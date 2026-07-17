@@ -100,6 +100,12 @@ func (w *physicalPredicatesFilterWrapper) HintCost(child []properties.Cost, _ pr
 	}
 }
 
+// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// orderingDelegator in winner_lookup.go).
+func (w *physicalPredicatesFilterWrapper) orderingSourceRef() *expressions.Reference {
+	return w.innerQuant.GetRangesOver()
+}
+
 func (w *physicalPredicatesFilterWrapper) HintOrdering() properties.Ordering {
 	ref := w.innerQuant.GetRangesOver()
 	if ref == nil {

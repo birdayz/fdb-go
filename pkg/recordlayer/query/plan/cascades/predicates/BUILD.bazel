@@ -49,6 +49,7 @@ go_test(
         "predrow_test.go",
         "rebase_test.go",
         "semantic_equals_test.go",
+        "semantic_hash_invariant_test.go",
         "simplifier_predicate_values_test.go",
         "structural_equal_test.go",
         "tautology_test.go",

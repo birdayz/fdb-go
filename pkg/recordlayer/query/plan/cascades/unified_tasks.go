@@ -22,6 +22,9 @@ func (t *InitiatePlannerPhaseTask) Run(p *Planner) {
 	// Before PLANNING starts, adjust partial matches from REWRITING.
 	if t.Phase == PhasePlanning {
 		AdjustMatches(t.RootRef)
+		if p.memo != nil {
+			p.memo.MarkPlanningActive()
+		}
 	}
 
 	p.push(&OptimizeGroupTask{Phase: t.Phase, Ref: t.RootRef})
@@ -56,15 +59,20 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		}
 	}
 
-	// Cap exploration rounds to prevent divergence from rule cycles
-	// (A→B→A) that keep inserting new members. Java's Cascades relies
-	// on memo dedup to reach a fixpoint; Go's per-Reference dedup is
-	// weaker (pointer-identity fast path + structural fallback), so
-	// pathological rule interactions can produce distinct-but-equivalent
-	// members indefinitely. 10 rounds is well above the 2–3 needed for
-	// typical queries and safely below the MaxTasks budget.
+	// Round cap: with the WS-B identity work (equal⟹same-hash across
+	// plans and predicates, memo no-collapse pins) the memo dedup reaches
+	// fixpoint like Java's, so a Reference still inserting new members
+	// after 10 rounds is a genuine rule-cycle divergence (A→B→A minting
+	// distinct-but-equivalent members) — a planner bug, not a load level.
+	// LOUD, never a silent commit of a half-explored group (RFC-180 I2:
+	// the cap re-evaluated after the dedup strengthening; kept as a
+	// tripwire).
 	const maxRoundsPerRef = 10
-	if !t.Ref.NeedsExploration() || t.Ref.ExplRounds() >= maxRoundsPerRef {
+	if t.Ref.NeedsExploration() && t.Ref.ExplRounds() >= maxRoundsPerRef {
+		p.capErr = ErrPlannerRoundCapHit
+		return
+	}
+	if !t.Ref.NeedsExploration() {
 		t.Ref.CommitExploration()
 		if t.Phase == PhasePlanning {
 			computeRefPlanProperties(t.Ref)
@@ -121,7 +129,12 @@ func (t *ExploreExprTask) Run(p *Planner) {
 		return
 	}
 
-	exprRules, implRules := p.rulesForPhase(t.Phase)
+	// Root-operator rule selection (Java AbstractRuleSet.getRules): only
+	// rules whose matcher can possibly match t.Expr's concrete type get
+	// transform tasks — the rest would pop, type-assert, and fail anyway.
+	exprIdx, implIdx := p.ruleIndexesForPhase(t.Phase)
+	exprRules := exprIdx.rulesFor(t.Expr)
+	implRules := implIdx.rulesFor(t.Expr)
 
 	// 1. Push match-partition rules (fire LAST — deepest on LIFO).
 	// Data access generation from PartialMatches.
@@ -195,8 +208,18 @@ func (t *TransformExprTask) Run(p *Planner) {
 		}
 	}
 
+	// Java's per-rule-call match cap counts ONE stream per rule invocation
+	// (CascadesPlanner.execute: a single numMatches over bindMatches, which
+	// enumerates quantifier permutations inside the same stream). The swapped
+	// bind below is part of THIS rule call, so it shares the counter.
+	numMatches := 0
 	fireExprRule := func(expr expressions.RelationalExpression) {
 		bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), expr)
+		numMatches += len(bindings)
+		if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
+			p.capErr = ErrPlannerRuleMatchCapHit
+			return
+		}
 		for _, b := range bindings {
 			call := &ExpressionRuleCall{
 				Bindings:    b,
@@ -254,7 +277,7 @@ func (t *TransformExprTask) Run(p *Planner) {
 
 	fireExprRule(t.Expr)
 
-	if t.Phase == PhasePlanning {
+	if t.Phase == PhasePlanning && p.capErr == nil {
 		if sel, ok := t.Expr.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
 			qs := sel.GetQuantifiers()
 			if len(qs) >= 2 && sel.GetJoinType() != expressions.JoinLeftOuter &&
@@ -284,12 +307,23 @@ func (t *TransformImplTask) Run(p *Planner) {
 		return
 	}
 	bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), t.Expr)
+	// Java CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded: one rule
+	// invocation producing more matches than the bound is a complexity
+	// blow-up; throw (here: capErr — tasks have no error channel). The
+	// counter is ONE stream per rule call in Java (quantifier permutations
+	// included), so the swapped bind below adds to it rather than resetting.
+	numMatches := len(bindings)
+	if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
+		p.capErr = ErrPlannerRuleMatchCapHit
+		return
+	}
 	for _, b := range bindings {
 		call := &ImplementationRuleCall{
 			Bindings:    b,
 			Reference:   t.Ref,
 			Context:     p.ctx,
 			Constraints: p.constraintMap,
+			Stats:       p.stats,
 			memo:        p.memo,
 			// Preorder (constraint-push) rules fire in their top-down constraint-only
 			// pass — PushRequestedOrderingThrough{Sort,Filter,Select,...}Rule and
@@ -341,12 +375,20 @@ func (t *TransformImplTask) Run(p *Planner) {
 			qs[1].Kind() == expressions.QuantifierForEach {
 			swapped := sel.WithSwappedQuantifiers()
 			swapBindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), swapped)
+			// Same rule call as the primary bind site above: the match cap
+			// counts cumulatively across both binding streams.
+			numMatches += len(swapBindings)
+			if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
+				p.capErr = ErrPlannerRuleMatchCapHit
+				return
+			}
 			for _, b := range swapBindings {
 				call := &ImplementationRuleCall{
 					Bindings:    b,
 					Reference:   t.Ref,
 					Context:     p.ctx,
 					Constraints: p.constraintMap,
+					Stats:       p.stats,
 					memo:        p.memo,
 				}
 				t.Rule.OnMatch(call)
@@ -409,16 +451,46 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 		}
 	}
 
-	if bestFinal != nil {
-		t.Ref.PruneWith(bestFinal)
-		t.Ref.SetWinner(expressions.NoProperties, bestFinal)
-	} else {
+	if bestFinal == nil {
 		t.Ref.ClearFinalMembers()
+		return
 	}
 
+	// Winner-per-(group, properties) retention (Graefe 1995 §2): pruning to
+	// the single overall cost winner would destroy a costlier-but-ORDERED
+	// final that a pushed RequestedOrderingConstraint asked this group for —
+	// before the parent's ordered lookup (bestSatisfyingMember) or the
+	// extraction elision seam can choose it, silently forcing an avoidable
+	// enforcer sort. Java parents don't hit this because they bake concrete
+	// child plans at rule time (memoizePlan); Go wrappers range over child
+	// References resolved at lookup/extraction, so the group must retain,
+	// per requested ordering, the cheapest final satisfying it. Orderings
+	// nothing requested stay dead weight and are pruned with the losers.
+	keep := map[expressions.RelationalExpression]struct{}{bestFinal: {}}
 	if t.Phase == PhasePlanning {
-		stampOrderingWinners(t.Ref, costModel)
+		if ros, ok := Get(p.constraintMap, t.Ref, RequestedOrderingConstraintKey); ok {
+			tieBrokenLess := lessWithHashTieBreak(costModel)
+			for _, ro := range ros {
+				if ro == nil || ro.IsPreserve() {
+					continue
+				}
+				var best expressions.RelationalExpression
+				for _, m := range t.Ref.FinalMembers() {
+					if !memberSatisfiesOrdering(m, ro) {
+						continue
+					}
+					if best == nil || tieBrokenLess(m, best) {
+						best = m
+					}
+				}
+				if best != nil {
+					keep[best] = struct{}{}
+				}
+			}
+		}
 	}
+	t.Ref.PruneToSet(keep)
+	t.Ref.SetWinner(bestFinal)
 }
 
 // OptimizeInputsTask pushes OptimizeGroup for each child quantifier.
@@ -431,6 +503,20 @@ type OptimizeInputsTask struct {
 
 func (t *OptimizeInputsTask) Run(p *Planner) {
 	if t.Expr == nil {
+		return
+	}
+	// Identity guard (Java CascadesPlanner.OptimizeInputs:
+	// `if (!group.containsExactly(expression)) return;`): an expression
+	// pruned OUT of its group between task push and pop is dead — it must
+	// not drive child-group pruning on behalf of a plan that lost. Go
+	// checks FINAL membership, stricter than Java's containsExactly:
+	// PLANNING expression rules dual-insert physical yields into both the
+	// exploratory and final sets (TransformExprTask's yieldFn) while
+	// pruning trims only finals, so a pruned loser still passes a
+	// both-sets check via its exploratory copy — and this task is only
+	// ever pushed for physical members, whose home set is finals. (Java
+	// has no dual insertion; there the two checks coincide.)
+	if t.Ref != nil && !t.Ref.ContainsFinal(t.Expr) {
 		return
 	}
 	for _, q := range t.Expr.GetQuantifiers() {

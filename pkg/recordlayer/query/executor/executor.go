@@ -348,9 +348,10 @@ func executeIndexScan(
 		// against the record type reads the same slot on the base-scan and
 		// covering paths. Non-covered fields stay nil (Java: unset partial
 		// fields — the planner's covering gate guarantees they are never
-		// referenced). Falls back to the index-layout row when any column
-		// cannot be mapped (a nested/expression index column has no
-		// top-level logical slot; those shapes keep name resolution).
+		// referenced). When any column cannot be mapped (a
+		// nested/expression index column has no top-level logical slot),
+		// this falls THROUGH to the full-record fetch below — never an
+		// index-layout row, which a baked logical ordinal would misread.
 		logicalOrds := coveringLogicalOrdinals(posNames, logicalType)
 		if logicalOrds != nil {
 			return &coveringIndexCursor{
@@ -611,6 +612,12 @@ func toFloat64Scalar(v any) (float64, bool) {
 		return float64(n), true
 	case int64:
 		return float64(n), true
+	case uint64:
+		// Tuple decoding preserves positive integers above math.MaxInt64 as
+		// uint64 (its only unsigned return) — a numeric value like any other.
+		return float64(n), true
+	case uint:
+		return float64(n), true
 	default:
 		return 0, false
 	}
@@ -661,8 +668,8 @@ func uuidToTupleElement(v any) any {
 //     (IndexKeyValueToPartialRecord.FieldCopier) and every read goes through
 //     the message, surfacing the same boxed Float either way — so the Go
 //     covering row must live in the SAME domain as the base row, or
-//     comparators (compareValues), dedup keys (distinctKey, extractKey) and
-//     hash-join keys split float32-vs-float64 across access paths.
+//     comparators (compareValues), dedup keys (distinctKey, packedDedupKey)
+//     and hash-join keys split float32-vs-float64 across access paths.
 //
 // Applied at every index-entry → row boundary so a column flows downstream
 // identically regardless of whether it was sourced from a stored record
@@ -924,9 +931,15 @@ type indexFetchCursor struct {
 	inner  recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	store  *recordlayer.FDBRecordStore
 	closed bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java's cached no-next result) — never re-pulls the inner entry scan.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
 
 func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	// One index entry per call: the fetch either yields its record, exhausts, or
 	// raises on an orphan/malformed entry. No loop — orphans no longer
 	// skip-and-continue (that silently dropped rows); they abort with a typed
@@ -939,7 +952,9 @@ func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 	}
 	if !result.HasNext() {
-		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+		res := recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation())
+		c.lastNoNext = &res
+		return res, nil
 	}
 
 	entry := result.GetValue()
@@ -1008,15 +1023,23 @@ type coveringIndexCursor struct {
 	logicalType *values.RecordType
 	logicalOrds []int
 	closed      bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java's cached no-next result) — never re-pulls the inner entry scan.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
 
 func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	result, err := c.inner.OnNext(ctx)
 	if err != nil {
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 	}
 	if !result.HasNext() {
-		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+		res := recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation())
+		c.lastNoNext = &res
+		return res, nil
 	}
 
 	entry := result.GetValue()
@@ -1267,6 +1290,9 @@ type limitEnvelopeCursor struct {
 	unbounded bool
 	// terminal caches a sticky no-next result (matching RowLimitedCursor's
 	// cached-terminal behavior): once set, every further OnNext returns it.
+	// Holds BOTH the exhaustion terminal and an out-of-band stop — Java caches
+	// every no-next result, so a re-call replays verbatim and never re-pulls
+	// the inner.
 	terminal *recordlayer.RecordCursorResult[QueryResult]
 	closed   bool
 }
@@ -1316,15 +1342,19 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 			}
 			// Inner stopped out-of-band (page/scan boundary): envelope the
 			// inner continuation with the CURRENT remaining offset/limit so the
-			// next page resumes mid-window. Not sticky — the next request opens
-			// a fresh cursor from this continuation.
+			// next page resumes mid-window (the next request opens a fresh
+			// cursor from this continuation). Cached in terminal so a
+			// contract-violating re-call on THIS instance replays it verbatim
+			// (Java's cached no-next result) instead of re-pulling the inner.
 			contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), c.remOffset, c.remLimit)
 			if encErr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
 			}
-			return recordlayer.NewResultNoNext[QueryResult](
+			res := recordlayer.NewResultNoNext[QueryResult](
 				reason, recordlayer.NewBytesContinuation(contBytes),
-			), nil
+			)
+			c.terminal = &res
+			return res, nil
 		}
 
 		if c.remOffset > 0 {
@@ -1517,7 +1547,10 @@ func executeDistinct(
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (bool, error) {
-			key := distinctKey(qr)
+			key, err := distinctKey(qr)
+			if err != nil {
+				return false, err
+			}
 			added, err := seen.Add(key, int64(len(key)))
 			if err != nil {
 				return false, err
@@ -1525,7 +1558,13 @@ func executeDistinct(
 			return added, nil
 		},
 	}
-	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
+	// Live-bytes model: the seen-set is rebuilt (and re-charged) per page;
+	// release its tally at page teardown. The hook reads Charged() at close
+	// time because the set grows while the page streams.
+	return newCloseHookCursor(
+		applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit),
+		func() { props.State.ReleaseMemory(seen.Charged()) },
+	), nil
 }
 
 // distinctKey builds a DISTINCT dedup key by packing the row's ordinal slot
@@ -1539,9 +1578,9 @@ func executeDistinct(
 // the same slot names in the same positions — the value tuple alone is the
 // comparison key, exactly as Java's comparison-key VALUES are. A nil-Positional
 // row yields the empty key.
-func distinctKey(qr QueryResult) string {
+func distinctKey(qr QueryResult) (string, error) {
 	if qr.Positional == nil || qr.Positional.Type == nil {
-		return ""
+		return "", nil
 	}
 	return packedDedupKey(qr.Positional.Slots)
 }
@@ -1554,9 +1593,12 @@ func distinctKey(qr QueryResult) string {
 // delimiter collapsed two different rows) and NULL has its own tuple code
 // distinct from any string (the "\x00NULL\x00"-sentinel collision). Java dedups
 // via Set<Key.Evaluated> structured value equality; this is the Go equivalent.
-// The [16]byte→UUID and composite %T:%v-fallback arms mirror
-// mergeSortCursor.extractKey.
-func packedDedupKey(slots []any) string {
+// The [16]byte→UUID arm mirrors intersectionCompKeyFunc's tuple
+// canonicalization; the composite %T:%v fallback keeps distinct concrete types
+// key-distinct. (The merge-sort union dedups via compareValues on evaluated
+// keys instead — Java UnionCursor's advance-all-equal — so it no longer packs
+// a dedup key at all.)
+func packedDedupKey(slots []any) (string, error) {
 	t := make(tuple.Tuple, len(slots))
 	for i, v := range slots {
 		switch tv := v.(type) {
@@ -1568,12 +1610,20 @@ func packedDedupKey(slots []any) string {
 			t[i] = tuple.UUID(tv)
 		default:
 			// Composite/nested slot (struct, array, message): the tuple layer
-			// cannot pack it, so fall back to a single length-prefixed string
-			// element — still boundary-safe, since it is one tuple slot.
-			t[i] = fmt.Sprintf("%T:%v", v, v)
+			// cannot pack it. Encode LOSSLESSLY via the continuation codec
+			// (type-tagged, length-prefixed, recursive) as one []byte tuple
+			// slot — boundary-safe AND collision-free. The retired %T:%v
+			// rendering collided on composites ([]any{"a b"} vs
+			// []any{"a","b"} both rendered "[a b]") and split equal protos
+			// across generated/dynamicpb representations (RFC-180 C1).
+			b, err := appendContValue(nil, v)
+			if err != nil {
+				return "", fmt.Errorf("dedup key slot %d: %w", i, err)
+			}
+			t[i] = b
 		}
 	}
-	return string(t.Pack())
+	return string(t.Pack()), nil
 }
 
 func executeProjection(
@@ -1655,9 +1705,15 @@ func executeProjection(
 type errCheckCursor struct {
 	inner recordlayer.RecordCursor[QueryResult]
 	err   *error
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java's cached no-next result) — never re-pulls the inner.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
 
 func (c *errCheckCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	if *c.err != nil {
 		return recordlayer.RecordCursorResult[QueryResult]{}, *c.err
 	}
@@ -1667,6 +1723,9 @@ func (c *errCheckCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRe
 	}
 	if *c.err != nil {
 		return recordlayer.RecordCursorResult[QueryResult]{}, *c.err
+	}
+	if !result.HasNext() {
+		c.lastNoNext = &result
 	}
 	return result, nil
 }
@@ -1750,22 +1809,11 @@ func executeUnionStreaming(
 			return c
 		}
 	}
-	var cursor recordlayer.RecordCursor[QueryResult]
-	if len(inners) == 1 {
-		cursor = branchFactory(0)(continuation)
-	} else {
-		// Fold right-to-left: tail = branch n-1; each step wraps
-		// (branch i, tail) in a binary concat factory.
-		tail := branchFactory(len(inners) - 1)
-		for i := len(inners) - 2; i >= 1; i-- {
-			fi, next := branchFactory(i), tail
-			tail = func(cont []byte) recordlayer.RecordCursor[QueryResult] {
-				return recordlayer.ConcatCursors(fi, next, cont)
-			}
-		}
-		cursor = recordlayer.ConcatCursors(branchFactory(0), tail, continuation)
+	factories := make([]recordlayer.CursorFactory[QueryResult], len(inners))
+	for i := range inners {
+		factories[i] = branchFactory(i)
 	}
-	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(concatFactories(factories, continuation), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeUnionBuffered(
@@ -1788,14 +1836,18 @@ func executeUnionBuffered(
 		return nil, &UnsupportedContinuationError{Shape: "buffered union (branch column names not statically known)"}
 	}
 	var all []QueryResult
+	var allCharged int64
 	for branchIdx, inner := range inners {
 		cursor, err := ExecutePlan(ctx, inner, store, evalCtx, nil, props.ClearSkipAndLimit())
 		if err != nil {
+			props.State.ReleaseMemory(allCharged)
 			return nil, err
 		}
-		items, err := CollectAllBounded(ctx, cursor, props.State, props.GetMaterializationLimit(), "buffered union branch")
+		items, charged, err := CollectAllBounded(ctx, cursor, props.State, props.GetMaterializationLimit(), "buffered union branch")
+		allCharged += charged
 		cursor.Close()
 		if err != nil {
+			props.State.ReleaseMemory(allCharged)
 			return nil, err
 		}
 		branchKeys := planColumnNames(inner)
@@ -1822,7 +1874,10 @@ func executeUnionBuffered(
 		// the budget is already advanced by the per-branch CollectAllBounded.
 		all = append(all, items...)
 	}
-	return applySkipLimit(recordlayer.FromList(all), props.Skip, props.ReturnedRowLimit), nil
+	return newChargeReleasingCursor(
+		applySkipLimit(recordlayer.FromList(all), props.Skip, props.ReturnedRowLimit),
+		props.State, allCharged,
+	), nil
 }
 
 func planColumnNames(p plans.RecordQueryPlan) []string {
@@ -2092,7 +2147,7 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 				// widenInt32: tuple has no int32 (RFC-092). uuidToTupleElement:
 				// a UUID comparison/PK key is a neutral [16]byte, which the tuple
 				// packer cannot encode — convert it to tuple.UUID, exactly as
-				// mergeSortCursor.extractKey does, so compareKeys' Pack doesn't
+				// packedDedupKey does, so compareKeys' Pack doesn't
 				// panic on an intersection over a UUID key (RFC-162).
 				t[i] = uuidToTupleElement(widenInt32(v))
 			}
@@ -2101,7 +2156,23 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 		if qr.PrimaryKey != nil {
 			return qr.PrimaryKey
 		}
-		return tuple.Tuple{fmt.Sprintf("%v", qr.Positional)}
+		// No comparison keys and no PK: match rows by their FULL positional
+		// content, encoded LOSSLESSLY via the continuation codec — the
+		// retired fmt %v rendering collapsed distinct composite rows and
+		// collapsed every nil-layout row into one. Encode failure is a
+		// planner invariant violation (this closure's documented no-error-
+		// channel contract, as with Evaluate above).
+		if qr.Positional == nil {
+			// A row with no keys, no PK and no positional content cannot be
+			// matched against anything; a constant key would intersect ALL
+			// such rows. Planner invariant violation (documented contract).
+			panic(fmt.Errorf("intersection row carries no comparison keys, primary key, or positional content — malformed plan"))
+		}
+		b, err := appendContValue(nil, qr.Positional.Slots)
+		if err != nil {
+			panic(err)
+		}
+		return tuple.Tuple{b}
 	}
 }
 
@@ -2182,10 +2253,34 @@ func executeNestedLoopJoin(
 	if err != nil {
 		return nil, err
 	}
-	innerRows, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "nested loop join inner side")
+	innerRows, innerCharged, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "nested loop join inner side")
 	innerCursor.Close()
 	if err != nil {
+		props.State.ReleaseMemory(innerCharged)
 		return nil, err
+	}
+
+	// Decode the NLJ page continuation (nljContinuation: a
+	// FlatMapContinuation envelope wrapping the outer position, the current
+	// outer's check value, and the tuple-packed inner position). Anything
+	// else — including the retired pre-continuation binary's one-byte fake
+	// marker — declines loudly: forwarding unrecognized bytes to the outer
+	// child risks a key-value cursor's raw-suffix fallback silently
+	// accepting them as a scan position (wrong rows).
+	if p.GetJoinType() == plans.JoinFullOuter && len(continuation) > 0 {
+		// No FULL OUTER continuation resumes — the cross-outer matchedInner
+		// bitmap has no serialized form. New tokens carry the declining FULL
+		// marker, but a token minted by a PREVIOUS binary version packs
+		// ordinary mid-inner state; decoding it here would rebuild the
+		// bitmap zeroed and re-pad already-matched inner rows. Join-type
+		// context is the authority, not the token's own claim.
+		props.State.ReleaseMemory(innerCharged)
+		return nil, &UnsupportedContinuationError{Shape: "nested loop join FULL OUTER (does not resume)"}
+	}
+	outerContinuation, nljResume, decodeErr := decodeNLJContinuation(continuation)
+	if decodeErr != nil {
+		props.State.ReleaseMemory(innerCharged)
+		return nil, decodeErr
 	}
 
 	// Stream the outer side one row at a time via nljCursor.
@@ -2211,8 +2306,9 @@ func executeNestedLoopJoin(
 		// it is passed through unconditionally only for code uniformity.
 		outerProps = outerProps.ClearRowAndTimeLimits()
 	}
-	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, outerProps)
+	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, outerContinuation, outerProps)
 	if err != nil {
+		props.State.ReleaseMemory(innerCharged)
 		return nil, err
 	}
 
@@ -2223,8 +2319,15 @@ func executeNestedLoopJoin(
 	)
 	if err != nil {
 		outerCursor.Close()
+		props.State.ReleaseMemory(innerCharged)
 		return nil, err
 	}
+	// Live-bytes model: the inner side is re-materialized (and re-charged)
+	// on every page against the statement-wide state; the cursor releases
+	// its charges — inner rows plus any hash index — at page teardown. ADD
+	// to the tally: newNLJCursor already accumulated the hash-index charges.
+	cursor.chargedBytes += innerCharged
+	cursor.armResume(outerContinuation, nljResume)
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
@@ -2396,34 +2499,83 @@ func executeAggregation(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	// Deserialize the aggregate continuation (if resuming from a
-	// previous transaction). Extract the inner continuation for the
-	// leaf cursor and the single in-progress group's partial state.
-	// Mirrors Java's RecordQueryStreamingAggregationPlan.executePlan().
-	var innerContinuation []byte
-	var priorGroupKey string
-	var priorState *groupState
+	// buildAgg deserializes an aggregate continuation (if resuming from a
+	// previous transaction), extracts the inner continuation for the leaf
+	// cursor plus the single in-progress group's partial state, and builds the
+	// aggregate cursor. Mirrors Java's
+	// RecordQueryStreamingAggregationPlan.executePlan().
+	buildAgg := func(aggCont []byte) (recordlayer.RecordCursor[QueryResult], error) {
+		var innerContinuation []byte
+		var priorGroupKey string
+		var priorState *groupState
 
-	if continuation != nil {
-		ic, gk, gs, decErr := decodeAggregateContinuation(continuation, len(aggregates))
-		if decErr != nil {
-			return nil, fmt.Errorf("invalid aggregate continuation: %w", decErr)
+		if aggCont != nil {
+			ic, gk, gs, decErr := decodeAggregateContinuation(aggCont, len(aggregates))
+			if decErr != nil {
+				return nil, fmt.Errorf("invalid aggregate continuation: %w", decErr)
+			}
+			innerContinuation = ic
+			priorGroupKey = gk
+			priorState = gs
 		}
-		innerContinuation = ic
-		priorGroupKey = gk
-		priorState = gs
+
+		innerCursor, err := ExecutePlan(ctx, inner, store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
+		if err != nil {
+			return nil, err
+		}
+
+		cursor := newAggregateCursor(innerCursor, groupingKeys, aggregates, inner, evalCtx)
+		if len(innerContinuation) > 0 {
+			// A resumed cursor's initial resume point is the decoded INNER
+			// position: if its first row group-breaks against restored partial
+			// state (the prior page's time/scan limit landed exactly on a group
+			// boundary), the emitted group's continuation is (this inner
+			// position, NO state) — resume reads the next group fresh. Java
+			// instead re-wraps the WHOLE parsed AggregateCursorContinuation as
+			// the initial previousContinuationInGroup (constructor param), whose
+			// re-emit NESTS the aggregate proto inside itself and would hand
+			// aggregate bytes to the leaf plan on a second resume — Go encodes
+			// the intended flat position (Java's own movement-table comment).
+			cursor.previousContinuationInGroup = recordlayer.NewBytesContinuation(innerContinuation)
+		}
+		if priorState != nil {
+			cursor.withPartialState(priorGroupKey, priorState.keyVals, priorState)
+		}
+		return cursor, nil
 	}
 
-	innerCursor, err := ExecutePlan(ctx, inner, store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
-	if err != nil {
-		return nil, err
+	if len(groupingKeys) > 0 {
+		cursor, err := buildAgg(continuation)
+		if err != nil {
+			return nil, err
+		}
+		return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 	}
 
-	cursor := newAggregateCursor(innerCursor, groupingKeys, aggregates, inner, evalCtx)
-	if priorState != nil {
-		cursor.withPartialState(priorGroupKey, priorState.keyVals, priorState)
+	// Scalar aggregation (no grouping keys): Java plans it as
+	// DefaultOnEmpty(StreamingAggregation) — RecordQueryStreamingAggregationPlan
+	// REFUSES an inline default (fromProto throws on isCreateDefaultOnEmpty) and
+	// the COUNT(*)-on-empty default row rides RecordCursor.orElse in
+	// RecordQueryDefaultOnEmptyPlan.executePlan. Mirror that structure: the
+	// OrElse state machine (UNDECIDED/USE_INNER/USE_OTHER) is what makes BOTH
+	// emitted-row shapes resumable — a resume from the aggregate row's
+	// continuation stays USE_INNER (the exhausted aggregate reports
+	// SourceExhausted, never fabricating a duplicate default), and a resume from
+	// the default row's continuation stays USE_OTHER (the single-row list cursor
+	// is past its row). The child clears skip/limit; skip/limit apply to the
+	// whole OrElse — Java's clearSkipAndLimit-on-child + skipThenLimit split.
+	primaryFactory := func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+		cursor, err := buildAgg(cont)
+		if err != nil {
+			return &errResultCursor{err: err}
+		}
+		return cursor
 	}
-	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+	alternativeFactory := func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+		return recordlayer.FromListWithContinuation([]QueryResult{emptyScalarAggregateRow(aggregates)}, cont)
+	}
+	orElse := recordlayer.OrElseWithContinuation(primaryFactory, alternativeFactory, continuation)
+	return applySkipLimit(orElse, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func toFloat64(v any) float64 {
@@ -2504,7 +2656,7 @@ func executeDelete(
 	// explicit transaction that a later commit would persist (RFC-106a). DML runs
 	// in one transaction, so the target set is bounded by the tx; the materialization
 	// cap is the memory backstop.
-	targets, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "DELETE target set")
+	targets, _, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "DELETE target set")
 	if err != nil {
 		return nil, err
 	}
@@ -2574,7 +2726,7 @@ func executeInsert(
 	// use. (Note: a single INSERT that paginates across transactions can
 	// still re-read across page boundaries — that extreme case is a known
 	// limitation, RFC-035.)
-	innerRows, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "INSERT source")
+	innerRows, _, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "INSERT source")
 	if err != nil {
 		return nil, err
 	}
@@ -2750,7 +2902,7 @@ func executeUpdate(
 	// Pre-materialize the full target set BEFORE applying any update — a resource-limit
 	// cut-off must abort with ZERO records changed, never a partially-applied UPDATE
 	// staged in an explicit transaction (RFC-106a; see executeDelete).
-	targets, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "UPDATE target set")
+	targets, _, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "UPDATE target set")
 	if err != nil {
 		return nil, err
 	}
@@ -2901,11 +3053,13 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 			return protoreflect.ValueOfFloat32(n), nil
 		// INT/LONG→FLOAT are promotable in Java's lattice; widen rather than
 		// falling through to the 22000 reject (e.g. SUM(BIGINT) into a FLOAT
-		// column). Matches ConvertToProtoValue's VALUES path.
-		// TODO(RFC-083 follow-up): int64→float32 silently produces ±Inf for
-		// |n| > MaxFloat32 (~3.4e38); the float64→FLOAT arm above range-checks but
-		// these do not. Verify Java's CastValue.LONG_TO_FLOAT behaviour and mirror it
-		// (the same gap pre-exists in ConvertToProtoValue's FloatKind branch).
+		// column). Matches ConvertToProtoValue's VALUES path. No range check,
+		// deliberately: Java's PromoteValue.LONG_TO_FLOAT is the plain
+		// widening cast Float.valueOf((Long)in) — precision-lossy above 2^24,
+		// never ±Inf (MaxInt64 ≈ 9.2e18 < MaxFloat32 ≈ 3.4e38, so overflow is
+		// unreachable from an integer; the float64 arm above range-checks
+		// because float64 CAN exceed float32 range). Go's float32(n) is the
+		// identical semantics.
 		case int64:
 			return protoreflect.ValueOfFloat32(float32(n)), nil
 		case int:
@@ -3014,6 +3168,10 @@ func executeTempTableInsert(
 
 	// RFC-130: charge the temp-table working set; tt.Add returns the budget
 	// error, propagated via MapErrCursor (MapCursor cannot return an error).
+	// The table outlives this cursor — it is the recursion's shared working
+	// set (BFS ping-pong locals, or the DFS accumulator GetOrCreate mints
+	// into the shared bindings map) — so its charges are released by the
+	// recursion's teardown, never here.
 	mapped := recordlayer.MapErrCursor(innerCursor, func(qr QueryResult) (QueryResult, error) {
 		if err := tt.Add(qr); err != nil {
 			return QueryResult{}, err
@@ -3268,6 +3426,22 @@ func executeRecursiveLevelUnion(
 
 	scanTable := NewTempTableWithState(props.State)
 	insertTable := NewTempTableWithState(props.State)
+	// Live-bytes model: every byte the recursion charges (ping-pong temp
+	// tables via TempTableInsert, the UNION-DISTINCT seen-set) stands in for
+	// the accumulated result set and is released in one place — at the final
+	// cursor's teardown on success, or right here on an error return.
+	var seenCharge func() int64 = func() int64 { return 0 }
+	releaseWorkingSet := func() {
+		scanTable.ReleaseCharges()
+		insertTable.ReleaseCharges()
+		props.State.ReleaseMemory(seenCharge())
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			releaseWorkingSet()
+		}
+	}()
 
 	levelCtx := evalCtx.WithBinding(scanAlias, scanTable)
 	levelCtx = levelCtx.WithBinding(insertAlias, insertTable)
@@ -3297,6 +3471,7 @@ func executeRecursiveLevelUnion(
 	var keyer *cteDedupKeyer
 	if distinct {
 		seen = newBoundedSet[string](props.State)
+		seenCharge = seen.Charged
 		// Dedup on the CTE's OUTPUT columns. Prefer the seed plan's projection
 		// OUTPUT schema: after the temp table is keyed under OUTPUT names, the
 		// seed row can carry INERT extra columns (e.g. the source column a rename
@@ -3315,7 +3490,10 @@ func executeRecursiveLevelUnion(
 		keyer = newCTEDedupKeyer(canonicalCols)
 		var deduped []QueryResult
 		for _, it := range items {
-			k := keyer.key(it)
+			k, kerr := keyer.key(it)
+			if kerr != nil {
+				return nil, kerr
+			}
 			added, err := seen.Add(k, int64(len(k)))
 			if err != nil {
 				return nil, err
@@ -3356,7 +3534,10 @@ func executeRecursiveLevelUnion(
 		if distinct {
 			var newItems []QueryResult
 			for _, it := range items {
-				k := keyer.key(it)
+				k, kerr := keyer.key(it)
+				if kerr != nil {
+					return nil, kerr
+				}
 				added, err := seen.Add(k, int64(len(k)))
 				if err != nil {
 					return nil, err
@@ -3377,7 +3558,11 @@ func executeRecursiveLevelUnion(
 		allResults = append(allResults, items...)
 	}
 
-	return applySkipLimit(recordlayer.FromList(allResults), props.Skip, props.ReturnedRowLimit), nil
+	handedOff = true
+	return newCloseHookCursor(
+		applySkipLimit(recordlayer.FromList(allResults), props.Skip, props.ReturnedRowLimit),
+		releaseWorkingSet,
+	), nil
 }
 
 // executeRecursiveDfsJoin implements depth-first recursive CTE
@@ -3414,6 +3599,23 @@ func executeRecursiveDfsJoin(
 
 	preorder := p.GetTraversalStrategy() == plans.DfsPreorder
 	var results []QueryResult
+	// RFC-130 live-bytes model: every DFS row is charged ONCE — at tt.Add,
+	// when the root/child TempTableInsertPlan appends it to the shared
+	// accumulator table GetOrCreate mints into this context's bindings map.
+	// That table's charge stands in for the result set (same rows); the
+	// teardown below returns it (and the DISTINCT seen-set) to the budget,
+	// so a per-page re-execution does not re-accumulate the recursion.
+	var seenCharge func() int64 = func() int64 { return 0 }
+	releaseWorkingSet := func() {
+		evalCtx.ReleaseAllTempTableCharges()
+		props.State.ReleaseMemory(seenCharge())
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			releaseWorkingSet()
+		}
+	}()
 	// RFC-130: the DFS dedup seen-set is a cross-traversal cardinality-growing
 	// buffer (one key per distinct visited row) — charge each NEW key via
 	// boundedSet.
@@ -3427,6 +3629,7 @@ func executeRecursiveDfsJoin(
 	var keyer *cteDedupKeyer
 	if p.IsDistinct() {
 		seen = newBoundedSet[string](props.State)
+		seenCharge = seen.Charged
 		canonicalCols := recursiveUnionOutputColumns(p.GetRoot())
 		if len(canonicalCols) == 0 && len(rootRows) > 0 && rootRows[0].Positional != nil {
 			// Ordinal order is already deterministic; no sort needed.
@@ -3439,7 +3642,10 @@ func executeRecursiveDfsJoin(
 
 	for _, root := range rootRows {
 		if seen != nil {
-			k := keyer.key(root)
+			k, kerr := keyer.key(root)
+			if kerr != nil {
+				return nil, kerr
+			}
 			added, err := seen.Add(k, int64(len(k)))
 			if err != nil {
 				return nil, err
@@ -3453,7 +3659,11 @@ func executeRecursiveDfsJoin(
 		}
 	}
 
-	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+	handedOff = true
+	return newCloseHookCursor(
+		applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit),
+		releaseWorkingSet,
+	), nil
 }
 
 func dfsVisit(
@@ -3502,7 +3712,10 @@ func dfsVisit(
 
 	for _, child := range children {
 		if seen != nil {
-			k := keyer.key(child)
+			k, kerr := keyer.key(child)
+			if kerr != nil {
+				return kerr
+			}
 			added, err := seen.Add(k, int64(len(k)))
 			if err != nil {
 				return err
@@ -3540,9 +3753,15 @@ type filterResultCursor struct {
 	inner  recordlayer.RecordCursor[QueryResult]
 	pred   func(QueryResult) (bool, error)
 	closed bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java FilterCursor's cached no-next result) — never re-pulls the inner.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
 
 func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.RecordCursorResult[QueryResult], err error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	for {
 		if err = ctx.Err(); err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
@@ -3552,6 +3771,7 @@ func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.Rec
 			return result, err
 		}
 		if !result.HasNext() {
+			c.lastNoNext = &result
 			return result, nil
 		}
 		keep, perr := c.pred(result.GetValue())
@@ -3612,28 +3832,32 @@ func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult
 // (props.State); a nil/zero-limit st makes the byte charge a no-op while the
 // row-count cap still applies. Returns MaterializationLimitExceededError on the
 // row cap and MemoryLimitExceededError (→ 54F01) on the byte budget.
-func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], st *recordlayer.ExecuteState, limit int, opName string) ([]QueryResult, error) {
+// The second return is the total bytes charged against st — the owner of the
+// returned rows releases exactly that at teardown (live-bytes model: the
+// buffer is rebuilt per page against the statement-wide state, so an
+// unreleased charge re-accumulates once per page).
+func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], st *recordlayer.ExecuteState, limit int, opName string) ([]QueryResult, int64, error) {
 	buf := newBoundedBuffer[QueryResult](st, limit, opName, estimateQueryResultBytes)
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, buf.Charged(), err
 		}
 		result, err := cursor.OnNext(ctx)
 		if err != nil {
-			return nil, err
+			return nil, buf.Charged(), err
 		}
 		if !result.HasNext() {
 			if lerr := errIfBufferTruncated(result); lerr != nil {
-				return nil, lerr
+				return nil, buf.Charged(), lerr
 			}
 			break
 		}
 		v := result.GetValue()
 		if err := buf.Append(v); err != nil {
-			return nil, err
+			return nil, buf.Charged(), err
 		}
 	}
-	return buf.Items(), nil
+	return buf.Items(), buf.Charged(), nil
 }
 
 // collectAllRowCapped drains a cursor into a slice enforcing the MaterializationLimit
@@ -3645,7 +3869,8 @@ func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[Quer
 // value (RFC-130, code-review #328). Passing a nil ExecuteState makes the boundedBuffer
 // skip both the estimate and the charge while keeping the row cap.
 func collectAllRowCapped(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], limit int, opName string) ([]QueryResult, error) {
-	return CollectAllBounded(ctx, cursor, nil, limit, opName)
+	rows, _, err := CollectAllBounded(ctx, cursor, nil, limit, opName)
+	return rows, err
 }
 
 // errIfBufferTruncated returns a 54F01-mapped error when an eager/buffered
@@ -3717,6 +3942,7 @@ func executeInMemorySort(
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	var innerContinuation []byte
 	var priorBuf []QueryResult
+	var emitPhase bool
 	if continuation != nil {
 		// Buffered STRUCT column slots rebuild as their ENCODED representation
 		// (concrete-type identity with fresh rows, which the %T-keyed
@@ -3730,12 +3956,13 @@ func executeInMemorySort(
 		if store != nil {
 			resolve = metadataMessageResolver(store.GetRecordMetaData())
 		}
-		ic, buf, decErr := decodeSortContinuation(continuation, resolve)
+		ic, buf, exhausted, decErr := decodeSortContinuation(continuation, resolve)
 		if decErr != nil {
 			return nil, fmt.Errorf("invalid sort continuation: %w", decErr)
 		}
 		innerContinuation = ic
 		priorBuf = buf
+		emitPhase = exhausted
 	}
 
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
@@ -3797,7 +4024,13 @@ func executeInMemorySort(
 					}
 					return jNil
 				}
-				cmp := compareValues(ci, cj)
+				cmp, cmpErr := compareValues(ci, cj)
+				if cmpErr != nil {
+					if sortErr == nil {
+						sortErr = cmpErr
+					}
+					return false
+				}
 				if cmp == 0 {
 					continue
 				}
@@ -3821,7 +4054,33 @@ func executeInMemorySort(
 	}
 
 	cursor := newCustomSortCursor(innerCursor, sortFn, props.State)
+	// RFC-180 H4: a RESUMED buffer is memory like any other — the fill loop
+	// charges every fresh row against the RFC-130 statement budget
+	// (customSortCursor.OnNext), so restored rows must charge identically at
+	// injection or a resume smuggles an arbitrarily large buffer past the
+	// limit. The cursor tracks its charges and releases them on Close, so a
+	// statement-wide ExecuteState reused across pages accounts the buffer's
+	// LIVE bytes once, not once per page boundary.
 	if len(priorBuf) > 0 {
+		if cerr := cursor.chargeResumedBuffer(priorBuf); cerr != nil {
+			_ = cursor.Close()
+			return nil, cerr
+		}
+	}
+	switch {
+	case emitPhase:
+		// Emit-phase resume (sortEmitContinuation): the inner was EXHAUSTED when
+		// the continuation was taken and priorBuf is the remaining SORTED output —
+		// go straight to emit. Re-running the fill loop would re-scan the inner
+		// from scratch and duplicate every restored row (the buffer is a slice,
+		// not Java MemorySortCursor's key-deduped scratchpad map). An EMPTY
+		// remaining buffer (resume taken at the last row) still sets loaded so the
+		// cursor reports SourceExhausted instead of re-filling.
+		cursor.buf = priorBuf
+		cursor.loaded = true
+	case len(priorBuf) > 0:
+		// Fill-phase resume: the buffer so far, inner resumes from its position;
+		// sortFn runs over the COMBINED buffer at exhaustion.
 		cursor.buf = priorBuf
 	}
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
@@ -3907,12 +4166,16 @@ func (k *cteDedupKeyer) layoutOrdinals(rt *values.RecordType) []int {
 	return ords
 }
 
-func (k *cteDedupKeyer) key(qr QueryResult) string {
+func (k *cteDedupKeyer) key(qr QueryResult) (string, error) {
 	if len(k.cols) == 0 {
 		return queryResultKey(qr)
 	}
 	if qr.Positional == nil || qr.Positional.Type == nil {
-		return fmt.Sprintf("%v", qr.Positional)
+		// A layout-less row carries no dedupable values: any constant key
+		// would collapse EVERY such row into one (the retired
+		// fmt.Sprintf("%v", nil) rendering did exactly that). Loud, never
+		// wrong rows (RFC-180 C4).
+		return "", fmt.Errorf("CTE dedup over a row with no positional layout — malformed plan")
 	}
 	ords := k.layoutOrdinals(qr.Positional.Type)
 	slots := make([]any, len(ords))
@@ -3929,10 +4192,12 @@ func (k *cteDedupKeyer) key(qr QueryResult) string {
 // from VALUES ONLY (sorted by column name for determinism) so rows with
 // different column names but identical values (e.g. seed {SRC:1} and
 // recursive {DST:1}) are correctly identified as duplicates.
-func queryResultKey(qr QueryResult) string {
+func queryResultKey(qr QueryResult) (string, error) {
 	pos := qr.Positional
 	if pos == nil || pos.Type == nil {
-		return fmt.Sprintf("%v", qr.Positional)
+		// See cteDedupKeyer.key: a layout-less row must not collapse into
+		// a shared constant key (RFC-180 C4).
+		return "", fmt.Errorf("UNION DISTINCT dedup over a row with no positional layout — malformed plan")
 	}
 	type nv struct {
 		name string

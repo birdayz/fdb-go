@@ -157,7 +157,7 @@ func TestMemoMerge_SkipsWhenWinnersPresent(t *testing.T) {
 	scanRef := expressions.InitialOf(fixtureScan("T"))
 	l := filterOver(scanRef)
 	r := filterOver(scanRef)
-	r.SetWinner(expressions.NoProperties, fixtureScan("W")) // r is "optimized"
+	r.SetWinner(fixtureScan("W")) // r is "optimized"
 
 	m := NewMemo(nil)
 	m.RegisterReference(l)
@@ -287,5 +287,44 @@ func TestMemoMerge_CorrelatedToInvariant(t *testing.T) {
 	}
 	if len(r.GetCorrelatedTo()) != before {
 		t.Fatal("forwarded loser must report the survivor's correlation set")
+	}
+}
+
+// TestMemoMerge_PanicsDuringPlanning pins the RFC-037 §0 phase tripwire:
+// once PLANNING is active, ANY cross-group merge must panic — the per-ref
+// winners/matches check alone has a blind spot for refs carrying only
+// pushed ConstraintMap entries, which a merge would orphan (the map keys
+// canonical refs at access time and cannot re-home entries written before
+// the union-find repoint).
+func TestMemoMerge_PanicsDuringPlanning(t *testing.T) {
+	t.Parallel()
+	a := expressions.InitialOf(fixtureScan("A"))
+	m := NewMemo(a)
+	b := expressions.InitialOf(fixtureScan("B"))
+	m.MarkPlanningActive()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("cross-group merge during PLANNING must panic (RFC-037 is REWRITING-only)")
+		}
+	}()
+	m.merge(a, b)
+}
+
+// TestMemoMergeable_DeclinesDuringPlanning pins the soft path of the
+// RFC-037 §0 phase gate: expression rules still fire during PLANNING and
+// integrateOne consults mergeable — a PLANNING-time equivalence discovery
+// must DECLINE (keep the groups separate; always sound) instead of
+// running into the merge tripwire's panic and failing the query.
+func TestMemoMergeable_DeclinesDuringPlanning(t *testing.T) {
+	t.Parallel()
+	a := expressions.InitialOf(fixtureScan("A"))
+	m := NewMemo(a)
+	b := expressions.InitialOf(fixtureScan("B"))
+	if !m.mergeable(a, b) {
+		t.Fatal("precondition: refs must be mergeable during REWRITING")
+	}
+	m.MarkPlanningActive()
+	if m.mergeable(a, b) {
+		t.Fatal("mergeable must decline once PLANNING is active")
 	}
 }

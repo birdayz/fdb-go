@@ -1,7 +1,44 @@
 # RFC-180: Query-Engine Quality Remediation
 
-**Status:** Workstream Y COMPLETE (corpus 319/319 green, un-skip landed);
-A partially landed (union streaming resume); B/C/D/E/F/G3/G4/H/I open
+**Status:** Y/A/B/C/E/G/H COMPLETE; D1/D3/D4 + I1/I2 + F COMPLETE (F-3
+aggregate stage: `LogicalAggregate.Aggregates []string` deleted, `Calls`
+is the sole representation; the surviving text fields — GroupKeys,
+Having-as-presence-sentinel, PredicateText, SortKey.Expr — are the
+translator's decline-or-resolve inputs, never re-parsed, and retire with
+their own stages as resolved-Value coverage completes).
+**Open follow-up (Torvalds lap on 0aea06b48): union-leg spine pinning.**
+ImplementSortRule now pins the delegation spine at yield time
+(pinOrderedSpine), but ImplementDistinctUnionRule /
+ImplementInUnionRule still compute leg orderings from the first
+partition member's estimate and memoize ALL partition expressions as
+the leg reference — extraction's WithChildren re-derivation over that
+multi-member ref can relink a leg to a member whose runtime order
+diverges from the comparison keys (merge-dedup correctness, not just
+order). The fix needs a RichOrdering→RequestedOrdering conversion for
+the leg requirement plus per-leg pinning, with a red repro harnessing a
+delegator leg. Queued next; in_join's use is enumeration-heuristic only
+(its wrapper claims no ordering) and needs nothing.
+
+**I3 DONE**: matching.RootOperatorMatcher carries the typed root
+(reflect.Type from the matcher's type parameter — never the debug
+string); ruleIndex buckets each phase's rules by root operator with an
+always bucket for interface-rooted matchers (Java AbstractRuleSet);
+planner task counts drop ~85%; the 14 pre-generics boilerplate matcher
+types are deleted. Follow-ups from the same reviewer lap: constraint
+pushes COMBINE with Java's subsumption union instead of clobbering, and
+the constraint map keys canonical references. **D2 DONE**: the flat
+PhysicalProperties winner key is DELETED — Reference keeps ONE
+OPTIMIZE winner; ordering-specific selection scans members' derived
+rich orderings (computeWrapperRichOrdering → RichOrdering.Satisfies,
+Value identity + four-state sort order incl. the counterflow-nulls
+gate) with the plan-hash tie-break; extraction-time sort elision
+routes through the same scan (Planner.OrderedChildWinner via the
+SortElisionSelector seam), so no path can elide a sort on a
+name+direction match that drops NULL placement, and the 8-column cap
+is gone. H1 resolved INVALID
+(int64→float32 overflow unreachable; Java parity verified). All landed
+work is on `audit/query-engine-correctness` (wave 2, PR #494) per owner
+direction — no separate branches.
 **Reviews:** RFC ACK'd by Graefe (3 binding notes incorporated) and Torvalds
 (G1/Y6/histogram NAK items fixed); every engine commit through the
 Graefe+Torvalds gate
@@ -208,7 +245,7 @@ The planner has three ordering domains; Java has one (`Ordering` /
   elide a sort verified on only the first 8 of 9+ ORDER BY keys — the most
   plausible unpinned wrong-rows path in the planner. Also blind to
   qualification (bare vs dotted names).
-- **D2** the winner map and requirement keys throughout keep using D1's type.
+- **D2** the winner map and requirement keys throughout keep using D1's type. **FIXED**: winner map deleted; rich-ordering member scan everywhere (see status above).
 - **D3** `expression_partition.go:262` (`RollUpPlanPartitions.makeKey`):
   partition merge keyed on `fmt.Sprintf("%v")` of property values — interface
   pointers stringify as addresses, so semantically-equal orderings never merge
@@ -260,12 +297,27 @@ The standing no-text-matching violation ("criminal", per owner):
   (`cascades_generator.go:2528`) and the `aggregateArgText` /
   `isBareColumnIdentifier` text classifiers (`cascades_translator.go:729-761`)
   with resolved-Value inspection.
-- **F-3 (staged, larger):** retire the text-shaped logical IR itself —
-  `LogicalAggregate.Aggregates []string`, `Having string`,
-  `LogicalFilter.PredicateText`, `canonicalTextOf` — in favor of the resolved
-  `Value` fields that already ride alongside. Text fields become
-  load-bearing-never, then deleted. This is the root fix; F-1/F-2 stop the
-  bleeding.
+- **F-3 final tier — the name-model residue:** the remaining dotted-name
+  splits (parseColRef over FieldValue.Field / schema Field.Name /
+  display-column names — ~12 sites) operate on ENGINE-MINTED encodings
+  (merged-row keys, leg-qualified labels, qualified explains), where
+  producer and consumer are the same engine. Their root fix is finishing
+  the RFC-142 ordinal model — positional/leg-window reads everywhere,
+  names demoted to display labels — not another segments sidecar; a
+  delimited user identifier containing a dot can still collide with the
+  merged-key encoding until that program completes. Everything upstream
+  of the IR (parser refs, group keys, sort keys, projections, aggregate
+  args, harvested refs, UPDATE SET) is structural as of this wave.
+- **F-3 (aggregate stage DONE):** `LogicalAggregate.Aggregates []string` is
+  deleted; `Calls []AggregateCall` is the sole aggregate representation
+  (readers ported to structural matching / `CanonicalName()`, writers build
+  Calls only). Perimeter findings that reshaped the plan: no
+  `canonicalTextOf` call site feeds ONLY retired text (each also feeds
+  `Calls.Operand` or a surviving field), and the translator's `Having`
+  check is a presence SENTINEL (decline-when-unstructured), never a
+  reparse. Remaining text fields (GroupKeys, Having, PredicateText,
+  SortKey.Expr) retire in later stages as resolved-Value coverage
+  completes. This is the root fix; F-1/F-2 stopped the bleeding.
 - **F-4:** `embedded/connection.go:742`: replace the
   `strings.Contains(msg, "not_committed")` fallback by preserving the typed
   FDBError through wrapping (`errors.As` all the way).
@@ -290,10 +342,14 @@ The standing no-text-matching violation ("criminal", per owner):
 
 ## Workstream H — small correctness + hygiene batch
 
-- **H1** `executor.go:2834`: int64→float32 conversion has no range check —
-  SUM(BIGINT) into a FLOAT column silently writes ±Inf. Mirror the float64
-  arm's `22003` range check (verify Java `CastValue` first, per the existing
-  TODO). *Silent wrong-value write; do not wait for RFC-083.*
+- **H1** ~~`executor.go:2834`: int64→float32 range check~~ — RESOLVED
+  INVALID: the premise is unreachable. MaxInt64 (≈9.2e18) is far below
+  MaxFloat32 (≈3.4e38), so an integer→float32 widening can never produce
+  ±Inf; the conversion is precision-lossy above 2^24, exactly like Java's
+  PromoteValue.LONG_TO_FLOAT (`Float.valueOf((Long)in)`, verified at tag
+  4.12.11.0). Go already matches Java; a range check would be dead code.
+  The mis-premised TODO at the site is replaced with the verified
+  semantics.
 - **H2** OrElse wrapper drops its serialized decision when the active child
   emits nil-byte continuations (executor cursor combinators).
 - **H3** `plans/index_key_value_to_partial_record.go:75-92`: silent nil on
@@ -358,16 +414,15 @@ Codex on the PR, re-request after every push.
 | Id | Severity | One-liner | Status |
 |---|---|---|---|
 | Y1–Y6 | wrong-rows/red-net | 67/319 yamsql failures + dark TestMain | **DONE** — corpus 319/319; ~110 Java-verdict re-pins; 12 engine fixes (sort pull-up, NULLS FIRST, UUID CAST, IN homogeneity, 0AF00 choke point, grouped-EXISTS guard, scalar-in-predicate guard, CTE shadowing, union positional ORDER BY, union streaming resume, ProjectionMergeRule composition, PK-suffix ordering); strict loader (exec:/rowcount: silent-drop hole killed); Y6 fatal-in-CI |
-| A1–A7 | wrong-rows (latent) + loud-gap | union/IN continuation family | OPEN |
-| B1–B5 | memo-collapse / nondeterministic | plan-identity stragglers | OPEN |
-| C1–C4 | wrong-rows | lossy dedup/group keys | OPEN |
-| D1–D4 | wrong-rows (D1) / divergence | ordering-representation split | OPEN |
-| E1 | nondeterministic | compensation map-order | OPEN |
-| F-1–F-4 | wrong-rows-history / rule-violation | text IR reparse | OPEN |
+| A1–A7 | wrong-rows (latent) + loud-gap | union/IN continuation family | **DONE** — real continuations for aggregate/sort/union/InJoin; fabricated-continuation family deleted |
+| B1–B5 | memo-collapse / nondeterministic | plan-identity stragglers | **DONE** — comparand identity completed (semanticValueEquals/writeValueHash on every straggler) |
+| C1–C4 | wrong-rows | lossy dedup/group keys | **DONE** — lossless typed codec; keyless fallbacks correct-or-loud |
+| D1–D4 | wrong-rows (D1) / divergence | ordering-representation split | D1/D3/D4 **DONE** (overflowed requirements unsatisfiable; property-equality roll-up with semantic null placement; fallback declines); D2 **DONE** (winner map deleted; rich-ordering member scan + counterflow gate + no width cap) |
+| E1 | nondeterministic | compensation map-order | **DONE** — deterministic quantifier iteration, pinned |
+| F-1–F-4 | wrong-rows-history / rule-violation | text IR reparse | **DONE** — F-1/F-2/F-4 killed the reparse/classifiers/errstring; F-3 aggregate stage deleted `Aggregates []string` (later stages staged: GroupKeys/Having/PredicateText/SortKey.Expr) |
 | G1 | process | yamsql un-skip | **DONE** (landed with the Y-green batch) |
 | G2 | dead-code | plangen deleted | **DONE** |
-| A1/A2 | wrong-rows (latent) + loud-gap | union streaming resume via ConcatCursors; buffered fallback correct-or-loud | **DONE** (A3–A7 remain) |
-| G3–G4 | net-gap | comparator fuzz + float cross-plan e2e | OPEN |
-| H1 | wrong-value write | int64→float32 ±Inf | OPEN |
-| H2–H8 | minor/hygiene | see workstream H | OPEN |
-| I1–I3 | parity/perf | planner guards | OPEN |
+| G3–G4 | net-gap | comparator fuzz + float cross-plan e2e | **DONE** — differential fuzz nets landed; surfaced + fixed the aggMinMax NaN/±Inf Java divergence |
+| H1 | wrong-value write | int64→float32 ±Inf | **INVALID** — premise unreachable (see Workstream H); kill seed pinned |
+| H2–H8 | minor/hygiene | see workstream H | **DONE** — skeleton deletions, resumed-buffer live-bytes accounting (H4), strict sort-continuation codec (H6) |
+| I1–I3 | parity/perf | planner guards | I1/I2 **DONE** (queue/match/round caps, corpus-validated, trip-pinned); I3 staged (blocked on a typed matcher-root API) |

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
+	"reflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -86,7 +87,27 @@ func (p *RecordQueryInUnionPlan) EqualsWithoutChildren(other RecordQueryPlan) bo
 	// IN-union plan non-equal → plan-cache churn + nondeterministic Explain (RFC-164
 	// WS-4, same class as RecordQueryInJoinPlan). Alias-invariant identity; the real
 	// names are retained on the field for execution (GetBindingNames).
-	return len(p.bindingNames) == len(o.bindingNames)
+	if len(p.bindingNames) != len(o.bindingNames) {
+		return false
+	}
+	// comparisonKeys and inSources join identity per Java
+	// RecordQueryInUnionPlan.equalsWithoutChildren (inSources.equals &&
+	// comparisonKeyFunction.equals). Both are set before the plan is
+	// memoized (rule_implement_in_union yields the wrapper after
+	// SetInSources), so sibling alternatives differing only in merge keys
+	// or IN-literals must NOT collapse into one memo group — the survivor
+	// would not produce the ordering (or the rows) the winner claimed.
+	if len(p.comparisonKeys) != len(o.comparisonKeys) {
+		return false
+	}
+	for i, k := range p.comparisonKeys {
+		if !semanticValueEquals(k, o.comparisonKeys[i]) {
+			return false
+		}
+	}
+	// inSources are literal comparand lists; DeepEqual is the Go analog of
+	// Java's List.equals element-wise Object.equals.
+	return reflect.DeepEqual(p.inSources, o.inSources)
 }
 
 func (p *RecordQueryInUnionPlan) HashCodeWithoutChildren() uint64 {
@@ -99,6 +120,21 @@ func (p *RecordQueryInUnionPlan) HashCodeWithoutChildren() uint64 {
 	h.Write(cnt[:])
 	if p.reverse {
 		h.Write([]byte{1})
+	}
+	for _, k := range p.comparisonKeys {
+		writeValueHash(h, k)
+	}
+	// inSources fold only their DIMENSIONS, not the literal payloads: the
+	// hash may be coarser than equality (equal⟹same-hash still holds), and
+	// hashing arbitrary `any` comparands bit-exactly would break it the
+	// other way (DeepEqual treats +0.0 == -0.0 for floats via ==, their
+	// bits differ). Bucket collisions between same-shape different-literal
+	// IN-unions are resolved by EqualsWithoutChildren.
+	binary.LittleEndian.PutUint64(cnt[:], uint64(len(p.inSources)))
+	h.Write(cnt[:])
+	for _, dim := range p.inSources {
+		binary.LittleEndian.PutUint64(cnt[:], uint64(len(dim)))
+		h.Write(cnt[:])
 	}
 	return h.Sum64()
 }

@@ -30,7 +30,7 @@ type ImplementInMemorySortRule struct {
 
 func NewImplementInMemorySortRule() *ImplementInMemorySortRule {
 	return &ImplementInMemorySortRule{
-		matcher: &inMemorySortMatcher{},
+		matcher: NewExpressionMatcher[*expressions.LogicalSortExpression]("in_memory_sort"),
 	}
 }
 
@@ -131,17 +131,6 @@ func (r *ImplementInMemorySortRule) GetRequestedOrderings(
 	_ expressions.RelationalExpression,
 ) []*RequestedOrdering {
 	return nil
-}
-
-type inMemorySortMatcher struct{}
-
-func (m *inMemorySortMatcher) RootType() string { return "LogicalSortExpression" }
-
-func (m *inMemorySortMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.LogicalSortExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
 }
 
 // isRestrictedFetch reports whether a physical plan is a Fetch wrapping

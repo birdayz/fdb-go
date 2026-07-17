@@ -62,8 +62,14 @@ type Reference struct {
 	// NONDETERMINISM / see RFC-167). The map stays for O(1) lookup; this slice fixes the order.
 	partialMatchOrder []any
 
-	// winners stores per-properties best plans following Graefe 1995 §2.
-	winners map[any]RelationalExpression
+	// winner is the OPTIMIZE-chosen cheapest physical plan for this
+	// group. Ordering-specific selection does NOT live here: a parent
+	// with a directional requirement scans the members' derived rich
+	// orderings (cascades getWinnerForOrdering), so satisfaction is
+	// always judged on the full Value+sort-order representation —
+	// never on a name-flattened key that would drop NULL placement
+	// and collide distinct values sharing a rendered name.
+	winner RelationalExpression
 
 	correlatedToCache map[values.CorrelationIdentifier]struct{}
 
@@ -94,6 +100,16 @@ type Reference struct {
 // phase exploration doesn't need to advance it.
 func InitialOf(e RelationalExpression) *Reference {
 	return &Reference{members: []RelationalExpression{e}, plannerStage: StageCanonical}
+}
+
+// FinalOf returns a Reference holding e as its only FINAL member, at
+// StagePlanned — Java's memoizePlan shape (Reference.ofFinalExpressions).
+// Used for spine-pinned singletons minted DURING PLANNING: with an empty
+// exploratory set and the target stage already reached, no ExploreGroup
+// task can explore the singleton and grow it past the pin, and no stage
+// advancement can promote-and-clear its finals.
+func FinalOf(e RelationalExpression) *Reference {
+	return &Reference{finalMembers: []RelationalExpression{e}, plannerStage: StagePlanned}
 }
 
 // Canonical follows the forwarding chain to the surviving Reference and
@@ -179,6 +195,16 @@ func (r *Reference) Absorb(loser *Reference) {
 func (r *Reference) Get() RelationalExpression {
 	r = r.Canonical()
 	if len(r.members) == 0 {
+		// A finals-only Reference (FinalOf — a spine-pinned singleton) has
+		// no exploratory members; its identity for semantic equality and
+		// child-cost lookups is the pinned FINAL. Without this fallback two
+		// otherwise-identical wrappers over DIFFERENT pinned children both
+		// exposed nil children, so SemanticEquals collapsed them and
+		// InsertFinal deduplicated a distinct ordered alternative away —
+		// and costing treated the pinned subtree as unknown cardinality.
+		if len(r.finalMembers) > 0 {
+			return r.finalMembers[0]
+		}
 		return nil
 	}
 	return r.members[0]
@@ -236,48 +262,26 @@ func (r *Reference) GetBest(less func(a, b RelationalExpression) bool) Relationa
 	return best
 }
 
-// Winner returns the best plan for the given physical properties key,
-// or nil if no winner has been stored. The key must be a comparable
-// PhysicalProperties value (defined in the cascades package).
-func (r *Reference) Winner(propsKey any) RelationalExpression {
-	r = r.Canonical()
-	if r.winners == nil {
-		return nil
-	}
-	return r.winners[propsKey]
+// Winner returns the OPTIMIZE-chosen cheapest plan for this group, or
+// nil if none has been stored.
+func (r *Reference) Winner() RelationalExpression {
+	return r.Canonical().winner
 }
 
-// SetWinner stores the best plan for the given physical properties.
-func (r *Reference) SetWinner(propsKey any, expr RelationalExpression) {
-	r = r.Canonical()
-	if r.winners == nil {
-		r.winners = make(map[any]RelationalExpression)
-	}
-	r.winners[propsKey] = expr
+// SetWinner stores the OPTIMIZE-chosen cheapest plan for this group.
+func (r *Reference) SetWinner(expr RelationalExpression) {
+	r.Canonical().winner = expr
 }
 
-// ClearWinners removes all stored winners. Used by advancePlannerStage
+// ClearWinners removes the stored winner. Used by advancePlannerStage
 // to discard EXPLORE-phase winners before PLANNING.
 func (r *Reference) ClearWinners() {
-	r = r.Canonical()
-	r.winners = nil
+	r.Canonical().winner = nil
 }
 
-// HasWinner reports whether a winner exists for the given properties.
-func (r *Reference) HasWinner(propsKey any) bool {
-	r = r.Canonical()
-	if r.winners == nil {
-		return false
-	}
-	_, ok := r.winners[propsKey]
-	return ok
-}
-
-// GetWinners returns the winners map for iteration. Returns nil if no
-// winners are stored. Callers must not mutate the map.
-func (r *Reference) GetWinners() map[any]RelationalExpression {
-	r = r.Canonical()
-	return r.winners
+// HasWinner reports whether a winner has been stored.
+func (r *Reference) HasWinner() bool {
+	return r.Canonical().winner != nil
 }
 
 // HasWinnersOrMatches reports whether this Reference carries any
@@ -287,7 +291,7 @@ func (r *Reference) GetWinners() map[any]RelationalExpression {
 // merge does not canonicalize.
 func (r *Reference) HasWinnersOrMatches() bool {
 	r = r.Canonical()
-	return len(r.winners) > 0 || len(r.partialMatchMap) > 0
+	return r.winner != nil || len(r.partialMatchMap) > 0
 }
 
 // Insert adds e to the equivalence class if no existing member already
@@ -480,7 +484,7 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 	r.explState = explorationNever
 	r.explRounds = 0
 	r.explMemberCount = 0
-	r.winners = nil
+	r.winner = nil
 }
 
 // Stage returns the current planner stage.
@@ -548,11 +552,41 @@ func (r *Reference) ContainsExactly(expr RelationalExpression) bool {
 	return false
 }
 
+// ContainsFinal reports whether expr is a FINAL member of this Reference
+// (by identity). Distinct from ContainsExactly, which also admits
+// exploratory members: PLANNING-phase expression rules dual-insert
+// physical yields into BOTH sets while pruning trims only finals — a
+// pruned loser therefore still passes ContainsExactly via its
+// exploratory copy.
+func (r *Reference) ContainsFinal(expr RelationalExpression) bool {
+	r = r.Canonical()
+	for _, m := range r.finalMembers {
+		if m == expr {
+			return true
+		}
+	}
+	return false
+}
+
 // PruneWith replaces final members with the single best expression.
 // Mirrors Java's Reference.pruneWith.
 func (r *Reference) PruneWith(expr RelationalExpression) {
 	r = r.Canonical()
 	r.finalMembers = append(r.finalMembers[:0], expr)
+}
+
+// PruneToSet keeps exactly the final members present in `keep` (by
+// identity), preserving their existing order, and drops the rest.
+// Exploratory members are untouched — same contract as PruneWith.
+func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
+	r = r.Canonical()
+	kept := r.finalMembers[:0]
+	for _, m := range r.finalMembers {
+		if _, ok := keep[m]; ok {
+			kept = append(kept, m)
+		}
+	}
+	r.finalMembers = kept
 }
 
 // ClearFinalMembers removes all final members.

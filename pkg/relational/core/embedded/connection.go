@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -739,18 +738,10 @@ func translateFDBError(err error) error {
 	if errors.As(err, &fdbValErr) {
 		return translateFDBCode(fdbValErr.Code, err)
 	}
-	// Fallback: string matching for wrapped errors that lost the typed FDBError.
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "transaction_timed_out"):
-		return api.WrapError(api.ErrCodeTransactionTimeout, "FDB transaction timed out", err)
-	case strings.Contains(msg, "not_committed"):
-		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
-	case strings.Contains(msg, "transaction_too_old"):
-		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
-	case strings.Contains(msg, "used_during_commit"):
-		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction used during commit", err)
-	}
+	// No string fallback: every in-tree producer wraps FDB errors with %w,
+	// so the typed errors.As lanes above are exhaustive (RFC-180 F-4). A
+	// wrap that severs the chain is a bug at the wrap site — fix it there,
+	// never by matching rendered text here.
 	return err
 }
 

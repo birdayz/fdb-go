@@ -402,12 +402,10 @@ var _ = Describe("listCursor / FromList / FromListWithContinuation", func() {
 			Expect(result.GetValue()).To(Equal(1))
 		})
 
-		It("empty continuation starts from the beginning", func() {
+		It("empty non-nil continuation is malformed (only nil starts — Java's getInt underflows)", func() {
 			c := FromListWithContinuation([]int{10, 20}, []byte{})
-			result, err := c.OnNext(ctx)
-			Expect(err).To(BeNil())
-			Expect(result.HasNext()).To(BeTrue())
-			Expect(result.GetValue()).To(Equal(10))
+			_, err := c.OnNext(ctx)
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("resumes correctly from a valid continuation", func() {

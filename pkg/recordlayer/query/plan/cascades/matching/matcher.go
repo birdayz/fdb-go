@@ -2,6 +2,7 @@ package matching
 
 import (
 	"fmt"
+	"reflect"
 	"sync/atomic"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -122,6 +123,20 @@ type BindingMatcher interface {
 	// matcher against `in`, one per successful match. Empty means
 	// "no match"; nil is equivalent.
 	BindMatches(outer *PlannerBindings, in any) []*PlannerBindings
+}
+
+// RootOperatorMatcher is implemented by matchers whose BindMatches admits
+// exactly one concrete type. RootOperator returns that type; the planner's
+// rule index buckets rules by it so an expression is only offered rules
+// that can possibly match. Matchers with broader roots (the any-matcher,
+// combinators) do not implement it and their rules are tried against every
+// expression. Ports Java BindingMatcher.getRootClass /
+// PlannerRule.getRootOperator (where Optional.empty() is the always
+// bucket) — a typed key, because a hand-typed name string as index key
+// turns a typo into a rule that silently never fires.
+type RootOperatorMatcher interface {
+	BindingMatcher
+	RootOperator() reflect.Type
 }
 
 // --- AnyValue -------------------------------------------------------

@@ -24,7 +24,7 @@ type PushRequestedOrderingThroughUniqueRule struct {
 
 func NewPushRequestedOrderingThroughUniqueRule() *PushRequestedOrderingThroughUniqueRule {
 	return &PushRequestedOrderingThroughUniqueRule{
-		matcher: &logicalUniquePushMatcher{},
+		matcher: NewExpressionMatcher[*expressions.LogicalUniqueExpression]("push_requested_ordering_through_unique"),
 	}
 }
 
@@ -52,17 +52,3 @@ func (r *PushRequestedOrderingThroughUniqueRule) OnMatch(call *ImplementationRul
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughUniqueRule)(nil)
-
-// logicalUniquePushMatcher matches LogicalUniqueExpression for the
-// constraint-push rule. Separate from logicalUniqueMatcher used by
-// ImplementUniqueRule to avoid matcher identity collisions.
-type logicalUniquePushMatcher struct{}
-
-func (m *logicalUniquePushMatcher) RootType() string { return "LogicalUniqueExpression" }
-
-func (m *logicalUniquePushMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.LogicalUniqueExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}

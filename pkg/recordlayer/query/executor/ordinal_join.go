@@ -632,15 +632,13 @@ func buriedLegWindow(row values.OrdinalRow, s legSpan, alias string) (*legWindow
 func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.OrdinalRow, error) {
 	if qr.Positional != nil {
 		// The passthrough requires ORDERED per-slot name agreement with the
-		// leg type (a width-only check is not
-		// enough): a COVERING-INDEX leg's positional row is INDEX-shaped —
-		// buildCoveringRow types it value-columns-then-PK ([V, ID]), not
-		// table order ([ID, V]) — same width, different layout, and a baked
-		// leg ordinal would silently read the wrong slot. A non-aligned
-		// positional row is a LEGITIMATE plan shape (not a gate breach): fall
-		// through to the per-layout gather below (rowSlotForLegColumn binds each leg
-		// column against the row's own plan-produced type), with the zero-match tripwire as
-		// the final guard.
+		// leg type — a width-only check is not enough: two layouts of the
+		// same columns are the same width, and a baked leg ordinal over the
+		// wrong layout silently reads the wrong slot. A non-aligned
+		// positional row is a LEGITIMATE plan shape (not a gate breach):
+		// fall through to the per-layout gather below (rowSlotForLegColumn
+		// binds each leg column against the row's own plan-produced type),
+		// with the zero-match tripwire as the final guard.
 		if legType == nil || positionalMatchesLegType(qr.Positional, legType) {
 			return qr.Positional, nil
 		}
@@ -653,9 +651,11 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 	// legType order via the row's own plan-produced RecordType (FieldIndex,
 	// first-match — the same rule every plan-time bake uses). A documented
 	// residual of Go's two-layout seed: gated-join legs are seeded with the
-	// LOGICAL (table-shaped) leg type while a physical leg may emit an
-	// INDEX-shaped row (buildCoveringRow types value-columns-then-PK), so the
-	// two layouts are permutations of each other. Java has no such adapter —
+	// LOGICAL (table-shaped) leg type while a physical leg may emit a row
+	// typed by its own plan output (covering-index rows are LOGICAL-shaped
+	// today — buildCoveringLogicalRow — but the leg contract does not pin
+	// every producer's layout), so the two layouts can be permutations of
+	// each other. Java has no such adapter —
 	// its planner rebinds every FieldValue ordinal against the physical
 	// quantifier's actual flowed type (translateCorrelations), so the baked
 	// ordinal IS the physical slot; retiring this gather requires Go's seed to

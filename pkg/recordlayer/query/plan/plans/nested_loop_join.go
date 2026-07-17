@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"encoding/binary"
 	"fmt"
 	"hash/fnv"
 	"strings"
@@ -127,9 +128,16 @@ func (p *RecordQueryNestedLoopJoinPlan) EqualsWithoutChildren(other RecordQueryP
 			return false
 		}
 	}
-	return true
+	// resultValue joins identity — the Java counterpart (RecordQueryFlatMapPlan)
+	// compares via semanticEqualsForResults; two joins differing only in the
+	// combined-row shape they emit are not interchangeable.
+	return semanticValueEquals(p.resultValue, o.resultValue)
 }
 
+// HashCodeWithoutChildren folds the structural discriminators. Predicates
+// fold predicates.SemanticHashCode (alias-invariant, coarser than the
+// structural PredicateEquals above — equal⟹same-hash holds), NOT Explain()
+// display text, which is for humans and carries no identity contract.
 func (p *RecordQueryNestedLoopJoinPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("nljoin|"))
@@ -138,10 +146,12 @@ func (p *RecordQueryNestedLoopJoinPlan) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte{0})
 	h.Write([]byte(p.innerAlias))
 	h.Write([]byte{0})
+	var buf [8]byte
 	for _, pred := range p.predicates {
-		h.Write([]byte(pred.Explain()))
-		h.Write([]byte{0})
+		binary.BigEndian.PutUint64(buf[:], predicates.SemanticHashCode(pred))
+		h.Write(buf[:])
 	}
+	writeValueHash(h, p.resultValue)
 	return h.Sum64()
 }
 

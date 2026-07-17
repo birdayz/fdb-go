@@ -2510,16 +2510,36 @@ func TestAggResultName_UnknownFunction(t *testing.T) {
 
 // --- distinctKey unit tests ---
 
+func mustQueryResultKey(t *testing.T, qr QueryResult) string {
+	t.Helper()
+	k, err := queryResultKey(qr)
+	if err != nil {
+		t.Fatalf("queryResultKey: %v", err)
+	}
+	return k
+}
+
+// mustDistinctKey unwraps distinctKey's error channel for the legacy pins
+// (their fixtures never carry unencodable slots).
+func mustDistinctKey(t *testing.T, qr QueryResult) string {
+	t.Helper()
+	k, err := distinctKey(qr)
+	if err != nil {
+		t.Fatalf("distinctKey: %v", err)
+	}
+	return k
+}
+
 func TestDistinctKey_WithDatum(t *testing.T) {
 	t.Parallel()
 	pk := tuple.Tuple{int64(42)}
 	qr := dmapPK(pk, map[string]any{"A": 1})
-	key := distinctKey(qr)
+	key := mustDistinctKey(t, qr)
 	if key == "" {
 		t.Fatal("expected non-empty key from datum map")
 	}
 	qr2 := dmapPK(tuple.Tuple{int64(99)}, map[string]any{"A": 1})
-	if distinctKey(qr) != distinctKey(qr2) {
+	if mustDistinctKey(t, qr) != mustDistinctKey(t, qr2) {
 		t.Fatal("same datum values should produce same distinct key regardless of PK")
 	}
 }
@@ -2527,7 +2547,7 @@ func TestDistinctKey_WithDatum(t *testing.T) {
 func TestDistinctKey_NilPrimaryKey(t *testing.T) {
 	t.Parallel()
 	qr := dmap(map[string]any{"A": 1})
-	key := distinctKey(qr)
+	key := mustDistinctKey(t, qr)
 	// The key is the tuple-packed slot values (Java's Key.Evaluated), not a
 	// NAME=type:value string.
 	expected := string(tuple.Tuple{1}.Pack())
@@ -2541,8 +2561,8 @@ func TestDistinctKey_Deterministic(t *testing.T) {
 	// With multiple slots the packed key must be stable regardless of map
 	// iteration order (dmap sorts columns by name → A,B,C).
 	qr := dmap(map[string]any{"B": 2, "A": 1, "C": 3})
-	key1 := distinctKey(qr)
-	key2 := distinctKey(qr)
+	key1 := mustDistinctKey(t, qr)
+	key2 := mustDistinctKey(t, qr)
 	if key1 != key2 {
 		t.Fatalf("non-deterministic: %q vs %q", key1, key2)
 	}
@@ -2561,8 +2581,8 @@ func TestDistinctKey_DelimiterInjection(t *testing.T) {
 	t.Parallel()
 	rowA := dorder([]string{"A", "B"}, []any{"x", "y|B=string:z"})
 	rowB := dorder([]string{"A", "B"}, []any{"x|B=string:y", "z"})
-	if distinctKey(rowA) == distinctKey(rowB) {
-		t.Fatalf("delimiter injection: distinct rows keyed identically (%q)", distinctKey(rowA))
+	if mustDistinctKey(t, rowA) == mustDistinctKey(t, rowB) {
+		t.Fatalf("delimiter injection: distinct rows keyed identically (%q)", mustDistinctKey(t, rowA))
 	}
 }
 
@@ -2577,20 +2597,20 @@ func TestQueryResultKey_DelimiterInjection(t *testing.T) {
 	// Delimiter injection: ["x","y|z"] and ["x|y","z"] both rendered "x|y|z".
 	r1 := dorder([]string{"A", "B"}, []any{"x", "y|z"})
 	r2 := dorder([]string{"A", "B"}, []any{"x|y", "z"})
-	if queryResultKey(r1) == queryResultKey(r2) {
-		t.Fatalf("queryResultKey delimiter injection: distinct rows keyed identically (%q)", queryResultKey(r1))
+	if mustQueryResultKey(t, r1) == mustQueryResultKey(t, r2) {
+		t.Fatalf("queryResultKey delimiter injection: distinct rows keyed identically (%q)", mustQueryResultKey(t, r1))
 	}
 	// NULL-sentinel: the literal string "\x00NULL\x00" must not key equal to SQL NULL.
 	rNull := dorder([]string{"A"}, []any{nil})
 	rSent := dorder([]string{"A"}, []any{"\x00NULL\x00"})
-	if queryResultKey(rNull) == queryResultKey(rSent) {
+	if mustQueryResultKey(t, rNull) == mustQueryResultKey(t, rSent) {
 		t.Fatal("queryResultKey: NULL sentinel collides with the literal string \\x00NULL\\x00")
 	}
 	// Preserved: same values under differently-named columns still dedup (the
 	// recursive-CTE seed {SRC:1} vs recursive {DST:1} case, values-only + name-sorted).
 	rSrc := dorder([]string{"SRC"}, []any{int64(1)})
 	rDst := dorder([]string{"DST"}, []any{int64(1)})
-	if queryResultKey(rSrc) != queryResultKey(rDst) {
+	if mustQueryResultKey(t, rSrc) != mustQueryResultKey(t, rDst) {
 		t.Fatal("queryResultKey: {SRC:1} and {DST:1} must still dedup as duplicates")
 	}
 }
@@ -2605,7 +2625,7 @@ func TestDistinctKey_NullSentinelCollision(t *testing.T) {
 	t.Parallel()
 	nullRow := dorder([]string{"A"}, []any{nil})
 	sentinelStr := dorder([]string{"A"}, []any{"\x00NULL\x00"})
-	if distinctKey(nullRow) == distinctKey(sentinelStr) {
+	if mustDistinctKey(t, nullRow) == mustDistinctKey(t, sentinelStr) {
 		t.Fatal("SQL NULL keyed equal to a string holding the NULL sentinel")
 	}
 }
@@ -2631,8 +2651,15 @@ func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected single-element tuple, got %v", got)
 	}
-	if _, ok := got[0].(string); !ok {
-		t.Fatalf("expected string element, got %T", got[0])
+	// RFC-180 C4: the keyless/PK-less fallback matches rows by their FULL
+	// positional content via the lossless continuation codec ([]byte), not
+	// a rendered string (which collapsed distinct composite rows).
+	if _, ok := got[0].([]byte); !ok {
+		t.Fatalf("expected lossless []byte element, got %T", got[0])
+	}
+	other := fn(dmap(map[string]any{"X": 2}))
+	if string(got[0].([]byte)) == string(other[0].([]byte)) {
+		t.Fatal("distinct rows must produce distinct fallback comparison keys")
 	}
 }
 
@@ -2652,31 +2679,81 @@ func TestIntersectionCompKeyFunc_WithKeyVals(t *testing.T) {
 
 // --- compareValues unit tests ---
 
+// TestCompareValues_UnsignedIntegerDomain pins the unsigned half of the
+// integer row domain:
+// tuple decoding preserves positive integers above math.MaxInt64 as uint64
+// (tuple.go's only unsigned return), so uint64 reaches the sort/merge
+// comparator on VALID same-domain data. The loud cross-type arm rejecting
+// it failed real ORDER BY / merge-union execution. Integer pairs compare
+// EXACTLY — float promotion would tie the adjacent boundary pair
+// (float64(2^63) == float64(2^63-1)).
+func TestCompareValues_UnsignedIntegerDomain(t *testing.T) {
+	t.Parallel()
+	big := uint64(math.MaxInt64) + 1
+	if mustCompareValues(t, big, uint64(math.MaxUint64)) >= 0 {
+		t.Fatal("2^63 < MaxUint64")
+	}
+	if mustCompareValues(t, big, big) != 0 {
+		t.Fatal("uint64 self-compare must be 0")
+	}
+	// Adjacent across the signed/unsigned boundary: exact, not float-tied.
+	if mustCompareValues(t, big, int64(math.MaxInt64)) <= 0 {
+		t.Fatal("2^63 > MaxInt64 (float promotion would tie this pair)")
+	}
+	if mustCompareValues(t, int64(math.MaxInt64), big) >= 0 {
+		t.Fatal("MaxInt64 < 2^63")
+	}
+	// Any negative sorts below any unsigned value.
+	if mustCompareValues(t, uint64(0), int64(-1)) <= 0 {
+		t.Fatal("uint64(0) > int64(-1)")
+	}
+	if mustCompareValues(t, int64(math.MinInt64), uint64(0)) >= 0 {
+		t.Fatal("MinInt64 < uint64(0) (MinInt64 negation must not overflow)")
+	}
+	// Plain int is an admitted integer form on BOTH sides (the a-side
+	// previously fell through to the loud arm asymmetrically).
+	if mustCompareValues(t, int(5), int64(7)) >= 0 {
+		t.Fatal("int(5) < int64(7)")
+	}
+	if mustCompareValues(t, int64(7), int(5)) <= 0 {
+		t.Fatal("int64(7) > int(5)")
+	}
+	// Integer vs float still uses the float total order.
+	if mustCompareValues(t, uint64(3), 3.5) >= 0 {
+		t.Fatal("uint64(3) < 3.5")
+	}
+	// Cross-type stays loud: the unsigned arm must not have widened the
+	// comparator into accepting non-numeric pairs.
+	if _, err := compareValues(uint64(1), "x"); err == nil {
+		t.Fatal("uint64 vs string must stay a loud cross-type error")
+	}
+}
+
 func TestCompareValues_NullHandling(t *testing.T) {
 	t.Parallel()
-	if compareValues(nil, nil) != 0 {
+	if mustCompareValues(t, nil, nil) != 0 {
 		t.Fatal("nil == nil should be 0")
 	}
-	if compareValues(nil, int64(1)) >= 0 {
+	if mustCompareValues(t, nil, int64(1)) >= 0 {
 		t.Fatal("nil < non-nil")
 	}
-	if compareValues(int64(1), nil) <= 0 {
+	if mustCompareValues(t, int64(1), nil) <= 0 {
 		t.Fatal("non-nil > nil")
 	}
 }
 
 func TestCompareValues_NumericTypes(t *testing.T) {
 	t.Parallel()
-	if compareValues(int64(1), int64(2)) >= 0 {
+	if mustCompareValues(t, int64(1), int64(2)) >= 0 {
 		t.Fatal("1 < 2")
 	}
-	if compareValues(int64(2), int64(1)) <= 0 {
+	if mustCompareValues(t, int64(2), int64(1)) <= 0 {
 		t.Fatal("2 > 1")
 	}
-	if compareValues(int64(42), float64(42.0)) != 0 {
+	if mustCompareValues(t, int64(42), float64(42.0)) != 0 {
 		t.Fatal("int64(42) == float64(42.0)")
 	}
-	if compareValues(float64(3.14), int64(3)) <= 0 {
+	if mustCompareValues(t, float64(3.14), int64(3)) <= 0 {
 		t.Fatal("3.14 > 3")
 	}
 }
@@ -2715,9 +2792,9 @@ func TestCompareValues_FloatTotalOrder(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := compareValues(c.a, c.b)
+			got := mustCompareValues(t, c.a, c.b)
 			if (c.want < 0 && got >= 0) || (c.want > 0 && got <= 0) || (c.want == 0 && got != 0) {
-				t.Errorf("compareValues(%v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
+				t.Errorf("mustCompareValues(t, %v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
 			}
 		})
 	}
@@ -2725,26 +2802,27 @@ func TestCompareValues_FloatTotalOrder(t *testing.T) {
 
 func TestCompareValues_CrossTypeNotEqual(t *testing.T) {
 	t.Parallel()
-	// int vs string must NOT return 0 (the NaN bug would make them "equal")
-	cmp := compareValues(int64(42), "hello")
-	if cmp == 0 {
-		t.Fatal("int64(42) should not equal string 'hello'")
+	// The former contract was "not silently equal" via the fmt fallback's
+	// lexical order; the contract is now strictly stronger — cross-type
+	// pairs ERROR (correct-or-loud), so they can never compare equal OR
+	// misordered.
+	if _, err := compareValues(int64(42), "hello"); err == nil {
+		t.Fatal("int64 vs string must error loudly")
 	}
-	cmp2 := compareValues(float64(3.14), "world")
-	if cmp2 == 0 {
-		t.Fatal("float64(3.14) should not equal string 'world'")
+	if _, err := compareValues(float64(3.14), "world"); err == nil {
+		t.Fatal("float64 vs string must error loudly")
 	}
 }
 
 func TestCompareValues_Strings(t *testing.T) {
 	t.Parallel()
-	if compareValues("abc", "def") >= 0 {
+	if mustCompareValues(t, "abc", "def") >= 0 {
 		t.Fatal("abc < def")
 	}
-	if compareValues("xyz", "abc") <= 0 {
+	if mustCompareValues(t, "xyz", "abc") <= 0 {
 		t.Fatal("xyz > abc")
 	}
-	if compareValues("same", "same") != 0 {
+	if mustCompareValues(t, "same", "same") != 0 {
 		t.Fatal("same == same")
 	}
 }
@@ -2768,12 +2846,12 @@ func TestCompareValues_Bytes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := compareValues(c.a, c.b)
+			got := mustCompareValues(t, c.a, c.b)
 			if (c.want < 0 && got >= 0) || (c.want > 0 && got <= 0) || (c.want == 0 && got != 0) {
-				t.Errorf("compareValues(%v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
+				t.Errorf("mustCompareValues(t, %v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
 			}
 			// Antisymmetry: the reversed call must flip the sign.
-			rev := compareValues(c.b, c.a)
+			rev := mustCompareValues(t, c.b, c.a)
 			if (got < 0 && rev <= 0) || (got > 0 && rev >= 0) || (got == 0 && rev != 0) {
 				t.Errorf("compareValues not antisymmetric: (a,b)=%d (b,a)=%d", got, rev)
 			}
@@ -2785,22 +2863,22 @@ func TestCompareValues_Bytes(t *testing.T) {
 // normalization): the fmt fallback compared "10.5" < "2.5" lexically (F10).
 func TestCompareValues_Float32(t *testing.T) {
 	t.Parallel()
-	if compareValues(float32(10.5), float32(2.5)) <= 0 {
+	if mustCompareValues(t, float32(10.5), float32(2.5)) <= 0 {
 		t.Fatal("float32 10.5 > 2.5 (was lexical \"10.5\" < \"2.5\")")
 	}
-	if compareValues(float32(2.5), float32(10.5)) >= 0 {
+	if mustCompareValues(t, float32(2.5), float32(10.5)) >= 0 {
 		t.Fatal("float32 2.5 < 10.5")
 	}
-	if compareValues(float32(1.5), float64(1.5)) != 0 {
+	if mustCompareValues(t, float32(1.5), float64(1.5)) != 0 {
 		t.Fatal("float32(1.5) == float64(1.5) across widths")
 	}
-	if compareValues(float64(1.5), float32(1.5)) != 0 {
+	if mustCompareValues(t, float64(1.5), float32(1.5)) != 0 {
 		t.Fatal("float64(1.5) == float32(1.5) across widths")
 	}
-	if compareValues(float32(2.5), int64(3)) >= 0 {
+	if mustCompareValues(t, float32(2.5), int64(3)) >= 0 {
 		t.Fatal("float32(2.5) < int64(3)")
 	}
-	if compareValues(int64(3), float32(2.5)) <= 0 {
+	if mustCompareValues(t, int64(3), float32(2.5)) <= 0 {
 		t.Fatal("int64(3) > float32(2.5)")
 	}
 }
@@ -2809,13 +2887,13 @@ func TestCompareValues_Float32(t *testing.T) {
 // by lexical accident ("false" < "true" in the fmt fallback); now pinned.
 func TestCompareValues_Bool(t *testing.T) {
 	t.Parallel()
-	if compareValues(false, true) >= 0 {
+	if mustCompareValues(t, false, true) >= 0 {
 		t.Fatal("false < true")
 	}
-	if compareValues(true, false) <= 0 {
+	if mustCompareValues(t, true, false) <= 0 {
 		t.Fatal("true > false")
 	}
-	if compareValues(true, true) != 0 || compareValues(false, false) != 0 {
+	if mustCompareValues(t, true, true) != 0 || mustCompareValues(t, false, false) != 0 {
 		t.Fatal("equal bools == 0")
 	}
 }
@@ -2889,9 +2967,9 @@ func TestDistinctKey_CoveringAndBaseFloatRowsDedup(t *testing.T) {
 		Type:  logicalType,
 		Slots: []any{int64(1), float64(2.5)},
 	}}
-	if distinctKey(covering) != distinctKey(base) {
+	if mustDistinctKey(t, covering) != mustDistinctKey(t, base) {
 		t.Fatalf("covering row key %q != base row key %q — dedup split across access paths",
-			distinctKey(covering), distinctKey(base))
+			mustDistinctKey(t, covering), mustDistinctKey(t, base))
 	}
 }
 
@@ -3812,15 +3890,11 @@ func newMergeSortCursor(
 	reverse bool,
 	dedup bool,
 ) *mergeSortCursor {
-	return &mergeSortCursor{
-		cursors:   cursors,
-		compKeys:  compKeys,
-		reverse:   reverse,
-		dedup:     dedup,
-		peeked:    make([]QueryResult, len(cursors)),
-		hasPeeked: make([]bool, len(cursors)),
-		exhausted: make([]bool, len(cursors)),
+	states := make([]*mergeSortChildState, len(cursors))
+	for i, c := range cursors {
+		states[i] = &mergeSortChildState{cursor: c, cont: &recordlayer.StartContinuation{}}
 	}
+	return &mergeSortCursor{states: states, compKeys: compKeys, reverse: reverse, dedup: dedup}
 }
 
 func TestMergeSortCursor_TwoSortedInputs(t *testing.T) {
@@ -4026,10 +4100,10 @@ func TestMergeSortCursor_NullComparisonKeys(t *testing.T) {
 	// so it should come before 3? Let's trace carefully.
 	//
 	// Actually left=[nil, 3], right=[1, nil]
-	// Peek: left=nil, right=1. isBetter(nil, 1): compareValues(nil, 1)=-1, cmp<0 → true → pick left(nil)
-	// Peek: left=3, right=1. isBetter(3, 1): compareValues(3, 1)=1, cmp<0 → false → pick right(1)
-	// Peek: left=3, right=nil. isBetter(3, nil): compareValues(3, nil)=1, cmp<0 → false.
-	//   isBetter(nil, 3): compareValues(nil, 3)=-1, cmp<0 → true → pick right(nil)
+	// Peek: left=nil, right=1. isBetter(nil, 1): mustCompareValues(t, nil, 1)=-1, cmp<0 → true → pick left(nil)
+	// Peek: left=3, right=1. isBetter(3, 1): mustCompareValues(t, 3, 1)=1, cmp<0 → false → pick right(1)
+	// Peek: left=3, right=nil. isBetter(3, nil): mustCompareValues(t, 3, nil)=1, cmp<0 → false.
+	//   isBetter(nil, 3): mustCompareValues(t, nil, 3)=-1, cmp<0 → true → pick right(nil)
 	// Peek: left=3, right exhausted. Pick left(3).
 	// Result: nil, 1, nil, 3
 	left := recordlayer.FromList([]QueryResult{
@@ -4648,12 +4722,12 @@ func TestSortContinuation_RoundTrip(t *testing.T) {
 
 	innerCont := recordlayer.NewBytesContinuation([]byte{0xCA, 0xFE})
 
-	encoded, err := encodeSortContinuation(innerCont, buf)
+	encoded, err := encodeSortContinuation(innerCont, buf, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotBuf, err := decodeSortContinuation(encoded, nil)
+	gotInner, gotBuf, _, err := decodeSortContinuation(encoded, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -4695,12 +4769,12 @@ func TestSortContinuation_RoundTrip(t *testing.T) {
 func TestSortContinuation_EmptyBuffer(t *testing.T) {
 	t.Parallel()
 
-	encoded, err := encodeSortContinuation(nil, nil)
+	encoded, err := encodeSortContinuation(nil, nil, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotBuf, err := decodeSortContinuation(encoded, nil)
+	gotInner, gotBuf, _, err := decodeSortContinuation(encoded, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -4914,7 +4988,19 @@ func TestNLJCursor_InnerJoin_PredicateFilters(t *testing.T) {
 // concatCursor
 // ===========================================================================
 
-func TestConcatCursor_MultipleCursors(t *testing.T) {
+// newUnorderedUnionForTest builds the cursor over pre-built children — the
+// executor recipe minus plan execution (pinned separately via the SQL e2e).
+func newUnorderedUnionForTest(children ...recordlayer.RecordCursor[QueryResult]) *unorderedUnionCursor {
+	return &unorderedUnionCursor{
+		children:  children,
+		states:    make([]recordlayer.RecordCursorContinuation, len(children)),
+		reasons:   make([]recordlayer.NoNextReason, len(children)),
+		stopped:   make([]bool, len(children)),
+		exhausted: make([]bool, len(children)),
+	}
+}
+
+func TestUnorderedUnionCursor_MultipleChildren(t *testing.T) {
 	t.Parallel()
 
 	c1 := recordlayer.FromList([]QueryResult{
@@ -4929,7 +5015,7 @@ func TestConcatCursor_MultipleCursors(t *testing.T) {
 		qr("id", int64(5)),
 	})
 
-	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{c1, c2, c3})
+	cc := newUnorderedUnionForTest(c1, c2, c3)
 	defer cc.Close()
 
 	results := collectCursor(t, cc)
@@ -4944,7 +5030,7 @@ func TestConcatCursor_MultipleCursors(t *testing.T) {
 	}
 }
 
-func TestConcatCursor_EmptyFirst(t *testing.T) {
+func TestUnorderedUnionCursor_EmptyFirst(t *testing.T) {
 	t.Parallel()
 
 	empty := recordlayer.FromList([]QueryResult{})
@@ -4953,7 +5039,7 @@ func TestConcatCursor_EmptyFirst(t *testing.T) {
 		qr("id", int64(8)),
 	})
 
-	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{empty, nonempty})
+	cc := newUnorderedUnionForTest(empty, nonempty)
 	defer cc.Close()
 
 	results := collectCursor(t, cc)
@@ -4965,40 +5051,27 @@ func TestConcatCursor_EmptyFirst(t *testing.T) {
 	}
 }
 
-func TestConcatCursor_AllEmpty(t *testing.T) {
+func TestUnorderedUnionCursor_AllEmpty(t *testing.T) {
 	t.Parallel()
 
-	e1 := recordlayer.FromList([]QueryResult{})
-	e2 := recordlayer.FromList([]QueryResult{})
-
-	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{e1, e2})
+	cc := newUnorderedUnionForTest(
+		recordlayer.FromList([]QueryResult{}),
+		recordlayer.FromList([]QueryResult{}),
+	)
 	defer cc.Close()
 
-	results := collectCursor(t, cc)
-	if len(results) != 0 {
+	if results := collectCursor(t, cc); len(results) != 0 {
 		t.Fatalf("got %d results, want 0", len(results))
 	}
 }
 
-func TestConcatCursor_NoCursors(t *testing.T) {
+func TestUnorderedUnionCursor_CloseIdempotent(t *testing.T) {
 	t.Parallel()
 
-	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{})
-	defer cc.Close()
-
-	results := collectCursor(t, cc)
-	if len(results) != 0 {
-		t.Fatalf("got %d results, want 0", len(results))
-	}
-}
-
-func TestConcatCursor_CloseIdempotent(t *testing.T) {
-	t.Parallel()
-
-	c1 := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
-	c2 := recordlayer.FromList([]QueryResult{qr("id", int64(2))})
-
-	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{c1, c2})
+	cc := newUnorderedUnionForTest(
+		recordlayer.FromList([]QueryResult{qr("id", int64(1))}),
+		recordlayer.FromList([]QueryResult{qr("id", int64(2))}),
+	)
 
 	if cc.IsClosed() {
 		t.Fatal("should not be closed initially")
@@ -5011,6 +5084,129 @@ func TestConcatCursor_CloseIdempotent(t *testing.T) {
 	}
 	if err := cc.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// TestExecuteUnorderedUnion_SingleChildKeepsSkipLimit pins the review-caught
+// hole: the single-child degenerate path cleared skip/limit for the child
+// (correct — pagination composes above) but never reapplied them, silently
+// returning every row of a LIMITed single-branch union.
+func TestExecuteUnorderedUnion_SingleChildKeepsSkipLimit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	plan := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{
+		plans.NewRecordQueryValuesPlan([]values.Value{
+			&values.ConstantValue{Value: int64(7), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+		}),
+	})
+	props := recordlayer.DefaultExecuteProperties().WithSkip(1)
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, props)
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+	rows, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("skip=1 over a 1-row single-child union must yield 0 rows, got %d", len(rows))
+	}
+}
+
+// TestUnorderedUnionCursor_MidStreamSnapshotWithUnpulledChild pins the
+// review-caught panic: the FIRST row's continuation snapshots child 1 before
+// it was ever pulled — the slot must encode START (Java's START_PROTO), never
+// a nil interface the encoder's IsEnd probe dereferences. Reachable via
+// LIMIT/maxRows paging that ends inside child 0.
+func TestUnorderedUnionCursor_MidStreamSnapshotWithUnpulledChild(t *testing.T) {
+	t.Parallel()
+	cc := newUnorderedUnionForTest(
+		recordlayer.FromList([]QueryResult{qr("id", int64(1)), qr("id", int64(2))}),
+		recordlayer.FromList([]QueryResult{qr("id", int64(9))}),
+	)
+	defer cc.Close()
+	res, err := cc.OnNext(context.Background())
+	if err != nil || !res.HasNext() {
+		t.Fatalf("first row: %v", err)
+	}
+	b, berr := res.GetContinuation().ToBytes()
+	if berr != nil {
+		t.Fatalf("first-row continuation must encode (unpulled child = START): %v", berr)
+	}
+	slots, derr := decodeUnionContinuation(b, 2)
+	if derr != nil {
+		t.Fatalf("decode: %v", derr)
+	}
+	if slots[0].exhausted || len(slots[0].continuation) == 0 {
+		t.Fatalf("emitting child slot = %+v, want its position", slots[0])
+	}
+	if slots[1].exhausted || len(slots[1].continuation) != 0 {
+		t.Fatalf("unpulled child slot = %+v, want START", slots[1])
+	}
+}
+
+// TestUnorderedUnionCursor_StopSlotsAndResume pins the Java
+// UnorderedUnionCursor contract the old eager concat declined (RFC-180 A2 →
+// E3/E4): a limit-stopped child parks while the others keep emitting; the
+// terminal carries the STRONGEST child reason and per-child UnionContinuation
+// slots (exhausted children marked, stopped children at their positions);
+// and a re-call replays the cached terminal (the flaky child would surface
+// MORE rows without the guard).
+func TestUnorderedUnionCursor_StopSlotsAndResume(t *testing.T) {
+	t.Parallel()
+	rows := nljTestRows("K", 2)
+	flaky := &flakyOuterCursor{first: rows[:1], rest: rows[1:]} // 1 row, pause, then MORE
+	done := recordlayer.FromList([]QueryResult{qr("id", int64(9))})
+	cc := newUnorderedUnionForTest(flaky, done)
+	defer cc.Close()
+
+	var emitted int
+	var terminal recordlayer.RecordCursorResult[QueryResult]
+	ctx := context.Background()
+	for {
+		res, err := cc.OnNext(ctx)
+		if err != nil {
+			t.Fatalf("OnNext: %v", err)
+		}
+		if !res.HasNext() {
+			terminal = res
+			break
+		}
+		emitted++
+	}
+	// Child 0's row + child 1's row: the pause parks child 0, child 1 keeps
+	// emitting (Java: a limited child does not stop the union).
+	if emitted != 2 {
+		t.Fatalf("emitted %d rows, want 2 (the stopped child must not stop the union)", emitted)
+	}
+	if terminal.GetNoNextReason() != recordlayer.TimeLimitReached {
+		t.Fatalf("terminal reason = %v, want the stopped child's TimeLimitReached (strongest)", terminal.GetNoNextReason())
+	}
+	b, berr := terminal.GetContinuation().ToBytes()
+	if berr != nil {
+		t.Fatalf("ToBytes: %v", berr)
+	}
+	slots, derr := decodeUnionContinuation(b, 2)
+	if derr != nil {
+		t.Fatalf("decode: %v", derr)
+	}
+	if slots[0].exhausted || len(slots[0].continuation) == 0 {
+		t.Fatalf("stopped child slot = %+v, want its resume position", slots[0])
+	}
+	if !slots[1].exhausted {
+		t.Fatalf("exhausted child slot = %+v, want the exhausted marker", slots[1])
+	}
+
+	// Terminal replay: without the cache, the flaky child's next pull would
+	// surface its post-pause rows.
+	again, err := cc.OnNext(ctx)
+	if err != nil {
+		t.Fatalf("re-call: %v", err)
+	}
+	ab, _ := again.GetContinuation().ToBytes()
+	if again.HasNext() || again.GetNoNextReason() != terminal.GetNoNextReason() || string(ab) != string(b) {
+		t.Fatal("re-call must replay the cached terminal verbatim")
 	}
 }
 
@@ -5065,7 +5261,13 @@ func expressionSortFn(keys []expressions.SortKey) func([]QueryResult) error {
 				// Mirror the production sort comparator (executeInMemorySort uses
 				// compareValues, the S2 total-order authority) rather than a separate
 				// scalar comparator, so this fixture exercises the real ordering.
-				cmp := compareValues(vi, vj)
+				cmp, cmpErr := compareValues(vi, vj)
+				if cmpErr != nil {
+					if sortErr == nil {
+						sortErr = cmpErr
+					}
+					return false
+				}
 				if cmp == 0 {
 					continue
 				}
@@ -5215,6 +5417,11 @@ func TestAggregateCursor_SingleGroup_CountStar(t *testing.T) {
 func TestAggregateCursor_ScalarOnEmpty(t *testing.T) {
 	t.Parallel()
 
+	// Java AggregateCursor.isNoRecords(): the BARE streaming-aggregate cursor
+	// emits NOTHING on empty input — RecordCursorResult.exhausted(). The
+	// COUNT(*)=0 default row is executeAggregation's OrElse ALTERNATIVE
+	// (emptyScalarAggregateRow — Java's DefaultOnEmpty(StreamingAggregation)),
+	// so a resume landing past the last input row can never re-fabricate it.
 	inner := recordlayer.FromList([]QueryResult{})
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}},
@@ -5223,12 +5430,14 @@ func TestAggregateCursor_ScalarOnEmpty(t *testing.T) {
 	defer c.Close()
 
 	results := collectCursor(t, c)
-	if len(results) != 1 {
-		t.Fatalf("scalar aggregate on empty input: got %d results, want 1", len(results))
+	if len(results) != 0 {
+		t.Fatalf("bare scalar aggregate cursor on empty input: got %d results, want 0 (Java isNoRecords)", len(results))
 	}
-	m, _ := rowMapOK(results[0])
+
+	// The default row itself: the OrElse alternative's single-row payload.
+	m, _ := rowMapOK(emptyScalarAggregateRow(aggs))
 	if m["COUNT(*)"] != int64(0) {
-		t.Errorf("COUNT(*) on empty = %v, want 0", m["COUNT(*)"])
+		t.Errorf("COUNT(*) default row = %v, want 0", m["COUNT(*)"])
 	}
 }
 
@@ -5375,7 +5584,7 @@ func TestCollectAllBounded_UnderLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	results, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
+	results, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5392,7 +5601,7 @@ func TestCollectAllBounded_ExactlyAtLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	_, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
+	_, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
 	if err == nil {
 		t.Fatal("expected MaterializationLimitExceededError at exactly limit rows")
 	}
@@ -5416,7 +5625,7 @@ func TestCollectAllBounded_OverLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	_, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "nested loop join inner side")
+	_, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "nested loop join inner side")
 	if err == nil {
 		t.Fatal("expected MaterializationLimitExceededError")
 	}
@@ -5442,7 +5651,7 @@ func TestCollectAllBounded_EmptyCursor(t *testing.T) {
 	t.Parallel()
 	cursor := recordlayer.FromList([]QueryResult{})
 
-	results, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 5, "test")
+	results, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 5, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5456,7 +5665,7 @@ func TestCollectAllBounded_LimitOne(t *testing.T) {
 	rows := []QueryResult{qr("n", int64(1)), qr("n", int64(2))}
 	cursor := recordlayer.FromList(rows)
 
-	_, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 1, "test")
+	_, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 1, "test")
 	if err == nil {
 		t.Fatal("expected MaterializationLimitExceededError with limit=1 and 2 rows")
 	}
@@ -5477,7 +5686,7 @@ func TestCollectAllBounded_OneBelowLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	results, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
+	results, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
 	if err != nil {
 		t.Fatalf("unexpected error with 9 rows and limit 10: %v", err)
 	}
@@ -5532,5 +5741,86 @@ func TestGetMaterializationLimit_NegativeFallsBackToDefault(t *testing.T) {
 	props := recordlayer.DefaultExecuteProperties().WithMaterializationLimit(-1)
 	if props.GetMaterializationLimit() != recordlayer.DefaultMaterializationLimit {
 		t.Errorf("negative = %d, want default %d", props.GetMaterializationLimit(), recordlayer.DefaultMaterializationLimit)
+	}
+}
+
+// TestExecuteUnorderedUnion_ResumeContract pins the resumable unordered
+// union (Java UnorderedUnionCursor parity — this replaced the RFC-180 A2 loud
+// decline, which itself replaced feeding the parent token verbatim to every
+// child): a VALID per-child UnionContinuation resumes (exhausted children
+// skipped), while unrecognized bytes still decline loudly as a parse error —
+// never reach a child raw.
+func TestExecuteUnorderedUnion_ResumeContract(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	mkValues := func(v int64) plans.RecordQueryPlan {
+		return plans.NewRecordQueryValuesPlan([]values.Value{
+			&values.ConstantValue{Value: v, Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+		})
+	}
+	plan := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{mkValues(1), mkValues(2)})
+
+	// Fresh start (nil continuation) executes and yields both branches' rows.
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("fresh ExecutePlan: %v", err)
+	}
+	rows, err := CollectAll(ctx, cursor)
+	cursor.Close()
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("fresh unordered union yielded %d rows, want 2", len(rows))
+	}
+
+	// A valid token marking child 0 exhausted resumes: only child 1 emits.
+	tok, terr := proto.Marshal(&gen.UnionContinuation{FirstExhausted: proto.Bool(true)})
+	if terr != nil {
+		t.Fatalf("marshal: %v", terr)
+	}
+	cursor, err = ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), tok, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("valid resume: %v", err)
+	}
+	rows, err = CollectAll(ctx, cursor)
+	cursor.Close()
+	if err != nil {
+		t.Fatalf("resumed CollectAll: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("resume with child 0 exhausted yielded %d rows, want 1 (child 1 only)", len(rows))
+	}
+
+	// Unrecognized bytes: loud parse error, never fed to a child raw.
+	_, err = ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), []byte("parent-token"), recordlayer.DefaultExecuteProperties())
+	var pErr *recordlayer.ContinuationParseError
+	if !errors.As(err, &pErr) {
+		t.Fatalf("garbage resume: err = %v, want *ContinuationParseError (a nil error means the token was misrouted to the children)", err)
+	}
+}
+
+// mustCompareValues asserts the pair has a defined ordering — every fixture
+// in these tests stays inside the typed comparison domain.
+func mustCompareValues(t *testing.T, a, b any) int {
+	t.Helper()
+	cmp, err := compareValues(a, b)
+	if err != nil {
+		t.Fatalf("compareValues(%#v, %#v): %v", a, b, err)
+	}
+	return cmp
+}
+
+// TestCompareValues_CrossTypeIsLoud pins the correct-or-loud contract on the
+// comparison authority: a pair with no typed arm errors instead of the
+// retired fmt fallback's silently-wrong lexical order.
+func TestCompareValues_CrossTypeIsLoud(t *testing.T) {
+	t.Parallel()
+	if _, err := compareValues("x", int64(1)); err == nil {
+		t.Fatal("string vs int64 has no defined ordering — must error, never compare lexically")
+	}
+	if _, err := compareValues([]byte{1}, "x"); err == nil {
+		t.Fatal("bytes vs string must error")
 	}
 }

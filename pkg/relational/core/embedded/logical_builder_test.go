@@ -565,3 +565,122 @@ func TestBuildLogicalPlan_InsertSelect(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+// TestAggArgQualified_ParseTreeTruth pins aggSelectCol.aggArgQualified: a
+// dotted reference is qualified by FullId SEGMENT COUNT, and a delimited
+// identifier containing a literal dot is ONE unqualified segment — the
+// distinction a dot scan of the rendered name cannot make.
+func TestAggArgQualified_ParseTreeTruth(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		sql       string
+		qualified bool
+	}{
+		{`SELECT SUM(t.c) FROM t`, true},
+		{`SELECT SUM(c) FROM t`, false},
+		{`SELECT SUM("a.b") FROM t`, false},
+	}
+	for _, tc := range cases {
+		sq := parseSelect(t, tc.sql)
+		if len(sq.aggCols) != 1 {
+			t.Fatalf("%s: %d aggCols, want 1", tc.sql, len(sq.aggCols))
+		}
+		if got := sq.aggCols[0].aggArgQualified; got != tc.qualified {
+			t.Errorf("%s: aggArgQualified = %v, want %v", tc.sql, got, tc.qualified)
+		}
+	}
+}
+
+// TestGroupKeyStripClearsQualification pins the single-source strip: when the
+// prefix is baked away the key must become BARE — stale qualification
+// segments would chase a qualifier the runtime row no longer carries
+// (corpus-caught during the GroupKey port).
+func TestGroupKeyStripClearsQualification(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, `SELECT p.category, COUNT(*) FROM products p GROUP BY p.category`)
+	if len(sq.groupBy) != 1 || !sq.groupBy[0].qualified {
+		t.Fatalf("fixture must parse one qualified key, got %+v", sq.groupBy)
+	}
+	// The strip fires on the single-source shell path (stripPrefix = the
+	// source alias) — drive it directly.
+	op := buildSelectShell(logical.NewScan("products", "p"), sq, "P.")
+	if op == nil {
+		t.Fatal("build returned nil")
+	}
+	agg := findAggregate(op)
+	if agg == nil {
+		t.Fatal("no aggregate built")
+	}
+	k := agg.GroupKeys[0]
+	if k.Qualified || k.Qualifier != "" {
+		t.Fatalf("stripped key kept stale qualification: %+v", k)
+	}
+	if !strings.EqualFold(k.Display, "category") || !strings.EqualFold(k.Bare, "category") {
+		t.Fatalf("stripped key = %+v, want bare CATEGORY", k)
+	}
+}
+
+// TestOrderByKeySegments_ParseTreeTruth pins orderByClause/SortKey structured
+// segments: qualification is FullId SEGMENT COUNT, and a delimited identifier
+// containing a literal dot stays one bare segment (the retired consumers
+// split renderings on the last dot).
+func TestOrderByKeySegments_ParseTreeTruth(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, `SELECT c FROM t ORDER BY t.c, "a.b", c2`)
+	if len(sq.orderBy) != 3 {
+		t.Fatalf("want 3 keys, got %d", len(sq.orderBy))
+	}
+	if ob := sq.orderBy[0]; !ob.qualified || ob.qualifier != "T" || ob.bare != "C" {
+		t.Fatalf("t.c segments = %+v", ob)
+	}
+	if ob := sq.orderBy[1]; ob.qualified || ob.bare != "a.b" {
+		t.Fatalf(`"a.b" must be ONE bare segment, got %+v`, ob)
+	}
+	if ob := sq.orderBy[2]; ob.qualified || ob.bare != "C2" {
+		t.Fatalf("c2 segments = %+v", ob)
+	}
+}
+
+// TestSortKeySegments_AliasRebaseClearsStaleSegments pins the review-caught
+// hole: the deferred-strip loop rebases an alias key's colName IN PLACE, so
+// the key's parse-tree segments (Bare = the alias spelling) go stale — a
+// source column spelled like the alias would silently mis-resolve. The
+// rebase must clear the segments to the internal name.
+func TestSortKeySegments_AliasRebaseClearsStaleSegments(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, `SELECT id AS v FROM t ORDER BY v`)
+	// Force the deferred-strip shape the builder rebases under.
+	sq.postSortStripProj = []string{"ID"}
+	sq.postSortStripAliases = []string{"V"}
+	op := buildSelectShell(logical.NewScan("t", ""), sq, "")
+	sort, ok := op.(*logical.LogicalSort)
+	if !ok {
+		if s2, ok2 := findSortOp(op); ok2 {
+			sort = s2
+		} else {
+			t.Fatalf("no sort in %T", op)
+		}
+	}
+	k := sort.Keys[0]
+	if k.Expr != "ID" {
+		t.Fatalf("rebased key Expr = %q, want ID", k.Expr)
+	}
+	if k.Bare != "ID" || k.Qualified {
+		t.Fatalf("rebased key kept stale segments: %+v (Bare must be the internal name, never the alias spelling)", k)
+	}
+}
+
+// findSortOp walks the shell for the sort operator.
+func findSortOp(op logical.LogicalOperator) (*logical.LogicalSort, bool) {
+	for op != nil {
+		if s, ok := op.(*logical.LogicalSort); ok {
+			return s, true
+		}
+		ch := op.Children()
+		if len(ch) == 0 {
+			return nil, false
+		}
+		op = ch[0]
+	}
+	return nil, false
+}

@@ -34,7 +34,9 @@ func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g) "+
 			"CREATE TABLE td (id BIGINT, g DOUBLE, PRIMARY KEY (id)) "+
-			"CREATE INDEX td_g ON td (g)")
+			"CREATE INDEX td_g ON td (g) "+
+			"CREATE TABLE tb (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX tb_g ON tb (g)")
 	ctx := context.Background()
 
 	const scanLimit = 3
@@ -107,6 +109,31 @@ func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 		if got != want {
 			t.Fatalf("streaming aggregate across a mid-group continuation = %q, want %q "+
 				"(buggy F4 splits the straddling group into \"200=3 200=1 300=1\")", got, want)
+		}
+	})
+
+	// ---- A6: the scan break lands exactly ON a group boundary (BETWEEN groups) ----
+	// The first group has EXACTLY scanLimit rows, so the page ends with the
+	// group complete in the serialized partial state and the resumed page's
+	// FIRST row group-breaks against it: that emit's continuation is the
+	// (decoded inner position, NO partial state) form — Java AggregateCursor's
+	// "previousValidResult == null" first-row-break arm. The groups must come
+	// back exactly once each: a drop here means the restored group was lost, a
+	// duplicate means the resume re-aggregated it.
+	t.Run("boundary_between_groups", func(t *testing.T) {
+		const q = "SELECT g, COUNT(*) FROM tb GROUP BY g"
+		requireStreaming(q)
+		for _, r := range [][2]int64{{1, 100}, {2, 100}, {3, 100}, {4, 200}, {5, 200}} {
+			exec(fmt.Sprintf("INSERT INTO tb (id, g) VALUES (%d, %d)", r[0], r[1]))
+		}
+		got := drainPairsStr(q, func(rows *sql.Rows) (string, int64, error) {
+			var g, c int64
+			err := rows.Scan(&g, &c)
+			return strconv.FormatInt(g, 10), c, err
+		})
+		const want = "100=3 200=2"
+		if got != want {
+			t.Fatalf("streaming aggregate with the scan break BETWEEN groups = %q, want %q", got, want)
 		}
 	})
 

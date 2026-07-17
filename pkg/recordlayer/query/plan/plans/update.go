@@ -59,10 +59,15 @@ func (p *RecordQueryUpdatePlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
-// EqualsWithoutChildren compares targetRecordType + transform count.
-// (Per-transform structural comparison is gated on a UpdateTransform
-// equality method which the seed doesn't expose; count match is the
-// best the seed can do without reaching into the transform shape.)
+// EqualsWithoutChildren compares targetRecordType + the transforms BY VALUE
+// (FieldPath + semantic NewValue identity), per Java RecordQueryAbstract-
+// DataModificationPlan.equalsWithoutChildren (transformationsTrie equality).
+// Count-only comparison made `SET a=1` ≡ `SET a=2` on the write path — a
+// memo collapse that executes the WRONG update. Transforms are canonicalised
+// sorted by FieldPath at construction (UpdateExpression), so pairwise
+// comparison is order-stable. Java's targetType/coercionTrie/
+// computationValue have no Go counterpart yet; they join identity when
+// they land.
 func (p *RecordQueryUpdatePlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryUpdatePlan)
 	if !ok {
@@ -71,19 +76,33 @@ func (p *RecordQueryUpdatePlan) EqualsWithoutChildren(other RecordQueryPlan) boo
 	if p.targetRecordType != o.targetRecordType {
 		return false
 	}
-	return len(p.transforms) == len(o.transforms)
+	if len(p.transforms) != len(o.transforms) {
+		return false
+	}
+	for i, tr := range p.transforms {
+		if tr.FieldPath != o.transforms[i].FieldPath {
+			return false
+		}
+		if !semanticValueEquals(tr.NewValue, o.transforms[i].NewValue) {
+			return false
+		}
+	}
+	return true
 }
 
-// HashCodeWithoutChildren mixes class + targetRecordType + transform count.
+// HashCodeWithoutChildren mixes class + targetRecordType + per-transform
+// FieldPath and NewValue (semantic hash), pairing with the by-value equality
+// above so equal⟹same-hash holds.
 func (p *RecordQueryUpdatePlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("updateplan|"))
 	h.Write([]byte(p.targetRecordType))
-	var b [8]byte
-	for i := 0; i < 8; i++ {
-		b[i] = byte(uint64(len(p.transforms)) >> (8 * (7 - i)))
+	h.Write([]byte{0})
+	for _, tr := range p.transforms {
+		h.Write([]byte(tr.FieldPath))
+		h.Write([]byte{0})
+		writeValueHash(h, tr.NewValue)
 	}
-	h.Write(b[:])
 	return h.Sum64()
 }
 

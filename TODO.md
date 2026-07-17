@@ -3831,6 +3831,13 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-07-17 (RFC-180 D2+I3 — winner map deletion, requested-ordering retention,
+root-operator rule index, exact integer comparators): branch (HEAD 0aea06b48),
+all subtests PASS — every metric BEATS the recorded bands: full_scan_count 3.16s,
+order_by_pk_full 3.29s, scan_all_narrow 3.31s / _wide 3.47s, sparse_filter 2.94s,
+needles/in_list ~10ms. The ~85% planner task-count reduction (rule index) shows up
+as faster end-to-end planning; no regression anywhere.**
+
 **2026-07-05 (RFC-173 item-1 commit 1 + fix round, PR #481 — dup-alias binding-id
 mint + binding-keyed seed, dark):** baseline master `8c179a025` 161.68s total vs
 branch `7f0f6848e` 165.14s (noise; branch equal-or-faster per metric: full scans

@@ -2,20 +2,28 @@ package cascades
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // getWinnerForOrdering returns the best physical plan in ref that
-// satisfies the given RequestedOrdering. Uses the winner map first
-// (stamped by OptimizeGroupTask / stampOrderingWinners), falling back
-// to scanning all physical members when winners aren't yet available.
+// satisfies the given RequestedOrdering.
+//
+// Ordering satisfaction is judged on each member's DERIVED RICH ordering
+// (computeWrapperRichOrdering → RichOrdering.Satisfies): full Value
+// identity plus the four-state sort order, including the counterflow-nulls
+// gate (ProvidedSortOrder.IsCompatibleWithRequestedSortOrder). There is
+// deliberately NO name-keyed winner map in front of this scan — a
+// name+direction key drops NULL placement (an ASC_NULLS_LAST requirement
+// would map-hit a plain-ASC winner and elide the enforcer sort with the
+// wrong null order) and collides distinct Values that share a rendered
+// name. The members of a group are few; the scan is the memo.
 //
 // For PRESERVE / nil ordering, returns the globally cheapest physical
-// plan (NoProperties winner or findBestValidPhysicalExpr fallback).
-// less is the cost comparator used for the un-stamped fallback scans; pass a
-// stats-aware comparator (call.CostModel()) so join sub-product winners are
-// chosen by real cardinality rather than the default-stats tie (RFC-041).
+// plan (the group's OPTIMIZE winner, or findBestValidPhysicalExpr when
+// none is stamped yet). less is the cost comparator; pass a stats-aware
+// comparator (call.CostModel()) so join sub-product winners are chosen by
+// real cardinality rather than the default-stats tie (RFC-041).
 func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	if ref == nil {
 		return nil
@@ -25,89 +33,148 @@ func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrderin
 	}
 
 	if ordering == nil || ordering.IsPreserve() {
-		if w := ref.Winner(expressions.NoProperties); w != nil {
+		if w := ref.Winner(); w != nil {
 			return w
 		}
 		return findBestValidPhysicalExpr(ref, less)
 	}
 
-	required := requestedOrderingToProps(ordering)
-
-	if !required.IsEmpty() {
-		if w := ref.Winner(required); w != nil {
-			return w
-		}
-		// No exact-key winner. Among ALL stamped winners whose ordering
-		// Satisfies the requirement, return the CHEAPEST under `less` — the
-		// same cost-aware selection the un-stamped fallback below performs.
-		// Returning the FIRST satisfying winner in map order was both
-		// cost-blind AND nondeterministic (Go map iteration is randomized),
-		// flipping the chosen plan across plannings. Java prunes each
-		// Reference to ONE winner via the phase's total-order cost model,
-		// whose PlanningCostModel.compare ends in a deterministic planHash
-		// tie-break precisely so the planner "select[s] the same plan on
-		// subsequent plannings"; lessWithHashTieBreak reproduces that final
-		// tie-break around WHATEVER comparator the caller passed, so the min
-		// is UNIQUE — hence order-independent — even under a custom `less`
-		// that does not itself break cost ties.
-		tieBrokenLess := lessWithHashTieBreak(less)
-		var best expressions.RelationalExpression
-		for key, winner := range ref.GetWinners() {
-			props, ok := key.(expressions.PhysicalProperties)
-			if !ok {
-				continue
-			}
-			if props.Satisfies(required) {
-				if best == nil || tieBrokenLess(winner, best) {
-					best = winner
-				}
-			}
-		}
-		if best != nil {
-			return best
-		}
-	}
-
-	// Winners not stamped yet — scan physical members for the cheapest
-	// that satisfies the requested ordering.
-	var bestOrdered expressions.RelationalExpression
-	for _, m := range ref.AllMembers() {
-		if _, ok := m.(physicalPlanExpression); !ok {
-			continue
-		}
-		if isNilInnerFetch(m) {
-			continue
-		}
-		if memberSatisfiesOrdering(m, required) {
-			if bestOrdered == nil || less(m, bestOrdered) {
-				bestOrdered = m
-			}
-		}
-	}
-	if bestOrdered != nil {
-		return bestOrdered
+	if best := bestSatisfyingMember(ref, ordering, less); best != nil {
+		return best
 	}
 
 	// No plan satisfies the ordering — return globally cheapest.
-	if w := ref.Winner(expressions.NoProperties); w != nil {
+	if w := ref.Winner(); w != nil {
 		return w
 	}
 	return findBestValidPhysicalExpr(ref, less)
 }
 
+// bestSatisfyingMember returns the cheapest physical member of ref whose
+// derived rich ordering satisfies the requested ordering, or nil when no
+// member does. The comparator is wrapped with the deterministic plan-hash
+// tie-break so the chosen member is unique — cost ties otherwise resolve
+// by member iteration order, flipping the plan across plannings.
+func bestSatisfyingMember(ref *expressions.Reference, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+	if ref == nil || ordering == nil {
+		return nil
+	}
+	if less == nil {
+		less = PlanningCostModelLess
+	}
+	tieBrokenLess := lessWithHashTieBreak(less)
+	var best expressions.RelationalExpression
+	for _, m := range ref.AllMembers() {
+		if !memberSatisfiesOrdering(m, ordering) {
+			continue
+		}
+		if best == nil || tieBrokenLess(m, best) {
+			best = m
+		}
+	}
+	return best
+}
+
+// pinOrderedSpine returns expr with its ordering-delegation spine BAKED:
+// each order-preserving wrapper's source group is resolved to its cheapest
+// satisfying member and rebuilt over a fresh singleton Reference, so no
+// later selection (extraction's generic rebuild, a parent's relink) can
+// swap the spine to an unordered sibling after a sort has been dropped on
+// the strength of this expression's ordering. Non-delegators return
+// unchanged — their own plan carries the ordering. Returns nil when any
+// spine level has no satisfying member or cannot relink (WithChildren
+// unsupported): the caller must then keep its enforcer sort. Mirrors the
+// extraction-side rebuildOrderedSpine; this is the RULE-time twin for
+// yields that drop a sort during PLANNING (Java bakes concrete children at
+// rule time via memoizePlan, so it has no unpinned window at all).
+func pinOrderedSpine(expr expressions.RelationalExpression, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+	return pinOrderedSpineDepth(expr, ordering, less, 0)
+}
+
+func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool, depth int) expressions.RelationalExpression {
+	d, ok := expr.(orderingDelegator)
+	if !ok {
+		return expr
+	}
+	if depth >= maxOrderingDelegationDepth {
+		return nil
+	}
+	srcRef := d.orderingSourceRef()
+	if srcRef == nil {
+		return nil
+	}
+	m := bestSatisfyingMember(srcRef, ordering, less)
+	if m == nil {
+		return nil
+	}
+	inner := pinOrderedSpineDepth(m, ordering, less, depth+1)
+	if inner == nil {
+		return nil
+	}
+	rebuilder, ok := expr.(properties.WithChildren)
+	if !ok {
+		return nil
+	}
+	if len(expr.GetQuantifiers()) != 1 {
+		return nil
+	}
+	// FinalOf, not InitialOf: the pinned singleton lives in the memo for
+	// the rest of PLANNING — held as a FINAL at StagePlanned (Java's
+	// memoizePlan / Reference.ofFinalExpressions shape), no exploration
+	// task can grow it past the pin.
+	pinnedQ := expressions.ForEachQuantifier(expressions.FinalOf(inner))
+	pinned, err := rebuilder.WithChildren([]expressions.Quantifier{pinnedQ})
+	if err != nil || pinned == nil {
+		return nil
+	}
+	// WithChildren is allowed to keep its ORIGINAL concrete plan when the
+	// new child isn't leaf-replaceable (several wrappers gate on
+	// isLeafReplaceable) — the quantifier then points at the pinned member
+	// while GetRecordQueryPlan() still executes the OLD child. A pin that
+	// did not reach the executable plan is not a pin: verify the wrapper's
+	// concrete child IS the pinned member's plan, else decline (the sort
+	// stays, which is always order-correct).
+	pinnedPE, ok := pinned.(physicalPlanExpression)
+	if !ok {
+		return nil
+	}
+	innerPE, ok := inner.(physicalPlanExpression)
+	if !ok {
+		return nil
+	}
+	if !planHasDirectChild(pinnedPE.GetRecordQueryPlan(), innerPE.GetRecordQueryPlan()) {
+		return nil
+	}
+	return pinned
+}
+
+// planHasDirectChild reports whether child is among plan's immediate
+// concrete children (pointer identity — WithChildren embeds the exact
+// plan object it relinked to).
+func planHasDirectChild(plan, child plans.RecordQueryPlan) bool {
+	if plan == nil || child == nil {
+		return false
+	}
+	for _, c := range plan.GetChildren() {
+		if c == child {
+			return true
+		}
+	}
+	return false
+}
+
 // lessWithHashTieBreak wraps a cost comparator with the deterministic
 // structural plan-hash tie-break (PlanningCostModel criterion #17) so the
 // derived order is TOTAL: a<b, b<a, or — when the comparator ties — a strict
-// order by costExprHash. Winner selection over Reference.GetWinners() iterates
-// a Go map (randomized order), so a merely cost-PARTIAL comparator would let
-// the chosen winner flip across plannings even after collecting all
-// candidates; wrapping makes the minimum unique and therefore
-// iteration-order-independent. Mirrors Java PlanningCostModel.compare, whose
-// final planHash arm exists so the planner "select[s] the same plan on
-// subsequent plannings". The default PlanningCostModelLess already ends in this
-// exact hash tie-break, so wrapping it is a no-op there; the wrap is what makes
-// determinism hold for ANY custom comparator a caller passes (which need not
-// carry its own tie-break).
+// order by costExprHash. Winner selection iterates the members slice; a
+// merely cost-PARTIAL comparator would let the chosen winner depend on
+// member insertion order, so the tie-break is what makes the minimum unique
+// and the selection reproducible. Mirrors Java PlanningCostModel.compare,
+// whose final planHash arm exists so the planner "select[s] the same plan on
+// subsequent plannings". The default PlanningCostModelLess already ends in
+// this exact hash tie-break, so wrapping it is a no-op there; the wrap is
+// what makes determinism hold for ANY custom comparator a caller passes
+// (which need not carry its own tie-break).
 func lessWithHashTieBreak(less func(a, b expressions.RelationalExpression) bool) func(a, b expressions.RelationalExpression) bool {
 	return func(a, b expressions.RelationalExpression) bool {
 		if less(a, b) {
@@ -154,40 +221,73 @@ func getWinnerPlan(ref *expressions.Reference, ordering *RequestedOrdering, less
 	return nil
 }
 
-// memberSatisfiesOrdering checks whether a physical member's ordering
-// satisfies the given PhysicalProperties requirement.
-func memberSatisfiesOrdering(m expressions.RelationalExpression, required expressions.PhysicalProperties) bool {
-	if required.IsEmpty() {
-		return true
-	}
-	h, ok := m.(orderingHinter)
+// orderingDelegator is implemented by physical wrappers that PRESERVE
+// their input's order rather than producing one — their HintOrdering
+// delegates to the inner child group. Ordering satisfaction and
+// extraction-time sort elision must resolve through the SOURCE GROUP
+// (which member actually provides the order), never through a flat
+// first-known-member estimate: the estimate both over-claims (the group's
+// eventual extraction winner may be a different, unordered member — the
+// sort would be elided and then rebuilt over an unordered child) and
+// under-claims (the first known ordering may be a different ordering
+// than the one requested while a later member provides it).
+// Contract: a delegator is a SINGLE-quantifier wrapper (its one child IS
+// the ordering source) implementing properties.WithChildren for the
+// relink. A multi-quantifier delegator would need per-quantifier routing
+// in pinOrderedSpine / rebuildOrderedSpine, which conservatively DECLINE
+// (sort kept) on anything else — implement the routing before adding one.
+type orderingDelegator interface {
+	orderingSourceRef() *expressions.Reference
+}
+
+// maxOrderingDelegationDepth bounds the delegator chain walk. Physical
+// plan wrappers nest far shallower than this; hitting the cap means a
+// cyclic reference (e.g. a recursive-CTE back-edge) reached the ordering
+// spine — answered conservatively (not satisfied ⇒ the sort stays).
+const maxOrderingDelegationDepth = 64
+
+// memberSatisfiesOrdering reports whether a physical member's derived rich
+// ordering satisfies the requested ordering. Non-physical members and
+// nil-inner Fetch shells never satisfy (a Fetch shell's inner is resolved
+// only at extraction; costed without it, it ranks artificially cheap).
+// Order-preserving wrappers resolve through their source group (see
+// orderingDelegator).
+func memberSatisfiesOrdering(m expressions.RelationalExpression, requested *RequestedOrdering) bool {
+	return memberSatisfiesOrderingDepth(m, requested, 0)
+}
+
+func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested *RequestedOrdering, depth int) bool {
+	// Physicality gates FIRST: a preserve request must not admit a logical
+	// member or a nil-inner Fetch shell either — bestSatisfyingMember
+	// promises "cheapest PHYSICAL member" unconditionally.
+	pe, ok := m.(physicalPlanExpression)
 	if !ok {
 		return false
 	}
-	ord := h.HintOrdering()
-	if !ord.IsKnown || len(ord.Keys) == 0 {
+	if isNilInnerFetch(m) {
 		return false
 	}
-	provided := orderingToProps(ord)
-	return provided.Satisfies(required)
-}
-
-// requestedOrderingToProps converts a RequestedOrdering to
-// PhysicalProperties for winner-map lookup.
-func requestedOrderingToProps(ordering *RequestedOrdering) expressions.PhysicalProperties {
-	if ordering == nil || ordering.IsPreserve() {
-		return expressions.NoProperties
+	if requested == nil || requested.IsPreserve() {
+		return true
 	}
-	parts := ordering.GetParts()
-	names := make([]string, len(parts))
-	desc := make([]bool, len(parts))
-	for i, p := range parts {
-		if fv, ok := p.Value.(*values.FieldValue); ok {
-			names[i] = fv.Field
-		} else {
-			names[i] = p.Value.Name()
+	if d, ok := m.(orderingDelegator); ok {
+		if depth >= maxOrderingDelegationDepth {
+			return false
 		}
-		desc[i] = p.SortOrder.IsAnyDescending()
+		srcRef := d.orderingSourceRef()
+		if srcRef == nil {
+			return false
+		}
+		for _, sm := range srcRef.AllMembers() {
+			if memberSatisfiesOrderingDepth(sm, requested, depth+1) {
+				return true
+			}
+		}
+		return false
 	}
-	return expressions.OrderingFromNameDir(names, desc)
+	ro := computeWrapperRichOrdering(pe)
+	if ro == nil {
+		return false
+	}
+	return ro.Satisfies(requested)
 }

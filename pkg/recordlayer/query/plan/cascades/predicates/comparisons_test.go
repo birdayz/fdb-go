@@ -1339,6 +1339,43 @@ func FuzzLikeMatchEscape(f *testing.F) {
 // from the SORT total order (values.CompareFloat64, -0.0 < 0.0, tested in
 // values.TestCompareFloat64) — predicate truth may exceed Java; sort order must
 // match the FDB tuple/index. Native `<`/`>` would report every NaN pair as EQUAL.
+// TestCmpAny_UnsignedIntegerDomain pins the predicate tier of the unsigned
+// integer domain: tuple decoding preserves positive integers above
+// math.MaxInt64 as uint64, so filter comparisons reach cmpAny with
+// unsigned operands on valid data. promoteInt (ToInt64) never admitted
+// them — the pair fell through every numeric arm and the comparison
+// failed. Integer pairs now compare EXACTLY via values.CompareExactInts:
+// the adjacent boundary pair (2^63 vs 2^63-1) would TIE under a float
+// promotion.
+func TestCmpAny_UnsignedIntegerDomain(t *testing.T) {
+	t.Parallel()
+	big := uint64(math.MaxInt64) + 1
+	if c, ok := cmpAny(big, uint64(math.MaxUint64)); !ok || c >= 0 {
+		t.Fatalf("2^63 < MaxUint64: c=%d ok=%v", c, ok)
+	}
+	if c, ok := cmpAny(big, int64(math.MaxInt64)); !ok || c <= 0 {
+		t.Fatalf("2^63 > MaxInt64 (float promotion would tie): c=%d ok=%v", c, ok)
+	}
+	if c, ok := cmpAny(uint64(0), int64(-1)); !ok || c <= 0 {
+		t.Fatalf("uint64(0) > int64(-1): c=%d ok=%v", c, ok)
+	}
+	if c, ok := cmpAny(int64(math.MinInt64), uint64(0)); !ok || c >= 0 {
+		t.Fatalf("MinInt64 < uint64(0): c=%d ok=%v", c, ok)
+	}
+	if c, ok := cmpAny(uint64(5), int64(5)); !ok || c != 0 {
+		t.Fatalf("uint64(5) == int64(5): c=%d ok=%v", c, ok)
+	}
+	// Mixed integer/float still promotes to the float path.
+	if c, ok := cmpAny(uint64(3), 3.5); !ok || c >= 0 {
+		t.Fatalf("uint64(3) < 3.5: c=%d ok=%v", c, ok)
+	}
+	// The exported eval surface agrees.
+	gt, err := Comparison{Type: ComparisonGreaterThan}.EvalAgainst(big, int64(math.MaxInt64))
+	if err != nil || gt != TriTrue {
+		t.Fatalf("EvalAgainst(2^63 > MaxInt64) = %v, %v", gt, err)
+	}
+}
+
 func TestCmpAny_FloatTotalOrder(t *testing.T) {
 	t.Parallel()
 	negZero := math.Copysign(0, -1)

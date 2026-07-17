@@ -37,6 +37,49 @@ import (
 // builders.
 
 // selectQuery holds the parsed components of a SELECT statement.
+// groupKeyRef is one GROUP BY key as the parse tree stated it. A bare column
+// carries bare/qualifier segments (qualification is FullId SEGMENT COUNT,
+// never a dot scan of display); an expression key carries expr (evaluated per
+// row) with display as its canonical rendering and empty bare.
+type groupKeyRef struct {
+	display   string // canonical rendering — output naming / diagnostics only
+	bare      string // last segment of a bare column ref; "" for expressions
+	qualifier string // leading segment(s) of a qualified bare ref; "" otherwise
+	qualified bool   // parse-tree segment count > 1
+	expr      antlrgen.IExpressionContext
+}
+
+// groupKeyRefDisplays renders the parser keys' display names for name-only
+// consumers (the ORDER-BY visitor's key membership).
+func groupKeyRefDisplays(keys []groupKeyRef) []string {
+	if keys == nil {
+		return nil
+	}
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = k.display
+	}
+	return out
+}
+
+// logicalGroupKeys converts the parser's structured keys to the logical IR's
+// — same segments, no re-parse anywhere in between.
+func logicalGroupKeys(keys []groupKeyRef) []logical.GroupKey {
+	if keys == nil {
+		return nil
+	}
+	out := make([]logical.GroupKey, len(keys))
+	for i, k := range keys {
+		out[i] = logical.GroupKey{
+			Display:   k.display,
+			Bare:      k.bare,
+			Qualifier: k.qualifier,
+			Qualified: k.qualified,
+		}
+	}
+	return out
+}
+
 type selectQuery struct {
 	// selectClassification holds all SELECT-list, GROUP BY, HAVING,
 	// ORDER BY, and aggregate classification fields. Embedded so that
@@ -135,6 +178,13 @@ type joinClause struct {
 type orderByClause struct {
 	colName   string
 	ascending bool
+	// bare/qualifier/qualified: parse-tree segments of a plain column
+	// reference item (splitColumnRef); zero values for positional and
+	// expression items. Qualification is FullId SEGMENT COUNT, never a dot
+	// scan of colName.
+	bare      string
+	qualifier string
+	qualified bool
 	// bareRef: the ORDER BY item is a plain ONE-segment column reference —
 	// the only shape SQL binds to an output alias. False for qualified
 	// references (`d.x`), aggregates, and computed expressions, whose
@@ -204,13 +254,23 @@ type aggSelectCol struct {
 	// Exactly one of groupCol / aggFunc / outExpr is set (non-visible entries
 	// harvested from HAVING/ORDER BY always have aggFunc set).
 	groupCol string // plain group-by column reference
-	aggFunc  string // COUNT/SUM/MIN/MAX/AVG
-	aggArg   string // argument column name — set only when arg is a bare column; used for the proto-path FD fast path. Empty for COUNT(*) and for expression args.
+	// groupColBare: the structural bare name of groupCol (parse-tree/derived
+	// at set time) — consumers never dot-split groupCol.
+	groupColBare string
+	aggFunc      string // COUNT/SUM/MIN/MAX/AVG
+	aggArg       string // argument column name — set only when arg is a bare column; used for the proto-path FD fast path. Empty for COUNT(*) and for expression args.
 	// aggExpr is the IExpressionContext of the aggregate's argument when it is not a bare
 	// column reference (e.g. SUM(qty*price), AVG(CASE ... END)). Evaluated per input row.
 	// nil for bare-column args and for COUNT(*).
 	aggExpr     antlrgen.IExpressionContext
 	aggDistinct bool // true when COUNT(DISTINCT col)
+	// aggArgQualified/aggArgBare: parse-tree qualification and LAST SEGMENT
+	// of the bare-column arg (FullId) — never a dot scan of the rendered
+	// name, which a delimited identifier containing a literal dot would
+	// false-positive.
+	aggArgQualified bool
+	aggArgBare      string
+	aggArgQualifier string
 	// visible is true when the aggregate appears in the user's SELECT list.
 	// Non-visible entries are harvested from HAVING or ORDER BY — they
 	// contribute to accumulation/evaluation but are excluded from (or
@@ -257,26 +317,26 @@ func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
 // Shares the AggregateWindowedFunction → (funcName, argCol, argExpr, outName)
 // extraction with aggColFromAwf via extractAwfFields; this wrapper adds the
 // SELECT-list element unwrap + the alias-from-AS overlay.
-func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, alias string, distinct, ok bool) {
+func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, alias string, distinct, argQualified bool, argBare, argQualifier string, ok bool) {
 	pred, pok := e.Expression().(*antlrgen.PredicatedExpressionContext)
 	if !pok {
-		return "", "", nil, "", false, false
+		return "", "", nil, "", false, false, "", "", false
 	}
 	fc, fcok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
 	if !fcok {
-		return "", "", nil, "", false, false
+		return "", "", nil, "", false, false, "", "", false
 	}
 	agg, aggok := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
 	if !aggok {
-		return "", "", nil, "", false, false
+		return "", "", nil, "", false, false, "", "", false
 	}
 	awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
 	if !awfok {
-		return "", "", nil, "", false, false
+		return "", "", nil, "", false, false, "", "", false
 	}
-	fn, arg, aExpr, outName, isDistinct, fieldsOk := extractAwfFields(awf)
+	fn, arg, aExpr, outName, isDistinct, argQual, argBare, argQualifier, fieldsOk := extractAwfFields(awf)
 	if !fieldsOk {
-		return "", "", nil, "", false, false
+		return "", "", nil, "", false, false, "", "", false
 	}
 	// SELECT-list-only overlay: an explicit `AS alias` on the SELECT element
 	// wins over the reconstructed default ("SUM(v)") as the output column
@@ -284,7 +344,7 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 	if e.Uid() != nil {
 		outName = functions.StripIdentifierQuotes(e.Uid().GetText())
 	}
-	return fn, arg, aExpr, outName, isDistinct, true
+	return fn, arg, aExpr, outName, isDistinct, argQual, argBare, argQualifier, true
 }
 
 // extractAwfFields classifies an AggregateWindowedFunction into the pieces
@@ -306,7 +366,7 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 // matches by surfacing distinct=true to callers, which then reject.
 // Same architectural reason in both engines: visitor doesn't handle
 // the DISTINCT case.
-func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, outName string, distinct, ok bool) {
+func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, outName string, distinct, argQualified bool, argBare, argQualifier string, ok bool) {
 	distinct = awf.DISTINCT() != nil
 	resolveArg := func(fa antlrgen.IFunctionArgContext) {
 		if fa == nil {
@@ -315,7 +375,22 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 		expr := fa.Expression()
 		if pred, ok := expr.(*antlrgen.PredicatedExpressionContext); ok {
 			if col, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
-				argCol = functions.FullIdToName(col.FullColumnName().FullId())
+				fid := col.FullColumnName().FullId()
+				argCol = functions.FullIdToName(fid)
+				// Qualification and segments are PARSE-TREE truth, never a
+				// dot scan of the rendered name — a delimited identifier
+				// containing a literal dot ("a.b") is ONE unqualified
+				// segment.
+				uids := fid.AllUid()
+				argQualified = len(uids) > 1
+				argBare = functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
+				if argQualified {
+					parts := make([]string, len(uids)-1)
+					for qi, u := range uids[:len(uids)-1] {
+						parts[qi] = functions.StripIdentifierQuotes(u.GetText())
+					}
+					argQualifier = strings.Join(parts, ".")
+				}
 				return
 			}
 		}
@@ -345,7 +420,7 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 		funcName = "AVG"
 		resolveArg(awf.FunctionArg())
 	default:
-		return "", "", nil, "", false, false
+		return "", "", nil, "", false, false, "", "", false
 	}
 	display := argCol
 	if display == "" && argExpr != nil {
@@ -359,7 +434,7 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 	default:
 		outName = funcName + "(" + display + ")"
 	}
-	return funcName, argCol, argExpr, outName, distinct, true
+	return funcName, argCol, argExpr, outName, distinct, argQualified, argBare, argQualifier, true
 }
 
 // columnNameFromExpr extracts a plain column name (or aggregate output name like
@@ -383,6 +458,36 @@ func exprIsBareColumnRef(expr antlrgen.IExpressionContext) bool {
 		return false
 	}
 	return len(a.FullColumnName().FullId().AllUid()) == 1
+}
+
+// splitColumnRef reads the parse-tree segments of a plain column-reference
+// expression: bare = last FullId segment, qualifier = the joined leading
+// segments, qualified = segment count > 1. Zero values when expr is not a
+// plain column reference (the caller has already classified it via
+// columnNameFromExpr).
+func splitColumnRef(expr antlrgen.IExpressionContext) (bare, qualifier string, qualified bool) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok || pred.Predicate() != nil {
+		return "", "", false
+	}
+	atom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return "", "", false
+	}
+	uids := atom.FullColumnName().FullId().AllUid()
+	parts := make([]string, len(uids))
+	for i, u := range uids {
+		parts[i] = functions.StripIdentifierQuotes(u.GetText())
+	}
+	if len(parts) == 0 {
+		return "", "", false
+	}
+	bare = parts[len(parts)-1]
+	if len(parts) > 1 {
+		qualifier = strings.Join(parts[:len(parts)-1], ".")
+		qualified = true
+	}
+	return bare, qualifier, qualified
 }
 
 func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (string, error) {
@@ -420,7 +525,7 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"%s: unsupported aggregate %T", context, agg.AggregateWindowedFunction())
 		}
-		_, _, _, outName, _, ok := extractAwfFields(awf)
+		_, _, _, outName, _, _, _, _, ok := extractAwfFields(awf)
 		if !ok {
 			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation, "%s: unsupported aggregate function", context)
 		}
@@ -486,9 +591,33 @@ func extractFromQueryTerm(body *antlrgen.QueryTermDefaultContext) (*selectQuery,
 // code that reads sq.projCols, sq.aggCols, etc. works unchanged.
 // PlanVisitor constructs a selectQuery directly from a
 // selectClassification + fromSource without any bridge method.
+// projCol is one projected column: the name (the load-bearing OUTPUT label —
+// every naming consumer reads it) plus the parse-tree reference segments for
+// plain column items (zero values for computed/sentinel entries, and cleared
+// by any rebase that rewrites the name to internal text — the group-key
+// rule). RFC-180 F-3: consumers never re-parse the name.
+type projCol struct {
+	name      string
+	bare      string
+	qualifier string
+	qualified bool
+}
+
+// projColNames renders the name list for name-only consumers.
+func projColNames(cols []projCol) []string {
+	if cols == nil {
+		return nil
+	}
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = c.name
+	}
+	return out
+}
+
 type selectClassification struct {
-	projCols    []string // nil = SELECT * or SELECT <qualifier>.*; ignored when countStar or aggCols non-empty
-	projAliases []string // parallel to projCols; empty string = no alias (use column name)
+	projCols    []projCol // nil = SELECT * or SELECT <qualifier>.*; ignored when countStar or aggCols non-empty
+	projAliases []string  // parallel to projCols; empty string = no alias (use column name)
 	// projExprs holds computed projection expressions parallel to projCols.
 	// Non-nil entry overrides the plain column lookup for that position.
 	projExprs          []antlrgen.IExpressionContext
@@ -503,14 +632,10 @@ type selectClassification struct {
 	aggCols        []aggSelectCol
 	distinct       bool // true when SELECT DISTINCT
 	orderBy        []orderByClause
-	// groupBy holds GROUP BY column names (nil = no GROUP BY). When an entry
-	// is an expression (e.g. `GROUP BY amt + 1`), groupBy[i] holds the raw
-	// expression text as a synthetic display key and groupByExprs[i] holds
-	// the IExpressionContext evaluated per row to derive the group key value.
-	groupBy []string
-	// groupByExprs is parallel to groupBy. nil entry = bare column (fast path
-	// via field-descriptor / map lookup); non-nil = evaluate per row/message.
-	groupByExprs []antlrgen.IExpressionContext
+	// groupBy holds the GROUP BY keys (nil = no GROUP BY), each captured
+	// STRUCTURALLY from the parse tree — the display text is a rendering,
+	// never re-parsed (RFC-180 F-3).
+	groupBy []groupKeyRef
 	// groupByAliases maps UPPERCASE `GROUP BY col AS alias` alias names to
 	// their index in groupBy. Used at parse time to resolve SELECT-list
 	// references to a GROUP BY alias (`SELECT x FROM t GROUP BY col1 AS x`)
@@ -563,7 +688,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 	// Parse SELECT list: either *, a list of column name expressions, COUNT(*), or
 	// a GROUP BY aggregate list (mix of group-by columns + aggregate functions).
 	selElems := simpleTable.SelectElements()
-	var projCols []string                       // nil = SELECT * or SELECT <qualifier>.*
+	var projCols []projCol                      // nil = SELECT * or SELECT <qualifier>.*
 	var projAliases []string                    // parallel to projCols
 	var projExprs []antlrgen.IExpressionContext // parallel to projCols; nil entry = plain column
 	var projStarQualifiers []string             // parallel to projCols; non-empty = <qualifier>.* slot
@@ -600,7 +725,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				if len(elems) == 1 {
 					projQualifier = qual
 				} else {
-					projCols = append(projCols, "") // sentinel; actual names resolved at execution
+					projCols = append(projCols, projCol{}) // sentinel; actual names resolved at execution
 					projAliases = append(projAliases, "")
 					projExprs = append(projExprs, nil)
 					projStarQualifiers = append(projStarQualifiers, qual)
@@ -611,12 +736,12 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 					if e.Uid() != nil {
 						countStarAlias = functions.StripIdentifierQuotes(e.Uid().GetText())
 					}
-				} else if fn, argCol, argExpr, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
+				} else if fn, argCol, argExpr, alias, isDistinct, argQual, argBare, argQualifier, isAgg := extractAggFunc(e); isAgg {
 					if containsNestedAggregateInSelectElement(e, argExpr) {
 						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 							"unsupported nested aggregate(s)")
 					}
-					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, visible: true})
+					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, aggArgQualified: argQual, aggArgBare: argBare, aggArgQualifier: argQualifier, visible: true})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
 					var expr antlrgen.IExpressionContext
@@ -697,10 +822,19 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 							// 42803 grouping_error.
 							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr, visible: true})
 						default:
-							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName, visible: true})
+							gcBare, _, _ := splitColumnRef(e.Expression())
+							if gcBare == "" {
+								gcBare = colName
+							}
+							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName, groupColBare: gcBare, visible: true})
 						}
 					} else {
-						projCols = append(projCols, colName)
+						pc := projCol{name: colName}
+						if expr == nil {
+							// Plain column reference: parse-tree segments.
+							pc.bare, pc.qualifier, pc.qualified = splitColumnRef(e.Expression())
+						}
+						projCols = append(projCols, pc)
 						projAliases = append(projAliases, alias)
 						projExprs = append(projExprs, expr) // nil when it's a plain column
 						projStarQualifiers = append(projStarQualifiers, "")
@@ -722,7 +856,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 		// reclassification below so those slots aren't treated as
 		// group-by references.
 		if len(projCols) > 0 {
-			var newProjCols []string
+			var newProjCols []projCol
 			var newProjAliases []string
 			var newProjExprs []antlrgen.IExpressionContext
 			var newStarQualifiers []string
@@ -765,7 +899,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				}
 				outName := projAliases[i]
 				if outName == "" {
-					outName = col
+					outName = col.name
 				}
 				promoted = append(promoted, aggSelectCol{outName: outName, outExpr: projExprs[i], visible: true})
 			}
@@ -802,7 +936,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			for i, c := range projCols {
 				out := projAliases[i]
 				if out == "" {
-					out = c
+					out = c.name
 				}
 				var slotExpr antlrgen.IExpressionContext
 				if i < len(projExprs) {
@@ -820,7 +954,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 					// mixed-agg classification site above.
 					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
 				default:
-					extra[i] = aggSelectCol{outName: out, groupCol: c, visible: true}
+					extra[i] = aggSelectCol{outName: out, groupCol: c.name, groupColBare: colBareOrName(c), visible: true}
 				}
 			}
 			aggCols = append(extra, aggCols...)
@@ -877,7 +1011,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			// 1-indexed position into the SELECT list. Resolve to the
 			// matching output column's name so the downstream colIdx
 			// lookup in the sort path works uniformly.
-			posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projCols, projAliases, aggCols)
+			posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projColNames(projCols), projAliases, aggCols)
 			if posErr != nil {
 				return nil, posErr
 			}
@@ -911,7 +1045,8 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 						"duplicate column %q in ORDER BY", colName)
 				}
 				seenOrderCols[key] = true
-				cls.orderBy = append(cls.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression(), bareRef: exprIsBareColumnRef(obExpr.Expression())})
+				kb, kq, kqf := splitColumnRef(obExpr.Expression())
+				cls.orderBy = append(cls.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression(), bareRef: exprIsBareColumnRef(obExpr.Expression()), bare: kb, qualifier: kq, qualified: kqf})
 			} else {
 				cls.orderBy = append(cls.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
 			}
@@ -955,13 +1090,12 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				}
 				seenAliases[aliasKey] = true
 			}
-			posName, _, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, cls.aggCols)
+			posName, _, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projColNames(projCols), projAliases, cls.aggCols)
 			if posErr != nil {
 				return nil, posErr
 			}
 			if isPos {
-				cls.groupBy = append(cls.groupBy, posName)
-				cls.groupByExprs = append(cls.groupByExprs, nil)
+				cls.groupBy = append(cls.groupBy, groupKeyRef{display: posName, bare: posName})
 				if aliasName != "" {
 					if cls.groupByAliases == nil {
 						cls.groupByAliases = make(map[string]int)
@@ -988,20 +1122,29 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 					if i >= len(selectExprsSnapshot) || selectExprsSnapshot[i] == nil {
 						break
 					}
-					cls.groupBy = append(cls.groupBy, canonicalTextOf(selectExprsSnapshot[i]))
-					cls.groupByExprs = append(cls.groupByExprs, selectExprsSnapshot[i])
+					cls.groupBy = append(cls.groupBy, groupKeyRef{
+						display: canonicalTextOf(selectExprsSnapshot[i]),
+						expr:    selectExprsSnapshot[i],
+					})
 					redirected = true
 					break
 				}
 				if !redirected {
-					cls.groupBy = append(cls.groupBy, colName)
-					cls.groupByExprs = append(cls.groupByExprs, nil)
+					bare, qualifier, qualified := splitColumnRef(item.Expression())
+					cls.groupBy = append(cls.groupBy, groupKeyRef{
+						display:   colName,
+						bare:      bare,
+						qualifier: qualifier,
+						qualified: qualified,
+					})
 				}
 			} else {
 				// Synthesize a display name from the expression text; the
 				// value used for grouping comes from evaluating the expr.
-				cls.groupBy = append(cls.groupBy, canonicalTextOf(item.Expression()))
-				cls.groupByExprs = append(cls.groupByExprs, item.Expression())
+				cls.groupBy = append(cls.groupBy, groupKeyRef{
+					display: canonicalTextOf(item.Expression()),
+					expr:    item.Expression(),
+				})
 			}
 			if aliasName != "" {
 				if cls.groupByAliases == nil {
@@ -1023,20 +1166,20 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			if !aliased {
 				return "", "", false
 			}
-			if idx < len(cls.groupByExprs) && cls.groupByExprs[idx] != nil {
+			if cls.groupBy[idx].expr != nil {
 				return "", "", false
 			}
-			return cls.groupBy[idx], name, true
+			return cls.groupBy[idx].display, name, true
 		}
 		for i := range cls.projCols {
 			if i < len(cls.projExprs) && cls.projExprs[i] != nil {
 				continue
 			}
 			col := cls.projCols[i]
-			if col == "" {
+			if col.name == "" {
 				continue
 			}
-			underlying, outName, ok := aliasResolves(col)
+			underlying, outName, ok := aliasResolves(col.name)
 			if !ok {
 				continue
 			}
@@ -1048,7 +1191,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			if cls.projAliases[i] == "" {
 				cls.projAliases[i] = outName
 			}
-			cls.projCols[i] = underlying
+			// The rebased name is the underlying GROUP BY column text — an
+			// internal name; segments cleared to it (the group-key rule).
+			cls.projCols[i] = projCol{name: underlying, bare: underlying}
 		}
 		// Also rewrite aggCols entries: when the SELECT list mixes
 		// plain-col refs with aggregates, bare columns are classified
@@ -1064,6 +1209,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			if ac.groupCol != "" {
 				if underlying, outName, ok := aliasResolves(ac.groupCol); ok {
 					ac.groupCol = underlying
+					ac.groupColBare = underlying
 					if ac.outName == "" {
 						ac.outName = outName
 					}
@@ -1133,7 +1279,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 		for i, c := range projCols {
 			out := projAliases[i]
 			if out == "" {
-				out = c
+				out = c.name
 			}
 			var slotExpr antlrgen.IExpressionContext
 			if i < len(projExprs) {
@@ -1146,7 +1292,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				// the rowMap (which carries group-by column values).
 				extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
 			default:
-				extra[i] = aggSelectCol{outName: out, groupCol: c, visible: true}
+				extra[i] = aggSelectCol{outName: out, groupCol: c.name, groupColBare: colBareOrName(c), visible: true}
 			}
 		}
 		cls.aggCols = extra
@@ -1242,9 +1388,10 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				continue
 			}
 			projText := canonicalTextOf(origExpr)
-			for gi, gn := range cls.groupBy {
-				if gi < len(cls.groupByExprs) && cls.groupByExprs[gi] != nil && projText == gn {
-					cls.aggCols[ai].groupCol = gn
+			for _, gn := range cls.groupBy {
+				if gn.expr != nil && projText == gn.display {
+					cls.aggCols[ai].groupCol = gn.display
+					cls.aggCols[ai].groupColBare = gn.display
 					break
 				}
 			}
@@ -1269,10 +1416,11 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				continue
 			}
 			outExprText := canonicalTextOf(ac.outExpr)
-			for gi, gn := range cls.groupBy {
-				if gi < len(cls.groupByExprs) && cls.groupByExprs[gi] != nil && outExprText == gn {
+			for _, gn := range cls.groupBy {
+				if gn.expr != nil && outExprText == gn.display {
 					cls.aggCols[ai].outExpr = nil
-					cls.aggCols[ai].groupCol = gn
+					cls.aggCols[ai].groupCol = gn.display
+					cls.aggCols[ai].groupColBare = gn.display
 					break
 				}
 			}
@@ -1291,7 +1439,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			outName = cls.countStarAlias
 		}
 		cls.aggCols = append(cls.aggCols, aggSelectCol{outName: outName, aggFunc: "COUNT", visible: true})
-		cls.projCols = []string{outName}
+		cls.projCols = []projCol{{name: outName, bare: outName}}
 		cls.projAliases = []string{""}
 		cls.projExprs = []antlrgen.IExpressionContext{nil}
 		cls.projStarQualifiers = []string{""}
@@ -1377,19 +1525,21 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				for i, c := range projCols {
 					out := projAliases[i]
 					if out == "" {
-						out = c
+						out = c.name
 					}
-					gc := c
+					gc := c.name
+					gcBare := colBareOrName(c)
 					if i < len(projExprs) && projExprs[i] != nil {
 						projText := canonicalTextOf(projExprs[i])
-						for gi, gn := range cls.groupBy {
-							if gi < len(cls.groupByExprs) && cls.groupByExprs[gi] != nil && projText == gn {
-								gc = gn
+						for _, gn := range cls.groupBy {
+							if gn.expr != nil && projText == gn.display {
+								gc = gn.display
+								gcBare = gn.display
 								break
 							}
 						}
 					}
-					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc, visible: true})
+					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc, groupColBare: gcBare, visible: true})
 				}
 				cls.aggCols = append(prepended, cls.aggCols...)
 				cls.projCols = nil
@@ -1473,8 +1623,46 @@ func harvestColumnRefs(expr antlrgen.IExpressionContext) []string {
 // read into the derived source surfaces through that build, loud at
 // translation). The GROUP-BY validator keeps the non-stopping walk: a
 // correlated ref into the outer query DOES need the group-check there.
-func harvestColumnRefsOutsideSubqueries(expr antlrgen.IExpressionContext) []string {
-	return harvestColumnRefsImpl(expr, true)
+// harvestBareColumnRefsOutsideSubqueries is the STRUCTURAL variant: it
+// returns each referenced column's bare LAST SEGMENT per the parse tree —
+// never a dot split of the rendered name, which a delimited identifier
+// containing a literal dot would corrupt. Same walk boundaries as the
+// rendering variant.
+func harvestBareColumnRefsOutsideSubqueries(expr antlrgen.IExpressionContext) []string {
+	if expr == nil {
+		return nil
+	}
+	var bares []string
+	seen := map[string]bool{}
+	var visit func(n antlr.Tree)
+	visit = func(n antlr.Tree) {
+		if n == nil {
+			return
+		}
+		switch n.(type) {
+		case *antlrgen.QueryContext, antlrgen.IQueryExpressionBodyContext:
+			return
+		}
+		if fc, ok := n.(*antlrgen.FunctionCallExpressionAtomContext); ok {
+			if _, isAgg := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext); isAgg {
+				return
+			}
+		}
+		if c, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+			uids := c.FullColumnName().FullId().AllUid()
+			bare := functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
+			if !seen[bare] {
+				seen[bare] = true
+				bares = append(bares, bare)
+			}
+			return
+		}
+		for i := 0; i < n.GetChildCount(); i++ {
+			visit(n.GetChild(i))
+		}
+	}
+	visit(expr)
+	return bares
 }
 
 func harvestColumnRefsImpl(expr antlrgen.IExpressionContext, stopAtNestedQuery bool) []string {
@@ -1657,16 +1845,19 @@ func queryScopeHasWindowedAggregate(n antlr.Tree) bool {
 // HAVING resolver's lookup name and the SELECT-list default alias
 // ("COUNT(*)", "SUM(v)"). Returns false for unknown aggregate shapes.
 func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol, bool) {
-	fn, argCol, argExpr, outName, isDistinct, ok := extractAwfFields(awf)
+	fn, argCol, argExpr, outName, isDistinct, argQual, argBare, argQualifier, ok := extractAwfFields(awf)
 	if !ok {
 		return aggSelectCol{}, false
 	}
 	return aggSelectCol{
-		outName:     outName,
-		aggFunc:     fn,
-		aggArg:      argCol,
-		aggExpr:     argExpr,
-		aggDistinct: isDistinct,
+		outName:         outName,
+		aggFunc:         fn,
+		aggArg:          argCol,
+		aggExpr:         argExpr,
+		aggDistinct:     isDistinct,
+		aggArgQualified: argQual,
+		aggArgBare:      argBare,
+		aggArgQualifier: argQualifier,
 	}, true
 }
 

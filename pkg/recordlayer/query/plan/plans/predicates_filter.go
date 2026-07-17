@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"encoding/binary"
 	"fmt"
 	"hash/fnv"
 
@@ -82,6 +83,13 @@ func (p *RecordQueryPredicatesFilterPlan) EqualsWithoutChildren(other RecordQuer
 	if !ok {
 		return false
 	}
+	// innerAlias is identity: it is the correlation the predicates resolve
+	// the current row under, so two filters differing only in binding alias
+	// evaluate differently and must not collapse into one memo group (the
+	// same field-class as the NLJ/FlatMap outer/inner aliases).
+	if p.innerAlias != o.innerAlias {
+		return false
+	}
 	if len(p.predicates) != len(o.predicates) {
 		return false
 	}
@@ -93,18 +101,20 @@ func (p *RecordQueryPredicatesFilterPlan) EqualsWithoutChildren(other RecordQuer
 	return true
 }
 
-// HashCodeWithoutChildren mixes the class discriminator + per-
-// predicate Explain-rendered text.
+// HashCodeWithoutChildren mixes the class discriminator + per-predicate
+// predicates.SemanticHashCode (alias-invariant, coarser than the structural
+// PredicateEquals — equal⟹same-hash holds by construction). NOT Explain()
+// display text: renderings are for humans, carry no identity contract, and
+// drift independently of equality.
 func (p *RecordQueryPredicatesFilterPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("predicatesfilterplan|"))
+	h.Write([]byte(p.innerAlias.Name()))
+	h.Write([]byte{0})
+	var buf [8]byte
 	for _, pr := range p.predicates {
-		if pr == nil {
-			h.Write([]byte("<nil>"))
-		} else {
-			h.Write([]byte(pr.Explain()))
-		}
-		h.Write([]byte{0})
+		binary.BigEndian.PutUint64(buf[:], predicates.SemanticHashCode(pr))
+		h.Write(buf[:])
 	}
 	return h.Sum64()
 }

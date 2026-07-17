@@ -27,6 +27,9 @@ type dedupCursor[T any] struct {
 	lastValue    T
 	hasLast      bool
 	closed       bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java's cached no-next result) — never re-pulls the inner.
+	lastNoNext *RecordCursorResult[T]
 }
 
 // Dedup creates a cursor that removes adjacent duplicate elements.
@@ -88,6 +91,9 @@ func (c *dedupCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 	if c.closed {
 		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -105,7 +111,9 @@ func (c *dedupCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 			if wrapErr != nil {
 				return RecordCursorResult[T]{}, wrapErr
 			}
-			return NewResultNoNext[T](result.GetNoNextReason(), wrapped), nil
+			res := NewResultNoNext[T](result.GetNoNextReason(), wrapped)
+			c.lastNoNext = &res
+			return res, nil
 		}
 
 		val := result.GetValue()

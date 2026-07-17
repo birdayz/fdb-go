@@ -139,7 +139,7 @@ type ImplementInUnionRule struct {
 
 func NewImplementInUnionRule() *ImplementInUnionRule {
 	return &ImplementInUnionRule{
-		matcher: &selectExpressionMatcher{},
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("implement_in_union"),
 	}
 }
 

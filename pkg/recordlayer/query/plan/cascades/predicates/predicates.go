@@ -152,9 +152,30 @@ func PredicateEquals(a, b QueryPredicate) bool {
 		// `IsNull{Operand: nil}` and `IsNull{Operand: LiteralValue(nil)}`
 		// are semantically equivalent and must compare equal even
 		// though their Operand fields differ structurally.
+		// ParameterName joins identity: `x = $a` and `x = $b` read
+		// DIFFERENT runtime bindings — they are distinct predicates.
+		// The text-search comparand fields join for the same reason two
+		// TEXT_CONTAINS over one field differing only in tokenizer /
+		// analyzer / distance / strict-prefix read different results
+		// (the comparisonEqual rationale in plans/semantic_identity.go,
+		// applied at the predicate layer).
 		if ap.Comparison.Type != bp.Comparison.Type ||
 			ap.Comparison.Escape != bp.Comparison.Escape ||
+			ap.Comparison.ParameterName != bp.Comparison.ParameterName ||
+			ap.Comparison.TextTokenizerName != bp.Comparison.TextTokenizerName ||
+			ap.Comparison.TextAnalyzerName != bp.Comparison.TextAnalyzerName ||
+			ap.Comparison.TextMaxDistance != bp.Comparison.TextMaxDistance ||
+			ap.Comparison.TextStrictPrefix != bp.Comparison.TextStrictPrefix ||
 			!valueNamesEqual(ap.Operand, bp.Operand) {
+			return false
+		}
+		// DistanceRank comparands (query vector + HNSW knobs) join for the
+		// same reason: logical_qualify builds DistanceRank predicates into
+		// AND/OR trees BEFORE lowering to a vector-index scan, so two K-NN
+		// searches differing only in query vector must not dedup to one.
+		// The plan-layer exemption (semantic_identity.go: "never reaches
+		// this helper") does not transfer to the predicate layer.
+		if !distanceRankFieldsEqual(&ap.Comparison, &bp.Comparison) {
 			return false
 		}
 		if ap.Comparison.Type.IsUnary() {
@@ -514,4 +535,12 @@ func (p *NotPredicate) Explain() string {
 		return "NOT " + child
 	}
 	return "NOT (" + child + ")"
+}
+
+// distanceRankFieldsEqual compares the DistanceRank comparand fields
+// (QueryVector + the optional HNSW knobs). The pointer knobs compare by
+// value-or-both-nil: nil means "index default", which is a distinct identity
+// from an explicit setting.
+func distanceRankFieldsEqual(a, b *Comparison) bool {
+	return valueNamesEqual(a.QueryVector, b.QueryVector) && distanceRankKnobsEqual(a, b)
 }

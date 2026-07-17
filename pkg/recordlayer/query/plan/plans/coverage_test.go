@@ -106,8 +106,16 @@ func TestRecordQueryIntersectionPlan_EqualsWithoutChildrenSameKeyCount(t *testin
 	}
 	i1 := NewRecordQueryIntersectionPlan(nil, keys1)
 	i2 := NewRecordQueryIntersectionPlan(nil, keys2)
-	if !i1.EqualsWithoutChildren(i2) {
-		t.Fatal("two Intersections with same key count should be EqualsWithoutChildren")
+	// Same key COUNT but different key Values → NOT equal (RFC-180 B2:
+	// count-only identity collapsed different-key intersections in the memo).
+	if i1.EqualsWithoutChildren(i2) {
+		t.Fatal("Intersections with different comparison keys should NOT be equal")
+	}
+	i1b := NewRecordQueryIntersectionPlan(nil, []values.Value{
+		&values.FieldValue{Field: "id", Typ: values.NotNullLong},
+	})
+	if !i1.EqualsWithoutChildren(i1b) {
+		t.Fatal("Intersections with identical comparison keys should be equal")
 	}
 
 	// Different key count → not equal.

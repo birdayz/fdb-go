@@ -77,6 +77,12 @@ func (w *physicalDefaultOnEmptyWrapper) HintCost(child []properties.Cost, _ prop
 	}
 }
 
+// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// orderingDelegator in winner_lookup.go).
+func (w *physicalDefaultOnEmptyWrapper) orderingSourceRef() *expressions.Reference {
+	return w.innerQuant.GetRangesOver()
+}
+
 func (w *physicalDefaultOnEmptyWrapper) HintOrdering() properties.Ordering {
 	ref := w.innerQuant.GetRangesOver()
 	if ref == nil {

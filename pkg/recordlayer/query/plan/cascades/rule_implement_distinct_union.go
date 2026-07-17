@@ -30,7 +30,7 @@ type ImplementDistinctUnionRule struct {
 
 func NewImplementDistinctUnionRule() *ImplementDistinctUnionRule {
 	return &ImplementDistinctUnionRule{
-		matcher: &logicalDistinctMatcher{},
+		matcher: NewExpressionMatcher[*expressions.LogicalDistinctExpression]("implement_distinct"),
 	}
 }
 
@@ -358,14 +358,3 @@ func getCommonPK(partitions []*PlanPartition) []values.Value {
 }
 
 var _ ImplementationRule = (*ImplementDistinctUnionRule)(nil)
-
-type logicalDistinctMatcher struct{}
-
-func (m *logicalDistinctMatcher) RootType() string { return "LogicalDistinctExpression" }
-
-func (m *logicalDistinctMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.LogicalDistinctExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}

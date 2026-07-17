@@ -12,205 +12,6 @@ func intCompKey(v int) tuple.Tuple {
 	return tuple.Tuple{v}
 }
 
-func TestUnionCursorBasic(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	c1 := FromList([]int{1, 3, 5, 7})
-	c2 := FromList([]int{2, 4, 6, 8})
-	union := Union([]RecordCursor[int]{c1, c2}, intCompKey, false)
-
-	var results []int
-	for v, iterErr := range Seq2(union, ctx) {
-		if iterErr != nil {
-			t.Fatalf("Seq2: %v", iterErr)
-		}
-		results = append(results, v)
-	}
-
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8}
-	if len(results) != len(expected) {
-		t.Fatalf("got %d results, want %d: %v", len(results), len(expected), results)
-	}
-	for i, v := range results {
-		if v != expected[i] {
-			t.Fatalf("result[%d]: got %d, want %d", i, v, expected[i])
-		}
-	}
-}
-
-func TestUnionCursorDuplicates(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	c1 := FromList([]int{1, 2, 3, 5})
-	c2 := FromList([]int{2, 3, 4, 5})
-	union := Union([]RecordCursor[int]{c1, c2}, intCompKey, false)
-
-	var results []int
-	for v, iterErr := range Seq2(union, ctx) {
-		if iterErr != nil {
-			t.Fatalf("Seq2: %v", iterErr)
-		}
-		results = append(results, v)
-	}
-
-	expected := []int{1, 2, 3, 4, 5}
-	if len(results) != len(expected) {
-		t.Fatalf("got %d results, want %d: %v", len(results), len(expected), results)
-	}
-	for i, v := range results {
-		if v != expected[i] {
-			t.Fatalf("result[%d]: got %d, want %d", i, v, expected[i])
-		}
-	}
-}
-
-func TestUnionCursorReverse(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	c1 := FromList([]int{7, 5, 3, 1})
-	c2 := FromList([]int{8, 6, 4, 2})
-	union := Union([]RecordCursor[int]{c1, c2}, intCompKey, true)
-
-	var results []int
-	for v, iterErr := range Seq2(union, ctx) {
-		if iterErr != nil {
-			t.Fatalf("Seq2: %v", iterErr)
-		}
-		results = append(results, v)
-	}
-
-	expected := []int{8, 7, 6, 5, 4, 3, 2, 1}
-	if len(results) != len(expected) {
-		t.Fatalf("got %d results, want %d: %v", len(results), len(expected), results)
-	}
-	for i, v := range results {
-		if v != expected[i] {
-			t.Fatalf("result[%d]: got %d, want %d", i, v, expected[i])
-		}
-	}
-}
-
-func TestUnionCursorEmptyCursors(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	t.Run("all_empty", func(t *testing.T) {
-		t.Parallel()
-		c1 := Empty[int]()
-		c2 := Empty[int]()
-		union := Union([]RecordCursor[int]{c1, c2}, intCompKey, false)
-
-		result, err := union.OnNext(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.HasNext() {
-			t.Fatal("expected no results")
-		}
-	})
-
-	t.Run("one_empty", func(t *testing.T) {
-		t.Parallel()
-		c1 := FromList([]int{1, 3, 5})
-		c2 := Empty[int]()
-		union := Union([]RecordCursor[int]{c1, c2}, intCompKey, false)
-
-		var results []int
-		for v, iterErr := range Seq2(union, ctx) {
-			if iterErr != nil {
-				t.Fatalf("Seq2: %v", iterErr)
-			}
-			results = append(results, v)
-		}
-
-		if len(results) != 3 {
-			t.Fatalf("got %d results, want 3: %v", len(results), results)
-		}
-	})
-
-	t.Run("no_cursors", func(t *testing.T) {
-		t.Parallel()
-		union := Union([]RecordCursor[int]{}, intCompKey, false)
-		result, err := union.OnNext(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.HasNext() {
-			t.Fatal("expected no results")
-		}
-	})
-}
-
-func TestUnionCursorThree(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	c1 := FromList([]int{1, 4, 7})
-	c2 := FromList([]int{2, 5, 8})
-	c3 := FromList([]int{3, 6, 9})
-	union := Union([]RecordCursor[int]{c1, c2, c3}, intCompKey, false)
-
-	var results []int
-	for v, iterErr := range Seq2(union, ctx) {
-		if iterErr != nil {
-			t.Fatalf("Seq2: %v", iterErr)
-		}
-		results = append(results, v)
-	}
-
-	expected := []int{1, 2, 3, 4, 5, 6, 7, 8, 9}
-	if len(results) != len(expected) {
-		t.Fatalf("got %d results, want %d: %v", len(results), len(expected), results)
-	}
-	for i, v := range results {
-		if v != expected[i] {
-			t.Fatalf("result[%d]: got %d, want %d", i, v, expected[i])
-		}
-	}
-}
-
-func TestUnionCursorContinuation(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	c1 := FromList([]int{1, 3, 5})
-	c2 := FromList([]int{2, 4, 6})
-	union := Union([]RecordCursor[int]{c1, c2}, intCompKey, false)
-
-	// Read first two results
-	r1, err := union.OnNext(ctx)
-	if err != nil || !r1.HasNext() {
-		t.Fatal("expected result 1")
-	}
-	if r1.GetValue() != 1 {
-		t.Fatalf("result 1: got %d, want 1", r1.GetValue())
-	}
-
-	r2, err := union.OnNext(ctx)
-	if err != nil || !r2.HasNext() {
-		t.Fatal("expected result 2")
-	}
-	if r2.GetValue() != 2 {
-		t.Fatalf("result 2: got %d, want 2", r2.GetValue())
-	}
-
-	// Continuation should be non-nil
-	cont := r2.GetContinuation()
-	if cont == nil || cont.IsEnd() {
-		t.Fatal("continuation should not be end")
-	}
-	contBytes, contBytesErr := cont.ToBytes()
-	if contBytesErr != nil {
-		t.Fatalf("cont.ToBytes() error: %v", contBytesErr)
-	}
-	if len(contBytes) == 0 {
-		t.Fatal("continuation bytes should not be empty")
-	}
-}
-
 func TestIntersectionCursorBasic(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -397,5 +198,66 @@ func TestCompareKeys(t *testing.T) {
 				t.Fatalf("compareKeys(%v, %v): got %d, want sign of %d", tt.a, tt.b, got, tt.expected)
 			}
 		})
+	}
+}
+
+// intPausingCursor emits its rows with position continuations, then pauses
+// out-of-band — models a child hitting a scan/time limit mid-catch-up.
+type intPausingCursor struct {
+	rows   []int
+	pos    int
+	closed bool
+}
+
+func (p *intPausingCursor) OnNext(context.Context) (RecordCursorResult[int], error) {
+	if p.pos < len(p.rows) {
+		v := p.rows[p.pos]
+		p.pos++
+		return NewResultWithValue(v, NewBytesContinuation([]byte{byte(p.pos)})), nil
+	}
+	return NewResultNoNext[int](TimeLimitReached, NewBytesContinuation([]byte{0xEE})), nil
+}
+func (p *intPausingCursor) Close() error   { p.closed = true; return nil }
+func (p *intPausingCursor) IsClosed() bool { return p.closed }
+
+// TestIntersectionCursor_NonMaxDiscardAdvancesContinuation pins Java
+// IntersectionCursorBase.computeNextResultStates: every DISCARDED non-max row
+// is consume()d, so the child's continuation slot advances past each discard
+// — a stop mid-catch-up resumes from the last discard, never re-scanning the
+// inter-match gap. Without the consume, the slot sits at the last MATCH
+// (START here) and the resumed child re-reads every discarded row.
+func TestIntersectionCursor_NonMaxDiscardAdvancesContinuation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Child A discards 1 and 2 chasing B's max key 5, then HOLDS 9; the
+	// stop comes from B pausing while chasing 9. A's slot must sit at the
+	// position after its LAST DISCARD (list position 2), not at START.
+	a := FromList([]int{1, 2, 9})
+	b := &intPausingCursor{rows: []int{5}}
+	inter := Intersection([]RecordCursor[int]{a, b}, intCompKey, false)
+
+	res, err := inter.OnNext(ctx)
+	if err != nil {
+		t.Fatalf("OnNext: %v", err)
+	}
+	if res.HasNext() {
+		t.Fatalf("no intersection expected before the pause, got %v", res.GetValue())
+	}
+	if res.GetNoNextReason() != TimeLimitReached {
+		t.Fatalf("reason = %v, want the child's TimeLimitReached", res.GetNoNextReason())
+	}
+	contBytes, cerr := res.GetContinuation().ToBytes()
+	if cerr != nil {
+		t.Fatalf("ToBytes: %v", cerr)
+	}
+	slots, derr := DecodeIntersectionContinuation(contBytes, 2)
+	if derr != nil {
+		t.Fatalf("decode: %v", derr)
+	}
+	// A's slot: list position 2 (after discards of 1 and 2, before the held
+	// 9) — the 4-byte big-endian ListCursor encoding.
+	if !slots[0].Started || string(slots[0].Continuation) != string([]byte{0, 0, 0, 2}) {
+		t.Fatalf("child A slot = %+v, want position-2 after its discards (Java consume() on non-max)", slots[0])
 	}
 }

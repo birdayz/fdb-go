@@ -55,6 +55,11 @@ type Memo struct {
 	// Starts at 1 so an unregistered Reference (id 0) is distinguishable.
 	nextID uint64
 
+	// planningActive marks that the PLANNING phase has started — the
+	// point after which cross-group merges are forbidden wholesale (see
+	// the tripwire in merge).
+	planningActive bool
+
 	// mergeCount counts cross-group merges performed (RFC-037). Exposed
 	// via MergeCount for tests that assert the optimization fires.
 	mergeCount int
@@ -114,6 +119,10 @@ func (m *Memo) track(ref *expressions.Reference) {
 // MergeCount returns the number of cross-group merges performed so far
 // (RFC-037). Used by tests to assert the merge optimization fires.
 func (m *Memo) MergeCount() int { return m.mergeCount }
+
+// MarkPlanningActive records that the PLANNING phase has begun; any
+// cross-group merge after this point panics (RFC-037 §0).
+func (m *Memo) MarkPlanningActive() { m.planningActive = true }
 
 // AliasAwareDedups sums, over every Reference in the memo, the extra dedup the
 // alias-aware interning tier performed (Reference.AliasAwareDedups) — the

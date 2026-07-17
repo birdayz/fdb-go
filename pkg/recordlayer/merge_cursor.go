@@ -46,14 +46,11 @@ type mergeChildState[T any] struct {
 	// it. buildIntersectionContinuation derives the START/MID/END encoding from
 	// this continuation.
 	//
-	// Consequence (Java-faithful): because the continuation sits at the last
-	// CONSUMED (matched) position, an out-of-band stop resumes a child from
-	// there and re-scans any non-matching rows discarded since the last match
-	// (bounded by the inter-match gap; the prefix-to-first-match for a
-	// never-matched child). This is correct (no dup/no loss) and matches Java
-	// MergeCursorState exactly. Tracking the position just before the currently
-	// held candidate to skip that re-scan would be a Go-only optimization beyond
-	// Java — out of scope for RFC-071; see TODO.
+	// Java IntersectionCursorBase.computeNextResultStates additionally calls
+	// consume() on every DISCARDED non-max cursor, so the cached continuation
+	// advances past each discarded row too — an out-of-band stop resumes a
+	// child from its last DISCARD, never re-scanning the inter-match gap. Go
+	// mirrors that in the non-max advance loop.
 	continuation RecordCursorContinuation
 }
 
@@ -84,211 +81,13 @@ func (s *mergeChildState[T]) consume() {
 	s.continuation = s.result.GetContinuation()
 }
 
-// --- UnionCursor ---
-
-// unionCursor merges multiple ordered cursors, returning all distinct elements
-// in order. When multiple cursors have the same comparison key, the element
-// from the first cursor is returned and others are consumed (deduplication).
-// Matches Java's UnionCursor.
-type unionCursor[T any] struct {
-	children         []*mergeChildState[T]
-	reverse          bool
-	started          bool
-	closed           bool
-	stopped          bool                     // set when a child hit an out-of-band limit
-	stopReason       NoNextReason             // reason for stop
-	stopContinuation RecordCursorContinuation // continuation at stop point
-}
-
-// Union creates a merge-union cursor that combines multiple ordered cursors.
-// All child cursors must be ordered by the same comparison key.
-// The compKeyFunc extracts the comparison key from each element.
-// Elements with duplicate keys across cursors are deduplicated (first cursor wins).
-// Matches Java's UnionCursor.create().
-func Union[T any](
-	cursors []RecordCursor[T],
-	compKeyFunc ComparisonKeyFunc[T],
-	reverse bool,
-) RecordCursor[T] {
-	if len(cursors) == 0 {
-		return Empty[T]()
-	}
-	children := make([]*mergeChildState[T], len(cursors))
-	for i, c := range cursors {
-		children[i] = &mergeChildState[T]{
-			cursor:      c,
-			compKeyFunc: compKeyFunc,
-		}
-	}
-	return &unionCursor[T]{
-		children: children,
-		reverse:  reverse,
-	}
-}
-
-func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
-	if c.closed {
-		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
-	}
-
-	// If a child previously hit an out-of-band limit, stop the union now.
-	// The previous call returned the last safe value; this call stops.
-	// Matches Java: UnionCursorBase.computeNextResultStates() stops the union
-	// when ANY child has !hasNext() && isLimitReached().
-	if c.stopped {
-		return NewResultNoNext[T](c.stopReason, c.stopContinuation), nil
-	}
-
-	// Advance all children that need it
-	for _, child := range c.children {
-		if !c.started || child.hasResult {
-			if !c.started {
-				if err := child.advance(ctx); err != nil {
-					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
-				}
-			}
-		}
-	}
-
-	if !c.started {
-		c.started = true
-	}
-
-	// Check if any child stopped for a non-exhaustion reason BEFORE selecting a winner.
-	// Matches Java: if ANY child has !hasNext() && isLimitReached(), return empty.
-	for _, child := range c.children {
-		if !child.hasResult && !child.result.GetNoNextReason().IsSourceExhausted() {
-			cont, contErr := c.buildContinuation()
-			if contErr != nil {
-				return RecordCursorResult[T]{}, contErr
-			}
-			return NewResultNoNext[T](child.result.GetNoNextReason(), cont), nil
-		}
-	}
-
-	// Find minimum (or maximum for reverse) key across all children
-	var minIdx int = -1
-	var minKey tuple.Tuple
-	for i, child := range c.children {
-		if !child.hasResult {
-			continue
-		}
-		if minIdx == -1 {
-			minIdx = i
-			minKey = child.comparisonKey
-			continue
-		}
-		cmp, cmpErr := compareKeys(child.comparisonKey, minKey)
-		if cmpErr != nil {
-			return RecordCursorResult[T]{}, cmpErr
-		}
-		if c.reverse {
-			cmp = -cmp
-		}
-		if cmp < 0 {
-			minIdx = i
-			minKey = child.comparisonKey
-		}
-	}
-
-	// No children have results -> exhausted
-	if minIdx == -1 {
-		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
-	}
-
-	// Get the result from the winning child
-	result := c.children[minIdx].result
-
-	// Consume all children with the same key (deduplication)
-	for _, child := range c.children {
-		eq, eqErr := compareKeys(child.comparisonKey, minKey)
-		if eqErr != nil {
-			return RecordCursorResult[T]{}, eqErr
-		}
-		if child.hasResult && eq == 0 {
-			if err := child.advance(ctx); err != nil {
-				return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
-			}
-		}
-	}
-
-	// Check if any child stopped during dedup advance. If so, return this value
-	// but stop the union on the next call.
-	for _, child := range c.children {
-		if !child.hasResult && !child.result.GetNoNextReason().IsSourceExhausted() {
-			c.stopped = true
-			c.stopReason = child.result.GetNoNextReason()
-			var contErr error
-			c.stopContinuation, contErr = c.buildContinuation()
-			if contErr != nil {
-				return RecordCursorResult[T]{}, contErr
-			}
-			return NewResultWithValue[T](result.GetValue(), c.stopContinuation), nil
-		}
-	}
-
-	cont, contErr := c.buildContinuation()
-	if contErr != nil {
-		return RecordCursorResult[T]{}, contErr
-	}
-	return NewResultWithValue[T](result.GetValue(), cont), nil
-}
-
-func (c *unionCursor[T]) buildContinuation() (RecordCursorContinuation, error) {
-	cont := &gen.UnionContinuation{}
-	for i, child := range c.children {
-		var contBytes []byte
-		exhausted := false
-		if child.hasResult {
-			var err error
-			contBytes, err = child.result.GetContinuation().ToBytes()
-			if err != nil {
-				return nil, fmt.Errorf("union continuation child %d: %w", i, err)
-			}
-		} else {
-			exhausted = child.result.GetNoNextReason().IsSourceExhausted()
-			var err error
-			contBytes, err = child.result.GetContinuation().ToBytes()
-			if err != nil {
-				return nil, fmt.Errorf("union continuation child %d: %w", i, err)
-			}
-		}
-
-		if i == 0 {
-			cont.FirstContinuation = contBytes
-			cont.FirstExhausted = proto.Bool(exhausted)
-		} else if i == 1 {
-			cont.SecondContinuation = contBytes
-			cont.SecondExhausted = proto.Bool(exhausted)
-		} else {
-			cont.OtherChildState = append(cont.OtherChildState, &gen.UnionContinuation_CursorState{
-				Continuation: contBytes,
-				Exhausted:    proto.Bool(exhausted),
-			})
-		}
-	}
-	data, err := cont.MarshalVT()
-	if err != nil {
-		return nil, fmt.Errorf("union continuation marshal: %w", err)
-	}
-	return &BytesContinuation{bytes: data}, nil
-}
-
-func (c *unionCursor[T]) Close() error {
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	var firstErr error
-	for _, child := range c.children {
-		if err := child.cursor.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-func (c *unionCursor[T]) IsClosed() bool { return c.closed }
+// NOTE: there is deliberately NO merge-union cursor in this file. The
+// wire-format UnionContinuation encoder lives in the executor's
+// mergeSortCursor (pkg/recordlayer/query/executor/executor_new_plans.go) — the
+// single union pipeline. A previous unionCursor here snapshotted
+// peeked-but-unconsumed children's POST-peek continuations, so a resume
+// skipped their held rows; it was dead code (zero production callers) and was
+// removed rather than fixed.
 
 // --- IntersectionCursor ---
 
@@ -301,6 +100,12 @@ type intersectionCursor[T any] struct {
 	reverse  bool
 	started  bool
 	closed   bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java MergeCursor.onNext: once stopped, every later onNext returns the
+	// SAME cached result). Without it a re-call recomputes the terminal —
+	// re-encoding every child's lazy continuation — instead of replaying it
+	// verbatim.
+	lastNoNext *RecordCursorResult[T]
 }
 
 // Intersection creates a merge-intersection cursor that returns only elements
@@ -371,6 +176,9 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 	if c.closed {
 		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	// Initial advance of all children
 	if !c.started {
@@ -392,13 +200,17 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 			if !child.hasResult {
 				reason := weakestNoNextReason(c.children)
 				if reason.IsSourceExhausted() {
-					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
+					res := NewResultNoNext[T](SourceExhausted, &EndContinuation{})
+					c.lastNoNext = &res
+					return res, nil
 				}
 				cont, contErr := c.buildContinuation()
 				if contErr != nil {
 					return RecordCursorResult[T]{}, contErr
 				}
-				return NewResultNoNext[T](reason, cont), nil
+				res := NewResultNoNext[T](reason, cont)
+				c.lastNoNext = &res
+				return res, nil
 			}
 		}
 
@@ -453,13 +265,18 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 			return NewResultWithValue[T](result.GetValue(), cont), nil
 		}
 
-		// Advance all non-maximal children
+		// Advance all non-maximal children. Java
+		// (IntersectionCursorBase.computeNextResultStates) consumes each
+		// discarded row first, so the child's cached continuation advances
+		// past it — a stop mid-catch-up resumes from the last discard, not
+		// the last match.
 		for _, child := range c.children {
 			neq, neqErr := compareKeys(child.comparisonKey, maxKey)
 			if neqErr != nil {
 				return RecordCursorResult[T]{}, neqErr
 			}
 			if neq != 0 {
+				child.consume()
 				if err := child.advance(ctx); err != nil {
 					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
 				}
@@ -654,6 +471,9 @@ type intersectionMultiCursor[T any] struct {
 	reverse  bool
 	started  bool
 	closed   bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java MergeCursor.onNext's cached result) — see intersectionCursor.
+	lastNoNext *RecordCursorResult[[]T]
 }
 
 // IntersectionMulti creates a merge-intersection cursor that returns, for
@@ -690,6 +510,9 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 	if c.closed {
 		return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	if !c.started {
 		for _, child := range c.children {
@@ -714,13 +537,17 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 			if !child.hasResult {
 				reason := weakestNoNextReason(c.children)
 				if reason.IsSourceExhausted() {
-					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), nil
+					res := NewResultNoNext[[]T](SourceExhausted, &EndContinuation{})
+					c.lastNoNext = &res
+					return res, nil
 				}
 				cont, contErr := buildIntersectionContinuation(c.children)
 				if contErr != nil {
 					return RecordCursorResult[[]T]{}, contErr
 				}
-				return NewResultNoNext[[]T](reason, cont), nil
+				res := NewResultNoNext[[]T](reason, cont)
+				c.lastNoNext = &res
+				return res, nil
 			}
 		}
 

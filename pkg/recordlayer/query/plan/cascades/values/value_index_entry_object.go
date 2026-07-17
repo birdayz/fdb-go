@@ -1,5 +1,7 @@
 package values
 
+import "fmt"
+
 // TupleSource enumerates the two tuple-bearing fields of an FDB
 // IndexEntry — the index KEY (primary scan tuple) or the index
 // VALUE (associated payload tuple). Mirrors Java's
@@ -155,24 +157,31 @@ func (v *IndexEntryObjectValue) Evaluate(evalCtx any) (any, error) {
 	default:
 		return nil, nil
 	}
-	return walkOrdinalPath(t, v.OrdinalPath), nil
+	return walkOrdinalPath(t, v.OrdinalPath)
 }
 
-// walkOrdinalPath descends through `t` along `path`, treating each
-// hop as an integer-index into a `[]any` (the Tuple representation).
-// Returns nil if any hop runs off the end / hits a non-slice.
-func walkOrdinalPath(t any, path []int) any {
+// walkOrdinalPath descends through `t` along `path`, treating each hop as an
+// integer-index into a `[]any` (the Tuple representation). Mirrors Java's
+// IndexKeyValueToPartialRecord.getForOrdinalPath exactly: a NULL value mid-
+// path propagates as nil (Java's `value == null → return null`), while an
+// out-of-bounds index or a non-tuple hop THROWS there
+// (List.get/Tuple.get/ClassCastException) — so here it is a loud error, never
+// a silent nil that would read as SQL NULL and drop rows.
+func walkOrdinalPath(t any, path []int) (any, error) {
 	for _, idx := range path {
+		if t == nil {
+			return nil, nil
+		}
 		s, ok := t.([]any)
 		if !ok {
-			return nil
+			return nil, fmt.Errorf("index entry ordinal path: hop %d addresses a non-tuple value %T", idx, t)
 		}
 		if idx < 0 || idx >= len(s) {
-			return nil
+			return nil, fmt.Errorf("index entry ordinal path: index %d out of bounds for tuple of length %d", idx, len(s))
 		}
 		t = s[idx]
 	}
-	return t
+	return t, nil
 }
 
 // GetCorrelatedTo returns the empty set — IndexEntryObjectValue

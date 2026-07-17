@@ -1,11 +1,15 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
 	"strings"
 
+	"google.golang.org/protobuf/proto"
+
+	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -13,8 +17,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
-
-var nonEndContinuation = recordlayer.NewBytesContinuation([]byte{0})
 
 // SortBufferExceededError is returned when an in-memory sort
 // materializes more rows than the configured limit. Prevents OOM
@@ -97,6 +99,28 @@ type aggregateCursor struct {
 	lastInnerContinuation recordlayer.RecordCursorContinuation
 	emittedFinal          bool
 	closed                bool
+
+	// lastNoNext replays a prior terminal result on a contract-violating
+	// re-call (Java AggregateCursor inherits the cached no-next result:
+	// `if (nextResult != null && !nextResult.hasNext()) return nextResult`).
+	// CRITICAL here: without it, a re-call after a mid-group out-of-band stop
+	// re-pulls the inner and consumes rows into an accumulator whose partial
+	// state was already serialized into the reported continuation — those rows
+	// are silently lost on resume.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
+
+	// previousContinuationInGroup is the inner continuation of the last row
+	// ACCEPTED into the current group — Java AggregateCursor's
+	// previousContinuationInGroup (AggregateCursor.java:116-146). Every
+	// non-group-break row advances it; a group-break / final-group emit carries
+	// it (with NO partial state) as the row's continuation, then the break row's
+	// continuation replaces it (single-element-group correctness — Java's
+	// movement-table comment block). Fresh cursors start at StartContinuation;
+	// executeAggregation initializes a RESUMED cursor to the decoded INNER
+	// position (never the whole aggregate continuation re-wrapped as its own
+	// inner, which is Java's latent nesting bug in fromRawBytes → toProto:
+	// re-emitting it would hand aggregate proto bytes to the LEAF plan).
+	previousContinuationInGroup recordlayer.RecordCursorContinuation
 }
 
 type groupState struct {
@@ -128,6 +152,10 @@ func newAggregateCursor(
 		needsRowCtx:       hasBindingContext(evalCtx),
 		joinLegSpans:      legSpans,
 		joinWindowsOK:     windowsOK,
+		// Java: this.previousContinuationInGroup = continuation (the constructor
+		// param, START on a fresh cursor). executeAggregation overwrites it with
+		// the decoded inner position on a resume.
+		previousContinuationInGroup: &recordlayer.StartContinuation{},
 	}
 }
 
@@ -213,6 +241,9 @@ func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 	if c.closed {
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	// If inner is exhausted, emit the final group (if any).
 	if c.innerExhausted {
@@ -249,9 +280,11 @@ func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 			if encErr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
 			}
-			return recordlayer.NewResultNoNext[QueryResult](
+			res := recordlayer.NewResultNoNext[QueryResult](
 				reason, recordlayer.NewBytesContinuation(contBytes),
-			), nil
+			)
+			c.lastNoNext = &res
+			return res, nil
 		}
 
 		row := result.GetValue()
@@ -273,16 +306,29 @@ func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 			c.current = c.newGroupState()
 
 			// Accumulate the new row into the new group, then emit the
-			// completed group.
+			// completed group with (previousContinuationInGroup, NO partial
+			// state) — Java AggregateCursor.java:131-136: the emitted row's
+			// resume point is the last row ACCEPTED into the completed group,
+			// so a resume re-reads the break row (this row) as the next
+			// group's first row, by design. AFTER capturing the emit
+			// continuation, advance previousContinuationInGroup to the BREAK
+			// row's continuation (Java :137-146's post-emit update) so a
+			// single-element group's emit carries its own (only) row.
 			if err := c.accumulateRow(row); err != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, err
 			}
-			return recordlayer.NewResultWithValue(completed, nonEndContinuation), nil
+			emitCont := &aggregateCursorContinuation{innerCont: c.previousContinuationInGroup}
+			c.previousContinuationInGroup = result.GetContinuation()
+			return recordlayer.NewResultWithValue(completed, emitCont), nil
 		}
 
 		if err := c.accumulateRow(row); err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
+		// A row accepted into the current group advances the group's resume
+		// point (Java AggregateCursor.java:116-130: previousValidResult /
+		// previousContinuationInGroup move on every non-group-break row).
+		c.previousContinuationInGroup = result.GetContinuation()
 	}
 }
 
@@ -295,20 +341,51 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 	c.emittedFinal = true
 
 	if c.current == nil {
-		// No rows at all.
-		if c.scalarMode {
-			// Scalar aggregation on empty input: COUNT(*)=0, SUM=nil, etc.
-			result := c.emptyScalarResult()
-			return recordlayer.NewResultWithValue(result, nonEndContinuation), nil
-		}
+		// No rows at all (and no restored partial state) — exhausted with no
+		// emit, in BOTH modes. Java AggregateCursor.isNoRecords() →
+		// RecordCursorResult.exhausted(): the streaming-aggregate cursor never
+		// fabricates a row on empty input. The scalar COUNT(*)-on-empty default
+		// row is executeAggregation's OrElse alternative (mirroring Java's
+		// DefaultOnEmpty(StreamingAggregation) plan structure), whose OrElse
+		// state machine makes the default row itself resumable — an inline emit
+		// here would be re-fabricated by any resume that lands past the last
+		// input row (a duplicate with no error).
 		return recordlayer.NewResultNoNext[QueryResult](
 			recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
 		), nil
 	}
 
+	// Emit the final group with (previousContinuationInGroup, NO partial
+	// state) — Java AggregateCursor.java:149-155 (the SOURCE_EXHAUSTED arm):
+	// a resume from this row's continuation re-opens the inner after the last
+	// accepted row, finds it exhausted with no rows and no state, and reports
+	// SourceExhausted (isNoRecords) — no duplicate final row.
 	completed := c.finalizeGroup()
-	return recordlayer.NewResultWithValue(completed, nonEndContinuation), nil
+	return recordlayer.NewResultWithValue(
+		completed, &aggregateCursorContinuation{innerCont: c.previousContinuationInGroup},
+	), nil
 }
+
+// aggregateCursorContinuation lazily encodes the AggregateCursorContinuation
+// proto at ToBytes() time, propagating a child encode failure through the
+// RecordCursorContinuation contract (the flatMapCursorContinuation pattern).
+// It is the continuation of an EMITTED aggregate row — Java
+// AggregateCursor.AggregateCursorContinuation's 2-arg (stateless) form: the
+// inner continuation of the last row ACCEPTED into the emitted group, NO
+// partial state. Resuming from it re-aggregates the next group from scratch,
+// deliberately re-reading that group's first (break) row — Java's movement
+// table. IsEnd() is false even when the wrapped inner encodes to empty bytes,
+// matching Java's isEnd() delegating to the inner continuation OBJECT, never
+// its byte form.
+type aggregateCursorContinuation struct {
+	innerCont recordlayer.RecordCursorContinuation
+}
+
+func (w *aggregateCursorContinuation) ToBytes() ([]byte, error) {
+	return encodeAggregateContinuation(w.innerCont, "", nil, nil, nil)
+}
+
+func (w *aggregateCursorContinuation) IsEnd() bool { return false }
 
 // aggregateEvalArg is the eval argument for a GROUP-BY key / aggregate operand.
 //
@@ -396,21 +473,27 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		}
 		keyParts[i] = v
 		// tuple.Pack handles nil, int64, float64, string, []byte, bool natively.
-		// For types the tuple layer doesn't list here (e.g. a UUID [16]byte),
-		// fall back to a deterministic %T:%v string so we still get a stable key.
+		// Any other slot type (UUID [16]byte, composite ARRAY/STRUCT values)
+		// encodes LOSSLESSLY via the continuation codec as one []byte tuple
+		// slot — the retired %T:%v rendering collided on composites
+		// ([]any{"a b"} vs []any{"a","b"}) and merged distinct groups
+		// (RFC-180 C3).
 		//
 		// The packed key rides through the aggregate continuation VERBATIM
 		// (encodeAggGroupKey stores it as raw bytes, not a JSON string) and is
 		// compared byte-for-byte on resume to detect a group change, so any
-		// deterministic packing is safe. The group's surfaced VALUE rides
-		// separately in keyVals (typed, lossless), so a UUID key still materializes
-		// as its [16]byte. A UUID could now pack natively since the raw bytes
-		// survive; the %T:%v form is retained only to keep the key bytes stable.
+		// deterministic packing is safe; both sides of a resume re-derive it
+		// with this same encoding. The group's surfaced VALUE rides separately
+		// in keyVals (typed, lossless).
 		switch tv := v.(type) {
 		case nil, int64, float64, string, []byte, bool:
 			t[i] = tv
 		default:
-			t[i] = fmt.Sprintf("%T:%v", v, v)
+			b, cerr := appendContValue(nil, v)
+			if cerr != nil {
+				return "", nil, fmt.Errorf("group key slot %d: %w", i, cerr)
+			}
+			t[i] = b
 		}
 	}
 	return string(t.Pack()), keyParts, nil
@@ -507,10 +590,14 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 // BEFORE any float64 arrives rounds long→float where Java's static DOUBLE lane
 // would round long→double. No-crash, no-drop corners only.
 //
-// For FLOAT/DOUBLE this MUST use Go's math.Min / math.Max, NOT a total-order
-// comparator. Go's math.Min/math.Max have special-cases identical to Java's
-// Math.min/Math.max: NaN PROPAGATES into BOTH extremes (min(x,NaN)=max(x,NaN)=NaN)
-// and -0.0 sorts below +0.0 (min(-0.0,+0.0)=-0.0, max(-0.0,+0.0)=+0.0). A total-order
+// For FLOAT/DOUBLE this MUST use Java Math.min/Math.max semantics, NOT a
+// total-order comparator: NaN PROPAGATES into BOTH extremes
+// (min(x,NaN)=max(x,NaN)=NaN) and -0.0 sorts below +0.0
+// (min(-0.0,+0.0)=-0.0, max(-0.0,+0.0)=+0.0). Go's math.Min/math.Max are NOT
+// identical to Java's on one corner: their special-case order resolves
+// Min(-Inf,NaN)=-Inf and Max(+Inf,NaN)=+Inf where Java propagates NaN — the
+// javaMinF64/javaMaxF64 wrappers below add the NaN-first guard (divergence
+// surfaced by the G4 exotic-float pin). A total-order
 // comparator (values.CompareFloat64, used by the sort/predicate path) makes NaN the
 // GREATEST element — correct for MAX but WRONG for MIN, which must yield NaN, not the
 // smallest finite. So float MIN/MAX is deliberately a DIFFERENT float semantic than
@@ -535,9 +622,9 @@ func aggMinMax(acc, val any, isMin bool) any {
 			return acc // non-numeric mix: contract guard (isNumeric-gated upstream)
 		}
 		if isMin {
-			return math.Min(a, v)
+			return javaMinF64(a, v)
 		}
-		return math.Max(a, v)
+		return javaMaxF64(a, v)
 	case aIsF32 || vIsF32:
 		// FLOAT lane (Java MIN_F/MAX_F over the float-promoted operand). An int
 		// side converts directly to float32 (Java's (float) promotion, one
@@ -549,9 +636,9 @@ func aggMinMax(acc, val any, isMin bool) any {
 			return acc // contract guard
 		}
 		if isMin {
-			return float32(math.Min(float64(a), float64(v)))
+			return float32(javaMinF64(float64(a), float64(v)))
 		}
-		return float32(math.Max(float64(a), float64(v)))
+		return float32(javaMaxF64(float64(a), float64(v)))
 	}
 	// Integer numerics (int64/int32/int). Row integers arrive int64 via the
 	// tupleElementToRowValue canonicalization; int32/int are accepted for
@@ -681,13 +768,18 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 	}
 }
 
-func (c *aggregateCursor) emptyScalarResult() QueryResult {
-	// Emit the authoritative ordinal row, SAME order + naming as
-	// finalizeGroup's aggregate arm (there are no grouping keys on the empty-scalar
-	// path — an empty GROUP BY yields zero rows, not this single all-groups row).
-	posNames := make([]string, 0, len(c.aggregates))
-	posSlots := make([]any, 0, len(c.aggregates))
-	for _, agg := range c.aggregates {
+// emptyScalarAggregateRow is the scalar-aggregation-on-empty-input default row
+// (COUNT(*)=0, SUM/MIN/MAX/AVG=NULL): the authoritative ordinal row, SAME order
+// + naming as finalizeGroup's aggregate arm (there are no grouping keys on the
+// empty-scalar path — an empty GROUP BY yields zero rows, not this single
+// all-groups row). It is executeAggregation's OrElse ALTERNATIVE (Java: the
+// DefaultOnEmpty plan's onEmptyResultValue riding RecordCursor.orElse), never
+// emitted by the aggregate cursor itself (Java AggregateCursor.isNoRecords
+// returns exhausted on empty input).
+func emptyScalarAggregateRow(aggregates []expressions.AggregateSpec) QueryResult {
+	posNames := make([]string, 0, len(aggregates))
+	posSlots := make([]any, 0, len(aggregates))
+	for _, agg := range aggregates {
 		name := aggResultName(agg)
 		var val any
 		if agg.Function == expressions.AggCount {
@@ -735,6 +827,20 @@ type customSortCursor struct {
 	closed  bool
 	maxBuf  int                       // 0 = use DefaultMaxSortBufferRows
 	st      *recordlayer.ExecuteState // RFC-130 statement memory budget
+	// lastNoNext replays a fill-phase out-of-band stop on a contract-violating
+	// re-call (Java's cached no-next result). Without it a re-call re-enters
+	// the fill loop and pulls MORE inner rows into a buffer whose contents were
+	// already serialized into the reported continuation — skewing the resume.
+	// The emit phase needs no cache: loaded=true makes its exhaustion terminal
+	// idempotent without touching the inner.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
+	// chargedBytes is what THIS cursor has charged against st, released on
+	// Close. The statement budget bounds LIVE buffered bytes: the buffer
+	// round-trips through the page continuation and is re-charged at resume
+	// injection (chargeResumedBuffer), so without the teardown release a
+	// statement-wide ExecuteState would re-accumulate the same buffer once
+	// per page and fail a compliant query for crossing page boundaries.
+	chargedBytes int64
 }
 
 // DefaultMaxSortBufferRows is the maximum number of rows the in-memory
@@ -758,6 +864,9 @@ func newCustomSortCursor(
 func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if c.closed {
 		return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf("cursor is closed")
+	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
 	}
 	if c.loaded {
 		return c.emitNext()
@@ -784,22 +893,26 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 				return c.emitNext()
 			}
 			contBytes, encErr := encodeSortContinuation(
-				result.GetContinuation(), c.buf,
+				result.GetContinuation(), c.buf, false,
 			)
 			if encErr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
 			}
-			return recordlayer.NewResultNoNext[QueryResult](
+			res := recordlayer.NewResultNoNext[QueryResult](
 				reason, recordlayer.NewBytesContinuation(contBytes),
-			), nil
+			)
+			c.lastNoNext = &res
+			return res, nil
 		}
 		v := result.GetValue()
 		// RFC-130: charge each row's bytes against the statement memory budget
 		// before keeping it in the sort buffer.
 		if c.st.HasMemLimit() {
-			if err := c.st.ChargeMemory(estimateQueryResultBytes(v)); err != nil {
+			n := estimateQueryResultBytes(v)
+			if err := c.st.ChargeMemory(n); err != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, err
 			}
+			c.chargedBytes += n
 		}
 		c.buf = append(c.buf, v)
 		if len(c.buf) >= limit {
@@ -819,10 +932,56 @@ func (c *customSortCursor) emitNext() (recordlayer.RecordCursorResult[QueryResul
 	}
 	row := c.buf[c.emitIdx]
 	c.emitIdx++
-	return recordlayer.NewResultWithValue(row, nonEndContinuation), nil
+	// The emitted row's continuation is the REMAINING sorted buffer plus the
+	// inner-EXHAUSTED marker (emit only starts once the inner is exhausted):
+	// a resume restores the remainder and goes straight to emit
+	// (executeInMemorySort sets loaded=true), never re-running the inner.
+	// buf is append-only during fill and immutable during emit, so the
+	// sub-slice stays valid for the lazy encode.
+	return recordlayer.NewResultWithValue(row, &sortEmitContinuation{remaining: c.buf[c.emitIdx:]}), nil
+}
+
+// sortEmitContinuation lazily encodes the sort EMIT-PHASE continuation at
+// ToBytes() time (the flatMapCursorContinuation pattern — an encode failure
+// propagates instead of being swallowed): (inner-EXHAUSTED marker, remaining
+// sorted rows) via the F53 typed sort codec. Go extension — Java's Cascades
+// has no physical sort; Java's own MemorySortCursor instead re-scans the input
+// filtered by minimum_key into a key-deduped map, which a slice buffer cannot
+// mirror without duplicating rows.
+type sortEmitContinuation struct {
+	remaining []QueryResult
+}
+
+func (w *sortEmitContinuation) ToBytes() ([]byte, error) {
+	return encodeSortContinuation(nil, w.remaining, true)
+}
+
+func (w *sortEmitContinuation) IsEnd() bool { return false }
+
+// chargeResumedBuffer charges rows restored from a sort continuation against
+// the statement memory budget (RFC-180 H4): a resumed buffer is memory like
+// any other, and for a FRESH ExecuteState this is its only accounting. For the
+// statement-wide state shared across pages the matching release happens in
+// Close — see chargedBytes.
+func (c *customSortCursor) chargeResumedBuffer(rows []QueryResult) error {
+	if !c.st.HasMemLimit() {
+		return nil
+	}
+	for _, r := range rows {
+		n := estimateQueryResultBytes(r)
+		if err := c.st.ChargeMemory(n); err != nil {
+			return err
+		}
+		c.chargedBytes += n
+	}
+	return nil
 }
 
 func (c *customSortCursor) Close() error {
+	if !c.closed && c.chargedBytes > 0 {
+		c.st.ReleaseMemory(c.chargedBytes)
+		c.chargedBytes = 0
+	}
 	c.closed = true
 	return c.inner.Close()
 }
@@ -858,6 +1017,28 @@ type nljCursor struct {
 	outerMatched   bool
 	outerExhausted bool
 	closed         bool
+	// chargedBytes: what this cursor holds against the statement budget
+	// (materialized inner rows + hash index), released once on Close —
+	// the inner side is rebuilt and re-charged each page (live-bytes model).
+	chargedBytes int64
+
+	// Continuation state (the FlatMapPipelinedCursor pattern flatMapCursor
+	// also ports): priorOuterCont is the outer position that re-produces
+	// the CURRENT outer row on resume, lastOuterCont the advanced position
+	// that produces the next one. The resume* fields hold a decoded page
+	// continuation, applied when the first outer row arrives.
+	priorOuterCont recordlayer.RecordCursorContinuation
+	lastOuterCont  recordlayer.RecordCursorContinuation
+	// lastNoNext replays a prior out-of-band stop on a contract-violating
+	// re-call (Java FlatMapPipelinedCursor:123-125 caches every no-next
+	// result) — without it a re-call re-pulls the outer and skews the
+	// reason/continuation pair.
+	lastNoNext         *recordlayer.RecordCursorResult[QueryResult]
+	resumePending      bool
+	resumeInnerIdx     int
+	resumeOuterMatched bool
+	resumeCheck        []byte
+	resumeInnerPK      []byte
 
 	// FULL OUTER JOIN drain state. matchedInner[i] is set when
 	// innerRows[i] passes the join predicates against any outer row;
@@ -1021,6 +1202,7 @@ func (c *nljCursor) tryBuildHashIndex(innerAlias string) {
 			c.hashIndex = nil
 			return
 		}
+		c.chargedBytes += charge
 		idx[val] = append(idx[val], i)
 	}
 	c.hashIndex = idx
@@ -1102,13 +1284,16 @@ func evalLegHashKey(val values.Value, corr values.CorrelationIdentifier, leg val
 // false negative silently drops matching rows); extra bucket collisions are
 // harmless — the per-pair re-check filters them.
 //
-//   - Every numeric promotes to float64, mirroring cmpAny's
-//     promoteInt/promoteFloat widening: integral pairs equal as int64 are
-//     equal as float64, and any-float pairs compare as float64 already.
-//     Distinct wide int64s that collide at float64 precision are false
-//     POSITIVES only. Without this, int64(5) missed the float64(5) bucket
-//     (BIGINT=DOUBLE dropped every match ≥100 inner rows) and a
-//     covering-index float32 leg missed a stored-record float64 bucket.
+//   - Every numeric promotes to float64. cmpAny compares pure-integer
+//     pairs EXACTLY (values.CompareExactInts, across the signed/unsigned
+//     halves) and mixed integer/float pairs as float64 — and float64(x)
+//     depends only on the numeric VALUE, so any pair cmpAny calls EQUAL
+//     lands in the same bucket. Distinct wide integers (int64 or uint64)
+//     that collide at float64 precision are false POSITIVES only, filtered
+//     by the exact per-pair re-check. Without this, int64(5) missed the
+//     float64(5) bucket (BIGINT=DOUBLE dropped every match ≥100 inner
+//     rows) and a covering-index float32 leg missed a stored-record
+//     float64 bucket.
 //   - NaN declines: cmpAny's <,>-based equality makes NaN compare EQUAL to
 //     every float, while a NaN map key matches nothing — no bucket can
 //     represent it.
@@ -1220,6 +1405,9 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 		c.buildErr = nil
 		return recordlayer.RecordCursorResult[QueryResult]{}, err
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -1258,7 +1446,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 							}
 							qr.Positional = pos
 						}
-						return recordlayer.NewResultWithValue(qr, nonEndContinuation), nil
+						// FULL OUTER never resumes (the drain bitmap has no
+						// serialized form; limits are cleared so the whole
+						// join runs in one page) — the marker continuation
+						// rejects loudly on decode.
+						return recordlayer.NewResultWithValue(qr, &nljContinuation{fullOuter: true}), nil
 					}
 				}
 				return recordlayer.NewResultNoNext[QueryResult](
@@ -1277,11 +1469,31 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					c.outerExhausted = true
 					continue
 				}
-				return recordlayer.NewResultNoNext[QueryResult](
-					reason, result.GetContinuation(),
-				), nil
+				// Out-of-band outer stop between rows: wrap the outer's
+				// position in the NLJ envelope so every NLJ continuation
+				// decodes uniformly (a raw pass-through would be ambiguous
+				// against the mid-inner format on resume).
+				w := &nljContinuation{outerCont: result.GetContinuation()}
+				if c.joinType == plans.JoinFullOuter {
+					w = &nljContinuation{fullOuter: true}
+				} else if c.resumePending {
+					// The outer stopped BEFORE re-yielding the resumed row:
+					// the armed mid-inner state must ride the new
+					// continuation or the next resume replays that outer
+					// row from inner index 0 (duplicate pairs).
+					w.hasInner = true
+					w.innerIdx = c.resumeInnerIdx
+					w.outerMatched = c.resumeOuterMatched
+					w.checkValue = c.resumeCheck
+					w.innerPK = c.resumeInnerPK
+				}
+				res := recordlayer.NewResultNoNext[QueryResult](reason, w)
+				c.lastNoNext = &res
+				return res, nil
 			}
 			outerRow := result.GetValue()
+			c.priorOuterCont = c.lastOuterCont
+			c.lastOuterCont = result.GetContinuation()
 			c.currentOuter = &outerRow
 			c.innerIdx = 0
 			c.innerMatches = nil
@@ -1311,6 +1523,34 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					// any real failure (or match, e.g. string-typed inner
 					// keys against a time.Time probe via ParseTimestamp).
 					c.innerMatches = c.allInnerIndices()
+				}
+			}
+			// A decoded page continuation resumes THIS outer row mid-inner:
+			// verify the row is the one the continuation was taken over
+			// (Java's check value), then restore the inner position and the
+			// matched flag. innerMatches was recomputed above
+			// deterministically (same innerRows order, same probe), so the
+			// restored index addresses the same candidate list. The saved
+			// inner PK then verifies the ordinal or repositions it
+			// (repositionInner) — key-positional like Java's inner-cursor
+			// continuation; only a deleted saved row degrades to the
+			// documented ordinal residue.
+			if c.resumePending {
+				if len(c.resumeCheck) > 0 && outerRow.PrimaryKey != nil &&
+					!bytes.Equal(outerRow.PrimaryKey.Pack(), c.resumeCheck) {
+					// Not the saved outer row (data changed between
+					// transactions — e.g. a row inserted before it): run
+					// THIS row's inner from its fresh-reset start and keep
+					// the state ARMED for the saved row when it re-appears.
+					// Java nulls initialInnerContinuation ONLY in the match
+					// branch (FlatMapPipelinedCursor:216-219); discarding on
+					// the first mismatch would re-emit the saved row's
+					// already-delivered pairs when it arrives later
+					// (duplicate rows). Never an error either way.
+				} else {
+					c.resumePending = false
+					c.innerIdx = c.repositionInner(c.resumeInnerIdx, c.resumeInnerPK)
+					c.outerMatched = c.resumeOuterMatched
 				}
 			}
 		}
@@ -1357,7 +1597,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						}
 						combined.Positional = pos
 					}
-					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
+					return recordlayer.NewResultWithValue(combined, c.midInnerContinuation()), nil
 				}
 				if c.currentOuter == nil {
 					break
@@ -1403,7 +1643,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						}
 						combined.Positional = pos
 					}
-					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
+					return recordlayer.NewResultWithValue(combined, c.midInnerContinuation()), nil
 				}
 				if c.currentOuter == nil {
 					break
@@ -1436,13 +1676,278 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					}
 					qr.Positional = pos
 				}
-				return recordlayer.NewResultWithValue(qr, nonEndContinuation), nil
+				if c.joinType == plans.JoinFullOuter {
+					// See midInnerContinuation: no FULL continuation resumes.
+					return recordlayer.NewResultWithValue(qr, &nljContinuation{fullOuter: true}), nil
+				}
+				// Last emission for this outer row: resume advances to the
+				// next outer (no inner state, no check value — Java writes
+				// only the advanced outer position in this branch).
+				return recordlayer.NewResultWithValue(qr, &nljContinuation{outerCont: c.lastOuterCont}), nil
 			}
 		}
 	}
 }
 
+// midInnerContinuation snapshots the page continuation for a pair emission:
+// the PRIOR outer position (re-produces the current outer row on resume), the
+// current outer's PK as the check value, and the already-advanced inner
+// position with the matched flag. Fields are copied at emit time — later
+// cursor advances do not mutate an issued continuation.
+func (c *nljCursor) midInnerContinuation() recordlayer.RecordCursorContinuation {
+	// FULL OUTER accumulates the cross-outer matchedInner bitmap, which has
+	// no serialized form — a resumed page would rebuild it zeroed and the
+	// drain phase would re-pad already-matched inner rows (wrong rows). A
+	// mid-stream FULL continuation (e.g. under LIMIT) therefore declines on
+	// resume, like the drain-phase marker.
+	if c.joinType == plans.JoinFullOuter {
+		return &nljContinuation{fullOuter: true}
+	}
+	w := &nljContinuation{
+		outerCont:    c.priorOuterCont,
+		hasInner:     true,
+		innerIdx:     c.innerIdx,
+		outerMatched: c.outerMatched,
+	}
+	if c.currentOuter != nil && c.currentOuter.PrimaryKey != nil {
+		w.checkValue = c.currentOuter.PrimaryKey.Pack()
+	}
+	// The just-emitted inner row (innerIdx already advanced past it): its PK
+	// keys the resume position against inner-side drift.
+	if idx, ok := c.lastEmittedInnerIndex(); ok && c.innerRows[idx].PrimaryKey != nil {
+		w.innerPK = c.innerRows[idx].PrimaryKey.Pack()
+	}
+	return w
+}
+
+// nljContinuation lazily encodes the nested-loop-join page continuation at
+// ToBytes() time using the FlatMapContinuation message — the NLJ is a flat
+// map over (outer row → matching inner rows), so it reuses the same
+// prior-outer / check-value / inner-position mechanics flatMapCursor ports
+// from Java's FlatMapPipelinedCursor. The inner position is a tuple-packed
+// (innerIdx, outerMatched, fullDrain) triple: the inner side re-materializes
+// deterministically on resume, so an index is the complete inner state. A
+// between-outer stop carries only the advanced outer position. Replaces the
+// retired fake one-byte marker, whose bytes reached the outer child raw on
+// resume and could be swallowed by a key-value cursor's raw-suffix fallback —
+// a silently wrong scan position.
+type nljContinuation struct {
+	outerCont    recordlayer.RecordCursorContinuation // prior (mid-inner) or advanced (between-outer); nil = scan start
+	checkValue   []byte                               // current outer PK (mid-inner only)
+	hasInner     bool
+	innerIdx     int
+	outerMatched bool
+	fullOuter    bool // FULL OUTER marker — every FULL emission; rejects loudly on decode
+	// innerPK: the last-emitted inner row's packed primary key. The ordinal
+	// inner position is a SNAPSHOT index; the PK makes the resume
+	// key-positional like Java's inner-cursor continuation — a re-collected
+	// inner that shifted (row inserted/removed before the position) is
+	// repositioned by PK search, with the ordinal as the last-resort
+	// fallback. Empty for computed inner rows without a PK.
+	innerPK []byte
+}
+
+func (w *nljContinuation) IsEnd() bool { return false }
+
+// The inner payload's third tuple slot is a KIND enum: 0 = normal mid-inner
+// state, 1 = FULL OUTER (declines on resume), 2 = the outer child provided NO
+// resume position (declines on resume — without this marker an advanced-outer
+// envelope over a continuation-less outer, e.g. a FirstOrDefault single-result
+// cursor, would marshal to ZERO bytes, which every consumer misreads: the
+// relational driver as exhaustion, a fresh executor call as a full restart).
+const (
+	nljKindMidInner    = 0
+	nljKindFullOuter   = 1
+	nljKindUnresumable = 2
+)
+
+func (w *nljContinuation) ToBytes() ([]byte, error) {
+	fmc := &gen.FlatMapContinuation{CheckValue: w.checkValue}
+	if w.outerCont != nil && !w.outerCont.IsEnd() {
+		b, err := w.outerCont.ToBytes()
+		if err != nil {
+			return nil, fmt.Errorf("nested loop join continuation outer: %w", err)
+		}
+		fmc.OuterContinuation = b
+	}
+	switch {
+	case w.fullOuter:
+		fmc.InnerContinuation = tuple.Tuple{int64(0), int64(0), int64(nljKindFullOuter)}.Pack()
+	case w.hasInner:
+		matched := int64(0)
+		if w.outerMatched {
+			matched = 1
+		}
+		fmc.InnerContinuation = tuple.Tuple{int64(w.innerIdx), matched, int64(nljKindMidInner), w.innerPK}.Pack()
+	case len(fmc.OuterContinuation) == 0 && len(fmc.CheckValue) == 0:
+		// Advanced-outer envelope with nothing to restore: never emit an
+		// empty token — mark the position unresumable so a resume declines
+		// loudly instead of silently restarting or ending the statement.
+		fmc.InnerContinuation = tuple.Tuple{int64(0), int64(0), int64(nljKindUnresumable)}.Pack()
+	}
+	return proto.Marshal(fmc)
+}
+
+// lastEmittedInnerIndex returns the innerRows index of the row the cursor
+// just emitted: hash path — innerMatches[innerIdx-1]; linear — innerIdx-1.
+func (c *nljCursor) lastEmittedInnerIndex() (int, bool) {
+	if c.innerIdx <= 0 {
+		return 0, false
+	}
+	if c.hashIndex != nil {
+		if c.innerIdx-1 < len(c.innerMatches) {
+			return c.innerMatches[c.innerIdx-1], true
+		}
+		return 0, false
+	}
+	if c.innerIdx-1 < len(c.innerRows) {
+		return c.innerIdx - 1, true
+	}
+	return 0, false
+}
+
+// repositionInner turns the saved inner position into an index over the
+// re-collected inner. Fast path: the ordinal still points just past the saved
+// PK — indices are stable. Otherwise the inner shifted between transactions;
+// search for the PK (over the recomputed match list on the hash path) and
+// resume AFTER it, exactly what Java's key-positional inner-cursor
+// continuation yields. A vanished PK (row deleted) keeps the ordinal — the
+// documented best-effort residue, no worse than the pure-ordinal model.
+func (c *nljCursor) repositionInner(savedIdx int, savedPK []byte) int {
+	if len(savedPK) == 0 || savedIdx <= 0 {
+		return savedIdx
+	}
+	rowPK := func(pos int) []byte {
+		var idx int
+		if c.hashIndex != nil {
+			if pos >= len(c.innerMatches) {
+				return nil
+			}
+			idx = c.innerMatches[pos]
+		} else {
+			if pos >= len(c.innerRows) {
+				return nil
+			}
+			idx = pos
+		}
+		if c.innerRows[idx].PrimaryKey == nil {
+			return nil
+		}
+		return c.innerRows[idx].PrimaryKey.Pack()
+	}
+	if pk := rowPK(savedIdx - 1); pk != nil && bytes.Equal(pk, savedPK) {
+		return savedIdx
+	}
+	limit := len(c.innerRows)
+	if c.hashIndex != nil {
+		limit = len(c.innerMatches)
+	}
+	for pos := 0; pos < limit; pos++ {
+		if pk := rowPK(pos); pk != nil && bytes.Equal(pk, savedPK) {
+			return pos + 1
+		}
+	}
+	return savedIdx
+}
+
+// nljResumeState is the decoded mid-inner half of an NLJ page continuation.
+type nljResumeState struct {
+	innerIdx     int
+	outerMatched bool
+	check        []byte
+	innerPK      []byte
+}
+
+// decodeNLJContinuation parses NLJ page-continuation bytes (the
+// nljContinuation encoding). Empty input means a fresh scan. Anything that is
+// not this binary's format — including the retired one-byte fake marker —
+// declines loudly: forwarding unrecognized bytes to the outer child risks a
+// key-value cursor's raw-suffix fallback silently accepting them as a scan
+// position (wrong rows). The FULL OUTER drain marker also declines (that
+// phase's bitmap has no serialized form and never legitimately paginates).
+func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resume *nljResumeState, err error) {
+	if len(continuation) == 0 {
+		return nil, nil, nil
+	}
+	fmc := &gen.FlatMapContinuation{}
+	if uerr := proto.Unmarshal(continuation, fmc); uerr != nil {
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (unrecognized continuation bytes)"}
+	}
+	if len(fmc.GetOuterContinuation()) == 0 && len(fmc.GetInnerContinuation()) == 0 && len(fmc.GetCheckValue()) == 0 {
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (empty continuation payload)"}
+	}
+	if len(fmc.GetInnerContinuation()) == 0 {
+		if len(fmc.GetOuterContinuation()) == 0 {
+			// A check-value-only token is unreachable from this encoder
+			// (the check rides only with mid-inner state); reject rather
+			// than misread it as a fresh scan.
+			return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (check value without positions)"}
+		}
+		return fmc.GetOuterContinuation(), nil, nil
+	}
+	tup, terr := tuple.Unpack(fmc.GetInnerContinuation())
+	if terr != nil || len(tup) < 3 || len(tup) > 4 {
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
+	}
+	idx, iok := tup[0].(int64)
+	matched, mok := tup[1].(int64)
+	kind, kok := tup[2].(int64)
+	if !iok || !mok || !kok || idx < 0 {
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
+	}
+	var innerPK []byte
+	if len(tup) == 4 && tup[3] != nil {
+		pk, pkOK := tup[3].([]byte)
+		if !pkOK {
+			return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
+		}
+		innerPK = pk
+	}
+	switch kind {
+	case nljKindMidInner:
+	case nljKindFullOuter:
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join FULL OUTER (does not resume)"}
+	case nljKindUnresumable:
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (outer child provides no resume position)"}
+	default:
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
+	}
+	return fmc.GetOuterContinuation(), &nljResumeState{
+		innerIdx:     int(idx),
+		outerMatched: matched != 0,
+		check:        fmc.GetCheckValue(),
+		innerPK:      innerPK,
+	}, nil
+}
+
+// armResume wires a decoded page continuation into the cursor: the mid-inner
+// state (nil = fresh scan or between-outer resume) and the saved outer
+// position. Seeding lastOuterCont matters even without mid-inner state: the
+// first outer advance copies it into priorOuterCont — the position AT the
+// resumed row — which every mid-inner continuation taken on this page pairs
+// with its check value. Without the seed, a token taken from a RESUMED page
+// encodes an EMPTY outer position (restart from scratch) and the next resume
+// silently replays the outer prefix (duplicate rows). The flatMap resume
+// seeds identically.
+func (c *nljCursor) armResume(outerContinuation []byte, rs *nljResumeState) {
+	if len(outerContinuation) > 0 {
+		c.lastOuterCont = recordlayer.NewBytesContinuation(outerContinuation)
+	}
+	if rs == nil {
+		return
+	}
+	c.resumePending = true
+	c.resumeInnerIdx = rs.innerIdx
+	c.resumeOuterMatched = rs.outerMatched
+	c.resumeCheck = rs.check
+	c.resumeInnerPK = rs.innerPK
+}
+
 func (c *nljCursor) Close() error {
+	if !c.closed && c.chargedBytes > 0 {
+		c.st.ReleaseMemory(c.chargedBytes)
+		c.chargedBytes = 0
+	}
 	c.closed = true
 	return c.outerInner.Close()
 }
@@ -1454,3 +1959,22 @@ var (
 	_ recordlayer.RecordCursor[QueryResult] = (*nljCursor)(nil)
 	_ recordlayer.RecordCursor[QueryResult] = (*customSortCursor)(nil)
 )
+
+// javaMinF64 / javaMaxF64 mirror Java Math.min/Math.max exactly: if either
+// operand is NaN the result is NaN, unconditionally. Go's math.Min/math.Max
+// check the infinity special cases FIRST, so Min(-Inf, NaN) = -Inf and
+// Max(+Inf, NaN) = +Inf — an evaluated-aggregate divergence from Java
+// whenever a set contains both an infinity and a NaN.
+func javaMinF64(a, b float64) float64 {
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return math.NaN()
+	}
+	return math.Min(a, b)
+}
+
+func javaMaxF64(a, b float64) float64 {
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return math.NaN()
+	}
+	return math.Max(a, b)
+}

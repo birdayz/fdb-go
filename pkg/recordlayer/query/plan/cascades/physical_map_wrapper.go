@@ -78,6 +78,12 @@ func (w *physicalMapWrapper) HintCost(child []properties.Cost, _ properties.Stat
 	return mapCost(child[0])
 }
 
+// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// orderingDelegator in winner_lookup.go).
+func (w *physicalMapWrapper) orderingSourceRef() *expressions.Reference {
+	return w.innerQuant.GetRangesOver()
+}
+
 func (w *physicalMapWrapper) HintOrdering() properties.Ordering {
 	ref := w.innerQuant.GetRangesOver()
 	if ref == nil {

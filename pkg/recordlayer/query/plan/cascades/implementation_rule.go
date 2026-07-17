@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // ImplementationRule is a rule that runs during PhasePlanning.
@@ -26,10 +27,21 @@ type ImplementationRuleCall struct {
 	Reference            *expressions.Reference
 	Context              PlanContext
 	Constraints          *ConstraintMap
+	Stats                properties.StatisticsProvider
 	memo                 *Memo
 	yielded              []expressions.RelationalExpression
 	constraintOnly       bool
 	constraintPushedRefs []*expressions.Reference
+}
+
+// CostModel returns the comparator a rule should use for internal best-plan
+// selection: stats-aware when the planner threaded statistics, else the
+// default-stats comparator. Mirrors ExpressionRuleCall.CostModel.
+func (c *ImplementationRuleCall) CostModel() func(a, b expressions.RelationalExpression) bool {
+	if c.Stats != nil {
+		return NewPlanningCostModelLessWithContext(c.Stats, c.Context)
+	}
+	return PlanningCostModelLess
 }
 
 // Yield records a final expression to be inserted into the
@@ -65,12 +77,25 @@ func (c *ImplementationRuleCall) IsConstraintOnly() bool {
 	return c.constraintOnly
 }
 
-// PushConstraint pushes a constraint value to a child Reference.
+// PushConstraint pushes requested orderings to a child Reference,
+// COMBINING with anything already pushed there (Java
+// ConstraintsMap.pushProperty → PlannerConstraint.combine — a
+// subsumption union). A blind replace let the LAST parent pushing onto a
+// shared child clobber every other parent's requirement, and the
+// requested-ordering winner retention in OptimizeGroupTask would then
+// prune the clobbered parents' ordered alternatives.
 func (c *ImplementationRuleCall) PushConstraint(
 	childRef *expressions.Reference,
 	orderings []*RequestedOrdering,
 ) {
-	Set(c.Constraints, childRef, RequestedOrderingConstraintKey, orderings)
+	if existing, ok := Get(c.Constraints, childRef, RequestedOrderingConstraintKey); ok {
+		combined, changed := CombineRequestedOrderings(existing, orderings)
+		if changed {
+			Set(c.Constraints, childRef, RequestedOrderingConstraintKey, combined)
+		}
+	} else {
+		Set(c.Constraints, childRef, RequestedOrderingConstraintKey, orderings)
+	}
 	c.constraintPushedRefs = append(c.constraintPushedRefs, childRef)
 }
 

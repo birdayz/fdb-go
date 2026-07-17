@@ -124,7 +124,7 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		// exactly as evalHavingTri's resolver expects.
 		if agg, ok := a.FunctionCall().(*antlrgen.AggregateFunctionCallContext); ok {
 			if awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext); awfok {
-				if _, _, _, outName, _, ok := extractAwfFields(awf); ok {
+				if _, _, _, outName, _, _, _, _, ok := extractAwfFields(awf); ok {
 					if v, present := row[outName]; present {
 						return v, nil
 					}

@@ -2560,12 +2560,15 @@ func deriveColumnsFromMultiIntersection(mi *plans.RecordQueryMultiIntersectionOn
 	cols := make([]executor.ColumnDef, 0, len(rc.Fields))
 	for _, f := range rc.Fields {
 		name := strings.ToUpper(f.Name)
-		// Aggregate columns are flowed under "FUNC(col)" / "FUNC(*)"; a
-		// grouping column is a plain field name. Resolve grouping columns
-		// against the record type, default aggregates to BIGINT.
+		// A grouping slot flows a plain column read (FieldValue); every
+		// other slot is an aggregate output. Classify by the RESOLVED
+		// Value, never by "(" in the rendered name (RFC-180 F-2): a
+		// delimited column literally named "SUM(X)" would misclassify.
+		// Grouping columns resolve their type against the record type;
+		// aggregates default to BIGINT.
 		typeName := "BIGINT"
-		if !strings.Contains(name, "(") && desc != nil {
-			if t := protoFieldTypeName(desc, name); t != "UNKNOWN" {
+		if fv, isCol := f.Value.(*values.FieldValue); isCol && desc != nil {
+			if t := protoFieldTypeName(desc, strings.ToUpper(fv.Field)); t != "UNKNOWN" {
 				typeName = t
 			}
 		}
@@ -2576,6 +2579,97 @@ func deriveColumnsFromMultiIntersection(mi *plans.RecordQueryMultiIntersectionOn
 		})
 	}
 	return cols
+}
+
+// legPlanFor resolves a QOV correlation alias to the JOIN LEG PLAN it
+// addresses, walking nested NLJ/FlatMap shapes through order-preserving
+// wrappers. Returns the leg's subplan and whether that leg is
+// null-supplying (its subtree carries a DefaultOnEmpty — the LEFT-JOIN
+// null-extension; coarse in the safe direction, like the descriptor-level
+// nullBorn detection). found=false when the alias doesn't name a leg of
+// this plan — callers fall back to the name-keyed lookups.
+func legPlanFor(p plans.RecordQueryPlan, alias string) (leg plans.RecordQueryPlan, nullSupplying bool, found bool) {
+	// UNIQUE-match-or-decline: the plan-level walk is not query-scope-aware
+	// — a FOLDED query block (a projected-EXISTS CTE lowered to a FlatMap)
+	// has no RecordQueryProjectionPlan for the opaque-boundary guard to
+	// stop at, so an interior block reusing a top-block alias would
+	// shadow-match and attach the WRONG branch's null extension. Every
+	// candidate is therefore collected; only an unambiguous single match is
+	// used, and a duplicated alias declines to the name-keyed fallbacks
+	// (which degrade toward nullable — the safe direction — never toward a
+	// foreign branch's metadata). Exact scoping needs resolver-carried leg
+	// provenance (the RFC-142 model), not plan-side alias search.
+	matches := collectLegMatches(p, alias, false, nil)
+	if len(matches) != 1 {
+		return nil, false, false
+	}
+	return matches[0].leg, matches[0].nullSupplying, true
+}
+
+type legMatch struct {
+	leg           plans.RecordQueryPlan
+	nullSupplying bool
+}
+
+func collectLegMatches(p plans.RecordQueryPlan, alias string, acc bool, out []legMatch) []legMatch {
+	for p != nil {
+		switch n := p.(type) {
+		case *plans.RecordQueryNestedLoopJoinPlan:
+			jt := n.GetJoinType()
+			outerNS := acc || jt == plans.JoinFullOuter
+			innerNS := acc || jt == plans.JoinLeftOuter || jt == plans.JoinFullOuter
+			// A matched leg's SUBTREE is still searched: shallow-wins scope
+			// shadowing would be sound only if plan nesting faithfully
+			// mirrored SQL scoping, and FOLDED query blocks are exactly
+			// where that mirror breaks — an interior duplicate therefore
+			// counts as a second match and the caller declines to the name
+			// fallbacks rather than trusting either binding.
+			if strings.EqualFold(n.GetOuterAlias(), alias) {
+				out = append(out, legMatch{n.GetOuter(), outerNS || legHasDefaultOnEmpty(n.GetOuter())})
+			}
+			out = collectLegMatches(n.GetOuter(), alias, outerNS, out)
+			if strings.EqualFold(n.GetInnerAlias(), alias) {
+				out = append(out, legMatch{n.GetInner(), innerNS || legHasDefaultOnEmpty(n.GetInner())})
+			}
+			out = collectLegMatches(n.GetInner(), alias, innerNS, out)
+			return out
+		case *plans.RecordQueryFlatMapPlan:
+			if strings.EqualFold(n.GetOuterAlias().Name(), alias) {
+				out = append(out, legMatch{n.GetOuter(), acc || legHasDefaultOnEmpty(n.GetOuter())})
+			}
+			out = collectLegMatches(n.GetOuter(), alias, acc, out)
+			if strings.EqualFold(n.GetInnerAlias().Name(), alias) {
+				out = append(out, legMatch{n.GetInner(), acc || legHasDefaultOnEmpty(n.GetInner())})
+			}
+			out = collectLegMatches(n.GetInner(), alias, acc, out)
+			return out
+		case *plans.RecordQueryDefaultOnEmptyPlan:
+			acc = true
+			p = n.GetInner()
+		case *plans.RecordQueryProjectionPlan:
+			// Query-block boundary — aliases below belong to another scope.
+			return out
+		default:
+			ip, ok := p.(innerPlan)
+			if !ok {
+				return out
+			}
+			p = ip.GetInner()
+		}
+	}
+	return out
+}
+
+func legHasDefaultOnEmpty(p plans.RecordQueryPlan) bool {
+	has := false
+	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
+		if _, ok := n.(*plans.RecordQueryDefaultOnEmptyPlan); ok {
+			has = true
+			return false
+		}
+		return true
+	})
+	return has
 }
 
 func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
@@ -2616,7 +2710,20 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 	// folded FlatMap's own column derivation (foldedColumnDef). The inner columns
 	// are derived lazily — only when a column's type is genuinely unresolved — so
 	// the ordinary projection path pays nothing.
+	var innerCols []executor.ColumnDef
+	var innerDerived bool
 	var innerByName map[string]executor.ColumnDef
+	deriveInner := func() {
+		if innerDerived {
+			return
+		}
+		innerDerived = true
+		innerCols = deriveColumnsFromPlan(proj.GetInner(), md)
+		innerByName = make(map[string]executor.ColumnDef, len(innerCols))
+		for _, ic := range innerCols {
+			innerByName[strings.ToUpper(ic.Name)] = ic
+		}
+	}
 	cols := make([]executor.ColumnDef, len(projections))
 	for i, v := range projections {
 		alias := ""
@@ -2650,17 +2757,127 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		}
 		if cd.TypeName == "" || cd.TypeName == "UNKNOWN" {
 			// Inherit from the inner column the projection reads (matched by the
-			// projected FieldValue's field = the inner output key).
-			if fv, ok := v.(*values.FieldValue); ok && fv.Child == nil {
-				if innerByName == nil {
-					innerByName = make(map[string]executor.ColumnDef)
-					for _, ic := range deriveColumnsFromPlan(proj.GetInner(), md) {
-						innerByName[strings.ToUpper(ic.Name)] = ic
+			// projected FieldValue's field = the inner output key). BOTH read
+			// emissions inherit: the FLAT (childless) form AND the resolver's
+			// QUANTIFIER-ADDRESSED bake (FieldValue{Child: QOV(inner)}) — a
+			// projection has exactly one input, so the QOV form reads the same
+			// inner output the flat form does. The QOV form arrives when the
+			// planner KEEPS a projection spine unmerged (e.g. an ordering-pinned
+			// spine under an elided sort): the outer read of a derived column
+			// like `val * 2 AS doubled` is then a plain rename of the inner
+			// output, and refusing to inherit reported UNKNOWN where Java types
+			// it from the flowed result type regardless of plan shape.
+			fv, isField := v.(*values.FieldValue)
+			if isField {
+				_, viaQOV := fv.Child.(*values.QuantifiedObjectValue)
+				if fv.Child == nil || viaQOV {
+					deriveInner()
+					// The BAKED ordinal is the structural linkage (RFC-142): a
+					// plan-time reference reads the inner output SLOT, and the
+					// inner's column NAME for that slot may be a positional
+					// label ("_1" for an unaliased computed column) that no
+					// name lookup can hit — e.g. an unmerged projection spine
+					// where the outer reads `DOUBLED#1` while the inner derives
+					// slot 1 as "_1" (correctly typed). Resolve by ordinal
+					// first; the name map serves lazy (unbaked) reads.
+					inherited := false
+					// Ordinal inheritance only for the FLAT read: a
+					// QUANTIFIER-ADDRESSED read over a JOIN carries a
+					// LEG-relative ordinal, which is not an index into the
+					// flattened inner columns — inheriting by it would type
+					// the column from an unrelated leg's slot. QOV reads use
+					// the name path below.
+					if fv.Child == nil && fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
+						if ord := fv.Resolved.Accessors[0].Ordinal; ord >= 0 && ord < len(innerCols) {
+							if ic := innerCols[ord]; ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+								cd.TypeName = ic.TypeName
+								// Upgrade-only, like every inherit site: the
+								// null-born adjustment ran before inheritance.
+								if ic.Nullable == api.ColumnNullable {
+									cd.Nullable = api.ColumnNullable
+								}
+								inherited = true
+							}
+						}
 					}
-				}
-				if ic, found := innerByName[strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-					cd.TypeName = ic.TypeName
-					cd.Nullable = ic.Nullable
+					if !inherited {
+						// A QOV-addressed read over a JOIN resolves against
+						// QUALIFIED inner keys ("D.FOO" — deriveColumnsFromJoin
+						// keys per-leg columns by their leg alias). When the
+						// read also carries a BAKED ordinal, resolve it WITHIN
+						// the leg's columns (qualified-prefix slice, leg order
+						// preserved by the join derivation): a name lookup
+						// alone loses slot identity when a leg duplicates an
+						// output name — the map keeps only the last "D.FOO"
+						// while the accessor addresses a specific slot. The
+						// name lookup serves unbaked QOV reads; the bare key
+						// serves single-source shapes.
+						inheritFrom := func(ic executor.ColumnDef) {
+							cd.TypeName = ic.TypeName
+							// Nullability only ever UPGRADES here: the
+							// null-born (LEFT-JOIN null-extension) adjustment
+							// ran before inheritance, and copying an inner
+							// NoNulls back would un-null-extend the column —
+							// unmatched outer rows still serve NULL.
+							if ic.Nullable == api.ColumnNullable {
+								cd.Nullable = api.ColumnNullable
+							}
+							inherited = true
+						}
+						if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
+							// Resolve the LEG STRUCTURALLY: reconstructing leg
+							// membership from qualified-name prefixes both
+							// miscounts (an already-qualified output like a
+							// quoted "X.Y" identifier stays unprefixed in the
+							// merge, shifting every later slot) and loses slot
+							// identity under duplicate names. The leg's own
+							// derived columns are 1:1 positional with the
+							// leg-relative baked ordinal, carry EXACT
+							// nullability (a synthesized NOT NULL such as a
+							// projected EXISTS stays NoNulls on a CROSS join),
+							// and the null-supplying flag applies the LEFT-JOIN
+							// null extension only where it exists.
+							if legPlan, nullSupplying, found := legPlanFor(proj.GetInner(), qov.Correlation.Name()); found {
+								legCols := deriveColumnsFromPlan(legPlan, md)
+								if fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
+									if ord := fv.Resolved.Accessors[0].Ordinal; ord >= 0 && ord < len(legCols) {
+										if ic := legCols[ord]; ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+											cd.TypeName = ic.TypeName
+											cd.Nullable = ic.Nullable
+											if nullSupplying {
+												cd.Nullable = api.ColumnNullable
+											}
+											inherited = true
+										}
+									}
+								}
+								if !inherited {
+									for _, ic := range legCols {
+										if strings.EqualFold(parseColRef(ic.Name).bare(), fv.Field) && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+											cd.TypeName = ic.TypeName
+											cd.Nullable = ic.Nullable
+											if nullSupplying {
+												cd.Nullable = api.ColumnNullable
+											}
+											inherited = true
+											break
+										}
+									}
+								}
+							}
+							if !inherited {
+								legPrefix := strings.ToUpper(qov.Correlation.Name()) + "."
+								if ic, found := innerByName[legPrefix+strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+									inheritFrom(ic)
+								}
+							}
+						}
+						if !inherited {
+							if ic, found := innerByName[strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+								inheritFrom(ic)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -3833,7 +4050,11 @@ func findUnfoldableProjectedExists(op logical.LogicalOperator) string {
 	// project's — the aggregate never folds an existential, so the EXISTS would
 	// be silently dropped. Reject.
 	if agg, ok := op.(*logical.LogicalAggregate); ok {
-		if projectValuesReferenceExists(agg.GroupKeyValues) || projectValuesReferenceExists(agg.AggregateOperands) {
+		gkVals := make([]values.Value, len(agg.GroupKeys))
+		for i, k := range agg.GroupKeys {
+			gkVals[i] = k.Value
+		}
+		if projectValuesReferenceExists(gkVals) || projectValuesReferenceExists(agg.AggregateOperands) {
 			return "projected EXISTS in this query shape is not yet supported"
 		}
 	}

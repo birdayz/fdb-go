@@ -29,9 +29,9 @@ package embedded
 //   buildWherePredicateForTable  (single source — primary table)
 //   buildWherePredicateForJoins  (multi source — JOIN chain)
 //
-// Plumbed into naive_generator.ExplainFn via
+// Plumbed into the connection's Explain path via
 // EmbeddedConnection.cachedMetaData() — when the session schema cache
-// already holds the active schema, ExplainFn upgrades to predicate-tree
+// already holds the active schema, Explain upgrades to predicate-tree
 // rendering; cold cache stays on the text-builder path so EXPLAIN
 // remains deterministic and IO-free.
 
@@ -278,7 +278,7 @@ func buildDerivedTableSource(
 		if innerSQ.projCols != nil {
 			cols = make([]semantic.Column, 0, len(innerSQ.projCols))
 			for i, col := range innerSQ.projCols {
-				name := col
+				name := col.name
 				if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 					name = innerSQ.projAliases[i]
 				}
@@ -326,14 +326,18 @@ func buildDerivedTableSource(
 	if projCols == nil {
 		// SELECT * — use all columns from the inner table in schema order.
 		allCols := innerTbl.Columns()
-		projCols = make([]string, len(allCols))
+		projCols = make([]projCol, len(allCols))
 		for i, c := range allCols {
-			projCols[i] = c.Id.Name()
+			projCols[i] = projCol{name: c.Id.Name(), bare: c.Id.Name()}
 		}
 	}
 	columns := make([]semantic.Column, 0, len(projCols))
 	for i, col := range projCols {
-		bareName := parseColRef(col).bare()
+		// Structured segments; a rebased/computed name is one opaque label.
+		bareName := col.bare
+		if bareName == "" {
+			bareName = col.name
+		}
 		innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
 		if !found {
 			return semantic.ScopeSource{}, false
@@ -1001,7 +1005,10 @@ func buildCTEColumnSource(
 		columns = make([]semantic.Column, 0, len(innerSQ.projCols))
 		for i, col := range innerSQ.projCols {
 			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
-			bareName := parseColRef(col).bare()
+			bareName := col.bare
+			if bareName == "" {
+				bareName = col.name
+			}
 			outName := bareName
 			if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 				outName = innerSQ.projAliases[i]
@@ -1338,26 +1345,26 @@ func derivedEmittedBareNames(md *recordlayer.RecordMetaData, schemaName string, 
 		isComputed := i < len(sq.projExprs) && sq.projExprs[i] != nil
 		if deeper != nil {
 			if isComputed {
-				for _, r := range harvestColumnRefsOutsideSubqueries(sq.projExprs[i]) {
-					if !deeper[parseColRef(r).bare()] {
+				for _, r := range harvestBareColumnRefsOutsideSubqueries(sq.projExprs[i]) {
+					if !deeper[r] {
 						return nil, false
 					}
 				}
-			} else if !deeper[parseColRef(col).bare()] {
+			} else if !deeper[colBareOrName(col)] {
 				return nil, false
 			}
 		}
-		switch ref := parseColRef(col); {
+		switch {
 		case i < len(sq.projAliases) && sq.projAliases[i] != "":
 			set[sq.projAliases[i]] = true
 		case isComputed:
 			// unaliased computed: keys by its rendering — nothing readable
-		case !ref.isQualified() && ref.bare() != "":
-			// the "" guard: a mixed-star sentinel slot (projCols[i]=="") must
+		case !col.qualified && col.bare != "":
+			// the "" guard: a mixed-star sentinel slot (name=="") must
 			// not deposit a junk claim in a soundness-critical set
-			set[ref.bare()] = true
-		case ref.isQualified() && positionalFrontier:
-			set[ref.bare()] = true
+			set[col.bare] = true
+		case col.qualified && positionalFrontier:
+			set[col.bare] = true
 		}
 	}
 	return set, true
@@ -1371,28 +1378,40 @@ func derivedEmittedBareNames(md *recordlayer.RecordMetaData, schemaName string, 
 // entries, which ARE checked.
 func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
 	for _, ac := range sq.aggCols {
-		if ac.groupCol != "" && !emitted[parseColRef(ac.groupCol).bare()] {
-			return false
+		if ac.groupCol != "" {
+			bare := ac.groupColBare
+			if bare == "" {
+				bare = ac.groupCol
+			}
+			if !emitted[bare] {
+				return false
+			}
 		}
-		if ac.aggArg != "" && !emitted[parseColRef(ac.aggArg).bare()] {
-			return false
+		if ac.aggArg != "" {
+			bare := ac.aggArgBare
+			if bare == "" {
+				bare = ac.aggArg
+			}
+			if !emitted[bare] {
+				return false
+			}
 		}
-		for _, r := range harvestColumnRefsOutsideSubqueries(ac.aggExpr) {
-			if !emitted[parseColRef(r).bare()] {
+		for _, r := range harvestBareColumnRefsOutsideSubqueries(ac.aggExpr) {
+			if !emitted[r] {
 				return false
 			}
 		}
 	}
 	for i, col := range sq.projCols {
 		if i < len(sq.projExprs) && sq.projExprs[i] != nil {
-			for _, r := range harvestColumnRefsOutsideSubqueries(sq.projExprs[i]) {
-				if !emitted[parseColRef(r).bare()] {
+			for _, r := range harvestBareColumnRefsOutsideSubqueries(sq.projExprs[i]) {
+				if !emitted[r] {
 					return false
 				}
 			}
 			continue
 		}
-		if !emitted[parseColRef(col).bare()] {
+		if !emitted[colBareOrName(col)] {
 			return false
 		}
 	}
@@ -1605,8 +1624,8 @@ func buildCTEOnOnlySource(
 			quoted = i < len(aliasQuoted) && aliasQuoted[i]
 		} else {
 			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
-			if ref := parseColRef(col); !isComputed && !ref.isQualified() {
-				outName = ref.bare()
+			if !isComputed && !col.qualified && col.bare != "" {
+				outName = col.bare
 			}
 		}
 		if outName == "" {
@@ -1940,10 +1959,6 @@ func unnestScopeSourceAdder(scope *semantic.Scope) func(j joinClause) bool {
 // LogicalFilter node differs when the walker succeeds. Passing md=nil
 // is equivalent to calling buildLogicalPlanForSelect: every WHERE
 // degrades to text.
-//
-// Follow-up wiring (not in this shift): plumb md into
-// naive_generator's ExplainFn so Explain output shows simplified
-// predicate trees when metadata is available.
 func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) (logical.LogicalOperator, error) {
 	return buildLogicalPlanForSelectWithCTECatalog(sq, md, schemaName, nil, nil)
 }
@@ -2187,7 +2202,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				}
 				continue
 			}
-			if err := resolveColumnName(resolver, col); err != nil {
+			if err := resolveColumnName(resolver, col.name); err != nil {
 				return nil, err
 			}
 			// A BARE column that binds to a lateral-unnest SHADOWING source
@@ -2201,8 +2216,8 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			// ResolveColumnShadowingQualified so the catalog and top-level paths shadow
 			// identically. Without this a shadowed unnest projection inside a subquery
 			// reads the wrong column (silent-wrong). RFC-142.
-			if ref := parseColRef(col); !ref.isQualified() && proj != nil {
-				id := semantic.NewUnquoted(ref.bare())
+			if !col.qualified && col.bare != "" && proj != nil {
+				id := semantic.NewUnquoted(col.bare)
 				if qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id); qerr == nil && ok {
 					if proj.ProjectedValues == nil {
 						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
@@ -2231,7 +2246,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 					}
 				}
 			}
-			if parseColRef(col).isQualified() && proj != nil {
+			if col.qualified && proj != nil {
 				if proj.ProjectedValues == nil {
 					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 				}
@@ -2245,7 +2260,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						// "ALIAS.COL" name lookup does not run this path.
 						// Twin of the PlanVisitor's qualified-projection bind
 						// (incl. the DUPLICATED-bare-leaf qualified output pin).
-						cr := parseColRef(col)
+						cr := colRef{table: col.qualifier, col: col.bare}
 						if bv := resolveQualifiedBaked(resolver, cr); bv != nil && !resolver.QualifierIsDuplicated(semantic.NewUnquoted(cr.table)) {
 							// A DUPLICATE plain alias on THIS (subquery /
 							// union-branch) build path stays display-keyed and
@@ -2259,22 +2274,21 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 									proj.Aliases = make([]string, len(proj.Projections))
 								}
 								if i < len(proj.Aliases) && proj.Aliases[i] == "" {
-									proj.Aliases[i] = strings.ToUpper(col)
+									proj.Aliases[i] = strings.ToUpper(col.name)
 								}
 							}
 						} else {
 							proj.ProjectedValues[i] = &values.FieldValue{
-								Field: strings.ToUpper(col),
+								Field: strings.ToUpper(col.name),
 								Typ:   values.UnknownType,
 							}
 						}
 					}
 				} else {
 					var qualifier semantic.Identifier
-					ref := parseColRef(col)
-					id := semantic.NewUnquoted(ref.bare())
-					if ref.isQualified() {
-						qualifier = semantic.NewUnquoted(ref.table)
+					id := semantic.NewUnquoted(colBareOrName(col))
+					if col.qualified {
+						qualifier = semantic.NewUnquoted(col.qualifier)
 					}
 					if v, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
 						if i < len(proj.ProjectedValues) {
@@ -2370,11 +2384,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 
 	if resolver != nil {
-		for i, gb := range sq.groupBy {
-			if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+		for _, gb := range sq.groupBy {
+			if gb.expr != nil {
 				continue
 			}
-			if err := resolveColumnName(resolver, gb); err != nil {
+			if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
 		}
@@ -3377,18 +3391,16 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		vals := make([]values.Value, len(proj.Projections))
 		agg := findAggregate(op)
 		var groupKeyExplains map[string]values.Value
-		if agg != nil && len(agg.GroupKeyValues) > 0 {
-			groupKeyExplains = make(map[string]values.Value, len(agg.GroupKeyValues))
-			for i, gkv := range agg.GroupKeyValues {
-				if gkv == nil {
+		if agg != nil && len(agg.GroupKeys) > 0 {
+			groupKeyExplains = make(map[string]values.Value, len(agg.GroupKeys))
+			for _, gk := range agg.GroupKeys {
+				if gk.Value == nil {
 					continue
 				}
-				explain := strings.ToUpper(values.ColumnNameValue(gkv))
+				explain := strings.ToUpper(values.ColumnNameValue(gk.Value))
 				ref := &values.FieldValue{Field: explain, Typ: values.UnknownType}
 				groupKeyExplains[explain] = ref
-				if i < len(agg.GroupKeys) {
-					groupKeyExplains[strings.ToUpper(agg.GroupKeys[i])] = ref
-				}
+				groupKeyExplains[strings.ToUpper(gk.Display)] = ref
 			}
 		}
 		aggSlots := make([]bool, len(proj.Projections))
@@ -3530,12 +3542,12 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	if resolver == nil {
 		return
 	}
-	operands := make([]values.Value, len(agg.Aggregates))
+	operands := make([]values.Value, len(agg.Calls))
 	for _, ac := range sq.aggCols {
 		// A PLAIN-column aggregate arg (`MIN(pid)`, `MIN(c2.pid)`) carries
 		// aggArg only — the parser's resolveArg captures no aggExpr for a bare
-		// FullColumnName. It must STILL resolve here: the text fallback
-		// (parseAggregateText) keeps a qualified arg as ONE opaque dotted
+		// FullColumnName. It must STILL resolve here: the translator's
+		// bare-column lazy read keeps a qualified arg as ONE opaque dotted
 		// FieldValue{"C2.PID"}, which key-misses the scan row's bare "PID" at
 		// accumulation and silently aggregates NULL (a sub-planned scalar
 		// subquery's rows carry bare keys only). COUNT(*) has neither and skips.
@@ -3544,36 +3556,32 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		}
 		// Collect EVERY matching aggregate slot — a HAVING that repeats a
 		// SELECT-list aggregate (`SELECT SUM(x) … HAVING SUM(x) > k`) creates a
-		// SECOND slot with the same canonical text; leaving it unresolved sends
-		// it down the lossy text reparse (parseAggregateText), whose flat dotted
-		// operand refs the ordinal frontier cannot resolve.
+		// SECOND slot with the same call shape; leaving it unresolved makes
+		// the translator fall back to the lazy bare-column read, whose flat
+		// dotted operand refs the ordinal frontier cannot resolve.
+		arg := ac.aggArg
+		if arg == "" && ac.aggExpr != nil {
+			arg = canonicalTextOf(ac.aggExpr)
+		}
+		if arg == "" {
+			arg = "*"
+		}
+		// The aggregate slot may carry the BARE column while the parsed arg
+		// is qualified (`MIN(PID)` vs aggArg `C.PID`) — the main builder
+		// strips a same-source qualifier when naming the slot. Match the
+		// bare form too so the resolved-operand path engages for it.
+		bare := ""
+		if ac.aggArgQualified {
+			bare = ac.aggArgBare
+		}
+		wantFunc := strings.ToUpper(ac.aggFunc)
 		var idxs []int
-		for i, aggText := range agg.Aggregates {
-			arg := ac.aggArg
-			if arg == "" && ac.aggExpr != nil {
-				arg = canonicalTextOf(ac.aggExpr)
-			}
-			if arg == "" {
-				arg = "*"
-			}
-			distinctPfx := ""
-			if ac.aggDistinct {
-				distinctPfx = "DISTINCT "
-			}
-			expected := strings.ToUpper(ac.aggFunc + "(" + distinctPfx + arg + ")")
-			if strings.ToUpper(aggText) == expected {
-				idxs = append(idxs, i)
+		for i, call := range agg.Calls {
+			if call.Func != wantFunc || call.Distinct != ac.aggDistinct {
 				continue
 			}
-			// The aggregate node's text may carry the BARE column while the
-			// parsed arg is qualified (`MIN(PID)` vs aggArg `C.PID`) — the main
-			// builder strips a same-source qualifier when naming the slot. Match
-			// the bare form too so the resolved-operand path engages for it.
-			if ref := parseColRef(arg); ref.isQualified() {
-				bareExpected := strings.ToUpper(ac.aggFunc + "(" + distinctPfx + ref.bare() + ")")
-				if strings.ToUpper(aggText) == bareExpected {
-					idxs = append(idxs, i)
-				}
+			if strings.EqualFold(call.Operand, arg) || (bare != "" && strings.EqualFold(call.Operand, bare)) {
+				idxs = append(idxs, i)
 			}
 		}
 		if len(idxs) == 0 {
@@ -3592,12 +3600,15 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			// so a qualified `c2.pid` binds against its FROM source instead of
 			// surviving as opaque dotted text. Unresolvable → fall through to
 			// the text path (fail-soft).
-			ref := parseColRef(ac.aggArg)
-			var qualID semantic.Identifier
-			if ref.isQualified() {
-				qualID = semantic.NewUnquoted(ref.table)
+			bareArg := ac.aggArgBare
+			if bareArg == "" {
+				bareArg = ac.aggArg
 			}
-			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.NewUnquoted(ref.bare()))
+			var qualID semantic.Identifier
+			if ac.aggArgQualified {
+				qualID = semantic.NewUnquoted(ac.aggArgQualifier)
+			}
+			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.NewUnquoted(bareArg))
 			if rerr != nil || qv == nil {
 				continue
 			}
@@ -3629,8 +3640,8 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	keyValues := make([]values.Value, len(agg.GroupKeys))
 	filled := false
 	for i := range agg.GroupKeys {
-		if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
-			v, err := resolver.WalkExpressionForProjection(sq.groupByExprs[i])
+		if i < len(sq.groupBy) && sq.groupBy[i].expr != nil {
+			v, err := resolver.WalkExpressionForProjection(sq.groupBy[i].expr)
 			if err != nil {
 				continue
 			}
@@ -3638,10 +3649,16 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			filled = true
 			continue
 		}
-		ref := parseColRef(agg.GroupKeys[i])
+		gk := agg.GroupKeys[i]
+		// Structured segments, never a re-parse of the display text: a
+		// delimited identifier containing a dot stays one bare segment.
+		ref := colRef{table: gk.Qualifier, col: gk.Bare}
+		if gk.Bare == "" {
+			ref = colRef{col: gk.Display}
+		}
 		var qualID semantic.Identifier
-		if ref.isQualified() {
-			qualID = semantic.NewUnquoted(ref.table)
+		if gk.Qualified {
+			qualID = semantic.NewUnquoted(gk.Qualifier)
 			// The dup-alias twin: a qualified key
 			// binding a LATER duplicate-alias leg must group by the BINDING
 			// correlation (`Q$DUP1.QID`) — the join row's actual namespace —
@@ -3695,7 +3712,11 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		}
 	}
 	if filled {
-		agg.GroupKeyValues = keyValues
+		for i := range agg.GroupKeys {
+			if keyValues[i] != nil {
+				agg.GroupKeys[i].Value = keyValues[i]
+			}
+		}
 	}
 }
 
@@ -3864,6 +3885,21 @@ func canonicalAggName(funcSymbol string, operand values.Value) string {
 	return fn + "(" + inner + ")"
 }
 
+// canonicalAggOperandText returns the operand segment of a canonical
+// aggregate name this builder just produced via canonicalAggName — the text
+// between the outermost parens. Operates only on our own rendering (never
+// user SQL), purely to keep AggregateCall.Operand identical to the name's
+// keyed segment. (Follow-up with F-3: canonicalAggName should return the
+// pair instead of render-then-unrender.)
+func canonicalAggOperandText(cname string) string {
+	l := strings.Index(cname, "(")
+	r := strings.LastIndex(cname, ")")
+	if l < 0 || r <= l {
+		return ""
+	}
+	return cname[l+1 : r]
+}
+
 func rewriteAggregateValue(v values.Value) values.Value {
 	if v == nil {
 		return nil
@@ -3917,8 +3953,8 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 	// never resolves to a Value and the group key silently evaluates to a
 	// constant. Reject cleanly rather than ship a constant-false grouped column.
 	// Structural detection (typed ANTLR node), no text matching.
-	for _, gbe := range sq.groupByExprs {
-		if gbe != nil && expr.ContainsExistsAtom(gbe) {
+	for _, gb := range sq.groupBy {
+		if gb.expr != nil && expr.ContainsExistsAtom(gb.expr) {
 			return api.NewError(api.ErrCodeUnsupportedQuery,
 				"projected EXISTS in this query shape is not yet supported")
 		}
@@ -3926,10 +3962,9 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 
 	groupBySet := make(map[string]bool, len(sq.groupBy))
 	for _, gb := range sq.groupBy {
-		ref := parseColRef(gb)
-		groupBySet[strings.ToUpper(gb)] = true
-		if ref.isQualified() {
-			groupBySet[strings.ToUpper(ref.bare())] = true
+		groupBySet[strings.ToUpper(gb.display)] = true
+		if gb.qualified {
+			groupBySet[strings.ToUpper(gb.bare)] = true
 		}
 	}
 
@@ -4005,9 +4040,9 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 	}
 
 	groupByExprSet := make(map[string]bool)
-	for i, gb := range sq.groupBy {
-		if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
-			groupByExprSet[strings.ToUpper(gb)] = true
+	for _, gb := range sq.groupBy {
+		if gb.expr != nil {
+			groupByExprSet[strings.ToUpper(gb.display)] = true
 		}
 	}
 
@@ -4048,7 +4083,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 		if i < len(sq.projExprs) && sq.projExprs[i] != nil {
 			continue
 		}
-		if err := checkColumn(col); err != nil {
+		if err := checkColumn(col.name); err != nil {
 			return err
 		}
 	}
@@ -4543,15 +4578,21 @@ func wrapBareAggregateInsertSource(insertOp *logical.LogicalInsert, sq *selectQu
 	// unresolved (nil), so the aggregate computes NULL. Wrapping would align the
 	// (NULL) column and SILENTLY insert NULL; NOT wrapping leaves the original LOUD
 	// failure (unset PK → 23505). Until the qualified-operand resolution is fixed
-	// (follow-up), skip — a qualifier shows up as a '.' in the canonical
-	// aggregate/group-key name.
-	for _, a := range agg.Aggregates {
-		if strings.Contains(a, ".") {
+	// (follow-up), skip. A bare column's qualification is parse-tree truth
+	// (call.Qualified); a computed operand keeps the conservative
+	// canonical-text scan (its dots come from real qualified refs or quoted
+	// literals, and skipping only retains the loud path).
+	for _, call := range agg.Calls {
+		if call.BareColumn {
+			if call.Qualified {
+				return
+			}
+		} else if strings.Contains(call.Operand, ".") {
 			return
 		}
 	}
 	for _, k := range agg.GroupKeys {
-		if strings.Contains(k, ".") {
+		if k.Qualified {
 			return
 		}
 	}
@@ -4676,17 +4717,18 @@ func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlaye
 		return nil
 	}
 	// Canonical aggregate output name → reliable result type, for the bare-
-	// aggregate case (nil ProjectedValue). Names match the projection text
-	// verbatim (both produced by the same canonicaliser, e.g. "AVG(V)").
+	// aggregate case (nil ProjectedValue). CanonicalName reproduces the
+	// projection text up to case (both render from the same operand text,
+	// e.g. "AVG(V)"), and the lookup below upper-cases both sides.
 	aggTypes := map[string]values.Type{}
 	if agg := findAggregate(insertOp.Source); agg != nil {
-		for j, name := range agg.Aggregates {
+		for j, call := range agg.Calls {
 			var operand values.Value
 			if j < len(agg.AggregateOperands) {
 				operand = agg.AggregateOperands[j]
 			}
-			if t := aggResultTypeFromName(name, operand); t != nil {
-				aggTypes[strings.ToUpper(name)] = t
+			if t := aggResultTypeFromFunc(call.Func, operand); t != nil {
+				aggTypes[strings.ToUpper(call.CanonicalName())] = t
 			}
 		}
 	}
@@ -4723,12 +4765,8 @@ func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlaye
 // user SQL text. Mirrors AggregateValue.Type() / Java's per-operator resultTypeCode
 // — keep the two in sync until the PromoteValue follow-up (RFC-083) dissolves this
 // function (it exists only for the nil-ProjectedValue bare-aggregate path).
-func aggResultTypeFromName(name string, operand values.Value) values.Type {
-	sym := name
-	if idx := strings.IndexByte(name, '('); idx >= 0 {
-		sym = name[:idx]
-	}
-	switch strings.ToUpper(strings.TrimSpace(sym)) {
+func aggResultTypeFromFunc(fn string, operand values.Value) values.Type {
+	switch fn {
 	case "AVG":
 		return values.NullableDouble
 	case "COUNT":
@@ -5426,7 +5464,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	if sq.projAliases != nil && sq.projCols != nil {
 		for i, a := range sq.projAliases {
 			if a != "" && i < len(sq.projCols) {
-				aliasToCol[strings.ToUpper(a)] = sq.projCols[i]
+				aliasToCol[strings.ToUpper(a)] = sq.projCols[i].name
 				aliasToIdx[strings.ToUpper(a)] = i
 			}
 		}
@@ -5443,10 +5481,11 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	proj := findProjection(op)
 	agg := findAggregate(op)
 	var groupKeyExplainMap map[string]string
-	if agg != nil && len(agg.GroupKeyValues) > 0 {
+	if agg != nil && len(agg.GroupKeys) > 0 {
 		groupKeyExplainMap = make(map[string]string)
-		for i, gkv := range agg.GroupKeyValues {
-			if gkv == nil || i >= len(agg.GroupKeys) {
+		for _, gk := range agg.GroupKeys {
+			gkv := gk.Value
+			if gkv == nil {
 				continue
 			}
 			// The sort sits ABOVE the aggregate, so the group-key sort key must read
@@ -5460,7 +5499,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			// (ORDER BY DESC silently ignored, P2b). Mirror aggKeyName:
 			// the field name for a FieldValue, the explain for a computed key (whose
 			// output column IS its explain). RFC-142.
-			groupKeyExplainMap[strings.ToUpper(agg.GroupKeys[i])] = aggregateGroupKeyOutputName(gkv)
+			groupKeyExplainMap[strings.ToUpper(gk.Display)] = aggregateGroupKeyOutputName(gkv)
 		}
 	}
 	// colToIdx maps a NON-aliased select item's canonical text to its select-list
@@ -5475,7 +5514,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// same expression, so the sort order is identical either way.
 	colToIdx := make(map[string]int, len(sq.projCols))
 	for i, c := range sq.projCols {
-		key := strings.ToUpper(c)
+		key := strings.ToUpper(c.name)
 		if _, dup := colToIdx[key]; !dup {
 			colToIdx[key] = i
 		}
@@ -5672,12 +5711,15 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 // references read the aggregate output as-is and the structural match is a no-op.
 // RFC-142.
 func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggregate) values.Value {
-	if v == nil || agg == nil || len(agg.GroupKeyValues) == 0 {
+	if v == nil || agg == nil || len(agg.GroupKeys) == 0 {
 		return v
 	}
 	return values.MapFieldValues(v, func(fv *values.FieldValue) values.Value {
-		for _, gkv := range agg.GroupKeyValues {
-			qfv, ok := gkv.(*values.FieldValue)
+		for _, gk := range agg.GroupKeys {
+			if gk.Value == nil {
+				continue
+			}
+			qfv, ok := gk.Value.(*values.FieldValue)
 			if !ok || qfv.Child == nil {
 				continue // only qualified group keys carry the V.V mismatch
 			}
@@ -5710,7 +5752,7 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 // deciders cannot drift — both ask "is this a single group-key comparison?".
 // RFC-142.
 func rebaseHavingGroupKeyPredicate(pred predicates.QueryPredicate, agg *logical.LogicalAggregate) predicates.QueryPredicate {
-	if pred == nil || agg == nil || len(agg.GroupKeyValues) == 0 {
+	if pred == nil || agg == nil || len(agg.GroupKeys) == 0 {
 		return pred
 	}
 	if havingPredicatePushesBelowAggregate(pred, agg) {
@@ -5736,8 +5778,8 @@ func havingPredicatePushesBelowAggregate(pred predicates.QueryPredicate, agg *lo
 	if !ok {
 		return false
 	}
-	for _, gkv := range agg.GroupKeyValues {
-		if gfv, ok := gkv.(*values.FieldValue); ok && strings.EqualFold(gfv.Field, fv.Field) {
+	for _, gk := range agg.GroupKeys {
+		if gfv, ok := gk.Value.(*values.FieldValue); ok && strings.EqualFold(gfv.Field, fv.Field) {
 			return true
 		}
 	}
@@ -5750,7 +5792,7 @@ func havingPredicatePushesBelowAggregate(pred predicates.QueryPredicate, agg *lo
 // reference reads the bare aggregate-output column, not the qualified pre-aggregate
 // `V.V`. RFC-142.
 func rebasePostAggregateGroupKeyPredicate(pred predicates.QueryPredicate, agg *logical.LogicalAggregate) predicates.QueryPredicate {
-	if pred == nil || agg == nil || len(agg.GroupKeyValues) == 0 {
+	if pred == nil || agg == nil || len(agg.GroupKeys) == 0 {
 		return pred
 	}
 	switch p := pred.(type) {
@@ -5968,7 +6010,8 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		}
 	}
 
-	var newCols, newAliases, newQuals []string
+	var newCols []projCol
+	var newAliases, newQuals []string
 	var newExprs []antlrgen.IExpressionContext
 	for i, col := range sq.projCols {
 		qual := ""
@@ -6000,7 +6043,9 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 			continue
 		}
 		for _, c := range cols {
-			newCols = append(newCols, qual+"."+c)
+			// Star expansion mints the qualified reference structurally —
+			// the segments are known here, never re-derived from the name.
+			newCols = append(newCols, projCol{name: qual + "." + c, bare: c, qualifier: qual, qualified: true})
 			newAliases = append(newAliases, "")
 			newExprs = append(newExprs, nil)
 			newQuals = append(newQuals, "")
@@ -6050,9 +6095,10 @@ func expandProjQualifier(sq *selectQuery, md *recordlayer.RecordMetaData, schema
 			continue
 		}
 		srcCols := src.Table.Columns()
-		cols := make([]string, len(srcCols))
+		cols := make([]projCol, len(srcCols))
 		for k, c := range srcCols {
-			cols[k] = qual + "." + strings.ToUpper(c.Id.Name())
+			bare := strings.ToUpper(c.Id.Name())
+			cols[k] = projCol{name: qual + "." + bare, bare: bare, qualifier: qual, qualified: true}
 		}
 		sq.projCols = cols
 		sq.projAliases = make([]string, len(srcCols))
@@ -6088,12 +6134,13 @@ func expandProjQualifier(sq *selectQuery, md *recordlayer.RecordMetaData, schema
 		return
 	}
 	fields := rt.Descriptor.Fields()
-	cols := make([]string, fields.Len())
+	cols := make([]projCol, fields.Len())
 	aliases := make([]string, fields.Len())
 	exprs := make([]antlrgen.IExpressionContext, fields.Len())
 	quals := make([]string, fields.Len())
 	for i := 0; i < fields.Len(); i++ {
-		cols[i] = qual + "." + strings.ToUpper(string(fields.Get(i).Name()))
+		bare := strings.ToUpper(string(fields.Get(i).Name()))
+		cols[i] = projCol{name: qual + "." + bare, bare: bare, qualifier: qual, qualified: true}
 	}
 	sq.projCols = cols
 	sq.projAliases = aliases
@@ -6155,7 +6202,15 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 	leftNames := make(map[string]bool, len(leftProj.Projections)*2)
 	for i, col := range leftProj.Projections {
 		leftNames[strings.ToUpper(col)] = true
-		leftNames[strings.ToUpper(parseColRef(col).bare())] = true
+		// The bare form comes from the RESOLVED channel: a childless
+		// FieldValue's Field IS the bare column (the same structural truth
+		// the upgrade passes bind), never a last-dot split of the rendering
+		// — a delimited identifier containing a literal dot is one name.
+		if i < len(leftProj.ProjectedValues) {
+			if fv, ok := leftProj.ProjectedValues[i].(*values.FieldValue); ok && fv.Child == nil {
+				leftNames[strings.ToUpper(fv.Field)] = true
+			}
+		}
 		if i < len(leftProj.Aliases) && leftProj.Aliases[i] != "" {
 			leftNames[strings.ToUpper(leftProj.Aliases[i])] = true
 		}
@@ -6174,7 +6229,13 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 			continue
 		}
 		upper := strings.ToUpper(k.Expr)
-		if !leftNames[upper] && !leftNames[strings.ToUpper(parseColRef(k.Expr).bare())] {
+		bareName := upper
+		if k.Bare != "" {
+			// Structured bare segment — never a last-dot split of the
+			// rendering (a delimited identifier may contain a literal dot).
+			bareName = strings.ToUpper(k.Bare)
+		}
+		if !leftNames[upper] && !leftNames[bareName] {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q not found in UNION result columns", k.Expr)
 		}
@@ -7574,6 +7635,34 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 	return alias, nil
 }
 
+// resolveCorrelatedColumnValueStructured resolves a structured group key —
+// segments come from the parse tree, never a re-parse of the display text.
+// colBareOrName: the structured bare segment, or the whole name as one
+// opaque label for computed/rebased entries — never a dot split.
+func colBareOrName(c projCol) string {
+	if c.bare != "" {
+		return c.bare
+	}
+	return c.name
+}
+
+func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical.GroupKey, hasJoins bool) (values.Value, error) {
+	if hasJoins {
+		// Merged join rows carry alias-qualified keys; the DISPLAY is that
+		// flat merged-row key (same limitation as the text path below).
+		return &values.FieldValue{Field: strings.ToUpper(key.Display), Typ: values.UnknownType}, nil
+	}
+	bare := key.Bare
+	if bare == "" {
+		bare = key.Display
+	}
+	var qualifier semantic.Identifier
+	if key.Qualified {
+		qualifier = semantic.NewUnquoted(key.Qualifier)
+	}
+	return resolver.ResolveIdentifier(qualifier, semantic.NewUnquoted(bare))
+}
+
 // resolveCorrelatedColumnValue resolves a (possibly alias-qualified) column
 // name to a Value through the semantic scope — the same resolution the
 // correlated WHERE clause uses. With a single inner source the scope returns a
@@ -7614,21 +7703,25 @@ func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQu
 	}
 	keyValues := make([]values.Value, len(agg.GroupKeys))
 	for i, key := range agg.GroupKeys {
-		if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
-			v, err := resolver.WalkExpressionForProjection(sq.groupByExprs[i])
+		if i < len(sq.groupBy) && sq.groupBy[i].expr != nil {
+			v, err := resolver.WalkExpressionForProjection(sq.groupBy[i].expr)
 			if err != nil {
 				return err
 			}
 			keyValues[i] = v
 			continue
 		}
-		v, err := resolveCorrelatedColumnValue(resolver, key, hasJoins)
+		v, err := resolveCorrelatedColumnValueStructured(resolver, key, hasJoins)
 		if err != nil {
 			return err
 		}
 		keyValues[i] = v
 	}
-	agg.GroupKeyValues = keyValues
+	for i := range agg.GroupKeys {
+		if keyValues[i] != nil {
+			agg.GroupKeys[i].Value = keyValues[i]
+		}
+	}
 	return nil
 }
 
@@ -7655,7 +7748,7 @@ func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isA
 	if !ok {
 		return "", "", false
 	}
-	f, a, aExpr, _, _, ok := extractAwfFields(awf)
+	f, a, aExpr, _, _, _, _, _, ok := extractAwfFields(awf)
 	if !ok || aExpr != nil {
 		return "", "", false
 	}
@@ -7676,10 +7769,17 @@ func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isA
 func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]logical.SortKey, error) {
 	keys := make([]logical.SortKey, 0, len(sq.orderBy))
 	for _, ob := range sq.orderBy {
-		bare := strings.ToUpper(parseColRef(ob.colName).bare())
+		bare := strings.ToUpper(ob.bare)
+		if ob.bare == "" {
+			bare = strings.ToUpper(ob.colName)
+		}
 		dk := ""
 		for _, k := range sq.groupBy {
-			if gkdk := strings.ToUpper(parseColRef(k).bare()); gkdk == bare && bare != "" {
+			gkdk := strings.ToUpper(k.bare)
+			if k.bare == "" {
+				gkdk = strings.ToUpper(k.display)
+			}
+			if gkdk == bare && bare != "" {
 				dk = gkdk
 				break
 			}
@@ -7906,7 +8006,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 	}
 	for _, pc := range sq.projCols {
-		if _, echo := visAggNames[strings.ToUpper(pc)]; !echo {
+		if _, echo := visAggNames[strings.ToUpper(pc.name)]; !echo {
 			outCount++
 		}
 	}
@@ -7941,7 +8041,8 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// join-merge resolver mis-parses as a qualifier separator; the operand
 		// itself is resolved separately so the qualifier still binds.
 		singleSource := len(sq.joins) == 0
-		var aggTexts, aggAliases []string
+		var aggAliases []string
+		var aggCalls []logical.AggregateCall
 		var aggOperands []values.Value
 		aggSeen := make(map[string]struct{})
 		exprAggNames := make(map[string]struct{}) // join-path collision tracking only
@@ -7949,14 +8050,17 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// the EXACT datum key the aggregate cursor emits (addAgg's returned name),
 		// for resolving an ORDER BY ref over the grouped output (RFC-085).
 		aggDatumKey := make(map[string]string)
-		addAgg := func(fn, arg string, e antlrgen.IExpressionContext, distinct bool) (string, error) {
+		addAgg := func(fn, arg, argBare string, e antlrgen.IExpressionContext, distinct bool) (string, error) {
 			// An expression argument has no bare column name, so it collapses to
 			// FN(*). Two DISTINCT expression aggregates (e.g. SUM(a+b) projected
 			// and SUM(c*d) in HAVING) would both synthesize "SUM(*)" and the
 			// second would silently overwrite the first — so the HAVING would
 			// read the projected aggregate's value. We cannot disambiguate them
 			// by name, so reject rather than return wrong rows.
-			bareArg := parseColRef(arg).bare()
+			bareArg := argBare
+			if bareArg == "" && arg != "" {
+				bareArg = arg
+			}
 			if bareArg == "" {
 				bareArg = "*"
 			}
@@ -7997,7 +8101,12 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 					return cname, nil
 				}
 				aggSeen[cname] = struct{}{}
-				aggTexts = append(aggTexts, cname)
+				aggCalls = append(aggCalls, logical.AggregateCall{
+					Func:       strings.ToUpper(fn),
+					Operand:    canonicalAggOperandText(cname),
+					Star:       opVal == nil,
+					BareColumn: e == nil && arg != "",
+				})
 				aggAliases = append(aggAliases, cname)
 				aggOperands = append(aggOperands, opVal)
 				return cname, nil
@@ -8031,7 +8140,12 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			if opaqueExpr {
 				exprAggNames[name] = struct{}{}
 			}
-			aggTexts = append(aggTexts, fn+"("+bareArg+")")
+			aggCalls = append(aggCalls, logical.AggregateCall{
+				Func:       strings.ToUpper(fn),
+				Operand:    strings.ToUpper(bareArg),
+				Star:       bareArg == "*",
+				BareColumn: e == nil && arg != "",
+			})
 			aggAliases = append(aggAliases, name)
 			aggOperands = append(aggOperands, opVal)
 			return name, nil
@@ -8055,7 +8169,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 					Message: "correlated scalar subquery over a join: HAVING references an expression/constant-argument aggregate (e.g. COUNT(1), SUM(<expr>)) that cannot be resolved against the grouped output",
 				}
 			}
-			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggExpr, ac.aggDistinct)
+			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggArgBare, ac.aggExpr, ac.aggDistinct)
 			if err != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 					Message: fmt.Sprintf("correlated scalar subquery: resolve aggregate argument: %v", err), Cause: err,
@@ -8070,14 +8184,14 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				if ac.outName != "" {
 					aggDatumKey[strings.ToUpper(ac.outName)] = name
 				}
-				if bareArg := parseColRef(ac.aggArg).bare(); bareArg != "" {
+				if bareArg := ac.aggArgBare; bareArg != "" {
 					aggDatumKey[strings.ToUpper(ac.aggFunc+"("+bareArg+")")] = name
 				}
 			}
 		}
 		// A sole COUNT(*) the parser flagged via countStar (no aggCol entry).
 		if sq.countStar {
-			name, _ := addAgg("COUNT", "", nil, false) // -> COUNT(*)
+			name, _ := addAgg("COUNT", "", "", nil, false) // -> COUNT(*)
 			scalarCol = name
 			aggDatumKey[strings.ToUpper(name)] = name
 			if sq.countStarAlias != "" {
@@ -8096,7 +8210,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		if scalarCol == "" {
 			for i := range sq.aggCols {
 				if sq.aggCols[i].visible && sq.aggCols[i].aggFunc == "" && sq.aggCols[i].groupCol != "" {
-					scalarCol = strings.ToUpper(parseColRef(sq.aggCols[i].groupCol).bare())
+					gcBare := sq.aggCols[i].groupColBare
+					if gcBare == "" {
+						gcBare = sq.aggCols[i].groupCol
+					}
+					scalarCol = strings.ToUpper(gcBare)
 					break
 				}
 			}
@@ -8106,7 +8224,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				Message: "correlated scalar subquery: expected an aggregate function or grouping-key projection",
 			}
 		}
-		aggOp := logical.NewAggregate(innerOp, sq.groupBy, aggTexts, aggAliases, "")
+		aggOp := logical.NewAggregate(innerOp, logicalGroupKeys(sq.groupBy), aggCalls, aggAliases, false)
 		aggOp.AggregateOperands = aggOperands
 		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
@@ -8223,9 +8341,9 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			}
 			if computedScalarVal == nil && scalarCol == "" {
 				if len(sq.joins) > 0 {
-					scalarCol = strings.ToUpper(sq.projCols[0])
+					scalarCol = strings.ToUpper(sq.projCols[0].name)
 				} else {
-					scalarCol = strings.ToUpper(parseColRef(sq.projCols[0]).bare())
+					scalarCol = strings.ToUpper(colBareOrName(sq.projCols[0]))
 				}
 			}
 		case len(sq.projCols) == 0 && len(sq.groupBy) > 0:
@@ -8239,7 +8357,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			// to the error rather than silently resolving to NULL.
 			for i := range sq.aggCols {
 				if sq.aggCols[i].visible && sq.aggCols[i].groupCol != "" {
-					scalarCol = strings.ToUpper(parseColRef(sq.aggCols[i].groupCol).bare())
+					gcBare := sq.aggCols[i].groupColBare
+					if gcBare == "" {
+						gcBare = sq.aggCols[i].groupCol
+					}
+					scalarCol = strings.ToUpper(gcBare)
 					break
 				}
 			}
@@ -8260,7 +8382,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// column is a grouping key. Build the GroupBy below the optional
 		// ORDER BY so the sort runs over the grouped output.
 		if len(sq.groupBy) > 0 {
-			aggOp := logical.NewAggregate(innerOp, sq.groupBy, nil, nil, "")
+			aggOp := logical.NewAggregate(innerOp, logicalGroupKeys(sq.groupBy), nil, nil, false)
 			if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 					Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,
@@ -8295,8 +8417,8 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 						dir = logical.SortDesc
 					}
 					keyExpr := ob.colName
-					if len(sq.joins) == 0 {
-						keyExpr = parseColRef(ob.colName).bare()
+					if len(sq.joins) == 0 && ob.bare != "" {
+						keyExpr = ob.bare
 					}
 					keys[i] = logical.SortKey{Expr: keyExpr, Dir: dir}
 					if ob.nullsFirst != nil {
@@ -8330,7 +8452,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// Both the name-model scalar ref (<inner>._0) and the ordinal seed
 		// (ofOrdinal(inner,0)) resolve the computed value, so it never reads as NULL.
 		if computedScalarVal != nil {
-			proj := logical.NewProject(innerOp, []string{sq.projCols[0]}, []string{""})
+			proj := logical.NewProject(innerOp, []string{sq.projCols[0].name}, []string{""})
 			proj.ProjectedValues = []values.Value{computedScalarVal}
 			proj.IsComputed = []bool{true}
 			innerOp = proj

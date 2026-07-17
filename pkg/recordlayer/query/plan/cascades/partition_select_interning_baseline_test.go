@@ -251,8 +251,30 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		// search prunes marginally earlier (FEWER tasks — a strict improvement, well
 		// inside the interning/correlation sentinels this baseline guards). 3-table is
 		// unaffected.
-		{3, 11122},
-		{4, 45306},
+		//
+		// The OptimizeInputs identity guard (Java CascadesPlanner.OptimizeInputs's
+		// containsExactly port) nudged 11122→11446 (3-table, +2.9%) / 45306→47088
+		// (4-table, +3.9%): a parent expression pruned OUT of its group no longer
+		// drives child-group pruning, so child groups keep more members through
+		// re-exploration. That is the point — pruning on behalf of a LOSER parent
+		// could fix a child winner chosen for a plan that no longer exists. The
+		// extra members are re-explored, not re-enumerated: interning still
+		// collapses shared sub-products, which is what this baseline guards.
+		//
+		// The root-operator rule index (Java AbstractRuleSet.getRootOperator
+		// bucketing) dropped 11446→1554 (3-table, -86%) / 47088→6998
+		// (4-table, -85%): ExploreExprTask no longer pushes transform tasks
+		// for rules whose matcher root cannot match the expression's type —
+		// those tasks previously popped, type-asserted, failed, and counted.
+		// The surviving counts are the REAL rule-firing workload, which is
+		// what the interning sentinels actually guard.
+		//
+		// The final-survival OptimizeInputs guard (ContainsFinal — a pruned
+		// dual-inserted loser no longer drives child optimization) plus the
+		// delegation-truthful ordering satisfaction trimmed 1554→1500
+		// (3-table, -3.5%) / 6998→6706 (4-table, -4.2%).
+		{3, 1500},
+		{4, 6706},
 	}
 	for _, tc := range cases {
 		got := planChainTasks(t, tc.tables)

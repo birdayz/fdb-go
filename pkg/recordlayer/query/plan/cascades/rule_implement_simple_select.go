@@ -21,7 +21,7 @@ type ImplementSimpleSelectRule struct {
 
 func NewImplementSimpleSelectRule() *ImplementSimpleSelectRule {
 	return &ImplementSimpleSelectRule{
-		matcher: &selectExpressionMatcher{},
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("implement_simple_select"),
 	}
 }
 
@@ -154,14 +154,3 @@ func isSimplePassthroughOf(v values.Value, q expressions.Quantifier) bool {
 }
 
 var _ ImplementationRule = (*ImplementSimpleSelectRule)(nil)
-
-type selectExpressionMatcher struct{}
-
-func (m *selectExpressionMatcher) RootType() string { return "SelectExpression" }
-
-func (m *selectExpressionMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.SelectExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}

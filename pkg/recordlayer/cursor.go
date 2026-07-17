@@ -247,7 +247,7 @@ func Seq2[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq2[T, error
 
 // emptyCursor is a cursor that immediately returns no results.
 // Matches Java's RecordCursor.empty().
-type emptyCursor[T any] struct{}
+type emptyCursor[T any] struct{ closed bool }
 
 // Empty returns a cursor that produces no results (source exhausted immediately).
 func Empty[T any]() RecordCursor[T] {
@@ -258,9 +258,12 @@ func (c *emptyCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error
 	return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 }
 
-func (c *emptyCursor[T]) Close() error { return nil }
+// Close/IsClosed track state like Java's EmptyCursor (close() sets a flag
+// isClosed() reports) — the cursor holds no resources, but the contract is
+// observable.
+func (c *emptyCursor[T]) Close() error { c.closed = true; return nil }
 
-func (c *emptyCursor[T]) IsClosed() bool { return false }
+func (c *emptyCursor[T]) IsClosed() bool { return c.closed }
 
 // errorCursor is a cursor that immediately returns an error on every OnNext call.
 // Used when a cursor cannot be created (e.g., scanning a non-readable index).
@@ -296,9 +299,11 @@ func FromList[T any](items []T) RecordCursor[T] {
 // throws BufferUnderflowException for continuations shorter than 4 bytes. Go returns
 // an error from OnNext for invalid continuation lengths to match Java's fail-fast behavior.
 func FromListWithContinuation[T any](items []T, continuation []byte) RecordCursor[T] {
-	if len(continuation) == 0 {
+	if continuation == nil {
 		return &listCursor[T]{items: items, pos: 0}
 	}
+	// A non-nil but short (including EMPTY) continuation is malformed: Java's
+	// ByteBuffer.getInt() underflows on it — only null means "start".
 	if len(continuation) < 4 {
 		// Java throws BufferUnderflowException. Return an error cursor.
 		return &errorCursor[T]{err: fmt.Errorf("invalid list continuation: expected at least 4 bytes, got %d", len(continuation))}

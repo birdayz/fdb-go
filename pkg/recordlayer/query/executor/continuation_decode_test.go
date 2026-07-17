@@ -10,6 +10,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -78,6 +79,19 @@ func TestExecuteFlatMapCorruptContinuation(t *testing.T) {
 	}
 }
 
+// validSlotBlobB64 returns a base64 typed-codec blob for one NULL slot —
+// the minimal valid strict-format positional payload.
+func validSlotBlobB64(t *testing.T) string {
+	t.Helper()
+	b, err := appendContValue(nil, nil)
+	if err != nil {
+		t.Fatalf("appendContValue: %v", err)
+	}
+	var cnt []byte
+	cnt = binary.AppendUvarint(cnt, 1)
+	return base64.StdEncoding.EncodeToString(append(cnt, b...))
+}
+
 func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 	t.Parallel()
 
@@ -115,13 +129,15 @@ func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte("{not json")})
 				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
 			},
-			wantErr: "failed to unmarshal sorted record 0 message",
+			wantErr: "failed to unmarshal sorted record 0 payload",
 		},
 		{
 			name: "SortedRecord with corrupt primary key",
 			data: func(t *testing.T) []byte {
 				sr := mustMarshal(t, &gen.SortedRecord{
-					Message:    []byte(`{"a":1}`),
+					// Valid strict-format payload so the decode reaches the
+					// PK unpack (the payload parses first now).
+					Message:    []byte(`[null, null, {"n":["A"], "b":"` + validSlotBlobB64(t) + `"}]`),
 					PrimaryKey: []byte{0xff}, // not a valid packed tuple
 				})
 				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
@@ -129,34 +145,32 @@ func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 			wantErr: "failed to unpack sorted record 0 primary key",
 		},
 		{
-			// A 1-element array carries no positional (slot 2 absent) — pre-positional
-			// / corrupt. Only a 3-element array [_, _, positional] is resumable; any
-			// other arity is rejected by the positional==nil guard, not silently
-			// mis-split (which would resume with wrong rows).
+			// Only the 3-element array [_, _, positional] is a shape this
+			// binary writes; any other arity fails loudly (RFC-180 H6 —
+			// legacy tolerance branches deleted).
 			name: "1-element array (no positional)",
 			data: func(t *testing.T) []byte {
 				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte(`[{"a":1}]`)})
 				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
 			},
-			wantErr: "no positional payload",
+			wantErr: "want 3",
 		},
 		{
-			// A 2-element v2 [_, complete] array is pre-positional (the retired
-			// Complete slot, no positional). Slot 1 is ignored now; the row has no
-			// reconstructable positional → rejected.
+			// A 2-element pre-release array is not a shape this binary
+			// writes — rejected by arity (RFC-180 H6).
 			name: "v2 2-element array (no positional)",
 			data: func(t *testing.T) []byte {
 				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte(`[{"a":1}, null]`)})
 				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
 			},
-			wantErr: "no positional payload",
+			wantErr: "want 3",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := decodeSortContinuation(tt.data(t), nil)
+			_, _, _, err := decodeSortContinuation(tt.data(t), nil)
 			if err == nil {
 				t.Fatal("want error, got nil (a silently dropped buffer row is wrong results with no error)")
 			}
@@ -174,11 +188,11 @@ func TestDecodeSortContinuationRoundTrip(t *testing.T) {
 		dmap(map[string]any{"a": int64(1), "b": "x"}),
 		dmap(map[string]any{"a": int64(2), "b": "y"}),
 	}
-	data, err := encodeSortContinuation(recordlayer.NewBytesContinuation([]byte("INNER")), buf)
+	data, err := encodeSortContinuation(recordlayer.NewBytesContinuation([]byte("INNER")), buf, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	inner, got, err := decodeSortContinuation(data, nil)
+	inner, got, _, err := decodeSortContinuation(data, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -208,6 +222,7 @@ func FuzzSortContinuation(f *testing.F) {
 	if valid, err := encodeSortContinuation(
 		recordlayer.NewBytesContinuation([]byte("INNER")),
 		[]QueryResult{dmap(map[string]any{"a": int64(1)})},
+		false,
 	); err == nil {
 		f.Add(valid)
 	}
@@ -218,13 +233,14 @@ func FuzzSortContinuation(f *testing.F) {
 			"arr":    []any{int64(1), "x", []any{nil}},
 			"struct": &gen.Flower{Type: proto.String("rose")},
 		})},
+		false,
 	); err == nil {
 		f.Add(valid)
 	}
 	// F55 seed: a flag-1 (dynamicpb) STRUCT slot — the tag-14 representation
 	// flag's other value.
 	ghost, _ := unregisteredDynamicMessage(f)
-	if valid, err := encodeSortContinuation(nil, []QueryResult{dmap(map[string]any{"g": ghost})}); err == nil {
+	if valid, err := encodeSortContinuation(nil, []QueryResult{dmap(map[string]any{"g": ghost})}, false); err == nil {
 		f.Add(valid)
 	}
 	if sr, err := proto.Marshal(&gen.SortedRecord{Message: []byte("{not json")}); err == nil {
@@ -234,7 +250,7 @@ func FuzzSortContinuation(f *testing.F) {
 	}
 
 	f.Fuzz(func(_ *testing.T, data []byte) {
-		_, _, _ = decodeSortContinuation(data, nil)
+		_, _, _, _ = decodeSortContinuation(data, nil)
 	})
 }
 
@@ -492,11 +508,11 @@ func TestSortContinuation_TypedSlotsPreserved_F33(t *testing.T) {
 	slots := []any{[]byte{0xff}, float64(2.0), bigInt, nil}
 	buf := []QueryResult{dorder(names, slots)}
 
-	encoded, err := encodeSortContinuation(recordlayer.NewBytesContinuation([]byte("INNER")), buf)
+	encoded, err := encodeSortContinuation(recordlayer.NewBytesContinuation([]byte("INNER")), buf, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	inner, got, err := decodeSortContinuation(encoded, nil)
+	inner, got, _, err := decodeSortContinuation(encoded, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -541,7 +557,7 @@ func TestSortContinuation_LegacyTypedSlotBlobRejected_F33(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	_, _, decErr := decodeSortContinuation(data, nil)
+	_, _, _, decErr := decodeSortContinuation(data, nil)
 	if decErr == nil {
 		t.Fatal("want error, got nil (a b-less legacy positional payload must fail-closed, not resume with lossy JSON slots)")
 	}
@@ -695,11 +711,11 @@ func TestSortContinuation_ArrayAndStructSlots_F53(t *testing.T) {
 	slots := []any{flower, []any{"a", "b"}, []any{elem}, int64(5)}
 	buf := []QueryResult{dorder(names, slots)}
 
-	encoded, err := encodeSortContinuation(recordlayer.NewBytesContinuation([]byte("INNER")), buf)
+	encoded, err := encodeSortContinuation(recordlayer.NewBytesContinuation([]byte("INNER")), buf, false)
 	if err != nil {
 		t.Fatalf("encode: %v (the F53 bug: an ARRAY/STRUCT slot must checkpoint losslessly, not fail)", err)
 	}
-	inner, got, err := decodeSortContinuation(encoded, demoMetadataResolver(t))
+	inner, got, _, err := decodeSortContinuation(encoded, demoMetadataResolver(t))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -758,11 +774,11 @@ func TestSortContinuation_ArrayAndStructSlots_F53(t *testing.T) {
 	// boundary checkpoints the SAME rows again. A restored message rides the
 	// same proto.Message arm and re-encodes the same representation flag it
 	// was restored as (generated → 0, dynamicpb → 1).
-	reEncoded, err := encodeSortContinuation(nil, got)
+	reEncoded, err := encodeSortContinuation(nil, got, false)
 	if err != nil {
 		t.Fatalf("re-encode of a resumed buffer: %v", err)
 	}
-	_, got2, err := decodeSortContinuation(reEncoded, demoMetadataResolver(t))
+	_, got2, _, err := decodeSortContinuation(reEncoded, demoMetadataResolver(t))
 	if err != nil {
 		t.Fatalf("second decode: %v", err)
 	}
@@ -789,11 +805,11 @@ func TestSortContinuation_StructSlot_NoResolverRejected_F53(t *testing.T) {
 
 	ghost, _ := unregisteredDynamicMessage(t)
 	buf := []QueryResult{dorder([]string{"GHOST"}, []any{ghost})}
-	encoded, err := encodeSortContinuation(nil, buf)
+	encoded, err := encodeSortContinuation(nil, buf, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	_, _, decErr := decodeSortContinuation(encoded, nil)
+	_, _, _, decErr := decodeSortContinuation(encoded, nil)
 	if decErr == nil {
 		t.Fatal("want error, got nil (a descriptor-less placeholder must never leak into the row domain)")
 	}
@@ -814,11 +830,11 @@ func TestSortContinuation_StructSlot_UnresolvableTypeRejected_F53(t *testing.T) 
 	// (resolver miss).
 	ghost, _ := unregisteredDynamicMessage(t)
 	buf := []QueryResult{dorder([]string{"X"}, []any{ghost})}
-	encoded, err := encodeSortContinuation(nil, buf)
+	encoded, err := encodeSortContinuation(nil, buf, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	_, _, decErr := decodeSortContinuation(encoded, demoMetadataResolver(t))
+	_, _, _, decErr := decodeSortContinuation(encoded, demoMetadataResolver(t))
 	if decErr == nil {
 		t.Fatal("want error, got nil (an unresolvable struct type must fail the resume loudly)")
 	}
@@ -837,7 +853,7 @@ func TestSortContinuation_DynamicSchemaFallback_F54(t *testing.T) {
 
 	ghost, md := unregisteredDynamicMessage(t)
 	buf := []QueryResult{dorder([]string{"GHOST", "ID"}, []any{ghost, int64(1)})}
-	encoded, err := encodeSortContinuation(nil, buf)
+	encoded, err := encodeSortContinuation(nil, buf, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -847,7 +863,7 @@ func TestSortContinuation_DynamicSchemaFallback_F54(t *testing.T) {
 		}
 		return md, nil
 	}
-	_, got, err := decodeSortContinuation(encoded, resolve)
+	_, got, _, err := decodeSortContinuation(encoded, resolve)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -998,7 +1014,7 @@ func TestSortContinuation_GeneratedTypeIdentity_F54(t *testing.T) {
 	slots := []any{flower, []any{elem}, int64(1)}
 	buf := []QueryResult{dorder(names, slots)}
 
-	encoded, err := encodeSortContinuation(nil, buf)
+	encoded, err := encodeSortContinuation(nil, buf, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -1018,7 +1034,7 @@ func TestSortContinuation_GeneratedTypeIdentity_F54(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, got, decErr := decodeSortContinuation(encoded, tc.resolve(t))
+			_, got, _, decErr := decodeSortContinuation(encoded, tc.resolve(t))
 			if decErr != nil {
 				t.Fatalf("decode: %v (a registered struct type must restore from the registry)", decErr)
 			}
@@ -1050,7 +1066,12 @@ func TestSortContinuation_GeneratedTypeIdentity_F54(t *testing.T) {
 			// The SYMPTOM pin: the restored row's dedup key must equal the
 			// original row's — a %T divergence here is the duplicate-groups /
 			// duplicate-DISTINCT-rows bug.
-			if orig, restored := packedDedupKey(slots), packedDedupKey(gotSlots); orig != restored {
+			orig, origErr := packedDedupKey(slots)
+			restored, restErr := packedDedupKey(gotSlots)
+			if origErr != nil || restErr != nil {
+				t.Fatalf("packedDedupKey: %v %v", origErr, restErr)
+			}
+			if orig != restored {
 				t.Errorf("packedDedupKey diverged across the checkpoint:\n  original = %q\n  restored = %q\n(equal rows straddling a resume would split into duplicate groups/DISTINCT rows)", orig, restored)
 			}
 		})
@@ -1115,7 +1136,7 @@ func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
 	slots := []any{dyn, []any{elem}, int64(1)}
 	buf := []QueryResult{dorder([]string{"FLOWER", "STRUCT_ARR", "ID"}, slots)}
 
-	encoded, err := encodeSortContinuation(nil, buf)
+	encoded, err := encodeSortContinuation(nil, buf, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -1125,7 +1146,7 @@ func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
 		// The demo metadata carries Flower, so the PRODUCTION resolver finds
 		// it — and the registry carries it too, so a registry-first decode
 		// would wrongly restore *gen.Flower.
-		_, got, decErr := decodeSortContinuation(encoded, demoMetadataResolver(t))
+		_, got, _, decErr := decodeSortContinuation(encoded, demoMetadataResolver(t))
 		if decErr != nil {
 			t.Fatalf("decode: %v", decErr)
 		}
@@ -1157,7 +1178,12 @@ func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
 		// The SYMPTOM pin: the restored row's dedup key must equal the
 		// original dynamicpb row's — a %T divergence here is the
 		// duplicate-groups / duplicate-DISTINCT-rows bug.
-		if orig, restored := packedDedupKey(slots), packedDedupKey(gotSlots); orig != restored {
+		orig, origErr := packedDedupKey(slots)
+		restored, restErr := packedDedupKey(gotSlots)
+		if origErr != nil || restErr != nil {
+			t.Fatalf("packedDedupKey: %v %v", origErr, restErr)
+		}
+		if orig != restored {
 			t.Errorf("packedDedupKey diverged across the checkpoint:\n  original = %q\n  restored = %q\n(equal dynamicpb rows straddling a resume would split into duplicate groups/DISTINCT rows)", orig, restored)
 		}
 	})
@@ -1167,7 +1193,7 @@ func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
 		// A flag-1 slot must NOT launder through the registry just because its
 		// name is registered: that restores the wrong representation — the
 		// same split, from the other side.
-		_, _, decErr := decodeSortContinuation(encoded, nil)
+		_, _, _, decErr := decodeSortContinuation(encoded, nil)
 		if decErr == nil {
 			t.Fatal("want error, got nil (a flag-1 slot with no resolver must fail loudly, never fall back to the registry)")
 		}

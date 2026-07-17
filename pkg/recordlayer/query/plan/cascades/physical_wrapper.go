@@ -895,6 +895,12 @@ func (w *physicalFilterWrapper) HintCost(child []properties.Cost, _ properties.S
 	return filterCost(child[0], len(w.plan.GetPredicates()))
 }
 
+// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// orderingDelegator in winner_lookup.go).
+func (w *physicalFilterWrapper) orderingSourceRef() *expressions.Reference {
+	return w.innerQuant.GetRangesOver()
+}
+
 func (w *physicalFilterWrapper) HintOrdering() properties.Ordering {
 	ref := w.innerQuant.GetRangesOver()
 	if ref == nil {
@@ -1001,6 +1007,12 @@ func (w *physicalDistinctWrapper) HintCost(child []properties.Cost, _ properties
 	return distinctCost(child[0])
 }
 
+// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// orderingDelegator in winner_lookup.go).
+func (w *physicalDistinctWrapper) orderingSourceRef() *expressions.Reference {
+	return w.innerQuant.GetRangesOver()
+}
+
 func (w *physicalDistinctWrapper) HintOrdering() properties.Ordering {
 	ref := w.innerQuant.GetRangesOver()
 	if ref == nil {
@@ -1098,6 +1110,12 @@ func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost, _ properti
 	}
 	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
 	return typeFilterCost(child[0])
+}
+
+// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// orderingDelegator in winner_lookup.go).
+func (w *physicalTypeFilterWrapper) orderingSourceRef() *expressions.Reference {
+	return w.innerQuant.GetRangesOver()
 }
 
 func (w *physicalTypeFilterWrapper) HintOrdering() properties.Ordering {
@@ -1649,6 +1667,12 @@ func (w *physicalProjectionWrapper) HintCost(child []properties.Cost, _ properti
 		Cardinality: child[0].Cardinality * physicalWrapperCostMultiplier,
 		CPU:         (child[0].CPU + child[0].Cardinality*properties.ProjectionCPU) * physicalWrapperCostMultiplier,
 	}
+}
+
+// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// orderingDelegator in winner_lookup.go).
+func (w *physicalProjectionWrapper) orderingSourceRef() *expressions.Reference {
+	return w.innerQuant.GetRangesOver()
 }
 
 func (w *physicalProjectionWrapper) HintOrdering() properties.Ordering {

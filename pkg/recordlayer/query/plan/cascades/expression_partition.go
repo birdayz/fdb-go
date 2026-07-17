@@ -1,8 +1,8 @@
 package cascades
 
 import (
-	"fmt"
 	"hash/fnv"
+	"reflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -111,9 +111,10 @@ func (p *PlanPartition) HasPrimaryKey() bool {
 }
 
 // GetOrdering returns the Ordering from the first expression in this
-// partition. Per-expression property — not a partitioning dimension.
-// For precise ordering, use GetExpressionPropertyValue on individual
-// expressions.
+// partition. Ordering IS a partitioning dimension — the partition key
+// folds orderingPartitionHash — so members share an ordering hash;
+// the first expression's Ordering is representative. For the precise
+// per-expression value, use GetExpressionPropertyValue.
 func (p *PlanPartition) GetOrdering() properties.Ordering {
 	for _, e := range p.GetExpressions() {
 		if props, ok := p.exprProps[e]; ok {
@@ -145,23 +146,15 @@ func ToPlanPartitions(ref *expressions.Reference) []*PlanPartition {
 }
 
 func toPlanPartitionsFallback(ref *expressions.Reference) []*PlanPartition {
-	if ref == nil {
-		return nil
-	}
-	members := ref.AllMembers()
-	p := &PlanPartition{
-		partitionProps: properties.PropertyMap{},
-		exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap),
-	}
-	for _, m := range members {
-		if ph, ok := m.(physicalPlanExpression); ok {
-			p.addExpression(m, computeWrapperProperties(ph))
-		}
-	}
-	if len(p.exprProps) == 0 {
-		return nil
-	}
-	return []*PlanPartition{p}
+	// RFC-180 D4: a nil PlanPropertiesMap means computeRefPlanProperties
+	// never ran for this Reference — a planner sequencing bug. The retired
+	// fallback lumped every member into ONE unordered partition,
+	// contradicting ImplementSortRule's invariant (partitions keyed on
+	// ordering properties) and leaking unordered members as sort-free
+	// finals (silently wrong ordering). Decline instead: no partitions →
+	// the consuming rule yields nothing → the planner fails loudly with
+	// could-not-plan rather than approximating.
+	return nil
 }
 
 func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
@@ -259,21 +252,31 @@ func RollUpPlanPartitions(partitions []*PlanPartition, interestingProps ...*prop
 		return []*PlanPartition{merged}
 	}
 
-	makeKey := func(p *PlanPartition) string {
-		var b []byte
+	// Group by property EQUALITY, never by a rendered string (RFC-180 D3):
+	// %v of an ordering stringified its Value interface pointers as
+	// addresses, so semantically-equal orderings NEVER merged —
+	// under-merging inflated enumeration and diverged the alternatives
+	// from Java's PlanPartitions.rollUpTo, which groups by property
+	// equals(). Partitions per Reference are few; the pairwise scan is
+	// Java's own shape.
+	sameProps := func(a, b *PlanPartition) bool {
 		for _, prop := range interestingProps {
-			v := p.partitionProps[prop]
-			b = append(b, fmt.Sprintf("%v|", v)...)
+			if !partitionPropValueEqual(a.partitionProps[prop], b.partitionProps[prop]) {
+				return false
+			}
 		}
-		return string(b)
+		return true
 	}
-
-	groups := make(map[string]*PlanPartition)
-	order := make([]string, 0)
+	var result []*PlanPartition
 	for _, p := range partitions {
-		key := makeKey(p)
-		existing, ok := groups[key]
-		if !ok {
+		var existing *PlanPartition
+		for _, g := range result {
+			if sameProps(g, p) {
+				existing = g
+				break
+			}
+		}
+		if existing == nil {
 			filteredProps := make(properties.PropertyMap, len(interestingProps))
 			for _, prop := range interestingProps {
 				filteredProps[prop] = p.partitionProps[prop]
@@ -282,19 +285,60 @@ func RollUpPlanPartitions(partitions []*PlanPartition, interestingProps ...*prop
 				partitionProps: filteredProps,
 				exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap),
 			}
-			groups[key] = existing
-			order = append(order, key)
+			result = append(result, existing)
 		}
 		for _, e := range p.GetExpressions() {
 			existing.addExpression(e, p.exprProps[e])
 		}
 	}
-
-	result := make([]*PlanPartition, 0, len(order))
-	for _, key := range order {
-		result = append(result, groups[key])
-	}
 	return result
+}
+
+// partitionPropValueEqual compares two partition property VALUES the way
+// Java's PlanPartitions.rollUpTo compares via equals(): typed, never a
+// rendered string. Orderings compare structurally (keys via
+// ValuesStructurallyEqual + parallel direction/null flags); comparable
+// scalars via ==; everything else via reflect.DeepEqual (the Go analog of
+// a value-object equals).
+func partitionPropValueEqual(a, b any) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if ao, ok := a.(properties.Ordering); ok {
+		bo, ok2 := b.(properties.Ordering)
+		if !ok2 {
+			return false
+		}
+		return orderingsEqual(ao, bo)
+	}
+	ra, rb := reflect.TypeOf(a), reflect.TypeOf(b)
+	if ra != rb {
+		return false
+	}
+	if ra.Comparable() {
+		return a == b
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+func orderingsEqual(a, b properties.Ordering) bool {
+	if a.IsKnown != b.IsKnown || len(a.Keys) != len(b.Keys) {
+		return false
+	}
+	for i := range a.Keys {
+		if !values.ValuesStructurallyEqual(a.Keys[i], b.Keys[i]) {
+			return false
+		}
+		// SEMANTIC accessors, never raw slices: an absent NullsFirst means
+		// NATURAL placement (ASC → nulls-first), so raw absent-=false both
+		// over-merged (absent vs explicit-false on ASC are semantically
+		// DIFFERENT null placements) and under-merged (absent vs
+		// explicit-true on ASC are the same).
+		if a.DescendingAt(i) != b.DescendingAt(i) || a.NullsFirstAt(i) != b.NullsFirstAt(i) {
+			return false
+		}
+	}
+	return true
 }
 
 // FilterPlanPartitions returns partitions that satisfy the predicate.

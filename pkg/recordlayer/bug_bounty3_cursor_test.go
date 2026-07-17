@@ -3,7 +3,6 @@ package recordlayer
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"testing"
 )
@@ -86,70 +85,57 @@ func (c *closeTracker[T]) wasClosed() bool {
 	return c.closed.Load()
 }
 
-// === BUG #1: LimitRowsCursor(cursor, 0) leaks the inner cursor ===
+// === LimitRowsCursor edge limits: Java's limitRowsTo contract ===
 //
-// File: cursor_combinators.go:71-76
-// Severity: $100 (resource leak)
-//
-// When LimitRowsCursor is called with n <= 0, it returns Empty[T]() and
-// discards the original cursor without closing it. If the original cursor
-// holds FDB range iterators or other resources, they are leaked. The caller
-// receives an Empty cursor whose Close() is a no-op, so the original cursor
-// is never cleaned up.
-//
-// Fix: Close the original cursor before returning Empty, or return a wrapper
-// that closes the original on Close().
+// Java RecordCursor.limitRowsTo: 0 (and MAX) mean UNLIMITED — the cursor is
+// returned unchanged — and a NEGATIVE limit throws. The original bug-bounty
+// pins here asserted the opposite (0 → zero rows + eager close), a silent
+// inversion of Java's convention that a caller passing the
+// getReturnedRowLimitOrMax-style "0 == no limit" value would misread as an
+// empty result set.
 
-func TestBugBounty3Cursor_LimitZeroLeaksInnerCursor(t *testing.T) {
+func TestCursor_LimitZeroMeansUnlimited(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
 	inner := newCloseTracker(FromList([]int{1, 2, 3}))
 	limited := LimitRowsCursor[int](inner, 0)
 
-	// Drain the limited cursor (it's Empty, returns immediately)
-	result, err := limited.OnNext(ctx)
-	if err != nil {
-		t.Fatal(err)
+	var got []int
+	for {
+		result, err := limited.OnNext(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.HasNext() {
+			break
+		}
+		got = append(got, result.GetValue())
 	}
-	if result.HasNext() {
-		t.Fatal("expected empty cursor to have no results")
+	if len(got) != 3 {
+		t.Fatalf("limitRowsTo(0) is UNLIMITED in Java; got %d rows, want all 3", len(got))
 	}
-
-	// Close the limited cursor (which is an Empty cursor)
 	if err := limited.Close(); err != nil {
 		t.Fatal(err)
 	}
-
-	// BUG: The inner cursor was never closed!
 	if !inner.wasClosed() {
-		t.Errorf("BUG: LimitRowsCursor(cursor, 0) leaked inner cursor — Close() was never called.\n" +
-			"The original cursor's resources (FDB iterators, etc.) are leaked.\n" +
-			"Fix: close the inner cursor before returning Empty, or return a wrapper.")
+		t.Error("closing the returned cursor must close the inner (it IS the inner)")
 	}
 }
 
-func TestBugBounty3Cursor_LimitNegativeLeaksInnerCursor(t *testing.T) {
+func TestCursor_LimitNegativeErrorsAndCloses(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
 	inner := newCloseTracker(FromList([]int{1, 2, 3}))
 	limited := LimitRowsCursor[int](inner, -5)
 
-	result, err := limited.OnNext(ctx)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := limited.OnNext(ctx); err == nil {
+		t.Fatal("a negative limit is an error (Java throws RecordCoreException)")
 	}
-	if result.HasNext() {
-		t.Fatal("expected empty cursor")
-	}
-
-	if err := limited.Close(); err != nil {
-		t.Fatal(err)
-	}
-
+	// The inner was closed eagerly — no resource leak on the error path.
 	if !inner.wasClosed() {
-		t.Errorf("BUG: LimitRowsCursor(cursor, -5) leaked inner cursor — Close() was never called.")
+		t.Error("LimitRowsCursor(cursor, -5) must close the inner before returning the error cursor")
 	}
 }
 
@@ -1054,67 +1040,4 @@ func TestBugBounty3Cursor_DeepNesting(t *testing.T) {
 	// Close should close all 100 nested cursors without error
 	// (already closed by AsList, but verify no panic on double-close)
 	_ = cursor.Close()
-}
-
-// === Verification: Union cursor first call initialization ===
-
-func TestBugBounty3Cursor_UnionFirstCallOnlyAdvancesOnce(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	// Track how many times each child cursor's OnNext is called.
-	// The union should advance each child exactly once on the first call,
-	// then only advance consumed children on subsequent calls.
-	c1Calls := 0
-	c1 := MapCursor(FromList([]int{1, 3, 5}), func(v int) int {
-		c1Calls++
-		return v
-	})
-
-	c2Calls := 0
-	c2 := MapCursor(FromList([]int{2, 4, 6}), func(v int) int {
-		c2Calls++
-		return v
-	})
-
-	union := Union([]RecordCursor[int]{c1, c2}, intCompKey, false)
-
-	// First call: should advance both children once
-	r1, err := union.OnNext(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !r1.HasNext() || r1.GetValue() != 1 {
-		t.Fatalf("expected 1, got %v", r1.GetValue())
-	}
-
-	// After first OnNext: c1 was advanced twice (once for initial, once for dedup
-	// because it won with key 1). c2 was advanced once (initial only, it didn't win).
-	// MapCursor counts are for the transform, which fires on successful values.
-	// So c1: map fired for initial advance (value 1) + dedup advance (value 3) = 2 calls
-	// c2: map fired for initial advance (value 2) = 1 call
-	if c1Calls != 2 {
-		t.Logf("c1 transform calls after first OnNext: %d (expected 2)", c1Calls)
-	}
-	if c2Calls != 1 {
-		t.Logf("c2 transform calls after first OnNext: %d (expected 1)", c2Calls)
-	}
-
-	// Read all remaining
-	results := []int{1}
-	for {
-		r, err := union.OnNext(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !r.HasNext() {
-			break
-		}
-		results = append(results, r.GetValue())
-	}
-
-	expected := []int{1, 2, 3, 4, 5, 6}
-	if fmt.Sprintf("%v", results) != fmt.Sprintf("%v", expected) {
-		t.Fatalf("union results: got %v, want %v", results, expected)
-	}
 }

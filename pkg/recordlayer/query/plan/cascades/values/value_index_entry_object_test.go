@@ -91,29 +91,54 @@ func TestIndexEntryObjectValue_EvaluateNestedPath(t *testing.T) {
 	}
 }
 
-func TestIndexEntryObjectValue_EvaluateOutOfBoundsReturnsNil(t *testing.T) {
+// Java getForOrdinalPath THROWS on an out-of-bounds hop
+// (Tuple.get/List.get); a silent nil here would read as SQL NULL and drop
+// rows the moment something wires this Value up.
+func TestIndexEntryObjectValue_EvaluateOutOfBoundsErrors(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("e")
 	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{99}, NotNullLong)
 	entry := &fakeIndexEntry{key: []any{int64(10)}}
 	ctx := map[CorrelationIdentifier]any{alias: entry}
-	got, errEv0 := v.Evaluate(ctx)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("Evaluate(OOB) = %v, want nil", got)
+	if _, err := v.Evaluate(ctx); err == nil {
+		t.Fatal("out-of-bounds ordinal path must error loudly (Java throws), not evaluate to nil")
 	}
 }
 
-func TestIndexEntryObjectValue_EvaluateNegativePathReturnsNil(t *testing.T) {
+func TestIndexEntryObjectValue_EvaluateNegativePathErrors(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("e")
 	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{-1}, NotNullLong)
 	entry := &fakeIndexEntry{key: []any{int64(10)}}
 	ctx := map[CorrelationIdentifier]any{alias: entry}
-	got, errEv0 := v.Evaluate(ctx)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("Evaluate(-1) = %v, want nil", got)
+	if _, err := v.Evaluate(ctx); err == nil {
+		t.Fatal("negative ordinal path must error loudly (Java throws), not evaluate to nil")
+	}
+}
+
+// A NULL value mid-path is Java's `value == null → return null` — legitimate
+// null propagation, NOT an error.
+func TestIndexEntryObjectValue_EvaluateNilMidPathPropagates(t *testing.T) {
+	t.Parallel()
+	alias := NamedCorrelationIdentifier("e")
+	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0, 1}, NotNullLong)
+	entry := &fakeIndexEntry{key: []any{nil}}
+	ctx := map[CorrelationIdentifier]any{alias: entry}
+	got, err := v.Evaluate(ctx)
+	if err != nil || got != nil {
+		t.Fatalf("nil mid-path must propagate nil without error, got (%v, %v)", got, err)
+	}
+}
+
+// A non-tuple mid-path hop is Java's ClassCastException — loud.
+func TestIndexEntryObjectValue_EvaluateNonTupleHopErrors(t *testing.T) {
+	t.Parallel()
+	alias := NamedCorrelationIdentifier("e")
+	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0, 0}, NotNullLong)
+	entry := &fakeIndexEntry{key: []any{int64(10)}}
+	ctx := map[CorrelationIdentifier]any{alias: entry}
+	if _, err := v.Evaluate(ctx); err == nil {
+		t.Fatal("a non-tuple hop must error loudly (Java class-casts), not evaluate to nil")
 	}
 }
 

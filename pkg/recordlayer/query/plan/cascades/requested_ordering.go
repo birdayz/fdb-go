@@ -160,6 +160,77 @@ func (o *RequestedOrdering) GetValueRequestedSortOrderMap() map[values.Value]Req
 	return m
 }
 
+// PartsEqual reports whether two requested-ordering part lists are equal
+// element-wise: same Value (structural equality) and same sort order.
+// Mirrors Java's List<RequestedOrderingPart>.equals in
+// RequestedOrderingConstraint.combine.
+func PartsEqual(a, b []RequestedOrderingPart) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].SortOrder != b[i].SortOrder || !valuesEqual(a[i].Value, b[i].Value) {
+			return false
+		}
+	}
+	return true
+}
+
+// CombineRequestedOrderings unions `new` into `current` with subsumption,
+// porting Java RequestedOrderingConstraint.combine exactly
+// (RequestedOrderingConstraint.java:38-76): a new ordering already
+// subsumed by a current one (same distinctness; an exhaustive current
+// subsumes any new whose parts extend its prefix; otherwise exact part
+// equality) is dropped. ok=false means nothing new remained — the
+// existing constraint already covers the push (Java's Optional.empty,
+// where the caller leaves the map untouched).
+func CombineRequestedOrderings(current, added []*RequestedOrdering) ([]*RequestedOrdering, bool) {
+	var fresh []*RequestedOrdering
+	for _, n := range added {
+		subsumed := false
+		for _, cur := range current {
+			if n.IsDistinct() != cur.IsDistinct() {
+				continue
+			}
+			if !cur.IsExhaustive() && n.IsExhaustive() {
+				continue
+			}
+			if cur.IsExhaustive() && len(n.parts) >= len(cur.parts) {
+				if PartsEqual(n.parts[:len(cur.parts)], cur.parts) {
+					subsumed = true
+					break
+				}
+				continue
+			}
+			if PartsEqual(n.parts, cur.parts) {
+				subsumed = true
+				break
+			}
+		}
+		if !subsumed {
+			// Java's newConstraint is a Set: exact duplicates WITHIN the
+			// pushed batch collapse too.
+			dup := false
+			for _, f := range fresh {
+				if f.IsDistinct() == n.IsDistinct() && f.IsExhaustive() == n.IsExhaustive() && PartsEqual(f.parts, n.parts) {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				fresh = append(fresh, n)
+			}
+		}
+	}
+	if len(fresh) == 0 {
+		return current, false
+	}
+	out := make([]*RequestedOrdering, 0, len(current)+len(fresh))
+	out = append(out, current...)
+	out = append(out, fresh...)
+	return out, true
+}
+
 // PushDownThroughValue translates this requested ordering's keys
 // through a result value, expressing them in terms of the result
 // value's inputs. Each ordering part's value is pushed down; sort

@@ -1,8 +1,13 @@
 package executor
 
 import (
+	"context"
 	"errors"
 	"testing"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -255,5 +260,202 @@ func TestBoundedSet_ChargesNewKeysOnly(t *testing.T) {
 	}
 	if st.MemUsed() != 12 {
 		t.Fatalf("memUsed = %d, want 12 after two distinct keys", st.MemUsed())
+	}
+}
+
+// TestResumedSortBufferChargesMemory pins RFC-180 H4: rows restored from a
+// sort continuation charge the RFC-130 statement memory budget exactly like
+// fresh fill-loop rows — a resume must not smuggle an arbitrarily large
+// buffer past the limit. The restored buffer here exceeds a tiny budget, so
+// the resume fails with MemoryLimitExceededError instead of materializing.
+func TestResumedSortBufferChargesMemory(t *testing.T) {
+	t.Parallel()
+	buf := make([]QueryResult, 8)
+	for i := range buf {
+		buf[i] = QueryResult{Positional: &PositionalRow{
+			Type:  positionalTypeFromNames([]string{"A"}),
+			Slots: []any{string(make([]byte, 64))},
+		}}
+	}
+	cont, err := encodeSortContinuation(nil, buf, true)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	plan := plans.NewRecordQueryInMemorySortPlan(
+		plans.NewRecordQueryValuesPlan(nil),
+		[]plans.SortKey{{Field: "A", ValueExpr: values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)}},
+	)
+	props := recordlayer.ExecuteProperties{State: recordlayer.NewExecuteState(64)}
+	_, err = executeInMemorySort(context.Background(), plan, nil, &EvaluationContext{}, cont, props)
+	var mem *recordlayer.MemoryLimitExceededError
+	if !errors.As(err, &mem) {
+		t.Fatalf("resumed over-budget buffer must trip the memory limit, got %v", err)
+	}
+}
+
+// TestResumedSortBufferReleasesOnPageTeardown pins the statement-wide half of
+// the RFC-180 H4 contract: the budget bounds LIVE buffered bytes. Relational
+// pagination reuses ONE ExecuteState across every page of a statement, and
+// each page's teardown (cursor Close) must release what that page's sort
+// cursor charged — otherwise every resume re-accounts the same buffer against
+// the shared counter and a query whose buffer FITS the budget fails with
+// MemoryLimitExceededError merely for crossing enough page boundaries.
+func TestResumedSortBufferReleasesOnPageTeardown(t *testing.T) {
+	t.Parallel()
+	buf := make([]QueryResult, 8)
+	var bufBytes int64
+	for i := range buf {
+		buf[i] = QueryResult{Positional: &PositionalRow{
+			Type:  positionalTypeFromNames([]string{"A"}),
+			Slots: []any{string(make([]byte, 64))},
+		}}
+		bufBytes += estimateQueryResultBytes(buf[i])
+	}
+	cont, err := encodeSortContinuation(nil, buf, true)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	plan := plans.NewRecordQueryInMemorySortPlan(
+		plans.NewRecordQueryValuesPlan(nil),
+		[]plans.SortKey{{Field: "A", ValueExpr: values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)}},
+	)
+	// Budget fits the buffer once but NOT twice: any page-to-page charge leak
+	// trips the limit on the second resume.
+	state := recordlayer.NewExecuteState(bufBytes + bufBytes/2)
+	props := recordlayer.ExecuteProperties{State: state}
+	for page := 0; page < 3; page++ {
+		cursor, serr := executeInMemorySort(context.Background(), plan, nil, &EvaluationContext{}, cont, props)
+		if serr != nil {
+			t.Fatalf("page %d: an in-budget buffer resumed against the statement-wide state must not trip the limit: %v", page, serr)
+		}
+		if cerr := cursor.Close(); cerr != nil {
+			t.Fatalf("page %d: close: %v", page, cerr)
+		}
+	}
+	if used := state.MemUsed(); used != 0 {
+		t.Fatalf("after final page teardown all sort charges must be released, still holding %d bytes", used)
+	}
+}
+
+// TestNLJInnerReleasesOnPageTeardown pins the live-bytes contract for the
+// nested-loop join: the inner side is re-materialized (and re-charged) on
+// EVERY page against the statement-wide ExecuteState, so nljCursor.Close must
+// release its charges (inner rows + hash index) — otherwise a join whose
+// inner side fits the budget fails after enough page boundaries.
+func TestNLJInnerReleasesOnPageTeardown(t *testing.T) {
+	t.Parallel()
+	// ≥100 inner rows + a baked single-column equijoin so tryBuildHashIndex
+	// fires: the pin must cover BOTH tallies (inner rows and hash index) —
+	// an assignment instead of an addition when wiring the collect charge
+	// onto the cursor clobbers the constructor's hash tally and orphans it.
+	inner := make([]QueryResult, 150)
+	var innerBytes int64
+	for i := range inner {
+		inner[i] = dmap(map[string]any{"K": int64(i), "P": string(make([]byte, 64))})
+		innerBytes += estimateQueryResultBytes(inner[i])
+	}
+	preds := []predicates.QueryPredicate{
+		&predicates.ComparisonPredicate{
+			Operand: &values.FieldValue{
+				Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("O")},
+				Field:    "K",
+				Resolved: values.NewFieldPathOfSingle("K", 0, false),
+			},
+			Comparison: predicates.Comparison{
+				Type: predicates.ComparisonEquals,
+				Operand: &values.FieldValue{
+					Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("I")},
+					Field:    "K",
+					Resolved: values.NewFieldPathOfSingle("K", 0, false),
+				},
+			},
+		},
+	}
+	// Budget fits the inner side + hash index once but not twice.
+	state := recordlayer.NewExecuteState(innerBytes + innerBytes/2 + 150*(nljHashEntryBytes+16))
+	for page := 0; page < 3; page++ {
+		buf := newBoundedBuffer[QueryResult](state, 0, "test inner", estimateQueryResultBytes)
+		for _, r := range inner {
+			if err := buf.Append(r); err != nil {
+				t.Fatalf("page %d: in-budget inner side must charge cleanly: %v", page, err)
+			}
+		}
+		cursor, err := newNLJCursor(
+			recordlayer.Empty[QueryResult](), buf.Items(),
+			plans.JoinInner, "O", "I", preds, nil, EmptyEvaluationContext(), state,
+		)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if cursor.hashIndex == nil {
+			t.Fatalf("page %d: hash index was not built — the pin no longer covers the hash tally", page)
+		}
+		cursor.chargedBytes += buf.Charged()
+		if cerr := cursor.Close(); cerr != nil {
+			t.Fatalf("page %d: close: %v", page, cerr)
+		}
+	}
+	if used := state.MemUsed(); used != 0 {
+		t.Fatalf("after final page teardown all NLJ charges (inner rows AND hash index) must be released, still holding %d bytes", used)
+	}
+}
+
+// TestDistinctSeenSetReleasesOnPageTeardown pins the live-bytes contract for
+// the DISTINCT dedup seen-set: it is rebuilt (and re-charged) per page against
+// the statement-wide state, so the cursor's teardown must return its tally —
+// otherwise a distinct scan whose key set fits the budget fails after enough
+// page boundaries.
+func TestDistinctSeenSetReleasesOnPageTeardown(t *testing.T) {
+	t.Parallel()
+	state := recordlayer.NewExecuteState(1 << 20)
+	props := recordlayer.ExecuteProperties{State: state}
+	plan := plans.NewRecordQueryDistinctPlan(plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(42)},
+	}))
+	for page := 0; page < 3; page++ {
+		cursor, err := executeDistinct(context.Background(), plan, nil, EmptyEvaluationContext(), nil, props)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if _, err := cursor.OnNext(context.Background()); err != nil {
+			t.Fatalf("page %d: drain: %v", page, err)
+		}
+		if state.MemUsed() == 0 {
+			t.Fatalf("page %d: the seen-set must have charged the budget before close", page)
+		}
+		if cerr := cursor.Close(); cerr != nil {
+			t.Fatalf("page %d: close: %v", page, cerr)
+		}
+		if used := state.MemUsed(); used != 0 {
+			t.Fatalf("page %d: teardown must release the seen-set tally, still holding %d bytes", page, used)
+		}
+	}
+}
+
+// TestRecursiveUnionReleasesOnPageTeardown pins the live-bytes contract for
+// the recursive-CTE working set: the whole recursion re-executes (and its
+// ping-pong temp tables re-charge) on every page, so the final cursor's
+// teardown must return every charged byte to the statement budget.
+func TestRecursiveUnionReleasesOnPageTeardown(t *testing.T) {
+	t.Parallel()
+	state := recordlayer.NewExecuteState(1 << 20)
+	tt := NewTempTableWithState(state)
+	rows := make([]QueryResult, 4)
+	for i := range rows {
+		rows[i] = dmap(map[string]any{"K": int64(i), "P": string(make([]byte, 64))})
+		if err := tt.Add(rows[i]); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+	}
+	if state.MemUsed() == 0 {
+		t.Fatal("temp table must have charged the budget")
+	}
+	tt.ReleaseCharges()
+	if used := state.MemUsed(); used != 0 {
+		t.Fatalf("ReleaseCharges must return every charged byte, still holding %d", used)
+	}
+	tt.ReleaseCharges() // idempotent — the tally was zeroed
+	if used := state.MemUsed(); used != 0 {
+		t.Fatalf("double release must be a no-op, holding %d", used)
 	}
 }

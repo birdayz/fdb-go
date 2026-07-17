@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -57,10 +58,32 @@ type Planner struct {
 	planningExpressionRules []ExpressionRule
 
 	// MaxTasks caps the total tasks executed before the planner
-	// gives up (returns the partial result). Defaults to 100_000.
-	// Hitting the cap is a strong signal of a non-terminating rule —
-	// callers should report.
+	// gives up: Plan returns nil and ErrPlannerCapHit (no partial
+	// result — matching Java's throw). Defaults to 100_000. Hitting
+	// the cap is a strong signal of a non-terminating rule — callers
+	// should report.
 	MaxTasks int
+
+	// MaxTaskQueueSize caps the task stack's depth; 0 disables (Java
+	// RecordQueryPlannerConfiguration.getMaxTaskQueueSize default). Hitting
+	// it returns ErrPlannerQueueCapHit — Java throws
+	// RecordQueryPlanComplexityException("Maximum task queue size...").
+	MaxTaskQueueSize int
+
+	// MaxNumMatchesPerRuleCall caps the bindings one rule invocation may
+	// produce; 0 disables (Java default). Hitting it returns
+	// ErrPlannerRuleMatchCapHit via the task-level capErr channel.
+	MaxNumMatchesPerRuleCall int
+
+	// DisabledRules holds rule type names (fmt %T spelling) excluded from
+	// selection — Java's PlannerRuleSet filtering via
+	// configuration.isRuleEnabled(rule). nil/empty = all rules enabled.
+	DisabledRules map[string]struct{}
+
+	// capErr carries a complexity-guard trip raised inside a task (tasks
+	// have no error channel — Java throws instead); the Plan loop checks
+	// it after every task.
+	capErr error
 
 	tasksRun int
 
@@ -83,6 +106,14 @@ type Planner struct {
 	// path — the RFC-148 §3c re-entry/termination guard. Re-consumption runs
 	// only when the match set grows. Reset per Plan() run.
 	dataAccessConsumed map[*expressions.Reference]int
+
+	// exprRuleIdx / implRuleIdx bucket each phase's rules by their
+	// matcher's typed root operator (ruleIndex), so ExploreExprTask only
+	// pushes transform tasks for rules that can possibly match an
+	// expression. Built lazily per phase; reset per Plan() run so a
+	// reconfigured planner (DisabledRules, With*Rules) re-indexes.
+	exprRuleIdx map[PlannerPhase]*ruleIndex[ExpressionRule]
+	implRuleIdx map[PlannerPhase]*ruleIndex[ImplementationRule]
 }
 
 // NewPlanner builds a planner with the given rule set + context.
@@ -110,13 +141,12 @@ func (p *Planner) Memo() *Memo {
 }
 
 // BestMember returns the OPTIMIZE-chosen best member for `ref`,
-// or nil if the Reference wasn't optimized. Delegates to the
-// per-properties winner map (NoProperties = cheapest overall).
+// or nil if the Reference wasn't optimized.
 func (p *Planner) BestMember(ref *expressions.Reference) expressions.RelationalExpression {
 	if ref == nil {
 		return nil
 	}
-	return ref.Winner(expressions.NoProperties)
+	return ref.Winner()
 }
 
 // HasBestMember reports whether a winner exists for `ref`.
@@ -124,20 +154,35 @@ func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 	if ref == nil {
 		return false
 	}
-	return ref.HasWinner(expressions.NoProperties)
+	return ref.HasWinner()
 }
 
-// orderingToProps converts a properties.Ordering to PhysicalProperties.
-func orderingToProps(ord properties.Ordering) expressions.PhysicalProperties {
-	names := make([]string, len(ord.Keys))
-	for i, k := range ord.Keys {
-		if fv, ok := k.(*values.FieldValue); ok {
-			names[i] = fv.Field
-		} else {
-			names[i] = k.Name()
-		}
+// OrderedChildWinner returns the cheapest physical member of childRef whose
+// derived rich ordering satisfies sortExpr's keys, or nil when none does
+// (the sort must then be materialised). Implements the sort-elision hook of
+// properties.ExtractBestPlanFromSelector: satisfaction runs on the full
+// Value + four-state sort-order representation (RichOrdering.Satisfies), so
+// an ASC_NULLS_LAST sort is never elided against a natural-order ASC scan.
+func (p *Planner) OrderedChildWinner(sortExpr *expressions.LogicalSortExpression, childRef *expressions.Reference) expressions.RelationalExpression {
+	ro := sortExpressionToRequestedOrdering(sortExpr)
+	if ro.IsPreserve() {
+		return nil
 	}
-	return expressions.OrderingFromNameDir(names, ord.Descending)
+	return bestSatisfyingMember(childRef, ro, p.costModel)
+}
+
+// OrderingSourceRef reports whether expr is an order-PRESERVING wrapper
+// (orderingDelegator) and returns the child group its ordering flows
+// from. Implements the second half of the sort-elision seam: extraction
+// must pin that group to a satisfying member when it elides a sort —
+// rebuilding through the group's overall winner could relink the spine
+// to a cheaper UNORDERED member after the sort is already gone.
+func (p *Planner) OrderingSourceRef(expr expressions.RelationalExpression) (*expressions.Reference, bool) {
+	d, ok := expr.(orderingDelegator)
+	if !ok {
+		return nil, false
+	}
+	return d.orderingSourceRef(), true
 }
 
 // WithImplementationRules adds rules for PhasePlanning. These run
@@ -208,6 +253,9 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	}
 	p.constraintMap = NewConstraintMap()
 	p.dataAccessConsumed = make(map[*expressions.Reference]int)
+	p.exprRuleIdx = nil
+	p.implRuleIdx = nil
+	p.capErr = nil
 
 	// One task-stack drives both REWRITING and PLANNING phases.
 	// InitiatePlannerPhase(REWRITING) pushes ExploreGroup + OptimizeGroup
@@ -218,9 +266,15 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 		if p.tasksRun >= p.MaxTasks {
 			return nil, p.tasksRun, ErrPlannerCapHit
 		}
+		if p.MaxTaskQueueSize > 0 && len(p.stack) > p.MaxTaskQueueSize {
+			return nil, p.tasksRun, ErrPlannerQueueCapHit
+		}
 		task := p.pop()
 		task.Run(p)
 		p.tasksRun++
+		if p.capErr != nil {
+			return nil, p.tasksRun, p.capErr
+		}
 	}
 
 	// After the task-stack drains, each Reference's FinalMembers has
@@ -255,6 +309,19 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 // non-termination indicator and report.
 var ErrPlannerCapHit = plannerErr("planner: MaxTasks cap hit before convergence")
 
+// ErrPlannerQueueCapHit mirrors Java's "Maximum task queue size was exceeded"
+// RecordQueryPlanComplexityException (CascadesPlanner.isTaskQueueSizeExceeded).
+var ErrPlannerQueueCapHit = plannerErr("planner: MaxTaskQueueSize cap hit — task queue exceeded the configured bound")
+
+// ErrPlannerRoundCapHit signals a Reference still inserting new exploratory
+// members after the round cap — a rule-cycle divergence the memo dedup should
+// have collapsed (RFC-180 I2). A planner bug indicator, never load.
+var ErrPlannerRoundCapHit = plannerErr("planner: exploration round cap hit — a Reference kept producing new members after 10 rounds (rule-cycle divergence)")
+
+// ErrPlannerRuleMatchCapHit mirrors Java's "Maximum number of matches per rule
+// call has been exceeded" (CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded).
+var ErrPlannerRuleMatchCapHit = plannerErr("planner: MaxNumMatchesPerRuleCall cap hit — one rule invocation produced more matches than the configured bound")
+
 // plannerErr is a string-error type local to the planner.
 type plannerErr string
 
@@ -278,14 +345,57 @@ func (p *Planner) pop() Task {
 // rulesForPhase returns the expression and implementation rules for the
 // given planner phase.
 func (p *Planner) rulesForPhase(phase PlannerPhase) ([]ExpressionRule, []ImplementationRule) {
+	var er []ExpressionRule
+	var ir []ImplementationRule
 	switch phase {
 	case PhaseRewriting:
-		return p.rules, p.rewritingImplRules
+		er, ir = p.rules, p.rewritingImplRules
 	case PhasePlanning:
-		return p.planningExpressionRules, p.implementationRules
+		er, ir = p.planningExpressionRules, p.implementationRules
 	default:
 		return nil, nil
 	}
+	// Java's configuration.isRuleEnabled filtering (PlannerRuleSet.getRules
+	// passes the predicate): a rule named in DisabledRules is never
+	// selected. Keyed by the concrete type's %T spelling — the Go analog of
+	// Java's rule class.
+	if len(p.DisabledRules) > 0 {
+		fe := er[:0:0]
+		for _, r := range er {
+			if _, off := p.DisabledRules[fmt.Sprintf("%T", r)]; !off {
+				fe = append(fe, r)
+			}
+		}
+		fi := ir[:0:0]
+		for _, r := range ir {
+			if _, off := p.DisabledRules[fmt.Sprintf("%T", r)]; !off {
+				fi = append(fi, r)
+			}
+		}
+		return fe, fi
+	}
+	return er, ir
+}
+
+// ruleIndexesForPhase returns the phase's rule indexes, building them from
+// rulesForPhase on first use (per Plan() run — Plan resets the maps).
+func (p *Planner) ruleIndexesForPhase(phase PlannerPhase) (*ruleIndex[ExpressionRule], *ruleIndex[ImplementationRule]) {
+	if p.exprRuleIdx == nil {
+		p.exprRuleIdx = make(map[PlannerPhase]*ruleIndex[ExpressionRule])
+	}
+	if p.implRuleIdx == nil {
+		p.implRuleIdx = make(map[PlannerPhase]*ruleIndex[ImplementationRule])
+	}
+	ei, ok := p.exprRuleIdx[phase]
+	ii, ok2 := p.implRuleIdx[phase]
+	if !ok || !ok2 {
+		er, ir := p.rulesForPhase(phase)
+		ei = newRuleIndex(er)
+		ii = newRuleIndex(ir)
+		p.exprRuleIdx[phase] = ei
+		p.implRuleIdx[phase] = ii
+	}
+	return ei, ii
 }
 
 // costModelForPhase returns the cost model comparator for the given phase.
@@ -440,7 +550,6 @@ func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates 
 			// shouldConsumeMatches' match-growth guard.
 			p.yieldUnknown(ref, expr)
 		}
-		stampOrderingWinners(ref, p.costModel)
 	}
 }
 
@@ -517,7 +626,6 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 	for _, expr := range result.GetExpressions() {
 		ref.InsertFinal(expr)
 	}
-	stampOrderingWinners(ref, p.costModel)
 }
 
 // yieldUnknown routes a data-access result by physicality, mirroring Java's
@@ -831,54 +939,6 @@ func hasIntersectionFinal(ref *expressions.Reference) bool {
 // against the planner; they may push more tasks.
 type Task interface {
 	Run(p *Planner)
-}
-
-// stampOrderingWinners iterates physical members of a Reference and
-// stamps ordering-specific winners. A member that implements
-// orderingHinter and returns a known ordering gets stamped as winner
-// for that ordering's PhysicalProperties key.
-func stampOrderingWinners(ref *expressions.Reference, costModel func(a, b expressions.RelationalExpression) bool) {
-	for _, m := range ref.AllMembers() {
-		// Never stamp a nil-inner Fetch shell as a per-ordering winner: it is a
-		// push-through template whose inner is resolved only at extraction, and
-		// (costed without its inner) it ranks artificially cheap. The stamped-
-		// winner lookup paths return it without re-checking, so a spurious
-		// Fetch(<nil>) wins the ordered slot and a downstream join drives off the
-		// wrong (unordered) side. Mirrors the guard on the scan-fallback paths.
-		if isNilInnerFetch(m) {
-			continue
-		}
-		h, ok := m.(orderingHinter)
-		if !ok {
-			continue
-		}
-		ord := h.HintOrdering()
-		if !ord.IsKnown || len(ord.Keys) == 0 {
-			continue
-		}
-		names := make([]string, len(ord.Keys))
-		for i, k := range ord.Keys {
-			if fv, ok := k.(*values.FieldValue); ok {
-				names[i] = fv.Field
-			} else {
-				names[i] = k.Name()
-			}
-		}
-		props := expressions.OrderingFromNameDir(names, ord.Descending)
-		if props.IsEmpty() {
-			continue
-		}
-		existing := ref.Winner(props)
-		if existing == nil || costModel(m, existing) {
-			ref.SetWinner(props, m)
-		}
-	}
-}
-
-// orderingHinter is implemented by physical wrappers that can
-// declare what ordering they produce.
-type orderingHinter interface {
-	HintOrdering() properties.Ordering
 }
 
 // compensationProbeCorrelations returns the outer aliases that the bound prefix of

@@ -269,7 +269,7 @@ func TestProjectSystemRows_ProjectSingleColumn(t *testing.T) {
 	}
 	sq := &selectQuery{
 		selectClassification: selectClassification{
-			projCols:    []string{"TABLE_NAME"},
+			projCols:    []projCol{{name: "TABLE_NAME", bare: "TABLE_NAME"}},
 			projExprs:   []antlrgen.IExpressionContext{nil},
 			projAliases: []string{""},
 		},
@@ -300,7 +300,7 @@ func TestProjectSystemRows_ProjectWithAlias(t *testing.T) {
 	}
 	sq := &selectQuery{
 		selectClassification: selectClassification{
-			projCols:    []string{"TABLE_NAME"},
+			projCols:    []projCol{{name: "TABLE_NAME", bare: "TABLE_NAME"}},
 			projExprs:   []antlrgen.IExpressionContext{nil},
 			projAliases: []string{"tbl"},
 		},
@@ -325,7 +325,7 @@ func TestProjectSystemRows_ColumnNotFound(t *testing.T) {
 	}
 	sq := &selectQuery{
 		selectClassification: selectClassification{
-			projCols:    []string{"NONEXISTENT"},
+			projCols:    []projCol{{name: "NONEXISTENT", bare: "NONEXISTENT"}},
 			projExprs:   []antlrgen.IExpressionContext{nil},
 			projAliases: []string{""},
 		},
@@ -345,7 +345,7 @@ func TestProjectSystemRows_CaseInsensitiveMatch(t *testing.T) {
 	}
 	sq := &selectQuery{
 		selectClassification: selectClassification{
-			projCols:    []string{"table_name"},
+			projCols:    []projCol{{name: "table_name", bare: "table_name"}},
 			projExprs:   []antlrgen.IExpressionContext{nil},
 			projAliases: []string{""},
 		},
@@ -529,7 +529,7 @@ func TestProjectSystemRows_ProjectionThenOrderBy(t *testing.T) {
 	}
 	sq := &selectQuery{
 		selectClassification: selectClassification{
-			projCols:    []string{"NAME"},
+			projCols:    []projCol{{name: "NAME", bare: "NAME"}},
 			projExprs:   []antlrgen.IExpressionContext{nil},
 			projAliases: []string{""},
 			orderBy:     []orderByClause{{colName: "NAME", ascending: true}},

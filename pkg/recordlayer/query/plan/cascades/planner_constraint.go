@@ -39,12 +39,15 @@ func NewConstraintMap() *ConstraintMap {
 }
 
 // Get retrieves the constraint value for a Reference + key combination.
+// The Reference is canonicalized: a constraint pushed on a since-merged
+// alias must stay visible to a reader holding the survivor (and vice
+// versa) — the map's identity is the GROUP, not the pointer.
 func Get[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConstraint[T]) (T, bool) {
 	if cm == nil {
 		var zero T
 		return zero, false
 	}
-	v, ok := cm.constraints[constraintEntry{ref: ref, key: key}]
+	v, ok := cm.constraints[constraintEntry{ref: ref.Canonical(), key: key}]
 	if !ok {
 		var zero T
 		return zero, false
@@ -52,10 +55,11 @@ func Get[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConst
 	return v.(T), true
 }
 
-// Set stores a constraint value for a Reference + key combination.
+// Set stores a constraint value for a Reference + key combination (the
+// Reference canonicalized — see Get).
 func Set[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConstraint[T], value T) {
 	if cm == nil {
 		return
 	}
-	cm.constraints[constraintEntry{ref: ref, key: key}] = value
+	cm.constraints[constraintEntry{ref: ref.Canonical(), key: key}] = value
 }

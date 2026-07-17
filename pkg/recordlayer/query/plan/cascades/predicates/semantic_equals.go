@@ -39,10 +39,20 @@ func SemanticEqualsUnderAliasMap(a, b QueryPredicate, aliases values.AliasMap) b
 		}
 		if ap.Comparison.Type != bp.Comparison.Type ||
 			ap.Comparison.Escape != bp.Comparison.Escape ||
-			ap.Comparison.ParameterName != bp.Comparison.ParameterName {
+			ap.Comparison.ParameterName != bp.Comparison.ParameterName ||
+			ap.Comparison.TextTokenizerName != bp.Comparison.TextTokenizerName ||
+			ap.Comparison.TextAnalyzerName != bp.Comparison.TextAnalyzerName ||
+			ap.Comparison.TextMaxDistance != bp.Comparison.TextMaxDistance ||
+			ap.Comparison.TextStrictPrefix != bp.Comparison.TextStrictPrefix {
 			return false
 		}
 		if !values.SemanticEqualsUnderAliasMap(ap.Operand, bp.Operand, aliases) {
+			return false
+		}
+		if !values.SemanticEqualsUnderAliasMap(ap.Comparison.QueryVector, bp.Comparison.QueryVector, aliases) {
+			return false
+		}
+		if !distanceRankKnobsEqual(&ap.Comparison, &bp.Comparison) {
 			return false
 		}
 		if ap.Comparison.Type.IsUnary() {
@@ -72,4 +82,21 @@ func predicateListsSemanticEqual(a, b []QueryPredicate, aliases values.AliasMap)
 		}
 	}
 	return true
+}
+
+// distanceRankKnobsEqual compares the optional HNSW knobs (EfSearch /
+// IsReturningVectors) by value-or-both-nil — nil ("index default") is a
+// distinct identity from an explicit setting. The QueryVector is compared
+// separately because this layer is alias-map-relative.
+func distanceRankKnobsEqual(a, b *Comparison) bool {
+	if (a.EfSearch == nil) != (b.EfSearch == nil) {
+		return false
+	}
+	if a.EfSearch != nil && *a.EfSearch != *b.EfSearch {
+		return false
+	}
+	if (a.IsReturningVectors == nil) != (b.IsReturningVectors == nil) {
+		return false
+	}
+	return a.IsReturningVectors == nil || *a.IsReturningVectors == *b.IsReturningVectors
 }

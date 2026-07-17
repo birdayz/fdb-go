@@ -584,15 +584,8 @@ func cmpAny(a, b any) (int, bool) {
 		// `<`/`>`. NaN vs NaN resolves to 0 here (matching Java Double.equals).
 		return values.CompareFloat64(af, bf), true
 	}
-	if ai, bi, ok := promoteInt(a, b); ok {
-		switch {
-		case ai < bi:
-			return -1, true
-		case ai > bi:
-			return 1, true
-		default:
-			return 0, true
-		}
+	if c, ok := values.CompareExactInts(a, b); ok {
+		return c, true
 	}
 	if av, ok := a.(string); ok {
 		if bv, ok2 := b.(string); ok2 {
@@ -702,21 +695,6 @@ func cmpAny(a, b any) (int, bool) {
 		return bytes.Compare(av[:], bv[:]), true
 	}
 	return 0, false
-}
-
-// promoteInt returns (a,b) as int64 when both are integral. Signed
-// int types only — unsigned promotion needs overflow rules we'll add
-// when a concrete use case calls for it.
-func promoteInt(a, b any) (int64, int64, bool) {
-	ai, ok := values.ToInt64(a)
-	if !ok {
-		return 0, 0, false
-	}
-	bi, ok := values.ToInt64(b)
-	if !ok {
-		return 0, 0, false
-	}
-	return ai, bi, true
 }
 
 // promoteFloat returns (a,b) as float64 when at least one side is

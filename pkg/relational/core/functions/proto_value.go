@@ -200,6 +200,12 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 			}
 			return protoreflect.ValueOfFloat32(float32(v)), nil
 		case int64:
+			// No range check, deliberately: Java's PromoteValue.LONG_TO_FLOAT
+			// is the plain widening cast Float.valueOf((Long)in) —
+			// precision-lossy above 2^24, never ±Inf (MaxInt64 ≈ 9.2e18 <
+			// MaxFloat32 ≈ 3.4e38, so overflow is unreachable from an
+			// integer; the float64 arm above range-checks because float64
+			// CAN exceed float32 range).
 			return protoreflect.ValueOfFloat32(float32(v)), nil
 		}
 	case protoreflect.DoubleKind:

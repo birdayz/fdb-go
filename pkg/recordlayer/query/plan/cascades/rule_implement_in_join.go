@@ -26,7 +26,7 @@ type ImplementInJoinRule struct {
 
 func NewImplementInJoinRule() *ImplementInJoinRule {
 	return &ImplementInJoinRule{
-		matcher: &selectExpressionMatcher{},
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("implement_in_join"),
 	}
 }
 

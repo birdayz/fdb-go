@@ -24,7 +24,7 @@ type ImplementSortRule struct {
 
 func NewImplementSortRule() *ImplementSortRule {
 	return &ImplementSortRule{
-		matcher: &logicalSortMatcher{},
+		matcher: NewExpressionMatcher[*expressions.LogicalSortExpression]("implement_sort"),
 	}
 }
 
@@ -110,7 +110,9 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			}
 			if allCovered {
 				for _, expr := range partition.GetExpressions() {
-					call.YieldFinalExpression(makeStrictlySorted(expr))
+					if pinned := pinOrderedSpine(expr, preserveDistinctReq, call.CostModel()); pinned != nil {
+						call.YieldFinalExpression(makeStrictlySorted(pinned))
+					}
 				}
 				continue
 			}
@@ -118,12 +120,23 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 
 		// Java RemoveSortRule lines 127-141: check each plan for
 		// unique-index coverage → strictlySorted.
+		//
+		// Every yield here DROPS the sort on the strength of expr's claimed
+		// ordering — an order-preserving wrapper must therefore have its
+		// delegation spine pinned (pinOrderedSpine): otherwise extraction's
+		// generic rebuild can relink its child group to a cheaper UNORDERED
+		// sibling after the sort is gone. Unpinnable expressions are simply
+		// not yielded — the in-memory sort alternative still competes.
 		numKeys := len(requestedParts) + equalityBoundUnsorted
 		for _, expr := range partition.GetExpressions() {
-			if strictlyOrderedIfUnique(expr, numKeys) {
-				call.YieldFinalExpression(makeStrictlySorted(expr))
+			pinned := pinOrderedSpine(expr, preserveDistinctReq, call.CostModel())
+			if pinned == nil {
+				continue
+			}
+			if strictlyOrderedIfUnique(pinned, numKeys) {
+				call.YieldFinalExpression(makeStrictlySorted(pinned))
 			} else {
-				call.YieldFinalExpression(expr)
+				call.YieldFinalExpression(pinned)
 			}
 		}
 	}
@@ -244,17 +257,6 @@ func computePartitionOrdering(partition *PlanPartition) *RichOrdering {
 		}
 	}
 	return nil
-}
-
-type logicalSortMatcher struct{}
-
-func (m *logicalSortMatcher) RootType() string { return "LogicalSortExpression" }
-
-func (m *logicalSortMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.LogicalSortExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
 }
 
 var _ ImplementationRule = (*ImplementSortRule)(nil)

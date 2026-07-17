@@ -61,12 +61,25 @@ func (p *RecordQueryFlatMapPlan) InheritOuterRecordProperties() bool {
 	return p.inheritOuterRecordProperties
 }
 
+// EqualsWithoutChildren compares aliases, the resultValue (semantic Value
+// identity — Java RecordQueryFlatMapPlan.equalsWithoutChildren is
+// semanticEqualsForResults), and inheritOuterRecordProperties. Java folds
+// inheritOuterRecordProperties into computeHashCodeWithoutChildren but omits
+// it from equals — Go compares it in BOTH so the equal⟹same-hash memo
+// invariant holds (two plans differing only in that flag null-extend
+// differently; they are not interchangeable).
 func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)
 	if !ok {
 		return false
 	}
-	return p.outerAlias == o.outerAlias && p.innerAlias == o.innerAlias
+	if p.outerAlias != o.outerAlias || p.innerAlias != o.innerAlias {
+		return false
+	}
+	if p.inheritOuterRecordProperties != o.inheritOuterRecordProperties {
+		return false
+	}
+	return semanticValueEquals(p.resultValue, o.resultValue)
 }
 
 func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
@@ -76,6 +89,10 @@ func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte{0})
 	h.Write([]byte(p.innerAlias.Name()))
 	h.Write([]byte{0})
+	if p.inheritOuterRecordProperties {
+		h.Write([]byte{1})
+	}
+	writeValueHash(h, p.resultValue)
 	return h.Sum64()
 }
 

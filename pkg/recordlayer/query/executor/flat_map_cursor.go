@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -93,6 +94,14 @@ type flatMapCursor struct {
 	// non-identity RV, or a baked/gated outer with its own more-specific layout
 	// authority.
 	outerIdentityPassthrough bool
+
+	// lastNoNext replays a prior terminal result on a contract-violating
+	// re-call (Java FlatMapPipelinedCursor:123-125: any no-next result is
+	// cached and returned verbatim). Without it, a re-call after an inner
+	// out-of-band stop (innerCursor already nil) silently advances to the
+	// NEXT outer row — dropping the unfinished inner's rows — and a re-call
+	// after an outer out-of-band stop reports a false SourceExhausted.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 
 	// Continuation state for cross-transaction resume.
 	priorOuterContinuation recordlayer.RecordCursorContinuation
@@ -210,6 +219,9 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 	if c.closed {
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -242,7 +254,9 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				// FlatMapContinuation with current outer + inner
 				// position so the next page resumes correctly.
 				cont := c.buildContinuation(innerCont)
-				return recordlayer.NewResultNoNext[QueryResult](reason, cont), nil
+				res := recordlayer.NewResultNoNext[QueryResult](reason, cont)
+				c.lastNoNext = &res
+				return res, nil
 			}
 		}
 
@@ -258,36 +272,21 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
 		if !outerResult.HasNext() {
-			c.outerExhausted = true
 			reason := outerResult.GetNoNextReason()
+			// Only a genuine source exhaustion is terminal; an out-of-band
+			// stop is a page boundary — the replay guard (not this flag)
+			// keeps a re-call from re-pulling the outer.
+			c.outerExhausted = reason == recordlayer.SourceExhausted
 			cont := c.wrapOuterContinuation(outerResult.GetContinuation())
-			return recordlayer.NewResultNoNext[QueryResult](reason, cont), nil
+			res := recordlayer.NewResultNoNext[QueryResult](reason, cont)
+			c.lastNoNext = &res
+			return res, nil
 		}
 
 		outerRow := outerResult.GetValue()
 		c.currentOuter = &outerRow
 		c.priorOuterContinuation = c.lastOuterContinuation
 		c.lastOuterContinuation = outerResult.GetContinuation()
-
-		// Java FlatMapPipelinedCursor (:210-220) consults the check value ONLY
-		// while an initial inner continuation is pending (initialInnerContinuation
-		// != null), and a mismatch RESTARTS the inner from the beginning for the
-		// (changed) outer rather than erroring — "this handles common cases of the
-		// data changing between transactions, such as the outer record being
-		// deleted or a new record being inserted right before it". The Cascades
-		// RecordQueryFlatMapPlan passes checker=null (no check at all); Go keeps the
-		// check as a resume-safety net but MUST mirror Java's restart-not-error
-		// semantics, or a legitimately-resumed page (or a deleted outer) hard-fails.
-		if c.initialInnerCont != nil {
-			if len(c.pendingCheckValue) > 0 && outerRow.PrimaryKey != nil &&
-				!bytes.Equal(outerRow.PrimaryKey.Pack(), c.pendingCheckValue) {
-				// Outer row changed: drop the stale inner continuation and rescan
-				// the inner from the start for this outer (Java's behaviour).
-				c.initialInnerCont = nil
-				c.hasPendingInner = false
-			}
-			c.pendingCheckValue = nil
-		}
 
 		// Bind the outer row as a correlation and execute the inner plan.
 		// Use initialInnerCont for the first outer row on resume.
@@ -317,11 +316,29 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			outerBinding = qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
 		}
 		correlatedCtx := c.evalCtx.WithBinding(c.outerAlias, outerBinding)
+		// Java FlatMapPipelinedCursor (:210-220): the initial inner
+		// continuation stays ARMED across outer rows until the row whose
+		// check value matches (or either check value is absent) CONSUMES it
+		// — Java nulls initialInnerContinuation ONLY in the match branch. A
+		// mismatching row (data changed between transactions — e.g. a row
+		// inserted before the saved one) runs its inner from the beginning
+		// while the armed state waits for the saved row to re-appear;
+		// discarding on the first mismatch would re-emit the saved row's
+		// already-delivered inner prefix when it arrives later (duplicate
+		// rows). The Cascades RecordQueryFlatMapPlan passes checker=null in
+		// Java (no check at all); Go keeps the PK check as a resume-safety
+		// net with Java's restart-not-error semantics.
 		var innerContBytes []byte
 		if c.initialInnerCont != nil {
-			innerContBytes = c.initialInnerCont
-			c.initialInnerCont = nil
-			c.hasPendingInner = false
+			if len(c.pendingCheckValue) > 0 && outerRow.PrimaryKey != nil &&
+				!bytes.Equal(outerRow.PrimaryKey.Pack(), c.pendingCheckValue) {
+				// Not the saved outer row: fresh inner, stay armed.
+			} else {
+				innerContBytes = c.initialInnerCont
+				c.initialInnerCont = nil
+				c.hasPendingInner = false
+				c.pendingCheckValue = nil
+			}
 		}
 		innerCursor, err := ExecutePlan(ctx, c.innerPlan, c.store, correlatedCtx, innerContBytes, c.props)
 		if err != nil {
@@ -543,7 +560,7 @@ func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorCont
 		return &recordlayer.EndContinuation{}
 	}
 
-	fmc := &gen.FlatMapContinuation{}
+	cont := &flatMapCursorContinuation{}
 
 	// Java FlatMapPipelinedCursor.Continuation.toByteString (:415-430) pairs the
 	// position AT the current outer row with the inner continuation, and the
@@ -566,23 +583,18 @@ func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorCont
 	//     wrote check_value into an advanced-outer continuation).
 	if innerCont != nil && !innerCont.IsEnd() {
 		if c.priorOuterContinuation != nil && !c.priorOuterContinuation.IsEnd() {
-			fmc.OuterContinuation, _ = c.priorOuterContinuation.ToBytes()
+			cont.outerCont = c.priorOuterContinuation
 		}
 		if c.currentOuter != nil && c.currentOuter.PrimaryKey != nil {
-			fmc.CheckValue = c.currentOuter.PrimaryKey.Pack()
+			cont.checkValue = c.currentOuter.PrimaryKey.Pack()
 		}
-		fmc.InnerContinuation, _ = innerCont.ToBytes()
+		cont.innerCont = innerCont
 	} else {
 		if c.lastOuterContinuation != nil && !c.lastOuterContinuation.IsEnd() {
-			fmc.OuterContinuation, _ = c.lastOuterContinuation.ToBytes()
+			cont.outerCont = c.lastOuterContinuation
 		}
 	}
-
-	data, err := proto.Marshal(fmc)
-	if err != nil {
-		return nonEndContinuation
-	}
-	return recordlayer.NewBytesContinuation(data)
+	return cont
 }
 
 // wrapOuterContinuation wraps the outer cursor's continuation in a
@@ -592,19 +604,63 @@ func (c *flatMapCursor) wrapOuterContinuation(outerCont recordlayer.RecordCursor
 	if outerCont != nil && outerCont.IsEnd() {
 		return &recordlayer.EndContinuation{}
 	}
-	fmc := &gen.FlatMapContinuation{}
-	if outerCont != nil {
-		fmc.OuterContinuation, _ = outerCont.ToBytes()
-	}
+	cont := &flatMapCursorContinuation{outerCont: outerCont}
 	if c.hasPendingInner {
-		fmc.InnerContinuation = c.initialInnerCont
+		// Snapshot the pending inner bytes now: the cursor nils
+		// initialInnerCont when it consumes the pending resume, and an
+		// already-issued continuation must not change under it. The check
+		// value rides along — without it a re-resume would apply the armed
+		// inner to the FIRST outer row unverified (the wrong row, if the
+		// saved one is no longer first).
+		cont.pendingInner = c.initialInnerCont
+		cont.checkValue = c.pendingCheckValue
 	}
-	data, err := proto.Marshal(fmc)
-	if err != nil {
-		return nonEndContinuation
-	}
-	return recordlayer.NewBytesContinuation(data)
+	return cont
 }
+
+// flatMapCursorContinuation lazily encodes the FlatMapContinuation proto at
+// ToBytes() time, so a child continuation whose encode fails propagates that
+// error through the RecordCursorContinuation contract (mirroring
+// flatMapContinuationWrapper in pkg/recordlayer/cursor_combinators.go and the
+// aggregate continuation's encode-error propagation in continuation.go). The
+// eager predecessor swallowed child ToBytes errors (`, _ =`) — serializing a
+// FlatMapContinuation with the failed component silently MISSING, which on
+// resume restarts the current outer's inner from scratch (duplicate rows) or
+// the whole outer scan — and returned the fake nonEndContinuation on a failed
+// proto.Marshal. Exactly one of innerCont/pendingInner is set: innerCont is
+// the mid-inner resume position (buildContinuation), pendingInner the
+// pre-serialized not-yet-consumed inner from a resume whose outer stopped
+// before re-reaching the resumed row (wrapOuterContinuation).
+type flatMapCursorContinuation struct {
+	outerCont    recordlayer.RecordCursorContinuation // outer position (prior or advanced); nil = omit
+	innerCont    recordlayer.RecordCursorContinuation // mid-inner resume position; nil = omit
+	checkValue   []byte                               // current outer PK (mid-inner branch only)
+	pendingInner []byte                               // pending inner bytes (outer-stop path only)
+}
+
+func (w *flatMapCursorContinuation) ToBytes() ([]byte, error) {
+	fmc := &gen.FlatMapContinuation{CheckValue: w.checkValue}
+	if w.outerCont != nil {
+		b, err := w.outerCont.ToBytes()
+		if err != nil {
+			return nil, fmt.Errorf("flatmap continuation outer: %w", err)
+		}
+		fmc.OuterContinuation = b
+	}
+	switch {
+	case w.innerCont != nil:
+		b, err := w.innerCont.ToBytes()
+		if err != nil {
+			return nil, fmt.Errorf("flatmap continuation inner: %w", err)
+		}
+		fmc.InnerContinuation = b
+	case w.pendingInner != nil:
+		fmc.InnerContinuation = w.pendingInner
+	}
+	return proto.Marshal(fmc)
+}
+
+func (w *flatMapCursorContinuation) IsEnd() bool { return false }
 
 func (c *flatMapCursor) Close() error {
 	c.closed = true

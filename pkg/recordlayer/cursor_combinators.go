@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	"google.golang.org/protobuf/proto"
 
@@ -17,9 +18,15 @@ import (
 type filterCursor[T any] struct {
 	inner     RecordCursor[T]
 	predicate func(T) bool
+	// lastNoNext replays the terminal result on re-call (Java FilterCursor
+	// caches every no-next), so a non-idempotent inner is never re-pulled.
+	lastNoNext *RecordCursorResult[T]
 }
 
 func (c *filterCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return RecordCursorResult[T]{}, err
@@ -29,6 +36,7 @@ func (c *filterCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 			return result, err
 		}
 		if !result.HasNext() {
+			c.lastNoNext = &result
 			return result, nil
 		}
 		if c.predicate(result.GetValue()) {
@@ -56,9 +64,14 @@ func SkipCursor[T any](cursor RecordCursor[T], n int) RecordCursor[T] {
 type skipCursor[T any] struct {
 	inner     RecordCursor[T]
 	remaining int
+	// lastNoNext replays the terminal result on re-call (Java SkipCursor).
+	lastNoNext *RecordCursorResult[T]
 }
 
 func (c *skipCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	for c.remaining > 0 {
 		if err := ctx.Err(); err != nil {
 			return RecordCursorResult[T]{}, err
@@ -68,11 +81,16 @@ func (c *skipCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], erro
 			return result, err
 		}
 		if !result.HasNext() {
+			c.lastNoNext = &result
 			return result, nil
 		}
 		c.remaining--
 	}
-	return c.inner.OnNext(ctx)
+	result, err := c.inner.OnNext(ctx)
+	if err == nil && !result.HasNext() {
+		c.lastNoNext = &result
+	}
+	return result, err
 }
 
 func (c *skipCursor[T]) Close() error { return c.inner.Close() }
@@ -80,12 +98,18 @@ func (c *skipCursor[T]) Close() error { return c.inner.Close() }
 func (c *skipCursor[T]) IsClosed() bool { return c.inner.IsClosed() }
 
 // LimitRowsCursor wraps a cursor and limits to at most n elements.
-// Matches Java's RecordCursor.limitRowsTo().
+// Matches Java's RecordCursor.limitRowsTo() exactly: 0 (and MaxInt) mean
+// UNLIMITED — the cursor is returned unchanged — and a negative limit is an
+// error (Java throws RecordCoreException("Invalid row limit"); Go's no-panic
+// rule surfaces it as an error cursor). The previous n<=0→Empty reading
+// silently inverted Java's 0-is-unlimited convention.
 func LimitRowsCursor[T any](cursor RecordCursor[T], n int) RecordCursor[T] {
-	if n <= 0 {
-		// Close inner cursor to prevent resource leaks (FDB iterators, etc.)
+	if n < 0 {
 		_ = cursor.Close()
-		return Empty[T]()
+		return &errorCursor[T]{err: fmt.Errorf("invalid row limit %d", n)}
+	}
+	if n == 0 || n == math.MaxInt {
+		return cursor
 	}
 	return &limitRowsCursor[T]{inner: cursor, remaining: n}
 }
@@ -216,9 +240,16 @@ type orElseCursor[T any] struct {
 	alternativeFactory CursorFactory[T]
 	active             RecordCursor[T]
 	state              gen.OrElseContinuation_State
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java OrElseCursor's cached no-next result) — never re-pulls the
+	// primary/active cursor.
+	lastNoNext *RecordCursorResult[T]
 }
 
 func (c *orElseCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	switch c.state {
 	case gen.OrElseContinuation_UNDECIDED:
 		result, err := c.primary.OnNext(ctx)
@@ -233,7 +264,9 @@ func (c *orElseCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 		}
 		if !result.GetNoNextReason().IsSourceExhausted() {
 			cont := c.wrapContinuation(gen.OrElseContinuation_UNDECIDED, result.GetContinuation())
-			return NewResultNoNext[T](result.GetNoNextReason(), cont), nil
+			res := NewResultNoNext[T](result.GetNoNextReason(), cont)
+			c.lastNoNext = &res
+			return res, nil
 		}
 		c.state = gen.OrElseContinuation_USE_OTHER
 		_ = c.primary.Close()
@@ -259,10 +292,13 @@ func (c *orElseCursor[T]) advanceActive(ctx context.Context) (RecordCursorResult
 		return NewResultWithValue(result.GetValue(), cont), nil
 	}
 	if result.GetContinuation().IsEnd() {
+		c.lastNoNext = &result
 		return result, nil
 	}
 	cont := c.wrapContinuation(c.state, result.GetContinuation())
-	return NewResultNoNext[T](result.GetNoNextReason(), cont), nil
+	res := NewResultNoNext[T](result.GetNoNextReason(), cont)
+	c.lastNoNext = &res
+	return res, nil
 }
 
 func (c *orElseCursor[T]) wrapContinuation(state gen.OrElseContinuation_State, inner RecordCursorContinuation) RecordCursorContinuation {
@@ -294,6 +330,15 @@ type orElseContinuationWrapper struct {
 	inner RecordCursorContinuation
 }
 
+// ToBytes mirrors Java OrElseCursor.Continuation.toByteString/toBytes
+// (OrElseCursor.java:194-211) exactly: when the wrapped continuation is at end
+// OR serializes to empty bytes, the whole OrElse continuation collapses to nil
+// — Java returns ByteString.EMPTY (toBytes → null) WITHOUT wrapping the state
+// enum. The serialized branch decision (STATE) is deliberately dropped in
+// exactly these cases: nil bytes mean "start" at every level, so a resume
+// re-decides from UNDECIDED — deterministic on unchanged data (the primary
+// that was empty is empty again), and identical to Java's resume semantics.
+// Pinned by TestOrElseContinuationWrapperToBytes.
 func (w *orElseContinuationWrapper) ToBytes() ([]byte, error) {
 	if w.inner == nil || w.inner.IsEnd() {
 		return nil, nil
@@ -328,6 +373,12 @@ type concatCursor[T any] struct {
 	current       RecordCursor[T]
 	onSecond      bool
 	closed        bool
+	// lastNoNext replays the terminal result on a contract-violating re-call.
+	// Java's ConcatCursor has no explicit top-level guard — it gets replay for
+	// free because every Java child cursor caches ITS no-next result; Go
+	// latches here because the factory-produced child carries no such
+	// guarantee (and the wrap re-encode must not run twice).
+	lastNoNext *RecordCursorResult[T]
 }
 
 // ConcatCursors concatenates two cursor factories: results from first, then second.
@@ -368,6 +419,9 @@ func (c *concatCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 	if c.closed {
 		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	result, err := c.current.OnNext(ctx)
 	if err != nil {
@@ -399,7 +453,9 @@ func (c *concatCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 	if wrapErr != nil {
 		return RecordCursorResult[T]{}, wrapErr
 	}
-	return NewResultNoNext[T](result.GetNoNextReason(), wrapped), nil
+	res := NewResultNoNext[T](result.GetNoNextReason(), wrapped)
+	c.lastNoNext = &res
+	return res, nil
 }
 
 func (c *concatCursor[T]) wrapContinuation(inner RecordCursorContinuation) (RecordCursorContinuation, error) {
@@ -450,6 +506,8 @@ func (c *concatCursor[T]) IsClosed() bool { return c.closed }
 type mapResultCursor[T, R any] struct {
 	inner RecordCursor[T]
 	fn    func(T) R
+	// lastNoNext replays the terminal result on re-call (Java MapCursor).
+	lastNoNext *RecordCursorResult[R]
 }
 
 // MapCursor creates a cursor that transforms each value using the given function.
@@ -459,12 +517,17 @@ func MapCursor[T, R any](cursor RecordCursor[T], fn func(T) R) RecordCursor[R] {
 }
 
 func (c *mapResultCursor[T, R]) OnNext(ctx context.Context) (RecordCursorResult[R], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	result, err := c.inner.OnNext(ctx)
 	if err != nil {
 		return RecordCursorResult[R]{}, err
 	}
 	if !result.HasNext() {
-		return NewResultNoNext[R](result.GetNoNextReason(), result.GetContinuation()), nil
+		res := NewResultNoNext[R](result.GetNoNextReason(), result.GetContinuation())
+		c.lastNoNext = &res
+		return res, nil
 	}
 	mapped := c.fn(result.GetValue())
 	return NewResultWithValue(mapped, result.GetContinuation()), nil
@@ -478,6 +541,8 @@ func (c *mapResultCursor[T, R]) IsClosed() bool { return c.inner.IsClosed() }
 type mapErrCursor[T, R any] struct {
 	inner RecordCursor[T]
 	fn    func(T) (R, error)
+	// lastNoNext replays the terminal result on re-call (Java MapCursor).
+	lastNoNext *RecordCursorResult[R]
 }
 
 // MapErrCursor creates a cursor that transforms each value using a function that
@@ -489,12 +554,17 @@ func MapErrCursor[T, R any](cursor RecordCursor[T], fn func(T) (R, error)) Recor
 }
 
 func (c *mapErrCursor[T, R]) OnNext(ctx context.Context) (RecordCursorResult[R], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	result, err := c.inner.OnNext(ctx)
 	if err != nil {
 		return RecordCursorResult[R]{}, err
 	}
 	if !result.HasNext() {
-		return NewResultNoNext[R](result.GetNoNextReason(), result.GetContinuation()), nil
+		res := NewResultNoNext[R](result.GetNoNextReason(), result.GetContinuation())
+		c.lastNoNext = &res
+		return res, nil
 	}
 	mapped, mapErr := c.fn(result.GetValue())
 	if mapErr != nil {
@@ -790,6 +860,12 @@ type autoContinuingCursor[T any] struct {
 	currentCursor RecordCursor[T]
 	lastResult    *RecordCursorResult[T]
 	closed        bool
+	// lastNoNext replays the terminal result on a contract-violating re-call.
+	// Java's AutoContinuingCursor has no explicit guard of its own — it gets
+	// replay for free because every Java inner cursor caches ITS no-next
+	// result; Go latches here because the generator-produced cursor carries no
+	// such guarantee.
+	lastNoNext *RecordCursorResult[T]
 }
 
 // NewAutoContinuingCursor creates a cursor that automatically creates new transactions
@@ -816,6 +892,9 @@ func (c *autoContinuingCursor[T]) OnNext(ctx context.Context) (RecordCursorResul
 	if c.closed {
 		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -835,7 +914,9 @@ func (c *autoContinuingCursor[T]) OnNext(ctx context.Context) (RecordCursorResul
 			// Guard against infinite loop: if continuation is nil/end, the cursor
 			// has nothing to resume from. Treat as source exhausted.
 			if contBytes == nil || result.GetContinuation().IsEnd() {
-				return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
+				res := NewResultNoNext[T](SourceExhausted, &EndContinuation{})
+				c.lastNoNext = &res
+				return res, nil
 			}
 			if err := c.openContextAndGenerateCursor(ctx, contBytes); err != nil {
 				return RecordCursorResult[T]{}, err
@@ -846,6 +927,8 @@ func (c *autoContinuingCursor[T]) OnNext(ctx context.Context) (RecordCursorResul
 		// Either has a value or source is exhausted
 		if result.HasNext() {
 			c.lastResult = &result
+		} else {
+			c.lastNoNext = &result
 		}
 		return result, nil
 	}

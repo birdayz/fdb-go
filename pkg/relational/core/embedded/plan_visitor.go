@@ -26,8 +26,9 @@ package embedded
 // resolution, subquery planning) are inlined into VisitSimpleTable
 // rather than delegated to the monolithic _postBuild function.
 //
-// The proto/naive generator continues using extractFromSimpleTable (which
-// calls classifySelectElements internally and merges with FROM info).
+// The selectQuery parse path (extractFromSimpleTable) remains the other
+// consumer of classifySelectElements; both builders share the same
+// classification so their aggregate layouts agree.
 
 import (
 	"errors"
@@ -496,7 +497,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// simpleTable.OrderByClause() and resolves positional references
 	// against the SELECT column list.
 	hasAggregate := cls.countStar || len(cls.aggCols) > 0
-	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, cls.groupBy, cls.groupByAliases, cls.postSortStripProj, cls.postSortStripAliases)
+	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, groupKeyRefDisplays(cls.groupBy), cls.groupByAliases, cls.postSortStripProj, cls.postSortStripAliases)
 
 	// Post-sort strip projection: when hasSortOnly is true in the
 	// aggregate path, the visible-only projection is deferred past
@@ -590,7 +591,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				}
 				continue
 			}
-			if err := resolveColumnName(resolver, col); err != nil {
+			if err := resolveColumnName(resolver, col.name); err != nil {
 				return nil, err
 			}
 			// A BARE column that binds to a lateral-unnest SHADOWING source
@@ -601,8 +602,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			// mergeRows; the qualified `v.v` survives (dotted keys are preserved
 			// verbatim). Without this the bare projection reads the wrong column
 			// (P2, silent-wrong). RFC-142.
-			if ref := parseColRef(col); !ref.isQualified() && proj != nil {
-				id := semantic.NewUnquoted(ref.bare())
+			if !col.qualified && col.bare != "" && proj != nil {
+				id := semantic.NewUnquoted(col.bare)
 				if qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id); qerr == nil && ok {
 					if proj.ProjectedValues == nil {
 						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
@@ -630,7 +631,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					}
 				}
 			}
-			if parseColRef(col).isQualified() && proj != nil {
+			if col.qualified && proj != nil {
 				if proj.ProjectedValues == nil {
 					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 				}
@@ -641,9 +642,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					// that leg's binding so the ordinal bake addresses the
 					// right quantifier. Every other reference keeps the
 					// alias-keyed merged-row read.
-					ref := parseColRef(col)
 					qv, qerr := resolver.ResolveQualifiedProjection(
-						semantic.NewUnquoted(ref.table), semantic.NewUnquoted(ref.bare()))
+						semantic.NewUnquoted(col.qualifier), semantic.NewUnquoted(col.bare))
 					if qerr != nil {
 						var ambigErr *semantic.AmbiguousColumnError
 						if errors.As(qerr, &ambigErr) {
@@ -655,7 +655,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					if i < len(proj.ProjectedValues) {
 						if qv != nil {
 							proj.ProjectedValues[i] = qv
-						} else if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
+						} else if bv := resolveQualifiedBaked(resolver, colRef{table: col.qualifier, col: col.bare}); bv != nil {
 							// A qualified projection over a join emits the
 							// resolver's QUANTIFIER-ADDRESSED source-relative
 							// baked reference — the executor binds the leg
@@ -670,22 +670,21 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 									proj.Aliases = make([]string, len(proj.Projections))
 								}
 								if i < len(proj.Aliases) && proj.Aliases[i] == "" {
-									proj.Aliases[i] = strings.ToUpper(col)
+									proj.Aliases[i] = strings.ToUpper(col.name)
 								}
 							}
 						} else {
 							proj.ProjectedValues[i] = &values.FieldValue{
-								Field: strings.ToUpper(col),
+								Field: strings.ToUpper(col.name),
 								Typ:   values.UnknownType,
 							}
 						}
 					}
 				} else {
 					var qualifier semantic.Identifier
-					ref := parseColRef(col)
-					id := semantic.NewUnquoted(ref.bare())
-					if ref.isQualified() {
-						qualifier = semantic.NewUnquoted(ref.table)
+					id := semantic.NewUnquoted(colBareOrName(col))
+					if col.qualified {
+						qualifier = semantic.NewUnquoted(col.qualifier)
 					}
 					if rv, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
 						if i < len(proj.ProjectedValues) {
@@ -780,11 +779,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (4) Validate GROUP BY columns.
 	if resolver != nil {
-		for i, gb := range sq.groupBy {
-			if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+		for _, gb := range sq.groupBy {
+			if gb.expr != nil {
 				continue
 			}
-			if err := resolveColumnName(resolver, gb); err != nil {
+			if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
 		}
@@ -1257,15 +1256,22 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		return op, stripPrefix
 	}
 
-	var aggs, aggAliases []string
+	var aggAliases []string
+	var aggCalls []logical.AggregateCall
 	hasDistinct := false
-	keys := make([]string, len(cls.groupBy))
-	for i, k := range cls.groupBy {
-		keys[i] = strip(k)
+	keys := logicalGroupKeys(cls.groupBy)
+	for i := range keys {
+		stripped := strip(keys[i].Display)
+		if stripped != keys[i].Display {
+			// The single-source prefix was baked away: the key is
+			// BARE from here on — stale qualification segments would
+			// chase a qualifier the runtime row no longer carries.
+			keys[i] = logical.GroupKey{Display: stripped, Bare: stripped}
+		}
 	}
 	if cls.countStar {
-		aggs = []string{"COUNT(*)"}
 		aggAliases = []string{cls.countStarAlias}
+		aggCalls = []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}
 	} else {
 		for _, ac := range cls.aggCols {
 			if ac.aggFunc != "" {
@@ -1277,21 +1283,22 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 					arg = "*"
 				}
 				arg = strip(arg)
-				distinctPfx := ""
 				if ac.aggDistinct {
-					distinctPfx = "DISTINCT "
 					hasDistinct = true
 				}
-				aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
+				aggCalls = append(aggCalls, logical.AggregateCall{
+					Func:       strings.ToUpper(ac.aggFunc),
+					Operand:    arg,
+					Star:       arg == "*",
+					Distinct:   ac.aggDistinct,
+					BareColumn: ac.aggArg != "" && ac.aggExpr == nil,
+					Qualified:  ac.aggArgQualified,
+				})
 				aggAliases = append(aggAliases, ac.outName)
 			}
 		}
 	}
-	having := ""
-	if cls.havingExpr != nil {
-		having = canonicalTextOf(cls.havingExpr)
-	}
-	aggOp := logical.NewAggregate(op, keys, aggs, aggAliases, having)
+	aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, cls.havingExpr != nil)
 	aggOp.HasDistinctAggregate = hasDistinct
 	op = aggOp
 
@@ -1350,7 +1357,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 				visibleAliases = append(visibleAliases, alias)
 			}
 		}
-		totalOutput := len(keys) + len(aggs)
+		totalOutput := len(keys) + len(aggCalls)
 		needsStrip := len(visibleProj) != totalOutput || hasAggAlias || hasNonVisible
 		// != (not <): a DUPLICATE visible read of one group key
 		// (`SELECT id, id … GROUP BY id`) makes the visible list WIDER
@@ -1359,7 +1366,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		// consumers (CTE column aliases, positional reads) see the
 		// internal one-slot layout.
 		if needsStrip {
-			if hasNonVisible || groupKeyMissingFromVisible(keys, visibleProj) {
+			if hasNonVisible || groupKeyMissingFromVisible(groupKeyDisplayNames(keys), visibleProj) {
 				cls.postSortStripProj = visibleProj
 				cls.postSortStripAliases = visibleAliases
 			} else {
@@ -1563,6 +1570,8 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 		if nameErr == nil {
 			bareRef := exprIsBareColumnRef(obExpr.Expression())
+			kb, kq, kqf := splitColumnRef(obExpr.Expression())
+			origColName := colName
 			if len(deferredStripProj) > 0 {
 				colName = rebaseToInternal(colName, bareRef)
 			}
@@ -1578,7 +1587,16 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 				continue
 			}
 			seenOrderCols[key] = true
-			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, BareRef: bareRef})
+			sk := logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, BareRef: bareRef, Bare: kb, Qualifier: kq, Qualified: kqf}
+			if kb != "" && (colName != origColName || sk.Expr != colName) {
+				// A COLUMN key rebased/alias-resolved to an internal OUTPUT
+				// name, or with its prefix stripped — BARE from here on
+				// (the group-key strip rule); the parse-tree segments
+				// describe the original reference, not this name.
+				// Expression keys keep zero segments.
+				sk.Bare, sk.Qualifier, sk.Qualified = sk.Expr, "", false
+			}
+			keys = append(keys, sk)
 		} else {
 			// Expression ORDER BY — use canonical text to get
 			// proper spacing (GetText concatenates without whitespace).
@@ -1637,16 +1655,18 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 // `SELECT t1.id AS id, t2.id` → the second stays T2.ID, colliding with the
 // alias), the name model's disambiguation rule that keeps two same-named leg
 // columns from collapsing in the datum map. A UNIQUE leaf keys bare.
-func bareLeafDuplicated(projCols, projAliases []string, i int) bool {
+func bareLeafDuplicated(projCols []projCol, projAliases []string, i int) bool {
 	if i >= len(projCols) {
 		return false
 	}
-	leaf := parseColRef(projCols[i]).bare()
+	// Structured bare segments — a delimited identifier containing a literal
+	// dot is one leaf, never a last-dot split of the rendering.
+	leaf := colBareOrName(projCols[i])
 	for j, c := range projCols {
 		if j == i {
 			continue
 		}
-		other := parseColRef(c).bare()
+		other := colBareOrName(c)
 		if j < len(projAliases) && projAliases[j] != "" {
 			other = projAliases[j]
 		}
@@ -1693,18 +1713,20 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 		if sort.Keys[i].Value != nil {
 			continue
 		}
-		ref := parseColRef(sort.Keys[i].Expr)
-		bare := ref.bare()
+		// Structured segments — an expression key has none (nothing to
+		// resolve as an unnest column) and skips; the retired text re-parse
+		// split a canonical rendering on its last dot.
+		bare := sort.Keys[i].Bare
 		if bare == "" {
 			continue
 		}
 		id := semantic.NewUnquoted(bare)
-		if ref.isQualified() {
+		if sort.Keys[i].Qualified {
 			// An AmbiguousColumnError here is DISCARDED on purpose: the
 			// upstream sort-key reference validation already terminated an
 			// ambiguous key with 42702 before this qualification pass runs
 			// (the ladder's >=2 arm is owned there, not here).
-			qv, err := resolver.ResolveQualifiedProjection(semantic.NewUnquoted(ref.table), id)
+			qv, err := resolver.ResolveQualifiedProjection(semantic.NewUnquoted(sort.Keys[i].Qualifier), id)
 			if err == nil && qv != nil {
 				sort.Keys[i].Value = qv
 				continue
@@ -1713,7 +1735,7 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 			// the quantifier-addressed source-relative baked reference so
 			// the key resolves positionally through its leg window
 			// (rowLegsBinder) instead of a flat dotted name read.
-			if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
+			if bv := resolveQualifiedBaked(resolver, colRef{table: sort.Keys[i].Qualifier, col: bare}); bv != nil {
 				sort.Keys[i].Value = bv
 			}
 			continue

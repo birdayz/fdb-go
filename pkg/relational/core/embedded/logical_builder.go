@@ -175,7 +175,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		rows := make([]string, len(sq.projCols))
 		aliases := make([]string, len(sq.projCols))
 		for i, col := range sq.projCols {
-			expr := col
+			expr := col.name
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				expr = strings.TrimSpace(canonicalTextOf(sq.projExprs[i]))
 			}
@@ -413,15 +413,22 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 	//   - Mixed: aggCols carries both group-col and agg-function
 	//     entries with outName.
 	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
-		var aggs, aggAliases []string
+		var aggAliases []string
+		var aggCalls []logical.AggregateCall
 		hasDistinct := false
-		keys := make([]string, len(sq.groupBy))
-		for i, k := range sq.groupBy {
-			keys[i] = strip(k)
+		keys := logicalGroupKeys(sq.groupBy)
+		for i := range keys {
+			stripped := strip(keys[i].Display)
+			if stripped != keys[i].Display {
+				// The single-source prefix was baked away: the key is
+				// BARE from here on — stale qualification segments would
+				// chase a qualifier the runtime row no longer carries.
+				keys[i] = logical.GroupKey{Display: stripped, Bare: stripped}
+			}
 		}
 		if sq.countStar {
-			aggs = []string{"COUNT(*)"}
 			aggAliases = []string{sq.countStarAlias}
+			aggCalls = []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}
 		} else {
 			for _, ac := range sq.aggCols {
 				if ac.aggFunc != "" {
@@ -433,21 +440,22 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 						arg = "*"
 					}
 					arg = strip(arg)
-					distinctPfx := ""
 					if ac.aggDistinct {
-						distinctPfx = "DISTINCT "
 						hasDistinct = true
 					}
-					aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
+					aggCalls = append(aggCalls, logical.AggregateCall{
+						Func:       strings.ToUpper(ac.aggFunc),
+						Operand:    arg,
+						Star:       arg == "*",
+						Distinct:   ac.aggDistinct,
+						BareColumn: ac.aggArg != "" && ac.aggExpr == nil,
+						Qualified:  ac.aggArgQualified,
+					})
 					aggAliases = append(aggAliases, ac.outName)
 				}
 			}
 		}
-		having := ""
-		if sq.havingExpr != nil {
-			having = canonicalTextOf(sq.havingExpr)
-		}
-		aggOp := logical.NewAggregate(op, keys, aggs, aggAliases, having)
+		aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, sq.havingExpr != nil)
 		aggOp.HasDistinctAggregate = hasDistinct
 		op = aggOp
 
@@ -510,7 +518,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 					visibleAliases = append(visibleAliases, alias)
 				}
 			}
-			totalOutput := len(keys) + len(aggs)
+			totalOutput := len(keys) + len(aggCalls)
 			needsStrip := len(visibleProj) != totalOutput || hasAggAlias || hasNonVisible
 			// != (not <): a DUPLICATE visible read of one group key
 			// (`SELECT id, id … GROUP BY id`) makes the visible list WIDER
@@ -519,7 +527,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// consumers (CTE column aliases, positional reads) see the
 			// internal one-slot layout.
 			if needsStrip {
-				if hasNonVisible || groupKeyMissingFromVisible(keys, visibleProj) {
+				if hasNonVisible || groupKeyMissingFromVisible(groupKeyDisplayNames(keys), visibleProj) {
 					sq.postSortStripProj = visibleProj
 					sq.postSortStripAliases = visibleAliases
 				} else {
@@ -539,6 +547,11 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			ob := &sq.orderBy[i]
 			if ob.pos >= 1 && ob.pos <= len(sq.postSortStripProj) {
 				ob.colName = sq.postSortStripProj[ob.pos-1]
+				// The rebased name is internal projection text — the
+				// original reference's segments no longer describe it
+				// (stale segments silently mis-resolve against a
+				// same-spelled source column).
+				ob.bare, ob.qualifier, ob.qualified = ob.colName, "", false
 				ob.pos = 0
 				continue
 			}
@@ -554,6 +567,9 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			for j, al := range sq.postSortStripAliases {
 				if al != "" && strings.EqualFold(al, ob.colName) && j < len(sq.postSortStripProj) {
 					ob.colName = sq.postSortStripProj[j]
+					// Same rule as the positional rebase above: internal
+					// text, segments cleared to the rebased bare.
+					ob.bare, ob.qualifier, ob.qualified = ob.colName, "", false
 					break
 				}
 			}
@@ -577,8 +593,11 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// ORDER BY 1` must sort by id, never the SCORE column).
 			// Rebase to the item's UNDERLYING text; Pos still rides along
 			// for output-slot baking where the input IS a projection.
-			if ob.pos >= 1 && ob.pos <= len(sq.projCols) && sq.projCols[ob.pos-1] != "" {
-				expr = strip(sq.projCols[ob.pos-1])
+			if ob.pos >= 1 && ob.pos <= len(sq.projCols) && sq.projCols[ob.pos-1].name != "" {
+				expr = strip(sq.projCols[ob.pos-1].name)
+				// Rebased to the underlying projection text — segments
+				// follow the same internal-name rule.
+				ob.bare, ob.qualifier, ob.qualified = expr, "", false
 			}
 			nullsFirst := ob.ascending
 			if ob.nullsFirst != nil {
@@ -590,7 +609,15 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// Pos), and the translator bakes a surviving Pos only into a
 			// select-list-carrying input (the aggregate reshaping
 			// projection or a union) — never a derived source's slots.
-			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Pos: ob.pos, BareRef: ob.bareRef})
+			sk := logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Pos: ob.pos, BareRef: ob.bareRef, Bare: ob.bare, Qualifier: ob.qualifier, Qualified: ob.qualified}
+			if ob.bare != "" && expr != ob.colName {
+				// A COLUMN key stripped/rebased to an internal name — bare
+				// from here on (the group-key strip rule). Expression keys
+				// keep zero segments: their Expr is a rendering, never a
+				// reference.
+				sk.Bare, sk.Qualifier, sk.Qualified = expr, "", false
+			}
+			keys = append(keys, sk)
 		}
 		op = logical.NewSort(op, keys)
 	}
@@ -606,7 +633,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		aliases := make([]string, len(sq.projCols))
 		computed := make([]bool, len(sq.projCols))
 		for i, col := range sq.projCols {
-			projs[i] = strip(col)
+			projs[i] = strip(col.name)
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				projs[i] = strings.TrimSpace(canonicalTextOf(sq.projExprs[i]))
 				computed[i] = true
@@ -749,10 +776,11 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		if el == nil || el.FullColumnName() == nil || el.Expression() == nil {
 			continue
 		}
-		col := functions.FullIdToName(el.FullColumnName().FullId())
-		// Strip the table-qualifier if present — UPDATE SET uses bare
-		// col names at the logical level.
-		col = parseColRef(col).bare()
+		// UPDATE SET uses bare col names at the logical level — the LAST
+		// FullId segment per the parse tree, never a dot split of the
+		// rendering (a delimited identifier may contain a literal dot).
+		uids := el.FullColumnName().FullId().AllUid()
+		col := functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
 		sets = append(sets, logical.Assignment{
 			Column: col,
 			Expr:   strings.TrimSpace(canonicalTextOf(el.Expression())),
@@ -766,6 +794,16 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 // (`SELECT id,id FROM t GROUP BY id,v ORDER BY v`), so the reshaping
 // projection must be DEFERRED past the sort (postSortStrip) — stripping the
 // key before the sort consumes it fails ordinal resolution at runtime.
+// groupKeyDisplayNames renders display names for the visible-projection
+// membership check (name comparison is the check's own semantics).
+func groupKeyDisplayNames(keys []logical.GroupKey) []string {
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = k.Display
+	}
+	return out
+}
+
 func groupKeyMissingFromVisible(keys, visibleProj []string) bool {
 	for _, k := range keys {
 		found := false

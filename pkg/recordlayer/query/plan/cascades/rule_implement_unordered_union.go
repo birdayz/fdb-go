@@ -21,7 +21,7 @@ type ImplementUnorderedUnionRule struct {
 
 func NewImplementUnorderedUnionRule() *ImplementUnorderedUnionRule {
 	return &ImplementUnorderedUnionRule{
-		matcher: &logicalUnionMatcher{},
+		matcher: NewExpressionMatcher[*expressions.LogicalUnionExpression]("implement_unordered_union"),
 	}
 }
 
@@ -100,17 +100,6 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 }
 
 var _ ImplementationRule = (*ImplementUnorderedUnionRule)(nil)
-
-type logicalUnionMatcher struct{}
-
-func (m *logicalUnionMatcher) RootType() string { return "LogicalUnionExpression" }
-
-func (m *logicalUnionMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.LogicalUnionExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}
 
 // crossProductPartitions returns the Cartesian product of per-child
 // partition lists. Delegates to the generic CrossProduct.

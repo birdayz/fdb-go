@@ -292,14 +292,15 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 			}
 			return out
 		}
-		if len(o.GroupKeyValues) > 0 {
-			gk := make([]values.Value, len(o.GroupKeyValues))
-			for i, v := range o.GroupKeyValues {
-				if v != nil {
-					gk[i] = values.Replace(v, guard)
+		if len(o.GroupKeys) > 0 {
+			gk := make([]logical.GroupKey, len(o.GroupKeys))
+			copy(gk, o.GroupKeys)
+			for i := range gk {
+				if gk[i].Value != nil {
+					gk[i].Value = values.Replace(gk[i].Value, guard)
 				}
 			}
-			cp.GroupKeyValues = gk
+			cp.GroupKeys = gk
 		}
 		if len(o.AggregateOperands) > 0 {
 			ao := make([]values.Value, len(o.AggregateOperands))

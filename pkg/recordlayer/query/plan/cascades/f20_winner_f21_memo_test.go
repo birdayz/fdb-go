@@ -9,99 +9,57 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// twoPhysicalScanWinners builds two distinct physical scan wrappers (over
-// different record types, so their structural plan-hash differs) for use as
-// stamped winners.
-func twoPhysicalScanWinners(t *testing.T) (expressions.RelationalExpression, expressions.RelationalExpression) {
-	t.Helper()
-	ref1 := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"Table1"}, values.UnknownType))
-	FireExpressionRule(NewPrimaryScanRule(), ref1)
-	w1 := findPhysicalExpr(ref1)
-
-	ref2 := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"Table2"}, values.UnknownType))
-	FireExpressionRule(NewPrimaryScanRule(), ref2)
-	w2 := findPhysicalExpr(ref2)
-
-	if w1 == nil || w2 == nil {
-		t.Fatal("PrimaryScanRule did not yield physical scan winners")
-	}
-	return w1, w2
-}
-
-// TestGetWinnerForOrdering_DeterministicCheapestAmongSatisfyingWinners (F20)
-// pins that when no exact-key winner exists, getWinnerForOrdering returns the
-// `less`-CHEAPEST stamped winner whose ordering satisfies the request — the
-// same cost-aware, deterministic selection as the un-stamped fallback — instead
-// of the FIRST satisfying winner in (randomized) Go map-iteration order. The
-// old code returned the first satisfying winner in map order: cost-blind AND
-// nondeterministic (flips across plannings). Java prunes each Reference to ONE
-// winner via a total-order cost model whose compare ends in a deterministic
-// planHash tie-break.
-func TestGetWinnerForOrdering_DeterministicCheapestAmongSatisfyingWinners(t *testing.T) {
+// TestGetWinnerForOrdering_DeterministicCheapestAmongSatisfyingMembers (F20)
+// pins that among MULTIPLE members whose derived rich orderings satisfy the
+// request, getWinnerForOrdering returns the `less`-CHEAPEST — with the
+// deterministic plan-hash tie-break, so the selection cannot flip across
+// plannings when the comparator ties.
+func TestGetWinnerForOrdering_DeterministicCheapestAmongSatisfyingMembers(t *testing.T) {
 	t.Parallel()
 
-	w1, w2 := twoPhysicalScanWinners(t)
-
-	// Stamp two winners under superset orderings [A,B] and [A,C]. Neither is the
-	// exact-key winner for the request [A asc], so lookup enters the winner scan;
-	// both orderings Satisfy [A asc], so BOTH are candidates.
+	// Two members ordered (A,B) and (A,C): both satisfy a request of (A asc).
+	w1 := sortedMemberOn(t, "A", "B")
+	w2 := sortedMemberOn(t, "A", "C")
 	ref := expressions.InitialOf(w1)
-	keyAB := expressions.OrderingFromNameDir([]string{"A", "B"}, []bool{false, false})
-	keyAC := expressions.OrderingFromNameDir([]string{"A", "C"}, []bool{false, false})
-	ref.SetWinner(keyAB, w1)
-	ref.SetWinner(keyAC, w2)
+	ref.Insert(w2)
 
 	reqOrd := NewRequestedOrdering(
-		[]RequestedOrderingPart{{Value: &values.FieldValue{Field: "A"}, SortOrder: RequestedSortOrderAscending}},
+		[]RequestedOrderingPart{{Value: values.NewFlatFieldValue("A", values.UnknownType), SortOrder: RequestedSortOrderAscending}},
 		DistinctnessPreserveDistinctness, false)
 
-	// A rank map gives an explicit, controllable total order over the two winners.
+	// A rank map gives an explicit, controllable total order over the two members.
 	rankOf := func(cheapest expressions.RelationalExpression) func(a, b expressions.RelationalExpression) bool {
 		return func(a, b expressions.RelationalExpression) bool {
-			// The `cheapest` argument is strictly less than anything else.
-			return a == cheapest && b != cheapest
-		}
-	}
-
-	const iters = 500
-
-	// (a) cost-awareness: the returned winner is the `less`-cheapest candidate.
-	//     Prove it is genuinely cost-driven by flipping which winner is cheapest.
-	for _, cheapest := range []expressions.RelationalExpression{w1, w2} {
-		less := rankOf(cheapest)
-		for i := 0; i < iters; i++ {
-			got := getWinnerForOrdering(ref, reqOrd, less)
-			if got != cheapest {
-				t.Fatalf("iter %d: cost-aware winner = %p, want cheapest %p", i, got, cheapest)
+			rank := func(e expressions.RelationalExpression) int {
+				if e == cheapest {
+					return 0
+				}
+				return 1
 			}
+			return rank(a) < rank(b)
 		}
 	}
 
-	// (b) even a comparator that TIES the two winners (returns false both ways,
-	//     i.e. carries no cost tie-break of its own) yields a DETERMINISTIC
-	//     winner — the wrapper adds the structural plan-hash tie-break so the
-	//     min is unique regardless of map iteration order. Requires the two
-	//     winners to hash apart.
-	if costExprHash(w1) == costExprHash(w2) {
-		t.Fatal("precondition: the two winners must have distinct costExprHash for the tie-break to be observable")
-	}
-	tyingLess := func(a, b expressions.RelationalExpression) bool { return false }
-	first := getWinnerForOrdering(ref, reqOrd, tyingLess)
-	for i := 0; i < iters; i++ {
-		if got := getWinnerForOrdering(ref, reqOrd, tyingLess); got != first {
-			t.Fatalf("iter %d: tying-comparator winner flipped to %p, want stable %p", i, got, first)
+	for run := 0; run < 20; run++ {
+		if got := getWinnerForOrdering(ref, reqOrd, rankOf(w1)); got != w1 {
+			t.Fatalf("run %d: cheapest=w1 but got %p (w1=%p w2=%p)", run, got, w1, w2)
+		}
+		if got := getWinnerForOrdering(ref, reqOrd, rankOf(w2)); got != w2 {
+			t.Fatalf("run %d: cheapest=w2 but got %p", run, got)
 		}
 	}
 
-	// (c) determinism with the DEFAULT cost model (nil less): the SAME winner
-	//     every iteration. This is the core revert-proof — the old first-in-map
-	//     scan returns 2 distinct winners across 500 calls.
-	distinct := map[expressions.RelationalExpression]struct{}{}
-	for i := 0; i < iters; i++ {
-		distinct[getWinnerForOrdering(ref, reqOrd, nil)] = struct{}{}
+	// A comparator that ties everything: the plan-hash tie-break must make
+	// the selection deterministic across repeated lookups.
+	tie := func(a, b expressions.RelationalExpression) bool { return false }
+	first := getWinnerForOrdering(ref, reqOrd, tie)
+	if first == nil {
+		t.Fatal("tied lookup returned nil")
 	}
-	if len(distinct) != 1 {
-		t.Fatalf("default-less winner is nondeterministic: %d distinct winners across %d calls", len(distinct), iters)
+	for run := 0; run < 20; run++ {
+		if got := getWinnerForOrdering(ref, reqOrd, tie); got != first {
+			t.Fatalf("run %d: tied selection flipped from %p to %p", run, first, got)
+		}
 	}
 }
 

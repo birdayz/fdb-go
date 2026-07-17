@@ -26,7 +26,9 @@ import (
 //     cross-type numeric equijoins (BIGINT=DOUBLE, covering-index float32 vs
 //     stored-record float64) silently dropped EVERY match once the inner leg
 //     hit 100 rows (fix: all numeric keys canonicalize to float64 on both
-//     the build and probe sides, mirroring cmpAny's promoteInt/promoteFloat).
+//     the build and probe sides; cmpAny itself compares pure-integer pairs
+//     exactly via values.CompareExactInts, and equal VALUES convert to the
+//     same float64, so the bucketing stays equality-faithful).
 
 // nljKeyLegs builds the two-leg fixtures of ojWiringLegs with configurable
 // join-key column types: A[ID outerKey, V long] / B[ID innerKey, W long],
@@ -158,6 +160,62 @@ func TestNLJCursor_HashPath_CrossNumericKeys(t *testing.T) {
 			t.Fatalf("got %d rows, want 1 (int64(5) = float64(5) per cmpAny's numeric promotion)", len(results))
 		}
 		ojAssertSlots(t, results[0].Positional, int64(5), int64(50), float64(5), int64(50))
+	})
+}
+
+// TestNLJCursor_HashPath_UnsignedKeys pins the unsigned half of the
+// integer join-key domain: tuple decoding preserves positive integers above
+// math.MaxInt64 as uint64, so uint64 reaches the equijoin key path on valid
+// rows. Before values.CompareExactInts, cmpAny admitted no unsigned form —
+// the pair failed comparison and the join dropped the row on BOTH the hash
+// and linear paths; and ToFloat64's unsigned exclusion made
+// normalizeNLJHashKey decline the key outright. Both a same-type uint64
+// pair and the cmpAny-equal cross-form uint64(5)=int64(5) must match
+// through the hash (equal VALUES convert to the same float64 bucket).
+func TestNLJCursor_HashPath_UnsignedKeys(t *testing.T) {
+	t.Parallel()
+	legA, legB, qovA, qovB, seed := nljKeyLegs(t, values.NotNullLong, values.NotNullLong)
+	pred := nljKeyEqPred(qovA, qovB, values.NotNullLong, values.NotNullLong)
+	big := uint64(math.MaxInt64) + 7
+	outerRows := []QueryResult{
+		ojLegQR(t, legA, big, int64(50)),
+		ojLegQR(t, legA, uint64(5), int64(51)),
+	}
+
+	run := func(t *testing.T, nInner int) (*nljCursor, []QueryResult) {
+		t.Helper()
+		innerRows := make([]QueryResult, 0, nInner)
+		innerRows = append(innerRows, ojLegQR(t, legB, big, int64(1000)))      // same-type uint64 match
+		innerRows = append(innerRows, ojLegQR(t, legB, int64(5), int64(1001))) // cross-form match
+		for i := len(innerRows); i < nInner; i++ {
+			innerRows = append(innerRows, ojLegQR(t, legB, int64(1_000_000+i), int64(i)))
+		}
+		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
+			"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		t.Cleanup(func() { c.Close() })
+		return c, collectCursor(t, c)
+	}
+
+	t.Run("120 inner rows match through the hash", func(t *testing.T) {
+		t.Parallel()
+		c, results := run(t, 120)
+		if c.hashIndex == nil {
+			t.Fatal("hash index was not built — unsigned keys must normalize, not decline")
+		}
+		if len(results) != 2 {
+			t.Fatalf("got %d rows, want 2 (uint64 same-type + uint64(5)=int64(5) cross-form)", len(results))
+		}
+	})
+
+	t.Run("50-inner-row linear control", func(t *testing.T) {
+		t.Parallel()
+		c, results := run(t, 50)
+		if c.hashIndex != nil {
+			t.Fatal("50 inner rows are below the hash threshold — control must run the linear path")
+		}
+		if len(results) != 2 {
+			t.Fatalf("got %d rows, want 2 on the linear path", len(results))
+		}
 	})
 }
 

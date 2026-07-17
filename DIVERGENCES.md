@@ -467,3 +467,114 @@ supports positional keys as a read-side extension, binding them to the union
 OUTPUT slot by ordinal (SortKey.Pos carried through the union lift;
 translateSort bakes the slot). Both are Go read-side extensions on a surface
 where Java's own behavior is non-standard; wire compat is untouched.
+
+## Cursor/continuation surface — systematic hunt (RFC-180 wave 2)
+
+Four parallel Java-vs-Go sweeps (FlatMapPipelinedCursor; union/intersection
+family; core combinators; InJoin/aggregation/sort) after the RFC-180
+continuation work. Every (a)-class bug found was fixed in the same batch
+(kept-armed resume state in flatMap+NLJ; terminal-result replay guards in
+flatMap/NLJ/skip/filter/map; Java `limitRowsTo` 0-is-unlimited semantics;
+stateful `Empty()` close; `FromListWithContinuation` nil-vs-empty; the
+intersection non-max `consume()` advance). What remains is classified below.
+
+### Clean extensions (compose with Java's way)
+
+- **FlatMap/NLJ PK check values where Java-Cascades passes `checker=null`**:
+  Go always writes the outer PK as the continuation check value; Java's
+  Cascades FlatMap plan disables the check entirely. Go uses exactly Java's
+  designed non-null-checker path and is strictly safer against
+  between-transaction outer shifts.
+- **FlatMap armed-inner survival across an outer out-of-band stop**: Go's
+  wrapOuterContinuation carries the armed inner + check value; Java drops the
+  armed state at the sentinel wrap (a later resume would re-run the saved
+  row's inner — duplicates). Go re-arms identically to the initial decode.
+- **InJoin check-value nil degradation for non-scalar in-values**: the outer
+  element is pinned by the positional in-list index over a fixed literal set;
+  the nil check is Java's own `checker==null` path.
+- **Aggregate resume seeds the flat inner position**: Java seeds the WHOLE
+  parsed AggregateCursorContinuation as previousContinuationInGroup — a
+  first-row group break then nests aggregate bytes into the LEAF plan's
+  resume (latent Java mis-resume). Go seeds the decoded flat inner position:
+  same emitted rows, resumable continuation. Go is the fix.
+- **Ordered UNION-ALL merge (removesDuplicates=false)**: Java's UnionCursor
+  always dedups; Go's merge-sort union adds a non-dedup mode on the same
+  state machine.
+- **Intersection continuation child-count/started validation**: Go validates
+  presence per child count where Java relies on list length — a defensive
+  superset with identical valid-token behavior.
+- **ListCursor unsigned position decode**: a corrupt high-bit 4-byte token
+  exhausts cleanly instead of Java's IndexOutOfBounds; unreachable from valid
+  tokens.
+
+### Architectural (by design, with reason)
+
+- **Pipeline depth**: Java prefetches (pipelineSize) in FlatMap/InJoin; Go is
+  serial pull-based. Same rows, same order, same continuation bytes — only
+  which page an out-of-band stop lands on can shift.
+- **Aggregation TO_OLD mode**: exists in Java solely to consume
+  pre-partial-aggregation legacy continuations; Go has no legacy tokens to
+  read and always runs Java's TO_NEW arm.
+- **Sort codec**: Go-owned typed payload inside Java's MemorySortContinuation
+  wrapper. Cascades emits no physical sort Java could resume (RemoveSortRule);
+  resume semantics are row-set-equivalent to Java's minimum-key re-scan.
+- **UnorderedUnion**: RESOLVED — Go now matches Java's UnorderedUnionCursor
+  contract serially: per-child UnionCursorContinuation slots, a limit-stopped
+  child parks while the rest keep emitting, strongest-reason terminal, full
+  resumability. The deterministic child order remains a legal realization of
+  Java's explicitly unspecified order. (The former eager concat's loud
+  declines are gone; the dead concat cursor was deleted.)
+- **ProbableIntersectionCursor / bloom-filter weak reads**: entirely
+  unimplemented (no plan type reaches it); Java's own docs flag the
+  Guava-serialized bloom bytes as a cross-compat hazard. Missing capability,
+  not a divergence in shared code.
+- **FutureCursor / fromFuture**: absent; single-future shapes are expressed
+  via FromList/flatMap composition instead.
+- **NoNextReason ordinals differ** (semantics and all predicates match); the
+  enum is never serialized. Latent trap only if someone persists ordinals.
+- **ConcatCursor carries no ScanProperties**: row-limit splitting and
+  reverse ordering are the Go caller's composition concern; pull-based
+  execution makes an outer LimitRows equivalent.
+- **Construction-time vs first-OnNext continuation-parse errors**: Go defers
+  all parse failures to an errorCursor on first pull (I/O-free construction);
+  Java throws in the constructor. Both fail loudly; timing differs.
+
+
+## PLANNING dual insertion: physical yields live in BOTH member sets (RFC-180 D2 audit)
+
+**Go:** `TransformExprTask`'s PLANNING yieldFn inserts a physical yield into
+BOTH the exploratory members (rule matching / convergence detection) and the
+final members (OptimizeGroup selection). **Java:** no dual insertion —
+`yieldUnknownExpression` routes a physical plan to the FINAL set only; the
+exploratory set never holds plans.
+
+Consequence: pruning (which trims finals only) leaves an exploratory copy of
+every pruned loser behind, so identity guards that transpose Java's
+`containsExactly` must demand FINAL survival instead
+(`Reference.ContainsFinal` in `OptimizeInputsTask`) — a compensating
+divergence for a structural one. The transform-task guards
+(`TransformExprTask`/`TransformImplTask`) deliberately keep the both-sets
+check: re-firing rules on a pruned-but-exploratory physical member matches
+the convergence bookkeeping the dual insert exists for.
+
+**Open question (Graefe review of 0aea06b48):** should the dual insertion
+itself die in favor of Java's final-only routing, letting the exploratory
+set hold only logical expressions? That would restore `containsExactly`
+parity wholesale and shrink re-exploration work, but the convergence
+detection (`NeedsExploration` keyed on member growth) currently counts
+physical yields as exploration progress — unwinding it is a planner-core
+arc, not a patch. Until then: any new identity guard on physical members
+must use `ContainsFinal`.
+
+## Ordering translation through renaming projections (performance-only gap)
+
+Sort-elision satisfaction resolves an order-preserving wrapper through its
+SOURCE GROUP without translating the requested ordering's Values across a
+projection's renames (`orderingDelegator` — the request stays in output
+space while the child orders in input space). A rename therefore fails
+`orderingKeyFor` resolution → elision declines → an avoidable enforcer sort
+(never a wrong order). Java translates requested orderings through
+pulled-up value maps (`RequestedOrdering.pushDown` on the projection's
+result value). Go has the machinery (`RequestedOrdering.PushDownThroughValue`)
+— wiring it into the delegation walk is the follow-up; until then the
+decline arm keeps correctness.

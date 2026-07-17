@@ -77,18 +77,13 @@ func TestEdge_ToPlanPartitions_NoPlanProperties(t *testing.T) {
 	// Plan properties not set -> fallback path.
 	partitions := ToPlanPartitions(ref)
 
-	// The fallback should still produce partitions because AllMembers
-	// includes the exploratory physical wrapper.
-	if len(partitions) == 0 {
-		t.Fatal("ToPlanPartitions should use fallback and produce partitions from exploratory members")
-	}
-
-	totalPlans := 0
-	for _, p := range partitions {
-		totalPlans += len(p.GetPlans())
-	}
-	if totalPlans != 1 {
-		t.Fatalf("expected 1 plan via fallback, got %d", totalPlans)
+	// RFC-180 D4: a nil PlanPropertiesMap is a planner sequencing bug —
+	// the retired fallback lumped every member into ONE unordered
+	// partition (unordered members leaked as sort-free finals). The
+	// contract is now a DECLINE: no partitions, so the consuming rule
+	// yields nothing and planning fails loudly instead of approximating.
+	if len(partitions) != 0 {
+		t.Fatalf("nil properties map must decline (no partitions), got %d", len(partitions))
 	}
 }
 

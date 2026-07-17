@@ -156,8 +156,8 @@ func (u *LogicalUnnest) Explain(indent string) string {
 // PredicateText is the fallback: the canonical source text of the
 // WHERE expression. Used when the expression shape is out of the
 // walker's scope (UnsupportedExpressionShapeError) or when the
-// builder is constructed without a metadata-backed catalog (today's
-// naive_generator Explain path, which has no transaction in scope).
+// builder is constructed without a metadata-backed catalog (the
+// catalog-less Explain path, which has no transaction in scope).
 type LogicalFilter struct {
 	Input            LogicalOperator
 	Predicate        predicates.QueryPredicate // preferred when non-nil
@@ -269,6 +269,12 @@ type SortKey struct {
 	// diverges for computed items whose canonical source text differs from the
 	// baked output spelling.
 	Pos int
+	// Bare/Qualifier/Qualified: parse-tree segments of a plain column
+	// reference key; zero values for positional and expression keys (their
+	// Expr is a rendering only). Qualification is FullId SEGMENT COUNT.
+	Bare      string
+	Qualifier string
+	Qualified bool
 	// BareRef marks a key whose source text is a plain ONE-segment column
 	// reference — the only shape SQL binds to an output alias. False for
 	// qualified references (`ORDER BY d.x`), aggregates and computed
@@ -372,46 +378,114 @@ func (d *LogicalDistinct) Explain(indent string) string {
 }
 
 // LogicalAggregate runs GROUP BY + aggregate functions on its child.
-// GroupKeys are the grouping-column expressions; Aggregates holds the
-// aggregate-call text with aliases.
+// GroupKeys are the grouping-column expressions; Calls holds the
+// structured aggregate calls (see AggregateCall) with parallel Aliases.
+// GroupKey is one GROUP BY key in structured form (RFC-180 F-3): the display
+// text is a rendering for output naming and diagnostics, never re-parsed;
+// qualification and segments are parse-tree truth; Value is the resolved key
+// (expressions always resolve; a bare column's Value is filled by the upgrade
+// passes, nil = lazy bare read).
+type GroupKey struct {
+	Display   string
+	Bare      string // last segment of a bare column ref; "" for expression keys
+	Qualifier string // leading segment(s) when qualified; "" otherwise
+	Qualified bool   // parse-tree segment count > 1
+	Value     values.Value
+}
+
 type LogicalAggregate struct {
-	Input                  LogicalOperator
-	GroupKeys              []string
-	GroupKeyValues         []values.Value // resolved Value trees for GROUP BY expressions; nil slot = bare column
-	Aggregates             []string       // e.g. "SUM(a)", "COUNT(*)"
-	Aliases                []string       // parallel to Aggregates
-	AggregateOperands      []values.Value // resolved operand Values (parallel to Aggregates); nil slot = use text
-	HasDistinctAggregate   bool           // true when any aggregate uses DISTINCT (e.g. COUNT(DISTINCT x))
-	Having                 string         // canonical HAVING predicate, "" when absent
+	Input     LogicalOperator
+	GroupKeys []GroupKey
+	// Calls is the SOLE aggregate-call representation. Builders populate it
+	// from the parse tree; the translator requires it (RFC-180 F-3 retired
+	// the parallel display-text slice).
+	Calls                []AggregateCall
+	Aliases              []string       // parallel to Calls
+	AggregateOperands    []values.Value // resolved operand Values (parallel to Calls); nil slot = use text
+	HasDistinctAggregate bool           // true when any aggregate uses DISTINCT (e.g. COUNT(DISTINCT x))
+	// HasHaving: the query carried a HAVING clause. Presence SENTINEL only
+	// (RFC-180 F-3 — the former canonical-text field was never re-parsed):
+	// the translator declines when HasHaving is set but HavingPredicate is
+	// nil, so an unstructured HAVING can never be silently dropped.
+	HasHaving              bool
 	HavingPredicate        predicates.QueryPredicate
 	HavingExistsSubqueries []ExistsSubquery // EXISTS subquery plans inside HAVING
 	HavingScalarSubqueries []ScalarSubquery // scalar subquery plans inside HAVING
 }
 
-func NewAggregate(input LogicalOperator, groupKeys, aggs, aliases []string, having string) *LogicalAggregate {
+// AggregateCall is the STRUCTURED form of one aggregate in the SELECT list,
+// captured from the parse tree at build time — function, operand text (for
+// result-map keying), and the star/distinct/bare-column classification. The
+// translator consumes this instead of re-parsing the display text in
+// Aggregates: a missing entry is a typed decline, never a string split
+// (RFC-180 F-1 — the text reparse mangled nested arithmetic and silently
+// dropped HAVING groups).
+type AggregateCall struct {
+	Func     string // upper-case aggregate function name (COUNT/SUM/MIN/MAX/AVG)
+	Operand  string // canonical operand text; "*" for COUNT(*)
+	Star     bool   // COUNT(*) (or COUNT(<non-null const>) collapsed to it)
+	Distinct bool
+	// BareColumn: the operand is a single column reference PER THE PARSE
+	// TREE — a lazy FieldValue read of Operand is well-defined without
+	// catalog resolution. False for computed/expression operands, which
+	// require a resolved Value.
+	BareColumn bool
+	// Qualified: a BareColumn operand carried a table qualifier PER THE
+	// PARSE TREE (FullId segment count > 1) — never a dot scan of the
+	// rendered name, which a delimited identifier containing a literal dot
+	// would false-positive. Always false for computed operands; consumers
+	// gating on qualification fall back to a conservative canonical-text
+	// scan there (a dot inside a computed rendering only ever comes from a
+	// real qualified reference or a quoted literal, and the gate is
+	// optimization-only).
+	Qualified bool
+}
+
+// CanonicalName renders the call in the canonical upper-case display form —
+// `FUNC(OPERAND)`, `FUNC(DISTINCT OPERAND)`, `COUNT(*)` — the alias-free
+// output-column name for an aggregate. Every consumer compares these keys
+// case-insensitively (upper-cased or via normalizeAggOutputName), so the
+// upper-case Func is safe even where the SQL wrote the function lower-case.
+func (c AggregateCall) CanonicalName() string {
+	if c.Star {
+		return c.Func + "(*)"
+	}
+	if c.Distinct {
+		return c.Func + "(DISTINCT " + c.Operand + ")"
+	}
+	return c.Func + "(" + c.Operand + ")"
+}
+
+func NewAggregate(input LogicalOperator, groupKeys []GroupKey, calls []AggregateCall, aliases []string, hasHaving bool) *LogicalAggregate {
 	return &LogicalAggregate{
-		Input:      input,
-		GroupKeys:  groupKeys,
-		Aggregates: aggs,
-		Aliases:    aliases,
-		Having:     having,
+		Input:     input,
+		GroupKeys: groupKeys,
+		Calls:     calls,
+		Aliases:   aliases,
+		HasHaving: hasHaving,
 	}
 }
 
 func (a *LogicalAggregate) Children() []LogicalOperator { return []LogicalOperator{a.Input} }
 func (a *LogicalAggregate) Explain(indent string) string {
-	aggs := make([]string, len(a.Aggregates))
-	for i, ag := range a.Aggregates {
+	aggs := make([]string, len(a.Calls))
+	for i, c := range a.Calls {
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
-			aggs[i] = fmt.Sprintf("%s AS %s", ag, a.Aliases[i])
+			aggs[i] = fmt.Sprintf("%s AS %s", c.CanonicalName(), a.Aliases[i])
 		} else {
-			aggs[i] = ag
+			aggs[i] = c.CanonicalName()
 		}
 	}
+	keyNames := make([]string, len(a.GroupKeys))
+	for i, k := range a.GroupKeys {
+		keyNames[i] = k.Display
+	}
 	line := fmt.Sprintf("%sAggregate(group=[%s], agg=[%s]", indent,
-		strings.Join(a.GroupKeys, ", "), strings.Join(aggs, ", "))
-	if a.Having != "" {
-		line += ", having=" + a.Having
+		strings.Join(keyNames, ", "), strings.Join(aggs, ", "))
+	if a.HavingPredicate != nil {
+		line += ", having=" + a.HavingPredicate.Explain()
+	} else if a.HasHaving {
+		line += ", having=<unresolved>"
 	}
 	line += ")"
 	return fmt.Sprintf("%s\n%s", line, a.Input.Explain(indent+"  "))

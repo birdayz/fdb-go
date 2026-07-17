@@ -10,25 +10,27 @@ import (
 )
 
 // =============================================================================
-// BUG #2: Union/Intersection cursor panics on type-mismatched comparison keys
+// BUG #2: merge cursor panics on type-mismatched comparison keys
 //
 // Severity: panic
 // Location: merge_cursor.go via compareKeys
 //
-// Description: When a Union or Intersection cursor has children whose
+// Description: When a merge cursor (Intersection) has children whose
 // ComparisonKeyFunc returns tuple.Tuple values with different element types at
 // the same position (e.g., one returns int64, another returns string),
 // compareKeys panics on the type mismatch inside the FDB tuple comparison.
 // This can happen with corrupt data or when different record types in a
-// union have differently-typed index columns.
+// merge have differently-typed index columns. (Originally pinned against the
+// merge-union cursor; that cursor was dead code and is gone — the surviving
+// Intersection cursor exercises the same compareKeys path.)
 // =============================================================================
 
-func TestBug2_UnionCursorMixedKeyTypesPanic(t *testing.T) {
+func TestBug2_IntersectionCursorMixedKeyTypesPanic(t *testing.T) {
 	t.Parallel()
 
 	defer func() {
 		if r := recover(); r != nil {
-			t.Fatalf("Union cursor panicked on type-mismatched keys: %v", r)
+			t.Fatalf("Intersection cursor panicked on type-mismatched keys: %v", r)
 		}
 	}()
 
@@ -45,16 +47,16 @@ func TestBug2_UnionCursorMixedKeyTypesPanic(t *testing.T) {
 		return tuple.Tuple{"value"} // string — type mismatch!
 	}
 
-	union := Union(
+	inter := Intersection(
 		[]RecordCursor[int]{cursor1, cursor2},
 		compKeyFunc,
 		false,
 	)
-	defer union.Close()
+	defer inter.Close()
 
 	// Consume all results — should not panic
 	for {
-		result, err := union.OnNext(t.Context())
+		result, err := inter.OnNext(t.Context())
 		if err != nil {
 			t.Logf("Error (acceptable): %v", err)
 			return

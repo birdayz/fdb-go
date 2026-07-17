@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"reflect"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 )
@@ -18,6 +20,25 @@ type ExpressionMatcher[T expressions.RelationalExpression] struct {
 
 // RootType returns the rule's debug-friendly root identifier.
 func (m *ExpressionMatcher[T]) RootType() string { return m.rootType }
+
+// RootOperator returns the one concrete type BindMatches admits — computed
+// from the type parameter, so it can never drift from the type assert.
+// Implements matching.RootOperatorMatcher for the planner's rule index.
+//
+// An INTERFACE type parameter (ExpressionMatcher[RelationalExpression] —
+// the match-anything shape MatchLeafRule / MatchIntermediateRule use)
+// returns nil: the assert admits every implementor, so the rule belongs in
+// the index's always bucket. Returning the interface type instead would
+// bucket the rule under a key no concrete expression ever looks up —
+// silently disabling the matching infrastructure (Java models this as
+// PlannerRule.getRootOperator returning Optional.empty()).
+func (m *ExpressionMatcher[T]) RootOperator() reflect.Type {
+	t := reflect.TypeFor[T]()
+	if t.Kind() == reflect.Interface {
+		return nil
+	}
+	return t
+}
 
 // BindMatches type-asserts `in` to T; on success binds m → in in the
 // outer bindings and returns one new binding set. On failure returns

@@ -29,6 +29,11 @@ type boundedBuffer[T any] struct {
 	rowLimit int
 	opName   string
 	est      func(T) int64
+	// charged is the total bytes this buffer has charged against st. The
+	// budget bounds LIVE bytes: the buffer's owner releases exactly this on
+	// teardown (Charged → ReleaseMemory), so a per-page rebuild against the
+	// statement-wide state does not re-accumulate the same buffer each page.
+	charged int64
 }
 
 // newBoundedBuffer constructs an accounted buffer. st is non-optional — the
@@ -53,15 +58,23 @@ func newBoundedBuffer[T any](st *recordlayer.ExecuteState, rowLimit int, opName 
 // cap.
 func (b *boundedBuffer[T]) Append(item T) error {
 	if b.st.HasMemLimit() {
-		if err := b.st.ChargeMemory(b.est(item)); err != nil {
+		n := b.est(item)
+		if err := b.st.ChargeMemory(n); err != nil {
 			return err
 		}
+		b.charged += n
 	}
 	if b.rowLimit > 0 && len(b.items)+1 >= b.rowLimit {
 		return &MaterializationLimitExceededError{Limit: b.rowLimit, Context: b.opName}
 	}
 	b.items = append(b.items, item)
 	return nil
+}
+
+// Charged returns the total bytes this buffer has charged against its state —
+// what the owner releases at teardown (live-bytes model).
+func (b *boundedBuffer[T]) Charged() int64 {
+	return b.charged
 }
 
 // Items returns the underlying slice. The buffer is append-only; callers must
@@ -80,8 +93,9 @@ func (b *boundedBuffer[T]) Len() int {
 // nothing new), and reports whether the key was newly inserted. A nil/zero
 // budget makes the charge a no-op.
 type boundedSet[K comparable] struct {
-	m  map[K]struct{}
-	st *recordlayer.ExecuteState
+	m       map[K]struct{}
+	st      *recordlayer.ExecuteState
+	charged int64 // total charged against st; owner releases on teardown
 }
 
 // newBoundedSet constructs an accounted set. st is non-optional (RFC-130
@@ -107,8 +121,15 @@ func (s *boundedSet[K]) Add(key K, estBytes int64) (added bool, err error) {
 	if err := s.st.ChargeMemory(estBytes); err != nil {
 		return false, err
 	}
+	s.charged += estBytes
 	s.m[key] = struct{}{}
 	return true, nil
+}
+
+// Charged returns the total bytes this set has charged against its state —
+// what the owner releases at teardown (live-bytes model, see boundedBuffer).
+func (s *boundedSet[K]) Charged() int64 {
+	return s.charged
 }
 
 // Len reports the number of distinct keys.
@@ -225,4 +246,55 @@ func scalarValueBytes(v any) int64 {
 	default:
 		return 8
 	}
+}
+
+// chargeReleasingCursor wraps a cursor over materialized rows and returns
+// their accounted bytes to the statement budget when the cursor is closed —
+// the page-teardown release half of the live-bytes model. Every buffered
+// execution path (buffered union, LoadByKeys, recursive CTE) materializes
+// per page against the statement-wide ExecuteState; without the release each
+// page re-accumulates the same buffer and a compliant multi-page statement
+// trips the budget on page count alone.
+type chargeReleasingCursor struct {
+	recordlayer.RecordCursor[QueryResult]
+	st       *recordlayer.ExecuteState
+	charge   int64
+	released bool
+}
+
+func newChargeReleasingCursor(inner recordlayer.RecordCursor[QueryResult], st *recordlayer.ExecuteState, charge int64) recordlayer.RecordCursor[QueryResult] {
+	if charge <= 0 {
+		return inner
+	}
+	return &chargeReleasingCursor{RecordCursor: inner, st: st, charge: charge}
+}
+
+func (c *chargeReleasingCursor) Close() error {
+	if !c.released {
+		c.st.ReleaseMemory(c.charge)
+		c.released = true
+	}
+	return c.RecordCursor.Close()
+}
+
+// closeHookCursor runs a hook exactly once when the cursor is closed — the
+// teardown point for charge releases whose amount is only known at close time
+// (a temp table that grows while the cursor is drained, a recursion's working
+// set).
+type closeHookCursor struct {
+	recordlayer.RecordCursor[QueryResult]
+	hook func()
+	ran  bool
+}
+
+func newCloseHookCursor(inner recordlayer.RecordCursor[QueryResult], hook func()) recordlayer.RecordCursor[QueryResult] {
+	return &closeHookCursor{RecordCursor: inner, hook: hook}
+}
+
+func (c *closeHookCursor) Close() error {
+	if !c.ran {
+		c.ran = true
+		c.hook()
+	}
+	return c.RecordCursor.Close()
 }
