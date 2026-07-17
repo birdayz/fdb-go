@@ -44,17 +44,23 @@ var _ = Describe("ExoticFloatIndexOrder", func() {
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		negNaN := math.Float64frombits(0xFFF8000000000000)     // sign-set canonical-payload NaN
-		payloadNaN := math.Float64frombits(0x7FF8000000000001) // sign-clear, non-canonical payload
-		writeOrder := []float64{                               // deliberately shuffled
-			1.5, math.Inf(-1), math.NaN(), math.Copysign(0, -1),
-			negNaN, math.Inf(1), 0.0, -1.5, payloadNaN,
+		negNaN := math.Float64frombits(0xFFF8000000000000)   // sign-set canonical-payload NaN
+		canonNaN := math.Float64frombits(0x7FF8000000000000) // Java doubleToLongBits canonical
+		// Go's math.NaN() is uvnan 0x7FF8000000000001 — one bit ABOVE the
+		// Java canonical, so it is itself a "payload" NaN; payloadNaN takes
+		// the next bit up so the three sign-clear NaNs are pairwise DISTINCT
+		// (a canonicalizing write path would collapse them and fail below).
+		goNaN := math.NaN()
+		payloadNaN := math.Float64frombits(0x7FF8000000000002)
+		writeOrder := []float64{ // deliberately shuffled
+			1.5, math.Inf(-1), goNaN, math.Copysign(0, -1),
+			negNaN, math.Inf(1), 0.0, canonNaN, -1.5, payloadNaN,
 		}
 		// Physical index expectation: IEEE-754 raw-bit total order (the
 		// tuple codec's order-preserving transform of the RAW bits).
 		wantIndexOrder := []float64{
 			negNaN, math.Inf(-1), -1.5, math.Copysign(0, -1),
-			0.0, 1.5, math.Inf(1), math.NaN(), payloadNaN,
+			0.0, 1.5, math.Inf(1), canonNaN, goNaN, payloadNaN,
 		}
 
 		ks := specSubspace()
@@ -107,26 +113,33 @@ var _ = Describe("ExoticFloatIndexOrder", func() {
 				Expect(math.Float64bits(mem[i])).To(Equal(math.Float64bits(w)),
 					"in-memory slot %d", i)
 			}
-			// The three NaNs (canonical, payload, sign-set) sort greatest
-			// and mutually equal in-memory.
+			// The four NaNs (canonical, uvnan, payload, sign-set) sort
+			// greatest and mutually equal in-memory.
 			for i := len(wantMemPrefix); i < len(mem); i++ {
 				Expect(math.IsNaN(mem[i])).To(BeTrue(), "in-memory tail slot %d must be NaN", i)
 				Expect(values.CompareFloat64(mem[i], mem[len(wantMemPrefix)])).To(Equal(0))
 			}
 
-			// (c) MIN/MAX agreement: the in-memory extremes over the full
-			// set are -Inf (min) and NaN (max, Double.compare) — matching
-			// Java's evaluated MIN/MAX; an index-backed MIN/MAX that reads
-			// the FIRST/LAST entry would instead see the raw-bit extremes
-			// (negNaN / payloadNaN), which COLLAPSE to the same canonical
-			// answer for MAX (a NaN) but DIVERGE for MIN (negNaN is a NaN,
-			// not -Inf). This is exactly Java's behavior too — its index
-			// entries hold the same raw bits — so the pin here is the
-			// in-memory truth; index-backed aggregate parity over NaN
-			// payloads follows Java by construction.
-			minV, maxV := mem[0], mem[len(mem)-1]
-			Expect(math.IsInf(minV, -1)).To(BeTrue())
-			Expect(math.IsNaN(maxV)).To(BeTrue())
+			// (c) EVALUATED MIN/MAX are a DIFFERENT float semantic than the
+			// comparator order asserted in (b): Java Math.min/max
+			// (NumericAggregationValue MIN_D/MAX_D, Go's aggMinMax via
+			// javaMinF64/javaMaxF64) propagate NaN into BOTH extremes, so
+			// the evaluated MIN over this set is NaN — never -Inf, which is
+			// what a comparator-based MIN would produce. NOTE: Go's raw
+			// math.Min/math.Max resolve Min(-Inf,NaN)=-Inf (infinity checks
+			// first) — the divergence this very pin surfaced; the executor
+			// unit test TestAggMinMax_NaNPropagatesOverInf pins the real
+			// aggregate function, this fold mirrors its Java semantics.
+			evalMin, evalMax := writeOrder[0], writeOrder[0]
+			for _, v := range writeOrder[1:] {
+				if math.IsNaN(v) || math.IsNaN(evalMin) {
+					evalMin, evalMax = math.NaN(), math.NaN()
+					continue
+				}
+				evalMin, evalMax = math.Min(evalMin, v), math.Max(evalMax, v)
+			}
+			Expect(math.IsNaN(evalMin)).To(BeTrue(), "evaluated MIN propagates NaN (Java Math.min)")
+			Expect(math.IsNaN(evalMax)).To(BeTrue(), "evaluated MAX propagates NaN (Java Math.max)")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

@@ -507,10 +507,14 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 // BEFORE any float64 arrives rounds long→float where Java's static DOUBLE lane
 // would round long→double. No-crash, no-drop corners only.
 //
-// For FLOAT/DOUBLE this MUST use Go's math.Min / math.Max, NOT a total-order
-// comparator. Go's math.Min/math.Max have special-cases identical to Java's
-// Math.min/Math.max: NaN PROPAGATES into BOTH extremes (min(x,NaN)=max(x,NaN)=NaN)
-// and -0.0 sorts below +0.0 (min(-0.0,+0.0)=-0.0, max(-0.0,+0.0)=+0.0). A total-order
+// For FLOAT/DOUBLE this MUST use Java Math.min/Math.max semantics, NOT a
+// total-order comparator: NaN PROPAGATES into BOTH extremes
+// (min(x,NaN)=max(x,NaN)=NaN) and -0.0 sorts below +0.0
+// (min(-0.0,+0.0)=-0.0, max(-0.0,+0.0)=+0.0). Go's math.Min/math.Max are NOT
+// identical to Java's on one corner: their special-case order resolves
+// Min(-Inf,NaN)=-Inf and Max(+Inf,NaN)=+Inf where Java propagates NaN — the
+// javaMinF64/javaMaxF64 wrappers below add the NaN-first guard (divergence
+// surfaced by the G4 exotic-float pin). A total-order
 // comparator (values.CompareFloat64, used by the sort/predicate path) makes NaN the
 // GREATEST element — correct for MAX but WRONG for MIN, which must yield NaN, not the
 // smallest finite. So float MIN/MAX is deliberately a DIFFERENT float semantic than
@@ -535,9 +539,9 @@ func aggMinMax(acc, val any, isMin bool) any {
 			return acc // non-numeric mix: contract guard (isNumeric-gated upstream)
 		}
 		if isMin {
-			return math.Min(a, v)
+			return javaMinF64(a, v)
 		}
-		return math.Max(a, v)
+		return javaMaxF64(a, v)
 	case aIsF32 || vIsF32:
 		// FLOAT lane (Java MIN_F/MAX_F over the float-promoted operand). An int
 		// side converts directly to float32 (Java's (float) promotion, one
@@ -549,9 +553,9 @@ func aggMinMax(acc, val any, isMin bool) any {
 			return acc // contract guard
 		}
 		if isMin {
-			return float32(math.Min(float64(a), float64(v)))
+			return float32(javaMinF64(float64(a), float64(v)))
 		}
-		return float32(math.Max(float64(a), float64(v)))
+		return float32(javaMaxF64(float64(a), float64(v)))
 	}
 	// Integer numerics (int64/int32/int). Row integers arrive int64 via the
 	// tupleElementToRowValue canonicalization; int32/int are accepted for
@@ -1454,3 +1458,22 @@ var (
 	_ recordlayer.RecordCursor[QueryResult] = (*nljCursor)(nil)
 	_ recordlayer.RecordCursor[QueryResult] = (*customSortCursor)(nil)
 )
+
+// javaMinF64 / javaMaxF64 mirror Java Math.min/Math.max exactly: if either
+// operand is NaN the result is NaN, unconditionally. Go's math.Min/math.Max
+// check the infinity special cases FIRST, so Min(-Inf, NaN) = -Inf and
+// Max(+Inf, NaN) = +Inf — an evaluated-aggregate divergence from Java
+// whenever a set contains both an infinity and a NaN.
+func javaMinF64(a, b float64) float64 {
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return math.NaN()
+	}
+	return math.Min(a, b)
+}
+
+func javaMaxF64(a, b float64) float64 {
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return math.NaN()
+	}
+	return math.Max(a, b)
+}

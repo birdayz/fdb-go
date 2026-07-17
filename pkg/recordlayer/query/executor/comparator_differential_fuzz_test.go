@@ -191,3 +191,48 @@ func FuzzCmpAnyVsCompareValues_PredicateSortSplit(f *testing.F) {
 			"pred(%#v, %#v)=%d sort=%d", a, b, ps, ss)
 	})
 }
+
+// TestAggMinMax_NaNPropagatesOverInf pins the Java Math.min/Math.max corner
+// the G4 exotic-float pin surfaced: Go's math.Min/math.Max resolve
+// Min(-Inf, NaN) = -Inf and Max(+Inf, NaN) = +Inf (their special-case order
+// checks infinities first), while Java propagates NaN unconditionally —
+// evaluated MIN/MAX over a set holding both an infinity and a NaN must be
+// NaN. RED before the javaMinF64/javaMaxF64 guard, in both operand orders
+// and both float lanes.
+func TestAggMinMax_NaNPropagatesOverInf(t *testing.T) {
+	t.Parallel()
+	nan, negInf, posInf := math.NaN(), math.Inf(-1), math.Inf(1)
+
+	for _, tc := range []struct {
+		name     string
+		acc, val any
+		isMin    bool
+	}{
+		{"min_negInf_then_NaN", negInf, nan, true},
+		{"min_NaN_then_negInf", nan, negInf, true},
+		{"max_posInf_then_NaN", posInf, nan, false},
+		{"max_NaN_then_posInf", nan, posInf, false},
+		{"min_f32_negInf_then_NaN", float32(math.Inf(-1)), float32(math.NaN()), true},
+		{"max_f32_posInf_then_NaN", float32(math.Inf(1)), float32(math.NaN()), false},
+	} {
+		got := aggMinMax(tc.acc, tc.val, tc.isMin)
+		isNaN := false
+		switch g := got.(type) {
+		case float64:
+			isNaN = math.IsNaN(g)
+		case float32:
+			isNaN = math.IsNaN(float64(g))
+		}
+		if !isNaN {
+			t.Errorf("%s: got %v, want NaN (Java Math.min/max propagates NaN over infinities)", tc.name, got)
+		}
+	}
+
+	// The non-NaN corners keep Go/Java shared semantics: -0.0 below +0.0.
+	if got := aggMinMax(math.Copysign(0, -1), 0.0, true); math.Signbit(got.(float64)) != true {
+		t.Error("min(-0.0, +0.0) must be -0.0")
+	}
+	if got := aggMinMax(math.Copysign(0, -1), 0.0, false); math.Signbit(got.(float64)) != false {
+		t.Error("max(-0.0, +0.0) must be +0.0")
+	}
+}
