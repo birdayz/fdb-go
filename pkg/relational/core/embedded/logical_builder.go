@@ -776,10 +776,11 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		if el == nil || el.FullColumnName() == nil || el.Expression() == nil {
 			continue
 		}
-		col := functions.FullIdToName(el.FullColumnName().FullId())
-		// Strip the table-qualifier if present — UPDATE SET uses bare
-		// col names at the logical level.
-		col = parseColRef(col).bare()
+		// UPDATE SET uses bare col names at the logical level — the LAST
+		// FullId segment per the parse tree, never a dot split of the
+		// rendering (a delimited identifier may contain a literal dot).
+		uids := el.FullColumnName().FullId().AllUid()
+		col := functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
 		sets = append(sets, logical.Assignment{
 			Column: col,
 			Expr:   strings.TrimSpace(canonicalTextOf(el.Expression())),

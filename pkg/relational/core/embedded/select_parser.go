@@ -1623,8 +1623,46 @@ func harvestColumnRefs(expr antlrgen.IExpressionContext) []string {
 // read into the derived source surfaces through that build, loud at
 // translation). The GROUP-BY validator keeps the non-stopping walk: a
 // correlated ref into the outer query DOES need the group-check there.
-func harvestColumnRefsOutsideSubqueries(expr antlrgen.IExpressionContext) []string {
-	return harvestColumnRefsImpl(expr, true)
+// harvestBareColumnRefsOutsideSubqueries is the STRUCTURAL variant: it
+// returns each referenced column's bare LAST SEGMENT per the parse tree —
+// never a dot split of the rendered name, which a delimited identifier
+// containing a literal dot would corrupt. Same walk boundaries as the
+// rendering variant.
+func harvestBareColumnRefsOutsideSubqueries(expr antlrgen.IExpressionContext) []string {
+	if expr == nil {
+		return nil
+	}
+	var bares []string
+	seen := map[string]bool{}
+	var visit func(n antlr.Tree)
+	visit = func(n antlr.Tree) {
+		if n == nil {
+			return
+		}
+		switch n.(type) {
+		case *antlrgen.QueryContext, antlrgen.IQueryExpressionBodyContext:
+			return
+		}
+		if fc, ok := n.(*antlrgen.FunctionCallExpressionAtomContext); ok {
+			if _, isAgg := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext); isAgg {
+				return
+			}
+		}
+		if c, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+			uids := c.FullColumnName().FullId().AllUid()
+			bare := functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
+			if !seen[bare] {
+				seen[bare] = true
+				bares = append(bares, bare)
+			}
+			return
+		}
+		for i := 0; i < n.GetChildCount(); i++ {
+			visit(n.GetChild(i))
+		}
+	}
+	visit(expr)
+	return bares
 }
 
 func harvestColumnRefsImpl(expr antlrgen.IExpressionContext, stopAtNestedQuery bool) []string {

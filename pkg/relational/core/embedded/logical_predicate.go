@@ -1345,8 +1345,8 @@ func derivedEmittedBareNames(md *recordlayer.RecordMetaData, schemaName string, 
 		isComputed := i < len(sq.projExprs) && sq.projExprs[i] != nil
 		if deeper != nil {
 			if isComputed {
-				for _, r := range harvestColumnRefsOutsideSubqueries(sq.projExprs[i]) {
-					if !deeper[parseColRef(r).bare()] {
+				for _, r := range harvestBareColumnRefsOutsideSubqueries(sq.projExprs[i]) {
+					if !deeper[r] {
 						return nil, false
 					}
 				}
@@ -1396,16 +1396,16 @@ func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
 				return false
 			}
 		}
-		for _, r := range harvestColumnRefsOutsideSubqueries(ac.aggExpr) {
-			if !emitted[parseColRef(r).bare()] {
+		for _, r := range harvestBareColumnRefsOutsideSubqueries(ac.aggExpr) {
+			if !emitted[r] {
 				return false
 			}
 		}
 	}
 	for i, col := range sq.projCols {
 		if i < len(sq.projExprs) && sq.projExprs[i] != nil {
-			for _, r := range harvestColumnRefsOutsideSubqueries(sq.projExprs[i]) {
-				if !emitted[parseColRef(r).bare()] {
+			for _, r := range harvestBareColumnRefsOutsideSubqueries(sq.projExprs[i]) {
+				if !emitted[r] {
 					return false
 				}
 			}
