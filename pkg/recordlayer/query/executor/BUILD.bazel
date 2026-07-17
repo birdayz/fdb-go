@@ -41,6 +41,7 @@ go_test(
         "aggregate_avg_precision_test.go",
         "bench_proto_test.go",
         "charge_coverage_test.go",
+        "comparator_differential_fuzz_test.go",
         "continuation_decode_test.go",
         "covering_logical_row_test.go",
         "equijoin_columns_test.go",
@@ -130,6 +131,7 @@ go_test(
         "aggregate_avg_precision_test.go",
         "flat_map_resume_safety_test.go",
         "orphan_index_entry_test.go",
+        "comparator_differential_fuzz_test.go",
     ],
     deps = [
         "//gen",
