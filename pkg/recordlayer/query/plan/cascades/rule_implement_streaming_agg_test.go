@@ -201,3 +201,65 @@ func TestStreamingAggPlan_EqualityAndHash(t *testing.T) {
 		t.Fatal("identical plans should have same hash")
 	}
 }
+
+// TestStreamingAgg_OrderedChildPinned pins RFC-181 P0.2: the ordered
+// alternative's child must be a PINNED singleton, never the SHARED inner
+// group — the agg wrapper's WithChildren relinks at extraction to whatever
+// leaf-replaceable plan its child group resolves to, and the shared
+// multi-member group can resolve to a cheaper UNORDERED member, silently
+// splitting groups (grouping-key order is a correctness precondition of
+// streaming aggregation). Driven through the REAL planner: the test-driver
+// shortcut (FireExpressionRule) has no memo, so MemoizeExpression already
+// degrades to a fresh singleton there and cannot exhibit the shared-group
+// leak.
+func TestStreamingAgg_OrderedChildPinned(t *testing.T) {
+	t.Parallel()
+
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"T$g", []string{"T"}, []string{"G"},
+		[]values.CorrelationIdentifier{a1}, values.UnknownType, false, nil)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	innerRef := expressions.InitialOf(scan)
+	groupKey := &values.FieldValue{Field: "G", Typ: values.UnknownType}
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{groupKey}, nil,
+		expressions.ForEachQuantifier(innerRef),
+	)
+	topRef := expressions.InitialOf(gb)
+
+	p := NewPlanner(DefaultExpressionRules(), ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(topRef); err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	// Find the ordered streaming-agg alternative: its plan child is the
+	// index scan (not the in-memory sort).
+	var orderedAgg *physicalStreamingAggWrapper
+	for _, m := range topRef.AllMembers() {
+		w, ok := m.(*physicalStreamingAggWrapper)
+		if !ok {
+			continue
+		}
+		if _, isIdx := w.plan.GetInner().(*plans.RecordQueryIndexPlan); isIdx {
+			orderedAgg = w
+			break
+		}
+	}
+	if orderedAgg == nil {
+		t.Skipf("no ordered streaming-agg alternative in the memo for this shape")
+	}
+
+	childRef := orderedAgg.innerQuant.GetRangesOver()
+	members := childRef.AllMembers()
+	if len(members) != 1 {
+		t.Fatalf("the ordered agg's child must be a PINNED singleton; got %d members — the shared inner group leaks the unordered winner into the extraction relink", len(members))
+	}
+	if got := findPhysicalPlan(childRef); got != orderedAgg.plan.GetInner() {
+		t.Fatalf("findPhysicalPlan over the pinned child = %T, want the ordered index plan — extraction would relink the agg onto an unordered child", got)
+	}
+}

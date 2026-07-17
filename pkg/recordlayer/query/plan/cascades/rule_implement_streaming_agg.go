@@ -130,7 +130,17 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		} else if ppe, ok := orderedExpr.(physicalPlanExpression); ok {
 			orderedInnerPlan := ppe.GetRecordQueryPlan()
 			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(orderedInnerPlan, groupingKeys, gb.GetAggregates())
-			orderedQ := expressions.ForEachQuantifier(call.MemoizeExpression(orderedExpr))
+			// PIN the ordered child (FinalOf singleton), never memoize into
+			// the SHARED inner group: the grouping-key ordering is a
+			// CORRECTNESS precondition of streaming aggregation, and the agg
+			// wrapper's WithChildren relinks at extraction to whatever
+			// leaf-replaceable plan its child group resolves to — with the
+			// shared multi-member group that could be a cheaper UNORDERED
+			// member, silently splitting groups. Java bakes the concrete
+			// ordered child at rule time (memoizePlan); FinalOf is that
+			// discipline (finals-only at StagePlanned — no exploration can
+			// grow past the pin, and Get() exposes it to semantic identity).
+			orderedQ := expressions.ForEachQuantifier(expressions.FinalOf(orderedExpr))
 			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, orderedQ))
 		}
 	}
