@@ -196,6 +196,13 @@ type TempTable struct {
 	mu   sync.Mutex
 	list []QueryResult
 	st   *recordlayer.ExecuteState
+	// charged: total bytes charged against st over this table's lifetime
+	// (monotonic — Clear/ReplaceList do not refund, matching the
+	// accumulate-within-a-page model). The table's OWNER releases it once
+	// at teardown via ReleaseCharges (live-bytes model): recursion owns its
+	// ping-pong tables; a table created by a TempTableInsert cursor is
+	// released by that cursor's Close.
+	charged int64
 }
 
 // NewTempTable creates an empty temp table with no memory budget. Used by
@@ -220,12 +227,42 @@ func (tt *TempTable) Add(qr QueryResult) error {
 	tt.mu.Lock()
 	defer tt.mu.Unlock()
 	if tt.st.HasMemLimit() {
-		if err := tt.st.ChargeMemory(estimateQueryResultBytes(qr)); err != nil {
+		n := estimateQueryResultBytes(qr)
+		if err := tt.st.ChargeMemory(n); err != nil {
 			return err
 		}
+		tt.charged += n
 	}
 	tt.list = append(tt.list, qr)
 	return nil
+}
+
+// ReleaseAllTempTableCharges releases every temp table bound in THIS context's
+// map back to the statement budget — the teardown half of the recursion's
+// live-bytes accounting (the DFS accumulator is minted into the shared
+// bindings map by GetOrCreateTempTable, so the recursion cannot name it
+// directly). Idempotent per table (the tally zeroes). A nested recursion
+// sharing the map would release an outer recursion's still-live tables a step
+// early — an accepted under-account bounded by the outer working set; the
+// outer teardown's release is then a harmless no-op.
+func (ec *EvaluationContext) ReleaseAllTempTableCharges() {
+	for _, v := range ec.bindings {
+		if tt, ok := v.(*TempTable); ok {
+			tt.ReleaseCharges()
+		}
+	}
+}
+
+// ReleaseCharges returns every byte this table has charged to the statement
+// budget and zeroes the tally. Called exactly once by the table's owner at
+// teardown; idempotent because the tally is zeroed.
+func (tt *TempTable) ReleaseCharges() {
+	tt.mu.Lock()
+	defer tt.mu.Unlock()
+	if tt.charged > 0 {
+		tt.st.ReleaseMemory(tt.charged)
+		tt.charged = 0
+	}
 }
 
 // GetList returns a snapshot of the temp table contents.

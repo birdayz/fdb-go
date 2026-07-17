@@ -5405,7 +5405,7 @@ func TestCollectAllBounded_UnderLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	results, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
+	results, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5422,7 +5422,7 @@ func TestCollectAllBounded_ExactlyAtLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	_, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
+	_, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
 	if err == nil {
 		t.Fatal("expected MaterializationLimitExceededError at exactly limit rows")
 	}
@@ -5446,7 +5446,7 @@ func TestCollectAllBounded_OverLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	_, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "nested loop join inner side")
+	_, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "nested loop join inner side")
 	if err == nil {
 		t.Fatal("expected MaterializationLimitExceededError")
 	}
@@ -5472,7 +5472,7 @@ func TestCollectAllBounded_EmptyCursor(t *testing.T) {
 	t.Parallel()
 	cursor := recordlayer.FromList([]QueryResult{})
 
-	results, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 5, "test")
+	results, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 5, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5486,7 +5486,7 @@ func TestCollectAllBounded_LimitOne(t *testing.T) {
 	rows := []QueryResult{qr("n", int64(1)), qr("n", int64(2))}
 	cursor := recordlayer.FromList(rows)
 
-	_, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 1, "test")
+	_, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 1, "test")
 	if err == nil {
 		t.Fatal("expected MaterializationLimitExceededError with limit=1 and 2 rows")
 	}
@@ -5507,7 +5507,7 @@ func TestCollectAllBounded_OneBelowLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	results, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
+	results, _, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
 	if err != nil {
 		t.Fatalf("unexpected error with 9 rows and limit 10: %v", err)
 	}

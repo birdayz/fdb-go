@@ -998,6 +998,10 @@ type nljCursor struct {
 	outerMatched   bool
 	outerExhausted bool
 	closed         bool
+	// chargedBytes: what this cursor holds against the statement budget
+	// (materialized inner rows + hash index), released once on Close —
+	// the inner side is rebuilt and re-charged each page (live-bytes model).
+	chargedBytes int64
 
 	// FULL OUTER JOIN drain state. matchedInner[i] is set when
 	// innerRows[i] passes the join predicates against any outer row;
@@ -1161,6 +1165,7 @@ func (c *nljCursor) tryBuildHashIndex(innerAlias string) {
 			c.hashIndex = nil
 			return
 		}
+		c.chargedBytes += charge
 		idx[val] = append(idx[val], i)
 	}
 	c.hashIndex = idx
@@ -1583,6 +1588,10 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 }
 
 func (c *nljCursor) Close() error {
+	if !c.closed && c.chargedBytes > 0 {
+		c.st.ReleaseMemory(c.chargedBytes)
+		c.chargedBytes = 0
+	}
 	c.closed = true
 	return c.outerInner.Close()
 }

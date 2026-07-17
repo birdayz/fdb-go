@@ -335,3 +335,70 @@ func TestResumedSortBufferReleasesOnPageTeardown(t *testing.T) {
 		t.Fatalf("after final page teardown all sort charges must be released, still holding %d bytes", used)
 	}
 }
+
+// TestNLJInnerReleasesOnPageTeardown pins the live-bytes contract for the
+// nested-loop join: the inner side is re-materialized (and re-charged) on
+// EVERY page against the statement-wide ExecuteState, so nljCursor.Close must
+// release its charges (inner rows + hash index) — otherwise a join whose
+// inner side fits the budget fails after enough page boundaries.
+func TestNLJInnerReleasesOnPageTeardown(t *testing.T) {
+	t.Parallel()
+	inner := make([]QueryResult, 4)
+	var innerBytes int64
+	for i := range inner {
+		inner[i] = dmap(map[string]any{"K": int64(i), "P": string(make([]byte, 64))})
+		innerBytes += estimateQueryResultBytes(inner[i])
+	}
+	// Budget fits the inner side once but not twice.
+	state := recordlayer.NewExecuteState(innerBytes + innerBytes/2)
+	for page := 0; page < 3; page++ {
+		buf := newBoundedBuffer[QueryResult](state, 0, "test inner", estimateQueryResultBytes)
+		for _, r := range inner {
+			if err := buf.Append(r); err != nil {
+				t.Fatalf("page %d: in-budget inner side must charge cleanly: %v", page, err)
+			}
+		}
+		cursor, err := newNLJCursor(
+			recordlayer.Empty[QueryResult](), buf.Items(),
+			plans.JoinInner, "O", "I", nil, nil, &EvaluationContext{}, state,
+		)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		cursor.chargedBytes = buf.Charged()
+		if cerr := cursor.Close(); cerr != nil {
+			t.Fatalf("page %d: close: %v", page, cerr)
+		}
+	}
+	if used := state.MemUsed(); used != 0 {
+		t.Fatalf("after final page teardown all NLJ charges must be released, still holding %d bytes", used)
+	}
+}
+
+// TestRecursiveUnionReleasesOnPageTeardown pins the live-bytes contract for
+// the recursive-CTE working set: the whole recursion re-executes (and its
+// ping-pong temp tables re-charge) on every page, so the final cursor's
+// teardown must return every charged byte to the statement budget.
+func TestRecursiveUnionReleasesOnPageTeardown(t *testing.T) {
+	t.Parallel()
+	state := recordlayer.NewExecuteState(1 << 20)
+	tt := NewTempTableWithState(state)
+	rows := make([]QueryResult, 4)
+	for i := range rows {
+		rows[i] = dmap(map[string]any{"K": int64(i), "P": string(make([]byte, 64))})
+		if err := tt.Add(rows[i]); err != nil {
+			t.Fatalf("add: %v", err)
+		}
+	}
+	if state.MemUsed() == 0 {
+		t.Fatal("temp table must have charged the budget")
+	}
+	tt.ReleaseCharges()
+	if used := state.MemUsed(); used != 0 {
+		t.Fatalf("ReleaseCharges must return every charged byte, still holding %d", used)
+	}
+	tt.ReleaseCharges() // idempotent — the tally was zeroed
+	if used := state.MemUsed(); used != 0 {
+		t.Fatalf("double release must be a no-op, holding %d", used)
+	}
+}

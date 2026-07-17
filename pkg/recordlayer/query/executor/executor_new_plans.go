@@ -452,6 +452,7 @@ func executeLoadByKeys(
 	for _, pk := range keys {
 		rec, err := store.LoadRecord(pk)
 		if err != nil {
+			props.State.ReleaseMemory(results.Charged())
 			return nil, fmt.Errorf("executor: LoadByKeys pk=%v: %w", pk, err)
 		}
 		if rec == nil {
@@ -459,12 +460,18 @@ func executeLoadByKeys(
 		}
 		qr := FromStoredRecord(rec)
 		if err := results.Append(qr); err != nil {
+			props.State.ReleaseMemory(results.Charged())
 			return nil, err
 		}
 	}
-	return applySkipLimit(
-		recordlayer.FromList(results.Items()),
-		props.Skip, props.ReturnedRowLimit,
+	// Live-bytes model: rebuilt (and re-charged) per page; released at page
+	// teardown via the wrapping cursor's Close.
+	return newChargeReleasingCursor(
+		applySkipLimit(
+			recordlayer.FromList(results.Items()),
+			props.Skip, props.ReturnedRowLimit,
+		),
+		props.State, results.Charged(),
 	), nil
 }
 

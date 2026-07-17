@@ -59,7 +59,7 @@ func TestChargeCoverage_AllBufferPaths(t *testing.T) {
 	//    sets, recursive-CTE per level, DFS root/children — all share it).
 	advanced(t, "CollectAllBounded", func(t *testing.T) {
 		cur := recordlayer.FromList(wideRows(5, w, "P"))
-		if _, err := CollectAllBounded(ctx, cur, st, 1_000_000, "coverage"); err != nil {
+		if _, _, err := CollectAllBounded(ctx, cur, st, 1_000_000, "coverage"); err != nil {
 			t.Fatalf("CollectAllBounded: %v", err)
 		}
 	})

@@ -717,9 +717,6 @@ func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 		// dotted operand text is conservatively rejected (qualified
 		// rendering; a delimited identifier containing a dot only costs
 		// the optimization, never correctness).
-		if i >= len(a.Calls) {
-			return false
-		}
 		call := a.Calls[i]
 		if call.Star {
 			continue // COUNT(*)

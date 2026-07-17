@@ -1792,14 +1792,17 @@ func executeUnionBuffered(
 		return nil, &UnsupportedContinuationError{Shape: "buffered union (branch column names not statically known)"}
 	}
 	var all []QueryResult
+	var allCharged int64
 	for branchIdx, inner := range inners {
 		cursor, err := ExecutePlan(ctx, inner, store, evalCtx, nil, props.ClearSkipAndLimit())
 		if err != nil {
 			return nil, err
 		}
-		items, err := CollectAllBounded(ctx, cursor, props.State, props.GetMaterializationLimit(), "buffered union branch")
+		items, charged, err := CollectAllBounded(ctx, cursor, props.State, props.GetMaterializationLimit(), "buffered union branch")
+		allCharged += charged
 		cursor.Close()
 		if err != nil {
+			props.State.ReleaseMemory(allCharged)
 			return nil, err
 		}
 		branchKeys := planColumnNames(inner)
@@ -1826,7 +1829,10 @@ func executeUnionBuffered(
 		// the budget is already advanced by the per-branch CollectAllBounded.
 		all = append(all, items...)
 	}
-	return applySkipLimit(recordlayer.FromList(all), props.Skip, props.ReturnedRowLimit), nil
+	return newChargeReleasingCursor(
+		applySkipLimit(recordlayer.FromList(all), props.Skip, props.ReturnedRowLimit),
+		props.State, allCharged,
+	), nil
 }
 
 func planColumnNames(p plans.RecordQueryPlan) []string {
@@ -2202,9 +2208,10 @@ func executeNestedLoopJoin(
 	if err != nil {
 		return nil, err
 	}
-	innerRows, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "nested loop join inner side")
+	innerRows, innerCharged, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "nested loop join inner side")
 	innerCursor.Close()
 	if err != nil {
+		props.State.ReleaseMemory(innerCharged)
 		return nil, err
 	}
 
@@ -2243,8 +2250,13 @@ func executeNestedLoopJoin(
 	)
 	if err != nil {
 		outerCursor.Close()
+		props.State.ReleaseMemory(innerCharged)
 		return nil, err
 	}
+	// Live-bytes model: the inner side is re-materialized (and re-charged)
+	// on every page against the statement-wide state; the cursor releases
+	// its charges — inner rows plus any hash index — at page teardown.
+	cursor.chargedBytes = innerCharged
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
@@ -2573,7 +2585,7 @@ func executeDelete(
 	// explicit transaction that a later commit would persist (RFC-106a). DML runs
 	// in one transaction, so the target set is bounded by the tx; the materialization
 	// cap is the memory backstop.
-	targets, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "DELETE target set")
+	targets, _, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "DELETE target set")
 	if err != nil {
 		return nil, err
 	}
@@ -2643,7 +2655,7 @@ func executeInsert(
 	// use. (Note: a single INSERT that paginates across transactions can
 	// still re-read across page boundaries — that extreme case is a known
 	// limitation, RFC-035.)
-	innerRows, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "INSERT source")
+	innerRows, _, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "INSERT source")
 	if err != nil {
 		return nil, err
 	}
@@ -2819,7 +2831,7 @@ func executeUpdate(
 	// Pre-materialize the full target set BEFORE applying any update — a resource-limit
 	// cut-off must abort with ZERO records changed, never a partially-applied UPDATE
 	// staged in an explicit transaction (RFC-106a; see executeDelete).
-	targets, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "UPDATE target set")
+	targets, _, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "UPDATE target set")
 	if err != nil {
 		return nil, err
 	}
@@ -3085,6 +3097,10 @@ func executeTempTableInsert(
 
 	// RFC-130: charge the temp-table working set; tt.Add returns the budget
 	// error, propagated via MapErrCursor (MapCursor cannot return an error).
+	// The table outlives this cursor — it is the recursion's shared working
+	// set (BFS ping-pong locals, or the DFS accumulator GetOrCreate mints
+	// into the shared bindings map) — so its charges are released by the
+	// recursion's teardown, never here.
 	mapped := recordlayer.MapErrCursor(innerCursor, func(qr QueryResult) (QueryResult, error) {
 		if err := tt.Add(qr); err != nil {
 			return QueryResult{}, err
@@ -3339,6 +3355,22 @@ func executeRecursiveLevelUnion(
 
 	scanTable := NewTempTableWithState(props.State)
 	insertTable := NewTempTableWithState(props.State)
+	// Live-bytes model: every byte the recursion charges (ping-pong temp
+	// tables via TempTableInsert, the UNION-DISTINCT seen-set) stands in for
+	// the accumulated result set and is released in one place — at the final
+	// cursor's teardown on success, or right here on an error return.
+	var seenCharge func() int64 = func() int64 { return 0 }
+	releaseWorkingSet := func() {
+		scanTable.ReleaseCharges()
+		insertTable.ReleaseCharges()
+		props.State.ReleaseMemory(seenCharge())
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			releaseWorkingSet()
+		}
+	}()
 
 	levelCtx := evalCtx.WithBinding(scanAlias, scanTable)
 	levelCtx = levelCtx.WithBinding(insertAlias, insertTable)
@@ -3368,6 +3400,7 @@ func executeRecursiveLevelUnion(
 	var keyer *cteDedupKeyer
 	if distinct {
 		seen = newBoundedSet[string](props.State)
+		seenCharge = seen.Charged
 		// Dedup on the CTE's OUTPUT columns. Prefer the seed plan's projection
 		// OUTPUT schema: after the temp table is keyed under OUTPUT names, the
 		// seed row can carry INERT extra columns (e.g. the source column a rename
@@ -3454,7 +3487,11 @@ func executeRecursiveLevelUnion(
 		allResults = append(allResults, items...)
 	}
 
-	return applySkipLimit(recordlayer.FromList(allResults), props.Skip, props.ReturnedRowLimit), nil
+	handedOff = true
+	return newCloseHookCursor(
+		applySkipLimit(recordlayer.FromList(allResults), props.Skip, props.ReturnedRowLimit),
+		releaseWorkingSet,
+	), nil
 }
 
 // executeRecursiveDfsJoin implements depth-first recursive CTE
@@ -3491,6 +3528,23 @@ func executeRecursiveDfsJoin(
 
 	preorder := p.GetTraversalStrategy() == plans.DfsPreorder
 	var results []QueryResult
+	// RFC-130 live-bytes model: every DFS row is charged ONCE — at tt.Add,
+	// when the root/child TempTableInsertPlan appends it to the shared
+	// accumulator table GetOrCreate mints into this context's bindings map.
+	// That table's charge stands in for the result set (same rows); the
+	// teardown below returns it (and the DISTINCT seen-set) to the budget,
+	// so a per-page re-execution does not re-accumulate the recursion.
+	var seenCharge func() int64 = func() int64 { return 0 }
+	releaseWorkingSet := func() {
+		evalCtx.ReleaseAllTempTableCharges()
+		props.State.ReleaseMemory(seenCharge())
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			releaseWorkingSet()
+		}
+	}()
 	// RFC-130: the DFS dedup seen-set is a cross-traversal cardinality-growing
 	// buffer (one key per distinct visited row) — charge each NEW key via
 	// boundedSet.
@@ -3504,6 +3558,7 @@ func executeRecursiveDfsJoin(
 	var keyer *cteDedupKeyer
 	if p.IsDistinct() {
 		seen = newBoundedSet[string](props.State)
+		seenCharge = seen.Charged
 		canonicalCols := recursiveUnionOutputColumns(p.GetRoot())
 		if len(canonicalCols) == 0 && len(rootRows) > 0 && rootRows[0].Positional != nil {
 			// Ordinal order is already deterministic; no sort needed.
@@ -3533,7 +3588,11 @@ func executeRecursiveDfsJoin(
 		}
 	}
 
-	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+	handedOff = true
+	return newCloseHookCursor(
+		applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit),
+		releaseWorkingSet,
+	), nil
 }
 
 func dfsVisit(
@@ -3695,28 +3754,32 @@ func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult
 // (props.State); a nil/zero-limit st makes the byte charge a no-op while the
 // row-count cap still applies. Returns MaterializationLimitExceededError on the
 // row cap and MemoryLimitExceededError (→ 54F01) on the byte budget.
-func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], st *recordlayer.ExecuteState, limit int, opName string) ([]QueryResult, error) {
+// The second return is the total bytes charged against st — the owner of the
+// returned rows releases exactly that at teardown (live-bytes model: the
+// buffer is rebuilt per page against the statement-wide state, so an
+// unreleased charge re-accumulates once per page).
+func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], st *recordlayer.ExecuteState, limit int, opName string) ([]QueryResult, int64, error) {
 	buf := newBoundedBuffer[QueryResult](st, limit, opName, estimateQueryResultBytes)
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, buf.Charged(), err
 		}
 		result, err := cursor.OnNext(ctx)
 		if err != nil {
-			return nil, err
+			return nil, buf.Charged(), err
 		}
 		if !result.HasNext() {
 			if lerr := errIfBufferTruncated(result); lerr != nil {
-				return nil, lerr
+				return nil, buf.Charged(), lerr
 			}
 			break
 		}
 		v := result.GetValue()
 		if err := buf.Append(v); err != nil {
-			return nil, err
+			return nil, buf.Charged(), err
 		}
 	}
-	return buf.Items(), nil
+	return buf.Items(), buf.Charged(), nil
 }
 
 // collectAllRowCapped drains a cursor into a slice enforcing the MaterializationLimit
@@ -3728,7 +3791,8 @@ func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[Quer
 // value (RFC-130, code-review #328). Passing a nil ExecuteState makes the boundedBuffer
 // skip both the estimate and the charge while keeping the row cap.
 func collectAllRowCapped(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], limit int, opName string) ([]QueryResult, error) {
-	return CollectAllBounded(ctx, cursor, nil, limit, opName)
+	rows, _, err := CollectAllBounded(ctx, cursor, nil, limit, opName)
+	return rows, err
 }
 
 // errIfBufferTruncated returns a 54F01-mapped error when an eager/buffered
