@@ -441,12 +441,46 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 		}
 	}
 
-	if bestFinal != nil {
-		t.Ref.PruneWith(bestFinal)
-		t.Ref.SetWinner(bestFinal)
-	} else {
+	if bestFinal == nil {
 		t.Ref.ClearFinalMembers()
+		return
 	}
+
+	// Winner-per-(group, properties) retention (Graefe 1995 §2): pruning to
+	// the single overall cost winner would destroy a costlier-but-ORDERED
+	// final that a pushed RequestedOrderingConstraint asked this group for —
+	// before the parent's ordered lookup (bestSatisfyingMember) or the
+	// extraction elision seam can choose it, silently forcing an avoidable
+	// enforcer sort. Java parents don't hit this because they bake concrete
+	// child plans at rule time (memoizePlan); Go wrappers range over child
+	// References resolved at lookup/extraction, so the group must retain,
+	// per requested ordering, the cheapest final satisfying it. Orderings
+	// nothing requested stay dead weight and are pruned with the losers.
+	keep := map[expressions.RelationalExpression]struct{}{bestFinal: {}}
+	if t.Phase == PhasePlanning {
+		if ros, ok := Get(p.constraintMap, t.Ref, RequestedOrderingConstraintKey); ok {
+			tieBrokenLess := lessWithHashTieBreak(costModel)
+			for _, ro := range ros {
+				if ro == nil || ro.IsPreserve() {
+					continue
+				}
+				var best expressions.RelationalExpression
+				for _, m := range t.Ref.FinalMembers() {
+					if !memberSatisfiesOrdering(m, ro) {
+						continue
+					}
+					if best == nil || tieBrokenLess(m, best) {
+						best = m
+					}
+				}
+				if best != nil {
+					keep[best] = struct{}{}
+				}
+			}
+		}
+	}
+	t.Ref.PruneToSet(keep)
+	t.Ref.SetWinner(bestFinal)
 }
 
 // OptimizeInputsTask pushes OptimizeGroup for each child quantifier.
@@ -459,6 +493,13 @@ type OptimizeInputsTask struct {
 
 func (t *OptimizeInputsTask) Run(p *Planner) {
 	if t.Expr == nil {
+		return
+	}
+	// Identity guard (Java CascadesPlanner.OptimizeInputs:
+	// `if (!group.containsExactly(expression)) return;`): an expression
+	// pruned OUT of its group between task push and pop is dead — it must
+	// not drive child-group pruning on behalf of a plan that lost.
+	if t.Ref != nil && !t.Ref.ContainsMember(t.Expr) {
 		return
 	}
 	for _, q := range t.Expr.GetQuantifiers() {

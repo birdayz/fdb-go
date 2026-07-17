@@ -539,6 +539,37 @@ func (r *Reference) PruneWith(expr RelationalExpression) {
 	r.finalMembers = append(r.finalMembers[:0], expr)
 }
 
+// PruneToSet keeps exactly the final members present in `keep` (by
+// identity), preserving their existing order, and drops the rest.
+// Exploratory members are untouched — same contract as PruneWith.
+func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
+	r = r.Canonical()
+	kept := r.finalMembers[:0]
+	for _, m := range r.finalMembers {
+		if _, ok := keep[m]; ok {
+			kept = append(kept, m)
+		}
+	}
+	r.finalMembers = kept
+}
+
+// ContainsMember reports whether expr is a member of this Reference (by
+// identity), exploratory or final. Ports Java Reference.containsExactly.
+func (r *Reference) ContainsMember(expr RelationalExpression) bool {
+	r = r.Canonical()
+	for _, m := range r.members {
+		if m == expr {
+			return true
+		}
+	}
+	for _, m := range r.finalMembers {
+		if m == expr {
+			return true
+		}
+	}
+	return false
+}
+
 // ClearFinalMembers removes all final members.
 func (r *Reference) ClearFinalMembers() {
 	r = r.Canonical()

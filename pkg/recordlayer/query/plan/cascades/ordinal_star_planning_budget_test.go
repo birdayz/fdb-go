@@ -75,7 +75,7 @@ const starWallClockCeiling = 5 * time.Second
 //     re-explodes shared sub-products blows past the 100k budget (measured: the
 //     5-way all-live star already caps; the 4-way is the largest that converges).
 //   - task-count == 42788 ±2% — the STAR-topology interning sentinel,
-//     complementing the CHAIN baseline (11122/45306): a different topology
+//     complementing the CHAIN baseline (11446/47088): a different topology
 //     stresses sub-product sharing differently. IsOrdinalJoinRV admitting bare
 //     TYPED QOV fields pulls the post-translation MIXED upper RVs
 //     (ofOrdinal-over-merge alongside bare leg QOVs) into alias-aware
@@ -87,7 +87,9 @@ const starWallClockCeiling = 5 * time.Second
 func TestOrdinalStarPlanningBudget(t *testing.T) {
 	t.Parallel()
 	const spokes = 3
-	const wantTasks = 42788
+	// 42788→43959 (+2.7%) with the OptimizeInputs identity guard (dead parent
+	// expressions no longer prune child groups — see the CHAIN baseline note).
+	const wantTasks = 43959
 	tol := wantTasks / 50 // ±2%
 
 	best := time.Hour
