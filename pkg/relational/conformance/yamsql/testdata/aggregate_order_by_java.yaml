@@ -154,3 +154,18 @@ tests:
   - query: SELECT score FROM (SELECT id, score FROM scores) d ORDER BY 1 DESC LIMIT 1
     rows:
       - [120]
+  # Positional identity survives AMBIGUOUS item text: item 1 is aliased to
+  # spell a sibling's rendering (id AS x, SUM(score) AS x) — ORDER BY 2
+  # is SUM(score) by ordinal, so the top group is id 3 (score 120).
+  - query: |-
+      SELECT (SELECT y FROM (SELECT id AS x, SUM(score) AS x, id AS y FROM scores GROUP BY id ORDER BY 2 DESC LIMIT 1) d) AS picked FROM scores LIMIT 1
+    rows:
+      - [3]
+  # Non-aggregate: a computed item ALIASED to spell item 2's underlying
+  # text (score + 0 AS id vs bare id) — ORDER BY 2 orders by item 2 (id).
+  - query: |-
+      SELECT score + 0 AS id, id AS y FROM (SELECT score, id FROM scores) d ORDER BY 2 LIMIT 3
+    rows:
+      - [100, 1]
+      - [80, 2]
+      - [120, 3]

@@ -584,14 +584,13 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			if ob.nullsFirst != nil {
 				nullsFirst = *ob.nullsFirst
 			}
-			// Pos is NOT carried here: this sort sits below the OUTER
-			// projection, so its translated input can be a DERIVED
-			// source's projection — baking the SELECT ordinal into that
-			// foreign slot misbinds (`SELECT b FROM (SELECT a, b …) d
-			// ORDER BY 1` must order by b, never source slot 1 = a). The
-			// positional semantics are already carried by the Expr rebase
-			// to the item's underlying text above.
-			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, BareRef: ob.bareRef})
+			// Pos is pure INFORMATION (the ordinal into THIS select's
+			// list), never a bake directive: upgradeSortKeyValues resolves
+			// it into the OUTER projection's typed item Value (clearing
+			// Pos), and the translator bakes a surviving Pos only into a
+			// select-list-carrying input (the aggregate reshaping
+			// projection or a union) — never a derived source's slots.
+			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Pos: ob.pos, BareRef: ob.bareRef})
 		}
 		op = logical.NewSort(op, keys)
 	}

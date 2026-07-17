@@ -5509,6 +5509,33 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			}
 		}
 	}
+	// POSITIONAL keys first, by ORDINAL — never by text. A positional key
+	// is an ordinal into THIS select's output list; when the select's own
+	// projection sits ABOVE the sort (the plain-select shape), the ordinal
+	// resolves to that projection's item: the resolved item Value when the
+	// catalog pass populated it (typed — immune to items whose rendered
+	// texts or aliases collide), the item's underlying text otherwise. Pos
+	// is CLEARED here so the translator can never bake the ordinal into
+	// whatever projection roots the sort's INPUT (a derived source's
+	// layout). When the projection is NOT an ancestor of the sort (the
+	// aggregate reshaping strip below the sort, or a union), Pos survives
+	// untouched — those inputs ARE select-list carriers and the
+	// translator's Pos bake against them is the correct binding.
+	if proj != nil && operatorContains(proj, sort) {
+		for i := range sort.Keys {
+			pos := sort.Keys[i].Pos
+			if pos < 1 || pos > len(proj.Projections) {
+				continue
+			}
+			if proj.ProjectedValues != nil && pos-1 < len(proj.ProjectedValues) && proj.ProjectedValues[pos-1] != nil {
+				sort.Keys[i].Value = proj.ProjectedValues[pos-1]
+			} else {
+				sort.Keys[i].Expr = proj.Projections[pos-1]
+			}
+			sort.Keys[i].Pos = 0
+		}
+	}
+
 	for i := range sort.Keys {
 		upper := strings.ToUpper(sort.Keys[i].Expr)
 		// Output aliases bind BARE one-segment identifiers only

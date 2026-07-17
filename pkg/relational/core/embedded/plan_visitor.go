@@ -1545,22 +1545,17 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			// The positional name is ALIAS-preferred but this sort sits
 			// BELOW the final projection, where the alias does not exist
 			// and may collide with a same-named SOURCE column. Rebase to
-			// the item's UNDERLYING text (selectCols). Pos rides along
-			// ONLY for aggregate-shaped selects, where the projection
-			// below the sort IS this select's visible list (the immediate
-			// reshaping strip): for a plain select the sort's input can be
-			// a DERIVED source's projection, and baking the SELECT ordinal
-			// into that foreign slot misbinds (`SELECT b FROM (SELECT a, b
-			// …) d ORDER BY 1` must order by b, never source slot 1 = a).
+			// the item's UNDERLYING text (selectCols) as the no-catalog
+			// fallback. Pos is pure INFORMATION (the ordinal into THIS
+			// select's list): upgradeSortKeyValues resolves it into the
+			// OUTER projection's typed item Value (clearing Pos), and the
+			// translator bakes a surviving Pos only into a select-list-
+			// carrying input (aggregate reshaping projection or union).
 			expr := strip(posName)
 			if pos >= 1 && pos <= len(selectCols) && selectCols[pos-1] != "" {
 				expr = strip(selectCols[pos-1])
 			}
-			keyPos := 0
-			if len(aggCols) > 0 {
-				keyPos = pos
-			}
-			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nf, Pos: keyPos})
+			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nf, Pos: pos})
 			continue
 		}
 

@@ -4738,8 +4738,9 @@ func (t *cascadesTranslator) applySortOverRef(s *logical.LogicalSort, ref *expre
 		v := k.Value
 		// A POSITIONAL key (`ORDER BY <n>`) IS an output ordinal by SQL
 		// definition — bake slot n-1 of the folded projection's output
-		// directly (see translateSort's twin).
-		if k.Pos > 0 && k.Pos <= len(fields) {
+		// directly (see translateSort's twin; a resolved typed Value wins
+		// for the same reason as there).
+		if k.Value == nil && k.Pos > 0 && k.Pos <= len(fields) {
 			v = values.NewFieldValueWithResolvedOrdinal(fields[k.Pos-1].Name, k.Pos-1, values.UnknownType)
 		}
 		if v == nil {
@@ -5727,8 +5728,11 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		// slot n-1 of its output directly — no text-rendering
 		// round-trip, which diverges for computed items whose canonical source
 		// text differs from the baked output spelling (`col1 + 10` vs
-		// `(COL1#0 + 10)`).
-		if k.Pos > 0 && k.Pos <= len(inputCols) {
+		// `(COL1#0 + 10)`). A key whose ordinal was already resolved into
+		// the select list's typed item Value (upgradeSortKeyValues) keeps
+		// that Value — the input projection here can be a DERIVED source's
+		// layout, whose slots are not this select's ordinals.
+		if v == nil && k.Pos > 0 && k.Pos <= len(inputCols) {
 			switch innerRef.Get().(type) {
 			case *expressions.LogicalProjectionExpression:
 				v = values.NewFieldValueWithResolvedOrdinal(inputCols[k.Pos-1], k.Pos-1, values.UnknownType)
