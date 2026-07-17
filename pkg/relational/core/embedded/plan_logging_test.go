@@ -346,7 +346,7 @@ func TestJoinDerivedAggregate_LegOrdinalNeverIndexesFlattenedColumns(t *testing.
 	q := parseQuery(t, "SELECT a.s, d.total FROM a_md AS a, (SELECT SUM(v) AS total FROM b_md) AS d")
 	p, err := g.planSelectCascades(context.Background(), q, md, true)
 	if err != nil {
-		t.Skipf("join-with-derived-aggregate not plannable in the DB-less fixture: %v", err)
+		t.Fatalf("join-with-derived-aggregate must plan (it does today; a regression here is a planner bug, not a skip): %v", err)
 	}
 	cp, ok := p.(*cascadesPlan)
 	if !ok {
