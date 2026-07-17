@@ -27,6 +27,22 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 		}
 
 		pkValues := commonPrimaryKeyValues(accesses, ctx)
+		if len(pkValues) == 0 {
+			return NoViableIntersection()
+		}
+		// RFC-181 P0.1: only PK-monotone legs may feed the strict pk-sorted
+		// merge; a single incompatible access disqualifies itself (the
+		// remaining pairs still form below).
+		compatible := accesses[:0:0]
+		for _, a := range accesses {
+			if accessCompatibleWithPKMerge(a.Value, pkValues) {
+				compatible = append(compatible, a)
+			}
+		}
+		accesses = compatible
+		if len(accesses) < 2 {
+			return NoViableIntersection()
+		}
 
 		var resultExprs []expressions.RelationalExpression
 
@@ -149,6 +165,59 @@ func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanC
 		}
 	}
 	return result
+}
+
+// accessCompatibleWithPKMerge reports whether an access's scan emission is
+// PK-MONOTONIC — the precondition of the strict pk-sorted intersection
+// merge (merge_cursor.go advances non-maximal legs past rows forever, so a
+// non-monotone leg silently DROPS intersection rows). Ports the substance
+// of Java's isCompatibleComparisonKey gate
+// (AbstractDataAccessRule.java:1145-1152 with comparison keys fixed to the
+// common primary key, the only comparison key this intersector builds):
+// walking the leg's matched ordering parts, the FREE (non-equality-bound)
+// sequence must BEGIN with exactly the primary-key values that are not
+// equality-bound in this leg, in pk order, each ascending — an
+// inequality-bound index column (`a > 5`) is a free NON-pk part at the
+// front, exactly the emission (`a, pk`) whose pk sequence interleaves.
+// Trailing free parts beyond the pk are harmless: the pk is a unique key,
+// so once the full free-pk prefix is present the order is already total.
+// Reverse legs decline outright — the executor's merge compares forward
+// (executeIntersection hardcodes reverse=false).
+func accessCompatibleWithPKMerge(access *SingleMatchedAccess, pkValues []values.Value) bool {
+	if access.IsReverseScanOrder() {
+		return false
+	}
+	parts := access.GetPartialMatch().GetMatchInfo().GetMatchedOrderingParts()
+	equalityBound := make(map[string]struct{})
+	for _, op := range parts {
+		if op.GetComparisonRange().IsEquality() {
+			equalityBound[values.ExplainValue(op.GetValue())] = struct{}{}
+		}
+	}
+	var expect []string
+	for _, pv := range pkValues {
+		k := values.ExplainValue(pv)
+		if _, bound := equalityBound[k]; !bound {
+			expect = append(expect, k)
+		}
+	}
+	freeIdx := 0
+	for _, op := range parts {
+		if op.GetComparisonRange().IsEquality() {
+			continue
+		}
+		if freeIdx >= len(expect) {
+			break // trailing free parts after the full pk prefix: harmless
+		}
+		if op.GetMatchedSortOrder().IsAnyDescending() {
+			return false
+		}
+		if values.ExplainValue(op.GetValue()) != expect[freeIdx] {
+			return false
+		}
+		freeIdx++
+	}
+	return freeIdx == len(expect)
 }
 
 func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {

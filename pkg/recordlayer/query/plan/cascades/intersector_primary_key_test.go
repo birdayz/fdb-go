@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -387,5 +388,61 @@ func TestCreateScanForAccess_NilPlan(t *testing.T) {
 	plan := createScanForAccess(access)
 	if plan != nil {
 		t.Fatal("expected nil plan when candidate returns nil")
+	}
+}
+
+// TestIntersector_DeclinesNonPKMonotoneLeg pins RFC-181 P0.1: the strict
+// pk-sorted intersection merge silently DROPS rows when a leg's emission is
+// not PK-monotonic — an INEQUALITY-bound index column is a free non-pk
+// ordering part at the front (`a > 5` emits (a, pk) order, pk interleaved).
+// Such an access must disqualify itself; with fewer than two compatible
+// legs the intersection is not viable. A reverse-scan access declines too
+// (the executor merge compares forward only).
+func TestIntersector_DeclinesNonPKMonotoneLeg(t *testing.T) {
+	t.Parallel()
+
+	// idxA: a INEQUALITY-bound (free part on non-pk column A first).
+	ineqCmp := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(5))
+	ineqRange := predicates.EmptyComparisonRange().Merge(&ineqCmp).Range
+	pidA := values.UniqueCorrelationIdentifier()
+	pidAPK := values.UniqueCorrelationIdentifier()
+	pmA := &testPartialMatch{
+		candidate: &dataAccessTestCandidate{
+			name:            "idxA",
+			sargableAliases: []values.CorrelationIdentifier{pidA},
+			columnNames:     []string{"A"},
+			recordTypes:     []string{"TestRecord"},
+			fixedPlan:       &testPlan{name: "scanA"},
+		},
+		matchInfo: &testMatchInfo{
+			orderingParts: []*MatchedOrderingPart{
+				NewMatchedOrderingPart(pidA, &values.FieldValue{Field: "A", Typ: values.UnknownType}, ineqRange, MatchedSortOrderAscending),
+				NewMatchedOrderingPart(pidAPK, &values.FieldValue{Field: "ID", Typ: values.UnknownType}, nil, MatchedSortOrderAscending),
+			},
+			paramBindings: map[values.CorrelationIdentifier]*predicates.ComparisonRange{pidA: ineqRange},
+		},
+	}
+	// idxB: equality-bound → pk-monotone (valid leg).
+	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB"})
+
+	ctx := newTestPKContext("TestRecord", []string{"id"})
+	intersector := WithPrimaryKeyIntersector(ctx)
+
+	result := intersector([]Vectored[*SingleMatchedAccess]{
+		makeVectoredAccess(pmA, 0),
+		makeVectoredAccess(pmB, 1),
+	}, nil)
+	if result.IsViable() {
+		t.Fatal("an inequality-bound (non-PK-monotone) leg must disqualify itself — the pk-sorted merge over it silently drops intersection rows")
+	}
+
+	// Two equality-bound legs stay viable (the gate must not over-decline).
+	pmC := makeDataAccessTestPartialMatch("idxC", 1, &testPlan{name: "scanC"})
+	result = intersector([]Vectored[*SingleMatchedAccess]{
+		makeVectoredAccess(pmB, 0),
+		makeVectoredAccess(pmC, 1),
+	}, nil)
+	if !result.IsViable() {
+		t.Fatal("two equality-bound pk-monotone legs must remain viable")
 	}
 }

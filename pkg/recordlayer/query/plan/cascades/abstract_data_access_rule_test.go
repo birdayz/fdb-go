@@ -145,6 +145,19 @@ func makeDataAccessTestPartialMatch(name string, numParts int, plan plans.Record
 		paramBindings[pid] = eqRange
 	}
 
+	// Real candidates continue the matched ordering into the trimmed
+	// primary-key suffix (ComputeMatchedOrderingParts) — the fixture must
+	// model that, or the pk-monotonicity gate (accessCompatibleWithPKMerge)
+	// would see an index with no pk continuation and decline every
+	// intersection the tests build.
+	pkPid := values.UniqueCorrelationIdentifier()
+	parts = append(parts, NewMatchedOrderingPart(
+		pkPid,
+		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+		nil,
+		MatchedSortOrderAscending,
+	))
+
 	candidate := &dataAccessTestCandidate{
 		name:            name,
 		sargableAliases: sargAliases,
