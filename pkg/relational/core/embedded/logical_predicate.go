@@ -1686,6 +1686,14 @@ func staticCTEProjectionCount(cteQuery antlrgen.IQueryContext) int {
 	if err != nil || innerSQ == nil || innerSQ.projCols == nil {
 		return -1
 	}
+	// A qualified-star slot (`x.*`) occupies ONE projCols entry but expands
+	// to every source column — the static count is UNKNOWN, not len().
+	// Comparing arity against the sentinel rejected valid mixed-star CTEs.
+	for _, q := range innerSQ.projStarQualifiers {
+		if q != "" {
+			return -1
+		}
+	}
 	return len(innerSQ.projCols)
 }
 

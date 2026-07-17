@@ -267,3 +267,12 @@ tests:
       WITH c2(a, b) AS (WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM t)
       SELECT a FROM c2
     error_code: "42F10"
+  # A MIXED qualified-star projection (x.* alongside named columns) occupies
+  # one projCols sentinel but expands to every source column — the static
+  # arity check must treat it as UNKNOWN width, not reject a valid four-alias
+  # CTE against the three-slot sentinel count (t has 2 cols: x.* -> id,v).
+  - query: |-
+      WITH c(a, b, cc, d) AS (SELECT x.*, y.id, y.v FROM t AS x, t AS y WHERE x.id = y.id)
+      SELECT COUNT(*) FROM c
+    rows:
+      - [4]
