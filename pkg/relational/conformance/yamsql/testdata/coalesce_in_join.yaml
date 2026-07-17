@@ -26,7 +26,9 @@ tests:
       FROM emp e LEFT JOIN dept d ON d.id = e.dept_id
       GROUP BY d.name
       ORDER BY d.name
+    # ASC default is NULLS FIRST (Java ParseHelpers.isNullsLast): the NULL
+    # d.name group (COALESCE'd to 'None') sorts first under ORDER BY d.name.
     rows:
+      - ["None", 1]
       - ["Engineering", 1]
       - ["Sales", 1]
-      - ["None", 1]

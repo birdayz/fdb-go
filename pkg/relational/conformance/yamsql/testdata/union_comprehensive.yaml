@@ -1,7 +1,7 @@
 # union_comprehensive.yaml — Comprehensive UNION tests
 #
-# Exercises UNION ALL, UNION (dedup), with ORDER BY, with aggregates
-# in subqueries, and multi-column UNIONs.
+# Exercises UNION ALL with ORDER BY and multi-column legs, and pins
+# that plain UNION (distinct) is rejected by both engines.
 name: union_comprehensive
 schema_template: |
   CREATE TABLE t1 (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
@@ -24,17 +24,15 @@ tests:
       - ["Charlie"]
       - ["Dave"]
 
-  # UNION — deduplicates
+  # Plain UNION (distinct) — rejected. Java QueryVisitor.java:349-351
+  # asserts the set quantifier is ALL: UNSUPPORTED_QUERY 0AF00
+  # "only UNION ALL is supported". Go's rejection is byte-identical.
   - query: >
       SELECT name FROM t1
       UNION
       SELECT name FROM t2
       ORDER BY name
-    rows:
-      - ["Alice"]
-      - ["Bob"]
-      - ["Charlie"]
-      - ["Dave"]
+    error_code: "0AF00"
 
   # UNION ALL with WHERE
   - query: >

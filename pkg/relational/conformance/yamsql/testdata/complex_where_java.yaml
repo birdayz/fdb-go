@@ -32,16 +32,22 @@ tests:
       - [5]
       - [6]
 
-  # AND has higher precedence than OR
-  # cat='A' OR (cat='B' AND price>50) → A rows + B rows with price>50
+  # Java upstream quirk: NO AND-over-OR precedence. Java's grammar
+  # folds AND and OR into ONE flat left-recursive alternative
+  # (RelationalParser.g4:1226-1231 `expression logicalOperator
+  # expression` + logicalOperator:1274-1276) with no precedence
+  # between them, so this parses left-to-right as
+  # ((cat='A' OR cat='B') AND price>50) → only id 4 (B, 80).
+  # SQL-standard precedence — cat='A' OR (cat='B' AND price>50) —
+  # would give [1,2,4]. Go's grammar is the same copy of Java's, so
+  # [4] is Java-faithful.
   - query: SELECT id FROM items WHERE cat = 'A' OR cat = 'B' AND price > 50 ORDER BY id
     rows:
-      - [1]
-      - [2]
       - [4]
 
-  # Explicit parentheses override precedence
-  # (cat='A' OR cat='B') AND price>50
+  # Explicit parentheses: (cat='A' OR cat='B') AND price>50 — the
+  # same grouping the flat grammar produces for the unparenthesized
+  # query above, here made explicit.
   - query: SELECT id FROM items WHERE (cat = 'A' OR cat = 'B') AND price > 50 ORDER BY id
     rows:
       - [4]

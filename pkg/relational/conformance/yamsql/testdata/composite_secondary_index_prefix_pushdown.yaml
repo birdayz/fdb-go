@@ -105,7 +105,7 @@ tests:
   # -------------------------------------------------------------------
 
   - query: UPDATE rp SET tier = 99 WHERE region = 'eu'
-    count: 2
+    rowcount: 2
 
   - query: SELECT id, tier FROM rp WHERE region = 'eu' ORDER BY id
     rows:
@@ -113,7 +113,7 @@ tests:
       - [5, 99]
 
   - query: DELETE FROM rp WHERE region = 'eu'
-    count: 2
+    rowcount: 2
 
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY id
     rows: []

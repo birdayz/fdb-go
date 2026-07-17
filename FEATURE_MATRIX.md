@@ -11,15 +11,15 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**319 scenarios · 2513 query/assertion cases** across 18 feature areas.
+**319 scenarios · 2552 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
-| Aggregates & GROUP BY | 49 | 298 |
+| Aggregates & GROUP BY | 49 | 315 |
 | Joins | 60 | 264 |
 | Subqueries (EXISTS / IN / scalar) | 42 | 281 |
-| CTEs | 12 | 85 |
-| Set operations (UNION / INTERSECT / EXCEPT) | 8 | 47 |
+| CTEs | 12 | 105 |
+| Set operations (UNION / INTERSECT / EXCEPT) | 8 | 48 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 194 |
 | Ordering & pagination | 13 | 114 |
 | Scalar functions & expressions | 32 | 347 |
@@ -28,7 +28,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | NULL handling | 5 | 26 |
 | NULL handling & boolean logic | 2 | 48 |
 | Index usage | 9 | 162 |
-| Types | 12 | 144 |
+| Types | 12 | 145 |
 | Keys & primary keys | 5 | 132 |
 | Error codes & validation | 4 | 37 |
 | End-to-end scenarios | 3 | 20 |
@@ -53,10 +53,10 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `aggregate_index_having` | 2 | Aggregate index with HAVING filter |
 | `aggregate_index_multi_group` | 1 | Aggregate index with multi-column GROUP BY |
 | `aggregate_index_sum` | 2 | SUM aggregate index via DDL |
-| `aggregate_index_update` | 5 | Aggregate index correctness after UPDATE |
+| `aggregate_index_update` | 6 | Aggregate index correctness after UPDATE |
 | `aggregate_null_edge` | 7 | Aggregate NULL edge cases |
-| `aggregate_nulls` | 7 | SQL-spec aggregate NULL semantics hardened in swingshift-35 (c370213e): |
-| `aggregate_order_by_java` | 6 | Aggregate queries with ORDER BY. |
+| `aggregate_nulls` | 9 | SQL-spec aggregate NULL semantics hardened in swingshift-35 (c370213e): |
+| `aggregate_order_by_java` | 19 | Aggregate queries with ORDER BY. |
 | `aggregate_sum_large` | 2 | SUM with large values |
 | `aggregate_with_null_groups` | 2 | Aggregates with NULL in group keys |
 | `avg` | 3 | AVG over BIGINT returns DOUBLE (float) — matches Java's |
@@ -76,7 +76,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `group_by_having_java` | 9 | GROUP BY + HAVING patterns from Java's |
 | `group_by_multi` | 12 | Multi-column GROUP BY plus GROUP BY on arbitrary expressions. |
 | `group_by_null` | 2 | swingshift-35 commit b059485e: groupByKey no longer uses fmt.Sprintf |
-| `group_by_proj_expr` | 4 | SELECT projection of an EXPRESSION on group-by columns |
+| `group_by_proj_expr` | 5 | SELECT projection of an EXPRESSION on group-by columns |
 | `group_by_validation` | 24 | Java's groupby-tests.yamsql validates that SELECT columns must |
 | `having` | 23 | HAVING filters grouped results (post-aggregate). |
 | `having_avg` | 2 | HAVING with AVG aggregate |
@@ -204,7 +204,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 
 | Scenario | Cases | What it pins |
 |---|--:|---|
-| `cte` | 21 | WITH ... |
+| `cte` | 41 | WITH ... |
 | `cte_aggregate` | 4 | CTE materialization + GROUP BY aggregation. |
 | `cte_error_codes` | 6 | Java's cte.yamsql error tests: CTE-specific validation errors. |
 | `cte_java_patterns` | 8 | CTE patterns from Java's cte.yamsql. |
@@ -224,7 +224,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `composite_aggregate_intersection` | 7 | Multi-aggregate queries using |
 | `union` | 2 | UNION / UNION ALL — set operations over SELECT results. |
 | `union_aggregate_java` | 7 | Aggregate over UNION ALL patterns from |
-| `union_columns` | 11 | UNION column-binding: SQL standard is positional, not name-based. |
+| `union_columns` | 12 | UNION column-binding: SQL standard is positional, not name-based. |
 | `union_comprehensive` | 4 | Comprehensive UNION tests |
 | `union_empty_tables_java` | 9 | UNION ALL behavior on empty tables |
 | `union_star` | 5 | Java's union.yamsql tests UNION ALL with SELECT * on either side. |
@@ -389,7 +389,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `type_coercion_java` | 11 | Implicit type coercion in comparisons |
 | `type_mismatch_alignment` | 7 | Java's ExceptionUtil.translateErrorCode maps |
 | `type_promotion` | 8 | Verifies implicit type promotion in comparisons and arithmetic. |
-| `uuid_column` | 5 | UUID column type. |
+| `uuid_column` | 6 | UUID column type. |
 
 ## Keys & primary keys
 

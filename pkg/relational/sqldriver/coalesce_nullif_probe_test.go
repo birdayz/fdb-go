@@ -1,7 +1,7 @@
 package sqldriver_test
 
 // Probes the null-coalescing functions. COALESCE (multi-arg first-non-null) and
-// IFNULL work; COALESCE over all-NULL → NULL. NULLIF is NOT supported (42883) —
+// IFNULL work; COALESCE over all-NULL → NULL. NULLIF is NOT supported (0AF00) —
 // conformant with Java (which also lacks it); the documented substitute is
 // `CASE WHEN a = b THEN NULL ELSE a END`, which works.
 
@@ -56,11 +56,11 @@ func TestFDB_CoalesceNullifProbe(t *testing.T) {
 	ck("ifnull_null_arg", "IFNULL(a, 99)", true, 99)
 	ck("ifnull_nonnull_arg", "IFNULL(c, 99)", true, 5)
 
-	// NULLIF is unsupported (42883) — conformant with Java; use CASE instead.
+	// NULLIF is unsupported (0AF00) — conformant with Java; use CASE instead.
 	t.Run("nullif_unsupported", func(t *testing.T) {
 		_, err := db.QueryContext(ctx, "SELECT NULLIF(c, 5) FROM t WHERE id = 1")
-		if err == nil || !strings.Contains(err.Error(), "42883") {
-			t.Errorf("NULLIF error = %v, want 42883 (unsupported; use CASE WHEN a=b THEN NULL ELSE a END)", err)
+		if err == nil || !strings.Contains(err.Error(), "0AF00") {
+			t.Errorf("NULLIF error = %v, want 0AF00 (unsupported; use CASE WHEN a=b THEN NULL ELSE a END)", err)
 		}
 	})
 	// the documented NULLIF substitute works: CASE WHEN c=5 THEN NULL ELSE c END → NULL.

@@ -32,6 +32,17 @@ tests:
 
   # Move task 2 from 'todo' to 'done'
   - exec: UPDATE tasks SET status = 'done' WHERE id = 2
+    rowcount: 1
+
+  # Base-table probe: verifies the UPDATE applied at the record level, so an
+  # aggregate mismatch below is attributable to INDEX maintenance, not DML.
+  # (RFC-180 Y3: before the runner supported `exec:`, this scenario's UPDATE
+  # silently never ran and the index-staleness it "caught" was a harness hole.)
+  - query: SELECT id, status FROM tasks ORDER BY id
+    rows:
+      - [1, "todo"]
+      - [2, "done"]
+      - [3, "done"]
 
   # After update: counts should reflect the move
   - query: SELECT status, COUNT(*) FROM tasks GROUP BY status ORDER BY status

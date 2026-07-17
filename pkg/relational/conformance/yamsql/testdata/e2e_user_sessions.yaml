@@ -37,12 +37,15 @@ tests:
       - ["Bob", 800]
       - ["Charlie", 100]
 
-  # Users with no sessions
+  # Users with no session starting after ts 2000. Bob's latest session
+  # starts AT 2000 and `2000 > 2000` is false, so Bob qualifies too —
+  # the original pin ([Charlie] only) treated > as >=.
   - query: >
       SELECT u.name FROM users u
       WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id AND s.start_ts > 2000)
       ORDER BY u.name
     rows:
+      - ["Bob"]
       - ["Charlie"]
 
   # Close Alice's active session

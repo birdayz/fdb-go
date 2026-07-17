@@ -15,27 +15,27 @@ outcome, so it cannot go stale. For the ANSI-standard scorecard see
 - **unsupported** — an explicitly-unsupported feature we cleanly reject (SQLSTATE `0A000`/`0AF00`/`0AF01`/`42883`).
 - **error-path** — correct rejection/constraint semantics (unknown column, overflow, unique violation, type mismatch, …): supported behaviour, not a gap.
 
-**319 scenarios · 2513 test cases** — 2217 supported (88.2%), 101 unsupported-feature pins, 195 error-path pins.
+**319 scenarios · 2552 test cases** — 2239 supported (87.7%), 110 unsupported-feature pins, 203 error-path pins.
 
 | Feature area | Cases | Supported | Unsupported | Error-path | Supported % |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 298 | 271 | 15 | 12 | 90.9% |
+| Aggregates & GROUP BY | 315 | 285 | 18 | 12 | 90.5% |
 | Joins | 264 | 255 | 3 | 6 | 96.6% |
-| Subqueries (EXISTS / IN / scalar) | 281 | 238 | 27 | 16 | 84.7% |
-| CTEs | 85 | 62 | 6 | 17 | 72.9% |
-| Set operations (UNION / INTERSECT / EXCEPT) | 47 | 38 | 5 | 4 | 80.9% |
+| Subqueries (EXISTS / IN / scalar) | 281 | 230 | 36 | 15 | 81.9% |
+| CTEs | 105 | 73 | 9 | 23 | 69.5% |
+| Set operations (UNION / INTERSECT / EXCEPT) | 48 | 39 | 5 | 4 | 81.2% |
 | DML (INSERT / UPDATE / DELETE) | 194 | 179 | 1 | 14 | 92.3% |
-| Ordering & pagination | 114 | 95 | 15 | 4 | 83.3% |
-| Scalar functions & expressions | 347 | 308 | 14 | 25 | 88.8% |
+| Ordering & pagination | 114 | 110 | 0 | 4 | 96.5% |
+| Scalar functions & expressions | 347 | 297 | 22 | 28 | 85.6% |
 | Predicates & WHERE | 104 | 102 | 0 | 2 | 98.1% |
 | Column resolution & aliasing | 55 | 29 | 0 | 26 | 52.7% |
 | NULL handling | 26 | 22 | 0 | 4 | 84.6% |
 | NULL handling & boolean logic | 48 | 48 | 0 | 0 | 100.0% |
-| Index usage | 162 | 159 | 1 | 2 | 98.1% |
-| Types | 144 | 125 | 3 | 16 | 86.8% |
+| Index usage | 162 | 160 | 0 | 2 | 98.8% |
+| Types | 145 | 124 | 4 | 17 | 85.5% |
 | Keys & primary keys | 132 | 127 | 0 | 5 | 96.2% |
-| Error codes & validation | 37 | 7 | 2 | 28 | 18.9% |
+| Error codes & validation | 37 | 8 | 2 | 27 | 21.6% |
 | End-to-end scenarios | 20 | 20 | 0 | 0 | 100.0% |
-| Other | 155 | 132 | 9 | 14 | 85.2% |
-| **Total** | **2513** | **2217** | **101** | **195** | **88.2%** |
+| Other | 155 | 131 | 10 | 14 | 84.5% |
+| **Total** | **2552** | **2239** | **110** | **203** | **87.7%** |
 

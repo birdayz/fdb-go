@@ -25,7 +25,7 @@ tests:
   # NULLIF evaluator. Workaround: `CASE WHEN a = b THEN NULL ELSE a END`.
   - query: SELECT id, NULLIF(a, 'x') FROM t ORDER BY id
     ansi_gap: [F261-03]
-    error_code: "42883"
+    error_code: "0AF00"
   # NULLIF rejected via the searched-CASE workaround.
   - query: SELECT id, CASE WHEN a = 'y' THEN NULL ELSE a END FROM t ORDER BY id
     rows:

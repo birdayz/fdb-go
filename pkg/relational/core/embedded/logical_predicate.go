@@ -878,6 +878,38 @@ func buildCTEColumnSource(
 	if md == nil || cteName == "" || cteQuery == nil {
 		return semantic.ScopeSource{}, false
 	}
+	// A NESTED WITH on the body (`c2 AS (WITH c3 … SELECT … FROM c3)`): the
+	// body's FROM names resolve against the nested CTEs FIRST (lexical
+	// scoping — the same shadowing the plan build applies via
+	// buildCTEBodyQuery). Derive each nested CTE's schema recursively into a
+	// SCOPED extension of priorCTEs (declaration order, so a later nested CTE
+	// sees an earlier one) and resolve the body against that. Without this the
+	// registration declined (body table `c3` unknown), the enclosing CTE fell
+	// to the ON-only class, and every later NAMED read of it failed to plan.
+	if ctes := cteQuery.Ctes(); ctes != nil {
+		scoped := make(map[string]semantic.ScopeSource, len(priorCTEs)+2)
+		for k, vv := range priorCTEs {
+			scoped[k] = vv
+		}
+		for _, nq := range ctes.AllNamedQuery() {
+			nname := functions.FullIdToName(nq.GetName())
+			if src, ok := buildCTEColumnSource(md, nname, nq.Query(), scoped); ok {
+				scoped[strings.ToUpper(nname)] = applyCTEColumnAliases(src, nq.GetColumnAliases())
+			} else {
+				// A DECLARED nested name SHADOWS an outer same-name CTE even
+				// when its schema is not derivable (join-shaped body):
+				// leaving the cloned outer entry in place validated the
+				// enclosing body against the OUTER schema and baked its
+				// ordinals over the inner's row — silent wrong slot. A
+				// TOMBSTONE (nil Table), not deletion: absence falls back to
+				// the CATALOG, and a same-named base table would bind its
+				// ordinals onto the CTE's rows just as silently. The
+				// tombstone hard-declines both resolution paths.
+				scoped[strings.ToUpper(nname)] = semantic.ScopeSource{}
+			}
+		}
+		priorCTEs = scoped
+	}
 	// The CTE body is either a simple QueryTermDefault (non-recursive) or a
 	// SetQuery / UNION ALL (recursive). For recursive CTEs, derive the column
 	// schema from the seed (left) branch of the UNION.
@@ -939,6 +971,13 @@ func buildCTEColumnSource(
 	var innerTbl semantic.Table
 	if priorCTEs != nil {
 		if src, found := priorCTEs[strings.ToUpper(innerSQ.tableName)]; found {
+			// A TOMBSTONE (declared CTE, schema underivable) hard-declines:
+			// falling through to the catalog would derive the enclosing
+			// schema from a same-named BASE TABLE and bake its ordinals
+			// onto the CTE's rows — silent wrong slots.
+			if src.Table == nil {
+				return semantic.ScopeSource{}, false
+			}
 			innerTbl = src.Table
 		}
 	}
@@ -1608,12 +1647,19 @@ func buildCTEOnOnlySource(
 // registration authority both build pipelines (the plan visitor and the
 // CTECatalog chain) share, so a declared CTE can never reach
 // upgradeJoinOnPredicates untracked (the silent ON-drop class).
-func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName string, cteQuery antlrgen.IQueryContext, colAliases antlrgen.IFullIdListContext, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) {
+func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName string, cteQuery antlrgen.IQueryContext, colAliases antlrgen.IFullIdListContext, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
+	// Column-alias arity for underivable bodies is validated at the POINT OF
+	// TRUTH instead of here: translateCTE checks the BUILT body's real output
+	// width against the alias list (42F10) — a static width predictor at
+	// registration kept re-implementing source resolution (stars, shadowing,
+	// unnest, nested WITH) and drifting from the real resolver, the exact
+	// two-authorities anti-pattern (review rounds 3-7).
 	if src, ok := buildCTEOnOnlySource(upperName, cteQuery, colAliases, md, schemaName, cteScopes, dst); ok {
 		dst[upperName] = src
-		return
+		return nil
 	}
 	dst[upperName] = semantic.ScopeSource{} // marker: declared, underivable → loud drop risk
+	return nil
 }
 
 // applyCTEColumnAliases renames the columns of a CTE ScopeSource
@@ -1695,7 +1741,9 @@ func buildWherePredicateForJoinsWithCTEScopes(
 				CorrelationName: binding,
 			}) == nil
 		}
-		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+		if src, found := cteScopes[strings.ToUpper(tableName)]; found && src.Table != nil {
+			// found-with-nil-Table is a TOMBSTONE (declared CTE, schema
+			// underivable) — decline instead of AddSource(nil) nil-deref.
 			src.Alias = aliasID
 			src.CorrelationName = binding
 			return scope.AddSource(src) == nil
@@ -2098,7 +2146,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		needRebuild = true
 	}
 	if hasAnyQualifiedStar(sq) {
-		expandQualifiedStars(sq, md, schemaName)
+		if starErr := expandQualifiedStars(sq, md, schemaName, cteScopes); starErr != nil {
+			return nil, starErr
+		}
 		needRebuild = true
 	}
 	if needRebuild {
@@ -2576,7 +2626,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	var pred predicates.QueryPredicate
 	var ok bool
 	if cteScopes != nil && len(sq.joins) == 0 {
-		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found {
+		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found && src.Table != nil {
+			// A TOMBSTONE entry (nil Table: declared CTE, schema underivable)
+			// must not reach scope construction — ResolveColumn nil-derefs.
 			pred, ok = buildWherePredicateFromCTEScope(src, sq.tableAlias, sq.whereExpr, md)
 		}
 	}
@@ -2654,6 +2706,15 @@ func buildSelectScope(
 		// schema-qualified bodies by the pre-round-9 nil resolver).
 		if cteScopes != nil {
 			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+				// TOMBSTONE (nil Table): a DECLARED CTE whose schema is not
+				// derivable in this context (underivable nested shadow). It
+				// must NOT fall through to the catalog — a same-named base
+				// table would bind ITS ordinals onto the CTE's rows (silent
+				// wrong slots). Declining the scope add keeps resolution
+				// loud downstream.
+				if src.Table == nil {
+					return false
+				}
 				aliasID := semantic.NewUnquoted(alias)
 				if alias == "" {
 					aliasID = semantic.NewUnquoted(tableName)
@@ -4781,7 +4842,9 @@ func buildLogicalPlanForQueryWithCTECatalog(
 				// delete below: a body leg naming the outer same-name
 				// correctly classifies against the OUTER binding (which is
 				// what the body's reference means, pre-state scoping).
-				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes)
+				if regErr := registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes); regErr != nil {
+					return nil, regErr
+				}
 				// The mirror of the derivable arm's shadow delete: an inner
 				// ON-ONLY registration must EVICT a same-named OUTER
 				// derivable entry, or this level's MAIN query resolves the
@@ -4959,7 +5022,9 @@ func buildLogicalPlanForQueryWithCatalog(
 				// delete below: a body leg naming the outer same-name
 				// correctly classifies against the OUTER binding (which is
 				// what the body's reference means, pre-state scoping).
-				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes)
+				if regErr := registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes); regErr != nil {
+					return nil, regErr
+				}
 				// The mirror of the derivable arm's shadow delete: an inner
 				// ON-ONLY registration must EVICT a same-named OUTER
 				// derivable entry, or this level's MAIN query resolves the
@@ -5087,7 +5152,7 @@ func buildLogicalPlanForQueryBodyWithCatalog(
 			return nil, err
 		}
 		if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
-			return nil, api.NewError(api.ErrCodeUndefinedFunction,
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"Unsupported operator "+fn)
 		}
 		if err := validateQualifiedStarSources(sq, md); err != nil {
@@ -5146,7 +5211,7 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 			return nil, err
 		}
 		if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
-			return nil, api.NewError(api.ErrCodeUndefinedFunction,
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"Unsupported operator "+fn)
 		}
 		if err := validateQualifiedStarSources(sq, md); err != nil {
@@ -5300,7 +5365,17 @@ func buildUnionRightBranchStrippingOrderBy(
 			if ob.nullsFirst != nil {
 				nullsFirst = *ob.nullsFirst
 			}
-			lifted.sortKeys = append(lifted.sortKeys, logical.SortKey{Expr: e, Dir: dir, NullsFirst: nullsFirst})
+			// Carry the SELECT-list position for a POSITIONAL key: the ordinal
+			// binds to the union OUTPUT slot (a Go extension — live-probed Java
+			// 4.12.11.0 has NO positional ORDER BY at all, and attaches a
+			// trailing ORDER BY to the RIGHT LEG ONLY, not the combined union;
+			// Go deliberately implements the SQL-standard combined-result
+			// semantics, see union_columns.yaml). Without Pos the key's TEXT
+			// resolves against the RIGHT leg's spelling and then fails the
+			// LEFT-leg name validation when the legs spell the position
+			// differently (`SELECT '2024', … UNION ALL SELECT '2025', …
+			// ORDER BY 1`). RFC-180.
+			lifted.sortKeys = append(lifted.sortKeys, logical.SortKey{Expr: e, Pos: ob.pos, Dir: dir, NullsFirst: nullsFirst})
 		}
 		sq.orderBy = nil
 	}
@@ -5322,7 +5397,7 @@ func buildUnionRightBranchStrippingOrderBy(
 	}
 
 	if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
-		return nil, lifted, api.NewError(api.ErrCodeUndefinedFunction, "Unsupported operator "+fn)
+		return nil, lifted, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
 	if err := validateQualifiedStarSources(sq, md); err != nil {
 		return nil, lifted, err
@@ -5405,12 +5480,74 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			colToIdx[key] = i
 		}
 	}
+	// GROUPED-select correspondence (Java LogicalOperator.generateSelect): for
+	// an aggregate query the SELECT list lives in aggCols, not projCols, so the
+	// maps above are empty — but the reshaping POST-AGGREGATE projection carries
+	// the items' rendered texts, aliases, and resolved output Values. Map them
+	// to their output slots so a computed ORDER BY key (`ORDER BY a + b` over
+	// `SELECT a + b, MAX(c) … GROUP BY a, b`) copies the EXACT projected Value
+	// pointer and the translator's pull-up (pullUpToOutputField) bakes the key
+	// to the projection OUTPUT ordinal. Without this the key resolves against
+	// the FROM scope (base-row ordinals) and the enforcer sort ABOVE the
+	// projection reads a foreign slot — silent mis-sort when the ordinal lands
+	// in range, an ordinal-model malformed-plan error when it doesn't.
+	// First-match semantics mirror colToIdx; existing entries win.
+	if proj != nil {
+		for i, ptext := range proj.Projections {
+			key := strings.ToUpper(ptext)
+			if _, dup := colToIdx[key]; !dup {
+				colToIdx[key] = i
+			}
+		}
+		for i, alias := range proj.Aliases {
+			if alias == "" {
+				continue
+			}
+			key := strings.ToUpper(alias)
+			if _, dup := aliasToIdx[key]; !dup {
+				aliasToIdx[key] = i
+			}
+		}
+	}
+	// POSITIONAL keys first, by ORDINAL — never by text. A positional key
+	// is an ordinal into THIS select's output list; when the select's own
+	// projection sits ABOVE the sort (the plain-select shape), the ordinal
+	// resolves to that projection's item: the resolved item Value when the
+	// catalog pass populated it (typed — immune to items whose rendered
+	// texts or aliases collide), the item's underlying text otherwise. Pos
+	// is CLEARED here so the translator can never bake the ordinal into
+	// whatever projection roots the sort's INPUT (a derived source's
+	// layout). When the projection is NOT an ancestor of the sort (the
+	// aggregate reshaping strip below the sort, or a union), Pos survives
+	// untouched — those inputs ARE select-list carriers and the
+	// translator's Pos bake against them is the correct binding.
+	if proj != nil && sortOwnedBySelect(proj, sort) {
+		for i := range sort.Keys {
+			pos := sort.Keys[i].Pos
+			if pos < 1 || pos > len(proj.Projections) {
+				continue
+			}
+			if proj.ProjectedValues != nil && pos-1 < len(proj.ProjectedValues) && proj.ProjectedValues[pos-1] != nil {
+				sort.Keys[i].Value = proj.ProjectedValues[pos-1]
+			} else {
+				sort.Keys[i].Expr = proj.Projections[pos-1]
+			}
+			sort.Keys[i].Pos = 0
+		}
+	}
+
 	for i := range sort.Keys {
 		upper := strings.ToUpper(sort.Keys[i].Expr)
-		if real, ok := aliasToCol[upper]; ok {
+		// Output aliases bind BARE one-segment identifiers only
+		// (SortKey.BareRef): a qualified key's Expr is already
+		// qualifier-stripped and an aggregate key's Expr is its canonical
+		// rendering, so without the flag `ORDER BY d.x` / `ORDER BY
+		// SUM(s.score)` would bind a same-spelled SELECT alias and
+		// silently mis-sort.
+		if real, ok := aliasToCol[upper]; ok && sort.Keys[i].BareRef {
 			sort.Keys[i].Expr = real
 		}
-		if idx, ok := aliasToIdx[upper]; ok && proj != nil {
+		if idx, ok := aliasToIdx[upper]; ok && proj != nil && sort.Keys[i].BareRef {
 			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
 				sort.Keys[i].Value = proj.ProjectedValues[idx]
 			}
@@ -5429,7 +5566,15 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 				// name is not a column of the projected row (a lazy key naming
 				// it is loud at runtime under the ordinal model; the retired
 				// name read no-op-sorted silently).
-				if proj != nil {
+				//
+				// DEFERRED-strip inversion: when the reshaping projection sits
+				// ABOVE the sort (a group key read only by ORDER BY defers the
+				// strip), the sort reads the AGGREGATE row — redirecting the
+				// key to the projection ALIAS would read a column that exists
+				// only above (loud failure), or silently bind a same-named
+				// hidden key. Redirect only when the sort is above the
+				// projection.
+				if proj != nil && !operatorContains(proj, sort) {
 					for pi, ptext := range proj.Projections {
 						if !strings.EqualFold(ptext, sort.Keys[i].Expr) {
 							continue
@@ -5713,9 +5858,9 @@ func hasAnyQualifiedStar(sq *selectQuery) bool {
 // query degrades to an UNQUALIFIED star → returns the ENTIRE FlatMap row (outer
 // columns included) instead of just the unnest source's columns (silent-wrong).
 // RFC-142.
-func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) {
+func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
 	if sq == nil || sq.projCols == nil || sq.projStarQualifiers == nil {
-		return
+		return nil
 	}
 	hasQualifiedStar := false
 	for _, q := range sq.projStarQualifiers {
@@ -5725,13 +5870,35 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		}
 	}
 	if !hasQualifiedStar {
-		return
+		return nil
 	}
 
-	// Build a map of source alias → table columns.
+	// Build a map of source alias → table columns, CTE-FIRST (execution's
+	// shadowing order): a preceding CTE shadowing a catalog table supplies
+	// ITS columns — md-first expanded `p.*` over a shadowed source against
+	// the BASE table's schema, minting columns the CTE row does not carry
+	// (42703 downstream on a valid query). A tombstoned CTE (nil Table)
+	// leaves the sentinel: downstream declines loud.
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
 	sourceColumns := make(map[string][]string)
+	derivedAliases := make(map[string]struct{})
 	addSource := func(tableName, alias string) {
+		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+			if src.Table == nil {
+				return
+			}
+			cteCols := src.Table.Columns()
+			cols := make([]string, len(cteCols))
+			for i, c := range cteCols {
+				cols[i] = strings.ToUpper(c.Id.Name())
+			}
+			key := strings.ToUpper(alias)
+			if key == "" {
+				key = strings.ToUpper(tableName)
+			}
+			sourceColumns[key] = cols
+			return
+		}
 		rt := md.GetRecordType(tableName)
 		if rt == nil || rt.Descriptor == nil {
 			return
@@ -5752,7 +5919,16 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		if alias == "" {
 			alias = sq.tableName
 		}
-		addSource(sq.tableName, alias)
+		// A DERIVED primary source registers NOTHING: sq.tableName is its
+		// range alias, not a relation — a CTE or base table sharing that
+		// name would supply the WRONG columns (star over the derived row
+		// silently projected the unrelated relation's schema). The sentinel
+		// stays; downstream resolves or declines loud.
+		if sq.derivedQuery == nil {
+			addSource(sq.tableName, alias)
+		} else {
+			derivedAliases[strings.ToUpper(alias)] = struct{}{}
+		}
 	}
 	for i, j := range sq.joins {
 		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
@@ -5770,7 +5946,26 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		if alias == "" {
 			alias = j.tableName
 		}
-		addSource(j.tableName, alias)
+		// Derived join legs: same bypass as the derived primary above.
+		if j.derivedQuery == nil {
+			addSource(j.tableName, alias)
+		} else {
+			derivedAliases[strings.ToUpper(alias)] = struct{}{}
+		}
+	}
+
+	// A qualified star BOUND TO A DERIVED source rejects PLAN-TIME: no
+	// relation can speak for the derived alias here, and leaving the
+	// sentinel produced a plan that died at row time with a raw
+	// ordinal-resolution error on a valid-shaped query.
+	for _, q := range sq.projStarQualifiers {
+		if q == "" {
+			continue
+		}
+		if _, isDerived := derivedAliases[strings.ToUpper(q)]; isDerived {
+			return api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"qualified star over derived table %q is not supported", q)
+		}
 	}
 
 	var newCols, newAliases, newQuals []string
@@ -5815,6 +6010,7 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 	sq.projAliases = newAliases
 	sq.projExprs = newExprs
 	sq.projStarQualifiers = newQuals
+	return nil
 }
 
 // expandProjQualifier handles `SELECT <qualifier>.*` when it is the
@@ -5966,6 +6162,15 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 	}
 	for _, k := range sort.Keys {
 		if k.Expr == "" {
+			continue
+		}
+		// A POSITIONAL key binds to the union OUTPUT slot by ordinal — its
+		// Expr carries the RIGHT leg's rendering of that slot (where the
+		// parser resolved it), which legitimately differs from the left
+		// leg's spelling. In-range is guaranteed upstream
+		// (resolveSelectListPosition errors out-of-range) plus the union's
+		// equal-column-count validation. RFC-180.
+		if k.Pos > 0 {
 			continue
 		}
 		upper := strings.ToUpper(k.Expr)
@@ -6507,6 +6712,26 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	sq, err := extractFromQueryTerm(body)
 	if err != nil || sq == nil {
 		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: %v", err), Cause: err}
+	}
+
+	// An inner with HAVING / QUALIFY cannot ride this fallback: the rebuild
+	// below carries only FROM + WHERE, so a group-eliminating filter would be
+	// silently DROPPED and the semijoin would keep outer rows whose every
+	// group fails HAVING — wrong rows (yamsql exists_with_aggregate:
+	// `EXISTS(… GROUP BY o.customer_id HAVING SUM(o.amount) > 150)` kept a
+	// customer whose group sums to 50). Java plans this shape (an existential
+	// quantifier over a GroupByExpression); the port is the RFC-180 booked
+	// follow-up — until then decline TYPED, never wrong rows.
+	//
+	// A HAVING-less GROUP BY is deliberately NOT declined: for EXISTS the
+	// drop is semantics-preserving — grouping a non-empty row set yields ≥1
+	// group and grouping an empty set yields none, so EXISTS(GROUP BY over S)
+	// ⇔ EXISTS(S). A NON-grouped aggregate inner likewise continues: it is
+	// unconditionally one row, which BuildExists flags (AlwaysTrue) and the
+	// translator folds to TRUE — or declines loudly under NOT EXISTS.
+	if sq.havingExpr != nil || sq.qualifyExpr != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated EXISTS over a GROUP BY / HAVING subquery is not supported")
 	}
 
 	// Strip the session-schema qualifier off a schema-qualified table source
@@ -8216,4 +8441,49 @@ func collectScanTableNamesInner(op logical.LogicalOperator, names map[string]boo
 	for _, ch := range op.Children() {
 		collectScanTableNamesInner(ch, names)
 	}
+}
+
+// sortOwnedBySelect reports whether sort is THIS select shell's own sort:
+// reachable from the select's projection through row-preserving single-child
+// operators only. A Sort below another Project/Aggregate belongs to a NESTED
+// select (derived table / CTE body); rewriting its ordinals against the
+// OUTER projection would swap in an unrelated item — `SELECT total FROM
+// (SELECT id AS x, SUM(score) AS total … ORDER BY 1 …) d` must keep the
+// inner ordinal on inner item 1, never the outer's slot 1.
+func sortOwnedBySelect(proj *logical.LogicalProject, sort *logical.LogicalSort) bool {
+	cur := proj.Input
+	for cur != nil {
+		if cur == logical.LogicalOperator(sort) {
+			return true
+		}
+		switch cur.(type) {
+		case *logical.LogicalFilter, *logical.LogicalLimit, *logical.LogicalDistinct:
+			ch := cur.Children()
+			if len(ch) != 1 {
+				return false
+			}
+			cur = ch[0]
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// operatorContains reports whether target appears in root's subtree
+// (including root itself). Used to determine relative operator placement
+// when a pass's rewrite depends on which of two operators is above.
+func operatorContains(root, target logical.LogicalOperator) bool {
+	if root == nil {
+		return false
+	}
+	if root == target {
+		return true
+	}
+	for _, ch := range root.Children() {
+		if operatorContains(ch, target) {
+			return true
+		}
+	}
+	return false
 }

@@ -511,9 +511,15 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				}
 			}
 			totalOutput := len(keys) + len(aggs)
-			needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasNonVisible
+			needsStrip := len(visibleProj) != totalOutput || hasAggAlias || hasNonVisible
+			// != (not <): a DUPLICATE visible read of one group key
+			// (`SELECT id, id … GROUP BY id`) makes the visible list WIDER
+			// than the aggregate's deduplicated output — the reshaping
+			// projection must materialize each visible slot or downstream
+			// consumers (CTE column aliases, positional reads) see the
+			// internal one-slot layout.
 			if needsStrip {
-				if hasNonVisible {
+				if hasNonVisible || groupKeyMissingFromVisible(keys, visibleProj) {
 					sq.postSortStripProj = visibleProj
 					sq.postSortStripAliases = visibleAliases
 				} else {
@@ -523,6 +529,36 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		}
 	}
 
+	if len(sq.orderBy) > 0 && len(sq.postSortStripProj) > 0 {
+		// The sort sits BELOW the deferred reshaping projection, over the
+		// aggregate's internal layout: rebase keys naming SELECT aliases
+		// (alias first — SQL resolves output names before source columns)
+		// and positional keys (visible slots differ from internal ones) to
+		// the underlying expressions.
+		for i := range sq.orderBy {
+			ob := &sq.orderBy[i]
+			if ob.pos >= 1 && ob.pos <= len(sq.postSortStripProj) {
+				ob.colName = sq.postSortStripProj[ob.pos-1]
+				ob.pos = 0
+				continue
+			}
+			// Output aliases bind BARE one-segment identifiers only: a
+			// qualified key (`d.x`) or an aggregate/computed key
+			// (`SUM(s.score)`) names source data, never the SELECT alias —
+			// text matching rebased both onto same-spelled aliases and
+			// silently mis-sorted. The parse tree decides (bareRef), not
+			// the name text.
+			if !ob.bareRef {
+				continue
+			}
+			for j, al := range sq.postSortStripAliases {
+				if al != "" && strings.EqualFold(al, ob.colName) && j < len(sq.postSortStripProj) {
+					ob.colName = sq.postSortStripProj[j]
+					break
+				}
+			}
+		}
+	}
 	if len(sq.orderBy) > 0 {
 		keys := make([]logical.SortKey, 0, len(sq.orderBy))
 		for _, ob := range sq.orderBy {
@@ -534,11 +570,27 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			if expr == "" && ob.rawExpr != nil {
 				expr = canonicalTextOf(ob.rawExpr)
 			}
+			// A POSITIONAL key's resolved name is ALIAS-preferred
+			// (resolveSelectListPosition), but this sort sits BELOW the
+			// projection: the alias does not exist there and may collide
+			// with a same-named SOURCE column (`SELECT id AS score …
+			// ORDER BY 1` must sort by id, never the SCORE column).
+			// Rebase to the item's UNDERLYING text; Pos still rides along
+			// for output-slot baking where the input IS a projection.
+			if ob.pos >= 1 && ob.pos <= len(sq.projCols) && sq.projCols[ob.pos-1] != "" {
+				expr = strip(sq.projCols[ob.pos-1])
+			}
 			nullsFirst := ob.ascending
 			if ob.nullsFirst != nil {
 				nullsFirst = *ob.nullsFirst
 			}
-			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst})
+			// Pos is pure INFORMATION (the ordinal into THIS select's
+			// list), never a bake directive: upgradeSortKeyValues resolves
+			// it into the OUTER projection's typed item Value (clearing
+			// Pos), and the translator bakes a surviving Pos only into a
+			// select-list-carrying input (the aggregate reshaping
+			// projection or a union) — never a derived source's slots.
+			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Pos: ob.pos, BareRef: ob.bareRef})
 		}
 		op = logical.NewSort(op, keys)
 	}
@@ -707,4 +759,25 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		})
 	}
 	return logical.NewUpdate(tableName, sets, scan)
+}
+
+// groupKeyMissingFromVisible reports whether any GROUP BY key is absent from
+// the visible SELECT list. Such a key is still a legal ORDER BY target
+// (`SELECT id,id FROM t GROUP BY id,v ORDER BY v`), so the reshaping
+// projection must be DEFERRED past the sort (postSortStrip) — stripping the
+// key before the sort consumes it fails ordinal resolution at runtime.
+func groupKeyMissingFromVisible(keys, visibleProj []string) bool {
+	for _, k := range keys {
+		found := false
+		for _, vp := range visibleProj {
+			if strings.EqualFold(k, vp) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return true
+		}
+	}
+	return false
 }

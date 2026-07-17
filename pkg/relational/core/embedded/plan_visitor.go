@@ -31,6 +31,7 @@ package embedded
 
 import (
 	"errors"
+	"maps"
 	"strconv"
 	"strings"
 
@@ -176,21 +177,22 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		if v.cteOnScopes == nil {
 			v.cteOnScopes = make(map[string]semantic.ScopeSource)
 		}
+		// Duplicate detection is scoped to THIS WITH clause: a name already
+		// registered from an ENCLOSING query's WITH is legal lexical
+		// SHADOWING (a nested body's `WITH c1 …` shadows the outer c1 inside
+		// the body — buildCTEBodyQuery snapshots/restores the maps), not a
+		// duplicate. Consulting the shared maps here mis-fired 42712 on the
+		// shadowing shape Java accepts (cte.yamsql). ON-only registrations
+		// are declared names too, so one set covers both arms.
+		declaredHere := make(map[string]struct{}, len(ctesCtx.AllNamedQuery()))
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			name := functions.FullIdToName(nq.GetName())
 			upper := strings.ToUpper(name)
-			if _, exists := v.cteScopes[upper]; exists {
+			if _, exists := declaredHere[upper]; exists {
 				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
 					"found '%s' more than once", name)
 			}
-			// An ON-only registration is a DECLARED name too — without this
-			// arm a join-bodied CTE (never in cteScopes) evaded the duplicate
-			// check on the visitor path (the CTECatalog chain's innerCTEs
-			// tracker got this right).
-			if _, exists := v.cteOnScopes[upper]; exists {
-				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
-					"found '%s' more than once", name)
-			}
+			declaredHere[upper] = struct{}{}
 			if src, ok := buildCTEColumnSource(v.md, name, nq.Query(), v.cteScopes); ok {
 				// Apply CTE column aliases: WITH c1(x, y) AS (...)
 				if colAliases := nq.GetColumnAliases(); colAliases != nil {
@@ -208,11 +210,33 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					src = applyCTEColumnAliases(src, colAliases)
 				}
 				v.cteScopes[upper] = src
+				// SHADOWING an enclosing same-name CTE across derivability
+				// classes: the inner registration must also EVICT the outer's
+				// entry from the OPPOSITE map, or later resolution consults
+				// the stale outer schema through the map this registration
+				// did not write (false 42703 in JOIN ON / wrong slot —
+				// silent misread). Mirrors the catalog path's opposite-map
+				// deletions.
+				delete(v.cteOnScopes, upper)
 			} else {
 				// Declared but not globally derivable (join/unnest body): the
 				// ON-only registration keeps an enclosing explicit join's ON
 				// resolvable — or LOUDLY dropped (marker) — never silent.
-				registerCTEOnOnlyScope(v.cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), v.md, v.schemaName, v.cteScopes)
+				if regErr := registerCTEOnOnlyScope(v.cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), v.md, v.schemaName, v.cteScopes); regErr != nil {
+					return nil, regErr
+				}
+				// Opposite-map eviction, ON-only arm: an underivable inner
+				// shadowing a DERIVABLE outer must displace the outer's
+				// cteScopes entry, or the body/main resolves named reads
+				// against the stale outer schema (the twin of the derivable
+				// arm's eviction above). A TOMBSTONE (nil Table), not
+				// deletion: absence falls back to the CATALOG and a
+				// same-named base table would silently bind its ordinals
+				// onto the CTE's rows; the tombstone keeps the name declared
+				// and resolution loud.
+				if _, hadOuter := v.cteScopes[upper]; hadOuter {
+					v.cteScopes[upper] = semantic.ScopeSource{}
+				}
 			}
 			// Eagerly build the CTE body plan so scalar subqueries
 			// that reference this CTE can wrap themselves with it.
@@ -229,7 +253,19 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				// resolution would otherwise resolve the body against its
 				// own OUTPUT schema (the R5a shadow pin 42703'd on ID).
 				bodyOp, bodyErr := buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, nil, isRecBody, func() (logical.LogicalOperator, error) {
-					return v.VisitQueryBody(inner.QueryExpressionBody())
+					if isRecBody {
+						// Recursive bodies are SetQuery-shaped by contract and
+						// this arm builds the body WITHOUT its own ctes — a
+						// nested WITH inside one would be SILENTLY DROPPED
+						// (the exact bug class buildCTEBodyQuery fixes), so
+						// decline typed instead.
+						if inner.Ctes() != nil {
+							return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+								"nested WITH inside a recursive CTE body is not supported")
+						}
+						return v.VisitQueryBody(inner.QueryExpressionBody())
+					}
+					return v.buildCTEBodyQuery(inner)
 				})
 				if isRecBody {
 					v.inRecursiveCTEBody = false
@@ -301,7 +337,17 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				// pre-existing; booked as the forward-visibility
 				// Java-conformance probe on the output-naming slice).
 				body, err = buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, nil, recursive, func() (logical.LogicalOperator, error) {
-					return v.VisitQueryBody(inner.QueryExpressionBody())
+					if recursive {
+						// Same silent-drop hazard as the eager arm: decline a
+						// nested WITH typed rather than build the body without
+						// its ctes.
+						if inner.Ctes() != nil {
+							return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+								"nested WITH inside a recursive CTE body is not supported")
+						}
+						return v.VisitQueryBody(inner.QueryExpressionBody())
+					}
+					return v.buildCTEBodyQuery(inner)
 				})
 				if recursive {
 					v.inRecursiveCTEBody = false
@@ -392,7 +438,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// Validate unsupported functions before building the plan.
 	for _, expr := range cls.projExprs {
 		if fn := findUnsupportedFunctionInParseTree(expr); fn != "" {
-			return nil, api.NewError(api.ErrCodeUndefinedFunction,
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"Unsupported operator "+fn)
 		}
 	}
@@ -450,7 +496,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// simpleTable.OrderByClause() and resolves positional references
 	// against the SELECT column list.
 	hasAggregate := cls.countStar || len(cls.aggCols) > 0
-	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, cls.groupBy, cls.groupByAliases)
+	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, cls.groupBy, cls.groupByAliases, cls.postSortStripProj, cls.postSortStripAliases)
 
 	// Post-sort strip projection: when hasSortOnly is true in the
 	// aggregate path, the visible-only projection is deferred past
@@ -500,7 +546,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		needRebuild = true
 	}
 	if hasAnyQualifiedStar(sq) {
-		expandQualifiedStars(sq, v.md, v.schemaName)
+		if starErr := expandQualifiedStars(sq, v.md, v.schemaName, v.cteScopes); starErr != nil {
+			return nil, starErr
+		}
 		needRebuild = true
 	}
 	if needRebuild {
@@ -849,6 +897,17 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// (14) Upgrade HAVING predicate.
 	if sq.havingExpr != nil {
 		upgradeHavingPredicate(op, sq, v.md, v.schemaName, v.cteScopes, existsPlanner)
+		// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
+		// HAVING walk has no lowering — ScalarSubqueryValue's evaluation
+		// contract is pre-eval (uncorrelated) only, and the projection attach
+		// (13) already ran and nil'd the lists, so anything here would reach
+		// the executor as an unbindable alias (runtime
+		// UnboundScalarSubqueryError on a valid query). Decline TYPED; Java's
+		// quantifier lowering is the booked follow-up.
+		if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"correlated scalar subquery in a WHERE/HAVING predicate is not supported")
+		}
 	}
 
 	// (15) Upgrade sort key values.
@@ -935,6 +994,24 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		}
 	}
 
+	// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
+	// WHERE walk above has no lowering. ScalarSubqueryValue's evaluation
+	// contract is pre-eval (uncorrelated) only — the uncorrelated list below
+	// attaches to the filter (upgradeFirstFilterScalarSubqueries) and the
+	// executor pre-binds it, but the correlated list's ONLY consumer is the
+	// PROJECTION path (materialized per-row column), whose attach step (13)
+	// already ran and nil'd the lists. A WHERE-position reference therefore
+	// reached the executor with an unbindable alias — the loud runtime
+	// UnboundScalarSubqueryError on a valid query (yamsql scalar_subquery_java:
+	// `WHERE e.salary = (SELECT MAX(e2.salary) … WHERE e2.dept_id =
+	// e.dept_id)`). Java lowers the subquery to a quantifier and lets the
+	// predicate reference its result — the booked RFC-180 follow-up; until
+	// then decline TYPED at plan time.
+	if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated scalar subquery in a WHERE/HAVING predicate is not supported")
+	}
+
 	hasSubqueries := len(existsPlanner.subqueries) > 0 || len(existsPlanner.scalarSubqueries) > 0
 	if hasSubqueries && preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
@@ -982,7 +1059,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	var pred predicates.QueryPredicate
 	var predOk bool
 	if v.cteScopes != nil && len(sq.joins) == 0 {
-		if src, found := v.cteScopes[strings.ToUpper(sq.tableName)]; found {
+		if src, found := v.cteScopes[strings.ToUpper(sq.tableName)]; found && src.Table != nil {
+			// A TOMBSTONE entry (nil Table: declared CTE, schema underivable)
+			// must not reach scope construction — ResolveColumn nil-derefs.
 			pred, predOk = buildWherePredicateFromCTEScope(src, sq.tableAlias, sq.whereExpr, v.md)
 		}
 	}
@@ -1272,9 +1351,15 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 			}
 		}
 		totalOutput := len(keys) + len(aggs)
-		needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasNonVisible
+		needsStrip := len(visibleProj) != totalOutput || hasAggAlias || hasNonVisible
+		// != (not <): a DUPLICATE visible read of one group key
+		// (`SELECT id, id … GROUP BY id`) makes the visible list WIDER
+		// than the aggregate's deduplicated output — the reshaping
+		// projection must materialize each visible slot or downstream
+		// consumers (CTE column aliases, positional reads) see the
+		// internal one-slot layout.
 		if needsStrip {
-			if hasNonVisible {
+			if hasNonVisible || groupKeyMissingFromVisible(keys, visibleProj) {
 				cls.postSortStripProj = visibleProj
 				cls.postSortStripAliases = visibleAliases
 			} else {
@@ -1284,6 +1369,55 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	}
 
 	return op, stripPrefix
+}
+
+// buildCTEBodyQuery builds a CTE body plan, PRESERVING the body's own WITH
+// clause. A body that is itself `WITH inner AS (…) SELECT … FROM inner` must
+// build as a FULL query: its nested CTEs register and wrap (LogicalCTE) with
+// lexical shadowing — the inner name wins INSIDE the body, the enclosing
+// query's same-named CTE stays bound outside it. Before this helper both
+// body-build sites called VisitQueryBody(inner.QueryExpressionBody()),
+// silently DROPPING the body's ctes: the nested WITH vanished, its filter
+// with it, and `FROM c1` inside c2's body resolved to the ENCLOSING c1 —
+// wrong rows (yamsql cte_error_codes: 9 rows for 6; Java's cte.yamsql pins
+// the shadowing). The visitor's CTE maps are snapshotted and restored so the
+// nested registrations stay scoped to the body build.
+func (v *PlanVisitor) buildCTEBodyQuery(inner antlrgen.IQueryContext) (logical.LogicalOperator, error) {
+	if inner.Ctes() == nil {
+		return v.VisitQueryBody(inner.QueryExpressionBody())
+	}
+	// Restore by MUTATING the original map objects, never by reassigning the
+	// fields to clones: this build runs inside buildCTEBodySelfHidden's
+	// self-hide window, whose own deferred restore writes the enclosing CTE's
+	// entry back into the map OBJECT it captured. A field reassignment here
+	// would strand that restore in an orphaned map — the enclosing CTE would
+	// vanish from scope after its own body build (a later reference to it
+	// resolves against the base catalog instead: unknown table, or a
+	// same-named base table silently). The two restore mechanisms compose
+	// only on shared object identity.
+	origScopes, origOn, origBodies := v.cteScopes, v.cteOnScopes, v.cteBodies
+	savedScopes := maps.Clone(origScopes)
+	savedOn := maps.Clone(origOn)
+	savedBodies := maps.Clone(origBodies)
+	restoreScope := func(dst, src map[string]semantic.ScopeSource) {
+		if dst == nil {
+			return
+		}
+		clear(dst)
+		maps.Copy(dst, src)
+	}
+	defer func() {
+		restoreScope(origScopes, savedScopes)
+		restoreScope(origOn, savedOn)
+		if origBodies != nil {
+			clear(origBodies)
+			maps.Copy(origBodies, savedBodies)
+		}
+		// Field identity: the nested VisitQuery may have lazily allocated a
+		// map onto a nil field; point the fields back at the originals.
+		v.cteScopes, v.cteOnScopes, v.cteBodies = origScopes, origOn, origBodies
+	}()
+	return v.VisitQuery(inner)
 }
 
 // visitOrderBy builds the LogicalSort operator by reading ORDER BY
@@ -1297,7 +1431,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 // resolution. aggCols is the aggregate classification from
 // classifySelectElements, used as a fallback when the SELECT list
 // was reclassified (projCols nil, aggCols non-nil).
-func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string, groupBy []string, groupByAliases map[string]int) logical.LogicalOperator {
+func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string, groupBy []string, groupByAliases map[string]int, deferredStripProj, deferredStripAliases []string) logical.LogicalOperator {
 	orderByCtx := simpleTable.OrderByClause()
 	if orderByCtx == nil {
 		return op
@@ -1322,6 +1456,30 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			return name, false
 		}
 		return groupBy[idx], true
+	}
+
+	// rebaseToInternal rewrites a sort key for the DEFERRED-strip case: the
+	// sort sits BELOW the reshaping projection, over the aggregate's
+	// internal layout, so a key naming a SELECT alias (which exists only
+	// ABOVE the projection) is rebased to its underlying expression. The
+	// alias is checked FIRST — SQL resolves ORDER BY names against output
+	// columns before source columns, so `SELECT id AS v … GROUP BY id, v
+	// ORDER BY v` sorts by id (the alias), not the hidden group key v.
+	rebaseToInternal := func(name string, bareRef bool) string {
+		// Output aliases bind BARE one-segment identifiers only: a
+		// qualified key (`d.x`) or an aggregate/computed key names source
+		// data, never the SELECT alias. The parse tree decides (bareRef),
+		// not the name text — delimited aliases can spell "x.y" or
+		// "SUM(S)".
+		if !bareRef {
+			return name
+		}
+		for i, al := range deferredStripAliases {
+			if al != "" && strings.EqualFold(al, name) && i < len(deferredStripProj) {
+				return deferredStripProj[i]
+			}
+		}
+		return name
 	}
 
 	obExprs := orderByCtx.AllOrderByExpression()
@@ -1376,14 +1534,38 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			seenOrderCols[key] = true
 			// Pos carries the SELECT-list position: a positional key IS an
 			// output ordinal by SQL definition, so the translator bakes it
-			// directly to the projection's output slot.
-			keys = append(keys, logical.SortKey{Expr: strip(posName), Dir: dir, NullsFirst: nf, Pos: pos})
+			// directly to the projection's output slot. Under a DEFERRED
+			// strip the sort input is the aggregate's INTERNAL layout whose
+			// slots differ from the visible ones — bake the underlying
+			// expression text instead and drop the positional binding.
+			if len(deferredStripProj) > 0 && pos >= 1 && pos <= len(deferredStripProj) {
+				keys = append(keys, logical.SortKey{Expr: deferredStripProj[pos-1], Dir: dir, NullsFirst: nf})
+				continue
+			}
+			// The positional name is ALIAS-preferred but this sort sits
+			// BELOW the final projection, where the alias does not exist
+			// and may collide with a same-named SOURCE column. Rebase to
+			// the item's UNDERLYING text (selectCols) as the no-catalog
+			// fallback. Pos is pure INFORMATION (the ordinal into THIS
+			// select's list): upgradeSortKeyValues resolves it into the
+			// OUTER projection's typed item Value (clearing Pos), and the
+			// translator bakes a surviving Pos only into a select-list-
+			// carrying input (aggregate reshaping projection or union).
+			expr := strip(posName)
+			if pos >= 1 && pos <= len(selectCols) && selectCols[pos-1] != "" {
+				expr = strip(selectCols[pos-1])
+			}
+			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nf, Pos: pos})
 			continue
 		}
 
 		// Prefer plain column / aggregate lookup.
 		colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 		if nameErr == nil {
+			bareRef := exprIsBareColumnRef(obExpr.Expression())
+			if len(deferredStripProj) > 0 {
+				colName = rebaseToInternal(colName, bareRef)
+			}
 			// Resolve GROUP BY alias (`ORDER BY z` where `GROUP BY
 			// x.col1 AS z`) to the underlying column before building
 			// the sort key, so the Cascades planner sees a field that
@@ -1396,7 +1578,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 				continue
 			}
 			seenOrderCols[key] = true
-			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf})
+			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, BareRef: bareRef})
 		} else {
 			// Expression ORDER BY — use canonical text to get
 			// proper spacing (GetText concatenates without whitespace).

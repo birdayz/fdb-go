@@ -58,10 +58,11 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		if isCountOnlyAggregation(gb.GetAggregates()) {
 			if idxWrapper := findIndexScanWrapper(innerRef); idxWrapper != nil && !idxWrapper.covering {
 				coveringWrapper := &physicalIndexScanWrapper{
-					plan:        idxWrapper.plan.WithCovering(nil),
-					columnNames: idxWrapper.columnNames,
-					unique:      idxWrapper.unique,
-					covering:    true,
+					plan:          idxWrapper.plan.WithCovering(nil),
+					columnNames:   idxWrapper.columnNames,
+					pkColumnNames: idxWrapper.pkColumnNames,
+					unique:        idxWrapper.unique,
+					covering:      true,
 				}
 				coveringQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringWrapper))
 				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(coveringWrapper.plan, groupingKeys, gb.GetAggregates())
@@ -91,7 +92,14 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		} else {
 			field = values.ExplainValue(gk)
 		}
-		sortKeys[i] = plans.SortKey{Field: field, ValueExpr: gk}
+		// NullsFirst: the pre-aggregate sort is ascending, and the default for
+		// ascending order is NULLS FIRST (Java ParseHelpers.isNullsLast —
+		// `ASC NULLS FIRST, DESC NULLS LAST` — which is also FDB tuple order,
+		// where null is the smallest element). Omitting it (zero-value = NULLS
+		// LAST) is not cosmetic: the aggregate's provided-ordering hint lets
+		// `GROUP BY k ORDER BY k` elide the enforcer sort, so the NULL group
+		// must physically arrive where that default ordering puts it.
+		sortKeys[i] = plans.SortKey{Field: field, NullsFirst: true, ValueExpr: gk}
 	}
 
 	// Always yield InMemorySort(FullScan) path as a Go extension.

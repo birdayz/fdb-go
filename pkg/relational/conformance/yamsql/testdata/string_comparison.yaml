@@ -18,12 +18,14 @@ tests:
     rows:
       - [3]
 
-  # Lexicographic ordering
+  # Lexicographic ordering — byte/UTF-16 code-unit order (Java and Go
+  # agree): '' first, then uppercase before lowercase
+  # ('A' 0x41 < 'B' 0x42 < 'a' 0x61 < 'b' 0x62).
   - query: SELECT id, s FROM t ORDER BY s
     rows:
       - [4, ""]
-      - [5, "BANANA"]
       - [3, "Apple"]
+      - [5, "BANANA"]
       - [1, "apple"]
       - [2, "banana"]
 

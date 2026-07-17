@@ -92,6 +92,16 @@ func (s *Scope) AllSourcesRecursive() []ScopeSource {
 // and the scope-level signal is what the join-ON builder's drop-risk
 // taxonomy keys on.
 func (s *Scope) AddSource(src ScopeSource) error {
+	// A nil-Table source is the declared-but-underivable CTE TOMBSTONE (or a
+	// construction bug) — never a resolvable relation. Rejecting it HERE, at
+	// the single chokepoint, converts every consumer that forgets the
+	// tombstone check into a clean decline instead of a later nil
+	// dereference inside ResolveColumn (recovered panic → XX000 on a valid
+	// query). Legitimate virtual sources (lateral unnest) always carry a
+	// StaticTable.
+	if src.Table == nil {
+		return &UnresolvableSourceError{Alias: src.Alias}
+	}
 	for _, existing := range s.sources {
 		if !existing.Alias.EqualsIgnoreQuoting(src.Alias) {
 			continue
@@ -316,6 +326,16 @@ func (e *SourceNotFoundError) Error() string {
 
 // DuplicateAliasError is returned by AddSource when the same alias
 // is already registered at this scope level.
+// UnresolvableSourceError reports an attempt to add a scope source with no
+// Table — the declared-but-underivable CTE tombstone reaching a resolver.
+type UnresolvableSourceError struct {
+	Alias Identifier
+}
+
+func (e *UnresolvableSourceError) Error() string {
+	return "source " + e.Alias.Name() + " has no resolvable schema in this context"
+}
+
 type DuplicateAliasError struct {
 	Alias Identifier
 }

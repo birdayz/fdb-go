@@ -1395,6 +1395,33 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 
 # NEXT
 
+> ## [ ] RFC-180 follow-up — output-label collision mis-binds sort keys over the IMMEDIATE reshaping strip (pre-existing)
+> `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC`
+> sorts by PLAYER (the aliased column), not the aggregate: the sort sits ABOVE the reshaping projection
+> whose output row carries a column literally labeled `SUM(SCORE)` (the delimited alias), and both
+> `upgradeSortKeyValues`' colToIdx text match and translateSort's aggProjFields name-fallback bind the
+> aggregate key to that colliding label by NAME. Fails identically on pre-RFC-180 master (verified at
+> 58ee9daa7) — a translator field-naming ambiguity, NOT a regression: `postAggregateProjectionFields`
+> names fields alias-preferred, so a rendered-item key and a same-spelled alias are indistinguishable
+> at bind time. Fix direction: positional identity for reshaping-projection outputs (carry the slot,
+> match rendered-item text against PROJECTION text and alias text only for SortKey.BareRef keys —
+> the same split RFC-180 round 14 pinned for the DEFERRED strip). The deferred-strip variant IS fixed
+> and pinned (aggregate_order_by_java "SUM(S.SCORE)" collision pin).
+
+> ## [ ] FLAKE — TestDifferential_GetKeyConflict diverged once under cold full-suite load (go over-conflicts vs cgo)
+> One occurrence (2026-07-17, fresh worktree, cold bazel output base, full `just test` running every
+> container suite concurrently): 3 subtests diverged — `cleared_range_excluded`: "go-A conflicted=true
+> (resolved=\"d\") cgo-A conflicted=false (probe=\"b\" sel=FGT)", plus independent_write_excluded and
+> outside_span_no_conflict — i.e. the GO side OVER-CONFLICTED exactly on the three trimming cases the
+> getKey conflict-set fix (PR #235 family) exists for. Passes in isolation, passes 5× under the bench
+> binary's own parallel load, did not recur on the next full-suite run (bench cached). Prefixes are
+> per-attempt unique (gkconf_<pid>_<name>_<attempt>_), so not cross-test key collision; the divergence
+> pattern suggests a LOAD-dependent path in the Go client's getKey conflict trimming (updateConflictMap)
+> falling back to the untrimmed span, or a differential-harness sequencing assumption that bends under
+> scheduler pressure. hunt-divergences track; C++ 7.3.77 is the spec. Repro condition: cold output base +
+> full concurrent suite. Log preserved at bazel-out .../ce2b9a2731780c0b259bca1a4820ae7d/.../pkg/fdbgo/
+> bench/bench_test/test.log (first failing run).
+
 > ## [ ] INFRA — scheduled nightlies dispatch HOURS late ("nightly" fuzz runs at noon)
 > The Nightly Fuzz (`cron: 17 3 * * *`, moved to `17 4` = 4:17 AM UTC) consistently *runs* mid-day,
 > not at night: GitHub CREATES the scheduled run ~4-5 h after the cron (07:04 on 06-30, 07:50 on 07-01),
@@ -2409,6 +2436,21 @@ each on its own stacked branch.
    so a live backend switch is impossible anyway). FDB-C-dev + Torvalds vetted; 11 codex rounds. (Was TODO-production P2.2.)
 
 ## Known gaps
+
+- **[RFC-180 follow-up, pre-existing] Output-alias vs rendered-item name collision
+  under the IMMEDIATE post-aggregate strip.** `SELECT player AS "SUM(SCORE)",
+  SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC` sorts by
+  the ALIASED player column, not the aggregate — fails identically on pre-RFC-180
+  master (verified at 58ee9daa7), so it is not a regression of the SortKey.BareRef
+  work (whose deferred-strip variant is pinned green in aggregate_order_by_java).
+  Root cause: the reshaping projection's output row carries alias-preferred column
+  NAMES, and both upgradeSortKeyValues' colToIdx and translateSort's flat-column
+  fallback bind sort keys BY NAME against that row — a delimited alias that spells
+  another item's canonical rendering shadows it. Fix direction: positional binding
+  (ordinal-baked ProjectedValues on the reshaping projection, and translateSort's
+  fallback matching PROJECTION texts rather than alias-preferred names). Needs its
+  own review cycle — translator field-naming surgery, not a gate tweak.
+
 
 ### [ ] query-engine (RFC-173, latent — surfaced by the 2-way EXISTS-in-ON review): F2-LEFT's isScanFamilyLeg is cteScope-BLIND — VERIFIED REACH, not silent-wrong (low priority)
 `isScanFamilyLeg` (cascades_translator.go:3185) is a syntactic Scan-through-Filter walk with NO cteScope
@@ -4825,3 +4867,70 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       accidental relabel is caught. Pinned by `rfc173_rider2_agg_metadata_fdb_test.go`
       (6 subtests, red-first proven: D.DNAME + UNKNOWN drift reproduced with the fix
       disabled) + the value-flow pin.
+
+### RFC-180 follow-ups (query-engine quality remediation)
+
+- [ ] **Grouped-select ORDER BY widening (Graefe, be9e66c62 review):** a computed
+      ORDER BY key over a grouped reshaping projection that is NOT a SELECT-list
+      output currently declines typed 0AF00 (`translateSort` pull-up miss). Java
+      widens the select with the missing expression and re-projects
+      (`LogicalOperator.generateSelect`, `remainingOrderByExpressions`). Port the
+      widening for the grouped path (the EXISTS-fold path already has its own
+      instance booked under RFC-141 Phase 2 FOLLOW-UP). Pin: replace
+      `TestGroupedOrderBy_UnderivableKeyDeclinesTyped` with a row-level pin.
+- [ ] **Java-harness-verify the NULLS-default corpus flips (Graefe, efc07340e
+      review):** the aggregate_null_edge / aggregate_with_null_groups /
+      coalesce_in_join / distinct_patterns_java / order_by_nulls_java NULL-order
+      pins were corrected from ParseHelpers.java source (ASC NULLS FIRST / DESC
+      NULLS LAST). Close the provenance loop with a live cross-engine run (add
+      the shapes to the plandiff corpus or run them via SqlPlanSteps).
+- [ ] **Unify the two row-shape-transparency sets (Graefe nit):**
+      `projectionOverAggregate` (translator) peels Filter/Sort/Limit;
+      `underlyingGroupBy` peels Filter/Sort. One authority for "operators that
+      pass the row through unchanged".
+- [ ] **Grouped correlated EXISTS port (RFC-180 Y4):** Java plans
+      `EXISTS(… GROUP BY … HAVING …)` (existential quantifier over a
+      GroupByExpression); Go's correlated-EXISTS fallback rebuilds only
+      FROM+WHERE and now declines TYPED 0AF00 (buildCorrelatedExists guard —
+      before the guard it silently dropped the grouping and returned wrong
+      rows, yamsql exists_with_aggregate). Port the aggregate into the
+      rebuilt inner; restore the [Alice] rows pin.
+- [ ] **Boolean-CASE WHERE predicate wrap (RFC-180 Y4):** Java wraps a
+      boolean-typed non-BooleanValue (CASE/PickValue) used as a predicate in
+      ValuePredicate(= TRUE) (Expression.java:371-400) and plans it as a
+      residual filter; Go declines 0AF00. Port the wrap; restore the rows
+      pins in case_when_in_java / case_exists_combo.
+- [ ] **Correlated scalar subquery in WHERE/HAVING — quantifier lowering
+      (RFC-180 Y4, extension):** ScalarSubqueryValue is pre-eval
+      (uncorrelated) only; the correlated materialized-column lowering exists
+      only for PROJECTION position. WHERE/HAVING-position correlated scalars
+      now decline TYPED 0AF00 (plan_visitor point checks — before the guard
+      they planned and died at runtime with UnboundScalarSubqueryError).
+      Lower via a quantifier (Java-style) and restore the rows pins in
+      scalar_subquery_java.
+- [ ] **Scalar subquery over a FROM-less SELECT (RFC-180 Y4, extension):**
+      `SELECT (SELECT COUNT(*) FROM t) AS total` declines 0AF00 — the
+      LogicalValues path carries no subquery plans. Restore rows pin when
+      wired.
+- [ ] **LIKE-prefix covering access path (RFC-180 Y4, plan-shape parity):**
+      Java plans `WHERE name LIKE 'bl%'` over an indexed column as an
+      UNBOUNDED covering index scan + residual LIKE + deferred FETCH
+      (never a LIKE→range conversion — RangeConstraints.java:780). Go
+      full-scans (rows correct). Implement the covering/filter-before-fetch
+      path; then flip like_patterns_java's plan_not_contains pin to a
+      covering plan_contains.
+- [ ] **HAVING-EXISTS error-surface alignment (RFC-180 Y4):** Java rejects
+      `SELECT COUNT(*) FROM t HAVING EXISTS(…)` at semantic analysis with
+      42803 GROUPING_ERROR "Invalid reference to non-grouping expression …
+      exists(q…)" (LogicalOperator.generateGroupBy →
+      SemanticAnalyzer.isComposableFrom; live-probed). Go declines 0AF00 via
+      the HavingExistsSubqueries planner gate. Align: reject at semantic
+      analysis with 42803 + Java's message shape; flip the exists.yaml pin.
+- [ ] **Comma join over a nested-shadowing CTE inside a CTE body
+      (RFC-180 round-7 reach):** `WITH x(m,n) AS (…) SELECT p.m, p.n, q.m
+      FROM x p, x q` inside a CTE body plans but dies at runtime with an
+      ordinal-resolution error (P.N vs merged-row keys [P.M N Q.M] — the
+      qualified/bare name-model seam, RFC-173 surface; stars and explicit
+      columns both hit it). Single-source nested bodies work (pinned).
+      Make the merged-row keys carry the qualified names the projection
+      mints, or decline the shape at plan time.

@@ -100,10 +100,11 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		}
 		idxPlan = idxPlan.WithCovering(colNames)
 		idxWrapper := &physicalIndexScanWrapper{
-			plan:        idxPlan,
-			columnNames: colNames,
-			unique:      cand.IsUnique(),
-			covering:    true,
+			plan:          idxPlan,
+			columnNames:   colNames,
+			pkColumnNames: candidatePKColumns(cand),
+			unique:        cand.IsUnique(),
+			covering:      true,
 		}
 		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
 			idxPlan, groupingKeys, gb.GetAggregates(),

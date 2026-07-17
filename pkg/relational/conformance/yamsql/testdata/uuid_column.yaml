@@ -32,3 +32,9 @@ tests:
   - query: SELECT COUNT(session_id) FROM Sessions
     rows:
       - [2]
+
+  # Codex-caught: CAST of a NON-string source to UUID must be a typed cast
+  # error (22F3H), never a silent per-row NULL (Java has no numeric→UUID
+  # coercion at all).
+  - query: SELECT CAST(id AS UUID) FROM Sessions
+    error_code: "22F3H"

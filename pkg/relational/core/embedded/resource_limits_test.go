@@ -117,6 +117,16 @@ func TestRFC106a_SQLSTATEMap(t *testing.T) {
 		})
 	}
 
+	// RFC-180 WS-A: a resume attempt on a cursor shape with no continuation
+	// support declines typed — 0A000, not 54F01 and never a generic error.
+	{
+		got := translateExecError(&executor.UnsupportedContinuationError{Shape: "buffered union"})
+		var apiErr *api.Error
+		if !errors.As(got, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedOperation {
+			t.Fatalf("UnsupportedContinuationError → %v, want *api.Error 0A000", got)
+		}
+	}
+
 	// A bare deadline is NO LONGER mapped by translateExecError on its own — the
 	// statement-timeout→54F01 mapping is gated on the internal-timeout context cause
 	// (translateExecErrorCtx) so a caller deadline can survive (see below).

@@ -37,6 +37,7 @@ go_test(
         "coverage_internal_test.go",
         "coverage_test.go",
         "featurematrix_test.go",
+        "load_strict_test.go",
         "runner_test.go",
         "yamsql_test.go",
     ],

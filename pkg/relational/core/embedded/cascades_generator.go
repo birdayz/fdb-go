@@ -297,7 +297,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return nil, api.NewError(api.ErrCodeUndefinedFunction,
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Unsupported operator "+fn)
 	}
 
@@ -352,6 +352,13 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// so catch it here.
 	if msg := findUnfoldableProjectedExists(logicalOp); msg != "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, msg)
+	}
+
+	// Point-of-truth CTE alias arity over the WHOLE built tree — covers
+	// unused CTEs (whose bodies the translator registers lazily and never
+	// descends into) and CTEs nested inside another CTE's body.
+	if arityErr := query.ValidateCTEAliasArities(logicalOp); arityErr != nil {
+		return nil, arityErr
 	}
 
 	ref, scalarSubqueryPlans, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
@@ -877,7 +884,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 					continue
 				}
 				if fn := findUnsupportedFunctionInParseTree(el.Expression()); fn != "" {
-					return nil, api.NewError(api.ErrCodeUndefinedFunction, "Unsupported operator "+fn)
+					return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 				}
 			}
 		}
@@ -887,7 +894,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return nil, api.NewError(api.ErrCodeUndefinedFunction,
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Unsupported operator "+fn)
 	}
 
@@ -1765,6 +1772,12 @@ func translateExecError(err error) error {
 	if errors.As(err, &aggTypeMismatch) {
 		return api.NewError(api.ErrCodeUnsupportedOperation, aggTypeMismatch.Error())
 	}
+	// A cursor shape with no continuation support yet (RFC-180 WS-A
+	// follow-ups) declines resume typed — 0A000, not an internal error.
+	var unsupCont *executor.UnsupportedContinuationError
+	if errors.As(err, &unsupCont) {
+		return api.NewError(api.ErrCodeUnsupportedOperation, unsupCont.Error())
+	}
 	var rangeOverflow *executor.NumericRangeOverflowError
 	if errors.As(err, &rangeOverflow) {
 		return api.NewError(api.ErrCodeNumericValueOutOfRange, rangeOverflow.Error())
@@ -2046,11 +2059,37 @@ func (d *metadataIndexDef) IndexPrimaryKeyColumns() []string {
 	if len(rts) == 0 {
 		return nil
 	}
-	pk := rts[0].PrimaryKey
-	if pk == nil {
+	// The PK ordering suffix is claimable ONLY when every record type the
+	// index covers has the IDENTICAL primary-key column list: a multi-type /
+	// universal index interleaves entries whose PK suffixes differ per type,
+	// so no single suffix orders the stream (claiming the first map-iterated
+	// type's PK was both wrong for the other types — a shared index on
+	// `status` would elide `ORDER BY a` on a type whose entries are ordered
+	// by `b` — and NONDETERMINISTIC, since RecordTypesForIndex iterates a
+	// map). All-equal is order-independent; anything else returns nil and the
+	// sort is simply kept (conservative). Java scopes the expansion per
+	// candidate record type (ValueIndexExpansionVisitor), which the
+	// per-queried-type refinement would mirror — tracked follow-up.
+	first := rts[0].PrimaryKey
+	if first == nil {
 		return nil
 	}
-	return pk.FieldNames()
+	pkCols := first.FieldNames()
+	for _, rt := range rts[1:] {
+		if rt.PrimaryKey == nil {
+			return nil
+		}
+		other := rt.PrimaryKey.FieldNames()
+		if len(other) != len(pkCols) {
+			return nil
+		}
+		for i := range other {
+			if !strings.EqualFold(other[i], pkCols[i]) {
+				return nil
+			}
+		}
+	}
+	return pkCols
 }
 
 func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {

@@ -3,35 +3,39 @@
 # Throwaway probes targeting features likely to surface bugs:
 # implicit type conversion, NULL semantics edge cases, self-referencing
 # updates, nested CTEs, multi-table FROM with shared column names.
-# Each entry is either a clean pin (passes) or a 22023/0A000 error
-# pin documenting the current limitation.
+# Each entry is either a clean pin (passes) or an error pin
+# documenting the current limitation.
 name: bug_hunt_probes
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, null), (4, null, 'd')
 tests:
-  # Self-referencing UPDATE: SET col = (subquery on same table).
-  # Postgres semantics: subquery sees the pre-UPDATE state. Confirms
-  # we don't read mid-update.
+  # Subquery in UPDATE ... SET: both engines reject, at different
+  # layers — Go parses it (Go-only grammar extension) but declines
+  # planning with 0AF00 "subqueries are not supported in UPDATE ...
+  # SET"; Java's grammar has no subquery expressionAtom, so it fails
+  # at parse time with 42601. Lifting the Go decline is tracked
+  # (TODO L121c).
   - query: UPDATE t SET n = (SELECT MAX(n) FROM t) WHERE id = 1
+    error_code: "0AF00"
   - query: SELECT n FROM t WHERE id = 1
     rows:
-      - [30]
+      - [10]
   # Reset.
   - query: UPDATE t SET n = id * 10 WHERE id IN (1, 2, 3)
   # Implicit type conversion: STRING column compared to integer literal.
-  # nightshift-39: Java-aligned, errors 22000 (CANNOT_CONVERT_TYPE)
-  # matching Java's PromoteValue.isPromotionNeeded → SemanticException
-  # (INCOMPATIBLE_TYPE).
+  # Java RelOpValue.java:206-215 → DATATYPE_MISMATCH (42804), message
+  # "The operands of a comparison operator are not compatible."
   - query: SELECT id FROM t WHERE s = 1
-    error_code: "22000"
+    error_code: "42804"
   # NULL in IN list — Java rejects with verbatim "NULL values are not
-  # allowed in the IN list" (22000).
+  # allowed in the IN list" (42809, SemanticAnalyzer.java:768
+  # WRONG_OBJECT_TYPE).
   - query: SELECT id FROM t WHERE n IN (1, NULL, 30) ORDER BY id
-    error_code: "22000"
+    error_code: "42809"
   - query: SELECT id FROM t WHERE n NOT IN (1, NULL, 30)
-    error_code: "22000"
+    error_code: "42809"
   # COUNT(NULL) — SQL spec: COUNT(*) counts all; COUNT(col) skips
   # NULLs. id=4 has n=NULL so COUNT(n) over all rows is 3, COUNT(*) is 4.
   - query: SELECT COUNT(*), COUNT(n), COUNT(s) FROM t

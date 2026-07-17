@@ -126,8 +126,18 @@ func runTest(ctx context.Context, db *sql.DB, t *Test) string {
 	// the scenario declares them with rows: absent or [] and the runner
 	// asserts only that they succeed.
 	if !IsQuery(t.Query) {
-		if _, err := db.ExecContext(ctx, t.Query); err != nil {
+		res, err := db.ExecContext(ctx, t.Query)
+		if err != nil {
 			return fmt.Sprintf("exec error: %v", err)
+		}
+		if t.Rowcount != nil {
+			affected, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Sprintf("RowsAffected: %v", err)
+			}
+			if affected != *t.Rowcount {
+				return fmt.Sprintf("rowcount mismatch: expected %d affected rows, got %d", *t.Rowcount, affected)
+			}
 		}
 		if len(t.Rows) != 0 {
 			return fmt.Sprintf("non-query statement returned no rows but scenario expects %d", len(t.Rows))

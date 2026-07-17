@@ -199,10 +199,11 @@ func strictlyOrderedIfUnique(expr expressions.RelationalExpression, numKeys int)
 func makeStrictlySorted(expr expressions.RelationalExpression) expressions.RelationalExpression {
 	if w, ok := expr.(*physicalIndexScanWrapper); ok {
 		return &physicalIndexScanWrapper{
-			plan:        w.plan.WithStrictlySorted(),
-			columnNames: w.columnNames,
-			unique:      w.unique,
-			covering:    w.covering,
+			plan:          w.plan.WithStrictlySorted(),
+			columnNames:   w.columnNames,
+			pkColumnNames: w.pkColumnNames,
+			unique:        w.unique,
+			covering:      w.covering,
 		}
 	}
 	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
@@ -214,9 +215,10 @@ func makeStrictlySorted(expr expressions.RelationalExpression) expressions.Relat
 			}
 			newIdxPlan := idxPlan.WithStrictlySorted()
 			newIdxWrapper := &physicalIndexScanWrapper{
-				plan:        newIdxPlan,
-				columnNames: origW.columnNames,
-				unique:      true,
+				plan:          newIdxPlan,
+				columnNames:   origW.columnNames,
+				pkColumnNames: origW.pkColumnNames,
+				unique:        true,
 			}
 			newIdxRef := expressions.InitialOf(newIdxWrapper)
 			newFetchQ := expressions.ForEachQuantifier(newIdxRef)

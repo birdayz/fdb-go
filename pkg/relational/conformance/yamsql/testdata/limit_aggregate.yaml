@@ -12,10 +12,13 @@ tests:
     rows:
       - ["East", 400]
       - ["North", 300]
-  # LIMIT 1 — top region only.
-  - query: SELECT region, COUNT(*) AS cnt FROM sales GROUP BY region ORDER BY cnt DESC LIMIT 1
+  # LIMIT 1 — top region only. All three regions tie at COUNT = 2, so
+  # `ORDER BY cnt DESC LIMIT 1` alone is nondeterministic (any single
+  # row is SQL-legal); add `region` as a deterministic tie-break. The
+  # alphabetically-first region among the ties is East.
+  - query: SELECT region, COUNT(*) AS cnt FROM sales GROUP BY region ORDER BY cnt DESC, region LIMIT 1
     rows:
-      - ["North", 2]
+      - ["East", 2]
   # LIMIT with OFFSET on aggregates.
   - query: SELECT region FROM sales GROUP BY region ORDER BY region LIMIT 1 OFFSET 1
     rows:

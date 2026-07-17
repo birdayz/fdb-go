@@ -18,14 +18,16 @@ tests:
       - ["north", 300]
       - ["west", 50]
 
-  # ORDER BY COUNT
+  # ORDER BY COUNT — ascending by count: west 1, east 2, north 3.
+  # (The old pin wasn't sorted by count at all; it was recorded from
+  # an old bug.)
   - query: >
       SELECT region, COUNT(*) FROM sales
       GROUP BY region
       ORDER BY COUNT(*)
     rows:
-      - ["east", 2]
       - ["west", 1]
+      - ["east", 2]
       - ["north", 3]
 
   # ORDER BY alias

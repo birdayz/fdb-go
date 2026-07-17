@@ -63,3 +63,117 @@ tests:
     rows:
       - ['chess', 5]
       - ['go', 3]
+  # A group key read ONLY by ORDER BY defers the reshaping projection past
+  # the sort; sort keys naming SELECT aliases are rebased to the underlying
+  # expression (alias first — SQL resolves output names before source
+  # columns). Mixed alias + hidden-key ordering:
+  - query: SELECT player AS x FROM scores GROUP BY player, game ORDER BY x, game
+    rows:
+      - ['Alice']
+      - ['Alice']
+      - ['Bob']
+      - ['Bob']
+      - ['Charlie']
+      - ['Charlie']
+  # The alias SHADOWS a hidden group key name: ORDER BY game must sort by
+  # the alias (player), not silently by the hidden key.
+  - query: SELECT player AS game FROM scores GROUP BY player, game ORDER BY game DESC
+    rows:
+      - ['Charlie']
+      - ['Charlie']
+      - ['Bob']
+      - ['Bob']
+      - ['Alice']
+      - ['Alice']
+  # Positional ORDER BY under the deferred strip: the visible slot is
+  # rebased to its underlying expression (internal slots differ).
+  - query: SELECT player AS x FROM scores GROUP BY player, game ORDER BY 1 DESC
+    rows:
+      - ['Charlie']
+      - ['Charlie']
+      - ['Bob']
+      - ['Bob']
+      - ['Alice']
+      - ['Alice']
+  # A QUALIFIED ORDER BY key names the source column, never the SELECT
+  # alias — d.x must sort by the derived column x (game), not rebase onto
+  # the alias x (player). Buggy alias-binding returns Charlie (player DESC).
+  - query: |-
+      SELECT player AS x FROM (SELECT player, game AS x FROM scores) d
+      GROUP BY player, x ORDER BY d.x DESC, player ASC LIMIT 1
+    rows:
+      - ['Alice']
+  # A DELIMITED alias containing a dot is a BARE identifier — it must
+  # still bind as an output alias (qualification is the parse tree's
+  # segment count, not dots in the joined name).
+  - query: |-
+      SELECT player AS "x.y" FROM scores GROUP BY player, game ORDER BY "x.y" DESC
+    rows:
+      - ['Charlie']
+      - ['Charlie']
+      - ['Bob']
+      - ['Bob']
+      - ['Alice']
+      - ['Alice']
+  # An AGGREGATE ORDER BY key never binds an output alias under the
+  # DEFERRED strip, even when a delimited alias spells the aggregate's
+  # canonical rendering: ORDER BY SUM(s.score) sorts by the aggregate,
+  # not by the "SUM(S.SCORE)"-aliased player column. (The immediate-strip
+  # variant of this collision is a PRE-EXISTING translator field-naming
+  # ambiguity — fails identically on the merge base — tracked in TODO.md.)
+  - query: |-
+      SELECT SUM(s.score) AS total, s.player AS "SUM(S.SCORE)" FROM scores s, scores t
+      WHERE s.id = t.id GROUP BY s.player, s.game ORDER BY SUM(s.score) DESC
+    rows:
+      - [220, 'Alice']
+      - [200, 'Charlie']
+      - [110, 'Bob']
+      - [90, 'Bob']
+      - [85, 'Charlie']
+      - [80, 'Alice']
+  # A positional ORDER BY in a catalog-built scalar subquery binds the
+  # OUTPUT slot, not a same-named source column: item 1 is `id AS score`,
+  # so ORDER BY 1 DESC picks the max id (8), never the max SCORE column.
+  - query: |-
+      SELECT (SELECT id AS score FROM scores ORDER BY 1 DESC LIMIT 1) AS picked FROM scores LIMIT 1
+    rows:
+      - [8]
+  # Same collision at top level (visitor path): ORDER BY 1 over
+  # `id AS score` sorts by id, never the same-named SCORE source column.
+  - query: SELECT id AS score FROM scores ORDER BY 1 DESC LIMIT 1
+    rows:
+      - [8]
+  # A positional key is an ordinal into THIS select's output list — never
+  # into a DERIVED source's projection that happens to sit below the sort.
+  # Misbinding bakes slot 1 = d.id (DESC -> id 8 -> score 105) instead of
+  # ordering by score (120).
+  - query: |-
+      SELECT (SELECT score FROM (SELECT id, score FROM scores) d ORDER BY 1 DESC LIMIT 1) AS top FROM scores LIMIT 1
+    rows:
+      - [120]
+  - query: SELECT score FROM (SELECT id, score FROM scores) d ORDER BY 1 DESC LIMIT 1
+    rows:
+      - [120]
+  # Positional identity survives AMBIGUOUS item text: item 1 is aliased to
+  # spell a sibling's rendering (id AS x, SUM(score) AS x) — ORDER BY 2
+  # is SUM(score) by ordinal, so the top group is id 3 (score 120).
+  - query: |-
+      SELECT (SELECT y FROM (SELECT id AS x, SUM(score) AS x, id AS y FROM scores GROUP BY id ORDER BY 2 DESC LIMIT 1) d) AS picked FROM scores LIMIT 1
+    rows:
+      - [3]
+  # Non-aggregate: a computed item ALIASED to spell item 2's underlying
+  # text (score + 0 AS id vs bare id) — ORDER BY 2 orders by item 2 (id).
+  - query: |-
+      SELECT score + 0 AS id, id AS y FROM (SELECT score, id FROM scores) d ORDER BY 2 LIMIT 3
+    rows:
+      - [100, 1]
+      - [80, 2]
+      - [120, 3]
+  # An OUTER select with no ORDER BY must never rewrite a NESTED select's
+  # positional key against its own projection: the inner ORDER BY 1 is the
+  # inner item 1 (id), so the top group is id 8 (total 105) — not the
+  # outer's slot 1 (total, which would pick 120).
+  - query: |-
+      SELECT total FROM (SELECT id AS x, SUM(score) AS total FROM scores GROUP BY id ORDER BY 1 DESC LIMIT 1) d
+    rows:
+      - [105]

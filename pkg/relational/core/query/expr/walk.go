@@ -1166,7 +1166,7 @@ func scalarFunctionResultType(name string) (values.Type, bool) {
 }
 
 // primitiveTypeToValueType maps the PrimitiveType terminal to a
-// values.Type. BYTES / UUID / VECTOR aren't in the seed CAST set —
+// values.Type. BYTES / VECTOR aren't in the CAST set yet —
 // they return (_, false) so the walker declines.
 func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, bool) {
 	ptc, ok := pt.(*antlrgen.PrimitiveTypeContext)
@@ -1188,6 +1188,10 @@ func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, b
 		return values.NullableDate, true
 	case ptc.TIMESTAMP() != nil:
 		return values.NullableTimestamp, true
+	case ptc.UUID() != nil:
+		// Java CastValue.STRING_TO_UUID (CastValue.java:249) — CAST('…' AS
+		// UUID) is a supported comparand form (uuid-non-prepared.yamsql).
+		return values.NullableUuid, true
 	}
 	return values.TypeUnknown, false
 }

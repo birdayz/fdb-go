@@ -23,6 +23,15 @@ func TestMain(m *testing.M) {
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
+		// RFC-180 Y6: in CI a startup failure must be FATAL, never a silent
+		// all-skip — a Docker hiccup would otherwise convert the 319-scenario
+		// corpus into a green run that executed nothing (the dark-safety-net
+		// pattern the corpus un-skip exists to kill). The skip path survives
+		// only for genuinely Docker-less local machines.
+		if os.Getenv("CI") != "" {
+			fmt.Fprintf(os.Stderr, "FATAL: FDB container startup failed in CI — the yamsql corpus would silently skip: %v\n", err)
+			os.Exit(1)
+		}
 		os.Exit(m.Run())
 	}
 	defer container.Terminate(context.Background()) //nolint:errcheck
@@ -58,7 +67,6 @@ func TestMain(m *testing.M) {
 // Java returns" and pinning our behaviour against it.
 func TestYamsqlConformance(t *testing.T) {
 	t.Parallel()
-	t.Skip("conformance: yamsql run on-demand — use FDB sqldriver tests for CI")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}

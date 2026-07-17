@@ -4738,8 +4738,9 @@ func (t *cascadesTranslator) applySortOverRef(s *logical.LogicalSort, ref *expre
 		v := k.Value
 		// A POSITIONAL key (`ORDER BY <n>`) IS an output ordinal by SQL
 		// definition — bake slot n-1 of the folded projection's output
-		// directly (see translateSort's twin).
-		if k.Pos > 0 && k.Pos <= len(fields) {
+		// directly (see translateSort's twin; a resolved typed Value wins
+		// for the same reason as there).
+		if k.Value == nil && k.Pos > 0 && k.Pos <= len(fields) {
 			v = values.NewFieldValueWithResolvedOrdinal(fields[k.Pos-1].Name, k.Pos-1, values.UnknownType)
 		}
 		if v == nil {
@@ -5702,6 +5703,22 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		sortGBNames = expressions.GroupByOutputColumnNames(sortGB.GetGroupingKeys(), sortGB.GetAggregates())
 		sortGBKeyOrds, sortGBAggOrds = groupByOutputOrdinals(sortGB)
 	}
+	// A sort whose input is the GROUPED select's RESHAPING projection (the
+	// post-aggregate projection carrying computed SELECT items) must express
+	// its keys relative to the projection's OUTPUT row — Java's
+	// OrderByExpression.pullUp onto the child's result value
+	// (LogicalOperator.generateSelect). The aggregate reshapes the row, so a
+	// key left with source-scope leaf ordinals reads a FOREIGN slot of the
+	// projected row at runtime: a silent mis-sort when the stale ordinal lands
+	// in range, an ordinal-model malformed-plan error when it doesn't. Keys
+	// that cannot be pulled up decline TYPED here — Java's alternative
+	// (widening the select with the missing expression and re-projecting, the
+	// remainingOrderByExpressions branch) is the booked follow-up; until then
+	// the decline is loud, never wrong rows.
+	var aggProjFields []values.RecordConstructorField
+	if p, isProj := s.Input.(*logical.LogicalProject); isProj && projectionOverAggregate(p) {
+		aggProjFields = postAggregateProjectionFields(p)
+	}
 	sortKeys := make([]expressions.SortKey, len(s.Keys))
 	for i, k := range s.Keys {
 		nf := k.NullsFirst
@@ -5711,10 +5728,30 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		// slot n-1 of its output directly — no text-rendering
 		// round-trip, which diverges for computed items whose canonical source
 		// text differs from the baked output spelling (`col1 + 10` vs
-		// `(COL1#0 + 10)`).
-		if k.Pos > 0 && k.Pos <= len(inputCols) {
-			if _, isProj := innerRef.Get().(*expressions.LogicalProjectionExpression); isProj {
+		// `(COL1#0 + 10)`). A key whose ordinal was already resolved into
+		// the select list's typed item Value (upgradeSortKeyValues) keeps
+		// that Value — the input projection here can be a DERIVED source's
+		// layout, whose slots are not this select's ordinals.
+		if v == nil && k.Pos > 0 && k.Pos <= len(inputCols) {
+			switch innerRef.Get().(type) {
+			case *expressions.LogicalProjectionExpression:
 				v = values.NewFieldValueWithResolvedOrdinal(inputCols[k.Pos-1], k.Pos-1, values.UnknownType)
+			case *expressions.LogicalUnionExpression:
+				// A positional key over a UNION binds to the union OUTPUT
+				// slot (the legs' spellings of that position may differ —
+				// the ordinal is the authority; the name is cosmetic, taken
+				// from the first leg via expressionOutputColumns). RFC-180.
+				v = values.NewFieldValueWithResolvedOrdinal(inputCols[k.Pos-1], k.Pos-1, values.UnknownType)
+			}
+		} else if k.Pos > 0 {
+			// A positional key whose slot the input's output layout cannot
+			// serve (no derivable columns) must not silently fall back to the
+			// TEXT rendering — that text is the RIGHT union leg's spelling
+			// and misresolves. Loud, never a misread. RFC-180.
+			if _, isUnion := innerRef.Get().(*expressions.LogicalUnionExpression); isUnion {
+				t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+					"positional ORDER BY %d is not derivable from the UNION output", k.Pos))
+				return nil
 			}
 		}
 		if v == nil {
@@ -5750,6 +5787,53 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 				}
 			}
 		}
+		if aggProjFields != nil {
+			// Positional keys were already baked to the output slot above;
+			// everything else pulls up onto the projection output here.
+			_, alreadyPositional := v.(*values.FieldValue)
+			alreadyPositional = alreadyPositional && k.Pos > 0 && k.Pos <= len(inputCols)
+			if !alreadyPositional {
+				if pulled, ok := pullUpToOutputField(v, aggProjFields); ok {
+					v = pulled
+				} else if fv, isFV := v.(*values.FieldValue); isFV && fv.Child == nil {
+					// A flat column key naming an output column (alias or
+					// rendered item, incl. `MAX(C)` canonicals) bakes to its
+					// output slot — same rule as pullUpSortKeyValue step (3).
+					matched := false
+					for fi, f := range aggProjFields {
+						if strings.EqualFold(f.Name, fv.Field) {
+							v = values.NewFieldValueWithResolvedOrdinal(f.Name, fi, fv.Typ)
+							matched = true
+							break
+						}
+					}
+					if !matched && fv.Resolved != nil {
+						// A flat key with a SOURCE-scope resolution that is not a
+						// projection output (`ORDER BY g` over `SELECT SUM(v) …
+						// GROUP BY g`): the stale accessor would read a foreign
+						// slot of the projected row. Strip it back to a LAZY name
+						// read — the planner's provided-ordering match still
+						// elides the sort on the canonical group-key spelling,
+						// the flat bake below still resolves TRANSLATED output
+						// names, and a key that survives to runtime unresolved
+						// fails LOUD (ordinal-model flat-reference miss), never
+						// silently mis-sorts.
+						v = &values.FieldValue{Field: fv.Field, Typ: fv.Typ}
+					}
+				} else {
+					// A COMPUTED key that did not pull up cannot be evaluated
+					// against the reshaped row (its leaves carry source-scope
+					// resolutions), and no downstream elision matches it. Java
+					// widens the select with the missing expression instead
+					// (LogicalOperator.generateSelect, remainingOrderByExpressions
+					// branch — the booked follow-up); until then decline TYPED,
+					// never emit the silent mis-sort.
+					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+						"ORDER BY expression is not derivable from the SELECT list of this grouped query"))
+					return nil
+				}
+			}
+		}
 		if bake.seedQOV != nil {
 			v = bakeGatheredGroupValue(v, bake.windows, bake.elementSlots, bake.seedQOV)
 		}
@@ -5764,6 +5848,58 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		}
 	}
 	return expressions.NewLogicalSortExpression(sortKeys, bake.quant)
+}
+
+// projectionOverAggregate reports whether p's row is produced by a GROUP BY
+// aggregate underneath, peeling only row-shape-preserving operators
+// (Filter/Sort like underlyingGroupBy, plus Limit — Limit preserves slots
+// too; underlyingGroupBy just never encounters one below a sort). Above an
+// aggregate, the ONLY addressable columns are the projection's own outputs —
+// no base-table column survives the reshape — which is what licenses
+// translateSort's pull-up-or-decline handling of its sort keys. NOTE the
+// coupling with underlyingGroupBy: that helper deliberately STOPS at a
+// projection, so for any sort input where this returns true, sortGB is nil
+// and the two rebase paths are mutually exclusive by construction.
+func projectionOverAggregate(p *logical.LogicalProject) bool {
+	cur := p.Input
+	for {
+		switch e := cur.(type) {
+		case *logical.LogicalAggregate:
+			return true
+		case *logical.LogicalFilter:
+			cur = e.Input
+		case *logical.LogicalSort:
+			cur = e.Input
+		case *logical.LogicalLimit:
+			cur = e.Input
+		default:
+			return false
+		}
+	}
+}
+
+// postAggregateProjectionFields builds the OUTPUT field list of the grouped
+// select's reshaping projection for sort-key pull-up: name = alias when set,
+// else the rendered item text; value = the resolved projected Value when the
+// walker produced one (computed items), nil otherwise (plain aggregate /
+// group-column references — matchable by NAME only). Mirrors the folded-EXISTS
+// path's field construction (translateProject) minus its `_i` positional
+// naming, which exists for row keying — here the names only serve the
+// name-match and diagnostics; ordinals are authoritative.
+func postAggregateProjectionFields(p *logical.LogicalProject) []values.RecordConstructorField {
+	fields := make([]values.RecordConstructorField, len(p.Projections))
+	for i, col := range p.Projections {
+		var v values.Value
+		if i < len(p.ProjectedValues) {
+			v = p.ProjectedValues[i]
+		}
+		name := strings.ToUpper(col)
+		if i < len(p.Aliases) && p.Aliases[i] != "" {
+			name = strings.ToUpper(p.Aliases[i])
+		}
+		fields[i] = values.RecordConstructorField{Name: name, Value: v}
+	}
+	return fields
 }
 
 func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) expressions.RelationalExpression {
@@ -7429,9 +7565,39 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 	}
 	body := c.Body
 	if len(c.ColumnAliases) > 0 {
-		if origCols := extractOutputColumns(body); len(origCols) == len(c.ColumnAliases) {
-			body = logical.NewProject(body, origCols, c.ColumnAliases)
+		origCols := extractOutputColumns(body)
+		switch {
+		case len(origCols) == len(c.ColumnAliases):
+			// The re-aliasing projection reads POSITIONALLY (baked
+			// ordinals), not by name: CTE column lists are positional,
+			// and duplicate body output labels (`SELECT id AS x, v AS x`)
+			// would make both name-based reads bind the first slot,
+			// silently duplicating its values.
+			proj := logical.NewProject(body, origCols, c.ColumnAliases)
+			proj.ProjectedValues = make([]values.Value, len(origCols))
+			for i, col := range origCols {
+				proj.ProjectedValues[i] = values.NewFieldValueWithResolvedOrdinal(strings.ToUpper(col), i, values.UnknownType)
+			}
+			body = proj
+		case len(origCols) > 0 && cteBodyWidthIsExact(body):
+			// The POINT-OF-TRUTH arity check (Java SemanticAnalyzer.
+			// validateCteColumnAliases): the body is BUILT here, so its
+			// output width is the real one — every shape (nested WITH,
+			// lateral unnest, qualified stars, shadowed sources) validates
+			// uniformly, with no parallel static width predictor to drift.
+			// Silently skipping the aliases instead executed the CTE with
+			// the mismatched list ignored. Rejection fires only for
+			// EXACT-width roots (Project): an Aggregate root's
+			// extractOutputColumns is its deduplicated internal layout,
+			// which legitimately differs from the visible SELECT list
+			// (`SELECT id, id … GROUP BY id` is 2 visible over 1 internal).
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeInvalidColumnReference,
+				"cte query has %d column(s), however %d aliases defined",
+				len(origCols), len(c.ColumnAliases)))
+			return nil
 		}
+		// Unknown or inexact widths stay lenient — never reject a valid
+		// query on an unmodeled shape.
 	}
 	name := strings.ToUpper(c.Name)
 	// Save the OUTER binding this registration shadows (nil = unbound): the
@@ -7499,6 +7665,23 @@ func (t *cascadesTranslator) inCTEDefiningScope(key string, body logical.Logical
 func extractOutputColumns(op logical.LogicalOperator) []string {
 	switch o := op.(type) {
 	case *logical.LogicalProject:
+		// Per-slot alias preference: the OUTPUT name of an aliased
+		// projection slot is the alias (`SELECT id AS x` outputs X, not
+		// ID). Returning the underlying Projections handed translateCTE
+		// stale source names — its re-aliasing projection then read ID
+		// from a row shaped [X,Y] and failed ordinal resolution at
+		// runtime.
+		if len(o.Aliases) == len(o.Projections) {
+			cols := make([]string, len(o.Projections))
+			for i, proj := range o.Projections {
+				if o.Aliases[i] != "" {
+					cols[i] = o.Aliases[i]
+				} else {
+					cols[i] = proj
+				}
+			}
+			return cols
+		}
 		return o.Projections
 	case *logical.LogicalAggregate:
 		var cols []string
@@ -7519,6 +7702,76 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 		return extractOutputColumns(o.Input)
 	case *logical.LogicalFilter:
 		return extractOutputColumns(o.Input)
+	case *logical.LogicalCTE:
+		// A CTE carrier's output is its MAIN query's output — a nested-WITH
+		// body (`c2(a) AS (WITH c3 … SELECT x FROM c3)`) wraps its SELECT in
+		// LogicalCTE(c3, Main=SELECT). Without this arm the c2(a) column-alias
+		// projection in translateCTE never applied (extractOutputColumns
+		// returned nil ≠ len(aliases)) and c2's output kept the body's inner
+		// spelling — a later `SELECT a FROM c2` died at runtime with an
+		// ordinal-resolution error on the aliased name.
+		return extractOutputColumns(o.Main)
+	}
+	return nil
+}
+
+// cteBodyWidthIsExact reports whether extractOutputColumns(op) is the
+// body's VISIBLE output width (a projection root — possibly under
+// row-preserving Sort/Limit/Filter/Distinct — lists the SELECT items
+// one-to-one). Aggregate roots are NOT exact: their column list is the
+// deduplicated internal grouping layout, which a SELECT list may read
+// multiple times.
+func cteBodyWidthIsExact(op logical.LogicalOperator) bool {
+	switch o := op.(type) {
+	case *logical.LogicalProject:
+		return true
+	case *logical.LogicalDistinct:
+		return cteBodyWidthIsExact(o.Input)
+	case *logical.LogicalSort:
+		return cteBodyWidthIsExact(o.Input)
+	case *logical.LogicalLimit:
+		return cteBodyWidthIsExact(o.Input)
+	case *logical.LogicalFilter:
+		return cteBodyWidthIsExact(o.Input)
+	case *logical.LogicalCTE:
+		return cteBodyWidthIsExact(o.Main)
+	}
+	return false
+}
+
+// ValidateCTEAliasArities walks the BUILT logical tree and applies the
+// point-of-truth alias-arity check to EVERY LogicalCTE carrying column
+// aliases — including CTEs that are never referenced (whose bodies
+// translateCTE registers lazily and never descends into) and CTEs nested
+// inside another CTE's body. Same exact-width rule as translateCTE's inline
+// backstop; recursive CTEs are excluded (their seed/recursive arms have
+// their own validation path).
+func ValidateCTEAliasArities(op logical.LogicalOperator) error {
+	if op == nil {
+		return nil
+	}
+	if c, ok := op.(*logical.LogicalCTE); ok {
+		if len(c.ColumnAliases) > 0 && !c.Recursive {
+			if origCols := extractOutputColumns(c.Body); len(origCols) > 0 &&
+				len(origCols) != len(c.ColumnAliases) && cteBodyWidthIsExact(c.Body) {
+				return api.NewErrorf(api.ErrCodeInvalidColumnReference,
+					"cte query has %d column(s), however %d aliases defined",
+					len(origCols), len(c.ColumnAliases))
+			}
+		}
+	}
+	for _, child := range op.Children() {
+		if err := ValidateCTEAliasArities(child); err != nil {
+			return err
+		}
+	}
+	// Attached subquery plans (EXISTS/scalar on filters, projections,
+	// HAVING, ON) are not Children() — a CTE declared inside one escaped
+	// the walk.
+	for _, sub := range logical.AttachedPlans(op) {
+		if err := ValidateCTEAliasArities(sub); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -81,10 +81,11 @@ func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	if idxW, ok := fetchInnerExpr.(*physicalIndexScanWrapper); ok && !idxW.covering {
 		coveredPlan := idxW.plan.WithCovering(idxW.columnNames)
 		fetchInnerExpr = &physicalIndexScanWrapper{
-			plan:        coveredPlan,
-			columnNames: idxW.columnNames,
-			unique:      idxW.unique,
-			covering:    true,
+			plan:          coveredPlan,
+			columnNames:   idxW.columnNames,
+			pkColumnNames: idxW.pkColumnNames,
+			unique:        idxW.unique,
+			covering:      true,
 		}
 	}
 

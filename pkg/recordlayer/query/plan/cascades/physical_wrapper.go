@@ -519,20 +519,70 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost, stats properties.Sta
 // HintOrdering: a scan produces rows in PK order when the scan
 // carries PK values (from WithPrimaryKey). Otherwise unknown.
 func (w *physicalScanWrapper) HintOrdering() properties.Ordering {
-	if w.plan == nil {
+	return pkScanOrdering(w.plan)
+}
+
+// HintRichOrdering — see pkScanRichOrdering.
+func (w *physicalScanWrapper) HintRichOrdering() *RichOrdering {
+	return pkScanRichOrdering(w.plan)
+}
+
+// pkScanOrdering derives the directional PK ordering of a primary scan:
+// PK columns in order, all ascending (descending under reverse).
+func pkScanOrdering(plan *plans.RecordQueryScanPlan) properties.Ordering {
+	if plan == nil {
 		return properties.Ordering{}
 	}
-	pk := w.plan.GetPrimaryKeyValues()
+	pk := plan.GetPrimaryKeyValues()
 	if len(pk) == 0 {
 		return properties.Ordering{}
 	}
 	desc := make([]bool, len(pk))
-	if w.plan.IsReverse() {
+	if plan.IsReverse() {
 		for i := range desc {
 			desc[i] = true
 		}
 	}
 	return properties.Ordering{IsKnown: true, Keys: pk, Descending: desc}
+}
+
+// pkScanRichOrdering returns a primary scan's PK ordering with bindings:
+// PK positions bound by an equality comparison become FixedBinding
+// entries, the rest SortedBinding. A primary scan is a value-index-like
+// candidate in Java (PrimaryScanMatchCandidate implements
+// ValueIndexLikeMatchCandidate), so its ordering comes from the same
+// computeOrderingFromScanComparisons: the equality prefix is
+// Binding.fixed, which is compatible with ANY requested direction. That
+// is what lets `WHERE a = 1 ORDER BY a DESC` elide the sort over a
+// FORWARD eq-bound scan (every row has the same a, so direction on a is
+// a no-op) — without the FIXED modeling the prefix reads as directional
+// ASC and a DESC request wrongly keeps the sort. Shared by
+// physicalScanWrapper and the plan-backed leaf scanPlanExpression (the
+// data-access path memoizes a SARGed PK scan as the latter).
+func pkScanRichOrdering(plan *plans.RecordQueryScanPlan) *RichOrdering {
+	if plan == nil {
+		return EmptyOrdering()
+	}
+	pk := plan.GetPrimaryKeyValues()
+	if len(pk) == 0 {
+		return EmptyOrdering()
+	}
+	comps := plan.GetScanComparisons()
+	bm := make(map[values.Value][]OrderingBinding, len(pk))
+	keys := make([]values.Value, 0, len(pk))
+	dir := ProvidedSortOrderAscending
+	if plan.IsReverse() {
+		dir = ProvidedSortOrderDescending
+	}
+	for i, key := range pk {
+		keys = append(keys, key)
+		if i < len(comps) && comps[i].IsEquality() {
+			bm[key] = []OrderingBinding{FixedBinding(comps[i])}
+		} else {
+			bm[key] = []OrderingBinding{SortedBinding(dir)}
+		}
+	}
+	return NewRichOrdering(bm, keys, false)
 }
 
 func (w *physicalScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -547,8 +597,20 @@ var _ expressions.RelationalExpression = (*physicalScanWrapper)(nil)
 type physicalIndexScanWrapper struct {
 	plan        *plans.RecordQueryIndexPlan
 	columnNames []string // index column names for ordering property
-	unique      bool
-	covering    bool // true when the index provides all needed columns (MergeFetch can eliminate the fetch)
+	// pkColumnNames is the record type's primary-key column list, used to
+	// extend the ordering property past the index key: a value index's
+	// entries are (index key, primary key), so the scan's output order
+	// covers the trimmed PK suffix too. Mirrors Java's
+	// ValueIndexExpansionVisitor.fullKey(index, primaryKey) — the ordering
+	// in ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons is
+	// derived over the FULL key (index root + trimPrimaryKey'd PK), which is
+	// what lets an equality-prefixed scan (status = ?) satisfy ORDER BY pk.
+	// Empty for fan-out (createsDuplicates) indexes, where positions past
+	// the fan-out are not sort-ordered (Java breaks the sorted-suffix loop
+	// at a duplicating key part).
+	pkColumnNames []string
+	unique        bool
+	covering      bool // true when the index provides all needed columns (MergeFetch can eliminate the fetch)
 }
 
 func (w *physicalIndexScanWrapper) GetPlan() *plans.RecordQueryIndexPlan      { return w.plan }
@@ -597,8 +659,12 @@ func (w *physicalIndexScanWrapper) WithChildren(qs []expressions.Quantifier) (ex
 }
 
 // HintOrdering: an index scan produces rows in index-key order for
-// the non-equality-bound suffix columns. E.g. index(a, b, c) with
-// a = 1 produces output sorted by (b, c).
+// the non-equality-bound suffix columns, extended by the trimmed
+// primary-key suffix (index entries are (index key, primary key), so
+// the PK columns continue the sort order). E.g. index(a, b, c) with
+// a = 1 over PK (id) produces output sorted by (b, c, id). Mirrors the
+// full-key ordering of Java's
+// ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons.
 func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
 	if w.plan == nil || len(w.columnNames) == 0 {
 		return properties.Ordering{}
@@ -612,14 +678,15 @@ func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
 			break
 		}
 	}
-	if firstNonEq >= len(w.columnNames) {
-		return properties.Ordering{IsKnown: true}
-	}
 	rev := w.plan.IsReverse()
-	keys := make([]values.Value, 0, len(w.columnNames)-firstNonEq)
-	desc := make([]bool, 0, len(w.columnNames)-firstNonEq)
+	keys := make([]values.Value, 0, len(w.columnNames)-firstNonEq+len(w.pkColumnNames))
+	desc := make([]bool, 0, cap(keys))
 	for i := firstNonEq; i < len(w.columnNames); i++ {
 		keys = append(keys, &values.FieldValue{Field: w.columnNames[i], Typ: values.UnknownType})
+		desc = append(desc, rev)
+	}
+	for _, col := range trimmedPKSuffix(w.columnNames, w.pkColumnNames) {
+		keys = append(keys, &values.FieldValue{Field: col, Typ: values.UnknownType})
 		desc = append(desc, rev)
 	}
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
@@ -627,31 +694,66 @@ func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
 
 // HintRichOrdering returns the full ordering with bindings: equality-bound
 // prefix columns become FixedBinding entries (with comparison reference),
-// non-equality suffix columns become SortedBinding entries. This enables
-// ordering-aware InJoin source matching.
+// non-equality suffix columns become SortedBinding entries. The trimmed
+// primary-key suffix continues the sorted keys — this is what lets an
+// equality-prefixed scan (status = ?) satisfy ORDER BY pk, exactly as
+// Java's ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons
+// derives the ordering over getFullKeyExpression() (index key + trimmed
+// PK) with Binding.fixed for the equality prefix and Binding.sorted for
+// the rest. This enables ordering-aware InJoin source matching and
+// RemoveSort-style elision in ImplementSortRule.
 func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
 	if w.plan == nil || len(w.columnNames) == 0 {
 		return EmptyOrdering()
 	}
 	comps := w.plan.GetScanComparisons()
 	bm := make(map[values.Value][]OrderingBinding)
-	keys := make([]values.Value, 0, len(w.columnNames))
+	keys := make([]values.Value, 0, len(w.columnNames)+len(w.pkColumnNames))
 
 	rev := w.plan.IsReverse()
+	dir := ProvidedSortOrderAscending
+	if rev {
+		dir = ProvidedSortOrderDescending
+	}
 	for i, col := range w.columnNames {
 		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
 		keys = append(keys, key)
 		if i < len(comps) && comps[i].IsEquality() {
 			bm[key] = []OrderingBinding{FixedBinding(comps[i])}
 		} else {
-			dir := ProvidedSortOrderAscending
-			if rev {
-				dir = ProvidedSortOrderDescending
-			}
 			bm[key] = []OrderingBinding{SortedBinding(dir)}
 		}
 	}
+	for _, col := range trimmedPKSuffix(w.columnNames, w.pkColumnNames) {
+		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
+		keys = append(keys, key)
+		bm[key] = []OrderingBinding{SortedBinding(dir)}
+	}
 	return NewRichOrdering(bm, keys, w.unique)
+}
+
+// trimmedPKSuffix returns the primary-key columns not already present in
+// the index key columns, in PK order. Ports Java's Index.trimPrimaryKey
+// semantics as used by ValueIndexExpansionVisitor.fullKey: PK components
+// that appear in the index key are trimmed, the remainder is appended
+// after the index key.
+func trimmedPKSuffix(columnNames, pkColumnNames []string) []string {
+	if len(pkColumnNames) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(columnNames))
+	for _, c := range columnNames {
+		seen[c] = struct{}{}
+	}
+	suffix := make([]string, 0, len(pkColumnNames))
+	for _, col := range pkColumnNames {
+		if _, dup := seen[col]; dup {
+			continue
+		}
+		seen[col] = struct{}{}
+		suffix = append(suffix, col)
+	}
+	return suffix
 }
 
 // HintCost: index scans are cheaper than full table scans because

@@ -65,10 +65,11 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		if idxW := findIndexScanWrapper(fetchInnerRef); idxW != nil {
 			coveredPlan := idxW.plan.WithCovering(idxW.columnNames)
 			coveringIdxW := &physicalIndexScanWrapper{
-				plan:        coveredPlan,
-				columnNames: idxW.columnNames,
-				unique:      idxW.unique,
-				covering:    true,
+				plan:          coveredPlan,
+				columnNames:   idxW.columnNames,
+				pkColumnNames: idxW.pkColumnNames,
+				unique:        idxW.unique,
+				covering:      true,
 			}
 			coveringRef := call.MemoizeExpression(coveringIdxW)
 			cq := expressions.ForEachQuantifier(coveringRef)

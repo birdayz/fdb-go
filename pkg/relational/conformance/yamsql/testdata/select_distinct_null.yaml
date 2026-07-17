@@ -8,9 +8,10 @@ schema_template: |
 setup:
   - INSERT INTO t VALUES (1, 10), (2, 20), (3, 10), (4, null), (5, null), (6, 20)
 tests:
-  # DISTINCT collapses duplicates and treats NULLs as one value
+  # DISTINCT collapses duplicates and treats NULLs as one value.
+  # ASC default is NULLS FIRST (Java ParseHelpers.java:167-172).
   - query: SELECT DISTINCT val FROM t ORDER BY val
     rows:
+      - [null]
       - [10]
       - [20]
-      - [null]

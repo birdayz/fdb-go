@@ -54,6 +54,8 @@ tests:
   - query: WITH x(a, b, c) AS (SELECT id FROM t) SELECT * FROM x
     error: "42F10"
 
-  # 42601: syntax error — nested aggregate
+  # 0A000: nested aggregate — Java SemanticAnalyzer.validateGroupByAggregates
+  # → UNSUPPORTED_OPERATION 0A000 "unsupported nested aggregate(s)";
+  # no 42601 site exists for this.
   - query: SELECT SUM(MAX(val)) FROM t
-    error: "42601"
+    error: "0A000"

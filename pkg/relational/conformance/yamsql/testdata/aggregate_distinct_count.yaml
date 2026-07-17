@@ -1,7 +1,11 @@
 # aggregate_distinct_count.yaml — COUNT with DISTINCT values
 #
-# Go extension: COUNT(DISTINCT col) uses hash-based deduplication.
-# Java rejects this. Pin Go's correct behavior.
+# The rows previously pinned here came from the removed legacy
+# hash-dedup extension (the legacy interpreter pipeline, removed with
+# RFC-145). Both engines now reject DISTINCT aggregates — Java's
+# intended code for non-ALL aggregators is UNSUPPORTED_QUERY 0AF00
+# (ExpressionVisitor.java:353). DISTINCT aggregates via Cascades is
+# tracked feature work.
 name: aggregate_distinct_count
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, category STRING, val BIGINT, PRIMARY KEY (id))
@@ -10,11 +14,8 @@ setup:
 tests:
   # Total distinct categories
   - query: SELECT COUNT(DISTINCT category) FROM t
-    rows:
-      - [2]
+    error_code: "0AF00"
 
   # Distinct values per category
   - query: SELECT category, COUNT(DISTINCT val) FROM t GROUP BY category ORDER BY category
-    rows:
-      - ["A", 2]
-      - ["B", 2]
+    error_code: "0AF00"

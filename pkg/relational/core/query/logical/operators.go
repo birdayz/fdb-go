@@ -269,6 +269,14 @@ type SortKey struct {
 	// diverges for computed items whose canonical source text differs from the
 	// baked output spelling.
 	Pos int
+	// BareRef marks a key whose source text is a plain ONE-segment column
+	// reference — the only shape SQL binds to an output alias. False for
+	// qualified references (`ORDER BY d.x`), aggregates and computed
+	// expressions: their canonical renderings ("X" after qualifier
+	// stripping, "SUM(S.SCORE)") are indistinguishable from a delimited
+	// alias's spelling, so alias-binding passes REQUIRE BareRef instead of
+	// inspecting Expr text.
+	BareRef bool
 }
 
 // LogicalSort sorts its child rows by the given keys.
@@ -876,4 +884,48 @@ func OuterSourceIsDerivedTable(op LogicalOperator, alias string) bool {
 		}
 	}
 	return walk(op)
+}
+
+// AttachedPlans returns the SUBQUERY plans attached to op beyond Children():
+// EXISTS/scalar plans on filters, projections, aggregates (HAVING) and joins
+// (ON). Tree walkers that must see EVERY built operator (e.g. the CTE
+// alias-arity validator) traverse Children() + AttachedPlans(). Keep this
+// switch in lockstep with the attachment fields on the structs above — a new
+// attachment field added without an arm here silently escapes whole-tree
+// validation.
+func AttachedPlans(op LogicalOperator) []LogicalOperator {
+	var out []LogicalOperator
+	add := func(p LogicalOperator) {
+		if p != nil {
+			out = append(out, p)
+		}
+	}
+	switch o := op.(type) {
+	case *LogicalFilter:
+		for _, sq := range o.ExistsSubqueries {
+			add(sq.Plan)
+		}
+		for _, sq := range o.ScalarSubqueries {
+			add(sq.Plan)
+		}
+	case *LogicalProject:
+		for _, sq := range o.ScalarSubqueries {
+			add(sq.Plan)
+		}
+		for _, sq := range o.CorrelatedScalarSubqueries {
+			add(sq.InnerPlan)
+		}
+	case *LogicalAggregate:
+		for _, sq := range o.HavingExistsSubqueries {
+			add(sq.Plan)
+		}
+		for _, sq := range o.HavingScalarSubqueries {
+			add(sq.Plan)
+		}
+	case *LogicalJoin:
+		for _, sq := range o.OnExistsSubqueries {
+			add(sq.Plan)
+		}
+	}
+	return out
 }

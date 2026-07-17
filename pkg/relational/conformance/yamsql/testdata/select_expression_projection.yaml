@@ -8,12 +8,19 @@ schema_template: |
 setup:
   - INSERT INTO products VALUES (1, 'Widget', 100, 10), (2, 'Gadget', 200, 20), (3, 'Doohickey', 50, 5)
 tests:
-  # Arithmetic expression
+  # Arithmetic expression — flat left-associative evaluation, NOT
+  # SQL-standard precedence. BOTH grammars fold * / + - into one flat
+  # left-associative alternative and neither visitor fixes precedence
+  # (Java's ExpressionVisitor.visitMathExpressionAtom does no fixup),
+  # so this evaluates as ((price + price) * tax_rate) / 100:
+  # (100+100)*10/100=20, (200+200)*20/100=80, (50+50)*5/100=5.
+  # Java-faithful; flagged as a Java upstream bug (violates
+  # SQL-standard operator precedence).
   - query: SELECT id, price + price * tax_rate / 100 FROM products ORDER BY id
     rows:
-      - [1, 110]
-      - [2, 240]
-      - [3, 52]
+      - [1, 20]
+      - [2, 80]
+      - [3, 5]
 
   # CASE in projection
   - query: >

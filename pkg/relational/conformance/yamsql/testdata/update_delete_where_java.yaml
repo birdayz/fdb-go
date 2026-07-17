@@ -19,13 +19,18 @@ setup:
       (4, 'Thingamajig', 0, 100, true),
       (5, 'Whatsit', 75, 15, false)
 tests:
-  # UPDATE with arithmetic expression
+  # UPDATE with arithmetic expression. THREE rows match qty > 50:
+  # id 1 (qty 100), id 3 (qty 200), and id 5 (qty 75) — id 2 has
+  # qty = 50, which is not > 50. The original pin missed id 5 (rows
+  # lacked [5, 30] and rowcount said 2); it shipped green because
+  # rowcount was silently unchecked before the strict loader.
   - query: UPDATE inventory SET price = price * 2 WHERE qty > 50
-    rowcount: 2
+    rowcount: 3
   - query: SELECT id, price FROM inventory WHERE qty > 50 ORDER BY id
     rows:
       - [1, 20]
       - [3, 10]
+      - [5, 30]
 
   # UPDATE with CASE expression
   - query: UPDATE inventory SET active = CASE WHEN qty > 0 THEN true ELSE false END

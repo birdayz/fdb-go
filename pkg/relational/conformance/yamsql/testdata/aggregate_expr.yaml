@@ -60,11 +60,11 @@ tests:
     rows:
       - [3]
 
-  # SUM(DISTINCT) is rejected by both engines (Java NPE on
-  # AggregateWindowedFunctionContext.ALL().getText() with DISTINCT;
-  # Go ErrCodeUnsupportedOperation). See distinct_aggregates.yaml.
+  # SUM(DISTINCT) is rejected by both engines — UNSUPPORTED_QUERY
+  # 0AF00 for non-ALL aggregators (ExpressionVisitor.java:353). See
+  # distinct_aggregates.yaml.
   - query: SELECT SUM(DISTINCT qty * price) FROM t
-    error_code: "0A000"
+    error_code: "0AF00"
 
   # Empty-group / all-NULL argument: SUM returns NULL (not 0), COUNT returns 0.
   # Filter rejects all rows, so the aggregate runs over an empty input.

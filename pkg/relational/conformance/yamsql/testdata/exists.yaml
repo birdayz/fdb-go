@@ -44,13 +44,19 @@ tests:
     rows: []
 
   # HAVING + EXISTS: aggregate, then filter the group by EXISTS.
-  # The inner subquery returns rows iff flags is non-empty (we
-  # just inserted one). HAVING keeps the group.
+  # BOTH ENGINES REJECT (live-verified against Java 4.12.11.0, RFC-180):
+  # Java throws 42803 GROUPING_ERROR "Invalid reference to non-grouping
+  # expression … exists(q…)" at semantic analysis (LogicalOperator.
+  # generateGroupBy → SemanticAnalyzer.isComposableFrom — an exists() value
+  # is composable from neither grouping keys nor aggregates). The old [3]
+  # pin was authored against the retired pre-Cascades map-backed engine,
+  # never Java. Go declines via the HavingExistsSubqueries gate (0AF00);
+  # the remaining parity item is error-surface alignment (42803 at
+  # semantic analysis instead of a planner decline).
   - query: |
       SELECT COUNT(*) FROM orders
       HAVING EXISTS (SELECT k FROM flags)
-    rows:
-      - [3]
+    error_code: "0AF00"
 
   # JOIN path (map-backed evaluator) + EXISTS. Exercises the
   # evalPredicateOnMapExpr → ExistsExpressionAtomContext branch.

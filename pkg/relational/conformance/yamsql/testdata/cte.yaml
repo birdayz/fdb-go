@@ -175,12 +175,13 @@ tests:
       - [1, 10]
       - [2, 20]
   # Nested WITH (Java cte.yamsql line 89): outer c1 renames (w, z);
-  # inner c3 selects id from c1. Java 4.10.1.0+ errors 42703 (c1 is
-  # visible but id is not in its renamed cols). Go errors 42F01
-  # because the inner SELECT can't resolve `c1` as a table — the CTE
-  # scope inheritance across nested WITH isn't propagating to the
-  # inner query's execSelectQuery. Divergence pinned; fix would
-  # require CTE scoping work beyond swingshift-41.
+  # inner c3 selects id from c1. Java errors 42703 (c1 is visible via
+  # lexical CTE scoping but id is not among its renamed columns).
+  # DIVERGENCE CLOSED (RFC-180): the nested WITH used to be silently
+  # DROPPED by the CTE body build (VisitQueryBody skipped the body's
+  # ctes), so `c3` was an unknown table (42F01). buildCTEBodyQuery now
+  # builds the body as a full query — nested CTEs register with lexical
+  # shadowing, enclosing CTEs stay visible — and Go matches Java's 42703.
   - query: |-
       WITH c1(w, z) AS (SELECT id, v FROM t),
            c2(a, b) AS (
@@ -188,7 +189,7 @@ tests:
              SELECT * FROM c3
            )
       SELECT * FROM c1, c2
-    error_code: "42F01"
+    error_code: "42703"
   # CTE with aggregate (GROUP BY + SUM) joined to base table.
   - query: |-
       WITH sums AS (SELECT id, SUM(v) AS total FROM t GROUP BY id)
@@ -197,5 +198,186 @@ tests:
       WHERE t.id = s.id AND s.total >= 30
       ORDER BY t.id
     rows:
+      - [3, 30]
+      - [4, 40]
+  # RFC-180 regression pin (reviewer-caught restore-composition bug): a VALID
+  # nested-WITH CTE body must not evict the ENCLOSING CTE from scope. The
+  # nested build snapshots/restores the CTE maps; buildCTEBodySelfHidden
+  # restores the enclosing name by mutating the map OBJECT it captured — a
+  # clone-and-reassign restore stranded that write in an orphaned map, so c2
+  # vanished after its own body build and the main query's NAMED column reads
+  # over c2 failed (SELECT * near-missed it: no column resolution). Both the
+  # main query and a later sibling reference c2 by column here.
+  - query: |-
+      WITH c1(w) AS (SELECT id FROM t),
+           c2(a) AS (WITH c3(x) AS (SELECT id FROM t WHERE id <= 2) SELECT x FROM c3)
+      SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
+    rows:
+      - [1, 1]
+      - [2, 2]
+  - query: |-
+      WITH c1(w) AS (SELECT id FROM t WHERE id >= 3),
+           c2(a) AS (WITH c3(x) AS (SELECT id FROM t WHERE id <= 2) SELECT x FROM c3),
+           c4(b) AS (SELECT a FROM c2)
+      SELECT b FROM c4 ORDER BY b
+    rows:
+      - [1]
+      - [2]
+  # Codex-caught: an UNDERIVABLE nested CTE (join-shaped body) shadowing an
+  # outer same-name CTE must not leave the OUTER schema visible to the
+  # enclosing body — before the fix the enclosing body's reads validated
+  # against outer c1(w)'s schema and baked foreign ordinals over the inner's
+  # row (silent wrong slot). With the shadow eviction the shape declines
+  # LOUD: join-bodied CTE schema derivation is the documented ON-only reach
+  # gap, so c2's registration declines and the named read cannot plan.
+  # Correct-or-loud; rows ([1,1],[2,2]) when join-bodied derivation lands.
+  - query: |-
+      WITH c1(w) AS (SELECT id FROM t),
+           c2(a) AS (WITH c1 AS (SELECT x.id AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM c1 WHERE id <= 2)
+      SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
+    error_code: "0AF00"
+  # Deletion-as-eviction left ABSENCE, and absence falls back to the CATALOG:
+  # here the underivable nested CTE shadows the BASE TABLE t itself, and its
+  # output column `id` deliberately carries V values (reversed mapping). The
+  # pre-tombstone silent path derived the enclosing schema from the BASE
+  # table, so `WHERE id <= 2` filtered real ids (rows 1,2) instead of the
+  # nested CTE's v-values (all >= 10 — EMPTY is the correct answer). The
+  # tombstone (declared-but-underivable marker) suppresses catalog fallback
+  # on every schema-resolution path, and the plan side (which always built
+  # the nested body correctly) now runs to the right result end-to-end.
+  - query: |-
+      WITH c2(a) AS (WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM t WHERE id <= 2)
+      SELECT a FROM c2 ORDER BY a
+    rows: []
+  # A COMPUTED enclosing projection routes through the projection resolver
+  # (buildProjectionResolverWithCTEScopes), which AddSource'd the tombstone
+  # unchecked — Scope.ResolveColumn nil-dereferenced (recovered → XX000 on a
+  # valid-shaped query). AddSource now rejects nil-Table sources at the
+  # chokepoint, so EVERY resolver path declines clean.
+  - query: |-
+      WITH c1(w) AS (SELECT id FROM t),
+           c2(a) AS (WITH c1 AS (SELECT x.id AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id + 1 FROM c1)
+      SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
+    error_code: "0AF00"
+  # Alias-arity validation must not be bypassed by a tombstoned (underivable)
+  # body: the derivable branch's 42F10 check never ran for this class, so a
+  # two-alias list over a statically one-column body executed instead of
+  # erroring like its derivable twin.
+  - query: |-
+      WITH c2(a, b) AS (WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM t)
+      SELECT a FROM c2
+    error_code: "42F10"
+  # A MIXED qualified-star projection (x.* alongside named columns) occupies
+  # one projCols sentinel but expands to every source column — the static
+  # arity check must treat it as UNKNOWN width, not reject a valid four-alias
+  # CTE against the three-slot sentinel count (t has 2 cols: x.* -> id,v).
+  - query: |-
+      WITH c(a, b, cc, d) AS (SELECT x.*, y.id, y.v FROM t AS x, t AS y WHERE x.id = y.id)
+      SELECT COUNT(*) FROM c
+    rows:
+      - [4]
+  # ...and the star EXPANDS for validation: two aliases over the same
+  # four-column mixed-star body must still error 42F10 (skipping validation
+  # for star-bearing bodies entirely would let this execute with the
+  # mismatched alias list silently ignored).
+  - query: |-
+      WITH c(a, b) AS (SELECT x.*, y.id, y.v FROM t AS x, t AS y WHERE x.id = y.id)
+      SELECT COUNT(*) FROM c
+    error_code: "42F10"
+  # ...and star width resolves CTE-FIRST: with a preceding CTE shadowing the
+  # base table (t(z) = 1 column vs base t = 2), p.* expands to the CTE's
+  # width — md-first counted 3 and rejected this valid two-alias list.
+  - query: |-
+      WITH t(z) AS (SELECT id FROM t),
+           c(a, b) AS (SELECT p.*, q.z FROM t AS p, t AS q WHERE p.z = q.z)
+      SELECT COUNT(*) FROM c
+    rows:
+      - [4]
+  # A DERIVED source's range alias colliding with a CTE name must NOT expand
+  # its star through the CTE (the CTE-first lookup would project the
+  # UNRELATED one-column CTE's schema over the two-column derived row —
+  # silent wrong columns). Derived sources register no star source; this
+  # reach class was a plan-time 0AF00 before the shadowing work and stays
+  # one (probed at the pre-change SHA) — loud, never wrong columns.
+  - query: |-
+      WITH x AS (SELECT id FROM t)
+      SELECT x.*, x.id FROM (SELECT id, v FROM t WHERE id <= 2) AS x ORDER BY x.id
+    error_code: "0AF00"
+  # Nested-WITH arity at the point of truth (the deleted static predictor
+  # counted the OUTER x's one-column width): nested x (2 cols) shadows outer
+  # x (1 col) inside c's body; the BUILT body's output width (2) is the
+  # alias-validation authority — (a,b) answers, (a) errors 42F10.
+  - query: |-
+      WITH x(one) AS (SELECT id FROM t),
+           c(a, b) AS (WITH x(m, n) AS (SELECT id, v FROM t WHERE id <= 2) SELECT m, n FROM x)
+      SELECT a, b FROM c ORDER BY a
+    rows:
+      - [1, 10]
+      - [2, 20]
+  - query: |-
+      WITH x(one) AS (SELECT id FROM t),
+           c(a) AS (WITH x(m, n) AS (SELECT id, v FROM t WHERE id <= 2) SELECT m, n FROM x)
+      SELECT a FROM c
+    error_code: "42F10"
+  # Round-8 pins: (a) an alias-arity mismatch inside an UNUSED outer CTE
+  # still validates — the tree walker covers bodies the lazy translator
+  # never descends into; (b) a duplicate group-key read stays VALID (the
+  # aggregate's internal layout dedups to one slot, but the visible SELECT
+  # is two — inexact roots never reject); (c) the no-filter derived-alias
+  # star collision rejects PLAN-TIME 0AF00 (was: raw runtime
+  # ordinal-resolution error).
+  - query: |-
+      WITH o AS (WITH i(a, b) AS (SELECT id FROM t WHERE id <= 2) SELECT id FROM t)
+      SELECT id FROM t WHERE id = 1
+    error_code: "42F10"
+  - query: |-
+      WITH c(a, b) AS (SELECT id, id FROM t GROUP BY id)
+      SELECT COUNT(*) FROM c
+    rows:
+      - [4]
+  - query: |-
+      WITH x AS (SELECT id FROM t)
+      SELECT x.*, x.id FROM (SELECT id, v FROM t) AS x ORDER BY x.id
+    error_code: "0AF00"
+  # Round-9 pins: (a) the dup-read aggregate CTE now materializes its
+  # VISIBLE two-slot layout (the builder mints the reshaping projection when
+  # visible != internal width), so reading BOTH aliased columns works —
+  # before, the plan advertised A,B over a one-slot row and died resolving
+  # B at runtime; (b) an arity mismatch inside a scalar-subquery-attached
+  # WITH still validates (attached plans are walked).
+  - query: |-
+      WITH c(a, b) AS (SELECT id, id FROM t GROUP BY id)
+      SELECT a, b FROM c ORDER BY a
+    rows:
+      - [1, 1]
+      - [2, 2]
+      - [3, 3]
+      - [4, 4]
+  - query: |-
+      SELECT id FROM t WHERE id = (WITH i(a, b) AS (SELECT id FROM t WHERE id <= 2) SELECT MAX(a) FROM i)
+    error_code: "42F10"
+  # Round-10 pins: (a) a group key read only by ORDER BY (v) survives until
+  # the sort consumes it — the reshaping projection defers past the sort
+  # instead of stripping the key first; (b) CTE re-aliasing composes with
+  # SELECT aliases — the re-aliasing projection reads the project's OUTPUT
+  # names (X,Y), not the stale underlying source names (ID,ID).
+  - query: |-
+      WITH c(a, b, d) AS (SELECT id, id, id FROM t GROUP BY id, v ORDER BY v)
+      SELECT COUNT(*) FROM c
+    rows:
+      - [4]
+  - query: |-
+      SELECT id FROM t WHERE id = (WITH c(a, b) AS (SELECT id AS x, id AS y FROM t GROUP BY id) SELECT COUNT(*) FROM c)
+    rows:
+      - [4]
+  # Round-11 pin: duplicate body output LABELS re-alias positionally — the
+  # re-aliasing projection reads baked ordinals, so b gets slot 1 (v), not
+  # a second copy of slot 0.
+  - query: |-
+      WITH c(a, b) AS (SELECT id AS x, v AS x FROM t)
+      SELECT a, b FROM c ORDER BY a
+    rows:
+      - [1, 10]
+      - [2, 20]
       - [3, 30]
       - [4, 40]

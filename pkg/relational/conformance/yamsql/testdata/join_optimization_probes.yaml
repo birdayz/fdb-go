@@ -20,7 +20,9 @@ tests:
       - ['Alice']
       - ['Bob']
 
-  # Cross-side predicate stays above join
+  # Cross-side predicate stays above join. Eve does NOT qualify:
+  # salary 95 > did 3 * 50 = 150 is false — the original pin
+  # included her by mistake.
   - query: |-
       SELECT e.ename FROM emp AS e
       INNER JOIN dept AS d ON e.did = d.did
@@ -30,7 +32,6 @@ tests:
       - ['Alice']
       - ['Bob']
       - ['Diana']
-      - ['Eve']
 
   # Both sides filtered
   - query: |-

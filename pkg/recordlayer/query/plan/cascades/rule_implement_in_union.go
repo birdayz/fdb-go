@@ -58,15 +58,24 @@ func bakeMergeComparisonKeys(keys []values.Value, requested *RequestedOrdering, 
 		}
 	}
 	rt, isRT := rowType.(*values.RecordType)
-	out := make([]values.Value, len(keys))
+	// Positions >= reqCount are the enumeration's FREE suffix: the
+	// permutation's prefix is pinned to the requested keys
+	// (SatisfyingPermutations), so everything after position
+	// len(requested parts) is ordering the request never asked for — the
+	// trimmed-PK-suffix keys the scan's full-key ordering contributes.
+	reqCount := -1
+	if requested != nil && !requested.IsPreserve() {
+		reqCount = len(requested.GetParts())
+	}
+	out := make([]values.Value, 0, len(keys))
 	for i, k := range keys {
 		fv, isFV := k.(*values.FieldValue)
 		if !isFV || fv.Child != nil || fv.Resolved != nil {
-			out[i] = k
+			out = append(out, k)
 			continue
 		}
 		if rv, hit := reqByCol[values.ColumnNameValue(fv)]; hit && rv != nil {
-			out[i] = rv
+			out = append(out, rv)
 			continue
 		}
 		if isRT && rt != nil {
@@ -77,11 +86,27 @@ func bakeMergeComparisonKeys(keys []values.Value, requested *RequestedOrdering, 
 			// Single-table branches carry no dups, so this never fires today; it
 			// fences the join-flows-here future.
 			if idx, unique := uniqueUpperFieldIndex(rt, fv.Field); unique {
-				out[i] = values.NewFieldValueWithResolvedOrdinal(fv.Field, idx, fv.Typ)
+				out = append(out, values.NewFieldValueWithResolvedOrdinal(fv.Field, idx, fv.Typ))
 				continue
 			}
 		}
-		out[i] = k
+		// Still lazy through both authorities. In the FREE suffix (positions
+		// past the requested prefix — the trimmed-PK tiebreak the scan's
+		// full-key ordering contributed) an unresolvable key means this
+		// comparison-key candidate cannot be planned soundly: the merge
+		// cursor DEDUPS on the packed comparison-key tuple, so truncating
+		// the tiebreak would collapse distinct rows that tie on the prefix
+		// (silent row drops), and passing the lazy key
+		// keeps only the record-backed path working. DECLINE the candidate
+		// (nil → caller skips this yield; other satisfying permutations and
+		// the in-memory-sort alternative still plan). Inside the requested
+		// prefix the key passes through lazy — pre-existing behavior: a
+		// record-backed merge row resolves it at the record boundary, a
+		// positional row fails loud.
+		if reqCount >= 0 && i >= reqCount {
+			return nil
+		}
+		out = append(out, k)
 	}
 	return out
 }
@@ -247,6 +272,12 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 					comparisonKeys[i] = p.Value
 				}
 				comparisonKeys = bakeMergeComparisonKeys(comparisonKeys, requestedOrdering, innerPlans[0].GetResultType())
+				if comparisonKeys == nil {
+					// Unresolvable free-suffix tiebreak — candidate declined
+					// (see bakeMergeComparisonKeys); the sort-based
+					// alternative still plans.
+					continue
+				}
 
 				maxSize := 0
 				if call.Context != nil {

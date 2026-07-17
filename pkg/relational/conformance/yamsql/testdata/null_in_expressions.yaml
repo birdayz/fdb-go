@@ -28,13 +28,11 @@ tests:
 
   # NULLIF
   - query: SELECT id, NULLIF(a, 10) FROM t ORDER BY id
-    rows:
-      - [1, null]
-      - [2, null]
-      - [3, 20]
-      - [4, null]
-
-  # NULL in boolean context (IS NULL / IS NOT NULL)
+    # Java does not support NULLIF at 4.12.11.0 (not in SqlFunctionCatalog;
+    # SemanticAnalyzer.resolveScalarFunction → UNSUPPORTED_QUERY 0AF00
+    # "Unsupported operator NULLIF"). The old rows pinned a retired
+    # pre-Cascades Go extension.
+    error_code: "0AF00"
   - query: SELECT COUNT(*) FROM t WHERE a IS NULL AND b IS NULL
     rows:
       - [1]

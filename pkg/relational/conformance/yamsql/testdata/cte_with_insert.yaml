@@ -1,6 +1,10 @@
 # cte_with_insert.yaml — CTE used in INSERT ... SELECT
 #
-# Exercises CTEs that feed into INSERT statements.
+# Pins that a CTE cannot feed an INSERT: Java's grammar has no `ctes?`
+# on insertStatement (RelationalParser.g4:382-387); only the `query`
+# rule carries `ctes? queryExpressionBody` (RelationalParser.g4:399).
+# `WITH ... INSERT` is therefore a syntax error — 42601 — in both
+# engines, and the destination table stays untouched.
 name: cte_with_insert
 schema_template: |
   CREATE TABLE source (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
@@ -8,13 +12,11 @@ schema_template: |
 setup:
   - INSERT INTO source VALUES (1, 10), (2, 20), (3, 30)
 tests:
-  # CTE feeding INSERT
+  # CTE feeding INSERT — syntax error in both engines (see header).
   - query: >
       WITH doubled AS (SELECT id, val * 2 AS dval FROM source)
       INSERT INTO dest SELECT id, dval FROM doubled
-    rows: []
+    error_code: "42601"
+  # The rejected statement inserted nothing — dest is still empty.
   - query: SELECT id, doubled_val FROM dest ORDER BY id
-    rows:
-      - [1, 20]
-      - [2, 40]
-      - [3, 60]
+    rows: []

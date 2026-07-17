@@ -57,7 +57,7 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
 	}
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return "", api.NewError(api.ErrCodeUndefinedFunction, "unsupported: "+fn)
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
 	if err := resolveQualifiedTableNames(logicalOp, "s"); err != nil {
 		return "", err
@@ -70,7 +70,15 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
-	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
+	if arityErr := query.ValidateCTEAliasArities(logicalOp); arityErr != nil {
+		return "", arityErr
+	}
+	ref, _, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
+	if translateErr != nil {
+		// Surface the translator's typed diagnostic over the generic fallback —
+		// same precedence the production generator applies.
+		return "", translateErr
+	}
 	if ref == nil {
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
@@ -141,7 +149,7 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
 	}
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return "", api.NewError(api.ErrCodeUndefinedFunction, "unsupported: "+fn)
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
 	if err := resolveQualifiedTableNames(logicalOp, "s"); err != nil {
 		return "", err
@@ -154,7 +162,15 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
-	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
+	if arityErr := query.ValidateCTEAliasArities(logicalOp); arityErr != nil {
+		return "", arityErr
+	}
+	ref, _, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
+	if translateErr != nil {
+		// Surface the translator's typed diagnostic over the generic fallback —
+		// same precedence the production generator applies.
+		return "", translateErr
+	}
 	if ref == nil {
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
@@ -294,6 +310,9 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 		return nil, nil, err
 	}
 
+	if arityErr := query.ValidateCTEAliasArities(logicalOp); arityErr != nil {
+		return nil, nil, arityErr
+	}
 	ref, scalarSubqueryPlans, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
 	if translateErr != nil {
 		// Surface a specific translation error code (RFC-142: AT ordinality on a
