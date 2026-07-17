@@ -239,13 +239,24 @@ func protoKindToSQL(k protoreflect.Kind) string {
 	switch k {
 	case protoreflect.BoolKind:
 		return "BOOL"
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
-		protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		// Genuine 32-bit INTEGER: Java types these INT and runs the
+		// int32-bounded arithmetic lane. The old all-integers→"INT"
+		// conflation was harmless only while "INT" aliased to the LONG
+		// type; with real width typing it would have put BIGINT columns
+		// on the int32 lane.
+		return "INTEGER"
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return "BIGINT"
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
 		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		return "INT"
-	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		// Unsigned proto kinds exceed their signed width — type them
+		// BIGINT (the long lane) so no false 32-bit bound applies.
+		return "BIGINT"
+	case protoreflect.FloatKind:
 		return "FLOAT"
+	case protoreflect.DoubleKind:
+		return "DOUBLE"
 	case protoreflect.StringKind:
 		return "STRING"
 	case protoreflect.BytesKind:

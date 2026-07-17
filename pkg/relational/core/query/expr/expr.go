@@ -893,9 +893,20 @@ func aggregateOpForName(name string, isStar bool) (values.AggregateOp, bool) {
 func sqlTypeToCascadesType(sqlType string) values.Type {
 	switch sqlType {
 	case "INT", "INTEGER":
-		return values.TypeInt
+		// Genuine 32-bit INT (TypeCodeInt), NOT the historical
+		// values.TypeInt alias (= NullableLong): Java types INTEGER
+		// columns INT and dispatches the int32-bounded arithmetic lane
+		// (ADD_II = Math.addExact(int,int) — overflow at 2^31 errors
+		// 22003 where the LONG lane silently returns the wide value).
+		// Only the NOT NULL spelling carried the real code before —
+		// a nullable INTEGER column silently lost its width.
+		return values.NullableInt
 	case "INT NOT NULL", "INTEGER NOT NULL":
 		return values.NotNullInt
+	case "BIGINT":
+		return values.NullableLong
+	case "BIGINT NOT NULL":
+		return values.NotNullLong
 	case "STRING", "ENUM":
 		return values.TypeString
 	case "UUID":
@@ -908,12 +919,20 @@ func sqlTypeToCascadesType(sqlType string) values.Type {
 		return values.NullableUuid
 	case "BOOL":
 		return values.TypeBool
-	case "FLOAT", "DOUBLE":
-		// FLOAT and DOUBLE both map to the seed's double type
-		// (values.TypeFloat == NullableDouble). Carrying the real
-		// TypeCodeDouble — rather than Unknown — lets the predicate-lift
-		// type gate reject a bare `WHERE <double_col>` as non-boolean
-		// (42804) instead of silently lifting it to `col = TRUE` (RFC-146).
+	case "FLOAT":
+		// Genuine 32-bit FLOAT (TypeCodeFloat): Java computes FLOAT
+		// arithmetic in float32 (ADD_FF — overflow saturates to ±Inf at
+		// ~3.4e38 where the double lane returns the finite wide value).
+		// The old "FLOAT, DOUBLE → NullableDouble" conflation erased the
+		// width.
+		return values.NullableFloat
+	case "FLOAT NOT NULL":
+		return values.NotNullFloat
+	case "DOUBLE", "DOUBLE NOT NULL":
+		// Carrying the real TypeCodeDouble — rather than Unknown — lets
+		// the predicate-lift type gate reject a bare `WHERE <double_col>`
+		// as non-boolean (42804) instead of silently lifting it to
+		// `col = TRUE` (RFC-146).
 		return values.NullableDouble
 	case "BYTES":
 		// Real TypeCodeBytes, same reason as FLOAT/DOUBLE.

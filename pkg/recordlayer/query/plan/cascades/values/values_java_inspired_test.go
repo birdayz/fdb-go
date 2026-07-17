@@ -36,8 +36,8 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 	t.Parallel()
 	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
 	// (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -81,12 +81,33 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 // TestArithmeticValue_OverflowPanics pins that integer overflow returns
 // ArithmeticOverflowError on the error channel (matching Java's
 // Math.addExact throwing ArithmeticException). The executor maps it to 22003.
+// DIV is deliberately absent: Java's DIV_LL/DIV_II are UNCHECKED casts
+// (`(long)l / (long)r`, ArithmeticValue.java:464/469) — the JVM wraps
+// MinLong/-1 with no exception, so Go wraps too
+// (TestArithmeticValue_DivMinWrapsLikeJava).
+// TestArithmeticValue_DivMinWrapsLikeJava pins DIV_LL parity: MinInt64/-1
+// WRAPS to MinInt64 (Java's unchecked JVM long division), where Go's
+// native `/` would panic — the wrap is explicit in the long lane.
+func TestArithmeticValue_DivMinWrapsLikeJava(t *testing.T) {
+	t.Parallel()
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableLong)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableLong)
+	av := &ArithmeticValue{Op: OpDiv, Left: a, Right: b}
+	v, err := av.Evaluate(fom(map[string]any{"a": int64(math.MinInt64), "b": int64(-1)}))
+	if err != nil {
+		t.Fatalf("MinInt64 / -1 must WRAP like Java DIV_LL, got error %v", err)
+	}
+	if got, ok := v.(int64); !ok || got != math.MinInt64 {
+		t.Fatalf("MinInt64 / -1 = %v, want MinInt64 (JVM wrap parity)", v)
+	}
+}
+
 func TestArithmeticValue_OverflowPanics(t *testing.T) {
 	t.Parallel()
 	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
 	// (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -100,7 +121,6 @@ func TestArithmeticValue_OverflowPanics(t *testing.T) {
 		{"mul MAX*2", OpMul, math.MaxInt64, 2},
 		{"mul MIN*-1", OpMul, math.MinInt64, -1},
 		{"mul -1*MIN", OpMul, -1, math.MinInt64},
-		{"div MIN/-1", OpDiv, math.MinInt64, -1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -125,8 +145,8 @@ func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
 	t.Parallel()
 	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
 	// (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -164,8 +184,8 @@ func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 	t.Parallel()
 	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
 	// (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
 	c := NewFieldValueWithResolvedOrdinal("c", 2, TypeInt)
 	// (a + b) * c
 	tree := &ArithmeticValue{
@@ -203,8 +223,8 @@ func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 	t.Parallel()
 	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
 	// (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
 	for _, op := range []ArithmeticOp{OpDiv, OpMod} {
 		op := op
 		t.Run(op.Symbol(), func(t *testing.T) {
@@ -231,8 +251,8 @@ func TestArithmeticValue_TypeMismatch_Panics(t *testing.T) {
 	t.Parallel()
 	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
 	// (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
 	cases := []struct {
 		name string
 		row  map[string]any
@@ -378,5 +398,67 @@ func TestCastValue_NullPropagation(t *testing.T) {
 				t.Fatalf("CastValue.Type after NULL propagation: got %v, want code %v", c.Type(), target.Code())
 			}
 		})
+	}
+}
+
+// TestArithmeticValue_IntLaneOverflowsAt32Bits pins RFC-181 P0.5: Java
+// types INTEGER operands INT and runs ADD_II/MUL_II = Math.addExact(int,
+// int) — overflow at 2^31 errors with the 22003 class. Go widened
+// everything to int64 and only checked the int64 boundary, silently
+// returning the wide value. With BOTH operands statically INT the int
+// lane now enforces the int32 bounds.
+func TestArithmeticValue_IntLaneOverflowsAt32Bits(t *testing.T) {
+	t.Parallel()
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
+
+	av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+	v, err := av.Evaluate(fom(map[string]any{"a": int64(2000000000), "b": int64(2000000000)}))
+	var overflow *ArithmeticOverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("INT + INT crossing 2^31 must overflow like Java ADD_II (Math.addExact(int,int)); got (%v, %v)", v, err)
+	}
+
+	// In-range INT arithmetic still succeeds.
+	v, err = av.Evaluate(fom(map[string]any{"a": int64(1000000000), "b": int64(1000000000)}))
+	if err != nil || v != int64(2000000000) {
+		t.Fatalf("in-range INT add = (%v, %v), want 2000000000", v, err)
+	}
+
+	// LONG-typed operands keep the 64-bit boundary: the same magnitudes
+	// that overflow the INT lane are fine as LONG.
+	al := NewFieldValueWithResolvedOrdinal("a", 0, NullableLong)
+	bl := NewFieldValueWithResolvedOrdinal("b", 1, NullableLong)
+	avl := &ArithmeticValue{Op: OpAdd, Left: al, Right: bl}
+	v, err = avl.Evaluate(fom(map[string]any{"a": int64(2000000000), "b": int64(2000000000)}))
+	if err != nil || v != int64(4000000000) {
+		t.Fatalf("LONG add of the same magnitudes = (%v, %v), want 4000000000", v, err)
+	}
+
+	// DIV_II wraps MinInt32/-1 (Java's unchecked (int) division).
+	avd := &ArithmeticValue{Op: OpDiv, Left: a, Right: b}
+	v, err = avd.Evaluate(fom(map[string]any{"a": int64(math.MinInt32), "b": int64(-1)}))
+	if err != nil || v != int64(math.MinInt32) {
+		t.Fatalf("MinInt32 / -1 on the INT lane = (%v, %v), want MinInt32 (JVM (int) wrap)", v, err)
+	}
+}
+
+// TestArithmeticValue_FloatLaneComputesInFloat32 pins the FLOAT lane
+// (Java ADD_FF and the mixed IF/LF operators): computation in float32, so
+// overflow saturates to ±Inf at the float32 boundary (~3.4e38) where the
+// double lane returns the finite wide value.
+func TestArithmeticValue_FloatLaneComputesInFloat32(t *testing.T) {
+	t.Parallel()
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableFloat)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableFloat)
+
+	av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+	v, err := av.Evaluate(fom(map[string]any{"a": float64(3e38), "b": float64(3e38)}))
+	if err != nil {
+		t.Fatalf("FLOAT add: %v", err)
+	}
+	f, ok := v.(float64)
+	if !ok || !math.IsInf(f, 1) {
+		t.Fatalf("FLOAT + FLOAT over the float32 boundary = %v, want +Inf (Java computes ADD_FF in float32)", v)
 	}
 }

@@ -108,16 +108,16 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 	r := expr.New(a, s)
 
 	cases := map[string]values.Type{
-		"i":     values.TypeInt,
-		"ii":    values.TypeInt,    // INTEGER is a synonym for INT, never UNKNOWN
-		"inn":   values.NotNullInt, // "INT NOT NULL" → non-null INT (unnest ordinal)
-		"intnn": values.NotNullInt, // "INTEGER NOT NULL" → non-null INT
+		"i":     values.NullableInt, // INT is a genuine 32-bit type (Java Type.TypeCode.INT), not the LONG the old alias erased it to
+		"ii":    values.NullableInt, // INTEGER is a synonym for INT, never UNKNOWN
+		"inn":   values.NotNullInt,  // "INT NOT NULL" → non-null INT (unnest ordinal)
+		"intnn": values.NotNullInt,  // "INTEGER NOT NULL" → non-null INT
 		"s":     values.TypeString,
 		"e":     values.TypeString,
 		"b":     values.TypeBool,
-		"f":     values.NullableDouble, // FLOAT/DOUBLE → seed double type (RFC-146: so a bare WHERE rejects 42804)
-		"by":    values.NullableBytes,  // BYTES → seed bytes type
-		"rec":   values.TypeUnknown,    // no struct/record type yet
+		"f":     values.NullableFloat, // FLOAT is a genuine 32-bit type; DOUBLE seeds NullableDouble (both still reject a bare WHERE with 42804)
+		"by":    values.NullableBytes, // BYTES → seed bytes type
+		"rec":   values.TypeUnknown,   // no struct/record type yet
 	}
 	for col, want := range cases {
 		v, err := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(col))

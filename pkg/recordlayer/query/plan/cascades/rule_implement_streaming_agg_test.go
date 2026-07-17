@@ -251,7 +251,7 @@ func TestStreamingAgg_OrderedChildPinned(t *testing.T) {
 		}
 	}
 	if orderedAgg == nil {
-		t.Skipf("no ordered streaming-agg alternative in the memo for this shape")
+		t.Fatal("the planner stopped yielding the ordered streaming-agg alternative for this shape — the invariant sentinel would evaporate; fix the yield, don't skip")
 	}
 
 	childRef := orderedAgg.innerQuant.GetRangesOver()

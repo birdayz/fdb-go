@@ -295,13 +295,24 @@ func rebuildOrderedSpine(
 	// sort stays — always order-correct).
 	if delegates && srcRef != nil {
 		rp, ok1 := rebuilt.(physicalPlanHolder)
+		// Verify against the SPINE quantifier's pinned plan specifically —
+		// current delegators are single-quantifier, but taking "the last
+		// quantifier with a plan" would verify the wrong child the moment a
+		// multi-quantifier delegator appears. The spine child was rebuilt
+		// at the same position as the original srcRef quantifier.
 		var pinnedChildPlan plans.RecordQueryPlan
-		for _, q := range rebuilt.GetQuantifiers() {
-			if inner := q.GetRangesOver().Get(); inner != nil {
+		origQs := e.GetQuantifiers()
+		newQs := rebuilt.GetQuantifiers()
+		for i, q := range origQs {
+			if q.GetRangesOver() != srcRef || i >= len(newQs) {
+				continue
+			}
+			if inner := newQs[i].GetRangesOver().Get(); inner != nil {
 				if ip, ok := inner.(physicalPlanHolder); ok {
 					pinnedChildPlan = ip.GetRecordQueryPlan()
 				}
 			}
+			break
 		}
 		if !ok1 || pinnedChildPlan == nil || !planEmbedsDirectChild(rp.GetRecordQueryPlan(), pinnedChildPlan) {
 			return nil, nil

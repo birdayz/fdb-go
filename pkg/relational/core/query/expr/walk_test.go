@@ -1571,12 +1571,16 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 	}{
 		// RFC-082: polymorphic value-preserving functions now infer their
 		// result type from the operand (id is LONG) instead of UNKNOWN.
-		{"SELECT * FROM users WHERE ABS(id)", "ABS", values.NullableLong, 1},
-		{"SELECT * FROM users WHERE FLOOR(id)", "FLOOR", values.NullableLong, 1},
-		{"SELECT * FROM users WHERE CEIL(id)", "CEIL", values.NullableLong, 1},
-		{"SELECT * FROM users WHERE CEILING(id)", "CEILING", values.NullableLong, 1},
-		{"SELECT * FROM users WHERE ROUND(id)", "ROUND", values.NullableLong, 1},
-		{"SELECT * FROM users WHERE ROUND(id, 2)", "ROUND", values.NullableLong, 2},
+		// id is a genuine 32-bit INT column, and these functions are
+		// type-preserving in their first operand (Java Math.abs(int) is
+		// int) — so they yield INT, not the old LONG the TypeInt alias
+		// erased everything to.
+		{"SELECT * FROM users WHERE ABS(id)", "ABS", values.NullableInt, 1},
+		{"SELECT * FROM users WHERE FLOOR(id)", "FLOOR", values.NullableInt, 1},
+		{"SELECT * FROM users WHERE CEIL(id)", "CEIL", values.NullableInt, 1},
+		{"SELECT * FROM users WHERE CEILING(id)", "CEILING", values.NullableInt, 1},
+		{"SELECT * FROM users WHERE ROUND(id)", "ROUND", values.NullableInt, 1},
+		{"SELECT * FROM users WHERE ROUND(id, 2)", "ROUND", values.NullableInt, 2},
 		{"SELECT * FROM users WHERE SQRT(id)", "SQRT", values.TypeFloat, 1},
 		{"SELECT * FROM users WHERE POWER(id, 2)", "POWER", values.TypeFloat, 2},
 		{"SELECT * FROM users WHERE POW(id, 2)", "POW", values.TypeFloat, 2},

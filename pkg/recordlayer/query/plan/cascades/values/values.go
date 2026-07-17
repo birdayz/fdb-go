@@ -2661,6 +2661,33 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) (any, error) {
 	if l == nil || r == nil {
 		return nil, nil
 	}
+	// STATIC-TYPE lane dispatch (Java ArithmeticValue's per-TypeCode
+	// physical operators, keyed on the operands' STATIC types like
+	// ADD_II/ADD_FF — never on the widened runtime representation):
+	//   both INT            → int lane: exact int32 bounds (Math.addExact(int,int));
+	//   max FLOAT (no DOUBLE) → float lane: float32 computation (ADD_FF/IF/LF —
+	//                          overflow to ±Inf at the float32 boundary where
+	//                          the double lane would return a finite value);
+	//   otherwise            → the existing LONG/DOUBLE lanes below.
+	// Operands with UNKNOWN static types keep the runtime-typed fallback —
+	// the dispatch grows more precise as the resolver types more values
+	// (WS-N Phase D).
+	lc, rc := arithOperandCode(a.Left), arithOperandCode(a.Right)
+	if lc == TypeCodeFloat || rc == TypeCodeFloat {
+		otherOK := func(c TypeCode) bool {
+			return c == TypeCodeFloat || c == TypeCodeInt || c == TypeCodeLong
+		}
+		if otherOK(lc) && otherOK(rc) {
+			if out := a.evalFloat32(l, r); out != nil {
+				return out, nil
+			}
+		}
+	}
+	if lc == TypeCodeInt && rc == TypeCodeInt {
+		if out, err, handled := a.evalInt32(l, r); handled {
+			return out, err
+		}
+	}
 	// Float promotion: if either operand is float64 AND the other is numeric, use float arithmetic.
 	_, lf := l.(float64)
 	_, rf := r.(float64)
@@ -2705,7 +2732,11 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) (any, error) {
 			return nil, &ArithmeticDivisionByZeroError{}
 		}
 		if li == math.MinInt64 && ri == -1 {
-			return nil, &ArithmeticOverflowError{}
+			// Java DIV_LL is UNCHECKED `(long)l / (long)r` — the JVM wraps
+			// MinLong / -1 back to MinLong with no exception (unlike
+			// ADD/SUB/MUL, which use Math.*Exact). Go's `/` would panic on
+			// exactly this pair, so the wrap is explicit. Parity, not taste.
+			return int64(math.MinInt64), nil
 		}
 		return li / ri, nil
 	case OpMod:
@@ -2744,6 +2775,90 @@ func (a *ArithmeticValue) evalFloat(l, r any) any {
 	return nil
 }
 
+// evalFloat32 is the FLOAT lane (Java ADD_FF/IF/LF …): computation in
+// float32, so overflow saturates to ±Inf at the float32 boundary and
+// low-bit rounding matches Java's per-operation float math. Returns the
+// float32 result widened to the row-domain float64 carrier; nil when an
+// operand isn't numeric (caller falls through to the generic lanes).
+func (a *ArithmeticValue) evalFloat32(l, r any) any {
+	lf64, _, lok := ToFloat64(l)
+	rf64, _, rok := ToFloat64(r)
+	if !lok || !rok {
+		return nil
+	}
+	lf, rf := float32(lf64), float32(rf64)
+	var out float32
+	switch a.Op {
+	case OpAdd:
+		out = lf + rf
+	case OpSub:
+		out = lf - rf
+	case OpMul:
+		out = lf * rf
+	case OpDiv:
+		out = lf / rf
+	case OpMod:
+		out = float32(math.Mod(float64(lf), float64(rf)))
+	default:
+		return nil
+	}
+	return float64(out)
+}
+
+// evalInt32 is the INT lane (Java ADD_II/SUB_II/MUL_II via
+// Math.*Exact(int,int)): both operands statically INT, arithmetic bounds
+// checked at the int32 boundary — `int_col + int_col` crossing 2^31 errors
+// with the overflow class where the LONG lane would silently return the
+// wide value. DIV_II/MOD_II mirror the long lane's zero/MinInt semantics at
+// 32 bits (Java (int) division wraps MinInt/-1). handled=false when an
+// operand isn't an admitted integer (caller falls through).
+func (a *ArithmeticValue) evalInt32(l, r any) (any, error, bool) {
+	li, lok := toInt64ForArith(l)
+	ri, rok := toInt64ForArith(r)
+	if !lok || !rok {
+		return nil, nil, false
+	}
+	// Inputs outside the int32 range mean the STATIC type lied about the
+	// runtime value (an INT column cannot hold them; Java's (int) cast
+	// would silently truncate, which is unreachable there because typing
+	// guarantees the range). Fall through to the LONG lane rather than
+	// emulate a truncation no valid execution produces.
+	if li > math.MaxInt32 || li < math.MinInt32 || ri > math.MaxInt32 || ri < math.MinInt32 {
+		return nil, nil, false
+	}
+	switch a.Op {
+	case OpAdd, OpSub, OpMul:
+		var out int64
+		switch a.Op {
+		case OpAdd:
+			out = li + ri
+		case OpSub:
+			out = li - ri
+		case OpMul:
+			out = li * ri
+		}
+		if out > math.MaxInt32 || out < math.MinInt32 {
+			return nil, &ArithmeticOverflowError{}, true
+		}
+		return out, nil, true
+	case OpDiv:
+		if ri == 0 {
+			return nil, &ArithmeticDivisionByZeroError{}, true
+		}
+		if li == math.MinInt32 && ri == -1 {
+			// Java DIV_II is `(int)l / (int)r` — wraps to MinInt.
+			return int64(math.MinInt32), nil, true
+		}
+		return li / ri, nil, true
+	case OpMod:
+		if ri == 0 {
+			return nil, &ArithmeticDivisionByZeroError{}, true
+		}
+		return li % ri, nil, true
+	}
+	return nil, nil, false
+}
+
 func toInt64ForArith(v any) (int64, bool) {
 	switch n := v.(type) {
 	case int64:
@@ -2752,6 +2867,19 @@ func toInt64ForArith(v any) (int64, bool) {
 		return int64(n), true
 	case int32:
 		return int64(n), true
+	case uint64:
+		// The tuple layer decodes positive integers above math.MaxInt64 as
+		// uint64; the LOSSLESS half joins integer arithmetic (the
+		// comparators already admit the whole domain — CompareExactInts).
+		// Values above MaxInt64 stay declined: int64 arithmetic cannot
+		// represent them and Java's equivalent is BigInteger territory.
+		if n <= math.MaxInt64 {
+			return int64(n), true
+		}
+	case uint:
+		if uint64(n) <= math.MaxInt64 {
+			return int64(n), true
+		}
 	}
 	return 0, false
 }

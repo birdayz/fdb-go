@@ -311,10 +311,13 @@ func TestApplyMathOp(t *testing.T) {
 		assertErr(t, err)
 	})
 
-	t.Run("int64_overflow_div_minint64_neg1", func(t *testing.T) {
+	t.Run("int64_div_minint64_neg1_wraps", func(t *testing.T) {
 		t.Parallel()
-		_, err := ApplyMathOp(int64(math.MinInt64), int64(-1), "/")
-		assertErr(t, err)
+		// Java DIV_LL is an unchecked (long)l / (long)r — MinLong / -1
+		// wraps to MinLong instead of raising 22003 (ArithmeticValue.java).
+		got, err := ApplyMathOp(int64(math.MinInt64), int64(-1), "/")
+		assertNoErr(t, err)
+		assertEq(t, got, int64(math.MinInt64))
 	})
 
 	t.Run("mixed_int_float_add", func(t *testing.T) {

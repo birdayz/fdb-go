@@ -123,9 +123,14 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 			if ri == 0 {
 				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
 			}
-			// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 			if li == math.MinInt64 && ri == -1 {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "long overflow")
+				// Java DIV_LL is UNCHECKED `(long)l / (long)r`
+				// (ArithmeticValue.java:469) — the JVM wraps MinLong/-1
+				// with no exception; Go's native `/` would panic, so the
+				// wrap is explicit. Kept identical to the cascades
+				// ArithmeticValue lane (the two arithmetic engines must
+				// not diverge).
+				return int64(math.MinInt64), nil
 			}
 			return li / ri, nil
 		case "%":
