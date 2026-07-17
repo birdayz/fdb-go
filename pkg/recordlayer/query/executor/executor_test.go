@@ -5037,6 +5037,33 @@ func TestUnorderedUnionCursor_CloseIdempotent(t *testing.T) {
 	}
 }
 
+// TestExecuteUnorderedUnion_SingleChildKeepsSkipLimit pins the review-caught
+// hole: the single-child degenerate path cleared skip/limit for the child
+// (correct — pagination composes above) but never reapplied them, silently
+// returning every row of a LIMITed single-branch union.
+func TestExecuteUnorderedUnion_SingleChildKeepsSkipLimit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	plan := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{
+		plans.NewRecordQueryValuesPlan([]values.Value{
+			&values.ConstantValue{Value: int64(7), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+		}),
+	})
+	props := recordlayer.DefaultExecuteProperties().WithSkip(1)
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, props)
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+	rows, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("skip=1 over a 1-row single-child union must yield 0 rows, got %d", len(rows))
+	}
+}
+
 // TestUnorderedUnionCursor_MidStreamSnapshotWithUnpulledChild pins the
 // review-caught panic: the FIRST row's continuation snapshots child 1 before
 // it was ever pulled — the slot must encode START (Java's START_PROTO), never

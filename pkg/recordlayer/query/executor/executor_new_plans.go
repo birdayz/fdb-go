@@ -1638,7 +1638,7 @@ func compareValues(a, b any) (int, error) {
 		default:
 			// int32 vs a floating operand: promote and use the
 			// Java-faithful float total order (NaN greatest, -0.0 < 0.0).
-			// A non-numeric b falls through to the fmt fallback.
+			// A non-numeric b is the loud cross-type arm below.
 			if bf, ok := toFloat64Scalar(b); ok {
 				return values.CompareFloat64(float64(av), bf), nil
 			}
@@ -1649,8 +1649,7 @@ func compareValues(a, b any) (int, error) {
 		// FDB tuple order an indexed FLOAT column uses, so an in-memory
 		// sort/merge/dedup agrees with an ordered index scan on both
 		// edge values. A non-numeric b is a cross-type mismatch the
-		// planner's type checking excludes; fall through to the fmt
-		// fallback.
+		// planner's type checking excludes — the loud arm below.
 		if bf, ok := toFloat64Scalar(b); ok {
 			return values.CompareFloat64(av, bf), nil
 		}
@@ -1658,16 +1657,16 @@ func compareValues(a, b any) (int, error) {
 		// Defense in depth: covering-index reads normalize float32 → float64 at
 		// the row boundary (tupleElementToRowValue), so this arm should not be
 		// reachable from production rows — but a float32 that slips through any
-		// other path must still compare numerically, not by the fmt fallback's
-		// lexical decimal string ("10.5" < "2.5"). Same Java-faithful float
+		// other path must still compare numerically (the retired fmt fallback
+		// ordered decimal strings — "10.5" < "2.5"). Same Java-faithful float
 		// total order as the float64 arm (NaN greatest, -0.0 < 0.0).
 		if bf, ok := toFloat64Scalar(b); ok {
 			return values.CompareFloat64(float64(av), bf), nil
 		}
 	case bool:
 		// false < true — FDB tuple order (0x26 < 0x27), same as Java's
-		// Boolean.compare. The fmt fallback happens to get this right
-		// ("false" < "true" lexically), but only by accident; pin it.
+		// Boolean.compare. (The retired fmt fallback got this right only by
+		// lexical accident; the typed arm is the contract.)
 		if bv, ok := b.(bool); ok {
 			if av == bv {
 				return 0, nil
@@ -1691,9 +1690,9 @@ func compareValues(a, b any) (int, error) {
 		// BYTES sorts by unsigned lexicographic byte order — the same order the
 		// FDB tuple byte-string encoding gives an indexed BYTES column, so an
 		// in-memory sort / merge / dedup of a non-indexed BYTES column agrees
-		// with an ordered index scan of the same data. Without this arm the
-		// fmt.Sprintf("%v") fallback below would compare decimal-list strings
-		// ("[0 1]" < "[0]" because ' ' < ']'), putting {0x02} after {0x0A}.
+		// with an ordered index scan of the same data. (The retired fmt
+		// fallback compared decimal-list strings — "[0 1]" < "[0]" — putting
+		// {0x02} after {0x0A}; the typed arm is the contract.)
 		if bv, ok := b.([]byte); ok {
 			return bytes.Compare(av, bv), nil
 		}
@@ -1701,8 +1700,8 @@ func compareValues(a, b any) (int, error) {
 		// UUID sorts by unsigned big-endian bytes — the same order the tuple.UUID
 		// wire encoding and the filter-path predicates.cmpAny use, so an
 		// in-memory sort of a non-indexed UUID column agrees with an ordered
-		// index scan. Without this arm the fmt.Sprintf("%v") fallback below would
-		// compare decimal-list strings ("[85 14 …]") in lexical, not byte, order.
+		// index scan. (The retired fmt fallback compared decimal-list strings
+		// in lexical, not byte, order.)
 		if bv, ok := b.([16]byte); ok {
 			return bytes.Compare(av[:], bv[:]), nil
 		}
