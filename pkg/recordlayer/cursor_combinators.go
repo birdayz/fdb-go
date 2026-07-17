@@ -294,6 +294,15 @@ type orElseContinuationWrapper struct {
 	inner RecordCursorContinuation
 }
 
+// ToBytes mirrors Java OrElseCursor.Continuation.toByteString/toBytes
+// (OrElseCursor.java:194-211) exactly: when the wrapped continuation is at end
+// OR serializes to empty bytes, the whole OrElse continuation collapses to nil
+// — Java returns ByteString.EMPTY (toBytes → null) WITHOUT wrapping the state
+// enum. The serialized branch decision (STATE) is deliberately dropped in
+// exactly these cases: nil bytes mean "start" at every level, so a resume
+// re-decides from UNDECIDED — deterministic on unchanged data (the primary
+// that was empty is empty again), and identical to Java's resume semantics.
+// Pinned by TestOrElseContinuationWrapperToBytes.
 func (w *orElseContinuationWrapper) ToBytes() ([]byte, error) {
 	if w.inner == nil || w.inner.IsEnd() {
 		return nil, nil

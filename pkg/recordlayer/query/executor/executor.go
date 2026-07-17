@@ -662,8 +662,8 @@ func uuidToTupleElement(v any) any {
 //     (IndexKeyValueToPartialRecord.FieldCopier) and every read goes through
 //     the message, surfacing the same boxed Float either way — so the Go
 //     covering row must live in the SAME domain as the base row, or
-//     comparators (compareValues), dedup keys (distinctKey, extractKey) and
-//     hash-join keys split float32-vs-float64 across access paths.
+//     comparators (compareValues), dedup keys (distinctKey, packedDedupKey)
+//     and hash-join keys split float32-vs-float64 across access paths.
 //
 // Applied at every index-entry → row boundary so a column flows downstream
 // identically regardless of whether it was sourced from a stored record
@@ -1555,8 +1555,11 @@ func distinctKey(qr QueryResult) string {
 // delimiter collapsed two different rows) and NULL has its own tuple code
 // distinct from any string (the "\x00NULL\x00"-sentinel collision). Java dedups
 // via Set<Key.Evaluated> structured value equality; this is the Go equivalent.
-// The [16]byte→UUID and composite %T:%v-fallback arms mirror
-// mergeSortCursor.extractKey.
+// The [16]byte→UUID arm mirrors intersectionCompKeyFunc's tuple
+// canonicalization; the composite %T:%v fallback keeps distinct concrete types
+// key-distinct. (The merge-sort union dedups via compareValues on evaluated
+// keys instead — Java UnionCursor's advance-all-equal — so it no longer packs
+// a dedup key at all.)
 func packedDedupKey(slots []any) string {
 	t := make(tuple.Tuple, len(slots))
 	for i, v := range slots {
@@ -1751,22 +1754,11 @@ func executeUnionStreaming(
 			return c
 		}
 	}
-	var cursor recordlayer.RecordCursor[QueryResult]
-	if len(inners) == 1 {
-		cursor = branchFactory(0)(continuation)
-	} else {
-		// Fold right-to-left: tail = branch n-1; each step wraps
-		// (branch i, tail) in a binary concat factory.
-		tail := branchFactory(len(inners) - 1)
-		for i := len(inners) - 2; i >= 1; i-- {
-			fi, next := branchFactory(i), tail
-			tail = func(cont []byte) recordlayer.RecordCursor[QueryResult] {
-				return recordlayer.ConcatCursors(fi, next, cont)
-			}
-		}
-		cursor = recordlayer.ConcatCursors(branchFactory(0), tail, continuation)
+	factories := make([]recordlayer.CursorFactory[QueryResult], len(inners))
+	for i := range inners {
+		factories[i] = branchFactory(i)
 	}
-	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(concatFactories(factories, continuation), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeUnionBuffered(
@@ -2093,7 +2085,7 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 				// widenInt32: tuple has no int32 (RFC-092). uuidToTupleElement:
 				// a UUID comparison/PK key is a neutral [16]byte, which the tuple
 				// packer cannot encode — convert it to tuple.UUID, exactly as
-				// mergeSortCursor.extractKey does, so compareKeys' Pack doesn't
+				// packedDedupKey does, so compareKeys' Pack doesn't
 				// panic on an intersection over a UUID key (RFC-162).
 				t[i] = uuidToTupleElement(widenInt32(v))
 			}
@@ -2397,34 +2389,83 @@ func executeAggregation(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	// Deserialize the aggregate continuation (if resuming from a
-	// previous transaction). Extract the inner continuation for the
-	// leaf cursor and the single in-progress group's partial state.
-	// Mirrors Java's RecordQueryStreamingAggregationPlan.executePlan().
-	var innerContinuation []byte
-	var priorGroupKey string
-	var priorState *groupState
+	// buildAgg deserializes an aggregate continuation (if resuming from a
+	// previous transaction), extracts the inner continuation for the leaf
+	// cursor plus the single in-progress group's partial state, and builds the
+	// aggregate cursor. Mirrors Java's
+	// RecordQueryStreamingAggregationPlan.executePlan().
+	buildAgg := func(aggCont []byte) (recordlayer.RecordCursor[QueryResult], error) {
+		var innerContinuation []byte
+		var priorGroupKey string
+		var priorState *groupState
 
-	if continuation != nil {
-		ic, gk, gs, decErr := decodeAggregateContinuation(continuation, len(aggregates))
-		if decErr != nil {
-			return nil, fmt.Errorf("invalid aggregate continuation: %w", decErr)
+		if aggCont != nil {
+			ic, gk, gs, decErr := decodeAggregateContinuation(aggCont, len(aggregates))
+			if decErr != nil {
+				return nil, fmt.Errorf("invalid aggregate continuation: %w", decErr)
+			}
+			innerContinuation = ic
+			priorGroupKey = gk
+			priorState = gs
 		}
-		innerContinuation = ic
-		priorGroupKey = gk
-		priorState = gs
+
+		innerCursor, err := ExecutePlan(ctx, inner, store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
+		if err != nil {
+			return nil, err
+		}
+
+		cursor := newAggregateCursor(innerCursor, groupingKeys, aggregates, inner, evalCtx)
+		if len(innerContinuation) > 0 {
+			// A resumed cursor's initial resume point is the decoded INNER
+			// position: if its first row group-breaks against restored partial
+			// state (the prior page's time/scan limit landed exactly on a group
+			// boundary), the emitted group's continuation is (this inner
+			// position, NO state) — resume reads the next group fresh. Java
+			// instead re-wraps the WHOLE parsed AggregateCursorContinuation as
+			// the initial previousContinuationInGroup (constructor param), whose
+			// re-emit NESTS the aggregate proto inside itself and would hand
+			// aggregate bytes to the leaf plan on a second resume — Go encodes
+			// the intended flat position (Java's own movement-table comment).
+			cursor.previousContinuationInGroup = recordlayer.NewBytesContinuation(innerContinuation)
+		}
+		if priorState != nil {
+			cursor.withPartialState(priorGroupKey, priorState.keyVals, priorState)
+		}
+		return cursor, nil
 	}
 
-	innerCursor, err := ExecutePlan(ctx, inner, store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
-	if err != nil {
-		return nil, err
+	if len(groupingKeys) > 0 {
+		cursor, err := buildAgg(continuation)
+		if err != nil {
+			return nil, err
+		}
+		return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 	}
 
-	cursor := newAggregateCursor(innerCursor, groupingKeys, aggregates, inner, evalCtx)
-	if priorState != nil {
-		cursor.withPartialState(priorGroupKey, priorState.keyVals, priorState)
+	// Scalar aggregation (no grouping keys): Java plans it as
+	// DefaultOnEmpty(StreamingAggregation) — RecordQueryStreamingAggregationPlan
+	// REFUSES an inline default (fromProto throws on isCreateDefaultOnEmpty) and
+	// the COUNT(*)-on-empty default row rides RecordCursor.orElse in
+	// RecordQueryDefaultOnEmptyPlan.executePlan. Mirror that structure: the
+	// OrElse state machine (UNDECIDED/USE_INNER/USE_OTHER) is what makes BOTH
+	// emitted-row shapes resumable — a resume from the aggregate row's
+	// continuation stays USE_INNER (the exhausted aggregate reports
+	// SourceExhausted, never fabricating a duplicate default), and a resume from
+	// the default row's continuation stays USE_OTHER (the single-row list cursor
+	// is past its row). The child clears skip/limit; skip/limit apply to the
+	// whole OrElse — Java's clearSkipAndLimit-on-child + skipThenLimit split.
+	primaryFactory := func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+		cursor, err := buildAgg(cont)
+		if err != nil {
+			return &errResultCursor{err: err}
+		}
+		return cursor
 	}
-	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+	alternativeFactory := func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+		return recordlayer.FromListWithContinuation([]QueryResult{emptyScalarAggregateRow(aggregates)}, cont)
+	}
+	orElse := recordlayer.OrElseWithContinuation(primaryFactory, alternativeFactory, continuation)
+	return applySkipLimit(orElse, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func toFloat64(v any) float64 {
@@ -3720,6 +3761,7 @@ func executeInMemorySort(
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	var innerContinuation []byte
 	var priorBuf []QueryResult
+	var emitPhase bool
 	if continuation != nil {
 		// Buffered STRUCT column slots rebuild as their ENCODED representation
 		// (concrete-type identity with fresh rows, which the %T-keyed
@@ -3733,12 +3775,13 @@ func executeInMemorySort(
 		if store != nil {
 			resolve = metadataMessageResolver(store.GetRecordMetaData())
 		}
-		ic, buf, decErr := decodeSortContinuation(continuation, resolve)
+		ic, buf, exhausted, decErr := decodeSortContinuation(continuation, resolve)
 		if decErr != nil {
 			return nil, fmt.Errorf("invalid sort continuation: %w", decErr)
 		}
 		innerContinuation = ic
 		priorBuf = buf
+		emitPhase = exhausted
 	}
 
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
@@ -3824,7 +3867,20 @@ func executeInMemorySort(
 	}
 
 	cursor := newCustomSortCursor(innerCursor, sortFn, props.State)
-	if len(priorBuf) > 0 {
+	switch {
+	case emitPhase:
+		// Emit-phase resume (sortEmitContinuation): the inner was EXHAUSTED when
+		// the continuation was taken and priorBuf is the remaining SORTED output —
+		// go straight to emit. Re-running the fill loop would re-scan the inner
+		// from scratch and duplicate every restored row (the buffer is a slice,
+		// not Java MemorySortCursor's key-deduped scratchpad map). An EMPTY
+		// remaining buffer (resume taken at the last row) still sets loaded so the
+		// cursor reports SourceExhausted instead of re-filling.
+		cursor.buf = priorBuf
+		cursor.loaded = true
+	case len(priorBuf) > 0:
+		// Fill-phase resume: the buffer so far, inner resumes from its position;
+		// sortFn runs over the COMBINED buffer at exhaustion.
 		cursor.buf = priorBuf
 	}
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil

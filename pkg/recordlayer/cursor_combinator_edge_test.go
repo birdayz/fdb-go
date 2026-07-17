@@ -160,21 +160,6 @@ var _ = Describe("CursorCombinatorEdgeCases", func() {
 		Expect(cursor.Close()).To(Succeed())
 	})
 
-	It("UnionCursor with two empty cursors is empty with source-exhausted", func() {
-		c1 := Empty[int]()
-		c2 := Empty[int]()
-		cursor := Union[int](
-			[]RecordCursor[int]{c1, c2},
-			func(v int) tuple.Tuple { return tuple.Tuple{v} },
-			false,
-		)
-
-		vals, reason := drain(cursor)
-		Expect(vals).To(BeEmpty())
-		Expect(reason).To(Equal(SourceExhausted))
-		Expect(cursor.Close()).To(Succeed())
-	})
-
 	It("IntersectionCursor with two empty cursors is empty with source-exhausted", func() {
 		c1 := Empty[int]()
 		c2 := Empty[int]()

@@ -126,6 +126,92 @@ func TestOrElseContinuationInvalid(t *testing.T) {
 	}
 }
 
+// TestOrElseContinuationWrapperToBytes pins orElseContinuationWrapper.ToBytes
+// against Java OrElseCursor.Continuation (OrElseCursor.java:194-211):
+//
+//	ByteString bytes = innerOrOtherContinuation.toByteString();
+//	if (isEnd() || bytes.isEmpty()) { return ByteString.EMPTY; }   // :195-198
+//	... wrap state + bytes ...                                      // :199-203
+//	toBytes(): byteString.isEmpty() ? null : toByteArray()          // :206-211
+//
+// Java collapses to null when the wrapped continuation is at end or serializes
+// to empty bytes — the STATE enum is dropped in exactly those cases (nil bytes
+// mean "start" everywhere; a resume re-decides from UNDECIDED). Go must do the
+// same, not "improve" on it: wrapping a state around empty bytes would diverge
+// the wire format from Java.
+func TestOrElseContinuationWrapperToBytes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("end inner collapses to nil (Java isEnd -> ByteString.EMPTY)", func(t *testing.T) {
+		t.Parallel()
+		w := &orElseContinuationWrapper{state: gen.OrElseContinuation_USE_INNER, inner: &EndContinuation{}}
+		b, err := w.ToBytes()
+		if err != nil {
+			t.Fatalf("ToBytes: %v", err)
+		}
+		if b != nil {
+			t.Errorf("end inner must collapse to nil bytes (Java OrElseCursor.java:196-197), got %x", b)
+		}
+	})
+
+	t.Run("empty inner bytes collapse to nil, dropping the state (Java bytes.isEmpty -> ByteString.EMPTY)", func(t *testing.T) {
+		t.Parallel()
+		// StartContinuation serializes to nil bytes while not being end — the
+		// active-branch decision (USE_OTHER) is intentionally NOT preserved,
+		// matching Java: the resumed cursor re-decides from UNDECIDED.
+		w := &orElseContinuationWrapper{state: gen.OrElseContinuation_USE_OTHER, inner: &StartContinuation{}}
+		b, err := w.ToBytes()
+		if err != nil {
+			t.Fatalf("ToBytes: %v", err)
+		}
+		if b != nil {
+			t.Errorf("empty inner bytes must collapse to nil (Java OrElseCursor.java:196-197), got %x", b)
+		}
+	})
+
+	t.Run("nil inner collapses to nil", func(t *testing.T) {
+		t.Parallel()
+		w := &orElseContinuationWrapper{state: gen.OrElseContinuation_USE_OTHER, inner: nil}
+		b, err := w.ToBytes()
+		if err != nil {
+			t.Fatalf("ToBytes: %v", err)
+		}
+		if b != nil {
+			t.Errorf("nil inner must collapse to nil bytes, got %x", b)
+		}
+	})
+
+	t.Run("non-empty inner bytes wrap state + continuation (Java :199-203)", func(t *testing.T) {
+		t.Parallel()
+		w := &orElseContinuationWrapper{
+			state: gen.OrElseContinuation_USE_OTHER,
+			inner: NewBytesContinuation([]byte{0x00, 0x00, 0x00, 0x01}),
+		}
+		b, err := w.ToBytes()
+		if err != nil {
+			t.Fatalf("ToBytes: %v", err)
+		}
+		var oc gen.OrElseContinuation
+		if err := oc.UnmarshalVT(b); err != nil {
+			t.Fatalf("UnmarshalVT: %v", err)
+		}
+		if oc.GetState() != gen.OrElseContinuation_USE_OTHER {
+			t.Errorf("state = %v, want USE_OTHER", oc.GetState())
+		}
+		if string(oc.GetContinuation()) != "\x00\x00\x00\x01" {
+			t.Errorf("continuation = %x, want 00000001", oc.GetContinuation())
+		}
+	})
+
+	t.Run("inner encode error propagates", func(t *testing.T) {
+		t.Parallel()
+		w := &orElseContinuationWrapper{state: gen.OrElseContinuation_USE_INNER, inner: &failContinuation{}}
+		if _, err := w.ToBytes(); err == nil {
+			t.Fatal("ToBytes: want inner encode error to propagate, got nil")
+		}
+	})
+}
+
 func TestOrElseContinuationStateRoundTrips(t *testing.T) {
 	t.Parallel()
 

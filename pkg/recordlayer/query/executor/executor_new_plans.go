@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strconv"
 
+	"google.golang.org/protobuf/proto"
+
+	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -296,7 +299,7 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 				// comparison key arrives as a neutral [16]byte the tuple packer
 				// can't encode; convert it to tuple.UUID so compareKeys' Pack
 				// doesn't panic on a multi-aggregate intersection over a UUID
-				// GROUP BY key (RFC-162). Mirrors mergeSortCursor.extractKey.
+				// GROUP BY key (RFC-162). Mirrors packedDedupKey's UUID arm.
 				t[i] = uuidToTupleElement(widenInt32(v))
 			}
 			return t
@@ -461,6 +464,15 @@ func executeUnorderedUnion(
 	if len(inners) == 0 {
 		return recordlayer.Empty[QueryResult](), nil
 	}
+	// Correct-or-loud (the RFC-180 A2 defect class, same treatment as
+	// executeUnionBuffered): this eager concat has no per-child continuation
+	// encoding, and before this guard it fed the PARENT's continuation verbatim
+	// to EVERY child — a raw-key scan child consumed it as a scan position and
+	// silently started mid-stream. Decline typed until per-branch states land
+	// (WS-A follow-up); children below always start fresh (nil).
+	if len(continuation) > 0 {
+		return nil, &UnsupportedContinuationError{Shape: "unordered union"}
+	}
 	var md *recordlayer.RecordMetaData
 	if store != nil {
 		md = store.GetRecordMetaData()
@@ -477,7 +489,7 @@ func executeUnorderedUnion(
 	childProps := props.ClearSkipAndLimit()
 	cursors := make([]recordlayer.RecordCursor[QueryResult], 0, len(inners))
 	for i, inner := range inners {
-		c, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, childProps)
+		c, err := ExecutePlan(ctx, inner, store, evalCtx, nil, childProps)
 		if err != nil {
 			for _, prev := range cursors {
 				_ = prev.Close()
@@ -816,25 +828,52 @@ func executeInJoin(
 		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	}
 
+	// Java RecordQueryInJoinPlan.executePlan (:112-131):
+	//   RecordCursor.flatMapPipelined(
+	//       outerCont -> RecordCursor.fromList(getValues(context), outerCont),
+	//       (outerValue, innerCont) -> inner.executePlan(context.withBinding(...),
+	//                                       innerCont, props.clearSkipAndLimit()),
+	//       checkFunc, continuation, pipelineSize)
+	//     .skipThenLimit(skip, limit)
+	// The continuation is the flatMap machinery's (outer list index, inner
+	// continuation, check value) triple, so a resume lands on the SAME in-value
+	// (validated by the check bytes) and continues its inner mid-stream. The
+	// pre-A5 eager concat discarded the incoming continuation entirely — every
+	// resumed page replayed the whole IN-join from value 0.
 	bindingID := values.NamedCorrelationIdentifier(p.GetBindingName())
-	var cursors []recordlayer.RecordCursor[QueryResult]
-	for _, val := range inValues {
+	outerFactory := func(cont []byte) recordlayer.RecordCursor[any] {
+		return recordlayer.FromListWithContinuation(inValues, cont)
+	}
+	innerFactory := func(val any, innerCont []byte) recordlayer.RecordCursor[QueryResult] {
 		boundCtx := evalCtx.WithBinding(bindingID, val)
-		cursor, err := ExecutePlan(ctx, p.GetInner(), store, boundCtx, nil, props)
+		cursor, err := ExecutePlan(ctx, p.GetInner(), store, boundCtx, innerCont, props.ClearSkipAndLimit())
 		if err != nil {
-			for _, c := range cursors {
-				c.Close()
-			}
-			return nil, err
+			return &errResultCursor{err: err}
 		}
-		cursors = append(cursors, cursor)
+		return cursor
 	}
+	cursor := recordlayer.FlatMapPipelinedWithCheck(outerFactory, innerFactory, inValueCheckBytes, continuation, 1)
+	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+}
 
-	if len(cursors) == 1 {
-		return cursors[0], nil
+// inValueCheckBytes is the IN-join flatMap check value — a deterministic byte
+// form of the current in-value validating on resume that the outer list
+// element at the saved index is still the same value. Java packs
+// Tuple.from(ScanComparisons.toTupleItem(outerValue)) (RecordQueryInJoinPlan
+// :123-129, DynamicMessage → toByteArray). Go in-values are plan-time-evaluated
+// scalars; the tuple packer covers all of them after the UUID/int32 wire
+// canonicalizations, gated by an explicit whitelist (the packer panics on
+// anything else — RFC-134 forbids a recover boundary here). A value outside
+// the whitelist yields NO check bytes (nil) — the resume then skips the
+// outer-identity check, exactly the checker==null degradation Java's Cascades
+// path runs with everywhere.
+func inValueCheckBytes(val any) []byte {
+	v := uuidToTupleElement(widenInt32(val))
+	switch v.(type) {
+	case nil, int, int64, uint, uint64, float32, float64, bool, string, []byte, tuple.UUID:
+		return tuple.Tuple{v}.Pack()
 	}
-
-	return newConcatCursor(cursors), nil
+	return nil
 }
 
 func executeInUnion(
@@ -852,41 +891,68 @@ func executeInUnion(
 	}
 
 	// Single binding dimension: execute inner once per IN value,
-	// merge-sort if comparison keys exist, otherwise concat.
+	// merge-sort if comparison keys exist, otherwise concat. Mirrors Java
+	// RecordQueryInUnionPlan.executePlan (:150-175): size==1 hands the
+	// continuation straight to the sole child; otherwise the children are
+	// CURSOR FACTORIES and the continuation is the UnionCursor's per-child
+	// UnionContinuation, decoded into each child's start state.
 	if len(bindingNames) == 1 && len(inSources[0]) > 0 {
 		bindingID := values.NamedCorrelationIdentifier(bindingNames[0])
-		var cursors []recordlayer.RecordCursor[QueryResult]
-		for _, val := range inSources[0] {
-			boundCtx := evalCtx.WithBinding(bindingID, val)
-			cursor, err := ExecutePlan(ctx, p.GetInner(), store, boundCtx, nil, props.ClearSkipAndLimit())
-			if err != nil {
-				for _, c := range cursors {
-					c.Close()
+		vals := inSources[0]
+		childFactory := func(val any) recordlayer.CursorFactory[QueryResult] {
+			return func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+				boundCtx := evalCtx.WithBinding(bindingID, val)
+				cursor, err := ExecutePlan(ctx, p.GetInner(), store, boundCtx, cont, props.ClearSkipAndLimit())
+				if err != nil {
+					return &errResultCursor{err: err}
 				}
-				return nil, err
+				return cursor
 			}
-			cursors = append(cursors, cursor)
 		}
-		if len(cursors) == 1 {
-			return applySkipLimit(cursors[0], props.Skip, props.ReturnedRowLimit), nil
+		if len(vals) == 1 {
+			// Java: size == 1 → childPlan.executePlan(store, childContext,
+			// continuation, executeProperties) — the raw child continuation IS
+			// the in-union continuation.
+			return applySkipLimit(childFactory(vals[0])(continuation), props.Skip, props.ReturnedRowLimit), nil
+		}
+		factories := make([]recordlayer.CursorFactory[QueryResult], len(vals))
+		for i, val := range vals {
+			factories[i] = childFactory(val)
 		}
 		compKeys := p.GetComparisonKeys()
 		if len(compKeys) > 0 {
-			merged := &mergeSortCursor{
-				cursors:   cursors,
-				compKeys:  compKeys,
-				reverse:   p.IsReverse(),
-				dedup:     true,
-				peeked:    make([]QueryResult, len(cursors)),
-				hasPeeked: make([]bool, len(cursors)),
-				exhausted: make([]bool, len(cursors)),
+			merged, err := newMergeSortCursorFromFactories(factories, compKeys, p.IsReverse(), true, continuation)
+			if err != nil {
+				return nil, err
 			}
 			return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
 		}
-		return applySkipLimit(newConcatCursor(cursors), props.Skip, props.ReturnedRowLimit), nil
+		// No comparison keys (order-free IN union): a resumable branch-tagged
+		// concat chain (concatFactories, shared with executeUnionStreaming)
+		// instead of the pre-A5 eager concat that discarded the continuation.
+		return applySkipLimit(concatFactories(factories, continuation), props.Skip, props.ReturnedRowLimit), nil
 	}
 
 	return nil, fmt.Errorf("executeInUnion: multi-binding IN union (%d bindings) not yet implemented", len(bindingNames))
+}
+
+// concatFactories folds N cursor factories into a right-nested chain of binary
+// recordlayer.ConcatCursors (Java's ConcatCursor with the branch-tagged
+// ConcatContinuation proto), so the concat resumes the branch the continuation
+// names. The single concat fold — both executeUnionStreaming (UNION ALL) and
+// executeInUnion's order-free arm delegate here.
+func concatFactories(factories []recordlayer.CursorFactory[QueryResult], continuation []byte) recordlayer.RecordCursor[QueryResult] {
+	if len(factories) == 1 {
+		return factories[0](continuation)
+	}
+	tail := factories[len(factories)-1]
+	for i := len(factories) - 2; i >= 1; i-- {
+		fi, next := factories[i], tail
+		tail = func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+			return recordlayer.ConcatCursors(fi, next, cont)
+		}
+	}
+	return recordlayer.ConcatCursors(factories[0], tail, continuation)
 }
 
 func executeMergeSortUnion(
@@ -902,165 +968,421 @@ func executeMergeSortUnion(
 		return newEmptyCursor[QueryResult](), nil
 	}
 
-	cursors := make([]recordlayer.RecordCursor[QueryResult], len(inners))
+	// Java RecordQueryUnionPlanBase.executePlan: children are CURSOR FACTORIES
+	// (childContinuation → executePlan(child, childContinuation, childProps)),
+	// and the union continuation decodes into per-child start states. The
+	// pre-A5 eager construction discarded the incoming continuation — a
+	// resumed merge replayed every leg from row 0.
+	factories := make([]recordlayer.CursorFactory[QueryResult], len(inners))
 	for i, inner := range inners {
-		c, err := ExecutePlan(ctx, inner, store, evalCtx, nil, props.ClearSkipAndLimit())
-		if err != nil {
-			for _, prev := range cursors[:i] {
-				prev.Close()
+		inner := inner
+		factories[i] = func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+			c, err := ExecutePlan(ctx, inner, store, evalCtx, cont, props.ClearSkipAndLimit())
+			if err != nil {
+				return &errResultCursor{err: err}
 			}
-			return nil, err
+			return c
 		}
-		cursors[i] = c
 	}
-
-	return &mergeSortCursor{
-		cursors:   cursors,
-		compKeys:  p.GetComparisonKeys(),
-		reverse:   p.IsReverse(),
-		dedup:     p.RemovesDuplicates(),
-		peeked:    make([]QueryResult, len(cursors)),
-		hasPeeked: make([]bool, len(cursors)),
-		exhausted: make([]bool, len(cursors)),
-	}, nil
-}
-
-type mergeSortCursor struct {
-	cursors   []recordlayer.RecordCursor[QueryResult]
-	compKeys  []values.Value
-	reverse   bool
-	dedup     bool
-	peeked    []QueryResult
-	hasPeeked []bool
-	exhausted []bool
-	lastKey   string
-	hasLast   bool
-	closed    bool
-}
-
-func (m *mergeSortCursor) IsClosed() bool { return m.closed }
-
-func (m *mergeSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, err
-		}
-		if err := m.fillPeekBuffers(ctx); err != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, err
-		}
-
-		bestIdx := -1
-		for i := range m.cursors {
-			if !m.hasPeeked[i] {
-				continue
-			}
-			if bestIdx < 0 || m.isBetter(m.peeked[i], m.peeked[bestIdx]) {
-				bestIdx = i
-			}
-		}
-
-		if bestIdx < 0 {
-			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
-		}
-
-		result := m.peeked[bestIdx]
-		m.hasPeeked[bestIdx] = false
-
-		if m.dedup {
-			key := m.extractKey(result)
-			if m.hasLast && key == m.lastKey {
-				continue
-			}
-			m.lastKey = key
-			m.hasLast = true
-		}
-
-		return recordlayer.NewResultWithValue(result, &recordlayer.StartContinuation{}), nil
+	if len(factories) == 1 {
+		// A 1-leg merge union cannot occur from the planner (the distinct-union
+		// rule requires >= 2 legs, matching Java UnionCursor.create's >= 2
+		// check); defensively hand the continuation straight to the sole leg —
+		// Java's InUnion size==1 arm.
+		return applySkipLimit(factories[0](continuation), props.Skip, props.ReturnedRowLimit), nil
 	}
+	merged, err := newMergeSortCursorFromFactories(
+		factories, p.GetComparisonKeys(), p.IsReverse(), p.RemovesDuplicates(), continuation)
+	if err != nil {
+		return nil, err
+	}
+	return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
 }
 
-func (m *mergeSortCursor) fillPeekBuffers(ctx context.Context) error {
-	for i := range m.cursors {
-		if m.hasPeeked[i] || m.exhausted[i] {
-			continue
+// mergeSortChildState tracks one child of the merge-sort union — a faithful
+// port of Java MergeCursorState / KeyedMergeCursorState
+// (provider/foundationdb/cursors/MergeCursorState.java,
+// KeyedMergeCursorState.java). cont is the child's cached resume point: it is
+// initialized to the child's START state (or its decoded resume position) and
+// advances ONLY when
+//   - the child yields NO value (handleNextCursorResult, MergeCursorState
+//     .java:58-63 — a stop's continuation IS the safe resume point), or
+//   - the child's held value is CONSUMED into an emitted merge row (consume,
+//     :76-81).
+//
+// A PEEKED-but-unconsumed row never advances cont — the emitted-row snapshot
+// then re-reads that row on resume instead of silently skipping it.
+type mergeSortChildState struct {
+	cursor  recordlayer.RecordCursor[QueryResult]
+	cont    recordlayer.RecordCursorContinuation
+	result  recordlayer.RecordCursorResult[QueryResult]
+	pulled  bool  // an OnNext result is cached and not yet consumed
+	keyVals []any // comparison-key values of the held row (KeyedMergeCursorState.comparisonKey)
+}
+
+// pull fetches the child's next result if none is cached (Java
+// MergeCursorState.getOnNextFuture + handleNextCursorResult: the onNext future
+// is created once and cleared only by consume, so a stopped child's cached
+// result is re-served without re-pulling the cursor).
+func (s *mergeSortChildState) pull(ctx context.Context, m *mergeSortCursor) error {
+	if s.pulled {
+		return nil
+	}
+	result, err := s.cursor.OnNext(ctx)
+	if err != nil {
+		return err
+	}
+	s.result = result
+	s.pulled = true
+	if result.HasNext() {
+		kv, kerr := m.evalCompKeys(result.GetValue())
+		if kerr != nil {
+			return kerr
 		}
-		result, err := m.cursors[i].OnNext(ctx)
-		if err != nil {
-			return err
-		}
-		if result.HasNext() {
-			m.peeked[i] = result.GetValue()
-			m.hasPeeked[i] = true
-		} else if result.GetNoNextReason().IsOutOfBand() {
-			// A branch cut off OUT-OF-BAND (resource limit, paginate mode) cannot be
-			// merged correctly — treating it as exhausted would drop the rest of that
-			// sorted run and emit a wrong merge order. Error instead (RFC-106a).
-			return &recordlayer.ScanLimitReachedError{Reason: result.GetNoNextReason()}
-		} else {
-			m.exhausted[i] = true
-		}
+		s.keyVals = kv
+	} else {
+		s.keyVals = nil
+		// No value: the child advanced to a stop — its continuation is the
+		// safe resume point (MergeCursorState.java:61).
+		s.cont = result.GetContinuation()
 	}
 	return nil
 }
 
-func (m *mergeSortCursor) isBetter(a, b QueryResult) bool {
-	for _, key := range m.compKeys {
-		// Merge-order keys are field extractions; the runtime typed-error
-		// family is unreachable and the comparator has no error channel, so
-		// a stray error is a planner invariant violation (panic, matching
-		// the prior no-recover behaviour). Resolves against each
-		// row's ordinal row via compKeyEvalArg.
-		va, err := key.Evaluate(compKeyEvalArg(a))
-		if err != nil {
-			panic(err)
+// consume records that the held row was emitted as part of a merge result,
+// advancing the cached continuation past it (MergeCursorState.java:76-81).
+func (s *mergeSortChildState) consume() {
+	s.cont = s.result.GetContinuation()
+	s.pulled = false
+	s.keyVals = nil
+}
+
+// mergeSortCursor merges N compatibly-ordered children — Java's UnionCursor
+// (dedup=true: per-step advance-all-equal on the comparison key,
+// UnionCursor.java:100-131) riding the MergeCursor state machine. dedup=false
+// is the ordered UNION-ALL merge (Go's RecordQueryMergeSortUnionPlan with
+// removesDuplicates=false): only the first minimum child is consumed per step,
+// so cross-child ties emit every tied row.
+type mergeSortCursor struct {
+	states   []*mergeSortChildState
+	compKeys []values.Value
+	reverse  bool
+	dedup    bool
+	closed   bool
+	// lastNoNext caches a terminal result (Java MergeCursor.onNext:291-293:
+	// once stopped, every later onNext returns the same result).
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
+}
+
+// unionChildResume is one child's decoded start state from a
+// RecordCursorProto.UnionContinuation — START (zero value), MID (continuation
+// bytes), or END (exhausted).
+type unionChildResume struct {
+	continuation []byte
+	exhausted    bool
+}
+
+// decodeUnionContinuation splits a UnionContinuation into n per-child resume
+// states — the exact inverse of mergeSortContinuation.ToBytes and a faithful
+// port of Java UnionCursorContinuation.from(bytes, n): absent fields mean
+// START, first_exhausted/second_exhausted (and other_child_state.exhausted)
+// mean END, continuation bytes mean MID. A corrupt token or a child-count
+// mismatch fails loudly (Java's RecordCoreException / the
+// "expected continuation count does not match read" RecordCoreArgumentException)
+// — never a silent fresh restart, which would re-emit rows the caller already
+// consumed.
+func decodeUnionContinuation(data []byte, n int) ([]unionChildResume, error) {
+	out := make([]unionChildResume, n)
+	if len(data) == 0 {
+		return out, nil // all children fresh (START)
+	}
+	msg := &gen.UnionContinuation{}
+	if err := msg.UnmarshalVT(data); err != nil {
+		return nil, &recordlayer.ContinuationParseError{Message: "invalid continuation", RawBytes: data, Cause: err}
+	}
+	// Java UnionCursorContinuation.from(parsed, n) always reads first + second
+	// + every other_child_state entry and requires the total to equal n.
+	if read := 2 + len(msg.OtherChildState); read != n {
+		return nil, fmt.Errorf("invalid continuation (expected continuation count does not match read): expected %d, read %d", n, read)
+	}
+	if msg.FirstContinuation != nil {
+		out[0] = unionChildResume{continuation: msg.FirstContinuation}
+	} else if msg.GetFirstExhausted() {
+		out[0] = unionChildResume{exhausted: true}
+	}
+	if msg.SecondContinuation != nil {
+		out[1] = unionChildResume{continuation: msg.SecondContinuation}
+	} else if msg.GetSecondExhausted() {
+		out[1] = unionChildResume{exhausted: true}
+	}
+	for i, cs := range msg.OtherChildState {
+		if cs.Continuation != nil {
+			out[i+2] = unionChildResume{continuation: cs.Continuation}
+		} else if cs.GetExhausted() {
+			out[i+2] = unionChildResume{exhausted: true}
 		}
-		vb, err := key.Evaluate(compKeyEvalArg(b))
-		if err != nil {
-			panic(err)
+	}
+	return out, nil
+}
+
+// newMergeSortCursorFromFactories constructs the merge over child CURSOR
+// FACTORIES, decoding the incoming continuation into per-child start states —
+// Java UnionCursor.createCursorStates + KeyedMergeCursorState.from: an END
+// child is NEVER re-opened (an empty cursor with an END continuation stands in
+// for it); a MID child resumes from its own bytes; a START child begins fresh.
+func newMergeSortCursorFromFactories(
+	factories []recordlayer.CursorFactory[QueryResult],
+	compKeys []values.Value,
+	reverse, dedup bool,
+	continuation []byte,
+) (*mergeSortCursor, error) {
+	resumes, err := decodeUnionContinuation(continuation, len(factories))
+	if err != nil {
+		return nil, err
+	}
+	states := make([]*mergeSortChildState, len(factories))
+	for i, factory := range factories {
+		if resumes[i].exhausted {
+			// Java MergeCursorState.from: continuation.isEnd() →
+			// (RecordCursor.empty(), END) — the exhausted child stays exhausted.
+			states[i] = &mergeSortChildState{cursor: newEmptyCursor[QueryResult](), cont: &recordlayer.EndContinuation{}}
+			continue
 		}
-		cmp := compareValues(va, vb)
+		var cont recordlayer.RecordCursorContinuation = &recordlayer.StartContinuation{}
+		if len(resumes[i].continuation) > 0 {
+			cont = recordlayer.NewBytesContinuation(resumes[i].continuation)
+		}
+		states[i] = &mergeSortChildState{cursor: factory(resumes[i].continuation), cont: cont}
+	}
+	return &mergeSortCursor{states: states, compKeys: compKeys, reverse: reverse, dedup: dedup}, nil
+}
+
+func (m *mergeSortCursor) IsClosed() bool { return m.closed }
+
+// OnNext is Java MergeCursor.onNext (:288-305) with UnionCursor's
+// computeNextResultStates (:74-98) and chooseStates (:101-131) inlined:
+// pull ALL children (whenAll), stop the whole merge if ANY child stopped for a
+// limit (in-band ReturnLimitReached included — treating it as exhaustion would
+// silently drop that child's remaining rows), otherwise emit the minimum-key
+// row, consume the chosen children, and snapshot every child's cached
+// continuation into the emitted row's lazy UnionContinuation.
+func (m *mergeSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if m.lastNoNext != nil {
+		return *m.lastNoNext, nil
+	}
+	if m.closed {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+	}
+	if err := ctx.Err(); err != nil {
+		return recordlayer.RecordCursorResult[QueryResult]{}, err
+	}
+
+	for _, s := range m.states {
+		if err := s.pull(ctx, m); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
+	}
+
+	// UnionCursor.computeNextResultStates (:77-96): any child stopped for a
+	// LIMIT (isLimitReached == any non-exhaustion reason) stops the merge with
+	// the strongest child reason and the snapshot continuation. The merge
+	// cannot keep going: it needs every child's next value to know the minimum.
+	anyHasNext := false
+	for _, s := range m.states {
+		if s.result.HasNext() {
+			anyHasNext = true
+		} else if s.result.GetNoNextReason().IsLimitReached() {
+			return m.stopWith(m.strongestNoNextReason()), nil
+		}
+	}
+	if !anyHasNext {
+		// All children exhausted: the snapshot is all-END (IsEnd() true),
+		// satisfying the SourceExhausted invariant.
+		return m.stopWith(recordlayer.SourceExhausted), nil
+	}
+
+	// chooseStates (UnionCursor.java:101-131): collect every child holding the
+	// minimum comparison key (maximum for reverse — the comparator flip).
+	var chosen []*mergeSortChildState
+	var minKey []any
+	for _, s := range m.states {
+		if !s.result.HasNext() {
+			continue
+		}
+		cmp := -1 // first key seen is always chosen
+		if chosen != nil {
+			cmp = m.compareKeyVals(s.keyVals, minKey)
+		}
+		if cmp < 0 {
+			chosen = chosen[:0]
+			minKey = s.keyVals
+		}
+		if cmp <= 0 {
+			chosen = append(chosen, s)
+		}
+	}
+	if !m.dedup {
+		// Ordered UNION-ALL merge: consume ONLY the first minimum child; the
+		// other tied children re-offer their rows on later steps, so every
+		// tied row is emitted. (Java's UnionCursor always dedups — the ALL
+		// variant is the Go merge-sort-union with removesDuplicates=false.)
+		chosen = chosen[:1]
+	}
+
+	// MergeCursor.onNext (:299-301): take the first chosen child's value,
+	// consume EVERY chosen child (the advance-all-equal dedup — one emitted
+	// row per distinct comparison key, no cross-page state), then snapshot.
+	result := chosen[0].result.GetValue()
+	for _, s := range chosen {
+		s.consume()
+	}
+	return recordlayer.NewResultWithValue(result, m.snapshotContinuation()), nil
+}
+
+// stopWith caches and returns the merge's terminal no-next result.
+func (m *mergeSortCursor) stopWith(reason recordlayer.NoNextReason) recordlayer.RecordCursorResult[QueryResult] {
+	res := recordlayer.NewResultNoNext[QueryResult](reason, m.snapshotContinuation())
+	m.lastNoNext = &res
+	return res
+}
+
+// evalCompKeys evaluates the comparison keys against a held row's ordinal row
+// (KeyedMergeCursorState.handleNextCursorResult's comparisonKeyFunction.apply).
+// Comparison keys are plan-baked field extractions; an evaluation error is a
+// planner invariant violation surfaced as a loud cursor error.
+func (m *mergeSortCursor) evalCompKeys(qr QueryResult) ([]any, error) {
+	kv := make([]any, len(m.compKeys))
+	for i, key := range m.compKeys {
+		v, err := key.Evaluate(compKeyEvalArg(qr))
+		if err != nil {
+			return nil, fmt.Errorf("merge comparison key %d: %w", i, err)
+		}
+		kv[i] = v
+	}
+	return kv, nil
+}
+
+// compareKeyVals compares two evaluated comparison-key vectors in merge order
+// (Java KeyComparisons.KEY_COMPARATOR with the reverse flip,
+// UnionCursor.java:114). compareValues is the same per-element ordering
+// authority the sort/merge paths share (Java-faithful float total order, FDB
+// tuple order for bytes/UUID/bool).
+func (m *mergeSortCursor) compareKeyVals(a, b []any) int {
+	for i := range m.compKeys {
+		cmp := compareValues(a[i], b[i])
 		if cmp == 0 {
 			continue
 		}
 		if m.reverse {
-			return cmp > 0
+			return -cmp
 		}
-		return cmp < 0
+		return cmp
 	}
-	return false
+	return 0
 }
 
-func (m *mergeSortCursor) extractKey(qr QueryResult) string {
-	if len(m.compKeys) == 0 {
-		return ""
-	}
-	t := make(tuple.Tuple, len(m.compKeys))
-	for i, key := range m.compKeys {
-		// Merge-dedup keys are field extractions; the runtime typed-error
-		// family is unreachable and extractKey has no error channel, so a
-		// stray error is a planner invariant violation (panic, matching the
-		// prior no-recover behaviour). Resolves against the ordinal
-		// row via compKeyEvalArg.
-		v, err := key.Evaluate(compKeyEvalArg(qr))
-		if err != nil {
-			panic(err)
+// strongestNoNextReason is Java MergeCursor.getStrongestNoNextReason
+// (:172-194): an out-of-band reason beats an in-band limit beats
+// SOURCE_EXHAUSTED. Only called with at least one stopped child.
+func (m *mergeSortCursor) strongestNoNextReason() recordlayer.NoNextReason {
+	reason := recordlayer.SourceExhausted
+	found := false
+	for _, s := range m.states {
+		if !s.pulled || s.result.HasNext() {
+			continue
 		}
-		switch tv := v.(type) {
-		case nil, int64, int, uint, uint64, float32, float64, string, []byte, bool:
-			t[i] = tv
-		case int32:
-			t[i] = int64(tv)
-		case [16]byte:
-			// A UUID merge key must pack as a tuple.UUID (0x30 + 16 bytes) so the
-			// packed-tuple ordering the merge relies on matches the unsigned
-			// big-endian UUID order — the fmt.Sprintf default below would pack a
-			// decimal-list string ("[16]uint8:[85 14 …]") that sorts lexically.
-			t[i] = tuple.UUID(tv)
+		childReason := s.result.GetNoNextReason()
+		if !found || childReason.IsOutOfBand() || reason.IsSourceExhausted() {
+			reason = childReason
+			found = true
+		}
+	}
+	return reason
+}
+
+// snapshotContinuation captures every child's CURRENT cached continuation
+// (MergeCursor.getChildContinuations, called via getContinuationObject AFTER
+// the chosen states were consumed): consumed children sit past their emitted
+// rows, peeked-but-unconsumed children sit BEFORE their held rows, stopped
+// children sit at their own stop positions.
+func (m *mergeSortCursor) snapshotContinuation() *mergeSortContinuation {
+	children := make([]recordlayer.RecordCursorContinuation, len(m.states))
+	for i, s := range m.states {
+		c := s.cont
+		if c == nil {
+			c = &recordlayer.StartContinuation{}
+		}
+		children[i] = c
+	}
+	return &mergeSortContinuation{children: children}
+}
+
+// mergeSortContinuation lazily encodes the merge's per-child state snapshot as
+// Java's RecordCursorProto.UnionContinuation (UnionCursorContinuation +
+// MergeCursorContinuation): child 0 → first_continuation/first_exhausted,
+// child 1 → second_continuation/second_exhausted, children 2+ →
+// other_child_state (exhausted=true for END, exhausted=false for START, bytes
+// for MID; for the first two children START is simply the absent field). A
+// child encode failure propagates through the RecordCursorContinuation
+// contract (the flatMapCursorContinuation lazy-encode pattern). IsEnd mirrors
+// UnionCursorContinuation.isEnd: end only when EVERY child is at end, and
+// MergeCursorContinuation.toBytes returns nil at end.
+type mergeSortContinuation struct {
+	children []recordlayer.RecordCursorContinuation
+}
+
+func (u *mergeSortContinuation) IsEnd() bool {
+	for _, c := range u.children {
+		if !c.IsEnd() {
+			return false
+		}
+	}
+	return true
+}
+
+func (u *mergeSortContinuation) ToBytes() ([]byte, error) {
+	if u.IsEnd() {
+		return nil, nil
+	}
+	msg := &gen.UnionContinuation{}
+	for i, c := range u.children {
+		end := c.IsEnd()
+		var b []byte
+		if !end {
+			var err error
+			b, err = c.ToBytes()
+			if err != nil {
+				return nil, fmt.Errorf("union continuation child %d: %w", i, err)
+			}
+		}
+		switch i {
+		case 0:
+			if end {
+				msg.FirstExhausted = proto.Bool(true)
+			} else if len(b) > 0 {
+				msg.FirstContinuation = b
+			}
+		case 1:
+			if end {
+				msg.SecondExhausted = proto.Bool(true)
+			} else if len(b) > 0 {
+				msg.SecondContinuation = b
+			}
 		default:
-			t[i] = fmt.Sprintf("%T:%v", v, v)
+			cs := &gen.UnionContinuation_CursorState{}
+			switch {
+			case end:
+				cs.Exhausted = proto.Bool(true)
+			case len(b) == 0:
+				// Java's START_PROTO writes exhausted=false explicitly.
+				cs.Exhausted = proto.Bool(false)
+			default:
+				cs.Continuation = b
+			}
+			msg.OtherChildState = append(msg.OtherChildState, cs)
 		}
 	}
-	return string(t.Pack())
+	return msg.MarshalVT()
 }
 
 func (m *mergeSortCursor) Close() error {
@@ -1069,8 +1391,8 @@ func (m *mergeSortCursor) Close() error {
 	}
 	m.closed = true
 	var firstErr error
-	for _, c := range m.cursors {
-		if err := c.Close(); err != nil && firstErr == nil {
+	for _, s := range m.states {
+		if err := s.cursor.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

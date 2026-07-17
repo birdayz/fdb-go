@@ -3,7 +3,6 @@ package recordlayer
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"testing"
 )
@@ -1054,67 +1053,4 @@ func TestBugBounty3Cursor_DeepNesting(t *testing.T) {
 	// Close should close all 100 nested cursors without error
 	// (already closed by AsList, but verify no panic on double-close)
 	_ = cursor.Close()
-}
-
-// === Verification: Union cursor first call initialization ===
-
-func TestBugBounty3Cursor_UnionFirstCallOnlyAdvancesOnce(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	// Track how many times each child cursor's OnNext is called.
-	// The union should advance each child exactly once on the first call,
-	// then only advance consumed children on subsequent calls.
-	c1Calls := 0
-	c1 := MapCursor(FromList([]int{1, 3, 5}), func(v int) int {
-		c1Calls++
-		return v
-	})
-
-	c2Calls := 0
-	c2 := MapCursor(FromList([]int{2, 4, 6}), func(v int) int {
-		c2Calls++
-		return v
-	})
-
-	union := Union([]RecordCursor[int]{c1, c2}, intCompKey, false)
-
-	// First call: should advance both children once
-	r1, err := union.OnNext(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !r1.HasNext() || r1.GetValue() != 1 {
-		t.Fatalf("expected 1, got %v", r1.GetValue())
-	}
-
-	// After first OnNext: c1 was advanced twice (once for initial, once for dedup
-	// because it won with key 1). c2 was advanced once (initial only, it didn't win).
-	// MapCursor counts are for the transform, which fires on successful values.
-	// So c1: map fired for initial advance (value 1) + dedup advance (value 3) = 2 calls
-	// c2: map fired for initial advance (value 2) = 1 call
-	if c1Calls != 2 {
-		t.Logf("c1 transform calls after first OnNext: %d (expected 2)", c1Calls)
-	}
-	if c2Calls != 1 {
-		t.Logf("c2 transform calls after first OnNext: %d (expected 1)", c2Calls)
-	}
-
-	// Read all remaining
-	results := []int{1}
-	for {
-		r, err := union.OnNext(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !r.HasNext() {
-			break
-		}
-		results = append(results, r.GetValue())
-	}
-
-	expected := []int{1, 2, 3, 4, 5, 6}
-	if fmt.Sprintf("%v", results) != fmt.Sprintf("%v", expected) {
-		t.Fatalf("union results: got %v, want %v", results, expected)
-	}
 }

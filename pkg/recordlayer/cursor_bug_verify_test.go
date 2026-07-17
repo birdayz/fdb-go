@@ -47,46 +47,11 @@ var _ = Describe("CursorBugVerify", func() {
 		ctx = context.Background()
 	})
 
-	// Bug 1: UnionCursor must stop when a child hits an out-of-band limit.
-	// Java: UnionCursorBase.computeNextResultStates() stops when ANY child
-	// has !hasNext() && isLimitReached().
-	Describe("UnionCursor stops on child OOB limit", func() {
-		It("stops returning values when a child hits ScanLimitReached", func() {
-			cursorA := FromList([]int{1, 3, 5})
-			cursorB := newLimitedListCursor([]int{2}, 1, ScanLimitReached)
-			union := Union([]RecordCursor[int]{cursorA, cursorB}, intCompKey, false)
-
-			// First: A=1, B=2. Min=1.
-			r1, err := union.OnNext(ctx)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(r1.HasNext()).To(BeTrue())
-			Expect(r1.GetValue()).To(Equal(1))
-
-			// Second: A=3, B=2. Min=2 (B). Consume B -> B hits limit.
-			// Returns 2 (last safe value), defers stop.
-			r2, err := union.OnNext(ctx)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(r2.HasNext()).To(BeTrue())
-			Expect(r2.GetValue()).To(Equal(2))
-
-			// Third: union stops because B hit ScanLimitReached.
-			r3, err := union.OnNext(ctx)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(r3.HasNext()).To(BeFalse())
-			Expect(r3.GetNoNextReason()).To(Equal(ScanLimitReached))
-		})
-
-		It("stops immediately when child starts with OOB limit", func() {
-			cursorA := FromList([]int{1, 2, 3})
-			cursorB := newLimitedListCursor([]int{}, 0, ScanLimitReached)
-			union := Union([]RecordCursor[int]{cursorA, cursorB}, intCompKey, false)
-
-			r1, err := union.OnNext(ctx)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(r1.HasNext()).To(BeFalse())
-			Expect(r1.GetNoNextReason()).To(Equal(ScanLimitReached))
-		})
-	})
+	// Bug 1 (a merge union must stop when a child hits an out-of-band limit)
+	// was pinned here against the dead merge-union cursor, since removed. The
+	// behavior is pinned on the production pipeline — the executor's
+	// mergeSortCursor — by TestMergeSortCursor_OutOfBandChildStop_StrongestReason
+	// and TestMergeSortCursor_InBandChildStop_PropagatesWithSnapshot.
 
 	// Bug 2: LimitRowsCursor must preserve inner continuation for resumability.
 	// Java: RowLimitedCursor returns nextResult.getContinuation().
