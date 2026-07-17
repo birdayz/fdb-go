@@ -1796,6 +1796,7 @@ func executeUnionBuffered(
 	for branchIdx, inner := range inners {
 		cursor, err := ExecutePlan(ctx, inner, store, evalCtx, nil, props.ClearSkipAndLimit())
 		if err != nil {
+			props.State.ReleaseMemory(allCharged)
 			return nil, err
 		}
 		items, charged, err := CollectAllBounded(ctx, cursor, props.State, props.GetMaterializationLimit(), "buffered union branch")
@@ -2255,8 +2256,9 @@ func executeNestedLoopJoin(
 	}
 	// Live-bytes model: the inner side is re-materialized (and re-charged)
 	// on every page against the statement-wide state; the cursor releases
-	// its charges — inner rows plus any hash index — at page teardown.
-	cursor.chargedBytes = innerCharged
+	// its charges — inner rows plus any hash index — at page teardown. ADD
+	// to the tally: newNLJCursor already accumulated the hash-index charges.
+	cursor.chargedBytes += innerCharged
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 

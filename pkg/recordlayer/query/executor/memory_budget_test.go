@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 
@@ -343,14 +344,35 @@ func TestResumedSortBufferReleasesOnPageTeardown(t *testing.T) {
 // inner side fits the budget fails after enough page boundaries.
 func TestNLJInnerReleasesOnPageTeardown(t *testing.T) {
 	t.Parallel()
-	inner := make([]QueryResult, 4)
+	// ≥100 inner rows + a baked single-column equijoin so tryBuildHashIndex
+	// fires: the pin must cover BOTH tallies (inner rows and hash index) —
+	// an assignment instead of an addition when wiring the collect charge
+	// onto the cursor clobbers the constructor's hash tally and orphans it.
+	inner := make([]QueryResult, 150)
 	var innerBytes int64
 	for i := range inner {
 		inner[i] = dmap(map[string]any{"K": int64(i), "P": string(make([]byte, 64))})
 		innerBytes += estimateQueryResultBytes(inner[i])
 	}
-	// Budget fits the inner side once but not twice.
-	state := recordlayer.NewExecuteState(innerBytes + innerBytes/2)
+	preds := []predicates.QueryPredicate{
+		&predicates.ComparisonPredicate{
+			Operand: &values.FieldValue{
+				Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("O")},
+				Field:    "K",
+				Resolved: values.NewFieldPathOfSingle("K", 0, false),
+			},
+			Comparison: predicates.Comparison{
+				Type: predicates.ComparisonEquals,
+				Operand: &values.FieldValue{
+					Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("I")},
+					Field:    "K",
+					Resolved: values.NewFieldPathOfSingle("K", 0, false),
+				},
+			},
+		},
+	}
+	// Budget fits the inner side + hash index once but not twice.
+	state := recordlayer.NewExecuteState(innerBytes + innerBytes/2 + 150*(nljHashEntryBytes+16))
 	for page := 0; page < 3; page++ {
 		buf := newBoundedBuffer[QueryResult](state, 0, "test inner", estimateQueryResultBytes)
 		for _, r := range inner {
@@ -360,18 +382,21 @@ func TestNLJInnerReleasesOnPageTeardown(t *testing.T) {
 		}
 		cursor, err := newNLJCursor(
 			recordlayer.Empty[QueryResult](), buf.Items(),
-			plans.JoinInner, "O", "I", nil, nil, &EvaluationContext{}, state,
+			plans.JoinInner, "O", "I", preds, nil, EmptyEvaluationContext(), state,
 		)
 		if err != nil {
 			t.Fatalf("page %d: %v", page, err)
 		}
-		cursor.chargedBytes = buf.Charged()
+		if cursor.hashIndex == nil {
+			t.Fatalf("page %d: hash index was not built — the pin no longer covers the hash tally", page)
+		}
+		cursor.chargedBytes += buf.Charged()
 		if cerr := cursor.Close(); cerr != nil {
 			t.Fatalf("page %d: close: %v", page, cerr)
 		}
 	}
 	if used := state.MemUsed(); used != 0 {
-		t.Fatalf("after final page teardown all NLJ charges must be released, still holding %d bytes", used)
+		t.Fatalf("after final page teardown all NLJ charges (inner rows AND hash index) must be released, still holding %d bytes", used)
 	}
 }
 
