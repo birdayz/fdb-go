@@ -131,3 +131,15 @@ tests:
       - [90, 'Bob']
       - [85, 'Charlie']
       - [80, 'Alice']
+  # A positional ORDER BY in a catalog-built scalar subquery binds the
+  # OUTPUT slot, not a same-named source column: item 1 is `id AS score`,
+  # so ORDER BY 1 DESC picks the max id (8), never the max SCORE column.
+  - query: |-
+      SELECT (SELECT id AS score FROM scores ORDER BY 1 DESC LIMIT 1) AS picked FROM scores LIMIT 1
+    rows:
+      - [8]
+  # Same collision at top level (visitor path): ORDER BY 1 over
+  # `id AS score` sorts by id, never the same-named SCORE source column.
+  - query: SELECT id AS score FROM scores ORDER BY 1 DESC LIMIT 1
+    rows:
+      - [8]

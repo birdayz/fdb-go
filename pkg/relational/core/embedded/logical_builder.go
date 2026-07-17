@@ -570,11 +570,28 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			if expr == "" && ob.rawExpr != nil {
 				expr = canonicalTextOf(ob.rawExpr)
 			}
+			// A POSITIONAL key's resolved name is ALIAS-preferred
+			// (resolveSelectListPosition), but this sort sits BELOW the
+			// projection: the alias does not exist there and may collide
+			// with a same-named SOURCE column (`SELECT id AS score …
+			// ORDER BY 1` must sort by id, never the SCORE column).
+			// Rebase to the item's UNDERLYING text; Pos still rides along
+			// for output-slot baking where the input IS a projection.
+			if ob.pos >= 1 && ob.pos <= len(sq.projCols) && sq.projCols[ob.pos-1] != "" {
+				expr = strip(sq.projCols[ob.pos-1])
+			}
 			nullsFirst := ob.ascending
 			if ob.nullsFirst != nil {
 				nullsFirst = *ob.nullsFirst
 			}
-			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, BareRef: ob.bareRef})
+			// Pos carries through (as in the visitor twin): a positional
+			// key IS an output ordinal, and the translator bakes it to the
+			// output slot directly. Historically this path leaned on
+			// upgradeSortKeyValues' TEXT alias-rebasing of the resolved
+			// item name — which the BareRef gate correctly forbids (the
+			// name may collide with a source column: `SELECT id AS score …
+			// ORDER BY 1` must sort by slot 1, never by the SCORE column).
+			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Pos: ob.pos, BareRef: ob.bareRef})
 		}
 		op = logical.NewSort(op, keys)
 	}

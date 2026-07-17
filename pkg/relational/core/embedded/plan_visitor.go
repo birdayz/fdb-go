@@ -1542,7 +1542,16 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 				keys = append(keys, logical.SortKey{Expr: deferredStripProj[pos-1], Dir: dir, NullsFirst: nf})
 				continue
 			}
-			keys = append(keys, logical.SortKey{Expr: strip(posName), Dir: dir, NullsFirst: nf, Pos: pos})
+			// The positional name is ALIAS-preferred but this sort sits
+			// BELOW the final projection, where the alias does not exist
+			// and may collide with a same-named SOURCE column. Rebase to
+			// the item's UNDERLYING text (selectCols); Pos still rides
+			// along for output-slot baking over projection inputs.
+			expr := strip(posName)
+			if pos >= 1 && pos <= len(selectCols) && selectCols[pos-1] != "" {
+				expr = strip(selectCols[pos-1])
+			}
+			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nf, Pos: pos})
 			continue
 		}
 
