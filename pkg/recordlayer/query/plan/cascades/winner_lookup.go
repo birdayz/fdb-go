@@ -137,15 +137,18 @@ func getWinnerPlan(ref *expressions.Reference, ordering *RequestedOrdering, less
 // nil-inner Fetch shells never satisfy (a Fetch shell's inner is resolved
 // only at extraction; costed without it, it ranks artificially cheap).
 func memberSatisfiesOrdering(m expressions.RelationalExpression, requested *RequestedOrdering) bool {
-	if requested == nil || requested.IsPreserve() {
-		return true
-	}
+	// Physicality gates FIRST: a preserve request must not admit a logical
+	// member or a nil-inner Fetch shell either — bestSatisfyingMember
+	// promises "cheapest PHYSICAL member" unconditionally.
 	pe, ok := m.(physicalPlanExpression)
 	if !ok {
 		return false
 	}
 	if isNilInnerFetch(m) {
 		return false
+	}
+	if requested == nil || requested.IsPreserve() {
+		return true
 	}
 	ro := computeWrapperRichOrdering(pe)
 	if ro == nil {

@@ -896,12 +896,6 @@ type Task interface {
 	Run(p *Planner)
 }
 
-// orderingHinter is implemented by physical wrappers that can
-// declare what ordering they produce.
-type orderingHinter interface {
-	HintOrdering() properties.Ordering
-}
-
 // compensationProbeCorrelations returns the outer aliases that the bound prefix of
 // any scan beneath the compensation filter f is correlated to (the comparands of
 // its ScanComparisons). The data-access scan (scanPlanExpression / the physical
