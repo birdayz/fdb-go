@@ -612,6 +612,12 @@ func toFloat64Scalar(v any) (float64, bool) {
 		return float64(n), true
 	case int64:
 		return float64(n), true
+	case uint64:
+		// Tuple decoding preserves positive integers above math.MaxInt64 as
+		// uint64 (its only unsigned return) — a numeric value like any other.
+		return float64(n), true
+	case uint:
+		return float64(n), true
 	default:
 		return 0, false
 	}

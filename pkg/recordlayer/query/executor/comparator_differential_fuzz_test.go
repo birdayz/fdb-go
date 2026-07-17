@@ -52,11 +52,20 @@ func FuzzCompareValues_TupleOrderAgreement(f *testing.F) {
 	// reverted float32 arm fails on the SEED corpus, not just under fuzzing.
 	f.Add(uint8(4), uint64(math.Float32bits(2.5)), uint64(math.Float32bits(10.5)), "", "")
 	f.Add(uint8(0), math.Float64bits(math.NaN()), math.Float64bits(math.NaN()), "", "") // NaN==NaN branch
+	// The unsigned integer half: tuple decoding returns uint64 for positive
+	// values above math.MaxInt64, so uint64 slots ARE row-domain values.
+	f.Add(uint8(5), uint64(math.MaxInt64)+1, uint64(math.MaxUint64), "", "")
+	// Deterministic kill for a float-promotion revert of the integer arms:
+	// float64(2^63) == float64(2^63-1) ties the ADJACENT pair the exact
+	// integer comparison must order — on the seed corpus, not just under
+	// fuzzing.
+	f.Add(uint8(6), uint64(math.MaxInt64)+1, uint64(math.MaxInt64), "", "")
+	f.Add(uint8(6), uint64(0), uint64(0xFFFFFFFFFFFFFFFF), "", "") // uint64(0) vs int64(-1)
 
 	f.Fuzz(func(t *testing.T, kind uint8, aBits, bBits uint64, aStr, bStr string) {
 		var a, b any
 		var aNaN, bNaN bool
-		switch kind % 5 {
+		switch kind % 7 {
 		case 0:
 			af, bf := math.Float64frombits(aBits), math.Float64frombits(bBits)
 			a, b = af, bf
@@ -72,6 +81,13 @@ func FuzzCompareValues_TupleOrderAgreement(f *testing.F) {
 			a, b = af, bf
 			aNaN = math.IsNaN(float64(af))
 			bNaN = math.IsNaN(float64(bf))
+		case 5:
+			a, b = aBits, bBits
+		case 6:
+			// Mixed signed/unsigned integer pair. Both pack as the tuple
+			// INTEGER type (ordered by true numeric value), so byte-order
+			// agreement must hold across the signed/unsigned boundary too.
+			a, b = aBits, int64(bBits)
 		}
 
 		cmpAB, errAB := compareValues(a, b)
@@ -130,17 +146,25 @@ func FuzzCmpAnyVsCompareValues_PredicateSortSplit(f *testing.F) {
 	f.Add(uint8(0), uint8(1), uint64(7), uint64(7))             // int32 vs int64
 	f.Add(uint8(2), uint8(3), uint64(math.Float32bits(1.5)), math.Float64bits(1.5))
 	f.Add(uint8(2), uint8(2), uint64(math.Float32bits(2.5)), uint64(math.Float32bits(10.5))) // lexical-vs-numeric split
+	// Unsigned half of the integer domain (tuple decode above math.MaxInt64):
+	// both comparators must order it identically — the adjacent boundary pair
+	// deterministically kills a float-promotion revert on either side.
+	f.Add(uint8(4), uint8(1), uint64(math.MaxInt64)+1, uint64(math.MaxInt64))
+	f.Add(uint8(4), uint8(4), uint64(math.MaxInt64)+1, uint64(math.MaxUint64))
+	f.Add(uint8(4), uint8(1), uint64(0), uint64(0xFFFFFFFFFFFFFFFF)) // uint64(0) vs int64(-1)
 
 	mk := func(kind uint8, bits uint64) any {
-		switch kind % 4 {
+		switch kind % 5 {
 		case 0:
 			return int32(bits)
 		case 1:
 			return int64(bits)
 		case 2:
 			return math.Float32frombits(uint32(bits))
-		default:
+		case 3:
 			return math.Float64frombits(bits)
+		default:
+			return bits
 		}
 	}
 	// predSign derives the predicate-layer ordering through the exported

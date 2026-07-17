@@ -1588,60 +1588,23 @@ func compareValues(a, b any) (int, error) {
 	if b == nil {
 		return 1, nil
 	}
+	// Integer domain first, EXACTLY (values.CompareExactInts): tuple
+	// decoding admits the full signed range as int64 AND positive values
+	// above math.MaxInt64 as uint64, so integer pairs compare by true
+	// numeric value without a float round-trip. A mixed integer/float
+	// pair falls through to the float arms' total order.
+	if c, ok := values.CompareExactInts(a, b); ok {
+		return c, nil
+	}
 	switch av := a.(type) {
-	case int64:
-		switch bv := b.(type) {
-		case int64:
-			if av < bv {
-				return -1, nil
-			}
-			if av > bv {
-				return 1, nil
-			}
-			return 0, nil
-		case int32:
-			bv64 := int64(bv)
-			if av < bv64 {
-				return -1, nil
-			}
-			if av > bv64 {
-				return 1, nil
-			}
-			return 0, nil
-		default:
-			// int64 vs a floating operand: promote and use the
-			// Java-faithful float total order (NaN greatest, -0.0 < 0.0).
-			// A non-numeric b is the loud cross-type arm below.
-			if bf, ok := toFloat64Scalar(b); ok {
-				return values.CompareFloat64(float64(av), bf), nil
-			}
-		}
-	case int32:
-		av64 := int64(av)
-		switch bv := b.(type) {
-		case int64:
-			if av64 < bv {
-				return -1, nil
-			}
-			if av64 > bv {
-				return 1, nil
-			}
-			return 0, nil
-		case int32:
-			if av < bv {
-				return -1, nil
-			}
-			if av > bv {
-				return 1, nil
-			}
-			return 0, nil
-		default:
-			// int32 vs a floating operand: promote and use the
-			// Java-faithful float total order (NaN greatest, -0.0 < 0.0).
-			// A non-numeric b is the loud cross-type arm below.
-			if bf, ok := toFloat64Scalar(b); ok {
-				return values.CompareFloat64(float64(av), bf), nil
-			}
+	case int64, int32, int, uint64, uint:
+		// Integer vs a floating operand (the integer/integer case returned
+		// above): promote and use the Java-faithful float total order (NaN
+		// greatest, -0.0 < 0.0). A non-numeric b is the loud cross-type arm
+		// below.
+		if bf, ok := toFloat64Scalar(b); ok {
+			af, _ := toFloat64Scalar(av)
+			return values.CompareFloat64(af, bf), nil
 		}
 	case float64:
 		// Java-faithful float total order (values.CompareFloat64):

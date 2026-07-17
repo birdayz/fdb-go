@@ -95,8 +95,81 @@ func ToFloat64(v any) (f float64, isFloat, numeric bool) {
 		return float64(x), false, true
 	case int8:
 		return float64(x), false, true
+	case uint64:
+		// The FDB tuple layer decodes positive integers above math.MaxInt64
+		// as uint64 (its only unsigned return) — a numeric row value like
+		// any other.
+		return float64(x), false, true
+	case uint:
+		return float64(x), false, true
 	}
 	return 0, false, false
+}
+
+// CompareExactInts compares two values EXACTLY when both are admitted
+// integer forms — int/int8/int16/int32/int64 plus the uint/uint64 half the
+// tuple layer uses for positive values above math.MaxInt64. ok=false when
+// either side is not an integer. The order is by true numeric value — the
+// order the FDB tuple integer encoding gives an indexed column — computed
+// on (negative, magnitude) form so no pair round-trips through float64
+// (promotion ties adjacent values above 2^53 and at the 2^63 boundary).
+func CompareExactInts(a, b any) (int, bool) {
+	an, am, aok := intParts(a)
+	if !aok {
+		return 0, false
+	}
+	bn, bm, bok := intParts(b)
+	if !bok {
+		return 0, false
+	}
+	if an != bn {
+		if an {
+			return -1, true
+		}
+		return 1, true
+	}
+	if am == bm {
+		return 0, true
+	}
+	less := am < bm
+	if an {
+		// Both negative: larger magnitude is the smaller value.
+		less = !less
+	}
+	if less {
+		return -1, true
+	}
+	return 1, true
+}
+
+func intParts(v any) (neg bool, mag uint64, ok bool) {
+	switch n := v.(type) {
+	case int:
+		return intPartsSigned(int64(n))
+	case int8:
+		return intPartsSigned(int64(n))
+	case int16:
+		return intPartsSigned(int64(n))
+	case int32:
+		return intPartsSigned(int64(n))
+	case int64:
+		return intPartsSigned(n)
+	case uint:
+		return false, uint64(n), true
+	case uint64:
+		return false, n, true
+	default:
+		return false, 0, false
+	}
+}
+
+func intPartsSigned(n int64) (bool, uint64, bool) {
+	if n < 0 {
+		// Two's-complement negation via unsigned arithmetic is exact for
+		// math.MinInt64 (where -n would overflow).
+		return true, -uint64(n), true
+	}
+	return false, uint64(n), true
 }
 
 // LiteralValue wraps a Go-native literal in the matching Value

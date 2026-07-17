@@ -30,7 +30,10 @@ func TestToInt64(t *testing.T) {
 		{"string", "42", 0, false},
 		{"bool", true, 0, false},
 		{"nil", nil, 0, false},
-		{"uint64 not handled", uint64(42), 0, false}, // unsigned types deliberately excluded
+		// Unsigned stays excluded HERE: uint64 above math.MaxInt64 is not
+		// losslessly an int64. Exact integer comparison across the signed/
+		// unsigned boundary goes through CompareExactInts instead.
+		{"uint64 not handled", uint64(42), 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,7 +76,11 @@ func TestToFloat64(t *testing.T) {
 		{"string", "1.5", 0, false, false},
 		{"bool", true, 0, false, false},
 		{"nil", nil, 0, false, false},
-		{"uint64 not handled", uint64(42), 0, false, false},
+		// Unsigned IS numeric: the tuple layer decodes positive integers
+		// above math.MaxInt64 as uint64, so predicates/sorts meet uint64 on
+		// valid rows. The old "deliberately excluded" pin enshrined the gap.
+		{"uint64", uint64(42), 42, false, true},
+		{"uint", uint(7), 7, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

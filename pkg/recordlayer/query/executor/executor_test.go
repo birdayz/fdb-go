@@ -2679,6 +2679,56 @@ func TestIntersectionCompKeyFunc_WithKeyVals(t *testing.T) {
 
 // --- compareValues unit tests ---
 
+// TestCompareValues_UnsignedIntegerDomain pins the unsigned half of the
+// integer row domain:
+// tuple decoding preserves positive integers above math.MaxInt64 as uint64
+// (tuple.go's only unsigned return), so uint64 reaches the sort/merge
+// comparator on VALID same-domain data. The loud cross-type arm rejecting
+// it failed real ORDER BY / merge-union execution. Integer pairs compare
+// EXACTLY — float promotion would tie the adjacent boundary pair
+// (float64(2^63) == float64(2^63-1)).
+func TestCompareValues_UnsignedIntegerDomain(t *testing.T) {
+	t.Parallel()
+	big := uint64(math.MaxInt64) + 1
+	if mustCompareValues(t, big, uint64(math.MaxUint64)) >= 0 {
+		t.Fatal("2^63 < MaxUint64")
+	}
+	if mustCompareValues(t, big, big) != 0 {
+		t.Fatal("uint64 self-compare must be 0")
+	}
+	// Adjacent across the signed/unsigned boundary: exact, not float-tied.
+	if mustCompareValues(t, big, int64(math.MaxInt64)) <= 0 {
+		t.Fatal("2^63 > MaxInt64 (float promotion would tie this pair)")
+	}
+	if mustCompareValues(t, int64(math.MaxInt64), big) >= 0 {
+		t.Fatal("MaxInt64 < 2^63")
+	}
+	// Any negative sorts below any unsigned value.
+	if mustCompareValues(t, uint64(0), int64(-1)) <= 0 {
+		t.Fatal("uint64(0) > int64(-1)")
+	}
+	if mustCompareValues(t, int64(math.MinInt64), uint64(0)) >= 0 {
+		t.Fatal("MinInt64 < uint64(0) (MinInt64 negation must not overflow)")
+	}
+	// Plain int is an admitted integer form on BOTH sides (the a-side
+	// previously fell through to the loud arm asymmetrically).
+	if mustCompareValues(t, int(5), int64(7)) >= 0 {
+		t.Fatal("int(5) < int64(7)")
+	}
+	if mustCompareValues(t, int64(7), int(5)) <= 0 {
+		t.Fatal("int64(7) > int(5)")
+	}
+	// Integer vs float still uses the float total order.
+	if mustCompareValues(t, uint64(3), 3.5) >= 0 {
+		t.Fatal("uint64(3) < 3.5")
+	}
+	// Cross-type stays loud: the unsigned arm must not have widened the
+	// comparator into accepting non-numeric pairs.
+	if _, err := compareValues(uint64(1), "x"); err == nil {
+		t.Fatal("uint64 vs string must stay a loud cross-type error")
+	}
+}
+
 func TestCompareValues_NullHandling(t *testing.T) {
 	t.Parallel()
 	if mustCompareValues(t, nil, nil) != 0 {
