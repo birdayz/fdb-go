@@ -3812,15 +3812,11 @@ func newMergeSortCursor(
 	reverse bool,
 	dedup bool,
 ) *mergeSortCursor {
-	return &mergeSortCursor{
-		cursors:   cursors,
-		compKeys:  compKeys,
-		reverse:   reverse,
-		dedup:     dedup,
-		peeked:    make([]QueryResult, len(cursors)),
-		hasPeeked: make([]bool, len(cursors)),
-		exhausted: make([]bool, len(cursors)),
+	states := make([]*mergeSortChildState, len(cursors))
+	for i, c := range cursors {
+		states[i] = &mergeSortChildState{cursor: c, cont: &recordlayer.StartContinuation{}}
 	}
+	return &mergeSortCursor{states: states, compKeys: compKeys, reverse: reverse, dedup: dedup}
 }
 
 func TestMergeSortCursor_TwoSortedInputs(t *testing.T) {
@@ -4648,12 +4644,12 @@ func TestSortContinuation_RoundTrip(t *testing.T) {
 
 	innerCont := recordlayer.NewBytesContinuation([]byte{0xCA, 0xFE})
 
-	encoded, err := encodeSortContinuation(innerCont, buf)
+	encoded, err := encodeSortContinuation(innerCont, buf, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotBuf, err := decodeSortContinuation(encoded, nil)
+	gotInner, gotBuf, _, err := decodeSortContinuation(encoded, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -4695,12 +4691,12 @@ func TestSortContinuation_RoundTrip(t *testing.T) {
 func TestSortContinuation_EmptyBuffer(t *testing.T) {
 	t.Parallel()
 
-	encoded, err := encodeSortContinuation(nil, nil)
+	encoded, err := encodeSortContinuation(nil, nil, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotBuf, err := decodeSortContinuation(encoded, nil)
+	gotInner, gotBuf, _, err := decodeSortContinuation(encoded, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5215,6 +5211,11 @@ func TestAggregateCursor_SingleGroup_CountStar(t *testing.T) {
 func TestAggregateCursor_ScalarOnEmpty(t *testing.T) {
 	t.Parallel()
 
+	// Java AggregateCursor.isNoRecords(): the BARE streaming-aggregate cursor
+	// emits NOTHING on empty input — RecordCursorResult.exhausted(). The
+	// COUNT(*)=0 default row is executeAggregation's OrElse ALTERNATIVE
+	// (emptyScalarAggregateRow — Java's DefaultOnEmpty(StreamingAggregation)),
+	// so a resume landing past the last input row can never re-fabricate it.
 	inner := recordlayer.FromList([]QueryResult{})
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}},
@@ -5223,12 +5224,14 @@ func TestAggregateCursor_ScalarOnEmpty(t *testing.T) {
 	defer c.Close()
 
 	results := collectCursor(t, c)
-	if len(results) != 1 {
-		t.Fatalf("scalar aggregate on empty input: got %d results, want 1", len(results))
+	if len(results) != 0 {
+		t.Fatalf("bare scalar aggregate cursor on empty input: got %d results, want 0 (Java isNoRecords)", len(results))
 	}
-	m, _ := rowMapOK(results[0])
+
+	// The default row itself: the OrElse alternative's single-row payload.
+	m, _ := rowMapOK(emptyScalarAggregateRow(aggs))
 	if m["COUNT(*)"] != int64(0) {
-		t.Errorf("COUNT(*) on empty = %v, want 0", m["COUNT(*)"])
+		t.Errorf("COUNT(*) default row = %v, want 0", m["COUNT(*)"])
 	}
 }
 
@@ -5532,5 +5535,47 @@ func TestGetMaterializationLimit_NegativeFallsBackToDefault(t *testing.T) {
 	props := recordlayer.DefaultExecuteProperties().WithMaterializationLimit(-1)
 	if props.GetMaterializationLimit() != recordlayer.DefaultMaterializationLimit {
 		t.Errorf("negative = %d, want default %d", props.GetMaterializationLimit(), recordlayer.DefaultMaterializationLimit)
+	}
+}
+
+// TestExecuteUnorderedUnion_ResumeDeclinesTyped pins the correct-or-loud guard
+// on the unordered union's resume path (RFC-180 A2 defect class): the unordered
+// concat has no per-child continuation encoding, so a non-empty continuation
+// must decline with a typed UnsupportedContinuationError — never be fed
+// verbatim to every child, where a raw-key scan child would consume the
+// PARENT's token as a scan position and silently start mid-stream.
+func TestExecuteUnorderedUnion_ResumeDeclinesTyped(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	mkValues := func(v int64) plans.RecordQueryPlan {
+		return plans.NewRecordQueryValuesPlan([]values.Value{
+			&values.ConstantValue{Value: v, Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+		})
+	}
+	plan := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{mkValues(1), mkValues(2)})
+
+	// Fresh start (nil continuation) executes and yields both branches' rows.
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("fresh ExecutePlan: %v", err)
+	}
+	rows, err := CollectAll(ctx, cursor)
+	cursor.Close()
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("fresh unordered union yielded %d rows, want 2", len(rows))
+	}
+
+	// Resume attempt (non-empty continuation): typed decline, no cursor.
+	_, err = ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), []byte("parent-token"), recordlayer.DefaultExecuteProperties())
+	var uErr *UnsupportedContinuationError
+	if !errors.As(err, &uErr) {
+		t.Fatalf("unordered-union resume: err = %v, want *UnsupportedContinuationError (a silent nil error means the parent token was misrouted to the children)", err)
+	}
+	if uErr.Shape != "unordered union" {
+		t.Fatalf("UnsupportedContinuationError.Shape = %q, want %q", uErr.Shape, "unordered union")
 	}
 }

@@ -40,11 +40,11 @@ func TestSortContinuation_PositionalRoundTripAndReject(t *testing.T) {
 	r0 := dmap(map[string]any{"AK": int64(100)})
 	r1 := dmap(map[string]any{"AK": int64(110)})
 	buf := []QueryResult{r0, r1}
-	enc, err := encodeSortContinuation(nil, buf)
+	enc, err := encodeSortContinuation(nil, buf, false)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	_, decoded, err := decodeSortContinuation(enc, nil)
+	_, decoded, _, err := decodeSortContinuation(enc, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestSortContinuation_PositionalRoundTripAndReject(t *testing.T) {
 			t.Parallel()
 			sr, _ := proto.Marshal(&gen.SortedRecord{Message: tc.message})
 			legacy, _ := proto.Marshal(&gen.MemorySortContinuation{Records: [][]byte{sr}})
-			_, _, err := decodeSortContinuation(legacy, nil)
+			_, _, _, err := decodeSortContinuation(legacy, nil)
 			if err == nil {
 				t.Fatal("pre-positional payload must be REJECTED (no positional) — a silently dropped row is wrong results with no error")
 			}

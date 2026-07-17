@@ -14,6 +14,15 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+// nonEndContinuation is a FAKE per-row continuation now used ONLY by the
+// nested-loop-join cursor's row emits: the NLJ has no continuation machinery
+// beyond passing the raw OUTER continuation through (its materialized inner
+// side, per-outer inner index, and FULL-outer matched bitmap have no serialized
+// form), so a genuinely resumable per-row continuation would need a new NLJ
+// continuation format — out of scope for the aggregate/sort retirement.
+// Resuming from these bytes fails loudly on decode rather than silently
+// restarting. The aggregate and sort cursors carry REAL lazily-encoded per-row
+// continuations (aggregateCursorContinuation / sortEmitContinuation).
 var nonEndContinuation = recordlayer.NewBytesContinuation([]byte{0})
 
 // SortBufferExceededError is returned when an in-memory sort
@@ -97,6 +106,19 @@ type aggregateCursor struct {
 	lastInnerContinuation recordlayer.RecordCursorContinuation
 	emittedFinal          bool
 	closed                bool
+
+	// previousContinuationInGroup is the inner continuation of the last row
+	// ACCEPTED into the current group — Java AggregateCursor's
+	// previousContinuationInGroup (AggregateCursor.java:116-146). Every
+	// non-group-break row advances it; a group-break / final-group emit carries
+	// it (with NO partial state) as the row's continuation, then the break row's
+	// continuation replaces it (single-element-group correctness — Java's
+	// movement-table comment block). Fresh cursors start at StartContinuation;
+	// executeAggregation initializes a RESUMED cursor to the decoded INNER
+	// position (never the whole aggregate continuation re-wrapped as its own
+	// inner, which is Java's latent nesting bug in fromRawBytes → toProto:
+	// re-emitting it would hand aggregate proto bytes to the LEAF plan).
+	previousContinuationInGroup recordlayer.RecordCursorContinuation
 }
 
 type groupState struct {
@@ -128,6 +150,10 @@ func newAggregateCursor(
 		needsRowCtx:       hasBindingContext(evalCtx),
 		joinLegSpans:      legSpans,
 		joinWindowsOK:     windowsOK,
+		// Java: this.previousContinuationInGroup = continuation (the constructor
+		// param, START on a fresh cursor). executeAggregation overwrites it with
+		// the decoded inner position on a resume.
+		previousContinuationInGroup: &recordlayer.StartContinuation{},
 	}
 }
 
@@ -273,16 +299,29 @@ func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 			c.current = c.newGroupState()
 
 			// Accumulate the new row into the new group, then emit the
-			// completed group.
+			// completed group with (previousContinuationInGroup, NO partial
+			// state) — Java AggregateCursor.java:131-136: the emitted row's
+			// resume point is the last row ACCEPTED into the completed group,
+			// so a resume re-reads the break row (this row) as the next
+			// group's first row, by design. AFTER capturing the emit
+			// continuation, advance previousContinuationInGroup to the BREAK
+			// row's continuation (Java :137-146's post-emit update) so a
+			// single-element group's emit carries its own (only) row.
 			if err := c.accumulateRow(row); err != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, err
 			}
-			return recordlayer.NewResultWithValue(completed, nonEndContinuation), nil
+			emitCont := &aggregateCursorContinuation{innerCont: c.previousContinuationInGroup}
+			c.previousContinuationInGroup = result.GetContinuation()
+			return recordlayer.NewResultWithValue(completed, emitCont), nil
 		}
 
 		if err := c.accumulateRow(row); err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
+		// A row accepted into the current group advances the group's resume
+		// point (Java AggregateCursor.java:116-130: previousValidResult /
+		// previousContinuationInGroup move on every non-group-break row).
+		c.previousContinuationInGroup = result.GetContinuation()
 	}
 }
 
@@ -295,20 +334,51 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 	c.emittedFinal = true
 
 	if c.current == nil {
-		// No rows at all.
-		if c.scalarMode {
-			// Scalar aggregation on empty input: COUNT(*)=0, SUM=nil, etc.
-			result := c.emptyScalarResult()
-			return recordlayer.NewResultWithValue(result, nonEndContinuation), nil
-		}
+		// No rows at all (and no restored partial state) — exhausted with no
+		// emit, in BOTH modes. Java AggregateCursor.isNoRecords() →
+		// RecordCursorResult.exhausted(): the streaming-aggregate cursor never
+		// fabricates a row on empty input. The scalar COUNT(*)-on-empty default
+		// row is executeAggregation's OrElse alternative (mirroring Java's
+		// DefaultOnEmpty(StreamingAggregation) plan structure), whose OrElse
+		// state machine makes the default row itself resumable — an inline emit
+		// here would be re-fabricated by any resume that lands past the last
+		// input row (a duplicate with no error).
 		return recordlayer.NewResultNoNext[QueryResult](
 			recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
 		), nil
 	}
 
+	// Emit the final group with (previousContinuationInGroup, NO partial
+	// state) — Java AggregateCursor.java:149-155 (the SOURCE_EXHAUSTED arm):
+	// a resume from this row's continuation re-opens the inner after the last
+	// accepted row, finds it exhausted with no rows and no state, and reports
+	// SourceExhausted (isNoRecords) — no duplicate final row.
 	completed := c.finalizeGroup()
-	return recordlayer.NewResultWithValue(completed, nonEndContinuation), nil
+	return recordlayer.NewResultWithValue(
+		completed, &aggregateCursorContinuation{innerCont: c.previousContinuationInGroup},
+	), nil
 }
+
+// aggregateCursorContinuation lazily encodes the AggregateCursorContinuation
+// proto at ToBytes() time, propagating a child encode failure through the
+// RecordCursorContinuation contract (the flatMapCursorContinuation pattern).
+// It is the continuation of an EMITTED aggregate row — Java
+// AggregateCursor.AggregateCursorContinuation's 2-arg (stateless) form: the
+// inner continuation of the last row ACCEPTED into the emitted group, NO
+// partial state. Resuming from it re-aggregates the next group from scratch,
+// deliberately re-reading that group's first (break) row — Java's movement
+// table. IsEnd() is false even when the wrapped inner encodes to empty bytes,
+// matching Java's isEnd() delegating to the inner continuation OBJECT, never
+// its byte form.
+type aggregateCursorContinuation struct {
+	innerCont recordlayer.RecordCursorContinuation
+}
+
+func (w *aggregateCursorContinuation) ToBytes() ([]byte, error) {
+	return encodeAggregateContinuation(w.innerCont, "", nil, nil, nil)
+}
+
+func (w *aggregateCursorContinuation) IsEnd() bool { return false }
 
 // aggregateEvalArg is the eval argument for a GROUP-BY key / aggregate operand.
 //
@@ -681,13 +751,18 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 	}
 }
 
-func (c *aggregateCursor) emptyScalarResult() QueryResult {
-	// Emit the authoritative ordinal row, SAME order + naming as
-	// finalizeGroup's aggregate arm (there are no grouping keys on the empty-scalar
-	// path — an empty GROUP BY yields zero rows, not this single all-groups row).
-	posNames := make([]string, 0, len(c.aggregates))
-	posSlots := make([]any, 0, len(c.aggregates))
-	for _, agg := range c.aggregates {
+// emptyScalarAggregateRow is the scalar-aggregation-on-empty-input default row
+// (COUNT(*)=0, SUM/MIN/MAX/AVG=NULL): the authoritative ordinal row, SAME order
+// + naming as finalizeGroup's aggregate arm (there are no grouping keys on the
+// empty-scalar path — an empty GROUP BY yields zero rows, not this single
+// all-groups row). It is executeAggregation's OrElse ALTERNATIVE (Java: the
+// DefaultOnEmpty plan's onEmptyResultValue riding RecordCursor.orElse), never
+// emitted by the aggregate cursor itself (Java AggregateCursor.isNoRecords
+// returns exhausted on empty input).
+func emptyScalarAggregateRow(aggregates []expressions.AggregateSpec) QueryResult {
+	posNames := make([]string, 0, len(aggregates))
+	posSlots := make([]any, 0, len(aggregates))
+	for _, agg := range aggregates {
 		name := aggResultName(agg)
 		var val any
 		if agg.Function == expressions.AggCount {
@@ -784,7 +859,7 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 				return c.emitNext()
 			}
 			contBytes, encErr := encodeSortContinuation(
-				result.GetContinuation(), c.buf,
+				result.GetContinuation(), c.buf, false,
 			)
 			if encErr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
@@ -819,8 +894,31 @@ func (c *customSortCursor) emitNext() (recordlayer.RecordCursorResult[QueryResul
 	}
 	row := c.buf[c.emitIdx]
 	c.emitIdx++
-	return recordlayer.NewResultWithValue(row, nonEndContinuation), nil
+	// The emitted row's continuation is the REMAINING sorted buffer plus the
+	// inner-EXHAUSTED marker (emit only starts once the inner is exhausted):
+	// a resume restores the remainder and goes straight to emit
+	// (executeInMemorySort sets loaded=true), never re-running the inner.
+	// buf is append-only during fill and immutable during emit, so the
+	// sub-slice stays valid for the lazy encode.
+	return recordlayer.NewResultWithValue(row, &sortEmitContinuation{remaining: c.buf[c.emitIdx:]}), nil
 }
+
+// sortEmitContinuation lazily encodes the sort EMIT-PHASE continuation at
+// ToBytes() time (the flatMapCursorContinuation pattern — an encode failure
+// propagates instead of being swallowed): (inner-EXHAUSTED marker, remaining
+// sorted rows) via the F53 typed sort codec. Go extension — Java's Cascades
+// has no physical sort; Java's own MemorySortCursor instead re-scans the input
+// filtered by minimum_key into a key-deduped map, which a slice buffer cannot
+// mirror without duplicating rows.
+type sortEmitContinuation struct {
+	remaining []QueryResult
+}
+
+func (w *sortEmitContinuation) ToBytes() ([]byte, error) {
+	return encodeSortContinuation(nil, w.remaining, true)
+}
+
+func (w *sortEmitContinuation) IsEnd() bool { return false }
 
 func (c *customSortCursor) Close() error {
 	c.closed = true

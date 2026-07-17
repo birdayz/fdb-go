@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -543,7 +544,7 @@ func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorCont
 		return &recordlayer.EndContinuation{}
 	}
 
-	fmc := &gen.FlatMapContinuation{}
+	cont := &flatMapCursorContinuation{}
 
 	// Java FlatMapPipelinedCursor.Continuation.toByteString (:415-430) pairs the
 	// position AT the current outer row with the inner continuation, and the
@@ -566,23 +567,18 @@ func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorCont
 	//     wrote check_value into an advanced-outer continuation).
 	if innerCont != nil && !innerCont.IsEnd() {
 		if c.priorOuterContinuation != nil && !c.priorOuterContinuation.IsEnd() {
-			fmc.OuterContinuation, _ = c.priorOuterContinuation.ToBytes()
+			cont.outerCont = c.priorOuterContinuation
 		}
 		if c.currentOuter != nil && c.currentOuter.PrimaryKey != nil {
-			fmc.CheckValue = c.currentOuter.PrimaryKey.Pack()
+			cont.checkValue = c.currentOuter.PrimaryKey.Pack()
 		}
-		fmc.InnerContinuation, _ = innerCont.ToBytes()
+		cont.innerCont = innerCont
 	} else {
 		if c.lastOuterContinuation != nil && !c.lastOuterContinuation.IsEnd() {
-			fmc.OuterContinuation, _ = c.lastOuterContinuation.ToBytes()
+			cont.outerCont = c.lastOuterContinuation
 		}
 	}
-
-	data, err := proto.Marshal(fmc)
-	if err != nil {
-		return nonEndContinuation
-	}
-	return recordlayer.NewBytesContinuation(data)
+	return cont
 }
 
 // wrapOuterContinuation wraps the outer cursor's continuation in a
@@ -592,19 +588,59 @@ func (c *flatMapCursor) wrapOuterContinuation(outerCont recordlayer.RecordCursor
 	if outerCont != nil && outerCont.IsEnd() {
 		return &recordlayer.EndContinuation{}
 	}
-	fmc := &gen.FlatMapContinuation{}
-	if outerCont != nil {
-		fmc.OuterContinuation, _ = outerCont.ToBytes()
-	}
+	cont := &flatMapCursorContinuation{outerCont: outerCont}
 	if c.hasPendingInner {
-		fmc.InnerContinuation = c.initialInnerCont
+		// Snapshot the pending inner bytes now: the cursor nils
+		// initialInnerCont when it consumes the pending resume, and an
+		// already-issued continuation must not change under it.
+		cont.pendingInner = c.initialInnerCont
 	}
-	data, err := proto.Marshal(fmc)
-	if err != nil {
-		return nonEndContinuation
-	}
-	return recordlayer.NewBytesContinuation(data)
+	return cont
 }
+
+// flatMapCursorContinuation lazily encodes the FlatMapContinuation proto at
+// ToBytes() time, so a child continuation whose encode fails propagates that
+// error through the RecordCursorContinuation contract (mirroring
+// flatMapContinuationWrapper in pkg/recordlayer/cursor_combinators.go and the
+// aggregate continuation's encode-error propagation in continuation.go). The
+// eager predecessor swallowed child ToBytes errors (`, _ =`) — serializing a
+// FlatMapContinuation with the failed component silently MISSING, which on
+// resume restarts the current outer's inner from scratch (duplicate rows) or
+// the whole outer scan — and returned the fake nonEndContinuation on a failed
+// proto.Marshal. Exactly one of innerCont/pendingInner is set: innerCont is
+// the mid-inner resume position (buildContinuation), pendingInner the
+// pre-serialized not-yet-consumed inner from a resume whose outer stopped
+// before re-reaching the resumed row (wrapOuterContinuation).
+type flatMapCursorContinuation struct {
+	outerCont    recordlayer.RecordCursorContinuation // outer position (prior or advanced); nil = omit
+	innerCont    recordlayer.RecordCursorContinuation // mid-inner resume position; nil = omit
+	checkValue   []byte                               // current outer PK (mid-inner branch only)
+	pendingInner []byte                               // pending inner bytes (outer-stop path only)
+}
+
+func (w *flatMapCursorContinuation) ToBytes() ([]byte, error) {
+	fmc := &gen.FlatMapContinuation{CheckValue: w.checkValue}
+	if w.outerCont != nil {
+		b, err := w.outerCont.ToBytes()
+		if err != nil {
+			return nil, fmt.Errorf("flatmap continuation outer: %w", err)
+		}
+		fmc.OuterContinuation = b
+	}
+	switch {
+	case w.innerCont != nil:
+		b, err := w.innerCont.ToBytes()
+		if err != nil {
+			return nil, fmt.Errorf("flatmap continuation inner: %w", err)
+		}
+		fmc.InnerContinuation = b
+	case w.pendingInner != nil:
+		fmc.InnerContinuation = w.pendingInner
+	}
+	return proto.Marshal(fmc)
+}
+
+func (w *flatMapCursorContinuation) IsEnd() bool { return false }
 
 func (c *flatMapCursor) Close() error {
 	c.closed = true
