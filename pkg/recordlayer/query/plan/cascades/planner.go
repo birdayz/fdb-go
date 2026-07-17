@@ -106,6 +106,14 @@ type Planner struct {
 	// path — the RFC-148 §3c re-entry/termination guard. Re-consumption runs
 	// only when the match set grows. Reset per Plan() run.
 	dataAccessConsumed map[*expressions.Reference]int
+
+	// exprRuleIdx / implRuleIdx bucket each phase's rules by their
+	// matcher's typed root operator (ruleIndex), so ExploreExprTask only
+	// pushes transform tasks for rules that can possibly match an
+	// expression. Built lazily per phase; reset per Plan() run so a
+	// reconfigured planner (DisabledRules, With*Rules) re-indexes.
+	exprRuleIdx map[PlannerPhase]*ruleIndex[ExpressionRule]
+	implRuleIdx map[PlannerPhase]*ruleIndex[ImplementationRule]
 }
 
 // NewPlanner builds a planner with the given rule set + context.
@@ -231,6 +239,8 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	}
 	p.constraintMap = NewConstraintMap()
 	p.dataAccessConsumed = make(map[*expressions.Reference]int)
+	p.exprRuleIdx = nil
+	p.implRuleIdx = nil
 	p.capErr = nil
 
 	// One task-stack drives both REWRITING and PLANNING phases.
@@ -351,6 +361,27 @@ func (p *Planner) rulesForPhase(phase PlannerPhase) ([]ExpressionRule, []Impleme
 		return fe, fi
 	}
 	return er, ir
+}
+
+// ruleIndexesForPhase returns the phase's rule indexes, building them from
+// rulesForPhase on first use (per Plan() run — Plan resets the maps).
+func (p *Planner) ruleIndexesForPhase(phase PlannerPhase) (*ruleIndex[ExpressionRule], *ruleIndex[ImplementationRule]) {
+	if p.exprRuleIdx == nil {
+		p.exprRuleIdx = make(map[PlannerPhase]*ruleIndex[ExpressionRule])
+	}
+	if p.implRuleIdx == nil {
+		p.implRuleIdx = make(map[PlannerPhase]*ruleIndex[ImplementationRule])
+	}
+	ei, ok := p.exprRuleIdx[phase]
+	ii, ok2 := p.implRuleIdx[phase]
+	if !ok || !ok2 {
+		er, ir := p.rulesForPhase(phase)
+		ei = newRuleIndex(er)
+		ii = newRuleIndex(ir)
+		p.exprRuleIdx[phase] = ei
+		p.implRuleIdx[phase] = ii
+	}
+	return ei, ii
 }
 
 // costModelForPhase returns the cost model comparator for the given phase.

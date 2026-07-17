@@ -126,7 +126,12 @@ func (t *ExploreExprTask) Run(p *Planner) {
 		return
 	}
 
-	exprRules, implRules := p.rulesForPhase(t.Phase)
+	// Root-operator rule selection (Java AbstractRuleSet.getRules): only
+	// rules whose matcher can possibly match t.Expr's concrete type get
+	// transform tasks — the rest would pop, type-assert, and fail anyway.
+	exprIdx, implIdx := p.ruleIndexesForPhase(t.Phase)
+	exprRules := exprIdx.rulesFor(t.Expr)
+	implRules := implIdx.rulesFor(t.Expr)
 
 	// 1. Push match-partition rules (fire LAST — deepest on LIFO).
 	// Data access generation from PartialMatches.

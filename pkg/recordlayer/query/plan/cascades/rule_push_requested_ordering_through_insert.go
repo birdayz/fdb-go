@@ -25,7 +25,7 @@ type PushRequestedOrderingThroughInsertRule struct {
 
 func NewPushRequestedOrderingThroughInsertRule() *PushRequestedOrderingThroughInsertRule {
 	return &PushRequestedOrderingThroughInsertRule{
-		matcher: &insertPushMatcher{},
+		matcher: NewExpressionMatcher[*expressions.InsertExpression]("push_requested_ordering_through_insert"),
 	}
 }
 
@@ -53,16 +53,3 @@ func (r *PushRequestedOrderingThroughInsertRule) OnMatch(call *ImplementationRul
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughInsertRule)(nil)
-
-// insertPushMatcher matches InsertExpression for the constraint-push
-// rule.
-type insertPushMatcher struct{}
-
-func (m *insertPushMatcher) RootType() string { return "InsertExpression" }
-
-func (m *insertPushMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.InsertExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}

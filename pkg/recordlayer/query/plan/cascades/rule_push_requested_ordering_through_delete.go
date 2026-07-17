@@ -24,7 +24,7 @@ type PushRequestedOrderingThroughDeleteRule struct {
 
 func NewPushRequestedOrderingThroughDeleteRule() *PushRequestedOrderingThroughDeleteRule {
 	return &PushRequestedOrderingThroughDeleteRule{
-		matcher: &deletePushMatcher{},
+		matcher: NewExpressionMatcher[*expressions.DeleteExpression]("push_requested_ordering_through_delete"),
 	}
 }
 
@@ -52,16 +52,3 @@ func (r *PushRequestedOrderingThroughDeleteRule) OnMatch(call *ImplementationRul
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughDeleteRule)(nil)
-
-// deletePushMatcher matches DeleteExpression for the constraint-push
-// rule.
-type deletePushMatcher struct{}
-
-func (m *deletePushMatcher) RootType() string { return "DeleteExpression" }
-
-func (m *deletePushMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.DeleteExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}

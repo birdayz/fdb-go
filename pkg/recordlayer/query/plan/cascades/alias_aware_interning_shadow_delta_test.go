@@ -68,7 +68,13 @@ func TestAliasAwareInterningShadowDelta(t *testing.T) {
 			"sub-product re-explodes when not deduped (cascade)", mIdentity3-mAware3, shadow3)
 	}
 
-	// 4-chain: exact shadow, and the tier is LOAD-BEARING for convergence.
+	// 4-chain: exact shadow, and the tier is LOAD-BEARING for the task
+	// budget. Before the root-operator rule index this was observable as
+	// outright non-convergence (the un-deduped population blew the 100k
+	// task cap); the index cut every configuration's task count ~7x, so
+	// both modes now converge and the load-bearing claim is asserted as
+	// the super-linear RATIO directly: turning the tier off must cost
+	// MULTIPLES of the deduped task count, not a constant.
 	shadow4, _, tasks4, conv4 := planChainInterning(t, 4, false)
 	_, _, tasksI4, convI4 := planChainInterning(t, 4, true)
 	if shadow4 != 56 {
@@ -77,10 +83,10 @@ func TestAliasAwareInterningShadowDelta(t *testing.T) {
 	if !conv4 {
 		t.Errorf("4-chain must CONVERGE with alias-aware interning on (tasks=%d)", tasks4)
 	}
-	if convI4 {
-		t.Errorf("4-chain must NOT converge with alias-aware interning OFF (tasks=%d) — the shadow's "+
-			"dedup is load-bearing; without it the alias-identity population blows the task budget", tasksI4)
+	if convI4 && tasksI4 < 2*tasks4 {
+		t.Errorf("4-chain with alias-aware interning OFF ran %d tasks vs %d on — the shadow's "+
+			"dedup no longer shows its super-linear re-explosion; interning behaviour changed", tasksI4, tasks4)
 	}
-	t.Logf("shadow-delta: 3-chain shadow=%d delta=%d (aware=%d identity=%d) | 4-chain shadow=%d conv(on)=%v conv(off)=%v",
-		shadow3, mIdentity3-mAware3, mAware3, mIdentity3, shadow4, conv4, convI4)
+	t.Logf("shadow-delta: 3-chain shadow=%d delta=%d (aware=%d identity=%d) | 4-chain shadow=%d tasks(on)=%d tasks(off)=%d conv(on)=%v conv(off)=%v",
+		shadow3, mIdentity3-mAware3, mAware3, mIdentity3, shadow4, tasks4, tasksI4, conv4, convI4)
 }

@@ -32,7 +32,7 @@ type PushRequestedOrderingThroughProjectionRule struct {
 
 func NewPushRequestedOrderingThroughProjectionRule() *PushRequestedOrderingThroughProjectionRule {
 	return &PushRequestedOrderingThroughProjectionRule{
-		matcher: &projectionPushMatcher{},
+		matcher: NewExpressionMatcher[*expressions.LogicalProjectionExpression]("push_requested_ordering_through_projection"),
 	}
 }
 
@@ -99,16 +99,3 @@ func (r *PushRequestedOrderingThroughProjectionRule) OnMatch(call *Implementatio
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughProjectionRule)(nil)
-
-// projectionPushMatcher matches LogicalProjectionExpression for the
-// constraint-push rule.
-type projectionPushMatcher struct{}
-
-func (m *projectionPushMatcher) RootType() string { return "LogicalProjectionExpression" }
-
-func (m *projectionPushMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.LogicalProjectionExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}

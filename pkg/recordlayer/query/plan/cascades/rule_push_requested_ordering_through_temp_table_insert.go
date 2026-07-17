@@ -25,7 +25,7 @@ type PushRequestedOrderingThroughTempTableInsertRule struct {
 
 func NewPushRequestedOrderingThroughTempTableInsertRule() *PushRequestedOrderingThroughTempTableInsertRule {
 	return &PushRequestedOrderingThroughTempTableInsertRule{
-		matcher: &tempTableInsertPushMatcher{},
+		matcher: NewExpressionMatcher[*expressions.TempTableInsertExpression]("push_requested_ordering_through_temp_table_insert"),
 	}
 }
 
@@ -53,16 +53,3 @@ func (r *PushRequestedOrderingThroughTempTableInsertRule) OnMatch(call *Implemen
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughTempTableInsertRule)(nil)
-
-// tempTableInsertPushMatcher matches TempTableInsertExpression for
-// the constraint-push rule.
-type tempTableInsertPushMatcher struct{}
-
-func (m *tempTableInsertPushMatcher) RootType() string { return "TempTableInsertExpression" }
-
-func (m *tempTableInsertPushMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.TempTableInsertExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}

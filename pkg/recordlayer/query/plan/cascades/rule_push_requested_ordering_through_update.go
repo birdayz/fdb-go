@@ -31,7 +31,7 @@ type PushRequestedOrderingThroughUpdateRule struct {
 
 func NewPushRequestedOrderingThroughUpdateRule() *PushRequestedOrderingThroughUpdateRule {
 	return &PushRequestedOrderingThroughUpdateRule{
-		matcher: &updatePushMatcher{},
+		matcher: NewExpressionMatcher[*expressions.UpdateExpression]("push_requested_ordering_through_update"),
 	}
 }
 
@@ -59,16 +59,3 @@ func (r *PushRequestedOrderingThroughUpdateRule) OnMatch(call *ImplementationRul
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughUpdateRule)(nil)
-
-// updatePushMatcher matches UpdateExpression for the constraint-push
-// rule.
-type updatePushMatcher struct{}
-
-func (m *updatePushMatcher) RootType() string { return "UpdateExpression" }
-
-func (m *updatePushMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.UpdateExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}

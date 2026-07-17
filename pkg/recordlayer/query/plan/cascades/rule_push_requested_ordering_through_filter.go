@@ -27,7 +27,7 @@ type PushRequestedOrderingThroughFilterRule struct {
 
 func NewPushRequestedOrderingThroughFilterRule() *PushRequestedOrderingThroughFilterRule {
 	return &PushRequestedOrderingThroughFilterRule{
-		matcher: &filterPushMatcher{},
+		matcher: NewExpressionMatcher[*expressions.LogicalFilterExpression]("push_requested_ordering_through_filter"),
 	}
 }
 
@@ -55,16 +55,3 @@ func (r *PushRequestedOrderingThroughFilterRule) OnMatch(call *ImplementationRul
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughFilterRule)(nil)
-
-// filterPushMatcher matches LogicalFilterExpression for the
-// constraint-push rule.
-type filterPushMatcher struct{}
-
-func (m *filterPushMatcher) RootType() string { return "LogicalFilterExpression" }
-
-func (m *filterPushMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.LogicalFilterExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}

@@ -17,7 +17,7 @@ type ImplementUniqueRule struct {
 
 func NewImplementUniqueRule() *ImplementUniqueRule {
 	return &ImplementUniqueRule{
-		matcher: &logicalUniqueMatcher{},
+		matcher: NewExpressionMatcher[*expressions.LogicalUniqueExpression]("implement_unique"),
 	}
 }
 
@@ -50,14 +50,3 @@ func (r *ImplementUniqueRule) OnMatch(call *ImplementationRuleCall) {
 }
 
 var _ ImplementationRule = (*ImplementUniqueRule)(nil)
-
-type logicalUniqueMatcher struct{}
-
-func (m *logicalUniqueMatcher) RootType() string { return "LogicalUniqueExpression" }
-
-func (m *logicalUniqueMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.LogicalUniqueExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}

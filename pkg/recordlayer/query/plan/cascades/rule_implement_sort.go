@@ -24,7 +24,7 @@ type ImplementSortRule struct {
 
 func NewImplementSortRule() *ImplementSortRule {
 	return &ImplementSortRule{
-		matcher: &logicalSortMatcher{},
+		matcher: NewExpressionMatcher[*expressions.LogicalSortExpression]("implement_sort"),
 	}
 }
 
@@ -244,17 +244,6 @@ func computePartitionOrdering(partition *PlanPartition) *RichOrdering {
 		}
 	}
 	return nil
-}
-
-type logicalSortMatcher struct{}
-
-func (m *logicalSortMatcher) RootType() string { return "LogicalSortExpression" }
-
-func (m *logicalSortMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.LogicalSortExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
 }
 
 var _ ImplementationRule = (*ImplementSortRule)(nil)

@@ -25,7 +25,7 @@ type PushRequestedOrderingThroughSortRule struct {
 
 func NewPushRequestedOrderingThroughSortRule() *PushRequestedOrderingThroughSortRule {
 	return &PushRequestedOrderingThroughSortRule{
-		matcher: &logicalSortPushMatcher{},
+		matcher: NewExpressionMatcher[*expressions.LogicalSortExpression]("push_requested_ordering_through_sort"),
 	}
 }
 
@@ -53,17 +53,3 @@ func (r *PushRequestedOrderingThroughSortRule) OnMatch(call *ImplementationRuleC
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughSortRule)(nil)
-
-// logicalSortPushMatcher matches LogicalSortExpression for the
-// constraint-push rule. Separate from logicalSortMatcher used by
-// ImplementSortRule to avoid matcher identity collisions.
-type logicalSortPushMatcher struct{}
-
-func (m *logicalSortPushMatcher) RootType() string { return "LogicalSortExpression" }
-
-func (m *logicalSortPushMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(*expressions.LogicalSortExpression); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}

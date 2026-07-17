@@ -260,8 +260,16 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		// could fix a child winner chosen for a plan that no longer exists. The
 		// extra members are re-explored, not re-enumerated: interning still
 		// collapses shared sub-products, which is what this baseline guards.
-		{3, 11446},
-		{4, 47088},
+		//
+		// The root-operator rule index (Java AbstractRuleSet.getRootOperator
+		// bucketing) dropped 11446→1554 (3-table, -86%) / 47088→6998
+		// (4-table, -85%): ExploreExprTask no longer pushes transform tasks
+		// for rules whose matcher root cannot match the expression's type —
+		// those tasks previously popped, type-asserted, failed, and counted.
+		// The surviving counts are the REAL rule-firing workload, which is
+		// what the interning sentinels actually guard.
+		{3, 1554},
+		{4, 6998},
 	}
 	for _, tc := range cases {
 		got := planChainTasks(t, tc.tables)
