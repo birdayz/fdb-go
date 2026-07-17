@@ -534,3 +534,34 @@ func TestJoinDerivedDottedName_OrdinalUnshifted(t *testing.T) {
 	}
 	t.Fatal("no FOO column in derived metadata")
 }
+
+// TestNestedFullOuter_AncestorNullExtensionReachesLeg pins the ancestor
+// accumulation in the leg walk: a leg found BELOW another join inherits
+// every enclosing null extension on its path — a FULL join null-supplies
+// everything inside both its legs, so d's synthesized NOT NULL EXISTS
+// flag must report NULLABLE (unmatched c rows emit NULL for every d
+// column), even though d's own immediate join is inner.
+func TestNestedFullOuter_AncestorNullExtensionReachesLeg(t *testing.T) {
+	t.Parallel()
+	g, md := newLoggingGenerator(t,
+		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE c_md (id BIGINT, PRIMARY KEY (id))",
+		&captureLogger{})
+	q := parseQuery(t, "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) SELECT d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id = c.id")
+	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	cp, ok := p.(*cascadesPlan)
+	if !ok {
+		t.Fatalf("plan is %T, want *cascadesPlan", p)
+	}
+	for _, c := range deriveColumnsFromPlan(cp.physicalPlan, cp.md) {
+		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
+			if c.Nullable != api.ColumnNullable {
+				t.Fatalf("d.foo under an enclosing FULL OUTER must report NULLABLE (ancestor null extension); got %v", c.Nullable)
+			}
+			return
+		}
+	}
+	t.Fatal("no FOO column in derived metadata")
+}
