@@ -1374,8 +1374,14 @@ func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
 		if ac.groupCol != "" && !emitted[parseColRef(ac.groupCol).bare()] {
 			return false
 		}
-		if ac.aggArg != "" && !emitted[parseColRef(ac.aggArg).bare()] {
-			return false
+		if ac.aggArg != "" {
+			bare := ac.aggArgBare
+			if bare == "" {
+				bare = ac.aggArg
+			}
+			if !emitted[bare] {
+				return false
+			}
 		}
 		for _, r := range harvestColumnRefsOutsideSubqueries(ac.aggExpr) {
 			if !emitted[parseColRef(r).bare()] {
@@ -3553,8 +3559,8 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		// strips a same-source qualifier when naming the slot. Match the
 		// bare form too so the resolved-operand path engages for it.
 		bare := ""
-		if ref := parseColRef(arg); ref.isQualified() {
-			bare = ref.bare()
+		if ac.aggArgQualified {
+			bare = ac.aggArgBare
 		}
 		wantFunc := strings.ToUpper(ac.aggFunc)
 		var idxs []int
@@ -3582,12 +3588,15 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			// so a qualified `c2.pid` binds against its FROM source instead of
 			// surviving as opaque dotted text. Unresolvable → fall through to
 			// the text path (fail-soft).
-			ref := parseColRef(ac.aggArg)
-			var qualID semantic.Identifier
-			if ref.isQualified() {
-				qualID = semantic.NewUnquoted(ref.table)
+			bareArg := ac.aggArgBare
+			if bareArg == "" {
+				bareArg = ac.aggArg
 			}
-			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.NewUnquoted(ref.bare()))
+			var qualID semantic.Identifier
+			if ac.aggArgQualified {
+				qualID = semantic.NewUnquoted(strings.TrimSuffix(ac.aggArg, "."+bareArg))
+			}
+			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.NewUnquoted(bareArg))
 			if rerr != nil || qv == nil {
 				continue
 			}
@@ -7705,7 +7714,7 @@ func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isA
 	if !ok {
 		return "", "", false
 	}
-	f, a, aExpr, _, _, _, ok := extractAwfFields(awf)
+	f, a, aExpr, _, _, _, _, ok := extractAwfFields(awf)
 	if !ok || aExpr != nil {
 		return "", "", false
 	}
@@ -7726,7 +7735,10 @@ func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isA
 func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]logical.SortKey, error) {
 	keys := make([]logical.SortKey, 0, len(sq.orderBy))
 	for _, ob := range sq.orderBy {
-		bare := strings.ToUpper(parseColRef(ob.colName).bare())
+		bare := strings.ToUpper(ob.bare)
+		if ob.bare == "" {
+			bare = strings.ToUpper(ob.colName)
+		}
 		dk := ""
 		for _, k := range sq.groupBy {
 			gkdk := strings.ToUpper(k.bare)
@@ -8004,14 +8016,17 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// the EXACT datum key the aggregate cursor emits (addAgg's returned name),
 		// for resolving an ORDER BY ref over the grouped output (RFC-085).
 		aggDatumKey := make(map[string]string)
-		addAgg := func(fn, arg string, e antlrgen.IExpressionContext, distinct bool) (string, error) {
+		addAgg := func(fn, arg, argBare string, e antlrgen.IExpressionContext, distinct bool) (string, error) {
 			// An expression argument has no bare column name, so it collapses to
 			// FN(*). Two DISTINCT expression aggregates (e.g. SUM(a+b) projected
 			// and SUM(c*d) in HAVING) would both synthesize "SUM(*)" and the
 			// second would silently overwrite the first — so the HAVING would
 			// read the projected aggregate's value. We cannot disambiguate them
 			// by name, so reject rather than return wrong rows.
-			bareArg := parseColRef(arg).bare()
+			bareArg := argBare
+			if bareArg == "" && arg != "" {
+				bareArg = arg
+			}
 			if bareArg == "" {
 				bareArg = "*"
 			}
@@ -8120,7 +8135,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 					Message: "correlated scalar subquery over a join: HAVING references an expression/constant-argument aggregate (e.g. COUNT(1), SUM(<expr>)) that cannot be resolved against the grouped output",
 				}
 			}
-			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggExpr, ac.aggDistinct)
+			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggArgBare, ac.aggExpr, ac.aggDistinct)
 			if err != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 					Message: fmt.Sprintf("correlated scalar subquery: resolve aggregate argument: %v", err), Cause: err,
@@ -8135,14 +8150,14 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				if ac.outName != "" {
 					aggDatumKey[strings.ToUpper(ac.outName)] = name
 				}
-				if bareArg := parseColRef(ac.aggArg).bare(); bareArg != "" {
+				if bareArg := ac.aggArgBare; bareArg != "" {
 					aggDatumKey[strings.ToUpper(ac.aggFunc+"("+bareArg+")")] = name
 				}
 			}
 		}
 		// A sole COUNT(*) the parser flagged via countStar (no aggCol entry).
 		if sq.countStar {
-			name, _ := addAgg("COUNT", "", nil, false) // -> COUNT(*)
+			name, _ := addAgg("COUNT", "", "", nil, false) // -> COUNT(*)
 			scalarCol = name
 			aggDatumKey[strings.ToUpper(name)] = name
 			if sq.countStarAlias != "" {
@@ -8360,8 +8375,8 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 						dir = logical.SortDesc
 					}
 					keyExpr := ob.colName
-					if len(sq.joins) == 0 {
-						keyExpr = parseColRef(ob.colName).bare()
+					if len(sq.joins) == 0 && ob.bare != "" {
+						keyExpr = ob.bare
 					}
 					keys[i] = logical.SortKey{Expr: keyExpr, Dir: dir}
 					if ob.nullsFirst != nil {
