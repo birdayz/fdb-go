@@ -1258,6 +1258,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	}
 
 	var aggs, aggAliases []string
+	var aggCalls []logical.AggregateCall
 	hasDistinct := false
 	keys := make([]string, len(cls.groupBy))
 	for i, k := range cls.groupBy {
@@ -1266,6 +1267,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	if cls.countStar {
 		aggs = []string{"COUNT(*)"}
 		aggAliases = []string{cls.countStarAlias}
+		aggCalls = []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}
 	} else {
 		for _, ac := range cls.aggCols {
 			if ac.aggFunc != "" {
@@ -1283,6 +1285,13 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 					hasDistinct = true
 				}
 				aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
+				aggCalls = append(aggCalls, logical.AggregateCall{
+					Func:       strings.ToUpper(ac.aggFunc),
+					Operand:    arg,
+					Star:       arg == "*",
+					Distinct:   ac.aggDistinct,
+					BareColumn: ac.aggArg != "" && ac.aggExpr == nil,
+				})
 				aggAliases = append(aggAliases, ac.outName)
 			}
 		}
@@ -1292,6 +1301,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		having = canonicalTextOf(cls.havingExpr)
 	}
 	aggOp := logical.NewAggregate(op, keys, aggs, aggAliases, having)
+	aggOp.Calls = aggCalls
 	aggOp.HasDistinctAggregate = hasDistinct
 	op = aggOp
 

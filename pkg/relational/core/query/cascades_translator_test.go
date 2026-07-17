@@ -551,6 +551,10 @@ func TestTranslateAggregate(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("orders", "")
 	agg := logical.NewAggregate(scan, []string{"CATEGORY"}, []string{"SUM(PRICE)", "COUNT(*)"}, []string{"total", "cnt"}, "")
+	agg.Calls = []logical.AggregateCall{
+		{Func: "SUM", Operand: "PRICE", BareColumn: true},
+		{Func: "COUNT", Operand: "*", Star: true},
+	}
 	ref := TranslateToCascades(agg)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for aggregate")
@@ -577,6 +581,7 @@ func TestTranslateAggregateNoGroup(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("orders", "")
 	agg := logical.NewAggregate(scan, nil, []string{"COUNT(*)"}, []string{"cnt"}, "")
+	agg.Calls = []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}
 	ref := TranslateToCascades(agg)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for scalar aggregate")
@@ -590,31 +595,62 @@ func TestTranslateAggregateNoGroup(t *testing.T) {
 	}
 }
 
-func TestParseAggregateText(t *testing.T) {
+func TestAggregateFunctionByName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		input string
 		fn    expressions.AggregateFunction
 		ok    bool
 	}{
-		{"COUNT(*)", expressions.AggCount, true},
-		{"SUM(PRICE)", expressions.AggSum, true},
-		{"AVG(X)", expressions.AggAvg, true},
-		{"MIN(Y)", expressions.AggMin, true},
-		{"MAX(Z)", expressions.AggMax, true},
-		{"count(*)", expressions.AggCount, true},
-		{"UNKNOWN(X)", 0, false},
-		{"noparen", 0, false},
+		{"COUNT", expressions.AggCount, true},
+		{"SUM", expressions.AggSum, true},
+		{"AVG", expressions.AggAvg, true},
+		{"MIN", expressions.AggMin, true},
+		{"MAX", expressions.AggMax, true},
+		{"UNKNOWN", 0, false},
 	}
 	for _, tc := range tests {
-		spec, ok := parseAggregateText(tc.input)
-		if ok != tc.ok {
-			t.Errorf("parseAggregateText(%q): ok=%v, want %v", tc.input, ok, tc.ok)
-			continue
+		fn, ok := aggregateFunctionByName(tc.input)
+		if ok != tc.ok || (ok && fn != tc.fn) {
+			t.Errorf("aggregateFunctionByName(%q) = (%d, %v), want (%d, %v)", tc.input, fn, ok, tc.fn, tc.ok)
 		}
-		if ok && spec.Function != tc.fn {
-			t.Errorf("parseAggregateText(%q): fn=%d, want %d", tc.input, spec.Function, tc.fn)
-		}
+	}
+}
+
+// TestTranslateAggregate_StructuredCallsOnly pins RFC-180 F-1: the translator
+// consumes LogicalAggregate.Calls (parse-tree-derived) and never re-parses
+// aggregate SQL text. Missing call info and unresolved COMPUTED operands are
+// TYPED declines; a parse-tree-classified bare column keeps its lazy read.
+func TestTranslateAggregate_StructuredCallsOnly(t *testing.T) {
+	t.Parallel()
+
+	build := func(calls []logical.AggregateCall, texts []string) *logical.LogicalAggregate {
+		scan := logical.NewScan("orders", "")
+		agg := logical.NewAggregate(scan, []string{"STATUS"}, texts, make([]string, len(texts)), "")
+		agg.Calls = calls
+		return agg
+	}
+
+	// Bare-column operand without a resolved Value: lazy FieldValue survives.
+	ref, _, err := TranslateToCascadesWithError(build(
+		[]logical.AggregateCall{{Func: "SUM", Operand: "PRICE", BareColumn: true}},
+		[]string{"SUM(PRICE)"}), nil)
+	if err != nil || ref == nil {
+		t.Fatalf("bare-column aggregate must translate: ref=%v err=%v", ref, err)
+	}
+
+	// Missing Calls entry: typed decline, never a text reparse.
+	ref, _, err = TranslateToCascadesWithError(build(nil, []string{"SUM(PRICE)"}), nil)
+	if ref != nil || err == nil {
+		t.Fatalf("missing structured call info must decline typed: ref=%v err=%v", ref, err)
+	}
+
+	// Computed operand with no resolved Value: typed decline.
+	ref, _, err = TranslateToCascadesWithError(build(
+		[]logical.AggregateCall{{Func: "SUM", Operand: "(AMOUNT+10)*2"}},
+		[]string{"SUM((AMOUNT+10)*2)"}), nil)
+	if ref != nil || err == nil {
+		t.Fatalf("unresolved computed operand must decline typed: ref=%v err=%v", ref, err)
 	}
 }
 

@@ -3848,6 +3848,20 @@ func rewriteAggregateValuesInTree(v values.Value) values.Value {
 // Value, or nil for a no-operand aggregate. The form mirrors what the executor's
 // aggResultName produces: FN(<uppercased ExplainValue, spaces stripped, one
 // outer-paren pair stripped>), with COUNT(*)/no-operand => "FN(*)".
+// canonicalAggOperandText returns the operand segment of a canonical
+// aggregate name this builder just produced via canonicalAggName — the text
+// between the outermost parens. Operates only on our own rendering (never
+// user SQL), purely to keep AggregateCall.Operand identical to the name's
+// keyed segment.
+func canonicalAggOperandText(cname string) string {
+	l := strings.Index(cname, "(")
+	r := strings.LastIndex(cname, ")")
+	if l < 0 || r <= l {
+		return ""
+	}
+	return cname[l+1 : r]
+}
+
 func canonicalAggName(funcSymbol string, operand values.Value) string {
 	fn := strings.ToUpper(funcSymbol)
 	if fn == "COUNT(*)" {
@@ -7942,6 +7956,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// itself is resolved separately so the qualifier still binds.
 		singleSource := len(sq.joins) == 0
 		var aggTexts, aggAliases []string
+		var aggCalls []logical.AggregateCall
 		var aggOperands []values.Value
 		aggSeen := make(map[string]struct{})
 		exprAggNames := make(map[string]struct{}) // join-path collision tracking only
@@ -7998,6 +8013,12 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				}
 				aggSeen[cname] = struct{}{}
 				aggTexts = append(aggTexts, cname)
+				aggCalls = append(aggCalls, logical.AggregateCall{
+					Func:       strings.ToUpper(fn),
+					Operand:    canonicalAggOperandText(cname),
+					Star:       opVal == nil,
+					BareColumn: e == nil && arg != "",
+				})
 				aggAliases = append(aggAliases, cname)
 				aggOperands = append(aggOperands, opVal)
 				return cname, nil
@@ -8032,6 +8053,12 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				exprAggNames[name] = struct{}{}
 			}
 			aggTexts = append(aggTexts, fn+"("+bareArg+")")
+			aggCalls = append(aggCalls, logical.AggregateCall{
+				Func:       strings.ToUpper(fn),
+				Operand:    strings.ToUpper(bareArg),
+				Star:       bareArg == "*",
+				BareColumn: e == nil && arg != "",
+			})
 			aggAliases = append(aggAliases, name)
 			aggOperands = append(aggOperands, opVal)
 			return name, nil
@@ -8107,6 +8134,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			}
 		}
 		aggOp := logical.NewAggregate(innerOp, sq.groupBy, aggTexts, aggAliases, "")
+		aggOp.Calls = aggCalls
 		aggOp.AggregateOperands = aggOperands
 		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
