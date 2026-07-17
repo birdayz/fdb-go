@@ -516,3 +516,76 @@ func TestNLJContinuation_BetweenOuterWrap(t *testing.T) {
 		return
 	}
 }
+
+// flakyOuterCursor emits its rows, pauses out-of-band ONCE, then yields MORE
+// rows — a re-call after the pause that re-pulls the outer (missing terminal
+// replay guard) surfaces the extra rows instead of replaying the pause.
+type flakyOuterCursor struct {
+	first  []QueryResult
+	rest   []QueryResult
+	paused bool
+	pos    int
+	closed bool
+}
+
+func (f *flakyOuterCursor) OnNext(context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if f.pos < len(f.first) {
+		r := f.first[f.pos]
+		f.pos++
+		return recordlayer.NewResultWithValue(r, recordlayer.NewBytesContinuation([]byte{byte(f.pos)})), nil
+	}
+	if !f.paused {
+		f.paused = true
+		return recordlayer.NewResultNoNext[QueryResult](
+			recordlayer.TimeLimitReached, recordlayer.NewBytesContinuation([]byte{0xAB})), nil
+	}
+	if f.pos < len(f.first)+len(f.rest) {
+		r := f.rest[f.pos-len(f.first)]
+		f.pos++
+		return recordlayer.NewResultWithValue(r, recordlayer.NewBytesContinuation([]byte{byte(f.pos)})), nil
+	}
+	return recordlayer.NewResultNoNext[QueryResult](
+		recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
+	), nil
+}
+func (f *flakyOuterCursor) Close() error   { f.closed = true; return nil }
+func (f *flakyOuterCursor) IsClosed() bool { return f.closed }
+
+// TestNLJContinuation_TerminalReplayOnRecall pins Java's cached-terminal
+// contract (FlatMapPipelinedCursor:123-125) on the NLJ: a re-call after an
+// out-of-band stop replays the identical result — never re-pulls the outer,
+// whose next pull here would surface MORE rows.
+func TestNLJContinuation_TerminalReplayOnRecall(t *testing.T) {
+	t.Parallel()
+	rows := nljTestRows("K", 2)
+	outer := &flakyOuterCursor{first: rows[:1], rest: rows[1:]}
+	c := nljTestCursor(t, outer, nljTestRows("J", 1), plans.JoinInner, nil)
+	ctx := context.Background()
+	var first recordlayer.RecordCursorResult[QueryResult]
+	for {
+		res, err := c.OnNext(ctx)
+		if err != nil {
+			t.Fatalf("drain: %v", err)
+		}
+		if !res.HasNext() {
+			first = res
+			break
+		}
+	}
+	if first.GetNoNextReason() != recordlayer.TimeLimitReached {
+		t.Fatalf("fixture must stop out-of-band, got %v", first.GetNoNextReason())
+	}
+	again, err := c.OnNext(ctx)
+	if err != nil {
+		t.Fatalf("re-call: %v", err)
+	}
+	if again.HasNext() {
+		t.Fatal("re-call after the out-of-band stop must replay the terminal result, not surface more outer rows")
+	}
+	fb, _ := first.GetContinuation().ToBytes()
+	ab, _ := again.GetContinuation().ToBytes()
+	if again.GetNoNextReason() != first.GetNoNextReason() || string(fb) != string(ab) {
+		t.Fatalf("re-call (%v, %v) must equal the cached terminal (%v, %v)",
+			again.GetNoNextReason(), ab, first.GetNoNextReason(), fb)
+	}
+}

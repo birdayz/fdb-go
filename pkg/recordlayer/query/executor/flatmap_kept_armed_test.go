@@ -99,3 +99,47 @@ func TestFlatMapKeptArmed_WrapCarriesCheckValue(t *testing.T) {
 		t.Fatalf("the pending CHECK VALUE must ride the wrap, got %v", fmc.GetCheckValue())
 	}
 }
+
+// TestFlatMapTerminalReplayOnRecall pins Java's cached-terminal contract
+// (FlatMapPipelinedCursor:123-125) on the flatMap cursor: a re-call after an
+// out-of-band outer stop replays the identical result — never re-pulls the
+// outer, whose next pull here would surface MORE rows.
+func TestFlatMapTerminalReplayOnRecall(t *testing.T) {
+	t.Parallel()
+	rows := nljTestRows("K", 2)
+	outer := &flakyOuterCursor{first: rows[:1], rest: rows[1:]}
+	c := flatMapArmedFixture(t, outer, tuple.Tuple{"K", int64(0)})
+	// Disarm the fixture's pending state — this pin is about the terminal
+	// cache, not the resume path.
+	c.initialInnerCont = nil
+	c.hasPendingInner = false
+	c.pendingCheckValue = nil
+	ctx := context.Background()
+	var first recordlayer.RecordCursorResult[QueryResult]
+	for {
+		res, err := c.OnNext(ctx)
+		if err != nil {
+			t.Fatalf("drain: %v", err)
+		}
+		if !res.HasNext() {
+			first = res
+			break
+		}
+	}
+	if first.GetNoNextReason() != recordlayer.TimeLimitReached {
+		t.Fatalf("fixture must stop out-of-band, got %v", first.GetNoNextReason())
+	}
+	again, err := c.OnNext(ctx)
+	if err != nil {
+		t.Fatalf("re-call: %v", err)
+	}
+	if again.HasNext() {
+		t.Fatal("re-call after the out-of-band stop must replay the terminal result, not surface more outer rows")
+	}
+	fb, _ := first.GetContinuation().ToBytes()
+	ab, _ := again.GetContinuation().ToBytes()
+	if again.GetNoNextReason() != first.GetNoNextReason() || string(fb) != string(ab) {
+		t.Fatalf("re-call (%v, %v) must equal the cached terminal (%v, %v)",
+			again.GetNoNextReason(), ab, first.GetNoNextReason(), fb)
+	}
+}

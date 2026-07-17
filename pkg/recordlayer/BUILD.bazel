@@ -333,6 +333,7 @@ go_test(
         "store_version_test.go",
         "sum_index_test.go",
         "tenant_isolation_test.go",
+        "terminal_replay_test.go",
         "text_index_test.go",
         "text_index_unit_test.go",
         "text_tokenizer_test.go",
