@@ -954,10 +954,10 @@ func encodeSortContinuation(
 		// PAYLOAD FORMAT (Go-owned): the SortedRecord proto mirrors Java's
 		// byte-for-byte and cannot grow fields, but Go already stores a JSON
 		// datum in `message` where Java stores record-proto bytes — the
-		// payload inside the opaque field is ours to version. The first byte
-		// discriminates: a JSON OBJECT is the legacy datum-only payload; a JSON
-		// ARRAY is versioned by its element count — 2 = [_, complete] (v2),
-		// 3 = [_, _, positional] (the current form). Slot 1 was the QueryResult
+		// payload inside the opaque field is ours to version. The ONE format
+		// is a 3-element JSON array [_, _, positional]; the decoder rejects
+		// every other shape (the pre-release object/2-element tolerances are
+		// deleted). Slot 1 was the QueryResult
 		// .Complete flag, now RETIRED — the field is deleted, decode IGNORES slot 1,
 		// and it is written as a constant `false` dead placeholder purely to keep the
 		// 3-slot array shape wire-identical (no format-version bump).
@@ -976,8 +976,15 @@ func encodeSortContinuation(
 		// pre-positional binary's object / 2-element payload, or an OLD 3-element
 		// {n, s:[JSON slots]} payload (no `b`), carries no typed blob and is rejected
 		// on decode (fail-closed — its slots are unreconstructable losslessly).
+		// A buffered sort row without a positional layout cannot round-trip:
+		// the strict decoder (rightly) rejects a 2-element payload, so
+		// emitting one would mint a continuation THIS binary cannot resume.
+		// Fail the encode loudly instead.
+		if qr.Positional == nil || qr.Positional.Type == nil {
+			return nil, fmt.Errorf("sort continuation: a buffered row has no positional layout — cannot encode a resumable continuation")
+		}
 		payload := []any{nil, false}
-		if qr.Positional != nil && qr.Positional.Type != nil {
+		{
 			names := make([]string, len(qr.Positional.Type.Fields))
 			for fi, f := range qr.Positional.Type.Fields {
 				names[fi] = f.Name
@@ -1069,6 +1076,9 @@ func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (inner
 		slots, _, sErr := readContSlice(pp.B)
 		if sErr != nil {
 			return nil, nil, false, fmt.Errorf("failed to decode sorted record %d slots in continuation: %w", i, sErr)
+		}
+		if len(slots) != len(pp.N) {
+			return nil, nil, false, fmt.Errorf("sorted record %d: %d slots for %d column names — corrupt continuation", i, len(slots), len(pp.N))
 		}
 		// Rebuild STRUCT column slots (and struct elements inside ARRAY
 		// slots) from their descriptor-less placeholders. Any failure —

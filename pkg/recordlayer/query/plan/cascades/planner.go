@@ -231,6 +231,7 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	}
 	p.constraintMap = NewConstraintMap()
 	p.dataAccessConsumed = make(map[*expressions.Reference]int)
+	p.capErr = nil
 
 	// One task-stack drives both REWRITING and PLANNING phases.
 	// InitiatePlannerPhase(REWRITING) pushes ExploreGroup + OptimizeGroup

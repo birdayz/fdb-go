@@ -1,7 +1,15 @@
 # RFC-180: Query-Engine Quality Remediation
 
-**Status:** Workstream Y COMPLETE (corpus 319/319 green, un-skip landed);
-A partially landed (union streaming resume); B/C/D/E/F/G3/G4/H/I open
+**Status:** Y/A/B/C/E/G/H COMPLETE; D1/D3/D4 + I1/I2 + F-1/F-2/F-4 COMPLETE.
+Remaining (explicitly staged): **D2** (winner/requirement keys onto
+rich_ordering — Graefe-led), **F-3** (retire the text-shaped logical IR:
+canonicalTextOf ×36, Aggregates-reader ×13 surface mapped; Having and
+PredicateText already load-bearing-never), **I3** (rule index by root
+operator class — perf-only; blocked on a typed matcher-root API, the
+debug rootType strings are not a safe key). H1 resolved INVALID
+(int64→float32 overflow unreachable; Java parity verified). All landed
+work is on `audit/query-engine-correctness` (wave 2, PR #494) per owner
+direction — no separate branches.
 **Reviews:** RFC ACK'd by Graefe (3 binding notes incorporated) and Torvalds
 (G1/Y6/histogram NAK items fixed); every engine commit through the
 Graefe+Torvalds gate

@@ -3914,6 +3914,7 @@ func executeInMemorySort(
 	if len(priorBuf) > 0 && props.State.HasMemLimit() {
 		for _, r := range priorBuf {
 			if cerr := props.State.ChargeMemory(estimateQueryResultBytes(r)); cerr != nil {
+				_ = innerCursor.Close()
 				return nil, cerr
 			}
 		}

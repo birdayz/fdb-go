@@ -358,6 +358,11 @@ func (t *TransformImplTask) Run(p *Planner) {
 			qs[1].Kind() == expressions.QuantifierForEach {
 			swapped := sel.WithSwappedQuantifiers()
 			swapBindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), swapped)
+			// Same per-rule-call match cap as the primary bind site above.
+			if p.MaxNumMatchesPerRuleCall > 0 && len(swapBindings) > p.MaxNumMatchesPerRuleCall {
+				p.capErr = ErrPlannerRuleMatchCapHit
+				return
+			}
 			for _, b := range swapBindings {
 				call := &ImplementationRuleCall{
 					Bindings:    b,

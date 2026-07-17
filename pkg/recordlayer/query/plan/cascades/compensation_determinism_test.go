@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -266,4 +267,77 @@ func TestRollUpPlanPartitions_MergesByPropertyEquality(t *testing.T) {
 	if len(merged[0].GetExpressions()) != 2 {
 		t.Fatalf("merged partition must carry both expressions, got %d", len(merged[0].GetExpressions()))
 	}
+}
+
+// TestOrderingsEqual_NullsFirstSemantics pins the semantic null-placement contract: absent
+// NullsFirst is NATURAL placement (ASC → nulls-first), so absent vs an
+// explicit counterflow [false] on ASC are DIFFERENT orderings (must not
+// merge), while absent vs explicit [true] on ASC are the SAME (must merge).
+func TestOrderingsEqual_NullsFirstSemantics(t *testing.T) {
+	t.Parallel()
+	key := func() values.Value { return values.NewFlatFieldValue("A", values.UnknownType) }
+	natural := properties.Ordering{IsKnown: true, Keys: []values.Value{key()}, Descending: []bool{false}}
+	explicitTrue := properties.Ordering{IsKnown: true, Keys: []values.Value{key()}, Descending: []bool{false}, NullsFirst: []bool{true}}
+	counterflow := properties.Ordering{IsKnown: true, Keys: []values.Value{key()}, Descending: []bool{false}, NullsFirst: []bool{false}}
+
+	if !orderingsEqual(natural, explicitTrue) {
+		t.Fatal("absent NullsFirst on ASC IS nulls-first: must equal the explicit [true] form")
+	}
+	if orderingsEqual(natural, counterflow) {
+		t.Fatal("absent NullsFirst on ASC must NOT equal the counterflow explicit [false] form")
+	}
+}
+
+// tripStubMatcher matches any expression twice — two bindings per call.
+type tripStubMatcher struct{}
+
+func (*tripStubMatcher) RootType() string { return "any" }
+func (*tripStubMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
+	return []*matching.PlannerBindings{outer, outer}
+}
+
+type tripStubRule struct{}
+
+func (*tripStubRule) Matcher() matching.BindingMatcher { return &tripStubMatcher{} }
+func (*tripStubRule) OnMatch(call *ExpressionRuleCall) {}
+
+// TestPlannerCapTrips gives both new complexity-guard error paths a POSITIVE
+// trip pin — a reverted guard stays red, not silently green.
+func TestPlannerCapTrips(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rule_match_cap_trips", func(t *testing.T) {
+		t.Parallel()
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+		ref := expressions.InitialOf(scan)
+		p := NewPlanner(nil, nil)
+		p.MaxNumMatchesPerRuleCall = 1
+		task := &TransformExprTask{Phase: PhaseRewriting, Ref: ref, Expr: scan, Rule: &tripStubRule{}}
+		task.Run(p)
+		if !errors.Is(p.capErr, ErrPlannerRuleMatchCapHit) {
+			t.Fatalf("two bindings over cap 1 must trip ErrPlannerRuleMatchCapHit, got %v", p.capErr)
+		}
+	})
+
+	t.Run("round_cap_trips", func(t *testing.T) {
+		t.Parallel()
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+		ref := expressions.InitialOf(scan)
+		// Ten committed-then-dirtied rounds: each StartExploration bumps the
+		// round counter; inserting a NEW member afterwards re-dirties the
+		// Reference, modeling a rule cycle that never converges.
+		for i := 0; i < 10; i++ {
+			ref.StartExploration()
+		}
+		ref.Insert(expressions.NewFullUnorderedScanExpression([]string{"U"}, nil))
+		if !ref.NeedsExploration() {
+			t.Fatal("fixture must still need exploration")
+		}
+		p := NewPlanner(nil, nil)
+		task := &ExploreGroupTask{Phase: PhaseRewriting, Ref: ref}
+		task.Run(p)
+		if !errors.Is(p.capErr, ErrPlannerRoundCapHit) {
+			t.Fatalf("10 rounds with a still-dirty Reference must trip ErrPlannerRoundCapHit, got %v", p.capErr)
+		}
+	})
 }

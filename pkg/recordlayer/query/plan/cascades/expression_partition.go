@@ -325,18 +325,16 @@ func orderingsEqual(a, b properties.Ordering) bool {
 	if a.IsKnown != b.IsKnown || len(a.Keys) != len(b.Keys) {
 		return false
 	}
-	dir := func(o properties.Ordering, i int) (bool, bool) {
-		d := i < len(o.Descending) && o.Descending[i]
-		nf := i < len(o.NullsFirst) && o.NullsFirst[i]
-		return d, nf
-	}
 	for i := range a.Keys {
 		if !values.ValuesStructurallyEqual(a.Keys[i], b.Keys[i]) {
 			return false
 		}
-		ad, anf := dir(a, i)
-		bd, bnf := dir(b, i)
-		if ad != bd || anf != bnf {
+		// SEMANTIC accessors, never raw slices: an absent NullsFirst means
+		// NATURAL placement (ASC → nulls-first), so raw absent-=false both
+		// over-merged (absent vs explicit-false on ASC are semantically
+		// DIFFERENT null placements) and under-merged (absent vs
+		// explicit-true on ASC are the same).
+		if a.DescendingAt(i) != b.DescendingAt(i) || a.NullsFirstAt(i) != b.NullsFirstAt(i) {
 			return false
 		}
 	}
