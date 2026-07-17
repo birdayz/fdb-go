@@ -236,3 +236,16 @@ tests:
            c2(a) AS (WITH c1 AS (SELECT x.id AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM c1 WHERE id <= 2)
       SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
     error_code: "0AF00"
+  # Deletion-as-eviction left ABSENCE, and absence falls back to the CATALOG:
+  # here the underivable nested CTE shadows the BASE TABLE t itself, and its
+  # output column `id` deliberately carries V values (reversed mapping). The
+  # pre-tombstone silent path derived the enclosing schema from the BASE
+  # table, so `WHERE id <= 2` filtered real ids (rows 1,2) instead of the
+  # nested CTE's v-values (all >= 10 — EMPTY is the correct answer). The
+  # tombstone (declared-but-underivable marker) suppresses catalog fallback
+  # on every schema-resolution path, and the plan side (which always built
+  # the nested body correctly) now runs to the right result end-to-end.
+  - query: |-
+      WITH c2(a) AS (WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM t WHERE id <= 2)
+      SELECT a FROM c2 ORDER BY a
+    rows: []

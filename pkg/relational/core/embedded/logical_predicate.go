@@ -900,9 +900,12 @@ func buildCTEColumnSource(
 				// when its schema is not derivable (join-shaped body):
 				// leaving the cloned outer entry in place validated the
 				// enclosing body against the OUTER schema and baked its
-				// ordinals over the inner's row — silent wrong slot. Absent
-				// from the map = resolve loud, never stale.
-				delete(scoped, strings.ToUpper(nname))
+				// ordinals over the inner's row — silent wrong slot. A
+				// TOMBSTONE (nil Table), not deletion: absence falls back to
+				// the CATALOG, and a same-named base table would bind its
+				// ordinals onto the CTE's rows just as silently. The
+				// tombstone hard-declines both resolution paths.
+				scoped[strings.ToUpper(nname)] = semantic.ScopeSource{}
 			}
 		}
 		priorCTEs = scoped
@@ -968,6 +971,13 @@ func buildCTEColumnSource(
 	var innerTbl semantic.Table
 	if priorCTEs != nil {
 		if src, found := priorCTEs[strings.ToUpper(innerSQ.tableName)]; found {
+			// A TOMBSTONE (declared CTE, schema underivable) hard-declines:
+			// falling through to the catalog would derive the enclosing
+			// schema from a same-named BASE TABLE and bake its ordinals
+			// onto the CTE's rows — silent wrong slots.
+			if src.Table == nil {
+				return semantic.ScopeSource{}, false
+			}
 			innerTbl = src.Table
 		}
 	}
@@ -1724,7 +1734,9 @@ func buildWherePredicateForJoinsWithCTEScopes(
 				CorrelationName: binding,
 			}) == nil
 		}
-		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+		if src, found := cteScopes[strings.ToUpper(tableName)]; found && src.Table != nil {
+			// found-with-nil-Table is a TOMBSTONE (declared CTE, schema
+			// underivable) — decline instead of AddSource(nil) nil-deref.
 			src.Alias = aliasID
 			src.CorrelationName = binding
 			return scope.AddSource(src) == nil
@@ -2605,7 +2617,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	var pred predicates.QueryPredicate
 	var ok bool
 	if cteScopes != nil && len(sq.joins) == 0 {
-		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found {
+		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found && src.Table != nil {
+			// A TOMBSTONE entry (nil Table: declared CTE, schema underivable)
+			// must not reach scope construction — ResolveColumn nil-derefs.
 			pred, ok = buildWherePredicateFromCTEScope(src, sq.tableAlias, sq.whereExpr, md)
 		}
 	}
@@ -2683,6 +2697,15 @@ func buildSelectScope(
 		// schema-qualified bodies by the pre-round-9 nil resolver).
 		if cteScopes != nil {
 			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+				// TOMBSTONE (nil Table): a DECLARED CTE whose schema is not
+				// derivable in this context (underivable nested shadow). It
+				// must NOT fall through to the catalog — a same-named base
+				// table would bind ITS ordinals onto the CTE's rows (silent
+				// wrong slots). Declining the scope add keeps resolution
+				// loud downstream.
+				if src.Table == nil {
+					return false
+				}
 				aliasID := semantic.NewUnquoted(alias)
 				if alias == "" {
 					aliasID = semantic.NewUnquoted(tableName)

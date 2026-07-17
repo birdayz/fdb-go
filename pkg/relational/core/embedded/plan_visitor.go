@@ -224,11 +224,17 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				// resolvable — or LOUDLY dropped (marker) — never silent.
 				registerCTEOnOnlyScope(v.cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), v.md, v.schemaName, v.cteScopes)
 				// Opposite-map eviction, ON-only arm: an underivable inner
-				// shadowing a DERIVABLE outer must remove the outer's
+				// shadowing a DERIVABLE outer must displace the outer's
 				// cteScopes entry, or the body/main resolves named reads
-				// against the stale outer schema (the twin of
-				// the derivable arm's eviction above).
-				delete(v.cteScopes, upper)
+				// against the stale outer schema (the twin of the derivable
+				// arm's eviction above). A TOMBSTONE (nil Table), not
+				// deletion: absence falls back to the CATALOG and a
+				// same-named base table would silently bind its ordinals
+				// onto the CTE's rows; the tombstone keeps the name declared
+				// and resolution loud.
+				if _, hadOuter := v.cteScopes[upper]; hadOuter {
+					v.cteScopes[upper] = semantic.ScopeSource{}
+				}
 			}
 			// Eagerly build the CTE body plan so scalar subqueries
 			// that reference this CTE can wrap themselves with it.
@@ -1049,7 +1055,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	var pred predicates.QueryPredicate
 	var predOk bool
 	if v.cteScopes != nil && len(sq.joins) == 0 {
-		if src, found := v.cteScopes[strings.ToUpper(sq.tableName)]; found {
+		if src, found := v.cteScopes[strings.ToUpper(sq.tableName)]; found && src.Table != nil {
+			// A TOMBSTONE entry (nil Table: declared CTE, schema underivable)
+			// must not reach scope construction — ResolveColumn nil-derefs.
 			pred, predOk = buildWherePredicateFromCTEScope(src, sq.tableAlias, sq.whereExpr, v.md)
 		}
 	}
