@@ -288,6 +288,11 @@ var ErrPlannerCapHit = plannerErr("planner: MaxTasks cap hit before convergence"
 // RecordQueryPlanComplexityException (CascadesPlanner.isTaskQueueSizeExceeded).
 var ErrPlannerQueueCapHit = plannerErr("planner: MaxTaskQueueSize cap hit — task queue exceeded the configured bound")
 
+// ErrPlannerRoundCapHit signals a Reference still inserting new exploratory
+// members after the round cap — a rule-cycle divergence the memo dedup should
+// have collapsed (RFC-180 I2). A planner bug indicator, never load.
+var ErrPlannerRoundCapHit = plannerErr("planner: exploration round cap hit — a Reference kept producing new members after 10 rounds (rule-cycle divergence)")
+
 // ErrPlannerRuleMatchCapHit mirrors Java's "Maximum number of matches per rule
 // call has been exceeded" (CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded).
 var ErrPlannerRuleMatchCapHit = plannerErr("planner: MaxNumMatchesPerRuleCall cap hit — one rule invocation produced more matches than the configured bound")
