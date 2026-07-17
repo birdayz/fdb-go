@@ -1258,7 +1258,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		return op, stripPrefix
 	}
 
-	var aggs, aggAliases []string
+	var aggAliases []string
 	var aggCalls []logical.AggregateCall
 	hasDistinct := false
 	keys := make([]string, len(cls.groupBy))
@@ -1266,7 +1266,6 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		keys[i] = strip(k)
 	}
 	if cls.countStar {
-		aggs = []string{"COUNT(*)"}
 		aggAliases = []string{cls.countStarAlias}
 		aggCalls = []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}
 	} else {
@@ -1280,12 +1279,9 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 					arg = "*"
 				}
 				arg = strip(arg)
-				distinctPfx := ""
 				if ac.aggDistinct {
-					distinctPfx = "DISTINCT "
 					hasDistinct = true
 				}
-				aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
 				aggCalls = append(aggCalls, logical.AggregateCall{
 					Func:       strings.ToUpper(ac.aggFunc),
 					Operand:    arg,
@@ -1301,8 +1297,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	if cls.havingExpr != nil {
 		having = canonicalTextOf(cls.havingExpr)
 	}
-	aggOp := logical.NewAggregate(op, keys, aggs, aggAliases, having)
-	aggOp.Calls = aggCalls
+	aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, having)
 	aggOp.HasDistinctAggregate = hasDistinct
 	op = aggOp
 
@@ -1361,7 +1356,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 				visibleAliases = append(visibleAliases, alias)
 			}
 		}
-		totalOutput := len(keys) + len(aggs)
+		totalOutput := len(keys) + len(aggCalls)
 		needsStrip := len(visibleProj) != totalOutput || hasAggAlias || hasNonVisible
 		// != (not <): a DUPLICATE visible read of one group key
 		// (`SELECT id, id … GROUP BY id`) makes the visible list WIDER

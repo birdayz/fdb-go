@@ -637,7 +637,7 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		return true
 	case *logical.LogicalAggregate:
 		// Bare aggregate branch (no Project).
-		if len(o.Aggregates) < 1 {
+		if len(o.Calls) < 1 {
 			return false // 0-aggregate (group-only) shape — distinct concern, gated.
 		}
 		// UNGROUPED: unchanged from RFC-080. An ungrouped aggregate has no aggregate-index
@@ -692,10 +692,10 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 // many shapes (e.g. SUM(col)) depending on the build path, and text scanning of the
 // canonical rendering is retired.
 func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
-	if len(a.Aggregates) == 0 || a.HasDistinctAggregate {
+	if len(a.Calls) == 0 || a.HasDistinctAggregate {
 		return false
 	}
-	for i := range a.Aggregates {
+	for i := range a.Calls {
 		// A constant operand — COUNT(1), COUNT(NULL), COUNT(TRUE) — folds into count-star,
 		// so a grouped aggregate index reports COUNT(*) ≠ the logical text. The resolved
 		// operand reliably distinguishes a literal (ConstantValue) from a column, which the
@@ -742,8 +742,8 @@ func aggregateOutputColumns(a *logical.LogicalAggregate) []values.Field {
 	for _, k := range a.GroupKeys {
 		fields = append(fields, values.Field{Name: strings.ToUpper(k), FieldType: values.UnknownType, Ordinal: len(fields)})
 	}
-	for i, agg := range a.Aggregates {
-		name := agg
+	for i, call := range a.Calls {
+		name := call.CanonicalName()
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
 			name = a.Aliases[i]
 		}
@@ -6367,19 +6367,15 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			}
 		}
 	}
-	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Aggregates))
-	for i := range a.Aggregates {
+	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Calls))
+	for i := range a.Calls {
 		// STRUCTURED aggregate info only (RFC-180 F-1): the builders capture
 		// function/operand/star/distinct from the parse tree in
-		// LogicalAggregate.Calls. SQL text is never re-parsed here — the
-		// deleted splitter mangled nested arithmetic ("(AMOUNT+10)*2" split
-		// on the inner '+') into unresolvable operands that accumulated to
-		// NULL and silently dropped HAVING groups.
-		if i >= len(a.Calls) {
-			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-				"aggregate %q carries no structured call info (builder did not populate LogicalAggregate.Calls)", a.Aggregates[i]))
-			return nil
-		}
+		// LogicalAggregate.Calls — the sole representation since F-3. SQL
+		// text is never re-parsed here — the deleted splitter mangled nested
+		// arithmetic ("(AMOUNT+10)*2" split on the inner '+') into
+		// unresolvable operands that accumulated to NULL and silently
+		// dropped HAVING groups.
 		call := a.Calls[i]
 		fn, fnOK := aggregateFunctionByName(call.Func)
 		if !fnOK {
@@ -7622,11 +7618,11 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 	case *logical.LogicalAggregate:
 		var cols []string
 		cols = append(cols, o.GroupKeys...)
-		for i, agg := range o.Aggregates {
+		for i, call := range o.Calls {
 			if i < len(o.Aliases) && o.Aliases[i] != "" {
 				cols = append(cols, o.Aliases[i])
 			} else {
-				cols = append(cols, agg)
+				cols = append(cols, call.CanonicalName())
 			}
 		}
 		return cols

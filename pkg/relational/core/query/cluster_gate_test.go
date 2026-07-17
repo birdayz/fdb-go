@@ -475,7 +475,7 @@ func TestWedgeGate_Translation(t *testing.T) {
 	t.Run("aggregate_boundary_roots_fresh_cluster", func(t *testing.T) {
 		t.Parallel()
 		nested := inner(scan("Order", "o"), scan("Customer", "c"))
-		agg := logical.NewAggregate(nested, []string{"o.order_id"}, []string{"COUNT(*)"}, []string{"cnt"}, "")
+		agg := logical.NewAggregate(nested, []string{"o.order_id"}, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, "")
 		root := inner(agg, scan("TypedRecord", "t"))
 		if d := run(t, root, nested); !d.Gated || d.Arity != 2 {
 			t.Fatalf("2-way under aggregate under a join: %+v, want gated arity 2 (aggregate is an opaque boundary)", d)
@@ -534,7 +534,7 @@ func TestWedgeGate_Translation(t *testing.T) {
 		// aggregate boundary roots a fresh cluster) before the rejection, but
 		// the plan dies with it.
 		nested := inner(scan("Order", "o"), scan("Customer", "c"))
-		agg := logical.NewAggregate(nested, []string{"o.order_id"}, []string{"COUNT(*)"}, []string{"cnt"}, "")
+		agg := logical.NewAggregate(nested, []string{"o.order_id"}, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, "")
 		agg.HavingPredicate = &predicates.ComparisonPredicate{
 			Operand:    &values.FieldValue{Field: "CNT"},
 			Comparison: predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: &values.ConstantValue{Value: int64(0)}},

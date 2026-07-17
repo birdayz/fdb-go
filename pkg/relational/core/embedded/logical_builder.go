@@ -413,7 +413,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 	//   - Mixed: aggCols carries both group-col and agg-function
 	//     entries with outName.
 	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
-		var aggs, aggAliases []string
+		var aggAliases []string
 		var aggCalls []logical.AggregateCall
 		hasDistinct := false
 		keys := make([]string, len(sq.groupBy))
@@ -421,7 +421,6 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			keys[i] = strip(k)
 		}
 		if sq.countStar {
-			aggs = []string{"COUNT(*)"}
 			aggAliases = []string{sq.countStarAlias}
 			aggCalls = []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}
 		} else {
@@ -435,12 +434,9 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 						arg = "*"
 					}
 					arg = strip(arg)
-					distinctPfx := ""
 					if ac.aggDistinct {
-						distinctPfx = "DISTINCT "
 						hasDistinct = true
 					}
-					aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
 					aggCalls = append(aggCalls, logical.AggregateCall{
 						Func:       strings.ToUpper(ac.aggFunc),
 						Operand:    arg,
@@ -456,8 +452,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		if sq.havingExpr != nil {
 			having = canonicalTextOf(sq.havingExpr)
 		}
-		aggOp := logical.NewAggregate(op, keys, aggs, aggAliases, having)
-		aggOp.Calls = aggCalls
+		aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, having)
 		aggOp.HasDistinctAggregate = hasDistinct
 		op = aggOp
 
@@ -520,7 +515,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 					visibleAliases = append(visibleAliases, alias)
 				}
 			}
-			totalOutput := len(keys) + len(aggs)
+			totalOutput := len(keys) + len(aggCalls)
 			needsStrip := len(visibleProj) != totalOutput || hasAggAlias || hasNonVisible
 			// != (not <): a DUPLICATE visible read of one group key
 			// (`SELECT id, id … GROUP BY id`) makes the visible list WIDER

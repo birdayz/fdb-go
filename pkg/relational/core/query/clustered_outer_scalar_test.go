@@ -213,11 +213,11 @@ func TestClusteredCarrierEnumeration(t *testing.T) {
 			Input: scan("Order", "SQ"), GroupKeys: []string{"x"}, GroupKeyValues: []values.Value{legRef()},
 		}},
 		{"Aggregate.AggregateOperands", &logical.LogicalAggregate{
-			Input: scan("Order", "SQ"), Aggregates: []string{"SUM(x)"}, Aliases: []string{""},
+			Input: scan("Order", "SQ"), Calls: []logical.AggregateCall{{Func: "SUM", Operand: "x", BareColumn: true}}, Aliases: []string{""},
 			AggregateOperands: []values.Value{legRef()},
 		}},
 		{"Aggregate.HavingPredicate", &logical.LogicalAggregate{
-			Input: scan("Order", "SQ"), Aggregates: []string{"COUNT(*)"}, Aliases: []string{""},
+			Input: scan("Order", "SQ"), Calls: []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, Aliases: []string{""},
 			HavingPredicate: legPred(),
 		}},
 		{"Sort.Keys.Value", logical.NewSort(scan("Order", "SQ"),
@@ -253,7 +253,7 @@ func TestClusteredCarrierEnumeration(t *testing.T) {
 		return v
 	}
 	aggLocal := &logical.LogicalAggregate{
-		Input: scan("Order", "SQ"), Aggregates: []string{"SUM(x)"}, Aliases: []string{""},
+		Input: scan("Order", "SQ"), Calls: []logical.AggregateCall{{Func: "SUM", Operand: "x", BareColumn: true}}, Aliases: []string{""},
 		AggregateOperands: []values.Value{legRef()},
 	}
 	if _, ok := rebuildInnerWithValues(aggLocal, rewriteAll); ok {

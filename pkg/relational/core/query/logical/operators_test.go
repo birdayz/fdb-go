@@ -129,12 +129,34 @@ func TestLimit_Explain(t *testing.T) {
 	}
 }
 
+// TestAggregateCall_CanonicalName pins the alias-free output-column rendering
+// (RFC-180 F-3): consumers key on strings.ToUpper(CanonicalName()) against
+// projection text rendered from the SAME operand string, so the shape —
+// FUNC(OPERAND) / FUNC(DISTINCT OPERAND) / COUNT(*), operand case preserved —
+// is load-bearing for name resolution, CTE columns, and insert-source typing.
+func TestAggregateCall_CanonicalName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		call AggregateCall
+		want string
+	}{
+		{AggregateCall{Func: "COUNT", Operand: "*", Star: true}, "COUNT(*)"},
+		{AggregateCall{Func: "SUM", Operand: "v", BareColumn: true}, "SUM(v)"},
+		{AggregateCall{Func: "COUNT", Operand: "x", Distinct: true}, "COUNT(DISTINCT x)"},
+		{AggregateCall{Func: "SUM", Operand: "(AMOUNT+10)*2"}, "SUM((AMOUNT+10)*2)"},
+	} {
+		if got := tc.call.CanonicalName(); got != tc.want {
+			t.Errorf("CanonicalName(%+v) = %q, want %q", tc.call, got, tc.want)
+		}
+	}
+}
+
 func TestAggregate_Explain(t *testing.T) {
 	t.Parallel()
 	a := NewAggregate(
 		NewScan("t", ""),
 		[]string{"grp"},
-		[]string{"SUM(v)", "COUNT(*)"},
+		[]AggregateCall{{Func: "SUM", Operand: "v", BareColumn: true}, {Func: "COUNT", Operand: "*", Star: true}},
 		[]string{"total", ""},
 		"",
 	)
@@ -145,7 +167,7 @@ func TestAggregate_Explain(t *testing.T) {
 	ah := NewAggregate(
 		NewScan("t", ""),
 		nil,
-		[]string{"COUNT(*)"},
+		[]AggregateCall{{Func: "COUNT", Operand: "*", Star: true}},
 		nil,
 		"COUNT(*) > 1",
 	)
@@ -248,7 +270,7 @@ func TestChildren_Arity(t *testing.T) {
 		{"Project", NewProject(leafA, []string{"id"}, []string{""}), 1, []LogicalOperator{leafA}},
 		{"Sort", NewSort(leafA, []SortKey{{Expr: "id", Dir: SortAsc}}), 1, []LogicalOperator{leafA}},
 		{"Limit", NewLimit(leafA, 10, 0), 1, []LogicalOperator{leafA}},
-		{"Aggregate", NewAggregate(leafA, nil, []string{"COUNT(*)"}, nil, ""), 1, []LogicalOperator{leafA}},
+		{"Aggregate", NewAggregate(leafA, nil, []AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, nil, ""), 1, []LogicalOperator{leafA}},
 		{"Join", NewJoin(leafA, leafB, JoinInner, "x=y"), 2, []LogicalOperator{leafA, leafB}},
 		{"Union", NewUnion([]LogicalOperator{leafA, leafB}, false), 2, []LogicalOperator{leafA, leafB}},
 		{"Insert-values (no source)", NewInsert("t", []string{"id"}, nil), 0, nil},

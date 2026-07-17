@@ -372,19 +372,18 @@ func (d *LogicalDistinct) Explain(indent string) string {
 }
 
 // LogicalAggregate runs GROUP BY + aggregate functions on its child.
-// GroupKeys are the grouping-column expressions; Aggregates holds the
-// aggregate-call text with aliases.
+// GroupKeys are the grouping-column expressions; Calls holds the
+// structured aggregate calls (see AggregateCall) with parallel Aliases.
 type LogicalAggregate struct {
 	Input          LogicalOperator
 	GroupKeys      []string
 	GroupKeyValues []values.Value // resolved Value trees for GROUP BY expressions; nil slot = bare column
-	Aggregates     []string       // e.g. "SUM(a)", "COUNT(*)"
-	// Calls carries the structured per-aggregate info parallel to
-	// Aggregates (see AggregateCall). Builders populate it from the parse
-	// tree; the translator requires it.
+	// Calls is the SOLE aggregate-call representation. Builders populate it
+	// from the parse tree; the translator requires it (RFC-180 F-3 retired
+	// the parallel display-text slice).
 	Calls                  []AggregateCall
-	Aliases                []string       // parallel to Aggregates
-	AggregateOperands      []values.Value // resolved operand Values (parallel to Aggregates); nil slot = use text
+	Aliases                []string       // parallel to Calls
+	AggregateOperands      []values.Value // resolved operand Values (parallel to Calls); nil slot = use text
 	HasDistinctAggregate   bool           // true when any aggregate uses DISTINCT (e.g. COUNT(DISTINCT x))
 	Having                 string         // canonical HAVING predicate, "" when absent
 	HavingPredicate        predicates.QueryPredicate
@@ -411,24 +410,39 @@ type AggregateCall struct {
 	BareColumn bool
 }
 
-func NewAggregate(input LogicalOperator, groupKeys, aggs, aliases []string, having string) *LogicalAggregate {
+// CanonicalName renders the call in the canonical upper-case display form —
+// `FUNC(OPERAND)`, `FUNC(DISTINCT OPERAND)`, `COUNT(*)` — the alias-free
+// output-column name for an aggregate. Every consumer compares these keys
+// case-insensitively (upper-cased or via normalizeAggOutputName), so the
+// upper-case Func is safe even where the SQL wrote the function lower-case.
+func (c AggregateCall) CanonicalName() string {
+	if c.Star {
+		return c.Func + "(*)"
+	}
+	if c.Distinct {
+		return c.Func + "(DISTINCT " + c.Operand + ")"
+	}
+	return c.Func + "(" + c.Operand + ")"
+}
+
+func NewAggregate(input LogicalOperator, groupKeys []string, calls []AggregateCall, aliases []string, having string) *LogicalAggregate {
 	return &LogicalAggregate{
-		Input:      input,
-		GroupKeys:  groupKeys,
-		Aggregates: aggs,
-		Aliases:    aliases,
-		Having:     having,
+		Input:     input,
+		GroupKeys: groupKeys,
+		Calls:     calls,
+		Aliases:   aliases,
+		Having:    having,
 	}
 }
 
 func (a *LogicalAggregate) Children() []LogicalOperator { return []LogicalOperator{a.Input} }
 func (a *LogicalAggregate) Explain(indent string) string {
-	aggs := make([]string, len(a.Aggregates))
-	for i, ag := range a.Aggregates {
+	aggs := make([]string, len(a.Calls))
+	for i, c := range a.Calls {
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
-			aggs[i] = fmt.Sprintf("%s AS %s", ag, a.Aliases[i])
+			aggs[i] = fmt.Sprintf("%s AS %s", c.CanonicalName(), a.Aliases[i])
 		} else {
-			aggs[i] = ag
+			aggs[i] = c.CanonicalName()
 		}
 	}
 	line := fmt.Sprintf("%sAggregate(group=[%s], agg=[%s]", indent,

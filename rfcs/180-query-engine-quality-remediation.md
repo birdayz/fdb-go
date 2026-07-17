@@ -1,10 +1,13 @@
 # RFC-180: Query-Engine Quality Remediation
 
-**Status:** Y/A/B/C/E/G/H COMPLETE; D1/D3/D4 + I1/I2 + F-1/F-2/F-4 COMPLETE.
+**Status:** Y/A/B/C/E/G/H COMPLETE; D1/D3/D4 + I1/I2 + F COMPLETE (F-3
+aggregate stage: `LogicalAggregate.Aggregates []string` deleted, `Calls`
+is the sole representation; the surviving text fields — GroupKeys,
+Having-as-presence-sentinel, PredicateText, SortKey.Expr — are the
+translator's decline-or-resolve inputs, never re-parsed, and retire with
+their own stages as resolved-Value coverage completes).
 Remaining (explicitly staged): **D2** (winner/requirement keys onto
-rich_ordering — Graefe-led), **F-3** (retire the text-shaped logical IR:
-canonicalTextOf ×36, Aggregates-reader ×13 surface mapped; Having and
-PredicateText already load-bearing-never), **I3** (rule index by root
+rich_ordering — Graefe-led), **I3** (rule index by root
 operator class — perf-only; blocked on a typed matcher-root API, the
 debug rootType strings are not a safe key). H1 resolved INVALID
 (int64→float32 overflow unreachable; Java parity verified). All landed
@@ -268,12 +271,16 @@ The standing no-text-matching violation ("criminal", per owner):
   (`cascades_generator.go:2528`) and the `aggregateArgText` /
   `isBareColumnIdentifier` text classifiers (`cascades_translator.go:729-761`)
   with resolved-Value inspection.
-- **F-3 (staged, larger):** retire the text-shaped logical IR itself —
-  `LogicalAggregate.Aggregates []string`, `Having string`,
-  `LogicalFilter.PredicateText`, `canonicalTextOf` — in favor of the resolved
-  `Value` fields that already ride alongside. Text fields become
-  load-bearing-never, then deleted. This is the root fix; F-1/F-2 stop the
-  bleeding.
+- **F-3 (aggregate stage DONE):** `LogicalAggregate.Aggregates []string` is
+  deleted; `Calls []AggregateCall` is the sole aggregate representation
+  (readers ported to structural matching / `CanonicalName()`, writers build
+  Calls only). Perimeter findings that reshaped the plan: no
+  `canonicalTextOf` call site feeds ONLY retired text (each also feeds
+  `Calls.Operand` or a surviving field), and the translator's `Having`
+  check is a presence SENTINEL (decline-when-unstructured), never a
+  reparse. Remaining text fields (GroupKeys, Having, PredicateText,
+  SortKey.Expr) retire in later stages as resolved-Value coverage
+  completes. This is the root fix; F-1/F-2 stopped the bleeding.
 - **F-4:** `embedded/connection.go:742`: replace the
   `strings.Contains(msg, "not_committed")` fallback by preserving the typed
   FDBError through wrapping (`errors.As` all the way).

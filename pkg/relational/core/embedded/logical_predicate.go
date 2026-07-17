@@ -3526,7 +3526,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	if resolver == nil {
 		return
 	}
-	operands := make([]values.Value, len(agg.Aggregates))
+	operands := make([]values.Value, len(agg.Calls))
 	for _, ac := range sq.aggCols {
 		// A PLAIN-column aggregate arg (`MIN(pid)`, `MIN(c2.pid)`) carries
 		// aggArg only — the parser's resolveArg captures no aggExpr for a bare
@@ -3540,36 +3540,32 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		}
 		// Collect EVERY matching aggregate slot — a HAVING that repeats a
 		// SELECT-list aggregate (`SELECT SUM(x) … HAVING SUM(x) > k`) creates a
-		// SECOND slot with the same canonical text; leaving it unresolved makes
+		// SECOND slot with the same call shape; leaving it unresolved makes
 		// the translator fall back to the lazy bare-column read, whose flat
 		// dotted operand refs the ordinal frontier cannot resolve.
+		arg := ac.aggArg
+		if arg == "" && ac.aggExpr != nil {
+			arg = canonicalTextOf(ac.aggExpr)
+		}
+		if arg == "" {
+			arg = "*"
+		}
+		// The aggregate slot may carry the BARE column while the parsed arg
+		// is qualified (`MIN(PID)` vs aggArg `C.PID`) — the main builder
+		// strips a same-source qualifier when naming the slot. Match the
+		// bare form too so the resolved-operand path engages for it.
+		bare := ""
+		if ref := parseColRef(arg); ref.isQualified() {
+			bare = ref.bare()
+		}
+		wantFunc := strings.ToUpper(ac.aggFunc)
 		var idxs []int
-		for i, aggText := range agg.Aggregates {
-			arg := ac.aggArg
-			if arg == "" && ac.aggExpr != nil {
-				arg = canonicalTextOf(ac.aggExpr)
-			}
-			if arg == "" {
-				arg = "*"
-			}
-			distinctPfx := ""
-			if ac.aggDistinct {
-				distinctPfx = "DISTINCT "
-			}
-			expected := strings.ToUpper(ac.aggFunc + "(" + distinctPfx + arg + ")")
-			if strings.ToUpper(aggText) == expected {
-				idxs = append(idxs, i)
+		for i, call := range agg.Calls {
+			if call.Func != wantFunc || call.Distinct != ac.aggDistinct {
 				continue
 			}
-			// The aggregate node's text may carry the BARE column while the
-			// parsed arg is qualified (`MIN(PID)` vs aggArg `C.PID`) — the main
-			// builder strips a same-source qualifier when naming the slot. Match
-			// the bare form too so the resolved-operand path engages for it.
-			if ref := parseColRef(arg); ref.isQualified() {
-				bareExpected := strings.ToUpper(ac.aggFunc + "(" + distinctPfx + ref.bare() + ")")
-				if strings.ToUpper(aggText) == bareExpected {
-					idxs = append(idxs, i)
-				}
+			if strings.EqualFold(call.Operand, arg) || (bare != "" && strings.EqualFold(call.Operand, bare)) {
+				idxs = append(idxs, i)
 			}
 		}
 		if len(idxs) == 0 {
@@ -4554,10 +4550,10 @@ func wrapBareAggregateInsertSource(insertOp *logical.LogicalInsert, sq *selectQu
 	// unresolved (nil), so the aggregate computes NULL. Wrapping would align the
 	// (NULL) column and SILENTLY insert NULL; NOT wrapping leaves the original LOUD
 	// failure (unset PK → 23505). Until the qualified-operand resolution is fixed
-	// (follow-up), skip — a qualifier shows up as a '.' in the canonical
-	// aggregate/group-key name.
-	for _, a := range agg.Aggregates {
-		if strings.Contains(a, ".") {
+	// (follow-up), skip — a qualifier shows up as a '.' in the structured
+	// operand / group-key name.
+	for _, call := range agg.Calls {
+		if strings.Contains(call.Operand, ".") {
 			return
 		}
 	}
@@ -4687,17 +4683,18 @@ func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlaye
 		return nil
 	}
 	// Canonical aggregate output name → reliable result type, for the bare-
-	// aggregate case (nil ProjectedValue). Names match the projection text
-	// verbatim (both produced by the same canonicaliser, e.g. "AVG(V)").
+	// aggregate case (nil ProjectedValue). CanonicalName reproduces the
+	// projection text up to case (both render from the same operand text,
+	// e.g. "AVG(V)"), and the lookup below upper-cases both sides.
 	aggTypes := map[string]values.Type{}
 	if agg := findAggregate(insertOp.Source); agg != nil {
-		for j, name := range agg.Aggregates {
+		for j, call := range agg.Calls {
 			var operand values.Value
 			if j < len(agg.AggregateOperands) {
 				operand = agg.AggregateOperands[j]
 			}
-			if t := aggResultTypeFromName(name, operand); t != nil {
-				aggTypes[strings.ToUpper(name)] = t
+			if t := aggResultTypeFromFunc(call.Func, operand); t != nil {
+				aggTypes[strings.ToUpper(call.CanonicalName())] = t
 			}
 		}
 	}
@@ -4734,12 +4731,8 @@ func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlaye
 // user SQL text. Mirrors AggregateValue.Type() / Java's per-operator resultTypeCode
 // — keep the two in sync until the PromoteValue follow-up (RFC-083) dissolves this
 // function (it exists only for the nil-ProjectedValue bare-aggregate path).
-func aggResultTypeFromName(name string, operand values.Value) values.Type {
-	sym := name
-	if idx := strings.IndexByte(name, '('); idx >= 0 {
-		sym = name[:idx]
-	}
-	switch strings.ToUpper(strings.TrimSpace(sym)) {
+func aggResultTypeFromFunc(fn string, operand values.Value) values.Type {
+	switch fn {
 	case "AVG":
 		return values.NullableDouble
 	case "COUNT":
@@ -7952,7 +7945,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// join-merge resolver mis-parses as a qualifier separator; the operand
 		// itself is resolved separately so the qualifier still binds.
 		singleSource := len(sq.joins) == 0
-		var aggTexts, aggAliases []string
+		var aggAliases []string
 		var aggCalls []logical.AggregateCall
 		var aggOperands []values.Value
 		aggSeen := make(map[string]struct{})
@@ -8009,7 +8002,6 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 					return cname, nil
 				}
 				aggSeen[cname] = struct{}{}
-				aggTexts = append(aggTexts, cname)
 				aggCalls = append(aggCalls, logical.AggregateCall{
 					Func:       strings.ToUpper(fn),
 					Operand:    canonicalAggOperandText(cname),
@@ -8049,7 +8041,6 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			if opaqueExpr {
 				exprAggNames[name] = struct{}{}
 			}
-			aggTexts = append(aggTexts, fn+"("+bareArg+")")
 			aggCalls = append(aggCalls, logical.AggregateCall{
 				Func:       strings.ToUpper(fn),
 				Operand:    strings.ToUpper(bareArg),
@@ -8130,8 +8121,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				Message: "correlated scalar subquery: expected an aggregate function or grouping-key projection",
 			}
 		}
-		aggOp := logical.NewAggregate(innerOp, sq.groupBy, aggTexts, aggAliases, "")
-		aggOp.Calls = aggCalls
+		aggOp := logical.NewAggregate(innerOp, sq.groupBy, aggCalls, aggAliases, "")
 		aggOp.AggregateOperands = aggOperands
 		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
