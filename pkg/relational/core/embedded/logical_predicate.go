@@ -1654,7 +1654,7 @@ func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName strin
 	// `WITH c(a,b) AS (<underivable body> SELECT id ...)` silently accepted a
 	// two-alias list over a one-column body instead of erroring like the
 	// derivable twin.
-	if n := staticCTEProjectionCount(cteQuery); n > 0 {
+	if n := staticCTEProjectionCount(cteQuery, md, schemaName); n > 0 {
 		if list, ok := colAliases.(*antlrgen.FullIdListContext); ok && list != nil {
 			if nAliases := len(list.AllFullId()); nAliases > 0 && nAliases != n {
 				return api.NewErrorf(api.ErrCodeInvalidColumnReference,
@@ -1673,9 +1673,17 @@ func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName strin
 // staticCTEProjectionCount returns the CTE body's statically-extractable
 // projection count: len(projCols) when the body's SELECT list is explicit,
 // -1 when unknown (SELECT *, unextractable shape, recursive seeds with
-// differing arms are still validated by their own paths).
-func staticCTEProjectionCount(cteQuery antlrgen.IQueryContext) int {
-	if cteQuery == nil {
+// differing arms are still validated by their own paths). A qualified-star
+// slot (`x.*`) occupies ONE projCols entry but expands to every source
+// column — it is EXPANDED against the source schema (the same
+// expandQualifiedStars pass the SELECT build runs) so a mixed-star body
+// still validates its true width; a star whose source cannot be resolved
+// leaves its sentinel in place and the count stays unknown. (Skipping
+// validation for every star-bearing body let a two-alias list over a
+// four-column mixed-star body execute; counting the sentinel rejected
+// valid CTEs — both review-caught.)
+func staticCTEProjectionCount(cteQuery antlrgen.IQueryContext, md *recordlayer.RecordMetaData, schemaName string) int {
+	if cteQuery == nil || md == nil {
 		return -1
 	}
 	body, ok := cteQuery.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
@@ -1686,11 +1694,10 @@ func staticCTEProjectionCount(cteQuery antlrgen.IQueryContext) int {
 	if err != nil || innerSQ == nil || innerSQ.projCols == nil {
 		return -1
 	}
-	// A qualified-star slot (`x.*`) occupies ONE projCols entry but expands
-	// to every source column — the static count is UNKNOWN, not len().
-	// Comparing arity against the sentinel rejected valid mixed-star CTEs.
-	for _, q := range innerSQ.projStarQualifiers {
-		if q != "" {
+	if hasAnyQualifiedStar(innerSQ) {
+		expandQualifiedStars(innerSQ, md, schemaName)
+		// An unresolved star leaves its sentinel: width still unknown.
+		if hasAnyQualifiedStar(innerSQ) {
 			return -1
 		}
 	}

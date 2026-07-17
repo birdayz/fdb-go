@@ -11,14 +11,14 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**319 scenarios · 2526 query/assertion cases** across 18 feature areas.
+**319 scenarios · 2527 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
 | Aggregates & GROUP BY | 49 | 302 |
 | Joins | 60 | 264 |
 | Subqueries (EXISTS / IN / scalar) | 42 | 281 |
-| CTEs | 12 | 92 |
+| CTEs | 12 | 93 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 8 | 48 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 194 |
 | Ordering & pagination | 13 | 114 |
@@ -204,7 +204,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 
 | Scenario | Cases | What it pins |
 |---|--:|---|
-| `cte` | 28 | WITH ... |
+| `cte` | 29 | WITH ... |
 | `cte_aggregate` | 4 | CTE materialization + GROUP BY aggregation. |
 | `cte_error_codes` | 6 | Java's cte.yamsql error tests: CTE-specific validation errors. |
 | `cte_java_patterns` | 8 | CTE patterns from Java's cte.yamsql. |

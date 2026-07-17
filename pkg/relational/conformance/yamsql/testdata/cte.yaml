@@ -276,3 +276,11 @@ tests:
       SELECT COUNT(*) FROM c
     rows:
       - [4]
+  # ...and the star EXPANDS for validation: two aliases over the same
+  # four-column mixed-star body must still error 42F10 (skipping validation
+  # for star-bearing bodies entirely would let this execute with the
+  # mismatched alias list silently ignored).
+  - query: |-
+      WITH c(a, b) AS (SELECT x.*, y.id, y.v FROM t AS x, t AS y WHERE x.id = y.id)
+      SELECT COUNT(*) FROM c
+    error_code: "42F10"
