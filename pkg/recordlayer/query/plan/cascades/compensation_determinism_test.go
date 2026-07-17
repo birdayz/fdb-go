@@ -286,6 +286,17 @@ func TestOrderingsEqual_NullsFirstSemantics(t *testing.T) {
 	if orderingsEqual(natural, counterflow) {
 		t.Fatal("absent NullsFirst on ASC must NOT equal the counterflow explicit [false] form")
 	}
+
+	// DESC mirror: natural placement on DESC is nulls-LAST.
+	descNatural := properties.Ordering{IsKnown: true, Keys: []values.Value{key()}, Descending: []bool{true}}
+	descExplicitLast := properties.Ordering{IsKnown: true, Keys: []values.Value{key()}, Descending: []bool{true}, NullsFirst: []bool{false}}
+	descExplicitFirst := properties.Ordering{IsKnown: true, Keys: []values.Value{key()}, Descending: []bool{true}, NullsFirst: []bool{true}}
+	if !orderingsEqual(descNatural, descExplicitLast) {
+		t.Fatal("absent NullsFirst on DESC IS nulls-last: must equal the explicit [false] form")
+	}
+	if orderingsEqual(descNatural, descExplicitFirst) {
+		t.Fatal("absent NullsFirst on DESC must NOT equal the counterflow explicit [true] form")
+	}
 }
 
 // tripStubMatcher matches any expression twice — two bindings per call.
@@ -316,6 +327,24 @@ func TestPlannerCapTrips(t *testing.T) {
 		task.Run(p)
 		if !errors.Is(p.capErr, ErrPlannerRuleMatchCapHit) {
 			t.Fatalf("two bindings over cap 1 must trip ErrPlannerRuleMatchCapHit, got %v", p.capErr)
+		}
+	})
+
+	t.Run("match_cap_cumulative_across_swapped_bind", func(t *testing.T) {
+		t.Parallel()
+		// Java counts ONE numMatches stream per rule call, with quantifier
+		// permutations inside it. Neither leg alone exceeds the cap here
+		// (2 primary, 2 swapped, cap 3); only the cumulative count trips.
+		qA := expressions.ForEachQuantifier(expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)))
+		qB := expressions.ForEachQuantifier(expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"U"}, nil)))
+		sel := expressions.NewSelectExpression(qA.GetFlowedObjectValue(), []expressions.Quantifier{qA, qB}, nil)
+		ref := expressions.InitialOf(sel)
+		p := NewPlanner(nil, nil)
+		p.MaxNumMatchesPerRuleCall = 3
+		task := &TransformExprTask{Phase: PhasePlanning, Ref: ref, Expr: sel, Rule: &tripStubRule{}}
+		task.Run(p)
+		if !errors.Is(p.capErr, ErrPlannerRuleMatchCapHit) {
+			t.Fatalf("2 primary + 2 swapped bindings over cap 3 must trip cumulatively, got %v", p.capErr)
 		}
 	})
 

@@ -200,10 +200,15 @@ func (t *TransformExprTask) Run(p *Planner) {
 		}
 	}
 
+	// Java's per-rule-call match cap counts ONE stream per rule invocation
+	// (CascadesPlanner.execute: a single numMatches over bindMatches, which
+	// enumerates quantifier permutations inside the same stream). The swapped
+	// bind below is part of THIS rule call, so it shares the counter.
+	numMatches := 0
 	fireExprRule := func(expr expressions.RelationalExpression) {
 		bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), expr)
-		// Java's per-rule-call match cap (see TransformImplTask).
-		if p.MaxNumMatchesPerRuleCall > 0 && len(bindings) > p.MaxNumMatchesPerRuleCall {
+		numMatches += len(bindings)
+		if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
 			p.capErr = ErrPlannerRuleMatchCapHit
 			return
 		}
@@ -264,7 +269,7 @@ func (t *TransformExprTask) Run(p *Planner) {
 
 	fireExprRule(t.Expr)
 
-	if t.Phase == PhasePlanning {
+	if t.Phase == PhasePlanning && p.capErr == nil {
 		if sel, ok := t.Expr.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
 			qs := sel.GetQuantifiers()
 			if len(qs) >= 2 && sel.GetJoinType() != expressions.JoinLeftOuter &&
@@ -296,8 +301,11 @@ func (t *TransformImplTask) Run(p *Planner) {
 	bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), t.Expr)
 	// Java CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded: one rule
 	// invocation producing more matches than the bound is a complexity
-	// blow-up; throw (here: capErr — tasks have no error channel).
-	if p.MaxNumMatchesPerRuleCall > 0 && len(bindings) > p.MaxNumMatchesPerRuleCall {
+	// blow-up; throw (here: capErr — tasks have no error channel). The
+	// counter is ONE stream per rule call in Java (quantifier permutations
+	// included), so the swapped bind below adds to it rather than resetting.
+	numMatches := len(bindings)
+	if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
 		p.capErr = ErrPlannerRuleMatchCapHit
 		return
 	}
@@ -358,8 +366,10 @@ func (t *TransformImplTask) Run(p *Planner) {
 			qs[1].Kind() == expressions.QuantifierForEach {
 			swapped := sel.WithSwappedQuantifiers()
 			swapBindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), swapped)
-			// Same per-rule-call match cap as the primary bind site above.
-			if p.MaxNumMatchesPerRuleCall > 0 && len(swapBindings) > p.MaxNumMatchesPerRuleCall {
+			// Same rule call as the primary bind site above: the match cap
+			// counts cumulatively across both binding streams.
+			numMatches += len(swapBindings)
+			if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
 				p.capErr = ErrPlannerRuleMatchCapHit
 				return
 			}

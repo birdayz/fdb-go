@@ -983,21 +983,18 @@ func encodeSortContinuation(
 		if qr.Positional == nil || qr.Positional.Type == nil {
 			return nil, fmt.Errorf("sort continuation: a buffered row has no positional layout — cannot encode a resumable continuation")
 		}
-		payload := []any{nil, false}
-		{
-			names := make([]string, len(qr.Positional.Type.Fields))
-			for fi, f := range qr.Positional.Type.Fields {
-				names[fi] = f.Name
-			}
-			blob, bErr := appendContSlice(nil, qr.Positional.Slots)
-			if bErr != nil {
-				return nil, fmt.Errorf("failed to encode sorted record slots for continuation: %w", bErr)
-			}
-			payload = append(payload, map[string]any{
-				"n": names,
-				"b": blob, // typed-codec slot blob; json.Marshal base64-encodes []byte
-			})
+		names := make([]string, len(qr.Positional.Type.Fields))
+		for fi, f := range qr.Positional.Type.Fields {
+			names[fi] = f.Name
 		}
+		blob, bErr := appendContSlice(nil, qr.Positional.Slots)
+		if bErr != nil {
+			return nil, fmt.Errorf("failed to encode sorted record slots for continuation: %w", bErr)
+		}
+		payload := []any{nil, false, map[string]any{
+			"n": names,
+			"b": blob, // typed-codec slot blob; json.Marshal base64-encodes []byte
+		}}
 		jsonBytes, jErr := json.Marshal(payload)
 		if jErr != nil {
 			return nil, fmt.Errorf("failed to marshal sorted record for continuation: %w", jErr)
