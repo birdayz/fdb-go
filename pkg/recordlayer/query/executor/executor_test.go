@@ -2510,16 +2510,36 @@ func TestAggResultName_UnknownFunction(t *testing.T) {
 
 // --- distinctKey unit tests ---
 
+func mustQueryResultKey(t *testing.T, qr QueryResult) string {
+	t.Helper()
+	k, err := queryResultKey(qr)
+	if err != nil {
+		t.Fatalf("queryResultKey: %v", err)
+	}
+	return k
+}
+
+// mustDistinctKey unwraps distinctKey's error channel for the legacy pins
+// (their fixtures never carry unencodable slots).
+func mustDistinctKey(t *testing.T, qr QueryResult) string {
+	t.Helper()
+	k, err := distinctKey(qr)
+	if err != nil {
+		t.Fatalf("distinctKey: %v", err)
+	}
+	return k
+}
+
 func TestDistinctKey_WithDatum(t *testing.T) {
 	t.Parallel()
 	pk := tuple.Tuple{int64(42)}
 	qr := dmapPK(pk, map[string]any{"A": 1})
-	key := distinctKey(qr)
+	key := mustDistinctKey(t, qr)
 	if key == "" {
 		t.Fatal("expected non-empty key from datum map")
 	}
 	qr2 := dmapPK(tuple.Tuple{int64(99)}, map[string]any{"A": 1})
-	if distinctKey(qr) != distinctKey(qr2) {
+	if mustDistinctKey(t, qr) != mustDistinctKey(t, qr2) {
 		t.Fatal("same datum values should produce same distinct key regardless of PK")
 	}
 }
@@ -2527,7 +2547,7 @@ func TestDistinctKey_WithDatum(t *testing.T) {
 func TestDistinctKey_NilPrimaryKey(t *testing.T) {
 	t.Parallel()
 	qr := dmap(map[string]any{"A": 1})
-	key := distinctKey(qr)
+	key := mustDistinctKey(t, qr)
 	// The key is the tuple-packed slot values (Java's Key.Evaluated), not a
 	// NAME=type:value string.
 	expected := string(tuple.Tuple{1}.Pack())
@@ -2541,8 +2561,8 @@ func TestDistinctKey_Deterministic(t *testing.T) {
 	// With multiple slots the packed key must be stable regardless of map
 	// iteration order (dmap sorts columns by name → A,B,C).
 	qr := dmap(map[string]any{"B": 2, "A": 1, "C": 3})
-	key1 := distinctKey(qr)
-	key2 := distinctKey(qr)
+	key1 := mustDistinctKey(t, qr)
+	key2 := mustDistinctKey(t, qr)
 	if key1 != key2 {
 		t.Fatalf("non-deterministic: %q vs %q", key1, key2)
 	}
@@ -2561,8 +2581,8 @@ func TestDistinctKey_DelimiterInjection(t *testing.T) {
 	t.Parallel()
 	rowA := dorder([]string{"A", "B"}, []any{"x", "y|B=string:z"})
 	rowB := dorder([]string{"A", "B"}, []any{"x|B=string:y", "z"})
-	if distinctKey(rowA) == distinctKey(rowB) {
-		t.Fatalf("delimiter injection: distinct rows keyed identically (%q)", distinctKey(rowA))
+	if mustDistinctKey(t, rowA) == mustDistinctKey(t, rowB) {
+		t.Fatalf("delimiter injection: distinct rows keyed identically (%q)", mustDistinctKey(t, rowA))
 	}
 }
 
@@ -2577,20 +2597,20 @@ func TestQueryResultKey_DelimiterInjection(t *testing.T) {
 	// Delimiter injection: ["x","y|z"] and ["x|y","z"] both rendered "x|y|z".
 	r1 := dorder([]string{"A", "B"}, []any{"x", "y|z"})
 	r2 := dorder([]string{"A", "B"}, []any{"x|y", "z"})
-	if queryResultKey(r1) == queryResultKey(r2) {
-		t.Fatalf("queryResultKey delimiter injection: distinct rows keyed identically (%q)", queryResultKey(r1))
+	if mustQueryResultKey(t, r1) == mustQueryResultKey(t, r2) {
+		t.Fatalf("queryResultKey delimiter injection: distinct rows keyed identically (%q)", mustQueryResultKey(t, r1))
 	}
 	// NULL-sentinel: the literal string "\x00NULL\x00" must not key equal to SQL NULL.
 	rNull := dorder([]string{"A"}, []any{nil})
 	rSent := dorder([]string{"A"}, []any{"\x00NULL\x00"})
-	if queryResultKey(rNull) == queryResultKey(rSent) {
+	if mustQueryResultKey(t, rNull) == mustQueryResultKey(t, rSent) {
 		t.Fatal("queryResultKey: NULL sentinel collides with the literal string \\x00NULL\\x00")
 	}
 	// Preserved: same values under differently-named columns still dedup (the
 	// recursive-CTE seed {SRC:1} vs recursive {DST:1} case, values-only + name-sorted).
 	rSrc := dorder([]string{"SRC"}, []any{int64(1)})
 	rDst := dorder([]string{"DST"}, []any{int64(1)})
-	if queryResultKey(rSrc) != queryResultKey(rDst) {
+	if mustQueryResultKey(t, rSrc) != mustQueryResultKey(t, rDst) {
 		t.Fatal("queryResultKey: {SRC:1} and {DST:1} must still dedup as duplicates")
 	}
 }
@@ -2605,7 +2625,7 @@ func TestDistinctKey_NullSentinelCollision(t *testing.T) {
 	t.Parallel()
 	nullRow := dorder([]string{"A"}, []any{nil})
 	sentinelStr := dorder([]string{"A"}, []any{"\x00NULL\x00"})
-	if distinctKey(nullRow) == distinctKey(sentinelStr) {
+	if mustDistinctKey(t, nullRow) == mustDistinctKey(t, sentinelStr) {
 		t.Fatal("SQL NULL keyed equal to a string holding the NULL sentinel")
 	}
 }
@@ -2631,8 +2651,15 @@ func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected single-element tuple, got %v", got)
 	}
-	if _, ok := got[0].(string); !ok {
-		t.Fatalf("expected string element, got %T", got[0])
+	// RFC-180 C4: the keyless/PK-less fallback matches rows by their FULL
+	// positional content via the lossless continuation codec ([]byte), not
+	// a rendered string (which collapsed distinct composite rows).
+	if _, ok := got[0].([]byte); !ok {
+		t.Fatalf("expected lossless []byte element, got %T", got[0])
+	}
+	other := fn(dmap(map[string]any{"X": 2}))
+	if string(got[0].([]byte)) == string(other[0].([]byte)) {
+		t.Fatal("distinct rows must produce distinct fallback comparison keys")
 	}
 }
 
@@ -2889,9 +2916,9 @@ func TestDistinctKey_CoveringAndBaseFloatRowsDedup(t *testing.T) {
 		Type:  logicalType,
 		Slots: []any{int64(1), float64(2.5)},
 	}}
-	if distinctKey(covering) != distinctKey(base) {
+	if mustDistinctKey(t, covering) != mustDistinctKey(t, base) {
 		t.Fatalf("covering row key %q != base row key %q — dedup split across access paths",
-			distinctKey(covering), distinctKey(base))
+			mustDistinctKey(t, covering), mustDistinctKey(t, base))
 	}
 }
 

@@ -1052,7 +1052,12 @@ func TestSortContinuation_GeneratedTypeIdentity_F54(t *testing.T) {
 			// The SYMPTOM pin: the restored row's dedup key must equal the
 			// original row's — a %T divergence here is the duplicate-groups /
 			// duplicate-DISTINCT-rows bug.
-			if orig, restored := packedDedupKey(slots), packedDedupKey(gotSlots); orig != restored {
+			orig, origErr := packedDedupKey(slots)
+			restored, restErr := packedDedupKey(gotSlots)
+			if origErr != nil || restErr != nil {
+				t.Fatalf("packedDedupKey: %v %v", origErr, restErr)
+			}
+			if orig != restored {
 				t.Errorf("packedDedupKey diverged across the checkpoint:\n  original = %q\n  restored = %q\n(equal rows straddling a resume would split into duplicate groups/DISTINCT rows)", orig, restored)
 			}
 		})
@@ -1159,7 +1164,12 @@ func TestSortContinuation_DynamicMessageOfRegisteredType_F55(t *testing.T) {
 		// The SYMPTOM pin: the restored row's dedup key must equal the
 		// original dynamicpb row's — a %T divergence here is the
 		// duplicate-groups / duplicate-DISTINCT-rows bug.
-		if orig, restored := packedDedupKey(slots), packedDedupKey(gotSlots); orig != restored {
+		orig, origErr := packedDedupKey(slots)
+		restored, restErr := packedDedupKey(gotSlots)
+		if origErr != nil || restErr != nil {
+			t.Fatalf("packedDedupKey: %v %v", origErr, restErr)
+		}
+		if orig != restored {
 			t.Errorf("packedDedupKey diverged across the checkpoint:\n  original = %q\n  restored = %q\n(equal dynamicpb rows straddling a resume would split into duplicate groups/DISTINCT rows)", orig, restored)
 		}
 	})

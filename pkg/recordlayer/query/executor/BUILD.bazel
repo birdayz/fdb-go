@@ -43,6 +43,7 @@ go_test(
         "charge_coverage_test.go",
         "continuation_decode_test.go",
         "covering_logical_row_test.go",
+        "dedup_key_lossless_test.go",
         "equijoin_columns_test.go",
         "eval_must_test.go",
         "evaluation_context_test.go",
@@ -138,6 +139,7 @@ go_test(
         "streaming_row_continuation_test.go",
         "merge_union_continuation_integration_test.go",
         "merge_union_continuation_test.go",
+        "dedup_key_lossless_test.go",
     ],
     deps = [
         "//gen",
