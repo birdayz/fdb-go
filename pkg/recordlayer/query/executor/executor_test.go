@@ -2681,29 +2681,29 @@ func TestIntersectionCompKeyFunc_WithKeyVals(t *testing.T) {
 
 func TestCompareValues_NullHandling(t *testing.T) {
 	t.Parallel()
-	if compareValues(nil, nil) != 0 {
+	if mustCompareValues(t, nil, nil) != 0 {
 		t.Fatal("nil == nil should be 0")
 	}
-	if compareValues(nil, int64(1)) >= 0 {
+	if mustCompareValues(t, nil, int64(1)) >= 0 {
 		t.Fatal("nil < non-nil")
 	}
-	if compareValues(int64(1), nil) <= 0 {
+	if mustCompareValues(t, int64(1), nil) <= 0 {
 		t.Fatal("non-nil > nil")
 	}
 }
 
 func TestCompareValues_NumericTypes(t *testing.T) {
 	t.Parallel()
-	if compareValues(int64(1), int64(2)) >= 0 {
+	if mustCompareValues(t, int64(1), int64(2)) >= 0 {
 		t.Fatal("1 < 2")
 	}
-	if compareValues(int64(2), int64(1)) <= 0 {
+	if mustCompareValues(t, int64(2), int64(1)) <= 0 {
 		t.Fatal("2 > 1")
 	}
-	if compareValues(int64(42), float64(42.0)) != 0 {
+	if mustCompareValues(t, int64(42), float64(42.0)) != 0 {
 		t.Fatal("int64(42) == float64(42.0)")
 	}
-	if compareValues(float64(3.14), int64(3)) <= 0 {
+	if mustCompareValues(t, float64(3.14), int64(3)) <= 0 {
 		t.Fatal("3.14 > 3")
 	}
 }
@@ -2742,9 +2742,9 @@ func TestCompareValues_FloatTotalOrder(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := compareValues(c.a, c.b)
+			got := mustCompareValues(t, c.a, c.b)
 			if (c.want < 0 && got >= 0) || (c.want > 0 && got <= 0) || (c.want == 0 && got != 0) {
-				t.Errorf("compareValues(%v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
+				t.Errorf("mustCompareValues(t, %v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
 			}
 		})
 	}
@@ -2752,26 +2752,27 @@ func TestCompareValues_FloatTotalOrder(t *testing.T) {
 
 func TestCompareValues_CrossTypeNotEqual(t *testing.T) {
 	t.Parallel()
-	// int vs string must NOT return 0 (the NaN bug would make them "equal")
-	cmp := compareValues(int64(42), "hello")
-	if cmp == 0 {
-		t.Fatal("int64(42) should not equal string 'hello'")
+	// The former contract was "not silently equal" via the fmt fallback's
+	// lexical order; the contract is now strictly stronger — cross-type
+	// pairs ERROR (correct-or-loud), so they can never compare equal OR
+	// misordered.
+	if _, err := compareValues(int64(42), "hello"); err == nil {
+		t.Fatal("int64 vs string must error loudly")
 	}
-	cmp2 := compareValues(float64(3.14), "world")
-	if cmp2 == 0 {
-		t.Fatal("float64(3.14) should not equal string 'world'")
+	if _, err := compareValues(float64(3.14), "world"); err == nil {
+		t.Fatal("float64 vs string must error loudly")
 	}
 }
 
 func TestCompareValues_Strings(t *testing.T) {
 	t.Parallel()
-	if compareValues("abc", "def") >= 0 {
+	if mustCompareValues(t, "abc", "def") >= 0 {
 		t.Fatal("abc < def")
 	}
-	if compareValues("xyz", "abc") <= 0 {
+	if mustCompareValues(t, "xyz", "abc") <= 0 {
 		t.Fatal("xyz > abc")
 	}
-	if compareValues("same", "same") != 0 {
+	if mustCompareValues(t, "same", "same") != 0 {
 		t.Fatal("same == same")
 	}
 }
@@ -2795,12 +2796,12 @@ func TestCompareValues_Bytes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := compareValues(c.a, c.b)
+			got := mustCompareValues(t, c.a, c.b)
 			if (c.want < 0 && got >= 0) || (c.want > 0 && got <= 0) || (c.want == 0 && got != 0) {
-				t.Errorf("compareValues(%v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
+				t.Errorf("mustCompareValues(t, %v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
 			}
 			// Antisymmetry: the reversed call must flip the sign.
-			rev := compareValues(c.b, c.a)
+			rev := mustCompareValues(t, c.b, c.a)
 			if (got < 0 && rev <= 0) || (got > 0 && rev >= 0) || (got == 0 && rev != 0) {
 				t.Errorf("compareValues not antisymmetric: (a,b)=%d (b,a)=%d", got, rev)
 			}
@@ -2812,22 +2813,22 @@ func TestCompareValues_Bytes(t *testing.T) {
 // normalization): the fmt fallback compared "10.5" < "2.5" lexically (F10).
 func TestCompareValues_Float32(t *testing.T) {
 	t.Parallel()
-	if compareValues(float32(10.5), float32(2.5)) <= 0 {
+	if mustCompareValues(t, float32(10.5), float32(2.5)) <= 0 {
 		t.Fatal("float32 10.5 > 2.5 (was lexical \"10.5\" < \"2.5\")")
 	}
-	if compareValues(float32(2.5), float32(10.5)) >= 0 {
+	if mustCompareValues(t, float32(2.5), float32(10.5)) >= 0 {
 		t.Fatal("float32 2.5 < 10.5")
 	}
-	if compareValues(float32(1.5), float64(1.5)) != 0 {
+	if mustCompareValues(t, float32(1.5), float64(1.5)) != 0 {
 		t.Fatal("float32(1.5) == float64(1.5) across widths")
 	}
-	if compareValues(float64(1.5), float32(1.5)) != 0 {
+	if mustCompareValues(t, float64(1.5), float32(1.5)) != 0 {
 		t.Fatal("float64(1.5) == float32(1.5) across widths")
 	}
-	if compareValues(float32(2.5), int64(3)) >= 0 {
+	if mustCompareValues(t, float32(2.5), int64(3)) >= 0 {
 		t.Fatal("float32(2.5) < int64(3)")
 	}
-	if compareValues(int64(3), float32(2.5)) <= 0 {
+	if mustCompareValues(t, int64(3), float32(2.5)) <= 0 {
 		t.Fatal("int64(3) > float32(2.5)")
 	}
 }
@@ -2836,13 +2837,13 @@ func TestCompareValues_Float32(t *testing.T) {
 // by lexical accident ("false" < "true" in the fmt fallback); now pinned.
 func TestCompareValues_Bool(t *testing.T) {
 	t.Parallel()
-	if compareValues(false, true) >= 0 {
+	if mustCompareValues(t, false, true) >= 0 {
 		t.Fatal("false < true")
 	}
-	if compareValues(true, false) <= 0 {
+	if mustCompareValues(t, true, false) <= 0 {
 		t.Fatal("true > false")
 	}
-	if compareValues(true, true) != 0 || compareValues(false, false) != 0 {
+	if mustCompareValues(t, true, true) != 0 || mustCompareValues(t, false, false) != 0 {
 		t.Fatal("equal bools == 0")
 	}
 }
@@ -4049,10 +4050,10 @@ func TestMergeSortCursor_NullComparisonKeys(t *testing.T) {
 	// so it should come before 3? Let's trace carefully.
 	//
 	// Actually left=[nil, 3], right=[1, nil]
-	// Peek: left=nil, right=1. isBetter(nil, 1): compareValues(nil, 1)=-1, cmp<0 → true → pick left(nil)
-	// Peek: left=3, right=1. isBetter(3, 1): compareValues(3, 1)=1, cmp<0 → false → pick right(1)
-	// Peek: left=3, right=nil. isBetter(3, nil): compareValues(3, nil)=1, cmp<0 → false.
-	//   isBetter(nil, 3): compareValues(nil, 3)=-1, cmp<0 → true → pick right(nil)
+	// Peek: left=nil, right=1. isBetter(nil, 1): mustCompareValues(t, nil, 1)=-1, cmp<0 → true → pick left(nil)
+	// Peek: left=3, right=1. isBetter(3, 1): mustCompareValues(t, 3, 1)=1, cmp<0 → false → pick right(1)
+	// Peek: left=3, right=nil. isBetter(3, nil): mustCompareValues(t, 3, nil)=1, cmp<0 → false.
+	//   isBetter(nil, 3): mustCompareValues(t, nil, 3)=-1, cmp<0 → true → pick right(nil)
 	// Peek: left=3, right exhausted. Pick left(3).
 	// Result: nil, 1, nil, 3
 	left := recordlayer.FromList([]QueryResult{
@@ -5036,6 +5037,38 @@ func TestUnorderedUnionCursor_CloseIdempotent(t *testing.T) {
 	}
 }
 
+// TestUnorderedUnionCursor_MidStreamSnapshotWithUnpulledChild pins the
+// review-caught panic: the FIRST row's continuation snapshots child 1 before
+// it was ever pulled — the slot must encode START (Java's START_PROTO), never
+// a nil interface the encoder's IsEnd probe dereferences. Reachable via
+// LIMIT/maxRows paging that ends inside child 0.
+func TestUnorderedUnionCursor_MidStreamSnapshotWithUnpulledChild(t *testing.T) {
+	t.Parallel()
+	cc := newUnorderedUnionForTest(
+		recordlayer.FromList([]QueryResult{qr("id", int64(1)), qr("id", int64(2))}),
+		recordlayer.FromList([]QueryResult{qr("id", int64(9))}),
+	)
+	defer cc.Close()
+	res, err := cc.OnNext(context.Background())
+	if err != nil || !res.HasNext() {
+		t.Fatalf("first row: %v", err)
+	}
+	b, berr := res.GetContinuation().ToBytes()
+	if berr != nil {
+		t.Fatalf("first-row continuation must encode (unpulled child = START): %v", berr)
+	}
+	slots, derr := decodeUnionContinuation(b, 2)
+	if derr != nil {
+		t.Fatalf("decode: %v", derr)
+	}
+	if slots[0].exhausted || len(slots[0].continuation) == 0 {
+		t.Fatalf("emitting child slot = %+v, want its position", slots[0])
+	}
+	if slots[1].exhausted || len(slots[1].continuation) != 0 {
+		t.Fatalf("unpulled child slot = %+v, want START", slots[1])
+	}
+}
+
 // TestUnorderedUnionCursor_StopSlotsAndResume pins the Java
 // UnorderedUnionCursor contract the old eager concat declined (RFC-180 A2 →
 // E3/E4): a limit-stopped child parks while the others keep emitting; the
@@ -5151,7 +5184,13 @@ func expressionSortFn(keys []expressions.SortKey) func([]QueryResult) error {
 				// Mirror the production sort comparator (executeInMemorySort uses
 				// compareValues, the S2 total-order authority) rather than a separate
 				// scalar comparator, so this fixture exercises the real ordering.
-				cmp := compareValues(vi, vj)
+				cmp, cmpErr := compareValues(vi, vj)
+				if cmpErr != nil {
+					if sortErr == nil {
+						sortErr = cmpErr
+					}
+					return false
+				}
 				if cmp == 0 {
 					continue
 				}
@@ -5682,5 +5721,29 @@ func TestExecuteUnorderedUnion_ResumeContract(t *testing.T) {
 	var pErr *recordlayer.ContinuationParseError
 	if !errors.As(err, &pErr) {
 		t.Fatalf("garbage resume: err = %v, want *ContinuationParseError (a nil error means the token was misrouted to the children)", err)
+	}
+}
+
+// mustCompareValues asserts the pair has a defined ordering — every fixture
+// in these tests stays inside the typed comparison domain.
+func mustCompareValues(t *testing.T, a, b any) int {
+	t.Helper()
+	cmp, err := compareValues(a, b)
+	if err != nil {
+		t.Fatalf("compareValues(%#v, %#v): %v", a, b, err)
+	}
+	return cmp
+}
+
+// TestCompareValues_CrossTypeIsLoud pins the correct-or-loud contract on the
+// comparison authority: a pair with no typed arm errors instead of the
+// retired fmt fallback's silently-wrong lexical order.
+func TestCompareValues_CrossTypeIsLoud(t *testing.T) {
+	t.Parallel()
+	if _, err := compareValues("x", int64(1)); err == nil {
+		t.Fatal("string vs int64 has no defined ordering — must error, never compare lexically")
+	}
+	if _, err := compareValues([]byte{1}, "x"); err == nil {
+		t.Fatal("bytes vs string must error")
 	}
 }

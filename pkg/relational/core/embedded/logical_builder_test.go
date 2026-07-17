@@ -590,3 +590,32 @@ func TestAggArgQualified_ParseTreeTruth(t *testing.T) {
 		}
 	}
 }
+
+// TestGroupKeyStripClearsQualification pins the single-source strip: when the
+// prefix is baked away the key must become BARE — stale qualification
+// segments would chase a qualifier the runtime row no longer carries
+// (corpus-caught during the GroupKey port).
+func TestGroupKeyStripClearsQualification(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, `SELECT p.category, COUNT(*) FROM products p GROUP BY p.category`)
+	if len(sq.groupBy) != 1 || !sq.groupBy[0].qualified {
+		t.Fatalf("fixture must parse one qualified key, got %+v", sq.groupBy)
+	}
+	// The strip fires on the single-source shell path (stripPrefix = the
+	// source alias) — drive it directly.
+	op := buildSelectShell(logical.NewScan("products", "p"), sq, "P.")
+	if op == nil {
+		t.Fatal("build returned nil")
+	}
+	agg := findAggregate(op)
+	if agg == nil {
+		t.Fatal("no aggregate built")
+	}
+	k := agg.GroupKeys[0]
+	if k.Qualified || k.Qualifier != "" {
+		t.Fatalf("stripped key kept stale qualification: %+v", k)
+	}
+	if !strings.EqualFold(k.Display, "category") || !strings.EqualFold(k.Bare, "category") {
+		t.Fatalf("stripped key = %+v, want bare CATEGORY", k)
+	}
+}

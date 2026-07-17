@@ -5462,12 +5462,11 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	var groupKeyExplainMap map[string]string
 	if agg != nil && len(agg.GroupKeys) > 0 {
 		groupKeyExplainMap = make(map[string]string)
-		for i, gk := range agg.GroupKeys {
+		for _, gk := range agg.GroupKeys {
 			gkv := gk.Value
 			if gkv == nil {
 				continue
 			}
-			_ = i
 			// The sort sits ABOVE the aggregate, so the group-key sort key must read
 			// the AGGREGATE OUTPUT column name — what the executor (aggKeyName /
 			// aggregateCursor.finalizeGroup) keys the group-key column by: a FieldValue
@@ -7605,6 +7604,25 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 // branch). A genuinely unresolvable column (single-source path) returns the
 // resolver error so the caller can reject — silently falling back to a raw
 // FieldValue would group every row under a null key (wrong results).
+// resolveCorrelatedColumnValueStructured resolves a structured group key —
+// segments come from the parse tree, never a re-parse of the display text.
+func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical.GroupKey, hasJoins bool) (values.Value, error) {
+	if hasJoins {
+		// Merged join rows carry alias-qualified keys; the DISPLAY is that
+		// flat merged-row key (same limitation as the text path below).
+		return &values.FieldValue{Field: strings.ToUpper(key.Display), Typ: values.UnknownType}, nil
+	}
+	bare := key.Bare
+	if bare == "" {
+		bare = key.Display
+	}
+	var qualifier semantic.Identifier
+	if key.Qualified {
+		qualifier = semantic.NewUnquoted(key.Qualifier)
+	}
+	return resolver.ResolveIdentifier(qualifier, semantic.NewUnquoted(bare))
+}
+
 func resolveCorrelatedColumnValue(resolver *expr.Resolver, col string, hasJoins bool) (values.Value, error) {
 	if hasJoins {
 		// Merged join rows carry alias-qualified keys; use the qualified name
@@ -7644,7 +7662,7 @@ func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQu
 			keyValues[i] = v
 			continue
 		}
-		v, err := resolveCorrelatedColumnValue(resolver, key.Display, hasJoins)
+		v, err := resolveCorrelatedColumnValueStructured(resolver, key, hasJoins)
 		if err != nil {
 			return err
 		}

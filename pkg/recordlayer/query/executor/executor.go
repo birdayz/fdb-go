@@ -4018,7 +4018,13 @@ func executeInMemorySort(
 					}
 					return jNil
 				}
-				cmp := compareValues(ci, cj)
+				cmp, cmpErr := compareValues(ci, cj)
+				if cmpErr != nil {
+					if sortErr == nil {
+						sortErr = cmpErr
+					}
+					return false
+				}
 				if cmp == 0 {
 					continue
 				}

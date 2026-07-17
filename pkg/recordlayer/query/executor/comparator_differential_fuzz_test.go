@@ -74,8 +74,13 @@ func FuzzCompareValues_TupleOrderAgreement(f *testing.F) {
 			bNaN = math.IsNaN(float64(bf))
 		}
 
-		got := sign(compareValues(a, b))
-		rev := sign(compareValues(b, a))
+		cmpAB, errAB := compareValues(a, b)
+		cmpBA, errBA := compareValues(b, a)
+		if errAB != nil || errBA != nil {
+			t.Fatalf("comparable fuzz domain must never hit the loud cross-type arm: %v / %v", errAB, errBA)
+		}
+		got := sign(cmpAB)
+		rev := sign(cmpBA)
 		if got != -rev {
 			t.Fatalf("compareValues not antisymmetric: cmp(%v,%v)=%d cmp(%v,%v)=%d", a, b, got, b, a, rev)
 		}
@@ -174,7 +179,11 @@ func FuzzCmpAnyVsCompareValues_PredicateSortSplit(f *testing.F) {
 		if !ok {
 			return
 		}
-		ss := sign(compareValues(a, b))
+		cmpSS, errSS := compareValues(a, b)
+		if errSS != nil {
+			t.Fatalf("comparable fuzz domain must never hit the loud cross-type arm: %v", errSS)
+		}
+		ss := sign(cmpSS)
 		if ps == ss {
 			return
 		}

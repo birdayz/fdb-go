@@ -497,7 +497,11 @@ func executeUnorderedUnion(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 	if len(inners) == 1 {
-		return ExecutePlan(ctx, inners[0], store, evalCtx, continuation, props.ClearSkipAndLimit())
+		c, err := ExecutePlan(ctx, inners[0], store, evalCtx, continuation, props.ClearSkipAndLimit())
+		if err != nil {
+			return nil, err
+		}
+		return applySkipLimit(c, props.Skip, props.ReturnedRowLimit), nil
 	}
 	// Java UnorderedUnionCursor: per-child slots in UnionCursorContinuation,
 	// order unspecified (a deterministic serial order is a legal
@@ -580,7 +584,15 @@ type unorderedUnionCursor struct {
 
 func (u *unorderedUnionCursor) snapshotContinuation() recordlayer.RecordCursorContinuation {
 	children := make([]recordlayer.RecordCursorContinuation, len(u.states))
-	copy(children, u.states)
+	for i, c := range u.states {
+		if c == nil {
+			// A not-yet-pulled child is at START (Java's START_PROTO); a
+			// raw nil interface would panic the encoder's IsEnd probe.
+			children[i] = &recordlayer.StartContinuation{}
+			continue
+		}
+		children[i] = c
+	}
 	return &mergeSortContinuation{children: children}
 }
 
@@ -1371,7 +1383,11 @@ func (m *mergeSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 		}
 		cmp := -1 // first key seen is always chosen
 		if chosen != nil {
-			cmp = m.compareKeyVals(s.keyVals, minKey)
+			var cmpErr error
+			cmp, cmpErr = m.compareKeyVals(s.keyVals, minKey)
+			if cmpErr != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, cmpErr
+			}
 		}
 		if cmp < 0 {
 			chosen = chosen[:0]
@@ -1427,18 +1443,21 @@ func (m *mergeSortCursor) evalCompKeys(qr QueryResult) ([]any, error) {
 // UnionCursor.java:114). compareValues is the same per-element ordering
 // authority the sort/merge paths share (Java-faithful float total order, FDB
 // tuple order for bytes/UUID/bool).
-func (m *mergeSortCursor) compareKeyVals(a, b []any) int {
+func (m *mergeSortCursor) compareKeyVals(a, b []any) (int, error) {
 	for i := range m.compKeys {
-		cmp := compareValues(a[i], b[i])
+		cmp, err := compareValues(a[i], b[i])
+		if err != nil {
+			return 0, err
+		}
 		if cmp == 0 {
 			continue
 		}
 		if m.reverse {
-			return -cmp
+			return -cmp, nil
 		}
-		return cmp
+		return cmp, nil
 	}
-	return 0
+	return 0, nil
 }
 
 // strongestNoNextReason is Java MergeCursor.getStrongestNoNextReason
@@ -1559,42 +1578,42 @@ func (m *mergeSortCursor) Close() error {
 	return firstErr
 }
 
-func compareValues(a, b any) int {
+func compareValues(a, b any) (int, error) {
 	if a == nil && b == nil {
-		return 0
+		return 0, nil
 	}
 	if a == nil {
-		return -1
+		return -1, nil
 	}
 	if b == nil {
-		return 1
+		return 1, nil
 	}
 	switch av := a.(type) {
 	case int64:
 		switch bv := b.(type) {
 		case int64:
 			if av < bv {
-				return -1
+				return -1, nil
 			}
 			if av > bv {
-				return 1
+				return 1, nil
 			}
-			return 0
+			return 0, nil
 		case int32:
 			bv64 := int64(bv)
 			if av < bv64 {
-				return -1
+				return -1, nil
 			}
 			if av > bv64 {
-				return 1
+				return 1, nil
 			}
-			return 0
+			return 0, nil
 		default:
 			// int64 vs a floating operand: promote and use the
 			// Java-faithful float total order (NaN greatest, -0.0 < 0.0).
-			// A non-numeric b falls through to the fmt fallback.
+			// A non-numeric b is the loud cross-type arm below.
 			if bf, ok := toFloat64Scalar(b); ok {
-				return values.CompareFloat64(float64(av), bf)
+				return values.CompareFloat64(float64(av), bf), nil
 			}
 		}
 	case int32:
@@ -1602,26 +1621,26 @@ func compareValues(a, b any) int {
 		switch bv := b.(type) {
 		case int64:
 			if av64 < bv {
-				return -1
+				return -1, nil
 			}
 			if av64 > bv {
-				return 1
+				return 1, nil
 			}
-			return 0
+			return 0, nil
 		case int32:
 			if av < bv {
-				return -1
+				return -1, nil
 			}
 			if av > bv {
-				return 1
+				return 1, nil
 			}
-			return 0
+			return 0, nil
 		default:
 			// int32 vs a floating operand: promote and use the
 			// Java-faithful float total order (NaN greatest, -0.0 < 0.0).
 			// A non-numeric b falls through to the fmt fallback.
 			if bf, ok := toFloat64Scalar(b); ok {
-				return values.CompareFloat64(float64(av), bf)
+				return values.CompareFloat64(float64(av), bf), nil
 			}
 		}
 	case float64:
@@ -1633,7 +1652,7 @@ func compareValues(a, b any) int {
 		// planner's type checking excludes; fall through to the fmt
 		// fallback.
 		if bf, ok := toFloat64Scalar(b); ok {
-			return values.CompareFloat64(av, bf)
+			return values.CompareFloat64(av, bf), nil
 		}
 	case float32:
 		// Defense in depth: covering-index reads normalize float32 → float64 at
@@ -1643,7 +1662,7 @@ func compareValues(a, b any) int {
 		// lexical decimal string ("10.5" < "2.5"). Same Java-faithful float
 		// total order as the float64 arm (NaN greatest, -0.0 < 0.0).
 		if bf, ok := toFloat64Scalar(b); ok {
-			return values.CompareFloat64(float64(av), bf)
+			return values.CompareFloat64(float64(av), bf), nil
 		}
 	case bool:
 		// false < true — FDB tuple order (0x26 < 0x27), same as Java's
@@ -1651,22 +1670,22 @@ func compareValues(a, b any) int {
 		// ("false" < "true" lexically), but only by accident; pin it.
 		if bv, ok := b.(bool); ok {
 			if av == bv {
-				return 0
+				return 0, nil
 			}
 			if !av {
-				return -1
+				return -1, nil
 			}
-			return 1
+			return 1, nil
 		}
 	case string:
 		if bv, ok := b.(string); ok {
 			if av < bv {
-				return -1
+				return -1, nil
 			}
 			if av > bv {
-				return 1
+				return 1, nil
 			}
-			return 0
+			return 0, nil
 		}
 	case []byte:
 		// BYTES sorts by unsigned lexicographic byte order — the same order the
@@ -1676,7 +1695,7 @@ func compareValues(a, b any) int {
 		// fmt.Sprintf("%v") fallback below would compare decimal-list strings
 		// ("[0 1]" < "[0]" because ' ' < ']'), putting {0x02} after {0x0A}.
 		if bv, ok := b.([]byte); ok {
-			return bytes.Compare(av, bv)
+			return bytes.Compare(av, bv), nil
 		}
 	case [16]byte:
 		// UUID sorts by unsigned big-endian bytes — the same order the tuple.UUID
@@ -1685,27 +1704,15 @@ func compareValues(a, b any) int {
 		// index scan. Without this arm the fmt.Sprintf("%v") fallback below would
 		// compare decimal-list strings ("[85 14 …]") in lexical, not byte, order.
 		if bv, ok := b.([16]byte); ok {
-			return bytes.Compare(av[:], bv[:])
+			return bytes.Compare(av[:], bv[:]), nil
 		}
 	}
-	// Should-never-happen fallback: every type the row domain can carry (nil,
-	// int64/int32, float64/float32, string, []byte, [16]byte, bool) has a typed
-	// arm above (the float arms totally order NaN), so for a well-typed query
-	// this is only reachable by a cross-type mismatch the planner's type
-	// checking excludes. It
-	// compares fmt.Sprintf("%v") strings LEXICALLY, which is NOT tuple order for
-	// anything numeric or binary — a typed arm must be added for any new row
-	// type before it can be sorted/merged. No error channel exists here
-	// (comparators return int); see F9b for making this loud.
-	as := fmt.Sprintf("%v", a)
-	bs := fmt.Sprintf("%v", b)
-	if as < bs {
-		return -1
-	}
-	if as > bs {
-		return 1
-	}
-	return 0
+	// A pair with no typed arm is a cross-type mismatch the planner's type
+	// checking excludes (every row-domain type has an arm above; the float
+	// arms totally order NaN). The retired fmt.Sprintf fallback compared
+	// LEXICALLY — silently wrong order for anything numeric or binary — so
+	// this is loud now: correct-or-loud, never a quietly misordered result.
+	return 0, fmt.Errorf("executor: no ordering defined between %T and %T (cross-type comparison the planner should have excluded)", a, b)
 }
 
 func newEmptyCursor[T any]() recordlayer.RecordCursor[T] {
