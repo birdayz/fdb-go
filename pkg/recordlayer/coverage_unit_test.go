@@ -454,14 +454,14 @@ var _ = Describe("Coverage Unit Tests", func() {
 			Expect(c.IsClosed()).To(BeTrue())
 		})
 
-		It("empty cursor reports not-closed even after Close", func() {
+		It("empty cursor reports closed after Close (Java EmptyCursor)", func() {
 			c := Empty[int]()
 			Expect(c.IsClosed()).To(BeFalse())
-			// emptyCursor is stateless — Close is a no-op and IsClosed
-			// always returns false. This is intentional: emptyCursor has
-			// no resources to release.
+			// No resources to release, but Java's EmptyCursor tracks the
+			// closed flag and isClosed() reports it — the contract is
+			// observable, so Go matches.
 			Expect(c.Close()).To(Succeed())
-			Expect(c.IsClosed()).To(BeFalse())
+			Expect(c.IsClosed()).To(BeTrue())
 		})
 	})
 

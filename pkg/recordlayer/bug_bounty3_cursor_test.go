@@ -85,70 +85,57 @@ func (c *closeTracker[T]) wasClosed() bool {
 	return c.closed.Load()
 }
 
-// === BUG #1: LimitRowsCursor(cursor, 0) leaks the inner cursor ===
+// === LimitRowsCursor edge limits: Java's limitRowsTo contract ===
 //
-// File: cursor_combinators.go:71-76
-// Severity: $100 (resource leak)
-//
-// When LimitRowsCursor is called with n <= 0, it returns Empty[T]() and
-// discards the original cursor without closing it. If the original cursor
-// holds FDB range iterators or other resources, they are leaked. The caller
-// receives an Empty cursor whose Close() is a no-op, so the original cursor
-// is never cleaned up.
-//
-// Fix: Close the original cursor before returning Empty, or return a wrapper
-// that closes the original on Close().
+// Java RecordCursor.limitRowsTo: 0 (and MAX) mean UNLIMITED — the cursor is
+// returned unchanged — and a NEGATIVE limit throws. The original bug-bounty
+// pins here asserted the opposite (0 → zero rows + eager close), a silent
+// inversion of Java's convention that a caller passing the
+// getReturnedRowLimitOrMax-style "0 == no limit" value would misread as an
+// empty result set.
 
-func TestBugBounty3Cursor_LimitZeroLeaksInnerCursor(t *testing.T) {
+func TestCursor_LimitZeroMeansUnlimited(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
 	inner := newCloseTracker(FromList([]int{1, 2, 3}))
 	limited := LimitRowsCursor[int](inner, 0)
 
-	// Drain the limited cursor (it's Empty, returns immediately)
-	result, err := limited.OnNext(ctx)
-	if err != nil {
-		t.Fatal(err)
+	var got []int
+	for {
+		result, err := limited.OnNext(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.HasNext() {
+			break
+		}
+		got = append(got, result.GetValue())
 	}
-	if result.HasNext() {
-		t.Fatal("expected empty cursor to have no results")
+	if len(got) != 3 {
+		t.Fatalf("limitRowsTo(0) is UNLIMITED in Java; got %d rows, want all 3", len(got))
 	}
-
-	// Close the limited cursor (which is an Empty cursor)
 	if err := limited.Close(); err != nil {
 		t.Fatal(err)
 	}
-
-	// BUG: The inner cursor was never closed!
 	if !inner.wasClosed() {
-		t.Errorf("BUG: LimitRowsCursor(cursor, 0) leaked inner cursor — Close() was never called.\n" +
-			"The original cursor's resources (FDB iterators, etc.) are leaked.\n" +
-			"Fix: close the inner cursor before returning Empty, or return a wrapper.")
+		t.Error("closing the returned cursor must close the inner (it IS the inner)")
 	}
 }
 
-func TestBugBounty3Cursor_LimitNegativeLeaksInnerCursor(t *testing.T) {
+func TestCursor_LimitNegativeErrorsAndCloses(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
 	inner := newCloseTracker(FromList([]int{1, 2, 3}))
 	limited := LimitRowsCursor[int](inner, -5)
 
-	result, err := limited.OnNext(ctx)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := limited.OnNext(ctx); err == nil {
+		t.Fatal("a negative limit is an error (Java throws RecordCoreException)")
 	}
-	if result.HasNext() {
-		t.Fatal("expected empty cursor")
-	}
-
-	if err := limited.Close(); err != nil {
-		t.Fatal(err)
-	}
-
+	// The inner was closed eagerly — no resource leak on the error path.
 	if !inner.wasClosed() {
-		t.Errorf("BUG: LimitRowsCursor(cursor, -5) leaked inner cursor — Close() was never called.")
+		t.Error("LimitRowsCursor(cursor, -5) must close the inner before returning the error cursor")
 	}
 }
 

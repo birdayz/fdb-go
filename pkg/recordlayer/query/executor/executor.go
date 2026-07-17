@@ -2229,6 +2229,16 @@ func executeNestedLoopJoin(
 	// marker — declines loudly: forwarding unrecognized bytes to the outer
 	// child risks a key-value cursor's raw-suffix fallback silently
 	// accepting them as a scan position (wrong rows).
+	if p.GetJoinType() == plans.JoinFullOuter && len(continuation) > 0 {
+		// No FULL OUTER continuation resumes — the cross-outer matchedInner
+		// bitmap has no serialized form. New tokens carry the declining FULL
+		// marker, but a token minted by a PREVIOUS binary version packs
+		// ordinary mid-inner state; decoding it here would rebuild the
+		// bitmap zeroed and re-pad already-matched inner rows. Join-type
+		// context is the authority, not the token's own claim.
+		props.State.ReleaseMemory(innerCharged)
+		return nil, &UnsupportedContinuationError{Shape: "nested loop join FULL OUTER (does not resume)"}
+	}
 	outerContinuation, nljResume, decodeErr := decodeNLJContinuation(continuation)
 	if decodeErr != nil {
 		props.State.ReleaseMemory(innerCharged)
@@ -2279,7 +2289,7 @@ func executeNestedLoopJoin(
 	// its charges — inner rows plus any hash index — at page teardown. ADD
 	// to the tally: newNLJCursor already accumulated the hash-index charges.
 	cursor.chargedBytes += innerCharged
-	cursor.applyResume(nljResume)
+	cursor.armResume(outerContinuation, nljResume)
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 

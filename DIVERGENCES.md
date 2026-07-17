@@ -467,3 +467,73 @@ supports positional keys as a read-side extension, binding them to the union
 OUTPUT slot by ordinal (SortKey.Pos carried through the union lift;
 translateSort bakes the slot). Both are Go read-side extensions on a surface
 where Java's own behavior is non-standard; wire compat is untouched.
+
+## Cursor/continuation surface — systematic hunt (RFC-180 wave 2)
+
+Four parallel Java-vs-Go sweeps (FlatMapPipelinedCursor; union/intersection
+family; core combinators; InJoin/aggregation/sort) after the RFC-180
+continuation work. Every (a)-class bug found was fixed in the same batch
+(kept-armed resume state in flatMap+NLJ; terminal-result replay guards in
+flatMap/NLJ/skip/filter/map; Java `limitRowsTo` 0-is-unlimited semantics;
+stateful `Empty()` close; `FromListWithContinuation` nil-vs-empty; the
+intersection non-max `consume()` advance). What remains is classified below.
+
+### Clean extensions (compose with Java's way)
+
+- **FlatMap/NLJ PK check values where Java-Cascades passes `checker=null`**:
+  Go always writes the outer PK as the continuation check value; Java's
+  Cascades FlatMap plan disables the check entirely. Go uses exactly Java's
+  designed non-null-checker path and is strictly safer against
+  between-transaction outer shifts.
+- **FlatMap armed-inner survival across an outer out-of-band stop**: Go's
+  wrapOuterContinuation carries the armed inner + check value; Java drops the
+  armed state at the sentinel wrap (a later resume would re-run the saved
+  row's inner — duplicates). Go re-arms identically to the initial decode.
+- **InJoin check-value nil degradation for non-scalar in-values**: the outer
+  element is pinned by the positional in-list index over a fixed literal set;
+  the nil check is Java's own `checker==null` path.
+- **Aggregate resume seeds the flat inner position**: Java seeds the WHOLE
+  parsed AggregateCursorContinuation as previousContinuationInGroup — a
+  first-row group break then nests aggregate bytes into the LEAF plan's
+  resume (latent Java mis-resume). Go seeds the decoded flat inner position:
+  same emitted rows, resumable continuation. Go is the fix.
+- **Ordered UNION-ALL merge (removesDuplicates=false)**: Java's UnionCursor
+  always dedups; Go's merge-sort union adds a non-dedup mode on the same
+  state machine.
+- **Intersection continuation child-count/started validation**: Go validates
+  presence per child count where Java relies on list length — a defensive
+  superset with identical valid-token behavior.
+- **ListCursor unsigned position decode**: a corrupt high-bit 4-byte token
+  exhausts cleanly instead of Java's IndexOutOfBounds; unreachable from valid
+  tokens.
+
+### Architectural (by design, with reason)
+
+- **Pipeline depth**: Java prefetches (pipelineSize) in FlatMap/InJoin; Go is
+  serial pull-based. Same rows, same order, same continuation bytes — only
+  which page an out-of-band stop lands on can shift.
+- **Aggregation TO_OLD mode**: exists in Java solely to consume
+  pre-partial-aggregation legacy continuations; Go has no legacy tokens to
+  read and always runs Java's TO_NEW arm.
+- **Sort codec**: Go-owned typed payload inside Java's MemorySortContinuation
+  wrapper. Cascades emits no physical sort Java could resume (RemoveSortRule);
+  resume semantics are row-set-equivalent to Java's minimum-key re-scan.
+- **UnorderedUnion**: Go is an eager deterministic concat that DECLINES
+  continuations loudly (correct-or-loud, RFC-180 A2) and errors on a child's
+  out-of-band stop; Java streams whenAny with full resumability. Feature gap,
+  never silent wrongness. Same for the reason-aggregation difference it
+  subsumes.
+- **ProbableIntersectionCursor / bloom-filter weak reads**: entirely
+  unimplemented (no plan type reaches it); Java's own docs flag the
+  Guava-serialized bloom bytes as a cross-compat hazard. Missing capability,
+  not a divergence in shared code.
+- **FutureCursor / fromFuture**: absent; single-future shapes are expressed
+  via FromList/flatMap composition instead.
+- **NoNextReason ordinals differ** (semantics and all predicates match); the
+  enum is never serialized. Latent trap only if someone persists ordinals.
+- **ConcatCursor carries no ScanProperties**: row-limit splitting and
+  reverse ordering are the Go caller's composition concern; pull-based
+  execution makes an outer LimitRows equivalent.
+- **Construction-time vs first-OnNext continuation-parse errors**: Go defers
+  all parse failures to an errorCursor on first pull (I/O-free construction);
+  Java throws in the constructor. Both fail loudly; timing differs.

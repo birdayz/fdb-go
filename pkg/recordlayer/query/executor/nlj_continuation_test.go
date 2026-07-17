@@ -139,7 +139,7 @@ func TestNLJContinuation_ResumeEverySplitPoint(t *testing.T) {
 				resumed := nljTestCursor(t,
 					recordlayer.FromListWithContinuation(outers, outerCont),
 					inners, tc.jt, tc.preds())
-				resumed.applyResume(rs)
+				resumed.armResume(outerCont, rs)
 				gotKeys, _ := drainNLJ(t, resumed)
 				want := fullKeys[split:]
 				if len(gotKeys) != len(want) {
@@ -153,6 +153,84 @@ func TestNLJContinuation_ResumeEverySplitPoint(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestNLJContinuation_DoubleResumeEverySplitPair pins the resumed-page outer
+// seeding (armResume): a token taken FROM a resumed page must carry the real
+// outer position. Without the seed, priorOuterCont on the resumed page is nil,
+// the second-generation token encodes an EMPTY outer position, and the second
+// resume replays the outer scan from row 0 — silent duplicates. Sweeps every
+// (first split, second split) pair.
+func TestNLJContinuation_DoubleResumeEverySplitPair(t *testing.T) {
+	t.Parallel()
+	outers := nljTestRows("K", 3)
+	inners := nljTestRows("J", 3)
+	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nil)
+	fullKeys, conts := drainNLJ(t, full)
+
+	for s1 := 1; s1 < len(fullKeys); s1++ {
+		oc1, rs1, err := decodeNLJContinuation(conts[s1-1])
+		if err != nil {
+			t.Fatalf("split %d decode: %v", s1, err)
+		}
+		r1 := nljTestCursor(t, recordlayer.FromListWithContinuation(outers, oc1), inners, plans.JoinInner, nil)
+		r1.armResume(oc1, rs1)
+		keys1, conts1 := drainNLJ(t, r1)
+		for s2 := 1; s2 <= len(keys1); s2++ {
+			oc2, rs2, err := decodeNLJContinuation(conts1[s2-1])
+			if err != nil {
+				t.Fatalf("split %d/%d decode: %v", s1, s2, err)
+			}
+			r2 := nljTestCursor(t, recordlayer.FromListWithContinuation(outers, oc2), inners, plans.JoinInner, nil)
+			r2.armResume(oc2, rs2)
+			keys2, _ := drainNLJ(t, r2)
+			got := append(append(append([]string{}, fullKeys[:s1]...), keys1[:s2]...), keys2...)
+			if len(got) != len(fullKeys) {
+				t.Fatalf("splits %d/%d: %d total rows, want %d (duplicated/dropped outer prefix)\ngot: %v\nwant: %v",
+					s1, s2, len(got), len(fullKeys), got, fullKeys)
+			}
+			for i := range fullKeys {
+				if got[i] != fullKeys[i] {
+					t.Fatalf("splits %d/%d row %d: %q, want %q", s1, s2, i, got[i], fullKeys[i])
+				}
+			}
+		}
+	}
+}
+
+// TestNLJContinuation_FullOuterExecutorRejectsAllTokens pins the executor
+// guard: a FULL OUTER plan rejects EVERY incoming continuation — including a
+// mid-inner token minted by a previous binary version (kind 0, no FULL
+// marker), which the decoder alone would accept and resume with a zeroed
+// matchedInner bitmap (re-padded rows). Join-type context is the authority.
+func TestNLJContinuation_FullOuterExecutorRejectsAllTokens(t *testing.T) {
+	t.Parallel()
+	outerAlias := values.NamedCorrelationIdentifier("TO")
+	innerAlias := values.NamedCorrelationIdentifier("TI")
+	evalCtx := EmptyEvaluationContext()
+	state := recordlayer.NewExecuteState(0)
+	for _, alias := range []values.CorrelationIdentifier{outerAlias, innerAlias} {
+		tt := evalCtx.GetOrCreateTempTable(alias, state)
+		for _, r := range nljTestRows("K", 2) {
+			if err := tt.Add(r); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+		}
+	}
+	plan := plans.NewRecordQueryNestedLoopJoinPlan(
+		plans.NewRecordQueryTempTableScanPlan(outerAlias),
+		plans.NewRecordQueryTempTableScanPlan(innerAlias),
+		nil, plans.JoinFullOuter, "TO", "TI", nil,
+	)
+	baseVersionToken, err := (&nljContinuation{hasInner: true, innerIdx: 1, outerMatched: true}).ToBytes()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	_, execErr := executeNestedLoopJoin(context.Background(), plan, nil, evalCtx, baseVersionToken,
+		recordlayer.ExecuteProperties{State: state})
+	if execErr == nil || !strings.Contains(execErr.Error(), "FULL OUTER") {
+		t.Fatalf("a FULL OUTER plan must reject every incoming continuation, got %v", execErr)
 	}
 }
 
@@ -211,7 +289,7 @@ func TestNLJContinuation_CheckValueMismatchRestarts(t *testing.T) {
 	}
 	tampered := nljTestRows("K", 3)[1:]
 	resumed := nljTestCursor(t, recordlayer.FromListWithContinuation(tampered, outerCont), inners, plans.JoinInner, nil)
-	resumed.applyResume(rs)
+	resumed.armResume(outerCont, rs)
 	gotKeys, _ := drainNLJ(t, resumed)
 	// The re-read (changed) outer row emits ALL its pairs (restart), then the
 	// remaining outer rows follow — count = full inner width per re-read
@@ -255,7 +333,7 @@ func TestNLJContinuation_ArmedResumeSurvivesOuterStop(t *testing.T) {
 	t.Parallel()
 	outer := &pausingCursor{rows: nil, cont: []byte("outer-pos")}
 	c := nljTestCursor(t, outer, nljTestRows("J", 3), plans.JoinInner, nil)
-	c.applyResume(&nljResumeState{innerIdx: 2, outerMatched: true, check: []byte("pk")})
+	c.armResume(nil, &nljResumeState{innerIdx: 2, outerMatched: true, check: []byte("pk")})
 	res, err := c.OnNext(context.Background())
 	if err != nil || res.HasNext() {
 		t.Fatalf("outer must pause without a row: %v", err)
@@ -309,7 +387,7 @@ func TestNLJContinuation_ArmedStateAppliesToLaterMatchingRow(t *testing.T) {
 	x.PrimaryKey = tuple.Tuple{"K", int64(99)}
 	newOuters := []QueryResult{outers[0], x, outers[1]}
 	resumed := nljTestCursor(t, recordlayer.FromListWithContinuation(newOuters, outerCont), inners, plans.JoinInner, nil)
-	resumed.applyResume(rs)
+	resumed.armResume(outerCont, rs)
 	gotKeys, _ := drainNLJ(t, resumed)
 
 	// X emits ALL 3 pairs; the saved K1 resumes at innerIdx=1 → 2 pairs.

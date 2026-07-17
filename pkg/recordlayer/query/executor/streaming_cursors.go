@@ -1001,8 +1001,13 @@ type nljCursor struct {
 	// the CURRENT outer row on resume, lastOuterCont the advanced position
 	// that produces the next one. The resume* fields hold a decoded page
 	// continuation, applied when the first outer row arrives.
-	priorOuterCont     recordlayer.RecordCursorContinuation
-	lastOuterCont      recordlayer.RecordCursorContinuation
+	priorOuterCont recordlayer.RecordCursorContinuation
+	lastOuterCont  recordlayer.RecordCursorContinuation
+	// lastNoNext replays a prior out-of-band stop on a contract-violating
+	// re-call (Java FlatMapPipelinedCursor:123-125 caches every no-next
+	// result) — without it a re-call re-pulls the outer and skews the
+	// reason/continuation pair.
+	lastNoNext         *recordlayer.RecordCursorResult[QueryResult]
 	resumePending      bool
 	resumeInnerIdx     int
 	resumeOuterMatched bool
@@ -1370,6 +1375,9 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 		c.buildErr = nil
 		return recordlayer.RecordCursorResult[QueryResult]{}, err
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -1448,7 +1456,9 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					w.outerMatched = c.resumeOuterMatched
 					w.checkValue = c.resumeCheck
 				}
-				return recordlayer.NewResultNoNext[QueryResult](reason, w), nil
+				res := recordlayer.NewResultNoNext[QueryResult](reason, w)
+				c.lastNoNext = &res
+				return res, nil
 			}
 			outerRow := result.GetValue()
 			c.priorOuterCont = c.lastOuterCont
@@ -1796,9 +1806,19 @@ func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resum
 	}, nil
 }
 
-// applyResume arms the cursor with a decoded mid-inner resume state; a nil
-// state is a no-op (fresh scan or between-outer resume).
-func (c *nljCursor) applyResume(rs *nljResumeState) {
+// armResume wires a decoded page continuation into the cursor: the mid-inner
+// state (nil = fresh scan or between-outer resume) and the saved outer
+// position. Seeding lastOuterCont matters even without mid-inner state: the
+// first outer advance copies it into priorOuterCont — the position AT the
+// resumed row — which every mid-inner continuation taken on this page pairs
+// with its check value. Without the seed, a token taken from a RESUMED page
+// encodes an EMPTY outer position (restart from scratch) and the next resume
+// silently replays the outer prefix (duplicate rows). The flatMap resume
+// seeds identically.
+func (c *nljCursor) armResume(outerContinuation []byte, rs *nljResumeState) {
+	if len(outerContinuation) > 0 {
+		c.lastOuterCont = recordlayer.NewBytesContinuation(outerContinuation)
+	}
 	if rs == nil {
 		return
 	}

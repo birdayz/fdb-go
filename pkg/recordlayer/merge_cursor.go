@@ -46,14 +46,11 @@ type mergeChildState[T any] struct {
 	// it. buildIntersectionContinuation derives the START/MID/END encoding from
 	// this continuation.
 	//
-	// Consequence (Java-faithful): because the continuation sits at the last
-	// CONSUMED (matched) position, an out-of-band stop resumes a child from
-	// there and re-scans any non-matching rows discarded since the last match
-	// (bounded by the inter-match gap; the prefix-to-first-match for a
-	// never-matched child). This is correct (no dup/no loss) and matches Java
-	// MergeCursorState exactly. Tracking the position just before the currently
-	// held candidate to skip that re-scan would be a Go-only optimization beyond
-	// Java — out of scope for RFC-071; see TODO.
+	// Java IntersectionCursorBase.computeNextResultStates additionally calls
+	// consume() on every DISCARDED non-max cursor, so the cached continuation
+	// advances past each discarded row too — an out-of-band stop resumes a
+	// child from its last DISCARD, never re-scanning the inter-match gap. Go
+	// mirrors that in the non-max advance loop.
 	continuation RecordCursorContinuation
 }
 
@@ -255,13 +252,18 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 			return NewResultWithValue[T](result.GetValue(), cont), nil
 		}
 
-		// Advance all non-maximal children
+		// Advance all non-maximal children. Java
+		// (IntersectionCursorBase.computeNextResultStates) consumes each
+		// discarded row first, so the child's cached continuation advances
+		// past it — a stop mid-catch-up resumes from the last discard, not
+		// the last match.
 		for _, child := range c.children {
 			neq, neqErr := compareKeys(child.comparisonKey, maxKey)
 			if neqErr != nil {
 				return RecordCursorResult[T]{}, neqErr
 			}
 			if neq != 0 {
+				child.consume()
 				if err := child.advance(ctx); err != nil {
 					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
 				}

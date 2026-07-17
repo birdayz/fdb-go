@@ -200,3 +200,64 @@ func TestCompareKeys(t *testing.T) {
 		})
 	}
 }
+
+// intPausingCursor emits its rows with position continuations, then pauses
+// out-of-band — models a child hitting a scan/time limit mid-catch-up.
+type intPausingCursor struct {
+	rows   []int
+	pos    int
+	closed bool
+}
+
+func (p *intPausingCursor) OnNext(context.Context) (RecordCursorResult[int], error) {
+	if p.pos < len(p.rows) {
+		v := p.rows[p.pos]
+		p.pos++
+		return NewResultWithValue(v, NewBytesContinuation([]byte{byte(p.pos)})), nil
+	}
+	return NewResultNoNext[int](TimeLimitReached, NewBytesContinuation([]byte{0xEE})), nil
+}
+func (p *intPausingCursor) Close() error   { p.closed = true; return nil }
+func (p *intPausingCursor) IsClosed() bool { return p.closed }
+
+// TestIntersectionCursor_NonMaxDiscardAdvancesContinuation pins Java
+// IntersectionCursorBase.computeNextResultStates: every DISCARDED non-max row
+// is consume()d, so the child's continuation slot advances past each discard
+// — a stop mid-catch-up resumes from the last discard, never re-scanning the
+// inter-match gap. Without the consume, the slot sits at the last MATCH
+// (START here) and the resumed child re-reads every discarded row.
+func TestIntersectionCursor_NonMaxDiscardAdvancesContinuation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Child A discards 1 and 2 chasing B's max key 5, then HOLDS 9; the
+	// stop comes from B pausing while chasing 9. A's slot must sit at the
+	// position after its LAST DISCARD (list position 2), not at START.
+	a := FromList([]int{1, 2, 9})
+	b := &intPausingCursor{rows: []int{5}}
+	inter := Intersection([]RecordCursor[int]{a, b}, intCompKey, false)
+
+	res, err := inter.OnNext(ctx)
+	if err != nil {
+		t.Fatalf("OnNext: %v", err)
+	}
+	if res.HasNext() {
+		t.Fatalf("no intersection expected before the pause, got %v", res.GetValue())
+	}
+	if res.GetNoNextReason() != TimeLimitReached {
+		t.Fatalf("reason = %v, want the child's TimeLimitReached", res.GetNoNextReason())
+	}
+	contBytes, cerr := res.GetContinuation().ToBytes()
+	if cerr != nil {
+		t.Fatalf("ToBytes: %v", cerr)
+	}
+	slots, derr := DecodeIntersectionContinuation(contBytes, 2)
+	if derr != nil {
+		t.Fatalf("decode: %v", derr)
+	}
+	// A's slot: list position 2 (after discards of 1 and 2, before the held
+	// 9) — the 4-byte big-endian ListCursor encoding.
+	if !slots[0].Started || string(slots[0].Continuation) != string([]byte{0, 0, 0, 2}) {
+		t.Fatalf("child A slot = %+v, want position-2 after its discards (Java consume() on non-max)", slots[0])
+	}
+}

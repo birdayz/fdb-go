@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	"google.golang.org/protobuf/proto"
 
@@ -17,9 +18,15 @@ import (
 type filterCursor[T any] struct {
 	inner     RecordCursor[T]
 	predicate func(T) bool
+	// lastNoNext replays the terminal result on re-call (Java FilterCursor
+	// caches every no-next), so a non-idempotent inner is never re-pulled.
+	lastNoNext *RecordCursorResult[T]
 }
 
 func (c *filterCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return RecordCursorResult[T]{}, err
@@ -29,6 +36,7 @@ func (c *filterCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 			return result, err
 		}
 		if !result.HasNext() {
+			c.lastNoNext = &result
 			return result, nil
 		}
 		if c.predicate(result.GetValue()) {
@@ -56,9 +64,14 @@ func SkipCursor[T any](cursor RecordCursor[T], n int) RecordCursor[T] {
 type skipCursor[T any] struct {
 	inner     RecordCursor[T]
 	remaining int
+	// lastNoNext replays the terminal result on re-call (Java SkipCursor).
+	lastNoNext *RecordCursorResult[T]
 }
 
 func (c *skipCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	for c.remaining > 0 {
 		if err := ctx.Err(); err != nil {
 			return RecordCursorResult[T]{}, err
@@ -68,11 +81,16 @@ func (c *skipCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], erro
 			return result, err
 		}
 		if !result.HasNext() {
+			c.lastNoNext = &result
 			return result, nil
 		}
 		c.remaining--
 	}
-	return c.inner.OnNext(ctx)
+	result, err := c.inner.OnNext(ctx)
+	if err == nil && !result.HasNext() {
+		c.lastNoNext = &result
+	}
+	return result, err
 }
 
 func (c *skipCursor[T]) Close() error { return c.inner.Close() }
@@ -80,12 +98,18 @@ func (c *skipCursor[T]) Close() error { return c.inner.Close() }
 func (c *skipCursor[T]) IsClosed() bool { return c.inner.IsClosed() }
 
 // LimitRowsCursor wraps a cursor and limits to at most n elements.
-// Matches Java's RecordCursor.limitRowsTo().
+// Matches Java's RecordCursor.limitRowsTo() exactly: 0 (and MaxInt) mean
+// UNLIMITED — the cursor is returned unchanged — and a negative limit is an
+// error (Java throws RecordCoreException("Invalid row limit"); Go's no-panic
+// rule surfaces it as an error cursor). The previous n<=0→Empty reading
+// silently inverted Java's 0-is-unlimited convention.
 func LimitRowsCursor[T any](cursor RecordCursor[T], n int) RecordCursor[T] {
-	if n <= 0 {
-		// Close inner cursor to prevent resource leaks (FDB iterators, etc.)
+	if n < 0 {
 		_ = cursor.Close()
-		return Empty[T]()
+		return &errorCursor[T]{err: fmt.Errorf("invalid row limit %d", n)}
+	}
+	if n == 0 || n == math.MaxInt {
+		return cursor
 	}
 	return &limitRowsCursor[T]{inner: cursor, remaining: n}
 }
@@ -459,6 +483,8 @@ func (c *concatCursor[T]) IsClosed() bool { return c.closed }
 type mapResultCursor[T, R any] struct {
 	inner RecordCursor[T]
 	fn    func(T) R
+	// lastNoNext replays the terminal result on re-call (Java MapCursor).
+	lastNoNext *RecordCursorResult[R]
 }
 
 // MapCursor creates a cursor that transforms each value using the given function.
@@ -468,12 +494,17 @@ func MapCursor[T, R any](cursor RecordCursor[T], fn func(T) R) RecordCursor[R] {
 }
 
 func (c *mapResultCursor[T, R]) OnNext(ctx context.Context) (RecordCursorResult[R], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	result, err := c.inner.OnNext(ctx)
 	if err != nil {
 		return RecordCursorResult[R]{}, err
 	}
 	if !result.HasNext() {
-		return NewResultNoNext[R](result.GetNoNextReason(), result.GetContinuation()), nil
+		res := NewResultNoNext[R](result.GetNoNextReason(), result.GetContinuation())
+		c.lastNoNext = &res
+		return res, nil
 	}
 	mapped := c.fn(result.GetValue())
 	return NewResultWithValue(mapped, result.GetContinuation()), nil

@@ -95,6 +95,14 @@ type flatMapCursor struct {
 	// authority.
 	outerIdentityPassthrough bool
 
+	// lastNoNext replays a prior terminal result on a contract-violating
+	// re-call (Java FlatMapPipelinedCursor:123-125: any no-next result is
+	// cached and returned verbatim). Without it, a re-call after an inner
+	// out-of-band stop (innerCursor already nil) silently advances to the
+	// NEXT outer row — dropping the unfinished inner's rows — and a re-call
+	// after an outer out-of-band stop reports a false SourceExhausted.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
+
 	// Continuation state for cross-transaction resume.
 	priorOuterContinuation recordlayer.RecordCursorContinuation
 	lastOuterContinuation  recordlayer.RecordCursorContinuation
@@ -211,6 +219,9 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 	if c.closed {
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -243,7 +254,9 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				// FlatMapContinuation with current outer + inner
 				// position so the next page resumes correctly.
 				cont := c.buildContinuation(innerCont)
-				return recordlayer.NewResultNoNext[QueryResult](reason, cont), nil
+				res := recordlayer.NewResultNoNext[QueryResult](reason, cont)
+				c.lastNoNext = &res
+				return res, nil
 			}
 		}
 
@@ -259,10 +272,15 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
 		if !outerResult.HasNext() {
-			c.outerExhausted = true
 			reason := outerResult.GetNoNextReason()
+			// Only a genuine source exhaustion is terminal; an out-of-band
+			// stop is a page boundary — the replay guard (not this flag)
+			// keeps a re-call from re-pulling the outer.
+			c.outerExhausted = reason == recordlayer.SourceExhausted
 			cont := c.wrapOuterContinuation(outerResult.GetContinuation())
-			return recordlayer.NewResultNoNext[QueryResult](reason, cont), nil
+			res := recordlayer.NewResultNoNext[QueryResult](reason, cont)
+			c.lastNoNext = &res
+			return res, nil
 		}
 
 		outerRow := outerResult.GetValue()

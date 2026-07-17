@@ -120,14 +120,13 @@ var _ = Describe("CursorCombinatorEdgeCases", func() {
 		Expect(cursor.Close()).To(Succeed())
 	})
 
-	It("LimitRowsCursor with limit=0 returns empty result with source exhausted", func() {
+	It("LimitRowsCursor with limit=0 is unlimited (Java limitRowsTo)", func() {
 		inner := FromList([]int{1, 2, 3})
 		cursor := LimitRowsCursor[int](inner, 0)
 
-		result, err := cursor.OnNext(ctx)
+		items, err := AsList(ctx, cursor)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.HasNext()).To(BeFalse())
-		Expect(result.GetNoNextReason()).To(Equal(SourceExhausted))
+		Expect(items).To(Equal([]int{1, 2, 3}))
 		Expect(cursor.Close()).To(Succeed())
 	})
 

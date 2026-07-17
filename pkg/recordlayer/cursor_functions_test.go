@@ -120,11 +120,17 @@ var _ = Describe("Cursor standalone functions", func() {
 			Expect(items).To(Equal([]int{1, 2}))
 		})
 
-		It("limit 0 returns empty", func() {
+		It("limit 0 means unlimited (Java limitRowsTo)", func() {
 			cursor := LimitRowsCursor(FromList([]int{1, 2, 3}), 0)
 			items, err := AsList(ctx, cursor)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(items).To(BeEmpty())
+			Expect(items).To(Equal([]int{1, 2, 3}))
+		})
+
+		It("negative limit errors (Java throws)", func() {
+			cursor := LimitRowsCursor(FromList([]int{1, 2, 3}), -1)
+			_, err := AsList(ctx, cursor)
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("returns ReturnLimitReached when exhausted by limit", func() {
