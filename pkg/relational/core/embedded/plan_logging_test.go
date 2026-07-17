@@ -474,3 +474,63 @@ func TestLeftJoinDerived_InheritanceNeverUnNullExtends(t *testing.T) {
 	}
 	t.Fatalf("no FOO column in derived metadata: %+v", cols)
 }
+
+// TestCrossJoinDerivedExists_KeepsNoNulls pins exact nullability through
+// leg-direct inheritance: a synthesized NOT NULL inner (projected EXISTS)
+// read through a QOV over a CROSS join must stay NoNulls — the earlier
+// upgrade-only rule blanket-discarded the only NoNulls source even where
+// no null extension exists.
+func TestCrossJoinDerivedExists_KeepsNoNulls(t *testing.T) {
+	t.Parallel()
+	g, md := newLoggingGenerator(t,
+		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		&captureLogger{})
+	q := parseQuery(t, "WITH d AS (SELECT EXISTS (SELECT 1 FROM b_md AS c WHERE c.id = b_md.id) AS foo FROM b_md) SELECT d.foo FROM a_md AS a, d")
+	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	cp, ok := p.(*cascadesPlan)
+	if !ok {
+		t.Fatalf("plan is %T, want *cascadesPlan", p)
+	}
+	for _, c := range deriveColumnsFromPlan(cp.physicalPlan, cp.md) {
+		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
+			if c.Nullable != api.ColumnNoNulls {
+				t.Fatalf("EXISTS flag over a CROSS join must stay NoNulls (no null extension exists); got %v", c.Nullable)
+			}
+			return
+		}
+	}
+	t.Fatal("no FOO column in derived metadata")
+}
+
+// TestJoinDerivedDottedName_OrdinalUnshifted pins structural leg
+// resolution against name-prefix reconstruction: a quoted output name
+// containing a literal dot ("X.Y") stays unprefixed in the qualified
+// merge, so a prefix-filtered slot count would skip it and shift every
+// later ordinal — typing d.foo from the wrong slot.
+func TestJoinDerivedDottedName_OrdinalUnshifted(t *testing.T) {
+	t.Parallel()
+	g, md := newLoggingGenerator(t,
+		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, y STRING, PRIMARY KEY (id))",
+		&captureLogger{})
+	q := parseQuery(t, "WITH d AS (SELECT y AS \"X.Y\", v * 2 AS foo, y AS bar FROM b_md) SELECT d.foo FROM a_md AS a, d")
+	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	cp, ok := p.(*cascadesPlan)
+	if !ok {
+		t.Fatalf("plan is %T, want *cascadesPlan", p)
+	}
+	for _, c := range deriveColumnsFromPlan(cp.physicalPlan, cp.md) {
+		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
+			if c.TypeName != "BIGINT" {
+				t.Fatalf("d.foo typed %q, want BIGINT — a dotted quoted identifier shifted the leg ordinal", c.TypeName)
+			}
+			return
+		}
+	}
+	t.Fatal("no FOO column in derived metadata")
+}

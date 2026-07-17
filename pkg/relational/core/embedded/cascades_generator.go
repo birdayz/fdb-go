@@ -2581,6 +2581,72 @@ func deriveColumnsFromMultiIntersection(mi *plans.RecordQueryMultiIntersectionOn
 	return cols
 }
 
+// legPlanFor resolves a QOV correlation alias to the JOIN LEG PLAN it
+// addresses, walking nested NLJ/FlatMap shapes through order-preserving
+// wrappers. Returns the leg's subplan and whether that leg is
+// null-supplying (its subtree carries a DefaultOnEmpty — the LEFT-JOIN
+// null-extension; coarse in the safe direction, like the descriptor-level
+// nullBorn detection). found=false when the alias doesn't name a leg of
+// this plan — callers fall back to the name-keyed lookups.
+func legPlanFor(p plans.RecordQueryPlan, alias string) (leg plans.RecordQueryPlan, nullSupplying bool, found bool) {
+	for p != nil {
+		switch n := p.(type) {
+		case *plans.RecordQueryNestedLoopJoinPlan:
+			// The null extension may live in the JOIN TYPE itself (a LEFT
+			// NLJ null-supplies its inner; FULL null-supplies both) — not
+			// only in a DefaultOnEmpty node inside the leg.
+			jt := n.GetJoinType()
+			if strings.EqualFold(n.GetOuterAlias(), alias) {
+				return n.GetOuter(), jt == plans.JoinFullOuter || legHasDefaultOnEmpty(n.GetOuter()), true
+			}
+			if strings.EqualFold(n.GetInnerAlias(), alias) {
+				return n.GetInner(), jt == plans.JoinLeftOuter || jt == plans.JoinFullOuter || legHasDefaultOnEmpty(n.GetInner()), true
+			}
+			// Nested join chains: recurse into both legs.
+			if l, ns, ok := legPlanFor(n.GetOuter(), alias); ok {
+				return l, ns, true
+			}
+			if l, ns, ok := legPlanFor(n.GetInner(), alias); ok {
+				return l, ns, true
+			}
+			return nil, false, false
+		case *plans.RecordQueryFlatMapPlan:
+			if strings.EqualFold(n.GetOuterAlias().Name(), alias) {
+				return n.GetOuter(), legHasDefaultOnEmpty(n.GetOuter()), true
+			}
+			if strings.EqualFold(n.GetInnerAlias().Name(), alias) {
+				return n.GetInner(), legHasDefaultOnEmpty(n.GetInner()), true
+			}
+			if l, ns, ok := legPlanFor(n.GetOuter(), alias); ok {
+				return l, ns, true
+			}
+			if l, ns, ok := legPlanFor(n.GetInner(), alias); ok {
+				return l, ns, true
+			}
+			return nil, false, false
+		default:
+			ip, ok := p.(innerPlan)
+			if !ok {
+				return nil, false, false
+			}
+			p = ip.GetInner()
+		}
+	}
+	return nil, false, false
+}
+
+func legHasDefaultOnEmpty(p plans.RecordQueryPlan) bool {
+	has := false
+	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
+		if _, ok := n.(*plans.RecordQueryDefaultOnEmptyPlan); ok {
+			has = true
+			return false
+		}
+		return true
+	})
+	return has
+}
+
 func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	// A projection over a join references columns from MULTIPLE record types,
 	// so resolve each column's type against every join leaf, not just the
@@ -2734,24 +2800,48 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 							inherited = true
 						}
 						if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
-							legPrefix := strings.ToUpper(qov.Correlation.Name()) + "."
-							if fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
-								ord := fv.Resolved.Accessors[0].Ordinal
-								legIdx := 0
-								for _, ic := range innerCols {
-									if !strings.HasPrefix(strings.ToUpper(ic.Name), legPrefix) {
-										continue
-									}
-									if legIdx == ord {
-										if ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-											inheritFrom(ic)
+							// Resolve the LEG STRUCTURALLY: reconstructing leg
+							// membership from qualified-name prefixes both
+							// miscounts (an already-qualified output like a
+							// quoted "X.Y" identifier stays unprefixed in the
+							// merge, shifting every later slot) and loses slot
+							// identity under duplicate names. The leg's own
+							// derived columns are 1:1 positional with the
+							// leg-relative baked ordinal, carry EXACT
+							// nullability (a synthesized NOT NULL such as a
+							// projected EXISTS stays NoNulls on a CROSS join),
+							// and the null-supplying flag applies the LEFT-JOIN
+							// null extension only where it exists.
+							if legPlan, nullSupplying, found := legPlanFor(proj.GetInner(), qov.Correlation.Name()); found {
+								legCols := deriveColumnsFromPlan(legPlan, md)
+								if fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
+									if ord := fv.Resolved.Accessors[0].Ordinal; ord >= 0 && ord < len(legCols) {
+										if ic := legCols[ord]; ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+											cd.TypeName = ic.TypeName
+											cd.Nullable = ic.Nullable
+											if nullSupplying {
+												cd.Nullable = api.ColumnNullable
+											}
+											inherited = true
 										}
-										break
 									}
-									legIdx++
+								}
+								if !inherited {
+									for _, ic := range legCols {
+										if strings.EqualFold(parseColRef(ic.Name).bare(), fv.Field) && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+											cd.TypeName = ic.TypeName
+											cd.Nullable = ic.Nullable
+											if nullSupplying {
+												cd.Nullable = api.ColumnNullable
+											}
+											inherited = true
+											break
+										}
+									}
 								}
 							}
 							if !inherited {
+								legPrefix := strings.ToUpper(qov.Correlation.Name()) + "."
 								if ic, found := innerByName[legPrefix+strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
 									inheritFrom(ic)
 								}
