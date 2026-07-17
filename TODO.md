@@ -4884,3 +4884,11 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       SemanticAnalyzer.isComposableFrom; live-probed). Go declines 0AF00 via
       the HavingExistsSubqueries planner gate. Align: reject at semantic
       analysis with 42803 + Java's message shape; flip the exists.yaml pin.
+- [ ] **Comma join over a nested-shadowing CTE inside a CTE body
+      (RFC-180 round-7 reach):** `WITH x(m,n) AS (…) SELECT p.m, p.n, q.m
+      FROM x p, x q` inside a CTE body plans but dies at runtime with an
+      ordinal-resolution error (P.N vs merged-row keys [P.M N Q.M] — the
+      qualified/bare name-model seam, RFC-173 surface; stars and explicit
+      columns both hit it). Single-source nested bodies work (pinned).
+      Make the merged-row keys carry the qualified names the projection
+      mints, or decline the shape at plan time.

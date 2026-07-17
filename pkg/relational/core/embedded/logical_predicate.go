@@ -1648,100 +1648,18 @@ func buildCTEOnOnlySource(
 // CTECatalog chain) share, so a declared CTE can never reach
 // upgradeJoinOnPredicates untracked (the silent ON-drop class).
 func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName string, cteQuery antlrgen.IQueryContext, colAliases antlrgen.IFullIdListContext, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
-	// Column-alias arity validates against the body's STATICALLY known
-	// projection count even when schema derivation declines — the derivable
-	// branch's validation (registration loops) never runs for this class, so
-	// `WITH c(a,b) AS (<underivable body> SELECT id ...)` silently accepted a
-	// two-alias list over a one-column body instead of erroring like the
-	// derivable twin.
-	if n := staticCTEProjectionCount(cteQuery, md, cteScopes); n > 0 {
-		if list, ok := colAliases.(*antlrgen.FullIdListContext); ok && list != nil {
-			if nAliases := len(list.AllFullId()); nAliases > 0 && nAliases != n {
-				return api.NewErrorf(api.ErrCodeInvalidColumnReference,
-					"cte query has %d column(s), however %d aliases defined", n, nAliases)
-			}
-		}
-	}
+	// Column-alias arity for underivable bodies is validated at the POINT OF
+	// TRUTH instead of here: translateCTE checks the BUILT body's real output
+	// width against the alias list (42F10) — a static width predictor at
+	// registration kept re-implementing source resolution (stars, shadowing,
+	// unnest, nested WITH) and drifting from the real resolver, the exact
+	// two-authorities anti-pattern (review rounds 3-7).
 	if src, ok := buildCTEOnOnlySource(upperName, cteQuery, colAliases, md, schemaName, cteScopes, dst); ok {
 		dst[upperName] = src
 		return nil
 	}
 	dst[upperName] = semantic.ScopeSource{} // marker: declared, underivable → loud drop risk
 	return nil
-}
-
-// staticCTEProjectionCount returns the CTE body's statically-derivable
-// OUTPUT width: one per explicit SELECT item, plus the source's column
-// count for each qualified-star slot (`x.*`), resolved CTE-FIRST (a
-// preceding CTE shadowing a catalog table supplies ITS width — md-first
-// rejected valid alias lists over shadowed sources). -1 = unknown (bare
-// SELECT *, unextractable shape, derived-table/tombstoned/unknown star
-// source) and validation is skipped. Review-driven shape: counting the
-// star SENTINEL rejected valid CTEs; skipping validation for star-bearing
-// bodies accepted malformed ones; md-only expansion ignored shadowing.
-func staticCTEProjectionCount(cteQuery antlrgen.IQueryContext, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) int {
-	if cteQuery == nil || md == nil {
-		return -1
-	}
-	body, ok := cteQuery.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
-	if !ok {
-		return -1
-	}
-	innerSQ, err := extractFromQueryTerm(body)
-	if err != nil || innerSQ == nil || innerSQ.projCols == nil {
-		return -1
-	}
-	// Source widths, CTE-FIRST (execution's shadowing order — a preceding
-	// CTE shadowing a catalog table supplies ITS column count; resolving the
-	// star against the base table rejected valid alias lists over shadowed
-	// sources). A tombstoned/underivable/unknown source makes the width
-	// unknown for slots that star it.
-	sourceWidth := map[string]int{}
-	addSrc := func(tableName, alias string) {
-		width := -1
-		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
-			if src.Table != nil {
-				width = len(src.Table.Columns())
-			}
-		} else if rt := md.GetRecordType(tableName); rt != nil && rt.Descriptor != nil {
-			width = rt.Descriptor.Fields().Len()
-		}
-		key := strings.ToUpper(alias)
-		if key == "" {
-			key = strings.ToUpper(tableName)
-		}
-		sourceWidth[key] = width
-	}
-	addSrc(innerSQ.tableName, innerSQ.tableAlias)
-	for _, j := range innerSQ.joins {
-		if j.derivedQuery != nil {
-			// Derived-table leg: width not statically modeled here.
-			key := strings.ToUpper(j.alias)
-			if key == "" {
-				key = strings.ToUpper(j.tableName)
-			}
-			sourceWidth[key] = -1
-			continue
-		}
-		addSrc(j.tableName, j.alias)
-	}
-	total := 0
-	for i := range innerSQ.projCols {
-		q := ""
-		if i < len(innerSQ.projStarQualifiers) {
-			q = innerSQ.projStarQualifiers[i]
-		}
-		if q == "" {
-			total++
-			continue
-		}
-		w, known := sourceWidth[strings.ToUpper(q)]
-		if !known || w < 0 {
-			return -1
-		}
-		total += w
-	}
-	return total
 }
 
 // applyCTEColumnAliases renames the columns of a CTE ScopeSource
@@ -5957,7 +5875,14 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		if alias == "" {
 			alias = sq.tableName
 		}
-		addSource(sq.tableName, alias)
+		// A DERIVED primary source registers NOTHING: sq.tableName is its
+		// range alias, not a relation — a CTE or base table sharing that
+		// name would supply the WRONG columns (star over the derived row
+		// silently projected the unrelated relation's schema). The sentinel
+		// stays; downstream resolves or declines loud.
+		if sq.derivedQuery == nil {
+			addSource(sq.tableName, alias)
+		}
 	}
 	for i, j := range sq.joins {
 		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
@@ -5975,7 +5900,10 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		if alias == "" {
 			alias = j.tableName
 		}
-		addSource(j.tableName, alias)
+		// Derived join legs: same bypass as the derived primary above.
+		if j.derivedQuery == nil {
+			addSource(j.tableName, alias)
+		}
 	}
 
 	var newCols, newAliases, newQuals []string

@@ -7561,9 +7561,25 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 	}
 	body := c.Body
 	if len(c.ColumnAliases) > 0 {
-		if origCols := extractOutputColumns(body); len(origCols) == len(c.ColumnAliases) {
+		origCols := extractOutputColumns(body)
+		switch {
+		case len(origCols) == len(c.ColumnAliases):
 			body = logical.NewProject(body, origCols, c.ColumnAliases)
+		case len(origCols) > 0:
+			// The POINT-OF-TRUTH arity check (Java SemanticAnalyzer.
+			// validateCteColumnAliases): the body is BUILT here, so its
+			// output width is the real one — every shape (nested WITH,
+			// lateral unnest, qualified stars, shadowed sources) validates
+			// uniformly, with no parallel static width predictor to drift.
+			// Silently skipping the aliases instead executed the CTE with
+			// the mismatched list ignored.
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeInvalidColumnReference,
+				"cte query has %d column(s), however %d aliases defined",
+				len(origCols), len(c.ColumnAliases)))
+			return nil
 		}
+		// origCols unknown (nil): shapes extractOutputColumns cannot model
+		// stay lenient — never reject a valid query on an unknown width.
 	}
 	name := strings.ToUpper(c.Name)
 	// Save the OUTER binding this registration shadows (nil = unbound): the

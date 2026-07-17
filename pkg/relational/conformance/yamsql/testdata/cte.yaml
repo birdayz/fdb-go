@@ -293,3 +293,29 @@ tests:
       SELECT COUNT(*) FROM c
     rows:
       - [4]
+  # A DERIVED source's range alias colliding with a CTE name must NOT expand
+  # its star through the CTE (the CTE-first lookup would project the
+  # UNRELATED one-column CTE's schema over the two-column derived row —
+  # silent wrong columns). Derived sources register no star source; this
+  # reach class was a plan-time 0AF00 before the shadowing work and stays
+  # one (probed at the pre-change SHA) — loud, never wrong columns.
+  - query: |-
+      WITH x AS (SELECT id FROM t)
+      SELECT x.*, x.id FROM (SELECT id, v FROM t WHERE id <= 2) AS x ORDER BY x.id
+    error_code: "0AF00"
+  # Nested-WITH arity at the point of truth (the deleted static predictor
+  # counted the OUTER x's one-column width): nested x (2 cols) shadows outer
+  # x (1 col) inside c's body; the BUILT body's output width (2) is the
+  # alias-validation authority — (a,b) answers, (a) errors 42F10.
+  - query: |-
+      WITH x(one) AS (SELECT id FROM t),
+           c(a, b) AS (WITH x(m, n) AS (SELECT id, v FROM t WHERE id <= 2) SELECT m, n FROM x)
+      SELECT a, b FROM c ORDER BY a
+    rows:
+      - [1, 10]
+      - [2, 20]
+  - query: |-
+      WITH x(one) AS (SELECT id FROM t),
+           c(a) AS (WITH x(m, n) AS (SELECT id, v FROM t WHERE id <= 2) SELECT m, n FROM x)
+      SELECT a FROM c
+    error_code: "42F10"
