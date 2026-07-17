@@ -355,11 +355,50 @@ func TestJoinDerivedAggregate_LegOrdinalNeverIndexesFlattenedColumns(t *testing.
 	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
 	for _, c := range cols {
 		if strings.EqualFold(c.Label, "TOTAL") || strings.EqualFold(c.Name, "TOTAL") {
-			if c.TypeName == "STRING" {
-				t.Fatalf("TOTAL typed STRING — a leg-relative ordinal indexed the flattened inner columns and inherited the other leg's slot")
+			// EXACT type, not merely "not the other leg's": permitting
+			// UNKNOWN here let the ordinal restriction silently break the
+			// QOV name fallback for join legs (qualified inner keys).
+			if c.TypeName != "BIGINT" {
+				t.Fatalf("TOTAL typed %q, want BIGINT (leg-relative ordinal misuse types it from the other leg; a bare-name lookup against qualified join keys types it UNKNOWN)", c.TypeName)
 			}
 			return
 		}
 	}
 	t.Fatalf("no TOTAL column in derived metadata: %+v", cols)
+}
+
+// TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys pins the
+// qualified-key fallback for QOV-addressed derived columns over a join:
+// deriveColumnsFromJoin keys per-leg columns QUALIFIED ("D.FOO"), so a
+// bare-name lookup finds nothing and both derived columns reported
+// UNKNOWN.
+func TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys(t *testing.T) {
+	t.Parallel()
+	g, md := newLoggingGenerator(t,
+		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, y BIGINT, PRIMARY KEY (id))",
+		&captureLogger{})
+	q := parseQuery(t, "WITH d AS (SELECT v * 2 AS foo, y * 2 AS bar FROM b_md) SELECT a.s, d.foo, d.bar FROM a_md AS a, d")
+	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	cp, ok := p.(*cascadesPlan)
+	if !ok {
+		t.Fatalf("plan is %T, want *cascadesPlan", p)
+	}
+	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	want := map[string]string{"FOO": "BIGINT", "BAR": "BIGINT"}
+	for _, c := range cols {
+		for col, typ := range want {
+			if strings.EqualFold(c.Label, col) || strings.EqualFold(parseColRef(c.Name).bare(), col) {
+				if c.TypeName != typ {
+					t.Fatalf("%s typed %q, want %s: %+v", col, c.TypeName, typ, cols)
+				}
+				delete(want, col)
+			}
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("columns not found in derived metadata: %v (cols %+v)", want, cols)
+	}
 }

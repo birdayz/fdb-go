@@ -2706,9 +2706,24 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 						}
 					}
 					if !inherited {
-						if ic, found := innerByName[strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-							cd.TypeName = ic.TypeName
-							cd.Nullable = ic.Nullable
+						// A QOV-addressed read over a JOIN resolves against
+						// QUALIFIED inner keys ("D.FOO" — deriveColumnsFromJoin
+						// keys per-leg columns by their leg alias), so compose
+						// the qualified lookup first, exactly like the
+						// null-born lookup above; the bare key serves
+						// single-source shapes.
+						if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
+							if ic, found := innerByName[strings.ToUpper(qov.Correlation.Name()+"."+fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+								cd.TypeName = ic.TypeName
+								cd.Nullable = ic.Nullable
+								inherited = true
+							}
+						}
+						if !inherited {
+							if ic, found := innerByName[strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+								cd.TypeName = ic.TypeName
+								cd.Nullable = ic.Nullable
+							}
 						}
 					}
 				}
