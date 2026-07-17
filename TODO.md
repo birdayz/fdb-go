@@ -1408,6 +1408,20 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > the same split RFC-180 round 14 pinned for the DEFERRED strip). The deferred-strip variant IS fixed
 > and pinned (aggregate_order_by_java "SUM(S.SCORE)" collision pin).
 
+> ## [ ] FLAKE — TestDifferential_GetKeyConflict diverged once under cold full-suite load (go over-conflicts vs cgo)
+> One occurrence (2026-07-17, fresh worktree, cold bazel output base, full `just test` running every
+> container suite concurrently): 3 subtests diverged — `cleared_range_excluded`: "go-A conflicted=true
+> (resolved=\"d\") cgo-A conflicted=false (probe=\"b\" sel=FGT)", plus independent_write_excluded and
+> outside_span_no_conflict — i.e. the GO side OVER-CONFLICTED exactly on the three trimming cases the
+> getKey conflict-set fix (PR #235 family) exists for. Passes in isolation, passes 5× under the bench
+> binary's own parallel load, did not recur on the next full-suite run (bench cached). Prefixes are
+> per-attempt unique (gkconf_<pid>_<name>_<attempt>_), so not cross-test key collision; the divergence
+> pattern suggests a LOAD-dependent path in the Go client's getKey conflict trimming (updateConflictMap)
+> falling back to the untrimmed span, or a differential-harness sequencing assumption that bends under
+> scheduler pressure. hunt-divergences track; C++ 7.3.77 is the spec. Repro condition: cold output base +
+> full concurrent suite. Log preserved at bazel-out .../ce2b9a2731780c0b259bca1a4820ae7d/.../pkg/fdbgo/
+> bench/bench_test/test.log (first failing run).
+
 > ## [ ] INFRA — scheduled nightlies dispatch HOURS late ("nightly" fuzz runs at noon)
 > The Nightly Fuzz (`cron: 17 3 * * *`, moved to `17 4` = 4:17 AM UTC) consistently *runs* mid-day,
 > not at night: GitHub CREATES the scheduled run ~4-5 h after the cron (07:04 on 06-30, 07:50 on 07-01),
