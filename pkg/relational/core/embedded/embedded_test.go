@@ -235,10 +235,14 @@ func TestTranslateFDBError(t *testing.T) {
 		{"fdb_during_commit_typed", &wire.FDBError{Code: 2017}, api.ErrCodeTransactionInactive, false},
 		{"fdb_timeout_fdb_error_value", fdb.Error{Code: 1031}, api.ErrCodeTransactionTimeout, false},
 		{"fdb_timeout_wrapped", fmt.Errorf("outer: %w", &wire.FDBError{Code: 1031}), api.ErrCodeTransactionTimeout, false},
-		{"fdb_timeout_string_fallback", fmt.Errorf("wrapped: transaction_timed_out"), api.ErrCodeTransactionTimeout, false},
-		{"fdb_conflict_string_fallback", fmt.Errorf("wrapped: not_committed"), api.ErrCodeSerializationFailure, false},
-		{"fdb_too_old_string_fallback", fmt.Errorf("wrapped: transaction_too_old"), api.ErrCodeSerializationFailure, false},
-		{"fdb_during_commit_string_fallback", fmt.Errorf("wrapped: used_during_commit"), api.ErrCodeTransactionInactive, false},
+		// RFC-180 F-4: rendered-text matching is GONE. An error whose typed
+		// FDBError chain was severed passes through unmapped — the fix for a
+		// severed chain is %w at the wrap site, never string matching here.
+		// The typed lanes above these cases are the exhaustive mapping.
+		{"fdb_timeout_severed_chain_passthrough", fmt.Errorf("wrapped: transaction_timed_out"), "", true},
+		{"fdb_conflict_severed_chain_passthrough", fmt.Errorf("wrapped: not_committed"), "", true},
+		{"fdb_too_old_severed_chain_passthrough", fmt.Errorf("wrapped: transaction_too_old"), "", true},
+		{"fdb_during_commit_severed_chain_passthrough", fmt.Errorf("wrapped: used_during_commit"), "", true},
 		{"metadata error", &recordlayer.MetaDataError{Message: "bad schema"}, api.ErrCodeSyntaxOrAccessViolation, false},
 		{"record exists", &recordlayer.RecordAlreadyExistsError{PrimaryKey: tuple.Tuple{int64(1)}}, api.ErrCodeUniqueConstraintViolation, false},
 		{"deserialization", &recordlayer.RecordDeserializationError{PrimaryKey: tuple.Tuple{int64(1)}, Cause: fmt.Errorf("bad proto")}, api.ErrCodeDeserializationFailure, false},
