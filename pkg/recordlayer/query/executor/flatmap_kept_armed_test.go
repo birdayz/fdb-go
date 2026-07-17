@@ -143,3 +143,43 @@ func TestFlatMapTerminalReplayOnRecall(t *testing.T) {
 			again.GetNoNextReason(), ab, first.GetNoNextReason(), fb)
 	}
 }
+
+// TestFlatMapTerminalReplayOnRecall_InnerStop pins the OTHER terminal-cache
+// site: the INNER cursor pauses out-of-band mid-row. A re-call must replay
+// the cached terminal — without the cache the nil'd inner falls through to
+// the outer advance and the next outer row's inner emits a VALUE (silently
+// skipping the paused row's remaining inner rows).
+func TestFlatMapTerminalReplayOnRecall_InnerStop(t *testing.T) {
+	t.Parallel()
+	rows := nljTestRows("K", 2)
+	c := flatMapArmedFixture(t, recordlayer.FromList(rows[1:]), tuple.Tuple{"K", int64(0)})
+	c.initialInnerCont = nil
+	c.hasPendingInner = false
+	c.pendingCheckValue = nil
+	// Mid-row state: the current outer is bound and its inner pauses
+	// out-of-band on the next pull.
+	c.currentOuter = &rows[0]
+	c.innerCursor = &pausingCursor{rows: nil, cont: []byte("inner-pos")}
+
+	ctx := context.Background()
+	first, err := c.OnNext(ctx)
+	if err != nil || first.HasNext() {
+		t.Fatalf("inner pause must surface as a no-next: %v", err)
+	}
+	if first.GetNoNextReason() != recordlayer.TimeLimitReached {
+		t.Fatalf("reason = %v, want the inner's TimeLimitReached", first.GetNoNextReason())
+	}
+	again, err := c.OnNext(ctx)
+	if err != nil {
+		t.Fatalf("re-call: %v", err)
+	}
+	if again.HasNext() {
+		t.Fatal("re-call after the inner's out-of-band stop must replay the terminal, not advance to the next outer row")
+	}
+	fb, _ := first.GetContinuation().ToBytes()
+	ab, _ := again.GetContinuation().ToBytes()
+	if again.GetNoNextReason() != first.GetNoNextReason() || string(fb) != string(ab) {
+		t.Fatalf("re-call (%v, %v) must equal the cached terminal (%v, %v)",
+			again.GetNoNextReason(), ab, first.GetNoNextReason(), fb)
+	}
+}
