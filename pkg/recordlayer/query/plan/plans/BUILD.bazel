@@ -76,6 +76,7 @@ go_test(
         "plans_new_structural_test.go",
         "plans_structural_test.go",
         "rfc176_p2_plan_identity_test.go",
+        "rfc180_wsb_identity_test.go",
         "table_function_test.go",
         "unordered_union_test.go",
     ],
