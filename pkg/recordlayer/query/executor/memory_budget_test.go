@@ -400,6 +400,38 @@ func TestNLJInnerReleasesOnPageTeardown(t *testing.T) {
 	}
 }
 
+// TestDistinctSeenSetReleasesOnPageTeardown pins the live-bytes contract for
+// the DISTINCT dedup seen-set: it is rebuilt (and re-charged) per page against
+// the statement-wide state, so the cursor's teardown must return its tally —
+// otherwise a distinct scan whose key set fits the budget fails after enough
+// page boundaries.
+func TestDistinctSeenSetReleasesOnPageTeardown(t *testing.T) {
+	t.Parallel()
+	state := recordlayer.NewExecuteState(1 << 20)
+	props := recordlayer.ExecuteProperties{State: state}
+	plan := plans.NewRecordQueryDistinctPlan(plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(42)},
+	}))
+	for page := 0; page < 3; page++ {
+		cursor, err := executeDistinct(context.Background(), plan, nil, EmptyEvaluationContext(), nil, props)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if _, err := cursor.OnNext(context.Background()); err != nil {
+			t.Fatalf("page %d: drain: %v", page, err)
+		}
+		if state.MemUsed() == 0 {
+			t.Fatalf("page %d: the seen-set must have charged the budget before close", page)
+		}
+		if cerr := cursor.Close(); cerr != nil {
+			t.Fatalf("page %d: close: %v", page, cerr)
+		}
+		if used := state.MemUsed(); used != 0 {
+			t.Fatalf("page %d: teardown must release the seen-set tally, still holding %d bytes", page, used)
+		}
+	}
+}
+
 // TestRecursiveUnionReleasesOnPageTeardown pins the live-bytes contract for
 // the recursive-CTE working set: the whole recursion re-executes (and its
 // ping-pong temp tables re-charge) on every page, so the final cursor's

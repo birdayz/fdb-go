@@ -1529,7 +1529,13 @@ func executeDistinct(
 			return added, nil
 		},
 	}
-	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
+	// Live-bytes model: the seen-set is rebuilt (and re-charged) per page;
+	// release its tally at page teardown. The hook reads Charged() at close
+	// time because the set grows while the page streams.
+	return newCloseHookCursor(
+		applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit),
+		func() { props.State.ReleaseMemory(seen.Charged()) },
+	), nil
 }
 
 // distinctKey builds a DISTINCT dedup key by packing the row's ordinal slot
@@ -2241,6 +2247,7 @@ func executeNestedLoopJoin(
 	}
 	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, outerProps)
 	if err != nil {
+		props.State.ReleaseMemory(innerCharged)
 		return nil, err
 	}
 
