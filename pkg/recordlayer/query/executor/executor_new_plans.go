@@ -307,7 +307,23 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 		if qr.PrimaryKey != nil {
 			return qr.PrimaryKey
 		}
-		return tuple.Tuple{fmt.Sprintf("%v", qr.Positional)}
+		// No comparison keys and no PK: match rows by their FULL positional
+		// content, encoded LOSSLESSLY via the continuation codec — the
+		// retired fmt %v rendering collapsed distinct composite rows and
+		// collapsed every nil-layout row into one. Encode failure is a
+		// planner invariant violation (this closure's documented no-error-
+		// channel contract, as with Evaluate above).
+		if qr.Positional == nil {
+			// A row with no keys, no PK and no positional content cannot be
+			// matched against anything; a constant key would intersect ALL
+			// such rows. Planner invariant violation (documented contract).
+			panic(fmt.Errorf("intersection row carries no comparison keys, primary key, or positional content — malformed plan"))
+		}
+		b, err := appendContValue(nil, qr.Positional.Slots)
+		if err != nil {
+			panic(err)
+		}
+		return tuple.Tuple{b}
 	}
 }
 

@@ -1518,7 +1518,10 @@ func executeDistinct(
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (bool, error) {
-			key := distinctKey(qr)
+			key, err := distinctKey(qr)
+			if err != nil {
+				return false, err
+			}
 			added, err := seen.Add(key, int64(len(key)))
 			if err != nil {
 				return false, err
@@ -1540,9 +1543,9 @@ func executeDistinct(
 // the same slot names in the same positions — the value tuple alone is the
 // comparison key, exactly as Java's comparison-key VALUES are. A nil-Positional
 // row yields the empty key.
-func distinctKey(qr QueryResult) string {
+func distinctKey(qr QueryResult) (string, error) {
 	if qr.Positional == nil || qr.Positional.Type == nil {
-		return ""
+		return "", nil
 	}
 	return packedDedupKey(qr.Positional.Slots)
 }
@@ -1560,7 +1563,7 @@ func distinctKey(qr QueryResult) string {
 // key-distinct. (The merge-sort union dedups via compareValues on evaluated
 // keys instead — Java UnionCursor's advance-all-equal — so it no longer packs
 // a dedup key at all.)
-func packedDedupKey(slots []any) string {
+func packedDedupKey(slots []any) (string, error) {
 	t := make(tuple.Tuple, len(slots))
 	for i, v := range slots {
 		switch tv := v.(type) {
@@ -1572,12 +1575,20 @@ func packedDedupKey(slots []any) string {
 			t[i] = tuple.UUID(tv)
 		default:
 			// Composite/nested slot (struct, array, message): the tuple layer
-			// cannot pack it, so fall back to a single length-prefixed string
-			// element — still boundary-safe, since it is one tuple slot.
-			t[i] = fmt.Sprintf("%T:%v", v, v)
+			// cannot pack it. Encode LOSSLESSLY via the continuation codec
+			// (type-tagged, length-prefixed, recursive) as one []byte tuple
+			// slot — boundary-safe AND collision-free. The retired %T:%v
+			// rendering collided on composites ([]any{"a b"} vs
+			// []any{"a","b"} both rendered "[a b]") and split equal protos
+			// across generated/dynamicpb representations (RFC-180 C1).
+			b, err := appendContValue(nil, v)
+			if err != nil {
+				return "", fmt.Errorf("dedup key slot %d: %w", i, err)
+			}
+			t[i] = b
 		}
 	}
-	return string(t.Pack())
+	return string(t.Pack()), nil
 }
 
 func executeProjection(
@@ -2094,7 +2105,23 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 		if qr.PrimaryKey != nil {
 			return qr.PrimaryKey
 		}
-		return tuple.Tuple{fmt.Sprintf("%v", qr.Positional)}
+		// No comparison keys and no PK: match rows by their FULL positional
+		// content, encoded LOSSLESSLY via the continuation codec — the
+		// retired fmt %v rendering collapsed distinct composite rows and
+		// collapsed every nil-layout row into one. Encode failure is a
+		// planner invariant violation (this closure's documented no-error-
+		// channel contract, as with Evaluate above).
+		if qr.Positional == nil {
+			// A row with no keys, no PK and no positional content cannot be
+			// matched against anything; a constant key would intersect ALL
+			// such rows. Planner invariant violation (documented contract).
+			panic(fmt.Errorf("intersection row carries no comparison keys, primary key, or positional content — malformed plan"))
+		}
+		b, err := appendContValue(nil, qr.Positional.Slots)
+		if err != nil {
+			panic(err)
+		}
+		return tuple.Tuple{b}
 	}
 }
 
@@ -3359,7 +3386,10 @@ func executeRecursiveLevelUnion(
 		keyer = newCTEDedupKeyer(canonicalCols)
 		var deduped []QueryResult
 		for _, it := range items {
-			k := keyer.key(it)
+			k, kerr := keyer.key(it)
+			if kerr != nil {
+				return nil, kerr
+			}
 			added, err := seen.Add(k, int64(len(k)))
 			if err != nil {
 				return nil, err
@@ -3400,7 +3430,10 @@ func executeRecursiveLevelUnion(
 		if distinct {
 			var newItems []QueryResult
 			for _, it := range items {
-				k := keyer.key(it)
+				k, kerr := keyer.key(it)
+				if kerr != nil {
+					return nil, kerr
+				}
 				added, err := seen.Add(k, int64(len(k)))
 				if err != nil {
 					return nil, err
@@ -3483,7 +3516,10 @@ func executeRecursiveDfsJoin(
 
 	for _, root := range rootRows {
 		if seen != nil {
-			k := keyer.key(root)
+			k, kerr := keyer.key(root)
+			if kerr != nil {
+				return nil, kerr
+			}
 			added, err := seen.Add(k, int64(len(k)))
 			if err != nil {
 				return nil, err
@@ -3546,7 +3582,10 @@ func dfsVisit(
 
 	for _, child := range children {
 		if seen != nil {
-			k := keyer.key(child)
+			k, kerr := keyer.key(child)
+			if kerr != nil {
+				return kerr
+			}
 			added, err := seen.Add(k, int64(len(k)))
 			if err != nil {
 				return err
@@ -3966,12 +4005,16 @@ func (k *cteDedupKeyer) layoutOrdinals(rt *values.RecordType) []int {
 	return ords
 }
 
-func (k *cteDedupKeyer) key(qr QueryResult) string {
+func (k *cteDedupKeyer) key(qr QueryResult) (string, error) {
 	if len(k.cols) == 0 {
 		return queryResultKey(qr)
 	}
 	if qr.Positional == nil || qr.Positional.Type == nil {
-		return fmt.Sprintf("%v", qr.Positional)
+		// A layout-less row carries no dedupable values: any constant key
+		// would collapse EVERY such row into one (the retired
+		// fmt.Sprintf("%v", nil) rendering did exactly that). Loud, never
+		// wrong rows (RFC-180 C4).
+		return "", fmt.Errorf("CTE dedup over a row with no positional layout — malformed plan")
 	}
 	ords := k.layoutOrdinals(qr.Positional.Type)
 	slots := make([]any, len(ords))
@@ -3988,10 +4031,12 @@ func (k *cteDedupKeyer) key(qr QueryResult) string {
 // from VALUES ONLY (sorted by column name for determinism) so rows with
 // different column names but identical values (e.g. seed {SRC:1} and
 // recursive {DST:1}) are correctly identified as duplicates.
-func queryResultKey(qr QueryResult) string {
+func queryResultKey(qr QueryResult) (string, error) {
 	pos := qr.Positional
 	if pos == nil || pos.Type == nil {
-		return fmt.Sprintf("%v", qr.Positional)
+		// See cteDedupKeyer.key: a layout-less row must not collapse into
+		// a shared constant key (RFC-180 C4).
+		return "", fmt.Errorf("UNION DISTINCT dedup over a row with no positional layout — malformed plan")
 	}
 	type nv struct {
 		name string

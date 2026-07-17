@@ -466,21 +466,27 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		}
 		keyParts[i] = v
 		// tuple.Pack handles nil, int64, float64, string, []byte, bool natively.
-		// For types the tuple layer doesn't list here (e.g. a UUID [16]byte),
-		// fall back to a deterministic %T:%v string so we still get a stable key.
+		// Any other slot type (UUID [16]byte, composite ARRAY/STRUCT values)
+		// encodes LOSSLESSLY via the continuation codec as one []byte tuple
+		// slot — the retired %T:%v rendering collided on composites
+		// ([]any{"a b"} vs []any{"a","b"}) and merged distinct groups
+		// (RFC-180 C3).
 		//
 		// The packed key rides through the aggregate continuation VERBATIM
 		// (encodeAggGroupKey stores it as raw bytes, not a JSON string) and is
 		// compared byte-for-byte on resume to detect a group change, so any
-		// deterministic packing is safe. The group's surfaced VALUE rides
-		// separately in keyVals (typed, lossless), so a UUID key still materializes
-		// as its [16]byte. A UUID could now pack natively since the raw bytes
-		// survive; the %T:%v form is retained only to keep the key bytes stable.
+		// deterministic packing is safe; both sides of a resume re-derive it
+		// with this same encoding. The group's surfaced VALUE rides separately
+		// in keyVals (typed, lossless).
 		switch tv := v.(type) {
 		case nil, int64, float64, string, []byte, bool:
 			t[i] = tv
 		default:
-			t[i] = fmt.Sprintf("%T:%v", v, v)
+			b, cerr := appendContValue(nil, v)
+			if cerr != nil {
+				return "", nil, fmt.Errorf("group key slot %d: %w", i, cerr)
+			}
+			t[i] = b
 		}
 	}
 	return string(t.Pack()), keyParts, nil
