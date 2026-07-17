@@ -131,11 +131,11 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 	}
 	visited[ref] = true
 
-	// Per-properties winner path (Graefe 1995 §2): if the Reference
-	// has a physical winner stamped for NoProperties, use it directly.
-	// Non-physical winners fall through to the legacy extraction which
-	// navigates Members to find the physical plan.
-	if w := ref.Winner(expressions.NoProperties); w != nil && isPhysicalPlan(w) {
+	// OPTIMIZE-winner path: if the Reference has a physical winner
+	// stamped, use it directly. Non-physical winners fall through to
+	// the legacy extraction which navigates Members to find the
+	// physical plan.
+	if w := ref.Winner(); w != nil && isPhysicalPlan(w) {
 		return rebuildExpressionFromSelectorVisited(w, sel, stats, visited)
 	}
 
@@ -150,10 +150,12 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 		return nil, nil
 	}
 
-	// Sort elimination via per-properties winners (Graefe 1995 §2):
-	// if the best expression is a LogicalSort and the child Reference
-	// has a winner for the sort's ordering, skip the sort and use the
-	// ordered winner directly.
+	// Sort elimination: if the best expression is a LogicalSort and the
+	// selector can name a child member whose ordering satisfies the
+	// sort's keys, skip the sort and use that member directly. The
+	// satisfaction judgment lives with the selector (the planner), which
+	// runs it on the rich Value + sort-order representation — this
+	// package deliberately has no ordering model of its own.
 	if sortExpr, ok := best.(*expressions.LogicalSortExpression); ok {
 		if childWinner := sortWinnerFromChild(sortExpr, sel, stats, visited); childWinner != nil {
 			return childWinner, nil
@@ -163,23 +165,28 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 	return rebuildExpressionFromSelectorVisited(best, sel, stats, visited)
 }
 
-// sortWinnerFromChild checks if a LogicalSort's child Reference has
-// an ordering-specific winner that satisfies the sort's keys. If yes,
-// returns the rebuilt winner (sort eliminated). If no, returns nil.
+// SortElisionSelector is the optional extension of BestMemberSelector a
+// selector implements to enable extraction-time sort elimination.
+type SortElisionSelector interface {
+	// OrderedChildWinner returns a physical member of childRef whose
+	// ordering satisfies sortExpr's keys, or nil (sort must stay).
+	OrderedChildWinner(sortExpr *expressions.LogicalSortExpression, childRef *expressions.Reference) expressions.RelationalExpression
+}
+
+// sortWinnerFromChild asks the selector for a child member that already
+// provides the sort's ordering. If one exists, returns the rebuilt member
+// (sort eliminated). If not — or the selector doesn't implement
+// SortElisionSelector — returns nil.
 func sortWinnerFromChild(sortExpr *expressions.LogicalSortExpression, sel BestMemberSelector, stats StatisticsProvider, visited map[*expressions.Reference]bool) expressions.RelationalExpression {
+	elider, ok := sel.(SortElisionSelector)
+	if !ok {
+		return nil
+	}
 	childRef := sortExpr.GetInner().GetRangesOver()
 	if childRef == nil {
 		return nil
 	}
-	sortKeys := sortExpr.GetSortKeys()
-	if len(sortKeys) == 0 {
-		return nil
-	}
-	requiredProps := expressions.OrderingFromSortKeys(sortKeys)
-	if requiredProps.IsEmpty() {
-		return nil
-	}
-	winner := childRef.Winner(requiredProps)
+	winner := elider.OrderedChildWinner(sortExpr, childRef)
 	if winner == nil || !isPhysicalPlan(winner) {
 		return nil
 	}

@@ -13,11 +13,12 @@
 // yes/no accessor + the ordering-key Values (with per-key direction)
 // when known.
 //
-// Ordering feeds plan selection through the planner's per-ordering
-// winner stamping (stampOrderingWinners keys winners by the
-// PhysicalProperties derived from a member's HintOrdering) and
-// through sort elimination at extraction (a Sort whose child has an
-// ordering winner for the requested keys extracts to the ordered
+// Ordering feeds plan selection through the cascades package's rich
+// ordering derivation (computeWrapperRichOrdering lifts a member's
+// HintOrdering into a RichOrdering; RichOrdering.Satisfies judges
+// requirements on full Value identity and the four-state sort order)
+// and through sort elimination at extraction (a Sort whose child has
+// a member satisfying the requested keys extracts to that ordered
 // child directly, dropping the in-memory sort).
 
 package properties

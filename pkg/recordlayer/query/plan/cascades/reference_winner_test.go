@@ -9,29 +9,14 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-func TestPhysicalProperties_NoProperties_IsEmpty(t *testing.T) {
-	t.Parallel()
-	if !expressions.NoProperties.IsEmpty() {
-		t.Fatal("NoProperties should be empty")
-	}
-}
-
-func TestPhysicalProperties_WithOrdering_NotEmpty(t *testing.T) {
-	t.Parallel()
-	props := expressions.PhysicalProperties{}
-	if !props.IsEmpty() {
-		t.Fatal("zero-value should be empty")
-	}
-}
-
 func TestReference_Winner_NoWinner(t *testing.T) {
 	t.Parallel()
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
 	ref := expressions.InitialOf(scan)
-	if ref.Winner(expressions.NoProperties) != nil {
+	if ref.Winner() != nil {
 		t.Fatal("expected nil winner")
 	}
-	if ref.HasWinner(expressions.NoProperties) {
+	if ref.HasWinner() {
 		t.Fatal("expected no winner")
 	}
 }
@@ -40,100 +25,36 @@ func TestReference_Winner_SetAndGet(t *testing.T) {
 	t.Parallel()
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
 	ref := expressions.InitialOf(scan)
-	ref.SetWinner(expressions.NoProperties, scan)
-	if ref.Winner(expressions.NoProperties) != scan {
+	ref.SetWinner(scan)
+	if ref.Winner() != scan {
 		t.Fatal("expected scan as winner")
 	}
-	if !ref.HasWinner(expressions.NoProperties) {
+	if !ref.HasWinner() {
 		t.Fatal("expected winner present")
 	}
 }
 
-func TestReference_Winner_MultipleProperties(t *testing.T) {
+func TestReference_Winner_Overwrites(t *testing.T) {
 	t.Parallel()
 	scan1 := expressions.NewFullUnorderedScanExpression([]string{"A"}, nil)
 	scan2 := expressions.NewFullUnorderedScanExpression([]string{"B"}, nil)
 	ref := expressions.InitialOf(scan1)
 	ref.Insert(scan2)
 
-	key1 := expressions.NoProperties
-	key2 := expressions.PhysicalProperties{} // same as NoProperties
-
-	ref.SetWinner(key1, scan1)
-	if ref.Winner(key2) != scan1 {
-		t.Fatal("equivalent keys should return same winner")
-	}
-}
-
-func TestReference_Winner_OverwritesBetterPlan(t *testing.T) {
-	t.Parallel()
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"A"}, nil)
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"B"}, nil)
-	ref := expressions.InitialOf(scan1)
-	ref.Insert(scan2)
-
-	ref.SetWinner(expressions.NoProperties, scan1)
-	ref.SetWinner(expressions.NoProperties, scan2)
-	if ref.Winner(expressions.NoProperties) != scan2 {
+	ref.SetWinner(scan1)
+	ref.SetWinner(scan2)
+	if ref.Winner() != scan2 {
 		t.Fatal("second SetWinner should overwrite first")
 	}
 }
 
-func TestPhysicalProperties_OrderingFromSortKeys(t *testing.T) {
-	t.Parallel()
-	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "name"}, Reverse: false},
-		{Value: &values.FieldValue{Field: "age"}, Reverse: true},
-	}
-	props := expressions.OrderingFromSortKeys(keys)
-	if props.IsEmpty() {
-		t.Fatal("ordering properties should not be empty")
-	}
-	if props.OrderingCount() != 2 {
-		t.Fatalf("expected 2 ordering columns, got %d", props.OrderingCount())
-	}
-}
-
-func TestPhysicalProperties_Satisfies(t *testing.T) {
-	t.Parallel()
-	nameAsc := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "name"}, Reverse: false},
-	}
-	nameAscAge := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "name"}, Reverse: false},
-		{Value: &values.FieldValue{Field: "age"}, Reverse: false},
-	}
-	nameDesc := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "name"}, Reverse: true},
-	}
-
-	propsNameAsc := expressions.OrderingFromSortKeys(nameAsc)
-	propsNameAscAge := expressions.OrderingFromSortKeys(nameAscAge)
-	propsNameDesc := expressions.OrderingFromSortKeys(nameDesc)
-
-	if !propsNameAscAge.Satisfies(propsNameAsc) {
-		t.Fatal("(name ASC, age ASC) should satisfy (name ASC)")
-	}
-	if propsNameAsc.Satisfies(propsNameAscAge) {
-		t.Fatal("(name ASC) should NOT satisfy (name ASC, age ASC)")
-	}
-	if propsNameAsc.Satisfies(propsNameDesc) {
-		t.Fatal("(name ASC) should NOT satisfy (name DESC)")
-	}
-	if !propsNameAsc.Satisfies(expressions.NoProperties) {
-		t.Fatal("any ordering should satisfy empty requirements")
-	}
-	if !expressions.NoProperties.Satisfies(expressions.NoProperties) {
-		t.Fatal("empty should satisfy empty")
-	}
-}
-
-func TestSortElimination_ViaChildOrderingWinner(t *testing.T) {
+func TestSortElimination_ViaChildOrderedMember(t *testing.T) {
 	t.Parallel()
 
-	// Set up: Sort(STATUS ASC) → Scan
-	// Manually stamp an ordering winner on the scan Reference.
-	// Verify extraction eliminates the sort.
+	// Set up: Sort(STATUS ASC) → Scan. Insert an ordered index scan as a
+	// MEMBER of the scan Reference — no winner stamping. Extraction must
+	// elide the sort by scanning the child's members' derived rich
+	// orderings (Planner.OrderedChildWinner).
 	a1 := values.UniqueCorrelationIdentifier()
 	cand := NewValueIndexScanMatchCandidate(
 		"Order$status",
@@ -157,16 +78,12 @@ func TestSortElimination_ViaChildOrderingWinner(t *testing.T) {
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	// Explore so the planner's Memo and exploration state are
-	// populated before the manual winner stamping below.
+	// Explore so the planner's Memo and exploration state are populated.
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules())
 	exploreRewriting(p, sortRef)
 
-	// Now manually stamp an ordered index scan as the ordering winner
-	// on the scan Reference. This simulates the future data-access
-	// architecture where ordered scans go into the child Reference.
 	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 	scanPlan := cand.ToScanPlan(emptyPrefix, false)
 	idxPlan := extractIndexPlan(scanPlan)
@@ -180,12 +97,6 @@ func TestSortElimination_ViaChildOrderingWinner(t *testing.T) {
 	}
 	scanRef.Insert(orderedScan)
 
-	// Stamp it as the ordering winner for STATUS ASC.
-	orderingProps := expressions.OrderingFromNameDir([]string{"STATUS"}, []bool{false})
-	scanRef.SetWinner(orderingProps, orderedScan)
-
-	// Now extract — the sort should be eliminated via the child's
-	// ordering winner.
 	plan, err := properties.ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
 	if err != nil {
 		t.Fatalf("ExtractBestPlanFromSelector: %v", err)
@@ -196,7 +107,65 @@ func TestSortElimination_ViaChildOrderingWinner(t *testing.T) {
 	// The extracted plan should be the index scan (sort eliminated),
 	// not a LogicalSortExpression or InMemorySort.
 	if !IsPhysicalIndexScan(plan) && !IsPhysicalFetchFromPartialRecord(plan) {
-		t.Fatalf("sort should be eliminated via child ordering winner; got %T", plan)
+		t.Fatalf("sort should be eliminated via the child's ordered member; got %T", plan)
+	}
+}
+
+// TestSortElimination_CounterflowNullsNotElidedAtExtraction pins the RFC-180
+// D2 fix at the extraction seam: an `ORDER BY status ASC NULLS LAST` sort
+// must NOT be elided against a child member that provides natural-order
+// ASC (nulls first). The retired name+direction winner key dropped NULL
+// placement, so the counterflow requirement map-hit the natural-order
+// winner and elided the sort with the wrong null order.
+func TestSortElimination_CounterflowNullsNotElidedAtExtraction(t *testing.T) {
+	t.Parallel()
+
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"Order$status",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+		nil,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	nullsLast := false
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}, NullsFirst: &nullsLast},
+		},
+		q,
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules())
+	exploreRewriting(p, sortRef)
+
+	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
+	scanPlan := cand.ToScanPlan(emptyPrefix, false)
+	idxPlan := extractIndexPlan(scanPlan)
+	if idxPlan == nil {
+		t.Fatal("could not extract index plan from candidate")
+	}
+	orderedScan := &physicalIndexScanWrapper{
+		plan:        idxPlan,
+		columnNames: []string{"STATUS"},
+		unique:      false,
+	}
+	scanRef.Insert(orderedScan)
+
+	// The natural-ASC index scan does NOT satisfy ASC NULLS LAST: the
+	// elision hook must decline.
+	if w := p.OrderedChildWinner(sort, scanRef); w != nil {
+		t.Fatalf("ASC NULLS LAST must not elide against a natural-ASC index scan; got %T", w)
 	}
 }
 
@@ -260,7 +229,7 @@ func TestSortElimination_ViaDataAccessOrderingWinner(t *testing.T) {
 	}
 }
 
-func TestPlan_StampsOrderingWinner(t *testing.T) {
+func TestPlan_OrderedMemberSelectable(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
@@ -293,13 +262,18 @@ func TestPlan_StampsOrderingWinner(t *testing.T) {
 	p.Plan(sortRef)
 
 	// OrderedIndexScanRule produces an ordered index scan at the sort
-	// level. stampOrderingWinners detects the ordering and stamps it.
-	statusOrdering := expressions.OrderingFromNameDir([]string{"STATUS"}, []bool{false})
-	winner := sortRef.Winner(statusOrdering)
+	// level; bestSatisfyingMember must find it for a STATUS ASC request.
+	reqOrd := NewRequestedOrdering(
+		[]RequestedOrderingPart{{
+			Value:     &values.FieldValue{Field: "STATUS", Typ: values.UnknownType},
+			SortOrder: RequestedSortOrderAscending,
+		}},
+		DistinctnessPreserveDistinctness, false)
+	winner := bestSatisfyingMember(sortRef, reqOrd, nil)
 	if winner == nil {
-		t.Fatal("expected ordering-specific winner for STATUS ASC")
+		t.Fatal("expected an ordering-satisfying member for STATUS ASC")
 	}
 	if !IsPhysicalIndexScan(winner) && !IsPhysicalFetchFromPartialRecord(winner) {
-		t.Fatalf("expected physicalIndexScanWrapper or physicalFetchFromPartialRecordWrapper as ordering winner, got %T", winner)
+		t.Fatalf("expected physicalIndexScanWrapper or physicalFetchFromPartialRecordWrapper, got %T", winner)
 	}
 }

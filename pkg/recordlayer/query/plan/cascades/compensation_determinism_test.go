@@ -118,22 +118,24 @@ func TestCompensationIntersect_QuantifierOrderDeterministic(t *testing.T) {
 	}
 }
 
-// TestStampOrderingWinners_OverflowedKeyNeverStamped pins the D1 residual:
-// a 9-column provider stamped under the overflowed key {first-8,
-// overflow:true} would be map-hit DIRECTLY (Reference.Winner bypasses
-// Satisfies) by a DIFFERENT 9-column requirement sharing the first-8
-// prefix, eliding its sort with the wrong 9th-column ordering.
-// stampOrderingWinners must skip overflowed keys entirely.
-func TestStampOrderingWinners_OverflowedKeyNeverStamped(t *testing.T) {
+// TestBestSatisfyingMember_WideOrderingsExact pins RFC-180 D1+D2: ordering
+// satisfaction has no fixed column capacity and is exact per part. The
+// retired 8-column winner key could not represent a 9th column at all —
+// truncating silently would have let a (C0..C7, I) provider serve a
+// (C0..C7, J) requirement, and the interim overflow guard "fixed" that by
+// making 9+-column requirements categorically unsatisfiable (sort always
+// materialised). The rich representation does neither: the provider
+// satisfies exactly its own 9-column ordering and nothing else.
+func TestBestSatisfyingMember_WideOrderingsExact(t *testing.T) {
 	t.Parallel()
 	inner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	mk := func(ninth string) *plans.RecordQueryInMemorySortPlan {
 		keys := make([]plans.SortKey, 9)
 		for i := 0; i < 8; i++ {
 			f := fmt.Sprintf("C%d", i)
-			keys[i] = plans.SortKey{Field: f, ValueExpr: values.NewFlatFieldValue(f, values.UnknownType)}
+			keys[i] = plans.SortKey{Field: f, ValueExpr: values.NewFlatFieldValue(f, values.UnknownType), NullsFirst: true}
 		}
-		keys[8] = plans.SortKey{Field: ninth, ValueExpr: values.NewFlatFieldValue(ninth, values.UnknownType)}
+		keys[8] = plans.SortKey{Field: ninth, ValueExpr: values.NewFlatFieldValue(ninth, values.UnknownType), NullsFirst: true}
 		return plans.NewRecordQueryInMemorySortPlan(inner, keys)
 	}
 
@@ -142,32 +144,23 @@ func TestStampOrderingWinners_OverflowedKeyNeverStamped(t *testing.T) {
 	provider := newPhysicalInMemorySortWrapper(mk("I"), expressions.ForEachQuantifier(scanRef))
 	ref := expressions.InitialOf(provider)
 
-	stampOrderingWinners(ref, func(a, b expressions.RelationalExpression) bool { return true })
+	req := func(ninth string) *RequestedOrdering {
+		parts := make([]RequestedOrderingPart, 9)
+		for i := 0; i < 8; i++ {
+			f := fmt.Sprintf("C%d", i)
+			parts[i] = RequestedOrderingPart{Value: values.NewFlatFieldValue(f, values.UnknownType), SortOrder: RequestedSortOrderAscending}
+		}
+		parts[8] = RequestedOrderingPart{Value: values.NewFlatFieldValue(ninth, values.UnknownType), SortOrder: RequestedSortOrderAscending}
+		return NewRequestedOrdering(parts, DistinctnessPreserveDistinctness, false)
+	}
 
-	names := make([]string, 9)
-	for i := 0; i < 8; i++ {
-		names[i] = fmt.Sprintf("C%d", i)
+	// Same first-8 prefix, DIFFERENT 9th column: never satisfied.
+	if w := bestSatisfyingMember(ref, req("J"), func(a, b expressions.RelationalExpression) bool { return true }); w != nil {
+		t.Fatalf("a provider ordered (C0..C7, I) must never satisfy a (C0..C7, J) requirement: got %T", w)
 	}
-	names[8] = "J" // same first-8 prefix, DIFFERENT 9th column
-	otherReq := expressions.OrderingFromNameDir(names, make([]bool, 9))
-	if w := ref.Winner(otherReq); w != nil {
-		t.Fatalf("a provider ordered (C0..C7, I) must never be served as winner for a (C0..C7, J) requirement: got %T", w)
-	}
-	// The provider's own overflowed key is not stamped either.
-	names[8] = "I"
-	ownReq := expressions.OrderingFromNameDir(names, make([]bool, 9))
-	if w := ref.Winner(ownReq); w != nil {
-		t.Fatalf("overflowed keys must not be stamped at all: got %T", w)
-	}
-	// Sanity: an 8-column provider still stamps normally.
-	provider8 := newPhysicalInMemorySortWrapper(
-		plans.NewRecordQueryInMemorySortPlan(inner, mk("I").GetSortKeys()[:8]),
-		expressions.ForEachQuantifier(scanRef))
-	ref8 := expressions.InitialOf(provider8)
-	stampOrderingWinners(ref8, func(a, b expressions.RelationalExpression) bool { return true })
-	req8 := expressions.OrderingFromNameDir(names[:8], make([]bool, 8))
-	if ref8.Winner(req8) == nil {
-		t.Fatal("an 8-column provider must still stamp its ordering winner")
+	// The provider's OWN 9-column ordering IS satisfied — no width cap.
+	if w := bestSatisfyingMember(ref, req("I"), func(a, b expressions.RelationalExpression) bool { return true }); w != provider {
+		t.Fatalf("a 9-column requirement matching the provider exactly must be satisfied; got %T", w)
 	}
 }
 

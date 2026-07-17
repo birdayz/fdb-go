@@ -443,13 +443,9 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 
 	if bestFinal != nil {
 		t.Ref.PruneWith(bestFinal)
-		t.Ref.SetWinner(expressions.NoProperties, bestFinal)
+		t.Ref.SetWinner(bestFinal)
 	} else {
 		t.Ref.ClearFinalMembers()
-	}
-
-	if t.Phase == PhasePlanning {
-		stampOrderingWinners(t.Ref, costModel)
 	}
 }
 

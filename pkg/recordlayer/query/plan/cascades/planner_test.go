@@ -189,7 +189,7 @@ func TestPlanner_Plan_MaxTasksHit(t *testing.T) {
 }
 
 // TestPlanner_BestMember_StampedAfterPlan pins that Plan's OPTIMIZE
-// phase stamps a NoProperties winner on the root Reference,
+// phase stamps the group winner on the root Reference,
 // accessible via BestMember(ref). A winner is stamped only when the
 // group holds a physical final member (Java's OptimizeGroup picks
 // from final expressions), so the production planning/implementation

@@ -133,13 +133,12 @@ func (p *Planner) Memo() *Memo {
 }
 
 // BestMember returns the OPTIMIZE-chosen best member for `ref`,
-// or nil if the Reference wasn't optimized. Delegates to the
-// per-properties winner map (NoProperties = cheapest overall).
+// or nil if the Reference wasn't optimized.
 func (p *Planner) BestMember(ref *expressions.Reference) expressions.RelationalExpression {
 	if ref == nil {
 		return nil
 	}
-	return ref.Winner(expressions.NoProperties)
+	return ref.Winner()
 }
 
 // HasBestMember reports whether a winner exists for `ref`.
@@ -147,20 +146,21 @@ func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 	if ref == nil {
 		return false
 	}
-	return ref.HasWinner(expressions.NoProperties)
+	return ref.HasWinner()
 }
 
-// orderingToProps converts a properties.Ordering to PhysicalProperties.
-func orderingToProps(ord properties.Ordering) expressions.PhysicalProperties {
-	names := make([]string, len(ord.Keys))
-	for i, k := range ord.Keys {
-		if fv, ok := k.(*values.FieldValue); ok {
-			names[i] = fv.Field
-		} else {
-			names[i] = k.Name()
-		}
+// OrderedChildWinner returns the cheapest physical member of childRef whose
+// derived rich ordering satisfies sortExpr's keys, or nil when none does
+// (the sort must then be materialised). Implements the sort-elision hook of
+// properties.ExtractBestPlanFromSelector: satisfaction runs on the full
+// Value + four-state sort-order representation (RichOrdering.Satisfies), so
+// an ASC_NULLS_LAST sort is never elided against a natural-order ASC scan.
+func (p *Planner) OrderedChildWinner(sortExpr *expressions.LogicalSortExpression, childRef *expressions.Reference) expressions.RelationalExpression {
+	ro := sortExpressionToRequestedOrdering(sortExpr)
+	if ro.IsPreserve() {
+		return nil
 	}
-	return expressions.OrderingFromNameDir(names, ord.Descending)
+	return bestSatisfyingMember(childRef, ro, p.costModel)
 }
 
 // WithImplementationRules adds rules for PhasePlanning. These run
@@ -505,7 +505,6 @@ func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates 
 			// shouldConsumeMatches' match-growth guard.
 			p.yieldUnknown(ref, expr)
 		}
-		stampOrderingWinners(ref, p.costModel)
 	}
 }
 
@@ -582,7 +581,6 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 	for _, expr := range result.GetExpressions() {
 		ref.InsertFinal(expr)
 	}
-	stampOrderingWinners(ref, p.costModel)
 }
 
 // yieldUnknown routes a data-access result by physicality, mirroring Java's
@@ -896,54 +894,6 @@ func hasIntersectionFinal(ref *expressions.Reference) bool {
 // against the planner; they may push more tasks.
 type Task interface {
 	Run(p *Planner)
-}
-
-// stampOrderingWinners iterates physical members of a Reference and
-// stamps ordering-specific winners. A member that implements
-// orderingHinter and returns a known ordering gets stamped as winner
-// for that ordering's PhysicalProperties key.
-func stampOrderingWinners(ref *expressions.Reference, costModel func(a, b expressions.RelationalExpression) bool) {
-	for _, m := range ref.AllMembers() {
-		// Never stamp a nil-inner Fetch shell as a per-ordering winner: it is a
-		// push-through template whose inner is resolved only at extraction, and
-		// (costed without its inner) it ranks artificially cheap. The stamped-
-		// winner lookup paths return it without re-checking, so a spurious
-		// Fetch(<nil>) wins the ordered slot and a downstream join drives off the
-		// wrong (unordered) side. Mirrors the guard on the scan-fallback paths.
-		if isNilInnerFetch(m) {
-			continue
-		}
-		h, ok := m.(orderingHinter)
-		if !ok {
-			continue
-		}
-		ord := h.HintOrdering()
-		if !ord.IsKnown || len(ord.Keys) == 0 {
-			continue
-		}
-		names := make([]string, len(ord.Keys))
-		for i, k := range ord.Keys {
-			if fv, ok := k.(*values.FieldValue); ok {
-				names[i] = fv.Field
-			} else {
-				names[i] = k.Name()
-			}
-		}
-		props := expressions.OrderingFromNameDir(names, ord.Descending)
-		if props.IsEmpty() || props.OrderingOverflowed() {
-			// An overflowed key holds only the first-8 prefix: stamping a
-			// 9+-column provider under it would let a DIFFERENT 9+-column
-			// requirement with the same prefix map-hit the winner directly
-			// (Reference.Winner bypasses Satisfies) and elide its sort with
-			// the wrong tail ordering — the exact bug class the overflow
-			// flag exists to kill.
-			continue
-		}
-		existing := ref.Winner(props)
-		if existing == nil || costModel(m, existing) {
-			ref.SetWinner(props, m)
-		}
-	}
 }
 
 // orderingHinter is implemented by physical wrappers that can

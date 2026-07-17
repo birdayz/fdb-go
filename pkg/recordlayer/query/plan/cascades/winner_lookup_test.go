@@ -6,6 +6,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 func TestGetWinnerForOrdering_PreserveReturnsNoPropsWinner(t *testing.T) {
@@ -22,8 +23,8 @@ func TestGetWinnerForOrdering_PreserveReturnsNoPropsWinner(t *testing.T) {
 		t.Fatal("no physical expr in ref after PrimaryScanRule")
 	}
 
-	// Stamp a winner via NoProperties key
-	ref.SetWinner(expressions.NoProperties, physExpr)
+	// Stamp the group winner
+	ref.SetWinner(physExpr)
 
 	// getWinnerForOrdering(PRESERVE) should return the stamped winner
 	winner := getWinnerForOrdering(ref, PreserveOrdering(), nil)
@@ -68,13 +69,15 @@ func TestGetWinnerForOrdering_OrderingLookup(t *testing.T) {
 		t.Fatal("no physical expr")
 	}
 
-	// Stamp an ordering-specific winner
-	props := expressions.OrderingFromNameDir([]string{"NAME"}, []bool{false})
-	ref.SetWinner(props, physExpr)
+	// Insert a member that genuinely PROVIDES (NAME ASC) — an in-memory
+	// sort wrapper. Ordering winners are found by scanning members'
+	// derived rich orderings, not a stamped key map.
+	sorted := sortedMemberOn(t, "NAME")
+	ref.Insert(sorted)
 
-	// Look up by RequestedOrdering with same name
+	// Look up by RequestedOrdering on the same column
 	parts := []RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "NAME"}, SortOrder: RequestedSortOrderAscending},
+		{Value: values.NewFlatFieldValue("NAME", values.UnknownType), SortOrder: RequestedSortOrderAscending},
 	}
 	reqOrd := NewRequestedOrdering(parts, DistinctnessPreserveDistinctness, false)
 
@@ -82,8 +85,77 @@ func TestGetWinnerForOrdering_OrderingLookup(t *testing.T) {
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering returned nil for matching ordering")
 	}
-	if winner != physExpr {
-		t.Fatal("getWinnerForOrdering did not return the stamped winner")
+	if winner != sorted {
+		t.Fatalf("getWinnerForOrdering must return the ordering-providing member, got %T", winner)
+	}
+}
+
+// sortedMemberOn builds a physical in-memory sort member sorted ascending
+// (natural null placement) on the given fields.
+func sortedMemberOn(t *testing.T, fields ...string) expressions.RelationalExpression {
+	t.Helper()
+	return sortedMemberWithNulls(t, fields, nil)
+}
+
+// sortedMemberWithNulls builds a physical in-memory sort member on the given
+// fields, ascending; nullsFirst (parallel to fields, nil = natural, i.e. all
+// true for ASC) sets each key's NULL placement.
+func sortedMemberWithNulls(t *testing.T, fields []string, nullsFirst []bool) expressions.RelationalExpression {
+	t.Helper()
+	inner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	keys := make([]plans.SortKey, len(fields))
+	for i, f := range fields {
+		nf := true // natural for ASC
+		if nullsFirst != nil {
+			nf = nullsFirst[i]
+		}
+		keys[i] = plans.SortKey{Field: f, ValueExpr: values.NewFlatFieldValue(f, values.UnknownType), NullsFirst: nf}
+	}
+	scanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
+	return newPhysicalInMemorySortWrapper(
+		plans.NewRecordQueryInMemorySortPlan(inner, keys),
+		expressions.ForEachQuantifier(scanRef))
+}
+
+// TestBestSatisfyingMember_CounterflowNullsGate pins the RFC-180 D2 core:
+// ordering-winner selection judges NULL placement. The retired
+// name+direction winner key flattened the four-state sort order to a
+// desc bool, so an ASC_NULLS_LAST requirement map-hit a natural-ASC
+// (nulls first) provider and elided the enforcer sort with the wrong
+// null order — and vice versa.
+func TestBestSatisfyingMember_CounterflowNullsGate(t *testing.T) {
+	t.Parallel()
+
+	natural := sortedMemberWithNulls(t, []string{"S"}, []bool{true})      // ASC NULLS FIRST (natural)
+	counterflow := sortedMemberWithNulls(t, []string{"S"}, []bool{false}) // ASC NULLS LAST
+
+	reqOn := func(so RequestedSortOrder) *RequestedOrdering {
+		return NewRequestedOrdering(
+			[]RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: so}},
+			DistinctnessPreserveDistinctness, false)
+	}
+
+	refNatural := expressions.InitialOf(natural)
+	if w := bestSatisfyingMember(refNatural, reqOn(RequestedSortOrderAscendingNullsLast), nil); w != nil {
+		t.Fatalf("ASC NULLS LAST must not be satisfied by a natural-ASC provider; got %T", w)
+	}
+	if w := bestSatisfyingMember(refNatural, reqOn(RequestedSortOrderAscending), nil); w != natural {
+		t.Fatalf("natural ASC request should be satisfied by the natural-ASC provider; got %T", w)
+	}
+
+	refCounter := expressions.InitialOf(counterflow)
+	if w := bestSatisfyingMember(refCounter, reqOn(RequestedSortOrderAscending), nil); w != nil {
+		t.Fatalf("natural ASC must not be satisfied by an ASC-NULLS-LAST provider; got %T", w)
+	}
+	if w := bestSatisfyingMember(refCounter, reqOn(RequestedSortOrderAscendingNullsLast), nil); w != counterflow {
+		t.Fatalf("ASC NULLS LAST request should be satisfied by the ASC-NULLS-LAST provider; got %T", w)
+	}
+
+	// getWinnerForOrdering falls back to the cheapest plan when nothing
+	// satisfies — it must not return the counterflow-mismatched member AS
+	// the satisfying winner, but it still returns a plan (the sort stays).
+	if w := getWinnerForOrdering(refNatural, reqOn(RequestedSortOrderAscendingNullsLast), nil); w != natural {
+		t.Fatalf("fallback should return the cheapest member, got %T", w)
 	}
 }
 

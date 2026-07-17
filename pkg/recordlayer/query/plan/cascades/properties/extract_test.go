@@ -318,7 +318,7 @@ func TestExtractBestPlanFromSelector_WinnerUsedWhenPhysical(t *testing.T) {
 	t.Parallel()
 	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
 	r := expressions.InitialOf(scanExpr)
-	r.SetWinner(expressions.NoProperties, scanExpr)
+	r.SetWinner(scanExpr)
 
 	got, err := ExtractBestPlanFromSelector(r, nil, nil)
 	if err != nil {

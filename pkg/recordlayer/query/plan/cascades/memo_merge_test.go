@@ -157,7 +157,7 @@ func TestMemoMerge_SkipsWhenWinnersPresent(t *testing.T) {
 	scanRef := expressions.InitialOf(fixtureScan("T"))
 	l := filterOver(scanRef)
 	r := filterOver(scanRef)
-	r.SetWinner(expressions.NoProperties, fixtureScan("W")) // r is "optimized"
+	r.SetWinner(fixtureScan("W")) // r is "optimized"
 
 	m := NewMemo(nil)
 	m.RegisterReference(l)
