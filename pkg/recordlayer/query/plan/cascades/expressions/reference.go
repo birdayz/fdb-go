@@ -553,23 +553,6 @@ func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 	r.finalMembers = kept
 }
 
-// ContainsMember reports whether expr is a member of this Reference (by
-// identity), exploratory or final. Ports Java Reference.containsExactly.
-func (r *Reference) ContainsMember(expr RelationalExpression) bool {
-	r = r.Canonical()
-	for _, m := range r.members {
-		if m == expr {
-			return true
-		}
-	}
-	for _, m := range r.finalMembers {
-		if m == expr {
-			return true
-		}
-	}
-	return false
-}
-
 // ClearFinalMembers removes all final members.
 func (r *Reference) ClearFinalMembers() {
 	r = r.Canonical()

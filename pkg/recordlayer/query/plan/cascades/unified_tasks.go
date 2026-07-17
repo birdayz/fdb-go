@@ -503,8 +503,10 @@ func (t *OptimizeInputsTask) Run(p *Planner) {
 	// Identity guard (Java CascadesPlanner.OptimizeInputs:
 	// `if (!group.containsExactly(expression)) return;`): an expression
 	// pruned OUT of its group between task push and pop is dead — it must
-	// not drive child-group pruning on behalf of a plan that lost.
-	if t.Ref != nil && !t.Ref.ContainsMember(t.Expr) {
+	// not drive child-group pruning on behalf of a plan that lost. The
+	// same guard already fronts TransformExprTask/TransformImplTask
+	// (Java's TransformExpression shouldExecute, CascadesPlanner:1128).
+	if t.Ref != nil && !t.Ref.ContainsExactly(t.Expr) {
 		return
 	}
 	for _, q := range t.Expr.GetQuantifiers() {
