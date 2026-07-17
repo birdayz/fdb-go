@@ -2618,28 +2618,30 @@ func collectLegMatches(p plans.RecordQueryPlan, alias string, acc bool, out []le
 			jt := n.GetJoinType()
 			outerNS := acc || jt == plans.JoinFullOuter
 			innerNS := acc || jt == plans.JoinLeftOuter || jt == plans.JoinFullOuter
+			// A matched leg's SUBTREE is still searched: shallow-wins scope
+			// shadowing would be sound only if plan nesting faithfully
+			// mirrored SQL scoping, and FOLDED query blocks are exactly
+			// where that mirror breaks — an interior duplicate therefore
+			// counts as a second match and the caller declines to the name
+			// fallbacks rather than trusting either binding.
 			if strings.EqualFold(n.GetOuterAlias(), alias) {
 				out = append(out, legMatch{n.GetOuter(), outerNS || legHasDefaultOnEmpty(n.GetOuter())})
-			} else {
-				out = collectLegMatches(n.GetOuter(), alias, outerNS, out)
 			}
+			out = collectLegMatches(n.GetOuter(), alias, outerNS, out)
 			if strings.EqualFold(n.GetInnerAlias(), alias) {
 				out = append(out, legMatch{n.GetInner(), innerNS || legHasDefaultOnEmpty(n.GetInner())})
-			} else {
-				out = collectLegMatches(n.GetInner(), alias, innerNS, out)
 			}
+			out = collectLegMatches(n.GetInner(), alias, innerNS, out)
 			return out
 		case *plans.RecordQueryFlatMapPlan:
 			if strings.EqualFold(n.GetOuterAlias().Name(), alias) {
 				out = append(out, legMatch{n.GetOuter(), acc || legHasDefaultOnEmpty(n.GetOuter())})
-			} else {
-				out = collectLegMatches(n.GetOuter(), alias, acc, out)
 			}
+			out = collectLegMatches(n.GetOuter(), alias, acc, out)
 			if strings.EqualFold(n.GetInnerAlias().Name(), alias) {
 				out = append(out, legMatch{n.GetInner(), acc || legHasDefaultOnEmpty(n.GetInner())})
-			} else {
-				out = collectLegMatches(n.GetInner(), alias, acc, out)
 			}
+			out = collectLegMatches(n.GetInner(), alias, acc, out)
 			return out
 		case *plans.RecordQueryDefaultOnEmptyPlan:
 			acc = true

@@ -592,6 +592,16 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 	if _, _, found := legPlanFor(top, "A"); !found {
 		t.Fatal("a unique alias must resolve")
 	}
+	// An interior duplicate INSIDE a matched leg also declines: folds can
+	// break the plan-nesting/SQL-scoping mirror, so shallow-wins shadowing
+	// is not trusted either.
+	nested := plans.NewRecordQueryNestedLoopJoinPlan(
+		scan(), scan(), nil, plans.JoinInner, "Z", "W", nil)
+	shadowTop := plans.NewRecordQueryNestedLoopJoinPlan(
+		nested, scan(), nil, plans.JoinInner, "Z", "Q", nil)
+	if _, _, found := legPlanFor(shadowTop, "Z"); found {
+		t.Fatal("an alias duplicated between a leg and its own subtree must DECLINE")
+	}
 	if leg, ns, found := legPlanFor(top, "Y"); !found || leg == nil || !ns {
 		t.Fatalf("Y is unique and inside a FULL join's inner — found=%v ns=%v", found, ns)
 	}
