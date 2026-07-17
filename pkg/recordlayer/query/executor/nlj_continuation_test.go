@@ -177,7 +177,7 @@ func TestNLJContinuation_LegacyFakeMarkerRejected(t *testing.T) {
 // continuation declines on resume (the drain bitmap has no serialized form).
 func TestNLJContinuation_FullDrainRejected(t *testing.T) {
 	t.Parallel()
-	b, err := (&nljContinuation{fullDrain: true}).ToBytes()
+	b, err := (&nljContinuation{fullOuter: true}).ToBytes()
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -187,31 +187,92 @@ func TestNLJContinuation_FullDrainRejected(t *testing.T) {
 	}
 }
 
-// TestNLJContinuation_CheckValueMismatch pins the Java check-value contract:
-// resuming a mid-inner continuation over CHANGED outer data (the re-read row
-// is not the one the continuation was taken over) fails loudly instead of
-// joining the wrong rows.
-func TestNLJContinuation_CheckValueMismatch(t *testing.T) {
+// TestNLJContinuation_CheckValueMismatchRestarts pins the Java check-value
+// contract (FlatMapPipelinedCursor, and this package's own flatMapCursor):
+// resuming a mid-inner continuation over CHANGED outer data discards the
+// stale inner position and RESTARTS that outer row's inner from scratch —
+// never an error, never a resume of the stale index against the wrong row.
+func TestNLJContinuation_CheckValueMismatchRestarts(t *testing.T) {
 	t.Parallel()
 	outers := nljTestRows("K", 2)
 	inners := nljTestRows("J", 2)
 	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nil)
-	_, conts := drainNLJ(t, full)
+	fullKeys, conts := drainNLJ(t, full)
 
-	outerCont, rs, derr := decodeNLJContinuation(conts[0])
+	// Split after pair 2 of outer row 0 (innerIdx=2): a faithful resume
+	// would skip that outer's pairs. With a TAMPERED outer row, the resume
+	// must instead restart its inner at index 0.
+	outerCont, rs, derr := decodeNLJContinuation(conts[1])
 	if derr != nil {
 		t.Fatalf("decode: %v", derr)
 	}
-	if rs == nil {
-		t.Fatal("first pair emission must carry mid-inner state")
+	if rs == nil || rs.innerIdx == 0 {
+		t.Fatal("fixture must capture a mid-inner state past index 0")
 	}
-	// Tamper: shift the outer rows so the re-read row's PK differs.
 	tampered := nljTestRows("K", 3)[1:]
 	resumed := nljTestCursor(t, recordlayer.FromListWithContinuation(tampered, outerCont), inners, plans.JoinInner, nil)
 	resumed.applyResume(rs)
-	_, err := resumed.OnNext(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "check value") {
-		t.Fatalf("changed outer data must fail the check value loudly, got %v", err)
+	gotKeys, _ := drainNLJ(t, resumed)
+	// The re-read (changed) outer row emits ALL its pairs (restart), then the
+	// remaining outer rows follow — count = full inner width per re-read
+	// outer, never the stale-suffix count.
+	wantLen := len(inners) * len(tampered)
+	if len(gotKeys) != wantLen {
+		t.Fatalf("changed outer data must RESTART the row's inner (got %d rows, want %d)\ngot: %v\nfull run was: %v",
+			len(gotKeys), wantLen, gotKeys, fullKeys)
+	}
+}
+
+// TestNLJContinuation_FullOuterMidStreamRejected pins that EVERY FULL OUTER
+// emission carries the declining marker — the cross-outer matchedInner bitmap
+// has no serialized form, so a resumed page would rebuild it zeroed and the
+// drain phase would re-pad already-matched inner rows (wrong rows). A
+// mid-stream FULL continuation (e.g. captured under LIMIT) must not decode as
+// resumable.
+func TestNLJContinuation_FullOuterMidStreamRejected(t *testing.T) {
+	t.Parallel()
+	outers := nljTestRows("K", 2)
+	inners := nljTestRows("J", 2)
+	c := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinFullOuter, nil)
+	res, err := c.OnNext(context.Background())
+	if err != nil || !res.HasNext() {
+		t.Fatalf("first FULL pair: %v", err)
+	}
+	b, berr := res.GetContinuation().ToBytes()
+	if berr != nil {
+		t.Fatalf("ToBytes: %v", berr)
+	}
+	if _, _, derr := decodeNLJContinuation(b); derr == nil || !strings.Contains(derr.Error(), "FULL OUTER") {
+		t.Fatalf("a mid-stream FULL OUTER continuation must decline on decode, got %v", derr)
+	}
+}
+
+// TestNLJContinuation_ArmedResumeSurvivesOuterStop pins the resumed-page
+// corner: the outer child stops out-of-band BEFORE re-yielding the resumed
+// row. The wrapped continuation must carry the still-armed mid-inner state —
+// dropping it would replay that outer row from inner index 0 (duplicates).
+func TestNLJContinuation_ArmedResumeSurvivesOuterStop(t *testing.T) {
+	t.Parallel()
+	outer := &pausingCursor{rows: nil, cont: []byte("outer-pos")}
+	c := nljTestCursor(t, outer, nljTestRows("J", 3), plans.JoinInner, nil)
+	c.applyResume(&nljResumeState{innerIdx: 2, outerMatched: true, check: []byte("pk")})
+	res, err := c.OnNext(context.Background())
+	if err != nil || res.HasNext() {
+		t.Fatalf("outer must pause without a row: %v", err)
+	}
+	b, berr := res.GetContinuation().ToBytes()
+	if berr != nil {
+		t.Fatalf("ToBytes: %v", berr)
+	}
+	outerCont, rs, derr := decodeNLJContinuation(b)
+	if derr != nil {
+		t.Fatalf("decode: %v", derr)
+	}
+	if string(outerCont) != "outer-pos" {
+		t.Fatalf("outer bytes = %q, want the wrapped outer position", outerCont)
+	}
+	if rs == nil || rs.innerIdx != 2 || !rs.outerMatched || string(rs.check) != "pk" {
+		t.Fatalf("armed mid-inner state must ride the wrap, got %+v", rs)
 	}
 }
 

@@ -1412,7 +1412,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						// serialized form; limits are cleared so the whole
 						// join runs in one page) — the marker continuation
 						// rejects loudly on decode.
-						return recordlayer.NewResultWithValue(qr, &nljContinuation{fullDrain: true}), nil
+						return recordlayer.NewResultWithValue(qr, &nljContinuation{fullOuter: true}), nil
 					}
 				}
 				return recordlayer.NewResultNoNext[QueryResult](
@@ -1435,9 +1435,20 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				// position in the NLJ envelope so every NLJ continuation
 				// decodes uniformly (a raw pass-through would be ambiguous
 				// against the mid-inner format on resume).
-				return recordlayer.NewResultNoNext[QueryResult](
-					reason, &nljContinuation{outerCont: result.GetContinuation()},
-				), nil
+				w := &nljContinuation{outerCont: result.GetContinuation()}
+				if c.joinType == plans.JoinFullOuter {
+					w = &nljContinuation{fullOuter: true}
+				} else if c.resumePending {
+					// The outer stopped BEFORE re-yielding the resumed row:
+					// the armed mid-inner state must ride the new
+					// continuation or the next resume replays that outer
+					// row from inner index 0 (duplicate pairs).
+					w.hasInner = true
+					w.innerIdx = c.resumeInnerIdx
+					w.outerMatched = c.resumeOuterMatched
+					w.checkValue = c.resumeCheck
+				}
+				return recordlayer.NewResultNoNext[QueryResult](reason, w), nil
 			}
 			outerRow := result.GetValue()
 			c.priorOuterCont = c.lastOuterCont
@@ -1478,16 +1489,26 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			// (Java's check value), then restore the inner position and the
 			// matched flag. innerMatches was recomputed above
 			// deterministically (same innerRows order, same probe), so the
-			// restored index addresses the same candidate list.
+			// restored index addresses the same candidate list. Note the
+			// index (unlike Java's key-positional inner continuation) is a
+			// SNAPSHOT position: the check value guards the OUTER row only,
+			// so an inner-side mutation between pages shifts the candidate
+			// list undetected — the same exposure as the materialized inner
+			// itself, which re-collects whatever the new transaction sees.
 			if c.resumePending {
 				c.resumePending = false
 				if len(c.resumeCheck) > 0 && outerRow.PrimaryKey != nil &&
 					!bytes.Equal(outerRow.PrimaryKey.Pack(), c.resumeCheck) {
-					return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf(
-						"nested loop join resume: outer row does not match the continuation's check value — underlying data changed between pages")
+					// Java FlatMapPipelinedCursor (and this package's own
+					// flatMapCursor): a check-value mismatch means the data
+					// changed between transactions — DISCARD the stale inner
+					// position and restart this outer row's inner from
+					// scratch, never error. innerIdx/outerMatched keep their
+					// fresh-reset values.
+				} else {
+					c.innerIdx = c.resumeInnerIdx
+					c.outerMatched = c.resumeOuterMatched
 				}
-				c.innerIdx = c.resumeInnerIdx
-				c.outerMatched = c.resumeOuterMatched
 			}
 		}
 
@@ -1612,6 +1633,10 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					}
 					qr.Positional = pos
 				}
+				if c.joinType == plans.JoinFullOuter {
+					// See midInnerContinuation: no FULL continuation resumes.
+					return recordlayer.NewResultWithValue(qr, &nljContinuation{fullOuter: true}), nil
+				}
 				// Last emission for this outer row: resume advances to the
 				// next outer (no inner state, no check value — Java writes
 				// only the advanced outer position in this branch).
@@ -1627,6 +1652,14 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 // position with the matched flag. Fields are copied at emit time — later
 // cursor advances do not mutate an issued continuation.
 func (c *nljCursor) midInnerContinuation() recordlayer.RecordCursorContinuation {
+	// FULL OUTER accumulates the cross-outer matchedInner bitmap, which has
+	// no serialized form — a resumed page would rebuild it zeroed and the
+	// drain phase would re-pad already-matched inner rows (wrong rows). A
+	// mid-stream FULL continuation (e.g. under LIMIT) therefore declines on
+	// resume, like the drain-phase marker.
+	if c.joinType == plans.JoinFullOuter {
+		return &nljContinuation{fullOuter: true}
+	}
 	w := &nljContinuation{
 		outerCont:    c.priorOuterCont,
 		hasInner:     true,
@@ -1656,7 +1689,7 @@ type nljContinuation struct {
 	hasInner     bool
 	innerIdx     int
 	outerMatched bool
-	fullDrain    bool // FULL OUTER drain marker — rejects loudly on decode
+	fullOuter    bool // FULL OUTER marker — every FULL emission; rejects loudly on decode
 }
 
 func (w *nljContinuation) IsEnd() bool { return false }
@@ -1670,13 +1703,13 @@ func (w *nljContinuation) ToBytes() ([]byte, error) {
 		}
 		fmc.OuterContinuation = b
 	}
-	if w.hasInner || w.fullDrain {
+	if w.hasInner || w.fullOuter {
 		matched := int64(0)
 		if w.outerMatched {
 			matched = 1
 		}
 		drain := int64(0)
-		if w.fullDrain {
+		if w.fullOuter {
 			drain = 1
 		}
 		fmc.InnerContinuation = tuple.Tuple{int64(w.innerIdx), matched, drain}.Pack()
@@ -1723,7 +1756,7 @@ func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resum
 		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
 	}
 	if drain != 0 {
-		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join FULL OUTER drain (does not resume)"}
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join FULL OUTER (does not resume)"}
 	}
 	return fmc.GetOuterContinuation(), &nljResumeState{
 		innerIdx:     int(idx),
