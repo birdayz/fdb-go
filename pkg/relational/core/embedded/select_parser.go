@@ -178,6 +178,13 @@ type joinClause struct {
 type orderByClause struct {
 	colName   string
 	ascending bool
+	// bare/qualifier/qualified: parse-tree segments of a plain column
+	// reference item (splitColumnRef); zero values for positional and
+	// expression items. Qualification is FullId SEGMENT COUNT, never a dot
+	// scan of colName.
+	bare      string
+	qualifier string
+	qualified bool
 	// bareRef: the ORDER BY item is a plain ONE-segment column reference —
 	// the only shape SQL binds to an output alias. False for qualified
 	// references (`d.x`), aggregates, and computed expressions, whose
@@ -991,7 +998,8 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 						"duplicate column %q in ORDER BY", colName)
 				}
 				seenOrderCols[key] = true
-				cls.orderBy = append(cls.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression(), bareRef: exprIsBareColumnRef(obExpr.Expression())})
+				kb, kq, kqf := splitColumnRef(obExpr.Expression())
+				cls.orderBy = append(cls.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression(), bareRef: exprIsBareColumnRef(obExpr.Expression()), bare: kb, qualifier: kq, qualified: kqf})
 			} else {
 				cls.orderBy = append(cls.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
 			}

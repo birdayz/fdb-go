@@ -619,3 +619,24 @@ func TestGroupKeyStripClearsQualification(t *testing.T) {
 		t.Fatalf("stripped key = %+v, want bare CATEGORY", k)
 	}
 }
+
+// TestOrderByKeySegments_ParseTreeTruth pins orderByClause/SortKey structured
+// segments: qualification is FullId SEGMENT COUNT, and a delimited identifier
+// containing a literal dot stays one bare segment (the retired consumers
+// split renderings on the last dot).
+func TestOrderByKeySegments_ParseTreeTruth(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, `SELECT c FROM t ORDER BY t.c, "a.b", c2`)
+	if len(sq.orderBy) != 3 {
+		t.Fatalf("want 3 keys, got %d", len(sq.orderBy))
+	}
+	if ob := sq.orderBy[0]; !ob.qualified || ob.qualifier != "T" || ob.bare != "C" {
+		t.Fatalf("t.c segments = %+v", ob)
+	}
+	if ob := sq.orderBy[1]; ob.qualified || ob.bare != "a.b" {
+		t.Fatalf(`"a.b" must be ONE bare segment, got %+v`, ob)
+	}
+	if ob := sq.orderBy[2]; ob.qualified || ob.bare != "C2" {
+		t.Fatalf("c2 segments = %+v", ob)
+	}
+}

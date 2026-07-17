@@ -598,7 +598,13 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// Pos), and the translator bakes a surviving Pos only into a
 			// select-list-carrying input (the aggregate reshaping
 			// projection or a union) — never a derived source's slots.
-			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Pos: ob.pos, BareRef: ob.bareRef})
+			sk := logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Pos: ob.pos, BareRef: ob.bareRef, Bare: ob.bare, Qualifier: ob.qualifier, Qualified: ob.qualified}
+			if expr != ob.colName {
+				// Stripped/rebased to an internal name — bare from here on
+				// (the group-key strip rule).
+				sk.Bare, sk.Qualifier, sk.Qualified = expr, "", false
+			}
+			keys = append(keys, sk)
 		}
 		op = logical.NewSort(op, keys)
 	}

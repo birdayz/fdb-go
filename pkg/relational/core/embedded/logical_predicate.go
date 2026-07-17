@@ -6195,7 +6195,13 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 			continue
 		}
 		upper := strings.ToUpper(k.Expr)
-		if !leftNames[upper] && !leftNames[strings.ToUpper(parseColRef(k.Expr).bare())] {
+		bareName := upper
+		if k.Bare != "" {
+			// Structured bare segment — never a last-dot split of the
+			// rendering (a delimited identifier may contain a literal dot).
+			bareName = strings.ToUpper(k.Bare)
+		}
+		if !leftNames[upper] && !leftNames[bareName] {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q not found in UNION result columns", k.Expr)
 		}

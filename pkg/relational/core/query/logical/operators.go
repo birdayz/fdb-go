@@ -269,6 +269,12 @@ type SortKey struct {
 	// diverges for computed items whose canonical source text differs from the
 	// baked output spelling.
 	Pos int
+	// Bare/Qualifier/Qualified: parse-tree segments of a plain column
+	// reference key; zero values for positional and expression keys (their
+	// Expr is a rendering only). Qualification is FullId SEGMENT COUNT.
+	Bare      string
+	Qualifier string
+	Qualified bool
 	// BareRef marks a key whose source text is a plain ONE-segment column
 	// reference — the only shape SQL binds to an output alias. False for
 	// qualified references (`ORDER BY d.x`), aggregates and computed

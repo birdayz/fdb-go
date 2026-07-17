@@ -1572,6 +1572,8 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 		if nameErr == nil {
 			bareRef := exprIsBareColumnRef(obExpr.Expression())
+			kb, kq, kqf := splitColumnRef(obExpr.Expression())
+			origColName := colName
 			if len(deferredStripProj) > 0 {
 				colName = rebaseToInternal(colName, bareRef)
 			}
@@ -1587,7 +1589,16 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 				continue
 			}
 			seenOrderCols[key] = true
-			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, BareRef: bareRef})
+			sk := logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, BareRef: bareRef, Bare: kb, Qualifier: kq, Qualified: kqf}
+			if colName != origColName || sk.Expr != colName {
+				// A rebased/alias-resolved name is an internal OUTPUT name,
+				// and a stripped prefix bakes the qualifier away — either
+				// way the key is BARE from here on (the group-key strip
+				// rule); the parse-tree segments describe the original
+				// reference, not this name.
+				sk.Bare, sk.Qualifier, sk.Qualified = sk.Expr, "", false
+			}
+			keys = append(keys, sk)
 		} else {
 			// Expression ORDER BY — use canonical text to get
 			// proper spacing (GetText concatenates without whitespace).
@@ -1702,18 +1713,20 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 		if sort.Keys[i].Value != nil {
 			continue
 		}
-		ref := parseColRef(sort.Keys[i].Expr)
-		bare := ref.bare()
+		// Structured segments — an expression key has none (nothing to
+		// resolve as an unnest column) and skips; the retired text re-parse
+		// split a canonical rendering on its last dot.
+		bare := sort.Keys[i].Bare
 		if bare == "" {
 			continue
 		}
 		id := semantic.NewUnquoted(bare)
-		if ref.isQualified() {
+		if sort.Keys[i].Qualified {
 			// An AmbiguousColumnError here is DISCARDED on purpose: the
 			// upstream sort-key reference validation already terminated an
 			// ambiguous key with 42702 before this qualification pass runs
 			// (the ladder's >=2 arm is owned there, not here).
-			qv, err := resolver.ResolveQualifiedProjection(semantic.NewUnquoted(ref.table), id)
+			qv, err := resolver.ResolveQualifiedProjection(semantic.NewUnquoted(sort.Keys[i].Qualifier), id)
 			if err == nil && qv != nil {
 				sort.Keys[i].Value = qv
 				continue
@@ -1722,7 +1735,7 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 			// the quantifier-addressed source-relative baked reference so
 			// the key resolves positionally through its leg window
 			// (rowLegsBinder) instead of a flat dotted name read.
-			if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
+			if bv := resolveQualifiedBaked(resolver, colRef{table: sort.Keys[i].Qualifier, col: bare}); bv != nil {
 				sort.Keys[i].Value = bv
 			}
 			continue
