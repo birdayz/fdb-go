@@ -161,9 +161,23 @@ func ExecutePlan(
 		}
 		return executeValues(p, evalCtx)
 	case *plans.RecordQueryRecursiveLevelUnionPlan:
-		return executeRecursiveLevelUnion(ctx, p, store, evalCtx, continuation, props)
+		// STOPGAP (RFC-181 C1): recursion is materialized eagerly and its
+		// mid-stream tokens are bare list indices; the executor used to feed
+		// an incoming continuation RAW to the SEED plan, where a scan seed
+		// silently accepted the bytes as a key suffix — wrong seed set and
+		// re-emission, no error. Decline loudly until the Java-shape
+		// RecursiveUnionCursor continuation (phase + PTempTable frontier +
+		// child position) is ported.
+		if err := rejectUnsupportedResume(continuation, "recursive CTE (level union)"); err != nil {
+			return nil, err
+		}
+		return executeRecursiveLevelUnion(ctx, p, store, evalCtx, nil, props)
 	case *plans.RecordQueryRecursiveDfsJoinPlan:
-		return executeRecursiveDfsJoin(ctx, p, store, evalCtx, continuation, props)
+		// Same stopgap as the level union above (RFC-181 C1).
+		if err := rejectUnsupportedResume(continuation, "recursive CTE (DFS join)"); err != nil {
+			return nil, err
+		}
+		return executeRecursiveDfsJoin(ctx, p, store, evalCtx, nil, props)
 	case *plans.RecordQueryUnorderedUnionPlan:
 		return executeUnorderedUnion(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryPredicatesFilterPlan:

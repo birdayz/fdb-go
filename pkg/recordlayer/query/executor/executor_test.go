@@ -5824,3 +5824,54 @@ func TestCompareValues_CrossTypeIsLoud(t *testing.T) {
 		t.Fatal("bytes vs string must error")
 	}
 }
+
+// TestRecursiveResume_DeclinesLoudly pins the RFC-181 C1 stopgap: the
+// recursion is materialized eagerly and its mid-stream tokens are bare list
+// indices — the executor used to feed an incoming continuation RAW to the
+// SEED plan, where a scan seed silently accepted the bytes as a key suffix
+// (wrong seed set, re-emission, NO ERROR). Until the Java-shape
+// RecursiveUnionCursor continuation is ported, a resume attempt must be a
+// TYPED decline, never a silent wrong start.
+func TestRecursiveResume_DeclinesLoudly(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	scanAlias := values.NamedCorrelationIdentifier("scan")
+	insertAlias := values.NamedCorrelationIdentifier("insert")
+	mkPlan := func() *plans.RecordQueryRecursiveLevelUnionPlan {
+		initial := plans.NewRecordQueryTempTableInsertPlan(
+			plans.NewRecordQueryValuesPlan([]values.Value{
+				&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+			}),
+			insertAlias, false,
+		)
+		recursive := plans.NewRecordQueryTempTableInsertPlan(
+			plans.NewRecordQueryExplodePlan(nil),
+			insertAlias, false,
+		)
+		return plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+	}
+
+	// A mid-stream list-index token from a prior page (4 bytes) — exactly
+	// the shape the misroute silently swallowed.
+	fakeToken := []byte{0, 0, 0, 1}
+	_, err := ExecutePlan(ctx, mkPlan(), nil, EmptyEvaluationContext(), fakeToken, recordlayer.DefaultExecuteProperties())
+	var unsupported *UnsupportedContinuationError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("resume on a recursive CTE must decline with UnsupportedContinuationError, got %v", err)
+	}
+
+	// DFS twin.
+	dfs := plans.NewRecordQueryRecursiveDfsJoinPlan(mkPlan().GetInitialState(), mkPlan().GetRecursiveState(), scanAlias, plans.DfsPreorder)
+	_, err = ExecutePlan(ctx, dfs, nil, EmptyEvaluationContext(), fakeToken, recordlayer.DefaultExecuteProperties())
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("resume on a recursive DFS join must decline, got %v", err)
+	}
+
+	// nil continuation still executes normally.
+	cursor, err := ExecutePlan(ctx, mkPlan(), nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("fresh execution must still work: %v", err)
+	}
+	cursor.Close()
+}

@@ -1396,7 +1396,9 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 # NEXT
 
 > ## [ ] RFC-181 — query-engine correctness wave 3 (rfcs/181-query-engine-correctness-wave3.md)
-> Owner priority: the NAME-MODEL findings first. Execution order (details in the RFC):
+> Owner priority: the NAME-MODEL findings are the priority PROGRAM; Graefe amendment:
+> the hours-scale silent-corruption P0s land BEFORE Phase A opens (P0.1, P0.2, P0.3,
+> P0.4, P0.6, C1-stopgap first). Execution order (details in the RFC):
 > 1. [ ] WS-N interim pins (red today): quoted case-colliding ORDER BY; column literally
 >        named "A.ID" on a join; duplicate-named ORDER BY with baked key (poison bypass);
 >        quoted "Q$1" table alias; cross-leg same-name-different-type metadata.

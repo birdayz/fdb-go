@@ -1,6 +1,6 @@
 # RFC-181: Query-Engine Correctness Wave 3 — provenance, set-op gates, and the type lattice
 
-Status: DRAFT — findings from the post-RFC-180 hunt (five parallel audits over
+Status: ACCEPTED (Graefe ACK with amendments folded below) — findings from the post-RFC-180 hunt (five parallel audits over
 master `8dd22ac7a`, the RFC-180 merge). Graefe ACK required on this RFC and on
 every implementation commit (Cascades core throughout).
 
@@ -46,8 +46,11 @@ monotonicity. Java gates every intersection on
 AbstractDataAccessRule.java:1103/1145).
 
 Repro: `WHERE a > 5 AND b = 3`, indexes on `a` and `b`, matching PKs
-interleaved in `a`-order. Fix: port the Java gate (comparison keys derived
-from the INTERSECTED ordering, compatibility per leg), thread reverse.
+interleaved in `a`-order. Fix: port the Java gate — comparison keys derived
+from the INTERSECTED ordering, compatibility per leg (GRAEFE: no
+"all-legs-PK-ordered" shortcut), thread reverse. Confirmed at source: the
+intersector's signature literally discards its ordering input
+(`_ []*RequestedOrdering`, intersector_primary_key.go:23).
 `ImplementIntersectionRule` gets the same gate (latent — no SQL producer yet).
 
 ### P0.2 Streaming-agg ordered alternative shares the inner group (wrong GROUPS)
@@ -188,7 +191,12 @@ Program (phases; each phase is separately shippable and Graefe-gated):
 - **Phase C — ordering on Value identity:** poset/binding maps keyed on
   semantic Value identity (writeSemanticHash/ValuesStructurallyEqual exist);
   requested parts carry resolved values; delete orderingKeyFor's three
-  bridges + normLookup; kills N-F1.
+  bridges + normLookup; kills N-F1. GRAEFE AMENDMENT: Java's Ordering
+  equality is Correlated.semanticEquals UNDER AN ALIASMAP — semantic
+  identity is relative to a correlation frame. Phase C's design must state
+  which frame the poset/binding keys live in (post-rebase,
+  current-quantifier); otherwise cross-quantifier comparisons silently fail
+  and bridge 2 gets rebuilt under a new name.
 - **Phase D — metadata from the flowed type:** FieldValue.Typ populated and
   preserved; ColumnDef positional from the top result value; delete
   descriptorForColumn/innerByName/qualifyAndMergeColumns/colref.go; kills
@@ -212,6 +220,11 @@ cross-leg same-name-different-type metadata.
   cross the phase boundary pruned-to-1 (Java Verify), then retire the Go-only
   cost tiebreakers 15b/15c (guarded by stress + EXPLAIN parity comparison —
   DIVERGENCES records that removing them today regresses).
+- GRAEFE AMENDMENT — one arc, internally staged, each checkpoint green under
+  stress + EXPLAIN parity: (a) epochs + finals routing with dual insertion
+  intact (behavior-neutral); (b) remove dual insertion + revert to
+  containsExactly; (c) prune-to-1 Verify at the phase boundary; (d) retire
+  15b/15c + the round cap. Separate RFC arcs would risk half-states.
 - The maxRoundsPerRef=10 cap becomes obsolete with epochs; until then, export
   the observed max rounds in stress/conformance runs (evidence, not a silent
   raise). Also: fix the stale DIVERGENCES.md claim that advancePlannerStage is
@@ -320,16 +333,17 @@ follow-up) → C1 full RecursiveCursorContinuation port.
 Wire-format changes (none required by any finding); porting Java's
 UTF-16-order bug; new query capabilities.
 
-## Execution order (owner directive: the name-model findings are the priority)
+## Execution order (owner: name-model is the priority PROGRAM; Graefe: live silent-corruption fixes are hours-scale and land first)
 
-1. **WS-N interim pins** (red today — they document the live wrong-rows
-   surface) then **WS-N phases A→D** — the priority axis. Each phase its own
-   review cycle. P0 items that are name-model-rooted (P0.3's delegator-hint
-   lie is N-F1's set-op face) fold into the phase that kills their class.
-2. Interleaved with WS-N phase boundaries: the INDEPENDENT P0 holes that
-   don't wait on provenance — P0.1 (intersection gate), P0.2 (streaming-agg
-   pin), P0.4 (extraction verification), P0.5 (INT lane), P0.6 (tie-break) —
-   each a small commit with its red pin.
-3. WS-C fixes (small, executor-local) as their audit lands.
-4. WS-T parity batch (independent of planner work).
-5. WS-P (planner-core arc; last — WS-N Phase B simplifies it).
+1. **Pre-A batch** (each hours-scale, red-pinned, own review lap): C1 stopgap
+   guard (DONE with the RFC commit), P0.1 intersection gate, P0.2
+   streaming-agg pin, P0.3 union-leg pinning (machinery exists — does NOT
+   wait for Phase C; Phase C later retires the bridges under it), P0.4
+   extraction verification, P0.6 tie-break. Then C3/C4 (small
+   executor-local), P0.5/P0.7.
+2. **WS-N interim pins** (red today) then **WS-N phases A→D** — the priority
+   axis; each phase its own review cycle, Phase C carrying the AliasMap-frame
+   amendment.
+3. WS-T parity batch (independent of planner work).
+4. WS-P (one arc, internally staged (a)-(d) per the amendment; last — WS-N
+   Phase B simplifies it).
