@@ -3910,13 +3910,13 @@ func executeInMemorySort(
 	// charges every fresh row against the RFC-130 statement budget
 	// (customSortCursor.OnNext), so restored rows must charge identically at
 	// injection or a resume smuggles an arbitrarily large buffer past the
-	// limit.
-	if len(priorBuf) > 0 && props.State.HasMemLimit() {
-		for _, r := range priorBuf {
-			if cerr := props.State.ChargeMemory(estimateQueryResultBytes(r)); cerr != nil {
-				_ = innerCursor.Close()
-				return nil, cerr
-			}
+	// limit. The cursor tracks its charges and releases them on Close, so a
+	// statement-wide ExecuteState reused across pages accounts the buffer's
+	// LIVE bytes once, not once per page boundary.
+	if len(priorBuf) > 0 {
+		if cerr := cursor.chargeResumedBuffer(priorBuf); cerr != nil {
+			_ = cursor.Close()
+			return nil, cerr
 		}
 	}
 	switch {

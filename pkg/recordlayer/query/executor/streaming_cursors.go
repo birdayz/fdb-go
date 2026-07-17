@@ -820,6 +820,13 @@ type customSortCursor struct {
 	closed  bool
 	maxBuf  int                       // 0 = use DefaultMaxSortBufferRows
 	st      *recordlayer.ExecuteState // RFC-130 statement memory budget
+	// chargedBytes is what THIS cursor has charged against st, released on
+	// Close. The statement budget bounds LIVE buffered bytes: the buffer
+	// round-trips through the page continuation and is re-charged at resume
+	// injection (chargeResumedBuffer), so without the teardown release a
+	// statement-wide ExecuteState would re-accumulate the same buffer once
+	// per page and fail a compliant query for crossing page boundaries.
+	chargedBytes int64
 }
 
 // DefaultMaxSortBufferRows is the maximum number of rows the in-memory
@@ -882,9 +889,11 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 		// RFC-130: charge each row's bytes against the statement memory budget
 		// before keeping it in the sort buffer.
 		if c.st.HasMemLimit() {
-			if err := c.st.ChargeMemory(estimateQueryResultBytes(v)); err != nil {
+			n := estimateQueryResultBytes(v)
+			if err := c.st.ChargeMemory(n); err != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, err
 			}
+			c.chargedBytes += n
 		}
 		c.buf = append(c.buf, v)
 		if len(c.buf) >= limit {
@@ -930,7 +939,30 @@ func (w *sortEmitContinuation) ToBytes() ([]byte, error) {
 
 func (w *sortEmitContinuation) IsEnd() bool { return false }
 
+// chargeResumedBuffer charges rows restored from a sort continuation against
+// the statement memory budget (RFC-180 H4): a resumed buffer is memory like
+// any other, and for a FRESH ExecuteState this is its only accounting. For the
+// statement-wide state shared across pages the matching release happens in
+// Close — see chargedBytes.
+func (c *customSortCursor) chargeResumedBuffer(rows []QueryResult) error {
+	if !c.st.HasMemLimit() {
+		return nil
+	}
+	for _, r := range rows {
+		n := estimateQueryResultBytes(r)
+		if err := c.st.ChargeMemory(n); err != nil {
+			return err
+		}
+		c.chargedBytes += n
+	}
+	return nil
+}
+
 func (c *customSortCursor) Close() error {
+	if !c.closed && c.chargedBytes > 0 {
+		c.st.ReleaseMemory(c.chargedBytes)
+		c.chargedBytes = 0
+	}
 	c.closed = true
 	return c.inner.Close()
 }

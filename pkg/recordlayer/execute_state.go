@@ -86,6 +86,21 @@ func (s *ExecuteState) ChargeMemory(n int64) error {
 	return nil
 }
 
+// ReleaseMemory returns n previously ChargeMemory'd bytes to the statement
+// budget. The budget bounds LIVE buffered bytes: a buffer that outlives its
+// cursor by round-tripping through a continuation is re-charged at resume
+// injection, so the producing cursor must release its charges at teardown —
+// otherwise a multi-page statement re-accounts the same buffer once per page
+// and a compliant query trips the limit merely by crossing page boundaries.
+// Callers release exactly what they charged; nil receiver / no budget is a
+// no-op mirroring ChargeMemory.
+func (s *ExecuteState) ReleaseMemory(n int64) {
+	if s == nil || s.memLimit <= 0 {
+		return
+	}
+	s.memUsed -= n
+}
+
 // MemoryLimitExceededError is returned when a statement's accounted in-memory
 // buffering exceeds the statement-wide memory byte budget (RFC-130). It is a
 // per-statement resource-limit error in the same family as the scan/byte/time

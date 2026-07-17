@@ -291,3 +291,47 @@ func TestResumedSortBufferChargesMemory(t *testing.T) {
 		t.Fatalf("resumed over-budget buffer must trip the memory limit, got %v", err)
 	}
 }
+
+// TestResumedSortBufferReleasesOnPageTeardown pins the statement-wide half of
+// the RFC-180 H4 contract: the budget bounds LIVE buffered bytes. Relational
+// pagination reuses ONE ExecuteState across every page of a statement, and
+// each page's teardown (cursor Close) must release what that page's sort
+// cursor charged — otherwise every resume re-accounts the same buffer against
+// the shared counter and a query whose buffer FITS the budget fails with
+// MemoryLimitExceededError merely for crossing enough page boundaries.
+func TestResumedSortBufferReleasesOnPageTeardown(t *testing.T) {
+	t.Parallel()
+	buf := make([]QueryResult, 8)
+	var bufBytes int64
+	for i := range buf {
+		buf[i] = QueryResult{Positional: &PositionalRow{
+			Type:  positionalTypeFromNames([]string{"A"}),
+			Slots: []any{string(make([]byte, 64))},
+		}}
+		bufBytes += estimateQueryResultBytes(buf[i])
+	}
+	cont, err := encodeSortContinuation(nil, buf, true)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	plan := plans.NewRecordQueryInMemorySortPlan(
+		plans.NewRecordQueryValuesPlan(nil),
+		[]plans.SortKey{{Field: "A", ValueExpr: values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)}},
+	)
+	// Budget fits the buffer once but NOT twice: any page-to-page charge leak
+	// trips the limit on the second resume.
+	state := recordlayer.NewExecuteState(bufBytes + bufBytes/2)
+	props := recordlayer.ExecuteProperties{State: state}
+	for page := 0; page < 3; page++ {
+		cursor, serr := executeInMemorySort(context.Background(), plan, nil, &EvaluationContext{}, cont, props)
+		if serr != nil {
+			t.Fatalf("page %d: an in-budget buffer resumed against the statement-wide state must not trip the limit: %v", page, serr)
+		}
+		if cerr := cursor.Close(); cerr != nil {
+			t.Fatalf("page %d: close: %v", page, cerr)
+		}
+	}
+	if used := state.MemUsed(); used != 0 {
+		t.Fatalf("after final page teardown all sort charges must be released, still holding %d bytes", used)
+	}
+}
