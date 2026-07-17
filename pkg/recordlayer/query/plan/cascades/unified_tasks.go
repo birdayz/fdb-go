@@ -197,6 +197,11 @@ func (t *TransformExprTask) Run(p *Planner) {
 
 	fireExprRule := func(expr expressions.RelationalExpression) {
 		bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), expr)
+		// Java's per-rule-call match cap (see TransformImplTask).
+		if p.MaxNumMatchesPerRuleCall > 0 && len(bindings) > p.MaxNumMatchesPerRuleCall {
+			p.capErr = ErrPlannerRuleMatchCapHit
+			return
+		}
 		for _, b := range bindings {
 			call := &ExpressionRuleCall{
 				Bindings:    b,
@@ -284,6 +289,13 @@ func (t *TransformImplTask) Run(p *Planner) {
 		return
 	}
 	bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), t.Expr)
+	// Java CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded: one rule
+	// invocation producing more matches than the bound is a complexity
+	// blow-up; throw (here: capErr — tasks have no error channel).
+	if p.MaxNumMatchesPerRuleCall > 0 && len(bindings) > p.MaxNumMatchesPerRuleCall {
+		p.capErr = ErrPlannerRuleMatchCapHit
+		return
+	}
 	for _, b := range bindings {
 		call := &ImplementationRuleCall{
 			Bindings:    b,

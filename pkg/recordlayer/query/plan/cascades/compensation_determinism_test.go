@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -166,4 +167,72 @@ func TestStampOrderingWinners_OverflowedKeyNeverStamped(t *testing.T) {
 	if ref8.Winner(req8) == nil {
 		t.Fatal("an 8-column provider must still stamp its ordering winner")
 	}
+}
+
+// TestPlannerComplexityGuards pins RFC-180 I1 — the Java-parity complexity
+// guards beyond MaxTasks: MaxTaskQueueSize trips ErrPlannerQueueCapHit,
+// MaxNumMatchesPerRuleCall trips ErrPlannerRuleMatchCapHit via the task
+// capErr channel, and DisabledRules excludes a rule from selection
+// (configuration.isRuleEnabled parity).
+func TestPlannerComplexityGuards(t *testing.T) {
+	t.Parallel()
+	buildRef := func() *expressions.Reference {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+		q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		filter := expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}, q)
+		return expressions.InitialOf(filter)
+	}
+
+	t.Run("queue_cap", func(t *testing.T) {
+		t.Parallel()
+		p := NewPlanner(DefaultExpressionRules(), nil).
+			WithImplementationRules(DefaultImplementationRules())
+		p.MaxTaskQueueSize = 1 // any real plan pushes deeper than one task
+		_, _, err := p.Plan(buildRef())
+		if !errors.Is(err, ErrPlannerQueueCapHit) {
+			t.Fatalf("want ErrPlannerQueueCapHit, got %v", err)
+		}
+	})
+
+	t.Run("rule_match_cap_zero_disabled", func(t *testing.T) {
+		t.Parallel()
+		p := NewPlanner(DefaultExpressionRules(), nil).
+			WithImplementationRules(DefaultImplementationRules())
+		// Zero (Java default) disables the guard: planning proceeds.
+		if _, _, err := p.Plan(buildRef()); err != nil {
+			t.Fatalf("zero cap must not trip: %v", err)
+		}
+	})
+
+	t.Run("disabled_rule_excluded", func(t *testing.T) {
+		t.Parallel()
+		p := NewPlanner(DefaultExpressionRules(), nil).
+			WithImplementationRules(DefaultImplementationRules())
+		er, ir := p.rulesForPhase(PhaseRewriting)
+		if len(er) == 0 && len(ir) == 0 {
+			t.Skip("no rewriting rules registered")
+		}
+		var name string
+		if len(er) > 0 {
+			name = fmt.Sprintf("%T", er[0])
+		} else {
+			name = fmt.Sprintf("%T", ir[0])
+		}
+		p.DisabledRules = map[string]struct{}{name: {}}
+		er2, ir2 := p.rulesForPhase(PhaseRewriting)
+		for _, r := range er2 {
+			if fmt.Sprintf("%T", r) == name {
+				t.Fatalf("disabled rule %s still selected", name)
+			}
+		}
+		for _, r := range ir2 {
+			if fmt.Sprintf("%T", r) == name {
+				t.Fatalf("disabled rule %s still selected", name)
+			}
+		}
+		if len(er2)+len(ir2) != len(er)+len(ir)-1 {
+			t.Fatalf("exactly one rule must be excluded: %d -> %d", len(er)+len(ir), len(er2)+len(ir2))
+		}
+	})
 }

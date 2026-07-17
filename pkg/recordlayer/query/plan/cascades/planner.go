@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -62,6 +63,27 @@ type Planner struct {
 	// the cap is a strong signal of a non-terminating rule — callers
 	// should report.
 	MaxTasks int
+
+	// MaxTaskQueueSize caps the task stack's depth; 0 disables (Java
+	// RecordQueryPlannerConfiguration.getMaxTaskQueueSize default). Hitting
+	// it returns ErrPlannerQueueCapHit — Java throws
+	// RecordQueryPlanComplexityException("Maximum task queue size...").
+	MaxTaskQueueSize int
+
+	// MaxNumMatchesPerRuleCall caps the bindings one rule invocation may
+	// produce; 0 disables (Java default). Hitting it returns
+	// ErrPlannerRuleMatchCapHit via the task-level capErr channel.
+	MaxNumMatchesPerRuleCall int
+
+	// DisabledRules holds rule type names (fmt %T spelling) excluded from
+	// selection — Java's PlannerRuleSet filtering via
+	// configuration.isRuleEnabled(rule). nil/empty = all rules enabled.
+	DisabledRules map[string]struct{}
+
+	// capErr carries a complexity-guard trip raised inside a task (tasks
+	// have no error channel — Java throws instead); the Plan loop checks
+	// it after every task.
+	capErr error
 
 	tasksRun int
 
@@ -219,9 +241,15 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 		if p.tasksRun >= p.MaxTasks {
 			return nil, p.tasksRun, ErrPlannerCapHit
 		}
+		if p.MaxTaskQueueSize > 0 && len(p.stack) > p.MaxTaskQueueSize {
+			return nil, p.tasksRun, ErrPlannerQueueCapHit
+		}
 		task := p.pop()
 		task.Run(p)
 		p.tasksRun++
+		if p.capErr != nil {
+			return nil, p.tasksRun, p.capErr
+		}
 	}
 
 	// After the task-stack drains, each Reference's FinalMembers has
@@ -256,6 +284,14 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 // non-termination indicator and report.
 var ErrPlannerCapHit = plannerErr("planner: MaxTasks cap hit before convergence")
 
+// ErrPlannerQueueCapHit mirrors Java's "Maximum task queue size was exceeded"
+// RecordQueryPlanComplexityException (CascadesPlanner.isTaskQueueSizeExceeded).
+var ErrPlannerQueueCapHit = plannerErr("planner: MaxTaskQueueSize cap hit — task queue exceeded the configured bound")
+
+// ErrPlannerRuleMatchCapHit mirrors Java's "Maximum number of matches per rule
+// call has been exceeded" (CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded).
+var ErrPlannerRuleMatchCapHit = plannerErr("planner: MaxNumMatchesPerRuleCall cap hit — one rule invocation produced more matches than the configured bound")
+
 // plannerErr is a string-error type local to the planner.
 type plannerErr string
 
@@ -279,14 +315,36 @@ func (p *Planner) pop() Task {
 // rulesForPhase returns the expression and implementation rules for the
 // given planner phase.
 func (p *Planner) rulesForPhase(phase PlannerPhase) ([]ExpressionRule, []ImplementationRule) {
+	var er []ExpressionRule
+	var ir []ImplementationRule
 	switch phase {
 	case PhaseRewriting:
-		return p.rules, p.rewritingImplRules
+		er, ir = p.rules, p.rewritingImplRules
 	case PhasePlanning:
-		return p.planningExpressionRules, p.implementationRules
+		er, ir = p.planningExpressionRules, p.implementationRules
 	default:
 		return nil, nil
 	}
+	// Java's configuration.isRuleEnabled filtering (PlannerRuleSet.getRules
+	// passes the predicate): a rule named in DisabledRules is never
+	// selected. Keyed by the concrete type's %T spelling — the Go analog of
+	// Java's rule class.
+	if len(p.DisabledRules) > 0 {
+		fe := er[:0:0]
+		for _, r := range er {
+			if _, off := p.DisabledRules[fmt.Sprintf("%T", r)]; !off {
+				fe = append(fe, r)
+			}
+		}
+		fi := ir[:0:0]
+		for _, r := range ir {
+			if _, off := p.DisabledRules[fmt.Sprintf("%T", r)]; !off {
+				fi = append(fi, r)
+			}
+		}
+		return fe, fi
+	}
+	return er, ir
 }
 
 // costModelForPhase returns the cost model comparator for the given phase.
