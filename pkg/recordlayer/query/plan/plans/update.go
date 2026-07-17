@@ -65,8 +65,9 @@ func (p *RecordQueryUpdatePlan) GetChildren() []RecordQueryPlan {
 // Count-only comparison made `SET a=1` ≡ `SET a=2` on the write path — a
 // memo collapse that executes the WRONG update. Transforms are canonicalised
 // sorted by FieldPath at construction (UpdateExpression), so pairwise
-// comparison is order-stable. Java's targetType/coercionTrie have no Go
-// counterpart yet (no coercion trie); they join identity when they land.
+// comparison is order-stable. Java's targetType/coercionTrie/
+// computationValue have no Go counterpart yet; they join identity when
+// they land.
 func (p *RecordQueryUpdatePlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryUpdatePlan)
 	if !ok {

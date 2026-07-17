@@ -152,8 +152,20 @@ func PredicateEquals(a, b QueryPredicate) bool {
 		// `IsNull{Operand: nil}` and `IsNull{Operand: LiteralValue(nil)}`
 		// are semantically equivalent and must compare equal even
 		// though their Operand fields differ structurally.
+		// ParameterName joins identity: `x = $a` and `x = $b` read
+		// DIFFERENT runtime bindings — they are distinct predicates.
+		// The text-search comparand fields join for the same reason two
+		// TEXT_CONTAINS over one field differing only in tokenizer /
+		// analyzer / distance / strict-prefix read different results
+		// (the comparisonEqual rationale in plans/semantic_identity.go,
+		// applied at the predicate layer).
 		if ap.Comparison.Type != bp.Comparison.Type ||
 			ap.Comparison.Escape != bp.Comparison.Escape ||
+			ap.Comparison.ParameterName != bp.Comparison.ParameterName ||
+			ap.Comparison.TextTokenizerName != bp.Comparison.TextTokenizerName ||
+			ap.Comparison.TextAnalyzerName != bp.Comparison.TextAnalyzerName ||
+			ap.Comparison.TextMaxDistance != bp.Comparison.TextMaxDistance ||
+			ap.Comparison.TextStrictPrefix != bp.Comparison.TextStrictPrefix ||
 			!valueNamesEqual(ap.Operand, bp.Operand) {
 			return false
 		}

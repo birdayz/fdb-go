@@ -34,10 +34,25 @@ func writeSemanticHash(h io.Writer, p QueryPredicate) {
 		_, _ = io.WriteString(h, "vp:"+strconv.FormatUint(values.SemanticHashCode(t.Value), 16))
 	case *ComparisonPredicate:
 		// Escape IS a discriminator (equality compares it, e.g. LIKE … ESCAPE).
+		// The text-search comparand fields fold because both equality layers
+		// compare them (see PredicateEquals). Length-delimit the strings so
+		// "ab"+"c" cannot collide with "a"+"bc".
 		_, _ = io.WriteString(h, "cp:"+strconv.Itoa(int(t.Comparison.Type))+":"+t.Comparison.ParameterName+":"+string(t.Comparison.Escape)+":")
+		_, _ = io.WriteString(h, strconv.Itoa(len(t.Comparison.TextTokenizerName))+":"+t.Comparison.TextTokenizerName+":")
+		_, _ = io.WriteString(h, strconv.Itoa(len(t.Comparison.TextAnalyzerName))+":"+t.Comparison.TextAnalyzerName+":")
+		_, _ = io.WriteString(h, strconv.Itoa(t.Comparison.TextMaxDistance)+":")
+		_, _ = io.WriteString(h, strconv.FormatBool(t.Comparison.TextStrictPrefix)+":")
 		_, _ = io.WriteString(h, strconv.FormatUint(values.SemanticHashCode(t.Operand), 16))
 		_, _ = io.WriteString(h, "/")
-		_, _ = io.WriteString(h, strconv.FormatUint(values.SemanticHashCode(t.Comparison.Operand), 16))
+		// Unary comparisons (IS [NOT] NULL) ignore Comparison.Operand at Eval
+		// time and BOTH equality layers treat nil and Literal(nil) operands as
+		// equivalent — folding the operand hash here split equal predicates
+		// across buckets (equal⟹same-hash violation). Fold a fixed token.
+		if t.Comparison.Type.IsUnary() {
+			_, _ = io.WriteString(h, "u")
+		} else {
+			_, _ = io.WriteString(h, strconv.FormatUint(values.SemanticHashCode(t.Comparison.Operand), 16))
+		}
 	case *ExistentialValuePredicate:
 		// QuantifiedObjectValue operand's alias EXCLUDED — alias-invariant.
 		// The operand's value hash (qov tag, alias-free) folds in too.
