@@ -83,6 +83,13 @@ func (p *RecordQueryPredicatesFilterPlan) EqualsWithoutChildren(other RecordQuer
 	if !ok {
 		return false
 	}
+	// innerAlias is identity: it is the correlation the predicates resolve
+	// the current row under, so two filters differing only in binding alias
+	// evaluate differently and must not collapse into one memo group (the
+	// same field-class as the NLJ/FlatMap outer/inner aliases).
+	if p.innerAlias != o.innerAlias {
+		return false
+	}
 	if len(p.predicates) != len(o.predicates) {
 		return false
 	}
@@ -102,6 +109,8 @@ func (p *RecordQueryPredicatesFilterPlan) EqualsWithoutChildren(other RecordQuer
 func (p *RecordQueryPredicatesFilterPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("predicatesfilterplan|"))
+	h.Write([]byte(p.innerAlias.Name()))
+	h.Write([]byte{0})
 	var buf [8]byte
 	for _, pr := range p.predicates {
 		binary.BigEndian.PutUint64(buf[:], predicates.SemanticHashCode(pr))

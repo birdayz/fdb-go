@@ -1553,8 +1553,9 @@ func compareValues(a, b any) int {
 	}
 	// Should-never-happen fallback: every type the row domain can carry (nil,
 	// int64/int32, float64/float32, string, []byte, [16]byte, bool) has a typed
-	// arm above, so for a well-typed query this is only reachable by a NaN sort
-	// key or a cross-type mismatch the planner's type checking excludes. It
+	// arm above (the float arms totally order NaN), so for a well-typed query
+	// this is only reachable by a cross-type mismatch the planner's type
+	// checking excludes. It
 	// compares fmt.Sprintf("%v") strings LEXICALLY, which is NOT tuple order for
 	// anything numeric or binary — a typed arm must be added for any new row
 	// type before it can be sorted/merged. No error channel exists here
