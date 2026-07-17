@@ -7595,15 +7595,6 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 	return alias, nil
 }
 
-// resolveCorrelatedColumnValue resolves a (possibly alias-qualified) column
-// name to a Value through the semantic scope — the same resolution the
-// correlated WHERE clause uses. With a single inner source the scope returns a
-// bare FieldValue (matching the bare keys a single scan flows); with joins the
-// merged rows carry alias-qualified keys, so use the qualified FieldValue, as
-// the top-level projection path does (logical_predicate.go ResolveIdentifier
-// branch). A genuinely unresolvable column (single-source path) returns the
-// resolver error so the caller can reject — silently falling back to a raw
-// FieldValue would group every row under a null key (wrong results).
 // resolveCorrelatedColumnValueStructured resolves a structured group key —
 // segments come from the parse tree, never a re-parse of the display text.
 func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical.GroupKey, hasJoins bool) (values.Value, error) {
@@ -7623,6 +7614,15 @@ func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical
 	return resolver.ResolveIdentifier(qualifier, semantic.NewUnquoted(bare))
 }
 
+// resolveCorrelatedColumnValue resolves a (possibly alias-qualified) column
+// name to a Value through the semantic scope — the same resolution the
+// correlated WHERE clause uses. With a single inner source the scope returns a
+// bare FieldValue (matching the bare keys a single scan flows); with joins the
+// merged rows carry alias-qualified keys, so use the qualified FieldValue, as
+// the top-level projection path does (logical_predicate.go ResolveIdentifier
+// branch). A genuinely unresolvable column (single-source path) returns the
+// resolver error so the caller can reject — silently falling back to a raw
+// FieldValue would group every row under a null key (wrong results).
 func resolveCorrelatedColumnValue(resolver *expr.Resolver, col string, hasJoins bool) (values.Value, error) {
 	if hasJoins {
 		// Merged join rows carry alias-qualified keys; use the qualified name

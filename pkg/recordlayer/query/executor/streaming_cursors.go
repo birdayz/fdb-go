@@ -1038,6 +1038,7 @@ type nljCursor struct {
 	resumeInnerIdx     int
 	resumeOuterMatched bool
 	resumeCheck        []byte
+	resumeInnerPK      []byte
 
 	// FULL OUTER JOIN drain state. matchedInner[i] is set when
 	// innerRows[i] passes the join predicates against any outer row;
@@ -1481,6 +1482,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					w.innerIdx = c.resumeInnerIdx
 					w.outerMatched = c.resumeOuterMatched
 					w.checkValue = c.resumeCheck
+					w.innerPK = c.resumeInnerPK
 				}
 				res := recordlayer.NewResultNoNext[QueryResult](reason, w)
 				c.lastNoNext = &res
@@ -1545,7 +1547,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					// (duplicate rows). Never an error either way.
 				} else {
 					c.resumePending = false
-					c.innerIdx = c.resumeInnerIdx
+					c.innerIdx = c.repositionInner(c.resumeInnerIdx, c.resumeInnerPK)
 					c.outerMatched = c.resumeOuterMatched
 				}
 			}
@@ -1708,6 +1710,11 @@ func (c *nljCursor) midInnerContinuation() recordlayer.RecordCursorContinuation 
 	if c.currentOuter != nil && c.currentOuter.PrimaryKey != nil {
 		w.checkValue = c.currentOuter.PrimaryKey.Pack()
 	}
+	// The just-emitted inner row (innerIdx already advanced past it): its PK
+	// keys the resume position against inner-side drift.
+	if idx, ok := c.lastEmittedInnerIndex(); ok && c.innerRows[idx].PrimaryKey != nil {
+		w.innerPK = c.innerRows[idx].PrimaryKey.Pack()
+	}
 	return w
 }
 
@@ -1729,6 +1736,13 @@ type nljContinuation struct {
 	innerIdx     int
 	outerMatched bool
 	fullOuter    bool // FULL OUTER marker — every FULL emission; rejects loudly on decode
+	// innerPK: the last-emitted inner row's packed primary key. The ordinal
+	// inner position is a SNAPSHOT index; the PK makes the resume
+	// key-positional like Java's inner-cursor continuation — a re-collected
+	// inner that shifted (row inserted/removed before the position) is
+	// repositioned by PK search, with the ordinal as the last-resort
+	// fallback. Empty for computed inner rows without a PK.
+	innerPK []byte
 }
 
 func (w *nljContinuation) IsEnd() bool { return false }
@@ -1762,7 +1776,7 @@ func (w *nljContinuation) ToBytes() ([]byte, error) {
 		if w.outerMatched {
 			matched = 1
 		}
-		fmc.InnerContinuation = tuple.Tuple{int64(w.innerIdx), matched, int64(nljKindMidInner)}.Pack()
+		fmc.InnerContinuation = tuple.Tuple{int64(w.innerIdx), matched, int64(nljKindMidInner), w.innerPK}.Pack()
 	case len(fmc.OuterContinuation) == 0 && len(fmc.CheckValue) == 0:
 		// Advanced-outer envelope with nothing to restore: never emit an
 		// empty token — mark the position unresumable so a resume declines
@@ -1772,11 +1786,74 @@ func (w *nljContinuation) ToBytes() ([]byte, error) {
 	return proto.Marshal(fmc)
 }
 
+// lastEmittedInnerIndex returns the innerRows index of the row the cursor
+// just emitted: hash path — innerMatches[innerIdx-1]; linear — innerIdx-1.
+func (c *nljCursor) lastEmittedInnerIndex() (int, bool) {
+	if c.innerIdx <= 0 {
+		return 0, false
+	}
+	if c.hashIndex != nil {
+		if c.innerIdx-1 < len(c.innerMatches) {
+			return c.innerMatches[c.innerIdx-1], true
+		}
+		return 0, false
+	}
+	if c.innerIdx-1 < len(c.innerRows) {
+		return c.innerIdx - 1, true
+	}
+	return 0, false
+}
+
+// repositionInner turns the saved inner position into an index over the
+// re-collected inner. Fast path: the ordinal still points just past the saved
+// PK — indices are stable. Otherwise the inner shifted between transactions;
+// search for the PK (over the recomputed match list on the hash path) and
+// resume AFTER it, exactly what Java's key-positional inner-cursor
+// continuation yields. A vanished PK (row deleted) keeps the ordinal — the
+// documented best-effort residue, no worse than the pure-ordinal model.
+func (c *nljCursor) repositionInner(savedIdx int, savedPK []byte) int {
+	if len(savedPK) == 0 || savedIdx <= 0 {
+		return savedIdx
+	}
+	rowPK := func(pos int) []byte {
+		var idx int
+		if c.hashIndex != nil {
+			if pos >= len(c.innerMatches) {
+				return nil
+			}
+			idx = c.innerMatches[pos]
+		} else {
+			if pos >= len(c.innerRows) {
+				return nil
+			}
+			idx = pos
+		}
+		if c.innerRows[idx].PrimaryKey == nil {
+			return nil
+		}
+		return c.innerRows[idx].PrimaryKey.Pack()
+	}
+	if pk := rowPK(savedIdx - 1); pk != nil && bytes.Equal(pk, savedPK) {
+		return savedIdx
+	}
+	limit := len(c.innerRows)
+	if c.hashIndex != nil {
+		limit = len(c.innerMatches)
+	}
+	for pos := 0; pos < limit; pos++ {
+		if pk := rowPK(pos); pk != nil && bytes.Equal(pk, savedPK) {
+			return pos + 1
+		}
+	}
+	return savedIdx
+}
+
 // nljResumeState is the decoded mid-inner half of an NLJ page continuation.
 type nljResumeState struct {
 	innerIdx     int
 	outerMatched bool
 	check        []byte
+	innerPK      []byte
 }
 
 // decodeNLJContinuation parses NLJ page-continuation bytes (the
@@ -1807,7 +1884,7 @@ func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resum
 		return fmc.GetOuterContinuation(), nil, nil
 	}
 	tup, terr := tuple.Unpack(fmc.GetInnerContinuation())
-	if terr != nil || len(tup) != 3 {
+	if terr != nil || len(tup) < 3 || len(tup) > 4 {
 		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
 	}
 	idx, iok := tup[0].(int64)
@@ -1815,6 +1892,14 @@ func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resum
 	kind, kok := tup[2].(int64)
 	if !iok || !mok || !kok || idx < 0 {
 		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
+	}
+	var innerPK []byte
+	if len(tup) == 4 && tup[3] != nil {
+		pk, pkOK := tup[3].([]byte)
+		if !pkOK {
+			return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
+		}
+		innerPK = pk
 	}
 	switch kind {
 	case nljKindMidInner:
@@ -1829,6 +1914,7 @@ func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resum
 		innerIdx:     int(idx),
 		outerMatched: matched != 0,
 		check:        fmc.GetCheckValue(),
+		innerPK:      innerPK,
 	}, nil
 }
 
@@ -1852,6 +1938,7 @@ func (c *nljCursor) armResume(outerContinuation []byte, rs *nljResumeState) {
 	c.resumeInnerIdx = rs.innerIdx
 	c.resumeOuterMatched = rs.outerMatched
 	c.resumeCheck = rs.check
+	c.resumeInnerPK = rs.innerPK
 }
 
 func (c *nljCursor) Close() error {

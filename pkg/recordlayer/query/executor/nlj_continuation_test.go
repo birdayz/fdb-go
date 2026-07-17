@@ -405,6 +405,58 @@ func TestNLJContinuation_ArmedStateAppliesToLaterMatchingRow(t *testing.T) {
 	}
 }
 
+// TestNLJContinuation_KeyPositionalInnerResume pins the key-positional inner
+// position: the saved ordinal is a SNAPSHOT index, so an inner row inserted
+// BEFORE the position between transactions shifts it — the resume must
+// reposition by the saved inner PK (Java's inner-cursor continuation is
+// key-positional through its scan) and emit exactly the unemitted pairs,
+// never a duplicate of the last-delivered pair or a skipped one.
+func TestNLJContinuation_KeyPositionalInnerResume(t *testing.T) {
+	t.Parallel()
+	outers := nljTestRows("K", 1)
+	inners := nljTestRows("J", 3)
+	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nil)
+	fullKeys, conts := drainNLJ(t, full)
+	if len(fullKeys) != 3 {
+		t.Fatalf("fixture: %d rows", len(fullKeys))
+	}
+
+	// Split after pair 2 (inner J1 emitted; saved ordinal 2, saved PK J1).
+	outerCont, rs, derr := decodeNLJContinuation(conts[1])
+	if derr != nil {
+		t.Fatalf("decode: %v", derr)
+	}
+	if rs == nil || len(rs.innerPK) == 0 {
+		t.Fatalf("mid-inner state must carry the inner PK, got %+v", rs)
+	}
+
+	// Insert a NEW inner row at the FRONT: ordinal 2 now points at J1 (the
+	// already-delivered row) — a pure-ordinal resume would re-emit it.
+	x := dmap(map[string]any{"J": int64(99)})
+	x.PrimaryKey = tuple.Tuple{"J", int64(99)}
+	shifted := append([]QueryResult{x}, inners...)
+	resumed := nljTestCursor(t, recordlayer.FromListWithContinuation(outers, outerCont), shifted, plans.JoinInner, nil)
+	resumed.armResume(outerCont, rs)
+	gotKeys, _ := drainNLJ(t, resumed)
+	// After J1 in the shifted list comes only J2: exactly one row.
+	if len(gotKeys) != 1 || gotKeys[0] != fullKeys[2] {
+		t.Fatalf("key-positional resume must emit exactly the unemitted suffix after the saved PK, got %v (want [%v])",
+			gotKeys, fullKeys[2])
+	}
+
+	// Deleted-PK fallback: the saved row vanished — the ordinal is the
+	// documented best-effort residue (no repositioning possible).
+	without := []QueryResult{inners[0], inners[2]} // J1 deleted
+	resumed2 := nljTestCursor(t, recordlayer.FromListWithContinuation(outers, outerCont), without, plans.JoinInner, nil)
+	resumed2.armResume(outerCont, rs)
+	got2, _ := drainNLJ(t, resumed2)
+	if len(got2) != 0 {
+		// ordinal 2 over a 2-row list = past the end → no rows; pin the
+		// fallback's exact best-effort shape so a change is deliberate.
+		t.Fatalf("deleted-PK fallback: ordinal best-effort expected 0 rows, got %v", got2)
+	}
+}
+
 // TestNLJContinuation_UnresumableOuterDeclines pins the zero-length-token
 // corner: a LEFT NLJ over an outer that yields NO continuation bytes (a
 // FirstOrDefault-style single-result cursor) emits its advanced-outer
