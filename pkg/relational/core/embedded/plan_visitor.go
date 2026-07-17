@@ -1466,6 +1466,11 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 	// columns before source columns, so `SELECT id AS v … GROUP BY id, v
 	// ORDER BY v` sorts by id (the alias), not the hidden group key v.
 	rebaseToInternal := func(name string) string {
+		// Output aliases bind BARE identifiers only: a QUALIFIED key
+		// (`ORDER BY d.x`) names the source column, never the SELECT alias.
+		if strings.Contains(name, ".") {
+			return name
+		}
 		for i, al := range deferredStripAliases {
 			if al != "" && strings.EqualFold(al, name) && i < len(deferredStripProj) {
 				return deferredStripProj[i]
@@ -1556,7 +1561,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 				continue
 			}
 			seenOrderCols[key] = true
-			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf})
+			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, Qualified: strings.Contains(colName, ".")})
 		} else {
 			// Expression ORDER BY — use canonical text to get
 			// proper spacing (GetText concatenates without whitespace).

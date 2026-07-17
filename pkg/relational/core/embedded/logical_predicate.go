@@ -5511,10 +5511,14 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	}
 	for i := range sort.Keys {
 		upper := strings.ToUpper(sort.Keys[i].Expr)
-		if real, ok := aliasToCol[upper]; ok {
+		// Output aliases bind BARE identifiers only (SortKey.Qualified):
+		// a qualified key's Expr is already qualifier-stripped, so without
+		// the flag `ORDER BY d.x` would bind a same-named SELECT alias and
+		// silently mis-sort.
+		if real, ok := aliasToCol[upper]; ok && !sort.Keys[i].Qualified {
 			sort.Keys[i].Expr = real
 		}
-		if idx, ok := aliasToIdx[upper]; ok && proj != nil {
+		if idx, ok := aliasToIdx[upper]; ok && proj != nil && !sort.Keys[i].Qualified {
 			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
 				sort.Keys[i].Value = proj.ProjectedValues[idx]
 			}

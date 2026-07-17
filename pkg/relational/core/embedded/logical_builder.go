@@ -542,8 +542,15 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				ob.pos = 0
 				continue
 			}
+			// Output aliases bind BARE identifiers only: a QUALIFIED key
+			// (`ORDER BY d.x`) names the source column, never the SELECT
+			// alias — stripping the qualifier before matching rebased
+			// d.x onto a same-named alias and silently mis-sorted.
+			if strings.Contains(ob.colName, ".") {
+				continue
+			}
 			for j, al := range sq.postSortStripAliases {
-				if al != "" && strings.EqualFold(al, strip(ob.colName)) && j < len(sq.postSortStripProj) {
+				if al != "" && strings.EqualFold(al, ob.colName) && j < len(sq.postSortStripProj) {
 					ob.colName = sq.postSortStripProj[j]
 					break
 				}
@@ -565,7 +572,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			if ob.nullsFirst != nil {
 				nullsFirst = *ob.nullsFirst
 			}
-			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst})
+			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Qualified: strings.Contains(ob.colName, ".")})
 		}
 		op = logical.NewSort(op, keys)
 	}

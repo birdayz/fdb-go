@@ -95,3 +95,11 @@ tests:
       - ['Bob']
       - ['Alice']
       - ['Alice']
+  # A QUALIFIED ORDER BY key names the source column, never the SELECT
+  # alias — d.x must sort by the derived column x (game), not rebase onto
+  # the alias x (player). Buggy alias-binding returns Charlie (player DESC).
+  - query: |-
+      SELECT player AS x FROM (SELECT player, game AS x FROM scores) d
+      GROUP BY player, x ORDER BY d.x DESC, player ASC LIMIT 1
+    rows:
+      - ['Alice']
