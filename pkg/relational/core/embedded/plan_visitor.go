@@ -1465,12 +1465,13 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 	// alias is checked FIRST — SQL resolves ORDER BY names against output
 	// columns before source columns, so `SELECT id AS v … GROUP BY id, v
 	// ORDER BY v` sorts by id (the alias), not the hidden group key v.
-	rebaseToInternal := func(name string, qualified bool) string {
-		// Output aliases bind BARE identifiers only: a QUALIFIED key
-		// (`ORDER BY d.x`) names the source column, never the SELECT alias.
-		// Qualification is the parse tree's segment count, not dots in the
-		// name: a delimited identifier may contain a dot ("x.y").
-		if qualified {
+	rebaseToInternal := func(name string, bareRef bool) string {
+		// Output aliases bind BARE one-segment identifiers only: a
+		// qualified key (`d.x`) or an aggregate/computed key names source
+		// data, never the SELECT alias. The parse tree decides (bareRef),
+		// not the name text — delimited aliases can spell "x.y" or
+		// "SUM(S)".
+		if !bareRef {
 			return name
 		}
 		for i, al := range deferredStripAliases {
@@ -1548,9 +1549,9 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		// Prefer plain column / aggregate lookup.
 		colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 		if nameErr == nil {
-			qualified := exprIsQualifiedColumn(obExpr.Expression())
+			bareRef := exprIsBareColumnRef(obExpr.Expression())
 			if len(deferredStripProj) > 0 {
-				colName = rebaseToInternal(colName, qualified)
+				colName = rebaseToInternal(colName, bareRef)
 			}
 			// Resolve GROUP BY alias (`ORDER BY z` where `GROUP BY
 			// x.col1 AS z`) to the underlying column before building
@@ -1564,7 +1565,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 				continue
 			}
 			seenOrderCols[key] = true
-			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, Qualified: qualified})
+			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, BareRef: bareRef})
 		} else {
 			// Expression ORDER BY — use canonical text to get
 			// proper spacing (GetText concatenates without whitespace).

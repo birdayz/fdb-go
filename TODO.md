@@ -1395,6 +1395,19 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 
 # NEXT
 
+> ## [ ] RFC-180 follow-up — output-label collision mis-binds sort keys over the IMMEDIATE reshaping strip (pre-existing)
+> `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC`
+> sorts by PLAYER (the aliased column), not the aggregate: the sort sits ABOVE the reshaping projection
+> whose output row carries a column literally labeled `SUM(SCORE)` (the delimited alias), and both
+> `upgradeSortKeyValues`' colToIdx text match and translateSort's aggProjFields name-fallback bind the
+> aggregate key to that colliding label by NAME. Fails identically on pre-RFC-180 master (verified at
+> 58ee9daa7) — a translator field-naming ambiguity, NOT a regression: `postAggregateProjectionFields`
+> names fields alias-preferred, so a rendered-item key and a same-spelled alias are indistinguishable
+> at bind time. Fix direction: positional identity for reshaping-projection outputs (carry the slot,
+> match rendered-item text against PROJECTION text and alias text only for SortKey.BareRef keys —
+> the same split RFC-180 round 14 pinned for the DEFERRED strip). The deferred-strip variant IS fixed
+> and pinned (aggregate_order_by_java "SUM(S.SCORE)" collision pin).
+
 > ## [ ] INFRA — scheduled nightlies dispatch HOURS late ("nightly" fuzz runs at noon)
 > The Nightly Fuzz (`cron: 17 3 * * *`, moved to `17 4` = 4:17 AM UTC) consistently *runs* mid-day,
 > not at night: GitHub CREATES the scheduled run ~4-5 h after the cron (07:04 on 06-30, 07:50 on 07-01),
@@ -2409,6 +2422,21 @@ each on its own stacked branch.
    so a live backend switch is impossible anyway). FDB-C-dev + Torvalds vetted; 11 codex rounds. (Was TODO-production P2.2.)
 
 ## Known gaps
+
+- **[RFC-180 follow-up, pre-existing] Output-alias vs rendered-item name collision
+  under the IMMEDIATE post-aggregate strip.** `SELECT player AS "SUM(SCORE)",
+  SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC` sorts by
+  the ALIASED player column, not the aggregate — fails identically on pre-RFC-180
+  master (verified at 58ee9daa7), so it is not a regression of the SortKey.BareRef
+  work (whose deferred-strip variant is pinned green in aggregate_order_by_java).
+  Root cause: the reshaping projection's output row carries alias-preferred column
+  NAMES, and both upgradeSortKeyValues' colToIdx and translateSort's flat-column
+  fallback bind sort keys BY NAME against that row — a delimited alias that spells
+  another item's canonical rendering shadows it. Fix direction: positional binding
+  (ordinal-baked ProjectedValues on the reshaping projection, and translateSort's
+  fallback matching PROJECTION texts rather than alias-preferred names). Needs its
+  own review cycle — translator field-naming surgery, not a gate tweak.
+
 
 ### [ ] query-engine (RFC-173, latent — surfaced by the 2-way EXISTS-in-ON review): F2-LEFT's isScanFamilyLeg is cteScope-BLIND — VERIFIED REACH, not silent-wrong (low priority)
 `isScanFamilyLeg` (cascades_translator.go:3185) is a syntactic Scan-through-Filter walk with NO cteScope

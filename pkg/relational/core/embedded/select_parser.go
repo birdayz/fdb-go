@@ -135,10 +135,12 @@ type joinClause struct {
 type orderByClause struct {
 	colName   string
 	ascending bool
-	// qualified: the column reference carried a source qualifier (`d.x`,
-	// ≥2 identifier segments in the parse tree). Output aliases bind BARE
-	// identifiers only, so alias-binding passes skip qualified keys.
-	qualified bool
+	// bareRef: the ORDER BY item is a plain ONE-segment column reference —
+	// the only shape SQL binds to an output alias. False for qualified
+	// references (`d.x`), aggregates, and computed expressions, whose
+	// canonical renderings may collide with a delimited alias; alias-
+	// binding passes require bareRef.
+	bareRef bool
 	// pos is the 1-indexed SELECT-list position for a POSITIONAL key
 	// (`ORDER BY 1`); 0 = not positional. A positional key IS an output
 	// ordinal by SQL definition — carrying it (instead of only the
@@ -363,12 +365,15 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 // columnNameFromExpr extracts a plain column name (or aggregate output name like
 // "COUNT(*)") from an IExpressionContext.
 // context is used in error messages (e.g. "SELECT expression", "ORDER BY expression").
-// exprIsQualifiedColumn reports whether expr is a plain column reference
-// with MORE THAN ONE identifier segment (`d.x`). Qualification comes from
-// the parse tree's segment count, never from dots in the JOINED name — a
-// delimited identifier can itself contain a dot (`AS "x.y"`), and after
-// FullIdToName strips the quotes the two are textually identical.
-func exprIsQualifiedColumn(expr antlrgen.IExpressionContext) bool {
+// exprIsBareColumnRef reports whether expr is a plain column reference
+// with exactly ONE identifier segment — the only shape SQL binds to an
+// output alias. Everything else (qualified `d.x`, aggregate or computed
+// expressions whose canonical rendering may collide with a delimited
+// alias) must never alias-bind. The decision comes from the parse tree,
+// never from the JOINED name text — a delimited identifier can itself
+// contain a dot or parentheses (`AS "x.y"`, `AS "SUM(S)"`), and after
+// FullIdToName strips the quotes the spellings are indistinguishable.
+func exprIsBareColumnRef(expr antlrgen.IExpressionContext) bool {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok || pred.Predicate() != nil {
 		return false
@@ -377,7 +382,7 @@ func exprIsQualifiedColumn(expr antlrgen.IExpressionContext) bool {
 	if !ok {
 		return false
 	}
-	return len(a.FullColumnName().FullId().AllUid()) > 1
+	return len(a.FullColumnName().FullId().AllUid()) == 1
 }
 
 func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (string, error) {
@@ -906,7 +911,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 						"duplicate column %q in ORDER BY", colName)
 				}
 				seenOrderCols[key] = true
-				cls.orderBy = append(cls.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression(), qualified: exprIsQualifiedColumn(obExpr.Expression())})
+				cls.orderBy = append(cls.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression(), bareRef: exprIsBareColumnRef(obExpr.Expression())})
 			} else {
 				cls.orderBy = append(cls.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
 			}

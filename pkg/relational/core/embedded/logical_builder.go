@@ -542,13 +542,13 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				ob.pos = 0
 				continue
 			}
-			// Output aliases bind BARE identifiers only: a QUALIFIED key
-			// (`ORDER BY d.x`) names the source column, never the SELECT
-			// alias — stripping the qualifier before matching rebased
-			// d.x onto a same-named alias and silently mis-sorted.
-			// Qualification is the parse tree's segment count, not dots in
-			// the name: a delimited identifier may contain a dot ("x.y").
-			if ob.qualified {
+			// Output aliases bind BARE one-segment identifiers only: a
+			// qualified key (`d.x`) or an aggregate/computed key
+			// (`SUM(s.score)`) names source data, never the SELECT alias —
+			// text matching rebased both onto same-spelled aliases and
+			// silently mis-sorted. The parse tree decides (bareRef), not
+			// the name text.
+			if !ob.bareRef {
 				continue
 			}
 			for j, al := range sq.postSortStripAliases {
@@ -574,7 +574,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			if ob.nullsFirst != nil {
 				nullsFirst = *ob.nullsFirst
 			}
-			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Qualified: ob.qualified})
+			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, BareRef: ob.bareRef})
 		}
 		op = logical.NewSort(op, keys)
 	}

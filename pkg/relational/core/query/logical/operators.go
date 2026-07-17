@@ -269,13 +269,14 @@ type SortKey struct {
 	// diverges for computed items whose canonical source text differs from the
 	// baked output spelling.
 	Pos int
-	// Qualified marks a key whose source text carried a table/source
-	// qualifier (`ORDER BY d.x`). SQL binds output aliases to BARE
-	// identifiers only, so alias-binding passes must skip qualified keys —
-	// Expr alone cannot carry this after the single-source qualifier is
-	// canonically stripped (`d.x` → `X`), and a stripped qualified key is
-	// indistinguishable from a bare alias reference.
-	Qualified bool
+	// BareRef marks a key whose source text is a plain ONE-segment column
+	// reference — the only shape SQL binds to an output alias. False for
+	// qualified references (`ORDER BY d.x`), aggregates and computed
+	// expressions: their canonical renderings ("X" after qualifier
+	// stripping, "SUM(S.SCORE)") are indistinguishable from a delimited
+	// alias's spelling, so alias-binding passes REQUIRE BareRef instead of
+	// inspecting Expr text.
+	BareRef bool
 }
 
 // LogicalSort sorts its child rows by the given keys.
