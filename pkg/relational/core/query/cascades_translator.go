@@ -7734,6 +7734,14 @@ func ValidateCTEAliasArities(op logical.LogicalOperator) error {
 			return err
 		}
 	}
+	// Attached subquery plans (EXISTS/scalar on filters, projections,
+	// HAVING, ON) are not Children() — a CTE declared inside one escaped
+	// the walk.
+	for _, sub := range logical.AttachedPlans(op) {
+		if err := ValidateCTEAliasArities(sub); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

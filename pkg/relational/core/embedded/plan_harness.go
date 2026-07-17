@@ -310,6 +310,9 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 		return nil, nil, err
 	}
 
+	if arityErr := query.ValidateCTEAliasArities(logicalOp); arityErr != nil {
+		return nil, nil, arityErr
+	}
 	ref, scalarSubqueryPlans, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
 	if translateErr != nil {
 		// Surface a specific translation error code (RFC-142: AT ordinality on a

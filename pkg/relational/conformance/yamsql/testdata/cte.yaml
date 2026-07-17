@@ -339,3 +339,20 @@ tests:
       WITH x AS (SELECT id FROM t)
       SELECT x.*, x.id FROM (SELECT id, v FROM t) AS x ORDER BY x.id
     error_code: "0AF00"
+  # Round-9 pins: (a) the dup-read aggregate CTE now materializes its
+  # VISIBLE two-slot layout (the builder mints the reshaping projection when
+  # visible != internal width), so reading BOTH aliased columns works —
+  # before, the plan advertised A,B over a one-slot row and died resolving
+  # B at runtime; (b) an arity mismatch inside a scalar-subquery-attached
+  # WITH still validates (attached plans are walked).
+  - query: |-
+      WITH c(a, b) AS (SELECT id, id FROM t GROUP BY id)
+      SELECT a, b FROM c ORDER BY a
+    rows:
+      - [1, 1]
+      - [2, 2]
+      - [3, 3]
+      - [4, 4]
+  - query: |-
+      SELECT id FROM t WHERE id = (WITH i(a, b) AS (SELECT id FROM t WHERE id <= 2) SELECT MAX(a) FROM i)
+    error_code: "42F10"

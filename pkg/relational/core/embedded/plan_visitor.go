@@ -1351,7 +1351,13 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 			}
 		}
 		totalOutput := len(keys) + len(aggs)
-		needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasNonVisible
+		needsStrip := len(visibleProj) != totalOutput || hasAggAlias || hasNonVisible
+		// != (not <): a DUPLICATE visible read of one group key
+		// (`SELECT id, id … GROUP BY id`) makes the visible list WIDER
+		// than the aggregate's deduplicated output — the reshaping
+		// projection must materialize each visible slot or downstream
+		// consumers (CTE column aliases, positional reads) see the
+		// internal one-slot layout.
 		if needsStrip {
 			if hasNonVisible {
 				cls.postSortStripProj = visibleProj
