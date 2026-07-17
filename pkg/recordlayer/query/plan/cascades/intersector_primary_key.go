@@ -187,16 +187,23 @@ func accessCompatibleWithPKMerge(access *SingleMatchedAccess, pkValues []values.
 	if access.IsReverseScanOrder() {
 		return false
 	}
+	// Case-FOLDED comparison keys: commonPrimaryKeyValues upper-cases the
+	// pk columns while the candidate's pk-suffix parts carry FieldNames()
+	// verbatim — comparing un-normalized renderings made a lowercase pk
+	// name miss and silently over-decline EVERY intersection. (Rendering-
+	// string identity here is the bridge pattern WS-N Phase C retires;
+	// tolerable now because both sides are same-frame flat FieldValues.)
+	key := func(v values.Value) string { return strings.ToUpper(values.ExplainValue(v)) }
 	parts := access.GetPartialMatch().GetMatchInfo().GetMatchedOrderingParts()
 	equalityBound := make(map[string]struct{})
 	for _, op := range parts {
 		if op.GetComparisonRange().IsEquality() {
-			equalityBound[values.ExplainValue(op.GetValue())] = struct{}{}
+			equalityBound[key(op.GetValue())] = struct{}{}
 		}
 	}
 	var expect []string
 	for _, pv := range pkValues {
-		k := values.ExplainValue(pv)
+		k := key(pv)
 		if _, bound := equalityBound[k]; !bound {
 			expect = append(expect, k)
 		}
@@ -212,7 +219,7 @@ func accessCompatibleWithPKMerge(access *SingleMatchedAccess, pkValues []values.
 		if op.GetMatchedSortOrder().IsAnyDescending() {
 			return false
 		}
-		if values.ExplainValue(op.GetValue()) != expect[freeIdx] {
+		if key(op.GetValue()) != expect[freeIdx] {
 			return false
 		}
 		freeIdx++

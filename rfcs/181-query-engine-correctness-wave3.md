@@ -53,6 +53,16 @@ intersector's signature literally discards its ordering input
 (`_ []*RequestedOrdering`, intersector_primary_key.go:23).
 `ImplementIntersectionRule` gets the same gate (latent — no SQL producer yet).
 
+FOLLOW-UP (found while pinning): pushCrossCandidateIntersection has NO e2e
+firing proof anywhere — no SQL query, yamsql scenario, or planner test
+produces a cross-candidate intersection through it (the cost model dodges
+every shape tried; the one planner test hand-builds
+LogicalIntersectionExpression). Per the fake-checkbox rule, either produce
+the firing SQL shape (plan_contains: Intersection pin) or establish the
+path is dead-in-effect and say so. The over-decline sentinel meanwhile
+drives the production entry directly
+(TestPushCrossCandidateIntersection_StillFires).
+
 ### P0.2 Streaming-agg ordered alternative shares the inner group (wrong GROUPS)
 
 `rule_implement_streaming_agg.go:133` memoizes the agg-over-ordered

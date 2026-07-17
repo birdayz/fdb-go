@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -444,5 +445,85 @@ func TestIntersector_DeclinesNonPKMonotoneLeg(t *testing.T) {
 	}, nil)
 	if !result.IsViable() {
 		t.Fatal("two equality-bound pk-monotone legs must remain viable")
+	}
+}
+
+// TestIntersector_LowercasePKStillViable pins the case-fold in the gate:
+// commonPrimaryKeyValues upper-cases pk columns while candidate pk-suffix
+// parts carry FieldNames() verbatim — un-normalized comparison made a
+// lowercase pk name miss and silently over-decline every intersection.
+func TestIntersector_LowercasePKStillViable(t *testing.T) {
+	t.Parallel()
+
+	mk := func(name string) *testPartialMatch {
+		eqCmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))
+		eqRange := predicates.EmptyComparisonRange().Merge(&eqCmp).Range
+		pid := values.UniqueCorrelationIdentifier()
+		pkPid := values.UniqueCorrelationIdentifier()
+		return &testPartialMatch{
+			candidate: &dataAccessTestCandidate{
+				name:            name,
+				sargableAliases: []values.CorrelationIdentifier{pid},
+				columnNames:     []string{name + "_col"},
+				recordTypes:     []string{"TestRecord"},
+				fixedPlan:       &testPlan{name: name + "_scan"},
+			},
+			matchInfo: &testMatchInfo{
+				orderingParts: []*MatchedOrderingPart{
+					NewMatchedOrderingPart(pid, &values.FieldValue{Field: name + "_col", Typ: values.UnknownType}, eqRange, MatchedSortOrderAscending),
+					// The pk-suffix part carries the LOWERCASE field name
+					// verbatim, as real candidates do (FieldNames()).
+					NewMatchedOrderingPart(pkPid, &values.FieldValue{Field: "id", Typ: values.UnknownType}, nil, MatchedSortOrderAscending),
+				},
+				paramBindings: map[values.CorrelationIdentifier]*predicates.ComparisonRange{pid: eqRange},
+			},
+		}
+	}
+
+	ctx := newTestPKContext("TestRecord", []string{"id"})
+	intersector := WithPrimaryKeyIntersector(ctx)
+	result := intersector([]Vectored[*SingleMatchedAccess]{
+		makeVectoredAccess(mk("idxL"), 0),
+		makeVectoredAccess(mk("idxM"), 1),
+	}, nil)
+	if !result.IsViable() {
+		t.Fatal("a lowercase pk-suffix field name must not over-decline the intersection (case-fold the comparison)")
+	}
+}
+
+// TestPushCrossCandidateIntersection_StillFires is the over-decline
+// sentinel: driven at the PRODUCTION entry (pushCrossCandidateIntersection)
+// with two equality-bound partial matches seeded, an intersection final
+// must appear — the P0.1 gate declines non-PK-monotone legs, never
+// everything. (No e2e drives this path from SQL today — the cost model
+// dodges it and no yamsql/planner test produces a cross-candidate
+// intersection; that reachability gap is filed in RFC-181 as the P0.1
+// follow-up. This sentinel is the closest production seam.)
+func TestPushCrossCandidateIntersection_StillFires(t *testing.T) {
+	t.Parallel()
+
+	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA"})
+	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB"})
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"TestRecord"}, values.UnknownType)
+	ref := expressions.InitialOf(scan)
+	AddPartialMatchForCandidate(ref, pmA.GetMatchCandidate(), pmA)
+	AddPartialMatchForCandidate(ref, pmB.GetMatchCandidate(), pmB)
+
+	ctx := newTestPKContext("TestRecord", []string{"id"})
+	p := NewPlanner(nil, ctx)
+	p.pushCrossCandidateIntersection(ref,
+		[]MatchCandidate{pmA.GetMatchCandidate(), pmB.GetMatchCandidate()},
+		[]*RequestedOrdering{PreserveOrdering()})
+
+	found := false
+	for _, m := range ref.FinalMembers() {
+		if _, ok := m.(*physicalIntersectionWrapper); ok {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("pushCrossCandidateIntersection produced no intersection final for two equality-bound matches — the ordering gate over-declined")
 	}
 }
