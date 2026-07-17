@@ -65,12 +65,25 @@ func (c *ImplementationRuleCall) IsConstraintOnly() bool {
 	return c.constraintOnly
 }
 
-// PushConstraint pushes a constraint value to a child Reference.
+// PushConstraint pushes requested orderings to a child Reference,
+// COMBINING with anything already pushed there (Java
+// ConstraintsMap.pushProperty → PlannerConstraint.combine — a
+// subsumption union). A blind replace let the LAST parent pushing onto a
+// shared child clobber every other parent's requirement, and the
+// requested-ordering winner retention in OptimizeGroupTask would then
+// prune the clobbered parents' ordered alternatives.
 func (c *ImplementationRuleCall) PushConstraint(
 	childRef *expressions.Reference,
 	orderings []*RequestedOrdering,
 ) {
-	Set(c.Constraints, childRef, RequestedOrderingConstraintKey, orderings)
+	if existing, ok := Get(c.Constraints, childRef, RequestedOrderingConstraintKey); ok {
+		combined, changed := CombineRequestedOrderings(existing, orderings)
+		if changed {
+			Set(c.Constraints, childRef, RequestedOrderingConstraintKey, combined)
+		}
+	} else {
+		Set(c.Constraints, childRef, RequestedOrderingConstraintKey, orderings)
+	}
 	c.constraintPushedRefs = append(c.constraintPushedRefs, childRef)
 }
 

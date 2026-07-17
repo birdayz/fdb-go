@@ -1284,13 +1284,16 @@ func evalLegHashKey(val values.Value, corr values.CorrelationIdentifier, leg val
 // false negative silently drops matching rows); extra bucket collisions are
 // harmless — the per-pair re-check filters them.
 //
-//   - Every numeric promotes to float64, mirroring cmpAny's
-//     promoteInt/promoteFloat widening: integral pairs equal as int64 are
-//     equal as float64, and any-float pairs compare as float64 already.
-//     Distinct wide int64s that collide at float64 precision are false
-//     POSITIVES only. Without this, int64(5) missed the float64(5) bucket
-//     (BIGINT=DOUBLE dropped every match ≥100 inner rows) and a
-//     covering-index float32 leg missed a stored-record float64 bucket.
+//   - Every numeric promotes to float64. cmpAny compares pure-integer
+//     pairs EXACTLY (values.CompareExactInts, across the signed/unsigned
+//     halves) and mixed integer/float pairs as float64 — and float64(x)
+//     depends only on the numeric VALUE, so any pair cmpAny calls EQUAL
+//     lands in the same bucket. Distinct wide integers (int64 or uint64)
+//     that collide at float64 precision are false POSITIVES only, filtered
+//     by the exact per-pair re-check. Without this, int64(5) missed the
+//     float64(5) bucket (BIGINT=DOUBLE dropped every match ≥100 inner
+//     rows) and a covering-index float32 leg missed a stored-record
+//     float64 bucket.
 //   - NaN declines: cmpAny's <,>-based equality makes NaN compare EQUAL to
 //     every float, while a NaN map key matches nothing — no bucket can
 //     represent it.
