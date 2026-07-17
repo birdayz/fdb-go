@@ -388,20 +388,17 @@ var _ = Describe("CursorCombinatorsUnit", func() {
 			Expect(err).To(MatchError("primary broken"))
 		})
 
-		It("primary returns OOB limit, does not switch, stays undecided for next call", func() {
-			// Primary returns ScanLimitReached then real values on retry.
-			callNum := 0
+		It("primary returns OOB limit, does not switch, stays undecided across the continuation", func() {
+			// Primary returns ScanLimitReached; a re-call on the SAME cursor
+			// replays the cached terminal (Java OrElseCursor.onNext:99-101 +
+			// postProcess: every result is cached, a no-next replays verbatim
+			// and never re-pulls the primary). "Stays undecided" manifests at
+			// the CONTINUATION level: the terminal wraps state=UNDECIDED, so a
+			// resume re-opens the primary and can still take the inner branch.
 			primary := &callbackCursor[int]{
 				fn: func(ctx context.Context) (RecordCursorResult[int], error) {
-					callNum++
-					if callNum == 1 {
-						return NewResultNoNext[int](ScanLimitReached,
-							&BytesContinuation{bytes: []byte{0x01}}), nil
-					}
-					if callNum == 2 {
-						return NewResultWithValue(42, &BytesContinuation{bytes: []byte{0x02}}), nil
-					}
-					return NewResultNoNext[int](SourceExhausted, &EndContinuation{}), nil
+					return NewResultNoNext[int](ScanLimitReached,
+						&BytesContinuation{bytes: []byte{0x01}}), nil
 				},
 			}
 
@@ -418,11 +415,37 @@ var _ = Describe("CursorCombinatorsUnit", func() {
 			Expect(r1.GetNoNextReason()).To(Equal(ScanLimitReached))
 			Expect(alternativeCalled).To(BeFalse())
 
-			// Second call: primary produces a value this time. Still no alternative.
+			// Second call on the same cursor: the cached terminal is replayed
+			// verbatim — no value, no alternative, no primary re-pull.
 			r2, err := cursor.OnNext(ctx)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(r2.HasNext()).To(BeTrue())
-			Expect(r2.GetValue()).To(Equal(42))
+			Expect(r2.HasNext()).To(BeFalse())
+			Expect(r2.GetNoNextReason()).To(Equal(ScanLimitReached))
+			Expect(alternativeCalled).To(BeFalse())
+
+			// Resume from the terminal's continuation: state is still
+			// UNDECIDED, the primary factory receives its saved position and
+			// its value decides the inner branch — the alternative is never
+			// consulted.
+			contBytes, cerr := r1.GetContinuation().ToBytes()
+			Expect(cerr).NotTo(HaveOccurred())
+			var primaryCont []byte
+			resumed := OrElseWithContinuation(
+				func(c []byte) RecordCursor[int] {
+					primaryCont = c
+					return FromList([]int{42})
+				},
+				func(c []byte) RecordCursor[int] {
+					alternativeCalled = true
+					return FromList([]int{999})
+				},
+				contBytes,
+			)
+			Expect(primaryCont).To(Equal([]byte{0x01}))
+			r3, err := resumed.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r3.HasNext()).To(BeTrue())
+			Expect(r3.GetValue()).To(Equal(42))
 			Expect(alternativeCalled).To(BeFalse())
 		})
 

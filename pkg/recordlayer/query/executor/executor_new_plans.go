@@ -338,15 +338,24 @@ type multiIntersectionMergeCursor struct {
 	inner       recordlayer.RecordCursor[[]QueryResult]
 	resultValue values.Value
 	closed      bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java's cached no-next result on the map/merge stage) — never re-pulls
+	// the inner intersection.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
 
 func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	result, err := c.inner.OnNext(ctx)
 	if err != nil {
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 	}
 	if !result.HasNext() {
-		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+		res := recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation())
+		c.lastNoNext = &res
+		return res, nil
 	}
 
 	childResults := result.GetValue()

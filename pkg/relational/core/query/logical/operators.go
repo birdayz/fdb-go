@@ -374,18 +374,34 @@ func (d *LogicalDistinct) Explain(indent string) string {
 // LogicalAggregate runs GROUP BY + aggregate functions on its child.
 // GroupKeys are the grouping-column expressions; Calls holds the
 // structured aggregate calls (see AggregateCall) with parallel Aliases.
+// GroupKey is one GROUP BY key in structured form (RFC-180 F-3): the display
+// text is a rendering for output naming and diagnostics, never re-parsed;
+// qualification and segments are parse-tree truth; Value is the resolved key
+// (expressions always resolve; a bare column's Value is filled by the upgrade
+// passes, nil = lazy bare read).
+type GroupKey struct {
+	Display   string
+	Bare      string // last segment of a bare column ref; "" for expression keys
+	Qualifier string // leading segment(s) when qualified; "" otherwise
+	Qualified bool   // parse-tree segment count > 1
+	Value     values.Value
+}
+
 type LogicalAggregate struct {
-	Input          LogicalOperator
-	GroupKeys      []string
-	GroupKeyValues []values.Value // resolved Value trees for GROUP BY expressions; nil slot = bare column
+	Input     LogicalOperator
+	GroupKeys []GroupKey
 	// Calls is the SOLE aggregate-call representation. Builders populate it
 	// from the parse tree; the translator requires it (RFC-180 F-3 retired
 	// the parallel display-text slice).
-	Calls                  []AggregateCall
-	Aliases                []string       // parallel to Calls
-	AggregateOperands      []values.Value // resolved operand Values (parallel to Calls); nil slot = use text
-	HasDistinctAggregate   bool           // true when any aggregate uses DISTINCT (e.g. COUNT(DISTINCT x))
-	Having                 string         // canonical HAVING predicate, "" when absent
+	Calls                []AggregateCall
+	Aliases              []string       // parallel to Calls
+	AggregateOperands    []values.Value // resolved operand Values (parallel to Calls); nil slot = use text
+	HasDistinctAggregate bool           // true when any aggregate uses DISTINCT (e.g. COUNT(DISTINCT x))
+	// HasHaving: the query carried a HAVING clause. Presence SENTINEL only
+	// (RFC-180 F-3 — the former canonical-text field was never re-parsed):
+	// the translator declines when HasHaving is set but HavingPredicate is
+	// nil, so an unstructured HAVING can never be silently dropped.
+	HasHaving              bool
 	HavingPredicate        predicates.QueryPredicate
 	HavingExistsSubqueries []ExistsSubquery // EXISTS subquery plans inside HAVING
 	HavingScalarSubqueries []ScalarSubquery // scalar subquery plans inside HAVING
@@ -408,6 +424,15 @@ type AggregateCall struct {
 	// catalog resolution. False for computed/expression operands, which
 	// require a resolved Value.
 	BareColumn bool
+	// Qualified: a BareColumn operand carried a table qualifier PER THE
+	// PARSE TREE (FullId segment count > 1) — never a dot scan of the
+	// rendered name, which a delimited identifier containing a literal dot
+	// would false-positive. Always false for computed operands; consumers
+	// gating on qualification fall back to a conservative canonical-text
+	// scan there (a dot inside a computed rendering only ever comes from a
+	// real qualified reference or a quoted literal, and the gate is
+	// optimization-only).
+	Qualified bool
 }
 
 // CanonicalName renders the call in the canonical upper-case display form —
@@ -425,13 +450,13 @@ func (c AggregateCall) CanonicalName() string {
 	return c.Func + "(" + c.Operand + ")"
 }
 
-func NewAggregate(input LogicalOperator, groupKeys []string, calls []AggregateCall, aliases []string, having string) *LogicalAggregate {
+func NewAggregate(input LogicalOperator, groupKeys []GroupKey, calls []AggregateCall, aliases []string, hasHaving bool) *LogicalAggregate {
 	return &LogicalAggregate{
 		Input:     input,
 		GroupKeys: groupKeys,
 		Calls:     calls,
 		Aliases:   aliases,
-		Having:    having,
+		HasHaving: hasHaving,
 	}
 }
 
@@ -445,10 +470,16 @@ func (a *LogicalAggregate) Explain(indent string) string {
 			aggs[i] = c.CanonicalName()
 		}
 	}
+	keyNames := make([]string, len(a.GroupKeys))
+	for i, k := range a.GroupKeys {
+		keyNames[i] = k.Display
+	}
 	line := fmt.Sprintf("%sAggregate(group=[%s], agg=[%s]", indent,
-		strings.Join(a.GroupKeys, ", "), strings.Join(aggs, ", "))
-	if a.Having != "" {
-		line += ", having=" + a.Having
+		strings.Join(keyNames, ", "), strings.Join(aggs, ", "))
+	if a.HavingPredicate != nil {
+		line += ", having=" + a.HavingPredicate.Explain()
+	} else if a.HasHaving {
+		line += ", having=<unresolved>"
 	}
 	line += ")"
 	return fmt.Sprintf("%s\n%s", line, a.Input.Explain(indent+"  "))

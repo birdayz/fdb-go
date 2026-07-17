@@ -721,7 +721,9 @@ func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 		if call.Star {
 			continue // COUNT(*)
 		}
-		if call.Distinct || !call.BareColumn || strings.Contains(call.Operand, ".") {
+		if call.Distinct || !call.BareColumn || call.Qualified {
+			// Qualified is parse-tree truth for a bare column — a delimited
+			// identifier with a literal dot stays normalizable.
 			return false // qualified / expression / distinct operand → name diverges
 		}
 	}
@@ -737,7 +739,7 @@ func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 func aggregateOutputColumns(a *logical.LogicalAggregate) []values.Field {
 	var fields []values.Field
 	for _, k := range a.GroupKeys {
-		fields = append(fields, values.Field{Name: strings.ToUpper(k), FieldType: values.UnknownType, Ordinal: len(fields)})
+		fields = append(fields, values.Field{Name: strings.ToUpper(k.Display), FieldType: values.UnknownType, Ordinal: len(fields)})
 	}
 	for i, call := range a.Calls {
 		name := call.CanonicalName()
@@ -6273,7 +6275,7 @@ func aggregateOperandReferencesColumn(a *logical.LogicalAggregate) bool {
 // too — gatheredSeedBakeContext walks the identity wrappers to the seed so the group keys /
 // operands bake positionally, correct in both name-model and demolition (flip) states.
 func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
-	if a.Having != "" && a.HavingPredicate == nil {
+	if a.HasHaving && a.HavingPredicate == nil {
 		return nil
 	}
 	for _, ssq := range a.HavingScalarSubqueries {
@@ -6327,10 +6329,10 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	aggInputFields := t.legColumns(a.Input)
 	groupKeys := make([]values.Value, len(a.GroupKeys))
 	for i, key := range a.GroupKeys {
-		if i < len(a.GroupKeyValues) && a.GroupKeyValues[i] != nil {
-			groupKeys[i] = a.GroupKeyValues[i]
+		if key.Value != nil {
+			groupKeys[i] = key.Value
 		} else {
-			groupKeys[i] = &values.FieldValue{Field: key, Typ: values.UnknownType}
+			groupKeys[i] = &values.FieldValue{Field: key.Display, Typ: values.UnknownType}
 		}
 		if bake.seedQOV != nil {
 			groupKeys[i] = bakeGatheredGroupValue(groupKeys[i], bake.windows, bake.elementSlots, bake.seedQOV)
@@ -6352,11 +6354,11 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	if bake.seedQOV == nil && positionalGatherUnbaked(innerRef.Get(), map[*expressions.Reference]bool{}) {
 		if proj := governingProjection(innerRef.Get(), map[*expressions.Reference]bool{}); proj != nil {
 			names := projectionOutputColumnNames(proj)
-			for i, key := range a.GroupKeys {
-				if i < len(a.GroupKeyValues) && a.GroupKeyValues[i] != nil {
+			for _, key := range a.GroupKeys {
+				if key.Value != nil {
 					continue // a resolved GroupByValue, not a bare name read
 				}
-				if !nameResolvesInColumns(key, names) {
+				if !nameResolvesInColumns(key.Display, names) {
 					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
 						"aggregate GROUP BY over a projected ordinal gather is not yet supported (the projected output column does not match the key name; would mis-resolve to NULL)"))
 					break
@@ -7614,7 +7616,9 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 		return o.Projections
 	case *logical.LogicalAggregate:
 		var cols []string
-		cols = append(cols, o.GroupKeys...)
+		for _, k := range o.GroupKeys {
+			cols = append(cols, k.Display)
+		}
 		for i, call := range o.Calls {
 			if i < len(o.Aliases) && o.Aliases[i] != "" {
 				cols = append(cols, o.Aliases[i])

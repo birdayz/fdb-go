@@ -334,30 +334,38 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 		name string
 		agg  *logical.LogicalAggregate
 	}{
-		{"ungrouped COUNT(*)", logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"X"}, "")},
-		{"ungrouped SUM(V),COUNT(*)", logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "SUM", Operand: "V", BareColumn: true}, {Func: "COUNT", Operand: "*", Star: true}}, []string{"S", "C"}, "")},
+		{"ungrouped COUNT(*)", logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"X"}, false)},
+		{"ungrouped SUM(V),COUNT(*)", logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "SUM", Operand: "V", BareColumn: true}, {Func: "COUNT", Operand: "*", Star: true}}, []string{"S", "C"}, false)},
 		// Ungrouped is unchanged from RFC-080 (always StreamingAgg) — the stable-name gate applies
 		// only to GROUPED branches, so ungrouped constants/qualified stay normalizable (no
 		// regression of previously-working ungrouped union join legs).
-		{"ungrouped COUNT(1) [not re-gated]", logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "COUNT", Operand: "1"}}, []string{""}, "")},
-		{"ungrouped SUM(T.C) [not re-gated]", logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "SUM", Operand: "T.C", BareColumn: true}}, []string{""}, "")},
-		{"grouped COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{""}, "")},
-		{"grouped SUM(V),COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []logical.AggregateCall{{Func: "SUM", Operand: "V", BareColumn: true}, {Func: "COUNT", Operand: "*", Star: true}}, []string{"", ""}, "")},
-		{"grouped COUNT(X) bare col", logical.NewAggregate(scan, []string{"G"}, []logical.AggregateCall{{Func: "COUNT", Operand: "X", BareColumn: true}}, []string{""}, "")},
+		{"ungrouped COUNT(1) [not re-gated]", logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "COUNT", Operand: "1"}}, []string{""}, false)},
+		{"ungrouped SUM(T.C) [not re-gated]", logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "SUM", Operand: "T.C", BareColumn: true, Qualified: true}}, []string{""}, false)},
+		{"grouped COUNT(*)", logical.NewAggregate(scan, []logical.GroupKey{{Display: "G", Bare: "G"}}, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{""}, false)},
+		{"grouped SUM(V),COUNT(*)", logical.NewAggregate(scan, []logical.GroupKey{{Display: "G", Bare: "G"}}, []logical.AggregateCall{{Func: "SUM", Operand: "V", BareColumn: true}, {Func: "COUNT", Operand: "*", Star: true}}, []string{"", ""}, false)},
+		{"grouped COUNT(X) bare col", logical.NewAggregate(scan, []logical.GroupKey{{Display: "G", Bare: "G"}}, []logical.AggregateCall{{Func: "COUNT", Operand: "X", BareColumn: true}}, []string{""}, false)},
 	} {
 		if !tr.unionBranchNormalizable(tc.agg) {
 			t.Errorf("%s: must be normalizable", tc.name)
 		}
 	}
 
+	// A DELIMITED identifier containing a literal dot ("A.B") is ONE
+	// unqualified segment per the parse tree — normalizable. The retired
+	// dot-scan of the rendered name false-positived exactly here.
+	delimitedDot := logical.NewAggregate(scan, []logical.GroupKey{{Display: "G", Bare: "G"}}, []logical.AggregateCall{{Func: "SUM", Operand: "A.B", BareColumn: true}}, []string{""}, false)
+	if !tr.unionBranchNormalizable(delimitedDot) {
+		t.Error(`SUM("A.B") (delimited, unqualified) must be normalizable — qualification is parse-tree truth, not a dot scan`)
+	}
+
 	// Divergent forms → gated.
-	qualified := logical.NewAggregate(scan, []string{"G"}, []logical.AggregateCall{{Func: "SUM", Operand: "T.C", BareColumn: true}}, []string{""}, "")
+	qualified := logical.NewAggregate(scan, []logical.GroupKey{{Display: "G", Bare: "G"}}, []logical.AggregateCall{{Func: "SUM", Operand: "T.C", BareColumn: true, Qualified: true}}, []string{""}, false)
 	if tr.unionBranchNormalizable(qualified) {
 		t.Error("qualified aggregate SUM(T.C) must NOT be normalizable (physical strips qualifier → SUM(C))")
 	}
 
 	// COUNT(<numeric constant>) — gated by both the text (leading digit) and the ConstantValue operand.
-	constNum := logical.NewAggregate(scan, []string{"G"}, []logical.AggregateCall{{Func: "COUNT", Operand: "1"}}, []string{""}, "")
+	constNum := logical.NewAggregate(scan, []logical.GroupKey{{Display: "G", Bare: "G"}}, []logical.AggregateCall{{Func: "COUNT", Operand: "1"}}, []string{""}, false)
 	constNum.AggregateOperands = []values.Value{&values.ConstantValue{Value: int64(1)}}
 	if tr.unionBranchNormalizable(constNum) {
 		t.Error("COUNT(1) must NOT be normalizable (count-star name mismatch)")
@@ -365,24 +373,24 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 
 	// COUNT(NULL) — text arg "NULL" LOOKS like an identifier, so only the ConstantValue operand
 	// catches it. This is why the gate combines text + operand.
-	constNull := logical.NewAggregate(scan, []string{"G"}, []logical.AggregateCall{{Func: "COUNT", Operand: "NULL"}}, []string{""}, "")
+	constNull := logical.NewAggregate(scan, []logical.GroupKey{{Display: "G", Bare: "G"}}, []logical.AggregateCall{{Func: "COUNT", Operand: "NULL"}}, []string{""}, false)
 	constNull.AggregateOperands = []values.Value{&values.ConstantValue{Value: nil}}
 	if tr.unionBranchNormalizable(constNull) {
 		t.Error("COUNT(NULL) must NOT be normalizable (constant folds to count-star; text alone misses it)")
 	}
 
 	// DISTINCT → gated via the branch flag.
-	distinct := logical.NewAggregate(scan, []string{"G"}, []logical.AggregateCall{{Func: "COUNT", Operand: "X", BareColumn: true}}, []string{""}, "")
+	distinct := logical.NewAggregate(scan, []logical.GroupKey{{Display: "G", Bare: "G"}}, []logical.AggregateCall{{Func: "COUNT", Operand: "X", BareColumn: true}}, []string{""}, false)
 	distinct.HasDistinctAggregate = true
 	if tr.unionBranchNormalizable(distinct) {
 		t.Error("DISTINCT aggregate must NOT be normalizable")
 	}
 
 	// 0-aggregate (group-only and ungrouped) → gated.
-	if tr.unionBranchNormalizable(logical.NewAggregate(scan, []string{"G"}, nil, nil, "")) {
+	if tr.unionBranchNormalizable(logical.NewAggregate(scan, []logical.GroupKey{{Display: "G", Bare: "G"}}, nil, nil, false)) {
 		t.Error("0-aggregate group-only must NOT be normalizable")
 	}
-	if tr.unionBranchNormalizable(logical.NewAggregate(scan, nil, nil, nil, "")) {
+	if tr.unionBranchNormalizable(logical.NewAggregate(scan, nil, nil, nil, false)) {
 		t.Error("0-aggregate ungrouped must NOT be normalizable")
 	}
 }
@@ -550,10 +558,10 @@ func TestTranslateNil(t *testing.T) {
 func TestTranslateAggregate(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("orders", "")
-	agg := logical.NewAggregate(scan, []string{"CATEGORY"}, []logical.AggregateCall{
+	agg := logical.NewAggregate(scan, []logical.GroupKey{{Display: "CATEGORY", Bare: "CATEGORY"}}, []logical.AggregateCall{
 		{Func: "SUM", Operand: "PRICE", BareColumn: true},
 		{Func: "COUNT", Operand: "*", Star: true},
-	}, []string{"total", "cnt"}, "")
+	}, []string{"total", "cnt"}, false)
 	ref := TranslateToCascades(agg)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for aggregate")
@@ -579,7 +587,7 @@ func TestTranslateAggregate(t *testing.T) {
 func TestTranslateAggregateNoGroup(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("orders", "")
-	agg := logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, "")
+	agg := logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, false)
 	ref := TranslateToCascades(agg)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for scalar aggregate")
@@ -624,7 +632,7 @@ func TestTranslateAggregate_StructuredCallsOnly(t *testing.T) {
 
 	build := func(calls []logical.AggregateCall) *logical.LogicalAggregate {
 		scan := logical.NewScan("orders", "")
-		return logical.NewAggregate(scan, []string{"STATUS"}, calls, make([]string, len(calls)), "")
+		return logical.NewAggregate(scan, []logical.GroupKey{{Display: "STATUS", Bare: "STATUS"}}, calls, make([]string, len(calls)), false)
 	}
 
 	// Bare-column operand without a resolved Value: lazy FieldValue survives.
@@ -806,7 +814,7 @@ func TestTranslateCTEMultipleReferences(t *testing.T) {
 func TestTranslateAggregateWithHavingReturnsNil(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("orders", "")
-	agg := logical.NewAggregate(scan, []string{"REGION"}, []logical.AggregateCall{{Func: "SUM", Operand: "PRICE", BareColumn: true}}, []string{"total"}, "SUM(PRICE) > 100")
+	agg := logical.NewAggregate(scan, []logical.GroupKey{{Display: "REGION", Bare: "REGION"}}, []logical.AggregateCall{{Func: "SUM", Operand: "PRICE", BareColumn: true}}, []string{"total"}, true)
 	ref := TranslateToCascades(agg)
 	if ref != nil {
 		t.Fatal("expected nil — aggregate with HAVING should bail to naive")

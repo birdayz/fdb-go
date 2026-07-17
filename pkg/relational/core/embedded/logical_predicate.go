@@ -2366,11 +2366,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 
 	if resolver != nil {
-		for i, gb := range sq.groupBy {
-			if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+		for _, gb := range sq.groupBy {
+			if gb.expr != nil {
 				continue
 			}
-			if err := resolveColumnName(resolver, gb); err != nil {
+			if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
 		}
@@ -3373,18 +3373,16 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		vals := make([]values.Value, len(proj.Projections))
 		agg := findAggregate(op)
 		var groupKeyExplains map[string]values.Value
-		if agg != nil && len(agg.GroupKeyValues) > 0 {
-			groupKeyExplains = make(map[string]values.Value, len(agg.GroupKeyValues))
-			for i, gkv := range agg.GroupKeyValues {
-				if gkv == nil {
+		if agg != nil && len(agg.GroupKeys) > 0 {
+			groupKeyExplains = make(map[string]values.Value, len(agg.GroupKeys))
+			for _, gk := range agg.GroupKeys {
+				if gk.Value == nil {
 					continue
 				}
-				explain := strings.ToUpper(values.ColumnNameValue(gkv))
+				explain := strings.ToUpper(values.ColumnNameValue(gk.Value))
 				ref := &values.FieldValue{Field: explain, Typ: values.UnknownType}
 				groupKeyExplains[explain] = ref
-				if i < len(agg.GroupKeys) {
-					groupKeyExplains[strings.ToUpper(agg.GroupKeys[i])] = ref
-				}
+				groupKeyExplains[strings.ToUpper(gk.Display)] = ref
 			}
 		}
 		aggSlots := make([]bool, len(proj.Projections))
@@ -3621,8 +3619,8 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	keyValues := make([]values.Value, len(agg.GroupKeys))
 	filled := false
 	for i := range agg.GroupKeys {
-		if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
-			v, err := resolver.WalkExpressionForProjection(sq.groupByExprs[i])
+		if i < len(sq.groupBy) && sq.groupBy[i].expr != nil {
+			v, err := resolver.WalkExpressionForProjection(sq.groupBy[i].expr)
 			if err != nil {
 				continue
 			}
@@ -3630,10 +3628,16 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			filled = true
 			continue
 		}
-		ref := parseColRef(agg.GroupKeys[i])
+		gk := agg.GroupKeys[i]
+		// Structured segments, never a re-parse of the display text: a
+		// delimited identifier containing a dot stays one bare segment.
+		ref := colRef{table: gk.Qualifier, col: gk.Bare}
+		if gk.Bare == "" {
+			ref = colRef{col: gk.Display}
+		}
 		var qualID semantic.Identifier
-		if ref.isQualified() {
-			qualID = semantic.NewUnquoted(ref.table)
+		if gk.Qualified {
+			qualID = semantic.NewUnquoted(gk.Qualifier)
 			// The dup-alias twin: a qualified key
 			// binding a LATER duplicate-alias leg must group by the BINDING
 			// correlation (`Q$DUP1.QID`) — the join row's actual namespace —
@@ -3687,7 +3691,11 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		}
 	}
 	if filled {
-		agg.GroupKeyValues = keyValues
+		for i := range agg.GroupKeys {
+			if keyValues[i] != nil {
+				agg.GroupKeys[i].Value = keyValues[i]
+			}
+		}
 	}
 }
 
@@ -3924,8 +3932,8 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 	// never resolves to a Value and the group key silently evaluates to a
 	// constant. Reject cleanly rather than ship a constant-false grouped column.
 	// Structural detection (typed ANTLR node), no text matching.
-	for _, gbe := range sq.groupByExprs {
-		if gbe != nil && expr.ContainsExistsAtom(gbe) {
+	for _, gb := range sq.groupBy {
+		if gb.expr != nil && expr.ContainsExistsAtom(gb.expr) {
 			return api.NewError(api.ErrCodeUnsupportedQuery,
 				"projected EXISTS in this query shape is not yet supported")
 		}
@@ -3933,10 +3941,9 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 
 	groupBySet := make(map[string]bool, len(sq.groupBy))
 	for _, gb := range sq.groupBy {
-		ref := parseColRef(gb)
-		groupBySet[strings.ToUpper(gb)] = true
-		if ref.isQualified() {
-			groupBySet[strings.ToUpper(ref.bare())] = true
+		groupBySet[strings.ToUpper(gb.display)] = true
+		if gb.qualified {
+			groupBySet[strings.ToUpper(gb.bare)] = true
 		}
 	}
 
@@ -4012,9 +4019,9 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 	}
 
 	groupByExprSet := make(map[string]bool)
-	for i, gb := range sq.groupBy {
-		if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
-			groupByExprSet[strings.ToUpper(gb)] = true
+	for _, gb := range sq.groupBy {
+		if gb.expr != nil {
+			groupByExprSet[strings.ToUpper(gb.display)] = true
 		}
 	}
 
@@ -4550,15 +4557,21 @@ func wrapBareAggregateInsertSource(insertOp *logical.LogicalInsert, sq *selectQu
 	// unresolved (nil), so the aggregate computes NULL. Wrapping would align the
 	// (NULL) column and SILENTLY insert NULL; NOT wrapping leaves the original LOUD
 	// failure (unset PK → 23505). Until the qualified-operand resolution is fixed
-	// (follow-up), skip — a qualifier shows up as a '.' in the structured
-	// operand / group-key name.
+	// (follow-up), skip. A bare column's qualification is parse-tree truth
+	// (call.Qualified); a computed operand keeps the conservative
+	// canonical-text scan (its dots come from real qualified refs or quoted
+	// literals, and skipping only retains the loud path).
 	for _, call := range agg.Calls {
-		if strings.Contains(call.Operand, ".") {
+		if call.BareColumn {
+			if call.Qualified {
+				return
+			}
+		} else if strings.Contains(call.Operand, ".") {
 			return
 		}
 	}
 	for _, k := range agg.GroupKeys {
-		if strings.Contains(k, ".") {
+		if k.Qualified {
 			return
 		}
 	}
@@ -5447,12 +5460,14 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	proj := findProjection(op)
 	agg := findAggregate(op)
 	var groupKeyExplainMap map[string]string
-	if agg != nil && len(agg.GroupKeyValues) > 0 {
+	if agg != nil && len(agg.GroupKeys) > 0 {
 		groupKeyExplainMap = make(map[string]string)
-		for i, gkv := range agg.GroupKeyValues {
-			if gkv == nil || i >= len(agg.GroupKeys) {
+		for i, gk := range agg.GroupKeys {
+			gkv := gk.Value
+			if gkv == nil {
 				continue
 			}
+			_ = i
 			// The sort sits ABOVE the aggregate, so the group-key sort key must read
 			// the AGGREGATE OUTPUT column name — what the executor (aggKeyName /
 			// aggregateCursor.finalizeGroup) keys the group-key column by: a FieldValue
@@ -5464,7 +5479,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			// (ORDER BY DESC silently ignored, P2b). Mirror aggKeyName:
 			// the field name for a FieldValue, the explain for a computed key (whose
 			// output column IS its explain). RFC-142.
-			groupKeyExplainMap[strings.ToUpper(agg.GroupKeys[i])] = aggregateGroupKeyOutputName(gkv)
+			groupKeyExplainMap[strings.ToUpper(gk.Display)] = aggregateGroupKeyOutputName(gkv)
 		}
 	}
 	// colToIdx maps a NON-aliased select item's canonical text to its select-list
@@ -5676,12 +5691,15 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 // references read the aggregate output as-is and the structural match is a no-op.
 // RFC-142.
 func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggregate) values.Value {
-	if v == nil || agg == nil || len(agg.GroupKeyValues) == 0 {
+	if v == nil || agg == nil || len(agg.GroupKeys) == 0 {
 		return v
 	}
 	return values.MapFieldValues(v, func(fv *values.FieldValue) values.Value {
-		for _, gkv := range agg.GroupKeyValues {
-			qfv, ok := gkv.(*values.FieldValue)
+		for _, gk := range agg.GroupKeys {
+			if gk.Value == nil {
+				continue
+			}
+			qfv, ok := gk.Value.(*values.FieldValue)
 			if !ok || qfv.Child == nil {
 				continue // only qualified group keys carry the V.V mismatch
 			}
@@ -5714,7 +5732,7 @@ func rebasePostAggregateGroupKeyValue(v values.Value, agg *logical.LogicalAggreg
 // deciders cannot drift — both ask "is this a single group-key comparison?".
 // RFC-142.
 func rebaseHavingGroupKeyPredicate(pred predicates.QueryPredicate, agg *logical.LogicalAggregate) predicates.QueryPredicate {
-	if pred == nil || agg == nil || len(agg.GroupKeyValues) == 0 {
+	if pred == nil || agg == nil || len(agg.GroupKeys) == 0 {
 		return pred
 	}
 	if havingPredicatePushesBelowAggregate(pred, agg) {
@@ -5740,8 +5758,8 @@ func havingPredicatePushesBelowAggregate(pred predicates.QueryPredicate, agg *lo
 	if !ok {
 		return false
 	}
-	for _, gkv := range agg.GroupKeyValues {
-		if gfv, ok := gkv.(*values.FieldValue); ok && strings.EqualFold(gfv.Field, fv.Field) {
+	for _, gk := range agg.GroupKeys {
+		if gfv, ok := gk.Value.(*values.FieldValue); ok && strings.EqualFold(gfv.Field, fv.Field) {
 			return true
 		}
 	}
@@ -5754,7 +5772,7 @@ func havingPredicatePushesBelowAggregate(pred predicates.QueryPredicate, agg *lo
 // reference reads the bare aggregate-output column, not the qualified pre-aggregate
 // `V.V`. RFC-142.
 func rebasePostAggregateGroupKeyPredicate(pred predicates.QueryPredicate, agg *logical.LogicalAggregate) predicates.QueryPredicate {
-	if pred == nil || agg == nil || len(agg.GroupKeyValues) == 0 {
+	if pred == nil || agg == nil || len(agg.GroupKeys) == 0 {
 		return pred
 	}
 	switch p := pred.(type) {
@@ -7618,21 +7636,25 @@ func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQu
 	}
 	keyValues := make([]values.Value, len(agg.GroupKeys))
 	for i, key := range agg.GroupKeys {
-		if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
-			v, err := resolver.WalkExpressionForProjection(sq.groupByExprs[i])
+		if i < len(sq.groupBy) && sq.groupBy[i].expr != nil {
+			v, err := resolver.WalkExpressionForProjection(sq.groupBy[i].expr)
 			if err != nil {
 				return err
 			}
 			keyValues[i] = v
 			continue
 		}
-		v, err := resolveCorrelatedColumnValue(resolver, key, hasJoins)
+		v, err := resolveCorrelatedColumnValue(resolver, key.Display, hasJoins)
 		if err != nil {
 			return err
 		}
 		keyValues[i] = v
 	}
-	agg.GroupKeyValues = keyValues
+	for i := range agg.GroupKeys {
+		if keyValues[i] != nil {
+			agg.GroupKeys[i].Value = keyValues[i]
+		}
+	}
 	return nil
 }
 
@@ -7659,7 +7681,7 @@ func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isA
 	if !ok {
 		return "", "", false
 	}
-	f, a, aExpr, _, _, ok := extractAwfFields(awf)
+	f, a, aExpr, _, _, _, ok := extractAwfFields(awf)
 	if !ok || aExpr != nil {
 		return "", "", false
 	}
@@ -7683,7 +7705,11 @@ func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]lo
 		bare := strings.ToUpper(parseColRef(ob.colName).bare())
 		dk := ""
 		for _, k := range sq.groupBy {
-			if gkdk := strings.ToUpper(parseColRef(k).bare()); gkdk == bare && bare != "" {
+			gkdk := strings.ToUpper(k.bare)
+			if k.bare == "" {
+				gkdk = strings.ToUpper(k.display)
+			}
+			if gkdk == bare && bare != "" {
 				dk = gkdk
 				break
 			}
@@ -8121,7 +8147,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				Message: "correlated scalar subquery: expected an aggregate function or grouping-key projection",
 			}
 		}
-		aggOp := logical.NewAggregate(innerOp, sq.groupBy, aggCalls, aggAliases, "")
+		aggOp := logical.NewAggregate(innerOp, logicalGroupKeys(sq.groupBy), aggCalls, aggAliases, false)
 		aggOp.AggregateOperands = aggOperands
 		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
@@ -8275,7 +8301,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// column is a grouping key. Build the GroupBy below the optional
 		// ORDER BY so the sort runs over the grouped output.
 		if len(sq.groupBy) > 0 {
-			aggOp := logical.NewAggregate(innerOp, sq.groupBy, nil, nil, "")
+			aggOp := logical.NewAggregate(innerOp, logicalGroupKeys(sq.groupBy), nil, nil, false)
 			if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 					Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,

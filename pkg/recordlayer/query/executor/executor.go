@@ -925,9 +925,15 @@ type indexFetchCursor struct {
 	inner  recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	store  *recordlayer.FDBRecordStore
 	closed bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java's cached no-next result) — never re-pulls the inner entry scan.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
 
 func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	// One index entry per call: the fetch either yields its record, exhausts, or
 	// raises on an orphan/malformed entry. No loop — orphans no longer
 	// skip-and-continue (that silently dropped rows); they abort with a typed
@@ -940,7 +946,9 @@ func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 	}
 	if !result.HasNext() {
-		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+		res := recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation())
+		c.lastNoNext = &res
+		return res, nil
 	}
 
 	entry := result.GetValue()
@@ -1009,15 +1017,23 @@ type coveringIndexCursor struct {
 	logicalType *values.RecordType
 	logicalOrds []int
 	closed      bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java's cached no-next result) — never re-pulls the inner entry scan.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
 
 func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	result, err := c.inner.OnNext(ctx)
 	if err != nil {
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 	}
 	if !result.HasNext() {
-		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+		res := recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation())
+		c.lastNoNext = &res
+		return res, nil
 	}
 
 	entry := result.GetValue()
@@ -1268,6 +1284,9 @@ type limitEnvelopeCursor struct {
 	unbounded bool
 	// terminal caches a sticky no-next result (matching RowLimitedCursor's
 	// cached-terminal behavior): once set, every further OnNext returns it.
+	// Holds BOTH the exhaustion terminal and an out-of-band stop — Java caches
+	// every no-next result, so a re-call replays verbatim and never re-pulls
+	// the inner.
 	terminal *recordlayer.RecordCursorResult[QueryResult]
 	closed   bool
 }
@@ -1317,15 +1336,19 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 			}
 			// Inner stopped out-of-band (page/scan boundary): envelope the
 			// inner continuation with the CURRENT remaining offset/limit so the
-			// next page resumes mid-window. Not sticky — the next request opens
-			// a fresh cursor from this continuation.
+			// next page resumes mid-window (the next request opens a fresh
+			// cursor from this continuation). Cached in terminal so a
+			// contract-violating re-call on THIS instance replays it verbatim
+			// (Java's cached no-next result) instead of re-pulling the inner.
 			contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), c.remOffset, c.remLimit)
 			if encErr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
 			}
-			return recordlayer.NewResultNoNext[QueryResult](
+			res := recordlayer.NewResultNoNext[QueryResult](
 				reason, recordlayer.NewBytesContinuation(contBytes),
-			), nil
+			)
+			c.terminal = &res
+			return res, nil
 		}
 
 		if c.remOffset > 0 {
@@ -1676,9 +1699,15 @@ func executeProjection(
 type errCheckCursor struct {
 	inner recordlayer.RecordCursor[QueryResult]
 	err   *error
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java's cached no-next result) — never re-pulls the inner.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
 
 func (c *errCheckCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	if *c.err != nil {
 		return recordlayer.RecordCursorResult[QueryResult]{}, *c.err
 	}
@@ -1688,6 +1717,9 @@ func (c *errCheckCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRe
 	}
 	if *c.err != nil {
 		return recordlayer.RecordCursorResult[QueryResult]{}, *c.err
+	}
+	if !result.HasNext() {
+		c.lastNoNext = &result
 	}
 	return result, nil
 }
@@ -3715,9 +3747,15 @@ type filterResultCursor struct {
 	inner  recordlayer.RecordCursor[QueryResult]
 	pred   func(QueryResult) (bool, error)
 	closed bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java FilterCursor's cached no-next result) — never re-pulls the inner.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 }
 
 func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.RecordCursorResult[QueryResult], err error) {
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	for {
 		if err = ctx.Err(); err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
@@ -3727,6 +3765,7 @@ func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.Rec
 			return result, err
 		}
 		if !result.HasNext() {
+			c.lastNoNext = &result
 			return result, nil
 		}
 		keep, perr := c.pred(result.GetValue())

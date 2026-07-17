@@ -100,6 +100,12 @@ type intersectionCursor[T any] struct {
 	reverse  bool
 	started  bool
 	closed   bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java MergeCursor.onNext: once stopped, every later onNext returns the
+	// SAME cached result). Without it a re-call recomputes the terminal —
+	// re-encoding every child's lazy continuation — instead of replaying it
+	// verbatim.
+	lastNoNext *RecordCursorResult[T]
 }
 
 // Intersection creates a merge-intersection cursor that returns only elements
@@ -170,6 +176,9 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 	if c.closed {
 		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	// Initial advance of all children
 	if !c.started {
@@ -191,13 +200,17 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 			if !child.hasResult {
 				reason := weakestNoNextReason(c.children)
 				if reason.IsSourceExhausted() {
-					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
+					res := NewResultNoNext[T](SourceExhausted, &EndContinuation{})
+					c.lastNoNext = &res
+					return res, nil
 				}
 				cont, contErr := c.buildContinuation()
 				if contErr != nil {
 					return RecordCursorResult[T]{}, contErr
 				}
-				return NewResultNoNext[T](reason, cont), nil
+				res := NewResultNoNext[T](reason, cont)
+				c.lastNoNext = &res
+				return res, nil
 			}
 		}
 
@@ -458,6 +471,9 @@ type intersectionMultiCursor[T any] struct {
 	reverse  bool
 	started  bool
 	closed   bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java MergeCursor.onNext's cached result) — see intersectionCursor.
+	lastNoNext *RecordCursorResult[[]T]
 }
 
 // IntersectionMulti creates a merge-intersection cursor that returns, for
@@ -494,6 +510,9 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 	if c.closed {
 		return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	if !c.started {
 		for _, child := range c.children {
@@ -518,13 +537,17 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 			if !child.hasResult {
 				reason := weakestNoNextReason(c.children)
 				if reason.IsSourceExhausted() {
-					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), nil
+					res := NewResultNoNext[[]T](SourceExhausted, &EndContinuation{})
+					c.lastNoNext = &res
+					return res, nil
 				}
 				cont, contErr := buildIntersectionContinuation(c.children)
 				if contErr != nil {
 					return RecordCursorResult[[]T]{}, contErr
 				}
-				return NewResultNoNext[[]T](reason, cont), nil
+				res := NewResultNoNext[[]T](reason, cont)
+				c.lastNoNext = &res
+				return res, nil
 			}
 		}
 

@@ -416,9 +416,15 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		var aggAliases []string
 		var aggCalls []logical.AggregateCall
 		hasDistinct := false
-		keys := make([]string, len(sq.groupBy))
-		for i, k := range sq.groupBy {
-			keys[i] = strip(k)
+		keys := logicalGroupKeys(sq.groupBy)
+		for i := range keys {
+			stripped := strip(keys[i].Display)
+			if stripped != keys[i].Display {
+				// The single-source prefix was baked away: the key is
+				// BARE from here on — stale qualification segments would
+				// chase a qualifier the runtime row no longer carries.
+				keys[i] = logical.GroupKey{Display: stripped, Bare: stripped}
+			}
 		}
 		if sq.countStar {
 			aggAliases = []string{sq.countStarAlias}
@@ -443,16 +449,13 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 						Star:       arg == "*",
 						Distinct:   ac.aggDistinct,
 						BareColumn: ac.aggArg != "" && ac.aggExpr == nil,
+						Qualified:  ac.aggArgQualified,
 					})
 					aggAliases = append(aggAliases, ac.outName)
 				}
 			}
 		}
-		having := ""
-		if sq.havingExpr != nil {
-			having = canonicalTextOf(sq.havingExpr)
-		}
-		aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, having)
+		aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, sq.havingExpr != nil)
 		aggOp.HasDistinctAggregate = hasDistinct
 		op = aggOp
 
@@ -524,7 +527,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// consumers (CTE column aliases, positional reads) see the
 			// internal one-slot layout.
 			if needsStrip {
-				if hasNonVisible || groupKeyMissingFromVisible(keys, visibleProj) {
+				if hasNonVisible || groupKeyMissingFromVisible(groupKeyDisplayNames(keys), visibleProj) {
 					sq.postSortStripProj = visibleProj
 					sq.postSortStripAliases = visibleAliases
 				} else {
@@ -771,6 +774,16 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 // (`SELECT id,id FROM t GROUP BY id,v ORDER BY v`), so the reshaping
 // projection must be DEFERRED past the sort (postSortStrip) — stripping the
 // key before the sort consumes it fails ordinal resolution at runtime.
+// groupKeyDisplayNames renders display names for the visible-projection
+// membership check (name comparison is the check's own semantics).
+func groupKeyDisplayNames(keys []logical.GroupKey) []string {
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = k.Display
+	}
+	return out
+}
+
 func groupKeyMissingFromVisible(keys, visibleProj []string) bool {
 	for _, k := range keys {
 		found := false

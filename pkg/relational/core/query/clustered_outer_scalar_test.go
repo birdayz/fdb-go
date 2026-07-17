@@ -209,8 +209,8 @@ func TestClusteredCarrierEnumeration(t *testing.T) {
 			Input: scan("Order", "SQ"), Projections: []string{"x"}, Aliases: []string{""},
 			ProjectedValues: []values.Value{legRef()}, IsComputed: []bool{true},
 		}},
-		{"Aggregate.GroupKeyValues", &logical.LogicalAggregate{
-			Input: scan("Order", "SQ"), GroupKeys: []string{"x"}, GroupKeyValues: []values.Value{legRef()},
+		{"Aggregate.GroupKeys.Value", &logical.LogicalAggregate{
+			Input: scan("Order", "SQ"), GroupKeys: []logical.GroupKey{{Display: "x", Bare: "x", Value: legRef()}},
 		}},
 		{"Aggregate.AggregateOperands", &logical.LogicalAggregate{
 			Input: scan("Order", "SQ"), Calls: []logical.AggregateCall{{Func: "SUM", Operand: "x", BareColumn: true}}, Aliases: []string{""},

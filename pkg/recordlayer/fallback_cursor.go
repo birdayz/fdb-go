@@ -16,6 +16,10 @@ type fallbackCursor[T any] struct {
 	lastSuccessfulValue *RecordCursorResult[T]
 	alreadyFailed       bool
 	closed              bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java FallbackCursor's cached no-next result) — never re-pulls the
+	// inner/fallback cursor.
+	lastNoNext *RecordCursorResult[T]
 }
 
 // Fallback creates a cursor that falls back to an alternative on error.
@@ -37,6 +41,9 @@ func (c *fallbackCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], 
 	if c.closed {
 		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	result, err := c.inner.OnNext(ctx)
 	if err != nil {
@@ -48,11 +55,16 @@ func (c *fallbackCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], 
 		_ = c.inner.Close()
 		c.alreadyFailed = true
 		c.inner = c.fallbackFactory(c.lastSuccessfulValue)
-		return c.inner.OnNext(ctx)
+		result, err = c.inner.OnNext(ctx)
+		if err != nil {
+			return result, err
+		}
 	}
 
 	if result.HasNext() {
 		c.lastSuccessfulValue = &result
+	} else {
+		c.lastNoNext = &result
 	}
 	return result, nil
 }

@@ -3836,7 +3836,11 @@ func findUnfoldableProjectedExists(op logical.LogicalOperator) string {
 	// project's — the aggregate never folds an existential, so the EXISTS would
 	// be silently dropped. Reject.
 	if agg, ok := op.(*logical.LogicalAggregate); ok {
-		if projectValuesReferenceExists(agg.GroupKeyValues) || projectValuesReferenceExists(agg.AggregateOperands) {
+		gkVals := make([]values.Value, len(agg.GroupKeys))
+		for i, k := range agg.GroupKeys {
+			gkVals[i] = k.Value
+		}
+		if projectValuesReferenceExists(gkVals) || projectValuesReferenceExists(agg.AggregateOperands) {
 			return "projected EXISTS in this query shape is not yet supported"
 		}
 	}

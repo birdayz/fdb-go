@@ -155,10 +155,10 @@ func TestAggregate_Explain(t *testing.T) {
 	t.Parallel()
 	a := NewAggregate(
 		NewScan("t", ""),
-		[]string{"grp"},
+		[]GroupKey{{Display: "grp", Bare: "grp"}},
 		[]AggregateCall{{Func: "SUM", Operand: "v", BareColumn: true}, {Func: "COUNT", Operand: "*", Star: true}},
 		[]string{"total", ""},
-		"",
+		false,
 	)
 	want := "Aggregate(group=[grp], agg=[SUM(v) AS total, COUNT(*)])\n  Scan(t)"
 	if got := a.Explain(""); got != want {
@@ -169,9 +169,11 @@ func TestAggregate_Explain(t *testing.T) {
 		nil,
 		[]AggregateCall{{Func: "COUNT", Operand: "*", Star: true}},
 		nil,
-		"COUNT(*) > 1",
+		true,
 	)
-	if got := ah.Explain(""); got != "Aggregate(group=[], agg=[COUNT(*)], having=COUNT(*) > 1)\n  Scan(t)" {
+	// HasHaving without a resolved predicate renders the unresolved marker
+	// (the canonical-text field is retired — RFC-180 F-3).
+	if got := ah.Explain(""); got != "Aggregate(group=[], agg=[COUNT(*)], having=<unresolved>)\n  Scan(t)" {
 		t.Fatalf("Aggregate with having: got %q", got)
 	}
 }
@@ -270,7 +272,7 @@ func TestChildren_Arity(t *testing.T) {
 		{"Project", NewProject(leafA, []string{"id"}, []string{""}), 1, []LogicalOperator{leafA}},
 		{"Sort", NewSort(leafA, []SortKey{{Expr: "id", Dir: SortAsc}}), 1, []LogicalOperator{leafA}},
 		{"Limit", NewLimit(leafA, 10, 0), 1, []LogicalOperator{leafA}},
-		{"Aggregate", NewAggregate(leafA, nil, []AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, nil, ""), 1, []LogicalOperator{leafA}},
+		{"Aggregate", NewAggregate(leafA, nil, []AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, nil, false), 1, []LogicalOperator{leafA}},
 		{"Join", NewJoin(leafA, leafB, JoinInner, "x=y"), 2, []LogicalOperator{leafA, leafB}},
 		{"Union", NewUnion([]LogicalOperator{leafA, leafB}, false), 2, []LogicalOperator{leafA, leafB}},
 		{"Insert-values (no source)", NewInsert("t", []string{"id"}, nil), 0, nil},

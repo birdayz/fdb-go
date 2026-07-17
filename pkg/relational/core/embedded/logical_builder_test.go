@@ -565,3 +565,28 @@ func TestBuildLogicalPlan_InsertSelect(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+// TestAggArgQualified_ParseTreeTruth pins aggSelectCol.aggArgQualified: a
+// dotted reference is qualified by FullId SEGMENT COUNT, and a delimited
+// identifier containing a literal dot is ONE unqualified segment — the
+// distinction a dot scan of the rendered name cannot make.
+func TestAggArgQualified_ParseTreeTruth(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		sql       string
+		qualified bool
+	}{
+		{`SELECT SUM(t.c) FROM t`, true},
+		{`SELECT SUM(c) FROM t`, false},
+		{`SELECT SUM("a.b") FROM t`, false},
+	}
+	for _, tc := range cases {
+		sq := parseSelect(t, tc.sql)
+		if len(sq.aggCols) != 1 {
+			t.Fatalf("%s: %d aggCols, want 1", tc.sql, len(sq.aggCols))
+		}
+		if got := sq.aggCols[0].aggArgQualified; got != tc.qualified {
+			t.Errorf("%s: aggArgQualified = %v, want %v", tc.sql, got, tc.qualified)
+		}
+	}
+}

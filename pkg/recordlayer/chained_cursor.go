@@ -17,6 +17,10 @@ type chainedCursor[T any] struct {
 	decode    func([]byte) (T, bool)
 	lastValue *T
 	closed    bool
+	// lastNoNext replays the terminal result on a contract-violating re-call
+	// (Java ChainedCursor's cached no-next result) — never re-invokes the
+	// generator, which may not be idempotent past exhaustion.
+	lastNoNext *RecordCursorResult[T]
 }
 
 // Chained creates a cursor that produces values from a generator function.
@@ -49,6 +53,9 @@ func (c *chainedCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], e
 	if c.closed {
 		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	next, err := c.generator(c.lastValue)
 	if err != nil {
@@ -56,7 +63,9 @@ func (c *chainedCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], e
 	}
 
 	if next == nil {
-		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
+		res := NewResultNoNext[T](SourceExhausted, &EndContinuation{})
+		c.lastNoNext = &res
+		return res, nil
 	}
 
 	c.lastValue = next

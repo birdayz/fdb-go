@@ -497,7 +497,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// simpleTable.OrderByClause() and resolves positional references
 	// against the SELECT column list.
 	hasAggregate := cls.countStar || len(cls.aggCols) > 0
-	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, cls.groupBy, cls.groupByAliases, cls.postSortStripProj, cls.postSortStripAliases)
+	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, groupKeyRefDisplays(cls.groupBy), cls.groupByAliases, cls.postSortStripProj, cls.postSortStripAliases)
 
 	// Post-sort strip projection: when hasSortOnly is true in the
 	// aggregate path, the visible-only projection is deferred past
@@ -781,11 +781,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (4) Validate GROUP BY columns.
 	if resolver != nil {
-		for i, gb := range sq.groupBy {
-			if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+		for _, gb := range sq.groupBy {
+			if gb.expr != nil {
 				continue
 			}
-			if err := resolveColumnName(resolver, gb); err != nil {
+			if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
 		}
@@ -1261,9 +1261,15 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	var aggAliases []string
 	var aggCalls []logical.AggregateCall
 	hasDistinct := false
-	keys := make([]string, len(cls.groupBy))
-	for i, k := range cls.groupBy {
-		keys[i] = strip(k)
+	keys := logicalGroupKeys(cls.groupBy)
+	for i := range keys {
+		stripped := strip(keys[i].Display)
+		if stripped != keys[i].Display {
+			// The single-source prefix was baked away: the key is
+			// BARE from here on — stale qualification segments would
+			// chase a qualifier the runtime row no longer carries.
+			keys[i] = logical.GroupKey{Display: stripped, Bare: stripped}
+		}
 	}
 	if cls.countStar {
 		aggAliases = []string{cls.countStarAlias}
@@ -1288,16 +1294,13 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 					Star:       arg == "*",
 					Distinct:   ac.aggDistinct,
 					BareColumn: ac.aggArg != "" && ac.aggExpr == nil,
+					Qualified:  ac.aggArgQualified,
 				})
 				aggAliases = append(aggAliases, ac.outName)
 			}
 		}
 	}
-	having := ""
-	if cls.havingExpr != nil {
-		having = canonicalTextOf(cls.havingExpr)
-	}
-	aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, having)
+	aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, cls.havingExpr != nil)
 	aggOp.HasDistinctAggregate = hasDistinct
 	op = aggOp
 
@@ -1365,7 +1368,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		// consumers (CTE column aliases, positional reads) see the
 		// internal one-slot layout.
 		if needsStrip {
-			if hasNonVisible || groupKeyMissingFromVisible(keys, visibleProj) {
+			if hasNonVisible || groupKeyMissingFromVisible(groupKeyDisplayNames(keys), visibleProj) {
 				cls.postSortStripProj = visibleProj
 				cls.postSortStripAliases = visibleAliases
 			} else {

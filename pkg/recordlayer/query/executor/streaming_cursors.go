@@ -100,6 +100,15 @@ type aggregateCursor struct {
 	emittedFinal          bool
 	closed                bool
 
+	// lastNoNext replays a prior terminal result on a contract-violating
+	// re-call (Java AggregateCursor inherits the cached no-next result:
+	// `if (nextResult != null && !nextResult.hasNext()) return nextResult`).
+	// CRITICAL here: without it, a re-call after a mid-group out-of-band stop
+	// re-pulls the inner and consumes rows into an accumulator whose partial
+	// state was already serialized into the reported continuation — those rows
+	// are silently lost on resume.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
+
 	// previousContinuationInGroup is the inner continuation of the last row
 	// ACCEPTED into the current group — Java AggregateCursor's
 	// previousContinuationInGroup (AggregateCursor.java:116-146). Every
@@ -232,6 +241,9 @@ func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 	if c.closed {
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 
 	// If inner is exhausted, emit the final group (if any).
 	if c.innerExhausted {
@@ -268,9 +280,11 @@ func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 			if encErr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
 			}
-			return recordlayer.NewResultNoNext[QueryResult](
+			res := recordlayer.NewResultNoNext[QueryResult](
 				reason, recordlayer.NewBytesContinuation(contBytes),
-			), nil
+			)
+			c.lastNoNext = &res
+			return res, nil
 		}
 
 		row := result.GetValue()
@@ -813,6 +827,13 @@ type customSortCursor struct {
 	closed  bool
 	maxBuf  int                       // 0 = use DefaultMaxSortBufferRows
 	st      *recordlayer.ExecuteState // RFC-130 statement memory budget
+	// lastNoNext replays a fill-phase out-of-band stop on a contract-violating
+	// re-call (Java's cached no-next result). Without it a re-call re-enters
+	// the fill loop and pulls MORE inner rows into a buffer whose contents were
+	// already serialized into the reported continuation — skewing the resume.
+	// The emit phase needs no cache: loaded=true makes its exhaustion terminal
+	// idempotent without touching the inner.
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
 	// chargedBytes is what THIS cursor has charged against st, released on
 	// Close. The statement budget bounds LIVE buffered bytes: the buffer
 	// round-trips through the page continuation and is re-charged at resume
@@ -844,6 +865,9 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 	if c.closed {
 		return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf("cursor is closed")
 	}
+	if c.lastNoNext != nil {
+		return *c.lastNoNext, nil
+	}
 	if c.loaded {
 		return c.emitNext()
 	}
@@ -874,9 +898,11 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 			if encErr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
 			}
-			return recordlayer.NewResultNoNext[QueryResult](
+			res := recordlayer.NewResultNoNext[QueryResult](
 				reason, recordlayer.NewBytesContinuation(contBytes),
-			), nil
+			)
+			c.lastNoNext = &res
+			return res, nil
 		}
 		v := result.GetValue()
 		// RFC-130: charge each row's bytes against the statement memory budget

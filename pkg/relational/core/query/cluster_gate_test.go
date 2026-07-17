@@ -225,7 +225,7 @@ func TestClusterArity_Shapes(t *testing.T) {
 		{"full_outer_box_plus_scan", inner(logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), scan("TypedRecord", "t")), 2},
 		{"filter_transparent", inner(logical.NewFilter(scan("Order", "o"), "x > 1"), scan("Customer", "c")), 2},
 		{"project_transparent", inner(logical.NewProject(scan("Order", "o"), []string{"order_id"}, []string{""}), scan("Customer", "c")), 2},
-		{"aggregate_opaque", inner(logical.NewAggregate(inner(scan("Order", "o"), scan("Customer", "c")), []string{"x"}, nil, nil, ""), scan("TypedRecord", "t")), 2},
+		{"aggregate_opaque", inner(logical.NewAggregate(inner(scan("Order", "o"), scan("Customer", "c")), []logical.GroupKey{{Display: "x", Bare: "x"}}, nil, nil, false), scan("TypedRecord", "t")), 2},
 		{"distinct_opaque", logical.NewDistinct(scan("Order", "o")), 1},
 		{"sort_opaque", inner(logical.NewSort(inner(scan("Order", "o"), scan("Customer", "c")), nil), scan("TypedRecord", "t")), 2},
 		{"union_opaque", logical.NewUnion([]logical.LogicalOperator{scan("Order", "o"), scan("Customer", "c")}, false), 1},
@@ -475,7 +475,7 @@ func TestWedgeGate_Translation(t *testing.T) {
 	t.Run("aggregate_boundary_roots_fresh_cluster", func(t *testing.T) {
 		t.Parallel()
 		nested := inner(scan("Order", "o"), scan("Customer", "c"))
-		agg := logical.NewAggregate(nested, []string{"o.order_id"}, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, "")
+		agg := logical.NewAggregate(nested, []logical.GroupKey{{Display: "o.order_id", Bare: "order_id", Qualifier: "o", Qualified: true}}, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, false)
 		root := inner(agg, scan("TypedRecord", "t"))
 		if d := run(t, root, nested); !d.Gated || d.Arity != 2 {
 			t.Fatalf("2-way under aggregate under a join: %+v, want gated arity 2 (aggregate is an opaque boundary)", d)
@@ -534,7 +534,7 @@ func TestWedgeGate_Translation(t *testing.T) {
 		// aggregate boundary roots a fresh cluster) before the rejection, but
 		// the plan dies with it.
 		nested := inner(scan("Order", "o"), scan("Customer", "c"))
-		agg := logical.NewAggregate(nested, []string{"o.order_id"}, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, "")
+		agg := logical.NewAggregate(nested, []logical.GroupKey{{Display: "o.order_id", Bare: "order_id", Qualifier: "o", Qualified: true}}, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, false)
 		agg.HavingPredicate = &predicates.ComparisonPredicate{
 			Operand:    &values.FieldValue{Field: "CNT"},
 			Comparison: predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: &values.ConstantValue{Value: int64(0)}},
@@ -587,7 +587,7 @@ func TestWalkArmParity(t *testing.T) {
 		{"full_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), true, 1},                                                                                                             // FULL gates unconditionally -> eligible; cluster: opaque box of 1
 		{"cte_nonrecursive_derived_join", logical.NewCTE("d", inner(scan("Order", "o"), scan("Customer", "c")), logical.NewScan("d", ""), false), true, 2},                                                                   // derived body join gates
 		{"cte_recursive", logical.NewCTE("r", logical.NewUnion([]logical.LogicalOperator{scan("Order", "o"), scan("Order", "o2")}, false), logical.NewScan("r", ""), true), false, arityPoison},
-		{"aggregate", logical.NewAggregate(scan("Order", "o"), []string{"x"}, nil, nil, ""), true, 1},
+		{"aggregate", logical.NewAggregate(scan("Order", "o"), []logical.GroupKey{{Display: "x", Bare: "x"}}, nil, nil, false), true, 1},
 		{"distinct", logical.NewDistinct(scan("Order", "o")), true, 1},
 		{"sort", logical.NewSort(scan("Order", "o"), nil), true, 1},
 		{"limit", logical.NewLimit(scan("Order", "o"), 5, 0), true, 1},
