@@ -538,3 +538,43 @@ intersection non-max `consume()` advance). What remains is classified below.
 - **Construction-time vs first-OnNext continuation-parse errors**: Go defers
   all parse failures to an errorCursor on first pull (I/O-free construction);
   Java throws in the constructor. Both fail loudly; timing differs.
+
+
+## PLANNING dual insertion: physical yields live in BOTH member sets (RFC-180 D2 audit)
+
+**Go:** `TransformExprTask`'s PLANNING yieldFn inserts a physical yield into
+BOTH the exploratory members (rule matching / convergence detection) and the
+final members (OptimizeGroup selection). **Java:** no dual insertion —
+`yieldUnknownExpression` routes a physical plan to the FINAL set only; the
+exploratory set never holds plans.
+
+Consequence: pruning (which trims finals only) leaves an exploratory copy of
+every pruned loser behind, so identity guards that transpose Java's
+`containsExactly` must demand FINAL survival instead
+(`Reference.ContainsFinal` in `OptimizeInputsTask`) — a compensating
+divergence for a structural one. The transform-task guards
+(`TransformExprTask`/`TransformImplTask`) deliberately keep the both-sets
+check: re-firing rules on a pruned-but-exploratory physical member matches
+the convergence bookkeeping the dual insert exists for.
+
+**Open question (Graefe review of 0aea06b48):** should the dual insertion
+itself die in favor of Java's final-only routing, letting the exploratory
+set hold only logical expressions? That would restore `containsExactly`
+parity wholesale and shrink re-exploration work, but the convergence
+detection (`NeedsExploration` keyed on member growth) currently counts
+physical yields as exploration progress — unwinding it is a planner-core
+arc, not a patch. Until then: any new identity guard on physical members
+must use `ContainsFinal`.
+
+## Ordering translation through renaming projections (performance-only gap)
+
+Sort-elision satisfaction resolves an order-preserving wrapper through its
+SOURCE GROUP without translating the requested ordering's Values across a
+projection's renames (`orderingDelegator` — the request stays in output
+space while the child orders in input space). A rename therefore fails
+`orderingKeyFor` resolution → elision declines → an avoidable enforcer sort
+(never a wrong order). Java translates requested orderings through
+pulled-up value maps (`RequestedOrdering.pushDown` on the projection's
+result value). Go has the machinery (`RequestedOrdering.PushDownThroughValue`)
+— wiring it into the delegation walk is the follow-up; until then the
+decline arm keeps correctness.

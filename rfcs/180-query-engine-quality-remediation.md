@@ -6,6 +6,19 @@ is the sole representation; the surviving text fields — GroupKeys,
 Having-as-presence-sentinel, PredicateText, SortKey.Expr — are the
 translator's decline-or-resolve inputs, never re-parsed, and retire with
 their own stages as resolved-Value coverage completes).
+**Open follow-up (Torvalds lap on 0aea06b48): union-leg spine pinning.**
+ImplementSortRule now pins the delegation spine at yield time
+(pinOrderedSpine), but ImplementDistinctUnionRule /
+ImplementInUnionRule still compute leg orderings from the first
+partition member's estimate and memoize ALL partition expressions as
+the leg reference — extraction's WithChildren re-derivation over that
+multi-member ref can relink a leg to a member whose runtime order
+diverges from the comparison keys (merge-dedup correctness, not just
+order). The fix needs a RichOrdering→RequestedOrdering conversion for
+the leg requirement plus per-leg pinning, with a red repro harnessing a
+delegator leg. Queued next; in_join's use is enumeration-heuristic only
+(its wrapper claims no ordering) and needs nothing.
+
 **I3 DONE**: matching.RootOperatorMatcher carries the typed root
 (reflect.Type from the matcher's type parameter — never the debug
 string); ruleIndex buckets each phase's rules by root operator with an

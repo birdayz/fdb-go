@@ -309,3 +309,22 @@ func TestMemoMerge_PanicsDuringPlanning(t *testing.T) {
 	}()
 	m.merge(a, b)
 }
+
+// TestMemoMergeable_DeclinesDuringPlanning pins the soft path of the
+// RFC-037 §0 phase gate: expression rules still fire during PLANNING and
+// integrateOne consults mergeable — a PLANNING-time equivalence discovery
+// must DECLINE (keep the groups separate; always sound) instead of
+// running into the merge tripwire's panic and failing the query.
+func TestMemoMergeable_DeclinesDuringPlanning(t *testing.T) {
+	t.Parallel()
+	a := expressions.InitialOf(fixtureScan("A"))
+	m := NewMemo(a)
+	b := expressions.InitialOf(fixtureScan("B"))
+	if !m.mergeable(a, b) {
+		t.Fatal("precondition: refs must be mergeable during REWRITING")
+	}
+	m.MarkPlanningActive()
+	if m.mergeable(a, b) {
+		t.Fatal("mergeable must decline once PLANNING is active")
+	}
+}

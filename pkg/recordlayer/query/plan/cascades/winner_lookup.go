@@ -74,6 +74,61 @@ func bestSatisfyingMember(ref *expressions.Reference, ordering *RequestedOrderin
 	return best
 }
 
+// pinOrderedSpine returns expr with its ordering-delegation spine BAKED:
+// each order-preserving wrapper's source group is resolved to its cheapest
+// satisfying member and rebuilt over a fresh singleton Reference, so no
+// later selection (extraction's generic rebuild, a parent's relink) can
+// swap the spine to an unordered sibling after a sort has been dropped on
+// the strength of this expression's ordering. Non-delegators return
+// unchanged — their own plan carries the ordering. Returns nil when any
+// spine level has no satisfying member or cannot relink (WithChildren
+// unsupported): the caller must then keep its enforcer sort. Mirrors the
+// extraction-side rebuildOrderedSpine; this is the RULE-time twin for
+// yields that drop a sort during PLANNING (Java bakes concrete children at
+// rule time via memoizePlan, so it has no unpinned window at all).
+func pinOrderedSpine(expr expressions.RelationalExpression, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+	return pinOrderedSpineDepth(expr, ordering, less, 0)
+}
+
+func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool, depth int) expressions.RelationalExpression {
+	d, ok := expr.(orderingDelegator)
+	if !ok {
+		return expr
+	}
+	if depth >= maxOrderingDelegationDepth {
+		return nil
+	}
+	srcRef := d.orderingSourceRef()
+	if srcRef == nil {
+		return nil
+	}
+	m := bestSatisfyingMember(srcRef, ordering, less)
+	if m == nil {
+		return nil
+	}
+	inner := pinOrderedSpineDepth(m, ordering, less, depth+1)
+	if inner == nil {
+		return nil
+	}
+	rebuilder, ok := expr.(interface {
+		WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error)
+	})
+	if !ok {
+		return nil
+	}
+	pinnedQ := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+	// The nine delegators are all single-quantifier wrappers; a
+	// multi-quantifier delegator would need per-quantifier routing.
+	if len(expr.GetQuantifiers()) != 1 {
+		return nil
+	}
+	pinned, err := rebuilder.WithChildren([]expressions.Quantifier{pinnedQ})
+	if err != nil || pinned == nil {
+		return nil
+	}
+	return pinned
+}
+
 // lessWithHashTieBreak wraps a cost comparator with the deterministic
 // structural plan-hash tie-break (PlanningCostModel criterion #17) so the
 // derived order is TOTAL: a<b, b<a, or — when the comparator ties — a strict

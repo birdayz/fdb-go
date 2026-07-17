@@ -82,6 +82,15 @@ func (m *Memo) mergeable(a, b *expressions.Reference) bool {
 	if a == b {
 		return false
 	}
+	// REWRITING-only (RFC-037 §0): expression rules still fire during
+	// PLANNING (integrateOne → merge is reachable from a PLANNING-phase
+	// yield), and a PLANNING-time equivalence discovery must DECLINE —
+	// keeping the groups separate is always sound — rather than reach the
+	// phase tripwire's panic in merge. The panic stays as the backstop for
+	// a direct merge call that bypasses this gate.
+	if m.planningActive {
+		return false
+	}
 	if a.HasWinnersOrMatches() || b.HasWinnersOrMatches() {
 		return false
 	}

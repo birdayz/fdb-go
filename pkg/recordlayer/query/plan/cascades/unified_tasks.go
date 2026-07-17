@@ -323,6 +323,7 @@ func (t *TransformImplTask) Run(p *Planner) {
 			Reference:   t.Ref,
 			Context:     p.ctx,
 			Constraints: p.constraintMap,
+			Stats:       p.stats,
 			memo:        p.memo,
 			// Preorder (constraint-push) rules fire in their top-down constraint-only
 			// pass — PushRequestedOrderingThrough{Sort,Filter,Select,...}Rule and
@@ -387,6 +388,7 @@ func (t *TransformImplTask) Run(p *Planner) {
 					Reference:   t.Ref,
 					Context:     p.ctx,
 					Constraints: p.constraintMap,
+					Stats:       p.stats,
 					memo:        p.memo,
 				}
 				t.Rule.OnMatch(call)

@@ -321,3 +321,65 @@ func TestFilterRule_UsesWinnerPerOrdering(t *testing.T) {
 		t.Fatal("FilterPlan is nil")
 	}
 }
+
+// TestPinOrderedSpine pins the RULE-time twin of the extraction spine
+// pinning: a sort-dropping yield of an order-preserving wrapper must bake
+// the wrapper's source group to the satisfying member — otherwise
+// extraction's generic rebuild relinks it to a cheaper unordered sibling
+// after the sort is already gone.
+func TestPinOrderedSpine(t *testing.T) {
+	t.Parallel()
+
+	ordered := sortedMemberOn(t, "S")
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	srcRef := expressions.InitialOf(scan)
+	FireExpressionRule(NewPrimaryScanRule(), srcRef)
+	cheap := findPhysicalExpr(srcRef)
+	if cheap == nil {
+		t.Fatal("no physical scan")
+	}
+	srcRef.InsertFinal(cheap)
+	srcRef.Insert(ordered)
+	srcRef.InsertFinal(ordered)
+	srcRef.SetWinner(cheap)
+
+	wrapper := &physicalPredicatesFilterWrapper{
+		plan: plans.NewRecordQueryPredicatesFilterPlan(
+			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		),
+		innerQuant: expressions.ForEachQuantifier(srcRef),
+	}
+
+	reqS := NewRequestedOrdering(
+		[]RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: RequestedSortOrderAscending}},
+		DistinctnessPreserveDistinctness, false)
+
+	pinned := pinOrderedSpine(wrapper, reqS, nil)
+	if pinned == nil {
+		t.Fatal("a delegator over a group WITH a satisfying member must pin, not decline")
+	}
+	qs := pinned.GetQuantifiers()
+	if len(qs) != 1 {
+		t.Fatalf("pinned wrapper must keep its single quantifier, got %d", len(qs))
+	}
+	members := qs[0].GetRangesOver().AllMembers()
+	if len(members) != 1 || members[0] != ordered {
+		t.Fatalf("the pinned source group must be a singleton holding the ORDERED member; got %d members", len(members))
+	}
+
+	// A non-delegator returns unchanged.
+	if got := pinOrderedSpine(ordered, reqS, nil); got != ordered {
+		t.Fatalf("non-delegator must pass through unchanged, got %T", got)
+	}
+
+	// Unpinnable (no satisfying member) declines with nil.
+	loneRef := expressions.InitialOf(cheap)
+	loneWrapper := &physicalPredicatesFilterWrapper{
+		plan:       wrapper.plan,
+		innerQuant: expressions.ForEachQuantifier(loneRef),
+	}
+	if got := pinOrderedSpine(loneWrapper, reqS, nil); got != nil {
+		t.Fatalf("delegator over an orderless group must decline, got %T", got)
+	}
+}

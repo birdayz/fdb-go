@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // ImplementationRule is a rule that runs during PhasePlanning.
@@ -26,10 +27,21 @@ type ImplementationRuleCall struct {
 	Reference            *expressions.Reference
 	Context              PlanContext
 	Constraints          *ConstraintMap
+	Stats                properties.StatisticsProvider
 	memo                 *Memo
 	yielded              []expressions.RelationalExpression
 	constraintOnly       bool
 	constraintPushedRefs []*expressions.Reference
+}
+
+// CostModel returns the comparator a rule should use for internal best-plan
+// selection: stats-aware when the planner threaded statistics, else the
+// default-stats comparator. Mirrors ExpressionRuleCall.CostModel.
+func (c *ImplementationRuleCall) CostModel() func(a, b expressions.RelationalExpression) bool {
+	if c.Stats != nil {
+		return NewPlanningCostModelLessWithContext(c.Stats, c.Context)
+	}
+	return PlanningCostModelLess
 }
 
 // Yield records a final expression to be inserted into the
