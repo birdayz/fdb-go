@@ -542,17 +542,5 @@ func (p *NotPredicate) Explain() string {
 // value-or-both-nil: nil means "index default", which is a distinct identity
 // from an explicit setting.
 func distanceRankFieldsEqual(a, b *Comparison) bool {
-	if !valueNamesEqual(a.QueryVector, b.QueryVector) {
-		return false
-	}
-	if (a.EfSearch == nil) != (b.EfSearch == nil) {
-		return false
-	}
-	if a.EfSearch != nil && *a.EfSearch != *b.EfSearch {
-		return false
-	}
-	if (a.IsReturningVectors == nil) != (b.IsReturningVectors == nil) {
-		return false
-	}
-	return a.IsReturningVectors == nil || *a.IsReturningVectors == *b.IsReturningVectors
+	return valueNamesEqual(a.QueryVector, b.QueryVector) && distanceRankKnobsEqual(a, b)
 }

@@ -101,4 +101,7 @@ func TestComparisonPredicate_Discriminators(t *testing.T) {
 	if SemanticEqualsUnderAliasMap(vecA, vecB, nil) {
 		t.Error("K-NN predicates with different query vectors must NOT be semantically equal")
 	}
+	if SemanticEqualsUnderAliasMap(vecA, withEf, nil) || SemanticEqualsUnderAliasMap(vecA, withRet, nil) {
+		t.Error("explicit HNSW knobs are distinct identities from index-default under the semantic layer too")
+	}
 }
