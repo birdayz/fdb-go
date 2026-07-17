@@ -6,9 +6,14 @@ is the sole representation; the surviving text fields — GroupKeys,
 Having-as-presence-sentinel, PredicateText, SortKey.Expr — are the
 translator's decline-or-resolve inputs, never re-parsed, and retire with
 their own stages as resolved-Value coverage completes).
-Remaining: **I3** (rule index by root
-operator class — perf-only; blocked on a typed matcher-root API, the
-debug rootType strings are not a safe key). **D2 DONE**: the flat
+**I3 DONE**: matching.RootOperatorMatcher carries the typed root
+(reflect.Type from the matcher's type parameter — never the debug
+string); ruleIndex buckets each phase's rules by root operator with an
+always bucket for interface-rooted matchers (Java AbstractRuleSet);
+planner task counts drop ~85%; the 14 pre-generics boilerplate matcher
+types are deleted. Follow-ups from the same reviewer lap: constraint
+pushes COMBINE with Java's subsumption union instead of clobbering, and
+the constraint map keys canonical references. **D2 DONE**: the flat
 PhysicalProperties winner key is DELETED — Reference keeps ONE
 OPTIMIZE winner; ordering-specific selection scans members' derived
 rich orderings (computeWrapperRichOrdering → RichOrdering.Satisfies,
