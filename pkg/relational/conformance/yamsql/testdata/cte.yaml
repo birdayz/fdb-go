@@ -356,3 +356,17 @@ tests:
   - query: |-
       SELECT id FROM t WHERE id = (WITH i(a, b) AS (SELECT id FROM t WHERE id <= 2) SELECT MAX(a) FROM i)
     error_code: "42F10"
+  # Round-10 pins: (a) a group key read only by ORDER BY (v) survives until
+  # the sort consumes it — the reshaping projection defers past the sort
+  # instead of stripping the key first; (b) CTE re-aliasing composes with
+  # SELECT aliases — the re-aliasing projection reads the project's OUTPUT
+  # names (X,Y), not the stale underlying source names (ID,ID).
+  - query: |-
+      WITH c(a, b, d) AS (SELECT id, id, id FROM t GROUP BY id, v ORDER BY v)
+      SELECT COUNT(*) FROM c
+    rows:
+      - [4]
+  - query: |-
+      SELECT id FROM t WHERE id = (WITH c(a, b) AS (SELECT id AS x, id AS y FROM t GROUP BY id) SELECT COUNT(*) FROM c)
+    rows:
+      - [4]

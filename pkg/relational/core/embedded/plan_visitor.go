@@ -1359,7 +1359,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		// consumers (CTE column aliases, positional reads) see the
 		// internal one-slot layout.
 		if needsStrip {
-			if hasNonVisible {
+			if hasNonVisible || groupKeyMissingFromVisible(keys, visibleProj) {
 				cls.postSortStripProj = visibleProj
 				cls.postSortStripAliases = visibleAliases
 			} else {

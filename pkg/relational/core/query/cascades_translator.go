@@ -7651,6 +7651,23 @@ func (t *cascadesTranslator) inCTEDefiningScope(key string, body logical.Logical
 func extractOutputColumns(op logical.LogicalOperator) []string {
 	switch o := op.(type) {
 	case *logical.LogicalProject:
+		// Per-slot alias preference: the OUTPUT name of an aliased
+		// projection slot is the alias (`SELECT id AS x` outputs X, not
+		// ID). Returning the underlying Projections handed translateCTE
+		// stale source names — its re-aliasing projection then read ID
+		// from a row shaped [X,Y] and failed ordinal resolution at
+		// runtime.
+		if len(o.Aliases) == len(o.Projections) {
+			cols := make([]string, len(o.Projections))
+			for i, proj := range o.Projections {
+				if o.Aliases[i] != "" {
+					cols[i] = o.Aliases[i]
+				} else {
+					cols[i] = proj
+				}
+			}
+			return cols
+		}
 		return o.Projections
 	case *logical.LogicalAggregate:
 		var cols []string

@@ -519,7 +519,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// consumers (CTE column aliases, positional reads) see the
 			// internal one-slot layout.
 			if needsStrip {
-				if hasNonVisible {
+				if hasNonVisible || groupKeyMissingFromVisible(keys, visibleProj) {
 					sq.postSortStripProj = visibleProj
 					sq.postSortStripAliases = visibleAliases
 				} else {
@@ -713,4 +713,25 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		})
 	}
 	return logical.NewUpdate(tableName, sets, scan)
+}
+
+// groupKeyMissingFromVisible reports whether any GROUP BY key is absent from
+// the visible SELECT list. Such a key is still a legal ORDER BY target
+// (`SELECT id,id FROM t GROUP BY id,v ORDER BY v`), so the reshaping
+// projection must be DEFERRED past the sort (postSortStrip) — stripping the
+// key before the sort consumes it fails ordinal resolution at runtime.
+func groupKeyMissingFromVisible(keys, visibleProj []string) bool {
+	for _, k := range keys {
+		found := false
+		for _, vp := range visibleProj {
+			if strings.EqualFold(k, vp) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return true
+		}
+	}
+	return false
 }
