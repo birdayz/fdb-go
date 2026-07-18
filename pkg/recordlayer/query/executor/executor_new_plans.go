@@ -901,6 +901,13 @@ func executeFirstOrDefault(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	// A resume from the emitted row's own continuation: the single row
+	// was already consumed — the cursor is exhausted, never re-executed
+	// (re-execution would re-emit the row: a duplicate under any parent
+	// that snapshots child positions).
+	if bytes.Equal(continuation, singleResultConsumedToken) {
+		return recordlayer.Empty[QueryResult](), nil
+	}
 	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	if err != nil {
 		return nil, err
@@ -1731,6 +1738,16 @@ func (c *errResultCursor) OnNext(context.Context) (recordlayer.RecordCursorResul
 func (c *errResultCursor) Close() error   { return nil }
 func (c *errResultCursor) IsClosed() bool { return false }
 
+// singleResultConsumedToken is the continuation a singleResultCursor's
+// emitted row carries: "the one row was consumed". A resume from it is
+// EXHAUSTED (executeFirstOrDefault returns Empty). The retired
+// value+nil-continuation shape was impossible in Java (every value
+// result carries a resumable continuation) and made every parent
+// snapshot the child as START — safe only while the shape stayed ≤1 row
+// under a per-outer-row FlatMap; any other parent would have silently
+// replayed the row.
+var singleResultConsumedToken = []byte{0x01}
+
 // singleResultCursor yields one result then ends.
 type singleResultCursor struct {
 	value  QueryResult
@@ -1749,10 +1766,9 @@ func (c *singleResultCursor) OnNext(_ context.Context) (recordlayer.RecordCursor
 		), nil
 	}
 	c.done = true
-	// Use nil continuation — a single-result cursor doesn't support
-	// resumption. EndContinuation is rejected by NewResultWithValue
-	// (a value result must have a resumable continuation).
-	return recordlayer.NewResultWithValue(c.value, nil), nil
+	return recordlayer.NewResultWithValue(
+		c.value, recordlayer.NewBytesContinuation(singleResultConsumedToken),
+	), nil
 }
 
 func (c *singleResultCursor) Close() error   { c.closed = true; return nil }

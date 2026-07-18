@@ -115,10 +115,16 @@ type RecordCursorResult[T any] struct {
 }
 
 // NewResultWithValue creates a result with a value.
-// Panics if continuation is an EndContinuation — a value result must always
-// have a resumable continuation. Matches Java's RecordCursorResult.withNextValue().
+// Panics if continuation is an EndContinuation OR nil — a value result
+// must always carry a RESUMABLE continuation (Java's
+// RecordCursorResult.withNextValue has no null arm). A nil here would
+// make every parent snapshot the child as START and silently replay the
+// emitted rows on resume.
 func NewResultWithValue[T any](value T, continuation RecordCursorContinuation) RecordCursorResult[T] {
-	if continuation != nil && continuation.IsEnd() {
+	if continuation == nil {
+		panic("value result requires a resumable continuation, got nil")
+	}
+	if continuation.IsEnd() {
 		panic("cannot return end continuation with next value")
 	}
 	return RecordCursorResult[T]{

@@ -1557,6 +1557,16 @@ func executeDistinct(
 	// RFC-130: the distinct seen-set is a cardinality-growing buffer (one
 	// key string per distinct row, held for the whole scan). Charge each NEW
 	// key's bytes against the statement memory budget via boundedSet.
+	//
+	// The set is rebuilt FRESH per page (nothing of it rides the
+	// continuation), so duplicates whose occurrences straddle an internal
+	// page break are re-admitted. Java's RecordQueryUnorderedDistinctPlan
+	// has the IDENTICAL fresh-HashSet shape — cross-page dedup is a known
+	// weakness of the operator in both engines, not a divergence — but
+	// Go's automatic internal paging surfaces it inside one statement,
+	// where Java only hits it on client-driven resumes. A fix means
+	// carrying the seen-set (or a sorted-input requirement) through the
+	// continuation — an ordering-aware arc, tracked in TODO.md.
 	seen := newBoundedSet[string](props.State)
 	filtered := &filterResultCursor{
 		inner: innerCursor,

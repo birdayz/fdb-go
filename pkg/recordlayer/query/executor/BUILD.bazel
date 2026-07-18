@@ -79,6 +79,7 @@ go_test(
         "positional_type_cache_test.go",
         "projection_output_names_test.go",
         "resultset_test.go",
+        "single_result_continuation_test.go",
         "span_window_cross_agreement_test.go",
         "streaming_row_continuation_integration_test.go",
         "streaming_row_continuation_test.go",
@@ -146,6 +147,7 @@ go_test(
         "nlj_continuation_test.go",
         "flatmap_kept_armed_test.go",
         "terminal_replay_exec_test.go",
+        "single_result_continuation_test.go",
     ],
     deps = [
         "//gen",

@@ -1425,6 +1425,11 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > - [x] P0.7 PushSetOperationThroughFetch rebuild over pushed inners (Graefe+Torvalds ACK;
 >       single-pass tryPushValues, dynamic InUnion arm live, Case-2 partial push,
 >       ordered-union instantiation, e2e Fetch(Union(IndexScan…)) pin)
+> - [ ] C5 follow-up: DISTINCT cross-page dedup (seen-set rebuilt fresh per page —
+>       duplicates straddling an internal 4s page break re-admit; Java's
+>       UnorderedDistinctPlan has the identical shape, but Go's auto-paging hits it
+>       inside ONE statement; fix = seen-set through the continuation or a
+>       sorted-input distinct; documented at executeDistinct)
 > Then: WS-C (continuation round 2; audit complete — C1 recursive-CTE resume misroute
 > is SILENT CORRUPTION, one-line stopgap guard immediately, then the full
 > RecursiveCursorContinuation port; C2 cross-engine SQL handoff silent-restart decision +

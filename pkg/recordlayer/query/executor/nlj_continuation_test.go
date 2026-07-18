@@ -458,12 +458,14 @@ func TestNLJContinuation_KeyPositionalInnerResume(t *testing.T) {
 }
 
 // TestNLJContinuation_UnresumableOuterDeclines pins the zero-length-token
-// corner: a LEFT NLJ over an outer that yields NO continuation bytes (a
-// FirstOrDefault-style single-result cursor) emits its advanced-outer
-// envelope after the null pad — with nothing to restore, that envelope used
-// to marshal to ZERO bytes, which the relational driver reads as exhaustion
-// and a fresh executor call reads as a full restart. The token must be
-// NON-empty and decline loudly on decode.
+// corner: a LEFT NLJ over an outer whose row continuations marshal to NO
+// bytes (a StartContinuation-style zero-marshaling token — the
+// value+nil-continuation shape itself is banned by NewResultWithValue)
+// emits its advanced-outer envelope after the null pad — with nothing to
+// restore, that envelope used to marshal to ZERO bytes, which the
+// relational driver reads as exhaustion and a fresh executor call reads
+// as a full restart. The token must be NON-empty and decline loudly on
+// decode.
 func TestNLJContinuation_UnresumableOuterDeclines(t *testing.T) {
 	t.Parallel()
 	// One outer row with an EMPTY continuation, no inner match → LEFT pad,
@@ -487,7 +489,7 @@ func TestNLJContinuation_UnresumableOuterDeclines(t *testing.T) {
 }
 
 // bareContinuationCursor emits rows whose continuations carry NO bytes —
-// models FirstOrDefault/singleResultCursor outers.
+// the zero-marshaling corner (StartContinuation-shaped tokens).
 type bareContinuationCursor struct {
 	rows   []QueryResult
 	pos    int
@@ -498,8 +500,9 @@ func (p *bareContinuationCursor) OnNext(context.Context) (recordlayer.RecordCurs
 	if p.pos < len(p.rows) {
 		r := p.rows[p.pos]
 		p.pos++
-		// nil continuation — exactly what singleResultCursor emits.
-		return recordlayer.NewResultWithValue(r, nil), nil
+		// A continuation whose bytes marshal EMPTY — the zero-byte
+		// envelope corner this test pins.
+		return recordlayer.NewResultWithValue(r, &recordlayer.StartContinuation{}), nil
 	}
 	return recordlayer.NewResultNoNext[QueryResult](
 		recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
