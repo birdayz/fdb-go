@@ -11,12 +11,12 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**324 scenarios · 2569 query/assertion cases** across 18 feature areas.
+**325 scenarios · 2572 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
 | Aggregates & GROUP BY | 49 | 315 |
-| Joins | 60 | 264 |
+| Joins | 61 | 267 |
 | Subqueries (EXISTS / IN / scalar) | 42 | 281 |
 | CTEs | 12 | 105 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 10 | 53 |
@@ -126,6 +126,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `join_group_having_exists` | 6 | complex pipeline: JOIN + GROUP BY + HAVING + EXISTS |
 | `join_index_correlation` | 6 | Join with correlated index probe |
 | `join_left_right_symmetry` | 2 | LEFT/RIGHT join symmetry |
+| `join_leg_name_pins` | 3 | same-named columns across join legs |
 | `join_null_key` | 3 | SQL §7.6: NULL = NULL evaluates to UNKNOWN, so rows with NULL in a |
 | `join_on_syntax` | 6 | JOIN ... |
 | `join_optimization_probes` | 6 | — |

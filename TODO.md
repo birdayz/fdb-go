@@ -1430,14 +1430,20 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       UnorderedDistinctPlan has the identical shape, but Go's auto-paging hits it
 >       inside ONE statement; fix = seen-set through the continuation or a
 >       sorted-input distinct; documented at executeDistinct)
-> Then: WS-C (continuation round 2; audit complete — C1 recursive-CTE resume misroute
-> is SILENT CORRUPTION, one-line stopgap guard immediately, then the full
-> RecursiveCursorContinuation port; C2 cross-engine SQL handoff silent-restart decision +
-> conformance pin; C3 FlatMapPipelinedWithCheck kept-armed port (IN-join uses it);
-> C4 LoadByKeys guard; intersectionMultiCursor consume()), WS-T (plan-time promotion lattice, cast-engine unification, MinInt64/-1,
-> number+string '+', document-and-pin items), WS-P (ConstraintsMap epoch port retiring
-> dual-insertion + 15b/15c + round cap; un-gate REWRITING OptimizeInputs; fix stale
-> DIVERGENCES advancePlannerStage claim).
+> WS-C: DONE (Graefe ACK; Torvalds conditions folded — lazy continuations, depth
+> parity, ctor charge release). C1 full RecursiveUnionCursor port (UNION ALL
+> recursion streams + resumes mid-level; DISTINCT eager + loud decline), C2
+> engine-private decision + loud OptContinuation boundary, C3 kept-armed pending
+> inner, C4 LoadByKeys lazy key-list resume, C5 documented at executeDistinct,
+> C6 nil-continuation ban, intersectionMultiCursor consume().
+> WS-N interim: quoted-lowercase column 42703 fixed (rlcatalog exact-key lookup);
+> case-colliding quoted columns reject 0A000 at CREATE (was a planning panic);
+> green pins landed (quoted_identifier_pins, join_leg_name_pins). Still red →
+> Phase A: derived "A.ID" through a join (parser→IR string channel re-split).
+> Remaining: WS-T (plan-time promotion lattice, cast-engine unification,
+> number+string '+', document-and-pin items), WS-P (ConstraintsMap epoch port
+> retiring dual-insertion + 15b/15c + round cap; un-gate REWRITING
+> OptimizeInputs; fix stale DIVERGENCES advancePlannerStage claim).
 
 > ## [ ] RFC-180 follow-up — output-label collision mis-binds sort keys over the IMMEDIATE reshaping strip (pre-existing)
 > `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC`
