@@ -116,7 +116,7 @@ func TestFilteredBoxUnnestCensus(t *testing.T) {
 		// pinned by the sqldriver FDB subquery-conjunct scenarios.
 		t.Run("scalar_subquery_operand_bakeable", func(t *testing.T) {
 			pred := predicates.NewComparisonPredicate(
-				t4ID(), eq(values.NewScalarSubqueryValue(values.NamedCorrelationIdentifier("SQ"))))
+				t4ID(), eq(values.NewScalarSubqueryValue(values.NamedCorrelationIdentifier("SQ"), nil)))
 			if got := classify(t, b2BoxShapeWithPred(pred)); got != boxConjBakeable {
 				t.Fatalf("classifyBoxLegConjunct = %d, want Bakeable(%d) for a scalar-subquery operand", got, boxConjBakeable)
 			}

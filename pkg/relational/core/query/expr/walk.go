@@ -2098,11 +2098,11 @@ func (r *Resolver) walkScalarSubquery(ctx *antlrgen.SubqueryExpressionAtomContex
 	if q == nil {
 		return nil, &UnsupportedExpressionShapeError{Shape: "scalar subquery without inner Query"}
 	}
-	alias, err := r.subqueryPlanner.BuildScalar(q)
+	alias, typ, err := r.subqueryPlanner.BuildScalar(q)
 	if err != nil {
 		return nil, err
 	}
-	return values.NewScalarSubqueryValue(alias), nil
+	return values.NewScalarSubqueryValue(alias, typ), nil
 }
 
 // walkExistsPredicate handles `EXISTS (SELECT ...)`. Delegates to the

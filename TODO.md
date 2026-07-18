@@ -1447,11 +1447,11 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > document-and-pin batch, datetime edge nets. Cross-engine wins landed live:
 > string_concat_via_plus annotation retired; type_mismatch_boolean_eq_int
 > left the known-red lock; bigint_eq_double_above_2p53 corpus entry added.
-> - [ ] FIRST-PRIORITY follow-up (Torvalds condition, sanctioned TODO):
->       ScalarSubqueryValue.Type() returns UnknownType unconditionally, so
->       CAST((SELECT bigint_col ...) AS BOOLEAN) evades the plan-time gates
->       the direct column hits. Thread the inner plan's output column type
->       through SubqueryPlanner.BuildScalar → ScalarSubqueryValue.
+> - [x] FIRST-PRIORITY follow-up (Torvalds condition, sanctioned TODO) — DONE:
+>       SubqueryPlanner.BuildScalar returns the inner plan's output column
+>       type (project value / Java aggregate result table; correlated arm
+>       stays Unknown); ScalarSubqueryValue flows it into the cast-pair and
+>       promotion gates. Pinned in scalar_subquery_typed_gates.yaml.
 > - [ ] Follow-up (Torvalds, sanctioned TODO): the yamsql walker's decline
 >       classification reports 0AF00 for a CAST the plan-time pair gate
 >       rejected with 22F3H (cast.yaml STRING→BYTES pins). Surface the

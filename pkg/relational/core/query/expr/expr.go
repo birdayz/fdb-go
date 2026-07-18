@@ -93,6 +93,9 @@ import (
 // BuildScalar receives the inner Query context from a
 // SubqueryExpressionAtomContext (scalar subquery) and returns:
 //   - alias: a unique CorrelationIdentifier for the scalar subquery
+//   - typ: the inner plan's single output column type (UnknownType when
+//     the shape is underivable) — flowed into ScalarSubqueryValue so the
+//     plan-time gates see the real type
 //   - err: non-nil when the inner query cannot be planned
 //
 // The planner stores the (alias → plan) mapping externally; the
@@ -100,7 +103,7 @@ import (
 // referencing the alias.
 type SubqueryPlanner interface {
 	BuildExists(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, err error)
-	BuildScalar(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, err error)
+	BuildScalar(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, typ values.Type, err error)
 }
 
 // Resolver converts parsed SQL expressions into cascades Values. It

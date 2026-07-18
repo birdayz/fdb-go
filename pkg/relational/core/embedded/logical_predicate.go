@@ -7758,9 +7758,9 @@ func qualifyBareFieldValue(v values.Value, qualifier string) {
 	})
 }
 
-func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
+func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, values.Type, error) {
 	if q == nil {
-		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: nil query context")
+		return values.CorrelationIdentifier{}, values.UnknownType, fmt.Errorf("scalar subquery: nil query context")
 	}
 	innerOp, err := buildLogicalPlanForQueryWithCTECatalog(q, p.md, p.schemaName, p.cteScopes, p.cteOnScopes)
 
@@ -7772,14 +7772,18 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 		}
 	}
 	if err != nil && (!isUndefinedCol || len(p.outerScopes) == 0) {
-		return values.CorrelationIdentifier{}, err
+		return values.CorrelationIdentifier{}, values.UnknownType, err
 	}
 	if isUndefinedCol {
-		return p.buildCorrelatedScalar(q)
+		alias, cerr := p.buildCorrelatedScalar(q)
+		// The correlated arm materializes its result through the NLJ slot
+		// machinery; its output type is not derivable from a logical plan
+		// here — Unknown keeps the pre-threading gate behavior for it.
+		return alias, values.UnknownType, cerr
 	}
 
 	if innerOp == nil {
-		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: inner query could not be planned")
+		return values.CorrelationIdentifier{}, values.UnknownType, fmt.Errorf("scalar subquery: inner query could not be planned")
 	}
 	// If the inner plan references outer CTEs (from a WITH clause on the
 	// enclosing query), wrap it with LogicalCTE nodes so the Cascades
@@ -7792,7 +7796,61 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 		Alias: alias,
 		Plan:  innerOp,
 	})
-	return alias, nil
+	return alias, scalarSubqueryOutputType(innerOp), nil
+}
+
+// scalarSubqueryOutputType derives the single output column's cascades
+// type from an uncorrelated scalar subquery's inner logical plan — the
+// type ScalarSubqueryValue flows so the plan-time gates (comparison
+// promotion 42804, cast pairs 22F3H) see the real type instead of the
+// Unknown that exempted every scalar subquery from the gates a direct
+// column reference hits. UnknownType when the shape is underivable (no
+// false claims — Unknown keeps the gate-exempt behavior).
+func scalarSubqueryOutputType(op logical.LogicalOperator) values.Type {
+	switch o := op.(type) {
+	case *logical.LogicalLimit:
+		return scalarSubqueryOutputType(o.Input)
+	case *logical.LogicalSort:
+		return scalarSubqueryOutputType(o.Input)
+	case *logical.LogicalFilter:
+		return scalarSubqueryOutputType(o.Input)
+	case *logical.LogicalProject:
+		if len(o.Projections) == 1 && len(o.ProjectedValues) == 1 && o.ProjectedValues[0] != nil {
+			if t := o.ProjectedValues[0].Type(); t != nil {
+				return t
+			}
+		}
+		return values.UnknownType
+	case *logical.LogicalAggregate:
+		if len(o.GroupKeys) == 0 && len(o.Calls) == 1 {
+			return aggregateCallOutputType(o.Calls[0], o.AggregateOperands)
+		}
+		return values.UnknownType
+	}
+	return values.UnknownType
+}
+
+// aggregateCallOutputType maps an aggregate call to Java's result type
+// (NumericAggregationValue / CountValue, tag 4.12.11.0): COUNT and
+// COUNT(*) return LONG; SUM/MIN/MAX return the OPERAND's type
+// (SUM_I INT->INT, SUM_L LONG->LONG, SUM_F FLOAT->FLOAT, SUM_D
+// DOUBLE->DOUBLE; MIN_*/MAX_* identity); AVG always returns DOUBLE.
+// Every result is nullable (a scalar subquery with zero rows is NULL).
+func aggregateCallOutputType(call logical.AggregateCall, operands []values.Value) values.Type {
+	switch call.Func {
+	case "COUNT":
+		return values.NullableLong
+	case "AVG":
+		return values.NullableDouble
+	case "SUM", "MIN", "MAX":
+		if len(operands) >= 1 && operands[0] != nil {
+			if t := operands[0].Type(); t != nil && t.Code() != values.TypeCodeUnknown {
+				return values.NewPrimitiveType(t.Code(), true)
+			}
+		}
+		return values.UnknownType
+	}
+	return values.UnknownType
 }
 
 // colBareOrName: the structured bare segment, or the whole name as one

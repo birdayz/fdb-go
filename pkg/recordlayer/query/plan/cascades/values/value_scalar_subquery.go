@@ -17,6 +17,13 @@ import "fmt"
 // per-row re-execution (not in scope).
 type ScalarSubqueryValue struct {
 	Alias CorrelationIdentifier
+	// Typ is the inner plan's single output column type, threaded from
+	// SubqueryPlanner.BuildScalar so the plan-time gates (comparison
+	// promotion, cast pairs) see the real type — an Unknown-typed scalar
+	// subquery evaded every gate a direct column reference hits. nil
+	// (underivable inner shape) reports UnknownType, the pre-threading
+	// behavior.
+	Typ Type
 }
 
 // UnboundScalarSubqueryError reports a runtime evaluation of a
@@ -36,13 +43,18 @@ func (e *UnboundScalarSubqueryError) Error() string {
 	return fmt.Sprintf("scalar subquery result not bound for alias %s: the executor must pre-evaluate the plan's scalar subqueries and bind them via WithScalarSubqueries before running the plan", e.Alias.Name())
 }
 
-func NewScalarSubqueryValue(alias CorrelationIdentifier) *ScalarSubqueryValue {
-	return &ScalarSubqueryValue{Alias: alias}
+func NewScalarSubqueryValue(alias CorrelationIdentifier, typ Type) *ScalarSubqueryValue {
+	return &ScalarSubqueryValue{Alias: alias, Typ: typ}
 }
 
 func (*ScalarSubqueryValue) Children() []Value { return nil }
 func (*ScalarSubqueryValue) Name() string      { return "scalar_subquery" }
-func (*ScalarSubqueryValue) Type() Type        { return UnknownType }
+func (v *ScalarSubqueryValue) Type() Type {
+	if v.Typ != nil {
+		return v.Typ
+	}
+	return UnknownType
+}
 
 // Evaluate retrieves the pre-computed scalar subquery result from
 // the evaluation context — correct-or-loud:
