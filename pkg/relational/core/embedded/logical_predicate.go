@@ -2278,7 +2278,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						// Twin of the PlanVisitor's qualified-projection bind
 						// (incl. the DUPLICATED-bare-leaf qualified output pin).
 						cr := colRef{table: col.qualifier, col: col.bare}
-						if bv := resolveQualifiedBaked(resolver, cr); bv != nil && !resolver.QualifierIsDuplicated(semantic.FromNormalized(cr.table)) {
+						if bv := resolveQualifiedBaked(resolver, cr); bv != nil {
 							// A qualified projection's structural bake —
 							// duplicated qualifiers included (per-attribute
 							// resolution addresses one leg by its binding;

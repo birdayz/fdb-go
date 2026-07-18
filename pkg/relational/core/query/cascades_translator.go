@@ -2291,7 +2291,12 @@ func unnestSourceCorrelation(u *logical.LogicalUnnest) values.CorrelationIdentif
 	if corr == "" {
 		corr = u.AtAlias
 	}
-	return values.NamedCorrelationIdentifier(corr)
+	// CANONICAL UPPER: the correlation-key namespace (Scope.AddSource
+	// canonicalizes registrations the same way). A quoted-lowercase
+	// unnest alias (`t.arr AS "val"`) resolves as VAL; emitting the
+	// verbatim `val` here missed the executor's exact leg lookup and an
+	// otherwise-valid query died unbound at runtime.
+	return values.NamedCorrelationIdentifier(strings.ToUpper(corr))
 }
 
 // newLimitExprFromLogical builds the Cascades LogicalLimitExpression for a

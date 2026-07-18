@@ -31,7 +31,8 @@ func TestFDB_QuotedMachineShapedAliases(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_qmsa")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE qmsa CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
-			" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))")
+			" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))"+
+			" CREATE TABLE sink (sid BIGINT, PRIMARY KEY (sid))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_qmsa/s WITH TEMPLATE qmsa")
 	dsn := fmt.Sprintf("fdbsql:///testdb_qmsa?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -134,6 +135,23 @@ func TestFDB_QuotedMachineShapedAliases(t *testing.T) {
 	t.Run("group_by", func(t *testing.T) {
 		if got := ints(t, `SELECT "q$1".v FROM p AS "q$1" GROUP BY "q$1".v ORDER BY "q$1".v`); !reflect.DeepEqual(got, []int64{10, 20}) {
 			t.Errorf("= %v, want [10 20]", got)
+		}
+	})
+	// The catalog post-build path (INSERT ... SELECT): duplicate FROM
+	// aliases bake per-binding like the SELECT path — the retired
+	// carve-out's guard clause here silently survived and discarded the
+	// valid baked value (UnresolvableOrdinalError on a query the base
+	// revision planned). The source filters to ONE p row so each qid
+	// inserts once (a full cross product would 23505 on the sink PK).
+	// The quoted-LOWERCASE unnest-alias twin lives in the array unnest
+	// suite (its fixture can seed arrays).
+	t.Run("insert_select_dup_aliases", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, `INSERT INTO sink SELECT a.qid FROM p AS a, q AS a WHERE a.id = 1`); err != nil {
+			t.Fatalf("INSERT...SELECT over dup aliases must ANSWER: %v", err)
+		}
+		got := ints(t, `SELECT sid FROM sink ORDER BY sid`)
+		if !reflect.DeepEqual(got, []int64{5, 7}) {
+			t.Errorf("= %v, want [5 7]", got)
 		}
 	})
 }

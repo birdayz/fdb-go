@@ -383,16 +383,42 @@ func TestFDB_KeyBindingAndBuriedExists(t *testing.T) {
 			t.Fatalf("P4e = %d rows %v, want 6 rows {5:2,7:2,9:2} (a.qid binds the q leg, EXISTS always true)", total, counts)
 		}
 	})
-	// (f) The UNION face: a dup-alias branch under UNION ALL dies LOUD at
-	// PLAN time — the carve-out retirement upgraded the decline from the
-	// executor's runtime ordinal guard (zero rows served first) to the
-	// born-baked plan-time UnresolvableOrdinalError: the union-branch
-	// scope source declares no column order, so the per-attribute bake
-	// cannot bind an ordinal. Correct-or-loud, now with no partial serve;
-	// full dup-alias-under-UNION support remains future work.
+	// (f) The UNION face: a dup-alias branch under UNION ALL ANSWERS.
+	// This shape declined at plan time ("declares no column order to
+	// bind a plan-time ordinal") only because the catalog post-build
+	// path kept a stale QualifierIsDuplicated guard from the retired
+	// display-keyed carve-out — the guard discarded the valid
+	// per-binding baked value and the bake fell through to the
+	// orderless scope source. With the guard gone the branch bakes
+	// per-binding like a plain SELECT: a.qid addresses the q leg, and
+	// the exact multiset pins against a first-leg misbind (which would
+	// serve p.id → {1:4,2:4}).
 	t.Run("P4f_union_dup_branch", func(t *testing.T) {
-		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a UNION ALL SELECT id FROM p",
-			"declares no column order to bind a plan-time ordinal")
+		rows, err := db.QueryContext(ctx,
+			"SELECT a.qid FROM p AS a, q AS a UNION ALL SELECT id FROM p")
+		if err != nil {
+			t.Fatalf("dup-alias branch under UNION ALL must ANSWER: %v", err)
+		}
+		defer rows.Close()
+		counts := map[int64]int{}
+		total := 0
+		for rows.Next() {
+			var v sql.NullInt64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if !v.Valid {
+				t.Fatal("served NULL — the dup upper must resolve positionally, never off the name Datum")
+			}
+			counts[v.Int64]++
+			total++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if total != 8 || counts[5] != 2 || counts[7] != 2 || counts[9] != 2 || counts[1] != 1 || counts[2] != 1 {
+			t.Fatalf("= %d rows %v, want 8 rows {5:2,7:2,9:2,1:1,2:1} (q.qid per cross-join row, then p.id)", total, counts)
+		}
 	})
 
 	// ---- P5: the LEFT-box dup FLIP ----

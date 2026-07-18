@@ -735,6 +735,17 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		unnestMustNotContain(t, plan, "WITH ORDINALITY")
 	})
 
+	// A QUOTED-LOWERCASE unnest alias (`AS "val"`): resolution canonicalizes
+	// the correlation key to VAL (Scope.AddSource chokepoint) while the
+	// unnest LEG's correlation was once stamped verbatim `val` — the exact
+	// (case-sensitive) leg lookup missed and a legal query died unbound at
+	// runtime. unnestSourceCorrelation now canonicalizes to match.
+	t.Run("quoted lowercase unnest alias", func(t *testing.T) {
+		assertRows(t, `SELECT "ID", "val" FROM T1, T1."ARR1" AS "val"`, []string{
+			"ID=1|val=101", "ID=2|val=201", "ID=2|val=202", "ID=2|val=203",
+		})
+	})
+
 	t.Run("with ordinality 1-based resets per row", func(t *testing.T) {
 		plan := assertRows(t, `SELECT "ID", "VAL", "AT" FROM T1, T1."ARR1" AS "VAL" AT "AT"`, []string{
 			"AT=1|ID=1|VAL=101", "AT=1|ID=2|VAL=201", "AT=2|ID=2|VAL=202", "AT=3|ID=2|VAL=203",
