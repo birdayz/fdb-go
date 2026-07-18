@@ -69,9 +69,12 @@ func Get[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConst
 // overwrite ALSO silently clobbered a shared child's accumulated
 // referenced fields when two parents pushed different sets — the
 // union combine is the Java-faithful repair.
-func Set[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConstraint[T], value T) {
+// The returned verdict reports whether the lattice GREW — Java's
+// pushProperty Optional presence. Callers gate re-exploration
+// scheduling on it (a subsumed push schedules nothing).
+func Set[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConstraint[T], value T) bool {
 	if cm == nil {
-		return
+		return false
 	}
 	combine := combineForKey(key)
 	entry := constraintEntry{ref: ref.Canonical(), key: key}
@@ -80,12 +83,13 @@ func Set[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConst
 		combined, changed := combine(existing, any(value))
 		if !changed {
 			// Subsumed: nothing to store, no epoch tick.
-			return
+			return false
 		}
 		stored = combined
 	}
 	cm.constraints[entry] = stored
 	ref.ConstraintsMap().PushProperty(key, stored, combine)
+	return true
 }
 
 // combineForKey returns the per-key lattice combine (Java dispatches

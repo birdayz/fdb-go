@@ -88,15 +88,13 @@ func (c *ImplementationRuleCall) PushConstraint(
 	childRef *expressions.Reference,
 	orderings []*RequestedOrdering,
 ) {
-	if existing, ok := Get(c.Constraints, childRef, RequestedOrderingConstraintKey); ok {
-		combined, changed := CombineRequestedOrderings(existing, orderings)
-		if changed {
-			Set(c.Constraints, childRef, RequestedOrderingConstraintKey, combined)
-		}
-	} else {
-		Set(c.Constraints, childRef, RequestedOrderingConstraintKey, orderings)
+	// Set IS the combiner (Java pushProperty): the former pre-combine
+	// here duplicated it. A SUBSUMED push schedules no re-exploration —
+	// Java's empty Optional schedules nothing; enqueueing on every push
+	// held groups in re-exploration for constraint no-ops.
+	if Set(c.Constraints, childRef, RequestedOrderingConstraintKey, orderings) {
+		c.constraintPushedRefs = append(c.constraintPushedRefs, childRef)
 	}
-	c.constraintPushedRefs = append(c.constraintPushedRefs, childRef)
 }
 
 // MemoizeFinalExpressionsFromOther creates a new Reference containing
