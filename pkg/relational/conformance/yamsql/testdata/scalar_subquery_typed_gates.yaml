@@ -5,10 +5,11 @@ schema_template: |
     big BIGINT,
     small INTEGER,
     flag BOOLEAN,
+    arr BIGINT ARRAY,
     PRIMARY KEY (id)
   )
 setup:
-  - INSERT INTO gt VALUES (1, 100, 5, true)
+  - INSERT INTO gt VALUES (1, 100, 5, true, NULL)
 tests:
   # The scalar subquery's inner output type flows into the plan-time
   # gates: CAST((SELECT bigint)) AS BOOLEAN must reject exactly like
@@ -27,5 +28,26 @@ tests:
     error_code: "42804"
   # Control: BIGINT vs INTEGER promotes; the typed subquery answers.
   - query: SELECT id FROM gt WHERE (SELECT big FROM gt WHERE id = 1) = 100
+    rows:
+      - [1]
+  # The AGGREGATE arm of the type derivation: MIN(big) declares LONG
+  # (Java NumericAggregationValue MIN_L — operand identity), COUNT(*)
+  # declares LONG (CountValue), AVG declares DOUBLE — all three gate the
+  # BOOLEAN cast exactly like the direct column.
+  - query: SELECT CAST((SELECT MIN(big) FROM gt) AS BOOLEAN) FROM gt
+    error_code: "22F3H"
+  - query: SELECT CAST((SELECT COUNT(*) FROM gt) AS BOOLEAN) FROM gt
+    error_code: "22F3H"
+  - query: SELECT CAST((SELECT AVG(small) FROM gt) AS BOOLEAN) FROM gt
+    error_code: "22F3H"
+  # A STRUCTURED aggregate operand (array column) has NO Java result row
+  # — the derivation must report Unknown, NEVER panic at plan time
+  # (NewPrimitiveType rejects structured codes): the aggregate itself
+  # rejects the array operand loudly (encapsulation type mismatch),
+  # exactly as before threading.
+  - query: SELECT (SELECT MIN(arr) FROM gt) FROM gt
+    error_code: "0A000"
+  # Aggregate control: the typed MIN answers through the promotion gate.
+  - query: SELECT id FROM gt WHERE (SELECT MIN(big) FROM gt) = 100
     rows:
       - [1]

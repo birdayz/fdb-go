@@ -11,13 +11,13 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**332 scenarios · 2622 query/assertion cases** across 18 feature areas.
+**332 scenarios · 2627 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
 | Aggregates & GROUP BY | 49 | 315 |
 | Joins | 61 | 267 |
-| Subqueries (EXISTS / IN / scalar) | 43 | 285 |
+| Subqueries (EXISTS / IN / scalar) | 43 | 290 |
 | CTEs | 12 | 105 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 10 | 53 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 194 |
@@ -193,7 +193,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `scalar_subquery_dml` | 8 | Scalar subquery on the right-hand side of UPDATE SET, in DELETE WHERE |
 | `scalar_subquery_java` | 5 | Scalar subqueries in SELECT and WHERE. |
 | `scalar_subquery_projection` | 3 | Scalar subquery in SELECT projection |
-| `scalar_subquery_typed_gates` | 4 | — |
+| `scalar_subquery_typed_gates` | 9 | — |
 | `scalar_subquery_types` | 9 | Type-coverage probes for scalar subqueries: the cached value flows |
 | `self_not_exists` | 3 | NOT EXISTS on the same table (self-referential) |
 | `subquery_exists_complex` | 4 | Complex EXISTS subquery patterns |

@@ -4925,6 +4925,11 @@ func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlaye
 // user SQL text. Mirrors AggregateValue.Type() / Java's per-operator resultTypeCode
 // — keep the two in sync until the PromoteValue follow-up (RFC-083) dissolves this
 // function (it exists only for the nil-ProjectedValue bare-aggregate path).
+// Divergences from the shared javaAggregateResultCode table, deliberate
+// for METADATA (this function feeds ResultSet column types, not the
+// plan-time gates): COUNT reports NOT NULL (the metadata contract), and
+// an unknown-operand SUM/MIN/MAX falls back to NullableLong rather than
+// Unknown so the column still carries a displayable type.
 func aggResultTypeFromFunc(fn string, operand values.Value) values.Type {
 	switch fn {
 	case "AVG":
@@ -7830,27 +7835,48 @@ func scalarSubqueryOutputType(op logical.LogicalOperator) values.Type {
 	return values.UnknownType
 }
 
-// aggregateCallOutputType maps an aggregate call to Java's result type
-// (NumericAggregationValue / CountValue, tag 4.12.11.0): COUNT and
-// COUNT(*) return LONG; SUM/MIN/MAX return the OPERAND's type
-// (SUM_I INT->INT, SUM_L LONG->LONG, SUM_F FLOAT->FLOAT, SUM_D
-// DOUBLE->DOUBLE; MIN_*/MAX_* identity); AVG always returns DOUBLE.
-// Every result is nullable (a scalar subquery with zero rows is NULL).
+// aggregateCallOutputType maps an aggregate call to the DECLARED Java
+// result type (nullable — Type.primitiveType defaults nullable=true;
+// a scalar subquery with zero rows is NULL anyway). The code-level
+// table is javaAggregateResultCode; a combination with no Java row —
+// including a STRUCTURED operand code, which has no NumericAggregation
+// operator and must never reach NewPrimitiveType's structured-code
+// panic — reports UnknownType (gate-exempt, no false claims).
 func aggregateCallOutputType(call logical.AggregateCall, operands []values.Value) values.Type {
-	switch call.Func {
-	case "COUNT":
-		return values.NullableLong
-	case "AVG":
-		return values.NullableDouble
-	case "SUM", "MIN", "MAX":
-		if len(operands) >= 1 && operands[0] != nil {
-			if t := operands[0].Type(); t != nil && t.Code() != values.TypeCodeUnknown {
-				return values.NewPrimitiveType(t.Code(), true)
-			}
+	opCode := values.TypeCodeUnknown
+	if len(operands) >= 1 && operands[0] != nil {
+		if t := operands[0].Type(); t != nil {
+			opCode = t.Code()
 		}
-		return values.UnknownType
+	}
+	if code, ok := javaAggregateResultCode(call.Func, opCode); ok {
+		return values.NewPrimitiveType(code, true)
 	}
 	return values.UnknownType
+}
+
+// javaAggregateResultCode is THE Java aggregate result-type table at the
+// TypeCode level (NumericAggregationValue / CountValue, tag 4.12.11.0):
+// COUNT and COUNT(*) return LONG regardless of operand; AVG returns
+// DOUBLE for every numeric operand; SUM/MIN/MAX return the OPERAND's
+// code — and Java defines those operators ONLY over INT/LONG/FLOAT/
+// DOUBLE (SUM_I/L/F/D, MIN_*, MAX_*), so any other operand code has no
+// row (ok=false). Both this table's consumers document their own
+// nullability choice at the call site; aggResultTypeFromFunc layers its
+// metadata-specific divergences over the same table.
+func javaAggregateResultCode(fn string, operandCode values.TypeCode) (values.TypeCode, bool) {
+	switch fn {
+	case "COUNT":
+		return values.TypeCodeLong, true
+	case "AVG":
+		return values.TypeCodeDouble, true
+	case "SUM", "MIN", "MAX":
+		switch operandCode {
+		case values.TypeCodeInt, values.TypeCodeLong, values.TypeCodeFloat, values.TypeCodeDouble:
+			return operandCode, true
+		}
+	}
+	return values.TypeCodeUnknown, false
 }
 
 // colBareOrName: the structured bare segment, or the whole name as one
