@@ -85,7 +85,7 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **Java:** `Reference` has `exploratoryMembers` (logical EXPLORE-phase) and `finalMembers` (physical PLANNING-phase). `advancePlannerStage` clears exploratory, promotes REWRITING winner, clears finals. `OptimizeGroup` prunes `finalMembers` to 1 winner. `ToPlanPartitions` reads only `finalMembers` via `propertiesMap`.
 
-**Go:** Added `finalMembers` to `Reference`. Implementation rules (`InsertFinal`) and data access generation insert into `finalMembers`. `computeRefPlanProperties` and `reoptimizeRecursive` prefer `finalMembers` when non-empty. `advancePlannerStage` NOT ported (Go's PLANNING phase relies on EXPLORE-phase physical wrappers in inner References).
+**Go:** Added `finalMembers` to `Reference`. Implementation rules (`InsertFinal`) and data access generation insert into `finalMembers`. `computeRefPlanProperties` and `reoptimizeRecursive` prefer `finalMembers` when non-empty. `Reference.AdvancePlannerStage` IS ported (expressions/reference.go — clears exploratory members and stage-local state on transition; driven by the phase-boundary task in unified_tasks.go). The remaining gap is the PRUNE-TO-1 contract: Java's OptimizeGroup leaves exactly one final winner per Reference at the phase boundary and Verify asserts it; Go crosses with multi-member finals and compensates downstream (dual insertion, ContainsFinal, the 15b/15c cost tiebreakers). Closing that is RFC-181 WS-P stages (b)-(d).
 
 **Impact:** FDB integration tests pass without `promoteInJoinWinners`/`promoteByDataAccessCost` — `finalMembers` + real statistics is sufficient. Promotion hacks remain for unit tests without statistics.
 
@@ -160,7 +160,7 @@ All 16 criteria ported. Criterion-by-criterion analysis:
 | 13. InJoin count (more=better) | count(InJoinPlan) reversed | `inJoinCount` reversed | Aligned |
 | 14. Map/filter count | count(Map, PredicatesFilter) | `mapCount + predicatesFilterCount` | Aligned |
 | 15. FlatMap join ordering | Compare outer child cardinalities | `compareFlatMapJoinOrdering` compares outer quantifier cardinalities | Aligned |
-| 15b. FlatMap vs NLJ | (none) | `compareFlatMapVsNLJ` — FlatMap beats NLJ | **Go-only** — workaround until `advancePlannerStage` is ported |
+| 15b. FlatMap vs NLJ | (none) | `compareFlatMapVsNLJ` — FlatMap beats NLJ | **Go-only** — workaround until WS-P's prune-to-1 phase boundary lands (AdvancePlannerStage itself is ported) |
 | 15c. Scalar cost fallback | (none) | `EstimateCostWith` comparison | **Go-only** — breaks ties the ordinal criteria can't resolve |
 | 16. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `costExprHash`→`concretePlanHash`/`exprConcreteHash` (FNV-flavored) | **Shape-aligned, NOT byte-aligned** (RFC-167 §5) — both break cost ties by a structural plan hash so each engine is *intra-engine* stable, but Go uses an FNV-flavored hash (RFC-024 cache key) ≠ Java's `planHash(CURRENT_FOR_CONTINUATION)`, so Go and Java may pick **different** tie-winner indexes for the same query (rows identical; EXPLAIN may differ). Convergence is deferred until cross-engine continuation re-planning is a requirement (RFC-167 OQ#5). |
 
