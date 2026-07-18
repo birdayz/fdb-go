@@ -173,11 +173,32 @@ func GetPhysicalFetchFromPartialRecordPlan(expr expressions.RelationalExpression
 // PhysicalIndexScanName, Explain) would get nil. Every site that selects a
 // "best" candidate from a set of physical expressions must call this guard.
 func isNilInnerFetch(expr expressions.RelationalExpression) bool {
-	fw, ok := expr.(*physicalFetchFromPartialRecordWrapper)
+	return isNilInnerShell(expr)
+}
+
+// isNilInnerShell reports whether expr is ANY physical wrapper whose embedded
+// plan is a non-leaf carrying no child — the extraction TEMPLATE form, valid
+// only once a WithChildren relink fills its inner. Such a member must never be
+// picked as a standalone winner or as another wrapper's relink source: its plan
+// executes as `Op(<nil>)`.
+//
+// Structural, not a type list: it asks the plan-invariant authority
+// (isGenuineLeafPlan) whether this plan type is ALLOWED to have no children, so
+// a newly-added unary wrapper is covered the day it lands. The predecessor
+// checked only the Fetch wrapper, so nil-inner PredicatesFilter / Map / Distinct
+// / InJoin shells passed as valid and reached extraction — surfacing as the
+// XX000 `PredicatesFilter(<nil>)` plan-invariant on shapes like
+// `WHERE a=? AND b=? AND c IN (…)` over two indexes (RFC-167 finding 1).
+func isNilInnerShell(expr expressions.RelationalExpression) bool {
+	pe, ok := expr.(physicalPlanExpression)
 	if !ok {
 		return false
 	}
-	return fw.plan != nil && fw.plan.GetInner() == nil
+	plan := pe.GetRecordQueryPlan()
+	if plan == nil {
+		return true
+	}
+	return len(plan.GetChildren()) == 0 && !isGenuineLeafPlan(plan)
 }
 
 var (

@@ -147,6 +147,123 @@ func TestIsInfraError_Classification(t *testing.T) {
 	}
 }
 
+func TestOracle_P2Leaves(t *testing.T) {
+	t.Parallel()
+	c := &Case{
+		Table: templateTable(),
+		Rows: []Row{
+			{"ID": int64(1), "A": int64(3), "B": int64(0), "C": int64(0), "S": "alpha", "F": false},
+			{"ID": int64(2), "A": int64(7), "B": int64(0), "C": int64(0), "S": "beta", "F": false},
+			{"ID": int64(3), "A": nil, "B": int64(0), "C": int64(0), "S": "gamma", "F": false},
+		},
+	}
+	ids := func(q Query) []int64 {
+		t.Helper()
+		rows, err := OracleRows(c, q, []string{"ID"})
+		if err != nil {
+			t.Fatalf("oracle: %v", err)
+		}
+		var out []int64
+		for _, r := range rows {
+			out = append(out, r["ID"].(int64))
+		}
+		return out
+	}
+
+	// IN: NULL row never qualifies; members do.
+	got := ids(Query{Where: &BoolNode{Leaf: &Pred{Col: "A", Op: predicates.ComparisonIn, InList: []any{int64(3), int64(9)}}}})
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("IN: got %v, want [1]", got)
+	}
+	// BETWEEN: inclusive bounds; NULL drops.
+	got = ids(Query{Where: &BoolNode{Leaf: &Pred{Col: "A", Op: predicates.ComparisonGreaterThanEq, Lit: int64(3), BetweenHi: int64(7), IsBetween: true}}})
+	if len(got) != 2 {
+		t.Fatalf("BETWEEN 3 AND 7: got %v, want [1 2]", got)
+	}
+	// LIKE: engine pattern semantics (% and _).
+	got = ids(Query{Where: &BoolNode{Leaf: &Pred{Col: "S", Op: predicates.ComparisonLike, Lit: "%eta"}}})
+	if len(got) != 1 || got[0] != 2 {
+		t.Fatalf("LIKE %%eta: got %v, want [2]", got)
+	}
+}
+
+func TestOracle_NullsPlacementAndDistinct(t *testing.T) {
+	t.Parallel()
+	c := &Case{
+		Table: templateTable(),
+		Rows: []Row{
+			{"ID": int64(1), "A": int64(5), "B": int64(0), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(2), "A": nil, "B": int64(0), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(3), "A": int64(1), "B": int64(0), "C": int64(0), "S": "y", "F": false},
+		},
+	}
+	firstID := func(q Query) int64 {
+		t.Helper()
+		rows, err := OracleRows(c, q, []string{"ID"})
+		if err != nil || len(rows) == 0 {
+			t.Fatalf("oracle: %v rows=%v", err, rows)
+		}
+		return rows[0]["ID"].(int64)
+	}
+
+	// Default ASC → NULLS FIRST (Java/FDB tuple order).
+	if id := firstID(Query{OrderBy: []OrderKey{{Col: "A"}, {Col: "ID"}}}); id != 2 {
+		t.Fatalf("ASC default: first ID %d, want 2 (NULL first)", id)
+	}
+	// Explicit NULLS LAST overrides.
+	if id := firstID(Query{OrderBy: []OrderKey{{Col: "A", Nulls: NullsLast}, {Col: "ID"}}}); id != 3 {
+		t.Fatalf("ASC NULLS LAST: first ID %d, want 3", id)
+	}
+	// Default DESC → NULLS LAST.
+	if id := firstID(Query{OrderBy: []OrderKey{{Col: "A", Desc: true}, {Col: "ID"}}}); id != 1 {
+		t.Fatalf("DESC default: first ID %d, want 1 (5 first, NULL last)", id)
+	}
+
+	// DISTINCT over a narrow projection dedups projected rows.
+	rows, err := OracleRows(c, Query{Distinct: true}, []string{"S"})
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("DISTINCT s: got %d rows, want 2", len(rows))
+	}
+}
+
+func TestDiffRows_LimitMembership(t *testing.T) {
+	t.Parallel()
+	cols := []string{"ID"}
+	r := func(id int64) Row { return Row{"ID": id} }
+	oracle := []Row{r(1), r(2), r(3)}
+
+	// min(k,|M|): engine must return exactly 2 for LIMIT 2 over |M|=3.
+	if d := diffRows([]Row{r(1), r(3)}, cols, oracle, Query{Limit: 2}); d != "" {
+		t.Fatalf("valid 2-subset flagged: %s", d)
+	}
+	// Any 2-subset is valid, but a non-member is not.
+	if d := diffRows([]Row{r(1), r(9)}, cols, oracle, Query{Limit: 2}); d == "" {
+		t.Fatal("non-member row not flagged")
+	}
+	// Duplicate consumption: engine may not repeat a row the oracle has once.
+	if d := diffRows([]Row{r(1), r(1)}, cols, oracle, Query{Limit: 2}); d == "" {
+		t.Fatal("duplicated row not flagged")
+	}
+	// |M| < k clamp: engine must return ALL 3, not fewer.
+	if d := diffRows([]Row{r(1), r(2)}, cols, oracle, Query{Limit: 10}); d == "" {
+		t.Fatal("|M|<k short result not flagged")
+	}
+	if d := diffRows([]Row{r(1), r(2), r(3)}, cols, oracle, Query{Limit: 10}); d != "" {
+		t.Fatalf("|M|<k full result flagged: %s", d)
+	}
+	// Ordered + LIMIT: exact prefix required.
+	ordered := Query{OrderBy: []OrderKey{{Col: "ID"}}, Limit: 2}
+	if d := diffRows([]Row{r(1), r(2)}, cols, oracle, ordered); d != "" {
+		t.Fatalf("valid ordered prefix flagged: %s", d)
+	}
+	if d := diffRows([]Row{r(1), r(3)}, cols, oracle, ordered); d == "" {
+		t.Fatal("non-prefix ordered result not flagged")
+	}
+}
+
 func TestFinalizeResult_MismatchPrecedence(t *testing.T) {
 	t.Parallel()
 	// A confirmed mismatch must never be masked by a later infra failure on

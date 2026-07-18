@@ -238,14 +238,18 @@ func normalizeDriverValue(v any) any {
 	}
 }
 
-// diffRows compares engine output against the oracle: multiset equality
-// always; with ORDER BY additionally the exact sequence (P1 sort keys are
-// total — NOT NULL keys suffixed by ID — so order is fully determined).
-// Returns "" when equal, else a human-readable divergence description.
+// diffRows compares engine output against the oracle's FULL result multiset
+// (the oracle never applies LIMIT):
+//   - no LIMIT: multiset equality; with ORDER BY additionally the exact
+//     sequence (generated sort keys are ID-suffixed total orders).
+//   - LIMIT k (RFC-182 §3): the correct answer is a SET of valid results —
+//     the engine must return exactly min(k, |oracle|) rows; with ORDER BY
+//     they must equal the oracle's prefix of that length (total order makes
+//     the tie-straddle rule degenerate to an exact prefix); without ORDER BY
+//     any sub-multiset of the oracle of that size is valid.
+//
+// Returns "" when valid, else a human-readable divergence description.
 func diffRows(engine []Row, cols []string, oracle []Row, q Query) string {
-	if len(engine) != len(oracle) {
-		return fmt.Sprintf("row count: engine %d, oracle %d", len(engine), len(oracle))
-	}
 	keyOf := func(r Row) string {
 		parts := make([]string, 0, len(cols))
 		for _, c := range cols {
@@ -253,7 +257,18 @@ func diffRows(engine []Row, cols []string, oracle []Row, q Query) string {
 		}
 		return strings.Join(parts, "|")
 	}
+
+	want := len(oracle)
+	if q.Limit > 0 && q.Limit < want {
+		want = q.Limit
+	}
+	if len(engine) != want {
+		return fmt.Sprintf("row count: engine %d, oracle expects %d (|M|=%d, limit=%d)",
+			len(engine), want, len(oracle), q.Limit)
+	}
+
 	if len(q.OrderBy) > 0 {
+		// Ordered: exact prefix of the oracle's total order.
 		for i := range engine {
 			if keyOf(engine[i]) != keyOf(oracle[i]) {
 				return fmt.Sprintf("ordered row %d differs: engine %s, oracle %s", i, keyOf(engine[i]), keyOf(oracle[i]))
@@ -261,14 +276,34 @@ func diffRows(engine []Row, cols []string, oracle []Row, q Query) string {
 		}
 		return ""
 	}
+
 	e := make([]string, 0, len(engine))
 	o := make([]string, 0, len(oracle))
 	for i := range engine {
 		e = append(e, keyOf(engine[i]))
+	}
+	for i := range oracle {
 		o = append(o, keyOf(oracle[i]))
 	}
 	sort.Strings(e)
 	sort.Strings(o)
+
+	if q.Limit > 0 && len(oracle) > want {
+		// Sub-multiset membership: every engine row must be consumable from
+		// the oracle multiset.
+		oi := 0
+		for _, ek := range e {
+			for oi < len(o) && o[oi] < ek {
+				oi++
+			}
+			if oi >= len(o) || o[oi] != ek {
+				return fmt.Sprintf("LIMIT sub-multiset violation: engine row %s not in oracle result", ek)
+			}
+			oi++
+		}
+		return ""
+	}
+
 	for i := range e {
 		if e[i] != o[i] {
 			return fmt.Sprintf("multiset differs at sorted position %d: engine %s, oracle %s", i, e[i], o[i])

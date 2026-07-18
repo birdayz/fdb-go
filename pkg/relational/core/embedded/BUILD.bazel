@@ -81,6 +81,7 @@ go_test(
         "duplicate_from_alias_binding_test.go",
         "embedded_test.go",
         "exists_in_on_plan_test.go",
+        "in_over_intersection_relink_test.go",
         "inner_source_aliases_test.go",
         "intersection_residual_plan_test.go",
         "logical_builder_test.go",

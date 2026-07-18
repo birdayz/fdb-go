@@ -55,11 +55,20 @@ type TableDef struct {
 // int64, string, bool, or nil.
 type Row map[string]any
 
-// Pred is one comparison leaf: COL <op> literal, or COL IS [NOT] NULL.
+// Pred is one comparison leaf: COL <op> literal, COL IS [NOT] NULL,
+// COL IN (…), COL BETWEEN lo AND hi, or COL LIKE pattern.
 type Pred struct {
 	Col string
 	Op  predicates.ComparisonType
-	Lit any // nil for IS NULL / IS NOT NULL
+	Lit any // nil for IS NULL / IS NOT NULL; the pattern for LIKE; lo for BETWEEN
+
+	// InList holds the membership list for Op == ComparisonIn.
+	InList []any
+	// BetweenHi holds the inclusive upper bound when IsBetween (rendered as
+	// BETWEEN; the oracle evaluates it as >=Lit AND <=BetweenHi with the
+	// engine's own comparisons, which is the SQL desugaring).
+	BetweenHi any
+	IsBetween bool
 }
 
 // BoolNode is the AND/OR tree over leaves. Exactly one of Leaf / Kids is set.
@@ -69,18 +78,33 @@ type BoolNode struct {
 	Kids []*BoolNode
 }
 
-// OrderKey is one ORDER BY component. P1 restricts sort keys to NOT NULL
-// columns (the NULLS placement axis is a named P2 dimension).
+// NullsPlacement is an ORDER BY key's NULL position. Default follows the
+// engine's Java/FDB-parity rule: NULLS FIRST ascending, NULLS LAST
+// descending (tuple order). Explicit placements render as NULLS FIRST/LAST.
+type NullsPlacement int
+
+const (
+	NullsDefault NullsPlacement = iota
+	NullsFirst
+	NullsLast
+)
+
+// OrderKey is one ORDER BY component. Nullable sort keys are allowed; keys
+// are always suffixed with ID by the generator so the total order stays
+// unique and the ordered comparator exact.
 type OrderKey struct {
-	Col  string
-	Desc bool
+	Col   string
+	Desc  bool
+	Nulls NullsPlacement
 }
 
 // Query is one generated query body; the runner executes it under every
 // projection variant and cross-checks row identity via ID.
 type Query struct {
-	Where   *BoolNode // nil = no WHERE
-	OrderBy []OrderKey
+	Where    *BoolNode // nil = no WHERE
+	OrderBy  []OrderKey
+	Limit    int  // 0 = no LIMIT
+	Distinct bool // SELECT DISTINCT (ORDER BY keys ⊆ projection enforced by generator)
 }
 
 // Case is everything one seed produces.
@@ -258,16 +282,41 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 	}
 
 	var orderBy []OrderKey
-	switch rng.IntN(3) {
+	switch rng.IntN(4) {
 	case 0:
 		orderBy = []OrderKey{{Col: "ID", Desc: rng.IntN(2) == 0}}
 	case 1:
 		// B is the NOT NULL sortable value column; append ID for a total
 		// order so the oracle's expected sequence is unique.
 		orderBy = []OrderKey{{Col: "B", Desc: rng.IntN(2) == 0}, {Col: "ID"}}
+	case 2:
+		// NULLABLE sort key (A, C, or S) with a NULLS placement drawn from
+		// {default, FIRST, LAST}; ID suffix keeps the total order unique.
+		col := []string{"A", "C", "S"}[rng.IntN(3)]
+		orderBy = []OrderKey{
+			{Col: col, Desc: rng.IntN(2) == 0, Nulls: NullsPlacement(rng.IntN(3))},
+			{Col: "ID"},
+		}
 	}
 
-	return Query{Where: where, OrderBy: orderBy}
+	q := Query{Where: where, OrderBy: orderBy}
+
+	// DISTINCT on ~1/6 of queries. ORDER BY is dropped for DISTINCT — the
+	// projection variants do not all contain every sort key, and SQL
+	// requires DISTINCT's ORDER BY ⊆ projection; the unordered multiset
+	// comparison stays exact.
+	if rng.IntN(6) == 0 {
+		q.Distinct = true
+		q.OrderBy = nil
+	}
+
+	// LIMIT on ~1/4 of queries: small values exercise the boundary, large
+	// values exercise the |M| < k clamp.
+	if rng.IntN(4) == 0 {
+		q.Limit = 1 + rng.IntN(30)
+	}
+
+	return q
 }
 
 func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
@@ -278,6 +327,28 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 			op = predicates.ComparisonIsNotNull
 		}
 		return &Pred{Col: col.Name, Op: op}
+	}
+
+	// P2 leaf kinds: IN (~1/8), BETWEEN (~1/10, BIGINT), LIKE (~1/6, STRING).
+	switch {
+	case col.Type != ColBoolean && rng.IntN(8) == 0:
+		n := 2 + rng.IntN(3)
+		list := make([]any, 0, n)
+		for i := 0; i < n; i++ {
+			if col.Type == ColBigint {
+				list = append(list, int64(rng.IntN(12)))
+			} else {
+				list = append(list, []string{"", "alpha", "beta", "gamma", "delta", "zeta"}[rng.IntN(6)])
+			}
+		}
+		return &Pred{Col: col.Name, Op: predicates.ComparisonIn, InList: list}
+	case col.Type == ColBigint && rng.IntN(10) == 0:
+		lo := int64(rng.IntN(10)) - 1
+		hi := lo + int64(rng.IntN(6))
+		return &Pred{Col: col.Name, Op: predicates.ComparisonGreaterThanEq, Lit: lo, BetweenHi: hi, IsBetween: true}
+	case col.Type == ColString && rng.IntN(6) == 0:
+		pat := []string{"%a%", "al%", "%ta", "_eta", "%e%a%", "alpha", "%"}[rng.IntN(7)]
+		return &Pred{Col: col.Name, Op: predicates.ComparisonLike, Lit: pat}
 	}
 
 	var ops []predicates.ComparisonType
@@ -363,6 +434,9 @@ func (c *Case) InsertSQL() string {
 func (c *Case) SQL(q Query, projection []string) string {
 	var b strings.Builder
 	b.WriteString("SELECT ")
+	if q.Distinct {
+		b.WriteString("DISTINCT ")
+	}
 	if projection == nil {
 		b.WriteString("*")
 	} else {
@@ -388,7 +462,16 @@ func (c *Case) SQL(q Query, projection []string) string {
 			if k.Desc {
 				b.WriteString(" DESC")
 			}
+			switch k.Nulls {
+			case NullsFirst:
+				b.WriteString(" NULLS FIRST")
+			case NullsLast:
+				b.WriteString(" NULLS LAST")
+			}
 		}
+	}
+	if q.Limit > 0 {
+		fmt.Fprintf(&b, " LIMIT %d", q.Limit)
 	}
 	return b.String()
 }
@@ -397,11 +480,21 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 	if n.Leaf != nil {
 		p := n.Leaf
 		col := strings.ToLower(p.Col)
-		switch p.Op {
-		case predicates.ComparisonIsNull:
+		switch {
+		case p.IsBetween:
+			fmt.Fprintf(b, "%s BETWEEN %s AND %s", col, renderLiteral(p.Lit), renderLiteral(p.BetweenHi))
+		case p.Op == predicates.ComparisonIsNull:
 			fmt.Fprintf(b, "%s IS NULL", col)
-		case predicates.ComparisonIsNotNull:
+		case p.Op == predicates.ComparisonIsNotNull:
 			fmt.Fprintf(b, "%s IS NOT NULL", col)
+		case p.Op == predicates.ComparisonIn:
+			lits := make([]string, len(p.InList))
+			for i, v := range p.InList {
+				lits[i] = renderLiteral(v)
+			}
+			fmt.Fprintf(b, "%s IN (%s)", col, strings.Join(lits, ", "))
+		case p.Op == predicates.ComparisonLike:
+			fmt.Fprintf(b, "%s LIKE %s", col, renderLiteral(p.Lit))
 		default:
 			fmt.Fprintf(b, "%s %s %s", col, opSQL(p.Op), renderLiteral(p.Lit))
 		}

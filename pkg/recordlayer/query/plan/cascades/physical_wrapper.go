@@ -322,19 +322,61 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	// first-pick without this guard grabbed a shell ahead of the valid
 	// alternative — the embedded shell plan then reached extraction as
 	// Fetch(<nil>) (the XX000 plan-invariant).
-	var shell plans.RecordQueryPlan
+	var shell expressions.RelationalExpression
 	for _, m := range ref.AllMembers() {
 		if ph, ok := m.(physicalPlanExpression); ok {
-			if isNilInnerFetch(m) {
+			if isNilInnerShell(m) {
 				if shell == nil {
-					shell = ph.GetRecordQueryPlan()
+					shell = m
 				}
 				continue
 			}
 			return ph.GetRecordQueryPlan()
 		}
 	}
-	return shell
+	// Only shells here. Returning a shell's plan verbatim embeds `Op(<nil>)`
+	// in the parent — the XX000 plan-invariant. Resolve it RECURSIVELY
+	// instead: relink the shell against its own child first (its
+	// WithChildren re-runs this lookup one level down) and hand the parent
+	// the completed plan. Nested `IN`s over a compensated intersection build
+	// exactly this chain of sole-shell references.
+	return resolveShellPlan(shell, 0)
+}
+
+// maxShellResolveDepth bounds the recursive shell relink. Shell chains are a
+// handful of unary wrappers deep in practice; the cap keeps a cyclic or
+// pathological memo from recursing without end (it returns nil, and the
+// caller then declines rather than embedding a malformed plan).
+const maxShellResolveDepth = 16
+
+func resolveShellPlan(shell expressions.RelationalExpression, depth int) plans.RecordQueryPlan {
+	if shell == nil || depth >= maxShellResolveDepth {
+		return nil
+	}
+	pe, ok := shell.(physicalPlanExpression)
+	if !ok {
+		return nil
+	}
+	qs := shell.GetQuantifiers()
+	rebuilder, canRebuild := shell.(properties.WithChildren)
+	if !canRebuild || len(qs) != 1 {
+		return pe.GetRecordQueryPlan()
+	}
+	rebuilt, err := rebuilder.WithChildren(qs)
+	if err != nil || rebuilt == nil {
+		return pe.GetRecordQueryPlan()
+	}
+	rebuiltPE, ok := rebuilt.(physicalPlanExpression)
+	if !ok {
+		return pe.GetRecordQueryPlan()
+	}
+	if isNilInnerShell(rebuilt) {
+		// The relink did not complete this level (its child reference is
+		// itself shell-only, or the wrapper declined). Give up rather than
+		// hand back a malformed plan.
+		return nil
+	}
+	return rebuiltPE.GetRecordQueryPlan()
 }
 
 // findBestPhysicalPlan returns the cheapest VALID physical member's plan
@@ -383,6 +425,25 @@ func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpressi
 	return shell
 }
 
+// shouldRelinkInner decides whether a wrapper's WithChildren may install
+// candidate as its embedded plan's inner.
+//
+// The isLeafReplaceable gate exists to stop a join-structured child being
+// SWAPPED for a different one (extraction picks the join via quantifier
+// traversal, not by substitution). That protection is meaningless when the
+// wrapper currently holds NO inner at all: the alternatives there are an
+// equivalent member of the very reference the quantifier ranges over, or a
+// `Op(<nil>)` plan that fails the plan invariant outright. A malformed plan
+// is never the safer choice, so a shell always relinks — nested `IN`s
+// (`c IN (…) AND a IN (…)`) build exactly that shape and previously
+// extracted `InJoin(<nil>)`.
+func shouldRelinkInner(currentInner, candidate plans.RecordQueryPlan) bool {
+	if candidate == nil {
+		return false
+	}
+	return currentInner == nil || isLeafReplaceable(candidate)
+}
+
 // isLeafReplaceable reports whether a plan is safe to substitute as the
 // inner of a projection without altering the output schema or predicate
 // semantics. Only leaf-adjacent plans (scans, filters over scans, index
@@ -390,6 +451,18 @@ func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpressi
 // (NLJ, FlatMap, InJoin) encode predicate semantics in their structure
 // and must NOT be swapped — extraction already picks the right join plan
 // via quantifier traversal.
+//
+// Set operations over ONE record type (intersection / union of index scans
+// merged on the primary key) are leaf-adjacent in exactly this sense: they
+// flow that record type's schema unchanged and carry no join structure, so
+// they belong in the list. They were absent only because no shape put one
+// under a relinking wrapper until compensated pk-intersections started
+// carrying residual filters — a filter over such an intersection then kept
+// its eagerly-snapshotted nil-inner plan and extracted
+// `PredicatesFilter(<nil>)` (XX000 plan-invariant), and before the
+// compensation landed the very same queries silently DROPPED the residual
+// (wrong rows). Their IN-variants (InJoin/InUnion) stay OUT: those bind a
+// correlation per IN value, which is join-like structure.
 func isLeafReplaceable(p plans.RecordQueryPlan) bool {
 	switch p.(type) {
 	case *plans.RecordQueryScanPlan,
@@ -402,7 +475,13 @@ func isLeafReplaceable(p plans.RecordQueryPlan) bool {
 		*plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryPredicatesFilterPlan,
-		*plans.RecordQueryAggregateIndexPlan:
+		*plans.RecordQueryAggregateIndexPlan,
+		*plans.RecordQueryIntersectionPlan,
+		*plans.RecordQueryMultiIntersectionOnValuesPlan,
+		*plans.RecordQueryUnionPlan,
+		*plans.RecordQueryUnorderedUnionPlan,
+		*plans.RecordQueryMergeSortUnionPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
 		return true
 	}
 	return false

@@ -46,7 +46,16 @@ func NewRecordQueryInJoinPlan(
 	}
 }
 
-func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan    { return p.inner }
+func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan { return p.inner }
+
+// WithInner returns a copy with the inner replaced and EVERY other field
+// preserved — the extraction-relink rebuild path; reconstructing via the
+// constructor risks silently dropping fields the setters carry.
+func (p *RecordQueryInJoinPlan) WithInner(inner RecordQueryPlan) *RecordQueryInJoinPlan {
+	cp := *p
+	cp.inner = inner
+	return &cp
+}
 func (p *RecordQueryInJoinPlan) GetBindingName() string       { return p.bindingName }
 func (p *RecordQueryInJoinPlan) IsSorted() bool               { return p.sorted }
 func (p *RecordQueryInJoinPlan) IsReverse() bool              { return p.reverse }

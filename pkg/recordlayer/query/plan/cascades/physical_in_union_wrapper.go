@@ -60,6 +60,17 @@ func (w *physicalInUnionWrapper) WithChildren(qs []expressions.Quantifier) (expr
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalInUnionWrapper.WithChildren: expected 1, got %d", len(qs))
 	}
+	// Relink to the extracted inner. Without this the wrapper kept the
+	// EAGER snapshot taken at yield time, so an IN-union over a compensated
+	// pk-intersection extracted `InUnion(PredicatesFilter(<nil>))` — the
+	// child wrapper relinked its own inner correctly, but this level still
+	// pointed at the stale pre-relink plan. Same relink duty the fetch
+	// (RFC-070) and limit wrappers carry; isLeafReplaceable gates the SWAP
+	// of join-structured children, and an IN-union's inner is a plain
+	// sub-plan, so the gate applies here as it does for the in-join.
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); shouldRelinkInner(w.plan.GetInner(), innerPlan) {
+		return &physicalInUnionWrapper{plan: w.plan.WithInner(innerPlan), innerQuant: qs[0]}, nil
+	}
 	return &physicalInUnionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 

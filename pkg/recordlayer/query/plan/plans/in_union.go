@@ -51,7 +51,16 @@ func NewRecordQueryInUnionPlanWithMaxSize(
 	return p
 }
 
-func (p *RecordQueryInUnionPlan) GetInner() RecordQueryPlan         { return p.inner }
+func (p *RecordQueryInUnionPlan) GetInner() RecordQueryPlan { return p.inner }
+
+// WithInner returns a copy with the inner replaced and EVERY other field
+// preserved (bindingNames, comparisonKeys, reverse, maxSize, inSources) —
+// the extraction-relink rebuild path.
+func (p *RecordQueryInUnionPlan) WithInner(inner RecordQueryPlan) *RecordQueryInUnionPlan {
+	cp := *p
+	cp.inner = inner
+	return &cp
+}
 func (p *RecordQueryInUnionPlan) GetBindingNames() []string         { return p.bindingNames }
 func (p *RecordQueryInUnionPlan) GetComparisonKeys() []values.Value { return p.comparisonKeys }
 func (p *RecordQueryInUnionPlan) IsReverse() bool                   { return p.reverse }
