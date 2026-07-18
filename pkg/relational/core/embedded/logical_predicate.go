@@ -2294,11 +2294,26 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 									proj.Aliases[i] = strings.ToUpper(col.name)
 								}
 							}
-						} else {
+						} else if resolver.QualifierIsDuplicated(semantic.NewUnquoted(cr.table)) {
+							// The DUP-ALIAS face: QOV(alias) cannot
+							// distinguish the two same-named legs, so the
+							// reference stays display-keyed against the
+							// merged row's alias-pinned datum key. Phase B's
+							// machine-minted unique quantifier aliases make
+							// QOV addressing unambiguous and retire this
+							// carve-out — the last flat-name projection mint.
 							proj.ProjectedValues[i] = &values.FieldValue{
 								Field: strings.ToUpper(col.name),
 								Typ:   values.UnknownType,
 							}
+						} else {
+							// Born-baked (slice 3): a validated qualified
+							// projection over a UNIQUE alias that cannot bake
+							// a leg-window ordinal must fail the plan, never
+							// mint a lazy name read (dead-in-effect across
+							// yamsql, embedded, and the full FDB driver
+							// suites before retirement).
+							return nil, &expr.UnresolvableOrdinalError{Field: cr.col, Source: cr.table}
 						}
 					}
 				} else {
