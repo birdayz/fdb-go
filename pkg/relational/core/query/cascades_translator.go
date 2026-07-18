@@ -468,7 +468,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// Output columns = the GROUP BY keys followed by the aggregate output
 		// column names (alias when present, else the aggregate text), mirroring
 		// extractOutputColumns / buildAggColumns.
-		return aggregateOutputColumns(o)
+		return t.aggregateOutputColumns(o)
 	case *logical.LogicalCTE:
 		// A CTE-wrapped derived table used as a JOIN LEG (e.g. FROM a,
 		// (SELECT …) b): translateCTE registers the body under the CTE name and
@@ -536,7 +536,7 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 		}
 		return fields
 	case *logical.LogicalAggregate:
-		return aggregateOutputColumns(o)
+		return t.aggregateOutputColumns(o)
 	case *logical.LogicalDistinct:
 		return t.derivedOutputColumns(o.Input)
 	case *logical.LogicalSort:
@@ -744,20 +744,52 @@ func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 // aggregateOutputColumns returns a LogicalAggregate's output column schema:
 // the GROUP BY keys (bare column names, upper-cased) followed by each
 // aggregate's output name (alias when present, else the aggregate text).
-// Mirrors extractOutputColumns(LogicalAggregate). Types are UnknownType
-// (only names are load-bearing for name-based resolution). Returns nil if
-// the aggregate has no output columns.
-func aggregateOutputColumns(a *logical.LogicalAggregate) []values.Field {
+// Mirrors extractOutputColumns(LogicalAggregate). Phase D: group keys
+// carry the INPUT leg's flowed type for the keyed column; aggregate
+// calls carry Java's result type (values.JavaAggregateResultCode over
+// the operand column's flowed code — COUNT→LONG, AVG→DOUBLE,
+// SUM/MIN/MAX→operand). A key/operand the input layout cannot type
+// stays Unknown (lazy until resolution). Returns nil if the aggregate
+// has no output columns.
+func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate) []values.Field {
+	inputCols := t.legColumns(a.Input)
+	typeOf := func(bare string) values.Type {
+		up := strings.ToUpper(bare)
+		for _, c := range inputCols {
+			if strings.ToUpper(c.Name) == up && c.FieldType != nil {
+				return c.FieldType
+			}
+		}
+		return values.UnknownType
+	}
 	var fields []values.Field
 	for _, k := range a.GroupKeys {
-		fields = append(fields, values.Field{Name: strings.ToUpper(k.Display), FieldType: values.UnknownType, Ordinal: len(fields)})
+		kt := values.Type(values.UnknownType)
+		if k.Bare != "" {
+			kt = typeOf(k.Bare)
+		}
+		fields = append(fields, values.Field{Name: strings.ToUpper(k.Display), FieldType: kt, Ordinal: len(fields)})
 	}
 	for i, call := range a.Calls {
 		name := call.CanonicalName()
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
 			name = a.Aliases[i]
 		}
-		fields = append(fields, values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: len(fields)})
+		ft := values.Type(values.UnknownType)
+		operandCode := values.TypeCodeUnknown
+		if call.Star {
+			operandCode = values.TypeCodeLong // COUNT(*): operand irrelevant
+		} else if call.BareColumn && call.Operand != "" {
+			if ot := typeOf(call.Operand); ot != nil {
+				operandCode = ot.Code()
+			}
+		}
+		if code, ok := values.JavaAggregateResultCode(strings.ToUpper(call.Func), operandCode); ok {
+			// Aggregate outputs are NULLABLE except COUNT (Java: COUNT
+			// never null; SUM/MIN/MAX/AVG null on empty groups).
+			ft = values.NewPrimitiveType(code, strings.ToUpper(call.Func) != "COUNT")
+		}
+		fields = append(fields, values.Field{Name: strings.ToUpper(name), FieldType: ft, Ordinal: len(fields)})
 	}
 	if len(fields) == 0 {
 		return nil

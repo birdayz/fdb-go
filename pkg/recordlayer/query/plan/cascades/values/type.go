@@ -1020,6 +1020,29 @@ var castPairs = map[promotionEdge]struct{}{
 	{TypeCodeEnum, TypeCodeString}: {},
 }
 
+// JavaAggregateResultCode is THE Java aggregate result-type table at the
+// TypeCode level (NumericAggregationValue / CountValue, tag 4.12.11.0):
+// COUNT and COUNT(*) return LONG regardless of operand; AVG returns
+// DOUBLE for every numeric operand; SUM/MIN/MAX return the OPERAND's
+// code — and Java defines those operators ONLY over INT/LONG/FLOAT/
+// DOUBLE (SUM_I/L/F/D, MIN_*, MAX_*), so any other operand code has no
+// row (ok=false). Consumers document their own nullability choice at
+// the call site.
+func JavaAggregateResultCode(fn string, operandCode TypeCode) (TypeCode, bool) {
+	switch fn {
+	case "COUNT":
+		return TypeCodeLong, true
+	case "AVG":
+		return TypeCodeDouble, true
+	case "SUM", "MIN", "MAX":
+		switch operandCode {
+		case TypeCodeInt, TypeCodeLong, TypeCodeFloat, TypeCodeDouble:
+			return operandCode, true
+		}
+	}
+	return TypeCodeUnknown, false
+}
+
 // CastPairDefined reports whether an explicit CAST from `from` to `to`
 // has a defined operator (Java CastValue's construction-time gate —
 // "No cast defined from X to Y" otherwise). Identity always casts;

@@ -7857,18 +7857,7 @@ func aggregateCallOutputType(call logical.AggregateCall, operands []values.Value
 // nullability choice at the call site; aggResultTypeFromFunc layers its
 // metadata-specific divergences over the same table.
 func javaAggregateResultCode(fn string, operandCode values.TypeCode) (values.TypeCode, bool) {
-	switch fn {
-	case "COUNT":
-		return values.TypeCodeLong, true
-	case "AVG":
-		return values.TypeCodeDouble, true
-	case "SUM", "MIN", "MAX":
-		switch operandCode {
-		case values.TypeCodeInt, values.TypeCodeLong, values.TypeCodeFloat, values.TypeCodeDouble:
-			return operandCode, true
-		}
-	}
-	return values.TypeCodeUnknown, false
+	return values.JavaAggregateResultCode(fn, operandCode)
 }
 
 // colBareOrName: the structured bare segment, or the whole name as one
