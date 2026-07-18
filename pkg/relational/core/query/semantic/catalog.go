@@ -147,8 +147,11 @@ func (t *StaticTable) Columns() []Column {
 	return out
 }
 
-// LookupColumn implements Table — case-insensitive match on
-// Identifier.Name.
+// LookupColumn implements Table — EXACT-name match on Identifier.Name
+// (EqualsIgnoreQuoting ignores only the quoting FLAG, never case).
+// Unquoted lookups arrive pre-folded by the identifier constructor, so
+// folded registrations match; a case-preserved quoted name matches only
+// its exact spelling.
 func (t *StaticTable) LookupColumn(id Identifier) (Column, bool) {
 	for _, c := range t.TableColumns {
 		if c.Id.EqualsIgnoreQuoting(id) {

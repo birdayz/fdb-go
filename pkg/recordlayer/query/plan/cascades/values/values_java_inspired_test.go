@@ -579,6 +579,16 @@ func TestArithmeticValue_AddStringConcatenates(t *testing.T) {
 		{"double whole keeps .0", "d=", float64(1), TypeString, NullableDouble, "d=1.0"},
 		{"double exponent E form", "d=", float64(1e10), TypeString, NullableDouble, "d=1.0E10"},
 		{"double negative exponent", "d=", float64(1e-10), TypeString, NullableDouble, "d=1.0E-10"},
+		// Java's decimal/scientific boundary is [1e-3, 1e7): inside stays
+		// DECIMAL (2e6 → "2000000.0", 0.001 → "0.001"), outside is
+		// scientific with an UNPADDED exponent (1e7 → "1.0E7",
+		// 1e-4 → "1.0E-4") — Go's 'g' would have picked "2e+06"/"0.0001".
+		{"double below sci boundary decimal", "d=", float64(2e6), TypeString, NullableDouble, "d=2000000.0"},
+		{"double at sci boundary", "d=", float64(1e7), TypeString, NullableDouble, "d=1.0E7"},
+		{"double small decimal edge", "d=", float64(0.001), TypeString, NullableDouble, "d=0.001"},
+		{"double below decimal edge", "d=", float64(1e-4), TypeString, NullableDouble, "d=1.0E-4"},
+		{"double tiny", "d=", float64(1e-5), TypeString, NullableDouble, "d=1.0E-5"},
+		{"double negative sci", "d=", float64(-2.5e8), TypeString, NullableDouble, "d=-2.5E8"},
 		{"float renders float32", "f=", float64(1.5), TypeString, NullableFloat, "f=1.5"},
 		{"float infinity spelling", "f=", math.Inf(1), TypeString, NullableFloat, "f=Infinity"},
 		{"double NaN spelling", "d=", math.NaN(), TypeString, NullableDouble, "d=NaN"},

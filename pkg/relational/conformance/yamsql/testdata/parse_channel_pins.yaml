@@ -33,10 +33,7 @@ tests:
     rows:
       - [1]
       - [2]
-  # Dotted UPPER alias projected bare, ordered, and grouped. (The
-  # lowercase-dotted variant — AS "a.b" — still 42703s: the SELECT-alias
-  # → derived-schema channel folds the alias's case; that channel is a
-  # later Phase A slice.)
+  # Dotted UPPER alias projected bare, ordered, and grouped.
   - query: SELECT "A.B" FROM (SELECT v AS "A.B" FROM u) AS s ORDER BY "A.B" DESC
     rows:
       - [8]
@@ -45,3 +42,11 @@ tests:
     rows:
       - [7, 1]
       - [8, 1]
+  # Lowercase-dotted alias: the derived-schema channel registers the
+  # alias FOLDED, and the structural resolver's folded retry finds it —
+  # rows come back correct. (Phase D's case-faithful registrations make
+  # the verbatim spelling hit directly and retire the retry.)
+  - query: SELECT "a.b" FROM (SELECT v AS "a.b" FROM u) AS s ORDER BY "a.b" DESC
+    rows:
+      - [8]
+      - [7]

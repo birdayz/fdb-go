@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -190,44 +191,16 @@ func CastValue(v any, typeName string) (any, error) {
 	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported CAST from %T to %s", v, typeName)
 }
 
-// javaDoubleToString matches Java's Double.toString(double): whole
-// numbers always include ".0" (1.0 → "1.0"), exponent forms use an
-// upper-case E with no plus sign and a ".0"-completed mantissa
-// (1e10 → "1.0E10"), and the special values spell
-// Infinity/-Infinity/NaN.
+// javaDoubleToString matches Java's Double.toString(double); the
+// contract (decimal inside [1e-3, 1e7), scientific outside, Infinity
+// spellings) lives in ONE place — values.JavaDoubleToString.
 func javaDoubleToString(n float64) string {
-	return javaFloatFormat(n, 64)
+	return values.JavaDoubleToString(n)
 }
 
-// javaFloatToString is Double.toString's float32 sibling
-// (Float.toString): shortest float32 rendering under the same rules.
+// javaFloatToString is Float.toString — the float32 sibling.
 func javaFloatToString(n float32) string {
-	return javaFloatFormat(float64(n), 32)
-}
-
-func javaFloatFormat(n float64, bits int) string {
-	if math.IsNaN(n) {
-		return "NaN"
-	}
-	if math.IsInf(n, 1) {
-		return "Infinity"
-	}
-	if math.IsInf(n, -1) {
-		return "-Infinity"
-	}
-	s := strconv.FormatFloat(n, 'g', -1, bits)
-	if i := strings.IndexAny(s, "eE"); i >= 0 {
-		mant, exp := s[:i], s[i+1:]
-		exp = strings.TrimPrefix(exp, "+")
-		if !strings.Contains(mant, ".") {
-			mant += ".0"
-		}
-		return mant + "E" + exp
-	}
-	if !strings.Contains(s, ".") {
-		s += ".0"
-	}
-	return s
+	return values.JavaFloatToString(n)
 }
 
 // StripStringLiteralQuotes removes a single pair of surrounding

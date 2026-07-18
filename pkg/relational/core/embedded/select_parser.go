@@ -477,6 +477,13 @@ func splitColumnRef(expr antlrgen.IExpressionContext) (bare, qualifier string, q
 	uids := atom.FullColumnName().FullId().AllUid()
 	parts := make([]string, len(uids))
 	for i, u := range uids {
+		// StripIdentifierQuotes folds unquoted segments and preserves
+		// quoted ones — the SQL binding semantics — but DISCARDS the
+		// per-segment quoted flag, so downstream cannot tell `"ID"`
+		// (quoted upper) from `id` (folded). Both bind the same column
+		// today; the flag must be carried (semantic.Identifier per
+		// segment) no later than WS-N Phase D, where case-faithful
+		// registrations make the distinction observable.
 		parts[i] = functions.StripIdentifierQuotes(u.GetText())
 	}
 	if len(parts) == 0 {

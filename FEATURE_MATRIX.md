@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**327 scenarios · 2582 query/assertion cases** across 18 feature areas.
+**327 scenarios · 2584 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -22,7 +22,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Set operations (UNION / INTERSECT / EXCEPT) | 10 | 53 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 194 |
 | Ordering & pagination | 13 | 114 |
-| Scalar functions & expressions | 33 | 353 |
+| Scalar functions & expressions | 33 | 354 |
 | Predicates & WHERE | 12 | 104 |
 | Column resolution & aliasing | 6 | 55 |
 | NULL handling | 5 | 26 |
@@ -32,7 +32,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Keys & primary keys | 5 | 132 |
 | Error codes & validation | 4 | 37 |
 | End-to-end scenarios | 3 | 20 |
-| Other | 24 | 171 |
+| Other | 24 | 172 |
 
 ## Aggregates & GROUP BY
 
@@ -313,7 +313,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `select_constant_expression` | 3 | Constant expressions in SELECT |
 | `select_expression_projection` | 4 | Computed columns in SELECT |
 | `select_expressions_java` | 9 | SELECT with various expression types. |
-| `string_concat_plus` | 6 | Java's ADD string family end-to-end |
+| `string_concat_plus` | 7 | Java's ADD string family end-to-end |
 | `string_functions` | 13 | STRING-family scalar functions: UPPER / LOWER / LENGTH / CHAR_LENGTH / |
 | `string_functions_java` | 11 | String function patterns. |
 | `trim_concat` | 10 | TRIM / LTRIM / RTRIM / CONCAT / REPLACE — a Go-only read-side extension |
@@ -444,7 +444,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `multi_feature_integer` | 11 | Integration tests combining multiple SQL features against INTEGER (INT32) |
 | `multi_operator_pipeline` | 6 | Tests that exercise multiple Cascades operators working together |
 | `negative_values` | 6 | Negative numbers and zero edge cases |
-| `parse_channel_pins` | 4 | dotted display names survive the parser→IR |
+| `parse_channel_pins` | 5 | dotted display names survive the parser→IR |
 | `quoted_identifier_pins` | 4 | quoted-identifier shapes that must keep |
 | `select_no_from` | 6 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | SELECT * from single table |

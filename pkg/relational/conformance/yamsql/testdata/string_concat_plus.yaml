@@ -29,6 +29,11 @@ tests:
   - query: SELECT s + d FROM t WHERE id = 2
     rows:
       - [x1.0E10]
+  # Mid-range double stays DECIMAL (Java's [1e-3, 1e7) boundary): 2e6
+  # renders "2000000.0", never Go's "2e+06".
+  - query: SELECT s + (d * 200000.0) FROM t WHERE id = 1
+    rows:
+      - [abc200000.0]
   - query: SELECT s + s FROM t WHERE id = 1
     rows:
       - [abcabc]

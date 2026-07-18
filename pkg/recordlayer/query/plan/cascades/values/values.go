@@ -2865,10 +2865,18 @@ func (a *ArithmeticValue) evalStringConcat(l, r any, lc, rc TypeCode) (any, bool
 	return ls + rs, true
 }
 
-// javaFloatString renders a float the way Java's Float.toString /
-// Double.toString does: whole values keep ".0", exponent forms use an
-// upper-case E with no "+" (1e10 → "1.0E10"), and the special values
-// spell Infinity/-Infinity/NaN.
+// javaFloatString renders a float exactly the way Java's
+// Float.toString / Double.toString does (the Java SE contract):
+//   - 1e-3 ≤ |v| < 1e7 (and zero) render in DECIMAL form, whole values
+//     completed with ".0" (2e6 → "2000000.0", 0.001 → "0.001");
+//   - everything else renders in "computerized scientific notation":
+//     one digit before the point, ".0"-completed mantissa, upper-case E,
+//     no plus sign, no zero-padded exponent (1e7 → "1.0E7",
+//     1e-4 → "1.0E-4");
+//   - the special values spell Infinity/-Infinity/NaN.
+//
+// Go's 'g' format picks its OWN form boundary and zero-pads exponents,
+// so the form is forced explicitly.
 func javaFloatString(f float64, bits int) string {
 	if math.IsNaN(f) {
 		return "NaN"
@@ -2879,20 +2887,36 @@ func javaFloatString(f float64, bits int) string {
 	if math.IsInf(f, -1) {
 		return "-Infinity"
 	}
-	s := strconv.FormatFloat(f, 'g', -1, bits)
-	if i := strings.IndexAny(s, "eE"); i >= 0 {
-		mant, exp := s[:i], s[i+1:]
-		exp = strings.TrimPrefix(exp, "+")
-		if !strings.Contains(mant, ".") {
-			mant += ".0"
+	abs := math.Abs(f)
+	if f == 0 || (abs >= 1e-3 && abs < 1e7) {
+		s := strconv.FormatFloat(f, 'f', -1, bits)
+		if !strings.Contains(s, ".") {
+			s += ".0"
 		}
-		return mant + "E" + exp
+		return s
 	}
-	if !strings.Contains(s, ".") {
-		s += ".0"
+	s := strconv.FormatFloat(f, 'e', -1, bits)
+	i := strings.IndexByte(s, 'e')
+	mant, exp := s[:i], s[i+1:]
+	neg := strings.HasPrefix(exp, "-")
+	exp = strings.TrimLeft(strings.TrimPrefix(strings.TrimPrefix(exp, "+"), "-"), "0")
+	if exp == "" {
+		exp = "0"
 	}
-	return s
+	if neg {
+		exp = "-" + exp
+	}
+	if !strings.Contains(mant, ".") {
+		mant += ".0"
+	}
+	return mant + "E" + exp
 }
+
+// JavaDoubleToString is Java's Double.toString(double).
+func JavaDoubleToString(f float64) string { return javaFloatString(f, 64) }
+
+// JavaFloatToString is Java's Float.toString(float).
+func JavaFloatToString(f float32) string { return javaFloatString(float64(f), 32) }
 
 // toFloat32Operand converts a FLOAT-lane operand to float32. Integer
 // operands convert DIRECTLY int64→float32 (Java's ADD_LF does `(float)l`
