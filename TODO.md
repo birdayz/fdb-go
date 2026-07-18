@@ -1489,6 +1489,18 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       rebaseOuterLegValue (rule_implement_nested_loop_join.go:1218) to compose
 >       FieldPath ordinals from planBuriedLegConcat leg windows instead of
 >       minting `corr + "." + field`; riskiest slice, stress-compare before/after.
+>       REFINED MAP (read before starting): ONE call site (:479), gated
+>       innerNullOnEmpty && buriedPreservedAliases — the RFC-153 LEFT-OUTER
+>       buried-preserved rebase ONLY (regular INNER multiway already rebases
+>       onto $m in the merge collapse). The value rewrite QOV(leg).col →
+>       FieldValue(QOV($m), "LEG.COL") is the lazy half; study the plan-side
+>       twin rebasePlanBuriedRefs for the ordinal-composition symmetry, and
+>       planBuriedLegConcat (:1006, Fields+RecordTypeLegs boundaries) for the
+>       window layout. The FrontierPinned panic guard inside rebaseOuterLegValue
+>       documents the baked/lazy contract to preserve. Verifier
+>       planReferencesAnyBuriedAlias fail-closes — the ordinal rewrite must keep
+>       that conservatism. Pins to re-run: RFC-153 outer-join FDB suite + 1M
+>       stress before/after.
 > - [ ] Slice 5: kill fieldValueAliasAndCol (NLJ :2827) + MergeSeedLegsOfValue
 >       (value_correlation.go:27) once 3-4 land.
 > - [ ] Slice 6: N-F5 sweep — remaining parseColRef callers down to the Phase-D
