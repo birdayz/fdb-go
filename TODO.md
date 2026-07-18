@@ -1543,14 +1543,43 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > Java pushProperty semantics — per-key lattice combine
 > (CombineRequestedOrderings / new CombineReferencedFields union),
 > subsumption = no store no tick, and the shared-child clobber the old
-> overwrite hid is repaired. Stage (b) REMAINDER (the convergence
-> handover — the arc's riskiest step): route insert-driven exploration
-> at the rule-call yield sites, flip Reference.NeedsExploration to the
-> epochs, remove dual insertion, revert ContainsFinal→containsExactly,
-> replace the Absorb fold's always-replace lambda with the typed
-> combine; then (c) prune-to-1 Verify at the boundary; (d) retire
-> 15b/15c + the round cap (evidence exported). Each checkpoint gates on
-> stress + EXPLAIN parity per the Graefe amendment.
+> overwrite hid is repaired; the b-first ACK folds landed too (Set
+> returns the lattice-grew verdict, PushConstraint's redundant
+> pre-combine deleted, subsumed pushes schedule NO re-exploration —
+> Java's empty Optional). Stage (b) REMAINDER (the convergence
+> handover — the arc's riskiest step), FLIP MAP from the executed
+> census (all three rule-yield sites ALREADY push per-expression
+> exploration; constraint pushes verdict-gated):
+> (1) Data-access insert sites rely on the count-round pickup TODAY:
+>     planner.go:561/:646/:659 InsertFinal + yieldUnknown run INLINE in
+>     ExploreExprTask and push no tasks — the stage-(a) finals loop is
+>     what explores them (why it probed live). The flip pushes
+>     OptimizeInputs+Explore for these finals at the insert sites (or
+>     via the finals loop with the once-guard retired under
+>     epoch-bounded rounds).
+> (2) Same-ref logical inserts outside tasks to verify per-site:
+>     implementation_rule.go:115, memo.go:284 (Integrate),
+>     rule_decorrelate_values.go:194, rule_predicate_push_down.go:131
+>     (fresh child refs — covered by the parent's child-walk; confirm).
+> (3) Flip Reference.NeedsExploration to the epochs
+>     (ConstraintsMap.NeedsExploration + HasNeverBeenExplored first
+>     round); retire explState/explMemberCount/explRounds and the
+>     stage-(a) once-guard (epoch-bounded rounds make Java's
+>     explore-all-every-round safe).
+> (4) Absorb: typed combine instead of the always-replace lambda (the
+>     key-typed combine must become visible to expressions — move the
+>     registration or pass it in); express the member-fold re-arm as an
+>     epoch tick (a constraint-less merge must still re-explore members
+>     fired under the loser's identity).
+> (5) Remove dual insertion (TransformExprTask PLANNING yieldFn drops
+>     Insert) + revert the OptimizeInputsTask guard
+>     ContainsFinal→ContainsExactly (unified_tasks.go:552 — without dual
+>     copies the checks coincide, Java's shape); audit EstimateOrdering/
+>     AllMembers consumers expecting physicals among Members().
+> The flip lands as ONE green commit. Then (c) prune-to-1 Verify at the
+> boundary; (d) retire 15b/15c + the round cap
+> (MaxObservedExplorationRounds evidence already exported). Each
+> checkpoint gates on stress + EXPLAIN parity per the Graefe amendment.
 > Remaining otherwise: WS-N Phases B-D after the slices
 > (ConstraintsMap epoch port retiring dual-insertion + 15b/15c + round cap;
 > un-gate REWRITING OptimizeInputs; fix stale DIVERGENCES advancePlannerStage
