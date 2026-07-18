@@ -5881,6 +5881,16 @@ func TestRecursiveResume_CorruptTokensFailLoudly(t *testing.T) {
 		t.Fatalf("a corrupt token on a recursive DFS join must fail loudly with ContinuationParseError, got %v", err)
 	}
 
+	// A protobuf-VALID token with zero levels (unknown-field-only — field
+	// 15 varint 0) is equally corrupt: RecursiveCursor never emits one
+	// (terminals serialize nil), and treating it as exhausted silently
+	// served ZERO ROWS.
+	zeroLevels := []byte{0x78, 0x00}
+	_, err = ExecutePlan(ctx, dfs, nil, EmptyEvaluationContext(), zeroLevels, recordlayer.DefaultExecuteProperties())
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("a zero-level recursive token must fail loudly, not serve zero rows, got %v", err)
+	}
+
 	// nil continuation still executes normally.
 	cursor, err := ExecutePlan(ctx, mkPlan(), nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {

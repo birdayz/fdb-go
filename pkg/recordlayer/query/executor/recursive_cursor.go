@@ -108,8 +108,11 @@ func newRecursiveCursor(
 		checkValueFromPrior = level.GetCheckValue()
 	}
 	if len(c.nodes) == 0 {
-		// A continuation with zero levels is the exhausted terminal state.
-		c.exhausted = true
+		// RecursiveCursor never emits a zero-level token — terminal
+		// continuations serialize as nil — so a protobuf-valid token with
+		// no levels (unknown-field-only, foreign, truncated) is CORRUPT:
+		// treating it as exhausted silently served zero rows.
+		return nil, &recordlayer.ContinuationParseError{Message: "recursive cursor: continuation carries no levels", RawBytes: continuation}
 	}
 	return c, nil
 }
@@ -251,7 +254,10 @@ func (c *recursiveCursor) addChildNode(value QueryResult) error {
 
 // chargeNode charges one stack slot's row against the byte budget.
 func (c *recursiveCursor) chargeNode(value QueryResult) (int64, error) {
-	if c.state == nil {
+	// HasMemLimit, not nil: the default unlimited setting supplies a
+	// non-nil state with memLimit 0, and estimateQueryResultBytes (proto
+	// sizing + key packing) per node is pure waste when accounting is off.
+	if c.state == nil || !c.state.HasMemLimit() {
 		return 0, nil
 	}
 	n := estimateQueryResultBytes(value)

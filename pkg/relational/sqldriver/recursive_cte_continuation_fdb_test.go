@@ -322,3 +322,66 @@ func TestFDB_RecursiveDistinct_CycleTerminates(t *testing.T) {
 		})
 	}
 }
+
+// TestFDB_RecursiveDistinct_DeepChain pins the depth-cap parity of the
+// DISTINCT recursion arms: a clause-less UNION (distinct) recursion over a
+// 300-node acyclic chain must answer ALL rows regardless of which physical
+// arm the cost model picks — the eager DFS arm's former 256 cap silently
+// cut availability relative to the level union's 1000 once the Java-shaped
+// (insert-free) DFS legs could win costing for this shape.
+func TestFDB_RecursiveDistinct_DeepChain(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	const dbPath = "/rec_dist_deep"
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rec_dist_deep_tmpl"+
+		" CREATE TABLE edges (id BIGINT, parent BIGINT, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("tmpl: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dist_deep_tmpl"); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	const chain = 300
+	var b strings.Builder
+	b.WriteString("INSERT INTO edges VALUES (1,0)")
+	for i := 2; i <= chain; i++ {
+		fmt.Fprintf(&b, ",(%d,%d)", i, i-1)
+	}
+	if _, err := db.ExecContext(ctx, b.String()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rows, err := db.QueryContext(ctx,
+		"WITH RECURSIVE r(n) AS ("+
+			"SELECT id FROM edges WHERE parent = 0 "+
+			"UNION "+
+			"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n"+
+			") SELECT n FROM r")
+	if err != nil {
+		t.Fatalf("deep DISTINCT recursion must ANSWER: %v", err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		n++
+		if n > chain+8 {
+			t.Fatal("row runaway")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows (the former 256 depth cap fails here as 54F01): %v", err)
+	}
+	if n != chain {
+		t.Fatalf("deep DISTINCT recursion = %d rows, want %d", n, chain)
+	}
+}

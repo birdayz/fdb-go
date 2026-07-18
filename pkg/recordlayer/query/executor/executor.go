@@ -3738,7 +3738,13 @@ func executeRecursiveDfsJoinDistinctEager(
 		keyer = newCTEDedupKeyer(canonicalCols)
 	}
 
-	const maxRecursionDepth = 256
+	// The SAME cycle tripwire as every other recursion arm
+	// (maxStreamingRecursionDepth): the eager DISTINCT arm's former 256
+	// silently CUT availability relative to the level union — with the
+	// DFS legs Java-shaped, a clause-less deep DISTINCT recursion can
+	// cost-flip onto this arm, and a 270-deep acyclic chain that used to
+	// answer via RecursiveLevelUnion failed 54F01 on the lower cap.
+	const maxRecursionDepth = maxStreamingRecursionDepth
 
 	for _, root := range rootRows {
 		if seen != nil {
