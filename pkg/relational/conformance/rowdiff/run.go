@@ -3,7 +3,10 @@ package rowdiff
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 
@@ -107,27 +110,38 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 	}
 
 	for _, q := range c.Queries {
-		// Plan-family telemetry from the TYPED plan tree (never EXPLAIN
-		// text), via the embedded planner over the same DDL. Classified
-		// once per query body — projection variants share the WHERE shape.
-		starSQL := c.SQL(q, nil)
-		if plan, planErr := embedded.PlanPhysicalForTest(starSQL, ddl, nil); planErr == nil {
-			for _, fam := range classifyPlan(plan) {
-				res.Histogram[fam]++
-			}
-		} else {
-			res.Histogram["plan-error"]++
-			if len(res.PlanErrors) < maxPlanErrorSamples {
-				res.PlanErrors = append(res.PlanErrors, fmt.Sprintf("%s: %v", starSQL, planErr))
-			}
-		}
-
 		for _, projection := range c.Projections() {
 			sqlText := c.SQL(q, projection)
+
+			// Plan-family telemetry from the TYPED plan tree (never EXPLAIN
+			// text), via the embedded planner over the same DDL. Classified
+			// per projection VARIANT: projection changes the winner even for
+			// an identical WHERE (a star variant can fetch where the narrow
+			// variant is covering), so star-only classification under-reports
+			// executed families.
+			if plan, planErr := embedded.PlanPhysicalForTest(sqlText, ddl, nil); planErr == nil {
+				for _, fam := range classifyPlan(plan) {
+					res.Histogram[fam]++
+				}
+			} else {
+				res.Histogram["plan-error"]++
+				if len(res.PlanErrors) < maxPlanErrorSamples {
+					res.PlanErrors = append(res.PlanErrors, fmt.Sprintf("%s: %v", sqlText, planErr))
+				}
+			}
+
 			engineRows, cols, err := queryRows(ctx, db, sqlText)
 			if err != nil {
-				// P1 generates only supported shapes — ANY engine error is a
-				// finding, not a decline (RFC-182 §3).
+				// RFC-182 §4: INFRA must never masquerade as a soundness
+				// finding. A context/transport failure aborts the seed as
+				// INFRA; every OTHER engine error stays a finding — P1
+				// generates only supported shapes (§3), and widening the
+				// INFRA class would open a suppression hole.
+				if isInfraError(err) {
+					res.Kind = OutcomeInfra
+					res.InfraErr = fmt.Errorf("query %q: %w", sqlText, err)
+					return res
+				}
 				res.Mismatches = append(res.Mismatches, &Mismatch{
 					Seed: c.Seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
 					Detail: fmt.Sprintf("engine error: %v", err),
@@ -188,6 +202,20 @@ func queryRows(ctx context.Context, db *sql.DB, sqlText string) ([]Row, []string
 		out = append(out, r)
 	}
 	return out, upper, rows.Err()
+}
+
+// isInfraError classifies the KNOWN transport/context failure signatures as
+// infrastructure. The set is deliberately narrow: an unrecognized error is a
+// finding, so a genuine engine defect can never hide behind the INFRA class.
+func isInfraError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if errors.Is(err, driver.ErrBadConn) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 func normalizeDriverValue(v any) any {

@@ -84,6 +84,9 @@ func run(seeds, seedStart uint64, templates bool) int {
 		for fam, n := range res.Histogram {
 			histogram[fam] += n
 		}
+		for _, pe := range res.PlanErrors {
+			fmt.Fprintf(os.Stderr, "%s plan-error: %s\n", label, pe)
+		}
 		switch res.Kind {
 		case rowdiff.OutcomeInfra:
 			infra++

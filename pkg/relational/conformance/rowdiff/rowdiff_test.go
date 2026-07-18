@@ -5,6 +5,11 @@ package rowdiff
 // synthetic mismatches, so a future all-green run can be trusted.
 
 import (
+	"context"
+	"database/sql/driver"
+	"errors"
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 
@@ -115,6 +120,30 @@ func TestDiffRows_SensitivityToSyntheticMismatches(t *testing.T) {
 	}
 	if d := diffRows([]Row{r(1, 5), r(2, 6)}, cols, []Row{r(1, 5), r(2, 6)}, ordered); d != "" {
 		t.Fatalf("correct order flagged: %s", d)
+	}
+}
+
+func TestIsInfraError_Classification(t *testing.T) {
+	t.Parallel()
+	// INFRA: the known transport/context signatures.
+	for _, err := range []error{
+		context.Canceled,
+		fmt.Errorf("wrap: %w", context.DeadlineExceeded),
+		driver.ErrBadConn,
+		&net.OpError{Op: "dial", Err: errors.New("refused")},
+	} {
+		if !isInfraError(err) {
+			t.Errorf("%v must classify as INFRA", err)
+		}
+	}
+	// FINDING: anything else — an engine error must never hide behind INFRA.
+	for _, err := range []error{
+		errors.New("42601: syntax error"),
+		errors.New("0AF00: could not plan query"),
+	} {
+		if isInfraError(err) {
+			t.Errorf("%v must stay a finding, not INFRA", err)
+		}
 	}
 }
 

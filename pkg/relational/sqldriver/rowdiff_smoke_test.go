@@ -66,6 +66,9 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 
 func reportRowdiff(t *testing.T, res *rowdiff.SeedResult) {
 	t.Helper()
+	for _, pe := range res.PlanErrors {
+		t.Logf("seed %d plan-error: %s", res.Seed, pe)
+	}
 	switch res.Kind {
 	case rowdiff.OutcomeInfra:
 		// INFRA is not a soundness finding, but the smoke shares the suite's
