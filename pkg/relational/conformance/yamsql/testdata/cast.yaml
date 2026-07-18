@@ -95,3 +95,13 @@ tests:
   # (the RFC-082 "Go-too-lenient" withheld candidate, resolved strict).
   - query: SELECT CAST(num_col AS BOOLEAN) FROM test_cast WHERE id = 1
     error_code: "22F3H"
+
+  # STRING→BYTES has no cast pair in EITHER engine — the plan-time
+  # pair gate rejects it. The walker's decline classification currently
+  # reports the planner's loud 0AF00 rather than the gate's own 22F3H
+  # (surfacing the inner code verbatim is follow-up polish); before the
+  # gate this shape evaluated to a SILENT NULL.
+  - query: SELECT id FROM test_cast WHERE CAST(str_col AS BYTES) IS NULL
+    error_code: "0AF00"
+  - query: SELECT CAST(str_col AS BYTES) FROM test_cast WHERE id = 1
+    error_code: "0AF00"

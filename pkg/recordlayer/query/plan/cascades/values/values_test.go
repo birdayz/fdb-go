@@ -1827,3 +1827,36 @@ func (b *testCorrelationBinder) GetCorrelationBinding(id CorrelationIdentifier) 
 	v, ok := b.bindings[id]
 	return v, ok
 }
+
+// TestCastPairDefined_ByteStringLandmines pins the castPairs admission
+// table against the evaluator: STRING↔BYTES has NO runtime arm in either
+// direction (an admitted pair with no arm evaluates to a SILENT NULL —
+// the worst failure mode) and NO Java castOperatorMap row, so the
+// plan-time gate must reject both. The two admitted Go extensions
+// (UUID→STRING, ENUM→STRING) DO have runtime arms and stay admitted.
+func TestCastPairDefined_ByteStringLandmines(t *testing.T) {
+	t.Parallel()
+	if CastPairDefined(TypeCodeString, TypeCodeBytes) {
+		t.Fatal("STRING→BYTES must NOT be admitted: no runtime arm (silent NULL), no Java row")
+	}
+	if CastPairDefined(TypeCodeBytes, TypeCodeString) {
+		t.Fatal("BYTES→STRING must NOT be admitted: no runtime arm (silent NULL), no Java row")
+	}
+	if !CastPairDefined(TypeCodeUuid, TypeCodeString) {
+		t.Fatal("UUID→STRING is a documented Go extension with a runtime arm")
+	}
+	if !CastPairDefined(TypeCodeEnum, TypeCodeString) {
+		t.Fatal("ENUM→STRING is a documented Go extension with a runtime arm")
+	}
+	// Red-proof of the landmine itself: an unhandled cast target falls
+	// off the evaluator's dispatch and returns (nil, nil) — the silent
+	// NULL the gate exists to make unreachable.
+	mine := NewCastValue(&ConstantValue{Value: "abc", Typ: NullableString}, NewPrimitiveType(TypeCodeBytes, true))
+	got, err := mine.Evaluate(nil)
+	if err == nil && got == nil {
+		// This is exactly why the pair is not admitted: reaching the
+		// evaluator without an arm silently produces NULL.
+		return
+	}
+	t.Fatalf("STRING→BYTES evaluator behavior changed (got %v, err %v) — if an arm was added, admit the pair and update this pin", got, err)
+}

@@ -617,6 +617,22 @@ func widenIntConstAgainstDouble(op predicates.ComparisonType, left, right values
 	return left, coerced
 }
 
+// mirrorOp flips an ordered comparison to the other operand's point of
+// view (a < b ≡ b > a). Equality-family ops are their own mirror.
+func mirrorOp(op predicates.ComparisonType) predicates.ComparisonType {
+	switch op {
+	case predicates.ComparisonLessThan:
+		return predicates.ComparisonGreaterThan
+	case predicates.ComparisonLessThanOrEq:
+		return predicates.ComparisonGreaterThanEq
+	case predicates.ComparisonGreaterThan:
+		return predicates.ComparisonLessThan
+	case predicates.ComparisonGreaterThanEq:
+		return predicates.ComparisonLessThanOrEq
+	}
+	return op
+}
+
 // narrowFloatConstAgainstInt is widenIntConstAgainstDouble's INVERSE:
 // a DOUBLE/FLOAT compile-time CONSTANT compared against a non-constant
 // INT/LONG-typed value (an integer column) packs as a tuple-double
@@ -688,16 +704,7 @@ func narrowFloatConstAgainstInt(op predicates.ComparisonType, left, right values
 		}
 		colRelOp := op
 		if lc {
-			switch op {
-			case predicates.ComparisonLessThan:
-				colRelOp = predicates.ComparisonGreaterThan
-			case predicates.ComparisonLessThanOrEq:
-				colRelOp = predicates.ComparisonGreaterThanEq
-			case predicates.ComparisonGreaterThan:
-				colRelOp = predicates.ComparisonLessThan
-			case predicates.ComparisonGreaterThanEq:
-				colRelOp = predicates.ComparisonLessThanOrEq
-			}
+			colRelOp = mirrorOp(op)
 		}
 		// col > +huge / col >= +huge → false ≡ col > MaxInt64;
 		// col < +huge / col <= +huge → true ≡ col <= MaxInt64;
@@ -718,16 +725,7 @@ func narrowFloatConstAgainstInt(op predicates.ComparisonType, left, right values
 			}
 		}
 		if lc {
-			switch colRelOp {
-			case predicates.ComparisonGreaterThan:
-				op = predicates.ComparisonLessThan
-			case predicates.ComparisonGreaterThanEq:
-				op = predicates.ComparisonLessThanOrEq
-			case predicates.ComparisonLessThan:
-				op = predicates.ComparisonGreaterThan
-			case predicates.ComparisonLessThanOrEq:
-				op = predicates.ComparisonGreaterThanEq
-			}
+			op = mirrorOp(colRelOp)
 		} else {
 			op = colRelOp
 		}
@@ -747,16 +745,7 @@ func narrowFloatConstAgainstInt(op predicates.ComparisonType, left, right values
 		// on the LEFT (`1.5 < col`), the column-relative op is mirrored.
 		colRelOp := op
 		if lc {
-			switch op {
-			case predicates.ComparisonLessThan:
-				colRelOp = predicates.ComparisonGreaterThan
-			case predicates.ComparisonLessThanOrEq:
-				colRelOp = predicates.ComparisonGreaterThanEq
-			case predicates.ComparisonGreaterThan:
-				colRelOp = predicates.ComparisonLessThan
-			case predicates.ComparisonGreaterThanEq:
-				colRelOp = predicates.ComparisonLessThanOrEq
-			}
+			colRelOp = mirrorOp(op)
 		}
 		switch colRelOp {
 		case predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
@@ -770,12 +759,7 @@ func narrowFloatConstAgainstInt(op predicates.ComparisonType, left, right values
 			return op, left, right
 		}
 		if lc {
-			switch colRelOp {
-			case predicates.ComparisonGreaterThanEq:
-				op = predicates.ComparisonLessThanOrEq
-			case predicates.ComparisonLessThanOrEq:
-				op = predicates.ComparisonGreaterThanEq
-			}
+			op = mirrorOp(colRelOp)
 		} else {
 			op = colRelOp
 		}

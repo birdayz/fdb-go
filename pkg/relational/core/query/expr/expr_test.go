@@ -853,25 +853,83 @@ func TestResolveIdentifier_BornBaked(t *testing.T) {
 		t.Fatal("resolution must be BORN BAKED (Resolved != nil)")
 	}
 
-	// A source with no declared column order errors loudly.
-	empty := &semantic.StaticTable{
-		TableName: semantic.ParseQualifiedName("EMPTYCAT", false),
+	// A source that RESOLVES the column but declares no column order
+	// (LookupColumn answers, Columns() is empty — the shape of an empty
+	// derived-table catalog with a computed alias) cannot bind a
+	// plan-time ordinal. Both resolution arms must fail LOUDLY, never
+	// mint a lazy node that reads by name.
+	ghost := &orderlessTable{
+		name: semantic.ParseQualifiedName("GHOSTCAT", false),
+		cols: map[string]semantic.Column{
+			"GHOST": {Id: semantic.NewUnquoted("ghost"), Type: "STRING", Nullable: true},
+		},
 	}
-	cat := semantic.NewInMemoryCatalog(empty)
+	cat := semantic.NewInMemoryCatalog()
 	a2 := semantic.NewAnalyzer(cat, false)
+
+	// LOCAL arm: the bare reference binds to the orderless source in the
+	// local scope.
 	s2 := semantic.NewScope(nil)
-	// A scope source whose TABLE lacks the column entirely fails
-	// resolution upstream (ColumnNotFound); the UnresolvableOrdinalError
-	// arm needs a source that RESOLVES the column but declares no order —
-	// a virtual table with a column the ordinal walk cannot place. The
-	// simplest such shape: a column present in LookupColumn but absent
-	// from Columns() ordering is not constructible via StaticTable (its
-	// lookup IS its column list), so the loud arm is pinned at the type
-	// level: the error type exists and carries the field.
-	_ = a2
-	_ = s2
-	e := &expr.UnresolvableOrdinalError{Field: "X", Source: "S"}
-	if e.Error() == "" {
-		t.Fatal("error must render")
+	if err := s2.AddSource(semantic.ScopeSource{
+		Table: ghost, Alias: semantic.NewUnquoted("g"),
+	}); err != nil {
+		t.Fatal(err)
 	}
+	r2 := expr.New(a2, s2)
+	_, err = r2.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("ghost"))
+	var unres *expr.UnresolvableOrdinalError
+	if !errors.As(err, &unres) {
+		t.Fatalf("local arm: want UnresolvableOrdinalError, got %v", err)
+	}
+	if unres.Field != "GHOST" {
+		t.Fatalf("local arm Field: got %q, want GHOST", unres.Field)
+	}
+
+	// CORRELATED arm: the bare reference falls through to a PARENT-scope
+	// orderless source (needsQualification via the local scope's own
+	// source not answering), reaching the correlated ordinal bind.
+	parent := semantic.NewScope(nil)
+	if err := parent.AddSource(semantic.ScopeSource{
+		Table: ghost, Alias: semantic.NewUnquoted("g"), CorrelationName: "gq",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	child := semantic.NewScope(parent)
+	users2 := &semantic.StaticTable{
+		TableName: semantic.ParseQualifiedName("USERS", false),
+		TableColumns: []semantic.Column{
+			{Id: semantic.NewUnquoted("id"), Type: "INT"},
+		},
+	}
+	if err := child.AddSource(semantic.ScopeSource{
+		Table: users2, Alias: semantic.NewUnquoted("u"), CorrelationName: "uq",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r3 := expr.New(a2, child)
+	_, err = r3.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("ghost"))
+	unres = nil
+	if !errors.As(err, &unres) {
+		t.Fatalf("correlated arm: want UnresolvableOrdinalError, got %v", err)
+	}
+	if unres.Source != "gq" {
+		t.Fatalf("correlated arm Source: got %q, want gq", unres.Source)
+	}
+}
+
+// orderlessTable resolves columns by name but declares NO column order —
+// LookupColumn answers while Columns() is empty. This is the shape that
+// makes a plan-time ordinal unbindable (StaticTable can't model it: its
+// lookup IS its column list).
+type orderlessTable struct {
+	name semantic.QualifiedName
+	cols map[string]semantic.Column
+}
+
+func (o *orderlessTable) Name() semantic.QualifiedName { return o.name }
+func (o *orderlessTable) Columns() []semantic.Column   { return []semantic.Column{} }
+func (o *orderlessTable) Indexes() []string            { return nil }
+func (o *orderlessTable) LookupColumn(id semantic.Identifier) (semantic.Column, bool) {
+	c, ok := o.cols[id.Name()]
+	return c, ok
 }

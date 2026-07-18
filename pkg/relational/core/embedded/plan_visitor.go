@@ -608,13 +608,21 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			// (P2, silent-wrong). RFC-142.
 			if !col.qualified && col.bare != "" && proj != nil {
 				id := semantic.NewUnquoted(col.bare)
-				if qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id); qerr == nil && ok {
+				qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id)
+				if qerr == nil && ok {
 					if proj.ProjectedValues == nil {
 						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 					}
 					if i < len(proj.ProjectedValues) {
 						proj.ProjectedValues[i] = qv
 					}
+				}
+				var unresShadow *expr.UnresolvableOrdinalError
+				if errors.As(qerr, &unresShadow) {
+					// Born-baked (slice 2): the scope bound the name but the
+					// source cannot answer a plan-time ordinal — never fall
+					// through to the name channel.
+					return nil, unresShadow
 				}
 				// A BARE non-shadowed column resolves through the scope so the
 				// projection carries the construction-bound ordinal (a
@@ -623,7 +631,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				// QOV-correlated resolution, an unresolvable name, a lazy
 				// result — keeps the translator's name emission unchanged.
 				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
-					if rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id); rerr == nil {
+					rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id)
+					if rerr == nil {
 						if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
 							if proj.ProjectedValues == nil {
 								proj.ProjectedValues = make([]values.Value, len(proj.Projections))
@@ -632,6 +641,10 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 								proj.ProjectedValues[i] = fv
 							}
 						}
+					}
+					var unresIdent *expr.UnresolvableOrdinalError
+					if errors.As(rerr, &unresIdent) {
+						return nil, unresIdent
 					}
 				}
 			}
@@ -875,7 +888,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (10) Upgrade aggregate operands + GROUP BY key values.
 	if len(sq.aggCols) > 0 {
-		upgradeAggregateOperands(op, sq, v.md, v.schemaName, v.cteScopes)
+		if uerr := upgradeAggregateOperands(op, sq, v.md, v.schemaName, v.cteScopes); uerr != nil {
+			return nil, uerr
+		}
 	}
 
 	// (11) Create a unified SubqueryPlanner for EXISTS/scalar subqueries.
@@ -940,7 +955,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// scope resolver and ResolveColumnShadowingQualified helper as the projection
 	// path, so the two never diverge. RFC-142.
 	if resolver != nil {
-		qualifyShadowedSortKeys(op, resolver)
+		if qerr := qualifyShadowedSortKeys(op, resolver); qerr != nil {
+			return nil, qerr
+		}
 	}
 
 	// (15b) RFC-141 Phase 2: register projected-EXISTS subqueries so the
@@ -1718,10 +1735,10 @@ func resolveQualifiedBaked(resolver *expr.Resolver, ref colRef) values.Value {
 	return nil
 }
 
-func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver) {
+func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver) error {
 	sort := findSort(op)
 	if sort == nil {
-		return
+		return nil
 	}
 	for i := range sort.Keys {
 		// A key already carrying a resolved Value (a projection alias, a computed
@@ -1747,6 +1764,13 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 				sort.Keys[i].Value = qv
 				continue
 			}
+			var unres *expr.UnresolvableOrdinalError
+			if errors.As(err, &unres) {
+				// Born-baked (slice 2): an unbindable ordinal must not
+				// fall through to the name channel — that is the
+				// reads-by-name failure the retirement killed.
+				return err
+			}
 			// Every other QUALIFIED sort key resolves through the scope to
 			// the quantifier-addressed source-relative baked reference so
 			// the key resolves positionally through its leg window
@@ -1758,10 +1782,15 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 		}
 		qv, ok, err := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id)
 		if err != nil || !ok {
+			var unres *expr.UnresolvableOrdinalError
+			if errors.As(err, &unres) {
+				return err
+			}
 			continue
 		}
 		sort.Keys[i].Value = qv
 	}
+	return nil
 }
 
 // parseLimitClause reads a LIMIT/OFFSET clause from a SimpleTableContext and

@@ -1002,7 +1002,6 @@ var castPairs = map[promotionEdge]struct{}{
 	{TypeCodeString, TypeCodeBoolean}: {},
 	{TypeCodeString, TypeCodeEnum}:    {},
 	{TypeCodeString, TypeCodeUuid}:    {},
-	{TypeCodeString, TypeCodeBytes}:   {},
 	// ARRAY_TO_VECTOR folds into the ARRAY identity here (no VECTOR code).
 	{TypeCodeArray, TypeCodeArray}:      {},
 	{TypeCodeString, TypeCodeDate}:      {},
@@ -1011,9 +1010,14 @@ var castPairs = map[promotionEdge]struct{}{
 	{TypeCodeTimestamp, TypeCodeString}: {},
 	{TypeCodeDate, TypeCodeTimestamp}:   {},
 	{TypeCodeTimestamp, TypeCodeDate}:   {},
-	{TypeCodeUuid, TypeCodeString}:      {},
-	{TypeCodeBytes, TypeCodeString}:     {},
-	{TypeCodeEnum, TypeCodeString}:      {},
+	// GO EXTENSIONS beyond Java's castOperatorMap (DIVERGENCES.md;
+	// runtime arms verified): UUID→STRING renders the canonical 36-char
+	// form ([16]byte arm of the STRING target); ENUM→STRING is identity
+	// (the enum carrier IS its name string). STRING↔BYTES is NOT
+	// admitted in EITHER direction — no runtime arm (an admitted pair
+	// with no arm evaluates to a SILENT NULL), and Java has no row.
+	{TypeCodeUuid, TypeCodeString}: {},
+	{TypeCodeEnum, TypeCodeString}: {},
 }
 
 // CastPairDefined reports whether an explicit CAST from `from` to `to`

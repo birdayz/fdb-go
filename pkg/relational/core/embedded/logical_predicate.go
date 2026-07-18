@@ -2222,13 +2222,21 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			// reads the wrong column (silent-wrong). RFC-142.
 			if !col.qualified && col.bare != "" && proj != nil {
 				id := semantic.NewUnquoted(col.bare)
-				if qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id); qerr == nil && ok {
+				qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id)
+				if qerr == nil && ok {
 					if proj.ProjectedValues == nil {
 						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 					}
 					if i < len(proj.ProjectedValues) {
 						proj.ProjectedValues[i] = qv
 					}
+				}
+				var unresShadow *expr.UnresolvableOrdinalError
+				if errors.As(qerr, &unresShadow) {
+					// Born-baked (slice 2): the scope bound the name but the
+					// source cannot answer a plan-time ordinal — never fall
+					// through to the name channel.
+					return nil, unresShadow
 				}
 				// A BARE non-shadowed column resolves through the
 				// scope so the projection carries the construction-bound ordinal
@@ -2238,7 +2246,8 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				// keeps the translator's name emission unchanged. Twin of the
 				// PlanVisitor's bare-projection bind.
 				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
-					if rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id); rerr == nil {
+					rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id)
+					if rerr == nil {
 						if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
 							if proj.ProjectedValues == nil {
 								proj.ProjectedValues = make([]values.Value, len(proj.Projections))
@@ -2247,6 +2256,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 								proj.ProjectedValues[i] = fv
 							}
 						}
+					}
+					var unresIdent *expr.UnresolvableOrdinalError
+					if errors.As(rerr, &unresIdent) {
+						return nil, unresIdent
 					}
 				}
 			}
@@ -2466,7 +2479,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 
 	if len(sq.aggCols) > 0 {
-		upgradeAggregateOperands(op, sq, md, schemaName, cteScopes)
+		if uerr := upgradeAggregateOperands(op, sq, md, schemaName, cteScopes); uerr != nil {
+			return nil, uerr
+		}
 	}
 
 	// Create a unified SubqueryPlanner early so both projection and
@@ -2523,7 +2538,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	// SAME qualifyShadowedSortKeys / ResolveColumnShadowingQualified helpers so the
 	// catalog and top-level paths shadow ORDER BY identically. RFC-142.
 	if resolver != nil {
-		qualifyShadowedSortKeys(op, resolver)
+		if qerr := qualifyShadowedSortKeys(op, resolver); qerr != nil {
+			return nil, qerr
+		}
 	}
 
 	// RFC-141 Phase 2 (projected EXISTS, the hidden-blocker step): a projected
@@ -3593,17 +3610,17 @@ func cascadesSafeScalarFunction(name string) bool {
 	return values.IsCascadesSafeScalarFunction(name)
 }
 
-func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) {
+func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
 	agg := findAggregate(op)
 	if agg == nil {
-		return
+		return nil
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
 	if resolver == nil {
 		resolver = buildSelectScope(sq, md, schemaName, cteScopes)
 	}
 	if resolver == nil {
-		return
+		return nil
 	}
 	operands := make([]values.Value, len(agg.Calls))
 	for _, ac := range sq.aggCols {
@@ -3733,10 +3750,16 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			// upstream group-key reference validation already terminated an
 			// ambiguous key with 42702 before this pass runs (the ladder's
 			// >=2 arm is owned there, not here).
-			if qv, err := resolver.ResolveQualifiedProjection(qualID, semantic.NewUnquoted(ref.bare())); err == nil && qv != nil {
+			qv, qerr := resolver.ResolveQualifiedProjection(qualID, semantic.NewUnquoted(ref.bare()))
+			if qerr == nil && qv != nil {
 				keyValues[i] = qv
 				filled = true
 				continue
+			}
+			var unres *expr.UnresolvableOrdinalError
+			if errors.As(qerr, &unres) {
+				// Born-baked (slice 2): never fall to the name channel.
+				return unres
 			}
 			// Every other QUALIFIED group key resolves through
 			// the scope to the quantifier-addressed source-relative baked
@@ -3756,6 +3779,10 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		if err == nil && ok {
 			keyValues[i] = qv
 			filled = true
+		}
+		var unresShadow *expr.UnresolvableOrdinalError
+		if errors.As(err, &unresShadow) {
+			return unresShadow
 		}
 		// A BARE non-shadowed group key resolves through the
 		// scope so it carries the construction-bound ordinal (a childless
@@ -3781,6 +3808,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			}
 		}
 	}
+	return nil
 }
 
 func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) {
