@@ -1461,14 +1461,24 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > (born-baked — the four lazy resolver fallbacks retired as
 > UnresolvableOrdinalError after zero-hit probes across yamsql/embedded/full
 > sqldriver) are LANDED; slices 1-2 need their joint Graefe/Torvalds lap.
-> - [ ] Slice 3 NEXT: delete the projection flatten fallbacks — the
->       `&values.FieldValue{Field: ToUpper(col.name)}` else-arms at
->       plan_visitor.go:~681 and logical_predicate.go:~2285 (identical twins),
->       the correlated hasJoins arms at logical_predicate.go:7653/7681, and the
->       translator re-mints (cascades_translator translateProject /
->       translateProjectOverExistsFilter fallback arms). CAREFUL: downstream
->       name-paths key on ProjectedValues[i]==nil vs lazy — removing the mint
->       changes that contract; map each consumer first.
+> - [ ] Slice 3 IN PROGRESS: (a) DONE — the builder qualified-projection
+>       else-arm twins narrowed to the DUP-ALIAS carve-out (only live family;
+>       QOV(alias) is ambiguous across same-named legs, Java rejects dup
+>       aliases; Phase B's unique quantifier aliases retire the carve-out) and
+>       fail UnresolvableOrdinalError otherwise. (b) DONE — the correlated
+>       scalar join-inner hasJoins arms bake structurally first
+>       (resolveQualifiedBaked leg windows; proven live+correct by the new
+>       column-arg/inner-GROUP-BY/comma-join FDB pin); flat mint retirement
+>       pending the full-FDB flat-arm probe (NOTE: verify probe builds compile —
+>       a goimports strip once turned a live arm into a false zero-hit).
+>       (c) translator re-mints (translateProject :5994,
+>       translateProjectOverExistsFilter :4223 + the sort/group-key mints at
+>       :4559/:4719/:5730/:6218/:6345): zero lazy escapes past the bakes in
+>       yamsql+embedded (survival probe); the mint→bake pair is translator-
+>       internal representation until Phase C/D move the IR off name-carrying
+>       LogicalProject — full deletion is re-scoped THERE, not slice 3. The
+>       dup-alias face is the only designed lazy escape (FDB survival probe to
+>       enumerate).
 > - [ ] Slice 4: structural rebases — rewrite rebaseOuterLegRefsToMerged /
 >       rebaseOuterLegValue (rule_implement_nested_loop_join.go:1218) to compose
 >       FieldPath ordinals from planBuriedLegConcat leg windows instead of

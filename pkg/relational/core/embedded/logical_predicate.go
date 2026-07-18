@@ -7750,8 +7750,6 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 	return alias, nil
 }
 
-// resolveCorrelatedColumnValueStructured resolves a structured group key —
-// segments come from the parse tree, never a re-parse of the display text.
 // colBareOrName: the structured bare segment, or the whole name as one
 // opaque label for computed/rebased entries — never a dot split.
 func colBareOrName(c projCol) string {
@@ -7761,12 +7759,15 @@ func colBareOrName(c projCol) string {
 	return c.name
 }
 
-func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical.GroupKey, hasJoins bool) (values.Value, error) {
-	if hasJoins {
-		// Merged join rows carry alias-qualified keys; the DISPLAY is that
-		// flat merged-row key (same limitation as the text path below).
-		return &values.FieldValue{Field: strings.ToUpper(key.Display), Typ: values.UnknownType}, nil
-	}
+// resolveCorrelatedColumnValueStructured resolves a structured group key of a
+// correlated scalar subquery's inner aggregate through the semantic scope —
+// ONE channel for single-source and join inners alike: a multi-source scope
+// emits the QOV-addressed born-baked form, which the executor binds through
+// the merged row's leg windows (rowLegsBinder). The flat merged-row-display
+// mint the join case used to return is retired (dead-in-effect across all
+// suites once the scope channel answered; the correlated join-inner
+// column-agg FDB pin proves qualified AND bare shapes end-to-end).
+func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical.GroupKey) (values.Value, error) {
 	bare := key.Bare
 	if bare == "" {
 		bare = key.Display
@@ -7780,21 +7781,13 @@ func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical
 
 // resolveCorrelatedColumnValue resolves a (possibly alias-qualified) column
 // name to a Value through the semantic scope — the same resolution the
-// correlated WHERE clause uses. With a single inner source the scope returns a
-// bare FieldValue (matching the bare keys a single scan flows); with joins the
-// merged rows carry alias-qualified keys, so use the qualified FieldValue, as
-// the top-level projection path does (logical_predicate.go ResolveIdentifier
-// branch). A genuinely unresolvable column (single-source path) returns the
-// resolver error so the caller can reject — silently falling back to a raw
-// FieldValue would group every row under a null key (wrong results).
-func resolveCorrelatedColumnValue(resolver *expr.Resolver, col string, hasJoins bool) (values.Value, error) {
-	if hasJoins {
-		// Merged join rows carry alias-qualified keys; use the qualified name
-		// directly (ResolveIdentifier would yield a QOV-anchored value that does
-		// not match the flat merged row). Existence is not validated here — the
-		// same limitation as the top-level join GROUP BY path.
-		return &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}, nil
-	}
+// correlated WHERE clause uses, for single-source and join inners alike
+// (the multi-source scope emits the QOV-addressed born-baked form; the
+// executor binds it through the merged row's leg windows). A genuinely
+// unresolvable column returns the resolver error so the caller can reject —
+// silently falling back to a raw FieldValue would group every row under a
+// null key (wrong results).
+func resolveCorrelatedColumnValue(resolver *expr.Resolver, col string) (values.Value, error) {
 	ref := parseColRef(col)
 	var qualifier semantic.Identifier
 	id := semantic.NewUnquoted(ref.bare())
@@ -7812,7 +7805,7 @@ func resolveCorrelatedColumnValue(resolver *expr.Resolver, col string, hasJoins 
 // fails to resolve is returned as an error — matching the top-level path
 // (upgradeAggregate) — rather than silently falling back to an unresolvable
 // raw FieldValue that would group every row under a null key.
-func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQuery, resolver *expr.Resolver, hasJoins bool) error {
+func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQuery, resolver *expr.Resolver) error {
 	if agg == nil || len(agg.GroupKeys) == 0 {
 		return nil
 	}
@@ -7826,7 +7819,7 @@ func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQu
 			keyValues[i] = v
 			continue
 		}
-		v, err := resolveCorrelatedColumnValueStructured(resolver, key, hasJoins)
+		v, err := resolveCorrelatedColumnValueStructured(resolver, key)
 		if err != nil {
 			return err
 		}
@@ -8192,7 +8185,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				}
 				opVal = v
 			} else if arg != "" {
-				v, err := resolveCorrelatedColumnValue(resolver, arg, len(sq.joins) > 0)
+				v, err := resolveCorrelatedColumnValue(resolver, arg)
 				if err != nil {
 					return "", err
 				}
@@ -8341,7 +8334,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 		aggOp := logical.NewAggregate(innerOp, logicalGroupKeys(sq.groupBy), aggCalls, aggAliases, false)
 		aggOp.AggregateOperands = aggOperands
-		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
+		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver); gkErr != nil {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 				Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,
 			}
@@ -8498,7 +8491,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// ORDER BY so the sort runs over the grouped output.
 		if len(sq.groupBy) > 0 {
 			aggOp := logical.NewAggregate(innerOp, logicalGroupKeys(sq.groupBy), nil, nil, false)
-			if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
+			if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver); gkErr != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 					Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,
 				}
