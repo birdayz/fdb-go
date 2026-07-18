@@ -1807,6 +1807,45 @@ func (s *ScalarFunctionValue) Type() Type {
 }
 
 func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
+	// SHORT-CIRCUITING forms evaluate arguments lazily — SQL requires
+	// that COALESCE stop at the first non-NULL argument and that IF
+	// evaluate only the taken branch, so `COALESCE(1, 1/0)` is 1 and
+	// `IF(true, x, 1/0)` is x, never a 22012. The eager loop below
+	// evaluated every argument first and turned these legal
+	// expressions into runtime errors.
+	switch s.FuncName {
+	case "COALESCE", "IFNULL":
+		for _, a := range s.Args {
+			if a == nil {
+				return nil, nil
+			}
+			av, err := a.Evaluate(evalCtx)
+			if err != nil {
+				return nil, err
+			}
+			if av != nil {
+				return av, nil
+			}
+		}
+		return nil, nil
+	case "IF", "IIF":
+		if len(s.Args) != 3 || s.Args[0] == nil {
+			return nil, nil
+		}
+		cond, err := s.Args[0].Evaluate(evalCtx)
+		if err != nil {
+			return nil, err
+		}
+		branch, ok := scalarIfBranch(cond)
+		if !ok {
+			// Unsupported condition type — decline like the strict arm.
+			return nil, nil
+		}
+		if s.Args[branch] == nil {
+			return nil, nil
+		}
+		return s.Args[branch].Evaluate(evalCtx)
+	}
 	args := make([]any, len(s.Args))
 	for i, a := range s.Args {
 		if a == nil {
@@ -1818,7 +1857,50 @@ func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
 		}
 		args[i] = av
 	}
-	return evalScalarFunction(s.FuncName, args)
+	return evalScalarFunctionCtx(s.FuncName, args, evalCtx)
+}
+
+// scalarIfBranch maps an evaluated IF/IIF condition to the argument
+// index of the branch to take (1 = then, 2 = else). Truthy: non-zero
+// numeric, non-empty string, true bool; NULL takes the else branch
+// (SQL §6.30 — NULL is not truthy). Single authority shared with the
+// strict evalScalarFunction arm so the two can never diverge.
+func scalarIfBranch(cond any) (int, bool) {
+	switch v := cond.(type) {
+	case bool:
+		if v {
+			return 1, true
+		}
+		return 2, true
+	case int64:
+		if v != 0 {
+			return 1, true
+		}
+		return 2, true
+	case float64:
+		if v != 0 {
+			return 1, true
+		}
+		return 2, true
+	case string:
+		if v != "" {
+			return 1, true
+		}
+		return 2, true
+	case nil:
+		return 2, true
+	}
+	return 0, false
+}
+
+// StatementClock is the optional evalCtx capability supplying the
+// statement-stable timestamp: SQL fixes CURRENT_TIMESTAMP / CURRENT_DATE
+// / CURRENT_TIME per STATEMENT, so every reference inside one statement
+// must observe the same instant. Evaluation contexts that carry a
+// statement time (the executor's EvaluationContext, the INSERT-VALUES
+// fold) implement this; without it the arms fall back to time.Now().
+type StatementClock interface {
+	StatementNow() time.Time
 }
 
 // evalScalarFunction dispatches the gated scalar function family
@@ -1847,6 +1929,30 @@ func scalarArgString(a any) string {
 		return uuid.UUID(b).String()
 	}
 	return fmt.Sprintf("%v", a)
+}
+
+// evalScalarFunctionCtx is evalScalarFunction with the evalCtx threaded
+// for the statement-clock arms (CURRENT_TIMESTAMP family); every other
+// function ignores the context.
+func evalScalarFunctionCtx(name string, args []any, evalCtx any) (any, error) {
+	switch name {
+	case "CURRENT_TIMESTAMP", "CURRENT_TIME", "LOCALTIME":
+		return statementTime(evalCtx).Format(timestampLayout), nil
+	case "CURRENT_DATE":
+		return statementTime(evalCtx).Format(dateLayout), nil
+	}
+	return evalScalarFunction(name, args)
+}
+
+// statementTime resolves the statement-stable instant from the evalCtx
+// (StatementClock) — every CURRENT_* reference in one statement observes
+// the same time, per SQL — falling back to time.Now() for contexts that
+// carry no clock.
+func statementTime(evalCtx any) time.Time {
+	if c, ok := evalCtx.(StatementClock); ok {
+		return c.StatementNow().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func evalScalarFunction(name string, args []any) (any, error) {
@@ -2205,31 +2311,8 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		if len(args) != 3 {
 			return nil, nil
 		}
-		switch v := args[0].(type) {
-		case bool:
-			if v {
-				return args[1], nil
-			}
-			return args[2], nil
-		case int64:
-			if v != 0 {
-				return args[1], nil
-			}
-			return args[2], nil
-		case float64:
-			if v != 0 {
-				return args[1], nil
-			}
-			return args[2], nil
-		case string:
-			if v != "" {
-				return args[1], nil
-			}
-			return args[2], nil
-		case nil:
-			// SQL §6.30: IF(NULL, …) returns the else branch (NULL is
-			// not truthy). embedded matches this.
-			return args[2], nil
+		if branch, ok := scalarIfBranch(args[0]); ok {
+			return args[branch], nil
 		}
 		// Unsupported condition type — decline so runtime can error.
 		return nil, nil
@@ -2432,13 +2515,19 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			}
 		}
 		if err != nil {
-			return nil, nil
+			// A non-NULL string that parses as NO supported date/time
+			// layout is DATA-DEPENDENT garbage input — a typed 22023,
+			// like SQRT(negative), never a silent NULL. The NULL-degrade
+			// contract covers TYPE declines (non-string, wrong arity),
+			// not malformed data: folding a typo to NULL silently
+			// corrupts an INSERT.
+			return nil, &InvalidArgumentError{Message: fmt.Sprintf("cannot extract %s from %q: not a date/time value", name, s)}
 		}
 		return datePartFromTime(name, t), nil
-	case "CURRENT_TIMESTAMP", "CURRENT_TIME", "LOCALTIME":
-		return time.Now().UTC().Format(timestampLayout), nil
-	case "CURRENT_DATE":
-		return time.Now().UTC().Format(dateLayout), nil
+		// CURRENT_TIMESTAMP / CURRENT_DATE / CURRENT_TIME / LOCALTIME
+		// live in evalScalarFunctionCtx — they need the evalCtx's
+		// StatementClock; a single authority so the strict path can
+		// never fork the timestamp semantics.
 	}
 	return nil, nil
 }

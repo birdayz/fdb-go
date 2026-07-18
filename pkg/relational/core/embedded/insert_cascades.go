@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"strings"
+	"time"
 
 	"github.com/antlr4-go/antlr/v4"
 
@@ -84,6 +85,10 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 	// SELECT projection path uses.
 	analyzer := semantic.NewAnalyzer(rlcatalog.Wrap(md), false)
 	resolver := expr.New(analyzer, semantic.NewScope(nil))
+	// One clock for the whole statement: SQL fixes CURRENT_TIMESTAMP /
+	// CURRENT_DATE per statement, so every cell in a multi-row VALUES
+	// folds against the same instant (values.StatementClock).
+	clock := stmtClock{now: c.statementNow()}
 
 	var rows []values.Value
 	for _, rowCtx := range valCtx.AllRecordConstructorForInsert() {
@@ -139,7 +144,7 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 					"unsupported INSERT VALUES expression: %v", walkErr)
 			}
-			val, evalErr := cell.Evaluate(nil)
+			val, evalErr := cell.Evaluate(clock)
 			if evalErr != nil {
 				return nil, translateExecError(evalErr)
 			}
@@ -179,6 +184,12 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 // nodes and reports the first severed subquery form found: "subquery"
 // for a scalar-subquery atom, "EXISTS" for an EXISTS atom, "" when the
 // tree has neither. The wording feeds the RFC-145 severed-arm message.
+// stmtClock carries the session's statement-stable timestamp into the
+// VALUES fold as the values.StatementClock capability.
+type stmtClock struct{ now time.Time }
+
+func (c stmtClock) StatementNow() time.Time { return c.now }
+
 func firstSubqueryOrExistsAtom(ctx antlr.Tree) string {
 	if ctx == nil {
 		return ""

@@ -52,8 +52,9 @@ tests:
   # closed on the SELECT path.
   - query: INSERT INTO t VALUES (52, 2000000000 + 200000000)
     error_code: "22003"
-  # The same sum against BIGINT-typed operands is fine (w column is
-  # BIGINT; a LONG literal operand puts the addition on the LL lane).
+  # The same sum with an out-of-int32-range operand is fine: 3000000000
+  # is statically LONG, putting the addition on the LL lane (and the n
+  # target column is BIGINT).
   - query: INSERT INTO t VALUES (53, 3000000000 + 200000000)
   - query: SELECT n FROM t WHERE id = 53
     rows:
@@ -78,3 +79,27 @@ tests:
   # has NO Java cast pair — same 22F3H the SELECT path raises.
   - query: INSERT INTO tb VALUES (3, CAST(2147483648 AS BOOLEAN))
     error_code: "22F3H"
+  # COALESCE SHORT-CIRCUITS (SQL): the first non-NULL argument wins and
+  # later arguments are NEVER evaluated — 1/0 must not raise 22012 here.
+  # The eager fold evaluated every argument first and turned this legal
+  # INSERT into a division-by-zero error.
+  - query: INSERT INTO t VALUES (60, COALESCE(1, 1 / 0))
+  - query: SELECT n FROM t WHERE id = 60
+    rows:
+      - [1]
+  # ...and the SELECT face of the same law.
+  - query: SELECT COALESCE(2, 1 / 0) FROM t WHERE id = 60
+    rows:
+      - [2]
+  # IF evaluates ONLY the taken branch.
+  - query: INSERT INTO t VALUES (61, IF(TRUE, 7, 1 / 0))
+  - query: SELECT n FROM t WHERE id = 61
+    rows:
+      - [7]
+  # A date-part over a non-NULL string that is NOT a date is
+  # DATA-DEPENDENT garbage — a typed 22023 (like SQRT(negative)), never
+  # a silent NULL: folding a typo to NULL silently corrupts the row.
+  - query: INSERT INTO t VALUES (62, YEAR('not-a-date'))
+    error_code: "22023"
+  - query: SELECT YEAR('not-a-date') FROM t WHERE id = 60
+    error_code: "22023"

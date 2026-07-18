@@ -95,9 +95,36 @@ func tieBrokenLess(less func(a, b expressions.RelationalExpression) bool) func(a
 		if less(b, a) {
 			return false
 		}
-		return extractTieBreakHash(a, map[*expressions.Reference]bool{}) <
-			extractTieBreakHash(b, map[*expressions.Reference]bool{})
+		ha := extractTieBreakHash(a, map[*expressions.Reference]bool{})
+		hb := extractTieBreakHash(b, map[*expressions.Reference]bool{})
+		if ha != hb {
+			return ha < hb
+		}
+		// HashCodeWithoutChildren can be DELIBERATELY coarser than
+		// structural equality (the scan hash is names-only so wildcard
+		// matching buckets typed and untyped scans together) — two
+		// structurally distinct members can hash equal. Fall back to the
+		// flowed RESULT TYPE's stable SQL rendering, which carries
+		// exactly the content such hashes omit. Members equal on hash
+		// AND type rendering expose identical equality-visible content —
+		// the memo would have merged genuinely equal ones.
+		return extractTieBreakTypeKey(a) < extractTieBreakTypeKey(b)
 	}
+}
+
+// extractTieBreakTypeKey renders an expression's flowed result type as
+// the deterministic secondary tie-break key. NOT the result value's
+// explain rendering — GetResultValue can mint per-call unique
+// correlation identifiers, which would poison determinism.
+func extractTieBreakTypeKey(e expressions.RelationalExpression) string {
+	rv := e.GetResultValue()
+	if rv == nil {
+		return ""
+	}
+	if t := rv.Type(); t != nil {
+		return t.String()
+	}
+	return ""
 }
 
 // extractTieBreakHash is a deterministic structural hash over the

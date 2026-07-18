@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestExtractBestPlan_NilOrEmptyReturnsNil(t *testing.T) {
@@ -391,5 +392,43 @@ func TestExtractBestPlan_CostTieDeterministicAcrossInsertionOrder(t *testing.T) 
 	ba := winner(t, build("B", "A"))
 	if ab != ba {
 		t.Fatalf("cost-tied winner depends on insertion order: [A,B]→%s, [B,A]→%s", ab, ba)
+	}
+}
+
+// TestExtractBestPlan_HashTieFallsBackToTypeKey pins the SECOND
+// tie-break key: the scan hash is names-only BY DESIGN (wildcard-match
+// bucketing), so two scans over the same record name with DIFFERENT
+// concrete flowed record types hash equal while Reference.Insert keeps
+// them distinct — the hash alone left the winner insertion-order
+// dependent. The flowed type's stable rendering discriminates them.
+func TestExtractBestPlan_HashTieFallsBackToTypeKey(t *testing.T) {
+	t.Parallel()
+	typeA := values.NewRecordType("T", false, []values.Field{
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	typeB := values.NewRecordType("T", false, []values.Field{
+		{Name: "B", FieldType: values.TypeString, Ordinal: 0},
+	})
+	build := func(first, second values.Type) *expressions.Reference {
+		r := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, first))
+		r.Insert(expressions.NewFullUnorderedScanExpression([]string{"T"}, second))
+		return r
+	}
+	winner := func(t *testing.T, r *expressions.Reference) string {
+		t.Helper()
+		got, err := ExtractBestPlan(r)
+		if err != nil {
+			t.Fatalf("ExtractBestPlan err=%v", err)
+		}
+		s, ok := got.(*expressions.FullUnorderedScanExpression)
+		if !ok {
+			t.Fatalf("got %T, want *FullUnorderedScanExpression", got)
+		}
+		return s.GetResultValue().Type().String()
+	}
+	ab := winner(t, build(typeA, typeB))
+	ba := winner(t, build(typeB, typeA))
+	if ab != ba {
+		t.Fatalf("hash-tied winner depends on insertion order: [A,B]→%s, [B,A]→%s", ab, ba)
 	}
 }

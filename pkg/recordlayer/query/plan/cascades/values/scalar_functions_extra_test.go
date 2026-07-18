@@ -3,6 +3,7 @@ package values
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -334,5 +335,65 @@ func TestSimplifyValue_FoldsExtendedScalars(t *testing.T) {
 		if cv.Value != tc.want {
 			t.Fatalf("%s: got %v, want %v", tc.name, cv.Value, tc.want)
 		}
+	}
+}
+
+// TestScalarFunction_StatementClock pins the statement-stable clock:
+// CURRENT_TIMESTAMP / CURRENT_DATE read the evalCtx's StatementClock, so
+// every reference within one statement observes the SAME instant (SQL
+// fixes them per statement; the raw time.Now() fallback made multi-cell
+// VALUES folds drift across a clock boundary).
+func TestScalarFunction_StatementClock(t *testing.T) {
+	t.Parallel()
+	fixed := time.Date(2026, 7, 18, 12, 34, 56, 0, time.UTC)
+	clock := testStatementClock{now: fixed}
+
+	ts := NewScalarFunctionValue("CURRENT_TIMESTAMP", TypeString)
+	got1, err := ts.Evaluate(clock)
+	if err != nil {
+		t.Fatalf("CURRENT_TIMESTAMP: %v", err)
+	}
+	got2, err := ts.Evaluate(clock)
+	if err != nil {
+		t.Fatalf("CURRENT_TIMESTAMP: %v", err)
+	}
+	want := fixed.Format(timestampLayout)
+	if got1 != want || got2 != want {
+		t.Errorf("CURRENT_TIMESTAMP = %v / %v, want stable %q", got1, got2, want)
+	}
+
+	d := NewScalarFunctionValue("CURRENT_DATE", TypeString)
+	gotD, err := d.Evaluate(clock)
+	if err != nil {
+		t.Fatalf("CURRENT_DATE: %v", err)
+	}
+	if gotD != fixed.Format(dateLayout) {
+		t.Errorf("CURRENT_DATE = %v, want %q", gotD, fixed.Format(dateLayout))
+	}
+}
+
+type testStatementClock struct{ now time.Time }
+
+func (c testStatementClock) StatementNow() time.Time { return c.now }
+
+// TestScalarFunction_ShortCircuit pins the lazy forms at the unit level:
+// COALESCE stops at the first non-NULL argument and IF evaluates only
+// the taken branch — the untaken 1/0 must never raise.
+func TestScalarFunction_ShortCircuit(t *testing.T) {
+	t.Parallel()
+	one := &ConstantValue{Value: int64(1), Typ: NullableInt}
+	boom := &ArithmeticValue{Op: OpDiv, Left: one, Right: &ConstantValue{Value: int64(0), Typ: NullableInt}}
+
+	got, err := NewScalarFunctionValue("COALESCE", NullableInt, one, boom).Evaluate(nil)
+	if err != nil || got != int64(1) {
+		t.Errorf("COALESCE(1, 1/0) = %v, %v — want 1, nil (short-circuit)", got, err)
+	}
+	got, err = NewScalarFunctionValue("IF", NullableInt, NewBooleanValue(true), one, boom).Evaluate(nil)
+	if err != nil || got != int64(1) {
+		t.Errorf("IF(true, 1, 1/0) = %v, %v — want 1, nil (taken branch only)", got, err)
+	}
+	// The error still surfaces when the poisoned argument IS reached.
+	if _, err = NewScalarFunctionValue("COALESCE", NullableInt, NewNullValue(NullableInt), boom).Evaluate(nil); err == nil {
+		t.Error("COALESCE(NULL, 1/0) must reach and raise the division error")
 	}
 }

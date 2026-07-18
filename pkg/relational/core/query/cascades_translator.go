@@ -755,7 +755,8 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 	inputCols := t.legColumns(a.Input)
 	typeOf := func(bare string) values.Type {
 		up := strings.ToUpper(bare)
-		found := values.Type(values.UnknownType)
+		var found values.Type
+		matched := false
 		for _, c := range inputCols {
 			if strings.ToUpper(c.Name) != up || c.FieldType == nil {
 				continue
@@ -767,10 +768,18 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 			// other leg's column. Correct-or-unknown: wrong metadata is
 			// the N-F4 class; Unknown is the honest lazy answer until
 			// binding-aware typing (Phase D2+) keys by leg, not name.
-			if found != values.UnknownType && found.Code() != c.FieldType.Code() {
+			// `matched` is tracked separately from the type so a FIRST
+			// match that is itself UnknownType still counts as seen — a
+			// later typed duplicate must not overwrite it (the name stays
+			// indeterminate).
+			if matched && found.Code() != c.FieldType.Code() {
 				return values.UnknownType
 			}
 			found = c.FieldType
+			matched = true
+		}
+		if !matched {
+			return values.UnknownType
 		}
 		return found
 	}

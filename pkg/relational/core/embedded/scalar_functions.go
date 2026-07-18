@@ -11,15 +11,15 @@ import (
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
-// Scalar / specific function-call dispatch — the unified
-// implementation shared by the proto and map evaluator paths.
+// Scalar / specific function-call dispatch for the MAP-path evaluator
+// (system-table filtering — see eval_map.go; the proto-path twin is
+// deleted, INSERT...VALUES folds through the Cascades value layer).
 //
 // exprEvaluator + predicateEvaluator are function-pointer adapters
 // that abstract over how arguments are evaluated. Both
 // evalScalarFunctionCallCore and evalSpecificFunctionCore drive
-// every sub-expression through these — proto and map paths supply
-// their own evaluators (makeProtoExprEvaluator /
-// makeMapExprEvaluator) and the cores stay path-agnostic.
+// every sub-expression through these (makeMapExprEvaluator supplies
+// the map-path evaluator) and the cores stay path-agnostic.
 //
 // evalScalarFunctionCallCore is the switch over scalar function
 // names that fdb-relational 4.11.1.0 has in its registry: MOD /
@@ -38,18 +38,16 @@ import (
 // because the function-call core consumes them; will be inlined
 // into the session interface as Phase 1c relocations land.
 
-// exprEvaluator is the function-pointer adapter that abstracts over the two
-// expression-evaluation contexts (proto record vs. map row). Both the scalar
-// and specific function cores drive all argument evaluation through this.
+// exprEvaluator is the function-pointer adapter the scalar and specific
+// function cores drive all argument evaluation through.
 type exprEvaluator func(expr antlrgen.IExpressionContext) (driver.Value, error)
 
 // predicateEvaluator is the boolean-predicate counterpart of exprEvaluator,
 // used by the searched CASE WHEN branch of evalSpecificFunctionCore.
 type predicateEvaluator func(expr antlrgen.IExpressionContext) (bool, error)
 
-// evalScalarFunctionCallCore is the unified implementation shared by
-// evalScalarFunctionCall (proto path) and evalScalarFunctionCallOnMap (map
-// path). The two callers differ only in how they evaluate sub-expressions;
+// evalScalarFunctionCallCore is the map-path scalar-function dispatch
+// (driven via evalScalarFunctionCallOnMap).
 // that variation is captured in the eval / predicateEval adapters.
 func evalScalarFunctionCallCore(
 	now time.Time,
@@ -216,7 +214,6 @@ func evalScalarFunctionCallCore(
 	}
 }
 
-// makeProtoExprEvaluator builds the exprEvaluator adapter for the proto path.
 // makeMapExprEvaluator builds the exprEvaluator adapter for the map path.
 func makeMapExprEvaluator(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value) exprEvaluator {
 	return func(e antlrgen.IExpressionContext) (driver.Value, error) {
@@ -226,8 +223,9 @@ func makeMapExprEvaluator(ctx context.Context, conn *EmbeddedConnection, row map
 
 func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, fc antlrgen.IFunctionCallContext) (driver.Value, error) {
 	eval := makeMapExprEvaluator(ctx, conn, row)
-	// Same value-context relaxation as the proto path — see
-	// evalScalarFunctionCall comment.
+	// Value-context relaxation: bare bool column operands of boolean
+	// ops are accepted (Java planner truthiness conversion), so the
+	// predicate adapter routes through the tri-state evaluator.
 	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
 		t, err := evalPredicateOnMapExprTri(ctx, conn, row, e)
 		return t.IsTrue(), err
@@ -251,8 +249,8 @@ func (c *EmbeddedConnection) beginStatement() func() {
 	return c.sess.BeginStatement()
 }
 
-// evalSpecificFunctionCore is the unified implementation shared by
-// evalSpecificFunction (proto path) and evalSpecificFunctionOnMap (map path).
+// evalSpecificFunctionCore is the map-path SpecificFunction dispatch
+// (driven via evalSpecificFunctionOnMap).
 // Handles grammar-level SpecificFunction nodes: CASE WHEN ... END, simple CASE,
 // CAST(expr AS type), and the no-argument datetime / user functions
 // (CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP, LOCALTIME, CURRENT_USER).

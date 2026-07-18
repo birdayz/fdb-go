@@ -1251,4 +1251,13 @@ func TestAggregateOutputColumns_DupNameConflictingTypes(t *testing.T) {
 	if fields[0].FieldType == nil || fields[0].FieldType.Code() != values.TypeCodeInt {
 		t.Errorf("same-typed dup-name key typed %v, want INT", fields[0].FieldType)
 	}
+
+	// A FIRST match that is itself UnknownType is still a MATCH: a later
+	// typed duplicate must not overwrite it (the name is indeterminate,
+	// not first-come-typed). Before the matched-bool split, UnknownType
+	// doubled as the not-yet-seen sentinel and the INT duplicate won.
+	fields = tr.aggregateOutputColumns(mkAgg(values.UnknownType, values.NullableInt))
+	if fields[0].FieldType == nil || fields[0].FieldType.Code() != values.TypeCodeUnknown {
+		t.Errorf("unknown-then-typed dup-name key typed %v, want Unknown", fields[0].FieldType)
+	}
 }

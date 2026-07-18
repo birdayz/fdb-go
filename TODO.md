@@ -4842,6 +4842,20 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
 
 ---
 
+## SELECT-path CURRENT_* statement-stability (small, follow-up)
+
+- [ ] **Thread the statement clock through the executor's row eval contexts.** `values.StatementClock`
+  (RFC-181 fold) makes CURRENT_TIMESTAMP / CURRENT_DATE statement-stable wherever the evalCtx carries
+  a clock — the INSERT…VALUES fold passes one (`stmtClock`, insert_cascades.go). The SELECT path does
+  NOT yet: a projection row evaluates against `*values.RowEvalContext` or (when no bindings exist) the
+  BARE `values.OrdinalRow`, neither of which implements StatementClock, so each row's CURRENT_TIMESTAMP
+  falls back to `time.Now()` and can drift across rows within one statement (SQL requires per-statement
+  stability). Fix: stamp a statement time on `executor.EvaluationContext` at ExecutePlan entry, carry it
+  through the With* copies, expose it from RowEvalContext AND the bare-row wrapper path
+  (`rowEvalContextFor` / RowContextPositional — the bare OrdinalRow shape needs a wrapping or a
+  clock-bearing twin). Pin with a plan over enough rows that a drift would be observable via
+  two CURRENT_TIMESTAMP projections comparing unequal.
+
 ## Test infra (low priority)
 
 - [ ] **Parallelize the whole `//conformance` suite via stdlib `t.Parallel` (drop Ginkgo). [LOW PRIO — RFC-082 follow-up]**
