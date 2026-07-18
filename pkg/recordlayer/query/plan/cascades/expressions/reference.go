@@ -52,19 +52,12 @@ type Reference struct {
 	explState    explorationState
 	// constraintsMap is the Java-style tick/watermark exploration
 	// bookkeeping (RFC-181 WS-P stage (a)) — maintained ALONGSIDE the
-	// member-count convergence above until stages (b)-(d) hand it
-	// control. Lazily allocated.
+	// member-count convergence during REWRITING first visits; since
+	// stage (b) it DRIVES convergence (NeedsExploration) — member
+	// growth no longer re-rounds a group; every insert site pushes its
+	// new expression's exploration tasks directly. Lazily allocated.
 	constraintsMap *ConstraintsMap
-	// exploredFinals tracks which FINAL members have been routed through
-	// exploration (pointer identity). The stage-(a) bridge: Java re-explores
-	// every final each convergence round because EPOCHS bound the rounds
-	// (a quiet round converges); Go's member-count convergence would see a
-	// re-explored final's rule yields as growth and cycle to the round cap
-	// — so under count-based convergence each final explores AT MOST once.
-	// Stage (b) hands convergence to the epochs and retires this set.
-	exploredFinals  map[RelationalExpression]struct{}
-	explMemberCount int
-	explRounds      int
+	explRounds     int
 
 	planProperties  any           // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
 	partialMatchMap map[any][]any // MatchCandidate → []PartialMatch; typed via cascades helpers
@@ -184,10 +177,14 @@ func (r *Reference) Absorb(loser *Reference) {
 	}
 	if len(r.members) > before {
 		// New members arrived: re-arm exploration so the survivor
-		// explores them. Bounded by maxRoundsPerRef in the planner.
+		// explores them under ITS OWN identity (rule bindings and
+		// partial matches are (group, expression)-scoped). Bounded by
+		// maxRoundsPerRef in the planner. The epoch tick is the same
+		// re-arm in the tick/watermark model.
 		if r.explState == explorationDone {
 			r.explState = explorationInProgress
 		}
+		r.ConstraintsMap().ReArm()
 	}
 	// Fold the loser's alias-aware dedup shadow into the survivor. The
 	// re-insertions above count only NEW dedups against the survivor's
@@ -202,11 +199,12 @@ func (r *Reference) Absorb(loser *Reference) {
 			r.constraintsMap.InheritFromOther(loser.constraintsMap)
 		} else {
 			// Both sides carry epoch state: fold the loser's constraints
-			// in via pushes (each bump re-arms the survivor's
-			// convergence — the epoch twin of the member re-arm above).
+			// in through the REAL per-key lattice combine (registered by
+			// the cascades package) — a subsumed fold neither stores nor
+			// ticks, exactly like a subsumed push (Java pushProperty).
 			for _, k := range loser.constraintsMap.order {
 				if e, ok := loser.constraintsMap.entries[k]; ok {
-					r.constraintsMap.PushProperty(k, e.property, func(_, pushed any) (any, bool) { return pushed, true })
+					r.constraintsMap.PushProperty(k, e.property, combineFor(k))
 				}
 			}
 		}
@@ -498,21 +496,6 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	return true
 }
 
-// MarkFinalExplored records that a final member has been routed through
-// exploration; reports whether it was ALREADY explored (see the
-// exploredFinals field for the stage-(a) once-only contract).
-func (r *Reference) MarkFinalExplored(expr RelationalExpression) bool {
-	r = r.Canonical()
-	if r.exploredFinals == nil {
-		r.exploredFinals = map[RelationalExpression]struct{}{}
-	}
-	if _, seen := r.exploredFinals[expr]; seen {
-		return true
-	}
-	r.exploredFinals[expr] = struct{}{}
-	return false
-}
-
 // ConstraintsMap returns the Reference's tick/watermark constraint map
 // (lazily allocated). Canonical-forwarding like every other accessor.
 func (r *Reference) ConstraintsMap() *ConstraintsMap {
@@ -536,9 +519,7 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 	r.planProperties = nil
 	r.explState = explorationNever
 	r.explRounds = 0
-	r.explMemberCount = 0
 	r.winner = nil
-	r.exploredFinals = nil
 	if r.constraintsMap != nil {
 		r.constraintsMap.AdvancePlannerStage()
 	}
@@ -553,17 +534,23 @@ func (r *Reference) Stage() PlannerStage { r = r.Canonical(); return r.plannerSt
 // target stage level.
 func (r *Reference) SetStage(s PlannerStage) { r = r.Canonical(); r.plannerStage = s }
 
-// NeedsExploration returns true if the Reference has never been explored
-// or if new exploratory members were added since the last round.
+// NeedsExploration is Java Reference.needsExploration: EPOCH-driven
+// (RFC-181 WS-P stage (b) — the convergence handover). A Reference
+// needs exploration when it has never been explored, or when it is
+// between rounds with constraint pushes newer than the last round's
+// goal. Member growth no longer drives group re-rounds: every insert
+// site pushes its new expression's exploration tasks directly (Java
+// executeRuleCall), so the group loop re-runs only on epoch signals.
 func (r *Reference) NeedsExploration() bool {
 	r = r.Canonical()
-	if r.explState == explorationNever {
+	if r.constraintsMap == nil {
+		// Never explored, never pushed: the fresh-group first visit.
+		return r.explState == explorationNever
+	}
+	if r.constraintsMap.HasNeverBeenExplored() && !r.constraintsMap.IsExploring() {
 		return true
 	}
-	if r.explState == explorationDone {
-		return false
-	}
-	return len(r.members) > r.explMemberCount
+	return r.constraintsMap.NeedsExploration()
 }
 
 // StartExploration marks exploration as in-progress and records the
@@ -571,20 +558,12 @@ func (r *Reference) NeedsExploration() bool {
 func (r *Reference) StartExploration() {
 	r = r.Canonical()
 	r.explState = explorationInProgress
-	r.explMemberCount = len(r.members)
 	r.explRounds++
 	r.ConstraintsMap().StartExploration()
 }
 
 // ExplRounds returns how many exploration rounds have been started.
 func (r *Reference) ExplRounds() int { r = r.Canonical(); return r.explRounds }
-
-// ExplMemberCount returns the member count recorded at the last
-// StartExploration. Used to explore only NEW members on re-entry.
-func (r *Reference) ExplMemberCount() int {
-	r = r.Canonical()
-	return r.explMemberCount
-}
 
 // CommitExploration marks exploration as converged.
 func (r *Reference) CommitExploration() {

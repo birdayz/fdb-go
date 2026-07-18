@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -265,36 +266,84 @@ func containsSort(expr expressions.RelationalExpression) bool {
 	return false
 }
 
-// TestE2E_JoinCommutativityExploration verifies that the planner
-// explores both join directions for a SelectExpression with
-// ChildrenAsSet=true and 2 ForEach quantifiers (an INNER join).
-// The NLJ rule should fire twice — once with the original quantifier
-// order (A outer, B inner) and once with the swapped order (B outer,
-// A inner) — yielding 2 distinct physical NLJ members.
+// TestE2E_JoinCommutativityExploration verifies that the planner's join
+// commutativity machinery explores both join directions for a
+// SelectExpression with ChildrenAsSet=true and 2 ForEach quantifiers
+// (an INNER join). Both directions FORM (the swapped-quantifier fire),
+// but physical yields land ONLY in FinalMembers and OptimizeGroup
+// prunes finals to the winner (Java's prune-to-1) — so only ONE NLJ
+// direction is visible in AllMembers() after Plan(). The test therefore
+// pins the two properties separately: BOTH directions at yield time via
+// a direct rule fire (FireExpressionRule performs the same
+// ChildrenAsSet swapped-quantifier permutation as the planner), and a
+// single valid-direction NLJ winner after the full planner run.
 func TestE2E_JoinCommutativityExploration(t *testing.T) {
 	t.Parallel()
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanARef := expressions.InitialOf(scanA)
-	scanAQ := expressions.ForEachQuantifier(scanARef)
+	buildSelect := func() *expressions.Reference {
+		scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+		scanARef := expressions.InitialOf(scanA)
+		scanAQ := expressions.ForEachQuantifier(scanARef)
 
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	scanBRef := expressions.InitialOf(scanB)
-	scanBQ := expressions.ForEachQuantifier(scanBRef)
+		scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+		scanBRef := expressions.InitialOf(scanB)
+		scanBQ := expressions.ForEachQuantifier(scanBRef)
 
-	joinPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "a_id", Typ: values.UnknownType},
-		predicates.NewLiteralComparison(predicates.ComparisonEquals, "b_id"),
-	)
+		joinPred := predicates.NewComparisonPredicate(
+			&values.FieldValue{Field: "a_id", Typ: values.UnknownType},
+			predicates.NewLiteralComparison(predicates.ComparisonEquals, "b_id"),
+		)
 
-	sel := expressions.NewSelectExpressionWithAliases(
-		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
-		[]expressions.Quantifier{scanAQ, scanBQ},
-		[]predicates.QueryPredicate{joinPred},
-		[]string{"A", "B"},
-	)
-	selRef := expressions.InitialOf(sel)
+		sel := expressions.NewSelectExpressionWithAliases(
+			values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+			[]expressions.Quantifier{scanAQ, scanBQ},
+			[]predicates.QueryPredicate{joinPred},
+			[]string{"A", "B"},
+		)
+		return expressions.InitialOf(sel)
+	}
 
+	// Contains (not equality): a winning leg may carry a pushed-down
+	// filter, e.g. PredicatesFilter(Scan(B), ...) — the DIRECTION is
+	// which table each leg scans, not the leg's exact wrapper chain.
+	directionsOf := func(nljPlans []*plans.RecordQueryNestedLoopJoinPlan) (foundAB, foundBA bool) {
+		for _, nlj := range nljPlans {
+			outerExplain := nlj.GetOuter().Explain()
+			innerExplain := nlj.GetInner().Explain()
+			if strings.Contains(outerExplain, "Scan(A)") && strings.Contains(innerExplain, "Scan(B)") {
+				foundAB = true
+			}
+			if strings.Contains(outerExplain, "Scan(B)") && strings.Contains(innerExplain, "Scan(A)") {
+				foundBA = true
+			}
+		}
+		return
+	}
+
+	// FORMATION: fire the NLJ rule directly on a select whose children
+	// hold physical scans — the primary and swapped binds must yield
+	// BOTH join directions.
+	fireRef := buildSelect()
+	for _, q := range fireRef.Get().GetQuantifiers() {
+		FireExpressionRule(NewPrimaryScanRule(), q.GetRangesOver())
+	}
+	var yieldedNLJs []*plans.RecordQueryNestedLoopJoinPlan
+	for _, y := range FireExpressionRule(NewImplementNestedLoopJoinRule(), fireRef) {
+		if nlj, ok := y.(*physicalNestedLoopJoinWrapper); ok {
+			yieldedNLJs = append(yieldedNLJs, nlj.GetPlan())
+		}
+	}
+	formedAB, formedBA := directionsOf(yieldedNLJs)
+	if !formedAB {
+		t.Error("commutativity fire missing the NLJ yield with A as outer and B as inner")
+	}
+	if !formedBA {
+		t.Error("commutativity fire missing the NLJ yield with B as outer and A as inner")
+	}
+
+	// WINNER: the full planner keeps at least one NLJ whose direction is
+	// one of the two valid orders (the loser direction is pruned).
+	selRef := buildSelect()
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, EmptyPlanContext()).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
@@ -303,46 +352,23 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// Collect all physical NLJ members — there should be at least 2
-	// (one per join direction). Physical wrappers are inserted into
-	// Members during the PLANNING phase.
 	var nljPlans []*plans.RecordQueryNestedLoopJoinPlan
 	for _, m := range selRef.AllMembers() {
-		nlj, ok := m.(*physicalNestedLoopJoinWrapper)
-		if !ok {
-			continue
+		if nlj, ok := m.(*physicalNestedLoopJoinWrapper); ok {
+			nljPlans = append(nljPlans, nlj.GetPlan())
 		}
-		nljPlans = append(nljPlans, nlj.GetPlan())
 	}
-
-	if len(nljPlans) < 2 {
+	if len(nljPlans) == 0 {
 		var explains []string
 		for _, m := range selRef.AllMembers() {
 			explains = append(explains, fmt.Sprintf("%T", m))
 		}
-		t.Fatalf("expected at least 2 NLJ members (both join directions), got %d; members: %v",
-			len(nljPlans), explains)
+		t.Fatalf("expected an NLJ winner after Plan(), got none; members: %v", explains)
 	}
-
-	// Verify we have both A-outer-B-inner and B-outer-A-inner.
-	foundAB := false
-	foundBA := false
-	for _, nlj := range nljPlans {
-		outerExplain := nlj.GetOuter().Explain()
-		innerExplain := nlj.GetInner().Explain()
-		if outerExplain == "Scan(A)" && innerExplain == "Scan(B)" {
-			foundAB = true
-		}
-		if outerExplain == "Scan(B)" && innerExplain == "Scan(A)" {
-			foundBA = true
-		}
-	}
-
-	if !foundAB {
-		t.Error("missing NLJ with A as outer and B as inner")
-	}
-	if !foundBA {
-		t.Error("missing NLJ with B as outer and A as inner")
+	winnerAB, winnerBA := directionsOf(nljPlans)
+	if !winnerAB && !winnerBA {
+		t.Fatalf("NLJ winner has an invalid join direction: outer=%q inner=%q",
+			nljPlans[0].GetOuter().Explain(), nljPlans[0].GetInner().Explain())
 	}
 }
 

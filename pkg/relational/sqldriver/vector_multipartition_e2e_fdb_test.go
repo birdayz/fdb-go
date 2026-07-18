@@ -332,35 +332,41 @@ func TestFDB_VectorSearch_MultiPartition_DimensionValidation(t *testing.T) {
 // subTuple(key, 0, prefixSize) likewise — Java cannot express this either).
 //
 // Go does NOT silently drop region and return wrong rows (the suspected failure
-// mode). The index-only DistanceRank, AND-combined with the unconsumed
-// region='r1', cannot be lowered to a residual filter and no index serves the
-// composite, so the final-plan guard rejects it with UnplannableIndexOnly-
-// ResidualError. That is a safe outcome (a clean planning error, never wrong
-// results), it matches Java (equally unserviceable; Go's typed error beats
-// Java's Verify blow-up), and it was unplannable before this change too (no
-// regression). Assert UNPLANNABLE; a Go-only trailing-partition
-// fan-out (plan + residual) is an allowed but out-of-scope follow-up. Pinning
-// the error is the regression sentinel proving the absence of the wrong-rows
-// behavior. Plan-only — the query never reaches execution.
+// mode). The query NOW PLANS as a full fan-out with the equality as a
+// PARTITION-COLUMN residual: PredicatesFilter(VectorIndexScan(prefix=[*, *],
+// rank<=1), region='r1'). That residual COMMUTES with per-partition top-K —
+// it drops whole partitions and never re-ranks a surviving partition's rows
+// (WHERE applies before the window, and the filtered partitions contain only
+// r1 rows either way) — the same established-safe pattern the
+// InequalityResidual sibling pins for region > 'r1'. Historically this shape
+// DECLINED (the fan-out alternative never materialized under the member-count
+// convergence; the note here called the fan-out an allowed follow-up) — the
+// RFC-181 WS-P epoch convergence materializes it. The row assertion is the
+// wrong-rows sentinel: per (zone, r1) partition top-1 = ids 11 (z1) and 31
+// (z2); a plan that re-ranked after filtering or dropped the residual would
+// return a different set.
 func TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	_, md, _ := multiPartitionVectorSetup(t, ctx)
+	db, md, ks := multiPartitionVectorSetup(t, ctx)
 
 	sql := `SELECT id, region FROM docs WHERE region = 'r1'
 		QUALIFY ROW_NUMBER() OVER (PARTITION BY zone, region
 			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])) <= 1`
 
-	_, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
-	if err == nil {
-		t.Fatal("trailing-equality vector query (leading partition column unbound) unexpectedly planned; " +
-			"expected unplannable (the unconsumed partition equality + index-only DistanceRank cannot be a residual)")
+	exp, got := planExplainAndRun(t, ctx, db, md, ks, sql)
+	if !strings.Contains(exp, "VectorIndexScan") {
+		t.Fatalf("query did not plan to a vector scan:\n%s", exp)
 	}
-	if !strings.Contains(err.Error(), "not plannable") && !strings.Contains(err.Error(), "index-only") {
-		t.Fatalf("expected an unplannable / index-only planning error, got: %v", err)
+	if !strings.Contains(exp, "prefix=[*, *]") {
+		t.Fatalf("expected the full fan-out prefix [*, *] with the equality as a residual:\n%s", exp)
+	}
+	want := []idRegion{{11, "r1"}, {31, "r1"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("trailing-equality fan-out = %v, want %v (per-zone top-1 within region r1, z1's 11 and z2's 31)", got, want)
 	}
 }
 

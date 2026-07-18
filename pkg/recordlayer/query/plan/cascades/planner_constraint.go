@@ -92,6 +92,12 @@ func Set[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConst
 	return true
 }
 
+func init() {
+	// Register the typed lattice dispatch for constraint folds performed
+	// inside the expressions package (Memo Absorb).
+	expressions.SetConstraintCombineProvider(combineForKey)
+}
+
 // combineForKey returns the per-key lattice combine (Java dispatches
 // through PlannerConstraint.combine): orderings use the
 // subsumption-aware union, referenced fields the set union. An unknown

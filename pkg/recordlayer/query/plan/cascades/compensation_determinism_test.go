@@ -345,13 +345,20 @@ func TestPlannerCapTrips(t *testing.T) {
 		t.Parallel()
 		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
 		ref := expressions.InitialOf(scan)
-		// Ten committed-then-dirtied rounds: each StartExploration bumps the
-		// round counter; inserting a NEW member afterwards re-dirties the
-		// Reference, modeling a rule cycle that never converges.
+		// Epoch-model divergence fixture (RFC-181 WS-P stage (b)): member
+		// growth no longer re-rounds a group, so the old shape — Insert a
+		// new member after 10 rounds — can no longer arm NeedsExploration.
+		// What re-rounds a group now is a constraint TICK. Model a rule
+		// cycle that never converges by re-arming the epoch inside every
+		// round: StartExploration bumps the round counter and records the
+		// goal watermark, ReArm pushes a fresh tick past it (the mid-round
+		// constraint push), and CommitExploration lands behind the current
+		// epoch — so the group still NeedsExploration after 10 rounds.
 		for i := 0; i < 10; i++ {
 			ref.StartExploration()
+			ref.ConstraintsMap().ReArm()
+			ref.CommitExploration()
 		}
-		ref.Insert(expressions.NewFullUnorderedScanExpression([]string{"U"}, nil))
 		if !ref.NeedsExploration() {
 			t.Fatal("fixture must still need exploration")
 		}
@@ -359,7 +366,7 @@ func TestPlannerCapTrips(t *testing.T) {
 		task := &ExploreGroupTask{Phase: PhaseRewriting, Ref: ref}
 		task.Run(p)
 		if !errors.Is(p.capErr, ErrPlannerRoundCapHit) {
-			t.Fatalf("10 rounds with a still-dirty Reference must trip ErrPlannerRoundCapHit, got %v", p.capErr)
+			t.Fatalf("10 epoch-re-armed rounds must trip ErrPlannerRoundCapHit, got %v", p.capErr)
 		}
 	})
 }

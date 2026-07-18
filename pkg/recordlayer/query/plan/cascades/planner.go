@@ -558,7 +558,9 @@ func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates 
 			// ImplementFilterRule !isIndexOnly() gate plus the
 			// validateNoIndexOnlyResidual backstop in Plan() (RFC-151 §5).
 			if !isPhysical(expr) && !compensationSafeForYield(expr) {
-				ref.InsertFinal(expr)
+				if ref.InsertFinal(expr) {
+					p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+				}
 				continue
 			}
 			// Physical plan → final set (competes now). A SAFE logical compensation →
@@ -634,6 +636,22 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 	if len(restrictedMatches) < 2 || len(restrictedMatches) > 8 {
 		return
 	}
+	// INTERSECTION-LOCAL duplicate resolution: a raw seeded match and
+	// its ADJUSTED twin (AdjustPartialMatchesForRef re-anchors it at the
+	// candidate's MatchableSort parent, ATTACHING the
+	// matchedOrderingParts) coexist by design under different candidate
+	// refs — the main data-access path builds scans from the raw one,
+	// but here the pair must collapse: keeping both feeds the intersector
+	// a self-intersection of the same index, and taking the raw one
+	// starves the PK-merge compatibility gate of its ordering parts.
+	// Keep, per (candidate, bound comparisons), only the match with the
+	// MOST matched ordering parts. This collapse is LOCAL to the
+	// intersection path — MaximumCoverageMatches stays untouched for the
+	// scan-building consumers.
+	restrictedMatches = collapseAdjustedTwins(restrictedMatches)
+	if len(restrictedMatches) < 2 {
+		return
+	}
 	bestMatches := MaximumCoverageMatches(restrictedMatches, requestedOrderings, p.ctx)
 	if len(bestMatches) < 2 {
 		return
@@ -643,8 +661,48 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 		return
 	}
 	for _, expr := range result.GetExpressions() {
-		ref.InsertFinal(expr)
+		if ref.InsertFinal(expr) {
+			if isPhysical(expr) {
+				p.push(&OptimizeInputsTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+			}
+			p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+		}
 	}
+}
+
+// collapseAdjustedTwins keeps, per (candidate, bound-parameter
+// comparisons), only the partial match with the most matched ordering
+// parts (see the call site for why). Order-preserving for the kept
+// representatives.
+func collapseAdjustedTwins(matches []PartialMatch) []PartialMatch {
+	var out []PartialMatch
+	for _, m := range matches {
+		pmi, ok := m.(*PartialMatchImpl)
+		if !ok {
+			out = append(out, m)
+			continue
+		}
+		prefix := pmi.GetBoundParameterPrefixMap()
+		dup := -1
+		for i, e := range out {
+			epmi, eok := e.(*PartialMatchImpl)
+			if !eok || e.GetMatchCandidate() != m.GetMatchCandidate() {
+				continue
+			}
+			if equalParameterPrefixMaps(epmi.GetBoundParameterPrefixMap(), prefix) {
+				dup = i
+				break
+			}
+		}
+		if dup < 0 {
+			out = append(out, m)
+			continue
+		}
+		if len(m.GetMatchInfo().GetMatchedOrderingParts()) > len(out[dup].GetMatchInfo().GetMatchedOrderingParts()) {
+			out[dup] = m
+		}
+	}
+	return out
 }
 
 // yieldUnknown routes a data-access result by physicality, mirroring Java's
@@ -656,10 +714,19 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 // Called only from pushDataAccessTasks, under its match-growth re-entry guard.
 func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.RelationalExpression) {
 	if isPhysical(expr) {
-		ref.InsertFinal(expr)
+		if ref.InsertFinal(expr) {
+			// Insert-driven exploration (Java executeRuleCall
+			// :1064-1070): under epoch convergence the group does NOT
+			// re-round on member growth, so every insert site owns its
+			// new expression's tasks.
+			p.push(&OptimizeInputsTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+			p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+		}
 		return
 	}
-	ref.Insert(expr)
+	if ref.Insert(expr) {
+		p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+	}
 }
 
 // compensationSafeForYield reports whether a standalone logical data-access

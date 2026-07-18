@@ -102,6 +102,14 @@ func TestOptimizeGroup_UnrequestedOrderingStillPruned(t *testing.T) {
 // expression)) return;`): an OptimizeInputs task whose expression has been
 // pruned OUT of its group between push and pop must not drive child-group
 // pruning on behalf of a dead parent.
+//
+// With dual insertion retired (RFC-181 WS-P stage (b): physical yields
+// land ONLY in FinalMembers), a pruned loser is in NO member set, so
+// Java's containsExactly (ContainsExactly) is again the exact guard —
+// the interim finals-only compensation (ContainsFinal, which existed
+// because a dual-inserted loser survived pruning via its exploratory
+// copy) reverted to the Java shape, and its dual-inserted-loser twin
+// fixture is unconstructible in the planner.
 func TestOptimizeInputs_SkipsPrunedExpression(t *testing.T) {
 	t.Parallel()
 
@@ -148,55 +156,5 @@ func TestOptimizeInputs_SkipsPrunedExpression(t *testing.T) {
 
 	if got := len(childRef.FinalMembers()); got != childFinals {
 		t.Fatalf("a pruned parent expression must not prune child groups: child finals %d -> %d", childFinals, got)
-	}
-}
-
-// TestOptimizeInputs_SkipsDualInsertedPrunedExpression pins the guard
-// against the DUAL-INSERTION shape: PLANNING expression rules insert
-// physical yields into BOTH the exploratory and final sets
-// (TransformExprTask's yieldFn) while pruning trims only finals. A
-// both-sets containment check still passes for the pruned loser via its
-// exploratory copy — the guard must demand FINAL survival.
-func TestOptimizeInputs_SkipsDualInsertedPrunedExpression(t *testing.T) {
-	t.Parallel()
-
-	childScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	childRef := expressions.InitialOf(childScan)
-	FireExpressionRule(NewPrimaryScanRule(), childRef)
-	childPhys := findPhysicalExpr(childRef)
-	if childPhys == nil {
-		t.Fatal("no physical child")
-	}
-	childRef.InsertFinal(childPhys)
-	childRef.InsertFinal(sortedMemberOn(t, "X"))
-	childFinals := len(childRef.FinalMembers())
-
-	parentInner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	parent := newPhysicalInMemorySortWrapper(
-		plans.NewRecordQueryInMemorySortPlan(parentInner, []plans.SortKey{
-			{Field: "Y", ValueExpr: values.NewFlatFieldValue("Y", values.UnknownType), NullsFirst: true},
-		}),
-		expressions.ForEachQuantifier(childRef))
-	// Dual insertion, exactly as TransformExprTask's PLANNING yieldFn does.
-	parentRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"P"}, values.UnknownType))
-	parentRef.Insert(parent)
-	parentRef.InsertFinal(parent)
-	other := sortedMemberOn(t, "Z")
-	parentRef.InsertFinal(other)
-	parentRef.PruneWith(other) // parent loses in finals; exploratory copy remains
-
-	p := NewPlanner(nil, nil)
-	p.constraintMap = NewConstraintMap()
-	task := &OptimizeInputsTask{Phase: PhasePlanning, Ref: parentRef, Expr: parent}
-	task.Run(p)
-	for len(p.stack) > 0 {
-		n := len(p.stack) - 1
-		tk := p.stack[n]
-		p.stack = p.stack[:n]
-		tk.Run(p)
-	}
-
-	if got := len(childRef.FinalMembers()); got != childFinals {
-		t.Fatalf("a dual-inserted pruned loser must not prune child groups: child finals %d -> %d", childFinals, got)
 	}
 }

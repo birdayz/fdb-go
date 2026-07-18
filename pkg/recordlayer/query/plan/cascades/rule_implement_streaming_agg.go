@@ -51,10 +51,6 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 
 	groupingKeys := gb.GetGroupingKeys()
 	if len(groupingKeys) == 0 {
-		innerExpr := findPhysicalExpr(innerRef)
-		if innerExpr == nil {
-			return
-		}
 		if isCountOnlyAggregation(gb.GetAggregates()) {
 			if idxWrapper := findIndexScanWrapper(innerRef); idxWrapper != nil && !idxWrapper.covering {
 				coveringWrapper := &physicalIndexScanWrapper{
@@ -69,9 +65,32 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 				call.Yield(newPhysicalStreamingAggWrapper(aggPlan, coveringQ))
 			}
 		}
-		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(innerPlan, groupingKeys, gb.GetAggregates())
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
-		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+		// Yield an aggregate over EVERY physical alternative of the
+		// inner (the memo dedups and the cost model picks the winner) —
+		// the former first-physical single pick was ORDER-DEPENDENT: it
+		// happened to see the Fetch(IndexScan) alternative first only
+		// because dual insertion interleaved physicals into the
+		// exploratory member order. With finals-only physicals the
+		// first member is whatever landed first, and a single pick
+		// silently drops the cheaper (or the only CORRECT-for-Explain)
+		// alternative.
+		for _, m := range innerRef.AllMembers() {
+			pe, ok := m.(physicalPlanExpression)
+			if !ok {
+				continue
+			}
+			// A nil-inner Fetch shell (the extraction template) must
+			// never be PLAN-EMBEDDED — its plan completes only via the
+			// wrapper's WithChildren relink; embedding it here bakes
+			// Fetch(<nil>) into the aggregate permanently (the XX000
+			// plan-invariant).
+			if isNilInnerFetch(m) {
+				continue
+			}
+			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(pe.GetRecordQueryPlan(), groupingKeys, gb.GetAggregates())
+			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(m))
+			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+		}
 		return
 	}
 

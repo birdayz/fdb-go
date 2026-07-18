@@ -249,7 +249,15 @@ func TestPlanner_DeleteOverScanProducesPhysicalDelete(t *testing.T) {
 }
 
 // TestPlanner_UnionOverTwoScansProducesPhysicalUnion verifies that a
-// LogicalUnionExpression over two scans produces a physicalUnionWrapper.
+// LogicalUnionExpression over two scans produces a physical union
+// implementation. Physical yields land ONLY in FinalMembers and
+// OptimizeGroup prunes finals to the winner (Java's prune-to-1), so a
+// SPECIFIC union wrapper type is no longer guaranteed to be visible
+// after Plan() — the ordered physicalUnionWrapper competes with the
+// sibling unordered implementation and either may win. The wrapper's
+// FORMATION is pinned by the direct-fire tests in
+// rule_implement_union_test.go; this test pins that the full planner
+// keeps SOME valid 2-child physical union as the winner.
 func TestPlanner_UnionOverTwoScansProducesPhysicalUnion(t *testing.T) {
 	t.Parallel()
 
@@ -267,12 +275,29 @@ func TestPlanner_UnionOverTwoScansProducesPhysicalUnion(t *testing.T) {
 	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
+	var unionPlan plans.RecordQueryPlan
 	isPhysicalUnion := func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalUnionWrapper)
-		return ok
+		switch w := expr.(type) {
+		case *physicalUnionWrapper:
+			unionPlan = w.GetRecordQueryPlan()
+			return true
+		case *physicalUnorderedUnionWrapper:
+			unionPlan = w.GetRecordQueryPlan()
+			return true
+		}
+		return false
 	}
 	if !containsPhysical(ref, isPhysicalUnion) {
-		t.Fatal("expected physicalUnionWrapper in explored members")
+		t.Fatal("expected a physical union wrapper (ordered or unordered) in explored members")
+	}
+	kids, ok := unionPlan.(interface {
+		GetChildren() []plans.RecordQueryPlan
+	})
+	if !ok {
+		t.Fatalf("winning union plan %T has no children accessor", unionPlan)
+	}
+	if got := len(kids.GetChildren()); got != 2 {
+		t.Fatalf("winning union children: got %d, want 2", got)
 	}
 }
 

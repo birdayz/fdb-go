@@ -51,7 +51,13 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 				ai := accesses[i].Value
 				aj := accesses[j].Value
 
-				if ai.GetPartialMatch().GetMatchCandidate() == aj.GetPartialMatch().GetMatchCandidate() {
+				// SAME-INDEX guard by candidate NAME, not object identity:
+				// the context can hold two candidate objects for one index
+				// (and epoch-driven re-matching seeds both), and an
+				// intersection of an index with itself is the same row set
+				// twice — a nonsensical self-intersection.
+				if ai.GetPartialMatch().GetMatchCandidate().CandidateName() ==
+					aj.GetPartialMatch().GetMatchCandidate().CandidateName() {
 					continue
 				}
 

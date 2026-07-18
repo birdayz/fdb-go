@@ -184,3 +184,35 @@ func (m *ConstraintsMap) bumpTick() int64 {
 	m.currentTick++
 	return m.currentTick
 }
+
+// constraintCombineProvider resolves the per-key lattice combine for
+// constraint folds performed INSIDE the expressions package (the Memo
+// Absorb path). The cascades package registers its typed dispatch at
+// init — the expressions package cannot see the constraint lattice
+// (same layering as Java, where PlannerConstraint.combine lives with
+// the constraint definitions, not the Reference).
+var constraintCombineProvider func(key any) func(existing, pushed any) (any, bool)
+
+// SetConstraintCombineProvider registers the per-key combine dispatch.
+// Called once from the cascades package's init.
+func SetConstraintCombineProvider(p func(key any) func(existing, pushed any) (any, bool)) {
+	constraintCombineProvider = p
+}
+
+func combineFor(key any) func(existing, pushed any) (any, bool) {
+	if constraintCombineProvider != nil {
+		return constraintCombineProvider(key)
+	}
+	// No registry (standalone expressions tests): conservative
+	// always-changed — over-ticking errs toward re-exploration.
+	return func(_, pushed any) (any, bool) { return pushed, true }
+}
+
+// ReArm bumps the tick so NeedsExploration reports true — the epoch
+// expression of the Absorb member-fold re-arm: members folded from a
+// merged-away Reference were explored under the LOSER's identity
+// (rule bindings and partial matches are (group, expression)-scoped),
+// so the survivor must re-explore them under its own.
+func (m *ConstraintsMap) ReArm() {
+	m.bumpTick()
+}

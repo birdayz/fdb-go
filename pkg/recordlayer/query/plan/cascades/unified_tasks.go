@@ -100,14 +100,7 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 	// stage (b) when dual insertion dies and finals live only here.
 	for _, expr := range t.Ref.FinalMembers() {
 		if isExploratoryMember(t.Ref, expr) {
-			continue // dual-inserted — the member loop owns it
-		}
-		if t.Ref.MarkFinalExplored(expr) {
-			// Already routed once. Java re-explores finals every round
-			// because epochs bound the rounds; under Go's member-count
-			// convergence a re-fire's yields read as growth and cycle
-			// to the round cap — once-only until stage (b).
-			continue
+			continue // also an exploratory member — the member loop owns it
 		}
 		if t.Phase == PhasePlanning && isPhysical(expr) {
 			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
@@ -115,16 +108,12 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 	}
 
-	// Only explore NEW members added since the last round. On the
-	// first round (explMemberCount=0), this explores all members.
-	// On subsequent rounds, only newly-added members are explored.
-	// This matches Java's convergence behavior and avoids exponential
-	// task growth from re-exploring already-explored members.
-	startIdx := t.Ref.ExplMemberCount()
-
-	members := t.Ref.Members()
-	for i := startIdx; i < len(members); i++ {
-		expr := members[i]
+	// Explore ALL members each round (Java ExploreGroup): rounds are
+	// EPOCH-bounded now — a round runs only on first visit or after a
+	// verdict-gated constraint push — and re-fired rules' yields hit the
+	// memo dedup, so re-exploration is idempotent. The former
+	// only-new-members slice was the member-count model's optimization.
+	for _, expr := range t.Ref.Members() {
 		// OptimizeInputs only for PHYSICAL (plan) members — the 1:1 port of Java's
 		// CascadesPlanner. Java constructs OptimizeInputs in exactly one place
 		// (CascadesPlanner.java:524), and its only callers push it ONLY for final/plan
@@ -231,13 +220,15 @@ func (t *TransformExprTask) Run(p *Planner) {
 	}
 
 	// During PLANNING, expression rules (BatchA) produce physical
-	// wrappers. Yield to BOTH exploratory (for rule matching and
-	// convergence detection) AND final (for OptimizeGroup selection).
+	// wrappers. They land in the FINAL set only (Java's shape — the
+	// dual insertion into the exploratory set was the member-count
+	// convergence crutch; rule matching on finals runs through the
+	// per-expression exploration tasks, and ContainsExactly admits
+	// finals).
 	var yieldFn func(expressions.RelationalExpression) bool
 	if t.Phase == PhasePlanning {
 		yieldFn = func(expr expressions.RelationalExpression) bool {
-			t.Ref.InsertFinal(expr)
-			return t.Ref.Insert(expr)
+			return t.Ref.InsertFinal(expr)
 		}
 	}
 
@@ -485,7 +476,13 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 	}
 
 	if bestFinal == nil {
-		t.Ref.ClearFinalMembers()
+		// No VALID final (only nil-inner Fetch shells, or nothing).
+		// Do NOT clear: an extraction template's shell must stay for
+		// the relink seam — under dual insertion the valid twin
+		// survived in the exploratory set, but with finals-only
+		// physical yields clearing would strand the template with an
+		// empty ref and the relink kept a nil inner (the XX000
+		// Fetch(<nil>) plan-invariant).
 		return
 	}
 
@@ -540,16 +537,12 @@ func (t *OptimizeInputsTask) Run(p *Planner) {
 	}
 	// Identity guard (Java CascadesPlanner.OptimizeInputs:
 	// `if (!group.containsExactly(expression)) return;`): an expression
-	// pruned OUT of its group between task push and pop is dead — it must
-	// not drive child-group pruning on behalf of a plan that lost. Go
-	// checks FINAL membership, stricter than Java's containsExactly:
-	// PLANNING expression rules dual-insert physical yields into both the
-	// exploratory and final sets (TransformExprTask's yieldFn) while
-	// pruning trims only finals, so a pruned loser still passes a
-	// both-sets check via its exploratory copy — and this task is only
-	// ever pushed for physical members, whose home set is finals. (Java
-	// has no dual insertion; there the two checks coincide.)
-	if t.Ref != nil && !t.Ref.ContainsFinal(t.Expr) {
+	// pruned OUT of its group between task push and pop is dead — it
+	// must not drive child-group pruning on behalf of a plan that lost.
+	// With dual insertion retired (WS-P stage (b)) a physical yield's
+	// only home is the final set, so Java's containsExactly and the
+	// former finals-only check coincide — the compensation reverts.
+	if t.Ref != nil && !t.Ref.ContainsExactly(t.Expr) {
 		return
 	}
 	for _, q := range t.Expr.GetQuantifiers() {
