@@ -1620,6 +1620,40 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > per-Reference ConstraintsMap once the stores can merge).
 > Remaining otherwise: WS-N Phases B-D after the slices.
 
+> ## [ ] RFC candidate — typed row representation: retire []any slots (GATED on WS-N Phase D)
+> Owner direction (2026-07-18): "we know the type of a column from proto —
+> get rid of any." Ground truth from the Java source: Java is MORE boxed
+> mechanically (QueryResult.datum is Object; rows are DynamicMessages whose
+> scalars live in a FieldDescriptor-keyed Object map), but structurally
+> STRICTER — Value extends Typed, getResultType() is part of the interface
+> contract, rows carry a descriptor synthesized from the plan-time type,
+> and client metadata reads positionally off Type.Record. Go's []any slots
+> are the lighter runtime shape; Go's DEFECT is type LOSS (UnknownType
+> minting + name-keyed re-derivation — the N-F4 family). Sequencing:
+> 1. WS-N Phase D ports Java's DISCIPLINE (type populated/preserved on
+>    every value, positional ColumnDef from the flowed type, the
+>    descriptor-guessing helpers deleted). Prerequisite; already scheduled.
+> 2. RFC A — typed scalar slots: PositionalRow.Slots []any → []Datum
+>    (kind tag + int64/float64/string/[]byte fields; no per-value heap
+>    alloc, kind-switch instead of type assertions). Row-at-a-time
+>    architecture unchanged. Mechanical but wide: evaluators, comparators,
+>    aggregate states, continuation codec, temp tables. MUST open with a
+>    pprof of the 1M stress + vector benches to quantify boxing cost and
+>    pick migration order. Boundaries that STAY any (correct): the FDB
+>    tuple layer (wire format is dynamically typed — wire-compat, hard
+>    line) and proto dynamic messages.
+> 3. RFC B — vectorized batches for the hot scan→filter→project pipeline
+>    (per-column typed arrays + null bitmaps, per-batch dispatch); complex
+>    operators (NLJ, recursion) stay row-at-a-time initially. This is also
+>    what makes SIMD distance kernels worthwhile (owner's c2goasm
+>    question): typed contiguous buffers first; then gonum asm / avo / Go
+>    1.26 GOEXPERIMENT=simd for euclidean_distance IF the profile shows it
+>    hot — never c2goasm (unmaintained, unreviewable output), and any
+>    kernel needs a fuzz differential pinning bit-equivalence with the
+>    pure-Go reference (distance ties feed plan/result determinism).
+> Both are allowed read-side Go extensions (Java never vectorized; wire
+> compat untouched). Each its own RFC with the standard review gauntlet.
+
 > ## [ ] RFC-180 follow-up — output-label collision mis-binds sort keys over the IMMEDIATE reshaping strip (pre-existing)
 > `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC`
 > sorts by PLAYER (the aliased column), not the aggregate: the sort sits ABOVE the reshaping projection
