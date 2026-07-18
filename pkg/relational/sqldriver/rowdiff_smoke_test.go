@@ -69,15 +69,14 @@ func reportRowdiff(t *testing.T, res *rowdiff.SeedResult) {
 	for _, pe := range res.PlanErrors {
 		t.Logf("seed %d plan-error: %s", res.Seed, pe)
 	}
-	switch res.Kind {
-	case rowdiff.OutcomeInfra:
-		// INFRA is not a soundness finding, but the smoke shares the suite's
-		// healthy container — treat it as a hard failure here so it cannot
-		// silently zero out coverage.
+	// Each dimension reports independently of Kind: a seed can hold
+	// confirmed mismatches AND a later infra failure. INFRA is not a
+	// soundness finding, but the smoke shares the suite's healthy
+	// container — hard-fail it so it cannot silently zero out coverage.
+	if res.InfraErr != nil {
 		t.Errorf("seed %d INFRA: %v", res.Seed, res.InfraErr)
-	case rowdiff.OutcomeMismatch:
-		for _, m := range res.Mismatches {
-			t.Errorf("%s", m.String())
-		}
+	}
+	for _, m := range res.Mismatches {
+		t.Errorf("%s", m.String())
 	}
 }

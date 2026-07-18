@@ -147,6 +147,25 @@ func TestIsInfraError_Classification(t *testing.T) {
 	}
 }
 
+func TestFinalizeResult_MismatchPrecedence(t *testing.T) {
+	t.Parallel()
+	// A confirmed mismatch must never be masked by a later infra failure on
+	// the same seed.
+	res := finalizeResult(&SeedResult{
+		Mismatches: []*Mismatch{{Seed: 1, Detail: "x"}},
+		InfraErr:   errors.New("late transport failure"),
+	})
+	if res.Kind != OutcomeMismatch {
+		t.Fatalf("mismatch+infra seed: Kind = %v, want OutcomeMismatch", res.Kind)
+	}
+	if finalizeResult(&SeedResult{InfraErr: errors.New("x")}).Kind != OutcomeInfra {
+		t.Fatal("infra-only seed must be OutcomeInfra")
+	}
+	if finalizeResult(&SeedResult{}).Kind != OutcomeOK {
+		t.Fatal("clean seed must be OutcomeOK")
+	}
+}
+
 func TestRenderSQL_Shapes(t *testing.T) {
 	t.Parallel()
 	c := Generate(42)

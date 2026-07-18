@@ -138,9 +138,8 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 				// generates only supported shapes (§3), and widening the
 				// INFRA class would open a suppression hole.
 				if isInfraError(err) {
-					res.Kind = OutcomeInfra
 					res.InfraErr = fmt.Errorf("query %q: %w", sqlText, err)
-					return res
+					return finalizeResult(res)
 				}
 				res.Mismatches = append(res.Mismatches, &Mismatch{
 					Seed: c.Seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
@@ -150,9 +149,8 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 			}
 			oracle, err := OracleRows(c, q, projection)
 			if err != nil {
-				res.Kind = OutcomeInfra
 				res.InfraErr = fmt.Errorf("oracle: %w", err)
-				return res
+				return finalizeResult(res)
 			}
 			res.Executed++
 			if detail := diffRows(engineRows, cols, oracle, q); detail != "" {
@@ -164,8 +162,21 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 		}
 	}
 
-	if len(res.Mismatches) > 0 {
+	return finalizeResult(res)
+}
+
+// finalizeResult resolves the seed's single Kind with MISMATCH precedence:
+// a confirmed soundness finding must never be masked by a later infra
+// failure on the same seed (both reporters print InfraErr independently of
+// Kind, so the infra evidence still surfaces).
+func finalizeResult(res *SeedResult) *SeedResult {
+	switch {
+	case len(res.Mismatches) > 0:
 		res.Kind = OutcomeMismatch
+	case res.InfraErr != nil:
+		res.Kind = OutcomeInfra
+	default:
+		res.Kind = OutcomeOK
 	}
 	return res
 }
