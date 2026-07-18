@@ -1534,72 +1534,45 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       RUNTIME datum-key splits, the name-keyed row model itself (Phase C/D);
 >       (d) cascades_generator metadata cluster (18 sites) — Phase D.
 >       Exit criterion unchanged: (a)-(c) drain as Phases B-D land.
-> WS-P PROGRESS: stage (a) LANDED + double-ACK'd (ConstraintsMap epoch
-> port pinned to the Java contract; finals routing with the once-guard
-> bridge — live for pruned/Absorb-deduped twins; Set choke-point epoch
-> mirror; MaxObservedExplorationRounds evidence export; gate green:
-> full sweep + plandiff parity + 1M stress + 10/10 determinism).
-> Stage (b) FIRST COMMIT landed (both reviewers' condition): Set has
-> Java pushProperty semantics — per-key lattice combine
-> (CombineRequestedOrderings / new CombineReferencedFields union),
-> subsumption = no store no tick, and the shared-child clobber the old
-> overwrite hid is repaired; the b-first ACK folds landed too (Set
-> returns the lattice-grew verdict, PushConstraint's redundant
-> pre-combine deleted, subsumed pushes schedule NO re-exploration —
-> Java's empty Optional). Stage (b) REMAINDER (the convergence
-> handover — the arc's riskiest step), FLIP MAP from the executed
-> census (all three rule-yield sites ALREADY push per-expression
-> exploration; constraint pushes verdict-gated):
-> (1) Data-access insert sites rely on the count-round pickup TODAY:
->     planner.go:561/:646/:659 InsertFinal + yieldUnknown run INLINE in
->     ExploreExprTask and push no tasks — the stage-(a) finals loop is
->     what explores them (why it probed live). The flip pushes
->     OptimizeInputs+Explore for these finals at the insert sites (or
->     via the finals loop with the once-guard retired under
->     epoch-bounded rounds).
-> (2) Same-ref logical inserts outside tasks to verify per-site:
->     implementation_rule.go:115, memo.go:284 (Integrate),
->     rule_decorrelate_values.go:194, rule_predicate_push_down.go:131
->     (fresh child refs — covered by the parent's child-walk; confirm).
-> (3) Flip Reference.NeedsExploration to the epochs
->     (ConstraintsMap.NeedsExploration + HasNeverBeenExplored first
->     round); retire explState/explMemberCount/explRounds and the
->     stage-(a) once-guard (epoch-bounded rounds make Java's
->     explore-all-every-round safe).
-> (4) Absorb: typed combine instead of the always-replace lambda (the
->     key-typed combine must become visible to expressions — move the
->     registration or pass it in); express the member-fold re-arm as an
->     epoch tick (a constraint-less merge must still re-explore members
->     fired under the loser's identity).
-> (5) Remove dual insertion (TransformExprTask PLANNING yieldFn drops
->     Insert) + revert the OptimizeInputsTask guard
->     ContainsFinal→ContainsExactly (unified_tasks.go:552 — without dual
->     copies the checks coincide, Java's shape); audit EstimateOrdering/
->     AllMembers consumers expecting physicals among Members().
-> The flip lands as ONE green commit. FIRST ATTEMPT EXECUTED AND
-> REVERTED (findings, the flip's red harness): moves 1-5 build and the
-> epoch mechanics work, but plan FORMATION regressed — alternatives
-> that materialized via count-driven re-rounds go missing because the
-> parent-re-reaction channel is unported: when a CHILD group gains
-> physical members, Go's count model re-rounded the parent (rules
-> matching over child physicals re-fired); Java drives this through
-> OptimizeInputs/OptimizeGroup propagation instead, which Go's flip
-> must port BEFORE NeedsExploration can leave the count model. Red
-> harness that catches it (run these first next attempt):
-> TestBugHunt_CountColumnNotForcedCovering (COUNT(col) loses its Fetch
-> — wrong-rows class), TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans
-> (missing physicalUnorderedUnionWrapper alternative),
-> TestImplementRecursiveLevelUnion_Fires_AnyStrategy, and
-> TestAliasAwareInterningShadowDelta (exact count pins encode the
-> count-model world — re-baseline LAST, only once the rest is green).
-> Then (c) prune-to-1 Verify at the boundary; (d) retire 15b/15c + the
-> round cap (MaxObservedExplorationRounds evidence already exported).
-> Each checkpoint gates on stress + EXPLAIN parity per the Graefe
-> amendment.
-> Remaining otherwise: WS-N Phases B-D after the slices
-> (ConstraintsMap epoch port retiring dual-insertion + 15b/15c + round cap;
-> un-gate REWRITING OptimizeInputs; fix stale DIVERGENCES advancePlannerStage
-> claim).
+> WS-P: DONE — all four amendment stages landed, double-ACK'd (Graefe ACK
+> with the 15c-wording condition folded; Torvalds conditions folded: dead
+> helpers + ContainsFinal deleted, stale pre-flip comments rewritten).
+> Stage (a): ConstraintsMap 1:1 epoch port (ticks/watermarks) + finals
+> routing + Set choke-point mirror + MaxObservedExplorationRounds export.
+> Stage (b): the convergence handover — NeedsExploration is epoch-driven,
+> dual insertion retired (physical yields are FINALS ONLY), OptimizeInputs
+> guard reverted to Java's containsExactly, insert-driven exploration at
+> every insert site (data-access sites push tasks on InsertFinal), Absorb
+> folds constraints via the typed per-key combine + epoch ReArm. Four
+> latent order-dependences the flip exposed, each fixed structurally:
+> streaming-agg empty-keys arm enumerates ALL valid physical members;
+> findPhysicalPlan/Expr prefer valid physicals (nil-inner Fetch shells are
+> relink templates, never plan-embedded); intersector same-index guard
+> compares CandidateName; raw/adjusted partial-match twins collapse in the
+> intersection path only, preferring most matched ordering parts.
+> Stage (c): REWRITING finals route through OptimizeInputs (Java
+> ExploreGroup shape) — parent-chain-optimized groups cross the stage
+> boundary pruned to their REWRITING winner. RESIDUAL (documented at the
+> boundary arm + DIVERGENCES): UNIVERSAL prune-to-1 is gated on PLANNING
+> re-derivation parity — the forced-prune attempt lost canonical
+> alternatives Go's PLANNING cannot re-derive (RFC-153 buried-leg,
+> cross-join-EXISTS NoNulls).
+> Stage (d): 15b (compareFlatMapVsNLJ) RETIRED (regression no longer
+> reproduces; deleted with tests); 15c reclassified — a Go statistics
+> EXTENSION in the pre-hash tiebreak slot (Java's cost model is purely
+> heuristic), retiring it regressed real selectivity decisions; round cap
+> 10→100 as a LOUD divergence tripwire (epoch rounds structurally bounded
+> by the finite constraint lattices; round_cap_trips fixture).
+> Gate each stage: full sweep green, 1M stress at thresholds, determinism
+> clean, plandiff EXPLAIN parity. Ten white-box tests re-baselined to pin
+> FORMATION via direct rule firing (prune-to-winner hides losers from
+> post-Plan member walks); trailing-partition vector fan-out now plans AND
+> executes (exact-rows re-pin).
+> WS-P residual follow-ups (evidence-gated, not deferrals): universal
+> boundary prune-to-1 (needs PLANNING re-derivation parity, red shapes
+> named above); dual-store collapse (planner-global constraint map →
+> per-Reference ConstraintsMap once the stores can merge).
+> Remaining otherwise: WS-N Phases B-D after the slices.
 
 > ## [ ] RFC-180 follow-up — output-label collision mis-binds sort keys over the IMMEDIATE reshaping strip (pre-existing)
 > `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC`
