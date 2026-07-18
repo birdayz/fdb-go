@@ -5686,8 +5686,19 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	// remainingOrderByExpressions branch) is the booked follow-up; until then
 	// the decline is loud, never wrong rows.
 	var aggProjFields []values.RecordConstructorField
+	// Per-slot RENDERED-ITEM texts, parallel to aggProjFields (whose Names
+	// are alias-preferred): a rendered-item sort key (`ORDER BY SUM(score)`
+	// — NOT a bare user identifier) must bind against the PROJECTION text
+	// only. Matching it against alias-preferred names let a colliding alias
+	// (`player AS "SUM(SCORE)"`) capture the aggregate's sort key and
+	// silently sort by the wrong column.
+	var aggProjItemTexts []string
 	if p, isProj := s.Input.(*logical.LogicalProject); isProj && projectionOverAggregate(p) {
 		aggProjFields = postAggregateProjectionFields(p)
+		aggProjItemTexts = make([]string, len(p.Projections))
+		for pi, col := range p.Projections {
+			aggProjItemTexts[pi] = strings.ToUpper(col)
+		}
 	}
 	sortKeys := make([]expressions.SortKey, len(s.Keys))
 	for i, k := range s.Keys {
@@ -5766,15 +5777,31 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 				if pulled, ok := pullUpToOutputField(v, aggProjFields); ok {
 					v = pulled
 				} else if fv, isFV := v.(*values.FieldValue); isFV && fv.Child == nil {
-					// A flat column key naming an output column (alias or
-					// rendered item, incl. `MAX(C)` canonicals) bakes to its
+					// A flat column key naming an output column bakes to its
 					// output slot — same rule as pullUpSortKeyValue step (3).
+					// The name universes SPLIT on the key's shape
+					// (SortKey.BareRef, the RFC-180 round-14 rule the
+					// deferred strip already applies): a BARE user
+					// identifier binds alias-preferred names; a RENDERED
+					// item (`SUM(score)`, a qualified ref) binds the
+					// PROJECTION text only — an alias spelled like a
+					// rendered item must never capture it.
 					matched := false
-					for fi, f := range aggProjFields {
-						if strings.EqualFold(f.Name, fv.Field) {
-							v = values.NewFieldValueWithResolvedOrdinal(f.Name, fi, fv.Typ)
-							matched = true
-							break
+					if k.BareRef {
+						for fi, f := range aggProjFields {
+							if strings.EqualFold(f.Name, fv.Field) {
+								v = values.NewFieldValueWithResolvedOrdinal(f.Name, fi, fv.Typ)
+								matched = true
+								break
+							}
+						}
+					} else {
+						for fi, item := range aggProjItemTexts {
+							if fi < len(aggProjFields) && strings.EqualFold(item, fv.Field) {
+								v = values.NewFieldValueWithResolvedOrdinal(aggProjFields[fi].Name, fi, fv.Typ)
+								matched = true
+								break
+							}
 						}
 					}
 					if !matched && fv.Resolved != nil {

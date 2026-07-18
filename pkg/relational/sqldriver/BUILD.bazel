@@ -330,6 +330,7 @@ go_test(
         "selfjoin_having_probe_test.go",
         "setops_distinct_probe_test.go",
         "setops_null_probe_test.go",
+        "sort_key_label_collision_fdb_test.go",
         "sql_integration_test.go",
         "sql_querycontext_fuzz_test.go",
         "star_body_cte_join_leg_fdb_test.go",

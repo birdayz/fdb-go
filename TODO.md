@@ -1654,7 +1654,11 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > Both are allowed read-side Go extensions (Java never vectorized; wire
 > compat untouched). Each its own RFC with the standard review gauntlet.
 
-> ## [ ] RFC-180 follow-up — output-label collision mis-binds sort keys over the IMMEDIATE reshaping strip (pre-existing)
+> ## [x] RFC-180 follow-up — output-label collision mis-binds sort keys over the IMMEDIATE reshaping strip — FIXED
+> (translateSort's flat-key arm now applies the RFC-180 round-14 BareRef
+> split: rendered-item keys bind PROJECTION text only, bare identifiers bind
+> alias-preferred names; pinned across four shapes in
+> sort_key_label_collision_fdb_test.go. Original diagnosis below.)
 > `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC`
 > sorts by PLAYER (the aliased column), not the aggregate: the sort sits ABOVE the reshaping projection
 > whose output row carries a column literally labeled `SUM(SCORE)` (the delimited alias), and both
