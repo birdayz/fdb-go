@@ -63,10 +63,15 @@ func Set[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConst
 	}
 	cm.constraints[constraintEntry{ref: ref.Canonical(), key: key}] = value
 	// Mirror the push into the Reference's tick/watermark ConstraintsMap
-	// (RFC-181 WS-P stage (a)): every Set here is a REAL push — the
-	// callers pre-combine before writing — so the per-ref epoch ticks
-	// record exactly the constraint-propagation events Java's
-	// pushProperty ticks on. The planner-global map stays authoritative
-	// for reads until stage (b) hands the epochs control.
+	// (RFC-181 WS-P stage (a)). NOT every Set is a real push:
+	// PushConstraint pre-combines, but rule_push_referenced_fields
+	// re-Sets an UNCHANGED value on every re-fire — so this mirror
+	// OVER-TICKS relative to Java's pushProperty (which subsumes
+	// unchanged pushes without a tick). Harmless while nothing reads
+	// the epochs for control; stage (b)'s FIRST commit must route the
+	// real lattice combine through PushProperty (subsumption = no
+	// tick), or an unchanged re-Set per round would keep the epoch
+	// unconverged forever once epochs drive convergence. The
+	// planner-global map stays authoritative for reads until then.
 	ref.ConstraintsMap().PushProperty(key, value, func(_, pushed any) (any, bool) { return pushed, true })
 }

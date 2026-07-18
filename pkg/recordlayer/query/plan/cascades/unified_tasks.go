@@ -92,11 +92,12 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 
 	// FINALS ROUTING (Java ExploreGroup: getFinalExpressions() →
 	// exploreExpressionAndOptimizeInputs — RFC-181 WS-P stage (a)).
-	// Under the still-intact dual insertion every final is ALSO an
+	// Under the still-intact dual insertion a final is USUALLY also an
 	// exploratory member and is explored by the member loop below, so
-	// this loop only picks up a final that is NOT dual-inserted —
-	// vacuous today, load-bearing at stage (b) when dual insertion
-	// dies and finals live only here.
+	// this loop serves the finals whose exploratory twins were pruned,
+	// replaced, or deduped away during a Memo.Absorb — a LIVE set (the
+	// exists-shadow FDB suite exercises it), fully load-bearing at
+	// stage (b) when dual insertion dies and finals live only here.
 	for _, expr := range t.Ref.FinalMembers() {
 		if isExploratoryMember(t.Ref, expr) {
 			continue // dual-inserted — the member loop owns it
