@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"bytes"
 	"context"
 	"database/sql/driver"
 	"encoding/binary"
@@ -1706,6 +1707,18 @@ func (r *paginatingRows) fetchPage() error {
 		exhausted, contBytes, classifyErr := pageContinuationState(rs.GetContinuation(), rs.GetNoNextReason())
 		if classifyErr != nil {
 			return nil, classifyErr
+		}
+		// LIVENESS tripwire: a page that produced ZERO rows and did not
+		// advance its continuation would repeat forever — the per-page
+		// resume cost exceeded the page's own resource budget (e.g. a
+		// recursive DFS whose re-descent depth outweighs a tiny
+		// scanned-rows limit; the checkpoint stores pre-yield positions,
+		// so such a page cannot make progress). Correct-or-loud: surface
+		// the stall as the resource-limit error it is, never an infinite
+		// internal retry loop.
+		if len(r.buf) == 0 && !exhausted && contBytes != nil && bytes.Equal(contBytes, r.continuation) {
+			return nil, api.NewError(api.ErrCodeExecutionLimitReached,
+				"query cannot progress under the configured per-page resource limits (a page produced no rows and no continuation advance); raise the scan/row limits")
 		}
 		r.exhausted = exhausted
 		r.continuation = contBytes

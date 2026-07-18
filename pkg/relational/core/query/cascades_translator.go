@@ -7893,6 +7893,11 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	recursiveInsertRef := expressions.InitialOf(recursiveInsert)
 	strategy := expressions.TraversalAny
 	switch c.TraversalOrder {
+	case logical.TraversalLevelOrder:
+		// An EXPLICIT level_order pins the level union (Java LEVEL gates
+		// the DFS rule off); only the clause-less ANY leaves the choice
+		// to the cost model.
+		strategy = expressions.TraversalLevel
 	case logical.TraversalPreOrder:
 		strategy = expressions.TraversalPreorder
 	case logical.TraversalPostOrder:

@@ -755,8 +755,15 @@ type LogicalCTE struct {
 
 type TraversalOrder int
 
+// The zero value is ANY — a recursion with NO traversal clause leaves the
+// order to the planner (Java TraversalStrategy.ANY: both the level union
+// and the DFS join implement, the cost model picks). An EXPLICIT
+// `TRAVERSAL ORDER level_order` is TraversalLevelOrder and PINS the level
+// union (Java's LEVEL gates the DFS rule off) — the two were once
+// conflated, which made the explicit clause unable to force the plan.
 const (
-	TraversalLevelOrder TraversalOrder = iota
+	TraversalAnyOrder TraversalOrder = iota
+	TraversalLevelOrder
 	TraversalPreOrder
 	TraversalPostOrder
 )

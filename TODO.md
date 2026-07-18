@@ -1432,10 +1432,33 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       sorted-input distinct; documented at executeDistinct)
 > WS-C: DONE (Graefe ACK; Torvalds conditions folded — lazy continuations, depth
 > parity, ctor charge release). C1 full RecursiveUnionCursor port (UNION ALL
-> recursion streams + resumes mid-level; DISTINCT eager + loud decline), C2
+> recursion streams + resumes mid-level), C2
 > engine-private decision + loud OptContinuation boundary, C3 kept-armed pending
 > inner, C4 LoadByKeys lazy key-list resume, C5 documented at executeDistinct,
 > C6 nil-continuation ban, intersectionMultiCursor consume().
+> C1 REMAINDER (no stopgaps — every rejectUnsupportedResume guard replaced by
+> the real port; the helper is deleted):
+> - RecursiveCursor 1:1 port (Java cursors/RecursiveCursor.java: per-depth
+>   node stack, RecursiveContinuation LevelCursor protos, primary-key check
+>   values with the discard-on-drift re-descent) — the DFS join now STREAMS
+>   and resumes; ImplementRecursiveDfsJoinRule strips the level-union
+>   TempTableInsert tops (Java's matcher shape), so the DFS legs are bare
+>   bodies and the eager DISTINCT arm charges its collects directly.
+>   E2E: TRAVERSAL ORDER pre_order/post_order paginate mid-traversal under a
+>   scanned-rows budget and resume with EXACT order
+>   (TestFDB_RecursiveDFS_Continuation_ResumeAcrossPages). Note the resume
+>   floor: checkpoints store PRE-YIELD positions (Java buildContinuation
+>   reads childContinuationBefore), so a page budget below ~depth scans
+>   cannot progress — inherent to Java's design, documented in the test.
+> - DISTINCT recursion arms (Go extension; Java rejects recursive UNION
+>   distinct): deterministic position-replay resume (lossless-codec
+>   {emitted count, boundary row}; drift under the token is LOUD), level
+>   union and DFS alike (TestRecursiveDistinctReplay_ResumesMidStream + the
+>   cyclic-graph FDB pin).
+> - explode / temp-table scan / table function / VALUES resume via Java's
+>   ListCursor 4-byte position (FromListWithContinuation)
+>   (TestListShapedPlans_ResumeMidList); corrupt tokens on every recursive
+>   arm are typed ContinuationParseError.
 > Phase B slice B1 LANDED: the correlated-scalar lowering is binding-aware —
 > clusterPullUp spans/seed/bake key by leg BINDING (legByBinding; display
 > aliases never key a span), the classifier's rightmost/outer-universe reads

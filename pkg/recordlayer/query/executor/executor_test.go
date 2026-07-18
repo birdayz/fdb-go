@@ -5825,14 +5825,14 @@ func TestCompareValues_CrossTypeIsLoud(t *testing.T) {
 	}
 }
 
-// TestRecursiveResume_DeclinesLoudly pins the RFC-181 C1 stopgap: the
-// recursion is materialized eagerly and its mid-stream tokens are bare list
-// indices — the executor used to feed an incoming continuation RAW to the
-// SEED plan, where a scan seed silently accepted the bytes as a key suffix
-// (wrong seed set, re-emission, NO ERROR). Until the Java-shape
-// RecursiveUnionCursor continuation is ported, a resume attempt must be a
-// TYPED decline, never a silent wrong start.
-func TestRecursiveResume_DeclinesLoudly(t *testing.T) {
+// TestRecursiveResume_CorruptTokensFailLoudly pins the resume boundary on
+// every recursive arm: a foreign/corrupt token parses LOUDLY as a typed
+// ContinuationParseError — never the C1 misroute (raw bytes fed to the seed
+// plan, silently accepted as a scan key suffix: wrong seed set,
+// re-emission, no error). All three arms RESUME now: UNION ALL level union
+// (RecursiveUnionCursor), UNION ALL DFS (RecursiveCursor), and the
+// DISTINCT extension (deterministic position-replay).
+func TestRecursiveResume_CorruptTokensFailLoudly(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -5863,21 +5863,22 @@ func TestRecursiveResume_DeclinesLoudly(t *testing.T) {
 		t.Fatalf("a corrupt token on a streaming recursive CTE must fail loudly with ContinuationParseError, got %v", err)
 	}
 
-	// UNION DISTINCT recursion carries a cross-level seen-set no
-	// continuation captures — resume DECLINES with the unsupported error.
+	// The DISTINCT extension resumes by position-replay; its token is the
+	// lossless-codec {position, boundary row} pair — the same foreign
+	// bytes fail its decode as the same typed parse error.
 	distinct := plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
 		mkPlan().GetInitialState(), mkPlan().GetRecursiveState(), scanAlias, insertAlias)
-	var unsupported *UnsupportedContinuationError
 	_, err = ExecutePlan(ctx, distinct, nil, EmptyEvaluationContext(), fakeToken, recordlayer.DefaultExecuteProperties())
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("resume on a DISTINCT recursive CTE must decline with UnsupportedContinuationError, got %v", err)
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("a corrupt token on a DISTINCT recursive CTE must fail loudly with ContinuationParseError, got %v", err)
 	}
 
-	// DFS twin.
+	// The DFS twin streams via the RecursiveCursor port; its token is the
+	// RecursiveContinuation proto — foreign bytes fail the parse.
 	dfs := plans.NewRecordQueryRecursiveDfsJoinPlan(mkPlan().GetInitialState(), mkPlan().GetRecursiveState(), scanAlias, plans.DfsPreorder)
 	_, err = ExecutePlan(ctx, dfs, nil, EmptyEvaluationContext(), fakeToken, recordlayer.DefaultExecuteProperties())
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("resume on a recursive DFS join must decline, got %v", err)
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("a corrupt token on a recursive DFS join must fail loudly with ContinuationParseError, got %v", err)
 	}
 
 	// nil continuation still executes normally.

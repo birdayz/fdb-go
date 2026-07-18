@@ -289,8 +289,11 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		return main, nil
 	}
 	recursive := ctesCtx.RECURSIVE() != nil
-	traversalOrder := logical.TraversalLevelOrder
+	// No clause = ANY (the planner picks); an explicit level_order pins
+	// the level union (the clause's only remaining alternative).
+	traversalOrder := logical.TraversalAnyOrder
 	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+		traversalOrder = logical.TraversalLevelOrder
 		if toc.PRE_ORDER() != nil {
 			traversalOrder = logical.TraversalPreOrder
 		} else if toc.POST_ORDER() != nil {

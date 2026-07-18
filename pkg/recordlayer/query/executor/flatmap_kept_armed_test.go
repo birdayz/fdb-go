@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -16,8 +15,9 @@ import (
 
 // flatMapArmedFixture builds a flatMapCursor over the given outer rows with a
 // trivial single-row values inner, armed with a pending inner continuation
-// bound to savedPK's check value.
-func flatMapArmedFixture(t *testing.T, outer recordlayer.RecordCursor[QueryResult], savedPK tuple.Tuple) *flatMapCursor {
+// bound to savedPK's check value. armedBytes is the pending inner
+// continuation the matching row will hand to its inner plan.
+func flatMapArmedFixture(t *testing.T, outer recordlayer.RecordCursor[QueryResult], savedPK tuple.Tuple, armedBytes []byte) *flatMapCursor {
 	t.Helper()
 	inner := plans.NewRecordQueryValuesPlan([]values.Value{&values.ConstantValue{Value: int64(7)}})
 	c, err := newFlatMapCursor(
@@ -28,7 +28,7 @@ func flatMapArmedFixture(t *testing.T, outer recordlayer.RecordCursor[QueryResul
 	if err != nil {
 		t.Fatalf("newFlatMapCursor: %v", err)
 	}
-	c.initialInnerCont = []byte("armed-inner")
+	c.initialInnerCont = armedBytes
 	c.hasPendingInner = true
 	c.pendingCheckValue = savedPK.Pack()
 	return c
@@ -40,12 +40,19 @@ func flatMapArmedFixture(t *testing.T, outer recordlayer.RecordCursor[QueryResul
 // runs its inner fresh while the armed state waits; the matching row consumes
 // it. The prior first-row discard re-ran the saved row's inner from scratch —
 // duplicate rows — while claiming Java fidelity.
+//
+// Proof of consumption at the RIGHT row: the armed bytes are a list
+// continuation POSITIONED PAST the single VALUES row, so the matching
+// outer's inner resumes exhausted (0 rows) while every fresh inner emits 1 —
+// a first-row consume would drop the FIRST row's emission, a first-row
+// discard would emit both.
 func TestFlatMapKeptArmed_SurvivesMismatchingRow(t *testing.T) {
 	t.Parallel()
 	rows := nljTestRows("K", 2) // PKs {K,0}, {K,1}
-	c := flatMapArmedFixture(t, recordlayer.FromList(rows), tuple.Tuple{"K", int64(1)})
+	pastTheOneRow := []byte{0, 0, 0, 1}
+	c := flatMapArmedFixture(t, recordlayer.FromList(rows), tuple.Tuple{"K", int64(1)}, pastTheOneRow)
 
-	// First outer row {K,0} mismatches: its inner runs, armed state SURVIVES.
+	// First outer row {K,0} mismatches: its inner runs FRESH, armed state SURVIVES.
 	res, err := c.OnNext(context.Background())
 	if err != nil || !res.HasNext() {
 		t.Fatalf("first row: %v", err)
@@ -53,22 +60,22 @@ func TestFlatMapKeptArmed_SurvivesMismatchingRow(t *testing.T) {
 	if c.initialInnerCont == nil {
 		t.Fatal("armed inner continuation must SURVIVE a mismatching outer row (Java keeps it until consumed)")
 	}
-	// Drain to the second (matching) row: the armed bytes are consumed and
-	// handed to the inner plan — the VALUES inner rejects foreign bytes
-	// loudly, and THAT error is the proof of consumption at the right row
-	// (a first-row discard would never present the bytes to any inner; a
-	// first-row consume would have errored on the FIRST pull above).
+	// Drain: the matching row {K,1} consumes the armed bytes — its inner
+	// resumes at position 1 of a 1-row list (0 rows), so NO further row is
+	// emitted and the cursor exhausts.
+	extra := 0
 	for {
 		res, err = c.OnNext(context.Background())
 		if err != nil {
-			if !strings.Contains(err.Error(), "cannot resume from a continuation") {
-				t.Fatalf("drain: %v", err)
-			}
-			break
+			t.Fatalf("drain: %v", err)
 		}
 		if !res.HasNext() {
-			t.Fatal("cursor exhausted with the armed state never consumed — the matching row did not apply it")
+			break
 		}
+		extra++
+	}
+	if extra != 0 {
+		t.Fatalf("matching row emitted %d rows, want 0 (its inner must RESUME from the armed position, not run fresh)", extra)
 	}
 	if c.initialInnerCont != nil || len(c.pendingCheckValue) != 0 {
 		t.Fatal("consumption must clear the armed state and its check value")
@@ -82,7 +89,7 @@ func TestFlatMapKeptArmed_SurvivesMismatchingRow(t *testing.T) {
 // saved one is no longer first).
 func TestFlatMapKeptArmed_WrapCarriesCheckValue(t *testing.T) {
 	t.Parallel()
-	c := flatMapArmedFixture(t, recordlayer.Empty[QueryResult](), tuple.Tuple{"K", int64(5)})
+	c := flatMapArmedFixture(t, recordlayer.Empty[QueryResult](), tuple.Tuple{"K", int64(5)}, []byte("armed-inner"))
 	cont := c.wrapOuterContinuation(recordlayer.NewBytesContinuation([]byte("outer-pos")))
 	b, err := cont.ToBytes()
 	if err != nil {
@@ -108,7 +115,7 @@ func TestFlatMapTerminalReplayOnRecall(t *testing.T) {
 	t.Parallel()
 	rows := nljTestRows("K", 2)
 	outer := &flakyOuterCursor{first: rows[:1], rest: rows[1:]}
-	c := flatMapArmedFixture(t, outer, tuple.Tuple{"K", int64(0)})
+	c := flatMapArmedFixture(t, outer, tuple.Tuple{"K", int64(0)}, []byte("armed-inner"))
 	// Disarm the fixture's pending state — this pin is about the terminal
 	// cache, not the resume path.
 	c.initialInnerCont = nil
@@ -152,7 +159,7 @@ func TestFlatMapTerminalReplayOnRecall(t *testing.T) {
 func TestFlatMapTerminalReplayOnRecall_InnerStop(t *testing.T) {
 	t.Parallel()
 	rows := nljTestRows("K", 2)
-	c := flatMapArmedFixture(t, recordlayer.FromList(rows[1:]), tuple.Tuple{"K", int64(0)})
+	c := flatMapArmedFixture(t, recordlayer.FromList(rows[1:]), tuple.Tuple{"K", int64(0)}, []byte("armed-inner"))
 	c.initialInnerCont = nil
 	c.hasPendingInner = false
 	c.pendingCheckValue = nil
