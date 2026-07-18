@@ -5349,7 +5349,7 @@ func expressionOutputLegs(expr expressions.RelationalExpression, flatCount int) 
 		if legCols == nil {
 			return nil
 		}
-		legs = append(legs, values.RecordTypeLeg{Name: strings.ToUpper(aliases[i]), Start: off, Width: len(legCols)})
+		legs = append(legs, values.RecordTypeLeg{Name: aliases[i], Start: off, Width: len(legCols)})
 		off += len(legCols)
 	}
 	if off != flatCount {
@@ -5572,7 +5572,7 @@ func wholeRowLegFor(alias string, cols []string) []values.RecordTypeLeg {
 	if alias == "" || len(cols) == 0 {
 		return nil
 	}
-	return []values.RecordTypeLeg{{Name: strings.ToUpper(alias), Start: 0, Width: len(cols)}}
+	return []values.RecordTypeLeg{{Name: alias, Start: 0, Width: len(cols)}}
 }
 
 // bakeFlatRefsAgainstColumns rewrites each FLAT LAZY FieldValue (nil child, no

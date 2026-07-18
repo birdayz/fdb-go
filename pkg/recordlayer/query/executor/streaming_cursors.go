@@ -1388,9 +1388,10 @@ func bakedLegOperand(v values.Value, outerAlias, innerAlias string) (isOuter, ok
 	}
 	alias := qov.Correlation.Name()
 	switch {
-	case strings.EqualFold(alias, outerAlias):
+	// Exact: correlation-key namespace on both sides.
+	case alias == outerAlias:
 		return true, true
-	case strings.EqualFold(alias, innerAlias):
+	case alias == innerAlias:
 		return false, true
 	}
 	return false, false

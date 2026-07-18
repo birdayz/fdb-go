@@ -2375,10 +2375,10 @@ func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias st
 	slots = append(slots, inner.Slots...)
 	legs := make([]values.RecordTypeLeg, 0, len(outer.Type.Legs)+len(inner.Type.Legs)+2)
 	if outerAlias != "" {
-		legs = append(legs, values.RecordTypeLeg{Name: strings.ToUpper(outerAlias), Start: 0, Width: nOuter})
+		legs = append(legs, values.RecordTypeLeg{Name: outerAlias, Start: 0, Width: nOuter})
 	}
 	if innerAlias != "" {
-		legs = append(legs, values.RecordTypeLeg{Name: strings.ToUpper(innerAlias), Start: nOuter, Width: nInner})
+		legs = append(legs, values.RecordTypeLeg{Name: innerAlias, Start: nOuter, Width: nInner})
 	}
 	for _, lg := range outer.Type.Legs {
 		legs = append(legs, lg)

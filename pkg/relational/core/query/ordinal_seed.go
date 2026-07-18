@@ -66,7 +66,7 @@ func (t *cascadesTranslator) buriedLegBounds(j *logical.LogicalJoin, base int) [
 		if sj, isJ := sub.op.(*logical.LogicalJoin); isJ {
 			out = append(out, t.buriedLegBounds(sj, off)...)
 		} else if sub.binding != "" {
-			out = append(out, values.RecordTypeLeg{Name: strings.ToUpper(sub.binding), Start: off, Width: len(subTyp.Fields)})
+			out = append(out, values.RecordTypeLeg{Name: sub.binding, Start: off, Width: len(subTyp.Fields)})
 		}
 		off += len(subTyp.Fields)
 	}
