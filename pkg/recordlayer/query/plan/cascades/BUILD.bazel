@@ -265,6 +265,7 @@ go_test(
         "memo_fuzz_test.go",
         "memo_merge_multiway_test.go",
         "memo_merge_test.go",
+        "memo_reexplore_test.go",
         "memo_test.go",
         "memo_wsb_no_collapse_test.go",
         "merge_seed_leg_classifier_gathered_test.go",
@@ -838,6 +839,7 @@ go_test(
         "rule_index.go",
         "rule_index_test.go",
         "rebase_ordinal_layout_test.go",
+        "memo_reexplore_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

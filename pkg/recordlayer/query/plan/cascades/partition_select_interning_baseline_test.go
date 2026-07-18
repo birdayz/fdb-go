@@ -283,9 +283,12 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		// already-interned members, not re-enumerated sub-products —
 		// interning still collapses shared sub-products (the alias-aware
 		// shadow moved in lockstep, see TestAliasAwareInterningShadowDelta),
-		// which is what this baseline guards.
-		{3, 2786},
-		{4, 13721},
+		// which is what this baseline guards. The sentinel gate then
+		// trimmed 2786→2468 / 13721→10255: PLANNING pure LOGICAL finals
+		// are fail-to-plan sentinels and no longer rule-explored each
+		// round (the member loop owns every implementable form).
+		{3, 2468},
+		{4, 10255},
 	}
 	for _, tc := range cases {
 		got := planChainTasks(t, tc.tables)

@@ -103,6 +103,12 @@ type Planner struct {
 	// model makes maxRoundsPerRef obsolete at stage (d)).
 	maxObservedExplRounds int
 
+	// activePhase is the phase whose tasks are currently draining —
+	// maintained by InitiatePlannerPhaseTask (phases run sequentially on
+	// the one stack). Out-of-band re-exploration tasks scheduled through
+	// the memo hook carry it.
+	activePhase PlannerPhase
+
 	// constraintMap holds ordering constraints propagated during
 	// PLANNING's preorder rules. Shared across all tasks.
 	constraintMap *ConstraintMap
@@ -270,6 +276,12 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	if p.memo == nil {
 		p.memo = NewMemo(rootRef)
 	}
+	// Out-of-band member growth (Absorb, raw inserts into existing
+	// groups) must schedule the re-round its epoch re-arm requires —
+	// dirtiness without a task is silently never explored.
+	p.memo.SetReExploreScheduler(func(ref *expressions.Reference) {
+		p.push(&ExploreGroupTask{Phase: p.activePhase, Ref: ref})
+	})
 	p.constraintMap = NewConstraintMap()
 	p.dataAccessConsumed = make(map[*expressions.Reference]int)
 	p.exprRuleIdx = nil
@@ -558,9 +570,13 @@ func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates 
 			// ImplementFilterRule !isIndexOnly() gate plus the
 			// validateNoIndexOnlyResidual backstop in Plan() (RFC-151 §5).
 			if !isPhysical(expr) && !compensationSafeForYield(expr) {
-				if ref.InsertFinal(expr) {
-					p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
-				}
+				// NO exploration task: an unsafe final exists only so the
+				// query FAILS to plan when no alternative lands — running
+				// rules on it would physicalize the top-K-before-filter
+				// shape this arm exists to prevent (silent wrong rows;
+				// the finals loop's PLANNING gate skips it for the same
+				// reason).
+				ref.InsertFinal(expr)
 				continue
 			}
 			// Physical plan → final set (competes now). A SAFE logical compensation →
@@ -622,7 +638,7 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 		//     advance) would drop rows whose distance rank disagrees with their
 		//     pk order (wrong rows for k>1). The safe shape is a Filter above the
 		//     un-intersected scan (compensationSafeForYield's partition-residual
-		//     exception, residualIsPartitionContiguous).
+		//     exception, residualSelectsWholePartitions).
 		// Both reduce to the same invariant — a distance-ordered scan cannot be a
 		// pk-keyed intersection leg — so exclude ALL vector candidates here, the
 		// single home for the rule (RFC-167 Phase 4).
@@ -786,18 +802,17 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 // non-index-only; the index-only distance marker lives only inside the
 // scan binding).
 //
-// SELF-LIMITING (partitioned) exception: a residual over the
-// PARTITION-key columns, contiguous immediately after the bound
-// equality prefix, is ALSO safe over a self-limiting per-partition
-// top-k scan. Such a filter selects WHOLE partitions (drops entire
-// regions ≤ 'r1'), never within-partition rows, so the per-partition
-// top-k the maintainer already enforced is preserved: survivors are
-// exactly top-k per surviving partition. This yields the correct
-// Filter(region>r1) → VectorScan(self-limiting) plan instead of the
+// SELF-LIMITING (partitioned) exception: a residual over ONLY the
+// PARTITION-key columns is ALSO safe over a self-limiting
+// per-partition top-k scan. Such a filter selects WHOLE partitions
+// (drops entire regions), never within-partition rows, so the
+// per-partition top-k the maintainer already enforced is preserved:
+// survivors are exactly top-k per surviving partition. This yields the
+// correct Filter → VectorScan(self-limiting) plan instead of the
 // pk-keyed intersection (which drops rows for k>1 because the vector
-// cursor delivers distance order, not pk order). The contiguity check
-// keeps a leading-column-unbound residual (region='r1', zone unbound)
-// unplannable — a non-contiguous residual is out of scope (RFC-046).
+// cursor delivers distance order, not pk order). Positions in the
+// partition prefix do not matter for the safety property — see
+// residualSelectsWholePartitions.
 func compensationInnerScanSafe(f *expressions.LogicalFilterExpression) bool {
 	for _, q := range f.GetQuantifiers() {
 		cref := q.GetRangesOver()
@@ -810,7 +825,7 @@ func compensationInnerScanSafe(f *expressions.LogicalFilterExpression) bool {
 				if v.plan == nil {
 					return false
 				}
-				if !v.plan.IsOrderedStream() && !residualIsPartitionContiguous(f, v.plan) {
+				if !v.plan.IsOrderedStream() && !residualSelectsWholePartitions(f, v.plan) {
 					return false
 				}
 			case *physicalAggregateIndexWrapper:
@@ -881,29 +896,30 @@ func compensationResidualCorrelationSafe(f *expressions.LogicalFilterExpression)
 	return true
 }
 
-// residualIsPartitionContiguous reports whether every field the residual filter
-// f references is a LOCAL PARTITION-key column of the vector scan, and the
-// referenced columns are exactly the contiguous run of partition columns
-// immediately after the scan's bound equality prefix. Such a residual selects
-// WHOLE partitions, so it composes safely as a Filter above a self-limiting
-// per-partition top-k scan (compensationSafeForYield): dropping entire partitions
-// never disturbs the per-partition top-k the maintainer already enforced. The
-// LOCAL qualifier is enforced here (the field-locality reject below) so the
-// guarantee is self-contained — an outer-correlated field sharing a partition
-// column's name is not misattributed.
+// residualSelectsWholePartitions reports whether every field the residual
+// filter f references is a LOCAL PARTITION-key column of the vector scan.
+// Such a residual selects WHOLE partitions — it can only admit or drop an
+// entire (zone, region, …) partition, never rows WITHIN one — so it
+// composes safely as a Filter above a self-limiting per-partition top-k
+// scan (compensationSafeForYield): dropping entire partitions never
+// disturbs the per-partition top-k the maintainer already enforced. The
+// LOCAL qualifier is enforced here (the field-locality reject below) so
+// the guarantee is self-contained — an outer-correlated field sharing a
+// partition column's name is not misattributed.
 //
-// The contiguity anchor (start exactly at len(bound equality prefix)) is what
-// distinguishes the plannable partition-INEQUALITY case (WHERE zone='z1' AND
-// region>'r1' — bound prefix [zone], residual {region} at index 1 = boundLen 1)
-// from the out-of-scope leading-column-GAP case (WHERE region='r1', zone unbound
-// — bound prefix [], residual {region} at index 1 ≠ boundLen 0), which stays
-// unplannable (TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual). The
-// discriminator is the GAP, not mere unboundedness: a leading INEQUALITY (WHERE
-// zone>'z1' — bound prefix [], residual {zone} at index 0 = boundLen 0) has no gap
-// and IS admitted (LeadingInequalityResidual). A residual touching any
-// non-partition column (or a non-contiguous set) is not certified here and is
-// routed to InsertFinal.
-func residualIsPartitionContiguous(
+// Positions do NOT matter for safety: a bound-prefix GAP (WHERE
+// region='r1' with zone unbound — the scan fans out over every partition
+// and the Filter keeps whole region='r1' partitions,
+// TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual), a
+// leading inequality (zone>'z1'), and the contiguous post-prefix run
+// (zone='z1' AND region>'r1') all commute identically. The former
+// contiguity anchor was an RFC-046 SCOPE limit, not a correctness
+// discriminator; the epoch convergence materializes the gap case's
+// fan-out plan and its exact-rows pin proves it. What is NOT certified
+// here — and stays a fail-to-plan sentinel — is any residual touching a
+// NON-partition column (it filters within partitions, so top-K-then-
+// filter would silently drop rows: the unsafe-residual pin's shape).
+func residualSelectsWholePartitions(
 	f *expressions.LogicalFilterExpression,
 	plan *plans.RecordQueryVectorIndexPlan,
 ) bool {
@@ -949,35 +965,9 @@ func residualIsPartitionContiguous(
 		return false
 	}
 
-	// The bound equality prefix length: the leading run of non-empty EQUALITY
-	// partition ranges the scan actually constrains.
-	boundLen := 0
-	for _, cr := range plan.GetPrefixComparisons() {
-		if cr == nil || cr.IsEmpty() || cr.GetRangeType() != predicates.ComparisonRangeEquality {
-			break
-		}
-		boundLen++
-	}
-
-	idxs := make([]int, 0, len(residualFields))
 	for fld := range residualFields {
-		i, ok := colIndex[strings.ToUpper(fld)]
-		if !ok {
+		if _, ok := colIndex[strings.ToUpper(fld)]; !ok {
 			return false // residual touches a non-partition column → not safe here
-		}
-		idxs = append(idxs, i)
-	}
-	sort.Ints(idxs)
-	// Contiguous run starting exactly at boundLen. A LEADING inequality on the
-	// first partition column (e.g. zone>'z0', boundLen 0, residual {zone} at
-	// index 0) is admitted here (0 == 0+0) and is correct: the scan fans out over
-	// all partitions and the whole-partition Filter selects those with zone>'z0',
-	// preserving each partition's top-k. Only a GAP before the residual (a leading
-	// column neither bound nor filtered, e.g. region='r1' with zone unbound →
-	// residual {region} at index 1 ≠ boundLen 0) is rejected.
-	for pos, i := range idxs {
-		if i != boundLen+pos {
-			return false
 		}
 	}
 	return true

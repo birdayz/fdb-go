@@ -97,8 +97,10 @@ func TestOrdinalStarPlanningBudget(t *testing.T) {
 	// (finals-only physical yields, epoch-driven rounds re-exploring ALL
 	// members per round like Java's ExploreGroup — see the CHAIN baseline
 	// note): idempotent re-exploration tasks, not re-enumerated
-	// sub-products; determinism and the wall-clock ceiling still hold.
-	const wantTasks = 11740
+	// sub-products. 11740→9189 with the sentinel gate (PLANNING pure
+	// LOGICAL finals are fail-to-plan sentinels, no longer rule-explored
+	// per round); determinism and the wall-clock ceiling still hold.
+	const wantTasks = 9189
 	tol := wantTasks / 50 // ±2%
 
 	best := time.Hour

@@ -513,3 +513,38 @@ func collectVectorPage(t *testing.T, ctx context.Context, store *recordlayer.FDB
 		return pks, b
 	}
 }
+
+// TestFDB_VectorSearch_UnsafeNonPartitionResidual pins the UNSAFE
+// compensation contract: a NON-partition
+// residual (id = 12) over a per-partition top-K does NOT commute — the
+// residual must apply BEFORE ranking, and no plannable form exists, so
+// the query must DECLINE loudly. The flip's insert-driven exploration
+// briefly rule-explored the unsafe final and ImplementFilterRule
+// physicalized PredicatesFilter(VectorIndexScan(rank<=1), id=12) —
+// top-K before the filter, silently EMPTY where filter-then-rank gives
+// {12} (row 11 is nearer and wins the partition's one slot, then fails
+// the filter). Correct-or-loud: a future plan that ranks AFTER the
+// filter is welcome and must return exactly {12}.
+func TestFDB_VectorSearch_UnsafeNonPartitionResidual(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db, md, ks := multiPartitionVectorSetup(t, ctx)
+	sql := `SELECT id, region FROM docs WHERE id = 12
+		QUALIFY ROW_NUMBER() OVER (PARTITION BY zone, region
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])) <= 1`
+	if _, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil); err != nil {
+		if !strings.Contains(err.Error(), "not plannable") {
+			t.Fatalf("decline must be the typed not-plannable rejection, got: %v", err)
+		}
+		return
+	}
+	// It planned: only a filter-BEFORE-rank plan is correct.
+	_, got := planExplainAndRun(t, ctx, db, md, ks, sql)
+	want := []idRegion{{12, "r1"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("non-partition residual = %v, want %v (a top-K-before-filter plan silently drops the row)", got, want)
+	}
+}

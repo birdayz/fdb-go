@@ -656,3 +656,48 @@ func TestIntersector_DeclinesMixedLayoutLegs(t *testing.T) {
 		})
 	}
 }
+
+// TestIntersector_ThreeWay_DuplicateCandidateNameSkipped pins the NAME-based
+// same-index guard on the TRIPLE loop: epoch
+// re-matching can seed TWO candidate OBJECTS for one index, and an object-
+// identity check under-detects — an A/A/B triple kept the redundant
+// same-index arm the guard exists to eliminate. With candidates
+// {A, A', B} (A and A' distinct objects, same CandidateName) only the ONE
+// A/B pair may form: no triple, no A/A pair, and the A'/B pair dedupes
+// against A/B only at the memo (both are yielded here — the pair loop
+// guards identity of the INDEX, not of the access), so exactly the pairs
+// with distinct names survive.
+func TestIntersector_ThreeWay_DuplicateCandidateNameSkipped(t *testing.T) {
+	t.Parallel()
+
+	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType})
+	pmA2 := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA2", resultType: testIntersectorRowType})
+	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType})
+
+	ctx := newTestPKContext("TestRecord", []string{"id"})
+	intersector := WithPrimaryKeyIntersector(ctx)
+
+	accesses := []Vectored[*SingleMatchedAccess]{
+		makeVectoredAccess(pmA, 0),
+		makeVectoredAccess(pmA2, 1),
+		makeVectoredAccess(pmB, 2),
+	}
+
+	result := intersector(accesses, nil)
+	if !result.IsViable() {
+		t.Fatal("expected the distinct-name pairs to remain viable")
+	}
+	for _, e := range result.GetExpressions() {
+		wrapper, ok := e.(*physicalIntersectionWrapper)
+		if !ok {
+			t.Fatalf("expected *physicalIntersectionWrapper, got %T", e)
+		}
+		if n := len(wrapper.GetPlan().GetChildren()); n != 2 {
+			t.Fatalf("a triple containing a duplicate index name must not form; got a %d-way intersection", n)
+		}
+	}
+	// A/B and A'/B — the A/A' pair is suppressed by name.
+	if n := len(result.GetExpressions()); n != 2 {
+		t.Fatalf("expected exactly the 2 distinct-name pairs, got %d", n)
+	}
+}

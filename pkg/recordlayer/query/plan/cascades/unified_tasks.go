@@ -15,6 +15,7 @@ type InitiatePlannerPhaseTask struct {
 }
 
 func (t *InitiatePlannerPhaseTask) Run(p *Planner) {
+	p.activePhase = t.Phase
 	if t.Phase.HasNextPhase() {
 		p.push(&InitiatePlannerPhaseTask{Phase: t.Phase.NextPhase(), RootRef: t.RootRef})
 	}
@@ -120,6 +121,15 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		//     comment below).
 		if t.Phase == PhaseRewriting || (t.Phase == PhasePlanning && isPhysical(expr)) {
 			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
+		}
+		// PLANNING explores PHYSICAL finals only (match re-consumption).
+		// A LOGICAL PLANNING final is an UNSAFE compensation
+		// (consumeMatchPartitions' InsertFinal arm) — a fail-to-plan
+		// sentinel that rules must never physicalize: exploring it let
+		// ImplementFilterRule build top-K-before-filter (silent wrong
+		// rows; the vector unsafe-residual pin is the red shape).
+		if t.Phase == PhasePlanning && !isPhysical(expr) {
+			continue
 		}
 		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 	}

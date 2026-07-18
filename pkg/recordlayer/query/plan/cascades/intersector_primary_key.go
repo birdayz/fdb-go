@@ -96,10 +96,14 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 						aj := accesses[j].Value
 						ak := accesses[k].Value
 
-						ci := ai.GetPartialMatch().GetMatchCandidate()
-						cj := aj.GetPartialMatch().GetMatchCandidate()
-						ck := ak.GetPartialMatch().GetMatchCandidate()
-						if ci == cj || ci == ck || cj == ck {
+						// Same NAME-based guard as the pair loop: the context
+						// can hold two candidate OBJECTS for one index, so
+						// object identity under-detects and an A/A/B triple
+						// would keep the redundant same-index arm.
+						ni := ai.GetPartialMatch().GetMatchCandidate().CandidateName()
+						nj := aj.GetPartialMatch().GetMatchCandidate().CandidateName()
+						nk := ak.GetPartialMatch().GetMatchCandidate().CandidateName()
+						if ni == nj || ni == nk || nj == nk {
 							continue
 						}
 
