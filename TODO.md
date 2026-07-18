@@ -1452,11 +1452,14 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       type (project value / Java aggregate result table; correlated arm
 >       stays Unknown); ScalarSubqueryValue flows it into the cast-pair and
 >       promotion gates. Pinned in scalar_subquery_typed_gates.yaml.
-> - [ ] Follow-up (Torvalds, sanctioned TODO): the yamsql walker's decline
->       classification reports 0AF00 for a CAST the plan-time pair gate
->       rejected with 22F3H (cast.yaml STRING→BYTES pins). Surface the
->       gate's own error code through the classification so the pins can
->       assert 22F3H; loud-either-way today.
+> - [x] Follow-up (Torvalds, sanctioned TODO) — DONE: the 0AF00 came from the
+>       walker being unable to EXPRESS a BYTES cast target (unsupported-shape
+>       decline → text-channel fallback → opaque "could not plan"). BYTES joined
+>       primitiveTypeToValueType, so ResolveCast's pair gate now rejects
+>       STRING→BYTES with its own 22F3H in both positions (WHERE via
+>       mapPredicateWalkError verbatim; projection via the InvalidCast surface
+>       arm), identity BYTES→BYTES evaluates instead of silently NULLing, and
+>       the cast.yaml pins assert 22F3H.
 > WS-N Phase A progress: slice 1 (structural validation channel) and slice 2
 > (born-baked — the four lazy resolver fallbacks retired as
 > UnresolvableOrdinalError after zero-hit probes across yamsql/embedded/full

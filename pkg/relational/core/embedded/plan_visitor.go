@@ -579,6 +579,18 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 						if errors.As(walkErr, &corrErr) {
 							return nil, corrErr
 						}
+						// The plan-time cast-pair gate's own rejection
+						// (ResolveCast → 22F3H "No cast defined") must
+						// surface verbatim: the name-channel fallback
+						// below cannot plan the cast either and would
+						// die later as an opaque 0AF00. Other walk
+						// failures keep the fallback — they are
+						// unwalkable-shape declines the legacy channel
+						// may still plan.
+						var apiErr *api.Error
+						if errors.As(walkErr, &apiErr) && apiErr.Code == api.ErrCodeInvalidCast {
+							return nil, apiErr
+						}
 					}
 					if walkErr == nil && wv != nil {
 						if proj.ProjectedValues == nil {

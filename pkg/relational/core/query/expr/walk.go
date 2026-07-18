@@ -373,7 +373,7 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 	target, ok := primitiveTypeToValueType(pt)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{
-			Shape: fmt.Sprintf("CAST target not in seed Type set (INT/STRING/BOOL/FLOAT); got %q", pt.GetText()),
+			Shape: fmt.Sprintf("CAST target type not expressible by the walker; got %q", pt.GetText()),
 		}
 	}
 	return r.ResolveCast(inner, target)
@@ -1192,6 +1192,14 @@ func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, b
 		// Java CastValue.STRING_TO_UUID (CastValue.java:249) — CAST('…' AS
 		// UUID) is a supported comparand form (uuid-non-prepared.yamsql).
 		return values.NullableUuid, true
+	case ptc.BYTES() != nil:
+		// Java defines NO cast operators to BYTES (CastValue.java's
+		// castOperatorMap) — only the identity cast is legal. Expressing
+		// the target here lets ResolveCast's plan-time pair gate reject
+		// e.g. STRING→BYTES with its own 22F3H instead of the walk
+		// failing as an unsupported shape and dying later as an opaque
+		// 0AF00 "could not plan query".
+		return values.NullableBytes, true
 	}
 	return values.TypeUnknown, false
 }

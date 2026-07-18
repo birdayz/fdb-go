@@ -39,6 +39,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/api",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/query/semantic",

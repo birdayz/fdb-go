@@ -2,11 +2,13 @@ package expr_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/expr"
@@ -1420,27 +1422,25 @@ func TestWalkExpression_CastTargets(t *testing.T) {
 	}
 }
 
-// CAST to a type outside the seed ValueType — FLOAT / DOUBLE /
-// BYTES / UUID / VECTOR — returns UnsupportedExpressionShapeError.
-// Waits on the Phase 4.0 Type hierarchy port.
-func TestWalkExpression_CastUnsupportedTarget(t *testing.T) {
+// CAST to BYTES is expressible by the walker, so the plan-time pair
+// gate rejects an undefined pair (STRING→BYTES — Java defines NO cast
+// operators to BYTES) with its OWN typed 22F3H, never an
+// unsupported-shape decline that dies later as an opaque 0AF00.
+func TestWalkExpression_CastBytesPairGate(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	cases := []string{
-		// FLOAT / DOUBLE moved to TestWalkExpression_CastFloat now
-		// that TypeFloat exists in the seed enum. BYTES still
-		// declines pending the full Type hierarchy port.
-		"CAST(name AS BYTES)",
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE CAST(name AS BYTES)")
+	_, err := r.WalkExpression(ctx)
+	if err == nil {
+		t.Fatal("expected the pair gate to reject STRING→BYTES")
 	}
-	for _, sql := range cases {
-		t.Run(sql, func(t *testing.T) {
-			t.Parallel()
-			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
-			if _, err := r.WalkExpression(ctx); err == nil {
-				t.Fatalf("expected UnsupportedExpressionShapeError for %q", sql)
-			}
-		})
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidCast {
+		t.Fatalf("expected *api.Error 22F3H (InvalidCast), got %T: %v", err, err)
+	}
+	if !strings.Contains(apiErr.Message, "No cast defined") {
+		t.Fatalf("expected Java's construction-time wording, got %q", apiErr.Message)
 	}
 }
 

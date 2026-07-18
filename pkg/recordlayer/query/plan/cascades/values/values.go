@@ -3446,6 +3446,18 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		default:
 			return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %T to UUID", v)}
 		}
+	case TypeCodeBytes:
+		// Java defines no cast operators TO bytes — only the identity
+		// cast passes CastPairDefined. Anything non-[]byte here means an
+		// unknown-typed child bypassed the plan-time pair gate; reject
+		// like Java's construction-time "No cast defined" rather than
+		// fall through to the silent-NULL tail below.
+		switch val := v.(type) {
+		case []byte:
+			return val, nil
+		default:
+			return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %T to BYTES", v)}
+		}
 	}
 	return nil, nil
 }
