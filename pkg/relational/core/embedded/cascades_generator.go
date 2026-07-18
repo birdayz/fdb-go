@@ -1919,13 +1919,21 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 			upperPK[i] = strings.ToUpper(col)
 			aliases[i] = values.UniqueCorrelationIdentifier()
 		}
+		// Flow the descriptor-shaped positional type, like the index
+		// candidates: a layout-less leg disqualifies itself from plans
+		// that bind comparison keys at plan time (the pk-merge
+		// intersection), and the primary scan serves exactly one type.
+		flowed := values.Type(values.UnknownType)
+		if rt.Descriptor != nil {
+			flowed = executor.PositionalTypeForDescriptor(rt.Descriptor)
+		}
 		candidates = append(candidates, cascades.NewPrimaryScanMatchCandidate(
 			nil,
 			aliases,
 			allTypeNames,
 			[]string{rt.Name},
 			upperPK,
-			values.UnknownType,
+			flowed,
 		))
 	}
 

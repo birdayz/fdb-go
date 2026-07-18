@@ -46,3 +46,4 @@ tests:
   - query: SELECT id FROM items WHERE category = 'electronics' AND name = 'Mouse'
     rows:
       - [4]
+

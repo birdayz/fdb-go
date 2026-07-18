@@ -556,7 +556,7 @@ func TestIntersector_BakesComparisonKeys(t *testing.T) {
 	if !result.IsViable() {
 		t.Fatal("expected viable intersection")
 	}
-	for _, e := range result.expressions {
+	for _, e := range result.GetExpressions() {
 		iw, ok := e.(*physicalIntersectionWrapper)
 		if !ok {
 			t.Fatalf("expected intersection wrapper, got %T", e)
@@ -590,5 +590,69 @@ func TestIntersector_DeclinesLayoutlessLegs(t *testing.T) {
 	}, nil)
 	if result.IsViable() {
 		t.Fatal("layout-less legs must DECLINE at plan time, not yield unbaked comparison keys")
+	}
+}
+
+// TestIntersector_BakesCompositePKKeys pins the 2-key composite-pk
+// merge: BOTH comparison keys bake, to the descriptor ordinals of their
+// columns (ID→0, VERSION→1 in the fixture layout).
+func TestIntersector_BakesCompositePKKeys(t *testing.T) {
+	t.Parallel()
+
+	pmA := makeDataAccessTestPartialMatchWithPK("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType}, "ID", "VERSION")
+	pmB := makeDataAccessTestPartialMatchWithPK("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType}, "ID", "VERSION")
+	ctx := newTestPKContext("TestRecord", []string{"id", "version"})
+
+	result := WithPrimaryKeyIntersector(ctx)([]Vectored[*SingleMatchedAccess]{
+		makeVectoredAccess(pmA, 0),
+		makeVectoredAccess(pmB, 1),
+	}, nil)
+	if !result.IsViable() {
+		t.Fatal("expected viable composite-pk intersection")
+	}
+	for _, e := range result.GetExpressions() {
+		iw, ok := e.(*physicalIntersectionWrapper)
+		if !ok {
+			t.Fatalf("expected intersection wrapper, got %T", e)
+		}
+		keys := iw.plan.GetComparisonKeyValues()
+		if len(keys) != 2 {
+			t.Fatalf("composite pk must carry 2 comparison keys, got %d", len(keys))
+		}
+		for i, want := range []int{0, 1} {
+			fv, isFV := keys[i].(*values.FieldValue)
+			if !isFV || fv.Resolved == nil {
+				t.Fatalf("key %d unbaked: %v", i, keys[i])
+			}
+			if got := fv.Resolved.Root().Ordinal; got != want {
+				t.Fatalf("key %d: baked ordinal %d, want %d", i, got, want)
+			}
+		}
+	}
+}
+
+// TestIntersector_DeclinesMixedLayoutLegs pins the leg-order-agnostic
+// layout check: ONE layout-less leg declines the candidate regardless of
+// which slot it occupies (the old planI-only check made planning
+// depend on leg order).
+func TestIntersector_DeclinesMixedLayoutLegs(t *testing.T) {
+	t.Parallel()
+
+	for name, accesses := range map[string][2]*testPartialMatch{
+		"layoutless_first":  {makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA"}), makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType})},
+		"layoutless_second": {makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType}), makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB"})},
+	} {
+		accesses := accesses
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := newTestPKContext("TestRecord", []string{"id"})
+			result := WithPrimaryKeyIntersector(ctx)([]Vectored[*SingleMatchedAccess]{
+				makeVectoredAccess(accesses[0], 0),
+				makeVectoredAccess(accesses[1], 1),
+			}, nil)
+			if result.IsViable() {
+				t.Fatal("a layout-less leg must decline the candidate in EITHER slot")
+			}
+		})
 	}
 }

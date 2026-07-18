@@ -128,6 +128,13 @@ var _ PartialMatch = (*testPartialMatch)(nil)
 // makeDataAccessTestPartialMatch creates a test PartialMatch with the given
 // number of matched ordering parts (used as a proxy for coverage).
 func makeDataAccessTestPartialMatch(name string, numParts int, plan plans.RecordQueryPlan) *testPartialMatch {
+	return makeDataAccessTestPartialMatchWithPK(name, numParts, plan, "ID")
+}
+
+// makeDataAccessTestPartialMatchWithPK is the composite-pk variant: the
+// matched ordering continues into the given pk suffix fields in order
+// (real candidates append the whole trimmed pk, not just its head).
+func makeDataAccessTestPartialMatchWithPK(name string, numParts int, plan plans.RecordQueryPlan, pkFields ...string) *testPartialMatch {
 	// Build a RESTRICTED match: each part's sargable alias is bound to a
 	// non-empty equality range so hasRestrictedScan(pm) is true. The
 	// data-access path now skips zero-prefix matches (a full index scan
@@ -160,13 +167,14 @@ func makeDataAccessTestPartialMatch(name string, numParts int, plan plans.Record
 	// model that, or the pk-monotonicity gate (accessCompatibleWithPKMerge)
 	// would see an index with no pk continuation and decline every
 	// intersection the tests build.
-	pkPid := values.UniqueCorrelationIdentifier()
-	parts = append(parts, NewMatchedOrderingPart(
-		pkPid,
-		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
-		nil,
-		MatchedSortOrderAscending,
-	))
+	for _, pkField := range pkFields {
+		parts = append(parts, NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			&values.FieldValue{Field: pkField, Typ: values.UnknownType},
+			nil,
+			MatchedSortOrderAscending,
+		))
+	}
 
 	candidate := &dataAccessTestCandidate{
 		name:            name,

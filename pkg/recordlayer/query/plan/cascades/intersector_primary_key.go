@@ -61,7 +61,7 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 					continue
 				}
 
-				bakedKeys := bakedIntersectionKeys(pkValues, planI.GetResultType())
+				bakedKeys := bakedIntersectionKeys(pkValues, []plans.RecordQueryPlan{planI, planJ})
 				if bakedKeys == nil {
 					continue
 				}
@@ -104,7 +104,7 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 							continue
 						}
 
-						bakedKeys := bakedIntersectionKeys(pkValues, planI.GetResultType())
+						bakedKeys := bakedIntersectionKeys(pkValues, []plans.RecordQueryPlan{planI, planJ, planK})
 						if bakedKeys == nil {
 							continue
 						}
@@ -176,17 +176,30 @@ func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanC
 }
 
 // bakedIntersectionKeys resolves the name-only pk comparison keys against
-// the legs' flowed row layout (all legs share one record type — the
-// commonPrimaryKeyValues gate). The ordinal row model has no runtime
-// name-resolution fallback: an unbaked FieldValue fails LOUD at merge
-// time (OrdinalResolutionError), so a comparison key that cannot bake is
-// a plan-time DECLINE of the intersection candidate, never a runtime
-// error. Returns nil when any key stays unbaked.
-func bakedIntersectionKeys(pkValues []values.Value, rowType values.Type) []values.Value {
-	baked := bakeMergeComparisonKeys(pkValues, nil, rowType)
-	if baked == nil {
-		return nil
+// the legs' flowed row layout. EVERY leg must flow the same RecordType
+// (the commonPrimaryKeyValues gate already pins one record type; the
+// layout check is leg-order-agnostic so a single layout-less leg —
+// whatever its slot — declines the candidate). The ordinal row model has
+// no runtime name-resolution fallback: an unbaked FieldValue fails LOUD
+// at merge time (OrdinalResolutionError), so a comparison key that
+// cannot bake is a plan-time DECLINE of the intersection candidate,
+// never a runtime error. Returns nil when any key stays unbaked.
+func bakedIntersectionKeys(pkValues []values.Value, legs []plans.RecordQueryPlan) []values.Value {
+	var rowType *values.RecordType
+	for _, leg := range legs {
+		rt, isRT := leg.GetResultType().(*values.RecordType)
+		if !isRT {
+			return nil
+		}
+		if rowType == nil {
+			rowType = rt
+			continue
+		}
+		if !rowType.Equals(rt) {
+			return nil
+		}
 	}
+	baked := bakeMergeComparisonKeys(pkValues, nil, rowType)
 	for _, k := range baked {
 		fv, isFV := k.(*values.FieldValue)
 		if !isFV || fv.Resolved == nil {

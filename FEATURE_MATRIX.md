@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**322 scenarios · 2563 query/assertion cases** across 18 feature areas.
+**323 scenarios · 2565 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -19,7 +19,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Joins | 60 | 264 |
 | Subqueries (EXISTS / IN / scalar) | 42 | 281 |
 | CTEs | 12 | 105 |
-| Set operations (UNION / INTERSECT / EXCEPT) | 9 | 51 |
+| Set operations (UNION / INTERSECT / EXCEPT) | 10 | 53 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 194 |
 | Ordering & pagination | 13 | 114 |
 | Scalar functions & expressions | 32 | 347 |
@@ -222,6 +222,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Scenario | Cases | What it pins |
 |---|--:|---|
 | `and_index_intersection` | 3 | AND over two indexed columns executes |
+| `and_index_intersection_composite_pk` | 2 | 2-key pk merge |
 | `composite_aggregate_intersection` | 7 | Multi-aggregate queries using |
 | `union` | 2 | UNION / UNION ALL — set operations over SELECT results. |
 | `union_aggregate_java` | 7 | Aggregate over UNION ALL patterns from |

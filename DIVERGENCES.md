@@ -578,3 +578,18 @@ pulled-up value maps (`RequestedOrdering.pushDown` on the projection's
 result value). Go has the machinery (`RequestedOrdering.PushDownThroughValue`)
 — wiring it into the delegation walk is the follow-up; until then the
 decline arm keeps correctness.
+
+## Multi-type-index pk-merge intersections decline (safe parity gap)
+
+Java can plan a pk-merge intersection whose legs are multi-record-type
+indexes: `ValueIndexScanMatchCandidate.getBaseType()` returns a MERGED
+`Type.Record` for multi-type candidates, so its comparison keys always
+bind. Go's positional row model keeps each descriptor's own layout, so a
+multi-type candidate flows no single row type (`metadataIndexDef.
+IndexRowType` returns Unknown for `len(recordTypes) != 1`), and the
+intersector's bake gate (`bakedIntersectionKeys`) DECLINES the candidate
+— the query still answers via scan+filter, never a wrong row. Closing
+this needs a merged positional layout for multi-type rows (the analogue
+of Java's type-merge), which is a WS-N Phase D-adjacent arc; until then
+the decline arm keeps correctness. Pinned by
+TestIntersector_DeclinesLayoutlessLegs / DeclinesMixedLayoutLegs.

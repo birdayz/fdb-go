@@ -731,6 +731,53 @@ var _ = Describe("CursorCombinatorsUnit", func() {
 			Expect(results).To(Equal([]int{9990, 9991}))
 		})
 
+		It("keeps the pending inner ARMED across a mismatch until the saved outer reappears", func() {
+			// Java consumes initialInnerContinuation only when the outer
+			// row's check value matches the saved one (or a check value is
+			// missing) — FlatMapPipelinedCursor.java:211-220. Discarding it
+			// on the FIRST mismatch replays the saved outer's inner from
+			// row 0 when that outer shows up later: duplicate rows.
+			outerCallCount := 0
+			makeOuter := func(cont []byte) RecordCursor[int] {
+				outerCallCount++
+				if outerCallCount == 2 {
+					// Resume: a NEW outer row precedes the saved one.
+					return FromListWithContinuation([]int{999, 1}, cont)
+				}
+				return FromListWithContinuation([]int{1}, cont)
+			}
+			makeInner := func(outer int, cont []byte) RecordCursor[int] {
+				if cont != nil {
+					return FromListWithContinuation([]int{outer*10 + 5, outer*10 + 6}, cont)
+				}
+				return FromList([]int{outer * 10, outer*10 + 1})
+			}
+			checkFunc := func(outer int) []byte {
+				return []byte(fmt.Sprintf("id:%d", outer))
+			}
+
+			cursor := LimitRowsCursor(
+				FlatMapPipelinedWithCheck(makeOuter, makeInner, checkFunc, nil, 1),
+				1,
+			)
+			r, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r.HasNext()).To(BeTrue())
+			Expect(r.GetValue()).To(Equal(10))
+			contBytes, err := r.GetContinuation().ToBytes()
+			Expect(err).NotTo(HaveOccurred())
+
+			cursor2 := FlatMapPipelinedWithCheck(makeOuter, makeInner, checkFunc, contBytes, 1)
+			results, err := AsList(ctx, cursor2)
+			Expect(err).NotTo(HaveOccurred())
+			// 999 mismatches → fresh inner from row 0; 1 then MATCHES →
+			// its inner receives the SAVED continuation (one row already
+			// consumed) and resumes at position 1 of the resumed-arm list:
+			// [16]. The discard-on-first-mismatch behavior replayed 1's
+			// inner from row 0 instead ([10, 11]) — duplicate rows.
+			Expect(results).To(Equal([]int{9990, 9991, 16}))
+		})
+
 		It("OnNext after Close returns SourceExhausted", func() {
 			cursor := FlatMapPipelined(
 				func(_ []byte) RecordCursor[int] { return FromList([]int{1}) },

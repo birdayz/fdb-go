@@ -725,24 +725,26 @@ func (c *flatMapCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResult[V]
 		v := outerResult.GetValue()
 		c.outerValue = &v
 
-		// Check if we're resuming with a pending inner continuation
+		// Check if we're resuming with a pending inner continuation. The
+		// pending inner is consumed ONLY when the saved outer reappears
+		// (check values match) or when either side has no check value —
+		// on a mismatch it stays ARMED for a later outer row, exactly
+		// Java's initialInnerContinuation handling
+		// (FlatMapPipelinedCursor.java:211-220). Consuming it on the
+		// FIRST mismatch replays the saved outer's inner from row 0 when
+		// that outer reappears later — duplicate rows.
 		var innerCont []byte
 		if c.hasPending {
-			c.hasPending = false
-			// Validate check value if provided
-			if c.checkValueFunc != nil && c.pendingCheck != nil {
-				currentCheck := c.checkValueFunc(v)
-				if !bytes.Equal(currentCheck, c.pendingCheck) {
-					// Outer record changed — restart inner from beginning
-					innerCont = nil
-				} else {
-					innerCont = c.pendingInner
-				}
-			} else {
-				innerCont = c.pendingInner
+			var currentCheck []byte
+			if c.checkValueFunc != nil {
+				currentCheck = c.checkValueFunc(v)
 			}
-			c.pendingInner = nil
-			c.pendingCheck = nil
+			if c.pendingCheck == nil || currentCheck == nil || bytes.Equal(currentCheck, c.pendingCheck) {
+				innerCont = c.pendingInner
+				c.hasPending = false
+				c.pendingInner = nil
+				c.pendingCheck = nil
+			}
 		}
 
 		c.inner = c.innerFactory(v, innerCont)
