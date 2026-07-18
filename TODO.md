@@ -1534,7 +1534,24 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       RUNTIME datum-key splits, the name-keyed row model itself (Phase C/D);
 >       (d) cascades_generator metadata cluster (18 sites) — Phase D.
 >       Exit criterion unchanged: (a)-(c) drain as Phases B-D land.
-> Remaining: WS-N Phases B-D after the slices, WS-P
+> WS-P PROGRESS: stage (a) LANDED + double-ACK'd (ConstraintsMap epoch
+> port pinned to the Java contract; finals routing with the once-guard
+> bridge — live for pruned/Absorb-deduped twins; Set choke-point epoch
+> mirror; MaxObservedExplorationRounds evidence export; gate green:
+> full sweep + plandiff parity + 1M stress + 10/10 determinism).
+> Stage (b) FIRST COMMIT landed (both reviewers' condition): Set has
+> Java pushProperty semantics — per-key lattice combine
+> (CombineRequestedOrderings / new CombineReferencedFields union),
+> subsumption = no store no tick, and the shared-child clobber the old
+> overwrite hid is repaired. Stage (b) REMAINDER (the convergence
+> handover — the arc's riskiest step): route insert-driven exploration
+> at the rule-call yield sites, flip Reference.NeedsExploration to the
+> epochs, remove dual insertion, revert ContainsFinal→containsExactly,
+> replace the Absorb fold's always-replace lambda with the typed
+> combine; then (c) prune-to-1 Verify at the boundary; (d) retire
+> 15b/15c + the round cap (evidence exported). Each checkpoint gates on
+> stress + EXPLAIN parity per the Graefe amendment.
+> Remaining otherwise: WS-N Phases B-D after the slices
 > (ConstraintsMap epoch port retiring dual-insertion + 15b/15c + round cap;
 > un-gate REWRITING OptimizeInputs; fix stale DIVERGENCES advancePlannerStage
 > claim).
