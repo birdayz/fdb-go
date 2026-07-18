@@ -130,9 +130,16 @@ func decodeTempTableInto(dst *TempTable, pt *gen.PTempTable, resolve protoDescri
 }
 
 // storeDescriptorResolver resolves proto full names against the store's
-// metadata (record types and their nested messages) for dynamic-message
-// row slots. A nil store resolves nothing (loud downstream).
+// metadata for dynamic-message row slots, delegating to
+// metadataMessageResolver — the WHOLE-FILE index (top-level siblings,
+// nested messages, and transitive imports), not just record types and
+// their nested messages: a buffered dynamic STRUCT's descriptor can be a
+// top-level sibling of a record type or live in an imported file, and a
+// record-type-only walk failed to resume a valid continuation with
+// "message type not found". A nil store resolves nothing (loud
+// downstream).
 func storeDescriptorResolver(store *recordlayer.FDBRecordStore) protoDescriptorResolver {
+	var inner protoDescriptorResolver
 	return func(fullName string) (protoreflect.MessageDescriptor, error) {
 		if store == nil {
 			return nil, fmt.Errorf("recursive continuation: no store metadata to resolve message type %q", fullName)
@@ -141,33 +148,11 @@ func storeDescriptorResolver(store *recordlayer.FDBRecordStore) protoDescriptorR
 		if md == nil {
 			return nil, fmt.Errorf("recursive continuation: no record metadata to resolve message type %q", fullName)
 		}
-		for _, rt := range md.RecordTypes() {
-			if rt.Descriptor == nil {
-				continue
-			}
-			if string(rt.Descriptor.FullName()) == fullName {
-				return rt.Descriptor, nil
-			}
-			if d := findNestedDescriptor(rt.Descriptor, fullName); d != nil {
-				return d, nil
-			}
+		if inner == nil {
+			inner = metadataMessageResolver(md)
 		}
-		return nil, fmt.Errorf("recursive continuation: message type %q not found in record metadata", fullName)
+		return inner(fullName)
 	}
-}
-
-func findNestedDescriptor(d protoreflect.MessageDescriptor, fullName string) protoreflect.MessageDescriptor {
-	msgs := d.Messages()
-	for i := 0; i < msgs.Len(); i++ {
-		m := msgs.Get(i)
-		if string(m.FullName()) == fullName {
-			return m
-		}
-		if n := findNestedDescriptor(m, fullName); n != nil {
-			return n
-		}
-	}
-	return nil
 }
 
 // --- TempTableInsertCursor (Java cursors/TempTableInsertCursor) ---
