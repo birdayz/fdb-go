@@ -197,6 +197,10 @@ func newTempTableInsertCursor(
 		}
 		if cont.GetTempTable() != nil {
 			if err := decodeTempTableInto(table, cont.GetTempTable(), resolve); err != nil {
+				// The recursion binds this table fresh on resume, so its
+				// tally is exactly the partial decode — release it (the
+				// cursor whose Close would is never constructed).
+				table.ReleaseCharges()
 				return nil, err
 			}
 		}
@@ -209,8 +213,21 @@ func newTempTableInsertCursor(
 	return &tempTableInsertCursor{table: table, inner: inner}, nil
 }
 
-func (c *tempTableInsertCursor) wrapContinuation(childCont recordlayer.RecordCursorContinuation) (recordlayer.RecordCursorContinuation, error) {
-	childBytes, err := childCont.ToBytes()
+// tempTableInsertContinuation is LAZY, like Java's
+// TempTableInsertCursor.Continuation: it holds the live table and the
+// child continuation and serializes only in ToBytes. Eager per-row
+// marshaling would be O(table) work per emitted row — thrown away for
+// every row whose continuation the caller never serializes (the pager
+// serializes once per page). Safe under the same consume-then-serialize
+// discipline as Java: ToBytes runs before any further OnNext mutates
+// the table.
+type tempTableInsertContinuation struct {
+	table     *TempTable
+	childCont recordlayer.RecordCursorContinuation
+}
+
+func (c *tempTableInsertContinuation) ToBytes() ([]byte, error) {
+	childBytes, err := c.childCont.ToBytes()
 	if err != nil {
 		return nil, err
 	}
@@ -219,11 +236,13 @@ func (c *tempTableInsertCursor) wrapContinuation(childCont recordlayer.RecordCur
 		return nil, err
 	}
 	msg := &gen.TempTableInsertContinuation{ChildContinuation: childBytes, TempTable: snapshot}
-	b, err := msg.MarshalVT()
-	if err != nil {
-		return nil, err
-	}
-	return recordlayer.NewBytesContinuation(b), nil
+	return msg.MarshalVT()
+}
+
+func (c *tempTableInsertContinuation) IsEnd() bool { return false }
+
+func (c *tempTableInsertCursor) wrapContinuation(childCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
+	return &tempTableInsertContinuation{table: c.table, childCont: childCont}
 }
 
 func (c *tempTableInsertCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -237,21 +256,13 @@ func (c *tempTableInsertCursor) OnNext(ctx context.Context) (recordlayer.RecordC
 				recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
 			), nil
 		}
-		cont, cerr := c.wrapContinuation(r.GetContinuation())
-		if cerr != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, cerr
-		}
-		return recordlayer.NewResultNoNext[QueryResult](r.GetNoNextReason(), cont), nil
+		return recordlayer.NewResultNoNext[QueryResult](r.GetNoNextReason(), c.wrapContinuation(r.GetContinuation())), nil
 	}
 	v := r.GetValue()
 	if err := c.table.Add(v); err != nil {
 		return recordlayer.RecordCursorResult[QueryResult]{}, err
 	}
-	cont, cerr := c.wrapContinuation(r.GetContinuation())
-	if cerr != nil {
-		return recordlayer.RecordCursorResult[QueryResult]{}, cerr
-	}
-	return recordlayer.NewResultWithValue(v, cont), nil
+	return recordlayer.NewResultWithValue(v, c.wrapContinuation(r.GetContinuation())), nil
 }
 
 func (c *tempTableInsertCursor) Close() error {
@@ -288,7 +299,8 @@ type recursiveUnionCursor struct {
 	closed         bool
 }
 
-// maxRecursionDepth mirrors the eager path's cycle bound.
+// maxStreamingRecursionDepth mirrors the eager path's cycle bound
+// (1000 recursive legs).
 const maxStreamingRecursionDepth = 1000
 
 func newRecursiveUnionCursor(
@@ -326,6 +338,10 @@ func newRecursiveUnionCursor(
 	c.isInitialState = cont.GetIsInitialState()
 	if cont.GetTempTable() != nil {
 		if err := decodeTempTableInto(c.scanTable, cont.GetTempTable(), c.resolve); err != nil {
+			// The owner-releases-once model: a failed resume releases the
+			// partially-decoded frontier's charges here, since Close will
+			// never run.
+			c.scanTable.ReleaseCharges()
 			return nil, err
 		}
 	}
@@ -335,6 +351,8 @@ func newRecursiveUnionCursor(
 	}
 	active, err := c.legCursor(ctx, legPlan, cont.GetActiveStateContinuation())
 	if err != nil {
+		c.scanTable.ReleaseCharges()
+		c.insertTable.ReleaseCharges()
 		return nil, err
 	}
 	c.active = active
@@ -349,8 +367,18 @@ func (c *recursiveUnionCursor) legCursor(ctx context.Context, legPlan plans.Reco
 	return ExecutePlan(ctx, legPlan, c.store, levelCtx, cont, c.props)
 }
 
-func (c *recursiveUnionCursor) wrapContinuation(childCont recordlayer.RecordCursorContinuation) (recordlayer.RecordCursorContinuation, error) {
-	childBytes, err := childCont.ToBytes()
+// recursiveUnionContinuation is LAZY like Java's
+// RecursiveUnionCursor.Continuation (toBytes serializes on demand): it
+// captures the phase, the live scan frontier, and the child
+// continuation. See tempTableInsertContinuation for the discipline.
+type recursiveUnionContinuation struct {
+	isInitialState bool
+	scanTable      *TempTable
+	childCont      recordlayer.RecordCursorContinuation
+}
+
+func (c *recursiveUnionContinuation) ToBytes() ([]byte, error) {
+	childBytes, err := c.childCont.ToBytes()
 	if err != nil {
 		return nil, err
 	}
@@ -364,11 +392,17 @@ func (c *recursiveUnionCursor) wrapContinuation(childCont recordlayer.RecordCurs
 		TempTable:               snapshot,
 		ActiveStateContinuation: childBytes,
 	}
-	b, err := msg.MarshalVT()
-	if err != nil {
-		return nil, err
+	return msg.MarshalVT()
+}
+
+func (c *recursiveUnionContinuation) IsEnd() bool { return false }
+
+func (c *recursiveUnionCursor) wrapContinuation(childCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
+	return &recursiveUnionContinuation{
+		isInitialState: c.isInitialState,
+		scanTable:      c.scanTable,
+		childCont:      childCont,
 	}
-	return recordlayer.NewBytesContinuation(b), nil
 }
 
 func (c *recursiveUnionCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -378,19 +412,11 @@ func (c *recursiveUnionCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
 		if r.HasNext() {
-			cont, cerr := c.wrapContinuation(r.GetContinuation())
-			if cerr != nil {
-				return recordlayer.RecordCursorResult[QueryResult]{}, cerr
-			}
-			return recordlayer.NewResultWithValue(r.GetValue(), cont), nil
+			return recordlayer.NewResultWithValue(r.GetValue(), c.wrapContinuation(r.GetContinuation())), nil
 		}
 		if !r.GetNoNextReason().IsSourceExhausted() {
 			// Out-of-band stop (limit): checkpoint (Java wrapLastResult).
-			cont, cerr := c.wrapContinuation(r.GetContinuation())
-			if cerr != nil {
-				return recordlayer.RecordCursorResult[QueryResult]{}, cerr
-			}
-			return recordlayer.NewResultNoNext[QueryResult](r.GetNoNextReason(), cont), nil
+			return recordlayer.NewResultNoNext[QueryResult](r.GetNoNextReason(), c.wrapContinuation(r.GetContinuation())), nil
 		}
 		// Exhausted: transition (Java notifyCursorIsExhausted +
 		// canTransitionToNewStep). The just-filled INSERT becomes the
@@ -405,7 +431,12 @@ func (c *recursiveUnionCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 			), nil
 		}
 		c.levels++
-		if c.levels >= maxStreamingRecursionDepth {
+		// > (not >=): recursive legs 1..1000 run, matching the eager
+		// path's level indices 0..999. The counter is NOT carried in the
+		// continuation, so under paging it resets per resume — the cap
+		// bounds runaway cycles within one page, not across a statement
+		// (Java has no cap at all; its recursion is fixpoint-only).
+		if c.levels > maxStreamingRecursionDepth {
 			return recordlayer.RecordCursorResult[QueryResult]{}, &RecursiveCTEDepthExceededError{MaxDepth: maxStreamingRecursionDepth}
 		}
 		active, aerr := c.legCursor(ctx, c.plan.GetRecursiveState(), nil)

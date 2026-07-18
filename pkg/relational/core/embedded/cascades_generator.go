@@ -4801,7 +4801,13 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 						}
 						upper = ref.bare()
 					}
-					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil {
+					// Try the VERBATIM name before the folded one: a quoted
+					// lowercase column ("x") declares a lower-case proto
+					// field, and folding it here mis-rejected a legal
+					// projection with 42703 (WS-N quoting-blindness; the
+					// resolution path itself handles the quoted name fine).
+					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil &&
+						rt.Descriptor.Fields().ByName(protoreflect.Name(parseColRef(col).bare())) == nil {
 						return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", col)
 					}
 				}

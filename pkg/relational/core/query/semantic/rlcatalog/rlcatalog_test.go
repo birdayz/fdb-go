@@ -75,7 +75,10 @@ func TestWrap_Columns(t *testing.T) {
 	if len(cols) == 0 {
 		t.Fatal("Order should have columns")
 	}
-	// order_id is a known field on the Order message.
+	// order_id is a known field on the Order message. Columns present
+	// the FOLDED identifier (the runtime positional layout folds names
+	// too); the verbatim field spelling survives as a LookupColumn key
+	// so quoted-DDL columns stay reachable.
 	found := false
 	for _, c := range cols {
 		if c.Id.EqualsIgnoreQuoting(semantic.NewUnquoted("order_id")) {

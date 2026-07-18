@@ -1,0 +1,35 @@
+# quoted_identifier_pins.yaml — quoted-identifier shapes that must keep
+# working through the WS-N name-model retirement (RFC-181)
+#
+# The engine still answers "is this the same column?" through rendered
+# strings in places; these pins hold the QUOTED shapes that already
+# resolve correctly so the Phase A-D rewrites cannot regress them.
+name: quoted_identifier_pins
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    "x" BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t VALUES (1, 20), (2, 10)
+tests:
+  # A quoted lowercase column (distinct from the folded namespace)
+  # resolves in projection, predicate, and ORDER BY.
+  - query: SELECT id FROM t ORDER BY "x" DESC
+    rows:
+      - [1]
+      - [2]
+  - query: SELECT "x" FROM t WHERE "x" = 10
+    rows:
+      - [10]
+  # A user table alias spelled like a MACHINE quantifier alias ("Q$1",
+  # quoted) binds as a plain user alias — the alias namespaces must not
+  # conflate (WS-N N-F6).
+  - query: SELECT "Q$1".id FROM t AS "Q$1" WHERE "Q$1".id = 2
+    rows:
+      - [2]
+  - query: SELECT "Q$1"."x" FROM t AS "Q$1" ORDER BY "Q$1".id
+    rows:
+      - [20]
+      - [10]
