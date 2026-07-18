@@ -12,6 +12,7 @@ go_library(
         "ordinal_join.go",
         "positional_row.go",
         "query_result.go",
+        "recursive_union_cursor.go",
         "resultset.go",
         "scalar_subquery.go",
         "streaming_cursors.go",
@@ -148,6 +149,7 @@ go_test(
         "flatmap_kept_armed_test.go",
         "terminal_replay_exec_test.go",
         "single_result_continuation_test.go",
+        "recursive_union_cursor.go",
     ],
     deps = [
         "//gen",

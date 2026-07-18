@@ -7829,8 +7829,12 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 
 	// Wrap seed in TempTableInsert.
 	seedRef := expressions.InitialOf(seedExpr)
+	// Owning inserts (Java TempTableInsertExpression.ofCorrelated defaults
+	// isOwningTempTable=true for CTE legs): the owning insert cursor
+	// snapshots its table in its continuation, which is what lets the
+	// recursive union resume mid-level.
 	seedInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(seedRef), insertAlias, false,
+		expressions.ForEachQuantifier(seedRef), insertAlias, true,
 	)
 
 	// Translate the recursive leg with the CTE self-reference resolving
@@ -7877,7 +7881,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// Wrap recursive leg in TempTableInsert.
 	recursiveRef := expressions.InitialOf(recursiveExpr)
 	recursiveInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(recursiveRef), insertAlias, false,
+		expressions.ForEachQuantifier(recursiveRef), insertAlias, true,
 	)
 
 	// Build RecursiveUnionExpression.

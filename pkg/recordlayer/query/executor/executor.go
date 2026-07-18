@@ -161,17 +161,23 @@ func ExecutePlan(
 		}
 		return executeValues(p, evalCtx)
 	case *plans.RecordQueryRecursiveLevelUnionPlan:
-		// STOPGAP (RFC-181 C1): recursion is materialized eagerly and its
-		// mid-stream tokens are bare list indices; the executor used to feed
-		// an incoming continuation RAW to the SEED plan, where a scan seed
-		// silently accepted the bytes as a key suffix — wrong seed set and
-		// re-emission, no error. Decline loudly until the Java-shape
-		// RecursiveUnionCursor continuation (phase + PTempTable frontier +
-		// child position) is ported.
-		if err := rejectUnsupportedResume(continuation, "recursive CTE (level union)"); err != nil {
+		if p.IsDistinct() {
+			// UNION DISTINCT recursion carries a cross-level seen-set no
+			// continuation captures (Java's recursive union is ALL-only) —
+			// a resume would re-admit already-emitted rows or fail to
+			// terminate on cyclic graphs. Loud decline, eager execution.
+			if err := rejectUnsupportedResume(continuation, "recursive CTE (level union, DISTINCT)"); err != nil {
+				return nil, err
+			}
+			return executeRecursiveLevelUnion(ctx, p, store, evalCtx, nil, props)
+		}
+		// UNION ALL streams with the Java-shape RecursiveUnionCursor
+		// continuation (phase + scan-frontier PTempTable + child position).
+		cur, err := newRecursiveUnionCursor(ctx, p, store, evalCtx, continuation, props)
+		if err != nil {
 			return nil, err
 		}
-		return executeRecursiveLevelUnion(ctx, p, store, evalCtx, nil, props)
+		return applySkipLimit(cur, props.Skip, props.ReturnedRowLimit), nil
 	case *plans.RecordQueryRecursiveDfsJoinPlan:
 		// Same stopgap as the level union above (RFC-181 C1).
 		if err := rejectUnsupportedResume(continuation, "recursive CTE (DFS join)"); err != nil {
@@ -3183,6 +3189,19 @@ func executeTempTableInsert(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	if p.IsOwning() {
+		// Java TempTableInsertPlan.executePlan's owning arm
+		// (TempTableInsertCursor.from): the cursor's continuation
+		// snapshots the table alongside the child position, so a
+		// mid-stream resume (the recursive union's) restores the rows
+		// inserted so far into the freshly-bound table before resuming
+		// the child mid-way.
+		tt := evalCtx.GetOrCreateTempTable(p.GetTempTableAlias(), props.State)
+		return newTempTableInsertCursor(continuation, tt, storeDescriptorResolver(store),
+			func(childCont []byte) (recordlayer.RecordCursor[QueryResult], error) {
+				return ExecutePlan(ctx, p.GetInner(), store, evalCtx, childCont, props.ClearSkipAndLimit())
+			})
+	}
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err

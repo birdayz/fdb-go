@@ -5853,12 +5853,24 @@ func TestRecursiveResume_DeclinesLoudly(t *testing.T) {
 	}
 
 	// A mid-stream list-index token from a prior page (4 bytes) — exactly
-	// the shape the misroute silently swallowed.
+	// the shape the misroute silently swallowed. For a UNION ALL plan the
+	// streaming resume PARSES the token as a RecursiveCursorContinuation —
+	// a foreign/corrupt token fails LOUDLY (never a silent restart).
 	fakeToken := []byte{0, 0, 0, 1}
 	_, err := ExecutePlan(ctx, mkPlan(), nil, EmptyEvaluationContext(), fakeToken, recordlayer.DefaultExecuteProperties())
+	var parseErr *recordlayer.ContinuationParseError
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("a corrupt token on a streaming recursive CTE must fail loudly with ContinuationParseError, got %v", err)
+	}
+
+	// UNION DISTINCT recursion carries a cross-level seen-set no
+	// continuation captures — resume DECLINES with the unsupported error.
+	distinct := plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
+		mkPlan().GetInitialState(), mkPlan().GetRecursiveState(), scanAlias, insertAlias)
 	var unsupported *UnsupportedContinuationError
+	_, err = ExecutePlan(ctx, distinct, nil, EmptyEvaluationContext(), fakeToken, recordlayer.DefaultExecuteProperties())
 	if !errors.As(err, &unsupported) {
-		t.Fatalf("resume on a recursive CTE must decline with UnsupportedContinuationError, got %v", err)
+		t.Fatalf("resume on a DISTINCT recursive CTE must decline with UnsupportedContinuationError, got %v", err)
 	}
 
 	// DFS twin.
