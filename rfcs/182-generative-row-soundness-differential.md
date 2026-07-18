@@ -348,3 +348,36 @@ Delta re-confirmation (2026-07-18, folded head): **Graefe ACK-DELTA** — two
 refinements folded (§5 nightly-scale empty-bucket hard gate; §3 LIMIT
 `min(k, |M|)`). **Torvalds ACK-DELTA** — one constraint folded (§4 ledger is
 Go=M/Java≠M-only; Go≠M always fails). RFC is implementation-ready.
+
+## 11. P1 landing note (2026-07-18)
+
+Shipped: `pkg/relational/conformance/rowdiff/` (generator, Oracle M, runner,
+templates, comparator sensitivity tests), `cmd/sql-diff-stress`,
+`TestFDB_RowDiff_Smoke` (sqldriver suite, shared container), and the
+`embedded.PlanPhysicalForTest` typed-plan helper for family bucketing.
+
+**Acceptance run (§7 P1) — PASSED.**
+- Target tree: `fb2dead8e` (the pk-intersection residual bug live on master;
+  the fix landed as its child on this branch). Harness overlaid as new files
+  only — no planner code from the fix present in the target tree.
+- Frozen weights: `gen.go` sha256 prefix `41d46411683d3a50`, byte-identical
+  in the acceptance worktree and the landing commit. Zero tuning after the
+  run.
+- Budget/result: 500 random seeds (start 1), templates DISABLED, 11,976
+  comparisons in 1m45s (4.8 seeds/s). **23 distinct seeds mismatched
+  (hit rate 4.6%), first hit seed 36, 0 infra.** Every sampled mismatch is
+  the target class (winning intersection dropping the unindexed residual;
+  e.g. seed 36: `WHERE (c IS NULL) AND (s='') AND (b<=6)` over
+  idx_c+idx_s+idx_a — engine 3 rows, oracle 2).
+- Histogram comparison (measured, 500 seeds each): Intersection bucket 123
+  on the buggy tree vs 109 on the fixed tree — directionally consistent with
+  the audit's cost-rung analysis (the under-filtered intersection costed
+  cheaper and won more often), though the bulk of the 23 wrong-rows seeds
+  sit inside intersections that win on BOTH trees and merely dropped their
+  residual on the buggy one.
+- Cross-check: the same 500 seeds + all templates on the FIXED tree run
+  clean (0 mismatches, 0 infra; 11,996 comparisons in 1m51s).
+
+Smoke budget (§6): measured 4.1–4.8 seeds/s; 25-seed smoke ≈ 6s + template
+seeds ≈ 0.4s, far inside the ≤2 min budget, sharing the sqldriver suite
+container (no extra startup).

@@ -25,62 +25,74 @@ import (
 // stats may be nil to use default statistics (LeafScanCardinality for all
 // record types).
 func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider) (string, error) {
+	physPlan, err := PlanPhysicalForTest(sql, schemaDDL, stats)
+	if err != nil {
+		return "", err
+	}
+	return physPlan.Explain(), nil
+}
+
+// PlanPhysicalForTest is PlanQueryForTest returning the TYPED physical plan
+// instead of its Explain rendering. The rowdiff harness (RFC-182) buckets
+// plan families over this tree — per the RFC, plan-family classification
+// must come from a plan-type switch, never from string-matching EXPLAIN text.
+func PlanPhysicalForTest(sql, schemaDDL string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
 	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
 	if err != nil {
-		return "", fmt.Errorf("schema DDL: %w", err)
+		return nil, fmt.Errorf("schema DDL: %w", err)
 	}
 	md := tmpl.Underlying()
 
 	root, err := parser.Parse(sql)
 	if err != nil {
-		return "", fmt.Errorf("parse SQL: %w", err)
+		return nil, fmt.Errorf("parse SQL: %w", err)
 	}
 	stmts := root.Statements()
 	if stmts == nil || len(stmts.AllStatement()) == 0 {
-		return "", fmt.Errorf("no statements in SQL")
+		return nil, fmt.Errorf("no statements in SQL")
 	}
 	sel := stmts.AllStatement()[0].SelectStatement()
 	if sel == nil {
-		return "", fmt.Errorf("not a SELECT statement")
+		return nil, fmt.Errorf("not a SELECT statement")
 	}
 	q := sel.Query()
 	if q == nil {
-		return "", fmt.Errorf("malformed SELECT")
+		return nil, fmt.Errorf("malformed SELECT")
 	}
 
 	visitor := NewPlanVisitor(md)
 	logicalOp, buildErr := visitor.VisitQuery(q)
 	if buildErr != nil {
-		return "", buildErr
+		return nil, buildErr
 	}
 	if logicalOp == nil {
-		return "", api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
 	}
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
 	if err := resolveQualifiedTableNames(logicalOp, "s"); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := validateTablesAndColumns(logicalOp, md); err != nil {
-		return "", err
+		return nil, err
 	}
 	if msg := findDistinctAggregate(logicalOp); msg != "" {
 		// Java rejects DISTINCT aggregates with UNSUPPORTED_QUERY (0AF00); match it.
-		return "", api.NewError(api.ErrCodeUnsupportedQuery, msg)
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
 	if arityErr := query.ValidateCTEAliasArities(logicalOp); arityErr != nil {
-		return "", arityErr
+		return nil, arityErr
 	}
 	ref, _, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
 	if translateErr != nil {
 		// Surface the translator's typed diagnostic over the generic fallback —
 		// same precedence the production generator applies.
-		return "", translateErr
+		return nil, translateErr
 	}
 	if ref == nil {
-		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
 	rules := cascades.DefaultExpressionRules()
@@ -94,10 +106,10 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil {
-		return "", fmt.Errorf("planning failed: %w", planErr)
+		return nil, fmt.Errorf("planning failed: %w", planErr)
 	}
 	if bestExpr == nil {
-		return "", api.NewError(api.ErrCodeUnsupportedQuery, "no plan found")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "no plan found")
 	}
 
 	type planExtractor interface {
@@ -105,18 +117,18 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 	}
 	ph, ok := bestExpr.(planExtractor)
 	if !ok {
-		return "", fmt.Errorf("best expression is not a physical plan: %T", bestExpr)
+		return nil, fmt.Errorf("best expression is not a physical plan: %T", bestExpr)
 	}
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
-		return "", fmt.Errorf("physical plan is nil")
+		return nil, fmt.Errorf("physical plan is nil")
 	}
 	// RFC-164 WS-2: structural plan invariants — an always-on backstop that fails
 	// loudly on a malformed extracted plan (e.g. a relink that dropped a child).
 	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
-		return "", fmt.Errorf("plan invariant violated: %w", err)
+		return nil, fmt.Errorf("plan invariant violated: %w", err)
 	}
-	return physPlan.Explain(), nil
+	return physPlan, nil
 }
 
 // PlanQueryWithMetadata is like PlanQueryForTest but accepts pre-built
