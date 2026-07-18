@@ -1485,10 +1485,17 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       LogicalProject — full deletion is re-scoped THERE, not slice 3. The
 >       dup-alias face is the only designed lazy escape (FDB survival probe to
 >       enumerate).
-> - [ ] Slice 4: structural rebases — rewrite rebaseOuterLegRefsToMerged /
->       rebaseOuterLegValue (rule_implement_nested_loop_join.go:1218) to compose
->       FieldPath ordinals from planBuriedLegConcat leg windows instead of
->       minting `corr + "." + field`; riskiest slice, stress-compare before/after.
+> - [x] Slice 4 DONE: the RFC-153 buried-preserved rebase is ordinal-first —
+>       buriedLegOrdinalLayout derives (leg, col) → global ordinal from the
+>       outer FlatMap's positional RC concat (or planBuriedLegConcat windows),
+>       and rebaseOuterLegValue bakes the merged-row ordinal when the layout
+>       answers, lazy qualified mint only when it cannot. EMPIRICAL FINDING:
+>       the whole leg-match arm is dead-in-effect today (box substrate rebases
+>       buried refs onto box correlations upstream — probed zero across all
+>       suites incl. the RFC-153 matrix); it stays as the fail-closed safety
+>       net and now bakes when it fires. White-box pins for the layout
+>       derivation + all rebase arms; 1M stress green at thresholds (full
+>       scans ~3.3s, lookups 10ms).
 >       REFINED MAP (read before starting): ONE call site (:479), gated
 >       innerNullOnEmpty && buriedPreservedAliases — the RFC-153 LEFT-OUTER
 >       buried-preserved rebase ONLY (regular INNER multiway already rebases
@@ -1501,8 +1508,16 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       planReferencesAnyBuriedAlias fail-closes — the ordinal rewrite must keep
 >       that conservatism. Pins to re-run: RFC-153 outer-join FDB suite + 1M
 >       stress before/after.
-> - [ ] Slice 5: kill fieldValueAliasAndCol (NLJ :2827) + MergeSeedLegsOfValue
->       (value_correlation.go:27) once 3-4 land.
+> - [ ] Slice 5 RE-GATED (probed, evidence in code comments): both arms are
+>       dead-in-effect on every covered surface (zero hits across yamsql,
+>       embedded, cascades, full FDB driver — ok-line-verified probe runs),
+>       but their PRODUCERS still live: fieldValueAliasAndCol's dot-split
+>       serves the dup-alias carve-out's flat "ALIAS.COL" mints (retires with
+>       Phase B unique quantifier aliases) and MergeSeedLegsOfValue defends
+>       the enclosed-unnest name-model residual's dotted merged reads
+>       (retires with the box-substrate ordinalization). Killing before the
+>       producers would delete live defenses for constructible shapes
+>       (RFC-142 zero-rows / misclassification hazards). NOT gated on 3-4.
 > - [ ] Slice 6: N-F5 sweep — remaining parseColRef callers down to the Phase-D
 >       metadata cluster (exit criterion: grep parseColRef → cascades_generator
 >       metadata sites only).
