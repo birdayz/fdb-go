@@ -66,6 +66,7 @@ package expr
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 
@@ -988,19 +989,33 @@ func (r *Resolver) ResolveConstant(lit any) (values.Value, error) {
 	case bool:
 		return values.NewBooleanValue(v), nil
 	case int:
-		return &values.ConstantValue{Value: int64(v), Typ: values.TypeInt}, nil
+		return &values.ConstantValue{Value: int64(v), Typ: intLiteralType(int64(v))}, nil
 	case int32:
-		return &values.ConstantValue{Value: int64(v), Typ: values.TypeInt}, nil
+		return &values.ConstantValue{Value: int64(v), Typ: values.NullableInt}, nil
 	case int64:
-		return &values.ConstantValue{Value: v, Typ: values.TypeInt}, nil
+		return &values.ConstantValue{Value: v, Typ: intLiteralType(v)}, nil
 	case string:
 		return &values.ConstantValue{Value: v, Typ: values.TypeString}, nil
 	case float32:
-		return &values.ConstantValue{Value: float64(v), Typ: values.TypeFloat}, nil
+		// A float32 carrier is a genuine FLOAT literal (Java's 'f'-suffix
+		// arm of ParseHelpers.parseDecimal returns Float).
+		return &values.ConstantValue{Value: float64(v), Typ: values.NullableFloat}, nil
 	case float64:
-		return &values.ConstantValue{Value: v, Typ: values.TypeFloat}, nil
+		return &values.ConstantValue{Value: v, Typ: values.NullableDouble}, nil
 	case []byte:
 		return &values.ConstantValue{Value: v, Typ: values.NullableBytes}, nil
 	}
 	return nil, fmt.Errorf("expr.ResolveConstant: unsupported literal type %T", lit)
+}
+
+// intLiteralType mirrors Java ParseHelpers.parseDecimal: an unsuffixed
+// integer literal that fits in int32 is typed INT (Math.toIntExact →
+// Integer), else LONG. This is what puts `int_col + 1` on the int32
+// arithmetic lane (Java ADD_II) instead of silently widening. The
+// carrier stays int64 either way; only the static width narrows.
+func intLiteralType(v int64) values.Type {
+	if v >= math.MinInt32 && v <= math.MaxInt32 {
+		return values.NullableInt
+	}
+	return values.NullableLong
 }

@@ -250,8 +250,15 @@ func protoKindToSQL(k protoreflect.Kind) string {
 		return "BIGINT"
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
 		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		// Unsigned proto kinds exceed their signed width — type them
-		// BIGINT (the long lane) so no false 32-bit bound applies.
+		// Deliberate divergence for the 32-bit unsigned kinds: Java maps
+		// UINT32/FIXED32 → TypeCode.INT (Type.java
+		// fromProtobufFieldDescriptor), which is sound there only because
+		// Java protobuf wraps uint32 into a Java int. Go decodes unsigned
+		// kinds as genuine unsigned values (up to 2^32-1), so an "INTEGER"
+		// typing would put values beyond MaxInt32 under a false 32-bit
+		// arithmetic bound. BIGINT keeps them on the long lane. Reachable
+		// only defensively: record-metadata validation rejects unsigned
+		// fields in record types (matching Java).
 		return "BIGINT"
 	case protoreflect.FloatKind:
 		return "FLOAT"

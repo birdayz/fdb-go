@@ -2624,9 +2624,11 @@ func (a *ArithmeticValue) Name() string      { return "arith" }
 
 // Type returns the arithmetic result Type by numeric promotion of the
 // operand types: DOUBLE if either operand is DOUBLE, else FLOAT if either is
-// FLOAT, else LONG (the conservative integer default, also used when an
-// operand type is unknown). Mirrors Java's ArithmeticValue result typing and
-// the float promotion Evaluate already performs. NULL propagates through
+// FLOAT, else INT when BOTH are INT (Java's ADD_II/DIV_II/MOD_II declare
+// result INT — without this the static property re-erases the width the
+// lane dispatch keys on, and `(a+b)+c` over INT columns escapes the int32
+// bounds at the outer op), else LONG (the conservative integer default,
+// also used when an operand type is unknown). NULL propagates through
 // Evaluate, so the result is nullable.
 func (a *ArithmeticValue) Type() Type {
 	lc, rc := arithOperandCode(a.Left), arithOperandCode(a.Right)
@@ -2635,6 +2637,9 @@ func (a *ArithmeticValue) Type() Type {
 	}
 	if lc == TypeCodeFloat || rc == TypeCodeFloat {
 		return NullableFloat
+	}
+	if lc == TypeCodeInt && rc == TypeCodeInt {
+		return NullableInt
 	}
 	return NullableLong
 }
@@ -2684,7 +2689,7 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) (any, error) {
 		}
 	}
 	if lc == TypeCodeInt && rc == TypeCodeInt {
-		if out, err, handled := a.evalInt32(l, r); handled {
+		if out, handled, err := a.evalInt32(l, r); handled {
 			return out, err
 		}
 	}
@@ -2781,12 +2786,11 @@ func (a *ArithmeticValue) evalFloat(l, r any) any {
 // float32 result widened to the row-domain float64 carrier; nil when an
 // operand isn't numeric (caller falls through to the generic lanes).
 func (a *ArithmeticValue) evalFloat32(l, r any) any {
-	lf64, _, lok := ToFloat64(l)
-	rf64, _, rok := ToFloat64(r)
+	lf, lok := toFloat32Operand(l)
+	rf, rok := toFloat32Operand(r)
 	if !lok || !rok {
 		return nil
 	}
-	lf, rf := float32(lf64), float32(rf64)
 	var out float32
 	switch a.Op {
 	case OpAdd:
@@ -2805,6 +2809,21 @@ func (a *ArithmeticValue) evalFloat32(l, r any) any {
 	return float64(out)
 }
 
+// toFloat32Operand converts a FLOAT-lane operand to float32. Integer
+// operands convert DIRECTLY int64→float32 (Java's ADD_LF does `(float)l`
+// in one rounding step; routing through float64 first would double-round
+// longs above 2^53 near float32 ties).
+func toFloat32Operand(v any) (float32, bool) {
+	if li, ok := toInt64ForArith(v); ok {
+		return float32(li), true
+	}
+	f64, _, ok := ToFloat64(v)
+	if !ok {
+		return 0, false
+	}
+	return float32(f64), true
+}
+
 // evalInt32 is the INT lane (Java ADD_II/SUB_II/MUL_II via
 // Math.*Exact(int,int)): both operands statically INT, arithmetic bounds
 // checked at the int32 boundary — `int_col + int_col` crossing 2^31 errors
@@ -2812,11 +2831,11 @@ func (a *ArithmeticValue) evalFloat32(l, r any) any {
 // wide value. DIV_II/MOD_II mirror the long lane's zero/MinInt semantics at
 // 32 bits (Java (int) division wraps MinInt/-1). handled=false when an
 // operand isn't an admitted integer (caller falls through).
-func (a *ArithmeticValue) evalInt32(l, r any) (any, error, bool) {
+func (a *ArithmeticValue) evalInt32(l, r any) (out any, handled bool, err error) {
 	li, lok := toInt64ForArith(l)
 	ri, rok := toInt64ForArith(r)
 	if !lok || !rok {
-		return nil, nil, false
+		return nil, false, nil
 	}
 	// Inputs outside the int32 range mean the STATIC type lied about the
 	// runtime value (an INT column cannot hold them; Java's (int) cast
@@ -2824,7 +2843,7 @@ func (a *ArithmeticValue) evalInt32(l, r any) (any, error, bool) {
 	// guarantees the range). Fall through to the LONG lane rather than
 	// emulate a truncation no valid execution produces.
 	if li > math.MaxInt32 || li < math.MinInt32 || ri > math.MaxInt32 || ri < math.MinInt32 {
-		return nil, nil, false
+		return nil, false, nil
 	}
 	switch a.Op {
 	case OpAdd, OpSub, OpMul:
@@ -2838,25 +2857,25 @@ func (a *ArithmeticValue) evalInt32(l, r any) (any, error, bool) {
 			out = li * ri
 		}
 		if out > math.MaxInt32 || out < math.MinInt32 {
-			return nil, &ArithmeticOverflowError{}, true
+			return nil, true, &ArithmeticOverflowError{}
 		}
-		return out, nil, true
+		return out, true, nil
 	case OpDiv:
 		if ri == 0 {
-			return nil, &ArithmeticDivisionByZeroError{}, true
+			return nil, true, &ArithmeticDivisionByZeroError{}
 		}
 		if li == math.MinInt32 && ri == -1 {
 			// Java DIV_II is `(int)l / (int)r` — wraps to MinInt.
-			return int64(math.MinInt32), nil, true
+			return int64(math.MinInt32), true, nil
 		}
-		return li / ri, nil, true
+		return li / ri, true, nil
 	case OpMod:
 		if ri == 0 {
-			return nil, &ArithmeticDivisionByZeroError{}, true
+			return nil, true, &ArithmeticDivisionByZeroError{}
 		}
-		return li % ri, nil, true
+		return li % ri, true, nil
 	}
-	return nil, nil, false
+	return nil, false, nil
 }
 
 func toInt64ForArith(v any) (int64, bool) {

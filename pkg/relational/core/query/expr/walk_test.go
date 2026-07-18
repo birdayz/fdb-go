@@ -147,8 +147,10 @@ func TestWalkExpression_IntegerLiteral(t *testing.T) {
 	if cv.Value != int64(42) {
 		t.Fatalf("Value: got %v, want 42", cv.Value)
 	}
-	if cv.Typ != values.TypeInt {
-		t.Fatalf("Typ: got %v, want TypeInt", cv.Typ)
+	if cv.Typ != values.NullableInt {
+		// 42 fits int32, so it is an INT literal (Java
+		// ParseHelpers.parseDecimal narrows via Math.toIntExact).
+		t.Fatalf("Typ: got %v, want NullableInt", cv.Typ)
 	}
 }
 

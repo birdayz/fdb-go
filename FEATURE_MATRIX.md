@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**319 scenarios · 2552 query/assertion cases** across 18 feature areas.
+**320 scenarios · 2558 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -32,7 +32,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Keys & primary keys | 5 | 132 |
 | Error codes & validation | 4 | 37 |
 | End-to-end scenarios | 3 | 20 |
-| Other | 20 | 155 |
+| Other | 21 | 161 |
 
 ## Aggregates & GROUP BY
 
@@ -431,6 +431,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `empty_table_operations` | 9 | Operations on empty tables |
 | `float_column` | 10 | FLOAT (32-bit) column type. |
 | `information_schema` | 5 | INFORMATION_SCHEMA.* system-table queries. |
+| `int_float_lanes` | 6 | 32-bit arithmetic lanes end-to-end |
 | `integer_range` | 12 | INTEGER (32-bit) column range enforcement. |
 | `java_alignment_probes` | 14 | Probes derived from Java's yamsql test suite to verify Go matches |
 | `min_max_string` | 3 | MIN/MAX on string columns is REJECTED |

@@ -30,12 +30,11 @@ var rfc082KnownRed = map[string]bool{
 	// nested_derived_col_rename removed: the RFC-141 R4 projected-EXISTS fold's
 	// column metadata/alias-provenance unification fixed the derived-column
 	// rename so Go now matches Java cross-engine (RFC-082 lock shrinks).
-	"greatest_all_nonnull":     true, // integer literal -> BIGINT vs Java INTEGER
-	"greatest_null_propagates": true,
-	"least_all_nonnull":        true,
-	"least_null_propagates":    true,
-	"proj_literal_column":      true,
-	"select_count_alias":       true, // COUNT(*) AS cnt drops the alias
+	// The GREATEST/LEAST family and proj_literal_column removed: integer
+	// literals now narrow to INTEGER like Java ParseHelpers.parseDecimal,
+	// so literal-bearing result types match cross-engine (RFC-082 lock
+	// shrinks).
+	"select_count_alias": true, // COUNT(*) AS cnt drops the alias
 	// "recursive_cte_depth_counter" was REMOVED (the lock shrank): the recursive
 	// leg's computed column (SELECT n + 1) silently stalled recursion one level
 	// early (count 2 instead of Java's 10) because the normalization wrap read

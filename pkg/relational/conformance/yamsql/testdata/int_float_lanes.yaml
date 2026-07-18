@@ -1,0 +1,46 @@
+# int_float_lanes.yaml — 32-bit arithmetic lanes end-to-end
+#
+# Java's ArithmeticValue dispatches per-TypeCode physical operators:
+# ADD_II is Math.addExact(int,int) — INTEGER arithmetic overflows at
+# 2^31, not 2^63 — and ADD_FF computes in float32, saturating to ±Inf
+# at the float32 boundary where DOUBLE would stay finite. These
+# scenarios prove the WHOLE chain: DDL INTEGER/FLOAT columns become
+# int32/float proto fields, the catalog types them INTEGER/FLOAT (not
+# the old all-integers→INT / float+double→FLOAT conflation), the
+# resolver seeds genuine 32-bit static types, and the lanes fire.
+name: int_float_lanes
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a INTEGER, b INTEGER, f FLOAT, g FLOAT, w BIGINT, PRIMARY KEY (id))
+setup:
+  # MaxInt32 = 2147483647. 3e38 is finite in float32 (max ≈ 3.4e38)
+  # but 3e38 + 3e38 crosses it.
+  - INSERT INTO t VALUES (1, 2000000000, 200000000, 1.5, 2.5, 3000000000), (2, 100, 23, 3.0E38, 3.0E38, 9223372036854775806), (3, 2147483647, 1, 0.5, 0.25, 1)
+tests:
+  # INTEGER + INTEGER crossing 2^31 → 22003 (Java ADD_II /
+  # Math.addExact(int,int)). Under the LONG lane this would silently
+  # return 2200000000.
+  - query: SELECT a + b FROM t WHERE id = 1
+    error_code: "22003"
+  # In-range INTEGER arithmetic succeeds.
+  - query: SELECT a + b FROM t WHERE id = 2
+    rows:
+      - [123]
+  # INTEGER + int-range literal rides the INT lane too (Java
+  # ParseHelpers.parseDecimal types in-range literals Integer, so
+  # MaxInt32 + 1 is ADD_II → overflow).
+  - query: SELECT a + 1 FROM t WHERE id = 3
+    error_code: "22003"
+  # BIGINT + literal is NOT under the int32 bound — the same literal
+  # against a wide column takes ADD_LI/LONG semantics.
+  - query: SELECT w + 1 FROM t WHERE id = 1
+    rows:
+      - [3000000001]
+  # FLOAT + FLOAT computes in float32: 3e38 + 3e38 saturates to +Inf
+  # (Java ADD_FF). The double lane would return the finite 6e38.
+  - query: SELECT f + g FROM t WHERE id = 2
+    rows:
+      - [.inf]
+  # In-range FLOAT arithmetic stays exact in float32.
+  - query: SELECT f + g FROM t WHERE id = 3
+    rows:
+      - [0.75]

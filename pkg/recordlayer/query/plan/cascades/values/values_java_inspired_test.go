@@ -35,9 +35,10 @@ import (
 func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 	t.Parallel()
 	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
-	// (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
+	// (fom sorts keys), read positionally from the row. Statically LONG:
+	// this is the LONG-lane parity table (rows feed MaxInt64-scale data).
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableLong)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableLong)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -104,10 +105,11 @@ func TestArithmeticValue_DivMinWrapsLikeJava(t *testing.T) {
 
 func TestArithmeticValue_OverflowPanics(t *testing.T) {
 	t.Parallel()
-	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
-	// (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
+	// Statically LONG — these rows pin the LONG lane's Math.*Exact
+	// bounds; under INT static types they'd exercise the range-guard
+	// fall-through instead (pinned separately below).
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableLong)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableLong)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -143,10 +145,9 @@ func TestArithmeticValue_OverflowPanics(t *testing.T) {
 // Asymmetric for sub: MAX - (-1) overflows, but MAX - 1 = MAX-1.
 func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
 	t.Parallel()
-	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
-	// (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
+	// Statically LONG — boundary rows are MaxInt64/MinInt64 values.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableLong)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableLong)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -186,7 +187,7 @@ func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 	// (fom sorts keys), read positionally from the row.
 	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
 	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
-	c := NewFieldValueWithResolvedOrdinal("c", 2, TypeInt)
+	c := NewFieldValueWithResolvedOrdinal("c", 2, NullableInt)
 	// (a + b) * c
 	tree := &ArithmeticValue{
 		Op:    OpMul,
@@ -221,10 +222,24 @@ func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 // ArithmeticException). The executor surfaces it as a SQL error.
 func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 	t.Parallel()
-	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
-	// (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
+	// Both integer lanes raise on /0 and %0 (Java DIV_II and DIV_LL alike
+	// throw ArithmeticException for zero divisors) — cover each lane.
+	for _, lane := range []struct {
+		name string
+		typ  Type
+	}{{"int_lane", NullableInt}, {"long_lane", NullableLong}} {
+		lane := lane
+		t.Run(lane.name, func(t *testing.T) {
+			t.Parallel()
+			a := NewFieldValueWithResolvedOrdinal("a", 0, lane.typ)
+			b := NewFieldValueWithResolvedOrdinal("b", 1, lane.typ)
+			divByZeroOps(t, a, b)
+		})
+	}
+}
+
+func divByZeroOps(t *testing.T, a, b Value) {
+	t.Helper()
 	for _, op := range []ArithmeticOp{OpDiv, OpMod} {
 		op := op
 		t.Run(op.Symbol(), func(t *testing.T) {
@@ -460,5 +475,86 @@ func TestArithmeticValue_FloatLaneComputesInFloat32(t *testing.T) {
 	f, ok := v.(float64)
 	if !ok || !math.IsInf(f, 1) {
 		t.Fatalf("FLOAT + FLOAT over the float32 boundary = %v, want +Inf (Java computes ADD_FF in float32)", v)
+	}
+}
+
+// TestArithmeticValue_NestedIntArithmetic pins that the INT lane holds
+// through NESTED arithmetic: ArithmeticValue.Type() declares INT⊕INT as
+// INT (Java ADD_II's result type), so the OUTER op of `(a+b)+c` also
+// dispatches on the int lane and errors at the int32 boundary. Before
+// the Type() fix the intermediate claimed LONG and the outer op
+// silently returned the wide value.
+func TestArithmeticValue_NestedIntArithmetic(t *testing.T) {
+	t.Parallel()
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
+	c := NewFieldValueWithResolvedOrdinal("c", 2, NullableInt)
+	inner := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+	if got := inner.Type(); got != NullableInt {
+		t.Fatalf("INT+INT static type: got %v, want NullableInt (Java ADD_II result type)", got)
+	}
+	tree := &ArithmeticValue{Op: OpAdd, Left: inner, Right: c}
+	// Inner sum 2_000_000_000 stays inside int32; only the outer op
+	// crosses 2^31 — so ONLY correct outer-lane dispatch catches it.
+	v, err := tree.Evaluate(fom(map[string]any{
+		"a": int64(1_500_000_000), "b": int64(500_000_000), "c": int64(200_000_000),
+	}))
+	var overflow *ArithmeticOverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("nested INT add crossing 2^31: got (%v, %v), want ArithmeticOverflowError", v, err)
+	}
+	// Same magnitudes over LONG stay fine.
+	al := NewFieldValueWithResolvedOrdinal("a", 0, NullableLong)
+	bl := NewFieldValueWithResolvedOrdinal("b", 1, NullableLong)
+	cl := NewFieldValueWithResolvedOrdinal("c", 2, NullableLong)
+	treeL := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &ArithmeticValue{Op: OpAdd, Left: al, Right: bl},
+		Right: cl,
+	}
+	got, err := treeL.Evaluate(fom(map[string]any{
+		"a": int64(1_500_000_000), "b": int64(500_000_000), "c": int64(200_000_000),
+	}))
+	require.NoError(t, err)
+	if got != int64(2_200_000_000) {
+		t.Fatalf("LONG nested add: got %v, want 2200000000", got)
+	}
+}
+
+// TestArithmeticValue_IntLaneRangeGuard pins the guard explicitly: when
+// the STATIC type says INT but the runtime value exceeds int32 (a state
+// unreachable in Java, whose sound typing makes the (int) cast safe),
+// the op falls through to the LONG lane and computes wide — it must not
+// emulate Java's cast truncation, which no valid execution produces.
+func TestArithmeticValue_IntLaneRangeGuard(t *testing.T) {
+	t.Parallel()
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableInt)
+	av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+	got, err := av.Evaluate(fom(map[string]any{"a": int64(3_000_000_000), "b": int64(3_000_000_000)}))
+	require.NoError(t, err)
+	if got != int64(6_000_000_000) {
+		t.Fatalf("out-of-int32-range INT-typed operands: got %v, want 6000000000 (LONG-lane fall-through)", got)
+	}
+}
+
+// TestArithmeticValue_FloatLaneSingleRounding pins that integer operands
+// convert DIRECTLY int64→float32 (Java's (float)l in ADD_LF — ONE
+// rounding step). Routing through float64 first double-rounds: for the
+// witness value float32(v) ≠ float32(float64(v)).
+func TestArithmeticValue_FloatLaneSingleRounding(t *testing.T) {
+	t.Parallel()
+	const witness = int64(1<<62 | 1<<38 | 1)
+	if float32(witness) == float32(float64(witness)) {
+		t.Fatal("witness no longer distinguishes single from double rounding")
+	}
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableLong)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableFloat)
+	av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+	got, err := av.Evaluate(fom(map[string]any{"a": witness, "b": float64(float32(0))}))
+	require.NoError(t, err)
+	want := float64(float32(witness) + 0)
+	if got != want {
+		t.Fatalf("LF add: got %v, want %v (single-rounded (float)long)", got, want)
 	}
 }

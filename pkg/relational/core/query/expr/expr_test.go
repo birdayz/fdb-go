@@ -156,9 +156,13 @@ func TestResolver_ResolveConstant(t *testing.T) {
 		lit  any
 		want values.Type
 	}{
-		{"int64", int64(42), values.TypeInt},
-		{"int", 42, values.TypeInt},
-		{"int32", int32(42), values.TypeInt},
+		// In-range integer literals narrow to INT, out-of-range stay
+		// LONG (Java ParseHelpers.parseDecimal / Math.toIntExact).
+		{"int64", int64(42), values.NullableInt},
+		{"int64_wide", int64(3_000_000_000), values.NullableLong},
+		{"int64_negwide", int64(-3_000_000_000), values.NullableLong},
+		{"int", 42, values.NullableInt},
+		{"int32", int32(42), values.NullableInt},
 		{"string", "hello", values.TypeString},
 		{"true", true, values.TypeBool},
 		{"false", false, values.TypeBool},
