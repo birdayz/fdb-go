@@ -1161,15 +1161,19 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 		// the alias itself as the output column name. Only bare column
 		// group-by items (groupByExprs[i] == nil) are handled;
 		// expression group keys keep their synthetic display name.
-		aliasResolves := func(name string) (underlying string, outName string, ok bool) {
+		// aliasResolves maps a GROUP BY alias to its underlying key —
+		// the DISPLAY string for the name/datum channel AND the key's
+		// structural segments, so rewrites keep both channels in sync
+		// (a display like "X.COL1" is a rendered join, never a bare).
+		aliasResolves := func(name string) (key groupKeyRef, outName string, ok bool) {
 			idx, aliased := cls.groupByAliases[strings.ToUpper(name)]
 			if !aliased {
-				return "", "", false
+				return groupKeyRef{}, "", false
 			}
 			if cls.groupBy[idx].expr != nil {
-				return "", "", false
+				return groupKeyRef{}, "", false
 			}
-			return cls.groupBy[idx].display, name, true
+			return cls.groupBy[idx], name, true
 		}
 		for i := range cls.projCols {
 			if i < len(cls.projExprs) && cls.projExprs[i] != nil {
@@ -1179,7 +1183,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			if col.name == "" {
 				continue
 			}
-			underlying, outName, ok := aliasResolves(col.name)
+			key, outName, ok := aliasResolves(col.name)
 			if !ok {
 				continue
 			}
@@ -1191,9 +1195,10 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			if cls.projAliases[i] == "" {
 				cls.projAliases[i] = outName
 			}
-			// The rebased name is the underlying GROUP BY column text — an
-			// internal name; segments cleared to it (the group-key rule).
-			cls.projCols[i] = projCol{name: underlying, bare: underlying}
+			// The rebased name is the underlying GROUP BY column text (the
+			// datum channel); segments come from the KEY so a qualified
+			// underlying keeps its real qualifier.
+			cls.projCols[i] = projCol{name: key.display, bare: key.bare, qualifier: key.qualifier, qualified: key.qualified}
 		}
 		// Also rewrite aggCols entries: when the SELECT list mixes
 		// plain-col refs with aggregates, bare columns are classified
@@ -1207,9 +1212,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				continue
 			}
 			if ac.groupCol != "" {
-				if underlying, outName, ok := aliasResolves(ac.groupCol); ok {
-					ac.groupCol = underlying
-					ac.groupColBare = underlying
+				if key, outName, ok := aliasResolves(ac.groupCol); ok {
+					ac.groupCol = key.display
+					ac.groupColBare = key.bare
 					if ac.outName == "" {
 						ac.outName = outName
 					}
@@ -1219,8 +1224,11 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				// Rewrite arg only; aggregate's outName (e.g. `MAX(z)`)
 				// is already set at parse time and shouldn't be
 				// collapsed to the alias string.
-				if underlying, _, ok := aliasResolves(ac.aggArg); ok {
-					ac.aggArg = underlying
+				if key, _, ok := aliasResolves(ac.aggArg); ok {
+					ac.aggArg = key.display
+					ac.aggArgBare = key.bare
+					ac.aggArgQualifier = key.qualifier
+					ac.aggArgQualified = key.qualified
 				}
 			}
 		}
@@ -1233,8 +1241,16 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			if ob.expr != nil || ob.colName == "" {
 				continue
 			}
-			if underlying, _, ok := aliasResolves(ob.colName); ok {
-				ob.colName = underlying
+			if key, _, ok := aliasResolves(ob.colName); ok {
+				ob.colName = key.display
+				// The structural segments must follow the rewrite — a
+				// stale pre-rewrite bare would re-validate the ALIAS
+				// against the FROM scope and 42703; a display copied
+				// into bare would re-split a qualified key. Both
+				// channels come from the group KEY.
+				ob.bare = key.bare
+				ob.qualifier = key.qualifier
+				ob.qualified = key.qualified
 			}
 		}
 	}
@@ -1509,6 +1525,12 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				outName: outName,
 			})
 			cls.orderBy[obIdx].colName = outName
+			// Synthetic aggregate output name — not a source column
+			// reference; clear the segments so validation never resolves
+			// it against the FROM scope.
+			cls.orderBy[obIdx].bare = ""
+			cls.orderBy[obIdx].qualifier = ""
+			cls.orderBy[obIdx].qualified = false
 			cls.orderBy[obIdx].expr = nil
 			obAggIdx++
 		}

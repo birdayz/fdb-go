@@ -2202,7 +2202,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				}
 				continue
 			}
-			if err := resolveColumnName(resolver, col.name); err != nil {
+			if col.bare != "" {
+				if err := resolveColumnRefStructural(resolver, col.bare, col.qualifier, col.qualified); err != nil {
+					return nil, err
+				}
+			} else if err := resolveColumnName(resolver, col.name); err != nil {
 				return nil, err
 			}
 			// A BARE column that binds to a lateral-unnest SHADOWING source
@@ -2372,7 +2376,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						// from the rawExpr text. Try resolving the
 						// rewritten colName through the scope; if it
 						// resolves, the reference is valid.
-						if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
+						if ob.bare != "" {
+							if resolveColumnRefStructural(resolver, ob.bare, ob.qualifier, ob.qualified) == nil {
+								continue
+							}
+						} else if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
 							continue
 						}
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
@@ -2388,7 +2396,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			if gb.expr != nil {
 				continue
 			}
-			if err := resolveColumnName(resolver, gb.display); err != nil {
+			if gb.bare != "" {
+				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
+					return nil, err
+				}
+			} else if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
 		}
@@ -2397,7 +2409,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	if resolver != nil {
 		for _, ac := range sq.aggCols {
 			if ac.aggArg != "" && ac.aggExpr == nil {
-				if err := resolveColumnName(resolver, ac.aggArg); err != nil {
+				if ac.aggArgBare != "" {
+					if err := resolveColumnRefStructural(resolver, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified); err != nil {
+						return nil, err
+					}
+				} else if err := resolveColumnName(resolver, ac.aggArg); err != nil {
 					return nil, err
 				}
 			}
@@ -2855,10 +2871,50 @@ func isBareIdentifierExpr(e antlrgen.IExpressionContext) bool {
 	return false
 }
 
-// resolveColumnName resolves a bare column name through the semantic
-// scope. Returns an error for ambiguous (42702) or undefined (42703)
-// columns. Returns nil for qualified names (contain ".") or when
-// resolver is nil.
+// resolveColumnRefStructural resolves a column reference from its
+// parse-tree SEGMENTS — never a dotted re-split of a rendered string,
+// so a derived column or alias whose NAME contains a dot ("A.ID")
+// resolves as itself instead of being torn at the last dot into a
+// phantom qualifier (WS-N Phase A slice 1; the segments arrive
+// quote-stripped with quoted case preserved, so identifiers are built
+// case-sensitively — no re-fold).
+func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string, qualified bool) error {
+	if resolver == nil || bare == "" {
+		return nil
+	}
+	var qual semantic.Identifier
+	display := bare
+	if qualified {
+		// The qualifier FOLDS: source aliases are registered through the
+		// folded namespace (a quoted lowercase alias "q" registers as
+		// "Q"), so the lookup must fold identically. Alias-namespace
+		// case fidelity is Phase B's scope; the COLUMN side below stays
+		// verbatim — that is where dotted/quoted-case names live.
+		qual = semantic.NewUnquoted(qualifier)
+		display = qualifier + "." + bare
+	}
+	_, err := resolver.ResolveIdentifier(qual, semantic.New(bare, true))
+	if err != nil {
+		var notFound *semantic.ColumnNotFoundError
+		if errors.As(err, &notFound) {
+			// Folded retry: derived/virtual schemas still REGISTER their
+			// columns folded (an alias "id" registers as "ID"), so a
+			// verbatim miss re-tries the folded spelling. Verbatim-first
+			// keeps case-significant names ("A.ID", quoted lowercase
+			// stored columns) winning; Phase D makes registrations
+			// case-faithful and retires this retry.
+			if _, retryErr := resolver.ResolveIdentifier(qual, semantic.NewUnquoted(bare)); retryErr == nil {
+				return nil
+			}
+		}
+	}
+	return mapColumnResolveError(err, display)
+}
+
+// resolveColumnName is the RENDERED-STRING arm for call sites whose
+// carrier predates structural segment capture: it re-splits at the last
+// dot (parseColRef), which mis-tears dotted display names — every
+// caller with parse-tree segments must use resolveColumnRefStructural.
 func resolveColumnName(resolver *expr.Resolver, col string) error {
 	if resolver == nil || col == "" {
 		return nil
@@ -2870,6 +2926,13 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 		qualifier = semantic.NewUnquoted(ref.table)
 	}
 	_, err := resolver.ResolveIdentifier(qualifier, id)
+	return mapColumnResolveError(err, col)
+}
+
+// mapColumnResolveError classifies a ResolveIdentifier failure into its
+// SQLSTATE (42702 ambiguous / 42703 undefined), shared by the
+// structural and rendered-string arms.
+func mapColumnResolveError(err error, display string) error {
 	if err != nil {
 		var ambigErr *semantic.AmbiguousColumnError
 		if errors.As(err, &ambigErr) {
@@ -2882,7 +2945,7 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 		var notFoundErr *semantic.ColumnNotFoundError
 		if errors.As(err, &notFoundErr) {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
-				"column %q does not exist", col)
+				"column %q does not exist", display)
 		}
 		var srcNotFound *semantic.SourceNotFoundError
 		if errors.As(err, &srcNotFound) {

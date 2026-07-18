@@ -591,7 +591,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				}
 				continue
 			}
-			if err := resolveColumnName(resolver, col.name); err != nil {
+			if col.bare != "" {
+				if err := resolveColumnRefStructural(resolver, col.bare, col.qualifier, col.qualified); err != nil {
+					return nil, err
+				}
+			} else if err := resolveColumnName(resolver, col.name); err != nil {
 				return nil, err
 			}
 			// A BARE column that binds to a lateral-unnest SHADOWING source
@@ -766,7 +770,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 						if projAliasSet[strings.ToUpper(ob.colName)] {
 							continue
 						}
-						if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
+						if ob.bare != "" {
+							if resolveColumnRefStructural(resolver, ob.bare, ob.qualifier, ob.qualified) == nil {
+								continue
+							}
+						} else if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
 							continue
 						}
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
@@ -783,7 +791,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			if gb.expr != nil {
 				continue
 			}
-			if err := resolveColumnName(resolver, gb.display); err != nil {
+			if gb.bare != "" {
+				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
+					return nil, err
+				}
+			} else if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
 		}
@@ -793,7 +805,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	if resolver != nil {
 		for _, ac := range sq.aggCols {
 			if ac.aggArg != "" && ac.aggExpr == nil {
-				if err := resolveColumnName(resolver, ac.aggArg); err != nil {
+				if ac.aggArgBare != "" {
+					if err := resolveColumnRefStructural(resolver, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified); err != nil {
+						return nil, err
+					}
+				} else if err := resolveColumnName(resolver, ac.aggArg); err != nil {
 					return nil, err
 				}
 			}
