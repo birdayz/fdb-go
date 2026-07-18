@@ -30,8 +30,8 @@
 // # Handled shapes
 //
 //   - Columns: bare (`col`) and qualified (`t.col`).
-//   - Constants: integer, string, NULL. Float pending (see
-//     ResolveConstant).
+//   - Constants: integer (width-narrowed like Java's parseDecimal),
+//     float, string, NULL.
 //   - Arithmetic: +, -, *, /.
 //   - Comparisons: =, <>, !=, <, <=, >, >=, IS [NOT] DISTINCT FROM.
 //   - Logical: AND / OR / NOT (with left-deep chain flattening).
@@ -975,13 +975,13 @@ func columnCascadesType(col semantic.Column) values.Type {
 // literal arguments when building a Value tree from a parsed
 // expression.
 //
-// Returns an error when the literal's runtime type doesn't map to
-// any seed ValueType — nil, int, int32, int64, float32, float64,
-// string, bool are supported. Float literals carry TypeFloat;
-// arithmetic over floats still goes through ArithmeticValue's
-// int-only Eval (mixed-type arith returns nil per the seed
-// contract — a real arithmetic-over-float requires the Type
-// hierarchy port to set up coercion).
+// Returns an error when the literal's runtime type doesn't map to a
+// known type — nil, int, int32, int64, float32, float64, string,
+// bool, []byte are supported. Integer literals width-narrow like Java
+// ParseHelpers.parseDecimal (in-int32-range → INT, else LONG); a
+// float64 carrier is a DOUBLE literal and a float32 carrier a FLOAT
+// one, so arithmetic over them rides ArithmeticValue's matching
+// per-width lanes.
 func (r *Resolver) ResolveConstant(lit any) (values.Value, error) {
 	switch v := lit.(type) {
 	case nil:

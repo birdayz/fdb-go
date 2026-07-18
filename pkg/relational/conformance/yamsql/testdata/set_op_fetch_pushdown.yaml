@@ -1,0 +1,45 @@
+# set_op_fetch_pushdown.yaml — set operations push below the fetch
+#
+# Java's PushSetOperationThroughFetchRule rebuilds the set operation
+# over the covering index scans and re-fetches ONCE above the merged
+# stream (withChildrenReferences over the fetch children). The EXPLAIN
+# pin is the point: Fetch(Union(IndexScan, IndexScan)) — one fetch above
+# the union — not Union(Fetch, Fetch) with a fetch per leg, and never
+# the double-fetching Fetch(Union(Fetch, Fetch)) the stale-snapshot
+# rebuild produced.
+name: set_op_fetch_pushdown
+schema_template: |
+  CREATE TABLE items (
+    id BIGINT NOT NULL,
+    category STRING,
+    name STRING,
+    price BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_category ON items (category)
+  CREATE INDEX idx_price ON items (price)
+setup:
+  - INSERT INTO items VALUES
+      (1, 'books', 'Go Programming', 45),
+      (2, 'books', 'Algorithms', 60),
+      (3, 'electronics', 'Keyboard', 120),
+      (4, 'electronics', 'Mouse', 30)
+tests:
+  # UNION ALL over two indexed-equality legs: both legs plan as covering
+  # index scans, the union merges index entries, ONE fetch materializes
+  # full records above.
+  - query: SELECT * FROM items WHERE category = 'books' UNION ALL SELECT * FROM items WHERE price = 120
+    plan_contains: "Fetch(Union(IndexScan"
+    unordered: true
+    rows:
+      - [1, books, Go Programming, 45]
+      - [2, books, Algorithms, 60]
+      - [3, electronics, Keyboard, 120]
+  # Overlapping legs: UNION ALL keeps duplicates — the pushed shape must
+  # not change multiplicity (row 2 matches both legs).
+  - query: SELECT id FROM items WHERE category = 'books' UNION ALL SELECT id FROM items WHERE price = 60
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [2]

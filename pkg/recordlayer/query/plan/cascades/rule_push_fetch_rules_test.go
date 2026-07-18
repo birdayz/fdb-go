@@ -577,3 +577,239 @@ func TestFieldValueChild_PushFilterDecision(t *testing.T) {
 		t.Fatalf("expected residual filter on top, got %T", yielded[0])
 	}
 }
+
+// TestPushUnionThroughFetch_RebuildsPlanOverPushedInners pins the Java
+// withChildrenReferences shape (PushSetOperationThroughFetchRule.java:236-240):
+// the yielded fetch's PLAN must be Fetch(Union(idxA, idxB)) — the union
+// rebuilt over the pushed INNER plans. The pre-fix rule passed the STALE
+// union plan (children still the fetch plans) into the wrapper and a
+// nil-inner fetch shell above it, so extraction executed
+// Fetch(Union(Fetch(idxA), Fetch(idxB))): every row fetched twice while
+// the cost model priced the pushed-down shape.
+func TestPushUnionThroughFetch_RebuildsPlanOverPushedInners(t *testing.T) {
+	t.Parallel()
+
+	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
+		return v, true
+	}
+	var indexPlans []*plans.RecordQueryIndexPlan
+	makeChild := func(indexName string) expressions.Quantifier {
+		indexPlan := plans.NewRecordQueryIndexPlan(
+			indexName, nil, []string{"T"}, values.UnknownType, false,
+		)
+		indexPlans = append(indexPlans, indexPlan)
+		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
+			indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+		)
+		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(indexWrapper))
+		fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		return expressions.ForEachQuantifier(expressions.InitialOf(fetchWrapper))
+	}
+	q1 := makeChild("idx_a")
+	q2 := makeChild("idx_b")
+
+	stale := plans.NewRecordQueryUnionPlan(nil)
+	unionWrapper := NewPhysicalUnionWrapper(stale, []expressions.Quantifier{q1, q2})
+
+	yielded := FireImplementationRule(NewPushUnionThroughFetchRule(), expressions.InitialOf(unionWrapper))
+	if len(yielded) != 1 {
+		t.Fatalf("expected 1 yielded, got %d", len(yielded))
+	}
+	fw, ok := yielded[0].(*physicalFetchFromPartialRecordWrapper)
+	if !ok {
+		t.Fatalf("expected fetch wrapper, got %T", yielded[0])
+	}
+	up, ok := fw.plan.GetInner().(*plans.RecordQueryUnionPlan)
+	if !ok {
+		t.Fatalf("fetch inner PLAN: got %T, want *RecordQueryUnionPlan (the rebuilt set-op, not a nil shell)", fw.plan.GetInner())
+	}
+	inners := up.GetInners()
+	if len(inners) != 2 {
+		t.Fatalf("rebuilt union arity: got %d, want 2", len(inners))
+	}
+	for i, inner := range inners {
+		if inner != plans.RecordQueryPlan(indexPlans[i]) {
+			t.Fatalf("union child %d: got %T (%v), want the pushed INDEX plan — a Fetch child here is the double-fetch bug", i, inner, inner.Explain())
+		}
+	}
+	// The union wrapper below the fetch must carry the rebuilt plan too,
+	// not the stale snapshot.
+	setOpExpr := findPhysicalExpr(fw.innerQuant.GetRangesOver())
+	uw, ok := setOpExpr.(*physicalUnionWrapper)
+	if !ok {
+		t.Fatalf("fetch child expr: got %T, want *physicalUnionWrapper", setOpExpr)
+	}
+	if uw.plan == stale {
+		t.Fatal("union wrapper still carries the STALE plan snapshot (children = fetches)")
+	}
+}
+
+// TestPushInUnionThroughFetch_Fires pins that the DYNAMIC set-op arm
+// fires with its single leg (Java RecordQueryInUnionPlan.isDynamic()).
+// The pre-fix helper declined every call with len(quants) < 2, so the
+// InUnion rule was registered but could never fire.
+func TestPushInUnionThroughFetch_Fires(t *testing.T) {
+	t.Parallel()
+
+	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
+		return v, true
+	}
+	indexPlan := plans.NewRecordQueryIndexPlan(
+		"idx_a", nil, []string{"T"}, values.UnknownType, false,
+	)
+	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+	)
+	fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(indexWrapper))
+	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	q := expressions.ForEachQuantifier(expressions.InitialOf(fetchWrapper))
+
+	inUnionPlan := plans.NewRecordQueryInUnionPlanWithMaxSize(
+		nil, []string{"__in_b"}, nil, false, 7,
+	)
+	w := NewPhysicalInUnionWrapper(inUnionPlan, q)
+
+	yielded := FireImplementationRule(NewPushInUnionThroughFetchRule(), expressions.InitialOf(w))
+	if len(yielded) != 1 {
+		t.Fatalf("expected the dynamic single-leg push to fire once, got %d yields", len(yielded))
+	}
+	fw, ok := yielded[0].(*physicalFetchFromPartialRecordWrapper)
+	if !ok {
+		t.Fatalf("expected fetch wrapper, got %T", yielded[0])
+	}
+	ip, ok := fw.plan.GetInner().(*plans.RecordQueryInUnionPlan)
+	if !ok {
+		t.Fatalf("fetch inner: got %T, want *RecordQueryInUnionPlan", fw.plan.GetInner())
+	}
+	if ip.GetInner() != plans.RecordQueryPlan(indexPlan) {
+		t.Fatalf("in-union child: got %T, want the pushed index plan", ip.GetInner())
+	}
+	if got := ip.GetBindingNames(); len(got) != 1 || got[0] != "__in_b" {
+		t.Fatalf("binding names not preserved: %v", got)
+	}
+	if ip.GetMaxSize() != 7 {
+		t.Fatalf("maxSize not preserved: %d", ip.GetMaxSize())
+	}
+}
+
+// TestPushUnionThroughFetch_PartialPush pins Java's Case 2
+// (PushSetOperationThroughFetchRule.java:242-251): with two fetch legs
+// and one residual scan leg, the fetches merge below ONE fetch and the
+// outer union survives over [Fetch(Union(idxA, idxB)), scan]. The
+// pre-fix rule declined unless EVERY leg was a fetch.
+func TestPushUnionThroughFetch_PartialPush(t *testing.T) {
+	t.Parallel()
+
+	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
+		return v, true
+	}
+	var indexPlans []*plans.RecordQueryIndexPlan
+	makeChild := func(indexName string) expressions.Quantifier {
+		indexPlan := plans.NewRecordQueryIndexPlan(
+			indexName, nil, []string{"T"}, values.UnknownType, false,
+		)
+		indexPlans = append(indexPlans, indexPlan)
+		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
+			indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+		)
+		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(indexWrapper))
+		fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		return expressions.ForEachQuantifier(expressions.InitialOf(fetchWrapper))
+	}
+	q1 := makeChild("idx_a")
+	q2 := makeChild("idx_b")
+
+	scanPlan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scanWrapper := &physicalScanWrapper{plan: scanPlan}
+	q3 := expressions.ForEachQuantifier(expressions.InitialOf(scanWrapper))
+
+	unionWrapper := NewPhysicalUnionWrapper(
+		plans.NewRecordQueryUnionPlan(nil), []expressions.Quantifier{q1, q2, q3},
+	)
+
+	yielded := FireImplementationRule(NewPushUnionThroughFetchRule(), expressions.InitialOf(unionWrapper))
+	if len(yielded) != 1 {
+		t.Fatalf("expected Case-2 partial push to yield once, got %d", len(yielded))
+	}
+	outer, ok := yielded[0].(*physicalUnionWrapper)
+	if !ok {
+		t.Fatalf("expected outer union wrapper, got %T", yielded[0])
+	}
+	outers := outer.plan.GetInners()
+	if len(outers) != 2 {
+		t.Fatalf("outer union arity: got %d, want 2 (merged fetch + residual scan)", len(outers))
+	}
+	mergedFetch, ok := outers[0].(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if !ok {
+		t.Fatalf("outer leg 0: got %T, want the merged fetch", outers[0])
+	}
+	up, ok := mergedFetch.GetInner().(*plans.RecordQueryUnionPlan)
+	if !ok || len(up.GetInners()) != 2 {
+		t.Fatalf("merged fetch inner: got %T, want Union over the two index plans", mergedFetch.GetInner())
+	}
+	if outers[1] != plans.RecordQueryPlan(scanPlan) {
+		t.Fatalf("outer leg 1: got %T, want the residual scan plan", outers[1])
+	}
+}
+
+// TestPushIntersectionThroughFetch_RequiredValuesGate pins the
+// tryPushValues port: an intersection's comparison keys must translate
+// through EVERY leg's translation function; a declining leg drops out
+// and (non-dynamic, one leg left) the rule declines entirely.
+func TestPushIntersectionThroughFetch_RequiredValuesGate(t *testing.T) {
+	t.Parallel()
+
+	okFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
+		return v, true
+	}
+	noFn := func(values.Value, values.CorrelationIdentifier, values.CorrelationIdentifier) (values.Value, bool) {
+		return nil, false
+	}
+	makeChild := func(indexName string, fn plans.TranslateValueFunction) expressions.Quantifier {
+		indexPlan := plans.NewRecordQueryIndexPlan(
+			indexName, nil, []string{"T"}, values.UnknownType, false,
+		)
+		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
+			indexPlan, fn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+		)
+		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(indexWrapper))
+		fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		return expressions.ForEachQuantifier(expressions.InitialOf(fetchWrapper))
+	}
+
+	key := values.NewFieldValue(nil, "PK", values.NullableLong)
+
+	// One leg cannot answer the comparison key → decline.
+	declining := NewPhysicalIntersectionWrapper(
+		plans.NewRecordQueryIntersectionPlan(nil, []values.Value{key}),
+		[]expressions.Quantifier{makeChild("idx_a", okFn), makeChild("idx_b", noFn)},
+	)
+	if got := FireImplementationRule(NewPushIntersectionThroughFetchRule(), expressions.InitialOf(declining)); len(got) != 0 {
+		t.Fatalf("expected decline when a leg cannot answer the comparison key, got %d yields", len(got))
+	}
+
+	// Both legs answer → fires, comparison keys preserved on the rebuilt plan.
+	firing := NewPhysicalIntersectionWrapper(
+		plans.NewRecordQueryIntersectionPlan(nil, []values.Value{key}),
+		[]expressions.Quantifier{makeChild("idx_a", okFn), makeChild("idx_b", okFn)},
+	)
+	yielded := FireImplementationRule(NewPushIntersectionThroughFetchRule(), expressions.InitialOf(firing))
+	if len(yielded) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(yielded))
+	}
+	fw, ok := yielded[0].(*physicalFetchFromPartialRecordWrapper)
+	if !ok {
+		t.Fatalf("expected fetch wrapper, got %T", yielded[0])
+	}
+	ipn, ok := fw.plan.GetInner().(*plans.RecordQueryIntersectionPlan)
+	if !ok {
+		t.Fatalf("fetch inner: got %T, want *RecordQueryIntersectionPlan", fw.plan.GetInner())
+	}
+	if got := ipn.GetComparisonKeyValues(); len(got) != 1 {
+		t.Fatalf("comparison keys not preserved: %v", got)
+	}
+}

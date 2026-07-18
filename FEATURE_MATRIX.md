@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**320 scenarios · 2558 query/assertion cases** across 18 feature areas.
+**321 scenarios · 2560 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -32,7 +32,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Keys & primary keys | 5 | 132 |
 | Error codes & validation | 4 | 37 |
 | End-to-end scenarios | 3 | 20 |
-| Other | 21 | 161 |
+| Other | 22 | 163 |
 
 ## Aggregates & GROUP BY
 
@@ -442,5 +442,6 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `negative_values` | 6 | Negative numbers and zero edge cases |
 | `select_no_from` | 6 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | SELECT * from single table |
+| `set_op_fetch_pushdown` | 2 | set operations push below the fetch |
 | `string_comparison` | 5 | String comparison edge cases |
 
