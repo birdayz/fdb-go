@@ -336,10 +336,6 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(mapFilterA, mapFilterB)
 	}
 
-	if cmp := compareFlatMapVsNLJ(opsA, opsB); cmp != 0 {
-		return cmp
-	}
-
 	if opsA.nljPredicateCount != opsB.nljPredicateCount {
 		return intCompare(opsB.nljPredicateCount, opsA.nljPredicateCount)
 	}
@@ -367,6 +363,11 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(opsA.inMemorySortCount, opsB.inMemorySortCount)
 	}
 
+	// Statistics-driven scalar cost — the Java CostModel analogue (Java
+	// compares plan costs after its ordinal rungs too). NOT a prune-to-1
+	// workaround: retiring it (WS-P stage (d) probe) regressed genuine
+	// selectivity decisions (equality-index preference, vector
+	// outer-limit folding), so it stays as the statistics rung.
 	costA := properties.EstimateCostWith(a, stats)
 	costB := properties.EstimateCostWith(b, stats)
 	if costA.Less(costB) {
@@ -841,20 +842,6 @@ func comparePrimaryScanVsIndexScan(opsA, opsB expressionCounts) int {
 		return -1
 	}
 	if bIsPrimaryScan && aIsIndexScanWithFetch {
-		return 1
-	}
-	return 0
-}
-
-func compareFlatMapVsNLJ(opsA, opsB expressionCounts) int {
-	aHasFlatMap := opsA.flatMapCount > 0
-	bHasFlatMap := opsB.flatMapCount > 0
-	aHasNLJ := opsA.nestedLoopJoinCount > 0
-	bHasNLJ := opsB.nestedLoopJoinCount > 0
-	if aHasFlatMap && bHasNLJ && !aHasNLJ && !bHasFlatMap {
-		return -1
-	}
-	if bHasFlatMap && aHasNLJ && !bHasNLJ && !aHasFlatMap {
 		return 1
 	}
 	return 0

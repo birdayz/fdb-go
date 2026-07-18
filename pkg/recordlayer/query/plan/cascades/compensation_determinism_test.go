@@ -353,8 +353,11 @@ func TestPlannerCapTrips(t *testing.T) {
 		// round: StartExploration bumps the round counter and records the
 		// goal watermark, ReArm pushes a fresh tick past it (the mid-round
 		// constraint push), and CommitExploration lands behind the current
-		// epoch — so the group still NeedsExploration after 10 rounds.
-		for i := 0; i < 10; i++ {
+		// epoch — so the group still NeedsExploration at the tripwire
+		// (100 since WS-P stage (d): the load-level cap is obsolete
+		// under epoch convergence; the bound remains only as a loud
+		// divergence tripwire for a tick leak / always-growing combine).
+		for i := 0; i < 100; i++ {
 			ref.StartExploration()
 			ref.ConstraintsMap().ReArm()
 			ref.CommitExploration()
@@ -366,7 +369,7 @@ func TestPlannerCapTrips(t *testing.T) {
 		task := &ExploreGroupTask{Phase: PhaseRewriting, Ref: ref}
 		task.Run(p)
 		if !errors.Is(p.capErr, ErrPlannerRoundCapHit) {
-			t.Fatalf("10 epoch-re-armed rounds must trip ErrPlannerRoundCapHit, got %v", p.capErr)
+			t.Fatalf("100 epoch-re-armed rounds must trip ErrPlannerRoundCapHit, got %v", p.capErr)
 		}
 	})
 }

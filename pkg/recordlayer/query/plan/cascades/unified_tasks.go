@@ -52,22 +52,31 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		if targetStage.Precedes(refStage) {
 			return
 		}
-		if len(t.Ref.FinalMembers()) > 0 {
+		if n := len(t.Ref.FinalMembers()); n > 0 {
+			// WS-P stage (c) status: the REWRITING OptimizeInputs
+			// routing prunes parent-chain-optimized groups to their
+			// winner before this boundary (Java's covered case). A
+			// UNIVERSAL forced prune here was attempted and reverted:
+			// canonical alternatives Go's PLANNING cannot re-derive
+			// (Java re-derives via its PLANNING rule set) were lost —
+			// the RFC-153 buried-leg and cross-join-EXISTS shapes lost
+			// their implementable form. Full prune-to-1 requires
+			// PLANNING re-derivation parity first; until then
+			// unoptimized groups cross with their full canonical set.
 			t.Ref.AdvancePlannerStage(targetStage)
 		} else {
 			t.Ref.SetStage(targetStage)
 		}
 	}
 
-	// Round cap: with the WS-B identity work (equal⟹same-hash across
-	// plans and predicates, memo no-collapse pins) the memo dedup reaches
-	// fixpoint like Java's, so a Reference still inserting new members
-	// after 10 rounds is a genuine rule-cycle divergence (A→B→A minting
-	// distinct-but-equivalent members) — a planner bug, not a load level.
-	// LOUD, never a silent commit of a half-explored group (RFC-180 I2:
-	// the cap re-evaluated after the dedup strengthening; kept as a
-	// tripwire).
-	const maxRoundsPerRef = 10
+	// Round tripwire (WS-P stage (d)): under EPOCH convergence rounds
+	// happen only on verdict-gated constraint growth, and both constraint
+	// lattices are finite chains — convergence is structural, so the old
+	// load-level cap (10) is obsolete. The bound stays only as a LOUD
+	// divergence tripwire (a combine that always reports growth, a
+	// tick leak) far above any real workload; never a silent commit of a
+	// half-explored group.
+	const maxRoundsPerRef = 100
 	if t.Ref.NeedsExploration() && t.Ref.ExplRounds() >= maxRoundsPerRef {
 		p.capErr = ErrPlannerRoundCapHit
 		return
@@ -102,7 +111,18 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		if isExploratoryMember(t.Ref, expr) {
 			continue // also an exploratory member — the member loop owns it
 		}
-		if t.Phase == PhasePlanning && isPhysical(expr) {
+		// OptimizeInputs routing per phase (Java ExploreGroup routes
+		// EVERY final through exploreExpressionAndOptimizeInputs):
+		//   - REWRITING (WS-P stage (c)): finals are the canonical
+		//     LOGICAL forms FinalizeExpressionsRule promoted;
+		//     OptimizeInputs → OptimizeGroup prunes each group to its
+		//     REWRITING winner so the stage boundary crosses
+		//     pruned (Java Verify's property).
+		//   - PLANNING: physical finals only — the correlated-leg
+		//     muzzle (a logical parent must not drive standalone child
+		//     pruning with the correlation unbound; see the member-loop
+		//     comment below).
+		if t.Phase == PhaseRewriting || (t.Phase == PhasePlanning && isPhysical(expr)) {
 			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 		}
 		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
@@ -129,7 +149,15 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		// stamped as a standalone winner → no 0-row. Child EXPLORATION is unaffected —
 		// it is driven independently by ExploreExprTask step 4 (children's ExploreGroup),
 		// not by OptimizeInputsTask — so this removes only premature standalone pruning.
-		if t.Phase == PhasePlanning && isPhysical(expr) {
+		//
+		// REWRITING (WS-P stage (c)): a member that is ALSO a final —
+		// FinalizeExpressionsRule promotes the SAME expression object,
+		// so canonical forms live in both sets — routes through
+		// OptimizeInputs exactly like Java's getFinalExpressions split:
+		// OptimizeGroup then prunes each group to its REWRITING winner
+		// and the stage boundary crosses pruned (Java Verify's shape).
+		if (t.Phase == PhaseRewriting && isFinalMember(t.Ref, expr)) ||
+			(t.Phase == PhasePlanning && isPhysical(expr)) {
 			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 		}
 		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
