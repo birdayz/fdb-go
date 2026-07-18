@@ -2292,30 +2292,16 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 									proj.Aliases[i] = strings.ToUpper(col.name)
 								}
 							}
-						} else if resolver.QualifierIsDuplicated(semantic.NewUnquoted(cr.table)) {
-							// The DUP-ALIAS face (a Go extension — Java
-							// rejects duplicate FROM aliases): the reference
-							// stays display-keyed against the merged row's
-							// alias-pinned datum key. The top-level dup-alias
-							// shapes routed through THIS build path (GROUP BY
-							// aggregates) answer through it, pinned by the
-							// duplicate-FROM-aliases FDB suite; the
-							// dup-alias-under-UNION face remains unsupported
-							// and dies loud downstream. Phase B's
-							// machine-minted unique quantifier aliases make
-							// QOV addressing unambiguous and retire this
-							// carve-out — the last flat-name projection mint.
-							proj.ProjectedValues[i] = &values.FieldValue{
-								Field: strings.ToUpper(col.name),
-								Typ:   values.UnknownType,
-							}
 						} else {
-							// Born-baked (slice 3): a validated qualified
-							// projection over a UNIQUE alias that cannot bake
-							// a leg-window ordinal must fail the plan, never
-							// mint a lazy name read (dead-in-effect across
-							// yamsql, embedded, and the full FDB driver
-							// suites before retirement).
+							// Born-baked (slice 3; the dup-alias flat-name
+							// carve-out is RETIRED — a duplicated qualifier
+							// bakes QOV(binding) per-attribute above, first
+							// leg included, since only later duplicates were
+							// renamed and QOV(alias) addresses exactly one
+							// leg; ambiguous dup reads die 42702 upstream):
+							// a validated qualified projection that cannot
+							// bake a leg-window ordinal must fail the plan,
+							// never mint a lazy name read.
 							return nil, &expr.UnresolvableOrdinalError{Field: cr.col, Source: cr.table}
 						}
 					}

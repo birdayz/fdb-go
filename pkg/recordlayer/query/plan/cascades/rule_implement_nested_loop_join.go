@@ -2929,13 +2929,13 @@ func fieldValueAliasAndCol(fv *values.FieldValue) (alias, col string) {
 	upper := strings.ToUpper(fv.Field)
 	// The dotted-split arm serves CHILDLESS dotted merged-row reads. On
 	// every covered surface it is dead-in-effect (probed zero across
-	// yamsql, embedded, cascades, and the full FDB driver suites) — but
-	// its PRODUCERS still live in code: the dup-alias projection
-	// carve-out mints flat "ALIAS.COL" names until Phase B's unique
-	// quantifier aliases, and the enclosed-unnest name-model residual
-	// still merges dotted keys. The arm retires WITH those producers
-	// (WS-N slice 5 re-gated), not before — deleting the defense while
-	// a producer can still emit the shape reintroduces silent
+	// yamsql, embedded, cascades, and the full FDB driver suites). The
+	// dup-alias projection carve-out — one of its two producers — is
+	// RETIRED (dup qualifiers bake QOV(binding) per-attribute, first leg
+	// included); the enclosed-unnest name-model residual still merges
+	// dotted keys, so the arm retires WITH that remaining producer (the
+	// box-substrate ordinalization), not before — deleting the defense
+	// while a producer can still emit the shape reintroduces silent
 	// misclassification.
 	if dot := strings.IndexByte(upper, '.'); dot >= 0 {
 		return upper[:dot], upper[dot+1:]

@@ -383,14 +383,16 @@ func TestFDB_KeyBindingAndBuriedExists(t *testing.T) {
 			t.Fatalf("P4e = %d rows %v, want 6 rows {5:2,7:2,9:2} (a.qid binds the q leg, EXISTS always true)", total, counts)
 		}
 	})
-	// (f) The UNION face: a dup-alias branch under UNION ALL keeps its
-	// per-attribute reference display-keyed and dies LOUD at the executor's
-	// ordinal-resolution guard (zero rows served; the distinct-alias control
-	// answers). Correct-or-loud holds; the typed-decline-at-translation
-	// upgrade rides the flip rider.
+	// (f) The UNION face: a dup-alias branch under UNION ALL dies LOUD at
+	// PLAN time — the carve-out retirement upgraded the decline from the
+	// executor's runtime ordinal guard (zero rows served first) to the
+	// born-baked plan-time UnresolvableOrdinalError: the union-branch
+	// scope source declares no column order, so the per-attribute bake
+	// cannot bind an ordinal. Correct-or-loud, now with no partial serve;
+	// full dup-alias-under-UNION support remains future work.
 	t.Run("P4f_union_dup_branch", func(t *testing.T) {
 		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a UNION ALL SELECT id FROM p",
-			"not resolvable in the runtime row")
+			"declares no column order to bind a plan-time ordinal")
 	})
 
 	// ---- P5: the LEFT-box dup FLIP ----

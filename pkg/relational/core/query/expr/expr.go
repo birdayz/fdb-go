@@ -355,13 +355,24 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 		}
 		return nil, nil
 	}
-	if src.CorrelationName == "" || src.CorrelationName == src.Alias.Name() {
+	if src.CorrelationName == "" {
+		return nil, nil
+	}
+	if src.CorrelationName == src.Alias.Name() && !r.QualifierIsDuplicated(src.Alias) {
+		// Unique alias bound by its own name — the caller's ordinary
+		// emission owns it.
 		return nil, nil
 	}
 	// Bind the source-relative ordinal at construction when the source's
 	// declared column order resolves it (see ResolveIdentifier's correlated
 	// arm) — the LATER-DUP-LEG binding (`q AS a`) resolves through the leg
 	// window, since a lazy ref over the ordinal row is a loud runtime error.
+	// The FIRST dup leg (which keeps the alias as its binding) bakes the
+	// SAME way: its correlation is unique at the quantifier level — only
+	// the later duplicates were renamed — so QOV(alias) addresses exactly
+	// one leg and the executor's binding-keyed leg windows resolve it.
+	// This retires the flat "ALIAS.COL" projection carve-out (the last
+	// flat-name projection mint).
 	// The UNION dup-alias case (not yet supported) declines UPSTREAM at the
 	// union-branch build before reaching here.
 	if ord, ok := sourceColumnOrdinal(src, col.Id.Name()); ok {
