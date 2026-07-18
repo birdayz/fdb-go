@@ -51,8 +51,13 @@ type SeedResult struct {
 	Mismatches []*Mismatch
 	InfraErr   error
 	Histogram  map[string]int // plan family → query count
+	PlanErrors []string       // first few embedded-planner failures (diagnostics for the plan-error bucket)
 	Executed   int            // query×projection executions compared
 }
+
+// maxPlanErrorSamples caps PlanErrors so a systematically-broken planner
+// doesn't balloon results while still leaving a diagnosable trail.
+const maxPlanErrorSamples = 3
 
 // RunSeed generates the seed's case, materializes it through the given
 // sqldriver DB (which must already point at a database; RunSeed creates a
@@ -112,6 +117,9 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 			}
 		} else {
 			res.Histogram["plan-error"]++
+			if len(res.PlanErrors) < maxPlanErrorSamples {
+				res.PlanErrors = append(res.PlanErrors, fmt.Sprintf("%s: %v", starSQL, planErr))
+			}
 		}
 
 		for _, projection := range c.Projections() {
@@ -126,7 +134,7 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 				})
 				continue
 			}
-			oracle, err := OracleRows(c, q, projectionOrStar(c, projection))
+			oracle, err := OracleRows(c, q, projection)
 			if err != nil {
 				res.Kind = OutcomeInfra
 				res.InfraErr = fmt.Errorf("oracle: %w", err)
@@ -146,13 +154,6 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 		res.Kind = OutcomeMismatch
 	}
 	return res
-}
-
-func projectionOrStar(c *Case, projection []string) []string {
-	if projection == nil {
-		return nil
-	}
-	return projection
 }
 
 // queryRows executes and decodes to []Row keyed by UPPER-CASE column name.

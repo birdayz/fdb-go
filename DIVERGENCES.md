@@ -11,6 +11,17 @@ live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
 
 ## Intentional Architectural Decisions (no functional difference)
 
+### PK-intersection declines a needed non-ForMatch compensation (conservative)
+
+**Java:** `createIntersectionAndCompensation` reapplies ANY compensation
+polymorphically via `applyAllNeededCompensations`.
+**Go:** `compensateIntersection` (`intersector_primary_key.go`) reapplies only
+the `ForMatchCompensation` form; a needed compensation of any other concrete
+type declines the pair/triple like the impossible arm. Today only ForMatch
+(and the monoid identities) reach that fold, so the arm is dead in practice;
+if a new Compensation form becomes reachable there, the decline loses a plan
+alternative — never rows. Revisit when a second realizable form exists.
+
 ### Go decomposes SelectExpression into separate logical operators
 
 **Java:** `SelectExpression` is a unified node for filters, projections, and joins.

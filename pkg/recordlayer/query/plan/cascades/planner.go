@@ -1014,9 +1014,10 @@ func hasIntersectionFinal(ref *expressions.Reference) bool {
 // hasIntersectionWithin reports whether expr IS a physical intersection or
 // wraps one within the given depth. A compensated intersection (the
 // createIntersectionAndCompensation port) is a LogicalFilterExpression or
-// SelectExpression OVER the intersection wrapper — up to two levels (filter
-// compensation + result compensation) — so the naked-physical check alone
-// would miss it and pushCrossCandidateIntersection would rebuild the same
+// SelectExpression OVER the intersection wrapper — up to two wrapper levels
+// (filter compensation + result compensation), hence the callers' depth of 3
+// counting the intersection itself — so the naked-physical check alone would
+// miss it and pushCrossCandidateIntersection would rebuild the same
 // intersection on every pushDataAccessTasks pass.
 func hasIntersectionWithin(expr expressions.RelationalExpression, depth int) bool {
 	if IsPhysicalIntersection(expr) {
