@@ -47,9 +47,14 @@ done
 
 Non-deterministic test results mean the planner produces different plans across runs. This is ALWAYS a bug — investigate, don't paper over.
 
-### 3. Review cycle (MANDATORY)
+### 3. Review cycle (MANDATORY, milestone-level)
 
-After implementation passes all tests, launch BOTH reviewers in parallel:
+The review unit is a COMPLETED workstream/phase (or the whole RFC
+implementation when it isn't phased) — NOT a commit. Implement the whole
+milestone with green tests per commit, then launch BOTH reviewers once in
+parallel. Do not run reviewer laps on intermediate commits (owner ruling
+2026-07-18: "not per commit"). After folding findings, the final HEAD gets
+one delta re-confirmation, not another full lap per fix commit.
 
 ```
 Agent(description: "Graefe Cascades review", prompt: "You are Goetz Graefe, author of the Cascades optimization framework paper. Review the diff in /home/birdy/projects/fdb-record-layer-go. Run `git diff HEAD` (or `git diff HEAD~N` for specific commits). [describe what changed and why]. Evaluate Cascades alignment. Under 300 words.", run_in_background: true)

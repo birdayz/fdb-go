@@ -61,7 +61,9 @@ If you can't write the e2e test, the feature isn't done. Period.
 
 ## QUERY-ENGINE CHANGES REQUIRE A GRAEFE ACK — RFC AND IMPL
 
-**Any change to the Cascades query engine (planner, optimizer, cost model, matching/data-access infra, physical wrappers, executor) needs a Graefe ACK on BOTH the RFC and the implementation before merge. Never merge a query-engine change Graefe hasn't reviewed.** Torvalds + @claude + codex are the other gates — don't ship with a NAK from any; re-request after every commit (an ACK only covers the HEAD it reviewed). Holds always-on, not just when a skill is loaded; mechanics in `.claude/skills/query-engine/` (impl) and `.claude/skills/todo-worker/` (RFC). PR #201 shipped a latent 0-row planner bug because it skipped Graefe.
+**Any change to the Cascades query engine (planner, optimizer, cost model, matching/data-access infra, physical wrappers, executor) needs a Graefe ACK on BOTH the RFC and the implementation before merge. Never merge a query-engine change Graefe hasn't reviewed.** Torvalds + @claude + codex are the other gates — never merge with a NAK from any.
+
+**Review cadence is MILESTONE-LEVEL, not per-commit (owner ruling 2026-07-18):** RFC → review → implement → review. Graefe+Torvalds ACK the RFC before implementation starts; implementation gets ONE joint review lap at workstream/phase completion (the review unit for an umbrella RFC is the workstream/phase, e.g. one lap for all of WS-P, one per WS-N phase), plus codex at the same granularity. Intermediate commits need green tests only — do NOT launch reviewer laps per commit. An ACK covers only the HEAD it reviewed, so review findings get folded and the FINAL head gets one DELTA re-confirmation — not a fresh full lap per fix commit. Holds always-on, not just when a skill is loaded; mechanics in `.claude/skills/query-engine/` (impl) and `.claude/skills/todo-worker/` (RFC). PR #201 shipped a latent 0-row planner bug because it skipped Graefe entirely — the gate is mandatory; its FREQUENCY is milestone-level.
 
 ---
 
