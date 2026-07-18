@@ -2875,8 +2875,11 @@ func (a *ArithmeticValue) evalStringConcat(l, r any, lc, rc TypeCode) (any, bool
 //     1e-4 → "1.0E-4");
 //   - the special values spell Infinity/-Infinity/NaN.
 //
-// Go's 'g' format picks its OWN form boundary and zero-pads exponents,
-// so the form is forced explicitly.
+// The DIGITS come from the Schubfach engine (schubfach.go) — the JDK
+// 19+ algorithm — not Go's shortest-decimal strconv: the two agree on
+// normal values but diverge on subnormals (Double.MIN_VALUE: Java
+// "4.9E-324", Go "5e-324"). The layout is forced here because Go's 'g'
+// format picks its own form boundary and zero-pads exponents.
 func javaFloatString(f float64, bits int) string {
 	if math.IsNaN(f) {
 		return "NaN"
@@ -2887,29 +2890,21 @@ func javaFloatString(f float64, bits int) string {
 	if math.IsInf(f, -1) {
 		return "-Infinity"
 	}
-	abs := math.Abs(f)
-	if f == 0 || (abs >= 1e-3 && abs < 1e7) {
-		s := strconv.FormatFloat(f, 'f', -1, bits)
-		if !strings.Contains(s, ".") {
-			s += ".0"
+	if f == 0 {
+		if math.Signbit(f) {
+			return "-0.0"
 		}
-		return s
+		return "0.0"
 	}
-	s := strconv.FormatFloat(f, 'e', -1, bits)
-	i := strings.IndexByte(s, 'e')
-	mant, exp := s[:i], s[i+1:]
-	neg := strings.HasPrefix(exp, "-")
-	exp = strings.TrimLeft(strings.TrimPrefix(strings.TrimPrefix(exp, "+"), "-"), "0")
-	if exp == "" {
-		exp = "0"
+	neg := math.Signbit(f)
+	var digits uint64
+	var e int
+	if bits == 32 {
+		digits, e = javaFloatDigits(float32(math.Abs(f)))
+	} else {
+		digits, e = javaDoubleDigits(math.Abs(f))
 	}
-	if neg {
-		exp = "-" + exp
-	}
-	if !strings.Contains(mant, ".") {
-		mant += ".0"
-	}
-	return mant + "E" + exp
+	return javaRenderDigits(neg, digits, e)
 }
 
 // JavaDoubleToString is Java's Double.toString(double).

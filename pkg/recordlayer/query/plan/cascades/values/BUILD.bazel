@@ -15,6 +15,7 @@ go_library(
         "pullup.go",
         "rebase.go",
         "replace.go",
+        "schubfach.go",
         "semantic_equals.go",
         "semantic_hash.go",
         "simplifier_value.go",
@@ -114,6 +115,7 @@ go_test(
         "scalar_functions_errors_test.go",
         "scalar_functions_extra2_test.go",
         "scalar_functions_extra_test.go",
+        "schubfach_test.go",
         "simplifier_value_test.go",
         "source_relative_baked_test.go",
         "swallow_axis_test.go",
@@ -174,6 +176,7 @@ go_test(
         "values_java_inspired_test.go",
         "values_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":values"],
     deps = [
         "//pkg/recordlayer/vectorcodec",
