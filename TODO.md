@@ -1452,7 +1452,28 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       CAST((SELECT bigint_col ...) AS BOOLEAN) evades the plan-time gates
 >       the direct column hits. Thread the inner plan's output column type
 >       through SubqueryPlanner.BuildScalar → ScalarSubqueryValue.
-> Remaining: WS-N slices 2-6 + Phases B-D (slice 1 landed, both ACK), WS-P
+> WS-N Phase A progress: slice 1 (structural validation channel) and slice 2
+> (born-baked — the four lazy resolver fallbacks retired as
+> UnresolvableOrdinalError after zero-hit probes across yamsql/embedded/full
+> sqldriver) are LANDED; slices 1-2 need their joint Graefe/Torvalds lap.
+> - [ ] Slice 3 NEXT: delete the projection flatten fallbacks — the
+>       `&values.FieldValue{Field: ToUpper(col.name)}` else-arms at
+>       plan_visitor.go:~681 and logical_predicate.go:~2285 (identical twins),
+>       the correlated hasJoins arms at logical_predicate.go:7653/7681, and the
+>       translator re-mints (cascades_translator translateProject /
+>       translateProjectOverExistsFilter fallback arms). CAREFUL: downstream
+>       name-paths key on ProjectedValues[i]==nil vs lazy — removing the mint
+>       changes that contract; map each consumer first.
+> - [ ] Slice 4: structural rebases — rewrite rebaseOuterLegRefsToMerged /
+>       rebaseOuterLegValue (rule_implement_nested_loop_join.go:1218) to compose
+>       FieldPath ordinals from planBuriedLegConcat leg windows instead of
+>       minting `corr + "." + field`; riskiest slice, stress-compare before/after.
+> - [ ] Slice 5: kill fieldValueAliasAndCol (NLJ :2827) + MergeSeedLegsOfValue
+>       (value_correlation.go:27) once 3-4 land.
+> - [ ] Slice 6: N-F5 sweep — remaining parseColRef callers down to the Phase-D
+>       metadata cluster (exit criterion: grep parseColRef → cascades_generator
+>       metadata sites only).
+> Remaining: WS-N Phases B-D after the slices, WS-P
 > (ConstraintsMap epoch port retiring dual-insertion + 15b/15c + round cap;
 > un-gate REWRITING OptimizeInputs; fix stale DIVERGENCES advancePlannerStage
 > claim).
