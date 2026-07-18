@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**330 scenarios · 2614 query/assertion cases** across 18 feature areas.
+**331 scenarios · 2618 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -24,7 +24,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Ordering & pagination | 13 | 114 |
 | Scalar functions & expressions | 33 | 358 |
 | Predicates & WHERE | 12 | 104 |
-| Column resolution & aliasing | 6 | 55 |
+| Column resolution & aliasing | 7 | 59 |
 | NULL handling | 5 | 26 |
 | NULL handling & boolean logic | 2 | 48 |
 | Index usage | 9 | 162 |
@@ -342,6 +342,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 |---|--:|---|
 | `alias_resolution` | 5 | Alias resolution edge cases |
 | `ambiguous_column` | 13 | Java's join-tests.yamsql: SELECT unqualified column that appears in |
+| `ambiguous_group_key_reread` | 4 | — |
 | `qualified_star` | 13 | SELECT <tbl>.* on a multi-source FROM clause restricts the projected |
 | `qualified_star_more` | 4 | More qualifier-star edge cases from Java's select-a-star.yamsql: |
 | `unknown_qualifier` | 6 | Java's SemanticAnalyzer rejects qualified column references whose |

@@ -15,7 +15,7 @@ outcome, so it cannot go stale. For the ANSI-standard scorecard see
 - **unsupported** — an explicitly-unsupported feature we cleanly reject (SQLSTATE `0A000`/`0AF00`/`0AF01`/`42883`).
 - **error-path** — correct rejection/constraint semantics (unknown column, overflow, unique violation, type mismatch, …): supported behaviour, not a gap.
 
-**330 scenarios · 2614 test cases** — 2288 supported (87.5%), 112 unsupported-feature pins, 214 error-path pins.
+**331 scenarios · 2618 test cases** — 2289 supported (87.4%), 112 unsupported-feature pins, 217 error-path pins.
 
 | Feature area | Cases | Supported | Unsupported | Error-path | Supported % |
 |---|--:|--:|--:|--:|--:|
@@ -28,7 +28,7 @@ outcome, so it cannot go stale. For the ANSI-standard scorecard see
 | Ordering & pagination | 114 | 110 | 0 | 4 | 96.5% |
 | Scalar functions & expressions | 358 | 304 | 24 | 30 | 84.9% |
 | Predicates & WHERE | 104 | 102 | 0 | 2 | 98.1% |
-| Column resolution & aliasing | 55 | 29 | 0 | 26 | 52.7% |
+| Column resolution & aliasing | 59 | 30 | 0 | 29 | 50.8% |
 | NULL handling | 26 | 22 | 0 | 4 | 84.6% |
 | NULL handling & boolean logic | 48 | 48 | 0 | 0 | 100.0% |
 | Index usage | 162 | 160 | 0 | 2 | 98.8% |
@@ -37,5 +37,5 @@ outcome, so it cannot go stale. For the ANSI-standard scorecard see
 | Error codes & validation | 37 | 8 | 2 | 27 | 21.6% |
 | End-to-end scenarios | 20 | 20 | 0 | 0 | 100.0% |
 | Other | 198 | 165 | 10 | 23 | 83.3% |
-| **Total** | **2614** | **2288** | **112** | **214** | **87.5%** |
+| **Total** | **2618** | **2289** | **112** | **217** | **87.4%** |
 

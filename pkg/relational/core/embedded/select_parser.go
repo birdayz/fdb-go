@@ -257,8 +257,14 @@ type aggSelectCol struct {
 	// groupColBare: the structural bare name of groupCol (parse-tree/derived
 	// at set time) — consumers never dot-split groupCol.
 	groupColBare string
-	aggFunc      string // COUNT/SUM/MIN/MAX/AVG
-	aggArg       string // argument column name — set only when arg is a bare column; used for the proto-path FD fast path. Empty for COUNT(*) and for expression args.
+	// groupColQualifier/groupColQualified: parse-tree qualification of the
+	// groupCol reference (FullId segment count), for the scope validation
+	// that rejects an AMBIGUOUS bare re-read (42702) instead of last-wins
+	// binding one leg's key. Empty/false for expression-redirected entries.
+	groupColQualifier string
+	groupColQualified bool
+	aggFunc           string // COUNT/SUM/MIN/MAX/AVG
+	aggArg            string // argument column name — set only when arg is a bare column; used for the proto-path FD fast path. Empty for COUNT(*) and for expression args.
 	// aggExpr is the IExpressionContext of the aggregate's argument when it is not a bare
 	// column reference (e.g. SUM(qty*price), AVG(CASE ... END)). Evaluated per input row.
 	// nil for bare-column args and for COUNT(*).
@@ -829,11 +835,11 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 							// 42803 grouping_error.
 							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr, visible: true})
 						default:
-							gcBare, _, _ := splitColumnRef(e.Expression())
+							gcBare, gcQual, gcQualified := splitColumnRef(e.Expression())
 							if gcBare == "" {
 								gcBare = colName
 							}
-							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName, groupColBare: gcBare, visible: true})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, visible: true})
 						}
 					} else {
 						pc := projCol{name: colName}
@@ -961,7 +967,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 					// mixed-agg classification site above.
 					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
 				default:
-					extra[i] = aggSelectCol{outName: out, groupCol: c.name, groupColBare: colBareOrName(c), visible: true}
+					extra[i] = aggSelectCol{outName: out, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, visible: true}
 				}
 			}
 			aggCols = append(extra, aggCols...)
@@ -1222,6 +1228,8 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				if key, outName, ok := aliasResolves(ac.groupCol); ok {
 					ac.groupCol = key.display
 					ac.groupColBare = key.bare
+					ac.groupColQualifier = key.qualifier
+					ac.groupColQualified = key.qualified
 					if ac.outName == "" {
 						ac.outName = outName
 					}
@@ -1315,7 +1323,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				// the rowMap (which carries group-by column values).
 				extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
 			default:
-				extra[i] = aggSelectCol{outName: out, groupCol: c.name, groupColBare: colBareOrName(c), visible: true}
+				extra[i] = aggSelectCol{outName: out, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, visible: true}
 			}
 		}
 		cls.aggCols = extra
@@ -1558,17 +1566,19 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 					}
 					gc := c.name
 					gcBare := colBareOrName(c)
+					gcQual, gcQualified := c.qualifier, c.qualified
 					if i < len(projExprs) && projExprs[i] != nil {
 						projText := canonicalTextOf(projExprs[i])
 						for _, gn := range cls.groupBy {
 							if gn.expr != nil && projText == gn.display {
 								gc = gn.display
 								gcBare = gn.display
+								gcQual, gcQualified = "", false
 								break
 							}
 						}
 					}
-					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc, groupColBare: gcBare, visible: true})
+					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, visible: true})
 				}
 				cls.aggCols = append(prepended, cls.aggCols...)
 				cls.projCols = nil

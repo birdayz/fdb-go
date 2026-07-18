@@ -2279,12 +2279,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						// (incl. the DUPLICATED-bare-leaf qualified output pin).
 						cr := colRef{table: col.qualifier, col: col.bare}
 						if bv := resolveQualifiedBaked(resolver, cr); bv != nil && !resolver.QualifierIsDuplicated(semantic.NewUnquoted(cr.table)) {
-							// A DUPLICATE plain alias on THIS (subquery /
-							// union-branch) build path stays display-keyed and
-							// dies LOUD — the dup-alias-under-UNION face is not
-							// yet a supported Go extension (Java rejects the
-							// duplicate alias); the top-level dup-alias shapes
-							// (plan_visitor path) remain supported.
+							// The structural bake is EXCLUDED for a duplicated
+							// qualifier: QOV(alias) cannot distinguish two
+							// same-named legs, so a dup reference takes the
+							// display-keyed arm below instead.
 							proj.ProjectedValues[i] = bv
 							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
 								if proj.Aliases == nil {
@@ -2295,10 +2293,15 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 								}
 							}
 						} else if resolver.QualifierIsDuplicated(semantic.NewUnquoted(cr.table)) {
-							// The DUP-ALIAS face: QOV(alias) cannot
-							// distinguish the two same-named legs, so the
-							// reference stays display-keyed against the
-							// merged row's alias-pinned datum key. Phase B's
+							// The DUP-ALIAS face (a Go extension — Java
+							// rejects duplicate FROM aliases): the reference
+							// stays display-keyed against the merged row's
+							// alias-pinned datum key. The top-level dup-alias
+							// shapes routed through THIS build path (GROUP BY
+							// aggregates) answer through it, pinned by the
+							// duplicate-FROM-aliases FDB suite; the
+							// dup-alias-under-UNION face remains unsupported
+							// and dies loud downstream. Phase B's
 							// machine-minted unique quantifier aliases make
 							// QOV addressing unambiguous and retire this
 							// carve-out — the last flat-name projection mint.
@@ -2448,6 +2451,30 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		}
 	}
 
+	// (5b) Validate SELECT-list group-column re-reads through the scope: a
+	// BARE re-read that is ambiguous across sources (GROUP BY po.id, pi.id
+	// re-read as `id`) is 42702 (Java AMBIGUOUS_COLUMN) — the aggregate
+	// output-name table matches keys qualifier-stripped, so an unvalidated
+	// bare re-read would silently bind ONE leg's key last-wins.
+	// Expression-redirected entries (groupCol = the GROUP BY expression's
+	// display) carry no column reference and are skipped.
+	if resolver != nil {
+		exprKeyDisplays := map[string]bool{}
+		for _, gn := range sq.groupBy {
+			if gn.expr != nil {
+				exprKeyDisplays[gn.display] = true
+			}
+		}
+		for _, ac := range sq.aggCols {
+			if ac.groupCol == "" || ac.groupColBare == "" || exprKeyDisplays[ac.groupCol] {
+				continue
+			}
+			if err := resolveColumnRefStructural(resolver, ac.groupColBare, ac.groupColQualifier, ac.groupColQualified); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	if len(sq.groupBy) > 0 && !sq.countStar {
 		if err := validateGroupByProjection(sq, md); err != nil {
 			return nil, err
@@ -2538,7 +2565,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 
 	if sq.havingExpr != nil {
-		upgradeHavingPredicate(op, sq, md, schemaName, cteScopes, existsPlanner)
+		if herr := upgradeHavingPredicate(op, sq, md, schemaName, cteScopes, existsPlanner); herr != nil {
+			return nil, herr
+		}
 	}
 
 	upgradeSortKeyValues(op, sq, md, schemaName, cteScopes)
@@ -3835,17 +3864,17 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	return nil
 }
 
-func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) {
+func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) error {
 	agg := findAggregate(op)
 	if agg == nil || sq.havingExpr == nil {
-		return
+		return nil
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
 	if resolver == nil {
 		resolver = buildSelectScope(sq, md, schemaName, cteScopes)
 	}
 	if resolver == nil {
-		return
+		return nil
 	}
 	// Install the SubqueryPlanner so EXISTS subqueries in HAVING can be planned.
 	if subqPlanner != nil {
@@ -3856,7 +3885,22 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 	}
 	pred, err := resolver.WalkPredicate(sq.havingExpr)
 	if err != nil {
-		return
+		// SEMANTIC errors surface with Java's codes: a bare HAVING re-read
+		// of an ambiguous grouped column is 42702 (Java AMBIGUOUS_COLUMN),
+		// exactly like the ORDER-BY twin — not a planner decline. An
+		// unbindable ordinal is loud per born-baked (slice 2). Every OTHER
+		// walk failure keeps the HasHaving decline sentinel: the translator
+		// rejects a set-but-unresolved HAVING, so nothing is dropped.
+		var ambig *semantic.AmbiguousColumnError
+		if errors.As(err, &ambig) {
+			return api.NewErrorf(api.ErrCodeAmbiguousColumn,
+				"Ambiguous reference %s", ambig.Reference())
+		}
+		var unres *expr.UnresolvableOrdinalError
+		if errors.As(err, &unres) {
+			return unres
+		}
+		return nil
 	}
 	// Unifying post-aggregate rebase: a HAVING reference to a
 	// grouped unnest key (`HAVING V > x`) resolves `V` against the PRE-aggregate
@@ -3879,6 +3923,7 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 		agg.HavingScalarSubqueries = subqPlanner.scalarSubqueries
 		subqPlanner.scalarSubqueries = nil
 	}
+	return nil
 }
 
 func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.QueryPredicate {

@@ -1466,11 +1466,17 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       QOV(alias) is ambiguous across same-named legs, Java rejects dup
 >       aliases; Phase B's unique quantifier aliases retire the carve-out) and
 >       fail UnresolvableOrdinalError otherwise. (b) DONE — the correlated
->       scalar join-inner hasJoins arms bake structurally first
->       (resolveQualifiedBaked leg windows; proven live+correct by the new
->       column-arg/inner-GROUP-BY/comma-join FDB pin); flat mint retirement
->       pending the full-FDB flat-arm probe (NOTE: verify probe builds compile —
->       a goimports strip once turned a live arm into a false zero-hit).
+>       scalar join-inner hasJoins special-cases are DELETED: every join-inner
+>       reference (qualified/bare, group keys/aggregate args) resolves through
+>       resolver.ResolveIdentifier, the single scope channel, and the flat
+>       mints are gone (five-shape column-agg FDB pin; NOTE: verify probe
+>       builds compile — a goimports strip once turned a live arm into a
+>       false zero-hit read as dead). (b2) Graefe slice-3 follow-up DONE: the
+>       ambiguous bare re-read of qualified group keys (GROUP BY po.id, pi.id
+>       re-read as `id`) was SILENT-WRONG in the SELECT list (last-wins leg
+>       bind) and 0AF00 in HAVING — both now 42702 via scope validation of
+>       groupCol re-reads + loud semantic errors from upgradeHavingPredicate
+>       (pinned in ambiguous_group_key_reread.yaml, all re-read positions).
 >       (c) translator re-mints (translateProject :5994,
 >       translateProjectOverExistsFilter :4223 + the sort/group-key mints at
 >       :4559/:4719/:5730/:6218/:6345): zero lazy escapes past the bakes in

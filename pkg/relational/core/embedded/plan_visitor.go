@@ -844,6 +844,30 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		}
 	}
 
+	// (5b) Validate SELECT-list group-column re-reads through the scope: a
+	// BARE re-read that is ambiguous across sources (GROUP BY po.id, pi.id
+	// re-read as `id`) is 42702 (Java AMBIGUOUS_COLUMN) — the aggregate
+	// output-name table matches keys qualifier-stripped, so an unvalidated
+	// bare re-read would silently bind ONE leg's key last-wins.
+	// Expression-redirected entries (groupCol = the GROUP BY expression's
+	// display) carry no column reference and are skipped.
+	if resolver != nil {
+		exprKeyDisplays := map[string]bool{}
+		for _, gn := range sq.groupBy {
+			if gn.expr != nil {
+				exprKeyDisplays[gn.display] = true
+			}
+		}
+		for _, ac := range sq.aggCols {
+			if ac.groupCol == "" || ac.groupColBare == "" || exprKeyDisplays[ac.groupCol] {
+				continue
+			}
+			if err := resolveColumnRefStructural(resolver, ac.groupColBare, ac.groupColQualifier, ac.groupColQualified); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	// (6) Validate GROUP BY projection constraints (42803).
 	if len(sq.groupBy) > 0 && !sq.countStar {
 		if err := validateGroupByProjection(sq, v.md); err != nil {
@@ -941,7 +965,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (14) Upgrade HAVING predicate.
 	if sq.havingExpr != nil {
-		upgradeHavingPredicate(op, sq, v.md, v.schemaName, v.cteScopes, existsPlanner)
+		if herr := upgradeHavingPredicate(op, sq, v.md, v.schemaName, v.cteScopes, existsPlanner); herr != nil {
+			return nil, herr
+		}
 		// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
 		// HAVING walk has no lowering — ScalarSubqueryValue's evaluation
 		// contract is pre-eval (uncorrelated) only, and the projection attach
