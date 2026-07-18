@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "rowdiff",
+    srcs = [
+        "gen.go",
+        "oracle.go",
+        "run.go",
+        "templates.go",
+    ],
+    importpath = "fdb.dev/pkg/relational/conformance/rowdiff",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/plans",
+        "//pkg/relational/core/embedded",
+    ],
+)
+
+go_test(
+    name = "rowdiff_test",
+    srcs = ["rowdiff_test.go"],
+    embed = [":rowdiff"],
+    deps = ["//pkg/recordlayer/query/plan/cascades/predicates"],
+)

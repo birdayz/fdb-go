@@ -4215,6 +4215,52 @@ All 23 subtests PASS. Total: 170.7s (incl. bulk insert ~2:28).
 
 ---
 
+## RFC-182 — generative row-soundness differential (2026-07-18 audit follow-ups)
+
+P1 SHIPPED (branch rfc182-row-soundness): rowdiff harness + `cmd/sql-diff-stress` +
+smoke; acceptance recorded in RFC §11 (500 pre-fix seeds → 23 catches, fixed tree
+clean). The enabling wrong-rows fix (pk-intersection residual compensation +
+adjusted-MaxMatchMap reader) landed in the same branch, pinned by
+`TestFDB_IntersectionResidualCompensation` + corpus dimension.
+
+- [ ] **RFC-182 P2** — continuation-resume dimension, LIMIT (§3 membership rule),
+  IN/BETWEEN/IS NULL/LIKE, the minimizer + yamsql draft emitter (§6), the
+  forced-alternative mode (disable dominant plan families so losing memo
+  alternatives get row-checked), non-correlated EXISTS/IN if feasible.
+- [ ] **RFC-182 P3** — Oracle J (Java `runSql` via plandiff runner), java-compat
+  profile, three-way triage, INFRA/DECLINE/MISMATCH signature ledger
+  (Go=M/Java≠M entries ONLY — Go≠M always fails), nightly target; REQUIRED:
+  extract the shared decline/divergence authority with the A3 skip list.
+  Subsumes/coordinates with RFC-164 WS-1 (generative Go-vs-Java differential).
+- [ ] **RFC-182 P4** — DISTINCT, GROUP BY/aggregates (Oracle M reimplementation
+  honesty note in §7 — Java-first coverage), joins incl. correlated EXISTS/IN,
+  vector/rank K>1 shapes. Nightly-scale empty-required-family bucket = hard fail.
+
+Audit findings (2026-07-18 quality audit) still open, in recommended order:
+- [ ] `plan_visitor.go:1116/:1133/:1156` discard `upgradeFirstFilter`'s success
+  bool and `:1153` returns the unfiltered op when no predicate builder succeeds —
+  make correct-or-loud; surface `planErr` at `cascades_generator.go:411`.
+- [ ] `physical_vector_index_scan_wrapper.go:36-38` returns empty correlation
+  (all 34 sibling wrappers propagate); memo leaf criterion `memo.go:522-542`
+  requires ALL members quantifier-free where Java's Traversal uses ANY.
+- [ ] DIVERGENCES.md ledger corrections: windowed candidate is DEAD (zero
+  constructors), not "Aligned"; cost-model "16 criteria" table stale;
+  compensation-intersect note (now partially wired via the RFC-182 fix).
+- [ ] Matcher arc (Graefe audit findings 1-3, one RFC): dependency-aware alias
+  matcher (`AliasMap.findCompleteMatches`), MatchIntermediate permutation
+  enumeration, retire the phantom `WithSwappedQuantifiers` double-fire.
+- [ ] `ForMatchCompensation.Intersect` early-returns Impossible when either
+  input is impossible; Java's WithSelectCompensation.intersect recomputes (an
+  impossible function on a NON-shared predicate drops out and the fold can be
+  possible — Compensation.java:762 case 2). Conservative: missed plans, never
+  rows. (Graefe impl-review finding, rfc182-row-soundness.)
+- [ ] Rule-registration hygiene: `RemoveRangeOneRule` dead in Java but registered
+  in Go; `DecorrelateValuesRule` double-registered; `OrderedPrimaryScanRule`
+  zero tests; `PredicateToLogicalUnionRule` REWRITING-vs-PLANNING phase.
+- [ ] ~750 LOC verified-dead code sweep (windowed candidate, `in_source.go`,
+  `rule_demorgan.go`, `IntersectionInfo` island, `derivations_evaluator.go`
+  computed-never-read).
+
 ## Phase 8: Planner architecture cleanup (Graefe review findings)
 
 ### 8.1 Evaluate `pushDataAccessTasks` as CascadesRule — RESOLVED (keep procedural)

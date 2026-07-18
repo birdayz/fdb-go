@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "sql-diff-stress_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/sql-diff-stress",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/relational/conformance/rowdiff",
+        "//pkg/relational/sqldriver",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)
+
+go_binary(
+    name = "sql-diff-stress",
+    embed = [":sql-diff-stress_lib"],
+    visibility = ["//visibility:public"],
+)

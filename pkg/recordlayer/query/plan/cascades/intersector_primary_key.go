@@ -79,8 +79,13 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 				qI := expressions.ForEachQuantifier(expressions.InitialOf(exprI))
 				qJ := expressions.ForEachQuantifier(expressions.InitialOf(exprJ))
 
-				resultExprs = append(resultExprs,
+				expr, viable := compensateIntersection(
+					[]*SingleMatchedAccess{ai, aj},
 					NewPhysicalIntersectionWrapper(intersectionPlan, []expressions.Quantifier{qI, qJ}))
+				if !viable {
+					continue
+				}
+				resultExprs = append(resultExprs, expr)
 			}
 		}
 
@@ -128,9 +133,14 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 						qJ := expressions.ForEachQuantifier(expressions.InitialOf(exprJ))
 						qK := expressions.ForEachQuantifier(expressions.InitialOf(exprK))
 
-						resultExprs = append(resultExprs,
+						expr, viable := compensateIntersection(
+							[]*SingleMatchedAccess{ai, aj, ak},
 							NewPhysicalIntersectionWrapper(intersectionPlan,
 								[]expressions.Quantifier{qI, qJ, qK}))
+						if !viable {
+							continue
+						}
+						resultExprs = append(resultExprs, expr)
 					}
 				}
 			}
@@ -146,6 +156,56 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 			resultExprs,
 		)
 	}
+}
+
+// compensateIntersection ports the compensation clause of Java's
+// WithPrimaryKeyDataAccessRule.createIntersectionAndCompensation
+// (WithPrimaryKeyDataAccessRule.java:135-139, 166, 191-194): the per-leg
+// compensations fold via the intersection monoid; an impossible fold
+// declines the combination outright (Java builds no expression for it — a
+// leg residual that cannot be reapplied must never be silently dropped),
+// and a needed fold wraps the intersection with the compensated residual
+// predicates. Every leg's candidate-top alias rebases onto the realized
+// base alias, exactly Java's matchedToRealizedTranslationMap (:233-242).
+//
+// Without this, `WHERE a=? AND b=? AND c=?` over idx(a), idx(b) planned to
+// a bare Intersection(idx_a, idx_b) and the c residual VANISHED — wrong
+// rows, confirmed live against FDB (see the pinned regression tests).
+func compensateIntersection(
+	accesses []*SingleMatchedAccess,
+	intersectionExpr expressions.RelationalExpression,
+) (expressions.RelationalExpression, bool) {
+	comps := make([]Compensation, 0, len(accesses))
+	for _, a := range accesses {
+		comps = append(comps, a.GetCompensation())
+	}
+	comp := IntersectCompensations(comps)
+	if comp.IsImpossible() {
+		return nil, false
+	}
+	if !comp.IsNeeded() {
+		return intersectionExpr, true
+	}
+	fmc, ok := comp.(*ForMatchCompensation)
+	if !ok {
+		// A needed compensation only the ForMatch form can reapply;
+		// anything else cannot be realized here — decline like Java's
+		// impossible arm rather than drop the residual.
+		return nil, false
+	}
+	return fmc.ApplyAllNeeded(intersectionExpr, func(realizedAlias values.CorrelationIdentifier) TranslationMap {
+		b := NewTranslationMapBuilder()
+		for _, a := range accesses {
+			topAlias := a.GetCandidateTopAlias()
+			if topAlias.IsZero() {
+				continue
+			}
+			b.When(topAlias).Then(func(_ values.CorrelationIdentifier, leafValue values.LeafValue) values.Value {
+				return leafValue.RebaseLeaf(realizedAlias)
+			})
+		}
+		return b.Build()
+	}), true
 }
 
 func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanContext) []values.Value {

@@ -123,7 +123,16 @@ func ComputeResultCompensation(pm PartialMatch, rootOfMatchPullUp *PullUp) *Comp
 		}
 	}
 
-	mmm := matchInfo.GetRegularMatchInfo().GetMaxMatchMap()
+	// The ADJUSTED map, not GetRegularMatchInfo().GetMaxMatchMap(): for an
+	// adjusted match (MatchableSort re-anchor) the wrapper's map is the
+	// child's map re-expressed through the sort level (AdjustMaybe), and the
+	// root pull-up's pull-through lives in that same level's namespace.
+	// Reading the underlying regular info's map here fed the pull-up a
+	// query value one candidate level too deep — the MaxMatchMap could not
+	// bridge the level's alias and EVERY adjusted match's compensation
+	// collapsed to Impossible (Java reads matchInfo.getMaxMatchMap() on the
+	// wrapper, Compensation.java:466).
+	mmm := matchInfo.GetMaxMatchMap()
 	if mmm == nil {
 		return nil
 	}
