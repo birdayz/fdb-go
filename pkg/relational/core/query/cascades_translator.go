@@ -6052,7 +6052,11 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	if outerRef == nil {
 		return nil
 	}
-	outerAlias := sourceAlias(p.Input)
+	// The single-source arm keys its outer leg by BINDING for uniformity
+	// with the cluster path — byte-identical to the alias here, since a
+	// duplicate mint needs ≥2 legs and a dup outer routes to the cluster
+	// dispatch above.
+	outerAlias := sourceBinding(p.Input)
 	outerQ := t.namedQuantifier(outerAlias, outerRef)
 
 	// Peel LogicalLimit off the inner plan and re-attach it explicitly here, so

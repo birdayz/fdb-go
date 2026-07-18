@@ -270,6 +270,7 @@ go_test(
         "outer_join_parity_fdb_test.go",
         "outer_join_types_probe_test.go",
         "outer_join_under_chained_unnest_decline_test.go",
+        "outer_projected_scalar_fdb_test.go",
         "overflow_probe_test.go",
         "pagination_limit_fdb_test.go",
         "param_rendering_probe_test.go",

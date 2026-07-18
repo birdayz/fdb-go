@@ -72,7 +72,7 @@ func TestClusteredPullUp_Spine(t *testing.T) {
 	if pu == nil {
 		t.Fatal("a gated 2-table cluster must build a pull-up spine")
 	}
-	if len(pu.legs) != 2 || pu.legs[0].alias != "O" || pu.legs[1].alias != "C" {
+	if len(pu.legs) != 2 || pu.legs[0].binding != "O" || pu.legs[1].binding != "C" {
 		t.Fatalf("legs = %+v, want FROM-order [O, C]", pu.legs)
 	}
 	if pu.legs[0].start != 0 || pu.legs[1].start != len(pu.legs[0].typ.Fields) {
@@ -150,8 +150,8 @@ func TestClusteredPullUp_BakesAllLegs(t *testing.T) {
 	}
 
 	// The baked ordinals land at legStart+idx of the CONCAT, not leg-relative.
-	cIdx, _ := pu.legByAlias["C"].typ.FieldIndex("CUSTOMER_ID")
-	wantC := pu.legByAlias["C"].start + cIdx
+	cIdx, _ := pu.legByBinding["C"].typ.FieldIndex("CUSTOMER_ID")
+	wantC := pu.legByBinding["C"].start + cIdx
 	found := false
 	predicates.ReplaceValues(rebuilt.(*logical.LogicalFilter).Predicate, func(v values.Value) values.Value {
 		if fv, isFV := v.(*values.FieldValue); isFV && fv.Resolved != nil {
@@ -162,7 +162,7 @@ func TestClusteredPullUp_BakesAllLegs(t *testing.T) {
 		return v
 	})
 	if !found {
-		t.Errorf("no baked ref at global ordinal %d (C.CUSTOMER_ID = legStart %d + idx %d)", wantC, pu.legByAlias["C"].start, cIdx)
+		t.Errorf("no baked ref at global ordinal %d (C.CUSTOMER_ID = legStart %d + idx %d)", wantC, pu.legByBinding["C"].start, cIdx)
 	}
 
 	// A leg ref to a column ABSENT from the leg's type flips missed → decline.
@@ -316,7 +316,7 @@ func TestClusteredSeed_Shape(t *testing.T) {
 		if dot <= 0 {
 			t.Fatalf("outer field %d name = %q, want DOTTED LEG.COL", i, f.Name)
 		}
-		leg, isLeg := pu.legByAlias[f.Name[:dot]]
+		leg, isLeg := pu.legByBinding[f.Name[:dot]]
 		if !isLeg {
 			t.Fatalf("outer field %d name %q: prefix is not a leg alias", i, f.Name)
 		}

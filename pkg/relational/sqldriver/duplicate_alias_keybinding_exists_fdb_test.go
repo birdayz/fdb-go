@@ -289,15 +289,63 @@ func TestFDB_KeyBindingAndBuriedExists(t *testing.T) {
 		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a, q AS b WHERE EXISTS (SELECT 1 FROM p)",
 			"duplicate FROM alias")
 	})
-	// (c) Correlated SCALAR subquery over a dup outer — the scalar lowering
-	// keys legs by display alias (not yet binding-aware).
-	t.Run("P4c_scalar_dup_outer", func(t *testing.T) {
-		loudDecline(t, "SELECT (SELECT a.id FROM q WHERE a.id = 1) FROM p AS a, q AS a",
-			"duplicate outer FROM alias")
+	// (c) Correlated SCALAR subquery over a dup outer — the clustered
+	// ordinal lowering keys the pull-up spans by the leg BINDING, so a
+	// per-attribute outer reference bakes onto the right concat window
+	// whether it binds the FIRST leg (binding == alias) or a LATER
+	// minted leg (Q$DUPn). Each multiset below served a loud decline
+	// while the path was display-keyed; the values are standard SQL
+	// (Java's per-attribute semantics).
+	scalarMultiset := func(t *testing.T, q string, want map[int64]int, wantNulls int) {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("dup-outer scalar subquery must ANSWER: %v\n  sql: %s", err, q)
+		}
+		defer rows.Close()
+		got := map[int64]int{}
+		nulls := 0
+		for rows.Next() {
+			var v sql.NullInt64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if !v.Valid {
+				nulls++
+				continue
+			}
+			got[v.Int64]++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) || nulls != wantNulls {
+			t.Errorf("scalar multiset = %v (+%d NULLs), want %v (+%d NULLs)\n  sql: %s",
+				got, nulls, want, wantNulls, q)
+		}
+	}
+	// First-leg correlation: the scalar is the OUTER p-leg's id, carried
+	// through a single-row inner (z.qid = 5). p×q = 6 outer rows → each
+	// p id three times.
+	t.Run("P4c_scalar_dup_outer_first_leg", func(t *testing.T) {
+		scalarMultiset(t, "SELECT (SELECT a.id FROM q AS z WHERE z.qid = 5) FROM p AS a, q AS a",
+			map[int64]int{1: 3, 2: 3}, 0)
 	})
+	// MINTED-leg correlation: the scalar is the outer q-leg's qid — the
+	// leg whose binding is Q$DUPn. A display-keyed pull-up cannot
+	// represent it (the old silent-NULL class); binding-keyed spans read
+	// the right window.
+	t.Run("P4c_scalar_dup_outer_minted_leg", func(t *testing.T) {
+		scalarMultiset(t, "SELECT (SELECT a.qid FROM q AS z WHERE z.qid = 5) FROM p AS a, q AS a",
+			map[int64]int{5: 2, 7: 2, 9: 2}, 0)
+	})
+	// Aggregate inner with the UNALIASED table as inner source (inner-own
+	// universe = the table name): MAX over the inner filtered by the
+	// outer's first-leg id — 9 for id=1 rows, NULL (empty aggregate) for
+	// id=2 rows.
 	t.Run("P4d_scalar_dup_outer_agg", func(t *testing.T) {
-		loudDecline(t, "SELECT (SELECT MAX(qid) FROM q WHERE a.id = 1) FROM p AS a, q AS a",
-			"duplicate outer FROM alias")
+		scalarMultiset(t, "SELECT (SELECT MAX(qid) FROM q WHERE a.id = 1) FROM p AS a, q AS a",
+			map[int64]int{9: 3}, 3)
 	})
 	// (e) The GATED flatten's leg-independent EXISTS.
 	// The minted-dup outer (p AS a, q AS a) resolves ordinally and a.qid binds the q

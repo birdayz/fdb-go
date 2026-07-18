@@ -1436,6 +1436,26 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > engine-private decision + loud OptContinuation boundary, C3 kept-armed pending
 > inner, C4 LoadByKeys lazy key-list resume, C5 documented at executeDistinct,
 > C6 nil-continuation ban, intersectionMultiCursor consume().
+> Phase B slice B1 LANDED: the correlated-scalar lowering is binding-aware —
+> clusterPullUp spans/seed/bake key by leg BINDING (legByBinding; display
+> aliases never key a span), the classifier's rightmost/outer-universe reads
+> sourceBinding + Binding entries, and the front-end dup-outer decline is
+> DELETED (P4c/P4d pins flipped from loud decline to exact rows, incl. the
+> minted-leg outer projection — the old silent-NULL class). Found+fixed in
+> the same slice (pre-existing on master, plain SQL, no dups): an
+> OUTER-scoped PLAIN column projected by a correlated scalar
+> (`SELECT (SELECT a.id FROM q AS z WHERE z.qid=5) FROM p AS a`) served the
+> INNER row's first column — the plain spelling bypassed the walked arm's
+> scope classification and derived the seed key from text; unified via
+> classifyProjFieldValue over the resolver channel (parenthesized and plain
+> spellings classify identically). Pinned: outer_projected_scalar_fdb_test.
+> - [ ] Follow-up (found in B1, loud today): a scalar subquery whose ONLY
+>       outer reference sits in the PROJECTION (`SELECT (SELECT a.id + z.qid
+>       FROM q AS z WHERE z.qid = 5) FROM p AS a`) is classified
+>       UNCORRELATED (correlation detection looks at WHERE position only) →
+>       routed to the pre-eval planner → loud 0AF00 "could not plan scalar
+>       subquery". Java plans it as correlated. Fix: classify by the walked
+>       projection's free correlations, route to buildCorrelatedScalar.
 > WS-N interim: quoted-lowercase column 42703 fixed (rlcatalog exact-key lookup);
 > case-colliding quoted columns reject 0A000 at CREATE (was a planning panic);
 > green pins landed (quoted_identifier_pins, join_leg_name_pins). Still red →

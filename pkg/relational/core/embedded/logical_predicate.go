@@ -8073,20 +8073,6 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 	if q == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{Message: "correlated scalar subquery: nil query"}
 	}
-	// The correlated-scalar lowering keys legs by
-	// DISPLAY alias — its inner plan and scalar output naming are not
-	// binding-aware — so a duplicate outer alias in scope (a minted Q$DUPn
-	// binding) would resolve per-attribute at the front end and then serve a
-	// silent-NULL scalar at execution (the outer projection is planned as an
-	// inner-row column). Decline LOUDLY until this path speaks bindings; the
-	// EXISTS twin (buildCorrelatedExists) is binding-aware and answers.
-	for _, src := range p.outerScopes {
-		if src.CorrelationName != "" && !strings.EqualFold(src.CorrelationName, src.Alias.Name()) {
-			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: fmt.Sprintf("correlated scalar subquery: duplicate outer FROM alias %s is not supported (the scalar lowering is not binding-aware)", src.Alias.Name()),
-			}
-		}
-	}
 	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
 	if !ok {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
@@ -8515,6 +8501,37 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// it is materialized as the inner's projected output AFTER the sort/limit
 		// below.
 		var computedScalarVal values.Value
+		// classifyProjFieldValue routes a resolved single-column projection by
+		// the SCOPE its reference binds: an OUTER-scoped field is NOT an inner
+		// row key and must take the materialized path (its value comes from
+		// the outer binding, evaluated per outer row); an inner-scoped field
+		// keys the inner row (qualified for a join's merged row, bare for a
+		// single source). Shared by the walked-expression arm and the plain
+		// column arm so both spellings of the same reference classify
+		// identically.
+		classifyProjFieldValue := func(fv *values.FieldValue) {
+			innerScoped, alias := true, ""
+			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+				alias = strings.ToUpper(qov.Correlation.Name())
+			} else if ref := parseColRef(fv.Field); ref.isQualified() {
+				alias = strings.ToUpper(ref.table)
+			}
+			if alias != "" {
+				_, innerScoped = innerSourceAliases(op)[alias]
+			}
+			switch {
+			case !innerScoped:
+				computedScalarVal = fv
+			case len(sq.joins) > 0:
+				if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+					scalarCol = strings.ToUpper(qov.Correlation.Name()) + "." + strings.ToUpper(fv.Field)
+				} else {
+					scalarCol = strings.ToUpper(fv.Field)
+				}
+			default:
+				scalarCol = strings.ToUpper(parseColRef(fv.Field).bare())
+			}
+		}
 		switch {
 		case len(sq.projCols) == 1:
 			// A COMPUTED projection (`SELECT UPPER(x)`, `a+b`, `CAST(...)`) is NOT
@@ -8563,29 +8580,28 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				// FieldValue takes the MATERIALIZED path like any computation —
 				// its value comes from the outer binding, evaluated per outer row.
 				if fv, isFV := cv.(*values.FieldValue); isFV {
-					innerScoped, alias := true, ""
-					if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-						alias = strings.ToUpper(qov.Correlation.Name())
-					} else if ref := parseColRef(fv.Field); ref.isQualified() {
-						alias = strings.ToUpper(ref.table)
-					}
-					if alias != "" {
-						_, innerScoped = innerSourceAliases(op)[alias]
-					}
-					switch {
-					case !innerScoped:
-						computedScalarVal = cv
-					case len(sq.joins) > 0:
-						if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-							scalarCol = strings.ToUpper(qov.Correlation.Name()) + "." + strings.ToUpper(fv.Field)
-						} else {
-							scalarCol = strings.ToUpper(fv.Field)
-						}
-					default:
-						scalarCol = strings.ToUpper(parseColRef(fv.Field).bare())
-					}
+					classifyProjFieldValue(fv)
 				} else {
 					computedScalarVal = cv
+				}
+			} else {
+				// A PLAIN (unparenthesized) column has no expression context,
+				// so it never reached the walk above — the old text path
+				// derived scalarCol from the projection TEXT without ever
+				// asking WHICH SCOPE the qualifier binds. An OUTER-scoped
+				// plain column (`SELECT a.id FROM q AS z WHERE …`) then read
+				// the INNER row's slot of that name — the seed's
+				// ofOrdinal(inner, 0) served the inner's first column as the
+				// scalar (silent wrong rows; the parenthesized twin `(a.id)`
+				// was already fixed by the walked arm above). Resolve the
+				// column through the semantic scope (inner first, outer
+				// fallthrough — SQL scoping) and run the SAME classification:
+				// outer-scoped materializes, inner-scoped keys the inner row.
+				pc := sq.projCols[0]
+				if rv, rErr := resolveCorrelatedColumnValue(resolver, colBareOrName(pc), pc.qualifier, pc.qualified); rErr == nil {
+					if fv, isFV := rv.(*values.FieldValue); isFV {
+						classifyProjFieldValue(fv)
+					}
 				}
 			}
 			if computedScalarVal == nil && scalarCol == "" {
