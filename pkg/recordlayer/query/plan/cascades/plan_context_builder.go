@@ -17,6 +17,16 @@ type IndexDef interface {
 	IndexPrimaryKeyColumns() []string
 }
 
+// IndexDefWithRowType is an optional extension of IndexDef for defs that
+// can state the flowed row layout of the records the index serves (the
+// descriptor-shaped positional type). Candidates built without one flow
+// UnknownType, which disqualifies them from plans that must bind
+// comparison keys to row slots at plan time (the pk-merge intersection).
+type IndexDefWithRowType interface {
+	IndexDef
+	IndexRowType() values.Type
+}
+
 // IndexDefWithColumnFunctions is an optional extension of IndexDef for indexes
 // whose key columns are not all bare fields. IndexColumnFunctions returns a
 // slice parallel to IndexColumnNames: entry i is the function wrapping the i-th
@@ -61,13 +71,19 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 		if withFns, ok := def.(IndexDefWithColumnFunctions); ok {
 			columnFns = withFns.IndexColumnFunctions()
 		}
+		flowed := values.Type(values.UnknownType)
+		if withRT, ok := def.(IndexDefWithRowType); ok {
+			if t := withRT.IndexRowType(); t != nil {
+				flowed = t
+			}
+		}
 		candidates = append(candidates, NewValueIndexScanMatchCandidateWithFunctions(
 			def.IndexName(),
 			def.IndexRecordTypes(),
 			upperCols,
 			columnFns,
 			aliases,
-			values.UnknownType,
+			flowed,
 			def.IndexIsUnique(),
 			upperPK,
 		))

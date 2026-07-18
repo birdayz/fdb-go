@@ -1,0 +1,33 @@
+name: ambiguous_group_key_reread
+schema_template: |
+  CREATE TABLE po (
+    id BIGINT NOT NULL,
+    v BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE pi (
+    id BIGINT NOT NULL,
+    po_id BIGINT,
+    w BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO po VALUES (1, 10), (2, 20)
+  - INSERT INTO pi VALUES (5, 1, 100), (6, 1, 200), (7, 2, 300)
+tests:
+  # With BOTH po.id and pi.id as group keys, a BARE re-read of `id` is
+  # ambiguous and must reject 42702 (Java AMBIGUOUS_COLUMN) in every
+  # re-read position — never bind last-wins to one leg's key. This pins
+  # the upstream scope rejection that keeps the translator's group-key
+  # output-name table (a name-keyed map) from ever seeing an ambiguous
+  # bare primary.
+  - query: SELECT po.id, pi.id, COUNT(*) FROM po, pi WHERE pi.po_id = po.id GROUP BY po.id, pi.id HAVING id > 0
+    error_code: "42702"
+  - query: SELECT po.id, pi.id, COUNT(*) FROM po, pi WHERE pi.po_id = po.id GROUP BY po.id, pi.id ORDER BY id
+    error_code: "42702"
+  - query: SELECT id, COUNT(*) FROM po, pi WHERE pi.po_id = po.id GROUP BY po.id, pi.id
+    error_code: "42702"
+  # Control: the QUALIFIED re-reads answer.
+  - query: SELECT po.id, pi.id, COUNT(*) FROM po, pi WHERE pi.po_id = po.id GROUP BY po.id, pi.id HAVING po.id > 1 ORDER BY po.id, pi.id
+    rows:
+      - [2, 7, 1]

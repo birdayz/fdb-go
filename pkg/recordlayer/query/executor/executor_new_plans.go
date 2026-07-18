@@ -447,42 +447,69 @@ func executeLoadByKeys(
 	p *plans.RecordQueryLoadByKeysPlan,
 	store *recordlayer.FDBRecordStore,
 	_ *EvaluationContext,
+	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	keys := p.GetKeysSource().GetPrimaryKeys()
 	if len(keys) == 0 {
 		return recordlayer.Empty[QueryResult](), nil
 	}
+	// Java's shape (RecordQueryLoadByKeysPlan.executePlan): the KEY list
+	// is the resumable source — RecordCursor.fromList(keys, continuation)
+	// — with each key loaded lazily and missing records skipped. The
+	// eager buffered form DROPPED the incoming continuation while still
+	// emitting resumable-looking list tokens, so a resume replayed every
+	// row from 0. Lazy loading also holds one record at a time, so no
+	// statement-memory charge is needed (the RFC-130 buffer accumulated
+	// every loaded record).
+	return applySkipLimit(
+		&loadByKeysCursor{
+			keys:  recordlayer.FromListWithContinuation(keys, continuation),
+			store: store,
+		},
+		props.Skip, props.ReturnedRowLimit,
+	), nil
+}
 
-	// RFC-130: bounded by a plan-literal key count, but each element is a whole
-	// stored record, so the resident bytes can grow. Charge each loaded record
-	// against the statement memory budget via boundedBuffer.
-	results := newBoundedBuffer[QueryResult](props.State, 0, "LoadByKeys", estimateQueryResultBytes)
-	for _, pk := range keys {
-		rec, err := store.LoadRecord(pk)
+// loadByKeysCursor loads records for a resumable key-list cursor,
+// skipping keys with no record (Java's .filter(Objects::nonNull)). Each
+// emitted row carries the KEY cursor's continuation — the wire format is
+// the plain 4-byte list-index token, byte-identical to Java's.
+type loadByKeysCursor struct {
+	keys   recordlayer.RecordCursor[tuple.Tuple]
+	store  *recordlayer.FDBRecordStore
+	closed bool
+}
+
+func (c *loadByKeysCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	for {
+		r, err := c.keys.OnNext(ctx)
 		if err != nil {
-			props.State.ReleaseMemory(results.Charged())
-			return nil, fmt.Errorf("executor: LoadByKeys pk=%v: %w", pk, err)
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
+		if !r.HasNext() {
+			return recordlayer.NewResultNoNext[QueryResult](r.GetNoNextReason(), r.GetContinuation()), nil
+		}
+		pk := r.GetValue()
+		rec, err := c.store.LoadRecord(pk)
+		if err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf("executor: LoadByKeys pk=%v: %w", pk, err)
 		}
 		if rec == nil {
 			continue
 		}
-		qr := FromStoredRecord(rec)
-		if err := results.Append(qr); err != nil {
-			props.State.ReleaseMemory(results.Charged())
-			return nil, err
-		}
+		return recordlayer.NewResultWithValue(FromStoredRecord(rec), r.GetContinuation()), nil
 	}
-	// Live-bytes model: rebuilt (and re-charged) per page; released at page
-	// teardown via the wrapping cursor's Close.
-	return newChargeReleasingCursor(
-		applySkipLimit(
-			recordlayer.FromList(results.Items()),
-			props.Skip, props.ReturnedRowLimit,
-		),
-		props.State, results.Charged(),
-	), nil
 }
+
+func (c *loadByKeysCursor) Close() error {
+	c.closed = true
+	return c.keys.Close()
+}
+
+func (c *loadByKeysCursor) IsClosed() bool { return c.closed }
+
+var _ recordlayer.RecordCursor[QueryResult] = (*loadByKeysCursor)(nil)
 
 func executeUnorderedUnion(
 	ctx context.Context,
@@ -874,6 +901,13 @@ func executeFirstOrDefault(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	// A resume from the emitted row's own continuation: the single row
+	// was already consumed — the cursor is exhausted, never re-executed
+	// (re-execution would re-emit the row: a duplicate under any parent
+	// that snapshots child positions).
+	if bytes.Equal(continuation, singleResultConsumedToken) {
+		return recordlayer.Empty[QueryResult](), nil
+	}
 	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	if err != nil {
 		return nil, err
@@ -1704,6 +1738,16 @@ func (c *errResultCursor) OnNext(context.Context) (recordlayer.RecordCursorResul
 func (c *errResultCursor) Close() error   { return nil }
 func (c *errResultCursor) IsClosed() bool { return false }
 
+// singleResultConsumedToken is the continuation a singleResultCursor's
+// emitted row carries: "the one row was consumed". A resume from it is
+// EXHAUSTED (executeFirstOrDefault returns Empty). The retired
+// value+nil-continuation shape was impossible in Java (every value
+// result carries a resumable continuation) and made every parent
+// snapshot the child as START — safe only while the shape stayed ≤1 row
+// under a per-outer-row FlatMap; any other parent would have silently
+// replayed the row.
+var singleResultConsumedToken = []byte{0x01}
+
 // singleResultCursor yields one result then ends.
 type singleResultCursor struct {
 	value  QueryResult
@@ -1722,10 +1766,9 @@ func (c *singleResultCursor) OnNext(_ context.Context) (recordlayer.RecordCursor
 		), nil
 	}
 	c.done = true
-	// Use nil continuation — a single-result cursor doesn't support
-	// resumption. EndContinuation is rejected by NewResultWithValue
-	// (a value result must have a resumable continuation).
-	return recordlayer.NewResultWithValue(c.value, nil), nil
+	return recordlayer.NewResultWithValue(
+		c.value, recordlayer.NewBytesContinuation(singleResultConsumedToken),
+	), nil
 }
 
 func (c *singleResultCursor) Close() error   { c.closed = true; return nil }

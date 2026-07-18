@@ -248,6 +248,14 @@ func (m *Memo) merge(a, b *expressions.Reference) {
 	}
 
 	winner.Absorb(loser) // folds members + exploration state; sets loser.forwardedTo=winner
+	// Absorb ReArmed the survivor's epoch (folded members were explored
+	// under the LOSER's identity); without a task the re-arm is inert —
+	// a converged survivor's trailing ExploreGroupTask has already run,
+	// and a mid-round one commits its stale goal and returns. Schedule
+	// the round the re-arm requires.
+	if m.reExplore != nil {
+		m.reExplore(winner.Canonical())
+	}
 	m.repointIndices(loser, winner)
 	m.invalidateCorrelatedUp(winner)
 	m.mergeCount++

@@ -135,6 +135,17 @@ func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) bool {
 // Rules should use this instead of expressions.InitialOf when creating
 // child References for yielded expressions. This is how the Cascades
 // planner avoids redundant exploration of shared sub-trees.
+// InsertReExploring inserts expr into ref through the memo's scheduled
+// insert (epoch re-arm + re-round when ref's exploration already began).
+// Rule code adding members to a reference it did not just create must use
+// this instead of Reference.Insert.
+func (c *ExpressionRuleCall) InsertReExploring(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	if c.memo != nil {
+		return c.memo.InsertReExploring(ref, expr)
+	}
+	return ref.Insert(expr)
+}
+
 func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpression) *expressions.Reference {
 	if c.memo != nil {
 		ref := c.memo.MemoizeExpression(expr)

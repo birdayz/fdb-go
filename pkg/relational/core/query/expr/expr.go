@@ -30,8 +30,8 @@
 // # Handled shapes
 //
 //   - Columns: bare (`col`) and qualified (`t.col`).
-//   - Constants: integer, string, NULL. Float pending (see
-//     ResolveConstant).
+//   - Constants: integer (width-narrowed like Java's parseDecimal),
+//     float, string, NULL.
 //   - Arithmetic: +, -, *, /.
 //   - Comparisons: =, <>, !=, <, <=, >, >=, IS [NOT] DISTINCT FROM.
 //   - Logical: AND / OR / NOT (with left-deep chain flattening).
@@ -66,6 +66,7 @@ package expr
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 
@@ -92,6 +93,9 @@ import (
 // BuildScalar receives the inner Query context from a
 // SubqueryExpressionAtomContext (scalar subquery) and returns:
 //   - alias: a unique CorrelationIdentifier for the scalar subquery
+//   - typ: the inner plan's single output column type (UnknownType when
+//     the shape is underivable) — flowed into ScalarSubqueryValue so the
+//     plan-time gates see the real type
 //   - err: non-nil when the inner query cannot be planned
 //
 // The planner stores the (alias → plan) mapping externally; the
@@ -99,7 +103,7 @@ import (
 // referencing the alias.
 type SubqueryPlanner interface {
 	BuildExists(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, err error)
-	BuildScalar(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, err error)
+	BuildScalar(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, typ values.Type, err error)
 }
 
 // Resolver converts parsed SQL expressions into cascades Values. It
@@ -268,8 +272,8 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 		// runtime the correlation binds a source-shaped row (the source's own
 		// row or its leg window), where the declared-column-order ordinal
 		// reads the same slot a name lookup would have found. Unresolvable
-		// (computed alias, empty derived-table catalog) stays lazy — a loud
-		// OrdinalResolutionError at runtime, never a silent wrong-slot read.
+		// (computed alias, empty derived-table catalog) is LOUD at plan
+		// time (UnresolvableOrdinalError — born-baked, slice 2).
 		if ord, ok := sourceColumnOrdinal(src, field); ok {
 			return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 				values.NewQuantifiedObjectValue(corrID),
@@ -278,11 +282,7 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 				columnCascadesType(col),
 			), nil
 		}
-		return values.NewFieldValue(
-			values.NewQuantifiedObjectValue(corrID),
-			field,
-			columnCascadesType(col),
-		), nil
+		return nil, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
 	}
 	// Bind the LOGICAL ordinal at plan time (Java's FieldValue.ofFieldName
 	// resolving against the referent's result type, FieldValue.java:273-299).
@@ -290,15 +290,29 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 	// order is src.Table.Columns() (declared order). First-match by
 	// case-folded name — identical to the RecordType.FieldIndex rule — so the
 	// bound slot is the same one a name read would have found. Unresolvable
-	// (computed alias, no source table) stays lazy (a plan-time artifact the
-	// bake walks rewrite, or loud if it somehow reaches evaluation).
+	// (computed alias, no source table) is LOUD at plan time
+	// (UnresolvableOrdinalError — born-baked, slice 2).
 	if ord, ok := sourceColumnOrdinal(src, field); ok {
 		return values.NewFieldValueWithResolvedOrdinal(field, ord, columnCascadesType(col)), nil
 	}
-	return &values.FieldValue{
-		Field: field,
-		Typ:   columnCascadesType(col),
-	}, nil
+	return nil, &UnresolvableOrdinalError{Field: field, Source: src.Alias.Name()}
+}
+
+// UnresolvableOrdinalError reports a column resolution whose source
+// cannot bind a plan-time ordinal (no declared column order — an empty
+// derived-table catalog or a computed alias outside it). Every
+// production SQL resolution binds one (verified empirically across the
+// yamsql, embedded, and full FDB driver suites: the lazy fallbacks were
+// dead-in-effect), so this is LOUD at plan time — never a lazy
+// FieldValue that dies later as a runtime OrdinalResolutionError or,
+// worse, reads by name (WS-N Phase A slice 2: born-baked resolutions).
+type UnresolvableOrdinalError struct {
+	Field  string
+	Source string
+}
+
+func (e *UnresolvableOrdinalError) Error() string {
+	return fmt.Sprintf("column %q resolves against source %q, which declares no column order to bind a plan-time ordinal", e.Field, e.Source)
 }
 
 // sourceColumnOrdinal returns the 0-based position of field within the
@@ -341,15 +355,26 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 		}
 		return nil, nil
 	}
-	if src.CorrelationName == "" || src.CorrelationName == src.Alias.Name() {
+	if src.CorrelationName == "" {
+		return nil, nil
+	}
+	if src.CorrelationName == src.Alias.Name() && !r.QualifierIsDuplicated(src.Alias) {
+		// Unique alias bound by its own name — the caller's ordinary
+		// emission owns it.
 		return nil, nil
 	}
 	// Bind the source-relative ordinal at construction when the source's
 	// declared column order resolves it (see ResolveIdentifier's correlated
 	// arm) — the LATER-DUP-LEG binding (`q AS a`) resolves through the leg
 	// window, since a lazy ref over the ordinal row is a loud runtime error.
-	// The UNION dup-alias case (not yet supported) declines UPSTREAM at the
-	// union-branch build before reaching here.
+	// The FIRST dup leg (which keeps the alias as its binding) bakes the
+	// SAME way: its correlation is unique at the quantifier level — only
+	// the later duplicates were renamed — so QOV(alias) addresses exactly
+	// one leg and the executor's binding-keyed leg windows resolve it.
+	// This retires the flat "ALIAS.COL" projection carve-out (the last
+	// flat-name projection mint).
+	// A dup-alias branch under UNION ALL reaches here too and bakes the
+	// same per-binding way — no upstream decline remains.
 	if ord, ok := sourceColumnOrdinal(src, col.Id.Name()); ok {
 		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(src.CorrelationName)),
@@ -358,20 +383,16 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 			columnCascadesType(col),
 		), nil
 	}
-	return values.NewFieldValue(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(src.CorrelationName)),
-		col.Id.Name(),
-		columnCascadesType(col),
-	), nil
+	return nil, &UnresolvableOrdinalError{Field: col.Id.Name(), Source: src.CorrelationName}
 }
 
 // QualifierIsDuplicated reports whether the given qualifier ALIAS names MORE
 // than one local scope source (`FROM p AS a, q AS a`) — a duplicate plain
-// alias. Such a reference must NOT bake: the duplicate-FROM-alias mint gives
-// the two sources distinct correlations, but the qualified reference stays
-// display-keyed and dies LOUD at the executor's ordinal-resolution guard —
-// matching Java, which rejects a duplicate alias at binding. A single-match
-// qualifier bakes normally.
+// alias. A duplicated qualifier cannot be served by ordinary display-keyed
+// emission (the duplicate-FROM-alias mint gives the sources distinct
+// correlations), so the caller forces the per-binding bake: a
+// source-relative ordinal against the resolved leg. A unique alias bound by
+// its own name stays with ordinary emission.
 func (r *Resolver) QualifierIsDuplicated(qualifier semantic.Identifier) bool {
 	if qualifier.IsZero() {
 		return false
@@ -414,7 +435,7 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 	corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
 	// Bind the source-relative ordinal at construction when the shadowing
 	// source's declared column order resolves it (see ResolveIdentifier's
-	// correlated arm); unresolvable stays lazy.
+	// correlated arm); unresolvable is LOUD at plan time (born-baked).
 	if ord, ok := sourceColumnOrdinal(src, field); ok {
 		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 			values.NewQuantifiedObjectValue(corrID),
@@ -423,11 +444,7 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 			columnCascadesType(col),
 		), true, nil
 	}
-	return values.NewFieldValue(
-		values.NewQuantifiedObjectValue(corrID),
-		field,
-		columnCascadesType(col),
-	), true, nil
+	return nil, false, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
 }
 
 // ResolveArithmetic wraps left/right Values in a cascades
@@ -466,7 +483,23 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
 	}
 	left, right = widenIntConstAgainstDouble(op, left, right)
+	op, left, right = narrowFloatConstAgainstInt(op, left, right)
 	left, right = promoteStringComparandToUuid(op, left, right)
+	// PLAN-TIME promotion gate (Java SemanticAnalyzer + PromoteValue
+	// lattice): a comparison whose operand types have NO common maximum
+	// (STRING vs a number, BOOLEAN vs a number, BYTES vs anything else)
+	// rejects 42804 at plan time with Java's exact message. The runtime
+	// dispatch degraded such pairs to UNKNOWN per row — silent empty
+	// results where Java errors, including the empty-table shape where
+	// no row was ever evaluated. UNKNOWN-typed operands (bound
+	// parameters, internal untyped expressions) keep the runtime path.
+	if lt, rt := left.Type(), right.Type(); lt != nil && rt != nil &&
+		lt.Code() != values.TypeCodeUnknown && rt.Code() != values.TypeCodeUnknown {
+		if values.MaximumType(lt, rt) == nil {
+			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
+		}
+	}
 	return predicates.NewComparisonPredicate(left, predicates.Comparison{
 		Type: op, Operand: right,
 	}), nil
@@ -598,6 +631,162 @@ func widenIntConstAgainstDouble(op predicates.ComparisonType, left, right values
 	return left, coerced
 }
 
+// mirrorOp flips an ordered comparison to the other operand's point of
+// view (a < b ≡ b > a). Equality-family ops are their own mirror.
+func mirrorOp(op predicates.ComparisonType) predicates.ComparisonType {
+	switch op {
+	case predicates.ComparisonLessThan:
+		return predicates.ComparisonGreaterThan
+	case predicates.ComparisonLessThanOrEq:
+		return predicates.ComparisonGreaterThanEq
+	case predicates.ComparisonGreaterThan:
+		return predicates.ComparisonLessThan
+	case predicates.ComparisonGreaterThanEq:
+		return predicates.ComparisonLessThanOrEq
+	}
+	return op
+}
+
+// narrowFloatConstAgainstInt is widenIntConstAgainstDouble's INVERSE:
+// a DOUBLE/FLOAT compile-time CONSTANT compared against a non-constant
+// INT/LONG-typed value (an integer column) packs as a tuple-double
+// against int-encoded index/PK entries — a different tuple type code,
+// so an equality probe silently missed every row (`bigint_col = 1.0`
+// returned empty where Java compares 1 = 1.0 true) and range bounds
+// ordered by type code, not value. An INTEGRAL constant narrows to the
+// column's integer type (same value, correct tuple code); a
+// NON-integral bound rewrites to the equivalent integer predicate:
+//
+//	col >  1.5  ≡  col >= 2      col <  1.5  ≡  col <= 1
+//	col >= 1.5  ≡  col >= 2      col <= 1.5  ≡  col <= 1
+//
+// Equality/inequality against a non-integral constant stays as-is:
+// `=` matches nothing (value-correct on any path) and `<>` is served
+// by the residual comparison, which widens numerics itself.
+func narrowFloatConstAgainstInt(op predicates.ComparisonType, left, right values.Value) (predicates.ComparisonType, values.Value, values.Value) {
+	switch op {
+	case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
+		predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+	default:
+		return op, left, right
+	}
+	lc, rc := values.IsConstantValue(left), values.IsConstantValue(right)
+	if lc == rc {
+		return op, left, right
+	}
+	constV, colV := left, right
+	if rc {
+		constV, colV = right, left
+	}
+	ct, colt := constV.Type(), colV.Type()
+	if ct == nil || colt == nil {
+		return op, left, right
+	}
+	isFloatConst := ct.Code() == values.TypeCodeDouble || ct.Code() == values.TypeCodeFloat
+	isIntCol := colt.Code() == values.TypeCodeInt || colt.Code() == values.TypeCodeLong
+	if !isFloatConst || !isIntCol {
+		return op, left, right
+	}
+	cv, ok := values.EvaluateConstant(constV)
+	if !ok {
+		return op, left, right
+	}
+	f, fok := cv.(float64)
+	if !fok {
+		return op, left, right
+	}
+	if math.IsNaN(f) {
+		return op, left, right
+	}
+	// A bound BEYOND the int64 range: the raw double would pack with the
+	// wrong tuple type code (ordering by type, not value — the bug this
+	// helper fixes), so clamp the ORDERED ops to the always-true/false
+	// integer form instead: every int64 is > -1e19, none is > 1e19.
+	// Equality leaves as-is (a probe that misses everything IS the
+	// correct empty result); inequality reaches the residual comparison,
+	// which widens numerics itself.
+	if math.IsInf(f, 0) || f < math.MinInt64 || f >= math.MaxInt64 {
+		switch op {
+		case predicates.ComparisonEquals, predicates.ComparisonNotEquals:
+			return op, left, right
+		}
+		below := f < 0 // out of range on the NEGATIVE side
+		clamp := int64(math.MaxInt64)
+		if below {
+			clamp = math.MinInt64
+		}
+		colRelOp := op
+		if lc {
+			colRelOp = mirrorOp(op)
+		}
+		// col > +huge / col >= +huge → false ≡ col > MaxInt64;
+		// col < +huge / col <= +huge → true ≡ col <= MaxInt64;
+		// col > -huge / col >= -huge → true ≡ col >= MinInt64;
+		// col < -huge / col <= -huge → false ≡ col < MinInt64.
+		switch colRelOp {
+		case predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+			if below {
+				colRelOp = predicates.ComparisonGreaterThanEq
+			} else {
+				colRelOp = predicates.ComparisonGreaterThan
+			}
+		case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq:
+			if below {
+				colRelOp = predicates.ComparisonLessThan
+			} else {
+				colRelOp = predicates.ComparisonLessThanOrEq
+			}
+		}
+		if lc {
+			op = mirrorOp(colRelOp)
+		} else {
+			op = colRelOp
+		}
+		coerced := &values.ConstantValue{Value: clamp, Typ: colt}
+		if lc {
+			return op, coerced, right
+		}
+		return op, left, coerced
+	}
+	integral := f == math.Trunc(f)
+	var n int64
+	if integral {
+		n = int64(f)
+	} else {
+		// Rewrite the bound to the tightest integer predicate. The op
+		// direction is relative to the COLUMN side: when the constant is
+		// on the LEFT (`1.5 < col`), the column-relative op is mirrored.
+		colRelOp := op
+		if lc {
+			colRelOp = mirrorOp(op)
+		}
+		switch colRelOp {
+		case predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+			n = int64(math.Ceil(f))
+			colRelOp = predicates.ComparisonGreaterThanEq
+		case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq:
+			n = int64(math.Floor(f))
+			colRelOp = predicates.ComparisonLessThanOrEq
+		default:
+			// Equality family with a non-integral constant: leave as-is.
+			return op, left, right
+		}
+		if lc {
+			op = mirrorOp(colRelOp)
+		} else {
+			op = colRelOp
+		}
+	}
+	// Typ: colt (the COLUMN's integer type) is load-bearing for the SARG
+	// packing path, exactly as in widenIntConstAgainstDouble.
+	coerced := &values.ConstantValue{Value: n, Typ: colt}
+	if lc {
+		return op, coerced, right
+	}
+	return op, left, coerced
+}
+
 // ResolveCast wraps v in a CastValue with the target type. Rejects
 // nil child (programmer error) and Unknown target (use the direct
 // Value if the target is genuinely unknown).
@@ -607,6 +796,17 @@ func (r *Resolver) ResolveCast(v values.Value, target values.Type) (values.Value
 	}
 	if target == nil || target.Code() == values.TypeCodeUnknown {
 		return nil, fmt.Errorf("expr.ResolveCast: target UnknownType")
+	}
+	// PLAN-TIME pair check (Java resolves the cast operator at
+	// construction and fails "No cast defined from X to Y",
+	// CastValue.java:480-489) — a per-row rejection alone leaves the
+	// empty-table shape silently succeeding. Unknown-typed children keep
+	// the runtime dispatch.
+	if st := v.Type(); st != nil && st.Code() != values.TypeCodeUnknown {
+		if !values.CastPairDefined(st.Code(), target.Code()) {
+			return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+				"No cast defined from %v to %v", st.Code(), target.Code())
+		}
 	}
 	return values.NewCastValue(v, target), nil
 }
@@ -650,6 +850,19 @@ func (r *Resolver) ResolveLikeWithEscape(lhs values.Value, pattern values.Value,
 	s, ok := lit.(string)
 	if !ok {
 		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a string; got %T", lit)
+	}
+	// PLAN-TIME LHS gate: LIKE is a string predicate — a numeric or
+	// boolean LHS rejects 42804 like Java's SemanticAnalyzer, never a
+	// silent per-row UNKNOWN. STRING and the string-promotable temporal
+	// extension types pass; Unknown keeps the runtime path.
+	if lt := lhs.Type(); lt != nil {
+		switch lt.Code() {
+		case values.TypeCodeString, values.TypeCodeUnknown, values.TypeCodeNull,
+			values.TypeCodeEnum, values.TypeCodeDate, values.TypeCodeTimestamp:
+		default:
+			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
+		}
 	}
 	return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
 		Type:    predicates.ComparisonLike,
@@ -721,6 +934,25 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 			return "BYTES"
 		}
 		return fmt.Sprintf("%T", lit)
+	}
+	// PLAN-TIME LHS-vs-element promotion gate, matching the equality
+	// gate in ResolveComparison: `s IN (1, 2)` must reject 42804 like
+	// Java, not silently match nothing. Unknown-typed sides keep the
+	// runtime path.
+	if lt := left.Type(); lt != nil && lt.Code() != values.TypeCodeUnknown {
+		for _, v := range rhs {
+			if v == nil {
+				continue
+			}
+			et := v.Type()
+			if et == nil || et.Code() == values.TypeCodeUnknown {
+				continue
+			}
+			if values.MaximumType(lt, et) == nil {
+				return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+					"The operands of a comparison operator are not compatible.")
+			}
+		}
 	}
 	seenClass := ""
 	list := make([]any, 0, len(rhs))
@@ -893,9 +1125,20 @@ func aggregateOpForName(name string, isStar bool) (values.AggregateOp, bool) {
 func sqlTypeToCascadesType(sqlType string) values.Type {
 	switch sqlType {
 	case "INT", "INTEGER":
-		return values.TypeInt
+		// Genuine 32-bit INT (TypeCodeInt), NOT the historical
+		// values.TypeInt alias (= NullableLong): Java types INTEGER
+		// columns INT and dispatches the int32-bounded arithmetic lane
+		// (ADD_II = Math.addExact(int,int) — overflow at 2^31 errors
+		// 22003 where the LONG lane silently returns the wide value).
+		// Only the NOT NULL spelling carried the real code before —
+		// a nullable INTEGER column silently lost its width.
+		return values.NullableInt
 	case "INT NOT NULL", "INTEGER NOT NULL":
 		return values.NotNullInt
+	case "BIGINT":
+		return values.NullableLong
+	case "BIGINT NOT NULL":
+		return values.NotNullLong
 	case "STRING", "ENUM":
 		return values.TypeString
 	case "UUID":
@@ -908,12 +1151,20 @@ func sqlTypeToCascadesType(sqlType string) values.Type {
 		return values.NullableUuid
 	case "BOOL":
 		return values.TypeBool
-	case "FLOAT", "DOUBLE":
-		// FLOAT and DOUBLE both map to the seed's double type
-		// (values.TypeFloat == NullableDouble). Carrying the real
-		// TypeCodeDouble — rather than Unknown — lets the predicate-lift
-		// type gate reject a bare `WHERE <double_col>` as non-boolean
-		// (42804) instead of silently lifting it to `col = TRUE` (RFC-146).
+	case "FLOAT":
+		// Genuine 32-bit FLOAT (TypeCodeFloat): Java computes FLOAT
+		// arithmetic in float32 (ADD_FF — overflow saturates to ±Inf at
+		// ~3.4e38 where the double lane returns the finite wide value).
+		// The old "FLOAT, DOUBLE → NullableDouble" conflation erased the
+		// width.
+		return values.NullableFloat
+	case "FLOAT NOT NULL":
+		return values.NotNullFloat
+	case "DOUBLE", "DOUBLE NOT NULL":
+		// Carrying the real TypeCodeDouble — rather than Unknown — lets
+		// the predicate-lift type gate reject a bare `WHERE <double_col>`
+		// as non-boolean (42804) instead of silently lifting it to
+		// `col = TRUE` (RFC-146).
 		return values.NullableDouble
 	case "BYTES":
 		// Real TypeCodeBytes, same reason as FLOAT/DOUBLE.
@@ -955,13 +1206,13 @@ func columnCascadesType(col semantic.Column) values.Type {
 // literal arguments when building a Value tree from a parsed
 // expression.
 //
-// Returns an error when the literal's runtime type doesn't map to
-// any seed ValueType — nil, int, int32, int64, float32, float64,
-// string, bool are supported. Float literals carry TypeFloat;
-// arithmetic over floats still goes through ArithmeticValue's
-// int-only Eval (mixed-type arith returns nil per the seed
-// contract — a real arithmetic-over-float requires the Type
-// hierarchy port to set up coercion).
+// Returns an error when the literal's runtime type doesn't map to a
+// known type — nil, int, int32, int64, float32, float64, string,
+// bool, []byte are supported. Integer literals width-narrow like Java
+// ParseHelpers.parseDecimal (in-int32-range → INT, else LONG); a
+// float64 carrier is a DOUBLE literal and a float32 carrier a FLOAT
+// one, so arithmetic over them rides ArithmeticValue's matching
+// per-width lanes.
 func (r *Resolver) ResolveConstant(lit any) (values.Value, error) {
 	switch v := lit.(type) {
 	case nil:
@@ -969,19 +1220,33 @@ func (r *Resolver) ResolveConstant(lit any) (values.Value, error) {
 	case bool:
 		return values.NewBooleanValue(v), nil
 	case int:
-		return &values.ConstantValue{Value: int64(v), Typ: values.TypeInt}, nil
+		return &values.ConstantValue{Value: int64(v), Typ: intLiteralType(int64(v))}, nil
 	case int32:
-		return &values.ConstantValue{Value: int64(v), Typ: values.TypeInt}, nil
+		return &values.ConstantValue{Value: int64(v), Typ: values.NullableInt}, nil
 	case int64:
-		return &values.ConstantValue{Value: v, Typ: values.TypeInt}, nil
+		return &values.ConstantValue{Value: v, Typ: intLiteralType(v)}, nil
 	case string:
 		return &values.ConstantValue{Value: v, Typ: values.TypeString}, nil
 	case float32:
-		return &values.ConstantValue{Value: float64(v), Typ: values.TypeFloat}, nil
+		// A float32 carrier is a genuine FLOAT literal (Java's 'f'-suffix
+		// arm of ParseHelpers.parseDecimal returns Float).
+		return &values.ConstantValue{Value: float64(v), Typ: values.NullableFloat}, nil
 	case float64:
-		return &values.ConstantValue{Value: v, Typ: values.TypeFloat}, nil
+		return &values.ConstantValue{Value: v, Typ: values.NullableDouble}, nil
 	case []byte:
 		return &values.ConstantValue{Value: v, Typ: values.NullableBytes}, nil
 	}
 	return nil, fmt.Errorf("expr.ResolveConstant: unsupported literal type %T", lit)
+}
+
+// intLiteralType mirrors Java ParseHelpers.parseDecimal: an unsuffixed
+// integer literal that fits in int32 is typed INT (Math.toIntExact →
+// Integer), else LONG. This is what puts `int_col + 1` on the int32
+// arithmetic lane (Java ADD_II) instead of silently widening. The
+// carrier stays int64 either way; only the static width narrows.
+func intLiteralType(v int64) values.Type {
+	if v >= math.MinInt32 && v <= math.MaxInt32 {
+		return values.NullableInt
+	}
+	return values.NullableLong
 }

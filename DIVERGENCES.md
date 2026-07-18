@@ -85,7 +85,7 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **Java:** `Reference` has `exploratoryMembers` (logical EXPLORE-phase) and `finalMembers` (physical PLANNING-phase). `advancePlannerStage` clears exploratory, promotes REWRITING winner, clears finals. `OptimizeGroup` prunes `finalMembers` to 1 winner. `ToPlanPartitions` reads only `finalMembers` via `propertiesMap`.
 
-**Go:** Added `finalMembers` to `Reference`. Implementation rules (`InsertFinal`) and data access generation insert into `finalMembers`. `computeRefPlanProperties` and `reoptimizeRecursive` prefer `finalMembers` when non-empty. `advancePlannerStage` NOT ported (Go's PLANNING phase relies on EXPLORE-phase physical wrappers in inner References).
+**Go:** Aligned by RFC-181 WS-P: convergence is EPOCH-driven (the ConstraintsMap tick/watermark port drives `NeedsExploration`; member growth pushes per-expression tasks at the insert sites like Java's executeRuleCall), dual insertion is retired (physical yields land in finals only; the OptimizeInputs guard reverted to `ContainsExactly`), OptimizeGroup prunes finals to the winner (+ ordering-retained finals in PLANNING — the Go-specific extension because Go wrappers resolve children at extraction where Java bakes concrete plans at rule time), and REWRITING finals route through OptimizeInputs so parent-chain-optimized groups cross the stage boundary pruned to their REWRITING winner. RESIDUAL: the UNIVERSAL prune-to-1 at the boundary requires PLANNING re-derivation parity first — a forced boundary prune lost canonical alternatives Go's PLANNING cannot re-derive (RFC-153 buried-leg, cross-join-EXISTS shapes); until Java's per-phase rule-set parity lands, unoptimized (satellite/mid-phase) groups cross with their full canonical set (documented at the boundary arm in unified_tasks.go).
 
 **Impact:** FDB integration tests pass without `promoteInJoinWinners`/`promoteByDataAccessCost` — `finalMembers` + real statistics is sufficient. Promotion hacks remain for unit tests without statistics.
 
@@ -160,11 +160,10 @@ All 16 criteria ported. Criterion-by-criterion analysis:
 | 13. InJoin count (more=better) | count(InJoinPlan) reversed | `inJoinCount` reversed | Aligned |
 | 14. Map/filter count | count(Map, PredicatesFilter) | `mapCount + predicatesFilterCount` | Aligned |
 | 15. FlatMap join ordering | Compare outer child cardinalities | `compareFlatMapJoinOrdering` compares outer quantifier cardinalities | Aligned |
-| 15b. FlatMap vs NLJ | (none) | `compareFlatMapVsNLJ` — FlatMap beats NLJ | **Go-only** — workaround until `advancePlannerStage` is ported |
-| 15c. Scalar cost fallback | (none) | `EstimateCostWith` comparison | **Go-only** — breaks ties the ordinal criteria can't resolve |
+| 15c. Scalar cost | Java CostModel is purely heuristic (ordinal rungs, planHash tiebreak — no statistics rung) | `EstimateCostWith` comparison | **Go extension in the tiebreak slot** — a statistics discriminator before the hash tiebreak, NOT a prune workaround (retiring it regressed genuine selectivity decisions) |
 | 16. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `costExprHash`→`concretePlanHash`/`exprConcreteHash` (FNV-flavored) | **Shape-aligned, NOT byte-aligned** (RFC-167 §5) — both break cost ties by a structural plan hash so each engine is *intra-engine* stable, but Go uses an FNV-flavored hash (RFC-024 cache key) ≠ Java's `planHash(CURRENT_FOR_CONTINUATION)`, so Go and Java may pick **different** tie-winner indexes for the same query (rows identical; EXPLAIN may differ). Convergence is deferred until cross-engine continuation re-planning is a requirement (RFC-167 OQ#5). |
 
-Go-only criteria 15b and 15c are workarounds for the missing `advancePlannerStage`. Java's OptimizeGroup prunes finalMembers to a single winner — ties are rare. Go's flat member list has more competing plans, requiring tiebreakers. Audited: removing criterion #12 guard causes GROUP BY regression (covering index scan penalized by unmatched trailing fields), removing criteria 15b/15c causes JOIN regression (NLJ chosen over FlatMap without real statistics).
+Criterion 15b (`compareFlatMapVsNLJ`) is RETIRED (RFC-181 WS-P stage (d)): under the epoch convergence with finals-only physical yields and prune-to-winner, its recorded JOIN regression no longer reproduces — deleted with its tests. 15c is RECLASSIFIED: Java's PlanningCostModel is self-described heuristic — its rungs end in a planHash tiebreak and no statistics rung exists — so 15c is a Go statistics EXTENSION occupying that role slot (cost discriminator before the hash tiebreak), not a literal Java rung; the stage-(d) retirement probe regressed equality-index preference and vector outer-limit folding, proving it load-bearing. The maxRoundsPerRef load cap (10) is obsolete under epoch convergence (both constraint lattices are finite chains, so rounds are structurally bounded); it remains only as a loud divergence tripwire at 100. Audited earlier: removing criterion #12 guard causes GROUP BY regression (covering index scan penalized by unmatched trailing fields).
 
 ### Cost Model: RewritingCostModelLess
 
@@ -578,3 +577,61 @@ pulled-up value maps (`RequestedOrdering.pushDown` on the projection's
 result value). Go has the machinery (`RequestedOrdering.PushDownThroughValue`)
 — wiring it into the delegation walk is the follow-up; until then the
 decline arm keeps correctness.
+
+## Multi-type-index pk-merge intersections decline (safe parity gap)
+
+Java can plan a pk-merge intersection whose legs are multi-record-type
+indexes: `ValueIndexScanMatchCandidate.getBaseType()` returns a MERGED
+`Type.Record` for multi-type candidates, so its comparison keys always
+bind. Go's positional row model keeps each descriptor's own layout, so a
+multi-type candidate flows no single row type (`metadataIndexDef.
+IndexRowType` returns Unknown for `len(recordTypes) != 1`), and the
+intersector's bake gate (`bakedIntersectionKeys`) DECLINES the candidate
+— the query still answers via scan+filter, never a wrong row. Closing
+this needs a merged positional layout for multi-type rows (the analogue
+of Java's type-merge), which is a WS-N Phase D-adjacent arc; until then
+the decline arm keeps correctness. Pinned by
+TestIntersector_DeclinesLayoutlessLegs / DeclinesMixedLayoutLegs.
+
+## SQL statement continuations are engine-private (RFC-181 C2 decision)
+
+Java's fdb-relational wraps SQL continuations in a ContinuationProto
+envelope (version + plan_hash + binding_hash + execution_state) and
+gates resumes through PlanValidator. Go has no envelope and NO SQL
+resume entry point at all — statement paging is internal to one
+execution (`paginatingRows`), and tokens never cross the API boundary.
+The RECORD-LAYER continuation framing below the SQL layer is
+byte-identical and conformance-proven (including the magic
+KeyValueCursorContinuation wrapper); the SQL-layer envelope is not.
+
+Decision: Go SQL tokens are ENGINE-PRIVATE until a real resume surface
+exists. The boundary is loud, not silent: supplying api.OptContinuation
+fails the statement with ErrCodeUnsupportedOperation
+(cascadesPlan.Execute; pinned by TestOptContinuation_RejectsLoudly) —
+never silently ignored, which would replay from row 1 while the caller
+believes they resumed. Adopting the ContinuationProto envelope +
+PlanValidator hashes is the follow-up arc if/when a resume surface
+ships; hash values would deliberately differ per engine so cross-engine
+resume attempts REJECT loudly in both directions.
+
+## BIGINT-vs-DOUBLE comparison: exact narrowing, not lossy promotion
+
+Java compares a BIGINT column against a DOUBLE constant by PROMOTING
+the column LONG→DOUBLE — lossy above 2^53, so `v = 9007199254740992.0`
+wrongly matches a stored 2^53+1. Go rewrites the CONSTANT instead
+(narrowFloatConstAgainstInt): integral doubles narrow to the column's
+integer type, non-integral and out-of-range bounds rewrite to the
+tightest integer predicate — exact at every magnitude. Go-right
+divergence, verified live by the bigint_eq_double_above_2p53 corpus
+entry (DivergenceJavaWrongRowsGoCorrect).
+
+## Bound parameters stay Unknown-typed at the plan gates
+
+The plan-time promotion and cast-pair gates exempt UNKNOWN-typed
+operands, which includes bound parameters on the exported
+PlanRecordQueryWithMetadata path (the SQL driver substitutes `?` as
+text, so driver-reachable binds arrive STRING-typed and take the
+STRING arms). Java types parameters by inference and gates them too;
+Go's parameter-inference arc would close this — until then a
+LONG-bound parameter through the exported path evaluates leniently
+where Java rejects at plan time.

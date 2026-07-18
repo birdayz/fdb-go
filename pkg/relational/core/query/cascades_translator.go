@@ -415,7 +415,10 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 				if !strings.Contains(c.Name, ".") {
 					name = prefix + name
 				}
-				fields = append(fields, values.Field{Name: name, FieldType: values.UnknownType, Ordinal: len(fields)})
+				// Phase D: the rename is name-only — the child leg's
+				// FLOWED type rides through (typed at the scan base from
+				// the proto descriptors).
+				fields = append(fields, values.Field{Name: name, FieldType: c.FieldType, Ordinal: len(fields)})
 			}
 		}
 		return fields
@@ -429,7 +432,15 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			if i < len(o.Aliases) && o.Aliases[i] != "" {
 				name = o.Aliases[i]
 			}
-			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
+			// Phase D: a resolved projection carries its own type; only a
+			// lazy (unresolved) projection stays Unknown until resolution.
+			ft := values.Type(values.UnknownType)
+			if i < len(o.ProjectedValues) && o.ProjectedValues[i] != nil {
+				if vt := o.ProjectedValues[i].Type(); vt != nil {
+					ft = vt
+				}
+			}
+			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: ft, Ordinal: i}
 		}
 		return fields
 	case *logical.LogicalUnnest:
@@ -457,7 +468,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// Output columns = the GROUP BY keys followed by the aggregate output
 		// column names (alias when present, else the aggregate text), mirroring
 		// extractOutputColumns / buildAggColumns.
-		return aggregateOutputColumns(o)
+		return t.aggregateOutputColumns(o)
 	case *logical.LogicalCTE:
 		// A CTE-wrapped derived table used as a JOIN LEG (e.g. FROM a,
 		// (SELECT …) b): translateCTE registers the body under the CTE name and
@@ -525,7 +536,7 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 		}
 		return fields
 	case *logical.LogicalAggregate:
-		return aggregateOutputColumns(o)
+		return t.aggregateOutputColumns(o)
 	case *logical.LogicalDistinct:
 		return t.derivedOutputColumns(o.Input)
 	case *logical.LogicalSort:
@@ -733,20 +744,77 @@ func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 // aggregateOutputColumns returns a LogicalAggregate's output column schema:
 // the GROUP BY keys (bare column names, upper-cased) followed by each
 // aggregate's output name (alias when present, else the aggregate text).
-// Mirrors extractOutputColumns(LogicalAggregate). Types are UnknownType
-// (only names are load-bearing for name-based resolution). Returns nil if
-// the aggregate has no output columns.
-func aggregateOutputColumns(a *logical.LogicalAggregate) []values.Field {
+// Mirrors extractOutputColumns(LogicalAggregate). Phase D: group keys
+// carry the INPUT leg's flowed type for the keyed column; aggregate
+// calls carry Java's result type (values.JavaAggregateResultCode over
+// the operand column's flowed code — COUNT→LONG, AVG→DOUBLE,
+// SUM/MIN/MAX→operand). A key/operand the input layout cannot type
+// stays Unknown (lazy until resolution). Returns nil if the aggregate
+// has no output columns.
+func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate) []values.Field {
+	inputCols := t.legColumns(a.Input)
+	typeOf := func(bare string) values.Type {
+		up := strings.ToUpper(bare)
+		var found values.Type
+		matched := false
+		for _, c := range inputCols {
+			if strings.ToUpper(c.Name) != up || c.FieldType == nil {
+				continue
+			}
+			// A name carried by MULTIPLE input columns with CONFLICTING
+			// type codes (two legs of a join both projecting `v`, one
+			// INT one STRING) is ambiguous by name alone — stay Unknown
+			// rather than attach the first leg's type to what may be the
+			// other leg's column. Correct-or-unknown: wrong metadata is
+			// the N-F4 class; Unknown is the honest lazy answer until
+			// binding-aware typing (Phase D2+) keys by leg, not name.
+			// `matched` is tracked separately from the type so a FIRST
+			// match that is itself UnknownType still counts as seen — a
+			// later typed duplicate must not overwrite it (the name stays
+			// indeterminate).
+			if matched && found.Code() != c.FieldType.Code() {
+				return values.UnknownType
+			}
+			found = c.FieldType
+			matched = true
+		}
+		if !matched {
+			return values.UnknownType
+		}
+		return found
+	}
 	var fields []values.Field
 	for _, k := range a.GroupKeys {
-		fields = append(fields, values.Field{Name: strings.ToUpper(k.Display), FieldType: values.UnknownType, Ordinal: len(fields)})
+		kt := values.Type(values.UnknownType)
+		if k.Bare != "" {
+			kt = typeOf(k.Bare)
+		}
+		fields = append(fields, values.Field{Name: strings.ToUpper(k.Display), FieldType: kt, Ordinal: len(fields)})
 	}
 	for i, call := range a.Calls {
 		name := call.CanonicalName()
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
 			name = a.Aliases[i]
 		}
-		fields = append(fields, values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: len(fields)})
+		ft := values.Type(values.UnknownType)
+		operandCode := values.TypeCodeUnknown
+		if call.Star {
+			operandCode = values.TypeCodeLong // COUNT(*): operand irrelevant
+		} else if call.BareColumn && call.Operand != "" {
+			if ot := typeOf(call.Operand); ot != nil {
+				operandCode = ot.Code()
+			}
+		}
+		if code, ok := values.JavaAggregateResultCode(strings.ToUpper(call.Func), operandCode); ok {
+			// ALL aggregate outputs are declared NULLABLE — Java's
+			// CountValue.getResultType() is Type.primitiveType(LONG)
+			// (nullable default) even though COUNT is never null per
+			// group: a null-extended outer leg can surface a NULL count,
+			// so a not-null declaration would license wrong
+			// simplifications.
+			ft = values.NewPrimitiveType(code, true)
+		}
+		fields = append(fields, values.Field{Name: strings.ToUpper(name), FieldType: ft, Ordinal: len(fields)})
 	}
 	if len(fields) == 0 {
 		return nil
@@ -1271,6 +1339,11 @@ func existsInnerScopeCollidesOuter(esqs []logical.ExistsSubquery, outerLegs map[
 // (`B.d`) is already read bare off the merged QOV and must NOT be re-qualified —
 // a single-source unnest (`FROM t, t.arr`) flows under segment-0's own alias, so
 // the set is empty and the rebase is a no-op. RFC-142.
+// unnestOuterLegAliases is a USER-alias universe: outerBoundAliases
+// gathers user source aliases (canonical UPPER) and the merged machine
+// correlation — the only machine id in reach — is deleted before use, so
+// the consumers' folded lookups are total over same-case keys (fold ≡
+// exact here; machine q$N ids never enter this map).
 func unnestOuterLegAliases(op logical.LogicalOperator, mergedCorr values.CorrelationIdentifier) map[string]struct{} {
 	all := outerBoundAliases(op)
 	delete(all, strings.ToUpper(mergedCorr.Name()))
@@ -2239,7 +2312,12 @@ func unnestSourceCorrelation(u *logical.LogicalUnnest) values.CorrelationIdentif
 	if corr == "" {
 		corr = u.AtAlias
 	}
-	return values.NamedCorrelationIdentifier(corr)
+	// CANONICAL UPPER: the correlation-key namespace (Scope.AddSource
+	// canonicalizes registrations the same way). A quoted-lowercase
+	// unnest alias (`t.arr AS "val"`) resolves as VAL; emitting the
+	// verbatim `val` here missed the executor's exact leg lookup and an
+	// otherwise-valid query died unbound at runtime.
+	return values.NamedCorrelationIdentifier(strings.ToUpper(corr))
 }
 
 // newLimitExprFromLogical builds the Cascades LogicalLimitExpression for a
@@ -3572,9 +3650,12 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg, field string, multiAlias
 	}
 	if len(rt.Legs) > 0 {
 		for _, lw := range rt.Legs {
-			// Legs.Name is contractually UPPER (buriedLegBounds); field names are
-			// UPPER on both sides (ordinalLegType stores + caller passes ToUpper),
-			// so an exact == mirrors the flat FieldIndex fallback exactly.
+			// Legs.Name here belongs to the USER-alias universe (canonical
+			// UPPER post-B3a; buriedLegBounds gathers user leg aliases —
+			// machine mints never appear as buried legs); field names are
+			// UPPER on both sides (ordinalLegType stores + caller passes
+			// ToUpper), so an exact == mirrors the flat FieldIndex
+			// fallback exactly.
 			if lw.Name != leg {
 				continue
 			}
@@ -4830,14 +4911,16 @@ func pullUpToOutputField(v values.Value, fields []values.RecordConstructorField)
 	// the folded row is positional.
 	for i, f := range fields {
 		if f.Value != nil && f.Value == v {
-			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, values.UnknownType), true
+			// The slot's type IS the projected value's type (Phase D:
+			// type at birth — the flowed type, never Unknown when known).
+			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, f.Value.Type()), true
 		}
 	}
 	// Pass 2: structural semantic equality — for keys whose Value was rebuilt
 	// (not pointer-copied) but is structurally the projected expression.
 	for i, f := range fields {
 		if f.Value != nil && values.SemanticEqualsUnderAliasMap(v, f.Value, values.AliasMap{}) {
-			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, values.UnknownType), true
+			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, f.Value.Type()), true
 		}
 	}
 	return nil, false
@@ -5304,7 +5387,7 @@ func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 			expr = e.GetInner().GetRangesOver().Get()
 		case *expressions.FullUnorderedScanExpression:
 			// The scan row conforms to the record's logical column order
-			// (positionalTypeForDescriptor).
+			// (executor.PositionalTypeForDescriptor).
 			if rt, isRT := e.GetFlowedType().(*values.RecordType); isRT && len(rt.Fields) > 0 {
 				names := make([]string, len(rt.Fields))
 				for i, f := range rt.Fields {
@@ -5349,7 +5432,7 @@ func expressionOutputLegs(expr expressions.RelationalExpression, flatCount int) 
 		if legCols == nil {
 			return nil
 		}
-		legs = append(legs, values.RecordTypeLeg{Name: strings.ToUpper(aliases[i]), Start: off, Width: len(legCols)})
+		legs = append(legs, values.RecordTypeLeg{Name: aliases[i], Start: off, Width: len(legCols)})
 		off += len(legCols)
 	}
 	if off != flatCount {
@@ -5572,7 +5655,7 @@ func wholeRowLegFor(alias string, cols []string) []values.RecordTypeLeg {
 	if alias == "" || len(cols) == 0 {
 		return nil
 	}
-	return []values.RecordTypeLeg{{Name: strings.ToUpper(alias), Start: 0, Width: len(cols)}}
+	return []values.RecordTypeLeg{{Name: alias, Start: 0, Width: len(cols)}}
 }
 
 // bakeFlatRefsAgainstColumns rewrites each FLAT LAZY FieldValue (nil child, no
@@ -5686,8 +5769,19 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	// remainingOrderByExpressions branch) is the booked follow-up; until then
 	// the decline is loud, never wrong rows.
 	var aggProjFields []values.RecordConstructorField
+	// Per-slot RENDERED-ITEM texts, parallel to aggProjFields (whose Names
+	// are alias-preferred): a rendered-item sort key (`ORDER BY SUM(score)`
+	// — NOT a bare user identifier) must bind against the PROJECTION text
+	// only. Matching it against alias-preferred names let a colliding alias
+	// (`player AS "SUM(SCORE)"`) capture the aggregate's sort key and
+	// silently sort by the wrong column.
+	var aggProjItemTexts []string
 	if p, isProj := s.Input.(*logical.LogicalProject); isProj && projectionOverAggregate(p) {
 		aggProjFields = postAggregateProjectionFields(p)
+		aggProjItemTexts = make([]string, len(p.Projections))
+		for pi, col := range p.Projections {
+			aggProjItemTexts[pi] = strings.ToUpper(col)
+		}
 	}
 	sortKeys := make([]expressions.SortKey, len(s.Keys))
 	for i, k := range s.Keys {
@@ -5766,15 +5860,31 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 				if pulled, ok := pullUpToOutputField(v, aggProjFields); ok {
 					v = pulled
 				} else if fv, isFV := v.(*values.FieldValue); isFV && fv.Child == nil {
-					// A flat column key naming an output column (alias or
-					// rendered item, incl. `MAX(C)` canonicals) bakes to its
+					// A flat column key naming an output column bakes to its
 					// output slot — same rule as pullUpSortKeyValue step (3).
+					// The name universes SPLIT on the key's shape
+					// (SortKey.BareRef, the RFC-180 round-14 rule the
+					// deferred strip already applies): a BARE user
+					// identifier binds alias-preferred names; a RENDERED
+					// item (`SUM(score)`, a qualified ref) binds the
+					// PROJECTION text only — an alias spelled like a
+					// rendered item must never capture it.
 					matched := false
-					for fi, f := range aggProjFields {
-						if strings.EqualFold(f.Name, fv.Field) {
-							v = values.NewFieldValueWithResolvedOrdinal(f.Name, fi, fv.Typ)
-							matched = true
-							break
+					if k.BareRef {
+						for fi, f := range aggProjFields {
+							if strings.EqualFold(f.Name, fv.Field) {
+								v = values.NewFieldValueWithResolvedOrdinal(f.Name, fi, fv.Typ)
+								matched = true
+								break
+							}
+						}
+					} else {
+						for fi, item := range aggProjItemTexts {
+							if fi < len(aggProjFields) && strings.EqualFold(item, fv.Field) {
+								v = values.NewFieldValueWithResolvedOrdinal(aggProjFields[fi].Name, fi, fv.Typ)
+								matched = true
+								break
+							}
 						}
 					}
 					if !matched && fv.Resolved != nil {
@@ -6052,7 +6162,11 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	if outerRef == nil {
 		return nil
 	}
-	outerAlias := sourceAlias(p.Input)
+	// The single-source arm keys its outer leg by BINDING for uniformity
+	// with the cluster path — byte-identical to the alias here, since a
+	// duplicate mint needs ≥2 legs and a dup outer routes to the cluster
+	// dispatch above.
+	outerAlias := sourceBinding(p.Input)
 	outerQ := t.namedQuantifier(outerAlias, outerRef)
 
 	// Peel LogicalLimit off the inner plan and re-attach it explicitly here, so
@@ -7829,8 +7943,12 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 
 	// Wrap seed in TempTableInsert.
 	seedRef := expressions.InitialOf(seedExpr)
+	// Owning inserts (Java TempTableInsertExpression.ofCorrelated defaults
+	// isOwningTempTable=true for CTE legs): the owning insert cursor
+	// snapshots its table in its continuation, which is what lets the
+	// recursive union resume mid-level.
 	seedInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(seedRef), insertAlias, false,
+		expressions.ForEachQuantifier(seedRef), insertAlias, true,
 	)
 
 	// Translate the recursive leg with the CTE self-reference resolving
@@ -7877,7 +7995,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// Wrap recursive leg in TempTableInsert.
 	recursiveRef := expressions.InitialOf(recursiveExpr)
 	recursiveInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(recursiveRef), insertAlias, false,
+		expressions.ForEachQuantifier(recursiveRef), insertAlias, true,
 	)
 
 	// Build RecursiveUnionExpression.
@@ -7885,6 +8003,11 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	recursiveInsertRef := expressions.InitialOf(recursiveInsert)
 	strategy := expressions.TraversalAny
 	switch c.TraversalOrder {
+	case logical.TraversalLevelOrder:
+		// An EXPLICIT level_order pins the level union (Java LEVEL gates
+		// the DFS rule off); only the clause-less ANY leaves the choice
+		// to the cost model.
+		strategy = expressions.TraversalLevel
 	case logical.TraversalPreOrder:
 		strategy = expressions.TraversalPreorder
 	case logical.TraversalPostOrder:

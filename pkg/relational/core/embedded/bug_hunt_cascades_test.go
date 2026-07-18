@@ -233,7 +233,13 @@ func TestBugHunt_DistinctOverUnionAllKeepsDedup(t *testing.T) {
 		t.Fatalf("plan: %v", err)
 	}
 	t.Logf("plan: %s", plan)
-	if !strings.Contains(plan, "Distinct") {
+	// The dedup may be carried by EITHER the explicit Distinct operator OR a
+	// merge-sort union planned WITH the distinct flag (MergeSortUnion(...,
+	// DISTINCT) — the leg-pinned distinct-union rule fires for this shape
+	// now that satisfaction resolves structurally, and its comparison-key
+	// dedup on the pk is full-row dedup via pk uniqueness). What must never
+	// happen is NO dedup at all.
+	if !strings.Contains(plan, "Distinct") && !strings.Contains(plan, "DISTINCT)") {
 		t.Errorf("SELECT DISTINCT over UNION ALL dropped the dedup operator: %s", plan)
 	}
 }

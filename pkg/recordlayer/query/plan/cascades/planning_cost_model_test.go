@@ -912,59 +912,6 @@ func TestPlanningCostModelLess_Criterion14_MapPredicatesFilterCount(t *testing.T
 // TestCompareFlatMapVsNLJ_FlatMapBeatsNLJ verifies that a plan with a
 // flatMap (and no NLJ) is preferred over a plan with an NLJ (and no
 // flatMap).
-func TestCompareFlatMapVsNLJ_FlatMapBeatsNLJ(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		a, b    expressionCounts
-		wantCmp int
-	}{
-		{
-			name:    "flatMap beats NLJ",
-			a:       expressionCounts{flatMapCount: 1},
-			b:       expressionCounts{nestedLoopJoinCount: 1},
-			wantCmp: -1,
-		},
-		{
-			name:    "NLJ loses to flatMap",
-			a:       expressionCounts{nestedLoopJoinCount: 1},
-			b:       expressionCounts{flatMapCount: 1},
-			wantCmp: 1,
-		},
-		{
-			name:    "both flatMap: tie",
-			a:       expressionCounts{flatMapCount: 1},
-			b:       expressionCounts{flatMapCount: 1},
-			wantCmp: 0,
-		},
-		{
-			name:    "both NLJ: tie",
-			a:       expressionCounts{nestedLoopJoinCount: 1},
-			b:       expressionCounts{nestedLoopJoinCount: 1},
-			wantCmp: 0,
-		},
-		{
-			name:    "flatMap + NLJ vs flatMap only: tie (both have flatMap)",
-			a:       expressionCounts{flatMapCount: 1, nestedLoopJoinCount: 1},
-			b:       expressionCounts{flatMapCount: 1},
-			wantCmp: 0,
-		},
-		{
-			name:    "neither: tie",
-			a:       expressionCounts{},
-			b:       expressionCounts{},
-			wantCmp: 0,
-		},
-	}
-
-	for _, tc := range tests {
-		got := compareFlatMapVsNLJ(tc.a, tc.b)
-		if got != tc.wantCmp {
-			t.Errorf("compareFlatMapVsNLJ(%s) = %d, want %d", tc.name, got, tc.wantCmp)
-		}
-	}
-}
 
 func TestPlanningCostModel_AggregateIndexBeatsStreamingAgg(t *testing.T) {
 	t.Parallel()

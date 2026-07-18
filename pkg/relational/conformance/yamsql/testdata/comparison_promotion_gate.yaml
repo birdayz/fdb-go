@@ -1,0 +1,76 @@
+# comparison_promotion_gate.yaml — unpromotable comparisons reject at
+# PLAN time (RFC-181 WS-T)
+#
+# Java rejects a comparison whose operand types have no common maximum
+# (PromoteValue lattice + Type.maximumType) with SemanticException
+# "The operands of a comparison operator are not compatible." (42804).
+# Go dispatched per row and degraded such pairs to UNKNOWN — silent
+# empty results, including on an EMPTY table where no row was ever
+# evaluated. The plan-time gate makes every shape below error like
+# Java. (This also resolves the RFC-082 withheld "boolean = int"
+# Go-too-lenient candidate.)
+name: comparison_promotion_gate
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    s STRING,
+    b BOOLEAN,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE empty_t (
+    id BIGINT NOT NULL,
+    s STRING,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t VALUES (1, 'x', true)
+tests:
+  # STRING vs number.
+  - query: SELECT id FROM t WHERE s = 5
+    error_code: "42804"
+  # BOOLEAN vs number.
+  - query: SELECT id FROM t WHERE b = 1
+    error_code: "42804"
+  # Number vs STRING (flipped side).
+  - query: SELECT id FROM t WHERE id = 'x'
+    error_code: "42804"
+  # The EMPTY-TABLE shape: no row ever evaluates, so the runtime
+  # dispatch could never error — only a plan-time gate catches it.
+  - query: SELECT id FROM empty_t WHERE s = 5
+    error_code: "42804"
+  # Compatible pairs keep answering: numeric widening…
+  - query: SELECT id FROM t WHERE id = 1.0
+    rows:
+      - [1]
+  # …and NULL comparisons (three-valued, no row matches but no error).
+  - query: SELECT id FROM t WHERE s = NULL
+    rows: []
+  # DOUBLE-constant bounds over an INTEGER column: an integral constant
+  # narrows to the column's tuple code (id = 1.0 above); a NON-integral
+  # bound rewrites to the tightest integer predicate (col > 0.5 ≡
+  # col >= 1; col < 1.5 ≡ col <= 1) — the raw double bound ordered by
+  # tuple TYPE CODE, not value, and missed everything.
+  - query: SELECT id FROM t WHERE id > 0.5
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE id < 1.5
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE 1.5 > id
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE id = 1.5
+    rows: []
+  # OUT-OF-RANGE double bounds clamp to the always-true/false integer
+  # form (the raw double bound ordered by tuple TYPE CODE and returned
+  # EMPTY for `id > -1e19`, which must match every row).
+  - query: SELECT id FROM t WHERE id > -10000000000000000000.0
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE id < 10000000000000000000.0
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE id > 10000000000000000000.0
+    rows: []
+  - query: SELECT id FROM t WHERE -10000000000000000000.0 > id
+    rows: []

@@ -1294,9 +1294,11 @@ func evalLegHashKey(val values.Value, corr values.CorrelationIdentifier, leg val
 //     float64(5) bucket (BIGINT=DOUBLE dropped every match ≥100 inner
 //     rows) and a covering-index float32 leg missed a stored-record
 //     float64 bucket.
-//   - NaN declines: cmpAny's <,>-based equality makes NaN compare EQUAL to
-//     every float, while a NaN map key matches nothing — no bucket can
-//     represent it.
+//   - NaN declines: cmpAny compares NaN via the Double.compare total
+//     order (NaN = NaN is EQUAL, NaN vs any other float is not), while a
+//     float64 NaN map key matches NOTHING — bucketing would silently
+//     drop NaN=NaN matches (a false negative), so NaN keys take the
+//     linear path where cmpAny answers.
 //   - string and bool pass through: cmpAny's arms for them are exact
 //     equality, same as map ==.
 //   - [16]byte (UUID) passes through: array == is exactly cmpAny's
@@ -1386,9 +1388,10 @@ func bakedLegOperand(v values.Value, outerAlias, innerAlias string) (isOuter, ok
 	}
 	alias := qov.Correlation.Name()
 	switch {
-	case strings.EqualFold(alias, outerAlias):
+	// Exact: correlation-key namespace on both sides.
+	case alias == outerAlias:
 		return true, true
-	case strings.EqualFold(alias, innerAlias):
+	case alias == innerAlias:
 		return false, true
 	}
 	return false, false

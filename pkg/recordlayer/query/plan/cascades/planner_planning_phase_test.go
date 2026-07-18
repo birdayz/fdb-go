@@ -75,6 +75,51 @@ func TestPlanner_PlanningPhase_UniqueOverScan(t *testing.T) {
 func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 	t.Parallel()
 
+	// FORMATION: ImplementUnorderedUnionRule itself must yield the
+	// unordered wrapper over two physical scans. The full-planner run
+	// below can no longer pin per-implementation visibility — physical
+	// yields land ONLY in FinalMembers and OptimizeGroup prunes finals to
+	// the winner (Java's prune-to-1), so the unordered wrapper may lose
+	// to the sibling ordered-union implementation and vanish from
+	// AllMembers(). Fire the rule directly to pin that it FORMS.
+	{
+		wA := &physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)}
+		wB := &physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)}
+		refA := expressions.InitialOf(wA)
+		pmA := NewPlanPropertiesMap()
+		pmA.Add(wA)
+		refA.SetPlanProperties(pmA)
+		refB := expressions.InitialOf(wB)
+		pmB := NewPlanPropertiesMap()
+		pmB.Add(wB)
+		refB.SetPlanProperties(pmB)
+		outerRef := expressions.InitialOf(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+			expressions.ForEachQuantifier(refA),
+			expressions.ForEachQuantifier(refB),
+		}))
+
+		var formed *physicalUnorderedUnionWrapper
+		for _, y := range FireImplementationRule(NewImplementUnorderedUnionRule(), outerRef) {
+			if w, ok := y.(*physicalUnorderedUnionWrapper); ok {
+				formed = w
+				break
+			}
+		}
+		if formed == nil {
+			t.Fatal("ImplementUnorderedUnionRule did not yield a *physicalUnorderedUnionWrapper")
+		}
+		uup, ok := formed.GetRecordQueryPlan().(*plans.RecordQueryUnorderedUnionPlan)
+		if !ok {
+			t.Fatalf("formed plan: expected *RecordQueryUnorderedUnionPlan, got %T", formed.GetRecordQueryPlan())
+		}
+		if got := len(uup.GetChildren()); got != 2 {
+			t.Fatalf("formed unordered union children: got %d, want 2", got)
+		}
+	}
+
+	// WINNER SHAPE: after the full planner run, SOME physical union
+	// implementation (unordered or ordered — whichever the cost model
+	// keeps) must survive in the root's members with a valid 2-child plan.
 	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
 	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
 	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
@@ -85,36 +130,38 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	// ImplementUnorderedUnionRule should yield a
-	// physicalUnorderedUnionWrapper into the root Reference's members.
 	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
 		t.Fatal("root Reference has no members after PLANNING phase")
 	}
 
-	var wrapper *physicalUnorderedUnionWrapper
+	var unionPlan plans.RecordQueryPlan
 	for _, f := range finals {
-		if w, ok := f.(*physicalUnorderedUnionWrapper); ok {
-			wrapper = w
+		switch w := f.(type) {
+		case *physicalUnorderedUnionWrapper:
+			unionPlan = w.GetRecordQueryPlan()
+		case *physicalUnionWrapper:
+			unionPlan = w.GetRecordQueryPlan()
+		}
+		if unionPlan != nil {
 			break
 		}
 	}
-	if wrapper == nil {
+	if unionPlan == nil {
 		types := make([]string, len(finals))
 		for i, f := range finals {
 			types[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected *physicalUnorderedUnionWrapper in members, got types: %v", types)
+		t.Fatalf("expected a physical union wrapper (unordered or ordered) in members, got types: %v", types)
 	}
-
-	// The underlying plan must be a RecordQueryUnorderedUnionPlan with 2 children.
-	uup, ok := wrapper.GetRecordQueryPlan().(*plans.RecordQueryUnorderedUnionPlan)
+	kids, ok := unionPlan.(interface {
+		GetChildren() []plans.RecordQueryPlan
+	})
 	if !ok {
-		t.Fatalf("underlying plan: expected *RecordQueryUnorderedUnionPlan, got %T",
-			wrapper.GetRecordQueryPlan())
+		t.Fatalf("winning union plan %T has no children accessor", unionPlan)
 	}
-	if got := len(uup.GetChildren()); got != 2 {
-		t.Fatalf("unordered union children: got %d, want 2", got)
+	if got := len(kids.GetChildren()); got != 2 {
+		t.Fatalf("winning union children: got %d, want 2", got)
 	}
 }
 

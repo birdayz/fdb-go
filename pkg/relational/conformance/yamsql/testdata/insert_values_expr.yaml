@@ -7,6 +7,7 @@
 name: insert_values_expr
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+  CREATE TABLE tb (id BIGINT NOT NULL, flag BOOLEAN, PRIMARY KEY (id))
 setup: []
 tests:
   # INSERT VALUES with arithmetic.
@@ -25,23 +26,80 @@ tests:
   - query: SELECT n FROM t WHERE id = 4
     rows:
       - [42]
-  # INSERT VALUES with function call — ABS is absent from
-  # fdb-relational 4.11.1.0's function registry; rejected with
-  # "Unsupported operator ABS" (0A000). Same architectural reason
-  # in both engines: no evaluator entry. Replace with arithmetic
-  # to keep the "INSERT VALUES with derived expression" shape
-  # exercised on a still-supported expression.
   - query: INSERT INTO t VALUES (5, 25 * 2)
   - query: SELECT n FROM t WHERE id = 5
     rows:
       - [50]
-  # ABS is a Go-only READ-side scalar function (RFC-087, Cascades SELECT
-  # path); the INSERT-VALUES write path is out of that scope and still
-  # rejects it ("Unsupported operator ABS"), matching Java.
+  # ABS is a Go-only scalar-function extension (RFC-087; Java's registry
+  # has no ABS at all). VALUES cells now fold through the ONE Cascades
+  # evaluator — the same registry that serves SELECT — so the extension
+  # covers INSERT VALUES as an emergent consequence, not a write-path
+  # special case. (The old rejection was an artifact of the deleted
+  # legacy proto-path interpreter.)
   - query: INSERT INTO t VALUES (50, ABS(-7))
+  - query: SELECT n FROM t WHERE id = 50
+    rows:
+      - [7]
+  # A function in NEITHER registry still rejects with Java's byte-equal
+  # "Unsupported operator <name>" via the same pre-scan the SELECT
+  # projection path runs (Java: no function-registry entry for NOW).
+  - query: INSERT INTO t VALUES (51, NOW())
     error_code: "0AF00"
+  # INT32 overflow inside a VALUES cell: both literals are int32-range,
+  # so Java types the addition ADD_II and Math.addExact throws at 2^31
+  # (22003). The deleted legacy evaluator was int64-only and silently
+  # inserted 2200000000 — the exact silent-wrong-VALUES class P0.5
+  # closed on the SELECT path.
+  - query: INSERT INTO t VALUES (52, 2000000000 + 200000000)
+    error_code: "22003"
+  # The same sum with an out-of-int32-range operand is fine: 3000000000
+  # is statically LONG, putting the addition on the LL lane (and the n
+  # target column is BIGINT).
+  - query: INSERT INTO t VALUES (53, 3000000000 + 200000000)
+  - query: SELECT n FROM t WHERE id = 53
+    rows:
+      - [3200000000]
   # INSERT VALUES with COALESCE.
   - query: INSERT INTO t VALUES (6, COALESCE(null, null, 77))
   - query: SELECT n FROM t WHERE id = 6
     rows:
       - [77]
+  # CAST(<int literal> AS BOOLEAN) in a VALUES cell: Java's cast table
+  # has INT_TO_BOOLEAN, and an int32-range literal is statically INT —
+  # the cast SUCCEEDS (1 → true). The deleted legacy evaluator saw only
+  # the runtime int64 and rejected "No cast defined from LONG to
+  # BOOLEAN" — a SELECT/INSERT divergence on the same expression.
+  - query: INSERT INTO tb VALUES (1, CAST(1 AS BOOLEAN))
+  - query: INSERT INTO tb VALUES (2, CAST(0 AS BOOLEAN))
+  - query: SELECT id, flag FROM tb WHERE id < 3 ORDER BY id
+    rows:
+      - [1, true]
+      - [2, false]
+  # An out-of-int32-range literal is statically LONG, and LONG→BOOLEAN
+  # has NO Java cast pair — same 22F3H the SELECT path raises.
+  - query: INSERT INTO tb VALUES (3, CAST(2147483648 AS BOOLEAN))
+    error_code: "22F3H"
+  # COALESCE SHORT-CIRCUITS (SQL): the first non-NULL argument wins and
+  # later arguments are NEVER evaluated — 1/0 must not raise 22012 here.
+  # The eager fold evaluated every argument first and turned this legal
+  # INSERT into a division-by-zero error.
+  - query: INSERT INTO t VALUES (60, COALESCE(1, 1 / 0))
+  - query: SELECT n FROM t WHERE id = 60
+    rows:
+      - [1]
+  # ...and the SELECT face of the same law.
+  - query: SELECT COALESCE(2, 1 / 0) FROM t WHERE id = 60
+    rows:
+      - [2]
+  # IF evaluates ONLY the taken branch.
+  - query: INSERT INTO t VALUES (61, IF(TRUE, 7, 1 / 0))
+  - query: SELECT n FROM t WHERE id = 61
+    rows:
+      - [7]
+  # A date-part over a non-NULL string that is NOT a date is
+  # DATA-DEPENDENT garbage — a typed 22023 (like SQRT(negative)), never
+  # a silent NULL: folding a typo to NULL silently corrupts the row.
+  - query: INSERT INTO t VALUES (62, YEAR('not-a-date'))
+    error_code: "22023"
+  - query: SELECT YEAR('not-a-date') FROM t WHERE id = 60
+    error_code: "22023"

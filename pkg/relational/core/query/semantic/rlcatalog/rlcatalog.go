@@ -5,6 +5,7 @@
 package rlcatalog
 
 import (
+	"strings"
 	"sync"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -102,12 +103,17 @@ type recordTypeTable struct {
 	rt   *recordlayer.RecordType
 	name semantic.QualifiedName
 
-	// Column cache: built once per table on first access. Keyed by
-	// case-folded column name. Values are fully-materialised
-	// semantic.Columns so repeated lookups don't re-allocate
-	// Identifier / Column values per call.
+	// Column cache: built once per table on first access. colIndex is
+	// keyed by the EXACT proto field name (the DDL-normalized spelling:
+	// unquoted columns are stored upper-cased, quoted ones verbatim);
+	// foldedIndex maps the case-folded name to every column that folds
+	// to it, serving the case-insensitive fallback for raw-proto
+	// metadata whose field names never went through DDL normalization.
+	// Values are fully-materialised semantic.Columns so repeated
+	// lookups don't re-allocate Identifier / Column values per call.
 	colIndexOnce sync.Once
 	colIndex     map[string]semantic.Column
+	foldedIndex  map[string][]semantic.Column
 	colOrdered   []semantic.Column
 }
 
@@ -119,6 +125,7 @@ func (t *recordTypeTable) ensureColumnIndex() {
 		}
 		fields := t.rt.Descriptor.Fields()
 		t.colIndex = make(map[string]semantic.Column, fields.Len())
+		t.foldedIndex = make(map[string][]semantic.Column, fields.Len())
 		t.colOrdered = make([]semantic.Column, 0, fields.Len())
 		for i := 0; i < fields.Len(); i++ {
 			f := fields.Get(i)
@@ -133,7 +140,15 @@ func (t *recordTypeTable) ensureColumnIndex() {
 				// needed to type the resolved Value as an ArrayType.
 				IsArray: isRepeated(f),
 			}
-			t.colIndex[id.Name()] = col
+			// The EXACT proto field name is a lookup key (a quoted-DDL
+			// column's field preserves case — "x" — and a quoted lookup
+			// must hit it; folding it away 42703'd SELECT "x", the WS-N
+			// quoting-blindness). The COLUMN itself presents the FOLDED
+			// identifier everywhere: the runtime positional layout folds
+			// names too, so folded presentation keeps plan-time and
+			// runtime in one namespace.
+			t.colIndex[string(f.Name())] = col
+			t.foldedIndex[id.Name()] = append(t.foldedIndex[id.Name()], col)
 			t.colOrdered = append(t.colOrdered, col)
 		}
 	})
@@ -156,8 +171,20 @@ func (t *recordTypeTable) Columns() []semantic.Column {
 
 func (t *recordTypeTable) LookupColumn(id semantic.Identifier) (semantic.Column, bool) {
 	t.ensureColumnIndex()
-	col, ok := t.colIndex[id.Name()]
-	return col, ok
+	// Exact field spelling first (a quoted lookup hits its
+	// case-significant column verbatim; unquoted lookups arrive
+	// pre-folded and hit DDL-normalized fields). The case-insensitive
+	// fallback serves raw-proto metadata (lowercase field names that
+	// never saw DDL normalization) — only when the folded name is
+	// UNAMBIGUOUS; a folded collision must not silently pick a column.
+	if col, ok := t.colIndex[id.Name()]; ok {
+		return col, true
+	}
+	cands := t.foldedIndex[strings.ToUpper(id.Name())]
+	if len(cands) == 1 {
+		return cands[0], true
+	}
+	return semantic.Column{}, false
 }
 
 func (t *recordTypeTable) Indexes() []string {
@@ -239,13 +266,31 @@ func protoKindToSQL(k protoreflect.Kind) string {
 	switch k {
 	case protoreflect.BoolKind:
 		return "BOOL"
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
-		protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		// Genuine 32-bit INTEGER: Java types these INT and runs the
+		// int32-bounded arithmetic lane. The old all-integers→"INT"
+		// conflation was harmless only while "INT" aliased to the LONG
+		// type; with real width typing it would have put BIGINT columns
+		// on the int32 lane.
+		return "INTEGER"
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return "BIGINT"
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
 		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		return "INT"
-	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		// Deliberate divergence for the 32-bit unsigned kinds: Java maps
+		// UINT32/FIXED32 → TypeCode.INT (Type.java
+		// fromProtobufFieldDescriptor), which is sound there only because
+		// Java protobuf wraps uint32 into a Java int. Go decodes unsigned
+		// kinds as genuine unsigned values (up to 2^32-1), so an "INTEGER"
+		// typing would put values beyond MaxInt32 under a false 32-bit
+		// arithmetic bound. BIGINT keeps them on the long lane. Reachable
+		// only defensively: record-metadata validation rejects unsigned
+		// fields in record types (matching Java).
+		return "BIGINT"
+	case protoreflect.FloatKind:
 		return "FLOAT"
+	case protoreflect.DoubleKind:
+		return "DOUBLE"
 	case protoreflect.StringKind:
 		return "STRING"
 	case protoreflect.BytesKind:

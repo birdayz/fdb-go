@@ -26,11 +26,13 @@ tests:
     rows:
       - [123.0]
 
-  # BOOLEAN → INT (true=1, false=0)
-  - query: SELECT CAST(bool_col AS BIGINT) FROM test_cast WHERE id = 1
+  # BOOLEAN → INT (true=1, false=0). Java's cast table defines
+  # BOOLEAN_TO_INT only — the old BIGINT spelling predates genuine
+  # width typing and now correctly rejects (pinned below).
+  - query: SELECT CAST(bool_col AS INTEGER) FROM test_cast WHERE id = 1
     rows:
       - [1]
-  - query: SELECT CAST(bool_col AS BIGINT) FROM test_cast WHERE id = 2
+  - query: SELECT CAST(bool_col AS INTEGER) FROM test_cast WHERE id = 2
     rows:
       - [0]
 
@@ -60,7 +62,7 @@ tests:
       - [1368.0]
 
   # CAST NULL preserves NULL
-  - query: SELECT CAST(bool_col AS BIGINT) FROM test_cast WHERE id = 3
+  - query: SELECT CAST(bool_col AS INTEGER) FROM test_cast WHERE id = 3
     rows:
       - [null]
 
@@ -69,3 +71,9 @@ tests:
   # 22F3H (ErrorCode.java:89).
   - query: SELECT CAST(str_col AS BIGINT) FROM test_cast WHERE id = 1
     error: "22F3H"
+
+  # BOOLEAN → BIGINT has NO Java cast pair ("No cast defined from
+  # BOOLEAN to LONG") — rejected at PLAN time, so the empty-row shape
+  # errors too.
+  - query: SELECT CAST(bool_col AS BIGINT) FROM test_cast WHERE id = 1
+    error_code: "22F3H"

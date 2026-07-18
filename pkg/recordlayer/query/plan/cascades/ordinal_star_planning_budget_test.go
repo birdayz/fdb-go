@@ -93,7 +93,14 @@ func TestOrdinalStarPlanningBudget(t *testing.T) {
 	// rules no longer get transform tasks — see the CHAIN baseline note).
 	// 6509→6219 (-4.5%) with the final-survival OptimizeInputs guard
 	// (pruned dual-inserted losers no longer drive child optimization).
-	const wantTasks = 6219
+	// 6219→11740 (+89%) with the RFC-181 WS-P stage (b) convergence flip
+	// (finals-only physical yields, epoch-driven rounds re-exploring ALL
+	// members per round like Java's ExploreGroup — see the CHAIN baseline
+	// note): idempotent re-exploration tasks, not re-enumerated
+	// sub-products. 11740→9189 with the sentinel gate (PLANNING pure
+	// LOGICAL finals are fail-to-plan sentinels, no longer rule-explored
+	// per round); determinism and the wall-clock ceiling still hold.
+	const wantTasks = 9189
 	tol := wantTasks / 50 // ±2%
 
 	best := time.Hour

@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"bytes"
 	"context"
 	"database/sql/driver"
 	"encoding/binary"
@@ -866,7 +867,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		if rt == nil {
 			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(insOp.Table))
 		}
-		arr, vErr := c.buildInsertValuesArray(ctx, insStmt, rt.Descriptor, insOp.Table)
+		arr, vErr := c.buildInsertValuesArray(insStmt, rt.Descriptor, insOp.Table, md)
 		if vErr != nil {
 			return nil, vErr
 		}
@@ -1084,6 +1085,18 @@ const txPageTimeLimit = 4 * time.Second
 //     every resume). The per-tx FDB timeout is unaffected.
 func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	c := p.conn
+	// Go SQL statement tokens are ENGINE-PRIVATE (no ContinuationProto
+	// envelope, no version/plan/binding hashes, no resume entry point) —
+	// paging is internal to one statement execution. Until a real resume
+	// surface exists, a caller-supplied CONTINUATION option must reject
+	// LOUDLY: consuming it silently would re-run the statement from row 1
+	// while the caller believes they resumed (duplicate rows), and a
+	// JAVA-minted token could never be honored here anyway (its envelope
+	// binds to Java's plan serialization hashes).
+	if c.Options().Get(api.OptContinuation) != nil {
+		return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation,
+			"statement continuations are not supported: Go SQL tokens are engine-private and no resume entry point exists")
+	}
 	ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
 	if ssErr != nil {
 		return query.Result{}, ssErr
@@ -1695,6 +1708,18 @@ func (r *paginatingRows) fetchPage() error {
 		if classifyErr != nil {
 			return nil, classifyErr
 		}
+		// LIVENESS tripwire: a page that produced ZERO rows and did not
+		// advance its continuation would repeat forever — the per-page
+		// resume cost exceeded the page's own resource budget (e.g. a
+		// recursive DFS whose re-descent depth outweighs a tiny
+		// scanned-rows limit; the checkpoint stores pre-yield positions,
+		// so such a page cannot make progress). Correct-or-loud: surface
+		// the stall as the resource-limit error it is, never an infinite
+		// internal retry loop.
+		if len(r.buf) == 0 && !exhausted && contBytes != nil && bytes.Equal(contBytes, r.continuation) {
+			return nil, api.NewError(api.ErrCodeExecutionLimitReached,
+				"query cannot progress under the configured per-page resource limits (a page produced no rows and no continuation advance); raise the scan/row limits")
+		}
 		r.exhausted = exhausted
 		r.continuation = contBytes
 		return nil, nil
@@ -1919,13 +1944,21 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 			upperPK[i] = strings.ToUpper(col)
 			aliases[i] = values.UniqueCorrelationIdentifier()
 		}
+		// Flow the descriptor-shaped positional type, like the index
+		// candidates: a layout-less leg disqualifies itself from plans
+		// that bind comparison keys at plan time (the pk-merge
+		// intersection), and the primary scan serves exactly one type.
+		flowed := values.Type(values.UnknownType)
+		if rt.Descriptor != nil {
+			flowed = executor.PositionalTypeForDescriptor(rt.Descriptor)
+		}
 		candidates = append(candidates, cascades.NewPrimaryScanMatchCandidate(
 			nil,
 			aliases,
 			allTypeNames,
 			[]string{rt.Name},
 			upperPK,
-			values.UnknownType,
+			flowed,
 		))
 	}
 
@@ -2043,6 +2076,20 @@ func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
 		}
 		return make([]string, len(names))
 	}
+}
+
+// IndexRowType flows the descriptor-shaped positional type for
+// single-record-type indexes — the SAME layout the runtime rows carry
+// (executor.PositionalTypeForDescriptor is the single authority), so
+// plan-time ordinal baking (the intersection's comparison keys) matches
+// the runtime slots by construction. Multi-type indexes flow Unknown:
+// their rows have no single layout.
+func (d *metadataIndexDef) IndexRowType() values.Type {
+	rts := d.md.RecordTypesForIndex(d.idx)
+	if len(rts) != 1 || rts[0].Descriptor == nil {
+		return values.UnknownType
+	}
+	return executor.PositionalTypeForDescriptor(rts[0].Descriptor)
 }
 
 func (d *metadataIndexDef) IndexRecordTypes() []string {
@@ -4767,7 +4814,13 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 						}
 						upper = ref.bare()
 					}
-					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil {
+					// Try the VERBATIM name before the folded one: a quoted
+					// lowercase column ("x") declares a lower-case proto
+					// field, and folding it here mis-rejected a legal
+					// projection with 42703 (WS-N quoting-blindness; the
+					// resolution path itself handles the quoted name fine).
+					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil &&
+						rt.Descriptor.Fields().ByName(protoreflect.Name(parseColRef(col).bare())) == nil {
 						return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", col)
 					}
 				}

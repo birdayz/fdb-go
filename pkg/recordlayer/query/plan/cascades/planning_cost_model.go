@@ -336,10 +336,6 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(mapFilterA, mapFilterB)
 	}
 
-	if cmp := compareFlatMapVsNLJ(opsA, opsB); cmp != 0 {
-		return cmp
-	}
-
 	if opsA.nljPredicateCount != opsB.nljPredicateCount {
 		return intCompare(opsB.nljPredicateCount, opsA.nljPredicateCount)
 	}
@@ -367,6 +363,13 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(opsA.inMemorySortCount, opsB.inMemorySortCount)
 	}
 
+	// Statistics-driven scalar cost — a Go EXTENSION in the tiebreak
+	// slot. Java's PlanningCostModel is purely heuristic (ordinal rungs
+	// ending in a planHash tiebreak; no statistics rung exists), so this
+	// discriminator sits before the hash tiebreak rather than mirroring
+	// a Java rung. NOT a prune-to-1 workaround: retiring it (WS-P stage
+	// (d) probe) regressed genuine selectivity decisions (equality-index
+	// preference, vector outer-limit folding).
 	costA := properties.EstimateCostWith(a, stats)
 	costB := properties.EstimateCostWith(b, stats)
 	if costA.Less(costB) {
@@ -506,7 +509,15 @@ func findExpressionsByType(e expressions.RelationalExpression, stats properties.
 // Uses scalar EstimateCost to rank, matching Java's evaluateAtRef
 // which expects exactly one member per Reference at cost-model time.
 func bestPhysicalChild(ref *expressions.Reference, stats properties.StatisticsProvider) expressions.RelationalExpression {
-	best := ref.GetBest(properties.CostLessWith(stats))
+	// The scalar cost comparator is NOT a total order (Cost ties are routine
+	// under default stats) and GetBest resolves ties by member insertion
+	// order — which shifts across plannings (memo merges, alias
+	// renumbering), flipping the picked child and with it every parent
+	// criteria comparison run-to-run. Wrap with the deterministic
+	// plan-hash tie-break so the minimum is unique (Java
+	// PlanningCostModel.compare's final planHash arm; Java additionally
+	// avoids most ties via prune-to-1, which Go lacks mid-phase).
+	best := ref.GetBest(lessWithHashTieBreak(properties.CostLessWith(stats)))
 	if best != nil {
 		if _, ok := best.(physicalPlanExpression); ok {
 			return best
@@ -833,20 +844,6 @@ func comparePrimaryScanVsIndexScan(opsA, opsB expressionCounts) int {
 		return -1
 	}
 	if bIsPrimaryScan && aIsIndexScanWithFetch {
-		return 1
-	}
-	return 0
-}
-
-func compareFlatMapVsNLJ(opsA, opsB expressionCounts) int {
-	aHasFlatMap := opsA.flatMapCount > 0
-	bHasFlatMap := opsB.flatMapCount > 0
-	aHasNLJ := opsA.nestedLoopJoinCount > 0
-	bHasNLJ := opsB.nestedLoopJoinCount > 0
-	if aHasFlatMap && bHasNLJ && !aHasNLJ && !bHasFlatMap {
-		return -1
-	}
-	if bHasFlatMap && aHasNLJ && !bHasNLJ && !aHasFlatMap {
 		return 1
 	}
 	return 0

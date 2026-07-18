@@ -1807,6 +1807,51 @@ func (s *ScalarFunctionValue) Type() Type {
 }
 
 func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
+	// SHORT-CIRCUITING forms evaluate arguments lazily — SQL requires
+	// that COALESCE stop at the first non-NULL argument and that IF
+	// evaluate only the taken branch, so `COALESCE(1, 1/0)` is 1 and
+	// `IF(true, x, 1/0)` is x, never a 22012. The eager loop below
+	// evaluated every argument first and turned these legal
+	// expressions into runtime errors.
+	switch s.FuncName {
+	case "COALESCE", "IFNULL":
+		// IFNULL is the strictly 2-arg COALESCE spelling — the lazy arm
+		// must keep the strict arm's arity decline (nil, nil), not
+		// degrade IFNULL(1) / IFNULL(a,b,c) into variadic COALESCE.
+		if s.FuncName == "IFNULL" && len(s.Args) != 2 {
+			return nil, nil
+		}
+		for _, a := range s.Args {
+			if a == nil {
+				return nil, nil
+			}
+			av, err := a.Evaluate(evalCtx)
+			if err != nil {
+				return nil, err
+			}
+			if av != nil {
+				return av, nil
+			}
+		}
+		return nil, nil
+	case "IF", "IIF":
+		if len(s.Args) != 3 || s.Args[0] == nil {
+			return nil, nil
+		}
+		cond, err := s.Args[0].Evaluate(evalCtx)
+		if err != nil {
+			return nil, err
+		}
+		branch, ok := scalarIfBranch(cond)
+		if !ok {
+			// Unsupported condition type — decline like the strict arm.
+			return nil, nil
+		}
+		if s.Args[branch] == nil {
+			return nil, nil
+		}
+		return s.Args[branch].Evaluate(evalCtx)
+	}
 	args := make([]any, len(s.Args))
 	for i, a := range s.Args {
 		if a == nil {
@@ -1818,7 +1863,50 @@ func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
 		}
 		args[i] = av
 	}
-	return evalScalarFunction(s.FuncName, args)
+	return evalScalarFunctionCtx(s.FuncName, args, evalCtx)
+}
+
+// scalarIfBranch maps an evaluated IF/IIF condition to the argument
+// index of the branch to take (1 = then, 2 = else). Truthy: non-zero
+// numeric, non-empty string, true bool; NULL takes the else branch
+// (SQL §6.30 — NULL is not truthy). Single authority shared with the
+// strict evalScalarFunction arm so the two can never diverge.
+func scalarIfBranch(cond any) (int, bool) {
+	switch v := cond.(type) {
+	case bool:
+		if v {
+			return 1, true
+		}
+		return 2, true
+	case int64:
+		if v != 0 {
+			return 1, true
+		}
+		return 2, true
+	case float64:
+		if v != 0 {
+			return 1, true
+		}
+		return 2, true
+	case string:
+		if v != "" {
+			return 1, true
+		}
+		return 2, true
+	case nil:
+		return 2, true
+	}
+	return 0, false
+}
+
+// StatementClock is the optional evalCtx capability supplying the
+// statement-stable timestamp: SQL fixes CURRENT_TIMESTAMP / CURRENT_DATE
+// / CURRENT_TIME per STATEMENT, so every reference inside one statement
+// must observe the same instant. Evaluation contexts that carry a
+// statement time (the executor's EvaluationContext, the INSERT-VALUES
+// fold) implement this; without it the arms fall back to time.Now().
+type StatementClock interface {
+	StatementNow() time.Time
 }
 
 // evalScalarFunction dispatches the gated scalar function family
@@ -1847,6 +1935,37 @@ func scalarArgString(a any) string {
 		return uuid.UUID(b).String()
 	}
 	return fmt.Sprintf("%v", a)
+}
+
+// timestampParseLayouts is the SINGLE authority for the string forms the
+// engine accepts as timestamps — the TIMESTAMP cast and the date-part
+// functions parse the SAME set, so a string castable to TIMESTAMP can
+// never be "not a date/time value" to YEAR() (the date-part arm appends
+// the bare time-only layout for HOUR/MINUTE/SECOND over "15:04:05").
+var timestampParseLayouts = []string{timestampLayout, "2006-01-02T15:04:05Z07:00", "2006-01-02T15:04:05", dateLayout}
+
+// evalScalarFunctionCtx is evalScalarFunction with the evalCtx threaded
+// for the statement-clock arms (CURRENT_TIMESTAMP family); every other
+// function ignores the context.
+func evalScalarFunctionCtx(name string, args []any, evalCtx any) (any, error) {
+	switch name {
+	case "CURRENT_TIMESTAMP", "CURRENT_TIME", "LOCALTIME":
+		return statementTime(evalCtx).Format(timestampLayout), nil
+	case "CURRENT_DATE":
+		return statementTime(evalCtx).Format(dateLayout), nil
+	}
+	return evalScalarFunction(name, args)
+}
+
+// statementTime resolves the statement-stable instant from the evalCtx
+// (StatementClock) — every CURRENT_* reference in one statement observes
+// the same time, per SQL — falling back to time.Now() for contexts that
+// carry no clock.
+func statementTime(evalCtx any) time.Time {
+	if c, ok := evalCtx.(StatementClock); ok {
+		return c.StatementNow().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func evalScalarFunction(name string, args []any) (any, error) {
@@ -2205,31 +2324,8 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		if len(args) != 3 {
 			return nil, nil
 		}
-		switch v := args[0].(type) {
-		case bool:
-			if v {
-				return args[1], nil
-			}
-			return args[2], nil
-		case int64:
-			if v != 0 {
-				return args[1], nil
-			}
-			return args[2], nil
-		case float64:
-			if v != 0 {
-				return args[1], nil
-			}
-			return args[2], nil
-		case string:
-			if v != "" {
-				return args[1], nil
-			}
-			return args[2], nil
-		case nil:
-			// SQL §6.30: IF(NULL, …) returns the else branch (NULL is
-			// not truthy). embedded matches this.
-			return args[2], nil
+		if branch, ok := scalarIfBranch(args[0]); ok {
+			return args[branch], nil
 		}
 		// Unsupported condition type — decline so runtime can error.
 		return nil, nil
@@ -2413,32 +2509,39 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		}
 		s, ok := args[0].(string)
 		if !ok {
-			// Also handle time.Time if the argument was already parsed.
+			// Also handle time.Time if the argument was already parsed —
+			// normalized to UTC like the string path, so the parts never
+			// depend on the carrier's zone representation.
 			if t, tok := args[0].(time.Time); tok {
-				return datePartFromTime(name, t), nil
+				return datePartFromTime(name, t.UTC()), nil
 			}
 			return nil, nil
 		}
 		var t time.Time
 		var err error
-		for _, layout := range []string{
-			timestampLayout,
-			dateLayout,
-			"15:04:05",
-		} {
+		for _, layout := range append(timestampParseLayouts[:len(timestampParseLayouts):len(timestampParseLayouts)], "15:04:05") {
 			t, err = time.Parse(layout, s)
 			if err == nil {
 				break
 			}
 		}
 		if err != nil {
-			return nil, nil
+			// A non-NULL string that parses as NO supported date/time
+			// layout is DATA-DEPENDENT garbage input — a typed 22023,
+			// like SQRT(negative), never a silent NULL. The NULL-degrade
+			// contract covers TYPE declines (non-string, wrong arity),
+			// not malformed data: folding a typo to NULL silently
+			// corrupts an INSERT.
+			return nil, &InvalidArgumentError{Message: fmt.Sprintf("cannot extract %s from %q: not a date/time value", name, s)}
 		}
-		return datePartFromTime(name, t), nil
-	case "CURRENT_TIMESTAMP", "CURRENT_TIME", "LOCALTIME":
-		return time.Now().UTC().Format(timestampLayout), nil
-	case "CURRENT_DATE":
-		return time.Now().UTC().Format(dateLayout), nil
+		// Normalize to UTC before extraction — the TIMESTAMP cast
+		// canonicalizes zoned forms to UTC, and the date parts must
+		// agree with it (HOUR('…T03:04:05+02:00') is 1, not 3).
+		return datePartFromTime(name, t.UTC()), nil
+		// CURRENT_TIMESTAMP / CURRENT_DATE / CURRENT_TIME / LOCALTIME
+		// live in evalScalarFunctionCtx — they need the evalCtx's
+		// StatementClock; a single authority so the strict path can
+		// never fork the timestamp semantics.
 	}
 	return nil, nil
 }
@@ -2624,17 +2727,29 @@ func (a *ArithmeticValue) Name() string      { return "arith" }
 
 // Type returns the arithmetic result Type by numeric promotion of the
 // operand types: DOUBLE if either operand is DOUBLE, else FLOAT if either is
-// FLOAT, else LONG (the conservative integer default, also used when an
-// operand type is unknown). Mirrors Java's ArithmeticValue result typing and
-// the float promotion Evaluate already performs. NULL propagates through
+// FLOAT, else INT when BOTH are INT (Java's ADD_II/DIV_II/MOD_II declare
+// result INT — without this the static property re-erases the width the
+// lane dispatch keys on, and `(a+b)+c` over INT columns escapes the int32
+// bounds at the outer op), else LONG (the conservative integer default,
+// also used when an operand type is unknown). NULL propagates through
 // Evaluate, so the result is nullable.
 func (a *ArithmeticValue) Type() Type {
 	lc, rc := arithOperandCode(a.Left), arithOperandCode(a.Right)
+	if a.Op == OpAdd && (lc == TypeCodeString || rc == TypeCodeString) {
+		// Java's ADD_*S/S* operators CONCATENATE: any + with a STRING
+		// operand (against INT/LONG/FLOAT/DOUBLE/STRING) yields STRING
+		// (ArithmeticValue.java ADD_IS..ADD_SS) — string wins over the
+		// numeric promotions for ADD.
+		return NullableString
+	}
 	if lc == TypeCodeDouble || rc == TypeCodeDouble {
 		return NullableDouble
 	}
 	if lc == TypeCodeFloat || rc == TypeCodeFloat {
 		return NullableFloat
+	}
+	if lc == TypeCodeInt && rc == TypeCodeInt {
+		return NullableInt
 	}
 	return NullableLong
 }
@@ -2660,6 +2775,38 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) (any, error) {
 	}
 	if l == nil || r == nil {
 		return nil, nil
+	}
+	// STATIC-TYPE lane dispatch (Java ArithmeticValue's per-TypeCode
+	// physical operators, keyed on the operands' STATIC types like
+	// ADD_II/ADD_FF — never on the widened runtime representation):
+	//   both INT            → int lane: exact int32 bounds (Math.addExact(int,int));
+	//   max FLOAT (no DOUBLE) → float lane: float32 computation (ADD_FF/IF/LF —
+	//                          overflow to ±Inf at the float32 boundary where
+	//                          the double lane would return a finite value);
+	//   otherwise            → the existing LONG/DOUBLE lanes below.
+	// Operands with UNKNOWN static types keep the runtime-typed fallback —
+	// the dispatch grows more precise as the resolver types more values
+	// (WS-N Phase D).
+	lc, rc := arithOperandCode(a.Left), arithOperandCode(a.Right)
+	if a.Op == OpAdd && (lc == TypeCodeString || rc == TypeCodeString) {
+		if out, handled := a.evalStringConcat(l, r, lc, rc); handled {
+			return out, nil
+		}
+	}
+	if lc == TypeCodeFloat || rc == TypeCodeFloat {
+		otherOK := func(c TypeCode) bool {
+			return c == TypeCodeFloat || c == TypeCodeInt || c == TypeCodeLong
+		}
+		if otherOK(lc) && otherOK(rc) {
+			if out := a.evalFloat32(l, r); out != nil {
+				return out, nil
+			}
+		}
+	}
+	if lc == TypeCodeInt && rc == TypeCodeInt {
+		if out, handled, err := a.evalInt32(l, r); handled {
+			return out, err
+		}
 	}
 	// Float promotion: if either operand is float64 AND the other is numeric, use float arithmetic.
 	_, lf := l.(float64)
@@ -2705,7 +2852,11 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) (any, error) {
 			return nil, &ArithmeticDivisionByZeroError{}
 		}
 		if li == math.MinInt64 && ri == -1 {
-			return nil, &ArithmeticOverflowError{}
+			// Java DIV_LL is UNCHECKED `(long)l / (long)r` — the JVM wraps
+			// MinLong / -1 back to MinLong with no exception (unlike
+			// ADD/SUB/MUL, which use Math.*Exact). Go's `/` would panic on
+			// exactly this pair, so the wrap is explicit. Parity, not taste.
+			return int64(math.MinInt64), nil
 		}
 		return li / ri, nil
 	case OpMod:
@@ -2744,6 +2895,196 @@ func (a *ArithmeticValue) evalFloat(l, r any) any {
 	return nil
 }
 
+// evalFloat32 is the FLOAT lane (Java ADD_FF/IF/LF …): computation in
+// float32, so overflow saturates to ±Inf at the float32 boundary and
+// low-bit rounding matches Java's per-operation float math. Returns the
+// float32 result widened to the row-domain float64 carrier; nil when an
+// operand isn't numeric (caller falls through to the generic lanes).
+func (a *ArithmeticValue) evalFloat32(l, r any) any {
+	lf, lok := toFloat32Operand(l)
+	rf, rok := toFloat32Operand(r)
+	if !lok || !rok {
+		return nil
+	}
+	var out float32
+	switch a.Op {
+	case OpAdd:
+		out = lf + rf
+	case OpSub:
+		out = lf - rf
+	case OpMul:
+		out = lf * rf
+	case OpDiv:
+		out = lf / rf
+	case OpMod:
+		out = float32(math.Mod(float64(lf), float64(rf)))
+	default:
+		return nil
+	}
+	return float64(out)
+}
+
+// evalStringConcat is Java's ADD string family
+// (ArithmeticValue.java ADD_IS/LS/FS/DS/SI/SL/SF/SD/SS): `+` with a
+// STRING operand CONCATENATES, rendering the numeric side exactly as
+// Java's string coercion would (Integer/Long decimal, Float/Double via
+// their toString — ".0" on whole values, upper-case E exponents,
+// Infinity/-Infinity/NaN spellings). handled=false when the other
+// operand's static code is outside the Java table (the caller's
+// generic arms then error as before).
+func (a *ArithmeticValue) evalStringConcat(l, r any, lc, rc TypeCode) (any, bool) {
+	render := func(v any, code TypeCode) (string, bool) {
+		switch code {
+		case TypeCodeString:
+			s, ok := v.(string)
+			return s, ok
+		case TypeCodeInt, TypeCodeLong:
+			iv, ok := toInt64ForArith(v)
+			if !ok {
+				return "", false
+			}
+			return strconv.FormatInt(iv, 10), true
+		case TypeCodeFloat:
+			f64, _, ok := ToFloat64(v)
+			if !ok {
+				return "", false
+			}
+			return javaFloatString(float64(float32(f64)), 32), true
+		case TypeCodeDouble:
+			f64, _, ok := ToFloat64(v)
+			if !ok {
+				return "", false
+			}
+			return javaFloatString(f64, 64), true
+		default:
+			return "", false
+		}
+	}
+	ls, lok := render(l, lc)
+	rs, rok := render(r, rc)
+	if !lok || !rok {
+		return nil, false
+	}
+	return ls + rs, true
+}
+
+// javaFloatString renders a float exactly the way Java's
+// Float.toString / Double.toString does (the Java SE contract):
+//   - 1e-3 ≤ |v| < 1e7 (and zero) render in DECIMAL form, whole values
+//     completed with ".0" (2e6 → "2000000.0", 0.001 → "0.001");
+//   - everything else renders in "computerized scientific notation":
+//     one digit before the point, ".0"-completed mantissa, upper-case E,
+//     no plus sign, no zero-padded exponent (1e7 → "1.0E7",
+//     1e-4 → "1.0E-4");
+//   - the special values spell Infinity/-Infinity/NaN.
+//
+// The DIGITS come from the Schubfach engine (schubfach.go) — the JDK
+// 19+ algorithm — not Go's shortest-decimal strconv: the two agree on
+// normal values but diverge on subnormals (Double.MIN_VALUE: Java
+// "4.9E-324", Go "5e-324"). The layout is forced here because Go's 'g'
+// format picks its own form boundary and zero-pads exponents.
+func javaFloatString(f float64, bits int) string {
+	if math.IsNaN(f) {
+		return "NaN"
+	}
+	if math.IsInf(f, 1) {
+		return "Infinity"
+	}
+	if math.IsInf(f, -1) {
+		return "-Infinity"
+	}
+	if f == 0 {
+		if math.Signbit(f) {
+			return "-0.0"
+		}
+		return "0.0"
+	}
+	neg := math.Signbit(f)
+	var digits uint64
+	var e int
+	if bits == 32 {
+		digits, e = javaFloatDigits(float32(math.Abs(f)))
+	} else {
+		digits, e = javaDoubleDigits(math.Abs(f))
+	}
+	return javaRenderDigits(neg, digits, e)
+}
+
+// JavaDoubleToString is Java's Double.toString(double).
+func JavaDoubleToString(f float64) string { return javaFloatString(f, 64) }
+
+// JavaFloatToString is Java's Float.toString(float).
+func JavaFloatToString(f float32) string { return javaFloatString(float64(f), 32) }
+
+// toFloat32Operand converts a FLOAT-lane operand to float32. Integer
+// operands convert DIRECTLY int64→float32 (Java's ADD_LF does `(float)l`
+// in one rounding step; routing through float64 first would double-round
+// longs above 2^53 near float32 ties).
+func toFloat32Operand(v any) (float32, bool) {
+	if li, ok := toInt64ForArith(v); ok {
+		return float32(li), true
+	}
+	f64, _, ok := ToFloat64(v)
+	if !ok {
+		return 0, false
+	}
+	return float32(f64), true
+}
+
+// evalInt32 is the INT lane (Java ADD_II/SUB_II/MUL_II via
+// Math.*Exact(int,int)): both operands statically INT, arithmetic bounds
+// checked at the int32 boundary — `int_col + int_col` crossing 2^31 errors
+// with the overflow class where the LONG lane would silently return the
+// wide value. DIV_II/MOD_II mirror the long lane's zero/MinInt semantics at
+// 32 bits (Java (int) division wraps MinInt/-1). handled=false when an
+// operand isn't an admitted integer (caller falls through).
+func (a *ArithmeticValue) evalInt32(l, r any) (out any, handled bool, err error) {
+	li, lok := toInt64ForArith(l)
+	ri, rok := toInt64ForArith(r)
+	if !lok || !rok {
+		return nil, false, nil
+	}
+	// Inputs outside the int32 range mean the STATIC type lied about the
+	// runtime value (an INT column cannot hold them; Java's (int) cast
+	// would silently truncate, which is unreachable there because typing
+	// guarantees the range). Fall through to the LONG lane rather than
+	// emulate a truncation no valid execution produces.
+	if li > math.MaxInt32 || li < math.MinInt32 || ri > math.MaxInt32 || ri < math.MinInt32 {
+		return nil, false, nil
+	}
+	switch a.Op {
+	case OpAdd, OpSub, OpMul:
+		var out int64
+		switch a.Op {
+		case OpAdd:
+			out = li + ri
+		case OpSub:
+			out = li - ri
+		case OpMul:
+			out = li * ri
+		}
+		if out > math.MaxInt32 || out < math.MinInt32 {
+			return nil, true, &ArithmeticOverflowError{}
+		}
+		return out, true, nil
+	case OpDiv:
+		if ri == 0 {
+			return nil, true, &ArithmeticDivisionByZeroError{}
+		}
+		if li == math.MinInt32 && ri == -1 {
+			// Java DIV_II is `(int)l / (int)r` — wraps to MinInt.
+			return int64(math.MinInt32), true, nil
+		}
+		return li / ri, true, nil
+	case OpMod:
+		if ri == 0 {
+			return nil, true, &ArithmeticDivisionByZeroError{}
+		}
+		return li % ri, true, nil
+	}
+	return nil, false, nil
+}
+
 func toInt64ForArith(v any) (int64, bool) {
 	switch n := v.(type) {
 	case int64:
@@ -2752,6 +3093,19 @@ func toInt64ForArith(v any) (int64, bool) {
 		return int64(n), true
 	case int32:
 		return int64(n), true
+	case uint64:
+		// The tuple layer decodes positive integers above math.MaxInt64 as
+		// uint64; the LOSSLESS half joins integer arithmetic (the
+		// comparators already admit the whole domain — CompareExactInts).
+		// Values above MaxInt64 stay declined: int64 arithmetic cannot
+		// represent them and Java's equivalent is BigInteger territory.
+		if n <= math.MaxInt64 {
+			return int64(n), true
+		}
+	case uint:
+		if uint64(n) <= math.MaxInt64 {
+			return int64(n), true
+		}
 	}
 	return 0, false
 }
@@ -3010,7 +3364,11 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		case string:
 			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 32)
 			if err != nil {
-				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to INT: %s", val, err)}
+				// Java STRING_TO_INT wraps Integer.parseInt's
+				// NumberFormatException — its message is the stock
+				// `For input string: "X"` for syntax AND range failures
+				// alike (CastValue.java:185-192), never Go's strconv text.
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to INT: For input string: \"%s\"", val, strings.TrimSpace(val))}
 			}
 			return n, nil
 		}
@@ -3035,7 +3393,8 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		case string:
 			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
 			if err != nil {
-				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to LONG: %s", val, err)}
+				// Java STRING_TO_LONG: Long.parseLong's stock message.
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to LONG: For input string: \"%s\"", val, strings.TrimSpace(val))}
 			}
 			return n, nil
 		}
@@ -3044,8 +3403,23 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		case bool:
 			return val, nil
 		case int64:
+			// Java's cast table has INT_TO_BOOLEAN but NO
+			// LONG/FLOAT/DOUBLE_TO_BOOLEAN (CastValue.java:230; missing
+			// pairs fail resolution with "No cast defined from X to
+			// BOOLEAN"). Dispatch on the CHILD's STATIC code: a genuine
+			// INT converts (!= 0); LONG rejects like Java. An
+			// UNKNOWN-typed child keeps the conversion — the static
+			// widths now flow from the catalog, so unknown means an
+			// internal untyped expression, not a BIGINT column.
+			if code := arithOperandCode(c.Child); code == TypeCodeLong {
+				return nil, &InvalidCastError{Message: "No cast defined from LONG to BOOLEAN"}
+			}
 			return val != 0, nil
 		case float64:
+			code := arithOperandCode(c.Child)
+			if code == TypeCodeDouble || code == TypeCodeFloat {
+				return nil, &InvalidCastError{Message: fmt.Sprintf("No cast defined from %v to BOOLEAN", code)}
+			}
 			return val != 0, nil
 		case string:
 			switch strings.ToLower(strings.TrimSpace(val)) {
@@ -3068,11 +3442,17 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 			return strconv.FormatInt(i, 10), nil
 		}
 		if f, ok := v.(float64); ok {
-			s := strconv.FormatFloat(f, 'g', -1, 64)
-			if !strings.ContainsAny(s, ".eE") && s != "NaN" && s != "+Inf" && s != "-Inf" {
-				s += ".0"
+			// Dispatch on the child's STATIC type code, like Java's
+			// FLOAT_TO_STRING vs DOUBLE_TO_STRING operator rows:
+			// FLOAT renders through the Float.toString contract
+			// (32-bit shortest-repr), DOUBLE through Double.toString.
+			if c.Child != nil && c.Child.Type() != nil && c.Child.Type().Code() == TypeCodeFloat {
+				return javaFloatString(float64(float32(f)), 32), nil
 			}
-			return s, nil
+			return javaFloatString(f, 64), nil
+		}
+		if f32, ok := v.(float32); ok {
+			return javaFloatString(float64(f32), 32), nil
 		}
 		if b, ok := v.(bool); ok {
 			// Match runtime functions.CastValue: lowercase
@@ -3113,7 +3493,7 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 			return val.UTC().Format(timestampLayout), nil
 		case string:
 			s := strings.TrimSpace(val)
-			for _, layout := range []string{timestampLayout, "2006-01-02T15:04:05Z07:00", "2006-01-02T15:04:05", dateLayout} {
+			for _, layout := range timestampParseLayouts {
 				if t, err := time.Parse(layout, s); err == nil {
 					return t.UTC().Format(timestampLayout), nil
 				}
@@ -3168,6 +3548,18 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 			return val, nil
 		default:
 			return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %T to UUID", v)}
+		}
+	case TypeCodeBytes:
+		// Java defines no cast operators TO bytes — only the identity
+		// cast passes CastPairDefined. Anything non-[]byte here means an
+		// unknown-typed child bypassed the plan-time pair gate; reject
+		// like Java's construction-time "No cast defined" rather than
+		// fall through to the silent-NULL tail below.
+		switch val := v.(type) {
+		case []byte:
+			return val, nil
+		default:
+			return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %T to BYTES", v)}
 		}
 	}
 	return nil, nil

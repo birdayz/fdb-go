@@ -68,19 +68,6 @@ func (e *NumericRangeOverflowError) Error() string {
 
 type SumOverflowError struct{}
 
-// rejectUnsupportedResume converts a non-empty incoming continuation on a
-// cursor shape with NO continuation handling into a typed decline. These
-// cursors previously DROPPED the bytes and restarted from row 0 — inside a
-// resumed branch-tagged concat that is an infinite repeat (a VALUES branch
-// re-emits its rows on every page) or silent duplicates, never an error
-// Correct-or-loud until each shape gains real resume.
-func rejectUnsupportedResume(continuation []byte, shape string) error {
-	if len(continuation) == 0 {
-		return nil
-	}
-	return &UnsupportedContinuationError{Shape: shape}
-}
-
 // UnsupportedContinuationError reports a resume attempt on a cursor shape
 // that has no continuation support yet (RFC-180 WS-A follow-ups). The driver
 // maps it to SQLSTATE 0A000 — a typed decline, never a silent wrong start
@@ -133,10 +120,7 @@ func ExecutePlan(
 	case *plans.RecordQueryStreamingAggregationPlan:
 		return executeAggregation(ctx, p.GetInner(), p.GetGroupingKeys(), p.GetAggregates(), store, evalCtx, continuation, props)
 	case *plans.RecordQueryExplodePlan:
-		if err := rejectUnsupportedResume(continuation, "explode"); err != nil {
-			return nil, err
-		}
-		return executeExplode(p, evalCtx, props)
+		return executeExplode(p, evalCtx, continuation, props)
 	case *plans.RecordQueryDeletePlan:
 		return executeDelete(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryInsertPlan:
@@ -144,24 +128,36 @@ func ExecutePlan(
 	case *plans.RecordQueryUpdatePlan:
 		return executeUpdate(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryTempTableScanPlan:
-		if err := rejectUnsupportedResume(continuation, "temp-table scan"); err != nil {
-			return nil, err
-		}
-		return executeTempTableScan(p, evalCtx, props)
+		return executeTempTableScan(p, evalCtx, continuation, props)
 	case *plans.RecordQueryTempTableInsertPlan:
 		return executeTempTableInsert(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryTableFunctionPlan:
-		if err := rejectUnsupportedResume(continuation, "table function"); err != nil {
-			return nil, err
-		}
-		return executeTableFunction(p, evalCtx, props)
+		return executeTableFunction(p, evalCtx, continuation, props)
 	case *plans.RecordQueryValuesPlan:
-		if err := rejectUnsupportedResume(continuation, "VALUES"); err != nil {
+		return executeValues(p, evalCtx, continuation)
+	case *plans.RecordQueryRecursiveLevelUnionPlan:
+		if p.IsDistinct() {
+			// UNION DISTINCT recursion (a Go extension — Java rejects it:
+			// "only UNION ALL is supported") carries a cross-level
+			// seen-set that IS the emission history, so it cannot ride a
+			// streaming continuation; it resumes by deterministic replay
+			// (position + boundary-row integrity, loud on drift).
+			replayBase := func() (recordlayer.RecordCursor[QueryResult], error) {
+				return executeRecursiveLevelUnion(ctx, p, store, evalCtx, nil, props.ClearSkipAndLimit())
+			}
+			cur, err := newPositionReplayCursor(ctx, replayBase, continuation)
+			if err != nil {
+				return nil, err
+			}
+			return applySkipLimit(cur, props.Skip, props.ReturnedRowLimit), nil
+		}
+		// UNION ALL streams with the Java-shape RecursiveUnionCursor
+		// continuation (phase + scan-frontier PTempTable + child position).
+		cur, err := newRecursiveUnionCursor(ctx, p, store, evalCtx, continuation, props)
+		if err != nil {
 			return nil, err
 		}
-		return executeValues(p, evalCtx)
-	case *plans.RecordQueryRecursiveLevelUnionPlan:
-		return executeRecursiveLevelUnion(ctx, p, store, evalCtx, continuation, props)
+		return applySkipLimit(cur, props.Skip, props.ReturnedRowLimit), nil
 	case *plans.RecordQueryRecursiveDfsJoinPlan:
 		return executeRecursiveDfsJoin(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryUnorderedUnionPlan:
@@ -194,7 +190,7 @@ func ExecutePlan(
 		return executeMultiIntersection(ctx, p, store, evalCtx, continuation, props)
 
 	case *plans.RecordQueryLoadByKeysPlan:
-		return executeLoadByKeys(ctx, p, store, evalCtx, props)
+		return executeLoadByKeys(ctx, p, store, evalCtx, continuation, props)
 
 	// --- Go extensions (no Java equivalent) ---
 	case *plans.RecordQueryInMemorySortPlan:
@@ -330,7 +326,7 @@ func executeIndexScan(
 				// scan serves a single record type (a multi-type covering scan
 				// has no single logical shape and keeps the index layout).
 				if len(rts) == 1 && rt.Descriptor != nil {
-					logicalType = positionalTypeForDescriptor(rt.Descriptor)
+					logicalType = PositionalTypeForDescriptor(rt.Descriptor)
 				}
 			}
 		}
@@ -1543,6 +1539,16 @@ func executeDistinct(
 	// RFC-130: the distinct seen-set is a cardinality-growing buffer (one
 	// key string per distinct row, held for the whole scan). Charge each NEW
 	// key's bytes against the statement memory budget via boundedSet.
+	//
+	// The set is rebuilt FRESH per page (nothing of it rides the
+	// continuation), so duplicates whose occurrences straddle an internal
+	// page break are re-admitted. Java's RecordQueryUnorderedDistinctPlan
+	// has the IDENTICAL fresh-HashSet shape — cross-page dedup is a known
+	// weakness of the operator in both engines, not a divergence — but
+	// Go's automatic internal paging surfaces it inside one statement,
+	// where Java only hits it on client-driven resumes. A fix means
+	// carrying the seen-set (or a sorted-input requirement) through the
+	// continuation — an ordering-aware arc, tracked in TODO.md.
 	seen := newBoundedSet[string](props.State)
 	filtered := &filterResultCursor{
 		inner: innerCursor,
@@ -2369,10 +2375,10 @@ func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias st
 	slots = append(slots, inner.Slots...)
 	legs := make([]values.RecordTypeLeg, 0, len(outer.Type.Legs)+len(inner.Type.Legs)+2)
 	if outerAlias != "" {
-		legs = append(legs, values.RecordTypeLeg{Name: strings.ToUpper(outerAlias), Start: 0, Width: nOuter})
+		legs = append(legs, values.RecordTypeLeg{Name: outerAlias, Start: 0, Width: nOuter})
 	}
 	if innerAlias != "" {
-		legs = append(legs, values.RecordTypeLeg{Name: strings.ToUpper(innerAlias), Start: nOuter, Width: nInner})
+		legs = append(legs, values.RecordTypeLeg{Name: innerAlias, Start: nOuter, Width: nInner})
 	}
 	for _, lg := range outer.Type.Legs {
 		legs = append(legs, lg)
@@ -3144,11 +3150,14 @@ func uuidBytesToProtoMessage(fd protoreflect.FieldDescriptor, b [16]byte) (proto
 func executeTempTableScan(
 	p *plans.RecordQueryTempTableScanPlan,
 	evalCtx *EvaluationContext,
+	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	// Java TempTableScanPlan.executePlan: ListCursor(table.getList(),
+	// continuation) — a mid-list resume is a 4-byte position.
 	tt := evalCtx.GetOrCreateTempTable(p.GetTempTableAlias(), props.State)
 	items := tt.GetList()
-	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(recordlayer.FromListWithContinuation(items, continuation), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeTempTableInsert(
@@ -3159,6 +3168,19 @@ func executeTempTableInsert(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	if p.IsOwning() {
+		// Java TempTableInsertPlan.executePlan's owning arm
+		// (TempTableInsertCursor.from): the cursor's continuation
+		// snapshots the table alongside the child position, so a
+		// mid-stream resume (the recursive union's) restores the rows
+		// inserted so far into the freshly-bound table before resuming
+		// the child mid-way.
+		tt := evalCtx.GetOrCreateTempTable(p.GetTempTableAlias(), props.State)
+		return newTempTableInsertCursor(continuation, tt, storeDescriptorResolver(store),
+			func(childCont []byte) (recordlayer.RecordCursor[QueryResult], error) {
+				return ExecutePlan(ctx, p.GetInner(), store, evalCtx, childCont, props.ClearSkipAndLimit())
+			})
+	}
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
@@ -3184,6 +3206,7 @@ func executeTempTableInsert(
 func executeTableFunction(
 	p *plans.RecordQueryTableFunctionPlan,
 	evalCtx *EvaluationContext,
+	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	sv := p.GetStreamValue()
@@ -3200,7 +3223,7 @@ func executeTableFunction(
 	list, ok := result.([]any)
 	if !ok {
 		return applySkipLimit(
-			recordlayer.FromList([]QueryResult{{Positional: explodeElementRow(result, arrayElementType(sv))}}),
+			recordlayer.FromListWithContinuation([]QueryResult{{Positional: explodeElementRow(result, arrayElementType(sv))}}, continuation),
 			props.Skip, props.ReturnedRowLimit,
 		), nil
 	}
@@ -3208,12 +3231,16 @@ func executeTableFunction(
 	for i, elem := range list {
 		items[i] = QueryResult{Positional: explodeElementRow(elem, arrayElementType(sv))}
 	}
-	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(recordlayer.FromListWithContinuation(items, continuation), props.Skip, props.ReturnedRowLimit), nil
 }
 
+// executeExplode mirrors Java RecordQueryExplodePlan.executePlan: the
+// collection re-evaluates from the bindings and the cursor is
+// RecordCursor.fromList(list, continuation) — resume is a list position.
 func executeExplode(
 	p *plans.RecordQueryExplodePlan,
 	evalCtx *EvaluationContext,
+	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	cv := p.GetCollectionValue()
@@ -3242,12 +3269,12 @@ func executeExplode(
 		// ordinal 1 (the SQL standard's 1-based position of the sole element).
 		if p.IsWithOrdinality() {
 			return applySkipLimit(
-				recordlayer.FromList([]QueryResult{explodeOrdinalityResult(ordType, result, 1)}),
+				recordlayer.FromListWithContinuation([]QueryResult{explodeOrdinalityResult(ordType, result, 1)}, continuation),
 				props.Skip, props.ReturnedRowLimit,
 			), nil
 		}
 		return applySkipLimit(
-			recordlayer.FromList([]QueryResult{{Positional: explodeElementRow(result, p.GetElementType())}}),
+			recordlayer.FromListWithContinuation([]QueryResult{{Positional: explodeElementRow(result, p.GetElementType())}}, continuation),
 			props.Skip, props.ReturnedRowLimit,
 		), nil
 	}
@@ -3265,7 +3292,7 @@ func executeExplode(
 		}
 		items[i] = QueryResult{Positional: explodeElementRow(elem, p.GetElementType())}
 	}
-	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(recordlayer.FromListWithContinuation(items, continuation), props.Skip, props.ReturnedRowLimit), nil
 }
 
 // explodeOrdinalityResult builds a WITH-ORDINALITY box output row: a
@@ -3391,7 +3418,7 @@ func isBareScalarRow(pos *PositionalRow) bool {
 		pos.Type.Fields[0].Name == values.OrdinalFieldName(0)
 }
 
-func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext) (recordlayer.RecordCursor[QueryResult], error) {
+func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext, continuation []byte) (recordlayer.RecordCursor[QueryResult], error) {
 	cols := p.GetColumns()
 	names := make([]string, len(cols))
 	slots := make([]any, len(cols))
@@ -3404,7 +3431,7 @@ func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext) (
 		slots[i] = v
 	}
 	pos := &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}
-	return recordlayer.FromList([]QueryResult{{Positional: pos}}), nil
+	return recordlayer.FromListWithContinuation([]QueryResult{{Positional: pos}}, continuation), nil
 }
 
 // executeRecursiveLevelUnion implements level-order (BFS) recursive
@@ -3570,7 +3597,11 @@ func executeRecursiveLevelUnion(
 // child plan is re-evaluated with the prior row bound via
 // priorCorrelation. Supports PREORDER (emit parent then children)
 // and POSTORDER (emit children then parent).
-// Mirrors Java's RecordQueryRecursiveDfsJoinPlan.executePlan.
+// Mirrors Java's RecordQueryRecursiveDfsJoinPlan.executePlan: the
+// UNION ALL arm STREAMS through the RecursiveCursor port (per-depth
+// continuation stack, primary-key check values); the DISTINCT arm is a
+// Go extension (Java rejects recursive UNION distinct — "only UNION
+// ALL is supported") and resumes by deterministic replay.
 func executeRecursiveDfsJoin(
 	ctx context.Context,
 	p *plans.RecordQueryRecursiveDfsJoinPlan,
@@ -3579,35 +3610,104 @@ func executeRecursiveDfsJoin(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	rootCursor, err := ExecutePlan(ctx, p.GetRoot(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if !p.IsDistinct() {
+		return executeRecursiveDfsJoinStreaming(ctx, p, store, evalCtx, continuation, props)
+	}
+	replayBase := func() (recordlayer.RecordCursor[QueryResult], error) {
+		return executeRecursiveDfsJoinDistinctEager(ctx, p, store, evalCtx, props)
+	}
+	cur, err := newPositionReplayCursor(ctx, replayBase, continuation)
+	if err != nil {
+		return nil, err
+	}
+	return applySkipLimit(cur, props.Skip, props.ReturnedRowLimit), nil
+}
+
+// executeRecursiveDfsJoinStreaming is Java's executePlan: RecursiveCursor
+// over the root plan and a per-parent-row child plan re-execution, with
+// the prior row bound as a single-row temp table under priorCorrelation
+// (the child body reads it through its TempTableScan — Go's prior-binding
+// plumbing; Java binds the value directly under an internal correlation
+// binding).
+func executeRecursiveDfsJoinStreaming(
+	ctx context.Context,
+	p *plans.RecordQueryRecursiveDfsJoinPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	nested := props.ClearSkipAndLimit()
+	rootFn := func(cont []byte) (recordlayer.RecordCursor[QueryResult], error) {
+		return ExecutePlan(ctx, p.GetRoot(), store, evalCtx, cont, nested)
+	}
+	childFn := func(value QueryResult, depth int, cont []byte) (recordlayer.RecordCursor[QueryResult], error) {
+		// Java has NO depth bound (fixpoint-only); the loud cap is the
+		// same cycle tripwire the eager path and the streaming level
+		// union carry — never a silent truncation.
+		if depth >= maxStreamingRecursionDepth {
+			return nil, &RecursiveCTEDepthExceededError{MaxDepth: maxStreamingRecursionDepth}
+		}
+		// A transient single-row binding table (not a cardinality
+		// buffer): the child body's TempTableScan(priorCorrelation)
+		// reads the parent row through it.
+		singleRow := NewTempTable()
+		if err := singleRow.Add(value); err != nil {
+			return nil, err
+		}
+		childCtx := evalCtx.WithBinding(p.GetPriorCorrelation(), singleRow)
+		return ExecutePlan(ctx, p.GetChild(), store, childCtx, cont, nested)
+	}
+	// Java: "serialize the primary key for continuation integrity
+	// checking" — computed rows carry none and go uncheckable (nil).
+	checkFn := func(v QueryResult) []byte {
+		if v.PrimaryKey != nil {
+			return v.PrimaryKey.Pack()
+		}
+		return nil
+	}
+	preorder := p.GetTraversalStrategy() == plans.DfsPreorder
+	cur, err := newRecursiveCursor(rootFn, childFn, checkFn, continuation, preorder, props.State)
+	if err != nil {
+		return nil, err
+	}
+	return applySkipLimit(cur, props.Skip, props.ReturnedRowLimit), nil
+}
+
+// executeRecursiveDfsJoinDistinctEager is the DISTINCT extension's eager
+// traversal (the cross-level seen-set makes the recursion inherently
+// materialized); resume is layered above via deterministic replay.
+func executeRecursiveDfsJoinDistinctEager(
+	ctx context.Context,
+	p *plans.RecordQueryRecursiveDfsJoinPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	rootCursor, err := ExecutePlan(ctx, p.GetRoot(), store, evalCtx, nil, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, fmt.Errorf("executor: recursive dfs join root: %w", err)
 	}
 
-	// RFC-130 (the charge-once fix, extended to the DFS path): the root/child
-	// cursors have a TempTableInsertPlan at the top that already charges each row
-	// in tt.Add — draining with the byte-charging CollectAllBounded would
-	// double-count and trip the budget at ~half its true value (the same defect
-	// collectAllRowCapped fixes for executeRecursiveLevelUnion's initial state).
-	// Ordinalizing the recursive body flips the cost
-	// so this DFS plan wins over the level union for wide-payload recursive CTEs.
-	rootRows, err := collectAllRowCapped(ctx, rootCursor, props.GetMaterializationLimit(), "recursive DFS join root")
+	// The DFS rule strips the level-union TempTableInsert tops (Java's
+	// matcher shape), so rows are charged HERE, once, by the byte-charging
+	// collects — the buffers below are the recursion's only residency.
+	rootRows, rootCharge, err := CollectAllBounded(ctx, rootCursor, props.State, props.GetMaterializationLimit(), "recursive DFS join root")
 	rootCursor.Close()
 	if err != nil {
+		props.State.ReleaseMemory(rootCharge)
 		return nil, fmt.Errorf("executor: recursive dfs join root collect: %w", err)
 	}
 
 	preorder := p.GetTraversalStrategy() == plans.DfsPreorder
 	var results []QueryResult
-	// RFC-130 live-bytes model: every DFS row is charged ONCE — at tt.Add,
-	// when the root/child TempTableInsertPlan appends it to the shared
-	// accumulator table GetOrCreate mints into this context's bindings map.
-	// That table's charge stands in for the result set (same rows); the
-	// teardown below returns it (and the DISTINCT seen-set) to the budget,
-	// so a per-page re-execution does not re-accumulate the recursion.
+	// RFC-130 live-bytes model: root rows + every child collect + the
+	// DISTINCT seen-set are charged as they accumulate and released in one
+	// place — at the final cursor's teardown, or on an error return.
 	var seenCharge func() int64 = func() int64 { return 0 }
+	childCharge := int64(0)
 	releaseWorkingSet := func() {
-		evalCtx.ReleaseAllTempTableCharges()
+		props.State.ReleaseMemory(rootCharge + childCharge)
 		props.State.ReleaseMemory(seenCharge())
 	}
 	handedOff := false
@@ -3638,7 +3738,13 @@ func executeRecursiveDfsJoin(
 		keyer = newCTEDedupKeyer(canonicalCols)
 	}
 
-	const maxRecursionDepth = 256
+	// The SAME cycle tripwire as every other recursion arm
+	// (maxStreamingRecursionDepth): the eager DISTINCT arm's former 256
+	// silently CUT availability relative to the level union — with the
+	// DFS legs Java-shaped, a clause-less deep DISTINCT recursion can
+	// cost-flip onto this arm, and a 270-deep acyclic chain that used to
+	// answer via RecursiveLevelUnion failed 54F01 on the lower cap.
+	const maxRecursionDepth = maxStreamingRecursionDepth
 
 	for _, root := range rootRows {
 		if seen != nil {
@@ -3654,16 +3760,16 @@ func executeRecursiveDfsJoin(
 				continue
 			}
 		}
-		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results, 0, maxRecursionDepth, seen, keyer); err != nil {
+		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results, 0, maxRecursionDepth, seen, keyer, &childCharge); err != nil {
 			return nil, err
 		}
 	}
 
 	handedOff = true
-	return newCloseHookCursor(
-		applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit),
-		releaseWorkingSet,
-	), nil
+	// Skip/limit and the resume position are applied by the replay wrapper
+	// above this cursor — the eager base serves the FULL deterministic
+	// sequence.
+	return newCloseHookCursor(recordlayer.FromList(results), releaseWorkingSet), nil
 }
 
 func dfsVisit(
@@ -3678,6 +3784,7 @@ func dfsVisit(
 	depth, maxDepth int,
 	seen *boundedSet[string],
 	keyer *cteDedupKeyer,
+	childCharge *int64,
 ) error {
 	if depth >= maxDepth {
 		return &RecursiveCTEDepthExceededError{MaxDepth: maxDepth}
@@ -3701,11 +3808,11 @@ func dfsVisit(
 		return fmt.Errorf("recursive DFS child plan: %w", err)
 	}
 
-	// RFC-130: the child's TempTableInsertPlan already charged these rows in
-	// tt.Add — use the row-capped (non-byte-charging) drain to avoid the
-	// double-count (see the root collect above).
-	children, err := collectAllRowCapped(ctx, childCursor, props.GetMaterializationLimit(), "recursive DFS children")
+	// The insert tops are stripped (see the root collect): charge the
+	// child rows here, accumulated into the traversal's working set.
+	children, charge, err := CollectAllBounded(ctx, childCursor, props.State, props.GetMaterializationLimit(), "recursive DFS children")
 	childCursor.Close()
+	*childCharge += charge
 	if err != nil {
 		return fmt.Errorf("recursive DFS collect children: %w", err)
 	}
@@ -3724,7 +3831,7 @@ func dfsVisit(
 				continue
 			}
 		}
-		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results, depth+1, maxDepth, seen, keyer); err != nil {
+		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results, depth+1, maxDepth, seen, keyer, childCharge); err != nil {
 			return err
 		}
 	}

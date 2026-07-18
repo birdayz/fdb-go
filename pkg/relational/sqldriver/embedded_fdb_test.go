@@ -72,25 +72,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// expectUnsupportedOperator asserts that err unwraps to an *api.Error
-// with the byte-equal Java rejection message ("Unsupported operator
-// <opName>"). SELECT path uses ErrCodeUnsupportedQuery (0AF00 — Java's
-// single choke point, SemanticAnalyzer.resolveScalarFunction; Java's
-// 42883 site in SqlFunctionCatalog.lookupFunction is unreachable for
-// non-catalog names because containsFunction asserts first); DML paths
-// may use ErrCodeUnsupportedOperation (0A000) when the function is
-// embedded in values/expressions the FindUnsupportedFunction walker
-// doesn't reach.
-func expectUnsupportedOperator(g gomega.Gomega, err error, opName, ctx string) {
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
-		"%s: want *api.Error, got %T (%v)", ctx, err, err)
-	g.Expect(apiErr.Code).To(gomega.BeElementOf(api.ErrCodeUnsupportedQuery, api.ErrCodeUnsupportedOperation),
-		"%s: want ErrCodeUnsupportedQuery or ErrCodeUnsupportedOperation, got %s", ctx, apiErr.Code)
-	g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+opName),
-		"%s: want byte-equal Java message", ctx)
-}
-
 // expectRejectionOrCascadesError asserts that err is an *api.Error whose
 // message is either the legacy specific rejection message or the generic
 // Cascades planner failure ("Cascades planner could not plan query").
@@ -6018,10 +5999,16 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 		{3, "ab", 42},
 	}))
 
-	// STRING-family scalar functions in INSERT VALUES — rejected.
-	_, errRej := db.ExecContext(ctx, `INSERT INTO T (id, name, doubled) VALUES (4, UPPER('x'), 0)`)
-	g.Expect(errRej).To(gomega.HaveOccurred())
-	expectUnsupportedOperator(g, errRej, "UPPER", "INSERT VALUES UPPER")
+	// STRING-family scalar functions in INSERT VALUES answer: the cells
+	// fold through the ONE Cascades evaluator, so the read-side scalar
+	// registry (UPPER et al., RFC-087 Go extensions) covers VALUES as an
+	// emergent consequence — the old rejection was an artifact of the
+	// deleted legacy proto-path interpreter.
+	_, errUp := db.ExecContext(ctx, `INSERT INTO T (id, name, doubled) VALUES (4, UPPER('x'), 0)`)
+	g.Expect(errUp).NotTo(gomega.HaveOccurred())
+	var upName string
+	g.Expect(db.QueryRowContext(ctx, `SELECT name FROM T WHERE id = 4`).Scan(&upName)).To(gomega.Succeed())
+	g.Expect(upName).To(gomega.Equal("X"))
 }
 
 func TestFDB_EmptyResultEdgeCases(t *testing.T) {

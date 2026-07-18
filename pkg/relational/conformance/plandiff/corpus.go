@@ -4734,6 +4734,25 @@ func SeedRunCorpus() []RunQuery {
 			},
 		},
 		{
+			// The bigint-vs-double comparison model: Java PROMOTES the
+			// column LONG→DOUBLE (lossy above 2^53 — a column value of
+			// 2^53+1 collides with the literal 2^53), while Go narrows
+			// the constant exactly, so col=2^53+1 never equals the
+			// double 9007199254740992.0. Go answers with exact integer
+			// semantics; Java's promotion loses the low bit.
+			Name:           "bigint_eq_double_above_2p53",
+			SchemaTemplate: "CREATE TABLE T_P53 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_P53 VALUES (1, 9007199254740993), (2, 9007199254740992)"},
+			Query:          "SELECT id FROM T_P53 WHERE v = 9007199254740992.0 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Java promotes the BIGINT column to DOUBLE (lossy above 2^53), so v=2^53+1 wrongly matches the 2^53 literal; Go narrows the constant exactly and matches only v=2^53.",
+				Direction: DivergenceJavaWrongRowsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(2)},
+				},
+			},
+		},
+		{
 			Name:           "bigint_max_minus_one",
 			SchemaTemplate: "CREATE TABLE T_E8 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_E8 VALUES (1, 9223372036854775806), (2, 9223372036854775807), (3, -9223372036854775808)"},

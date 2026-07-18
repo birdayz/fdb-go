@@ -1,0 +1,36 @@
+# and_index_intersection_composite_pk.yaml — 2-key pk merge
+#
+# Composite primary key: the merge's comparison keys are BOTH pk columns
+# (baked to ordinals 0 and 1 of the descriptor layout) — a 2-key
+# pk-sorted merge, not the single-column special case.
+name: and_index_intersection_composite_pk
+schema_template: |
+  CREATE TABLE events (
+    tenant BIGINT NOT NULL,
+    seq BIGINT NOT NULL,
+    kind STRING,
+    region STRING,
+    PRIMARY KEY (tenant, seq)
+  )
+  CREATE INDEX idx_kind ON events (kind)
+  CREATE INDEX idx_region ON events (region)
+setup:
+  - INSERT INTO events VALUES
+      (1, 1, 'click', 'eu'),
+      (1, 2, 'click', 'us'),
+      (2, 1, 'view', 'eu'),
+      (2, 2, 'click', 'eu'),
+      (2, 3, 'view', 'us')
+tests:
+  - query: SELECT * FROM events WHERE kind = 'click' AND region = 'eu'
+    plan_contains: "Intersection("
+    unordered: true
+    rows:
+      - [1, 1, click, eu]
+      - [2, 2, click, eu]
+  # Row-net only: under a narrowing projection the cost model may prefer
+  # the single-index residual-filter shape — either way the rows must
+  # hold. The Intersection EXPLAIN pin is the SELECT * test above.
+  - query: SELECT tenant, seq FROM events WHERE kind = 'view' AND region = 'us'
+    rows:
+      - [2, 3]

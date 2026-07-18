@@ -272,7 +272,7 @@ func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
 			}
 			continue
 		}
-		mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: strings.ToUpper(s.Alias.Name()), Start: s.Offset, Width: s.Width})
+		mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: s.Alias.Name(), Start: s.Offset, Width: s.Width})
 	}
 	return mergedLegs
 }
@@ -561,7 +561,11 @@ type legWindowBinder struct {
 func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
 	alias := id.Name()
 	for _, s := range b.spans {
-		if !strings.EqualFold(s.Alias.Name(), alias) {
+		// Exact: both sides live in the correlation-key namespace
+		// (canonical UPPER for user aliases, verbatim lowercase q$N for
+		// machine mints). A fold here would let a quoted "q$5" user
+		// alias cross into the machine namespace.
+		if s.Alias.Name() != alias {
 			continue
 		}
 		if s.LegType != nil {
@@ -594,7 +598,7 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 // loud downstream).
 func buriedLegWindow(row values.OrdinalRow, s legSpan, alias string) (*legWindowRow, bool) {
 	for _, bl := range s.LegType.Legs {
-		if !strings.EqualFold(bl.Name, alias) {
+		if bl.Name != alias {
 			continue
 		}
 		end := bl.Start + bl.Width
@@ -847,7 +851,7 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 			lastCorr = ""
 			continue
 		}
-		corr := strings.ToUpper(qov.Correlation.Name())
+		corr := qov.Correlation.Name()
 		if corr == lastCorr {
 			continue
 		}
@@ -1397,7 +1401,9 @@ func (b *rowLegsBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (
 	if b.row != nil && b.row.Type != nil {
 		name := id.Name()
 		for _, leg := range b.row.Type.Legs {
-			if !strings.EqualFold(leg.Name, name) {
+			// Exact: correlation-key namespace on both sides (see
+			// legWindowBinder).
+			if leg.Name != name {
 				continue
 			}
 			end := leg.Start + leg.Width

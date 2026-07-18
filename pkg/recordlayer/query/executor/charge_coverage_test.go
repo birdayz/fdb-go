@@ -64,7 +64,7 @@ func TestChargeCoverage_AllBufferPaths(t *testing.T) {
 		}
 	})
 
-	// 2. boundedBuffer.Append directly (executeLoadByKeys). (DELETE echo is not separately
+	// 2. boundedBuffer.Append directly. (DELETE echo is not separately
 	// charged — it IS the already-charged target row. INSERT/UPDATE echoes ARE charged in
 	// Phase 1 via proto.Size + len(PK.Pack()) in executeInsert/executeUpdate — exercised by
 	// the FDB integration tests, not here.)

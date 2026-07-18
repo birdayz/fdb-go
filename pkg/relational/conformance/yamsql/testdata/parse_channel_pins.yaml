@@ -1,0 +1,52 @@
+# parse_channel_pins.yaml — dotted display names survive the parser→IR
+# channel (WS-N Phase A slice 1)
+#
+# A derived column or alias whose NAME contains a dot used to be torn
+# apart by the rendered-string channel: the parser's segments were
+# joined with dots and re-split at the LAST dot, so `s."A.ID"` became
+# qualifier "S.A" + column "ID" → 42703. Validation now consumes the
+# parse-tree segments (resolveColumnRefStructural); these shapes must
+# stay green through the rest of the Phase A-D rewrites.
+name: parse_channel_pins
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    "x" BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE u (
+    id BIGINT NOT NULL,
+    v BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t VALUES (1, 20), (2, 10)
+  - INSERT INTO u VALUES (1, 7), (2, 8)
+tests:
+  # The RFC-181 red probe: a derived column literally named "A.ID"
+  # flowing through a join whose OTHER leg is aliased A.
+  - query: SELECT s."A.ID" FROM (SELECT id AS "A.ID" FROM u) AS s, t AS a WHERE a.id = s."A.ID" AND a.id = 2
+    rows:
+      - [2]
+  # Single-source variant — no join leg to mis-bind to.
+  - query: SELECT s."A.ID" FROM (SELECT id AS "A.ID" FROM u) AS s ORDER BY s."A.ID"
+    rows:
+      - [1]
+      - [2]
+  # Dotted UPPER alias projected bare, ordered, and grouped.
+  - query: SELECT "A.B" FROM (SELECT v AS "A.B" FROM u) AS s ORDER BY "A.B" DESC
+    rows:
+      - [8]
+      - [7]
+  - query: SELECT "G.K", COUNT(*) FROM (SELECT v AS "G.K" FROM u) AS s GROUP BY "G.K" ORDER BY "G.K"
+    rows:
+      - [7, 1]
+      - [8, 1]
+  # Lowercase-dotted alias: the derived-schema channel registers the
+  # alias FOLDED, and the structural resolver's folded retry finds it —
+  # rows come back correct. (Phase D's case-faithful registrations make
+  # the verbatim spelling hit directly and retire the retry.)
+  - query: SELECT "a.b" FROM (SELECT v AS "a.b" FROM u) AS s ORDER BY "a.b" DESC
+    rows:
+      - [8]
+      - [7]

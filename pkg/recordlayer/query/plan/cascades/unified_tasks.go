@@ -15,6 +15,7 @@ type InitiatePlannerPhaseTask struct {
 }
 
 func (t *InitiatePlannerPhaseTask) Run(p *Planner) {
+	p.activePhase = t.Phase
 	if t.Phase.HasNextPhase() {
 		p.push(&InitiatePlannerPhaseTask{Phase: t.Phase.NextPhase(), RootRef: t.RootRef})
 	}
@@ -53,21 +54,30 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 			return
 		}
 		if len(t.Ref.FinalMembers()) > 0 {
+			// WS-P stage (c) status: the REWRITING OptimizeInputs
+			// routing prunes parent-chain-optimized groups to their
+			// winner before this boundary (Java's covered case). A
+			// UNIVERSAL forced prune here was attempted and reverted:
+			// canonical alternatives Go's PLANNING cannot re-derive
+			// (Java re-derives via its PLANNING rule set) were lost —
+			// the RFC-153 buried-leg and cross-join-EXISTS shapes lost
+			// their implementable form. Full prune-to-1 requires
+			// PLANNING re-derivation parity first; until then
+			// unoptimized groups cross with their full canonical set.
 			t.Ref.AdvancePlannerStage(targetStage)
 		} else {
 			t.Ref.SetStage(targetStage)
 		}
 	}
 
-	// Round cap: with the WS-B identity work (equal⟹same-hash across
-	// plans and predicates, memo no-collapse pins) the memo dedup reaches
-	// fixpoint like Java's, so a Reference still inserting new members
-	// after 10 rounds is a genuine rule-cycle divergence (A→B→A minting
-	// distinct-but-equivalent members) — a planner bug, not a load level.
-	// LOUD, never a silent commit of a half-explored group (RFC-180 I2:
-	// the cap re-evaluated after the dedup strengthening; kept as a
-	// tripwire).
-	const maxRoundsPerRef = 10
+	// Round tripwire (WS-P stage (d)): under EPOCH convergence rounds
+	// happen only on verdict-gated constraint growth, and both constraint
+	// lattices are finite chains — convergence is structural, so the old
+	// load-level cap (10) is obsolete. The bound stays only as a LOUD
+	// divergence tripwire (a combine that always reports growth, a
+	// tick leak) far above any real workload; never a silent commit of a
+	// half-explored group.
+	const maxRoundsPerRef = 100
 	if t.Ref.NeedsExploration() && t.Ref.ExplRounds() >= maxRoundsPerRef {
 		p.capErr = ErrPlannerRoundCapHit
 		return
@@ -80,18 +90,56 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		return
 	}
 
+	// Observed-rounds evidence: exported so stress/conformance runs can
+	// show how far below the divergence tripwire real workloads sit.
+	if r := t.Ref.ExplRounds() + 1; r > p.maxObservedExplRounds {
+		p.maxObservedExplRounds = r
+	}
+
 	p.push(&ExploreGroupTask{Phase: t.Phase, Ref: t.Ref})
 
-	// Only explore NEW members added since the last round. On the
-	// first round (explMemberCount=0), this explores all members.
-	// On subsequent rounds, only newly-added members are explored.
-	// This matches Java's convergence behavior and avoids exponential
-	// task growth from re-exploring already-explored members.
-	startIdx := t.Ref.ExplMemberCount()
+	// FINALS ROUTING (Java ExploreGroup: getFinalExpressions() →
+	// exploreExpressionAndOptimizeInputs). Physical yields insert as
+	// finals ONLY, so this loop is what explores them; the
+	// isExploratoryMember skip covers finals that are ALSO canonical
+	// members (FinalizeExpressionsRule promotes the same pointer),
+	// which the member loop below owns.
+	for _, expr := range t.Ref.FinalMembers() {
+		if isExploratoryMember(t.Ref, expr) {
+			continue // also an exploratory member — the member loop owns it
+		}
+		// OptimizeInputs routing per phase (Java ExploreGroup routes
+		// EVERY final through exploreExpressionAndOptimizeInputs):
+		//   - REWRITING (WS-P stage (c)): finals are the canonical
+		//     LOGICAL forms FinalizeExpressionsRule promoted;
+		//     OptimizeInputs → OptimizeGroup prunes each group to its
+		//     REWRITING winner so the stage boundary crosses
+		//     pruned (Java Verify's property).
+		//   - PLANNING: physical finals only — the correlated-leg
+		//     muzzle (a logical parent must not drive standalone child
+		//     pruning with the correlation unbound; see the member-loop
+		//     comment below).
+		if t.Phase == PhaseRewriting || (t.Phase == PhasePlanning && isPhysical(expr)) {
+			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
+		}
+		// PLANNING explores PHYSICAL finals only (match re-consumption).
+		// A LOGICAL PLANNING final is an UNSAFE compensation
+		// (consumeMatchPartitions' InsertFinal arm) — a fail-to-plan
+		// sentinel that rules must never physicalize: exploring it let
+		// ImplementFilterRule build top-K-before-filter (silent wrong
+		// rows; the vector unsafe-residual pin is the red shape).
+		if t.Phase == PhasePlanning && !isPhysical(expr) {
+			continue
+		}
+		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
+	}
 
-	members := t.Ref.Members()
-	for i := startIdx; i < len(members); i++ {
-		expr := members[i]
+	// Explore ALL members each round (Java ExploreGroup): rounds are
+	// EPOCH-bounded now — a round runs only on first visit or after a
+	// verdict-gated constraint push — and re-fired rules' yields hit the
+	// memo dedup, so re-exploration is idempotent. The former
+	// only-new-members slice was the member-count model's optimization.
+	for _, expr := range t.Ref.Members() {
 		// OptimizeInputs only for PHYSICAL (plan) members — the 1:1 port of Java's
 		// CascadesPlanner. Java constructs OptimizeInputs in exactly one place
 		// (CascadesPlanner.java:524), and its only callers push it ONLY for final/plan
@@ -107,7 +155,15 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		// stamped as a standalone winner → no 0-row. Child EXPLORATION is unaffected —
 		// it is driven independently by ExploreExprTask step 4 (children's ExploreGroup),
 		// not by OptimizeInputsTask — so this removes only premature standalone pruning.
-		if t.Phase == PhasePlanning && isPhysical(expr) {
+		//
+		// REWRITING (WS-P stage (c)): a member that is ALSO a final —
+		// FinalizeExpressionsRule promotes the SAME expression object,
+		// so canonical forms live in both sets — routes through
+		// OptimizeInputs exactly like Java's getFinalExpressions split:
+		// OptimizeGroup then prunes each group to its REWRITING winner
+		// and the stage boundary crosses pruned (Java Verify's shape).
+		if (t.Phase == PhaseRewriting && isFinalMember(t.Ref, expr)) ||
+			(t.Phase == PhasePlanning && isPhysical(expr)) {
 			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 		}
 		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
@@ -198,13 +254,15 @@ func (t *TransformExprTask) Run(p *Planner) {
 	}
 
 	// During PLANNING, expression rules (BatchA) produce physical
-	// wrappers. Yield to BOTH exploratory (for rule matching and
-	// convergence detection) AND final (for OptimizeGroup selection).
+	// wrappers. They land in the FINAL set only (Java's shape — the
+	// dual insertion into the exploratory set was the member-count
+	// convergence crutch; rule matching on finals runs through the
+	// per-expression exploration tasks, and ContainsExactly admits
+	// finals).
 	var yieldFn func(expressions.RelationalExpression) bool
 	if t.Phase == PhasePlanning {
 		yieldFn = func(expr expressions.RelationalExpression) bool {
-			t.Ref.InsertFinal(expr)
-			return t.Ref.Insert(expr)
+			return t.Ref.InsertFinal(expr)
 		}
 	}
 
@@ -452,7 +510,13 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 	}
 
 	if bestFinal == nil {
-		t.Ref.ClearFinalMembers()
+		// No VALID final (only nil-inner Fetch shells, or nothing).
+		// Do NOT clear: an extraction template's shell must stay for
+		// the relink seam — under dual insertion the valid twin
+		// survived in the exploratory set, but with finals-only
+		// physical yields clearing would strand the template with an
+		// empty ref and the relink kept a nil inner (the XX000
+		// Fetch(<nil>) plan-invariant).
 		return
 	}
 
@@ -507,16 +571,12 @@ func (t *OptimizeInputsTask) Run(p *Planner) {
 	}
 	// Identity guard (Java CascadesPlanner.OptimizeInputs:
 	// `if (!group.containsExactly(expression)) return;`): an expression
-	// pruned OUT of its group between task push and pop is dead — it must
-	// not drive child-group pruning on behalf of a plan that lost. Go
-	// checks FINAL membership, stricter than Java's containsExactly:
-	// PLANNING expression rules dual-insert physical yields into both the
-	// exploratory and final sets (TransformExprTask's yieldFn) while
-	// pruning trims only finals, so a pruned loser still passes a
-	// both-sets check via its exploratory copy — and this task is only
-	// ever pushed for physical members, whose home set is finals. (Java
-	// has no dual insertion; there the two checks coincide.)
-	if t.Ref != nil && !t.Ref.ContainsFinal(t.Expr) {
+	// pruned OUT of its group between task push and pop is dead — it
+	// must not drive child-group pruning on behalf of a plan that lost.
+	// With dual insertion retired (WS-P stage (b)) a physical yield's
+	// only home is the final set, so Java's containsExactly and the
+	// former finals-only check coincide — the compensation reverts.
+	if t.Ref != nil && !t.Ref.ContainsExactly(t.Expr) {
 		return
 	}
 	for _, q := range t.Expr.GetQuantifiers() {
@@ -530,6 +590,17 @@ func (t *OptimizeInputsTask) Run(p *Planner) {
 }
 
 // isFinalMember checks if expr is already in the Reference's final members.
+// isExploratoryMember reports pointer-identity membership in the
+// EXPLORATORY set only (ContainsExactly admits finals too).
+func isExploratoryMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	for _, m := range ref.Members() {
+		if m == expr {
+			return true
+		}
+	}
+	return false
+}
+
 func isFinalMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
 	for _, m := range ref.FinalMembers() {
 		if m == expr {

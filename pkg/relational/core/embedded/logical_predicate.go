@@ -136,9 +136,9 @@ func buildWherePredicateForTableE(
 	if err != nil {
 		return nil, false, nil
 	}
-	alias := semantic.NewUnquoted(tableAlias)
+	alias := semantic.FromNormalized(tableAlias)
 	if tableAlias == "" {
-		alias = semantic.NewUnquoted(tableName)
+		alias = semantic.FromNormalized(tableName)
 	}
 	scope := semantic.NewScope(nil)
 	if err := scope.AddSource(semantic.ScopeSource{
@@ -272,7 +272,7 @@ func buildDerivedTableSource(
 		if !ok {
 			return semantic.ScopeSource{}, false
 		}
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		// Apply inner projection aliases if present.
 		cols := innerSrc.Table.Columns()
 		if innerSQ.projCols != nil {
@@ -283,7 +283,7 @@ func buildDerivedTableSource(
 					name = innerSQ.projAliases[i]
 				}
 				cols = append(cols, semantic.Column{
-					Id:       semantic.NewUnquoted(name),
+					Id:       semantic.FromNormalized(name),
 					Type:     "UNKNOWN",
 					Nullable: true,
 				})
@@ -338,7 +338,7 @@ func buildDerivedTableSource(
 		if bareName == "" {
 			bareName = col.name
 		}
-		innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
+		innerCol, found := innerTbl.LookupColumn(semantic.FromNormalized(bareName))
 		if !found {
 			return semantic.ScopeSource{}, false
 		}
@@ -350,13 +350,13 @@ func buildDerivedTableSource(
 		// projection emits (Java resolves references to the output column
 		// verbatim — no reverse-map to the underlying source column).
 		columns = append(columns, semantic.Column{
-			Id:       semantic.NewUnquoted(outName),
+			Id:       semantic.FromNormalized(outName),
 			Type:     innerCol.Type,
 			Nullable: innerCol.Nullable,
 		})
 	}
 
-	aliasID := semantic.NewUnquoted(alias)
+	aliasID := semantic.FromNormalized(alias)
 	virtualTable := &semantic.StaticTable{
 		TableName:    semantic.FromSegments([]string{alias}, false),
 		TableColumns: columns,
@@ -417,9 +417,9 @@ func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery) (semantic.Sco
 	}
 	columns := make([]semantic.Column, len(cols))
 	for i, c := range cols {
-		columns[i] = semantic.Column{Id: semantic.NewUnquoted(c.name), Type: c.typ, Nullable: c.nullable}
+		columns[i] = semantic.Column{Id: semantic.FromNormalized(c.name), Type: c.typ, Nullable: c.nullable}
 	}
-	aliasID := semantic.NewUnquoted(alias)
+	aliasID := semantic.FromNormalized(alias)
 	virtualTable := &semantic.StaticTable{
 		TableName:    semantic.FromSegments([]string{alias}, false),
 		TableColumns: columns,
@@ -631,9 +631,9 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			}
 			return false
 		}
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		if alias == "" {
-			aliasID = semantic.NewUnquoted(tableName)
+			aliasID = semantic.FromNormalized(tableName)
 		}
 		// The binding correlation: the parser-minted duplicate-leg id when
 		// present, else the alias. Duplicate
@@ -853,7 +853,7 @@ func buildWherePredicateFromCTEScope(
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
 	if tableAlias != "" {
-		src.Alias = semantic.NewUnquoted(tableAlias)
+		src.Alias = semantic.FromNormalized(tableAlias)
 		src.CorrelationName = tableAlias
 	}
 	if err := scope.AddSource(src); err != nil {
@@ -1015,17 +1015,17 @@ func buildCTEColumnSource(
 			}
 			if isComputed {
 				columns = append(columns, semantic.Column{
-					Id:       semantic.NewUnquoted(outName),
+					Id:       semantic.FromNormalized(outName),
 					Type:     "UNKNOWN",
 					Nullable: true,
 				})
 				continue
 			}
-			innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
+			innerCol, found := innerTbl.LookupColumn(semantic.FromNormalized(bareName))
 			if !found {
 				if hasComputedExpr {
 					columns = append(columns, semantic.Column{
-						Id:       semantic.NewUnquoted(outName),
+						Id:       semantic.FromNormalized(outName),
 						Type:     "UNKNOWN",
 						Nullable: true,
 					})
@@ -1036,14 +1036,14 @@ func buildCTEColumnSource(
 			// The virtual column carries the OUTPUT name the CTE body
 			// projection emits — references resolve to it verbatim.
 			columns = append(columns, semantic.Column{
-				Id:       semantic.NewUnquoted(outName),
+				Id:       semantic.FromNormalized(outName),
 				Type:     innerCol.Type,
 				Nullable: innerCol.Nullable,
 			})
 		}
 	}
 
-	aliasID := semantic.NewUnquoted(cteName)
+	aliasID := semantic.FromNormalized(cteName)
 	virtualTable := &semantic.StaticTable{
 		TableName:    semantic.FromSegments([]string{cteName}, false),
 		TableColumns: columns,
@@ -1637,7 +1637,7 @@ func buildCTEOnOnlySource(
 		}
 		seen[runtimeName]++
 		columns = append(columns, semantic.Column{
-			Id:       semantic.NewUnquoted(runtimeName),
+			Id:       semantic.FromNormalized(runtimeName),
 			Type:     "UNKNOWN",
 			Nullable: true,
 		})
@@ -1650,7 +1650,7 @@ func buildCTEOnOnlySource(
 	if len(columns) == 0 {
 		return semantic.ScopeSource{}, false
 	}
-	aliasID := semantic.NewUnquoted(cteName)
+	aliasID := semantic.FromNormalized(cteName)
 	return semantic.ScopeSource{
 		Table: &semantic.StaticTable{
 			TableName:    semantic.FromSegments([]string{cteName}, false),
@@ -1706,7 +1706,7 @@ func applyCTEColumnAliases(src semantic.ScopeSource, colAliases antlrgen.IFullId
 			// OUTPUT name — references (a.node) resolve to it verbatim.
 			newName := functions.FullIdToName(aliases[i])
 			newCols[i] = semantic.Column{
-				Id:       semantic.NewUnquoted(newName),
+				Id:       semantic.FromNormalized(newName),
 				Type:     col.Type,
 				Nullable: col.Nullable,
 			}
@@ -1744,9 +1744,9 @@ func buildWherePredicateForJoinsWithCTEScopes(
 	scope := semantic.NewScope(nil)
 
 	addSource := func(tableName, alias, bindingID string) bool {
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		if alias == "" {
-			aliasID = semantic.NewUnquoted(tableName)
+			aliasID = semantic.FromNormalized(tableName)
 		}
 		// The binding correlation: the parser-minted duplicate-leg id when
 		// present, else the alias.
@@ -1826,9 +1826,9 @@ func buildWherePredicateForJoins(
 		if err != nil {
 			return false
 		}
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		if alias == "" {
-			aliasID = semantic.NewUnquoted(tableName)
+			aliasID = semantic.FromNormalized(tableName)
 		}
 		binding := bindingOrAlias(bindingID, aliasID)
 		return scope.AddSource(semantic.ScopeSource{
@@ -1902,7 +1902,7 @@ func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
 	var cols []semantic.Column
 	corr := asAlias
 	if asAlias != "" {
-		cols = append(cols, semantic.Column{Id: semantic.NewUnquoted(asAlias), Type: "UNKNOWN", Nullable: true})
+		cols = append(cols, semantic.Column{Id: semantic.FromNormalized(asAlias), Type: "UNKNOWN", Nullable: true})
 	}
 	if atAlias != "" {
 		// The unnest WITH ORDINALITY ordinal is a 1-based, NON-NULL INT
@@ -1911,7 +1911,7 @@ func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
 		// sqlTypeToCascadesType resolves it to values.NotNullInt — matching the
 		// translator's ordinal FieldValue type — and a PROJECT/COMPUTE over the AT
 		// alias reports INT, not UNKNOWN. RFC-142.
-		cols = append(cols, semantic.Column{Id: semantic.NewUnquoted(atAlias), Type: "INT NOT NULL", Nullable: false})
+		cols = append(cols, semantic.Column{Id: semantic.FromNormalized(atAlias), Type: "INT NOT NULL", Nullable: false})
 		if corr == "" {
 			corr = atAlias
 		}
@@ -1919,7 +1919,7 @@ func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
 	if corr == "" {
 		return semantic.ScopeSource{}, false
 	}
-	corrID := semantic.NewUnquoted(corr)
+	corrID := semantic.FromNormalized(corr)
 	virtual := &semantic.StaticTable{
 		TableName:    semantic.FromSegments([]string{corr}, false),
 		TableColumns: cols,
@@ -2202,7 +2202,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				}
 				continue
 			}
-			if err := resolveColumnName(resolver, col.name); err != nil {
+			if col.bare != "" {
+				if err := resolveColumnRefStructural(resolver, col.bare, col.qualifier, col.qualified); err != nil {
+					return nil, err
+				}
+			} else if err := resolveColumnName(resolver, col.name); err != nil {
 				return nil, err
 			}
 			// A BARE column that binds to a lateral-unnest SHADOWING source
@@ -2217,14 +2221,22 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			// identically. Without this a shadowed unnest projection inside a subquery
 			// reads the wrong column (silent-wrong). RFC-142.
 			if !col.qualified && col.bare != "" && proj != nil {
-				id := semantic.NewUnquoted(col.bare)
-				if qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id); qerr == nil && ok {
+				id := semantic.FromNormalized(col.bare)
+				qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id)
+				if qerr == nil && ok {
 					if proj.ProjectedValues == nil {
 						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 					}
 					if i < len(proj.ProjectedValues) {
 						proj.ProjectedValues[i] = qv
 					}
+				}
+				var unresShadow *expr.UnresolvableOrdinalError
+				if errors.As(qerr, &unresShadow) {
+					// Born-baked (slice 2): the scope bound the name but the
+					// source cannot answer a plan-time ordinal — never fall
+					// through to the name channel.
+					return nil, unresShadow
 				}
 				// A BARE non-shadowed column resolves through the
 				// scope so the projection carries the construction-bound ordinal
@@ -2234,7 +2246,8 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				// keeps the translator's name emission unchanged. Twin of the
 				// PlanVisitor's bare-projection bind.
 				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
-					if rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id); rerr == nil {
+					rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id)
+					if rerr == nil {
 						if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
 							if proj.ProjectedValues == nil {
 								proj.ProjectedValues = make([]values.Value, len(proj.Projections))
@@ -2243,6 +2256,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 								proj.ProjectedValues[i] = fv
 							}
 						}
+					}
+					var unresIdent *expr.UnresolvableOrdinalError
+					if errors.As(rerr, &unresIdent) {
+						return nil, unresIdent
 					}
 				}
 			}
@@ -2261,13 +2278,12 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						// Twin of the PlanVisitor's qualified-projection bind
 						// (incl. the DUPLICATED-bare-leaf qualified output pin).
 						cr := colRef{table: col.qualifier, col: col.bare}
-						if bv := resolveQualifiedBaked(resolver, cr); bv != nil && !resolver.QualifierIsDuplicated(semantic.NewUnquoted(cr.table)) {
-							// A DUPLICATE plain alias on THIS (subquery /
-							// union-branch) build path stays display-keyed and
-							// dies LOUD — the dup-alias-under-UNION face is not
-							// yet a supported Go extension (Java rejects the
-							// duplicate alias); the top-level dup-alias shapes
-							// (plan_visitor path) remain supported.
+						if bv := resolveQualifiedBaked(resolver, cr); bv != nil {
+							// A qualified projection's structural bake —
+							// duplicated qualifiers included (per-attribute
+							// resolution addresses one leg by its binding;
+							// the display-keyed carve-out this arm once
+							// deferred to is retired).
 							proj.ProjectedValues[i] = bv
 							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
 								if proj.Aliases == nil {
@@ -2278,17 +2294,23 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 								}
 							}
 						} else {
-							proj.ProjectedValues[i] = &values.FieldValue{
-								Field: strings.ToUpper(col.name),
-								Typ:   values.UnknownType,
-							}
+							// Born-baked (slice 3; the dup-alias flat-name
+							// carve-out is RETIRED — a duplicated qualifier
+							// bakes QOV(binding) per-attribute above, first
+							// leg included, since only later duplicates were
+							// renamed and QOV(alias) addresses exactly one
+							// leg; ambiguous dup reads die 42702 upstream):
+							// a validated qualified projection that cannot
+							// bake a leg-window ordinal must fail the plan,
+							// never mint a lazy name read.
+							return nil, &expr.UnresolvableOrdinalError{Field: cr.col, Source: cr.table}
 						}
 					}
 				} else {
 					var qualifier semantic.Identifier
-					id := semantic.NewUnquoted(colBareOrName(col))
+					id := semantic.FromNormalized(colBareOrName(col))
 					if col.qualified {
-						qualifier = semantic.NewUnquoted(col.qualifier)
+						qualifier = semantic.FromNormalized(col.qualifier)
 					}
 					if v, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
 						if i < len(proj.ProjectedValues) {
@@ -2372,7 +2394,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						// from the rawExpr text. Try resolving the
 						// rewritten colName through the scope; if it
 						// resolves, the reference is valid.
-						if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
+						if ob.bare != "" {
+							if resolveColumnRefStructural(resolver, ob.bare, ob.qualifier, ob.qualified) == nil {
+								continue
+							}
+						} else if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
 							continue
 						}
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
@@ -2388,7 +2414,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			if gb.expr != nil {
 				continue
 			}
-			if err := resolveColumnName(resolver, gb.display); err != nil {
+			if gb.bare != "" {
+				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
+					return nil, err
+				}
+			} else if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
 		}
@@ -2397,9 +2427,37 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	if resolver != nil {
 		for _, ac := range sq.aggCols {
 			if ac.aggArg != "" && ac.aggExpr == nil {
-				if err := resolveColumnName(resolver, ac.aggArg); err != nil {
+				if ac.aggArgBare != "" {
+					if err := resolveColumnRefStructural(resolver, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified); err != nil {
+						return nil, err
+					}
+				} else if err := resolveColumnName(resolver, ac.aggArg); err != nil {
 					return nil, err
 				}
+			}
+		}
+	}
+
+	// (5b) Validate SELECT-list group-column re-reads through the scope: a
+	// BARE re-read that is ambiguous across sources (GROUP BY po.id, pi.id
+	// re-read as `id`) is 42702 (Java AMBIGUOUS_COLUMN) — the aggregate
+	// output-name table matches keys qualifier-stripped, so an unvalidated
+	// bare re-read would silently bind ONE leg's key last-wins.
+	// Expression-redirected entries (groupCol = the GROUP BY expression's
+	// display) carry no column reference and are skipped.
+	if resolver != nil {
+		exprKeyDisplays := map[string]bool{}
+		for _, gn := range sq.groupBy {
+			if gn.expr != nil {
+				exprKeyDisplays[gn.display] = true
+			}
+		}
+		for _, ac := range sq.aggCols {
+			if ac.groupCol == "" || ac.groupColBare == "" || exprKeyDisplays[ac.groupCol] {
+				continue
+			}
+			if err := resolveColumnRefStructural(resolver, ac.groupColBare, ac.groupColQualifier, ac.groupColQualified); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -2450,7 +2508,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 
 	if len(sq.aggCols) > 0 {
-		upgradeAggregateOperands(op, sq, md, schemaName, cteScopes)
+		if uerr := upgradeAggregateOperands(op, sq, md, schemaName, cteScopes); uerr != nil {
+			return nil, uerr
+		}
 	}
 
 	// Create a unified SubqueryPlanner early so both projection and
@@ -2492,7 +2552,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 
 	if sq.havingExpr != nil {
-		upgradeHavingPredicate(op, sq, md, schemaName, cteScopes, existsPlanner)
+		if herr := upgradeHavingPredicate(op, sq, md, schemaName, cteScopes, existsPlanner); herr != nil {
+			return nil, herr
+		}
 	}
 
 	upgradeSortKeyValues(op, sq, md, schemaName, cteScopes)
@@ -2507,7 +2569,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	// SAME qualifyShadowedSortKeys / ResolveColumnShadowingQualified helpers so the
 	// catalog and top-level paths shadow ORDER BY identically. RFC-142.
 	if resolver != nil {
-		qualifyShadowedSortKeys(op, resolver)
+		if qerr := qualifyShadowedSortKeys(op, resolver); qerr != nil {
+			return nil, qerr
+		}
 	}
 
 	// RFC-141 Phase 2 (projected EXISTS, the hidden-blocker step): a projected
@@ -2729,9 +2793,9 @@ func buildSelectScope(
 				if src.Table == nil {
 					return false
 				}
-				aliasID := semantic.NewUnquoted(alias)
+				aliasID := semantic.FromNormalized(alias)
 				if alias == "" {
-					aliasID = semantic.NewUnquoted(tableName)
+					aliasID = semantic.FromNormalized(tableName)
 				}
 				return scope.AddSource(semantic.ScopeSource{
 					Table:           src.Table,
@@ -2744,9 +2808,9 @@ func buildSelectScope(
 		if err != nil {
 			return false
 		}
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		if alias == "" {
-			aliasID = semantic.NewUnquoted(tableName)
+			aliasID = semantic.FromNormalized(tableName)
 		}
 		return scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
@@ -2855,21 +2919,73 @@ func isBareIdentifierExpr(e antlrgen.IExpressionContext) bool {
 	return false
 }
 
-// resolveColumnName resolves a bare column name through the semantic
-// scope. Returns an error for ambiguous (42702) or undefined (42703)
-// columns. Returns nil for qualified names (contain ".") or when
-// resolver is nil.
+// resolveColumnRefStructural resolves a column reference from its
+// parse-tree SEGMENTS — never a dotted re-split of a rendered string,
+// so a derived column or alias whose NAME contains a dot ("A.ID")
+// resolves as itself instead of being torn at the last dot into a
+// phantom qualifier (WS-N Phase A slice 1; the segments arrive
+// quote-stripped with quoted case preserved, so identifiers are built
+// case-sensitively — no re-fold).
+func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string, qualified bool) error {
+	if resolver == nil || bare == "" {
+		return nil
+	}
+	var qual semantic.Identifier
+	display := bare
+	if qualified {
+		// The qualifier FOLDS: source aliases are registered through the
+		// folded namespace (a quoted lowercase alias "q" registers as
+		// "Q"), so the lookup must fold identically. Alias-namespace
+		// case fidelity is Phase B's scope; the COLUMN side below stays
+		// verbatim — that is where dotted/quoted-case names live.
+		qual = semantic.FromNormalized(qualifier)
+		display = qualifier + "." + bare
+	}
+	_, err := resolver.ResolveIdentifier(qual, semantic.New(bare, true))
+	if err != nil {
+		var notFound *semantic.ColumnNotFoundError
+		if errors.As(err, &notFound) {
+			// Folded retry: derived/virtual schemas still REGISTER their
+			// columns folded (an alias "id" registers as "ID"), so a
+			// verbatim miss re-tries the folded spelling. This retry MUST
+			// fold — NewUnquoted on purpose, the one deliberate
+			// re-normalization: FromNormalized would re-issue the
+			// identical verbatim spelling and the exact-case lookup would
+			// miss again (a quoted-lowercase reference over a derived
+			// table's folded registration → spurious 42703).
+			// Verbatim-first keeps case-significant names ("A.ID", quoted
+			// lowercase stored columns) winning; Phase D makes
+			// registrations case-faithful and retires this retry.
+			if _, retryErr := resolver.ResolveIdentifier(qual, semantic.NewUnquoted(bare)); retryErr == nil {
+				return nil
+			}
+		}
+	}
+	return mapColumnResolveError(err, display)
+}
+
+// resolveColumnName is the RENDERED-STRING arm for call sites whose
+// carrier predates structural segment capture: it re-splits at the last
+// dot (parseColRef), which mis-tears dotted display names — every
+// caller with parse-tree segments must use resolveColumnRefStructural.
 func resolveColumnName(resolver *expr.Resolver, col string) error {
 	if resolver == nil || col == "" {
 		return nil
 	}
 	var qualifier semantic.Identifier
 	ref := parseColRef(col)
-	id := semantic.NewUnquoted(ref.bare())
+	id := semantic.FromNormalized(ref.bare())
 	if ref.isQualified() {
-		qualifier = semantic.NewUnquoted(ref.table)
+		qualifier = semantic.FromNormalized(ref.table)
 	}
 	_, err := resolver.ResolveIdentifier(qualifier, id)
+	return mapColumnResolveError(err, col)
+}
+
+// mapColumnResolveError classifies a ResolveIdentifier failure into its
+// SQLSTATE (42702 ambiguous / 42703 undefined), shared by the
+// structural and rendered-string arms.
+func mapColumnResolveError(err error, display string) error {
 	if err != nil {
 		var ambigErr *semantic.AmbiguousColumnError
 		if errors.As(err, &ambigErr) {
@@ -2882,7 +2998,7 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 		var notFoundErr *semantic.ColumnNotFoundError
 		if errors.As(err, &notFoundErr) {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
-				"column %q does not exist", col)
+				"column %q does not exist", display)
 		}
 		var srcNotFound *semantic.SourceNotFoundError
 		if errors.As(err, &srcNotFound) {
@@ -3530,17 +3646,17 @@ func cascadesSafeScalarFunction(name string) bool {
 	return values.IsCascadesSafeScalarFunction(name)
 }
 
-func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) {
+func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
 	agg := findAggregate(op)
 	if agg == nil {
-		return
+		return nil
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
 	if resolver == nil {
 		resolver = buildSelectScope(sq, md, schemaName, cteScopes)
 	}
 	if resolver == nil {
-		return
+		return nil
 	}
 	operands := make([]values.Value, len(agg.Calls))
 	for _, ac := range sq.aggCols {
@@ -3606,10 +3722,14 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			}
 			var qualID semantic.Identifier
 			if ac.aggArgQualified {
-				qualID = semantic.NewUnquoted(ac.aggArgQualifier)
+				qualID = semantic.FromNormalized(ac.aggArgQualifier)
 			}
-			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.NewUnquoted(bareArg))
+			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.FromNormalized(bareArg))
 			if rerr != nil || qv == nil {
+				var unresArg *expr.UnresolvableOrdinalError
+				if errors.As(rerr, &unresArg) {
+					return unresArg
+				}
 				continue
 			}
 			v = qv
@@ -3658,7 +3778,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		}
 		var qualID semantic.Identifier
 		if gk.Qualified {
-			qualID = semantic.NewUnquoted(gk.Qualifier)
+			qualID = semantic.FromNormalized(gk.Qualifier)
 			// The dup-alias twin: a qualified key
 			// binding a LATER duplicate-alias leg must group by the BINDING
 			// correlation (`Q$DUP1.QID`) — the join row's actual namespace —
@@ -3670,10 +3790,16 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			// upstream group-key reference validation already terminated an
 			// ambiguous key with 42702 before this pass runs (the ladder's
 			// >=2 arm is owned there, not here).
-			if qv, err := resolver.ResolveQualifiedProjection(qualID, semantic.NewUnquoted(ref.bare())); err == nil && qv != nil {
+			qv, qerr := resolver.ResolveQualifiedProjection(qualID, semantic.FromNormalized(ref.bare()))
+			if qerr == nil && qv != nil {
 				keyValues[i] = qv
 				filled = true
 				continue
+			}
+			var unres *expr.UnresolvableOrdinalError
+			if errors.As(qerr, &unres) {
+				// Born-baked (slice 2): never fall to the name channel.
+				return unres
 			}
 			// Every other QUALIFIED group key resolves through
 			// the scope to the quantifier-addressed source-relative baked
@@ -3689,10 +3815,14 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 				continue
 			}
 		}
-		qv, ok, err := resolver.ResolveColumnShadowingQualified(qualID, semantic.NewUnquoted(ref.bare()))
+		qv, ok, err := resolver.ResolveColumnShadowingQualified(qualID, semantic.FromNormalized(ref.bare()))
 		if err == nil && ok {
 			keyValues[i] = qv
 			filled = true
+		}
+		var unresShadow *expr.UnresolvableOrdinalError
+		if errors.As(err, &unresShadow) {
+			return unresShadow
 		}
 		// A BARE non-shadowed group key resolves through the
 		// scope so it carries the construction-bound ordinal (a childless
@@ -3703,11 +3833,16 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		// resolutions, and unresolvable names keep the translator's name
 		// emission.
 		if keyValues[i] == nil && !ref.isQualified() {
-			if rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(ref.bare())); rerr == nil {
+			rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.FromNormalized(ref.bare()))
+			if rerr == nil {
 				if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
 					keyValues[i] = fv
 					filled = true
 				}
+			}
+			var unresKey *expr.UnresolvableOrdinalError
+			if errors.As(rerr, &unresKey) {
+				return unresKey
 			}
 		}
 	}
@@ -3718,19 +3853,20 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			}
 		}
 	}
+	return nil
 }
 
-func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) {
+func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) error {
 	agg := findAggregate(op)
 	if agg == nil || sq.havingExpr == nil {
-		return
+		return nil
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
 	if resolver == nil {
 		resolver = buildSelectScope(sq, md, schemaName, cteScopes)
 	}
 	if resolver == nil {
-		return
+		return nil
 	}
 	// Install the SubqueryPlanner so EXISTS subqueries in HAVING can be planned.
 	if subqPlanner != nil {
@@ -3741,7 +3877,22 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 	}
 	pred, err := resolver.WalkPredicate(sq.havingExpr)
 	if err != nil {
-		return
+		// SEMANTIC errors surface with Java's codes: a bare HAVING re-read
+		// of an ambiguous grouped column is 42702 (Java AMBIGUOUS_COLUMN),
+		// exactly like the ORDER-BY twin — not a planner decline. An
+		// unbindable ordinal is loud per born-baked (slice 2). Every OTHER
+		// walk failure keeps the HasHaving decline sentinel: the translator
+		// rejects a set-but-unresolved HAVING, so nothing is dropped.
+		var ambig *semantic.AmbiguousColumnError
+		if errors.As(err, &ambig) {
+			return api.NewErrorf(api.ErrCodeAmbiguousColumn,
+				"Ambiguous reference %s", ambig.Reference())
+		}
+		var unres *expr.UnresolvableOrdinalError
+		if errors.As(err, &unres) {
+			return unres
+		}
+		return nil
 	}
 	// Unifying post-aggregate rebase: a HAVING reference to a
 	// grouped unnest key (`HAVING V > x`) resolves `V` against the PRE-aggregate
@@ -3764,6 +3915,7 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 		agg.HavingScalarSubqueries = subqPlanner.scalarSubqueries
 		subqPlanner.scalarSubqueries = nil
 	}
+	return nil
 }
 
 func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.QueryPredicate {
@@ -4098,9 +4250,9 @@ func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.Recor
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
 	addSource := func(tableName, alias, bindingID string) bool {
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		if alias == "" {
-			aliasID = semantic.NewUnquoted(tableName)
+			aliasID = semantic.FromNormalized(tableName)
 		}
 		// The binding correlation: the parser-minted duplicate-leg id when
 		// present, else the alias.
@@ -4765,6 +4917,11 @@ func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlaye
 // user SQL text. Mirrors AggregateValue.Type() / Java's per-operator resultTypeCode
 // — keep the two in sync until the PromoteValue follow-up (RFC-083) dissolves this
 // function (it exists only for the nil-ProjectedValue bare-aggregate path).
+// Divergences from the shared javaAggregateResultCode table, deliberate
+// for METADATA (this function feeds ResultSet column types, not the
+// plan-time gates): COUNT reports NOT NULL (the metadata contract), and
+// an unknown-operand SUM/MIN/MAX falls back to NullableLong rather than
+// Unknown so the column still carries a displayable type.
 func aggResultTypeFromFunc(fn string, operand values.Value) values.Type {
 	switch fn {
 	case "AVG":
@@ -4926,8 +5083,11 @@ func buildLogicalPlanForQueryWithCTECatalog(
 		return main, nil
 	}
 	recursive := ctesCtx.RECURSIVE() != nil
-	traversalOrder := logical.TraversalLevelOrder
+	// No clause = ANY (the planner picks); an explicit level_order pins
+	// the level union (the clause's only remaining alternative).
+	traversalOrder := logical.TraversalAnyOrder
 	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+		traversalOrder = logical.TraversalLevelOrder
 		if toc.PRE_ORDER() != nil {
 			traversalOrder = logical.TraversalPreOrder
 		} else if toc.POST_ORDER() != nil {
@@ -5106,8 +5266,11 @@ func buildLogicalPlanForQueryWithCatalog(
 		return main, nil
 	}
 	recursive := ctesCtx.RECURSIVE() != nil
-	traversalOrder := logical.TraversalLevelOrder
+	// No clause = ANY (the planner picks); an explicit level_order pins
+	// the level union (the clause's only remaining alternative).
+	traversalOrder := logical.TraversalAnyOrder
 	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+		traversalOrder = logical.TraversalLevelOrder
 		if toc.PRE_ORDER() != nil {
 			traversalOrder = logical.TraversalPreOrder
 		} else if toc.POST_ORDER() != nil {
@@ -6444,9 +6607,9 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 		if err != nil {
 			return
 		}
-		a := semantic.NewUnquoted(alias)
+		a := semantic.FromNormalized(alias)
 		if alias == "" {
-			a = semantic.NewUnquoted(tableName)
+			a = semantic.FromNormalized(tableName)
 		}
 		sources = append(sources, semantic.ScopeSource{
 			Table: tbl, Alias: a, CorrelationName: bindingOrAlias(bindingID, a),
@@ -6744,7 +6907,7 @@ func (p *existsSubqueryPlanner) addCorrelatedJoinScopeSource(innerScope *semanti
 	if jErr != nil {
 		return jErr
 	}
-	jAliasID := semantic.NewUnquoted(jAlias)
+	jAliasID := semantic.FromNormalized(jAlias)
 	_ = innerScope.AddSource(semantic.ScopeSource{
 		Table: jTbl, Alias: jAliasID, CorrelationName: jAliasID.Name(),
 	})
@@ -6892,7 +7055,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	if tblErr != nil {
 		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: resolve inner table %q: %v", sq.tableName, tblErr), Cause: tblErr}
 	}
-	aliasID := semantic.NewUnquoted(innerAlias)
+	aliasID := semantic.FromNormalized(innerAlias)
 	// Collision mint: a SINGLE-TABLE catalog inner is BORN under a
 	// unique correlation identity, never its SQL source name. The SQL name
 	// (aliasID) stays the scope-resolution qualifier — `MA.c` inside the
@@ -7598,9 +7761,9 @@ func qualifyBareFieldValue(v values.Value, qualifier string) {
 	})
 }
 
-func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
+func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, values.Type, error) {
 	if q == nil {
-		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: nil query context")
+		return values.CorrelationIdentifier{}, values.UnknownType, fmt.Errorf("scalar subquery: nil query context")
 	}
 	innerOp, err := buildLogicalPlanForQueryWithCTECatalog(q, p.md, p.schemaName, p.cteScopes, p.cteOnScopes)
 
@@ -7612,14 +7775,18 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 		}
 	}
 	if err != nil && (!isUndefinedCol || len(p.outerScopes) == 0) {
-		return values.CorrelationIdentifier{}, err
+		return values.CorrelationIdentifier{}, values.UnknownType, err
 	}
 	if isUndefinedCol {
-		return p.buildCorrelatedScalar(q)
+		alias, cerr := p.buildCorrelatedScalar(q)
+		// The correlated arm materializes its result through the NLJ slot
+		// machinery; its output type is not derivable from a logical plan
+		// here — Unknown keeps the pre-threading gate behavior for it.
+		return alias, values.UnknownType, cerr
 	}
 
 	if innerOp == nil {
-		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: inner query could not be planned")
+		return values.CorrelationIdentifier{}, values.UnknownType, fmt.Errorf("scalar subquery: inner query could not be planned")
 	}
 	// If the inner plan references outer CTEs (from a WITH clause on the
 	// enclosing query), wrap it with LogicalCTE nodes so the Cascades
@@ -7632,11 +7799,73 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 		Alias: alias,
 		Plan:  innerOp,
 	})
-	return alias, nil
+	return alias, scalarSubqueryOutputType(innerOp), nil
 }
 
-// resolveCorrelatedColumnValueStructured resolves a structured group key —
-// segments come from the parse tree, never a re-parse of the display text.
+// scalarSubqueryOutputType derives the single output column's cascades
+// type from an uncorrelated scalar subquery's inner logical plan — the
+// type ScalarSubqueryValue flows so the plan-time gates (comparison
+// promotion 42804, cast pairs 22F3H) see the real type instead of the
+// Unknown that exempted every scalar subquery from the gates a direct
+// column reference hits. UnknownType when the shape is underivable (no
+// false claims — Unknown keeps the gate-exempt behavior).
+func scalarSubqueryOutputType(op logical.LogicalOperator) values.Type {
+	switch o := op.(type) {
+	case *logical.LogicalLimit:
+		return scalarSubqueryOutputType(o.Input)
+	case *logical.LogicalSort:
+		return scalarSubqueryOutputType(o.Input)
+	case *logical.LogicalFilter:
+		return scalarSubqueryOutputType(o.Input)
+	case *logical.LogicalProject:
+		if len(o.Projections) == 1 && len(o.ProjectedValues) == 1 && o.ProjectedValues[0] != nil {
+			if t := o.ProjectedValues[0].Type(); t != nil {
+				return t
+			}
+		}
+		return values.UnknownType
+	case *logical.LogicalAggregate:
+		if len(o.GroupKeys) == 0 && len(o.Calls) == 1 {
+			return aggregateCallOutputType(o.Calls[0], o.AggregateOperands)
+		}
+		return values.UnknownType
+	}
+	return values.UnknownType
+}
+
+// aggregateCallOutputType maps an aggregate call to the DECLARED Java
+// result type (nullable — Type.primitiveType defaults nullable=true;
+// a scalar subquery with zero rows is NULL anyway). The code-level
+// table is javaAggregateResultCode; a combination with no Java row —
+// including a STRUCTURED operand code, which has no NumericAggregation
+// operator and must never reach NewPrimitiveType's structured-code
+// panic — reports UnknownType (gate-exempt, no false claims).
+func aggregateCallOutputType(call logical.AggregateCall, operands []values.Value) values.Type {
+	opCode := values.TypeCodeUnknown
+	if len(operands) >= 1 && operands[0] != nil {
+		if t := operands[0].Type(); t != nil {
+			opCode = t.Code()
+		}
+	}
+	if code, ok := javaAggregateResultCode(call.Func, opCode); ok {
+		return values.NewPrimitiveType(code, true)
+	}
+	return values.UnknownType
+}
+
+// javaAggregateResultCode is THE Java aggregate result-type table at the
+// TypeCode level (NumericAggregationValue / CountValue, tag 4.12.11.0):
+// COUNT and COUNT(*) return LONG regardless of operand; AVG returns
+// DOUBLE for every numeric operand; SUM/MIN/MAX return the OPERAND's
+// code — and Java defines those operators ONLY over INT/LONG/FLOAT/
+// DOUBLE (SUM_I/L/F/D, MIN_*, MAX_*), so any other operand code has no
+// row (ok=false). Both this table's consumers document their own
+// nullability choice at the call site; aggResultTypeFromFunc layers its
+// metadata-specific divergences over the same table.
+func javaAggregateResultCode(fn string, operandCode values.TypeCode) (values.TypeCode, bool) {
+	return values.JavaAggregateResultCode(fn, operandCode)
+}
+
 // colBareOrName: the structured bare segment, or the whole name as one
 // opaque label for computed/rebased entries — never a dot split.
 func colBareOrName(c projCol) string {
@@ -7646,47 +7875,42 @@ func colBareOrName(c projCol) string {
 	return c.name
 }
 
-func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical.GroupKey, hasJoins bool) (values.Value, error) {
-	if hasJoins {
-		// Merged join rows carry alias-qualified keys; the DISPLAY is that
-		// flat merged-row key (same limitation as the text path below).
-		return &values.FieldValue{Field: strings.ToUpper(key.Display), Typ: values.UnknownType}, nil
-	}
+// resolveCorrelatedColumnValueStructured resolves a structured group key of a
+// correlated scalar subquery's inner aggregate through the semantic scope —
+// ONE channel for single-source and join inners alike: a multi-source scope
+// emits the QOV-addressed born-baked form, which the executor binds through
+// the merged row's leg windows (rowLegsBinder). The flat merged-row-display
+// mint the join case used to return is retired (dead-in-effect across all
+// suites once the scope channel answered; the correlated join-inner
+// column-agg FDB pin proves qualified AND bare shapes end-to-end).
+func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical.GroupKey) (values.Value, error) {
 	bare := key.Bare
 	if bare == "" {
 		bare = key.Display
 	}
 	var qualifier semantic.Identifier
 	if key.Qualified {
-		qualifier = semantic.NewUnquoted(key.Qualifier)
+		qualifier = semantic.FromNormalized(key.Qualifier)
 	}
-	return resolver.ResolveIdentifier(qualifier, semantic.NewUnquoted(bare))
+	return resolver.ResolveIdentifier(qualifier, semantic.FromNormalized(bare))
 }
 
 // resolveCorrelatedColumnValue resolves a (possibly alias-qualified) column
-// name to a Value through the semantic scope — the same resolution the
-// correlated WHERE clause uses. With a single inner source the scope returns a
-// bare FieldValue (matching the bare keys a single scan flows); with joins the
-// merged rows carry alias-qualified keys, so use the qualified FieldValue, as
-// the top-level projection path does (logical_predicate.go ResolveIdentifier
-// branch). A genuinely unresolvable column (single-source path) returns the
-// resolver error so the caller can reject — silently falling back to a raw
-// FieldValue would group every row under a null key (wrong results).
-func resolveCorrelatedColumnValue(resolver *expr.Resolver, col string, hasJoins bool) (values.Value, error) {
-	if hasJoins {
-		// Merged join rows carry alias-qualified keys; use the qualified name
-		// directly (ResolveIdentifier would yield a QOV-anchored value that does
-		// not match the flat merged row). Existence is not validated here — the
-		// same limitation as the top-level join GROUP BY path.
-		return &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}, nil
-	}
-	ref := parseColRef(col)
+// reference to a Value through the semantic scope — the same resolution the
+// correlated WHERE clause uses, for single-source and join inners alike
+// (the multi-source scope emits the QOV-addressed born-baked form; the
+// executor binds it through the merged row's leg windows). Segments come
+// STRUCTURED from the parse tree (AggregateCall.aggArgBare/Qualifier —
+// WS-N slice 6: never a dot re-split of rendered text). A genuinely
+// unresolvable column returns the resolver error so the caller can reject —
+// silently falling back to a raw FieldValue would group every row under a
+// null key (wrong results).
+func resolveCorrelatedColumnValue(resolver *expr.Resolver, bare, qual string, qualified bool) (values.Value, error) {
 	var qualifier semantic.Identifier
-	id := semantic.NewUnquoted(ref.bare())
-	if ref.isQualified() {
-		qualifier = semantic.NewUnquoted(ref.table)
+	if qualified {
+		qualifier = semantic.FromNormalized(qual)
 	}
-	return resolver.ResolveIdentifier(qualifier, id)
+	return resolver.ResolveIdentifier(qualifier, semantic.FromNormalized(bare))
 }
 
 // resolveCorrelatedGroupKeyValues resolves the GROUP BY keys of a correlated
@@ -7697,7 +7921,7 @@ func resolveCorrelatedColumnValue(resolver *expr.Resolver, col string, hasJoins 
 // fails to resolve is returned as an error — matching the top-level path
 // (upgradeAggregate) — rather than silently falling back to an unresolvable
 // raw FieldValue that would group every row under a null key.
-func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQuery, resolver *expr.Resolver, hasJoins bool) error {
+func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQuery, resolver *expr.Resolver) error {
 	if agg == nil || len(agg.GroupKeys) == 0 {
 		return nil
 	}
@@ -7711,7 +7935,7 @@ func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQu
 			keyValues[i] = v
 			continue
 		}
-		v, err := resolveCorrelatedColumnValueStructured(resolver, key, hasJoins)
+		v, err := resolveCorrelatedColumnValueStructured(resolver, key)
 		if err != nil {
 			return err
 		}
@@ -7731,7 +7955,11 @@ func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQu
 // matching). Returns isAgg=false for non-aggregate refs and for
 // expression-argument aggregates (`SUM(a*b)`), which have no bare column name
 // to form the producer's stable FN(BAREARG) key.
-func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isAgg bool) {
+// aggColRefFromExpr returns the aggregate function name and the STRUCTURAL
+// bare operand column from the parse tree (extractAwfFields' argBare — WS-N
+// slice 6: never a dot re-split of the rendered operand, which a qualified
+// `SUM(o.amount)` rendering would split at the inner dot).
+func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argBare string, isAgg bool) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok || pred.Predicate() != nil {
 		return "", "", false
@@ -7748,9 +7976,12 @@ func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isA
 	if !ok {
 		return "", "", false
 	}
-	f, a, aExpr, _, _, _, _, _, ok := extractAwfFields(awf)
+	f, a, aExpr, _, _, _, aBare, _, ok := extractAwfFields(awf)
 	if !ok || aExpr != nil {
 		return "", "", false
+	}
+	if aBare != "" {
+		return f, aBare, true
 	}
 	return f, a, true
 }
@@ -7793,13 +8024,14 @@ func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]lo
 		}
 		// A selected aggregate spelled differently in ORDER BY than in SELECT
 		// (`SELECT SUM(amount) … ORDER BY SUM(o.amount)`): the raw-text forms
-		// above miss (parseColRef on `SUM(o.amount)` splits at the inner dot).
-		// Recover the producer's stable FN(BAREARG) key from the parse tree so a
-		// genuinely-selected aggregate resolves regardless of operand qualifier.
+		// above miss (a rendered `SUM(o.amount)` key never matches the bare
+		// producer key). Recover the producer's stable FN(BAREARG) key from the
+		// parse tree so a genuinely-selected aggregate resolves regardless of
+		// operand qualifier.
 		if dk == "" && ob.rawExpr != nil {
-			if fn, argCol, isAgg := aggColRefFromExpr(ob.rawExpr); isAgg {
+			if fn, argBare, isAgg := aggColRefFromExpr(ob.rawExpr); isAgg {
 				canonKey := strings.ToUpper(fn) + "(*)"
-				if b := strings.ToUpper(parseColRef(argCol).bare()); b != "" {
+				if b := strings.ToUpper(argBare); b != "" {
 					canonKey = strings.ToUpper(fn) + "(" + b + ")"
 				}
 				if v, ok := aggDatumKey[canonKey]; ok {
@@ -7827,20 +8059,6 @@ func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]lo
 func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{Message: "correlated scalar subquery: nil query"}
-	}
-	// The correlated-scalar lowering keys legs by
-	// DISPLAY alias — its inner plan and scalar output naming are not
-	// binding-aware — so a duplicate outer alias in scope (a minted Q$DUPn
-	// binding) would resolve per-attribute at the front end and then serve a
-	// silent-NULL scalar at execution (the outer projection is planned as an
-	// inner-row column). Decline LOUDLY until this path speaks bindings; the
-	// EXISTS twin (buildCorrelatedExists) is binding-aware and answers.
-	for _, src := range p.outerScopes {
-		if src.CorrelationName != "" && !strings.EqualFold(src.CorrelationName, src.Alias.Name()) {
-			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: fmt.Sprintf("correlated scalar subquery: duplicate outer FROM alias %s is not supported (the scalar lowering is not binding-aware)", src.Alias.Name()),
-			}
-		}
 	}
 	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
 	if !ok {
@@ -7890,7 +8108,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			Message: fmt.Sprintf("correlated scalar subquery: resolve table %q: %v", sq.tableName, tblErr), Cause: tblErr,
 		}
 	}
-	aliasID := semantic.NewUnquoted(innerAlias)
+	aliasID := semantic.FromNormalized(innerAlias)
 	_ = innerScope.AddSource(semantic.ScopeSource{
 		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
 	})
@@ -8050,7 +8268,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// the EXACT datum key the aggregate cursor emits (addAgg's returned name),
 		// for resolving an ORDER BY ref over the grouped output (RFC-085).
 		aggDatumKey := make(map[string]string)
-		addAgg := func(fn, arg, argBare string, e antlrgen.IExpressionContext, distinct bool) (string, error) {
+		addAgg := func(fn, arg, argBare, argQual string, argQualified bool, e antlrgen.IExpressionContext, distinct bool) (string, error) {
 			// An expression argument has no bare column name, so it collapses to
 			// FN(*). Two DISTINCT expression aggregates (e.g. SUM(a+b) projected
 			// and SUM(c*d) in HAVING) would both synthesize "SUM(*)" and the
@@ -8077,7 +8295,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				}
 				opVal = v
 			} else if arg != "" {
-				v, err := resolveCorrelatedColumnValue(resolver, arg, len(sq.joins) > 0)
+				b := argBare
+				if b == "" {
+					b = arg
+				}
+				v, err := resolveCorrelatedColumnValue(resolver, b, argQual, argQualified)
 				if err != nil {
 					return "", err
 				}
@@ -8169,7 +8391,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 					Message: "correlated scalar subquery over a join: HAVING references an expression/constant-argument aggregate (e.g. COUNT(1), SUM(<expr>)) that cannot be resolved against the grouped output",
 				}
 			}
-			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggArgBare, ac.aggExpr, ac.aggDistinct)
+			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified, ac.aggExpr, ac.aggDistinct)
 			if err != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 					Message: fmt.Sprintf("correlated scalar subquery: resolve aggregate argument: %v", err), Cause: err,
@@ -8191,7 +8413,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 		// A sole COUNT(*) the parser flagged via countStar (no aggCol entry).
 		if sq.countStar {
-			name, _ := addAgg("COUNT", "", "", nil, false) // -> COUNT(*)
+			name, _ := addAgg("COUNT", "", "", "", false, nil, false) // -> COUNT(*)
 			scalarCol = name
 			aggDatumKey[strings.ToUpper(name)] = name
 			if sq.countStarAlias != "" {
@@ -8226,7 +8448,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 		aggOp := logical.NewAggregate(innerOp, logicalGroupKeys(sq.groupBy), aggCalls, aggAliases, false)
 		aggOp.AggregateOperands = aggOperands
-		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
+		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver); gkErr != nil {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 				Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,
 			}
@@ -8266,6 +8488,37 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// it is materialized as the inner's projected output AFTER the sort/limit
 		// below.
 		var computedScalarVal values.Value
+		// classifyProjFieldValue routes a resolved single-column projection by
+		// the SCOPE its reference binds: an OUTER-scoped field is NOT an inner
+		// row key and must take the materialized path (its value comes from
+		// the outer binding, evaluated per outer row); an inner-scoped field
+		// keys the inner row (qualified for a join's merged row, bare for a
+		// single source). Shared by the walked-expression arm and the plain
+		// column arm so both spellings of the same reference classify
+		// identically.
+		classifyProjFieldValue := func(fv *values.FieldValue) {
+			innerScoped, alias := true, ""
+			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+				alias = strings.ToUpper(qov.Correlation.Name())
+			} else if ref := parseColRef(fv.Field); ref.isQualified() {
+				alias = strings.ToUpper(ref.table)
+			}
+			if alias != "" {
+				_, innerScoped = innerSourceAliases(op)[alias]
+			}
+			switch {
+			case !innerScoped:
+				computedScalarVal = fv
+			case len(sq.joins) > 0:
+				if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+					scalarCol = strings.ToUpper(qov.Correlation.Name()) + "." + strings.ToUpper(fv.Field)
+				} else {
+					scalarCol = strings.ToUpper(fv.Field)
+				}
+			default:
+				scalarCol = strings.ToUpper(parseColRef(fv.Field).bare())
+			}
+		}
 		switch {
 		case len(sq.projCols) == 1:
 			// A COMPUTED projection (`SELECT UPPER(x)`, `a+b`, `CAST(...)`) is NOT
@@ -8314,29 +8567,28 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				// FieldValue takes the MATERIALIZED path like any computation —
 				// its value comes from the outer binding, evaluated per outer row.
 				if fv, isFV := cv.(*values.FieldValue); isFV {
-					innerScoped, alias := true, ""
-					if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-						alias = strings.ToUpper(qov.Correlation.Name())
-					} else if ref := parseColRef(fv.Field); ref.isQualified() {
-						alias = strings.ToUpper(ref.table)
-					}
-					if alias != "" {
-						_, innerScoped = innerSourceAliases(op)[alias]
-					}
-					switch {
-					case !innerScoped:
-						computedScalarVal = cv
-					case len(sq.joins) > 0:
-						if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-							scalarCol = strings.ToUpper(qov.Correlation.Name()) + "." + strings.ToUpper(fv.Field)
-						} else {
-							scalarCol = strings.ToUpper(fv.Field)
-						}
-					default:
-						scalarCol = strings.ToUpper(parseColRef(fv.Field).bare())
-					}
+					classifyProjFieldValue(fv)
 				} else {
 					computedScalarVal = cv
+				}
+			} else {
+				// A PLAIN (unparenthesized) column has no expression context,
+				// so it never reached the walk above — the old text path
+				// derived scalarCol from the projection TEXT without ever
+				// asking WHICH SCOPE the qualifier binds. An OUTER-scoped
+				// plain column (`SELECT a.id FROM q AS z WHERE …`) then read
+				// the INNER row's slot of that name — the seed's
+				// ofOrdinal(inner, 0) served the inner's first column as the
+				// scalar (silent wrong rows; the parenthesized twin `(a.id)`
+				// was already fixed by the walked arm above). Resolve the
+				// column through the semantic scope (inner first, outer
+				// fallthrough — SQL scoping) and run the SAME classification:
+				// outer-scoped materializes, inner-scoped keys the inner row.
+				pc := sq.projCols[0]
+				if rv, rErr := resolveCorrelatedColumnValue(resolver, colBareOrName(pc), pc.qualifier, pc.qualified); rErr == nil {
+					if fv, isFV := rv.(*values.FieldValue); isFV {
+						classifyProjFieldValue(fv)
+					}
 				}
 			}
 			if computedScalarVal == nil && scalarCol == "" {
@@ -8383,7 +8635,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// ORDER BY so the sort runs over the grouped output.
 		if len(sq.groupBy) > 0 {
 			aggOp := logical.NewAggregate(innerOp, logicalGroupKeys(sq.groupBy), nil, nil, false)
-			if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
+			if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver); gkErr != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 					Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,
 				}

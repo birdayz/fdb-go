@@ -408,3 +408,81 @@ func TestDecodeIntersectionContinuation_Errors(t *testing.T) {
 		t.Error("1-child token decoded as n=2 must be a hard error")
 	}
 }
+
+// stopAfterFirstCursor emits its inner's first row, then reports an
+// out-of-band limit carrying the inner's post-row continuation (the
+// honest stop position of a real limited cursor).
+type stopAfterFirstCursor struct {
+	inner   RecordCursor[int64]
+	stopAt  RecordCursorContinuation
+	emitted bool
+	closed  bool
+}
+
+func (c *stopAfterFirstCursor) OnNext(ctx context.Context) (RecordCursorResult[int64], error) {
+	if c.emitted {
+		return NewResultNoNext[int64](ScanLimitReached, c.stopAt), nil
+	}
+	c.emitted = true
+	r, err := c.inner.OnNext(ctx)
+	if err == nil && r.HasNext() {
+		c.stopAt = r.GetContinuation()
+	}
+	return r, err
+}
+func (c *stopAfterFirstCursor) Close() error   { c.closed = true; return c.inner.Close() }
+func (c *stopAfterFirstCursor) IsClosed() bool { return c.closed }
+
+// TestIntersectionMultiResume_DiscardedRowsConsumed pins Java
+// IntersectionCursorBase.computeNextResultStates: a non-maximal child's
+// discarded row is CONSUMED (its cached continuation advances past it),
+// so a checkpoint triggered while that child HOLDS a later, unmatched
+// row resumes it after the DISCARD — never re-scanning the inter-match
+// gap. Without consume the cache still points before the discarded row
+// (correct rows on resume, wasted I/O — the binary intersectionCursor
+// already had the consume; the multi cursor lacked it).
+func TestIntersectionMultiResume_DiscardedRowsConsumed(t *testing.T) {
+	t.Parallel()
+	// Sequence: A=1 vs B=2 → A discards 1 (consume) and loads 3 (held,
+	// unmatched). Then B discards 2 toward 3 and stops with a limit.
+	// Checkpoint: A's saved position must be AFTER the discarded 1 and
+	// BEFORE the held 3.
+	a := []int64{1, 3}
+	cursors := []RecordCursor[int64]{
+		newSliceResumeCursor(a, nil),
+		&stopAfterFirstCursor{inner: newSliceResumeCursor([]int64{2, 4}, nil)},
+	}
+	resume := make([]IntersectionChildResume, 2)
+	cur := IntersectionMultiResume(cursors, intResumeKey, false, resume)
+	res, err := cur.OnNext(context.Background())
+	if err != nil {
+		t.Fatalf("OnNext: %v", err)
+	}
+	if res.HasNext() {
+		t.Fatalf("expected a checkpoint stop, got value %v", res.GetValue())
+	}
+	if res.GetContinuation().IsEnd() {
+		t.Fatal("expected a resumable checkpoint, got END")
+	}
+	bts, err := res.GetContinuation().ToBytes()
+	if err != nil {
+		t.Fatalf("checkpoint bytes: %v", err)
+	}
+	cur.Close()
+
+	decoded, err := DecodeIntersectionContinuation(bts, 2)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Child A's saved position: past the discarded 1, before the held 3 —
+	// resuming yields 3 first. The consume-less shape saved the
+	// pre-discard position and re-read 1.
+	resumedA := newSliceResumeCursor(a, decoded[0].Continuation)
+	first, err := resumedA.OnNext(context.Background())
+	if err != nil {
+		t.Fatalf("resumed A OnNext: %v", err)
+	}
+	if !first.HasNext() || first.GetValue() != int64(3) {
+		t.Fatalf("resumed child A must start AFTER the discarded row: got %v (HasNext=%v), want 3", first.GetValue(), first.HasNext())
+	}
+}

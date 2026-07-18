@@ -941,23 +941,25 @@ type promotionEdge struct {
 // Identity (T → T) is NOT in the map — IsPromotable handles that
 // trivially before consulting the map.
 var promotionMap = map[promotionEdge]struct{}{
-	{TypeCodeInt, TypeCodeLong}:         {},
-	{TypeCodeInt, TypeCodeFloat}:        {},
-	{TypeCodeInt, TypeCodeDouble}:       {},
-	{TypeCodeLong, TypeCodeFloat}:       {},
-	{TypeCodeLong, TypeCodeDouble}:      {},
-	{TypeCodeFloat, TypeCodeDouble}:     {},
-	{TypeCodeNull, TypeCodeInt}:         {},
-	{TypeCodeNull, TypeCodeLong}:        {},
-	{TypeCodeNull, TypeCodeFloat}:       {},
-	{TypeCodeNull, TypeCodeDouble}:      {},
-	{TypeCodeNull, TypeCodeBoolean}:     {},
-	{TypeCodeNull, TypeCodeString}:      {},
-	{TypeCodeNull, TypeCodeBytes}:       {},
-	{TypeCodeNull, TypeCodeArray}:       {},
-	{TypeCodeNull, TypeCodeRecord}:      {},
-	{TypeCodeNull, TypeCodeEnum}:        {},
-	{TypeCodeNull, TypeCodeVersion}:     {},
+	{TypeCodeInt, TypeCodeLong}:     {},
+	{TypeCodeInt, TypeCodeFloat}:    {},
+	{TypeCodeInt, TypeCodeDouble}:   {},
+	{TypeCodeLong, TypeCodeFloat}:   {},
+	{TypeCodeLong, TypeCodeDouble}:  {},
+	{TypeCodeFloat, TypeCodeDouble}: {},
+	{TypeCodeNull, TypeCodeInt}:     {},
+	{TypeCodeNull, TypeCodeLong}:    {},
+	{TypeCodeNull, TypeCodeFloat}:   {},
+	{TypeCodeNull, TypeCodeDouble}:  {},
+	{TypeCodeNull, TypeCodeBoolean}: {},
+	{TypeCodeNull, TypeCodeString}:  {},
+	{TypeCodeNull, TypeCodeBytes}:   {},
+	{TypeCodeNull, TypeCodeArray}:   {},
+	{TypeCodeNull, TypeCodeRecord}:  {},
+	{TypeCodeNull, TypeCodeEnum}:    {},
+	{TypeCodeNull, TypeCodeVersion}: {},
+	// Java also has NULL→VECTOR (PromoteValue.java): Go has no VECTOR
+	// TypeCode — vectors are ARRAY-typed — so NULL→ARRAY covers it.
 	{TypeCodeNone, TypeCodeArray}:       {},
 	{TypeCodeString, TypeCodeEnum}:      {},
 	{TypeCodeString, TypeCodeUuid}:      {},
@@ -966,6 +968,91 @@ var promotionMap = map[promotionEdge]struct{}{
 	{TypeCodeDate, TypeCodeTimestamp}:   {},
 	{TypeCodeDate, TypeCodeString}:      {},
 	{TypeCodeTimestamp, TypeCodeString}: {},
+}
+
+// castPairs mirrors Java CastValue.java's castOperatorMap — the pairs
+// an explicit CAST may take (looser than the implicit promotionMap:
+// casts include narrowing and parsing). Identity is handled by the
+// caller; NULL casts to everything. The DATE/TIMESTAMP rows are the
+// Go temporal extension's arms (STRING-backed), not Java pairs.
+var castPairs = map[promotionEdge]struct{}{
+	{TypeCodeInt, TypeCodeLong}:       {},
+	{TypeCodeInt, TypeCodeFloat}:      {},
+	{TypeCodeInt, TypeCodeDouble}:     {},
+	{TypeCodeInt, TypeCodeString}:     {},
+	{TypeCodeInt, TypeCodeBoolean}:    {},
+	{TypeCodeLong, TypeCodeInt}:       {},
+	{TypeCodeLong, TypeCodeFloat}:     {},
+	{TypeCodeLong, TypeCodeDouble}:    {},
+	{TypeCodeLong, TypeCodeString}:    {},
+	{TypeCodeFloat, TypeCodeInt}:      {},
+	{TypeCodeFloat, TypeCodeLong}:     {},
+	{TypeCodeFloat, TypeCodeDouble}:   {},
+	{TypeCodeFloat, TypeCodeString}:   {},
+	{TypeCodeDouble, TypeCodeInt}:     {},
+	{TypeCodeDouble, TypeCodeLong}:    {},
+	{TypeCodeDouble, TypeCodeFloat}:   {},
+	{TypeCodeDouble, TypeCodeString}:  {},
+	{TypeCodeBoolean, TypeCodeInt}:    {},
+	{TypeCodeBoolean, TypeCodeString}: {},
+	{TypeCodeString, TypeCodeInt}:     {},
+	{TypeCodeString, TypeCodeLong}:    {},
+	{TypeCodeString, TypeCodeFloat}:   {},
+	{TypeCodeString, TypeCodeDouble}:  {},
+	{TypeCodeString, TypeCodeBoolean}: {},
+	{TypeCodeString, TypeCodeEnum}:    {},
+	{TypeCodeString, TypeCodeUuid}:    {},
+	// ARRAY_TO_VECTOR folds into the ARRAY identity here (no VECTOR code).
+	{TypeCodeArray, TypeCodeArray}:      {},
+	{TypeCodeString, TypeCodeDate}:      {},
+	{TypeCodeString, TypeCodeTimestamp}: {},
+	{TypeCodeDate, TypeCodeString}:      {},
+	{TypeCodeTimestamp, TypeCodeString}: {},
+	{TypeCodeDate, TypeCodeTimestamp}:   {},
+	{TypeCodeTimestamp, TypeCodeDate}:   {},
+	// GO EXTENSIONS beyond Java's castOperatorMap (DIVERGENCES.md;
+	// runtime arms verified): UUID→STRING renders the canonical 36-char
+	// form ([16]byte arm of the STRING target); ENUM→STRING is identity
+	// (the enum carrier IS its name string). STRING↔BYTES is NOT
+	// admitted in EITHER direction — no runtime arm (an admitted pair
+	// with no arm evaluates to a SILENT NULL), and Java has no row.
+	{TypeCodeUuid, TypeCodeString}: {},
+	{TypeCodeEnum, TypeCodeString}: {},
+}
+
+// JavaAggregateResultCode is THE Java aggregate result-type table at the
+// TypeCode level (NumericAggregationValue / CountValue, tag 4.12.11.0):
+// COUNT and COUNT(*) return LONG regardless of operand; AVG returns
+// DOUBLE for every numeric operand; SUM/MIN/MAX return the OPERAND's
+// code — and Java defines those operators ONLY over INT/LONG/FLOAT/
+// DOUBLE (SUM_I/L/F/D, MIN_*, MAX_*), so any other operand code has no
+// row (ok=false). Consumers document their own nullability choice at
+// the call site.
+func JavaAggregateResultCode(fn string, operandCode TypeCode) (TypeCode, bool) {
+	switch fn {
+	case "COUNT":
+		return TypeCodeLong, true
+	case "AVG":
+		return TypeCodeDouble, true
+	case "SUM", "MIN", "MAX":
+		switch operandCode {
+		case TypeCodeInt, TypeCodeLong, TypeCodeFloat, TypeCodeDouble:
+			return operandCode, true
+		}
+	}
+	return TypeCodeUnknown, false
+}
+
+// CastPairDefined reports whether an explicit CAST from `from` to `to`
+// has a defined operator (Java CastValue's construction-time gate —
+// "No cast defined from X to Y" otherwise). Identity always casts;
+// NULL casts to anything.
+func CastPairDefined(from, to TypeCode) bool {
+	if from == to || from == TypeCodeNull || from == TypeCodeNone {
+		return true
+	}
+	_, ok := castPairs[promotionEdge{from, to}]
+	return ok
 }
 
 // IsPromotable reports whether `from` can be implicitly promoted

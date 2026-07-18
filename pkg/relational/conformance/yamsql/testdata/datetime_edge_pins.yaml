@@ -1,0 +1,45 @@
+# datetime_edge_pins.yaml — DATE/TIMESTAMP extension edge coverage
+# (RFC-181 WS-T: the Go-only temporal types need deep edge tests, not
+# parity work — parse-failure arms and mixed string/time comparisons)
+name: datetime_edge_pins
+schema_template: |
+  CREATE TABLE ev (id BIGINT NOT NULL, d DATE, ts TIMESTAMP, PRIMARY KEY (id))
+setup:
+  - INSERT INTO ev VALUES (1, '2024-03-15', '2024-03-15 10:30:00'), (2, NULL, NULL)
+tests:
+  # --- Parse-failure arms ---
+  # CAST of a malformed date string errors, never silently NULLs.
+  - query: SELECT CAST('not-a-date' AS DATE) FROM ev WHERE id = 1
+    error_code: "22F3H"
+  - query: SELECT CAST('2024-13-45' AS DATE) FROM ev WHERE id = 1
+    error_code: "22F3H"
+  - query: SELECT CAST('2024-03-15 99:99:99' AS TIMESTAMP) FROM ev WHERE id = 1
+    error_code: "22F3H"
+  # --- Mixed string/time comparisons ---
+  # A syntactically-valid literal in a DIFFERENT shape (timestamp
+  # against DATE column): DATE→STRING promotion compares the rendered
+  # forms — a full timestamp never equals a plain date rendering.
+  - query: SELECT COUNT(*) FROM ev WHERE d = '2024-03-15 00:00:00'
+    rows:
+      - [0]
+  # A GARBAGE string compares (string domain — the extension stores
+  # fixed-width strings, so it is an honest string comparison): matches
+  # nothing, errors nothing.
+  - query: SELECT COUNT(*) FROM ev WHERE d = 'zzzz'
+    rows:
+      - [0]
+  # Range with a garbage lower bound: string order still answers
+  # ('zzzz' > every ISO date) — self-consistent with the index order.
+  - query: SELECT COUNT(*) FROM ev WHERE d > 'zzzz'
+    rows:
+      - [0]
+  - query: SELECT COUNT(*) FROM ev WHERE d < 'zzzz' AND d IS NOT NULL
+    rows:
+      - [1]
+  # --- NULL arms ---
+  - query: SELECT COUNT(*) FROM ev WHERE d IS NULL
+    rows:
+      - [1]
+  - query: SELECT YEAR(d) FROM ev WHERE id = 2
+    rows:
+      - [null]

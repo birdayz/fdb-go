@@ -64,6 +64,23 @@ func NewUnquoted(raw string) Identifier {
 	return New(raw, false)
 }
 
+// FromNormalized wraps a string that was ALREADY normalized by the parse
+// capture (functions.StripIdentifierQuotes: unquoted segments folded
+// UPPER, quoted segments verbatim with the quotes removed). Unlike
+// NewUnquoted it performs NO re-normalization — re-folding a captured
+// quoted-verbatim alias (`AS "q$1"` → captured `q$1`) would corrupt it to
+// `Q$1` and split resolution across positions (the FROM registration and
+// the quote-aware reference channel disagreeing on the same alias). The
+// quoting FLAG is not recoverable from the captured string, which is fine
+// everywhere this is used: resolution equality ignores the flag
+// (EqualsIgnoreQuoting) and only the normalized text matters.
+func FromNormalized(name string) Identifier {
+	if name == "" {
+		return Identifier{}
+	}
+	return Identifier{name: name}
+}
+
 // Name returns the normalized identifier text. Two Identifiers
 // with the same Name AND same WasQuoted are equal via `==`.
 func (i Identifier) Name() string { return i.name }

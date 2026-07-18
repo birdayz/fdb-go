@@ -289,15 +289,63 @@ func TestFDB_KeyBindingAndBuriedExists(t *testing.T) {
 		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a, q AS b WHERE EXISTS (SELECT 1 FROM p)",
 			"duplicate FROM alias")
 	})
-	// (c) Correlated SCALAR subquery over a dup outer — the scalar lowering
-	// keys legs by display alias (not yet binding-aware).
-	t.Run("P4c_scalar_dup_outer", func(t *testing.T) {
-		loudDecline(t, "SELECT (SELECT a.id FROM q WHERE a.id = 1) FROM p AS a, q AS a",
-			"duplicate outer FROM alias")
+	// (c) Correlated SCALAR subquery over a dup outer — the clustered
+	// ordinal lowering keys the pull-up spans by the leg BINDING, so a
+	// per-attribute outer reference bakes onto the right concat window
+	// whether it binds the FIRST leg (binding == alias) or a LATER
+	// minted leg (Q$DUPn). Each multiset below served a loud decline
+	// while the path was display-keyed; the values are standard SQL
+	// (Java's per-attribute semantics).
+	scalarMultiset := func(t *testing.T, q string, want map[int64]int, wantNulls int) {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("dup-outer scalar subquery must ANSWER: %v\n  sql: %s", err, q)
+		}
+		defer rows.Close()
+		got := map[int64]int{}
+		nulls := 0
+		for rows.Next() {
+			var v sql.NullInt64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if !v.Valid {
+				nulls++
+				continue
+			}
+			got[v.Int64]++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) || nulls != wantNulls {
+			t.Errorf("scalar multiset = %v (+%d NULLs), want %v (+%d NULLs)\n  sql: %s",
+				got, nulls, want, wantNulls, q)
+		}
+	}
+	// First-leg correlation: the scalar is the OUTER p-leg's id, carried
+	// through a single-row inner (z.qid = 5). p×q = 6 outer rows → each
+	// p id three times.
+	t.Run("P4c_scalar_dup_outer_first_leg", func(t *testing.T) {
+		scalarMultiset(t, "SELECT (SELECT a.id FROM q AS z WHERE z.qid = 5) FROM p AS a, q AS a",
+			map[int64]int{1: 3, 2: 3}, 0)
 	})
+	// MINTED-leg correlation: the scalar is the outer q-leg's qid — the
+	// leg whose binding is Q$DUPn. A display-keyed pull-up cannot
+	// represent it (the old silent-NULL class); binding-keyed spans read
+	// the right window.
+	t.Run("P4c_scalar_dup_outer_minted_leg", func(t *testing.T) {
+		scalarMultiset(t, "SELECT (SELECT a.qid FROM q AS z WHERE z.qid = 5) FROM p AS a, q AS a",
+			map[int64]int{5: 2, 7: 2, 9: 2}, 0)
+	})
+	// Aggregate inner with the UNALIASED table as inner source (inner-own
+	// universe = the table name): MAX over the inner filtered by the
+	// outer's first-leg id — 9 for id=1 rows, NULL (empty aggregate) for
+	// id=2 rows.
 	t.Run("P4d_scalar_dup_outer_agg", func(t *testing.T) {
-		loudDecline(t, "SELECT (SELECT MAX(qid) FROM q WHERE a.id = 1) FROM p AS a, q AS a",
-			"duplicate outer FROM alias")
+		scalarMultiset(t, "SELECT (SELECT MAX(qid) FROM q WHERE a.id = 1) FROM p AS a, q AS a",
+			map[int64]int{9: 3}, 3)
 	})
 	// (e) The GATED flatten's leg-independent EXISTS.
 	// The minted-dup outer (p AS a, q AS a) resolves ordinally and a.qid binds the q
@@ -335,14 +383,42 @@ func TestFDB_KeyBindingAndBuriedExists(t *testing.T) {
 			t.Fatalf("P4e = %d rows %v, want 6 rows {5:2,7:2,9:2} (a.qid binds the q leg, EXISTS always true)", total, counts)
 		}
 	})
-	// (f) The UNION face: a dup-alias branch under UNION ALL keeps its
-	// per-attribute reference display-keyed and dies LOUD at the executor's
-	// ordinal-resolution guard (zero rows served; the distinct-alias control
-	// answers). Correct-or-loud holds; the typed-decline-at-translation
-	// upgrade rides the flip rider.
+	// (f) The UNION face: a dup-alias branch under UNION ALL ANSWERS.
+	// This shape declined at plan time ("declares no column order to
+	// bind a plan-time ordinal") only because the catalog post-build
+	// path kept a stale QualifierIsDuplicated guard from the retired
+	// display-keyed carve-out — the guard discarded the valid
+	// per-binding baked value and the bake fell through to the
+	// orderless scope source. With the guard gone the branch bakes
+	// per-binding like a plain SELECT: a.qid addresses the q leg, and
+	// the exact multiset pins against a first-leg misbind (which would
+	// serve p.id → {1:4,2:4}).
 	t.Run("P4f_union_dup_branch", func(t *testing.T) {
-		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a UNION ALL SELECT id FROM p",
-			"not resolvable in the runtime row")
+		rows, err := db.QueryContext(ctx,
+			"SELECT a.qid FROM p AS a, q AS a UNION ALL SELECT id FROM p")
+		if err != nil {
+			t.Fatalf("dup-alias branch under UNION ALL must ANSWER: %v", err)
+		}
+		defer rows.Close()
+		counts := map[int64]int{}
+		total := 0
+		for rows.Next() {
+			var v sql.NullInt64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if !v.Valid {
+				t.Fatal("served NULL — the dup upper must resolve positionally, never off the name Datum")
+			}
+			counts[v.Int64]++
+			total++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if total != 8 || counts[5] != 2 || counts[7] != 2 || counts[9] != 2 || counts[1] != 1 || counts[2] != 1 {
+			t.Fatalf("= %d rows %v, want 8 rows {5:2,7:2,9:2,1:1,2:1} (q.qid per cross-join row, then p.id)", total, counts)
+		}
 	})
 
 	// ---- P5: the LEFT-box dup FLIP ----

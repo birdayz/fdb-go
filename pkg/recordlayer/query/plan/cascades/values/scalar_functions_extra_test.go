@@ -1,8 +1,10 @@
 package values
 
 import (
+	"errors"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -334,5 +336,129 @@ func TestSimplifyValue_FoldsExtendedScalars(t *testing.T) {
 		if cv.Value != tc.want {
 			t.Fatalf("%s: got %v, want %v", tc.name, cv.Value, tc.want)
 		}
+	}
+}
+
+// TestScalarFunction_StatementClock pins the statement-stable clock:
+// CURRENT_TIMESTAMP / CURRENT_DATE read the evalCtx's StatementClock, so
+// every reference within one statement observes the SAME instant (SQL
+// fixes them per statement; the raw time.Now() fallback made multi-cell
+// VALUES folds drift across a clock boundary).
+func TestScalarFunction_StatementClock(t *testing.T) {
+	t.Parallel()
+	fixed := time.Date(2026, 7, 18, 12, 34, 56, 0, time.UTC)
+	clock := testStatementClock{now: fixed}
+
+	ts := NewScalarFunctionValue("CURRENT_TIMESTAMP", TypeString)
+	got1, err := ts.Evaluate(clock)
+	if err != nil {
+		t.Fatalf("CURRENT_TIMESTAMP: %v", err)
+	}
+	got2, err := ts.Evaluate(clock)
+	if err != nil {
+		t.Fatalf("CURRENT_TIMESTAMP: %v", err)
+	}
+	want := fixed.Format(timestampLayout)
+	if got1 != want || got2 != want {
+		t.Errorf("CURRENT_TIMESTAMP = %v / %v, want stable %q", got1, got2, want)
+	}
+
+	d := NewScalarFunctionValue("CURRENT_DATE", TypeString)
+	gotD, err := d.Evaluate(clock)
+	if err != nil {
+		t.Fatalf("CURRENT_DATE: %v", err)
+	}
+	if gotD != fixed.Format(dateLayout) {
+		t.Errorf("CURRENT_DATE = %v, want %q", gotD, fixed.Format(dateLayout))
+	}
+}
+
+type testStatementClock struct{ now time.Time }
+
+func (c testStatementClock) StatementNow() time.Time { return c.now }
+
+// TestScalarFunction_ShortCircuit pins the lazy forms at the unit level:
+// COALESCE stops at the first non-NULL argument and IF evaluates only
+// the taken branch — the untaken 1/0 must never raise.
+func TestScalarFunction_ShortCircuit(t *testing.T) {
+	t.Parallel()
+	one := &ConstantValue{Value: int64(1), Typ: NullableInt}
+	boom := &ArithmeticValue{Op: OpDiv, Left: one, Right: &ConstantValue{Value: int64(0), Typ: NullableInt}}
+
+	got, err := NewScalarFunctionValue("COALESCE", NullableInt, one, boom).Evaluate(nil)
+	if err != nil || got != int64(1) {
+		t.Errorf("COALESCE(1, 1/0) = %v, %v — want 1, nil (short-circuit)", got, err)
+	}
+	got, err = NewScalarFunctionValue("IF", NullableInt, NewBooleanValue(true), one, boom).Evaluate(nil)
+	if err != nil || got != int64(1) {
+		t.Errorf("IF(true, 1, 1/0) = %v, %v — want 1, nil (taken branch only)", got, err)
+	}
+	// The error still surfaces when the poisoned argument IS reached.
+	if _, err = NewScalarFunctionValue("COALESCE", NullableInt, NewNullValue(NullableInt), boom).Evaluate(nil); err == nil {
+		t.Error("COALESCE(NULL, 1/0) must reach and raise the division error")
+	}
+}
+
+// TestScalarFunction_IFNULLArity pins the lazy IFNULL's arity guard: the
+// short-circuit arm must keep the strict arm's exactly-2-args contract —
+// IFNULL(1) and IFNULL(a,b,c) decline to NULL, never degrade into
+// variadic COALESCE.
+func TestScalarFunction_IFNULLArity(t *testing.T) {
+	t.Parallel()
+	one := &ConstantValue{Value: int64(1), Typ: NullableInt}
+	two := &ConstantValue{Value: int64(2), Typ: NullableInt}
+
+	got, err := NewScalarFunctionValue("IFNULL", NullableInt, one).Evaluate(nil)
+	if err != nil || got != nil {
+		t.Errorf("IFNULL(1) = %v, %v — want NULL decline (strict 2-arg contract)", got, err)
+	}
+	got, err = NewScalarFunctionValue("IFNULL", NullableInt, one, two, one).Evaluate(nil)
+	if err != nil || got != nil {
+		t.Errorf("IFNULL(1,2,1) = %v, %v — want NULL decline, not variadic COALESCE", got, err)
+	}
+	got, err = NewScalarFunctionValue("IFNULL", NullableInt, NewNullValue(NullableInt), two).Evaluate(nil)
+	if err != nil || got != int64(2) {
+		t.Errorf("IFNULL(NULL, 2) = %v, %v — want 2", got, err)
+	}
+}
+
+// TestScalarFunction_DatePartAcceptsCastableTimestamps pins the layout
+// authority: every string the TIMESTAMP cast accepts must be a valid
+// date-part input — the 22023 garbage rejection fires only for strings
+// castable NOWHERE (the RFC3339 form was wrongly classified malformed
+// when the date-part arm carried its own shorter layout list).
+func TestScalarFunction_DatePartAcceptsCastableTimestamps(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{
+		"2024-01-02 03:04:05",
+		"2024-01-02T03:04:05Z",
+		"2024-01-02T03:04:05",
+		"2024-01-02",
+	} {
+		arg := &ConstantValue{Value: in, Typ: TypeString}
+		got, err := NewScalarFunctionValue("YEAR", NullableInt, arg).Evaluate(nil)
+		if err != nil || got != int64(2024) {
+			t.Errorf("YEAR(%q) = %v, %v — want 2024 (castable-to-TIMESTAMP forms must never 22023)", in, got, err)
+		}
+	}
+	// A zoned form NORMALIZES TO UTC before extraction, agreeing with
+	// the TIMESTAMP cast's canonicalization — the raw fixed-offset zone
+	// would silently answer the local hour (3, not 1).
+	zoned := &ConstantValue{Value: "2024-01-02T03:04:05+02:00", Typ: TypeString}
+	if got, err := NewScalarFunctionValue("HOUR", NullableInt, zoned).Evaluate(nil); err != nil || got != int64(1) {
+		t.Errorf("HOUR('2024-01-02T03:04:05+02:00') = %v, %v — want 1 (UTC-normalized, cast-consistent)", got, err)
+	}
+	// The already-parsed time.Time carrier normalizes identically — a
+	// non-UTC zone representation must not leak into the parts.
+	zonedT := &ConstantValue{
+		Value: time.Date(2024, 1, 2, 3, 4, 5, 0, time.FixedZone("X", 2*3600)),
+		Typ:   NullableTimestamp,
+	}
+	if got, err := NewScalarFunctionValue("HOUR", NullableInt, zonedT).Evaluate(nil); err != nil || got != int64(1) {
+		t.Errorf("HOUR(time.Time in +02:00) = %v, %v — want 1 (UTC-normalized)", got, err)
+	}
+	var argErr *InvalidArgumentError
+	if _, err := NewScalarFunctionValue("YEAR", NullableInt, &ConstantValue{Value: "not-a-date", Typ: TypeString}).Evaluate(nil); !errors.As(err, &argErr) {
+		t.Errorf("YEAR('not-a-date') = %v — want *InvalidArgumentError (22023)", err)
 	}
 }

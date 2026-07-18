@@ -352,6 +352,22 @@ func TestImplementRecursiveLevelUnion_Fires_LevelStrategy(t *testing.T) {
 func TestImplementRecursiveLevelUnion_Fires_AnyStrategy(t *testing.T) {
 	t.Parallel()
 
+	// FORMATION: the level-union rule itself must fire for TraversalAny.
+	// The full-planner run below can no longer show the level union
+	// alongside the DFS join — physical yields land ONLY in FinalMembers
+	// and OptimizeGroup prunes finals to the winner (Java's prune-to-1),
+	// so the losing alternative is not visible in AllMembers() after
+	// Plan(). Fire the rule directly on a prepared tree to pin formation.
+	topRef, isr, ir, rsr, rr := buildLevelUnionTree(expressions.TraversalAny)
+	implementInnerCTEPlans(isr, ir, rsr, rr)
+	yielded := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	if len(yielded) != 1 || !IsPhysicalRecursiveLevelUnion(yielded[0]) {
+		t.Fatalf("ImplementRecursiveLevelUnionRule must yield the level union for TraversalAny; got %d yields", len(yielded))
+	}
+
+	// WINNER: the full planner must keep SOME physical recursive-union
+	// implementation (level union or DFS join — whichever the cost model
+	// picks) as the surviving final.
 	ref := buildRecursiveUnionTree(expressions.TraversalAny)
 
 	rules := DefaultExpressionRules()
@@ -362,26 +378,14 @@ func TestImplementRecursiveLevelUnion_Fires_AnyStrategy(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	foundLevel := false
+	foundImpl := false
 	for _, m := range ref.AllMembers() {
-		if IsPhysicalRecursiveLevelUnion(m) {
-			foundLevel = true
+		if IsPhysicalRecursiveLevelUnion(m) || IsPhysicalRecursiveDfsJoin(m) {
+			foundImpl = true
 			break
 		}
 	}
-	if !foundLevel {
-		t.Fatal("TraversalAny should allow level union, but no physical RecursiveLevelUnion found")
-	}
-
-	// TraversalAny should also produce DFS as an alternative.
-	foundDfs := false
-	for _, m := range ref.AllMembers() {
-		if IsPhysicalRecursiveDfsJoin(m) {
-			foundDfs = true
-			break
-		}
-	}
-	if !foundDfs {
-		t.Fatal("TraversalAny should produce both DFS and Level alternatives; DFS missing")
+	if !foundImpl {
+		t.Fatal("TraversalAny should produce a physical recursive-union winner (level union or DFS join), found neither")
 	}
 }

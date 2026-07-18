@@ -1,6 +1,8 @@
 package values
 
-import "strings"
+import (
+	"strings"
+)
 
 // MergeSeedLegsOfValue returns the SOURCE-LEG correlations a value tree depends
 // on THROUGH a merged (source-anchored join) row — the partition-time
@@ -24,6 +26,14 @@ import "strings"
 // the prefix maps directly to the owned quantifier.
 //
 // Returns a non-nil (possibly empty) map; nil input yields an empty map.
+//
+// Retirement gating (WS-N slice 5): dead-in-effect on every covered
+// surface (probed zero across all suites incl. full FDB), but the
+// producing shape — a dotted merged-row read from the enclosed-unnest
+// name-model residual — is still constructible by the translator. This
+// recovery retires WITH that residual's ordinalization (the box
+// arcs), not before: it is the defense that keeps the partition rules
+// from separating an Explode from its buried leg (zero-rows bug).
 func MergeSeedLegsOfValue(v Value) map[CorrelationIdentifier]struct{} {
 	out := map[CorrelationIdentifier]struct{}{}
 	if v == nil {

@@ -2,11 +2,13 @@ package expr_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/expr"
@@ -147,8 +149,10 @@ func TestWalkExpression_IntegerLiteral(t *testing.T) {
 	if cv.Value != int64(42) {
 		t.Fatalf("Value: got %v, want 42", cv.Value)
 	}
-	if cv.Typ != values.TypeInt {
-		t.Fatalf("Typ: got %v, want TypeInt", cv.Typ)
+	if cv.Typ != values.NullableInt {
+		// 42 fits int32, so it is an INT literal (Java
+		// ParseHelpers.parseDecimal narrows via Math.toIntExact).
+		t.Fatalf("Typ: got %v, want NullableInt", cv.Typ)
 	}
 }
 
@@ -1418,27 +1422,25 @@ func TestWalkExpression_CastTargets(t *testing.T) {
 	}
 }
 
-// CAST to a type outside the seed ValueType — FLOAT / DOUBLE /
-// BYTES / UUID / VECTOR — returns UnsupportedExpressionShapeError.
-// Waits on the Phase 4.0 Type hierarchy port.
-func TestWalkExpression_CastUnsupportedTarget(t *testing.T) {
+// CAST to BYTES is expressible by the walker, so the plan-time pair
+// gate rejects an undefined pair (STRING→BYTES — Java defines NO cast
+// operators to BYTES) with its OWN typed 22F3H, never an
+// unsupported-shape decline that dies later as an opaque 0AF00.
+func TestWalkExpression_CastBytesPairGate(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	cases := []string{
-		// FLOAT / DOUBLE moved to TestWalkExpression_CastFloat now
-		// that TypeFloat exists in the seed enum. BYTES still
-		// declines pending the full Type hierarchy port.
-		"CAST(name AS BYTES)",
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE CAST(name AS BYTES)")
+	_, err := r.WalkExpression(ctx)
+	if err == nil {
+		t.Fatal("expected the pair gate to reject STRING→BYTES")
 	}
-	for _, sql := range cases {
-		t.Run(sql, func(t *testing.T) {
-			t.Parallel()
-			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
-			if _, err := r.WalkExpression(ctx); err == nil {
-				t.Fatalf("expected UnsupportedExpressionShapeError for %q", sql)
-			}
-		})
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidCast {
+		t.Fatalf("expected *api.Error 22F3H (InvalidCast), got %T: %v", err, err)
+	}
+	if !strings.Contains(apiErr.Message, "No cast defined") {
+		t.Fatalf("expected Java's construction-time wording, got %q", apiErr.Message)
 	}
 }
 
@@ -1571,12 +1573,16 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 	}{
 		// RFC-082: polymorphic value-preserving functions now infer their
 		// result type from the operand (id is LONG) instead of UNKNOWN.
-		{"SELECT * FROM users WHERE ABS(id)", "ABS", values.NullableLong, 1},
-		{"SELECT * FROM users WHERE FLOOR(id)", "FLOOR", values.NullableLong, 1},
-		{"SELECT * FROM users WHERE CEIL(id)", "CEIL", values.NullableLong, 1},
-		{"SELECT * FROM users WHERE CEILING(id)", "CEILING", values.NullableLong, 1},
-		{"SELECT * FROM users WHERE ROUND(id)", "ROUND", values.NullableLong, 1},
-		{"SELECT * FROM users WHERE ROUND(id, 2)", "ROUND", values.NullableLong, 2},
+		// id is a genuine 32-bit INT column, and these functions are
+		// type-preserving in their first operand (Java Math.abs(int) is
+		// int) — so they yield INT, not the old LONG the TypeInt alias
+		// erased everything to.
+		{"SELECT * FROM users WHERE ABS(id)", "ABS", values.NullableInt, 1},
+		{"SELECT * FROM users WHERE FLOOR(id)", "FLOOR", values.NullableInt, 1},
+		{"SELECT * FROM users WHERE CEIL(id)", "CEIL", values.NullableInt, 1},
+		{"SELECT * FROM users WHERE CEILING(id)", "CEILING", values.NullableInt, 1},
+		{"SELECT * FROM users WHERE ROUND(id)", "ROUND", values.NullableInt, 1},
+		{"SELECT * FROM users WHERE ROUND(id, 2)", "ROUND", values.NullableInt, 2},
 		{"SELECT * FROM users WHERE SQRT(id)", "SQRT", values.TypeFloat, 1},
 		{"SELECT * FROM users WHERE POWER(id, 2)", "POWER", values.TypeFloat, 2},
 		{"SELECT * FROM users WHERE POW(id, 2)", "POW", values.TypeFloat, 2},

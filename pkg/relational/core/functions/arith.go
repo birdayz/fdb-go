@@ -17,6 +17,7 @@ package functions
 
 import (
 	"math"
+	"strconv"
 
 	"fdb.dev/pkg/relational/api"
 )
@@ -86,13 +87,18 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 	// toward zero). Going through float first would turn 10 / 3 into
 	// 3.333 instead of 3, and unchecked ops would silently wrap
 	// MAX_INT + 1 to MIN_INT.
-	// String + string → concat (Java alignment). Java's
-	// `+` is overloaded for strings; fdb-relational evaluates
-	// 'foo' + 'bar' = 'foobar'. Other operators (- * / %) on strings
+	// `+` with ANY string operand → concat (Java alignment:
+	// ArithmeticValue's ADD_IS..ADD_SS family — `+` is Java's string
+	// coercion, so 5 + 'abc' is "5abc" and 'd=' + 1.0 is "d=1.0" with
+	// Java's number rendering). Other operators (- * / %) on strings
 	// remain unsupported.
 	if op == "+" {
-		if ls, lstr := left.(string); lstr {
-			if rs, rstr := right.(string); rstr {
+		_, lstr := left.(string)
+		_, rstr := right.(string)
+		if lstr || rstr {
+			ls, lok := javaConcatOperand(left)
+			rs, rok := javaConcatOperand(right)
+			if lok && rok {
 				return ls + rs, nil
 			}
 		}
@@ -123,9 +129,14 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 			if ri == 0 {
 				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
 			}
-			// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 			if li == math.MinInt64 && ri == -1 {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "long overflow")
+				// Java DIV_LL is UNCHECKED `(long)l / (long)r`
+				// (ArithmeticValue.java:469) — the JVM wraps MinLong/-1
+				// with no exception; Go's native `/` would panic, so the
+				// wrap is explicit. Kept identical to the cascades
+				// ArithmeticValue lane (the two arithmetic engines must
+				// not diverge).
+				return int64(math.MinInt64), nil
 			}
 			return li / ri, nil
 		case "%":
@@ -166,6 +177,30 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported math operator %q", op)
 	}
 	return result, nil
+}
+
+// javaConcatOperand renders a `+`-concat operand the way Java's string
+// coercion does: strings verbatim, integers decimal, floats via
+// Float/Double.toString (javaDoubleToString handles the ".0" / E-form /
+// Infinity spellings). Non-renderable operands decline so the generic
+// mismatch arms error as before.
+func javaConcatOperand(v any) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		return t, true
+	case int64:
+		return strconv.FormatInt(t, 10), true
+	case int32:
+		return strconv.FormatInt(int64(t), 10), true
+	case int:
+		return strconv.FormatInt(int64(t), 10), true
+	case float64:
+		return javaDoubleToString(t), true
+	case float32:
+		return javaFloatToString(t), true
+	default:
+		return "", false
+	}
 }
 
 // ApplyBitOp evaluates a bitwise operator. SQL standard + Java both

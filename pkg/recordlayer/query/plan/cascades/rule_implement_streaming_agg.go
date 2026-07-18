@@ -51,10 +51,6 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 
 	groupingKeys := gb.GetGroupingKeys()
 	if len(groupingKeys) == 0 {
-		innerExpr := findPhysicalExpr(innerRef)
-		if innerExpr == nil {
-			return
-		}
 		if isCountOnlyAggregation(gb.GetAggregates()) {
 			if idxWrapper := findIndexScanWrapper(innerRef); idxWrapper != nil && !idxWrapper.covering {
 				coveringWrapper := &physicalIndexScanWrapper{
@@ -69,9 +65,32 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 				call.Yield(newPhysicalStreamingAggWrapper(aggPlan, coveringQ))
 			}
 		}
-		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(innerPlan, groupingKeys, gb.GetAggregates())
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
-		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+		// Yield an aggregate over EVERY physical alternative of the
+		// inner (the memo dedups and the cost model picks the winner) —
+		// the former first-physical single pick was ORDER-DEPENDENT: it
+		// happened to see the Fetch(IndexScan) alternative first only
+		// because dual insertion interleaved physicals into the
+		// exploratory member order. With finals-only physicals the
+		// first member is whatever landed first, and a single pick
+		// silently drops the cheaper (or the only CORRECT-for-Explain)
+		// alternative.
+		for _, m := range innerRef.AllMembers() {
+			pe, ok := m.(physicalPlanExpression)
+			if !ok {
+				continue
+			}
+			// A nil-inner Fetch shell (the extraction template) must
+			// never be PLAN-EMBEDDED — its plan completes only via the
+			// wrapper's WithChildren relink; embedding it here bakes
+			// Fetch(<nil>) into the aggregate permanently (the XX000
+			// plan-invariant).
+			if isNilInnerFetch(m) {
+				continue
+			}
+			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(pe.GetRecordQueryPlan(), groupingKeys, gb.GetAggregates())
+			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(m))
+			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+		}
 		return
 	}
 
@@ -127,11 +146,35 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	if orderedExpr != nil {
 		if fw, isFetch := orderedExpr.(*physicalFetchFromPartialRecordWrapper); isFetch && isFullRangeFetch(fw) {
 			// Skip — InMemorySort(FullScan) is cheaper than Fetch(IndexScan(full-range)).
-		} else if ppe, ok := orderedExpr.(physicalPlanExpression); ok {
-			orderedInnerPlan := ppe.GetRecordQueryPlan()
-			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(orderedInnerPlan, groupingKeys, gb.GetAggregates())
-			orderedQ := expressions.ForEachQuantifier(call.MemoizeExpression(orderedExpr))
-			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, orderedQ))
+		} else if _, ok := orderedExpr.(physicalPlanExpression); ok {
+			// PIN the whole ordering SPINE, not just the top expression: the
+			// grouping-key ordering is a CORRECTNESS precondition of
+			// streaming aggregation, and an order-PRESERVING delegator
+			// (Fetch/Filter) reports its ordering from SOME member of its
+			// source group while extraction's generic rebuild relinks that
+			// group to its winner — a cheaper UNORDERED sibling would put
+			// equal keys in separate runs and silently split groups.
+			// pinOrderedSpine bakes each delegation level to its cheapest
+			// satisfying member as a FinalOf singleton and verifies the pin
+			// reached the EXECUTABLE plan; a non-delegator passes through
+			// unchanged. Java bakes the concrete ordered child at rule time
+			// (memoizePlan); this is that discipline extended through the
+			// delegation spine. Declining (nil) keeps the InMemorySort
+			// alternative, which is always order-correct.
+			parts := make([]RequestedOrderingPart, len(groupingKeys))
+			for i, gk := range groupingKeys {
+				// Streaming aggregation needs equal keys ADJACENT — any
+				// consistent per-key direction works, matching the
+				// direction-agnostic admission above.
+				parts[i] = RequestedOrderingPart{Value: gk, SortOrder: RequestedSortOrderAny}
+			}
+			groupReq := NewRequestedOrdering(parts, DistinctnessPreserveDistinctness, false)
+			pinned := pinOrderedSpine(orderedExpr, groupReq, call.CostModel())
+			if pinnedPE, isPE := pinned.(physicalPlanExpression); pinned != nil && isPE {
+				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(pinnedPE.GetRecordQueryPlan(), groupingKeys, gb.GetAggregates())
+				orderedQ := expressions.ForEachQuantifier(expressions.FinalOf(pinned))
+				call.Yield(newPhysicalStreamingAggWrapper(aggPlan, orderedQ))
+			}
 		}
 	}
 }

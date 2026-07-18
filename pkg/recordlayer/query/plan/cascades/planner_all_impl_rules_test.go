@@ -11,12 +11,14 @@ import (
 func TestAllImplRules_DefaultListHas7Rules(t *testing.T) {
 	t.Parallel()
 	rules := DefaultImplementationRules()
-	// 15 ordering-push + 4 referenced-fields-push + 9 Java-ported + 12 fetch-push-through
+	// 15 ordering-push + 4 referenced-fields-push + 9 Java-ported + 13 fetch-push-through
+	// (the ordered merge-sort union joined the set-op-through-fetch
+	// family — Java PlanningRuleSet.java:158's UnionOnValues arm)
 	// + 1 vector limit-fold (SinkLimitIntoVectorScanRule, RFC-156 Phase B)
-	// + 1 Go extension (ImplementInMemorySortRule) = 42
+	// + 1 Go extension (ImplementInMemorySortRule) = 43
 	// Rules yield into Members.
-	if len(rules) != 42 {
-		t.Fatalf("expected 42 implementation rules, got %d", len(rules))
+	if len(rules) != 43 {
+		t.Fatalf("expected 43 implementation rules, got %d", len(rules))
 	}
 }
 

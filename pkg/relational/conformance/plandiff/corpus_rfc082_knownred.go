@@ -17,8 +17,9 @@ package plandiff
 // When the list reaches empty, the gate is a plain all-green gate.
 var rfc082KnownRed = map[string]bool{
 	// Go-too-lenient (withheld from annotation — fix-or-accept; reviewers):
+	// type_mismatch_boolean_eq_int removed: the plan-time promotion gate
+	// rejects bool = int with Java's 42804 — cross-engine equivalent.
 	"agg_in_where_rejected":        true, // WHERE COUNT(*)>0 accepted; should reject
-	"type_mismatch_boolean_eq_int": true, // bool = int returns empty; should reject
 	"cast_bigint_to_boolean_probe": true, // Go allows a cast Java disallows
 	// CAST edge cases (Go vs Java error/behaviour on overflow / malformed strings):
 	"cast_bigint_to_integer_overflow":               true,
@@ -30,12 +31,11 @@ var rfc082KnownRed = map[string]bool{
 	// nested_derived_col_rename removed: the RFC-141 R4 projected-EXISTS fold's
 	// column metadata/alias-provenance unification fixed the derived-column
 	// rename so Go now matches Java cross-engine (RFC-082 lock shrinks).
-	"greatest_all_nonnull":     true, // integer literal -> BIGINT vs Java INTEGER
-	"greatest_null_propagates": true,
-	"least_all_nonnull":        true,
-	"least_null_propagates":    true,
-	"proj_literal_column":      true,
-	"select_count_alias":       true, // COUNT(*) AS cnt drops the alias
+	// The GREATEST/LEAST family and proj_literal_column removed: integer
+	// literals now narrow to INTEGER like Java ParseHelpers.parseDecimal,
+	// so literal-bearing result types match cross-engine (RFC-082 lock
+	// shrinks).
+	"select_count_alias": true, // COUNT(*) AS cnt drops the alias
 	// "recursive_cte_depth_counter" was REMOVED (the lock shrank): the recursive
 	// leg's computed column (SELECT n + 1) silently stalled recursion one level
 	// early (count 2 instead of Java's 10) because the normalization wrap read

@@ -1,6 +1,7 @@
 package values
 
 import (
+	"bytes"
 	"errors"
 	"math"
 	"testing"
@@ -308,18 +309,41 @@ func TestCastValue(t *testing.T) {
 		t.Fatalf("false→int: got %v", got)
 	}
 
-	// int → bool: 0=false, non-zero=true.
-	intToBool := NewCastValue(&ConstantValue{Value: int64(0), Typ: TypeInt}, TypeBool)
+	// INT → bool: 0=false, non-zero=true (Java INT_TO_BOOLEAN — the
+	// genuine 32-bit type; TypeInt is the LONG alias, which REJECTS).
+	intToBool := NewCastValue(&ConstantValue{Value: int64(0), Typ: NullableInt}, TypeBool)
 	got, errEv6 := intToBool.Evaluate(nil)
 	require.NoError(t, errEv6)
 	if got != false {
 		t.Fatalf("0→bool: got %v", got)
 	}
-	intToBool = NewCastValue(&ConstantValue{Value: int64(7), Typ: TypeInt}, TypeBool)
+	intToBool = NewCastValue(&ConstantValue{Value: int64(7), Typ: NullableInt}, TypeBool)
 	got, errEv7 := intToBool.Evaluate(nil)
 	require.NoError(t, errEv7)
 	if got != true {
 		t.Fatalf("7→bool: got %v", got)
+	}
+	// LONG → bool has NO Java cast pair (CastValue.java's table defines
+	// INT_TO_BOOLEAN only; missing pairs fail "No cast defined") — the
+	// lenient arm silently converting BIGINT was the RFC-082
+	// "Go-too-lenient" suspect, now resolved by rejecting like Java.
+	longToBool := NewCastValue(&ConstantValue{Value: int64(7), Typ: NullableLong}, TypeBool)
+	if _, err := longToBool.Evaluate(nil); err == nil {
+		t.Fatal("LONG→BOOLEAN must reject (no Java cast pair)")
+	}
+	// DOUBLE → bool likewise.
+	dblToBool := NewCastValue(&ConstantValue{Value: float64(1), Typ: NullableDouble}, TypeBool)
+	if _, err := dblToBool.Evaluate(nil); err == nil {
+		t.Fatal("DOUBLE→BOOLEAN must reject (no Java cast pair)")
+	}
+	// An UNKNOWN-typed child keeps the conversion (internal untyped
+	// expressions; SQL columns carry real widths since the catalog
+	// split).
+	unkToBool := NewCastValue(&ConstantValue{Value: int64(7), Typ: UnknownType}, TypeBool)
+	got, errEv7b := unkToBool.Evaluate(nil)
+	require.NoError(t, errEv7b)
+	if got != true {
+		t.Fatalf("unknown-typed 7→bool: got %v", got)
 	}
 
 	// NULL propagates.
@@ -351,18 +375,18 @@ func TestCastValue(t *testing.T) {
 	if got != int64(-4) {
 		t.Fatalf("-3.9→int: got %v, want -4", got)
 	}
-	// float → bool: 0.0 = false, non-zero = true
+	// DOUBLE/FLOAT → bool REJECT (no Java cast pair — TypeFloat is the
+	// DOUBLE alias); only an UNKNOWN-typed float child keeps the legacy
+	// conversion for internal untyped expressions.
 	floatToBool0 := NewCastValue(&ConstantValue{Value: float64(0), Typ: TypeFloat}, TypeBool)
-	got, errEv12 := floatToBool0.Evaluate(nil)
-	require.NoError(t, errEv12)
-	if got != false {
-		t.Fatalf("0.0→bool: got %v", got)
+	if _, err := floatToBool0.Evaluate(nil); err == nil {
+		t.Fatal("DOUBLE→BOOLEAN must reject (no Java cast pair)")
 	}
-	floatToBoolNZ := NewCastValue(&ConstantValue{Value: float64(0.5), Typ: TypeFloat}, TypeBool)
-	got, errEv13 := floatToBoolNZ.Evaluate(nil)
+	unkFloatToBool := NewCastValue(&ConstantValue{Value: float64(0.5), Typ: UnknownType}, TypeBool)
+	got, errEv13 := unkFloatToBool.Evaluate(nil)
 	require.NoError(t, errEv13)
 	if got != true {
-		t.Fatalf("0.5→bool: got %v", got)
+		t.Fatalf("unknown-typed 0.5→bool: got %v", got)
 	}
 	// float → string
 	floatToStr := NewCastValue(&ConstantValue{Value: float64(3.14), Typ: TypeFloat}, TypeString)
@@ -1803,4 +1827,78 @@ type testCorrelationBinder struct {
 func (b *testCorrelationBinder) GetCorrelationBinding(id CorrelationIdentifier) (any, bool) {
 	v, ok := b.bindings[id]
 	return v, ok
+}
+
+// TestCastPairDefined_ByteStringLandmines pins the castPairs admission
+// table against the evaluator: STRING↔BYTES has NO Java castOperatorMap
+// row, so the plan-time gate must reject both directions — only the
+// identity BYTES→BYTES cast is legal. The two admitted Go extensions
+// (UUID→STRING, ENUM→STRING) DO have runtime arms and stay admitted.
+func TestCastPairDefined_ByteStringLandmines(t *testing.T) {
+	t.Parallel()
+	if CastPairDefined(TypeCodeString, TypeCodeBytes) {
+		t.Fatal("STRING→BYTES must NOT be admitted: no Java row")
+	}
+	if CastPairDefined(TypeCodeBytes, TypeCodeString) {
+		t.Fatal("BYTES→STRING must NOT be admitted: no Java row")
+	}
+	if !CastPairDefined(TypeCodeUuid, TypeCodeString) {
+		t.Fatal("UUID→STRING is a documented Go extension with a runtime arm")
+	}
+	if !CastPairDefined(TypeCodeEnum, TypeCodeString) {
+		t.Fatal("ENUM→STRING is a documented Go extension with a runtime arm")
+	}
+	// The BYTES target has a typed evaluator arm: a non-[]byte reaching
+	// runtime (an unknown-typed child bypassed the plan-time gate) is a
+	// typed InvalidCastError — never the silent-NULL fall-through the
+	// unhandled-target tail would produce.
+	mine := NewCastValue(&ConstantValue{Value: "abc", Typ: NullableString}, NewPrimitiveType(TypeCodeBytes, true))
+	got, err := mine.Evaluate(nil)
+	var castErr *InvalidCastError
+	if !errors.As(err, &castErr) || got != nil {
+		t.Fatalf("STRING→BYTES at runtime = (%v, %v), want typed InvalidCastError", got, err)
+	}
+	// Identity BYTES→BYTES passes the gate (from == to) and evaluates.
+	id := NewCastValue(&ConstantValue{Value: []byte{0x01, 0x02}, Typ: NullableBytes}, NewPrimitiveType(TypeCodeBytes, true))
+	got, err = id.Evaluate(nil)
+	if err != nil || !bytes.Equal(got.([]byte), []byte{0x01, 0x02}) {
+		t.Fatalf("identity BYTES→BYTES = (%v, %v), want the value through", got, err)
+	}
+}
+
+// TestCastValue_FloatToString_JavaContract pins the STRING-target float
+// rendering to Java's operator rows: DOUBLE_TO_STRING is Double.toString
+// (decimal iff 1e-3 <= |v| < 1e7, else scientific with ".0"-completed
+// mantissa and unpadded exponent), FLOAT_TO_STRING is Float.toString on
+// the 32-bit value. Go's FormatFloat 'g' diverges in both scientific
+// zones (boundary at 1e6 vs 1e7; zero-padded "1e+07" exponents), so the
+// arm must route through javaFloatString with static-type dispatch.
+func TestCastValue_FloatToString_JavaContract(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   float64
+		typ  Type
+		want string
+	}{
+		{1e7, NullableDouble, "1.0E7"},
+		{1e6, NullableDouble, "1000000.0"},
+		{1e-4, NullableDouble, "1.0E-4"},
+		{1e-3, NullableDouble, "0.001"},
+		{-2.5e8, NullableDouble, "-2.5E8"},
+		{0.5, NullableDouble, "0.5"},
+		// FLOAT dispatches on the child's static type: the value is
+		// rendered through the 32-bit Float.toString contract.
+		{float64(float32(0.1)), NullableFloat, "0.1"},
+		{1e7, NullableFloat, "1.0E7"},
+	}
+	for _, tc := range cases {
+		cv := NewCastValue(&ConstantValue{Value: tc.in, Typ: tc.typ}, TypeString)
+		got, err := cv.Evaluate(nil)
+		if err != nil {
+			t.Fatalf("CAST(%v %v AS STRING): %v", tc.in, tc.typ, err)
+		}
+		if got != tc.want {
+			t.Errorf("CAST(%v %v AS STRING): got %q, want %q", tc.in, tc.typ, got, tc.want)
+		}
+	}
 }

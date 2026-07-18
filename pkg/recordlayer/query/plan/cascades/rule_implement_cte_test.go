@@ -700,30 +700,42 @@ func TestImplementRecursiveLevelUnion_PlanOutput(t *testing.T) {
 func TestImplementRecursiveLevelUnion_BothRulesFire_TraversalAny(t *testing.T) {
 	t.Parallel()
 
-	topRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalAny)
+	// FORMATION (both alternatives): fire the two implementation rules
+	// directly on a prepared TraversalAny tree — BOTH must yield. The
+	// full-planner run below can no longer show both alternatives at
+	// once: physical yields land ONLY in FinalMembers and OptimizeGroup
+	// prunes finals to the winner (Java's prune-to-1), so the losing
+	// alternative is not visible in AllMembers() after Plan().
+	topRef, isr, ir, rsr, rr := buildLevelUnionTree(expressions.TraversalAny)
+	implementInnerCTEPlans(isr, ir, rsr, rr)
+	levelYields := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	if len(levelYields) != 1 || !IsPhysicalRecursiveLevelUnion(levelYields[0]) {
+		t.Fatalf("TraversalAny: ImplementRecursiveLevelUnionRule must yield the LevelUnion alternative; got %d yields", len(levelYields))
+	}
+	dfsYields := FireExpressionRule(NewImplementRecursiveDfsJoinRule(), topRef)
+	if len(dfsYields) != 1 || !IsPhysicalRecursiveDfsJoin(dfsYields[0]) {
+		t.Fatalf("TraversalAny: ImplementRecursiveDfsJoinRule must yield the DFS alternative; got %d yields", len(dfsYields))
+	}
+
+	// WINNER: the full planner keeps exactly one of the two alternatives.
+	planRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalAny)
 
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, EmptyPlanContext()).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
-	if _, _, err := p.Plan(topRef); err != nil {
+	if _, _, err := p.Plan(planRef); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	foundDfs := false
-	foundLevel := false
-	for _, m := range topRef.AllMembers() {
-		if IsPhysicalRecursiveDfsJoin(m) {
-			foundDfs = true
-		}
-		if IsPhysicalRecursiveLevelUnion(m) {
-			foundLevel = true
+	foundImpl := false
+	for _, m := range planRef.AllMembers() {
+		if IsPhysicalRecursiveDfsJoin(m) || IsPhysicalRecursiveLevelUnion(m) {
+			foundImpl = true
+			break
 		}
 	}
-	if !foundDfs {
-		t.Fatal("TraversalAny should produce a DFS alternative")
-	}
-	if !foundLevel {
-		t.Fatal("TraversalAny should produce a LevelUnion alternative")
+	if !foundImpl {
+		t.Fatal("TraversalAny should keep a physical recursive-union winner (DFS join or LevelUnion), found neither")
 	}
 }

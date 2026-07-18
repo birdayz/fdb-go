@@ -55,9 +55,19 @@ func (c *dataAccessTestCandidate) ToScanPlan(
 // testPlan is a minimal RecordQueryPlan for tests.
 type testPlan struct {
 	name string
+	// resultType lets fixtures flow a real row layout (production match
+	// candidates always do) — the intersector's comparison-key baking
+	// declines candidates whose layout is unknown, so intersector tests
+	// must carry one. Zero value keeps UnknownType for everything else.
+	resultType values.Type
 }
 
-func (p *testPlan) GetResultType() values.Type           { return values.UnknownType }
+func (p *testPlan) GetResultType() values.Type {
+	if p.resultType != nil {
+		return p.resultType
+	}
+	return values.UnknownType
+}
 func (p *testPlan) GetChildren() []plans.RecordQueryPlan { return nil }
 func (p *testPlan) EqualsWithoutChildren(other plans.RecordQueryPlan) bool {
 	o, ok := other.(*testPlan)
@@ -118,6 +128,13 @@ var _ PartialMatch = (*testPartialMatch)(nil)
 // makeDataAccessTestPartialMatch creates a test PartialMatch with the given
 // number of matched ordering parts (used as a proxy for coverage).
 func makeDataAccessTestPartialMatch(name string, numParts int, plan plans.RecordQueryPlan) *testPartialMatch {
+	return makeDataAccessTestPartialMatchWithPK(name, numParts, plan, "ID")
+}
+
+// makeDataAccessTestPartialMatchWithPK is the composite-pk variant: the
+// matched ordering continues into the given pk suffix fields in order
+// (real candidates append the whole trimmed pk, not just its head).
+func makeDataAccessTestPartialMatchWithPK(name string, numParts int, plan plans.RecordQueryPlan, pkFields ...string) *testPartialMatch {
 	// Build a RESTRICTED match: each part's sargable alias is bound to a
 	// non-empty equality range so hasRestrictedScan(pm) is true. The
 	// data-access path now skips zero-prefix matches (a full index scan
@@ -143,6 +160,20 @@ func makeDataAccessTestPartialMatch(name string, numParts int, plan plans.Record
 			MatchedSortOrderAscending,
 		)
 		paramBindings[pid] = eqRange
+	}
+
+	// Real candidates continue the matched ordering into the trimmed
+	// primary-key suffix (ComputeMatchedOrderingParts) — the fixture must
+	// model that, or the pk-monotonicity gate (accessCompatibleWithPKMerge)
+	// would see an index with no pk continuation and decline every
+	// intersection the tests build.
+	for _, pkField := range pkFields {
+		parts = append(parts, NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			&values.FieldValue{Field: pkField, Typ: values.UnknownType},
+			nil,
+			MatchedSortOrderAscending,
+		))
 	}
 
 	candidate := &dataAccessTestCandidate{

@@ -191,3 +191,47 @@ func TestConstraintMap_CanonicalKeys(t *testing.T) {
 		t.Fatalf("constraint set via the forwarded alias must be visible via the canonical ref (ok=%v)", ok)
 	}
 }
+
+// TestSet_PushPropertySemantics pins the WS-P stage-(b) Set contract:
+// the per-key lattice combine decides — growth stores the union and
+// ticks the epoch, an unchanged re-push is subsumed (no store, no
+// tick), and a shared child's accumulated referenced fields are
+// UNIONED, never clobbered by a second parent's overwrite.
+func TestSet_PushPropertySemantics(t *testing.T) {
+	t.Parallel()
+	cm := NewConstraintMap()
+	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
+
+	a := NewReferencedFields(map[string]struct{}{"A": {}})
+	b := NewReferencedFields(map[string]struct{}{"B": {}})
+
+	Set(cm, ref, ReferencedFieldsConstraintKey, a)
+	tickAfterFirst := ref.ConstraintsMap().CurrentTick()
+	if tickAfterFirst != 1 {
+		t.Fatalf("first push ticks once, got %d", tickAfterFirst)
+	}
+
+	// Second parent pushes a DIFFERENT set: union, not clobber.
+	Set(cm, ref, ReferencedFieldsConstraintKey, b)
+	got, ok := Get(cm, ref, ReferencedFieldsConstraintKey)
+	if !ok || !got.Contains("A") || !got.Contains("B") {
+		t.Fatalf("shared-child push must UNION, got %v", got.Fields())
+	}
+	if tick := ref.ConstraintsMap().CurrentTick(); tick != 2 {
+		t.Fatalf("growing push ticks, got %d", tick)
+	}
+
+	// Unchanged re-push (a rule re-fire): subsumed — no tick.
+	Set(cm, ref, ReferencedFieldsConstraintKey, a)
+	if tick := ref.ConstraintsMap().CurrentTick(); tick != 2 {
+		t.Fatalf("subsumed re-push must NOT tick, got %d", tick)
+	}
+
+	// CombineReferencedFields arms directly.
+	if _, changed := CombineReferencedFields(got, EmptyReferencedFields()); changed {
+		t.Fatal("empty push is subsumed")
+	}
+	if u, changed := CombineReferencedFields(nil, a); !changed || !u.Contains("A") {
+		t.Fatal("push onto empty stores the push")
+	}
+}

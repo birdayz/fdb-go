@@ -4,6 +4,7 @@ go_library(
     name = "expressions",
     srcs = [
         "alias_map.go",
+        "constraints_map.go",
         "delete.go",
         "explode.go",
         "expression.go",
@@ -46,6 +47,7 @@ go_test(
     srcs = [
         "alias_map_test.go",
         "benchmark_test.go",
+        "constraints_map_test.go",
         "correlation_test.go",
         "cte_expressions_test.go",
         "dml_test.go",

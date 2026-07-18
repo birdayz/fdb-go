@@ -16,22 +16,25 @@ import (
 // still surface is pinned by TestEvaluateConstant_ProgrammerInvariantPanicSurfaces.
 
 // TestEvaluateConstant_TypeMismatch_DeclinesToFold pins the EvaluateConstant
-// swallow path: `5 + 'abc'` is a constant tree (IsConstantValue == true)
+// swallow path: `5 + true` is a constant tree (IsConstantValue == true)
 // whose Evaluate raises a *ScalarTypeMismatchError. EvaluateConstant must
 // return (nil, false) — decline — not crash or surface the error.
+// (The old `5 + 'abc'` fixture stopped erroring when the Java ADD string
+// family landed — number + string CONCATENATES per ArithmeticValue.java
+// ADD_IS, so it now folds to "5abc".)
 func TestEvaluateConstant_TypeMismatch_DeclinesToFold(t *testing.T) {
 	t.Parallel()
 	v := &ArithmeticValue{
 		Op:    OpAdd,
 		Left:  &ConstantValue{Value: int64(5), Typ: TypeInt},
-		Right: &ConstantValue{Value: "abc", Typ: TypeString},
+		Right: &ConstantValue{Value: true, Typ: TypeBool},
 	}
 	if !IsConstantValue(v) {
-		t.Fatalf("precondition: 5 + 'abc' should be a constant tree so the fold path is exercised")
+		t.Fatalf("precondition: 5 + true should be a constant tree so the fold path is exercised")
 	}
 	out, ok := EvaluateConstant(v)
 	if ok || out != nil {
-		t.Fatalf("EvaluateConstant(5 + 'abc'): got (%v, %v), want (nil, false) — decline-to-fold", out, ok)
+		t.Fatalf("EvaluateConstant(5 + true): got (%v, %v), want (nil, false) — decline-to-fold", out, ok)
 	}
 }
 

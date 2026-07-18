@@ -23,8 +23,7 @@ import (
 //
 //   applyArithmeticOp   map-path arithmetic wrapper over
 //                       functions.ApplyMathOp (int64 preservation,
-//                       div/0 errors, `%` support — single path
-//                       shared by proto + map evaluators).
+//                       div/0 errors, `%` support).
 //   substituteParams    positional `?` placeholder substitution
 //                       (nil → NULL, bool → TRUE/FALSE, int64,
 //                       float64, string with quote escaping,
@@ -47,9 +46,9 @@ import (
 // Destined for pkg/relational/core/{functions,eval}/ per RFC 021
 // Phase 1c.
 
-// applyArithmeticOp is the map-path arithmetic entry. It delegates to the
-// canonical `applyMathOp` so proto and map paths stay behaviourally identical
-// (div/0 errors per SQL standard, int64 preservation, `%` support).
+// applyArithmeticOp is the map-path arithmetic entry, delegating to
+// functions.ApplyMathOp (div/0 errors per SQL standard, int64
+// preservation, `%` support).
 func applyArithmeticOp(left, right driver.Value, op string) (driver.Value, error) {
 	return functions.ApplyMathOp(left, right, op)
 }

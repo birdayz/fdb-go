@@ -672,6 +672,7 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 	var cols []metadata.ColumnSpec
 	var pkCols []string
 	seen := make(map[string]bool)
+	foldedSeen := make(map[string]string)
 
 	for i, colDef := range td.AllColumnDefinition() {
 		colName := functions.StripIdentifierQuotes(colDef.Uid().GetText())
@@ -683,6 +684,17 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 				"duplicate column name %q in table definition", colName)
 		}
 		seen[colName] = true
+		// CASE-COLLIDING quoted names ("x" alongside X) are legitimately
+		// distinct columns in Java, but Go's positional row layout folds
+		// identifiers to upper case (PositionalTypeForDescriptor), so the
+		// collision would panic deep in planning. Until the layout is
+		// case-preserving (WS-N Phase D), reject the schema loudly at
+		// CREATE instead of failing as XX000 on the first statement.
+		if prev, dup := foldedSeen[strings.ToUpper(colName)]; dup {
+			return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"column names %q and %q collide case-insensitively — the positional row layout folds identifiers, so case-colliding quoted columns are not supported", prev, colName)
+		}
+		foldedSeen[strings.ToUpper(colName)] = colName
 		ct := colDef.ColumnType()
 		if ct == nil {
 			return nil, nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,

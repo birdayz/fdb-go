@@ -108,16 +108,16 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 	r := expr.New(a, s)
 
 	cases := map[string]values.Type{
-		"i":     values.TypeInt,
-		"ii":    values.TypeInt,    // INTEGER is a synonym for INT, never UNKNOWN
-		"inn":   values.NotNullInt, // "INT NOT NULL" → non-null INT (unnest ordinal)
-		"intnn": values.NotNullInt, // "INTEGER NOT NULL" → non-null INT
+		"i":     values.NullableInt, // INT is a genuine 32-bit type (Java Type.TypeCode.INT), not the LONG the old alias erased it to
+		"ii":    values.NullableInt, // INTEGER is a synonym for INT, never UNKNOWN
+		"inn":   values.NotNullInt,  // "INT NOT NULL" → non-null INT (unnest ordinal)
+		"intnn": values.NotNullInt,  // "INTEGER NOT NULL" → non-null INT
 		"s":     values.TypeString,
 		"e":     values.TypeString,
 		"b":     values.TypeBool,
-		"f":     values.NullableDouble, // FLOAT/DOUBLE → seed double type (RFC-146: so a bare WHERE rejects 42804)
-		"by":    values.NullableBytes,  // BYTES → seed bytes type
-		"rec":   values.TypeUnknown,    // no struct/record type yet
+		"f":     values.NullableFloat, // FLOAT is a genuine 32-bit type; DOUBLE seeds NullableDouble (both still reject a bare WHERE with 42804)
+		"by":    values.NullableBytes, // BYTES → seed bytes type
+		"rec":   values.TypeUnknown,   // no struct/record type yet
 	}
 	for col, want := range cases {
 		v, err := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(col))
@@ -156,9 +156,13 @@ func TestResolver_ResolveConstant(t *testing.T) {
 		lit  any
 		want values.Type
 	}{
-		{"int64", int64(42), values.TypeInt},
-		{"int", 42, values.TypeInt},
-		{"int32", int32(42), values.TypeInt},
+		// In-range integer literals narrow to INT, out-of-range stay
+		// LONG (Java ParseHelpers.parseDecimal / Math.toIntExact).
+		{"int64", int64(42), values.NullableInt},
+		{"int64_wide", int64(3_000_000_000), values.NullableLong},
+		{"int64_negwide", int64(-3_000_000_000), values.NullableLong},
+		{"int", 42, values.NullableInt},
+		{"int32", int32(42), values.NullableInt},
 		{"string", "hello", values.TypeString},
 		{"true", true, values.TypeBool},
 		{"false", false, values.TypeBool},
@@ -305,8 +309,12 @@ func TestResolver_ResolveComparison_NonConstantRHS(t *testing.T) {
 	a, s := buildScope(t)
 	r := expr.New(a, s)
 
+	// A TYPE-compatible pair (INT vs INT): the old id-vs-name fixture
+	// (INT vs STRING) now correctly rejects 42804 at plan time (the
+	// promotion gate) — this test pins the STRUCTURAL property that a
+	// non-constant RHS is preserved as the comparison operand.
 	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
-	rhs, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
+	rhs, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
 	pred, err := r.ResolveComparison(predicates.ComparisonEquals, left, rhs)
 	if err != nil {
 		t.Fatalf("ResolveComparison: %v", err)
@@ -819,4 +827,111 @@ func TestResolver_ResolveComparison_PromotesUuidComparand(t *testing.T) {
 	if _, isPromote := cp.Comparison.Operand.(*values.PromoteValue); isPromote {
 		t.Fatalf("uuid=uuid comparand should NOT be promoted, got %T", cp.Comparison.Operand)
 	}
+}
+
+// TestResolveIdentifier_BornBaked pins WS-N Phase A slice 2: every
+// resolution binds a plan-time ordinal (Resolved != nil on the
+// FieldValue) — the lazy fallbacks are retired, and a source that
+// cannot bind one errors LOUDLY at plan time instead of minting a node
+// that dies at runtime (or reads by name). Verified dead-in-effect
+// across the yamsql, embedded, and full FDB driver suites before
+// retirement.
+func TestResolveIdentifier_BornBaked(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	v, err := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	fv, ok := v.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("expected *FieldValue, got %T", v)
+	}
+	if fv.Resolved == nil {
+		t.Fatal("resolution must be BORN BAKED (Resolved != nil)")
+	}
+
+	// A source that RESOLVES the column but declares no column order
+	// (LookupColumn answers, Columns() is empty — the shape of an empty
+	// derived-table catalog with a computed alias) cannot bind a
+	// plan-time ordinal. Both resolution arms must fail LOUDLY, never
+	// mint a lazy node that reads by name.
+	ghost := &orderlessTable{
+		name: semantic.ParseQualifiedName("GHOSTCAT", false),
+		cols: map[string]semantic.Column{
+			"GHOST": {Id: semantic.NewUnquoted("ghost"), Type: "STRING", Nullable: true},
+		},
+	}
+	cat := semantic.NewInMemoryCatalog()
+	a2 := semantic.NewAnalyzer(cat, false)
+
+	// LOCAL arm: the bare reference binds to the orderless source in the
+	// local scope.
+	s2 := semantic.NewScope(nil)
+	if err := s2.AddSource(semantic.ScopeSource{
+		Table: ghost, Alias: semantic.NewUnquoted("g"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r2 := expr.New(a2, s2)
+	_, err = r2.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("ghost"))
+	var unres *expr.UnresolvableOrdinalError
+	if !errors.As(err, &unres) {
+		t.Fatalf("local arm: want UnresolvableOrdinalError, got %v", err)
+	}
+	if unres.Field != "GHOST" {
+		t.Fatalf("local arm Field: got %q, want GHOST", unres.Field)
+	}
+
+	// CORRELATED arm: the bare reference falls through to a PARENT-scope
+	// orderless source (needsQualification via the local scope's own
+	// source not answering), reaching the correlated ordinal bind.
+	parent := semantic.NewScope(nil)
+	if err := parent.AddSource(semantic.ScopeSource{
+		Table: ghost, Alias: semantic.NewUnquoted("g"), CorrelationName: "gq",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	child := semantic.NewScope(parent)
+	users2 := &semantic.StaticTable{
+		TableName: semantic.ParseQualifiedName("USERS", false),
+		TableColumns: []semantic.Column{
+			{Id: semantic.NewUnquoted("id"), Type: "INT"},
+		},
+	}
+	if err := child.AddSource(semantic.ScopeSource{
+		Table: users2, Alias: semantic.NewUnquoted("u"), CorrelationName: "uq",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r3 := expr.New(a2, child)
+	_, err = r3.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("ghost"))
+	unres = nil
+	if !errors.As(err, &unres) {
+		t.Fatalf("correlated arm: want UnresolvableOrdinalError, got %v", err)
+	}
+	// AddSource canonicalizes CorrelationName to the UPPER runtime
+	// correlation-key namespace.
+	if unres.Source != "GQ" {
+		t.Fatalf("correlated arm Source: got %q, want GQ", unres.Source)
+	}
+}
+
+// orderlessTable resolves columns by name but declares NO column order —
+// LookupColumn answers while Columns() is empty. This is the shape that
+// makes a plan-time ordinal unbindable (StaticTable can't model it: its
+// lookup IS its column list).
+type orderlessTable struct {
+	name semantic.QualifiedName
+	cols map[string]semantic.Column
+}
+
+func (o *orderlessTable) Name() semantic.QualifiedName { return o.name }
+func (o *orderlessTable) Columns() []semantic.Column   { return []semantic.Column{} }
+func (o *orderlessTable) Indexes() []string            { return nil }
+func (o *orderlessTable) LookupColumn(id semantic.Identifier) (semantic.Column, bool) {
+	c, ok := o.cols[id.Name()]
+	return c, ok
 }

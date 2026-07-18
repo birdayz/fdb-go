@@ -27,6 +27,22 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 		}
 
 		pkValues := commonPrimaryKeyValues(accesses, ctx)
+		if len(pkValues) == 0 {
+			return NoViableIntersection()
+		}
+		// RFC-181 P0.1: only PK-monotone legs may feed the strict pk-sorted
+		// merge; a single incompatible access disqualifies itself (the
+		// remaining pairs still form below).
+		compatible := accesses[:0:0]
+		for _, a := range accesses {
+			if accessCompatibleWithPKMerge(a.Value, pkValues) {
+				compatible = append(compatible, a)
+			}
+		}
+		accesses = compatible
+		if len(accesses) < 2 {
+			return NoViableIntersection()
+		}
 
 		var resultExprs []expressions.RelationalExpression
 
@@ -35,7 +51,13 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 				ai := accesses[i].Value
 				aj := accesses[j].Value
 
-				if ai.GetPartialMatch().GetMatchCandidate() == aj.GetPartialMatch().GetMatchCandidate() {
+				// SAME-INDEX guard by candidate NAME, not object identity:
+				// the context can hold two candidate objects for one index
+				// (and epoch-driven re-matching seeds both), and an
+				// intersection of an index with itself is the same row set
+				// twice — a nonsensical self-intersection.
+				if ai.GetPartialMatch().GetMatchCandidate().CandidateName() ==
+					aj.GetPartialMatch().GetMatchCandidate().CandidateName() {
 					continue
 				}
 
@@ -45,8 +67,12 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 					continue
 				}
 
+				bakedKeys := bakedIntersectionKeys(pkValues, []plans.RecordQueryPlan{planI, planJ})
+				if bakedKeys == nil {
+					continue
+				}
 				intersectionPlan := plans.NewRecordQueryIntersectionPlan(
-					[]plans.RecordQueryPlan{planI, planJ}, pkValues)
+					[]plans.RecordQueryPlan{planI, planJ}, bakedKeys)
 
 				exprI := wrapAccessScan(ai, planI)
 				exprJ := wrapAccessScan(aj, planJ)
@@ -70,10 +96,14 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 						aj := accesses[j].Value
 						ak := accesses[k].Value
 
-						ci := ai.GetPartialMatch().GetMatchCandidate()
-						cj := aj.GetPartialMatch().GetMatchCandidate()
-						ck := ak.GetPartialMatch().GetMatchCandidate()
-						if ci == cj || ci == ck || cj == ck {
+						// Same NAME-based guard as the pair loop: the context
+						// can hold two candidate OBJECTS for one index, so
+						// object identity under-detects and an A/A/B triple
+						// would keep the redundant same-index arm.
+						ni := ai.GetPartialMatch().GetMatchCandidate().CandidateName()
+						nj := aj.GetPartialMatch().GetMatchCandidate().CandidateName()
+						nk := ak.GetPartialMatch().GetMatchCandidate().CandidateName()
+						if ni == nj || ni == nk || nj == nk {
 							continue
 						}
 
@@ -84,8 +114,12 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 							continue
 						}
 
+						bakedKeys := bakedIntersectionKeys(pkValues, []plans.RecordQueryPlan{planI, planJ, planK})
+						if bakedKeys == nil {
+							continue
+						}
 						intersectionPlan := plans.NewRecordQueryIntersectionPlan(
-							[]plans.RecordQueryPlan{planI, planJ, planK}, pkValues)
+							[]plans.RecordQueryPlan{planI, planJ, planK}, bakedKeys)
 
 						exprI := wrapAccessScan(ai, planI)
 						exprJ := wrapAccessScan(aj, planJ)
@@ -149,6 +183,100 @@ func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanC
 		}
 	}
 	return result
+}
+
+// bakedIntersectionKeys resolves the name-only pk comparison keys against
+// the legs' flowed row layout. EVERY leg must flow the same RecordType
+// (the commonPrimaryKeyValues gate already pins one record type; the
+// layout check is leg-order-agnostic so a single layout-less leg —
+// whatever its slot — declines the candidate). The ordinal row model has
+// no runtime name-resolution fallback: an unbaked FieldValue fails LOUD
+// at merge time (OrdinalResolutionError), so a comparison key that
+// cannot bake is a plan-time DECLINE of the intersection candidate,
+// never a runtime error. Returns nil when any key stays unbaked.
+func bakedIntersectionKeys(pkValues []values.Value, legs []plans.RecordQueryPlan) []values.Value {
+	var rowType *values.RecordType
+	for _, leg := range legs {
+		rt, isRT := leg.GetResultType().(*values.RecordType)
+		if !isRT {
+			return nil
+		}
+		if rowType == nil {
+			rowType = rt
+			continue
+		}
+		if !rowType.Equals(rt) {
+			return nil
+		}
+	}
+	baked := bakeMergeComparisonKeys(pkValues, nil, rowType)
+	for _, k := range baked {
+		fv, isFV := k.(*values.FieldValue)
+		if !isFV || fv.Resolved == nil {
+			return nil
+		}
+	}
+	return baked
+}
+
+// accessCompatibleWithPKMerge reports whether an access's scan emission is
+// PK-MONOTONIC — the precondition of the strict pk-sorted intersection
+// merge (merge_cursor.go advances non-maximal legs past rows forever, so a
+// non-monotone leg silently DROPS intersection rows). Ports the substance
+// of Java's isCompatibleComparisonKey gate
+// (AbstractDataAccessRule.java:1145-1152 with comparison keys fixed to the
+// common primary key, the only comparison key this intersector builds):
+// walking the leg's matched ordering parts, the FREE (non-equality-bound)
+// sequence must BEGIN with exactly the primary-key values that are not
+// equality-bound in this leg, in pk order, each ascending — an
+// inequality-bound index column (`a > 5`) is a free NON-pk part at the
+// front, exactly the emission (`a, pk`) whose pk sequence interleaves.
+// Trailing free parts beyond the pk are harmless: the pk is a unique key,
+// so once the full free-pk prefix is present the order is already total.
+// Reverse legs decline outright — the executor's merge compares forward
+// (executeIntersection hardcodes reverse=false).
+func accessCompatibleWithPKMerge(access *SingleMatchedAccess, pkValues []values.Value) bool {
+	if access.IsReverseScanOrder() {
+		return false
+	}
+	// Case-FOLDED comparison keys: commonPrimaryKeyValues upper-cases the
+	// pk columns while the candidate's pk-suffix parts carry FieldNames()
+	// verbatim — comparing un-normalized renderings made a lowercase pk
+	// name miss and silently over-decline EVERY intersection. (Rendering-
+	// string identity here is the bridge pattern WS-N Phase C retires;
+	// tolerable now because both sides are same-frame flat FieldValues.)
+	key := func(v values.Value) string { return strings.ToUpper(values.ExplainValue(v)) }
+	parts := access.GetPartialMatch().GetMatchInfo().GetMatchedOrderingParts()
+	equalityBound := make(map[string]struct{})
+	for _, op := range parts {
+		if op.GetComparisonRange().IsEquality() {
+			equalityBound[key(op.GetValue())] = struct{}{}
+		}
+	}
+	var expect []string
+	for _, pv := range pkValues {
+		k := key(pv)
+		if _, bound := equalityBound[k]; !bound {
+			expect = append(expect, k)
+		}
+	}
+	freeIdx := 0
+	for _, op := range parts {
+		if op.GetComparisonRange().IsEquality() {
+			continue
+		}
+		if freeIdx >= len(expect) {
+			break // trailing free parts after the full pk prefix: harmless
+		}
+		if op.GetMatchedSortOrder().IsAnyDescending() {
+			return false
+		}
+		if key(op.GetValue()) != expect[freeIdx] {
+			return false
+		}
+		freeIdx++
+	}
+	return freeIdx == len(expect)
 }
 
 func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {

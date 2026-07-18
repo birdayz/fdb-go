@@ -1,0 +1,49 @@
+# and_index_intersection.yaml — AND over two indexed columns executes
+# as a PK-merge intersection
+#
+# The EXPLAIN pin proves the cross-candidate intersection
+# (WithPrimaryKeyDataAccessRule's Go port) fires for a conjunction over
+# two independently-indexed equality predicates. The row assertions are
+# the regression net for the comparison-key baking: the merge evaluates
+# the PK comparison keys against POSITIONAL rows, which resolve by
+# plan-time-baked ordinal only — unbaked keys made every such query fail
+# with OrdinalResolutionError("ID") at the merge, so a bare
+# `WHERE a = x AND b = y` over two indexes returned an error instead of
+# rows.
+name: and_index_intersection
+schema_template: |
+  CREATE TABLE items (
+    id BIGINT NOT NULL,
+    category STRING,
+    name STRING,
+    price BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_category ON items (category)
+  CREATE INDEX idx_price ON items (price)
+setup:
+  - INSERT INTO items VALUES
+      (1, 'books', 'Go Programming', 45),
+      (2, 'books', 'Algorithms', 60),
+      (3, 'electronics', 'Keyboard', 120),
+      (4, 'electronics', 'Mouse', 30),
+      (5, 'electronics', 'Monitor', 120)
+tests:
+  # Both predicates indexed → intersection of two index scans, merged on
+  # the primary key.
+  - query: SELECT * FROM items WHERE category = 'electronics' AND price = 120
+    plan_contains: "Intersection("
+    unordered: true
+    rows:
+      - [3, electronics, Keyboard, 120]
+      - [5, electronics, Monitor, 120]
+  # Empty intersection: legs individually non-empty, no common PK.
+  - query: SELECT * FROM items WHERE category = 'books' AND price = 120
+    plan_contains: "Intersection("
+    rows: []
+  # One leg unindexed keeps the residual-filter shape and correct rows —
+  # the intersection only forms over genuine index accesses.
+  - query: SELECT id FROM items WHERE category = 'electronics' AND name = 'Mouse'
+    rows:
+      - [4]
+

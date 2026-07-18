@@ -166,6 +166,75 @@ func MaximumCoverageMatches(
 	return result
 }
 
+// equalParameterPrefixMaps compares two bound-parameter prefix maps by
+// alias set and semantically-equal comparison ranges.
+func equalParameterPrefixMaps(a, b map[values.CorrelationIdentifier]*predicates.ComparisonRange) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok {
+			return false
+		}
+		if (av == nil) != (bv == nil) {
+			return false
+		}
+		if av != nil && !comparisonRangesEqual(av, bv) {
+			return false
+		}
+	}
+	return true
+}
+
+// comparisonRangesEqual compares two comparison ranges conservatively:
+// equal only when every comparison matches on type, parameter name, and
+// semantically-equal operand. Unsure means NOT equal (the dedup then
+// keeps both accesses — never drops a genuinely different scan).
+func comparisonRangesEqual(a, b *predicates.ComparisonRange) bool {
+	if a.IsEquality() != b.IsEquality() || a.IsInequality() != b.IsInequality() {
+		return false
+	}
+	if a.IsEmpty() && b.IsEmpty() {
+		return true
+	}
+	var ac, bc []*predicates.Comparison
+	switch {
+	case a.IsEquality():
+		ac = []*predicates.Comparison{a.GetEqualityComparison()}
+		bc = []*predicates.Comparison{b.GetEqualityComparison()}
+	case a.IsInequality():
+		ac = a.GetInequalityComparisons()
+		bc = b.GetInequalityComparisons()
+	default:
+		// Neither equality nor inequality and not both empty — unsure,
+		// so NOT equal (keep both accesses).
+		return false
+	}
+	if len(ac) != len(bc) {
+		return false
+	}
+	for i := range ac {
+		x, y := ac[i], bc[i]
+		if (x == nil) != (y == nil) {
+			return false
+		}
+		if x == nil {
+			continue
+		}
+		if x.Type != y.Type || x.ParameterName != y.ParameterName {
+			return false
+		}
+		if (x.Operand == nil) != (y.Operand == nil) {
+			return false
+		}
+		if x.Operand != nil && !semanticValueEquals(x.Operand, y.Operand) {
+			return false
+		}
+	}
+	return true
+}
+
 // findContainingAccess checks whether `probe` is dominated by another
 // access from the same MatchCandidate in the list. A probe is
 // dominated if another match from the same candidate has strictly more

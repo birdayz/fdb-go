@@ -314,12 +314,27 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	if ref == nil {
 		return nil
 	}
+	// A nil-inner Fetch shell (the extraction template) is never a valid
+	// standalone pick — it only works via a WithChildren relink. Prefer
+	// any VALID physical; fall back to a shell only when nothing else
+	// exists (a sole-template ref that a later relink completes). With
+	// finals-only physical yields the member order changed, and a
+	// first-pick without this guard grabbed a shell ahead of the valid
+	// alternative — the embedded shell plan then reached extraction as
+	// Fetch(<nil>) (the XX000 plan-invariant).
+	var shell plans.RecordQueryPlan
 	for _, m := range ref.AllMembers() {
 		if ph, ok := m.(physicalPlanExpression); ok {
+			if isNilInnerFetch(m) {
+				if shell == nil {
+					shell = ph.GetRecordQueryPlan()
+				}
+				continue
+			}
 			return ph.GetRecordQueryPlan()
 		}
 	}
-	return nil
+	return shell
 }
 
 // findBestPhysicalPlan returns the cheapest VALID physical member's plan
@@ -352,12 +367,20 @@ func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpressi
 	if ref == nil {
 		return nil
 	}
+	// Same nil-inner-shell preference as findPhysicalPlan.
+	var shell expressions.RelationalExpression
 	for _, m := range ref.AllMembers() {
 		if _, ok := m.(physicalPlanExpression); ok {
+			if isNilInnerFetch(m) {
+				if shell == nil {
+					shell = m
+				}
+				continue
+			}
 			return m
 		}
 	}
-	return nil
+	return shell
 }
 
 // isLeafReplaceable reports whether a plan is safe to substitute as the

@@ -62,6 +62,14 @@ func TestFDB_DDLErrorsProbe(t *testing.T) {
 	// proto-descriptor build that used to leak an XX000 internal error).
 	rejectsCode("duplicate_column",
 		"CREATE SCHEMA TEMPLATE de_dup CREATE TABLE t (id BIGINT NOT NULL, x BIGINT, x STRING, PRIMARY KEY (id))", "42701")
+
+	// CASE-COLLIDING quoted columns ("y" alongside Y — legitimately
+	// distinct in Java) reject cleanly at CREATE: Go's positional row
+	// layout folds identifiers, and the collision used to escape DDL and
+	// PANIC deep in planning (XX000 "NewRecordType: duplicate field
+	// name") on the first statement touching the table (WS-N).
+	rejectsCode("case-colliding quoted columns reject at CREATE",
+		"CREATE SCHEMA TEMPLATE de_fold CREATE TABLE t (id BIGINT NOT NULL, \"y\" BIGINT, y BIGINT, PRIMARY KEY (id))", "0A000")
 	// PK over an unknown column → clean 42703 (validated in parseTableDefinition
 	// before the metadata build that used to leak an XX000 internal error).
 	rejectsCode("pk_unknown_column",

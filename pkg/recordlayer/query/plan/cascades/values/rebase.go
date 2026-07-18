@@ -44,7 +44,7 @@ func RebaseValue(v Value, aliases AliasMap) Value {
 		return v
 	case *ScalarSubqueryValue:
 		if newAlias, ok := aliases[val.Alias]; ok {
-			return &ScalarSubqueryValue{Alias: newAlias}
+			return &ScalarSubqueryValue{Alias: newAlias, Typ: val.Typ}
 		}
 		return v
 	case *ObjectValue:

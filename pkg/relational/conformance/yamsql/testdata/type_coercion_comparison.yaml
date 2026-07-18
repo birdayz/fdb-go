@@ -30,7 +30,11 @@ tests:
       - [2]
       - [3]
 
-  # Integer + Float arithmetic
+  # BIGINT + DOUBLE computes in the double lane (Java ADD_LD): the column
+  # is DECLARED DOUBLE, and since the catalog stopped conflating
+  # FloatKind/DoubleKind into one "FLOAT" string, the static types carry
+  # the real widths — a true FLOAT column would ride the float32 lane
+  # (pinned at the values layer).
   - query: SELECT id, int_price + float_price FROM prices WHERE id = 1
     rows:
       - [1, 199.99]

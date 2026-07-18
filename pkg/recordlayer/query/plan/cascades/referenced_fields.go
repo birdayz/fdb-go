@@ -52,6 +52,37 @@ func (r *ReferencedFields) Size() int {
 	return len(r.fields)
 }
 
+// CombineReferencedFields is the ReferencedFields lattice combine (Java
+// ReferencedFieldsConstraint.combine): the UNION of both sets, with
+// changed=false when the union adds nothing over current (Java's empty
+// Optional — the push is subsumed). nil operands act as empty sets.
+func CombineReferencedFields(current, added *ReferencedFields) (*ReferencedFields, bool) {
+	if added.IsEmpty() {
+		return current, false
+	}
+	if current.IsEmpty() {
+		return added, true
+	}
+	grew := false
+	for f := range added.fields {
+		if _, ok := current.fields[f]; !ok {
+			grew = true
+			break
+		}
+	}
+	if !grew {
+		return current, false
+	}
+	union := make(map[string]struct{}, len(current.fields)+len(added.fields))
+	for f := range current.fields {
+		union[f] = struct{}{}
+	}
+	for f := range added.fields {
+		union[f] = struct{}{}
+	}
+	return &ReferencedFields{fields: union}, true
+}
+
 // Fields returns the referenced field names.
 func (r *ReferencedFields) Fields() map[string]struct{} {
 	if r == nil {

@@ -71,12 +71,88 @@ func extractBestPlanWithVisited(ref *expressions.Reference, stats StatisticsProv
 		return nil, nil
 	}
 	visited[ref] = true
-	less := CostLessWith(stats)
-	best := ref.GetBest(less)
+	best := ref.GetBest(tieBrokenLess(CostLessWith(stats)))
 	if best == nil {
 		return nil, nil
 	}
 	return rebuildExpressionVisited(best, stats, visited)
+}
+
+// tieBrokenLess wraps a cost comparator into a TOTAL order for the
+// selector-less extraction path (ExtractBestPlan / ExtractBestPlanWith).
+// GetBest iterates the members slice, so a merely cost-partial comparator
+// lets the winner depend on member INSERTION order — the same
+// nondeterminism class the planner's selector path closes with its
+// plan-hash tie-break (PlanningCostModel criterion #17, costLessFor).
+// This package cannot reach the planner's physical plan hash (layering),
+// so ties resolve by extractTieBreakHash — structural, expressions-only,
+// and member-order invariant.
+func tieBrokenLess(less func(a, b expressions.RelationalExpression) bool) func(a, b expressions.RelationalExpression) bool {
+	return func(a, b expressions.RelationalExpression) bool {
+		if less(a, b) {
+			return true
+		}
+		if less(b, a) {
+			return false
+		}
+		ha := extractTieBreakHash(a, map[*expressions.Reference]bool{})
+		hb := extractTieBreakHash(b, map[*expressions.Reference]bool{})
+		if ha != hb {
+			return ha < hb
+		}
+		// HashCodeWithoutChildren can be DELIBERATELY coarser than
+		// structural equality (the scan hash is names-only so wildcard
+		// matching buckets typed and untyped scans together) — two
+		// structurally distinct members can hash equal. Fall back to the
+		// flowed RESULT TYPE's stable SQL rendering, which carries
+		// exactly the content such hashes omit. Members equal on hash
+		// AND type rendering expose identical equality-visible content —
+		// the memo would have merged genuinely equal ones.
+		return extractTieBreakTypeKey(a) < extractTieBreakTypeKey(b)
+	}
+}
+
+// extractTieBreakTypeKey renders an expression's flowed result type as
+// the deterministic secondary tie-break key. NOT the result value's
+// explain rendering — GetResultValue can mint per-call unique
+// correlation identifiers, which would poison determinism.
+func extractTieBreakTypeKey(e expressions.RelationalExpression) string {
+	rv := e.GetResultValue()
+	if rv == nil {
+		return ""
+	}
+	if t := rv.Type(); t != nil {
+		return t.String()
+	}
+	return ""
+}
+
+// extractTieBreakHash is a deterministic structural hash over the
+// expression DAG: the node's own HashCodeWithoutChildren folded
+// ORDER-SENSITIVELY over each quantifier's reference hash (quantifier
+// order is structural), where a reference hashes as the COMMUTATIVE
+// (XOR) fold of its members — so the value never depends on member
+// insertion order. Back-edges (recursive CTE references) are skipped
+// via the visited guard.
+func extractTieBreakHash(e expressions.RelationalExpression, visited map[*expressions.Reference]bool) uint64 {
+	if e == nil {
+		return 0
+	}
+	h := e.HashCodeWithoutChildren()
+	for _, q := range e.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil || visited[ref] {
+			continue
+		}
+		visited[ref] = true
+		var rh uint64
+		for _, m := range ref.AllMembers() {
+			rh ^= extractTieBreakHash(m, visited)
+		}
+		delete(visited, ref)
+		h = h*0x100000001b3 ^ (rh*0x517cc1b727220a95 + 0x6c62272e07bb0142)
+	}
+	return h
 }
 
 // BestMemberSelector is the optional interface a planner implements
@@ -144,7 +220,7 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 		best = sel.BestMember(ref)
 	}
 	if !isPhysicalPlan(best) {
-		best = ref.GetBest(CostLessWith(stats))
+		best = ref.GetBest(costLessFor(sel, stats))
 	}
 	if best == nil {
 		return nil, nil
@@ -163,6 +239,26 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 	}
 
 	return rebuildExpressionFromSelectorVisited(best, sel, stats, visited)
+}
+
+// TieBrokenCostSelector is the optional extension of BestMemberSelector a
+// selector implements to supply a TOTAL-ORDER cost comparator for the
+// extraction fallbacks. The scalar CostLessWith is not total (Cost ties are
+// routine), and GetBest resolves ties by member insertion order — which
+// shifts across plannings. The planner supplies its hash-tie-broken
+// comparator through this seam; without it the fallbacks keep the raw
+// comparator (test-only paths).
+type TieBrokenCostSelector interface {
+	TieBrokenCostLess(stats StatisticsProvider) func(a, b expressions.RelationalExpression) bool
+}
+
+func costLessFor(sel BestMemberSelector, stats StatisticsProvider) func(a, b expressions.RelationalExpression) bool {
+	if tb, ok := sel.(TieBrokenCostSelector); ok {
+		if less := tb.TieBrokenCostLess(stats); less != nil {
+			return less
+		}
+	}
+	return CostLessWith(stats)
 }
 
 // SortElisionSelector is the optional extension of BestMemberSelector a
@@ -261,7 +357,60 @@ func rebuildOrderedSpine(
 		}
 		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
 	}
-	return rebuildWithFreshChildren(e, freshChildren)
+	rebuilt, err := rebuildWithFreshChildren(e, freshChildren)
+	if err != nil || rebuilt == nil {
+		return rebuilt, err
+	}
+	// A pin that did not reach the EXECUTABLE plan is not a pin — the same
+	// verification pinOrderedSpine applies at rule time: WithChildren may
+	// keep its ORIGINAL concrete plan when the pinned inner is not
+	// leaf-replaceable, leaving the quantifier pointing at the pinned
+	// member while GetRecordQueryPlan() still executes the OLD child. On a
+	// delegating spine node, verify the rebuilt wrapper's concrete plan
+	// embeds the pinned child's plan; decline the elision otherwise (the
+	// sort stays — always order-correct).
+	if delegates && srcRef != nil {
+		rp, ok1 := rebuilt.(physicalPlanHolder)
+		// Verify against the SPINE quantifier's pinned plan specifically —
+		// current delegators are single-quantifier, but taking "the last
+		// quantifier with a plan" would verify the wrong child the moment a
+		// multi-quantifier delegator appears. The spine child was rebuilt
+		// at the same position as the original srcRef quantifier.
+		var pinnedChildPlan plans.RecordQueryPlan
+		origQs := e.GetQuantifiers()
+		newQs := rebuilt.GetQuantifiers()
+		for i, q := range origQs {
+			if q.GetRangesOver() != srcRef || i >= len(newQs) {
+				continue
+			}
+			if inner := newQs[i].GetRangesOver().Get(); inner != nil {
+				if ip, ok := inner.(physicalPlanHolder); ok {
+					pinnedChildPlan = ip.GetRecordQueryPlan()
+				}
+			}
+			break
+		}
+		if !ok1 || pinnedChildPlan == nil || !planEmbedsDirectChild(rp.GetRecordQueryPlan(), pinnedChildPlan) {
+			return nil, nil
+		}
+	}
+	return rebuilt, nil
+}
+
+// planEmbedsDirectChild reports whether child is among plan's immediate
+// concrete children (pointer identity — WithChildren embeds the exact plan
+// object it relinked to). The properties-side twin of the cascades
+// package's planHasDirectChild.
+func planEmbedsDirectChild(plan, child plans.RecordQueryPlan) bool {
+	if plan == nil || child == nil {
+		return false
+	}
+	for _, c := range plan.GetChildren() {
+		if c == child {
+			return true
+		}
+	}
+	return false
 }
 
 // rebuildExpressionFromSelectorVisited is the same switch-based

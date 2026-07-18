@@ -11,20 +11,20 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**319 scenarios · 2552 query/assertion cases** across 18 feature areas.
+**332 scenarios · 2643 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
 | Aggregates & GROUP BY | 49 | 315 |
-| Joins | 60 | 264 |
-| Subqueries (EXISTS / IN / scalar) | 42 | 281 |
+| Joins | 61 | 267 |
+| Subqueries (EXISTS / IN / scalar) | 43 | 290 |
 | CTEs | 12 | 105 |
-| Set operations (UNION / INTERSECT / EXCEPT) | 8 | 48 |
-| DML (INSERT / UPDATE / DELETE) | 25 | 194 |
+| Set operations (UNION / INTERSECT / EXCEPT) | 10 | 53 |
+| DML (INSERT / UPDATE / DELETE) | 25 | 210 |
 | Ordering & pagination | 13 | 114 |
-| Scalar functions & expressions | 32 | 347 |
+| Scalar functions & expressions | 33 | 358 |
 | Predicates & WHERE | 12 | 104 |
-| Column resolution & aliasing | 6 | 55 |
+| Column resolution & aliasing | 7 | 59 |
 | NULL handling | 5 | 26 |
 | NULL handling & boolean logic | 2 | 48 |
 | Index usage | 9 | 162 |
@@ -32,7 +32,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Keys & primary keys | 5 | 132 |
 | Error codes & validation | 4 | 37 |
 | End-to-end scenarios | 3 | 20 |
-| Other | 20 | 155 |
+| Other | 27 | 198 |
 
 ## Aggregates & GROUP BY
 
@@ -126,6 +126,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `join_group_having_exists` | 6 | complex pipeline: JOIN + GROUP BY + HAVING + EXISTS |
 | `join_index_correlation` | 6 | Join with correlated index probe |
 | `join_left_right_symmetry` | 2 | LEFT/RIGHT join symmetry |
+| `join_leg_name_pins` | 3 | same-named columns across join legs |
 | `join_null_key` | 3 | SQL §7.6: NULL = NULL evaluates to UNKNOWN, so rows with NULL in a |
 | `join_on_syntax` | 6 | JOIN ... |
 | `join_optimization_probes` | 6 | — |
@@ -192,6 +193,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `scalar_subquery_dml` | 8 | Scalar subquery on the right-hand side of UPDATE SET, in DELETE WHERE |
 | `scalar_subquery_java` | 5 | Scalar subqueries in SELECT and WHERE. |
 | `scalar_subquery_projection` | 3 | Scalar subquery in SELECT projection |
+| `scalar_subquery_typed_gates` | 9 | — |
 | `scalar_subquery_types` | 9 | Type-coverage probes for scalar subqueries: the cached value flows |
 | `self_not_exists` | 3 | NOT EXISTS on the same table (self-referential) |
 | `subquery_exists_complex` | 4 | Complex EXISTS subquery patterns |
@@ -221,6 +223,8 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 
 | Scenario | Cases | What it pins |
 |---|--:|---|
+| `and_index_intersection` | 3 | AND over two indexed columns executes |
+| `and_index_intersection_composite_pk` | 2 | 2-key pk merge |
 | `composite_aggregate_intersection` | 7 | Multi-aggregate queries using |
 | `union` | 2 | UNION / UNION ALL — set operations over SELECT results. |
 | `union_aggregate_java` | 7 | Aggregate over UNION ALL patterns from |
@@ -250,7 +254,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `insert_select_complex` | 2 | INSERT ... |
 | `insert_select_java` | 10 | INSERT...SELECT patterns. |
 | `insert_select_transform` | 2 | INSERT ... |
-| `insert_values_expr` | 11 | INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc). |
+| `insert_values_expr` | 27 | INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc). |
 | `multi_insert_delete` | 6 | Multiple INSERT/DELETE/UPDATE operations |
 | `update_case_when` | 10 | UPDATE SET col = CASE ... |
 | `update_comprehensive` | 8 | Comprehensive UPDATE patterns |
@@ -287,8 +291,8 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `case_insensitive_keywords` | 9 | SQL standard says keywords are case-insensitive. |
 | `case_when` | 11 | CASE WHEN ... |
 | `case_when_in_java` | 5 | CASE WHEN with IN predicate from Java's |
-| `cast` | 16 | swingshift-35 commits 1acc097b/258073ee/13f43b58: CAST Java-conformance. |
-| `cast_scalar_java` | 11 | Scalar CAST patterns from Java's cast-tests.yamsql. |
+| `cast` | 19 | swingshift-35 commits 1acc097b/258073ee/13f43b58: CAST Java-conformance. |
+| `cast_scalar_java` | 12 | Scalar CAST patterns from Java's cast-tests.yamsql. |
 | `coalesce_nullif` | 3 | COALESCE(v1, v2, ...) returns the first non-NULL argument, or NULL |
 | `datetime_functions` | 27 | Two groups: |
 | `function_in_predicate` | 5 | Functions used in WHERE predicates |
@@ -310,6 +314,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `select_constant_expression` | 3 | Constant expressions in SELECT |
 | `select_expression_projection` | 4 | Computed columns in SELECT |
 | `select_expressions_java` | 9 | SELECT with various expression types. |
+| `string_concat_plus` | 7 | Java's ADD string family end-to-end |
 | `string_functions` | 13 | STRING-family scalar functions: UPPER / LOWER / LENGTH / CHAR_LENGTH / |
 | `string_functions_java` | 11 | String function patterns. |
 | `trim_concat` | 10 | TRIM / LTRIM / RTRIM / CONCAT / REPLACE — a Go-only read-side extension |
@@ -338,6 +343,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 |---|--:|---|
 | `alias_resolution` | 5 | Alias resolution edge cases |
 | `ambiguous_column` | 13 | Java's join-tests.yamsql: SELECT unqualified column that appears in |
+| `ambiguous_group_key_reread` | 4 | — |
 | `qualified_star` | 13 | SELECT <tbl>.* on a multi-source FROM clause restricts the projected |
 | `qualified_star_more` | 4 | More qualifier-star edge cases from Java's select-a-star.yamsql: |
 | `unknown_qualifier` | 6 | Java's SemanticAnalyzer rejects qualified column references whose |
@@ -425,12 +431,16 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `bare_col_with_agg` | 9 | SQL §7.10 GR1: when a SELECT list contains an aggregate function, |
 | `bug_hunt_probes` | 13 | Throwaway probes targeting features likely to surface bugs: |
 | `cascades_plan_shapes` | 9 | Tests that verify the Cascades planner produces correct results for |
+| `collation_and_nan_pins` | 3 | documented Go-right divergences and |
 | `comparison_edge_cases` | 9 | Edge cases in comparison operators |
+| `comparison_promotion_gate` | 14 | unpromotable comparisons reject at |
 | `computed_column_names` | 6 | Verifies that unnamed computed expressions in SELECT projections |
+| `datetime_edge_pins` | 9 | DATE/TIMESTAMP extension edge coverage |
 | `empty_result_edge_cases_java` | 11 | Empty result handling in various |
 | `empty_table_operations` | 9 | Operations on empty tables |
 | `float_column` | 10 | FLOAT (32-bit) column type. |
 | `information_schema` | 5 | INFORMATION_SCHEMA.* system-table queries. |
+| `int_float_lanes` | 6 | 32-bit arithmetic lanes end-to-end |
 | `integer_range` | 12 | INTEGER (32-bit) column range enforcement. |
 | `java_alignment_probes` | 14 | Probes derived from Java's yamsql test suite to verify Go matches |
 | `min_max_string` | 3 | MIN/MAX on string columns is REJECTED |
@@ -439,7 +449,10 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `multi_feature_integer` | 11 | Integration tests combining multiple SQL features against INTEGER (INT32) |
 | `multi_operator_pipeline` | 6 | Tests that exercise multiple Cascades operators working together |
 | `negative_values` | 6 | Negative numbers and zero edge cases |
+| `parse_channel_pins` | 5 | dotted display names survive the parser→IR |
+| `quoted_identifier_pins` | 4 | quoted-identifier shapes that must keep |
 | `select_no_from` | 6 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | SELECT * from single table |
+| `set_op_fetch_pushdown` | 2 | set operations push below the fetch |
 | `string_comparison` | 5 | String comparison edge cases |
 

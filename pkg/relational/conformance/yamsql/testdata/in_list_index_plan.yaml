@@ -53,8 +53,13 @@ tests:
       - [5, 'Shirt']
 
   # IN-list on PK column (should use PK index probe)
+  # ORDER BY over IN plans as an IN-UNION: the merge across per-value
+  # streams PROVIDES the requested order (Java's RecordQueryInUnionPlan is
+  # the ordered-IN plan — InJoin provides no cross-value order and would
+  # need an enforcer sort). The leg-pinned in-union rule (RFC-181 P0.3)
+  # fires for this shape now that leg satisfaction resolves structurally.
   - query: SELECT id, name FROM items WHERE id IN (2, 5, 7) ORDER BY id
-    plan_contains: InJoin
+    plan_contains: InUnion
     rows:
       - [2, 'Algorithms']
       - [5, 'Shirt']

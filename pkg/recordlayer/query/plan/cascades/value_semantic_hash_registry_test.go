@@ -29,7 +29,7 @@ func TestValueSemanticHashCode_AllCorrelationBearingTypesAreAliasInvariant(t *te
 		{"ObjectValue", func(c values.CorrelationIdentifier) values.Value { return values.NewObjectValue(c, ut) }},
 		{"ConstantObjectValue", func(c values.CorrelationIdentifier) values.Value { return values.NewConstantObjectValue(c, "k", ut) }},
 		{"ExistsValue", func(c values.CorrelationIdentifier) values.Value { return values.NewExistsValue(c) }},
-		{"ScalarSubqueryValue", func(c values.CorrelationIdentifier) values.Value { return values.NewScalarSubqueryValue(c) }},
+		{"ScalarSubqueryValue", func(c values.CorrelationIdentifier) values.Value { return values.NewScalarSubqueryValue(c, nil) }},
 		{"UnmatchedAggregateValue", func(c values.CorrelationIdentifier) values.Value { return values.NewUnmatchedAggregateValue(c) }},
 		{"IndexEntryObjectValue", func(c values.CorrelationIdentifier) values.Value {
 			return values.NewIndexEntryObjectValue(c, values.TupleSourceKey, []int{0}, ut)

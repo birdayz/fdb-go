@@ -149,19 +149,20 @@ func (e *ExplodeExpression) EqualsWithoutChildren(other RelationalExpression, _ 
 	return e.collectionValue == o.collectionValue && e.withOrdinality == o.withOrdinality
 }
 
-// HashCodeWithoutChildren mixes the class discriminator + the
-// collection Value's name + the ordinality flag. Mirrors Java's
-// `Objects.hash(collectionValue, withOrdinality)` (Java preserves the
-// pre-ordinality hash for the withOrdinality=false case; the Go hash is
-// not wire-stable so we simply fold the flag in unconditionally).
+// HashCodeWithoutChildren mixes the class discriminator + the collection
+// Value's SEMANTIC hash + the ordinality flag. Mirrors Java's
+// `Objects.hash(collectionValue, withOrdinality)` — Java hashes the full
+// collectionValue (its content), so a Name()-only mix was both
+// less faithful and too coarse: two explodes over DIFFERENT array
+// fields hashed identically ("field"), which left the extraction
+// tie-break blind and degraded memo bucketing. Equality here is
+// pointer-identity on collectionValue, so equal expressions trivially
+// keep equal hashes.
 func (e *ExplodeExpression) HashCodeWithoutChildren() uint64 {
 	const classDisc uint64 = 0xE1730DE
 	var h uint64 = classDisc
 	if e.collectionValue != nil {
-		// Cheap mix — the collection Value's Name() string hashed.
-		for _, b := range []byte(e.collectionValue.Name()) {
-			h = h*31 + uint64(b)
-		}
+		h = h*0x100000001b3 ^ values.SemanticHashCode(e.collectionValue)
 	}
 	if e.withOrdinality {
 		h = h*31 + 1

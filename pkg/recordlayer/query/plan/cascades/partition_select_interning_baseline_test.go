@@ -273,8 +273,22 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		// dual-inserted loser no longer drives child optimization) plus the
 		// delegation-truthful ordering satisfaction trimmed 1554→1500
 		// (3-table, -3.5%) / 6998→6706 (4-table, -4.2%).
-		{3, 1500},
-		{4, 6706},
+		//
+		// The RFC-181 WS-P stage (b) convergence flip (physical yields land
+		// ONLY in FinalMembers, dual insertion retired; group re-exploration
+		// is EPOCH-driven and every round re-explores ALL members like Java's
+		// ExploreGroup, instead of the member-count model's only-new-members
+		// slice) moved 1500→2786 (3-table, +86%) / 6706→13721 (4-table,
+		// +105%): the extra tasks are idempotent re-explorations of
+		// already-interned members, not re-enumerated sub-products —
+		// interning still collapses shared sub-products (the alias-aware
+		// shadow moved in lockstep, see TestAliasAwareInterningShadowDelta),
+		// which is what this baseline guards. The sentinel gate then
+		// trimmed 2786→2468 / 13721→10255: PLANNING pure LOGICAL finals
+		// are fail-to-plan sentinels and no longer rule-explored each
+		// round (the member loop owns every implementable form).
+		{3, 2468},
+		{4, 10255},
 	}
 	for _, tc := range cases {
 		got := planChainTasks(t, tc.tables)

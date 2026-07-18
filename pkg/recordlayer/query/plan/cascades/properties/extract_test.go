@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestExtractBestPlan_NilOrEmptyReturnsNil(t *testing.T) {
@@ -358,5 +359,123 @@ func TestExtractBestPlanFromSelector_RecursivelyExtractsChildWithSelector(t *tes
 	exInnerRef := exFilter.GetInner().GetRangesOver()
 	if exInnerRef == innerRef {
 		t.Fatal("extracted inner Reference is same pointer — should be fresh")
+	}
+}
+
+// TestExtractBestPlan_CostTieDeterministicAcrossInsertionOrder pins the
+// selector-less extraction tie-break (tieBrokenLess): two structurally
+// different but cost-tied members must extract the SAME winner no matter
+// the member insertion order. Before the tie-break, GetBest under the
+// merely cost-partial comparator kept whichever tied member it met first
+// — the P0.6 insertion-order nondeterminism, closed on the planner's
+// selector path but left open on this exported path.
+func TestExtractBestPlan_CostTieDeterministicAcrossInsertionOrder(t *testing.T) {
+	t.Parallel()
+	build := func(first, second string) *expressions.Reference {
+		r := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{first}, nil))
+		r.Insert(expressions.NewFullUnorderedScanExpression([]string{second}, nil))
+		return r
+	}
+	winner := func(t *testing.T, r *expressions.Reference) string {
+		t.Helper()
+		got, err := ExtractBestPlan(r)
+		if err != nil {
+			t.Fatalf("ExtractBestPlan err=%v", err)
+		}
+		s, ok := got.(*expressions.FullUnorderedScanExpression)
+		if !ok {
+			t.Fatalf("got %T, want *FullUnorderedScanExpression", got)
+		}
+		return s.GetRecordTypes()[0]
+	}
+	ab := winner(t, build("A", "B"))
+	ba := winner(t, build("B", "A"))
+	if ab != ba {
+		t.Fatalf("cost-tied winner depends on insertion order: [A,B]→%s, [B,A]→%s", ab, ba)
+	}
+}
+
+// TestExtractBestPlan_HashTieFallsBackToTypeKey pins the SECOND
+// tie-break key: the scan hash is names-only BY DESIGN (wildcard-match
+// bucketing), so two scans over the same record name with DIFFERENT
+// concrete flowed record types hash equal while Reference.Insert keeps
+// them distinct — the hash alone left the winner insertion-order
+// dependent. The flowed type's stable rendering discriminates them.
+func TestExtractBestPlan_HashTieFallsBackToTypeKey(t *testing.T) {
+	t.Parallel()
+	typeA := values.NewRecordType("T", false, []values.Field{
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	typeB := values.NewRecordType("T", false, []values.Field{
+		{Name: "B", FieldType: values.TypeString, Ordinal: 0},
+	})
+	build := func(first, second values.Type) *expressions.Reference {
+		r := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, first))
+		r.Insert(expressions.NewFullUnorderedScanExpression([]string{"T"}, second))
+		return r
+	}
+	winner := func(t *testing.T, r *expressions.Reference) string {
+		t.Helper()
+		got, err := ExtractBestPlan(r)
+		if err != nil {
+			t.Fatalf("ExtractBestPlan err=%v", err)
+		}
+		s, ok := got.(*expressions.FullUnorderedScanExpression)
+		if !ok {
+			t.Fatalf("got %T, want *FullUnorderedScanExpression", got)
+		}
+		return s.GetResultValue().Type().String()
+	}
+	ab := winner(t, build(typeA, typeB))
+	ba := winner(t, build(typeB, typeA))
+	if ab != ba {
+		t.Fatalf("hash-tied winner depends on insertion order: [A,B]→%s, [B,A]→%s", ab, ba)
+	}
+}
+
+// TestExtractBestPlan_ExplodeFieldTieDeterministic pins the tie-break
+// against the Explode shape: two cost-tied explodes over DIFFERENT array
+// fields share an identical result element type, so the type-key cannot
+// discriminate — the discrimination must come from the expression hash,
+// which now folds the collection Value's SEMANTIC content (the field
+// path) rather than its bare Name() ("field" for either). Same winner
+// regardless of insertion order.
+func TestExtractBestPlan_ExplodeFieldTieDeterministic(t *testing.T) {
+	t.Parallel()
+	arr := values.NewArrayType(true, values.NotNullLong)
+	fieldOf := func(name string) values.Value {
+		qov := values.NewQuantifiedObjectValueOfType(
+			values.NamedCorrelationIdentifier("T"),
+			values.NewRecordType("T", false, []values.Field{
+				{Name: "ARR1", FieldType: arr, Ordinal: 0},
+				{Name: "ARR2", FieldType: arr, Ordinal: 1},
+			}))
+		return values.NewFieldValue(qov, name, arr)
+	}
+	build := func(first, second string) *expressions.Reference {
+		r := expressions.InitialOf(expressions.NewExplodeExpression(fieldOf(first)))
+		r.Insert(expressions.NewExplodeExpression(fieldOf(second)))
+		return r
+	}
+	winner := func(t *testing.T, r *expressions.Reference) string {
+		t.Helper()
+		got, err := ExtractBestPlan(r)
+		if err != nil {
+			t.Fatalf("ExtractBestPlan err=%v", err)
+		}
+		ex, ok := got.(*expressions.ExplodeExpression)
+		if !ok {
+			t.Fatalf("got %T, want *ExplodeExpression", got)
+		}
+		fv, ok := ex.GetCollectionValue().(*values.FieldValue)
+		if !ok {
+			t.Fatalf("collection %T, want *FieldValue", ex.GetCollectionValue())
+		}
+		return fv.Field
+	}
+	ab := winner(t, build("ARR1", "ARR2"))
+	ba := winner(t, build("ARR2", "ARR1"))
+	if ab != ba {
+		t.Fatalf("explode-field-tied winner depends on insertion order: →%s vs →%s", ab, ba)
 	}
 }

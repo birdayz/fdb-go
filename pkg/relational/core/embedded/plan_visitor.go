@@ -289,8 +289,11 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		return main, nil
 	}
 	recursive := ctesCtx.RECURSIVE() != nil
-	traversalOrder := logical.TraversalLevelOrder
+	// No clause = ANY (the planner picks); an explicit level_order pins
+	// the level union (the clause's only remaining alternative).
+	traversalOrder := logical.TraversalAnyOrder
 	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+		traversalOrder = logical.TraversalLevelOrder
 		if toc.PRE_ORDER() != nil {
 			traversalOrder = logical.TraversalPreOrder
 		} else if toc.POST_ORDER() != nil {
@@ -579,6 +582,18 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 						if errors.As(walkErr, &corrErr) {
 							return nil, corrErr
 						}
+						// The plan-time cast-pair gate's own rejection
+						// (ResolveCast → 22F3H "No cast defined") must
+						// surface verbatim: the name-channel fallback
+						// below cannot plan the cast either and would
+						// die later as an opaque 0AF00. Other walk
+						// failures keep the fallback — they are
+						// unwalkable-shape declines the legacy channel
+						// may still plan.
+						var apiErr *api.Error
+						if errors.As(walkErr, &apiErr) && apiErr.Code == api.ErrCodeInvalidCast {
+							return nil, apiErr
+						}
 					}
 					if walkErr == nil && wv != nil {
 						if proj.ProjectedValues == nil {
@@ -591,7 +606,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				}
 				continue
 			}
-			if err := resolveColumnName(resolver, col.name); err != nil {
+			if col.bare != "" {
+				if err := resolveColumnRefStructural(resolver, col.bare, col.qualifier, col.qualified); err != nil {
+					return nil, err
+				}
+			} else if err := resolveColumnName(resolver, col.name); err != nil {
 				return nil, err
 			}
 			// A BARE column that binds to a lateral-unnest SHADOWING source
@@ -603,14 +622,22 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			// verbatim). Without this the bare projection reads the wrong column
 			// (P2, silent-wrong). RFC-142.
 			if !col.qualified && col.bare != "" && proj != nil {
-				id := semantic.NewUnquoted(col.bare)
-				if qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id); qerr == nil && ok {
+				id := semantic.FromNormalized(col.bare)
+				qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id)
+				if qerr == nil && ok {
 					if proj.ProjectedValues == nil {
 						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 					}
 					if i < len(proj.ProjectedValues) {
 						proj.ProjectedValues[i] = qv
 					}
+				}
+				var unresShadow *expr.UnresolvableOrdinalError
+				if errors.As(qerr, &unresShadow) {
+					// Born-baked (slice 2): the scope bound the name but the
+					// source cannot answer a plan-time ordinal — never fall
+					// through to the name channel.
+					return nil, unresShadow
 				}
 				// A BARE non-shadowed column resolves through the scope so the
 				// projection carries the construction-bound ordinal (a
@@ -619,7 +646,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				// QOV-correlated resolution, an unresolvable name, a lazy
 				// result — keeps the translator's name emission unchanged.
 				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
-					if rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id); rerr == nil {
+					rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id)
+					if rerr == nil {
 						if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
 							if proj.ProjectedValues == nil {
 								proj.ProjectedValues = make([]values.Value, len(proj.Projections))
@@ -628,6 +656,10 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 								proj.ProjectedValues[i] = fv
 							}
 						}
+					}
+					var unresIdent *expr.UnresolvableOrdinalError
+					if errors.As(rerr, &unresIdent) {
+						return nil, unresIdent
 					}
 				}
 			}
@@ -643,7 +675,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					// right quantifier. Every other reference keeps the
 					// alias-keyed merged-row read.
 					qv, qerr := resolver.ResolveQualifiedProjection(
-						semantic.NewUnquoted(col.qualifier), semantic.NewUnquoted(col.bare))
+						semantic.FromNormalized(col.qualifier), semantic.FromNormalized(col.bare))
 					if qerr != nil {
 						var ambigErr *semantic.AmbiguousColumnError
 						if errors.As(qerr, &ambigErr) {
@@ -674,17 +706,23 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 								}
 							}
 						} else {
-							proj.ProjectedValues[i] = &values.FieldValue{
-								Field: strings.ToUpper(col.name),
-								Typ:   values.UnknownType,
-							}
+							// Born-baked (slice 3; the dup-alias flat-name
+							// carve-out is RETIRED — a duplicated qualifier
+							// bakes QOV(binding) per-attribute above, first
+							// leg included, since only later duplicates were
+							// renamed and QOV(alias) addresses exactly one
+							// leg; ambiguous dup reads die 42702 upstream):
+							// a validated qualified projection that cannot
+							// bake a leg-window ordinal must fail the plan,
+							// never mint a lazy name read.
+							return nil, &expr.UnresolvableOrdinalError{Field: col.bare, Source: col.qualifier}
 						}
 					}
 				} else {
 					var qualifier semantic.Identifier
-					id := semantic.NewUnquoted(colBareOrName(col))
+					id := semantic.FromNormalized(colBareOrName(col))
 					if col.qualified {
-						qualifier = semantic.NewUnquoted(col.qualifier)
+						qualifier = semantic.FromNormalized(col.qualifier)
 					}
 					if rv, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
 						if i < len(proj.ProjectedValues) {
@@ -766,7 +804,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 						if projAliasSet[strings.ToUpper(ob.colName)] {
 							continue
 						}
-						if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
+						if ob.bare != "" {
+							if resolveColumnRefStructural(resolver, ob.bare, ob.qualifier, ob.qualified) == nil {
+								continue
+							}
+						} else if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
 							continue
 						}
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
@@ -783,7 +825,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			if gb.expr != nil {
 				continue
 			}
-			if err := resolveColumnName(resolver, gb.display); err != nil {
+			if gb.bare != "" {
+				if err := resolveColumnRefStructural(resolver, gb.bare, gb.qualifier, gb.qualified); err != nil {
+					return nil, err
+				}
+			} else if err := resolveColumnName(resolver, gb.display); err != nil {
 				return nil, err
 			}
 		}
@@ -793,9 +839,37 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	if resolver != nil {
 		for _, ac := range sq.aggCols {
 			if ac.aggArg != "" && ac.aggExpr == nil {
-				if err := resolveColumnName(resolver, ac.aggArg); err != nil {
+				if ac.aggArgBare != "" {
+					if err := resolveColumnRefStructural(resolver, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified); err != nil {
+						return nil, err
+					}
+				} else if err := resolveColumnName(resolver, ac.aggArg); err != nil {
 					return nil, err
 				}
+			}
+		}
+	}
+
+	// (5b) Validate SELECT-list group-column re-reads through the scope: a
+	// BARE re-read that is ambiguous across sources (GROUP BY po.id, pi.id
+	// re-read as `id`) is 42702 (Java AMBIGUOUS_COLUMN) — the aggregate
+	// output-name table matches keys qualifier-stripped, so an unvalidated
+	// bare re-read would silently bind ONE leg's key last-wins.
+	// Expression-redirected entries (groupCol = the GROUP BY expression's
+	// display) carry no column reference and are skipped.
+	if resolver != nil {
+		exprKeyDisplays := map[string]bool{}
+		for _, gn := range sq.groupBy {
+			if gn.expr != nil {
+				exprKeyDisplays[gn.display] = true
+			}
+		}
+		for _, ac := range sq.aggCols {
+			if ac.groupCol == "" || ac.groupColBare == "" || exprKeyDisplays[ac.groupCol] {
+				continue
+			}
+			if err := resolveColumnRefStructural(resolver, ac.groupColBare, ac.groupColQualifier, ac.groupColQualified); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -859,7 +933,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (10) Upgrade aggregate operands + GROUP BY key values.
 	if len(sq.aggCols) > 0 {
-		upgradeAggregateOperands(op, sq, v.md, v.schemaName, v.cteScopes)
+		if uerr := upgradeAggregateOperands(op, sq, v.md, v.schemaName, v.cteScopes); uerr != nil {
+			return nil, uerr
+		}
 	}
 
 	// (11) Create a unified SubqueryPlanner for EXISTS/scalar subqueries.
@@ -895,7 +971,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (14) Upgrade HAVING predicate.
 	if sq.havingExpr != nil {
-		upgradeHavingPredicate(op, sq, v.md, v.schemaName, v.cteScopes, existsPlanner)
+		if herr := upgradeHavingPredicate(op, sq, v.md, v.schemaName, v.cteScopes, existsPlanner); herr != nil {
+			return nil, herr
+		}
 		// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
 		// HAVING walk has no lowering — ScalarSubqueryValue's evaluation
 		// contract is pre-eval (uncorrelated) only, and the projection attach
@@ -924,7 +1002,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// scope resolver and ResolveColumnShadowingQualified helper as the projection
 	// path, so the two never diverge. RFC-142.
 	if resolver != nil {
-		qualifyShadowedSortKeys(op, resolver)
+		if qerr := qualifyShadowedSortKeys(op, resolver); qerr != nil {
+			return nil, qerr
+		}
 	}
 
 	// (15b) RFC-141 Phase 2: register projected-EXISTS subqueries so the
@@ -1692,7 +1772,7 @@ func resolveQualifiedBaked(resolver *expr.Resolver, ref colRef) values.Value {
 	if !ref.isQualified() {
 		return nil
 	}
-	rv, err := resolver.ResolveIdentifier(semantic.NewUnquoted(ref.table), semantic.NewUnquoted(ref.bare()))
+	rv, err := resolver.ResolveIdentifier(semantic.FromNormalized(ref.table), semantic.FromNormalized(ref.bare()))
 	if err != nil || rv == nil {
 		return nil
 	}
@@ -1702,10 +1782,10 @@ func resolveQualifiedBaked(resolver *expr.Resolver, ref colRef) values.Value {
 	return nil
 }
 
-func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver) {
+func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver) error {
 	sort := findSort(op)
 	if sort == nil {
-		return
+		return nil
 	}
 	for i := range sort.Keys {
 		// A key already carrying a resolved Value (a projection alias, a computed
@@ -1720,16 +1800,23 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 		if bare == "" {
 			continue
 		}
-		id := semantic.NewUnquoted(bare)
+		id := semantic.FromNormalized(bare)
 		if sort.Keys[i].Qualified {
 			// An AmbiguousColumnError here is DISCARDED on purpose: the
 			// upstream sort-key reference validation already terminated an
 			// ambiguous key with 42702 before this qualification pass runs
 			// (the ladder's >=2 arm is owned there, not here).
-			qv, err := resolver.ResolveQualifiedProjection(semantic.NewUnquoted(sort.Keys[i].Qualifier), id)
+			qv, err := resolver.ResolveQualifiedProjection(semantic.FromNormalized(sort.Keys[i].Qualifier), id)
 			if err == nil && qv != nil {
 				sort.Keys[i].Value = qv
 				continue
+			}
+			var unres *expr.UnresolvableOrdinalError
+			if errors.As(err, &unres) {
+				// Born-baked (slice 2): an unbindable ordinal must not
+				// fall through to the name channel — that is the
+				// reads-by-name failure the retirement killed.
+				return err
 			}
 			// Every other QUALIFIED sort key resolves through the scope to
 			// the quantifier-addressed source-relative baked reference so
@@ -1742,10 +1829,15 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 		}
 		qv, ok, err := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id)
 		if err != nil || !ok {
+			var unres *expr.UnresolvableOrdinalError
+			if errors.As(err, &unres) {
+				return err
+			}
 			continue
 		}
 		sort.Keys[i].Value = qv
 	}
+	return nil
 }
 
 // parseLimitClause reads a LIMIT/OFFSET clause from a SimpleTableContext and

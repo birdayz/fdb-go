@@ -47,10 +47,10 @@ import (
 // and the FROM-order per-leg column spans that map `LEG.COL` to a global
 // ordinal of the concat.
 type clusterPullUp struct {
-	outerCorr  values.CorrelationIdentifier
-	concatType *values.RecordType
-	legs       []clusterLegSpan
-	legByAlias map[string]clusterLegSpan
+	outerCorr    values.CorrelationIdentifier
+	concatType   *values.RecordType
+	legs         []clusterLegSpan
+	legByBinding map[string]clusterLegSpan
 	// missed flips when the bake meets a leg reference it cannot map (a column
 	// absent from the leg's type) — the caller must then decline the ordinal
 	// path (design ruling (iv): never a silent partial bake).
@@ -58,10 +58,14 @@ type clusterPullUp struct {
 }
 
 // clusterLegSpan is one plain (non-box) leg's span within the flat concat.
+// Spans key by the leg's BINDING correlation (== the alias for every
+// non-duplicate leg; the parser-minted Q$DUPN for a later duplicate), the
+// same name the resolver's QOV emissions carry — display aliases never key
+// a span (two duplicate legs would collide last-wins).
 type clusterLegSpan struct {
-	alias string             // UPPER leg alias
-	start int                // global ordinal of the leg's first column
-	typ   *values.RecordType // the leg's own flowed type
+	binding string             // UPPER leg binding
+	start   int                // global ordinal of the leg's first column
+	typ     *values.RecordType // the leg's own flowed type
 }
 
 // peelToClusterJoin walks row-shape-preserving unaries (WHERE filters without
@@ -100,7 +104,7 @@ func (t *cascadesTranslator) buildClusterPullUp(j *logical.LogicalJoin) *cluster
 	if concat == nil || len(concat.Fields) == 0 {
 		return nil
 	}
-	pu := &clusterPullUp{concatType: concat, legByAlias: map[string]clusterLegSpan{}}
+	pu := &clusterPullUp{concatType: concat, legByBinding: map[string]clusterLegSpan{}}
 	offset := 0
 	// A GATED box leg contributes its BURIED
 	// legs' spans — the buried aliases are the real reference names (dotting
@@ -130,12 +134,16 @@ func (t *cascadesTranslator) buildClusterPullUp(j *logical.LogicalJoin) *cluster
 				// positionally — the same rule as the seed's nullable wrap).
 				typ = values.WithNullability(typ, true).(*values.RecordType)
 			}
-			span := clusterLegSpan{alias: strings.ToUpper(leg.alias), start: offset, typ: typ}
-			if _, dup := pu.legByAlias[span.alias]; dup {
-				return false // defensive: the gate already declines dup leg aliases
+			span := clusterLegSpan{binding: strings.ToUpper(leg.binding), start: offset, typ: typ}
+			if _, dup := pu.legByBinding[span.binding]; dup {
+				// Two legs binding the SAME correlation are unclassifiable —
+				// an unminted duplicate can only reach here through a path the
+				// mint authority does not cover (the gate's pairwise check
+				// direction). Distinct minted bindings pass.
+				return false
 			}
 			pu.legs = append(pu.legs, span)
-			pu.legByAlias[span.alias] = span
+			pu.legByBinding[span.binding] = span
 			offset += len(typ.Fields)
 		}
 		return true
@@ -177,7 +185,7 @@ func (pu *clusterPullUp) bake(v values.Value) values.Value {
 	} else {
 		return v
 	}
-	leg, isLeg := pu.legByAlias[alias]
+	leg, isLeg := pu.legByBinding[alias]
 	if !isLeg {
 		return v
 	}
@@ -427,6 +435,13 @@ func outerSubtreeAliases(op logical.LogicalOperator) map[string]struct{} {
 				a = o.Table
 			}
 			out[strings.ToUpper(a)] = struct{}{}
+			if o.Binding != "" {
+				// A later duplicate leg is addressed ONLY by its minted
+				// binding (the resolver's QOV emission) — without this
+				// entry a binding-correlated reference is invisible to
+				// the guard and the classification silently skips it.
+				out[strings.ToUpper(o.Binding)] = struct{}{}
+			}
 		case *logical.LogicalUnnest:
 			if o.Alias != "" {
 				out[strings.ToUpper(o.Alias)] = struct{}{}
@@ -434,8 +449,14 @@ func outerSubtreeAliases(op logical.LogicalOperator) map[string]struct{} {
 			if o.AtAlias != "" {
 				out[strings.ToUpper(o.AtAlias)] = struct{}{}
 			}
+			if o.Binding != "" {
+				out[strings.ToUpper(o.Binding)] = struct{}{}
+			}
 		case *logical.LogicalCTE:
 			out[strings.ToUpper(o.Name)] = struct{}{}
+			if o.Binding != "" {
+				out[strings.ToUpper(o.Binding)] = struct{}{}
+			}
 		}
 		for _, c := range op.Children() {
 			walk(c)
@@ -463,7 +484,7 @@ func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationId
 				return nil // decline
 			}
 			fields = append(fields, values.RecordConstructorField{
-				Name:  leg.alias + "." + strings.ToUpper(leg.typ.Fields[i].Name),
+				Name:  leg.binding + "." + strings.ToUpper(leg.typ.Fields[i].Name),
 				Value: fv,
 			})
 		}
@@ -527,7 +548,7 @@ func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.Correla
 							ok = false
 							return false
 						}
-						leg, isLeg := pu.legByAlias[strings.ToUpper(qov.Correlation.Name())]
+						leg, isLeg := pu.legByBinding[strings.ToUpper(qov.Correlation.Name())]
 						if !isLeg {
 							ok = false
 							return false
@@ -578,7 +599,7 @@ func flattenClusterLegRefs(v values.Value, pu *clusterPullUp) values.Value {
 			return node
 		}
 		alias := strings.ToUpper(qov.Correlation.Name())
-		leg, isLeg := pu.legByAlias[alias]
+		leg, isLeg := pu.legByBinding[alias]
 		if !isLeg {
 			return node
 		}
@@ -601,7 +622,7 @@ func clusterFieldResolvable(field string, pu *clusterPullUp, innerKey string) bo
 	if i <= 0 {
 		return false
 	}
-	leg, isLeg := pu.legByAlias[f[:i]]
+	leg, isLeg := pu.legByBinding[f[:i]]
 	if !isLeg {
 		return false
 	}
@@ -629,7 +650,10 @@ func (t *cascadesTranslator) translateClusteredOuterScalar(p *logical.LogicalPro
 		return nil, false
 	}
 
-	rightmost := strings.ToUpper(sourceAlias(p.Input))
+	// The rightmost leg's BINDING — the name the resolver's outer-leg QOV
+	// emissions carry (== the alias upper form except for a later
+	// duplicate leg, where only the minted binding addresses the leg).
+	rightmost := strings.ToUpper(sourceBinding(p.Input))
 	// The classifier's skip set is the inner's WHOLE own-alias universe — the
 	// subquery alias plus every source the inner binds (join legs, unnest) —
 	// exactly the universe the ordinal path's shadow check uses. Skipping only
@@ -684,7 +708,7 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 	// scopes apart — the pull-up would mis-bake an inner-own reference onto
 	// the outer concat. Any overlap declines.
 	for a := range innerOwn {
-		if _, collide := pu.legByAlias[a]; collide {
+		if _, collide := pu.legByBinding[a]; collide {
 			return nil
 		}
 	}

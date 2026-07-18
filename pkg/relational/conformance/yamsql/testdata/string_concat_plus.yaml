@@ -1,0 +1,43 @@
+# string_concat_plus.yaml — Java's ADD string family end-to-end
+#
+# `+` with a STRING operand CONCATENATES (ArithmeticValue.java
+# ADD_IS..ADD_SS): the number renders exactly as Java's string coercion
+# (Integer/Long decimal; Float/Double via toString — ".0" on whole
+# values, upper-case E exponents, Infinity spelling). Go used to error
+# on every mixed number+string `+`.
+name: string_concat_plus
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    n BIGINT,
+    d DOUBLE,
+    s STRING,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t VALUES (1, 5, 1.0, 'abc'), (2, -7, 10000000000.0, 'x')
+tests:
+  - query: SELECT n + s FROM t WHERE id = 1
+    rows:
+      - [5abc]
+  - query: SELECT s + n FROM t WHERE id = 2
+    rows:
+      - [x-7]
+  - query: SELECT s + d FROM t WHERE id = 1
+    rows:
+      - [abc1.0]
+  - query: SELECT s + d FROM t WHERE id = 2
+    rows:
+      - [x1.0E10]
+  # Mid-range double stays DECIMAL (Java's [1e-3, 1e7) boundary): 2e6
+  # renders "2000000.0", never Go's "2e+06".
+  - query: SELECT s + (d * 200000.0) FROM t WHERE id = 1
+    rows:
+      - [abc200000.0]
+  - query: SELECT s + s FROM t WHERE id = 1
+    rows:
+      - [abcabc]
+  # Non-ADD operators on strings still error (runtime mismatch today;
+  # the WS-T plan-time promotion lattice will move this to plan time).
+  - query: SELECT s - n FROM t WHERE id = 1
+    error_code: "22000"

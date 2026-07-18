@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -190,16 +191,16 @@ func CastValue(v any, typeName string) (any, error) {
 	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported CAST from %T to %s", v, typeName)
 }
 
-// javaDoubleToString matches Java's Double.toString(double):
-// whole numbers always include ".0" (e.g. 1.0 → "1.0", not "1"),
-// and Go's 'g' format is adjusted so values already containing a
-// decimal point or exponent are left as-is.
+// javaDoubleToString matches Java's Double.toString(double); the
+// contract (decimal inside [1e-3, 1e7), scientific outside, Infinity
+// spellings) lives in ONE place — values.JavaDoubleToString.
 func javaDoubleToString(n float64) string {
-	s := strconv.FormatFloat(n, 'g', -1, 64)
-	if !strings.ContainsAny(s, ".eE") && s != "NaN" && s != "+Inf" && s != "-Inf" {
-		s += ".0"
-	}
-	return s
+	return values.JavaDoubleToString(n)
+}
+
+// javaFloatToString is Float.toString — the float32 sibling.
+func javaFloatToString(n float32) string {
+	return values.JavaFloatToString(n)
 }
 
 // StripStringLiteralQuotes removes a single pair of surrounding

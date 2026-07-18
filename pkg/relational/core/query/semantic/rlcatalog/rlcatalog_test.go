@@ -75,13 +75,16 @@ func TestWrap_Columns(t *testing.T) {
 	if len(cols) == 0 {
 		t.Fatal("Order should have columns")
 	}
-	// order_id is a known field on the Order message.
+	// order_id is a known field on the Order message. Columns present
+	// the FOLDED identifier (the runtime positional layout folds names
+	// too); the verbatim field spelling survives as a LookupColumn key
+	// so quoted-DDL columns stay reachable.
 	found := false
 	for _, c := range cols {
 		if c.Id.EqualsIgnoreQuoting(semantic.NewUnquoted("order_id")) {
 			found = true
-			if c.Type != "INT" {
-				t.Fatalf("order_id Type: got %q, want INT", c.Type)
+			if c.Type != "BIGINT" {
+				t.Fatalf("order_id Type: got %q, want BIGINT", c.Type)
 			}
 			break
 		}
@@ -101,8 +104,8 @@ func TestWrap_LookupColumn(t *testing.T) {
 	if !ok {
 		t.Fatal("case-insensitive ORDER_ID lookup should succeed")
 	}
-	if col.Type != "INT" {
-		t.Fatalf("Type: got %q, want INT", col.Type)
+	if col.Type != "BIGINT" {
+		t.Fatalf("Type: got %q, want BIGINT", col.Type)
 	}
 
 	if _, ok := tbl.LookupColumn(semantic.NewUnquoted("nonexistent")); ok {
@@ -128,8 +131,8 @@ func TestNewAnalyzer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve order_id: %v", err)
 	}
-	if col.Type != "INT" {
-		t.Fatalf("Type: got %q, want INT", col.Type)
+	if col.Type != "BIGINT" {
+		t.Fatalf("Type: got %q, want BIGINT", col.Type)
 	}
 }
 
@@ -208,16 +211,20 @@ func TestWrap_ProtoKindToSQL_FullMapping(t *testing.T) {
 		t.Fatal("TypedRecord should exist")
 	}
 
+	// Widths are faithful to the proto kind: 32-bit kinds are INTEGER,
+	// 64-bit kinds are BIGINT, float is FLOAT and double is DOUBLE. The
+	// old all-integers→"INT" / float+double→"FLOAT" conflation was
+	// harmless only while the expression layer erased widths anyway.
 	want := map[string]string{
-		"id":           "INT",
-		"val_int32":    "INT",
-		"val_int64":    "INT",
-		"val_sint32":   "INT",
-		"val_sint64":   "INT",
-		"val_sfixed32": "INT",
-		"val_sfixed64": "INT",
+		"id":           "BIGINT",
+		"val_int32":    "INTEGER",
+		"val_int64":    "BIGINT",
+		"val_sint32":   "INTEGER",
+		"val_sint64":   "BIGINT",
+		"val_sfixed32": "INTEGER",
+		"val_sfixed64": "BIGINT",
 		"val_float":    "FLOAT",
-		"val_double":   "FLOAT",
+		"val_double":   "DOUBLE",
 		"val_bool":     "BOOL",
 		"val_string":   "STRING",
 		"val_bytes":    "BYTES",

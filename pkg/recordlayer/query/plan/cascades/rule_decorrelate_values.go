@@ -189,9 +189,14 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 			}
 		}
 		if anyChanged {
+			// MemoizeExpression can resolve to an EXISTING (already
+			// explored) reference; the extras then need the scheduled
+			// insert — a raw Insert leaves them without any task under
+			// the epoch convergence and AdvancePlannerStage discards
+			// them (a lost decorrelated alternative).
 			newRef := call.MemoizeExpression(newMembers[0])
 			for _, extra := range newMembers[1:] {
-				newRef.Insert(extra)
+				call.InsertReExploring(newRef, extra)
 			}
 			rebuilt := expressions.RebuildQuantifier(q, newRef)
 			newQuantifiers = append(newQuantifiers, rebuilt)

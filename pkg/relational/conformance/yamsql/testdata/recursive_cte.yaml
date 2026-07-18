@@ -242,7 +242,9 @@ tests:
       SELECT n FROM reach
     error_code: "54F01"
 
-  # TRAVERSAL ORDER level_order → accepted (matches our default).
+  # TRAVERSAL ORDER level_order → accepted; the EXPLICIT clause pins the
+  # level-union plan (a clause-less recursion leaves the choice to the
+  # cost model, which may pick the DFS join).
   - query: |-
       WITH RECURSIVE ancestors AS (
         SELECT id, parent FROM t WHERE id = 250

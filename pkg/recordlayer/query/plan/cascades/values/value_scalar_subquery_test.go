@@ -15,7 +15,7 @@ import (
 func TestScalarSubqueryValue_Evaluate(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("SQ")
-	v := NewScalarSubqueryValue(alias)
+	v := NewScalarSubqueryValue(alias, nil)
 
 	t.Run("absent_binding_is_loud", func(t *testing.T) {
 		t.Parallel()

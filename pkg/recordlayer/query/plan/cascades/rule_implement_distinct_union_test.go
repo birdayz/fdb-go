@@ -3,6 +3,8 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -238,5 +240,73 @@ func TestRemoveCommonEqualityBoundParts_SingleOrdering(t *testing.T) {
 	result := removeCommonEqualityBoundParts([]*RichOrdering{o})
 	if len(result) != 1 || len(result[0].GetKeys()) != 1 {
 		t.Fatal("single ordering should not be modified")
+	}
+}
+
+// TestImplementDistinctUnionRule_LyingDelegatorLegPinned pins RFC-181 P0.3:
+// a leg whose member is an order-PRESERVING wrapper derives its ordering
+// from its SOURCE GROUP, but its BAKED plan child was frozen when the
+// wrapper's own rule fired — possibly before ordered variants entered the
+// group. The old shape trusted the group estimate and baked the wrapper's
+// stale plan: comparison keys describing an order the executed leg does not
+// produce → merge-front dedup misses → duplicates through UNION (distinct).
+// The leg must be spine-PINNED: the yielded merge union's executable child
+// for that leg is the ORDERED member's plan, never the stale one.
+func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
+	t.Parallel()
+
+	// Leg A: plain pk-ordered scan.
+	_, refA := makeScanWithPK("T", "id")
+
+	// Leg B: a filter wrapper (delegator) whose SOURCE group holds a
+	// pk-ordered scan, but whose BAKED plan child is a DIFFERENT (stale)
+	// scan object — the estimate/executable divergence.
+	pkVals := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
+	orderedScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pkVals)
+	orderedSW := &physicalScanWrapper{plan: orderedScan}
+	srcRef := expressions.InitialOf(orderedSW)
+	pmSrc := NewPlanPropertiesMap()
+	pmSrc.Add(orderedSW)
+	srcRef.SetPlanProperties(pmSrc)
+
+	staleScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pkVals)
+	filterWrap := &physicalPredicatesFilterWrapper{
+		plan: plans.NewRecordQueryPredicatesFilterPlan(
+			staleScan,
+			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		),
+		innerQuant: expressions.ForEachQuantifier(srcRef),
+	}
+	refB := expressions.InitialOf(filterWrap)
+	pmB := NewPlanPropertiesMap()
+	pmB.Add(filterWrap)
+	refB.SetPlanProperties(pmB)
+
+	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		expressions.ForEachQuantifier(refA),
+		expressions.ForEachQuantifier(refB),
+	})
+	unionRef := expressions.InitialOf(union)
+	distinct := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(unionRef))
+	outerRef := expressions.InitialOf(distinct)
+
+	results := FireImplementationRule(NewImplementDistinctUnionRule(), outerRef)
+	var msu *physicalMergeSortUnionWrapper
+	for _, r := range results {
+		if w, ok := r.(*physicalMergeSortUnionWrapper); ok {
+			msu = w
+			break
+		}
+	}
+	if msu == nil {
+		t.Fatal("expected a merge-sort union yield (the pinned path must not over-decline this shape)")
+	}
+	for _, child := range msu.plan.GetChildren() {
+		if child == staleScan {
+			t.Fatal("the union baked the delegator's STALE plan child — the leg was not spine-pinned and the merge dedup runs over an order the leg does not produce")
+		}
+		if fp, ok := child.(*plans.RecordQueryPredicatesFilterPlan); ok && fp.GetInner() == staleScan {
+			t.Fatal("the union baked the filter over its STALE child — pinOrderedSpine must relink the executable plan to the ordered member")
+		}
 	}
 }

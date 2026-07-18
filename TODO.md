@@ -1395,7 +1395,312 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 
 # NEXT
 
-> ## [ ] RFC-180 follow-up — output-label collision mis-binds sort keys over the IMMEDIATE reshaping strip (pre-existing)
+> ## [ ] RFC-181 — query-engine correctness wave 3 (rfcs/181-query-engine-correctness-wave3.md)
+> Owner priority: the NAME-MODEL findings are the priority PROGRAM; Graefe amendment:
+> the hours-scale silent-corruption P0s land BEFORE Phase A opens (P0.1, P0.2, P0.3,
+> P0.4, P0.6, C1-stopgap first). Execution order (details in the RFC):
+> 1. [ ] WS-N interim pins (red today): quoted case-colliding ORDER BY; column literally
+>        named "A.ID" on a join; duplicate-named ORDER BY with baked key (poison bypass);
+>        quoted "Q$1" table alias; cross-leg same-name-different-type metadata.
+> 2. [ ] WS-N Phase A — resolver provenance end-to-end (typed leg+accessors on every
+>        FieldValue; structural rebases; kills N-F2/N-F3/N-F5).
+> 3. [~] WS-N Phase B — SUBSTANTIALLY COMPLETE (B1-B3b landed); the residual is a
+>        purity refactor, not a bug class. Landed: B1 binding-keyed scalar
+>        lowering (dup-outer scalars answer; + the outer-projected plain-column
+>        wrong-rows master fix); B2 the dup-alias flat-name projection carve-out
+>        RETIRED (dup qualifiers bake QOV(binding) per-attribute, first leg
+>        included; UNION-face decline upgraded to plan-time); B3a quote-aware
+>        aliases resolve in EVERY position (FromNormalized for parse-captured
+>        strings; Scope.AddSource canonicalizes CorrelationName to the UPPER
+>        runtime correlation-key namespace — the quoted-"Q$1" interim pin is
+>        GREEN, TestFDB_QuotedMachineShapedAliases); B3b ONE correlation-key
+>        namespace end-to-end (leg names verbatim, correlation-vs-leg compares
+>        EXACT; lowercase q$N machine mints case-DISJOINT from user
+>        correlations — unforgeable). N-F6's harm cases are closed. RESIDUAL
+>        (purity, own RFC if wanted): the full machine-mint flip for every leg
+>        (statement-scoped deterministic mints; retires QualifierIsDuplicated's
+>        concept and the remaining display-alias plumbing); the
+>        dotted-split arm of fieldValueAliasAndCol retires with the
+>        enclosed-unnest residual (box-substrate ordinalization), not B.
+> 4. [~] WS-N Phase C — ordering on Value identity: the label-collision family's
+>        live wrong-order bug is FIXED (translateSort's BareRef split,
+>        sort_key_label_collision_fdb_test.go; the RFC-180 follow-up entry).
+>        REMAINING (the phase core): requested parts carry RESOLVED values,
+>        poset/binding maps keyed on semantic Value identity in the
+>        current-quantifier post-rebase frame (the Graefe amendment), then
+>        DELETE orderingKeyFor's three rendering bridges + normLookup
+>        (rich_ordering.go — construction at :60-130, bridges at :317-335).
+>        The bridges exist BECAUSE requesters mint lazy values while providers
+>        are baked — C1 is requester-side born-baked ordering values, C2 the
+>        identity keying, C3 the EnumerateSatisfyingComparisonKeyValues /
+>        set-op merge-key consumers.
+> 5. [ ] WS-N Phase D — metadata from the flowed type (positional ColumnDef; delete
+>        descriptorForColumn/innerByName/qualifyAndMergeColumns/colref.go; kills N-F4).
+>        Full agent handoff: shifts/handoff-ws-n-phase-d-typed-metadata.md.
+>        D1 OPENED: plan_visitor mints 0 (carve-out retirement removed the last);
+>        logical_predicate down to 11 (mostly justified error-arm unknowns +
+>        3 lazy-strip arms); pullUpToOutputField slots now carry the projected
+>        value's own type. Translator census (48 sites, 4 clusters):
+>        (1) leg/record-type synthesis from NAME lists (:418,:432,:442,:475,
+>        :524,:742,:749,:7978) — types derivable from catalog descriptors /
+>        leg output types; the HIGH-VALUE cluster (typed legs ⇒ positional
+>        types everywhere downstream);
+>        (2) ofOrdinal rebinds (:4550,:4565,:4714,:5719,:5725,:5757,:7541,
+>        :8207) — derivable from the input layout's field type once (1) lands;
+>        (3) lazy flat name reads (:4221,:4557,:4568,:4717,:5739,:6019,:6239,
+>        :6262,:6366,:6433,:8188,:8197) — documented correct-or-loud
+>        fallbacks, type arrives at resolution; drain with their producers;
+>        (4) honest unknowns (:293-316 7.6 model gap, :1304-1352 probe
+>        multi-returns, :6431 NULL literal, :8267,:8286) — justify or leave.
+> Interleaved at phase boundaries (independent wrong-rows P0s, each small+red-pinned):
+> - [x] P0.1 PK-intersection ordering gate (row DROPS, plain SQL) + reverse threading.
+>       Follow-up CLOSED: the AND-over-two-indexes SQL shape fires the path e2e
+>       (and_index_intersection.yaml) — and exposed unbaked comparison keys
+>       (OrdinalResolutionError on every such query); fixed by flowing the
+>       descriptor row type into candidates + baking pk keys, plan-time decline.
+> - [x] P0.2 streaming-agg ordered child pinned (FinalOf) instead of shared-group memoize
+> - [x] P0.3 union-leg pinning (delegator-hint lie + arity bake → dup rows through DISTINCT)
+> - [x] P0.4 rebuildOrderedSpine executable-plan verification (extraction twin of RFC-180's)
+> - [x] P0.5 INT/FLOAT 32-bit arithmetic lanes (Graefe+Torvalds ACK; Type() INT case,
+>       literal narrowing per parseDecimal — closed 5 RFC-082 known-red entries)
+> - [x] P0.6 bestPhysicalChild hash tie-break + properties-side comparator injection
+> - [x] P0.7 PushSetOperationThroughFetch rebuild over pushed inners (Graefe+Torvalds ACK;
+>       single-pass tryPushValues, dynamic InUnion arm live, Case-2 partial push,
+>       ordered-union instantiation, e2e Fetch(Union(IndexScan…)) pin)
+> - [ ] C5 follow-up: DISTINCT cross-page dedup (seen-set rebuilt fresh per page —
+>       duplicates straddling an internal 4s page break re-admit; Java's
+>       UnorderedDistinctPlan has the identical shape, but Go's auto-paging hits it
+>       inside ONE statement; fix = seen-set through the continuation or a
+>       sorted-input distinct; documented at executeDistinct)
+> WS-C: DONE (Graefe ACK; Torvalds conditions folded — lazy continuations, depth
+> parity, ctor charge release). C1 full RecursiveUnionCursor port (UNION ALL
+> recursion streams + resumes mid-level), C2
+> engine-private decision + loud OptContinuation boundary, C3 kept-armed pending
+> inner, C4 LoadByKeys lazy key-list resume, C5 documented at executeDistinct,
+> C6 nil-continuation ban, intersectionMultiCursor consume().
+> C1 REMAINDER (no stopgaps — every rejectUnsupportedResume guard replaced by
+> the real port; the helper is deleted):
+> - RecursiveCursor 1:1 port (Java cursors/RecursiveCursor.java: per-depth
+>   node stack, RecursiveContinuation LevelCursor protos, primary-key check
+>   values with the discard-on-drift re-descent) — the DFS join now STREAMS
+>   and resumes; ImplementRecursiveDfsJoinRule strips the level-union
+>   TempTableInsert tops (Java's matcher shape), so the DFS legs are bare
+>   bodies and the eager DISTINCT arm charges its collects directly.
+>   E2E: TRAVERSAL ORDER pre_order/post_order paginate mid-traversal under a
+>   scanned-rows budget and resume with EXACT order
+>   (TestFDB_RecursiveDFS_Continuation_ResumeAcrossPages). Note the resume
+>   floor: checkpoints store PRE-YIELD positions (Java buildContinuation
+>   reads childContinuationBefore), so a page budget below ~depth scans
+>   cannot progress — inherent to Java's design, documented in the test.
+> - DISTINCT recursion arms (Go extension; Java rejects recursive UNION
+>   distinct): deterministic position-replay resume (lossless-codec
+>   {emitted count, boundary row}; drift under the token is LOUD), level
+>   union and DFS alike (TestRecursiveDistinctReplay_ResumesMidStream + the
+>   cyclic-graph FDB pin).
+> - explode / temp-table scan / table function / VALUES resume via Java's
+>   ListCursor 4-byte position (FromListWithContinuation)
+>   (TestListShapedPlans_ResumeMidList); corrupt tokens on every recursive
+>   arm are typed ContinuationParseError.
+> Phase B slice B1 LANDED: the correlated-scalar lowering is binding-aware —
+> clusterPullUp spans/seed/bake key by leg BINDING (legByBinding; display
+> aliases never key a span), the classifier's rightmost/outer-universe reads
+> sourceBinding + Binding entries, and the front-end dup-outer decline is
+> DELETED (P4c/P4d pins flipped from loud decline to exact rows, incl. the
+> minted-leg outer projection — the old silent-NULL class). Found+fixed in
+> the same slice (pre-existing on master, plain SQL, no dups): an
+> OUTER-scoped PLAIN column projected by a correlated scalar
+> (`SELECT (SELECT a.id FROM q AS z WHERE z.qid=5) FROM p AS a`) served the
+> INNER row's first column — the plain spelling bypassed the walked arm's
+> scope classification and derived the seed key from text; unified via
+> classifyProjFieldValue over the resolver channel (parenthesized and plain
+> spellings classify identically). Pinned: outer_projected_scalar_fdb_test.
+> - [ ] Follow-up (found in B1, loud today): a scalar subquery whose ONLY
+>       outer reference sits in the PROJECTION (`SELECT (SELECT a.id + z.qid
+>       FROM q AS z WHERE z.qid = 5) FROM p AS a`) is classified
+>       UNCORRELATED (correlation detection looks at WHERE position only) →
+>       routed to the pre-eval planner → loud 0AF00 "could not plan scalar
+>       subquery". Java plans it as correlated. Fix: classify by the walked
+>       projection's free correlations, route to buildCorrelatedScalar.
+> WS-N interim: quoted-lowercase column 42703 fixed (rlcatalog exact-key lookup);
+> case-colliding quoted columns reject 0A000 at CREATE (was a planning panic);
+> green pins landed (quoted_identifier_pins, join_leg_name_pins). Still red →
+> Phase A: derived "A.ID" through a join (parser→IR string channel re-split).
+> WS-T: DONE (both reviewers ACK; conditions folded). Lanes, div wrap, ADD
+> string family + Double.toString contract, cast strictness + plan-time
+> cast-pair gate, plan-time promotion gate (+ the double-vs-integer SARG
+> narrowing and out-of-range clamps it exposed), IN/LIKE LHS gates,
+> document-and-pin batch, datetime edge nets. Cross-engine wins landed live:
+> string_concat_via_plus annotation retired; type_mismatch_boolean_eq_int
+> left the known-red lock; bigint_eq_double_above_2p53 corpus entry added.
+> - [x] FIRST-PRIORITY follow-up (Torvalds condition, sanctioned TODO) — DONE:
+>       SubqueryPlanner.BuildScalar returns the inner plan's output column
+>       type (project value / Java aggregate result table; correlated arm
+>       stays Unknown); ScalarSubqueryValue flows it into the cast-pair and
+>       promotion gates. Pinned in scalar_subquery_typed_gates.yaml.
+> - [x] Follow-up (Torvalds, sanctioned TODO) — DONE: the 0AF00 came from the
+>       walker being unable to EXPRESS a BYTES cast target (unsupported-shape
+>       decline → text-channel fallback → opaque "could not plan"). BYTES joined
+>       primitiveTypeToValueType, so ResolveCast's pair gate now rejects
+>       STRING→BYTES with its own 22F3H in both positions (WHERE via
+>       mapPredicateWalkError verbatim; projection via the InvalidCast surface
+>       arm), identity BYTES→BYTES evaluates instead of silently NULLing, and
+>       the cast.yaml pins assert 22F3H.
+> WS-N Phase A progress: slice 1 (structural validation channel) and slice 2
+> (born-baked — the four lazy resolver fallbacks retired as
+> UnresolvableOrdinalError after zero-hit probes across yamsql/embedded/full
+> sqldriver) are LANDED; slices 1-2 need their joint Graefe/Torvalds lap.
+> - [ ] Slice 3 IN PROGRESS: (a) DONE — the builder qualified-projection
+>       else-arm twins narrowed to the DUP-ALIAS carve-out (only live family;
+>       QOV(alias) is ambiguous across same-named legs, Java rejects dup
+>       aliases; Phase B's unique quantifier aliases retire the carve-out) and
+>       fail UnresolvableOrdinalError otherwise. (b) DONE — the correlated
+>       scalar join-inner hasJoins special-cases are DELETED: every join-inner
+>       reference (qualified/bare, group keys/aggregate args) resolves through
+>       resolver.ResolveIdentifier, the single scope channel, and the flat
+>       mints are gone (five-shape column-agg FDB pin; NOTE: verify probe
+>       builds compile — a goimports strip once turned a live arm into a
+>       false zero-hit read as dead). (b2) Graefe slice-3 follow-up DONE: the
+>       ambiguous bare re-read of qualified group keys (GROUP BY po.id, pi.id
+>       re-read as `id`) was SILENT-WRONG in the SELECT list (last-wins leg
+>       bind) and 0AF00 in HAVING — both now 42702 via scope validation of
+>       groupCol re-reads + loud semantic errors from upgradeHavingPredicate
+>       (pinned in ambiguous_group_key_reread.yaml, all re-read positions).
+>       (c) translator re-mints (translateProject :5994,
+>       translateProjectOverExistsFilter :4223 + the sort/group-key mints at
+>       :4559/:4719/:5730/:6218/:6345): zero lazy escapes past the bakes in
+>       yamsql+embedded (survival probe); the mint→bake pair is translator-
+>       internal representation until Phase C/D move the IR off name-carrying
+>       LogicalProject — full deletion is re-scoped THERE, not slice 3. The
+>       dup-alias face is the only designed lazy escape (FDB survival probe to
+>       enumerate).
+> - [x] Slice 4 DONE: the RFC-153 buried-preserved rebase is ordinal-first —
+>       buriedLegOrdinalLayout derives (leg, col) → global ordinal from the
+>       outer FlatMap's positional RC concat (or planBuriedLegConcat windows),
+>       and rebaseOuterLegValue bakes the merged-row ordinal when the layout
+>       answers, lazy qualified mint only when it cannot. EMPIRICAL FINDING:
+>       the whole leg-match arm is dead-in-effect today (box substrate rebases
+>       buried refs onto box correlations upstream — probed zero across all
+>       suites incl. the RFC-153 matrix); it stays as the fail-closed safety
+>       net and now bakes when it fires. White-box pins for the layout
+>       derivation + all rebase arms; 1M stress green at thresholds (full
+>       scans ~3.3s, lookups 10ms).
+>       REFINED MAP (read before starting): ONE call site (:479), gated
+>       innerNullOnEmpty && buriedPreservedAliases — the RFC-153 LEFT-OUTER
+>       buried-preserved rebase ONLY (regular INNER multiway already rebases
+>       onto $m in the merge collapse). The value rewrite QOV(leg).col →
+>       FieldValue(QOV($m), "LEG.COL") is the lazy half; study the plan-side
+>       twin rebasePlanBuriedRefs for the ordinal-composition symmetry, and
+>       planBuriedLegConcat (:1006, Fields+RecordTypeLegs boundaries) for the
+>       window layout. The FrontierPinned panic guard inside rebaseOuterLegValue
+>       documents the baked/lazy contract to preserve. Verifier
+>       planReferencesAnyBuriedAlias fail-closes — the ordinal rewrite must keep
+>       that conservatism. Pins to re-run: RFC-153 outer-join FDB suite + 1M
+>       stress before/after.
+> - [ ] Slice 5 RE-GATED (probed, evidence in code comments): both arms are
+>       dead-in-effect on every covered surface (zero hits across yamsql,
+>       embedded, cascades, full FDB driver — ok-line-verified probe runs),
+>       but their PRODUCERS still live: fieldValueAliasAndCol's dot-split
+>       serves the dup-alias carve-out's flat "ALIAS.COL" mints (retires with
+>       Phase B unique quantifier aliases) and MergeSeedLegsOfValue defends
+>       the enclosed-unnest name-model residual's dotted merged reads
+>       (retires with the box-substrate ordinalization). Killing before the
+>       producers would delete live defenses for constructible shapes
+>       (RFC-142 zero-rows / misclassification hazards). NOT gated on 3-4.
+> - [ ] Slice 6 SWEPT + CLASSIFIED (remaining callers each mapped to their
+>       retirement owner): converted-to-structural this slice —
+>       resolveCorrelatedColumnValue (takes aggArgBare/Qualifier/Qualified
+>       segments, no text re-split) and aggColRefFromExpr (returns
+>       extractAwfFields' structural argBare). Remaining census:
+>       (a) resolveColumnName else-arms (8 sites, both build paths) — the
+>       slice-1 dual-channel fallback for entries with EMPTY segments;
+>       retires when Phase D saturates segment population;
+>       (b) resolved-value dotted-defense splits (bareCol :3269 pair texts,
+>       qualifyBareFieldValue :7752, scalar classify :8557/:8573, checkColumn
+>       :4190 RFC-088 follow-up) — defend legacy dotted names; retire with
+>       their producers (dup-alias carve-out / name-model residuals);
+>       (c) eval_map/eval_predicate/eval_proto/select_helpers (5 sites) —
+>       RUNTIME datum-key splits, the name-keyed row model itself (Phase C/D);
+>       (d) cascades_generator metadata cluster (18 sites) — Phase D.
+>       Exit criterion unchanged: (a)-(c) drain as Phases B-D land.
+> WS-P: DONE — all four amendment stages landed, double-ACK'd (Graefe ACK
+> with the 15c-wording condition folded; Torvalds conditions folded: dead
+> helpers + ContainsFinal deleted, stale pre-flip comments rewritten).
+> Stage (a): ConstraintsMap 1:1 epoch port (ticks/watermarks) + finals
+> routing + Set choke-point mirror + MaxObservedExplorationRounds export.
+> Stage (b): the convergence handover — NeedsExploration is epoch-driven,
+> dual insertion retired (physical yields are FINALS ONLY), OptimizeInputs
+> guard reverted to Java's containsExactly, insert-driven exploration at
+> every insert site (data-access sites push tasks on InsertFinal), Absorb
+> folds constraints via the typed per-key combine + epoch ReArm. Four
+> latent order-dependences the flip exposed, each fixed structurally:
+> streaming-agg empty-keys arm enumerates ALL valid physical members;
+> findPhysicalPlan/Expr prefer valid physicals (nil-inner Fetch shells are
+> relink templates, never plan-embedded); intersector same-index guard
+> compares CandidateName; raw/adjusted partial-match twins collapse in the
+> intersection path only, preferring most matched ordering parts.
+> Stage (c): REWRITING finals route through OptimizeInputs (Java
+> ExploreGroup shape) — parent-chain-optimized groups cross the stage
+> boundary pruned to their REWRITING winner. RESIDUAL (documented at the
+> boundary arm + DIVERGENCES): UNIVERSAL prune-to-1 is gated on PLANNING
+> re-derivation parity — the forced-prune attempt lost canonical
+> alternatives Go's PLANNING cannot re-derive (RFC-153 buried-leg,
+> cross-join-EXISTS NoNulls).
+> Stage (d): 15b (compareFlatMapVsNLJ) RETIRED (regression no longer
+> reproduces; deleted with tests); 15c reclassified — a Go statistics
+> EXTENSION in the pre-hash tiebreak slot (Java's cost model is purely
+> heuristic), retiring it regressed real selectivity decisions; round cap
+> 10→100 as a LOUD divergence tripwire (epoch rounds structurally bounded
+> by the finite constraint lattices; round_cap_trips fixture).
+> Gate each stage: full sweep green, 1M stress at thresholds, determinism
+> clean, plandiff EXPLAIN parity. Ten white-box tests re-baselined to pin
+> FORMATION via direct rule firing (prune-to-winner hides losers from
+> post-Plan member walks); trailing-partition vector fan-out now plans AND
+> executes (exact-rows re-pin).
+> WS-P residual follow-ups (evidence-gated, not deferrals): universal
+> boundary prune-to-1 (needs PLANNING re-derivation parity, red shapes
+> named above); dual-store collapse (planner-global constraint map →
+> per-Reference ConstraintsMap once the stores can merge).
+> Remaining otherwise: WS-N Phases B-D after the slices.
+
+> ## [ ] RFC candidate — typed row representation: retire []any slots (GATED on WS-N Phase D)
+> Owner direction (2026-07-18): "we know the type of a column from proto —
+> get rid of any." Ground truth from the Java source: Java is MORE boxed
+> mechanically (QueryResult.datum is Object; rows are DynamicMessages whose
+> scalars live in a FieldDescriptor-keyed Object map), but structurally
+> STRICTER — Value extends Typed, getResultType() is part of the interface
+> contract, rows carry a descriptor synthesized from the plan-time type,
+> and client metadata reads positionally off Type.Record. Go's []any slots
+> are the lighter runtime shape; Go's DEFECT is type LOSS (UnknownType
+> minting + name-keyed re-derivation — the N-F4 family). Sequencing:
+> 1. WS-N Phase D ports Java's DISCIPLINE (type populated/preserved on
+>    every value, positional ColumnDef from the flowed type, the
+>    descriptor-guessing helpers deleted). Prerequisite; already scheduled.
+> 2. RFC A — typed scalar slots: PositionalRow.Slots []any → []Datum
+>    (kind tag + int64/float64/string/[]byte fields; no per-value heap
+>    alloc, kind-switch instead of type assertions). Row-at-a-time
+>    architecture unchanged. Mechanical but wide: evaluators, comparators,
+>    aggregate states, continuation codec, temp tables. MUST open with a
+>    pprof of the 1M stress + vector benches to quantify boxing cost and
+>    pick migration order. Boundaries that STAY any (correct): the FDB
+>    tuple layer (wire format is dynamically typed — wire-compat, hard
+>    line) and proto dynamic messages.
+> 3. RFC B — vectorized batches for the hot scan→filter→project pipeline
+>    (per-column typed arrays + null bitmaps, per-batch dispatch); complex
+>    operators (NLJ, recursion) stay row-at-a-time initially. This is also
+>    what makes SIMD distance kernels worthwhile (owner's c2goasm
+>    question): typed contiguous buffers first; then gonum asm / avo / Go
+>    1.26 GOEXPERIMENT=simd for euclidean_distance IF the profile shows it
+>    hot — never c2goasm (unmaintained, unreviewable output), and any
+>    kernel needs a fuzz differential pinning bit-equivalence with the
+>    pure-Go reference (distance ties feed plan/result determinism).
+> Both are allowed read-side Go extensions (Java never vectorized; wire
+> compat untouched). Each its own RFC with the standard review gauntlet.
+
+> ## [x] RFC-180 follow-up — output-label collision mis-binds sort keys over the IMMEDIATE reshaping strip — FIXED
+> (translateSort's flat-key arm now applies the RFC-180 round-14 BareRef
+> split: rendered-item keys bind PROJECTION text only, bare identifiers bind
+> alias-preferred names; pinned across four shapes in
+> sort_key_label_collision_fdb_test.go. Original diagnosis below.)
 > `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC`
 > sorts by PLAYER (the aliased column), not the aggregate: the sort sits ABOVE the reshaping projection
 > whose output row carries a column literally labeled `SUM(SCORE)` (the delimited alias), and both
@@ -4536,6 +4841,20 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
       (`TestSimInlineFutureVersion_QueueModelBackoff`; single-SS asserts QueueModel state, the cause).
 
 ---
+
+## SELECT-path CURRENT_* statement-stability (small, follow-up)
+
+- [ ] **Thread the statement clock through the executor's row eval contexts.** `values.StatementClock`
+  (RFC-181 fold) makes CURRENT_TIMESTAMP / CURRENT_DATE statement-stable wherever the evalCtx carries
+  a clock — the INSERT…VALUES fold passes one (`stmtClock`, insert_cascades.go). The SELECT path does
+  NOT yet: a projection row evaluates against `*values.RowEvalContext` or (when no bindings exist) the
+  BARE `values.OrdinalRow`, neither of which implements StatementClock, so each row's CURRENT_TIMESTAMP
+  falls back to `time.Now()` and can drift across rows within one statement (SQL requires per-statement
+  stability). Fix: stamp a statement time on `executor.EvaluationContext` at ExecutePlan entry, carry it
+  through the With* copies, expose it from RowEvalContext AND the bare-row wrapper path
+  (`rowEvalContextFor` / RowContextPositional — the bare OrdinalRow shape needs a wrapping or a
+  clock-bearing twin). Pin with a plan over enough rows that a drift would be observable via
+  two CURRENT_TIMESTAMP projections comparing unequal.
 
 ## Test infra (low priority)
 

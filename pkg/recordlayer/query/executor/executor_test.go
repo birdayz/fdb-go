@@ -5824,3 +5824,77 @@ func TestCompareValues_CrossTypeIsLoud(t *testing.T) {
 		t.Fatal("bytes vs string must error")
 	}
 }
+
+// TestRecursiveResume_CorruptTokensFailLoudly pins the resume boundary on
+// every recursive arm: a foreign/corrupt token parses LOUDLY as a typed
+// ContinuationParseError — never the C1 misroute (raw bytes fed to the seed
+// plan, silently accepted as a scan key suffix: wrong seed set,
+// re-emission, no error). All three arms RESUME now: UNION ALL level union
+// (RecursiveUnionCursor), UNION ALL DFS (RecursiveCursor), and the
+// DISTINCT extension (deterministic position-replay).
+func TestRecursiveResume_CorruptTokensFailLoudly(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	scanAlias := values.NamedCorrelationIdentifier("scan")
+	insertAlias := values.NamedCorrelationIdentifier("insert")
+	mkPlan := func() *plans.RecordQueryRecursiveLevelUnionPlan {
+		initial := plans.NewRecordQueryTempTableInsertPlan(
+			plans.NewRecordQueryValuesPlan([]values.Value{
+				&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+			}),
+			insertAlias, false,
+		)
+		recursive := plans.NewRecordQueryTempTableInsertPlan(
+			plans.NewRecordQueryExplodePlan(nil),
+			insertAlias, false,
+		)
+		return plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+	}
+
+	// A mid-stream list-index token from a prior page (4 bytes) — exactly
+	// the shape the misroute silently swallowed. For a UNION ALL plan the
+	// streaming resume PARSES the token as a RecursiveCursorContinuation —
+	// a foreign/corrupt token fails LOUDLY (never a silent restart).
+	fakeToken := []byte{0, 0, 0, 1}
+	_, err := ExecutePlan(ctx, mkPlan(), nil, EmptyEvaluationContext(), fakeToken, recordlayer.DefaultExecuteProperties())
+	var parseErr *recordlayer.ContinuationParseError
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("a corrupt token on a streaming recursive CTE must fail loudly with ContinuationParseError, got %v", err)
+	}
+
+	// The DISTINCT extension resumes by position-replay; its token is the
+	// lossless-codec {position, boundary row} pair — the same foreign
+	// bytes fail its decode as the same typed parse error.
+	distinct := plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
+		mkPlan().GetInitialState(), mkPlan().GetRecursiveState(), scanAlias, insertAlias)
+	_, err = ExecutePlan(ctx, distinct, nil, EmptyEvaluationContext(), fakeToken, recordlayer.DefaultExecuteProperties())
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("a corrupt token on a DISTINCT recursive CTE must fail loudly with ContinuationParseError, got %v", err)
+	}
+
+	// The DFS twin streams via the RecursiveCursor port; its token is the
+	// RecursiveContinuation proto — foreign bytes fail the parse.
+	dfs := plans.NewRecordQueryRecursiveDfsJoinPlan(mkPlan().GetInitialState(), mkPlan().GetRecursiveState(), scanAlias, plans.DfsPreorder)
+	_, err = ExecutePlan(ctx, dfs, nil, EmptyEvaluationContext(), fakeToken, recordlayer.DefaultExecuteProperties())
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("a corrupt token on a recursive DFS join must fail loudly with ContinuationParseError, got %v", err)
+	}
+
+	// A protobuf-VALID token with zero levels (unknown-field-only — field
+	// 15 varint 0) is equally corrupt: RecursiveCursor never emits one
+	// (terminals serialize nil), and treating it as exhausted silently
+	// served ZERO ROWS.
+	zeroLevels := []byte{0x78, 0x00}
+	_, err = ExecutePlan(ctx, dfs, nil, EmptyEvaluationContext(), zeroLevels, recordlayer.DefaultExecuteProperties())
+	if !errors.As(err, &parseErr) {
+		t.Fatalf("a zero-level recursive token must fail loudly, not serve zero rows, got %v", err)
+	}
+
+	// nil continuation still executes normally.
+	cursor, err := ExecutePlan(ctx, mkPlan(), nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("fresh execution must still work: %v", err)
+	}
+	cursor.Close()
+}

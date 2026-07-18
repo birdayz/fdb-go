@@ -9,25 +9,30 @@ import (
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
-// Map-path expression evaluator (mirror of eval_proto.go).
+// Map-path expression evaluator.
 //
 // evalExprAtomOnMap / evalExprOnMap evaluate expressions against a
-// `map[string]driver.Value` row — the path used by JOIN, CTE, and
-// post-aggregate row sets where the underlying representation is a
-// keyed map rather than a proto message. Routes to the same shared
-// scalar-function core, predicate evaluators, and value-compare
-// helpers as the proto path; the only divergence is column-resolution
-// (map lookup vs proto descriptor) and aggregate-name resolution
-// (post-aggregation rows have function-call names like "SUM(a)" as
-// keys).
-//
-// Phase 1c (RFC-021) plans to merge eval_proto.go and eval_map.go
-// behind a uniform `Row` interface — keeping the two paths in
-// dedicated files makes the duplication visible and the eventual
-// unification a clean before/after diff.
+// `map[string]driver.Value` row. Its ONE remaining production entry is
+// system-table filtering (system_tables.go → evalPredicateOnMapExpr):
+// INFORMATION_SCHEMA rows are keyed maps, not proto records, and are
+// filtered outside the Cascades executor. Every other consumer of the
+// legacy interpreter family is gone — INSERT...VALUES cells fold
+// through the Cascades value layer (insert_cascades.go), and the
+// proto-path twin this file once mirrored (eval_proto.go) is deleted.
+// If system-table filtering ever moves onto the Cascades path, this
+// file goes with it.
 
-// evalExprAtomOnMap resolves an expression atom using a map[string]driver.Value
-// row (used for JOIN WHERE and ON condition evaluation).
+// looksBoolean reports whether an expression atom is clearly a boolean
+// (comparison or nested parenthesised boolean). Used to route a
+// parenthesised group through the tri-state predicate evaluator
+// instead of the value evaluator when the inner looks predicate-ish.
+// False negatives are OK — they just fall through to the value path
+// which handles non-boolean atoms correctly.
+func looksBoolean(atom antlrgen.IExpressionAtomContext) bool {
+	_, ok := atom.(*antlrgen.BinaryComparisonPredicateContext)
+	return ok
+}
+
 func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
 	switch a := atom.(type) {
 	case *antlrgen.ConstantExpressionAtomContext:
@@ -44,9 +49,9 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 			// Try unqualified: "Order.amount" → "amount". The
 			// qualifier-reject and correlated outer-scope paths were
 			// removed with the legacy interpreter (RFC-147): the kept
-			// map-path consumers (INFORMATION_SCHEMA WHERE,
-			// INSERT-VALUES folding) never set a JOIN/outer scope, so
-			// those branches were unreachable dead state.
+			// map-path consumer (INFORMATION_SCHEMA WHERE filtering)
+			// never sets a JOIN/outer scope, so those branches were
+			// unreachable dead state.
 			v, found = row[ref.bare()]
 		}
 		if !found {
@@ -208,9 +213,8 @@ func evalExprOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string
 	case *antlrgen.LogicalExpressionContext:
 		// Value-eval must preserve UNKNOWN as NULL, not collapse to
 		// false. `SELECT b AND TRUE FROM x` for b=NULL should project
-		// NULL, matching the proto-path fix at d0f2a3a1. Using the
-		// 2-valued bool wrapper here dropped UNKNOWN → false and
-		// diverged from Java.
+		// NULL (Java parity). Using the 2-valued bool wrapper here
+		// dropped UNKNOWN → false and diverged from Java.
 		t, err := evalPredicateOnMapExprTri(ctx, conn, row, expr)
 		if err != nil {
 			return nil, err

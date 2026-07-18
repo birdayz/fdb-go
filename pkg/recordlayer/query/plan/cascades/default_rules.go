@@ -289,6 +289,7 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushUnionThroughFetchRule(),
 		NewPushIntersectionThroughFetchRule(),
 		NewPushUnorderedUnionThroughFetchRule(),
+		NewPushMergeSortUnionThroughFetchRule(),
 		NewPushInUnionThroughFetchRule(),
 		NewRemoveProjectionRule(),
 		NewMergeProjectionAndFetchRule(),

@@ -163,7 +163,7 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 
 			if len(merge) == len(orderings) {
 				mergedOrdering := merge[len(merge)-1].merged
-				r.yieldFromMergedOrdering(call, unionQs, combo, mergedOrdering, requestedOrdering)
+				r.yieldFromMergedOrdering(call, combo, mergedOrdering, requestedOrdering)
 			}
 		}
 	}
@@ -171,30 +171,11 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 
 func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 	call *ImplementationRuleCall,
-	unionQs []expressions.Quantifier,
 	combo []*PlanPartition,
 	mergedOrdering *RichOrdering,
 	requestedOrdering *RequestedOrdering,
 ) {
-	var childPlans []plans.RecordQueryPlan
-	var newQuantifiers []expressions.Quantifier
-	for i, partition := range combo {
-		planExprs := partition.GetExpressions()
-		if len(planExprs) == 0 {
-			return
-		}
-		newRef := call.MemoizeFinalExpressionsFromOther(
-			unionQs[i].GetRangesOver(), planExprs)
-		newQuantifiers = append(newQuantifiers,
-			expressions.NewPhysicalQuantifier(newRef))
-		for _, pe := range planExprs {
-			if ph, ok := pe.(physicalPlanExpression); ok {
-				childPlans = append(childPlans, ph.GetRecordQueryPlan())
-			}
-		}
-	}
-
-	if len(childPlans) < 2 {
+	if len(combo) < 2 {
 		return
 	}
 
@@ -204,6 +185,65 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 			comparisonKeyValues, requestedOrdering, ProvidedSortOrderFixed)
 		isReverse := ResolveComparisonDirection(comparisonParts)
 		comparisonParts = AdjustFixedBindings(comparisonParts, isReverse)
+
+		// The comparison keys ARE the per-leg ordering contract of the
+		// merge-front dedup: a leg whose EXECUTED order diverges from them
+		// mis-merges (duplicates through UNION distinct). The old shape
+		// trusted a partition-level first-member ordering ESTIMATE (a
+		// delegator's group hint, untethered to its baked child) and baked
+		// EVERY partition member as a plan child (a 2-leg union executing a
+		// 3+-way merge). Now: per leg, the cheapest member that
+		// STRUCTURALLY satisfies the comparison-key requirement
+		// (memberSatisfiesOrdering resolves delegators through their
+		// source groups), spine-PINNED (pinOrderedSpine — executable-plan
+		// verified) and baked as the ONE child over a FinalOf singleton.
+		// An unpinnable leg skips this comparison-key candidate — the
+		// in-memory-sort alternative still competes.
+		legReqParts := make([]RequestedOrderingPart, len(comparisonParts))
+		for i, p := range comparisonParts {
+			so := RequestedSortOrderAny
+			if p.SortOrder != ProvidedSortOrderFixed {
+				so = p.SortOrder.ToRequestedSortOrder()
+			}
+			legReqParts[i] = RequestedOrderingPart{Value: p.Value, SortOrder: so}
+		}
+		legReq := NewRequestedOrdering(legReqParts, DistinctnessPreserveDistinctness, false)
+
+		tieBrokenLess := lessWithHashTieBreak(call.CostModel())
+		var childPlans []plans.RecordQueryPlan
+		var newQuantifiers []expressions.Quantifier
+		ok := true
+		for _, partition := range combo {
+			var best expressions.RelationalExpression
+			for _, pe := range partition.GetExpressions() {
+				if !memberSatisfiesOrdering(pe, legReq) {
+					continue
+				}
+				if best == nil || tieBrokenLess(pe, best) {
+					best = pe
+				}
+			}
+			if best == nil {
+				ok = false
+				break
+			}
+			pinned := pinOrderedSpine(best, legReq, call.CostModel())
+			if pinned == nil {
+				ok = false
+				break
+			}
+			pp, isPhys := pinned.(physicalPlanExpression)
+			if !isPhys {
+				ok = false
+				break
+			}
+			childPlans = append(childPlans, pp.GetRecordQueryPlan())
+			newQuantifiers = append(newQuantifiers,
+				expressions.NewPhysicalQuantifier(expressions.FinalOf(pinned)))
+		}
+		if !ok {
+			continue
+		}
 
 		comparisonKeys := make([]values.Value, len(comparisonParts))
 		for i, p := range comparisonParts {

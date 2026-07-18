@@ -70,15 +70,25 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// populated.
 	priorCorrelation := recUnion.GetTempTableScanAlias()
 
+	// Java's rule (ImplementRecursiveDfsJoinRule) matches
+	// tempTableInsertPlanOverQuantifier and builds the DFS plan from the
+	// plans UNDER the inserts: the DFS traversal binds the prior row per
+	// level (no ping-pong tables), so the level-union's insert tops are
+	// dead plumbing here — and under the streaming RecursiveCursor a
+	// per-level TempTableInsertCursor continuation would snapshot the
+	// accumulator table into EVERY level of the DFS continuation.
+	rootPlan := stripTempTableInsertTop(initPh.GetRecordQueryPlan())
+	childPlan := stripTempTableInsertTop(recPh.GetRecordQueryPlan())
+
 	var plan *plans.RecordQueryRecursiveDfsJoinPlan
 	if recUnion.IsDistinct() {
 		plan = plans.NewRecordQueryRecursiveDfsJoinPlanDistinct(
-			initPh.GetRecordQueryPlan(), recPh.GetRecordQueryPlan(),
+			rootPlan, childPlan,
 			priorCorrelation, strategy,
 		)
 	} else {
 		plan = plans.NewRecordQueryRecursiveDfsJoinPlan(
-			initPh.GetRecordQueryPlan(), recPh.GetRecordQueryPlan(),
+			rootPlan, childPlan,
 			priorCorrelation, strategy,
 		)
 	}
@@ -86,6 +96,20 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	rootQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialWinner))
 	childQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveWinner))
 	call.Yield(newPhysicalRecursiveDfsJoinWrapper(plan, rootQ, childQ))
+}
+
+// stripTempTableInsertTop unwraps a TempTableInsert at the top of a leg plan
+// (Java's initialInnerPlanMatcher / recursive TempTableInsertExpression
+// matcher shapes take the plan UNDER the insert). Match-surface divergence:
+// Java's matcher REQUIRES the insert top (the rule does not fire without
+// it), while this strip tolerates its absence — benign because the front
+// end always builds recursive legs insert-topped, and a hypothetical bare
+// leg would plan identically rather than silently mis-fire.
+func stripTempTableInsertTop(p plans.RecordQueryPlan) plans.RecordQueryPlan {
+	if ins, ok := p.(*plans.RecordQueryTempTableInsertPlan); ok {
+		return ins.GetInner()
+	}
+	return p
 }
 
 var _ ExpressionRule = (*ImplementRecursiveDfsJoinRule)(nil)

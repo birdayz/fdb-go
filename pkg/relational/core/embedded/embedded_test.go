@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -677,8 +678,16 @@ func FuzzApplyMathOp(f *testing.F) {
 					pair.l, pair.r, op, v, err)
 			}
 		}
-		// Non-numeric operand must error cleanly.
-		if _, err := functions.ApplyMathOp("bad", b, op); err == nil {
+		// A string operand: `+` CONCATENATES per Java's ADD string family
+		// (ArithmeticValue.java ADD_SI..ADD_SS — "bad" + 3 is "bad3");
+		// every other operator must error cleanly.
+		v, err := functions.ApplyMathOp("bad", b, op)
+		if op == "+" {
+			want := "bad" + strconv.FormatInt(b, 10)
+			if err != nil || v != want {
+				t.Fatalf("functions.ApplyMathOp(string, %d, +) = (%v, %v), want (%q, nil)", b, v, err, want)
+			}
+		} else if err == nil {
 			t.Fatalf("functions.ApplyMathOp(string, _, %q) must error", op)
 		}
 	})

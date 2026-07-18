@@ -29,6 +29,18 @@ import (
 type Memo struct {
 	root *expressions.Reference
 
+	// reExplore, when set, schedules a re-exploration round for a
+	// Reference whose member set changed OUTSIDE the task-driven yield
+	// paths (a cross-group Absorb, a rule's raw insert into an existing
+	// child group). Under the epoch convergence, member growth no longer
+	// drives exploration by itself — an insertion into a group whose
+	// exploration already began MUST re-arm the epoch AND put a task on
+	// the stack, or the new member is silently never explored and
+	// AdvancePlannerStage discards it. Registered per-planner (the memo
+	// is per-planner state; a package-global would leak across the
+	// parallel planners tests run in one process).
+	reExplore func(*expressions.Reference)
+
 	// refs is the set of all References known to the Memo.
 	refs map[*expressions.Reference]struct{}
 
@@ -285,6 +297,43 @@ func (m *Memo) MemoizeExpressions(exprs []expressions.RelationalExpression) *exp
 	}
 	m.indexReference(ref)
 	return ref
+}
+
+// SetReExploreScheduler registers the planner's re-exploration hook
+// (see the reExplore field).
+func (m *Memo) SetReExploreScheduler(f func(*expressions.Reference)) { m.reExplore = f }
+
+// scheduleReExplore re-arms and schedules a re-exploration round for a
+// reference whose members changed outside the yield paths. A reference
+// whose exploration never began needs nothing — its first round explores
+// every member when a parent's child-walk reaches it.
+func (m *Memo) scheduleReExplore(ref *expressions.Reference) {
+	if m == nil || ref == nil {
+		return
+	}
+	ref = ref.Canonical()
+	cm := ref.ConstraintsMap()
+	if cm == nil || cm.HasNeverBeenExplored() {
+		return
+	}
+	cm.ReArm()
+	if m.reExplore != nil {
+		m.reExplore(ref)
+	}
+}
+
+// InsertReExploring inserts expr into ref, keeps the topology index
+// fresh, and — when ref's exploration already began — re-arms and
+// schedules the re-round the epoch model requires for out-of-band
+// member growth. Rule code inserting into a ref it did NOT just create
+// must use this, never a raw Reference.Insert.
+func (m *Memo) InsertReExploring(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	if !ref.Insert(expr) {
+		return false
+	}
+	m.AddExpression(ref, expr)
+	m.scheduleReExplore(ref)
+	return true
 }
 
 // AddExpression registers a new expression into the Memo's index

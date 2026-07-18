@@ -1,0 +1,40 @@
+# join_leg_name_pins.yaml — same-named columns across join legs
+#
+# WS-N (RFC-181) regression nets: the engine still resolves some
+# leg/column questions through rendered names; these shapes are correct
+# today and must stay correct through the Phase A-D rewrites. The
+# deeper EXPLAIN-verified variants (sort-elision poison bypass, driver
+# TYPE metadata) land with Phases C/D where their machinery changes.
+name: join_leg_name_pins
+schema_template: |
+  CREATE TABLE a (
+    id BIGINT NOT NULL,
+    v BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE b (
+    id BIGINT NOT NULL,
+    v STRING,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO a VALUES (1, 100), (2, 50)
+  - INSERT INTO b VALUES (1, 'zz'), (2, 'aa')
+tests:
+  # Pin 3 shape: duplicate output name V across join legs; ORDER BY a.v
+  # must sort by LEG A's column (50 first), not bind the baked requested
+  # key to b's same-named column.
+  - query: SELECT a.id FROM a, b WHERE b.id = a.id ORDER BY a.v
+    rows:
+      - [2]
+      - [1]
+  - query: SELECT a.id FROM a, b WHERE b.id = a.id ORDER BY b.v
+    rows:
+      - [2]
+      - [1]
+  # Pin 5 shape: same-named columns with DIFFERENT types across legs —
+  # each output column keeps its own leg's values (a.v integer, b.v
+  # string), never the other leg's same-named datum.
+  - query: SELECT a.v, b.v FROM a, b WHERE b.id = a.id AND a.id = 1
+    rows:
+      - [100, zz]
