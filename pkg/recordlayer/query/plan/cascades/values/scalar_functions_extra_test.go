@@ -448,6 +448,15 @@ func TestScalarFunction_DatePartAcceptsCastableTimestamps(t *testing.T) {
 	if got, err := NewScalarFunctionValue("HOUR", NullableInt, zoned).Evaluate(nil); err != nil || got != int64(1) {
 		t.Errorf("HOUR('2024-01-02T03:04:05+02:00') = %v, %v — want 1 (UTC-normalized, cast-consistent)", got, err)
 	}
+	// The already-parsed time.Time carrier normalizes identically — a
+	// non-UTC zone representation must not leak into the parts.
+	zonedT := &ConstantValue{
+		Value: time.Date(2024, 1, 2, 3, 4, 5, 0, time.FixedZone("X", 2*3600)),
+		Typ:   NullableTimestamp,
+	}
+	if got, err := NewScalarFunctionValue("HOUR", NullableInt, zonedT).Evaluate(nil); err != nil || got != int64(1) {
+		t.Errorf("HOUR(time.Time in +02:00) = %v, %v — want 1 (UTC-normalized)", got, err)
+	}
 	var argErr *InvalidArgumentError
 	if _, err := NewScalarFunctionValue("YEAR", NullableInt, &ConstantValue{Value: "not-a-date", Typ: TypeString}).Evaluate(nil); !errors.As(err, &argErr) {
 		t.Errorf("YEAR('not-a-date') = %v — want *InvalidArgumentError (22023)", err)

@@ -2509,9 +2509,11 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		}
 		s, ok := args[0].(string)
 		if !ok {
-			// Also handle time.Time if the argument was already parsed.
+			// Also handle time.Time if the argument was already parsed —
+			// normalized to UTC like the string path, so the parts never
+			// depend on the carrier's zone representation.
 			if t, tok := args[0].(time.Time); tok {
-				return datePartFromTime(name, t), nil
+				return datePartFromTime(name, t.UTC()), nil
 			}
 			return nil, nil
 		}
