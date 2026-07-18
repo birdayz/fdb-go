@@ -2532,7 +2532,10 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			// corrupts an INSERT.
 			return nil, &InvalidArgumentError{Message: fmt.Sprintf("cannot extract %s from %q: not a date/time value", name, s)}
 		}
-		return datePartFromTime(name, t), nil
+		// Normalize to UTC before extraction — the TIMESTAMP cast
+		// canonicalizes zoned forms to UTC, and the date parts must
+		// agree with it (HOUR('…T03:04:05+02:00') is 1, not 3).
+		return datePartFromTime(name, t.UTC()), nil
 		// CURRENT_TIMESTAMP / CURRENT_DATE / CURRENT_TIME / LOCALTIME
 		// live in evalScalarFunctionCtx — they need the evalCtx's
 		// StatementClock; a single authority so the strict path can
