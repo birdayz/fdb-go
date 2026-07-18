@@ -208,7 +208,7 @@ func ExecutePlan(
 		return executeMultiIntersection(ctx, p, store, evalCtx, continuation, props)
 
 	case *plans.RecordQueryLoadByKeysPlan:
-		return executeLoadByKeys(ctx, p, store, evalCtx, props)
+		return executeLoadByKeys(ctx, p, store, evalCtx, continuation, props)
 
 	// --- Go extensions (no Java equivalent) ---
 	case *plans.RecordQueryInMemorySortPlan:

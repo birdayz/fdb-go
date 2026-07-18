@@ -4022,3 +4022,88 @@ func TestIntegration_IndexScan_FullRange(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestIntegration_LoadByKeys_Resume pins the resumable key-list shape of
+// LoadByKeys (Java RecordQueryLoadByKeysPlan.executePlan resumes via
+// RecordCursor.fromList(keys, continuation)): reading one row, then
+// re-executing with the emitted continuation, must yield ONLY the
+// remaining keys' records. The eager buffered form dropped the incoming
+// continuation while emitting resumable-looking list tokens, so a
+// resume replayed every row from 0 — duplicates. Missing keys are
+// skipped like Java's .filter(Objects::nonNull).
+func TestIntegration_LoadByKeys_Resume(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store, &gen.Order{
+		OrderId: proto.Int64(1),
+		Price:   proto.Int32(100),
+	}, &gen.Order{
+		OrderId: proto.Int64(2),
+		Price:   proto.Int32(200),
+	}, &gen.Order{
+		OrderId: proto.Int64(3),
+		Price:   proto.Int32(300),
+	})
+
+	// Key 99 has no record — skipped without consuming an output slot.
+	keys := []tuple.Tuple{{int64(1)}, {int64(99)}, {int64(2)}, {int64(3)}}
+	p := plans.NewRecordQueryLoadByKeysPlanFromKeys(keys)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		cursor, err := ExecutePlan(ctx, p, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		first, err := cursor.OnNext(ctx)
+		if err != nil {
+			t.Fatalf("OnNext: %v", err)
+		}
+		if !first.HasNext() {
+			t.Fatal("expected a first row")
+		}
+		if got := first.GetValue().PrimaryKey; len(got) != 1 || got[0] != int64(1) {
+			t.Fatalf("first row pk = %v, want [1]", got)
+		}
+		contBytes, err := first.GetContinuation().ToBytes()
+		if err != nil {
+			t.Fatalf("continuation: %v", err)
+		}
+		if len(contBytes) == 0 {
+			t.Fatal("expected a resumable continuation after row 1")
+		}
+
+		resumed, err := ExecutePlan(ctx, p, s, EmptyEvaluationContext(), contBytes, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan(resume): %v", err)
+		}
+		defer resumed.Close()
+		rest, err := CollectAll(ctx, resumed)
+		if err != nil {
+			t.Fatalf("CollectAll(resume): %v", err)
+		}
+		var pks []int64
+		for _, r := range rest {
+			pks = append(pks, r.PrimaryKey[0].(int64))
+		}
+		// Resume must yield ONLY keys after the token (99 skipped): 2, 3.
+		// The replay-from-0 behavior yielded 1, 2, 3 again.
+		if len(pks) != 2 || pks[0] != int64(2) || pks[1] != int64(3) {
+			t.Fatalf("resumed rows = %v, want [2 3]", pks)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

@@ -604,13 +604,18 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 			return NewResultWithValue[[]T](results, cont), nil
 		}
 
-		// Advance all non-maximal children toward the max key.
+		// Advance all non-maximal children toward the max key. Java
+		// (IntersectionCursorBase.computeNextResultStates) consumes each
+		// discarded row first, so the child's cached continuation advances
+		// past it — a stop mid-catch-up resumes from the last discard, not
+		// the last match. Same shape as the binary intersectionCursor.
 		for _, child := range c.children {
 			neq, neqErr := compareKeys(child.comparisonKey, maxKey)
 			if neqErr != nil {
 				return RecordCursorResult[[]T]{}, neqErr
 			}
 			if neq != 0 {
+				child.consume()
 				if err := child.advance(ctx); err != nil {
 					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
 				}
