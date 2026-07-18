@@ -2632,6 +2632,13 @@ func (a *ArithmeticValue) Name() string      { return "arith" }
 // Evaluate, so the result is nullable.
 func (a *ArithmeticValue) Type() Type {
 	lc, rc := arithOperandCode(a.Left), arithOperandCode(a.Right)
+	if a.Op == OpAdd && (lc == TypeCodeString || rc == TypeCodeString) {
+		// Java's ADD_*S/S* operators CONCATENATE: any + with a STRING
+		// operand (against INT/LONG/FLOAT/DOUBLE/STRING) yields STRING
+		// (ArithmeticValue.java ADD_IS..ADD_SS) — string wins over the
+		// numeric promotions for ADD.
+		return NullableString
+	}
 	if lc == TypeCodeDouble || rc == TypeCodeDouble {
 		return NullableDouble
 	}
@@ -2678,6 +2685,11 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) (any, error) {
 	// the dispatch grows more precise as the resolver types more values
 	// (WS-N Phase D).
 	lc, rc := arithOperandCode(a.Left), arithOperandCode(a.Right)
+	if a.Op == OpAdd && (lc == TypeCodeString || rc == TypeCodeString) {
+		if out, handled := a.evalStringConcat(l, r, lc, rc); handled {
+			return out, nil
+		}
+	}
 	if lc == TypeCodeFloat || rc == TypeCodeFloat {
 		otherOK := func(c TypeCode) bool {
 			return c == TypeCodeFloat || c == TypeCodeInt || c == TypeCodeLong
@@ -2807,6 +2819,79 @@ func (a *ArithmeticValue) evalFloat32(l, r any) any {
 		return nil
 	}
 	return float64(out)
+}
+
+// evalStringConcat is Java's ADD string family
+// (ArithmeticValue.java ADD_IS/LS/FS/DS/SI/SL/SF/SD/SS): `+` with a
+// STRING operand CONCATENATES, rendering the numeric side exactly as
+// Java's string coercion would (Integer/Long decimal, Float/Double via
+// their toString — ".0" on whole values, upper-case E exponents,
+// Infinity/-Infinity/NaN spellings). handled=false when the other
+// operand's static code is outside the Java table (the caller's
+// generic arms then error as before).
+func (a *ArithmeticValue) evalStringConcat(l, r any, lc, rc TypeCode) (any, bool) {
+	render := func(v any, code TypeCode) (string, bool) {
+		switch code {
+		case TypeCodeString:
+			s, ok := v.(string)
+			return s, ok
+		case TypeCodeInt, TypeCodeLong:
+			iv, ok := toInt64ForArith(v)
+			if !ok {
+				return "", false
+			}
+			return strconv.FormatInt(iv, 10), true
+		case TypeCodeFloat:
+			f64, _, ok := ToFloat64(v)
+			if !ok {
+				return "", false
+			}
+			return javaFloatString(float64(float32(f64)), 32), true
+		case TypeCodeDouble:
+			f64, _, ok := ToFloat64(v)
+			if !ok {
+				return "", false
+			}
+			return javaFloatString(f64, 64), true
+		default:
+			return "", false
+		}
+	}
+	ls, lok := render(l, lc)
+	rs, rok := render(r, rc)
+	if !lok || !rok {
+		return nil, false
+	}
+	return ls + rs, true
+}
+
+// javaFloatString renders a float the way Java's Float.toString /
+// Double.toString does: whole values keep ".0", exponent forms use an
+// upper-case E with no "+" (1e10 → "1.0E10"), and the special values
+// spell Infinity/-Infinity/NaN.
+func javaFloatString(f float64, bits int) string {
+	if math.IsNaN(f) {
+		return "NaN"
+	}
+	if math.IsInf(f, 1) {
+		return "Infinity"
+	}
+	if math.IsInf(f, -1) {
+		return "-Infinity"
+	}
+	s := strconv.FormatFloat(f, 'g', -1, bits)
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		mant, exp := s[:i], s[i+1:]
+		exp = strings.TrimPrefix(exp, "+")
+		if !strings.Contains(mant, ".") {
+			mant += ".0"
+		}
+		return mant + "E" + exp
+	}
+	if !strings.Contains(s, ".") {
+		s += ".0"
+	}
+	return s
 }
 
 // toFloat32Operand converts a FLOAT-lane operand to float32. Integer

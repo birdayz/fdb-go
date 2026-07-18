@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**325 scenarios · 2572 query/assertion cases** across 18 feature areas.
+**326 scenarios · 2578 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -22,7 +22,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Set operations (UNION / INTERSECT / EXCEPT) | 10 | 53 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 194 |
 | Ordering & pagination | 13 | 114 |
-| Scalar functions & expressions | 32 | 347 |
+| Scalar functions & expressions | 33 | 353 |
 | Predicates & WHERE | 12 | 104 |
 | Column resolution & aliasing | 6 | 55 |
 | NULL handling | 5 | 26 |
@@ -313,6 +313,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `select_constant_expression` | 3 | Constant expressions in SELECT |
 | `select_expression_projection` | 4 | Computed columns in SELECT |
 | `select_expressions_java` | 9 | SELECT with various expression types. |
+| `string_concat_plus` | 6 | Java's ADD string family end-to-end |
 | `string_functions` | 13 | STRING-family scalar functions: UPPER / LOWER / LENGTH / CHAR_LENGTH / |
 | `string_functions_java` | 11 | String function patterns. |
 | `trim_concat` | 10 | TRIM / LTRIM / RTRIM / CONCAT / REPLACE — a Go-only read-side extension |

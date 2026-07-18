@@ -558,3 +558,58 @@ func TestArithmeticValue_FloatLaneSingleRounding(t *testing.T) {
 		t.Fatalf("LF add: got %v, want %v (single-rounded (float)long)", got, want)
 	}
 }
+
+// TestArithmeticValue_AddStringConcatenates pins Java's ADD string
+// family (ArithmeticValue.java ADD_IS/LS/FS/DS/SI/SL/SF/SD/SS): `+`
+// with a STRING operand concatenates, rendering numbers exactly as
+// Java's string coercion — Integer/Long decimal, Float/Double via
+// their toString (".0" on whole values, upper-case E exponents with no
+// plus sign, Infinity/NaN spellings).
+func TestArithmeticValue_AddStringConcatenates(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		l, r   any
+		lt, rt Type
+		want   string
+	}{
+		{"int+string", int64(5), "abc", NullableInt, TypeString, "5abc"},
+		{"string+long", "n=", int64(-7), TypeString, NullableLong, "n=-7"},
+		{"string+string", "ab", "cd", TypeString, TypeString, "abcd"},
+		{"double whole keeps .0", "d=", float64(1), TypeString, NullableDouble, "d=1.0"},
+		{"double exponent E form", "d=", float64(1e10), TypeString, NullableDouble, "d=1.0E10"},
+		{"double negative exponent", "d=", float64(1e-10), TypeString, NullableDouble, "d=1.0E-10"},
+		{"float renders float32", "f=", float64(1.5), TypeString, NullableFloat, "f=1.5"},
+		{"float infinity spelling", "f=", math.Inf(1), TypeString, NullableFloat, "f=Infinity"},
+		{"double NaN spelling", "d=", math.NaN(), TypeString, NullableDouble, "d=NaN"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			av := &ArithmeticValue{
+				Op:    OpAdd,
+				Left:  &ConstantValue{Value: tc.l, Typ: tc.lt},
+				Right: &ConstantValue{Value: tc.r, Typ: tc.rt},
+			}
+			if got := av.Type(); got != NullableString {
+				t.Fatalf("static type: got %v, want NullableString (Java ADD_*S result type)", got)
+			}
+			got, err := av.Evaluate(nil)
+			require.NoError(t, err)
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	// Non-ADD ops with a string operand still error (Java has no SUB/MUL
+	// string operators).
+	sub := &ArithmeticValue{
+		Op:    OpSub,
+		Left:  &ConstantValue{Value: "ab", Typ: TypeString},
+		Right: &ConstantValue{Value: int64(1), Typ: NullableInt},
+	}
+	if _, err := sub.Evaluate(nil); err == nil {
+		t.Fatal("string - int must still error (no Java SUB string operator)")
+	}
+}
