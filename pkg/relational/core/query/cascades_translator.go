@@ -415,7 +415,10 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 				if !strings.Contains(c.Name, ".") {
 					name = prefix + name
 				}
-				fields = append(fields, values.Field{Name: name, FieldType: values.UnknownType, Ordinal: len(fields)})
+				// Phase D: the rename is name-only — the child leg's
+				// FLOWED type rides through (typed at the scan base from
+				// the proto descriptors).
+				fields = append(fields, values.Field{Name: name, FieldType: c.FieldType, Ordinal: len(fields)})
 			}
 		}
 		return fields
@@ -429,7 +432,15 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			if i < len(o.Aliases) && o.Aliases[i] != "" {
 				name = o.Aliases[i]
 			}
-			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
+			// Phase D: a resolved projection carries its own type; only a
+			// lazy (unresolved) projection stays Unknown until resolution.
+			ft := values.Type(values.UnknownType)
+			if i < len(o.ProjectedValues) && o.ProjectedValues[i] != nil {
+				if vt := o.ProjectedValues[i].Type(); vt != nil {
+					ft = vt
+				}
+			}
+			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: ft, Ordinal: i}
 		}
 		return fields
 	case *logical.LogicalUnnest:
