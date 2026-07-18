@@ -373,8 +373,8 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 	// one leg and the executor's binding-keyed leg windows resolve it.
 	// This retires the flat "ALIAS.COL" projection carve-out (the last
 	// flat-name projection mint).
-	// The UNION dup-alias case (not yet supported) declines UPSTREAM at the
-	// union-branch build before reaching here.
+	// A dup-alias branch under UNION ALL reaches here too and bakes the
+	// same per-binding way — no upstream decline remains.
 	if ord, ok := sourceColumnOrdinal(src, col.Id.Name()); ok {
 		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(src.CorrelationName)),
@@ -388,11 +388,11 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 
 // QualifierIsDuplicated reports whether the given qualifier ALIAS names MORE
 // than one local scope source (`FROM p AS a, q AS a`) — a duplicate plain
-// alias. Such a reference must NOT bake: the duplicate-FROM-alias mint gives
-// the two sources distinct correlations, but the qualified reference stays
-// display-keyed and dies LOUD at the executor's ordinal-resolution guard —
-// matching Java, which rejects a duplicate alias at binding. A single-match
-// qualifier bakes normally.
+// alias. A duplicated qualifier cannot be served by ordinary display-keyed
+// emission (the duplicate-FROM-alias mint gives the sources distinct
+// correlations), so the caller forces the per-binding bake: a
+// source-relative ordinal against the resolved leg. A unique alias bound by
+// its own name stays with ordinary emission.
 func (r *Resolver) QualifierIsDuplicated(qualifier semantic.Identifier) bool {
 	if qualifier.IsZero() {
 		return false
