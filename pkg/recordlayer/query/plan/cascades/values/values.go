@@ -3266,7 +3266,11 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		case string:
 			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 32)
 			if err != nil {
-				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to INT: %s", val, err)}
+				// Java STRING_TO_INT wraps Integer.parseInt's
+				// NumberFormatException — its message is the stock
+				// `For input string: "X"` for syntax AND range failures
+				// alike (CastValue.java:185-192), never Go's strconv text.
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to INT: For input string: \"%s\"", val, strings.TrimSpace(val))}
 			}
 			return n, nil
 		}
@@ -3291,7 +3295,8 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		case string:
 			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
 			if err != nil {
-				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to LONG: %s", val, err)}
+				// Java STRING_TO_LONG: Long.parseLong's stock message.
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to LONG: For input string: \"%s\"", val, strings.TrimSpace(val))}
 			}
 			return n, nil
 		}
@@ -3300,8 +3305,23 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		case bool:
 			return val, nil
 		case int64:
+			// Java's cast table has INT_TO_BOOLEAN but NO
+			// LONG/FLOAT/DOUBLE_TO_BOOLEAN (CastValue.java:230; missing
+			// pairs fail resolution with "No cast defined from X to
+			// BOOLEAN"). Dispatch on the CHILD's STATIC code: a genuine
+			// INT converts (!= 0); LONG rejects like Java. An
+			// UNKNOWN-typed child keeps the conversion — the static
+			// widths now flow from the catalog, so unknown means an
+			// internal untyped expression, not a BIGINT column.
+			if code := arithOperandCode(c.Child); code == TypeCodeLong {
+				return nil, &InvalidCastError{Message: "No cast defined from LONG to BOOLEAN"}
+			}
 			return val != 0, nil
 		case float64:
+			code := arithOperandCode(c.Child)
+			if code == TypeCodeDouble || code == TypeCodeFloat {
+				return nil, &InvalidCastError{Message: fmt.Sprintf("No cast defined from %v to BOOLEAN", code)}
+			}
 			return val != 0, nil
 		case string:
 			switch strings.ToLower(strings.TrimSpace(val)) {

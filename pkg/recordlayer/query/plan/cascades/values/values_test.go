@@ -308,18 +308,41 @@ func TestCastValue(t *testing.T) {
 		t.Fatalf("false→int: got %v", got)
 	}
 
-	// int → bool: 0=false, non-zero=true.
-	intToBool := NewCastValue(&ConstantValue{Value: int64(0), Typ: TypeInt}, TypeBool)
+	// INT → bool: 0=false, non-zero=true (Java INT_TO_BOOLEAN — the
+	// genuine 32-bit type; TypeInt is the LONG alias, which REJECTS).
+	intToBool := NewCastValue(&ConstantValue{Value: int64(0), Typ: NullableInt}, TypeBool)
 	got, errEv6 := intToBool.Evaluate(nil)
 	require.NoError(t, errEv6)
 	if got != false {
 		t.Fatalf("0→bool: got %v", got)
 	}
-	intToBool = NewCastValue(&ConstantValue{Value: int64(7), Typ: TypeInt}, TypeBool)
+	intToBool = NewCastValue(&ConstantValue{Value: int64(7), Typ: NullableInt}, TypeBool)
 	got, errEv7 := intToBool.Evaluate(nil)
 	require.NoError(t, errEv7)
 	if got != true {
 		t.Fatalf("7→bool: got %v", got)
+	}
+	// LONG → bool has NO Java cast pair (CastValue.java's table defines
+	// INT_TO_BOOLEAN only; missing pairs fail "No cast defined") — the
+	// lenient arm silently converting BIGINT was the RFC-082
+	// "Go-too-lenient" suspect, now resolved by rejecting like Java.
+	longToBool := NewCastValue(&ConstantValue{Value: int64(7), Typ: NullableLong}, TypeBool)
+	if _, err := longToBool.Evaluate(nil); err == nil {
+		t.Fatal("LONG→BOOLEAN must reject (no Java cast pair)")
+	}
+	// DOUBLE → bool likewise.
+	dblToBool := NewCastValue(&ConstantValue{Value: float64(1), Typ: NullableDouble}, TypeBool)
+	if _, err := dblToBool.Evaluate(nil); err == nil {
+		t.Fatal("DOUBLE→BOOLEAN must reject (no Java cast pair)")
+	}
+	// An UNKNOWN-typed child keeps the conversion (internal untyped
+	// expressions; SQL columns carry real widths since the catalog
+	// split).
+	unkToBool := NewCastValue(&ConstantValue{Value: int64(7), Typ: UnknownType}, TypeBool)
+	got, errEv7b := unkToBool.Evaluate(nil)
+	require.NoError(t, errEv7b)
+	if got != true {
+		t.Fatalf("unknown-typed 7→bool: got %v", got)
 	}
 
 	// NULL propagates.
@@ -351,18 +374,18 @@ func TestCastValue(t *testing.T) {
 	if got != int64(-4) {
 		t.Fatalf("-3.9→int: got %v, want -4", got)
 	}
-	// float → bool: 0.0 = false, non-zero = true
+	// DOUBLE/FLOAT → bool REJECT (no Java cast pair — TypeFloat is the
+	// DOUBLE alias); only an UNKNOWN-typed float child keeps the legacy
+	// conversion for internal untyped expressions.
 	floatToBool0 := NewCastValue(&ConstantValue{Value: float64(0), Typ: TypeFloat}, TypeBool)
-	got, errEv12 := floatToBool0.Evaluate(nil)
-	require.NoError(t, errEv12)
-	if got != false {
-		t.Fatalf("0.0→bool: got %v", got)
+	if _, err := floatToBool0.Evaluate(nil); err == nil {
+		t.Fatal("DOUBLE→BOOLEAN must reject (no Java cast pair)")
 	}
-	floatToBoolNZ := NewCastValue(&ConstantValue{Value: float64(0.5), Typ: TypeFloat}, TypeBool)
-	got, errEv13 := floatToBoolNZ.Evaluate(nil)
+	unkFloatToBool := NewCastValue(&ConstantValue{Value: float64(0.5), Typ: UnknownType}, TypeBool)
+	got, errEv13 := unkFloatToBool.Evaluate(nil)
 	require.NoError(t, errEv13)
 	if got != true {
-		t.Fatalf("0.5→bool: got %v", got)
+		t.Fatalf("unknown-typed 0.5→bool: got %v", got)
 	}
 	// float → string
 	floatToStr := NewCastValue(&ConstantValue{Value: float64(3.14), Typ: TypeFloat}, TypeString)
