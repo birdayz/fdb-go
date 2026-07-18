@@ -1189,6 +1189,12 @@ func buriedLegOrdinalLayout(outerPlan plans.RecordQueryPlan) map[string]int {
 	}
 	layout := make(map[string]int, len(fields))
 	for _, leg := range legs {
+		// A leg without a name (the top-level alias argument is empty, so
+		// a single-scan outer windows under "") would mint unmatchable
+		// ".COL" keys — decline the whole layout rather than carry junk.
+		if leg.Name == "" {
+			return nil
+		}
 		for j := 0; j < leg.Width && leg.Start+j < len(fields); j++ {
 			key := leg.Name + "." + strings.ToUpper(fields[leg.Start+j].Name)
 			if _, dup := layout[key]; !dup {
@@ -2137,9 +2143,11 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 				rebased[i] = np
 				continue
 			}
-			// nil layout: this arm serves only NON-windowed step-1 RVs
-			// (the windowed case took the ordinal rebase above), so
-			// there is no positional layout to bake against.
+			// nil layout: this arm serves only NON-windowed step-1 RVs,
+			// whose merged row binds legs by NAME at execution — a baked
+			// ordinal reference here would die on the name-keyed row
+			// context (BakedNameContextError), so the lazy qualified
+			// mint is the CORRECT form, not a missed bake.
 			rebased[i] = rebaseOuterLegRefsToMerged(p, outerLegAliases, mergedOuterCorr, nil)
 		}
 		existPreds = rebased
