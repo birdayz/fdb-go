@@ -1004,8 +1004,36 @@ func deletePredicateConstantObjectAliases(pred predicates.QueryPredicate, corr m
 
 func hasIntersectionFinal(ref *expressions.Reference) bool {
 	for _, m := range ref.FinalMembers() {
-		if IsPhysicalIntersection(m) {
+		if hasIntersectionWithin(m, 3) {
 			return true
+		}
+	}
+	return false
+}
+
+// hasIntersectionWithin reports whether expr IS a physical intersection or
+// wraps one within the given depth. A compensated intersection (the
+// createIntersectionAndCompensation port) is a LogicalFilterExpression or
+// SelectExpression OVER the intersection wrapper — up to two levels (filter
+// compensation + result compensation) — so the naked-physical check alone
+// would miss it and pushCrossCandidateIntersection would rebuild the same
+// intersection on every pushDataAccessTasks pass.
+func hasIntersectionWithin(expr expressions.RelationalExpression, depth int) bool {
+	if IsPhysicalIntersection(expr) {
+		return true
+	}
+	if depth == 0 {
+		return false
+	}
+	for _, q := range expr.GetQuantifiers() {
+		child := q.GetRangesOver()
+		if child == nil {
+			continue
+		}
+		for _, m := range child.AllMembers() {
+			if hasIntersectionWithin(m, depth-1) {
+				return true
+			}
 		}
 	}
 	return false

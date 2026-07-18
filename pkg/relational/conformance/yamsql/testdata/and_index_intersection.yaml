@@ -46,4 +46,14 @@ tests:
   - query: SELECT id FROM items WHERE category = 'electronics' AND name = 'Mouse'
     rows:
       - [4]
+  # BOTH legs indexed PLUS an unindexed residual — the dimension the corpus
+  # was missing when the intersector silently dropped the residual (audit
+  # 2026-07-18): the bare Intersection(idx_category, idx_price) leaked row 5
+  # ('Monitor', fails name='Keyboard'). The compensated shape reapplies the
+  # residual as a filter above the intersection (Java
+  # createIntersectionAndCompensation).
+  - query: SELECT * FROM items WHERE category = 'electronics' AND price = 120 AND name = 'Keyboard'
+    plan_contains: "Intersection("
+    rows:
+      - [3, electronics, Keyboard, 120]
 
