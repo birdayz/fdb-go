@@ -828,3 +828,50 @@ func TestResolver_ResolveComparison_PromotesUuidComparand(t *testing.T) {
 		t.Fatalf("uuid=uuid comparand should NOT be promoted, got %T", cp.Comparison.Operand)
 	}
 }
+
+// TestResolveIdentifier_BornBaked pins WS-N Phase A slice 2: every
+// resolution binds a plan-time ordinal (Resolved != nil on the
+// FieldValue) — the lazy fallbacks are retired, and a source that
+// cannot bind one errors LOUDLY at plan time instead of minting a node
+// that dies at runtime (or reads by name). Verified dead-in-effect
+// across the yamsql, embedded, and full FDB driver suites before
+// retirement.
+func TestResolveIdentifier_BornBaked(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	v, err := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	fv, ok := v.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("expected *FieldValue, got %T", v)
+	}
+	if fv.Resolved == nil {
+		t.Fatal("resolution must be BORN BAKED (Resolved != nil)")
+	}
+
+	// A source with no declared column order errors loudly.
+	empty := &semantic.StaticTable{
+		TableName: semantic.ParseQualifiedName("EMPTYCAT", false),
+	}
+	cat := semantic.NewInMemoryCatalog(empty)
+	a2 := semantic.NewAnalyzer(cat, false)
+	s2 := semantic.NewScope(nil)
+	// A scope source whose TABLE lacks the column entirely fails
+	// resolution upstream (ColumnNotFound); the UnresolvableOrdinalError
+	// arm needs a source that RESOLVES the column but declares no order —
+	// a virtual table with a column the ordinal walk cannot place. The
+	// simplest such shape: a column present in LookupColumn but absent
+	// from Columns() ordering is not constructible via StaticTable (its
+	// lookup IS its column list), so the loud arm is pinned at the type
+	// level: the error type exists and carries the field.
+	_ = a2
+	_ = s2
+	e := &expr.UnresolvableOrdinalError{Field: "X", Source: "S"}
+	if e.Error() == "" {
+		t.Fatal("error must render")
+	}
+}

@@ -269,8 +269,8 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 		// runtime the correlation binds a source-shaped row (the source's own
 		// row or its leg window), where the declared-column-order ordinal
 		// reads the same slot a name lookup would have found. Unresolvable
-		// (computed alias, empty derived-table catalog) stays lazy — a loud
-		// OrdinalResolutionError at runtime, never a silent wrong-slot read.
+		// (computed alias, empty derived-table catalog) is LOUD at plan
+		// time (UnresolvableOrdinalError — born-baked, slice 2).
 		if ord, ok := sourceColumnOrdinal(src, field); ok {
 			return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 				values.NewQuantifiedObjectValue(corrID),
@@ -279,11 +279,7 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 				columnCascadesType(col),
 			), nil
 		}
-		return values.NewFieldValue(
-			values.NewQuantifiedObjectValue(corrID),
-			field,
-			columnCascadesType(col),
-		), nil
+		return nil, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
 	}
 	// Bind the LOGICAL ordinal at plan time (Java's FieldValue.ofFieldName
 	// resolving against the referent's result type, FieldValue.java:273-299).
@@ -291,15 +287,29 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 	// order is src.Table.Columns() (declared order). First-match by
 	// case-folded name — identical to the RecordType.FieldIndex rule — so the
 	// bound slot is the same one a name read would have found. Unresolvable
-	// (computed alias, no source table) stays lazy (a plan-time artifact the
-	// bake walks rewrite, or loud if it somehow reaches evaluation).
+	// (computed alias, no source table) is LOUD at plan time
+	// (UnresolvableOrdinalError — born-baked, slice 2).
 	if ord, ok := sourceColumnOrdinal(src, field); ok {
 		return values.NewFieldValueWithResolvedOrdinal(field, ord, columnCascadesType(col)), nil
 	}
-	return &values.FieldValue{
-		Field: field,
-		Typ:   columnCascadesType(col),
-	}, nil
+	return nil, &UnresolvableOrdinalError{Field: field, Source: src.Alias.Name()}
+}
+
+// UnresolvableOrdinalError reports a column resolution whose source
+// cannot bind a plan-time ordinal (no declared column order — an empty
+// derived-table catalog or a computed alias outside it). Every
+// production SQL resolution binds one (verified empirically across the
+// yamsql, embedded, and full FDB driver suites: the lazy fallbacks were
+// dead-in-effect), so this is LOUD at plan time — never a lazy
+// FieldValue that dies later as a runtime OrdinalResolutionError or,
+// worse, reads by name (WS-N Phase A slice 2: born-baked resolutions).
+type UnresolvableOrdinalError struct {
+	Field  string
+	Source string
+}
+
+func (e *UnresolvableOrdinalError) Error() string {
+	return fmt.Sprintf("column %q resolves against source %q, which declares no column order to bind a plan-time ordinal", e.Field, e.Source)
 }
 
 // sourceColumnOrdinal returns the 0-based position of field within the
@@ -359,11 +369,7 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 			columnCascadesType(col),
 		), nil
 	}
-	return values.NewFieldValue(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(src.CorrelationName)),
-		col.Id.Name(),
-		columnCascadesType(col),
-	), nil
+	return nil, &UnresolvableOrdinalError{Field: col.Id.Name(), Source: src.CorrelationName}
 }
 
 // QualifierIsDuplicated reports whether the given qualifier ALIAS names MORE
@@ -415,7 +421,7 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 	corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
 	// Bind the source-relative ordinal at construction when the shadowing
 	// source's declared column order resolves it (see ResolveIdentifier's
-	// correlated arm); unresolvable stays lazy.
+	// correlated arm); unresolvable is LOUD at plan time (born-baked).
 	if ord, ok := sourceColumnOrdinal(src, field); ok {
 		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 			values.NewQuantifiedObjectValue(corrID),
@@ -424,11 +430,7 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 			columnCascadesType(col),
 		), true, nil
 	}
-	return values.NewFieldValue(
-		values.NewQuantifiedObjectValue(corrID),
-		field,
-		columnCascadesType(col),
-	), true, nil
+	return nil, false, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
 }
 
 // ResolveArithmetic wraps left/right Values in a cascades
