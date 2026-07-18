@@ -93,7 +93,7 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 	desc := refl.Descriptor()
 	fields := desc.Fields()
 	n := fields.Len()
-	rt := positionalTypeForDescriptor(desc)
+	rt := PositionalTypeForDescriptor(desc)
 	slots := make([]any, n)
 	for i := 0; i < n; i++ {
 		fd := fields.Get(i)
@@ -104,7 +104,7 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 	return &PositionalRow{Type: rt, Slots: slots}
 }
 
-// positionalTypeForDescriptor returns the LOGICAL RecordType for a message
+// PositionalTypeForDescriptor returns the LOGICAL RecordType for a message
 // descriptor — one field per descriptor field in declaration order (the
 // field's ordinal), UPPER-cased name, UnknownType placeholder. THE single authority
 // for a stored record's logical row shape: every physical access path that
@@ -114,7 +114,7 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 // (mirrors Java's IndexKeyValueToPartialRecord, which reconstructs a
 // descriptor-shaped partial record for exactly this reason). Cached per
 // descriptor (see positionalTypeCache).
-func positionalTypeForDescriptor(desc protoreflect.MessageDescriptor) *values.RecordType {
+func PositionalTypeForDescriptor(desc protoreflect.MessageDescriptor) *values.RecordType {
 	if v, ok := positionalTypeCache.Load(desc); ok {
 		return v.(*values.RecordType)
 	}

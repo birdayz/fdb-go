@@ -344,7 +344,7 @@ func executeIndexScan(
 				// scan serves a single record type (a multi-type covering scan
 				// has no single logical shape and keeps the index layout).
 				if len(rts) == 1 && rt.Descriptor != nil {
-					logicalType = positionalTypeForDescriptor(rt.Descriptor)
+					logicalType = PositionalTypeForDescriptor(rt.Descriptor)
 				}
 			}
 		}

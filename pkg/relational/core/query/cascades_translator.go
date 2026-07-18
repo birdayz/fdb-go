@@ -5304,7 +5304,7 @@ func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 			expr = e.GetInner().GetRangesOver().Get()
 		case *expressions.FullUnorderedScanExpression:
 			// The scan row conforms to the record's logical column order
-			// (positionalTypeForDescriptor).
+			// (executor.PositionalTypeForDescriptor).
 			if rt, isRT := e.GetFlowedType().(*values.RecordType); isRT && len(rt.Fields) > 0 {
 				names := make([]string, len(rt.Fields))
 				for i, f := range rt.Fields {

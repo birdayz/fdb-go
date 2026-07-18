@@ -55,9 +55,19 @@ func (c *dataAccessTestCandidate) ToScanPlan(
 // testPlan is a minimal RecordQueryPlan for tests.
 type testPlan struct {
 	name string
+	// resultType lets fixtures flow a real row layout (production match
+	// candidates always do) — the intersector's comparison-key baking
+	// declines candidates whose layout is unknown, so intersector tests
+	// must carry one. Zero value keeps UnknownType for everything else.
+	resultType values.Type
 }
 
-func (p *testPlan) GetResultType() values.Type           { return values.UnknownType }
+func (p *testPlan) GetResultType() values.Type {
+	if p.resultType != nil {
+		return p.resultType
+	}
+	return values.UnknownType
+}
 func (p *testPlan) GetChildren() []plans.RecordQueryPlan { return nil }
 func (p *testPlan) EqualsWithoutChildren(other plans.RecordQueryPlan) bool {
 	o, ok := other.(*testPlan)

@@ -61,8 +61,12 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 					continue
 				}
 
+				bakedKeys := bakedIntersectionKeys(pkValues, planI.GetResultType())
+				if bakedKeys == nil {
+					continue
+				}
 				intersectionPlan := plans.NewRecordQueryIntersectionPlan(
-					[]plans.RecordQueryPlan{planI, planJ}, pkValues)
+					[]plans.RecordQueryPlan{planI, planJ}, bakedKeys)
 
 				exprI := wrapAccessScan(ai, planI)
 				exprJ := wrapAccessScan(aj, planJ)
@@ -100,8 +104,12 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 							continue
 						}
 
+						bakedKeys := bakedIntersectionKeys(pkValues, planI.GetResultType())
+						if bakedKeys == nil {
+							continue
+						}
 						intersectionPlan := plans.NewRecordQueryIntersectionPlan(
-							[]plans.RecordQueryPlan{planI, planJ, planK}, pkValues)
+							[]plans.RecordQueryPlan{planI, planJ, planK}, bakedKeys)
 
 						exprI := wrapAccessScan(ai, planI)
 						exprJ := wrapAccessScan(aj, planJ)
@@ -165,6 +173,27 @@ func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanC
 		}
 	}
 	return result
+}
+
+// bakedIntersectionKeys resolves the name-only pk comparison keys against
+// the legs' flowed row layout (all legs share one record type — the
+// commonPrimaryKeyValues gate). The ordinal row model has no runtime
+// name-resolution fallback: an unbaked FieldValue fails LOUD at merge
+// time (OrdinalResolutionError), so a comparison key that cannot bake is
+// a plan-time DECLINE of the intersection candidate, never a runtime
+// error. Returns nil when any key stays unbaked.
+func bakedIntersectionKeys(pkValues []values.Value, rowType values.Type) []values.Value {
+	baked := bakeMergeComparisonKeys(pkValues, nil, rowType)
+	if baked == nil {
+		return nil
+	}
+	for _, k := range baked {
+		fv, isFV := k.(*values.FieldValue)
+		if !isFV || fv.Resolved == nil {
+			return nil
+		}
+	}
+	return baked
 }
 
 // accessCompatibleWithPKMerge reports whether an access's scan emission is

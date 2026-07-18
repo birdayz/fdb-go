@@ -2045,6 +2045,20 @@ func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
 	}
 }
 
+// IndexRowType flows the descriptor-shaped positional type for
+// single-record-type indexes — the SAME layout the runtime rows carry
+// (executor.PositionalTypeForDescriptor is the single authority), so
+// plan-time ordinal baking (the intersection's comparison keys) matches
+// the runtime slots by construction. Multi-type indexes flow Unknown:
+// their rows have no single layout.
+func (d *metadataIndexDef) IndexRowType() values.Type {
+	rts := d.md.RecordTypesForIndex(d.idx)
+	if len(rts) != 1 || rts[0].Descriptor == nil {
+		return values.UnknownType
+	}
+	return executor.PositionalTypeForDescriptor(rts[0].Descriptor)
+}
+
 func (d *metadataIndexDef) IndexRecordTypes() []string {
 	rts := d.md.RecordTypesForIndex(d.idx)
 	names := make([]string, len(rts))
