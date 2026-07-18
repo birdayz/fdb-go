@@ -614,3 +614,25 @@ believes they resumed. Adopting the ContinuationProto envelope +
 PlanValidator hashes is the follow-up arc if/when a resume surface
 ships; hash values would deliberately differ per engine so cross-engine
 resume attempts REJECT loudly in both directions.
+
+## BIGINT-vs-DOUBLE comparison: exact narrowing, not lossy promotion
+
+Java compares a BIGINT column against a DOUBLE constant by PROMOTING
+the column LONG→DOUBLE — lossy above 2^53, so `v = 9007199254740992.0`
+wrongly matches a stored 2^53+1. Go rewrites the CONSTANT instead
+(narrowFloatConstAgainstInt): integral doubles narrow to the column's
+integer type, non-integral and out-of-range bounds rewrite to the
+tightest integer predicate — exact at every magnitude. Go-right
+divergence, verified live by the bigint_eq_double_above_2p53 corpus
+entry (DivergenceJavaWrongRowsGoCorrect).
+
+## Bound parameters stay Unknown-typed at the plan gates
+
+The plan-time promotion and cast-pair gates exempt UNKNOWN-typed
+operands, which includes bound parameters on the exported
+PlanRecordQueryWithMetadata path (the SQL driver substitutes `?` as
+text, so driver-reachable binds arrive STRING-typed and take the
+STRING arms). Java types parameters by inference and gates them too;
+Go's parameter-inference arc would close this — until then a
+LONG-bound parameter through the exported path evaluates leniently
+where Java rejects at plan time.

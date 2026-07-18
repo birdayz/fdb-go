@@ -1440,10 +1440,22 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > case-colliding quoted columns reject 0A000 at CREATE (was a planning panic);
 > green pins landed (quoted_identifier_pins, join_leg_name_pins). Still red →
 > Phase A: derived "A.ID" through a join (parser→IR string channel re-split).
-> Remaining: WS-T (plan-time promotion lattice, cast-engine unification,
-> number+string '+', document-and-pin items), WS-P (ConstraintsMap epoch port
-> retiring dual-insertion + 15b/15c + round cap; un-gate REWRITING
-> OptimizeInputs; fix stale DIVERGENCES advancePlannerStage claim).
+> WS-T: DONE (both reviewers ACK; conditions folded). Lanes, div wrap, ADD
+> string family + Double.toString contract, cast strictness + plan-time
+> cast-pair gate, plan-time promotion gate (+ the double-vs-integer SARG
+> narrowing and out-of-range clamps it exposed), IN/LIKE LHS gates,
+> document-and-pin batch, datetime edge nets. Cross-engine wins landed live:
+> string_concat_via_plus annotation retired; type_mismatch_boolean_eq_int
+> left the known-red lock; bigint_eq_double_above_2p53 corpus entry added.
+> - [ ] FIRST-PRIORITY follow-up (Torvalds condition, sanctioned TODO):
+>       ScalarSubqueryValue.Type() returns UnknownType unconditionally, so
+>       CAST((SELECT bigint_col ...) AS BOOLEAN) evades the plan-time gates
+>       the direct column hits. Thread the inner plan's output column type
+>       through SubqueryPlanner.BuildScalar → ScalarSubqueryValue.
+> Remaining: WS-N slices 2-6 + Phases B-D (slice 1 landed, both ACK), WS-P
+> (ConstraintsMap epoch port retiring dual-insertion + 15b/15c + round cap;
+> un-gate REWRITING OptimizeInputs; fix stale DIVERGENCES advancePlannerStage
+> claim).
 
 > ## [ ] RFC-180 follow-up — output-label collision mis-binds sort keys over the IMMEDIATE reshaping strip (pre-existing)
 > `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC`

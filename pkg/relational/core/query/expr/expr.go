@@ -664,8 +664,76 @@ func narrowFloatConstAgainstInt(op predicates.ComparisonType, left, right values
 	if !fok {
 		return op, left, right
 	}
-	if math.IsNaN(f) || math.IsInf(f, 0) || f < math.MinInt64 || f >= math.MaxInt64 {
+	if math.IsNaN(f) {
 		return op, left, right
+	}
+	// A bound BEYOND the int64 range: the raw double would pack with the
+	// wrong tuple type code (ordering by type, not value — the bug this
+	// helper fixes), so clamp the ORDERED ops to the always-true/false
+	// integer form instead: every int64 is > -1e19, none is > 1e19.
+	// Equality leaves as-is (a probe that misses everything IS the
+	// correct empty result); inequality reaches the residual comparison,
+	// which widens numerics itself.
+	if math.IsInf(f, 0) || f < math.MinInt64 || f >= math.MaxInt64 {
+		switch op {
+		case predicates.ComparisonEquals, predicates.ComparisonNotEquals:
+			return op, left, right
+		}
+		below := f < 0 // out of range on the NEGATIVE side
+		clamp := int64(math.MaxInt64)
+		if below {
+			clamp = math.MinInt64
+		}
+		colRelOp := op
+		if lc {
+			switch op {
+			case predicates.ComparisonLessThan:
+				colRelOp = predicates.ComparisonGreaterThan
+			case predicates.ComparisonLessThanOrEq:
+				colRelOp = predicates.ComparisonGreaterThanEq
+			case predicates.ComparisonGreaterThan:
+				colRelOp = predicates.ComparisonLessThan
+			case predicates.ComparisonGreaterThanEq:
+				colRelOp = predicates.ComparisonLessThanOrEq
+			}
+		}
+		// col > +huge / col >= +huge → false ≡ col > MaxInt64;
+		// col < +huge / col <= +huge → true ≡ col <= MaxInt64;
+		// col > -huge / col >= -huge → true ≡ col >= MinInt64;
+		// col < -huge / col <= -huge → false ≡ col < MinInt64.
+		switch colRelOp {
+		case predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+			if below {
+				colRelOp = predicates.ComparisonGreaterThanEq
+			} else {
+				colRelOp = predicates.ComparisonGreaterThan
+			}
+		case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq:
+			if below {
+				colRelOp = predicates.ComparisonLessThan
+			} else {
+				colRelOp = predicates.ComparisonLessThanOrEq
+			}
+		}
+		if lc {
+			switch colRelOp {
+			case predicates.ComparisonGreaterThan:
+				op = predicates.ComparisonLessThan
+			case predicates.ComparisonGreaterThanEq:
+				op = predicates.ComparisonLessThanOrEq
+			case predicates.ComparisonLessThan:
+				op = predicates.ComparisonGreaterThan
+			case predicates.ComparisonLessThanOrEq:
+				op = predicates.ComparisonGreaterThanEq
+			}
+		} else {
+			op = colRelOp
+		}
+		coerced := &values.ConstantValue{Value: clamp, Typ: colt}
+		if lc {
+			return op, coerced, right
+		}
+		return op, left, coerced
 	}
 	integral := f == math.Trunc(f)
 	var n int64
@@ -729,6 +797,17 @@ func (r *Resolver) ResolveCast(v values.Value, target values.Type) (values.Value
 	if target == nil || target.Code() == values.TypeCodeUnknown {
 		return nil, fmt.Errorf("expr.ResolveCast: target UnknownType")
 	}
+	// PLAN-TIME pair check (Java resolves the cast operator at
+	// construction and fails "No cast defined from X to Y",
+	// CastValue.java:480-489) — a per-row rejection alone leaves the
+	// empty-table shape silently succeeding. Unknown-typed children keep
+	// the runtime dispatch.
+	if st := v.Type(); st != nil && st.Code() != values.TypeCodeUnknown {
+		if !values.CastPairDefined(st.Code(), target.Code()) {
+			return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+				"No cast defined from %v to %v", st.Code(), target.Code())
+		}
+	}
 	return values.NewCastValue(v, target), nil
 }
 
@@ -771,6 +850,19 @@ func (r *Resolver) ResolveLikeWithEscape(lhs values.Value, pattern values.Value,
 	s, ok := lit.(string)
 	if !ok {
 		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a string; got %T", lit)
+	}
+	// PLAN-TIME LHS gate: LIKE is a string predicate — a numeric or
+	// boolean LHS rejects 42804 like Java's SemanticAnalyzer, never a
+	// silent per-row UNKNOWN. STRING and the string-promotable temporal
+	// extension types pass; Unknown keeps the runtime path.
+	if lt := lhs.Type(); lt != nil {
+		switch lt.Code() {
+		case values.TypeCodeString, values.TypeCodeUnknown, values.TypeCodeNull,
+			values.TypeCodeEnum, values.TypeCodeDate, values.TypeCodeTimestamp:
+		default:
+			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
+		}
 	}
 	return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
 		Type:    predicates.ComparisonLike,
@@ -842,6 +934,25 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 			return "BYTES"
 		}
 		return fmt.Sprintf("%T", lit)
+	}
+	// PLAN-TIME LHS-vs-element promotion gate, matching the equality
+	// gate in ResolveComparison: `s IN (1, 2)` must reject 42804 like
+	// Java, not silently match nothing. Unknown-typed sides keep the
+	// runtime path.
+	if lt := left.Type(); lt != nil && lt.Code() != values.TypeCodeUnknown {
+		for _, v := range rhs {
+			if v == nil {
+				continue
+			}
+			et := v.Type()
+			if et == nil || et.Code() == values.TypeCodeUnknown {
+				continue
+			}
+			if values.MaximumType(lt, et) == nil {
+				return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+					"The operands of a comparison operator are not compatible.")
+			}
+		}
 	}
 	seenClass := ""
 	list := make([]any, 0, len(rhs))
