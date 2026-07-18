@@ -1,0 +1,104 @@
+package sqldriver_test
+
+// A QUOTED, machine-shaped table alias (`AS "q$1"`, `AS "Q$DUP1"` — the
+// lexer admits $ inside quoted identifiers) must resolve IDENTICALLY in
+// every position. The parse capture strips quotes early
+// (StripIdentifierQuotes keeps quoted text verbatim), and the embedded
+// builders used to re-wrap those captured strings with NewUnquoted —
+// re-FOLDING the verbatim `q$1` to `Q$1` — so the FROM registration and
+// the quote-aware reference channel disagreed on the same alias: the
+// projection resolved (both sides folded) while WHERE / correlated-EXISTS
+// failed 42703 "no FROM source aliased as q$1" on a LEGAL query.
+// FromNormalized preserves the captured text; these pins hold every
+// position together.
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"reflect"
+	"testing"
+)
+
+func TestFDB_QuotedMachineShapedAliases(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_qmsa")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_qmsa")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE qmsa CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
+			" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_qmsa/s WITH TEMPLATE qmsa")
+	dsn := fmt.Sprintf("fdbsql:///testdb_qmsa?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mwjoMustExec(t, db, ctx, "INSERT INTO p VALUES (1, 10), (2, 20)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO q VALUES (5), (7)")
+
+	ints := func(t *testing.T, q string) []int64 {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("must ANSWER: %v\n  sql: %s", err, q)
+		}
+		defer rows.Close()
+		var out []int64
+		for rows.Next() {
+			var v sql.NullInt64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if !v.Valid {
+				t.Fatalf("NULL — the quoted alias silently missed its leg\n  sql: %s", q)
+			}
+			out = append(out, v.Int64)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		return out
+	}
+
+	t.Run("projection", func(t *testing.T) {
+		if got := ints(t, `SELECT "q$1".id FROM p AS "q$1"`); !reflect.DeepEqual(got, []int64{1, 2}) {
+			t.Errorf("= %v, want [1 2]", got)
+		}
+	})
+	t.Run("where", func(t *testing.T) {
+		if got := ints(t, `SELECT "q$1".id FROM p AS "q$1" WHERE "q$1".v = 10`); !reflect.DeepEqual(got, []int64{1}) {
+			t.Errorf("= %v, want [1]", got)
+		}
+	})
+	t.Run("dup_shaped_alias", func(t *testing.T) {
+		if got := ints(t, `SELECT "Q$DUP1".id FROM p AS "Q$DUP1"`); !reflect.DeepEqual(got, []int64{1, 2}) {
+			t.Errorf("= %v, want [1 2]", got)
+		}
+	})
+	t.Run("join_legs", func(t *testing.T) {
+		got := ints(t, `SELECT "q$2".qid FROM p AS "q$1", q AS "q$2"`)
+		if !reflect.DeepEqual(got, []int64{5, 5, 7, 7}) {
+			t.Errorf("= %v, want [5 5 7 7]", got)
+		}
+	})
+	t.Run("correlated_exists", func(t *testing.T) {
+		if got := ints(t, `SELECT "q$3".id FROM p AS "q$3" WHERE EXISTS (SELECT 1 FROM q WHERE "q$3".id = 1)`); !reflect.DeepEqual(got, []int64{1}) {
+			t.Errorf("= %v, want [1]", got)
+		}
+	})
+	t.Run("order_by", func(t *testing.T) {
+		if got := ints(t, `SELECT "q$1".v FROM p AS "q$1" ORDER BY "q$1".v DESC`); !reflect.DeepEqual(got, []int64{20, 10}) {
+			t.Errorf("= %v, want [20 10]", got)
+		}
+	})
+	t.Run("group_by", func(t *testing.T) {
+		if got := ints(t, `SELECT "q$1".v FROM p AS "q$1" GROUP BY "q$1".v ORDER BY "q$1".v`); !reflect.DeepEqual(got, []int64{10, 20}) {
+			t.Errorf("= %v, want [10 20]", got)
+		}
+	})
+}

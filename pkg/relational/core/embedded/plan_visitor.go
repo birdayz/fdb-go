@@ -622,7 +622,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			// verbatim). Without this the bare projection reads the wrong column
 			// (P2, silent-wrong). RFC-142.
 			if !col.qualified && col.bare != "" && proj != nil {
-				id := semantic.NewUnquoted(col.bare)
+				id := semantic.FromNormalized(col.bare)
 				qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id)
 				if qerr == nil && ok {
 					if proj.ProjectedValues == nil {
@@ -675,7 +675,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					// right quantifier. Every other reference keeps the
 					// alias-keyed merged-row read.
 					qv, qerr := resolver.ResolveQualifiedProjection(
-						semantic.NewUnquoted(col.qualifier), semantic.NewUnquoted(col.bare))
+						semantic.FromNormalized(col.qualifier), semantic.FromNormalized(col.bare))
 					if qerr != nil {
 						var ambigErr *semantic.AmbiguousColumnError
 						if errors.As(qerr, &ambigErr) {
@@ -720,9 +720,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					}
 				} else {
 					var qualifier semantic.Identifier
-					id := semantic.NewUnquoted(colBareOrName(col))
+					id := semantic.FromNormalized(colBareOrName(col))
 					if col.qualified {
-						qualifier = semantic.NewUnquoted(col.qualifier)
+						qualifier = semantic.FromNormalized(col.qualifier)
 					}
 					if rv, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
 						if i < len(proj.ProjectedValues) {
@@ -1772,7 +1772,7 @@ func resolveQualifiedBaked(resolver *expr.Resolver, ref colRef) values.Value {
 	if !ref.isQualified() {
 		return nil
 	}
-	rv, err := resolver.ResolveIdentifier(semantic.NewUnquoted(ref.table), semantic.NewUnquoted(ref.bare()))
+	rv, err := resolver.ResolveIdentifier(semantic.FromNormalized(ref.table), semantic.FromNormalized(ref.bare()))
 	if err != nil || rv == nil {
 		return nil
 	}
@@ -1800,13 +1800,13 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 		if bare == "" {
 			continue
 		}
-		id := semantic.NewUnquoted(bare)
+		id := semantic.FromNormalized(bare)
 		if sort.Keys[i].Qualified {
 			// An AmbiguousColumnError here is DISCARDED on purpose: the
 			// upstream sort-key reference validation already terminated an
 			// ambiguous key with 42702 before this qualification pass runs
 			// (the ladder's >=2 arm is owned there, not here).
-			qv, err := resolver.ResolveQualifiedProjection(semantic.NewUnquoted(sort.Keys[i].Qualifier), id)
+			qv, err := resolver.ResolveQualifiedProjection(semantic.FromNormalized(sort.Keys[i].Qualifier), id)
 			if err == nil && qv != nil {
 				sort.Keys[i].Value = qv
 				continue

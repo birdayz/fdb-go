@@ -298,6 +298,7 @@ go_test(
         "projected_exists_round7_fdb_test.go",
         "projected_exists_round8_fdb_test.go",
         "quality_probes_test.go",
+        "quoted_machine_alias_fdb_test.go",
         "rcte_crossjoin_probe_test.go",
         "recursive_cte_alias_frontier_test.go",
         "recursive_cte_computed_leg_projection_fdb_test.go",

@@ -1,6 +1,9 @@
 package semantic
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Scope is the set of named resolutions visible at a point during
 // query analysis. A scope knows about the FROM-clause sources
@@ -101,6 +104,21 @@ func (s *Scope) AddSource(src ScopeSource) error {
 	// StaticTable.
 	if src.Table == nil {
 		return &UnresolvableSourceError{Alias: src.Alias}
+	}
+	// CorrelationName is the RUNTIME correlation key and lives in the
+	// CANONICAL UPPER namespace (merged-row leg names, sourceBinding,
+	// the bake/window sites are all upper-folded). Canonicalize at the
+	// single registration chokepoint so a quoted-verbatim alias
+	// (`AS "q$1"` — Alias keeps the verbatim text for quote-aware
+	// RESOLUTION) still keys the runtime namespace consistently; the
+	// verbatim form leaking through here made a correlated EXISTS over
+	// such an alias silently match no leg (identity compare against the
+	// upper leg name) and serve zero rows. Minted bindings (Q$DUPn) are
+	// fold-stable upper already, and the lowercase q$N machine-counter
+	// namespace stays case-DISJOINT from every upper-folded user
+	// correlation — quoted "q$5" cannot forge a planner-minted q$5.
+	if src.CorrelationName != "" {
+		src.CorrelationName = strings.ToUpper(src.CorrelationName)
 	}
 	for _, existing := range s.sources {
 		if !existing.Alias.EqualsIgnoreQuoting(src.Alias) {

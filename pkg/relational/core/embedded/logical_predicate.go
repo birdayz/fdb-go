@@ -136,9 +136,9 @@ func buildWherePredicateForTableE(
 	if err != nil {
 		return nil, false, nil
 	}
-	alias := semantic.NewUnquoted(tableAlias)
+	alias := semantic.FromNormalized(tableAlias)
 	if tableAlias == "" {
-		alias = semantic.NewUnquoted(tableName)
+		alias = semantic.FromNormalized(tableName)
 	}
 	scope := semantic.NewScope(nil)
 	if err := scope.AddSource(semantic.ScopeSource{
@@ -272,7 +272,7 @@ func buildDerivedTableSource(
 		if !ok {
 			return semantic.ScopeSource{}, false
 		}
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		// Apply inner projection aliases if present.
 		cols := innerSrc.Table.Columns()
 		if innerSQ.projCols != nil {
@@ -283,7 +283,7 @@ func buildDerivedTableSource(
 					name = innerSQ.projAliases[i]
 				}
 				cols = append(cols, semantic.Column{
-					Id:       semantic.NewUnquoted(name),
+					Id:       semantic.FromNormalized(name),
 					Type:     "UNKNOWN",
 					Nullable: true,
 				})
@@ -338,7 +338,7 @@ func buildDerivedTableSource(
 		if bareName == "" {
 			bareName = col.name
 		}
-		innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
+		innerCol, found := innerTbl.LookupColumn(semantic.FromNormalized(bareName))
 		if !found {
 			return semantic.ScopeSource{}, false
 		}
@@ -350,13 +350,13 @@ func buildDerivedTableSource(
 		// projection emits (Java resolves references to the output column
 		// verbatim — no reverse-map to the underlying source column).
 		columns = append(columns, semantic.Column{
-			Id:       semantic.NewUnquoted(outName),
+			Id:       semantic.FromNormalized(outName),
 			Type:     innerCol.Type,
 			Nullable: innerCol.Nullable,
 		})
 	}
 
-	aliasID := semantic.NewUnquoted(alias)
+	aliasID := semantic.FromNormalized(alias)
 	virtualTable := &semantic.StaticTable{
 		TableName:    semantic.FromSegments([]string{alias}, false),
 		TableColumns: columns,
@@ -417,9 +417,9 @@ func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery) (semantic.Sco
 	}
 	columns := make([]semantic.Column, len(cols))
 	for i, c := range cols {
-		columns[i] = semantic.Column{Id: semantic.NewUnquoted(c.name), Type: c.typ, Nullable: c.nullable}
+		columns[i] = semantic.Column{Id: semantic.FromNormalized(c.name), Type: c.typ, Nullable: c.nullable}
 	}
-	aliasID := semantic.NewUnquoted(alias)
+	aliasID := semantic.FromNormalized(alias)
 	virtualTable := &semantic.StaticTable{
 		TableName:    semantic.FromSegments([]string{alias}, false),
 		TableColumns: columns,
@@ -631,9 +631,9 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			}
 			return false
 		}
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		if alias == "" {
-			aliasID = semantic.NewUnquoted(tableName)
+			aliasID = semantic.FromNormalized(tableName)
 		}
 		// The binding correlation: the parser-minted duplicate-leg id when
 		// present, else the alias. Duplicate
@@ -853,7 +853,7 @@ func buildWherePredicateFromCTEScope(
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
 	if tableAlias != "" {
-		src.Alias = semantic.NewUnquoted(tableAlias)
+		src.Alias = semantic.FromNormalized(tableAlias)
 		src.CorrelationName = tableAlias
 	}
 	if err := scope.AddSource(src); err != nil {
@@ -1015,17 +1015,17 @@ func buildCTEColumnSource(
 			}
 			if isComputed {
 				columns = append(columns, semantic.Column{
-					Id:       semantic.NewUnquoted(outName),
+					Id:       semantic.FromNormalized(outName),
 					Type:     "UNKNOWN",
 					Nullable: true,
 				})
 				continue
 			}
-			innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
+			innerCol, found := innerTbl.LookupColumn(semantic.FromNormalized(bareName))
 			if !found {
 				if hasComputedExpr {
 					columns = append(columns, semantic.Column{
-						Id:       semantic.NewUnquoted(outName),
+						Id:       semantic.FromNormalized(outName),
 						Type:     "UNKNOWN",
 						Nullable: true,
 					})
@@ -1036,14 +1036,14 @@ func buildCTEColumnSource(
 			// The virtual column carries the OUTPUT name the CTE body
 			// projection emits — references resolve to it verbatim.
 			columns = append(columns, semantic.Column{
-				Id:       semantic.NewUnquoted(outName),
+				Id:       semantic.FromNormalized(outName),
 				Type:     innerCol.Type,
 				Nullable: innerCol.Nullable,
 			})
 		}
 	}
 
-	aliasID := semantic.NewUnquoted(cteName)
+	aliasID := semantic.FromNormalized(cteName)
 	virtualTable := &semantic.StaticTable{
 		TableName:    semantic.FromSegments([]string{cteName}, false),
 		TableColumns: columns,
@@ -1637,7 +1637,7 @@ func buildCTEOnOnlySource(
 		}
 		seen[runtimeName]++
 		columns = append(columns, semantic.Column{
-			Id:       semantic.NewUnquoted(runtimeName),
+			Id:       semantic.FromNormalized(runtimeName),
 			Type:     "UNKNOWN",
 			Nullable: true,
 		})
@@ -1650,7 +1650,7 @@ func buildCTEOnOnlySource(
 	if len(columns) == 0 {
 		return semantic.ScopeSource{}, false
 	}
-	aliasID := semantic.NewUnquoted(cteName)
+	aliasID := semantic.FromNormalized(cteName)
 	return semantic.ScopeSource{
 		Table: &semantic.StaticTable{
 			TableName:    semantic.FromSegments([]string{cteName}, false),
@@ -1706,7 +1706,7 @@ func applyCTEColumnAliases(src semantic.ScopeSource, colAliases antlrgen.IFullId
 			// OUTPUT name — references (a.node) resolve to it verbatim.
 			newName := functions.FullIdToName(aliases[i])
 			newCols[i] = semantic.Column{
-				Id:       semantic.NewUnquoted(newName),
+				Id:       semantic.FromNormalized(newName),
 				Type:     col.Type,
 				Nullable: col.Nullable,
 			}
@@ -1744,9 +1744,9 @@ func buildWherePredicateForJoinsWithCTEScopes(
 	scope := semantic.NewScope(nil)
 
 	addSource := func(tableName, alias, bindingID string) bool {
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		if alias == "" {
-			aliasID = semantic.NewUnquoted(tableName)
+			aliasID = semantic.FromNormalized(tableName)
 		}
 		// The binding correlation: the parser-minted duplicate-leg id when
 		// present, else the alias.
@@ -1826,9 +1826,9 @@ func buildWherePredicateForJoins(
 		if err != nil {
 			return false
 		}
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		if alias == "" {
-			aliasID = semantic.NewUnquoted(tableName)
+			aliasID = semantic.FromNormalized(tableName)
 		}
 		binding := bindingOrAlias(bindingID, aliasID)
 		return scope.AddSource(semantic.ScopeSource{
@@ -1902,7 +1902,7 @@ func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
 	var cols []semantic.Column
 	corr := asAlias
 	if asAlias != "" {
-		cols = append(cols, semantic.Column{Id: semantic.NewUnquoted(asAlias), Type: "UNKNOWN", Nullable: true})
+		cols = append(cols, semantic.Column{Id: semantic.FromNormalized(asAlias), Type: "UNKNOWN", Nullable: true})
 	}
 	if atAlias != "" {
 		// The unnest WITH ORDINALITY ordinal is a 1-based, NON-NULL INT
@@ -1911,7 +1911,7 @@ func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
 		// sqlTypeToCascadesType resolves it to values.NotNullInt — matching the
 		// translator's ordinal FieldValue type — and a PROJECT/COMPUTE over the AT
 		// alias reports INT, not UNKNOWN. RFC-142.
-		cols = append(cols, semantic.Column{Id: semantic.NewUnquoted(atAlias), Type: "INT NOT NULL", Nullable: false})
+		cols = append(cols, semantic.Column{Id: semantic.FromNormalized(atAlias), Type: "INT NOT NULL", Nullable: false})
 		if corr == "" {
 			corr = atAlias
 		}
@@ -1919,7 +1919,7 @@ func unnestVirtualScopeSource(j joinClause) (semantic.ScopeSource, bool) {
 	if corr == "" {
 		return semantic.ScopeSource{}, false
 	}
-	corrID := semantic.NewUnquoted(corr)
+	corrID := semantic.FromNormalized(corr)
 	virtual := &semantic.StaticTable{
 		TableName:    semantic.FromSegments([]string{corr}, false),
 		TableColumns: cols,
@@ -2221,7 +2221,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			// identically. Without this a shadowed unnest projection inside a subquery
 			// reads the wrong column (silent-wrong). RFC-142.
 			if !col.qualified && col.bare != "" && proj != nil {
-				id := semantic.NewUnquoted(col.bare)
+				id := semantic.FromNormalized(col.bare)
 				qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id)
 				if qerr == nil && ok {
 					if proj.ProjectedValues == nil {
@@ -2278,7 +2278,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						// Twin of the PlanVisitor's qualified-projection bind
 						// (incl. the DUPLICATED-bare-leaf qualified output pin).
 						cr := colRef{table: col.qualifier, col: col.bare}
-						if bv := resolveQualifiedBaked(resolver, cr); bv != nil && !resolver.QualifierIsDuplicated(semantic.NewUnquoted(cr.table)) {
+						if bv := resolveQualifiedBaked(resolver, cr); bv != nil && !resolver.QualifierIsDuplicated(semantic.FromNormalized(cr.table)) {
 							// The structural bake is EXCLUDED for a duplicated
 							// qualifier: QOV(alias) cannot distinguish two
 							// same-named legs, so a dup reference takes the
@@ -2307,9 +2307,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 					}
 				} else {
 					var qualifier semantic.Identifier
-					id := semantic.NewUnquoted(colBareOrName(col))
+					id := semantic.FromNormalized(colBareOrName(col))
 					if col.qualified {
-						qualifier = semantic.NewUnquoted(col.qualifier)
+						qualifier = semantic.FromNormalized(col.qualifier)
 					}
 					if v, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
 						if i < len(proj.ProjectedValues) {
@@ -2792,9 +2792,9 @@ func buildSelectScope(
 				if src.Table == nil {
 					return false
 				}
-				aliasID := semantic.NewUnquoted(alias)
+				aliasID := semantic.FromNormalized(alias)
 				if alias == "" {
-					aliasID = semantic.NewUnquoted(tableName)
+					aliasID = semantic.FromNormalized(tableName)
 				}
 				return scope.AddSource(semantic.ScopeSource{
 					Table:           src.Table,
@@ -2807,9 +2807,9 @@ func buildSelectScope(
 		if err != nil {
 			return false
 		}
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		if alias == "" {
-			aliasID = semantic.NewUnquoted(tableName)
+			aliasID = semantic.FromNormalized(tableName)
 		}
 		return scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
@@ -2937,7 +2937,7 @@ func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string,
 		// "Q"), so the lookup must fold identically. Alias-namespace
 		// case fidelity is Phase B's scope; the COLUMN side below stays
 		// verbatim — that is where dotted/quoted-case names live.
-		qual = semantic.NewUnquoted(qualifier)
+		qual = semantic.FromNormalized(qualifier)
 		display = qualifier + "." + bare
 	}
 	_, err := resolver.ResolveIdentifier(qual, semantic.New(bare, true))
@@ -2950,7 +2950,7 @@ func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string,
 			// keeps case-significant names ("A.ID", quoted lowercase
 			// stored columns) winning; Phase D makes registrations
 			// case-faithful and retires this retry.
-			if _, retryErr := resolver.ResolveIdentifier(qual, semantic.NewUnquoted(bare)); retryErr == nil {
+			if _, retryErr := resolver.ResolveIdentifier(qual, semantic.FromNormalized(bare)); retryErr == nil {
 				return nil
 			}
 		}
@@ -2968,9 +2968,9 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 	}
 	var qualifier semantic.Identifier
 	ref := parseColRef(col)
-	id := semantic.NewUnquoted(ref.bare())
+	id := semantic.FromNormalized(ref.bare())
 	if ref.isQualified() {
-		qualifier = semantic.NewUnquoted(ref.table)
+		qualifier = semantic.FromNormalized(ref.table)
 	}
 	_, err := resolver.ResolveIdentifier(qualifier, id)
 	return mapColumnResolveError(err, col)
@@ -3716,9 +3716,9 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			}
 			var qualID semantic.Identifier
 			if ac.aggArgQualified {
-				qualID = semantic.NewUnquoted(ac.aggArgQualifier)
+				qualID = semantic.FromNormalized(ac.aggArgQualifier)
 			}
-			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.NewUnquoted(bareArg))
+			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.FromNormalized(bareArg))
 			if rerr != nil || qv == nil {
 				var unresArg *expr.UnresolvableOrdinalError
 				if errors.As(rerr, &unresArg) {
@@ -3772,7 +3772,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		}
 		var qualID semantic.Identifier
 		if gk.Qualified {
-			qualID = semantic.NewUnquoted(gk.Qualifier)
+			qualID = semantic.FromNormalized(gk.Qualifier)
 			// The dup-alias twin: a qualified key
 			// binding a LATER duplicate-alias leg must group by the BINDING
 			// correlation (`Q$DUP1.QID`) — the join row's actual namespace —
@@ -3784,7 +3784,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			// upstream group-key reference validation already terminated an
 			// ambiguous key with 42702 before this pass runs (the ladder's
 			// >=2 arm is owned there, not here).
-			qv, qerr := resolver.ResolveQualifiedProjection(qualID, semantic.NewUnquoted(ref.bare()))
+			qv, qerr := resolver.ResolveQualifiedProjection(qualID, semantic.FromNormalized(ref.bare()))
 			if qerr == nil && qv != nil {
 				keyValues[i] = qv
 				filled = true
@@ -3809,7 +3809,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 				continue
 			}
 		}
-		qv, ok, err := resolver.ResolveColumnShadowingQualified(qualID, semantic.NewUnquoted(ref.bare()))
+		qv, ok, err := resolver.ResolveColumnShadowingQualified(qualID, semantic.FromNormalized(ref.bare()))
 		if err == nil && ok {
 			keyValues[i] = qv
 			filled = true
@@ -3827,7 +3827,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		// resolutions, and unresolvable names keep the translator's name
 		// emission.
 		if keyValues[i] == nil && !ref.isQualified() {
-			rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(ref.bare()))
+			rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.FromNormalized(ref.bare()))
 			if rerr == nil {
 				if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
 					keyValues[i] = fv
@@ -4244,9 +4244,9 @@ func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.Recor
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
 	addSource := func(tableName, alias, bindingID string) bool {
-		aliasID := semantic.NewUnquoted(alias)
+		aliasID := semantic.FromNormalized(alias)
 		if alias == "" {
-			aliasID = semantic.NewUnquoted(tableName)
+			aliasID = semantic.FromNormalized(tableName)
 		}
 		// The binding correlation: the parser-minted duplicate-leg id when
 		// present, else the alias.
@@ -6601,9 +6601,9 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 		if err != nil {
 			return
 		}
-		a := semantic.NewUnquoted(alias)
+		a := semantic.FromNormalized(alias)
 		if alias == "" {
-			a = semantic.NewUnquoted(tableName)
+			a = semantic.FromNormalized(tableName)
 		}
 		sources = append(sources, semantic.ScopeSource{
 			Table: tbl, Alias: a, CorrelationName: bindingOrAlias(bindingID, a),
@@ -6901,7 +6901,7 @@ func (p *existsSubqueryPlanner) addCorrelatedJoinScopeSource(innerScope *semanti
 	if jErr != nil {
 		return jErr
 	}
-	jAliasID := semantic.NewUnquoted(jAlias)
+	jAliasID := semantic.FromNormalized(jAlias)
 	_ = innerScope.AddSource(semantic.ScopeSource{
 		Table: jTbl, Alias: jAliasID, CorrelationName: jAliasID.Name(),
 	})
@@ -7049,7 +7049,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	if tblErr != nil {
 		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: resolve inner table %q: %v", sq.tableName, tblErr), Cause: tblErr}
 	}
-	aliasID := semantic.NewUnquoted(innerAlias)
+	aliasID := semantic.FromNormalized(innerAlias)
 	// Collision mint: a SINGLE-TABLE catalog inner is BORN under a
 	// unique correlation identity, never its SQL source name. The SQL name
 	// (aliasID) stays the scope-resolution qualifier — `MA.c` inside the
@@ -7895,9 +7895,9 @@ func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical
 	}
 	var qualifier semantic.Identifier
 	if key.Qualified {
-		qualifier = semantic.NewUnquoted(key.Qualifier)
+		qualifier = semantic.FromNormalized(key.Qualifier)
 	}
-	return resolver.ResolveIdentifier(qualifier, semantic.NewUnquoted(bare))
+	return resolver.ResolveIdentifier(qualifier, semantic.FromNormalized(bare))
 }
 
 // resolveCorrelatedColumnValue resolves a (possibly alias-qualified) column
@@ -7913,9 +7913,9 @@ func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical
 func resolveCorrelatedColumnValue(resolver *expr.Resolver, bare, qual string, qualified bool) (values.Value, error) {
 	var qualifier semantic.Identifier
 	if qualified {
-		qualifier = semantic.NewUnquoted(qual)
+		qualifier = semantic.FromNormalized(qual)
 	}
-	return resolver.ResolveIdentifier(qualifier, semantic.NewUnquoted(bare))
+	return resolver.ResolveIdentifier(qualifier, semantic.FromNormalized(bare))
 }
 
 // resolveCorrelatedGroupKeyValues resolves the GROUP BY keys of a correlated
@@ -8113,7 +8113,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			Message: fmt.Sprintf("correlated scalar subquery: resolve table %q: %v", sq.tableName, tblErr), Cause: tblErr,
 		}
 	}
-	aliasID := semantic.NewUnquoted(innerAlias)
+	aliasID := semantic.FromNormalized(innerAlias)
 	_ = innerScope.AddSource(semantic.ScopeSource{
 		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
 	})

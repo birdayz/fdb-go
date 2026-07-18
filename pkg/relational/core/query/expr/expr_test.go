@@ -912,8 +912,10 @@ func TestResolveIdentifier_BornBaked(t *testing.T) {
 	if !errors.As(err, &unres) {
 		t.Fatalf("correlated arm: want UnresolvableOrdinalError, got %v", err)
 	}
-	if unres.Source != "gq" {
-		t.Fatalf("correlated arm Source: got %q, want gq", unres.Source)
+	// AddSource canonicalizes CorrelationName to the UPPER runtime
+	// correlation-key namespace.
+	if unres.Source != "GQ" {
+		t.Fatalf("correlated arm Source: got %q, want GQ", unres.Source)
 	}
 }
 
