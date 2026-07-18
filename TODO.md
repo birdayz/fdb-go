@@ -1518,9 +1518,22 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       (retires with the box-substrate ordinalization). Killing before the
 >       producers would delete live defenses for constructible shapes
 >       (RFC-142 zero-rows / misclassification hazards). NOT gated on 3-4.
-> - [ ] Slice 6: N-F5 sweep — remaining parseColRef callers down to the Phase-D
->       metadata cluster (exit criterion: grep parseColRef → cascades_generator
->       metadata sites only).
+> - [ ] Slice 6 SWEPT + CLASSIFIED (remaining callers each mapped to their
+>       retirement owner): converted-to-structural this slice —
+>       resolveCorrelatedColumnValue (takes aggArgBare/Qualifier/Qualified
+>       segments, no text re-split) and aggColRefFromExpr (returns
+>       extractAwfFields' structural argBare). Remaining census:
+>       (a) resolveColumnName else-arms (8 sites, both build paths) — the
+>       slice-1 dual-channel fallback for entries with EMPTY segments;
+>       retires when Phase D saturates segment population;
+>       (b) resolved-value dotted-defense splits (bareCol :3269 pair texts,
+>       qualifyBareFieldValue :7752, scalar classify :8557/:8573, checkColumn
+>       :4190 RFC-088 follow-up) — defend legacy dotted names; retire with
+>       their producers (dup-alias carve-out / name-model residuals);
+>       (c) eval_map/eval_predicate/eval_proto/select_helpers (5 sites) —
+>       RUNTIME datum-key splits, the name-keyed row model itself (Phase C/D);
+>       (d) cascades_generator metadata cluster (18 sites) — Phase D.
+>       Exit criterion unchanged: (a)-(c) drain as Phases B-D land.
 > Remaining: WS-N Phases B-D after the slices, WS-P
 > (ConstraintsMap epoch port retiring dual-insertion + 15b/15c + round cap;
 > un-gate REWRITING OptimizeInputs; fix stale DIVERGENCES advancePlannerStage

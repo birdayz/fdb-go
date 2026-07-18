@@ -7909,21 +7909,21 @@ func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical
 }
 
 // resolveCorrelatedColumnValue resolves a (possibly alias-qualified) column
-// name to a Value through the semantic scope — the same resolution the
+// reference to a Value through the semantic scope — the same resolution the
 // correlated WHERE clause uses, for single-source and join inners alike
 // (the multi-source scope emits the QOV-addressed born-baked form; the
-// executor binds it through the merged row's leg windows). A genuinely
+// executor binds it through the merged row's leg windows). Segments come
+// STRUCTURED from the parse tree (AggregateCall.aggArgBare/Qualifier —
+// WS-N slice 6: never a dot re-split of rendered text). A genuinely
 // unresolvable column returns the resolver error so the caller can reject —
 // silently falling back to a raw FieldValue would group every row under a
 // null key (wrong results).
-func resolveCorrelatedColumnValue(resolver *expr.Resolver, col string) (values.Value, error) {
-	ref := parseColRef(col)
+func resolveCorrelatedColumnValue(resolver *expr.Resolver, bare, qual string, qualified bool) (values.Value, error) {
 	var qualifier semantic.Identifier
-	id := semantic.NewUnquoted(ref.bare())
-	if ref.isQualified() {
-		qualifier = semantic.NewUnquoted(ref.table)
+	if qualified {
+		qualifier = semantic.NewUnquoted(qual)
 	}
-	return resolver.ResolveIdentifier(qualifier, id)
+	return resolver.ResolveIdentifier(qualifier, semantic.NewUnquoted(bare))
 }
 
 // resolveCorrelatedGroupKeyValues resolves the GROUP BY keys of a correlated
@@ -7968,7 +7968,11 @@ func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQu
 // matching). Returns isAgg=false for non-aggregate refs and for
 // expression-argument aggregates (`SUM(a*b)`), which have no bare column name
 // to form the producer's stable FN(BAREARG) key.
-func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isAgg bool) {
+// aggColRefFromExpr returns the aggregate function name and the STRUCTURAL
+// bare operand column from the parse tree (extractAwfFields' argBare — WS-N
+// slice 6: never a dot re-split of the rendered operand, which a qualified
+// `SUM(o.amount)` rendering would split at the inner dot).
+func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argBare string, isAgg bool) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok || pred.Predicate() != nil {
 		return "", "", false
@@ -7985,9 +7989,12 @@ func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isA
 	if !ok {
 		return "", "", false
 	}
-	f, a, aExpr, _, _, _, _, _, ok := extractAwfFields(awf)
+	f, a, aExpr, _, _, _, aBare, _, ok := extractAwfFields(awf)
 	if !ok || aExpr != nil {
 		return "", "", false
+	}
+	if aBare != "" {
+		return f, aBare, true
 	}
 	return f, a, true
 }
@@ -8030,13 +8037,14 @@ func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]lo
 		}
 		// A selected aggregate spelled differently in ORDER BY than in SELECT
 		// (`SELECT SUM(amount) … ORDER BY SUM(o.amount)`): the raw-text forms
-		// above miss (parseColRef on `SUM(o.amount)` splits at the inner dot).
-		// Recover the producer's stable FN(BAREARG) key from the parse tree so a
-		// genuinely-selected aggregate resolves regardless of operand qualifier.
+		// above miss (a rendered `SUM(o.amount)` key never matches the bare
+		// producer key). Recover the producer's stable FN(BAREARG) key from the
+		// parse tree so a genuinely-selected aggregate resolves regardless of
+		// operand qualifier.
 		if dk == "" && ob.rawExpr != nil {
-			if fn, argCol, isAgg := aggColRefFromExpr(ob.rawExpr); isAgg {
+			if fn, argBare, isAgg := aggColRefFromExpr(ob.rawExpr); isAgg {
 				canonKey := strings.ToUpper(fn) + "(*)"
-				if b := strings.ToUpper(parseColRef(argCol).bare()); b != "" {
+				if b := strings.ToUpper(argBare); b != "" {
 					canonKey = strings.ToUpper(fn) + "(" + b + ")"
 				}
 				if v, ok := aggDatumKey[canonKey]; ok {
@@ -8287,7 +8295,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// the EXACT datum key the aggregate cursor emits (addAgg's returned name),
 		// for resolving an ORDER BY ref over the grouped output (RFC-085).
 		aggDatumKey := make(map[string]string)
-		addAgg := func(fn, arg, argBare string, e antlrgen.IExpressionContext, distinct bool) (string, error) {
+		addAgg := func(fn, arg, argBare, argQual string, argQualified bool, e antlrgen.IExpressionContext, distinct bool) (string, error) {
 			// An expression argument has no bare column name, so it collapses to
 			// FN(*). Two DISTINCT expression aggregates (e.g. SUM(a+b) projected
 			// and SUM(c*d) in HAVING) would both synthesize "SUM(*)" and the
@@ -8314,7 +8322,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				}
 				opVal = v
 			} else if arg != "" {
-				v, err := resolveCorrelatedColumnValue(resolver, arg)
+				b := argBare
+				if b == "" {
+					b = arg
+				}
+				v, err := resolveCorrelatedColumnValue(resolver, b, argQual, argQualified)
 				if err != nil {
 					return "", err
 				}
@@ -8406,7 +8418,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 					Message: "correlated scalar subquery over a join: HAVING references an expression/constant-argument aggregate (e.g. COUNT(1), SUM(<expr>)) that cannot be resolved against the grouped output",
 				}
 			}
-			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggArgBare, ac.aggExpr, ac.aggDistinct)
+			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified, ac.aggExpr, ac.aggDistinct)
 			if err != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 					Message: fmt.Sprintf("correlated scalar subquery: resolve aggregate argument: %v", err), Cause: err,
@@ -8428,7 +8440,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 		// A sole COUNT(*) the parser flagged via countStar (no aggCol entry).
 		if sq.countStar {
-			name, _ := addAgg("COUNT", "", "", nil, false) // -> COUNT(*)
+			name, _ := addAgg("COUNT", "", "", "", false, nil, false) // -> COUNT(*)
 			scalarCol = name
 			aggDatumKey[strings.ToUpper(name)] = name
 			if sq.countStarAlias != "" {
