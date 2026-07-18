@@ -1411,13 +1411,20 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > 5. [ ] WS-N Phase D — metadata from the flowed type (positional ColumnDef; delete
 >        descriptorForColumn/innerByName/qualifyAndMergeColumns/colref.go; kills N-F4).
 > Interleaved at phase boundaries (independent wrong-rows P0s, each small+red-pinned):
-> - [ ] P0.1 PK-intersection ordering gate (row DROPS, plain SQL) + reverse threading
-> - [ ] P0.2 streaming-agg ordered child pinned (FinalOf) instead of shared-group memoize
-> - [ ] P0.3 union-leg pinning (delegator-hint lie + arity bake → dup rows through DISTINCT)
-> - [ ] P0.4 rebuildOrderedSpine executable-plan verification (extraction twin of RFC-180's)
-> - [ ] P0.5 INT/FLOAT 32-bit arithmetic lanes (silent wrong values on INTEGER schemas)
-> - [ ] P0.6 bestPhysicalChild hash tie-break + properties-side comparator injection
-> - [ ] P0.7 PushSetOperationThroughFetch rebuild over pushed inners (cost/EXPLAIN lie)
+> - [x] P0.1 PK-intersection ordering gate (row DROPS, plain SQL) + reverse threading.
+>       Follow-up CLOSED: the AND-over-two-indexes SQL shape fires the path e2e
+>       (and_index_intersection.yaml) — and exposed unbaked comparison keys
+>       (OrdinalResolutionError on every such query); fixed by flowing the
+>       descriptor row type into candidates + baking pk keys, plan-time decline.
+> - [x] P0.2 streaming-agg ordered child pinned (FinalOf) instead of shared-group memoize
+> - [x] P0.3 union-leg pinning (delegator-hint lie + arity bake → dup rows through DISTINCT)
+> - [x] P0.4 rebuildOrderedSpine executable-plan verification (extraction twin of RFC-180's)
+> - [x] P0.5 INT/FLOAT 32-bit arithmetic lanes (Graefe+Torvalds ACK; Type() INT case,
+>       literal narrowing per parseDecimal — closed 5 RFC-082 known-red entries)
+> - [x] P0.6 bestPhysicalChild hash tie-break + properties-side comparator injection
+> - [x] P0.7 PushSetOperationThroughFetch rebuild over pushed inners (Graefe+Torvalds ACK;
+>       single-pass tryPushValues, dynamic InUnion arm live, Case-2 partial push,
+>       ordered-union instantiation, e2e Fetch(Union(IndexScan…)) pin)
 > Then: WS-C (continuation round 2; audit complete — C1 recursive-CTE resume misroute
 > is SILENT CORRUPTION, one-line stopgap guard immediately, then the full
 > RecursiveCursorContinuation port; C2 cross-engine SQL handoff silent-restart decision +
