@@ -48,8 +48,21 @@ type Reference struct {
 	members      []RelationalExpression
 	finalMembers []RelationalExpression
 
-	plannerStage    PlannerStage
-	explState       explorationState
+	plannerStage PlannerStage
+	explState    explorationState
+	// constraintsMap is the Java-style tick/watermark exploration
+	// bookkeeping (RFC-181 WS-P stage (a)) — maintained ALONGSIDE the
+	// member-count convergence above until stages (b)-(d) hand it
+	// control. Lazily allocated.
+	constraintsMap *ConstraintsMap
+	// exploredFinals tracks which FINAL members have been routed through
+	// exploration (pointer identity). The stage-(a) bridge: Java re-explores
+	// every final each convergence round because EPOCHS bound the rounds
+	// (a quiet round converges); Go's member-count convergence would see a
+	// re-explored final's rule yields as growth and cycle to the round cap
+	// — so under count-based convergence each final explores AT MOST once.
+	// Stage (b) hands convergence to the epochs and retires this set.
+	exploredFinals  map[RelationalExpression]struct{}
 	explMemberCount int
 	explRounds      int
 
@@ -183,6 +196,21 @@ func (r *Reference) Absorb(loser *Reference) {
 	// would otherwise be discarded when AliasAwareDedups canonicalizes to the
 	// survivor, undercounting the shadow-delta metric after a Memo.merge.
 	r.aliasAwareDedups += loser.aliasAwareDedups
+	if loser.constraintsMap != nil {
+		if r.constraintsMap == nil {
+			r.constraintsMap = NewConstraintsMap()
+			r.constraintsMap.InheritFromOther(loser.constraintsMap)
+		} else {
+			// Both sides carry epoch state: fold the loser's constraints
+			// in via pushes (each bump re-arms the survivor's
+			// convergence — the epoch twin of the member re-arm above).
+			for _, k := range loser.constraintsMap.order {
+				if e, ok := loser.constraintsMap.entries[k]; ok {
+					r.constraintsMap.PushProperty(k, e.property, func(_, pushed any) (any, bool) { return pushed, true })
+				}
+			}
+		}
+	}
 	r.correlatedToCache = nil
 	loser.forwardedTo = r
 }
@@ -470,6 +498,31 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	return true
 }
 
+// MarkFinalExplored records that a final member has been routed through
+// exploration; reports whether it was ALREADY explored (see the
+// exploredFinals field for the stage-(a) once-only contract).
+func (r *Reference) MarkFinalExplored(expr RelationalExpression) bool {
+	r = r.Canonical()
+	if r.exploredFinals == nil {
+		r.exploredFinals = map[RelationalExpression]struct{}{}
+	}
+	if _, seen := r.exploredFinals[expr]; seen {
+		return true
+	}
+	r.exploredFinals[expr] = struct{}{}
+	return false
+}
+
+// ConstraintsMap returns the Reference's tick/watermark constraint map
+// (lazily allocated). Canonical-forwarding like every other accessor.
+func (r *Reference) ConstraintsMap() *ConstraintsMap {
+	r = r.Canonical()
+	if r.constraintsMap == nil {
+		r.constraintsMap = NewConstraintsMap()
+	}
+	return r.constraintsMap
+}
+
 // AdvancePlannerStage transitions this Reference to a new planner stage.
 // Clears exploratory members, promotes final members as the new
 // exploratory seed, clears finals and plan properties, resets
@@ -485,6 +538,10 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 	r.explRounds = 0
 	r.explMemberCount = 0
 	r.winner = nil
+	r.exploredFinals = nil
+	if r.constraintsMap != nil {
+		r.constraintsMap.AdvancePlannerStage()
+	}
 }
 
 // Stage returns the current planner stage.
@@ -516,6 +573,7 @@ func (r *Reference) StartExploration() {
 	r.explState = explorationInProgress
 	r.explMemberCount = len(r.members)
 	r.explRounds++
+	r.ConstraintsMap().StartExploration()
 }
 
 // ExplRounds returns how many exploration rounds have been started.
@@ -532,6 +590,7 @@ func (r *Reference) ExplMemberCount() int {
 func (r *Reference) CommitExploration() {
 	r = r.Canonical()
 	r.explState = explorationDone
+	r.ConstraintsMap().CommitExploration()
 }
 
 // ContainsExactly returns true if expr is a member of this Reference

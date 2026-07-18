@@ -97,6 +97,12 @@ type Planner struct {
 	// default 1e6 constant.
 	stats properties.StatisticsProvider
 
+	// maxObservedExplRounds records the maximum exploration rounds any
+	// Reference started this Plan() — the WS-P round-cap retirement
+	// evidence (exported via MaxObservedExplorationRounds; the epoch
+	// model makes maxRoundsPerRef obsolete at stage (d)).
+	maxObservedExplRounds int
+
 	// constraintMap holds ordering constraints propagated during
 	// PLANNING's preorder rules. Shared across all tasks.
 	constraintMap *ConstraintMap
@@ -231,6 +237,11 @@ func (p *Planner) WithStatistics(stats properties.StatisticsProvider) *Planner {
 
 // Statistics returns the planner's statistics provider, or nil if none set.
 func (p *Planner) Statistics() properties.StatisticsProvider { return p.stats }
+
+// MaxObservedExplorationRounds reports the maximum exploration rounds
+// any Reference started during Plan() — round-cap retirement evidence
+// (RFC-181 WS-P).
+func (p *Planner) MaxObservedExplorationRounds() int { return p.maxObservedExplRounds }
 
 // WithMaxTasks overrides the task cap. Returns p for chaining.
 func (p *Planner) WithMaxTasks(n int) *Planner {

@@ -80,7 +80,39 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		return
 	}
 
+	// Observed-rounds evidence for the WS-P round-cap retirement: the
+	// epoch model makes maxRoundsPerRef obsolete; until stage (d)
+	// retires it, export the observed maximum so stress/conformance
+	// runs carry the evidence rather than a silent raise.
+	if r := t.Ref.ExplRounds() + 1; r > p.maxObservedExplRounds {
+		p.maxObservedExplRounds = r
+	}
+
 	p.push(&ExploreGroupTask{Phase: t.Phase, Ref: t.Ref})
+
+	// FINALS ROUTING (Java ExploreGroup: getFinalExpressions() →
+	// exploreExpressionAndOptimizeInputs — RFC-181 WS-P stage (a)).
+	// Under the still-intact dual insertion every final is ALSO an
+	// exploratory member and is explored by the member loop below, so
+	// this loop only picks up a final that is NOT dual-inserted —
+	// vacuous today, load-bearing at stage (b) when dual insertion
+	// dies and finals live only here.
+	for _, expr := range t.Ref.FinalMembers() {
+		if isExploratoryMember(t.Ref, expr) {
+			continue // dual-inserted — the member loop owns it
+		}
+		if t.Ref.MarkFinalExplored(expr) {
+			// Already routed once. Java re-explores finals every round
+			// because epochs bound the rounds; under Go's member-count
+			// convergence a re-fire's yields read as growth and cycle
+			// to the round cap — once-only until stage (b).
+			continue
+		}
+		if t.Phase == PhasePlanning && isPhysical(expr) {
+			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
+		}
+		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
+	}
 
 	// Only explore NEW members added since the last round. On the
 	// first round (explMemberCount=0), this explores all members.
@@ -530,6 +562,17 @@ func (t *OptimizeInputsTask) Run(p *Planner) {
 }
 
 // isFinalMember checks if expr is already in the Reference's final members.
+// isExploratoryMember reports pointer-identity membership in the
+// EXPLORATORY set only (ContainsExactly admits finals too).
+func isExploratoryMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	for _, m := range ref.Members() {
+		if m == expr {
+			return true
+		}
+	}
+	return false
+}
+
 func isFinalMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
 	for _, m := range ref.FinalMembers() {
 		if m == expr {

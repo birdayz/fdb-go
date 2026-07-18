@@ -62,4 +62,11 @@ func Set[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConst
 		return
 	}
 	cm.constraints[constraintEntry{ref: ref.Canonical(), key: key}] = value
+	// Mirror the push into the Reference's tick/watermark ConstraintsMap
+	// (RFC-181 WS-P stage (a)): every Set here is a REAL push — the
+	// callers pre-combine before writing — so the per-ref epoch ticks
+	// record exactly the constraint-propagation events Java's
+	// pushProperty ticks on. The planner-global map stays authoritative
+	// for reads until stage (b) hands the epochs control.
+	ref.ConstraintsMap().PushProperty(key, value, func(_, pushed any) (any, bool) { return pushed, true })
 }
