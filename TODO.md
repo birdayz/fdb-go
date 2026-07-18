@@ -1452,6 +1452,11 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >       CAST((SELECT bigint_col ...) AS BOOLEAN) evades the plan-time gates
 >       the direct column hits. Thread the inner plan's output column type
 >       through SubqueryPlanner.BuildScalar → ScalarSubqueryValue.
+> - [ ] Follow-up (Torvalds, sanctioned TODO): the yamsql walker's decline
+>       classification reports 0AF00 for a CAST the plan-time pair gate
+>       rejected with 22F3H (cast.yaml STRING→BYTES pins). Surface the
+>       gate's own error code through the classification so the pins can
+>       assert 22F3H; loud-either-way today.
 > WS-N Phase A progress: slice 1 (structural validation channel) and slice 2
 > (born-baked — the four lazy resolver fallbacks retired as
 > UnresolvableOrdinalError after zero-hit probes across yamsql/embedded/full

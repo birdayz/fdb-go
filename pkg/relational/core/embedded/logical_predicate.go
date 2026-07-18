@@ -3690,6 +3690,10 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			}
 			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.NewUnquoted(bareArg))
 			if rerr != nil || qv == nil {
+				var unresArg *expr.UnresolvableOrdinalError
+				if errors.As(rerr, &unresArg) {
+					return unresArg
+				}
 				continue
 			}
 			v = qv
@@ -3793,11 +3797,16 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		// resolutions, and unresolvable names keep the translator's name
 		// emission.
 		if keyValues[i] == nil && !ref.isQualified() {
-			if rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(ref.bare())); rerr == nil {
+			rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(ref.bare()))
+			if rerr == nil {
 				if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
 					keyValues[i] = fv
 					filled = true
 				}
+			}
+			var unresKey *expr.UnresolvableOrdinalError
+			if errors.As(rerr, &unresKey) {
+				return unresKey
 			}
 		}
 	}

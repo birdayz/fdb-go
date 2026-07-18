@@ -3344,11 +3344,17 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 			return strconv.FormatInt(i, 10), nil
 		}
 		if f, ok := v.(float64); ok {
-			s := strconv.FormatFloat(f, 'g', -1, 64)
-			if !strings.ContainsAny(s, ".eE") && s != "NaN" && s != "+Inf" && s != "-Inf" {
-				s += ".0"
+			// Dispatch on the child's STATIC type code, like Java's
+			// FLOAT_TO_STRING vs DOUBLE_TO_STRING operator rows:
+			// FLOAT renders through the Float.toString contract
+			// (32-bit shortest-repr), DOUBLE through Double.toString.
+			if c.Child != nil && c.Child.Type() != nil && c.Child.Type().Code() == TypeCodeFloat {
+				return javaFloatString(float64(float32(f)), 32), nil
 			}
-			return s, nil
+			return javaFloatString(f, 64), nil
+		}
+		if f32, ok := v.(float32); ok {
+			return javaFloatString(float64(f32), 32), nil
 		}
 		if b, ok := v.(bool); ok {
 			// Match runtime functions.CastValue: lowercase

@@ -1860,3 +1860,40 @@ func TestCastPairDefined_ByteStringLandmines(t *testing.T) {
 	}
 	t.Fatalf("STRING→BYTES evaluator behavior changed (got %v, err %v) — if an arm was added, admit the pair and update this pin", got, err)
 }
+
+// TestCastValue_FloatToString_JavaContract pins the STRING-target float
+// rendering to Java's operator rows: DOUBLE_TO_STRING is Double.toString
+// (decimal iff 1e-3 <= |v| < 1e7, else scientific with ".0"-completed
+// mantissa and unpadded exponent), FLOAT_TO_STRING is Float.toString on
+// the 32-bit value. Go's FormatFloat 'g' diverges in both scientific
+// zones (boundary at 1e6 vs 1e7; zero-padded "1e+07" exponents), so the
+// arm must route through javaFloatString with static-type dispatch.
+func TestCastValue_FloatToString_JavaContract(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   float64
+		typ  Type
+		want string
+	}{
+		{1e7, NullableDouble, "1.0E7"},
+		{1e6, NullableDouble, "1000000.0"},
+		{1e-4, NullableDouble, "1.0E-4"},
+		{1e-3, NullableDouble, "0.001"},
+		{-2.5e8, NullableDouble, "-2.5E8"},
+		{0.5, NullableDouble, "0.5"},
+		// FLOAT dispatches on the child's static type: the value is
+		// rendered through the 32-bit Float.toString contract.
+		{float64(float32(0.1)), NullableFloat, "0.1"},
+		{1e7, NullableFloat, "1.0E7"},
+	}
+	for _, tc := range cases {
+		cv := NewCastValue(&ConstantValue{Value: tc.in, Typ: tc.typ}, TypeString)
+		got, err := cv.Evaluate(nil)
+		if err != nil {
+			t.Fatalf("CAST(%v %v AS STRING): %v", tc.in, tc.typ, err)
+		}
+		if got != tc.want {
+			t.Errorf("CAST(%v %v AS STRING): got %q, want %q", tc.in, tc.typ, got, tc.want)
+		}
+	}
+}
