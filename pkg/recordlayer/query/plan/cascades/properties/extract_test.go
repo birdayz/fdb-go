@@ -432,3 +432,50 @@ func TestExtractBestPlan_HashTieFallsBackToTypeKey(t *testing.T) {
 		t.Fatalf("hash-tied winner depends on insertion order: [A,B]→%s, [B,A]→%s", ab, ba)
 	}
 }
+
+// TestExtractBestPlan_ExplodeFieldTieDeterministic pins the tie-break
+// against the Explode shape: two cost-tied explodes over DIFFERENT array
+// fields share an identical result element type, so the type-key cannot
+// discriminate — the discrimination must come from the expression hash,
+// which now folds the collection Value's SEMANTIC content (the field
+// path) rather than its bare Name() ("field" for either). Same winner
+// regardless of insertion order.
+func TestExtractBestPlan_ExplodeFieldTieDeterministic(t *testing.T) {
+	t.Parallel()
+	arr := values.NewArrayType(true, values.NotNullLong)
+	fieldOf := func(name string) values.Value {
+		qov := values.NewQuantifiedObjectValueOfType(
+			values.NamedCorrelationIdentifier("T"),
+			values.NewRecordType("T", false, []values.Field{
+				{Name: "ARR1", FieldType: arr, Ordinal: 0},
+				{Name: "ARR2", FieldType: arr, Ordinal: 1},
+			}))
+		return values.NewFieldValue(qov, name, arr)
+	}
+	build := func(first, second string) *expressions.Reference {
+		r := expressions.InitialOf(expressions.NewExplodeExpression(fieldOf(first)))
+		r.Insert(expressions.NewExplodeExpression(fieldOf(second)))
+		return r
+	}
+	winner := func(t *testing.T, r *expressions.Reference) string {
+		t.Helper()
+		got, err := ExtractBestPlan(r)
+		if err != nil {
+			t.Fatalf("ExtractBestPlan err=%v", err)
+		}
+		ex, ok := got.(*expressions.ExplodeExpression)
+		if !ok {
+			t.Fatalf("got %T, want *ExplodeExpression", got)
+		}
+		fv, ok := ex.GetCollectionValue().(*values.FieldValue)
+		if !ok {
+			t.Fatalf("collection %T, want *FieldValue", ex.GetCollectionValue())
+		}
+		return fv.Field
+	}
+	ab := winner(t, build("ARR1", "ARR2"))
+	ba := winner(t, build("ARR2", "ARR1"))
+	if ab != ba {
+		t.Fatalf("explode-field-tied winner depends on insertion order: →%s vs →%s", ab, ba)
+	}
+}

@@ -57,13 +57,6 @@ type EmbeddedConnection struct {
 	// nil means auto-commit mode.
 	activeTx *embeddedTx
 
-	// currentSourceAliases holds the uppercased set of qualifier aliases
-	// for the outer proto-path scan currently executing. Consumed by the
-	// proto-path evaluator (eval_proto.go) so a correlated inner reference
-	// resolves against the outer's user alias. nil falls back to the proto
-	// descriptor name.
-	currentSourceAliases map[string]bool
-
 	// planCache caches Cascades physical plans keyed by normalized SQL
 	// hash. Per-connection (and therefore per-schema), invalidated on
 	// DDL. Lazily initialized on first query.
@@ -548,7 +541,6 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 		c.activeTx = nil
 		tx.rctx.Cancel()
 	}
-	c.currentSourceAliases = nil
 	c.sess.ResetSchemaCache()
 	c.invalidatePlanCache()
 	return nil

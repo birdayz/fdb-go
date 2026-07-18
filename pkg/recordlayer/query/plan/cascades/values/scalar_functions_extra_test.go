@@ -1,6 +1,7 @@
 package values
 
 import (
+	"errors"
 	"math"
 	"testing"
 	"time"
@@ -395,5 +396,53 @@ func TestScalarFunction_ShortCircuit(t *testing.T) {
 	// The error still surfaces when the poisoned argument IS reached.
 	if _, err = NewScalarFunctionValue("COALESCE", NullableInt, NewNullValue(NullableInt), boom).Evaluate(nil); err == nil {
 		t.Error("COALESCE(NULL, 1/0) must reach and raise the division error")
+	}
+}
+
+// TestScalarFunction_IFNULLArity pins the lazy IFNULL's arity guard: the
+// short-circuit arm must keep the strict arm's exactly-2-args contract —
+// IFNULL(1) and IFNULL(a,b,c) decline to NULL, never degrade into
+// variadic COALESCE.
+func TestScalarFunction_IFNULLArity(t *testing.T) {
+	t.Parallel()
+	one := &ConstantValue{Value: int64(1), Typ: NullableInt}
+	two := &ConstantValue{Value: int64(2), Typ: NullableInt}
+
+	got, err := NewScalarFunctionValue("IFNULL", NullableInt, one).Evaluate(nil)
+	if err != nil || got != nil {
+		t.Errorf("IFNULL(1) = %v, %v — want NULL decline (strict 2-arg contract)", got, err)
+	}
+	got, err = NewScalarFunctionValue("IFNULL", NullableInt, one, two, one).Evaluate(nil)
+	if err != nil || got != nil {
+		t.Errorf("IFNULL(1,2,1) = %v, %v — want NULL decline, not variadic COALESCE", got, err)
+	}
+	got, err = NewScalarFunctionValue("IFNULL", NullableInt, NewNullValue(NullableInt), two).Evaluate(nil)
+	if err != nil || got != int64(2) {
+		t.Errorf("IFNULL(NULL, 2) = %v, %v — want 2", got, err)
+	}
+}
+
+// TestScalarFunction_DatePartAcceptsCastableTimestamps pins the layout
+// authority: every string the TIMESTAMP cast accepts must be a valid
+// date-part input — the 22023 garbage rejection fires only for strings
+// castable NOWHERE (the RFC3339 form was wrongly classified malformed
+// when the date-part arm carried its own shorter layout list).
+func TestScalarFunction_DatePartAcceptsCastableTimestamps(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{
+		"2024-01-02 03:04:05",
+		"2024-01-02T03:04:05Z",
+		"2024-01-02T03:04:05",
+		"2024-01-02",
+	} {
+		arg := &ConstantValue{Value: in, Typ: TypeString}
+		got, err := NewScalarFunctionValue("YEAR", NullableInt, arg).Evaluate(nil)
+		if err != nil || got != int64(2024) {
+			t.Errorf("YEAR(%q) = %v, %v — want 2024 (castable-to-TIMESTAMP forms must never 22023)", in, got, err)
+		}
+	}
+	var argErr *InvalidArgumentError
+	if _, err := NewScalarFunctionValue("YEAR", NullableInt, &ConstantValue{Value: "not-a-date", Typ: TypeString}).Evaluate(nil); !errors.As(err, &argErr) {
+		t.Errorf("YEAR('not-a-date') = %v — want *InvalidArgumentError (22023)", err)
 	}
 }

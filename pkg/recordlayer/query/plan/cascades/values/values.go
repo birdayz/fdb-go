@@ -1815,6 +1815,12 @@ func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
 	// expressions into runtime errors.
 	switch s.FuncName {
 	case "COALESCE", "IFNULL":
+		// IFNULL is the strictly 2-arg COALESCE spelling — the lazy arm
+		// must keep the strict arm's arity decline (nil, nil), not
+		// degrade IFNULL(1) / IFNULL(a,b,c) into variadic COALESCE.
+		if s.FuncName == "IFNULL" && len(s.Args) != 2 {
+			return nil, nil
+		}
 		for _, a := range s.Args {
 			if a == nil {
 				return nil, nil
@@ -1930,6 +1936,13 @@ func scalarArgString(a any) string {
 	}
 	return fmt.Sprintf("%v", a)
 }
+
+// timestampParseLayouts is the SINGLE authority for the string forms the
+// engine accepts as timestamps — the TIMESTAMP cast and the date-part
+// functions parse the SAME set, so a string castable to TIMESTAMP can
+// never be "not a date/time value" to YEAR() (the date-part arm appends
+// the bare time-only layout for HOUR/MINUTE/SECOND over "15:04:05").
+var timestampParseLayouts = []string{timestampLayout, "2006-01-02T15:04:05Z07:00", "2006-01-02T15:04:05", dateLayout}
 
 // evalScalarFunctionCtx is evalScalarFunction with the evalCtx threaded
 // for the statement-clock arms (CURRENT_TIMESTAMP family); every other
@@ -2504,11 +2517,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		}
 		var t time.Time
 		var err error
-		for _, layout := range []string{
-			timestampLayout,
-			dateLayout,
-			"15:04:05",
-		} {
+		for _, layout := range append(timestampParseLayouts[:len(timestampParseLayouts):len(timestampParseLayouts)], "15:04:05") {
 			t, err = time.Parse(layout, s)
 			if err == nil {
 				break
@@ -3479,7 +3488,7 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 			return val.UTC().Format(timestampLayout), nil
 		case string:
 			s := strings.TrimSpace(val)
-			for _, layout := range []string{timestampLayout, "2006-01-02T15:04:05Z07:00", "2006-01-02T15:04:05", dateLayout} {
+			for _, layout := range timestampParseLayouts {
 				if t, err := time.Parse(layout, s); err == nil {
 					return t.UTC().Format(timestampLayout), nil
 				}

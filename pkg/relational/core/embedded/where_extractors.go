@@ -4,9 +4,9 @@ import (
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
-// Operator classifiers shared by the expression evaluators
-// (eval_map.go, eval_proto.go, eval_predicate*.go). Each maps a typed
-// ANTLR operator node to a canonical string without GetText().
+// Operator classifiers for the map-path expression evaluator
+// (eval_map.go, eval_predicate_map.go). Each maps a typed ANTLR
+// operator node to a canonical string without GetText().
 
 // classifyComparisonOp returns a canonical string for comparison operators
 // using typed ANTLR terminal nodes (no GetText()). Returns "" for
