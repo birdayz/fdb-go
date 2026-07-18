@@ -1404,10 +1404,36 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >        quoted "Q$1" table alias; cross-leg same-name-different-type metadata.
 > 2. [ ] WS-N Phase A — resolver provenance end-to-end (typed leg+accessors on every
 >        FieldValue; structural rebases; kills N-F2/N-F3/N-F5).
-> 3. [ ] WS-N Phase B — alias namespace split (machine-minted quantifier aliases only;
->        delete EqualFold on correlation names; TODO 7.1; kills N-F6).
-> 4. [ ] WS-N Phase C — ordering on Value identity (delete orderingKeyFor's three
->        rendering bridges + normLookup; kills N-F1).
+> 3. [~] WS-N Phase B — SUBSTANTIALLY COMPLETE (B1-B3b landed); the residual is a
+>        purity refactor, not a bug class. Landed: B1 binding-keyed scalar
+>        lowering (dup-outer scalars answer; + the outer-projected plain-column
+>        wrong-rows master fix); B2 the dup-alias flat-name projection carve-out
+>        RETIRED (dup qualifiers bake QOV(binding) per-attribute, first leg
+>        included; UNION-face decline upgraded to plan-time); B3a quote-aware
+>        aliases resolve in EVERY position (FromNormalized for parse-captured
+>        strings; Scope.AddSource canonicalizes CorrelationName to the UPPER
+>        runtime correlation-key namespace — the quoted-"Q$1" interim pin is
+>        GREEN, TestFDB_QuotedMachineShapedAliases); B3b ONE correlation-key
+>        namespace end-to-end (leg names verbatim, correlation-vs-leg compares
+>        EXACT; lowercase q$N machine mints case-DISJOINT from user
+>        correlations — unforgeable). N-F6's harm cases are closed. RESIDUAL
+>        (purity, own RFC if wanted): the full machine-mint flip for every leg
+>        (statement-scoped deterministic mints; retires QualifierIsDuplicated's
+>        concept and the remaining display-alias plumbing); the
+>        dotted-split arm of fieldValueAliasAndCol retires with the
+>        enclosed-unnest residual (box-substrate ordinalization), not B.
+> 4. [~] WS-N Phase C — ordering on Value identity: the label-collision family's
+>        live wrong-order bug is FIXED (translateSort's BareRef split,
+>        sort_key_label_collision_fdb_test.go; the RFC-180 follow-up entry).
+>        REMAINING (the phase core): requested parts carry RESOLVED values,
+>        poset/binding maps keyed on semantic Value identity in the
+>        current-quantifier post-rebase frame (the Graefe amendment), then
+>        DELETE orderingKeyFor's three rendering bridges + normLookup
+>        (rich_ordering.go — construction at :60-130, bridges at :317-335).
+>        The bridges exist BECAUSE requesters mint lazy values while providers
+>        are baked — C1 is requester-side born-baked ordering values, C2 the
+>        identity keying, C3 the EnumerateSatisfyingComparisonKeyValues /
+>        set-op merge-key consumers.
 > 5. [ ] WS-N Phase D — metadata from the flowed type (positional ColumnDef; delete
 >        descriptorForColumn/innerByName/qualifyAndMergeColumns/colref.go; kills N-F4).
 >        Full agent handoff: shifts/handoff-ws-n-phase-d-typed-metadata.md.
