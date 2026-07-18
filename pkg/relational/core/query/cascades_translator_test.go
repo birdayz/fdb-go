@@ -1211,3 +1211,44 @@ func TestTranslateUnnest_NilMetadataAtOrdinalityIsCleanError(t *testing.T) {
 		t.Fatalf("nil-md AT unnest: err = %v (%T), want code %v", err, err, api.ErrCodeUnsupportedQuery)
 	}
 }
+
+// TestAggregateOutputColumns_DupNameConflictingTypes pins the typeOf
+// ambiguity guard: a GROUP BY key whose bare name is carried by MULTIPLE
+// input columns with CONFLICTING type codes (two legs both projecting `V`,
+// one INT one STRING) must stay UnknownType — first-match would silently
+// attach one leg's type to what may be the other leg's column (the N-F4
+// wrong-metadata class). Same-typed duplicates keep the shared type.
+func TestAggregateOutputColumns_DupNameConflictingTypes(t *testing.T) {
+	t.Parallel()
+	tr := &cascadesTranslator{}
+
+	mkAgg := func(a, b values.Type) *logical.LogicalAggregate {
+		return &logical.LogicalAggregate{
+			Input: &logical.LogicalProject{
+				Projections: []string{"V", "V"},
+				Aliases:     []string{"", ""},
+				ProjectedValues: []values.Value{
+					&values.ConstantValue{Value: int64(1), Typ: a},
+					&values.ConstantValue{Value: "s", Typ: b},
+				},
+			},
+			GroupKeys: []logical.GroupKey{{Display: "V", Bare: "V"}},
+			Calls:     []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}},
+		}
+	}
+
+	// Conflicting codes → the key stays Unknown (correct-or-unknown).
+	fields := tr.aggregateOutputColumns(mkAgg(values.NullableInt, values.TypeString))
+	if len(fields) < 1 {
+		t.Fatalf("no output fields")
+	}
+	if fields[0].FieldType == nil || fields[0].FieldType.Code() != values.TypeCodeUnknown {
+		t.Errorf("conflicting dup-name key typed %v, want Unknown", fields[0].FieldType)
+	}
+
+	// Agreeing codes → the shared type flows.
+	fields = tr.aggregateOutputColumns(mkAgg(values.NullableInt, values.NullableInt))
+	if fields[0].FieldType == nil || fields[0].FieldType.Code() != values.TypeCodeInt {
+		t.Errorf("same-typed dup-name key typed %v, want INT", fields[0].FieldType)
+	}
+}

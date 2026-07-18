@@ -71,12 +71,61 @@ func extractBestPlanWithVisited(ref *expressions.Reference, stats StatisticsProv
 		return nil, nil
 	}
 	visited[ref] = true
-	less := CostLessWith(stats)
-	best := ref.GetBest(less)
+	best := ref.GetBest(tieBrokenLess(CostLessWith(stats)))
 	if best == nil {
 		return nil, nil
 	}
 	return rebuildExpressionVisited(best, stats, visited)
+}
+
+// tieBrokenLess wraps a cost comparator into a TOTAL order for the
+// selector-less extraction path (ExtractBestPlan / ExtractBestPlanWith).
+// GetBest iterates the members slice, so a merely cost-partial comparator
+// lets the winner depend on member INSERTION order — the same
+// nondeterminism class the planner's selector path closes with its
+// plan-hash tie-break (PlanningCostModel criterion #17, costLessFor).
+// This package cannot reach the planner's physical plan hash (layering),
+// so ties resolve by extractTieBreakHash — structural, expressions-only,
+// and member-order invariant.
+func tieBrokenLess(less func(a, b expressions.RelationalExpression) bool) func(a, b expressions.RelationalExpression) bool {
+	return func(a, b expressions.RelationalExpression) bool {
+		if less(a, b) {
+			return true
+		}
+		if less(b, a) {
+			return false
+		}
+		return extractTieBreakHash(a, map[*expressions.Reference]bool{}) <
+			extractTieBreakHash(b, map[*expressions.Reference]bool{})
+	}
+}
+
+// extractTieBreakHash is a deterministic structural hash over the
+// expression DAG: the node's own HashCodeWithoutChildren folded
+// ORDER-SENSITIVELY over each quantifier's reference hash (quantifier
+// order is structural), where a reference hashes as the COMMUTATIVE
+// (XOR) fold of its members — so the value never depends on member
+// insertion order. Back-edges (recursive CTE references) are skipped
+// via the visited guard.
+func extractTieBreakHash(e expressions.RelationalExpression, visited map[*expressions.Reference]bool) uint64 {
+	if e == nil {
+		return 0
+	}
+	h := e.HashCodeWithoutChildren()
+	for _, q := range e.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil || visited[ref] {
+			continue
+		}
+		visited[ref] = true
+		var rh uint64
+		for _, m := range ref.AllMembers() {
+			rh ^= extractTieBreakHash(m, visited)
+		}
+		delete(visited, ref)
+		h = h*0x100000001b3 ^ (rh*0x517cc1b727220a95 + 0x6c62272e07bb0142)
+	}
+	return h
 }
 
 // BestMemberSelector is the optional interface a planner implements

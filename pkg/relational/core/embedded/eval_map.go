@@ -28,6 +28,17 @@ import (
 
 // evalExprAtomOnMap resolves an expression atom using a map[string]driver.Value
 // row (used for JOIN WHERE and ON condition evaluation).
+// looksBoolean reports whether an expression atom is clearly a boolean
+// (comparison or nested parenthesised boolean). Used to route a
+// parenthesised group through the tri-state predicate evaluator
+// instead of the value evaluator when the inner looks predicate-ish.
+// False negatives are OK — they just fall through to the value path
+// which handles non-boolean atoms correctly.
+func looksBoolean(atom antlrgen.IExpressionAtomContext) bool {
+	_, ok := atom.(*antlrgen.BinaryComparisonPredicateContext)
+	return ok
+}
+
 func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
 	switch a := atom.(type) {
 	case *antlrgen.ConstantExpressionAtomContext:

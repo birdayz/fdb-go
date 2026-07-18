@@ -238,12 +238,19 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 		}
 	case protoreflect.MessageKind:
 		// UUID columns are stored as the tuple_fields.UUID message
-		// (most_significant_bits, least_significant_bits). The SQL
-		// layer carries the value as the canonical 36-char string;
-		// convert here at the proto-write boundary.
+		// (most_significant_bits, least_significant_bits). Convert here
+		// at the proto-write boundary from either carrier: the canonical
+		// 36-char string, or the neutral [16]byte the Cascades value
+		// layer works with (RFC-162 — CAST('…' AS UUID) folded at plan
+		// time arrives as [16]byte). Mirrors the executor's
+		// goToProtoValue UUID arm so a UUID written via INSERT … VALUES
+		// is byte-identical to one written via UPDATE / INSERT … SELECT.
 		if isUUIDMessageField(fd) {
-			if s, ok := val.(string); ok {
-				return uuidStringToProtoMessage(fd, s)
+			switch v := val.(type) {
+			case string:
+				return uuidStringToProtoMessage(fd, v)
+			case [16]byte:
+				return uuidStringToProtoMessage(fd, uuid.UUID(v).String())
 			}
 		}
 	}

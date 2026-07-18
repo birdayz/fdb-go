@@ -81,6 +81,7 @@ go_test(
         "positional_test_helpers_test.go",
         "positional_type_cache_test.go",
         "projection_output_names_test.go",
+        "recursive_cursor_resume_test.go",
         "recursive_distinct_replay_test.go",
         "recursive_union_cursor_test.go",
         "resultset_test.go",
@@ -158,6 +159,7 @@ go_test(
         "position_replay_cursor.go",
         "recursive_cursor.go",
         "recursive_distinct_replay_test.go",
+        "recursive_cursor_resume_test.go",
     ],
     deps = [
         "//gen",

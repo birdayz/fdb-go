@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**332 scenarios · 2627 query/assertion cases** across 18 feature areas.
+**332 scenarios · 2636 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -20,7 +20,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Subqueries (EXISTS / IN / scalar) | 43 | 290 |
 | CTEs | 12 | 105 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 10 | 53 |
-| DML (INSERT / UPDATE / DELETE) | 25 | 194 |
+| DML (INSERT / UPDATE / DELETE) | 25 | 203 |
 | Ordering & pagination | 13 | 114 |
 | Scalar functions & expressions | 33 | 358 |
 | Predicates & WHERE | 12 | 104 |
@@ -254,7 +254,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `insert_select_complex` | 2 | INSERT ... |
 | `insert_select_java` | 10 | INSERT...SELECT patterns. |
 | `insert_select_transform` | 2 | INSERT ... |
-| `insert_values_expr` | 11 | INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc). |
+| `insert_values_expr` | 20 | INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc). |
 | `multi_insert_delete` | 6 | Multiple INSERT/DELETE/UPDATE operations |
 | `update_case_when` | 10 | UPDATE SET col = CASE ... |
 | `update_comprehensive` | 8 | Comprehensive UPDATE patterns |

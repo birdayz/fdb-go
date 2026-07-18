@@ -755,12 +755,24 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 	inputCols := t.legColumns(a.Input)
 	typeOf := func(bare string) values.Type {
 		up := strings.ToUpper(bare)
+		found := values.Type(values.UnknownType)
 		for _, c := range inputCols {
-			if strings.ToUpper(c.Name) == up && c.FieldType != nil {
-				return c.FieldType
+			if strings.ToUpper(c.Name) != up || c.FieldType == nil {
+				continue
 			}
+			// A name carried by MULTIPLE input columns with CONFLICTING
+			// type codes (two legs of a join both projecting `v`, one
+			// INT one STRING) is ambiguous by name alone — stay Unknown
+			// rather than attach the first leg's type to what may be the
+			// other leg's column. Correct-or-unknown: wrong metadata is
+			// the N-F4 class; Unknown is the honest lazy answer until
+			// binding-aware typing (Phase D2+) keys by leg, not name.
+			if found != values.UnknownType && found.Code() != c.FieldType.Code() {
+				return values.UnknownType
+			}
+			found = c.FieldType
 		}
-		return values.UnknownType
+		return found
 	}
 	var fields []values.Field
 	for _, k := range a.GroupKeys {

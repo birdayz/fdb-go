@@ -6018,10 +6018,16 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 		{3, "ab", 42},
 	}))
 
-	// STRING-family scalar functions in INSERT VALUES — rejected.
-	_, errRej := db.ExecContext(ctx, `INSERT INTO T (id, name, doubled) VALUES (4, UPPER('x'), 0)`)
-	g.Expect(errRej).To(gomega.HaveOccurred())
-	expectUnsupportedOperator(g, errRej, "UPPER", "INSERT VALUES UPPER")
+	// STRING-family scalar functions in INSERT VALUES answer: the cells
+	// fold through the ONE Cascades evaluator, so the read-side scalar
+	// registry (UPPER et al., RFC-087 Go extensions) covers VALUES as an
+	// emergent consequence — the old rejection was an artifact of the
+	// deleted legacy proto-path interpreter.
+	_, errUp := db.ExecContext(ctx, `INSERT INTO T (id, name, doubled) VALUES (4, UPPER('x'), 0)`)
+	g.Expect(errUp).NotTo(gomega.HaveOccurred())
+	var upName string
+	g.Expect(db.QueryRowContext(ctx, `SELECT name FROM T WHERE id = 4`).Scan(&upName)).To(gomega.Succeed())
+	g.Expect(upName).To(gomega.Equal("X"))
 }
 
 func TestFDB_EmptyResultEdgeCases(t *testing.T) {

@@ -867,7 +867,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		if rt == nil {
 			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(insOp.Table))
 		}
-		arr, vErr := c.buildInsertValuesArray(ctx, insStmt, rt.Descriptor, insOp.Table)
+		arr, vErr := c.buildInsertValuesArray(insStmt, rt.Descriptor, insOp.Table, md)
 		if vErr != nil {
 			return nil, vErr
 		}

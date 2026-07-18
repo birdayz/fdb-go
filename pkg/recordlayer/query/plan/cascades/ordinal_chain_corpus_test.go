@@ -124,3 +124,29 @@ func TestOrdinalBoxSeedChainConverges(t *testing.T) {
 		}
 	}
 }
+
+// TestExplorationRounds_EvidenceUnderCap is the observability half of the
+// WS-P round-cap amendment ("evidence, not a silent raise"): the per-Ref
+// exploration-round cap is 100 (unified_tasks.go maxRoundsPerRef), and the
+// raise is only justified while REAL plans stay far under it. This pin
+// PLANS the chain corpus and asserts the observed maximum keeps ≥2×
+// headroom — if exploration ever creeps past 50 rounds, this fails before
+// the cap starts silently truncating exploration in production.
+func TestExplorationRounds_EvidenceUnderCap(t *testing.T) {
+	t.Parallel()
+	for _, n := range []int{2, 3, 4} {
+		p := fullChainPlanner()
+		ref := expressions.InitialOf(buildOrdinalChainSelect(n))
+		if _, tasks, err := p.Plan(ref); err != nil {
+			t.Fatalf("%d-leg chain did not plan: %v (tasks=%d)", n, err, tasks)
+		}
+		got := p.MaxObservedExplorationRounds()
+		t.Logf("%d-leg chain: max observed exploration rounds = %d (cap 100)", n, got)
+		if got < 1 {
+			t.Errorf("%d-leg chain: observed %d rounds — the counter is not being populated", n, got)
+		}
+		if got > 50 {
+			t.Errorf("%d-leg chain: observed %d rounds — creeping toward the 100-round cap; re-justify the cap before raising it", n, got)
+		}
+	}
+}

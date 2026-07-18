@@ -1,15 +1,19 @@
 package embedded
 
 import (
-	"context"
 	"strings"
+
+	"github.com/antlr4-go/antlr/v4"
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/query/semantic"
+	"fdb.dev/pkg/relational/core/query/semantic/rlcatalog"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -24,18 +28,22 @@ import (
 // Validation (arity, NOT NULL, "expected Record but got Primitive")
 // runs here at plan time, matching Java's visitor and the SQLSTATE codes
 // the naive execInsert produced. VALUES expressions are constant after
-// parameter substitution, so they are evaluated now via the same
-// evalExpr the naive path used; the resulting literals are wrapped as
-// ConstantValues, with per-column proto coercion deferred to the
-// executor's buildInsertRecord (matching how UPDATE coerces SET values).
+// parameter substitution, so they fold NOW through the ONE evaluator:
+// expr.WalkExpressionForProjection lowers each cell to a values.Value
+// (Java-typed literals — an int32-range literal is INT, so the INT32
+// arithmetic/cast lanes apply exactly as they do on the SELECT path)
+// and Evaluate runs the same typed lanes SELECT runs. The legacy
+// proto-path evalExpr interpreter was a second, int64-only evaluator:
+// it silently widened INT overflow Java rejects (22003) and rejected
+// CAST(<int literal> AS BOOLEAN) Java accepts.
 //
 // Returns (nil, nil) when ins is not a VALUES insert (e.g. INSERT …
 // SELECT), leaving Source-based translation in charge.
 func (c *EmbeddedConnection) buildInsertValuesArray(
-	ctx context.Context,
 	ins antlrgen.IInsertStatementContext,
 	desc protoreflect.MessageDescriptor,
 	tableName string,
+	md *recordlayer.RecordMetaData,
 ) (values.Value, error) {
 	valCtx, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueValuesContext)
 	if !ok {
@@ -70,6 +78,13 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 		}
 	}
 
+	// One resolver for the whole statement: an EMPTY scope (a VALUES cell
+	// has no FROM — a column reference resolves nowhere and dies 42703)
+	// over the schema catalog, lowering each cell with the SAME walk the
+	// SELECT projection path uses.
+	analyzer := semantic.NewAnalyzer(rlcatalog.Wrap(md), false)
+	resolver := expr.New(analyzer, semantic.NewScope(nil))
+
 	var rows []values.Value
 	for _, rowCtx := range valCtx.AllRecordConstructorForInsert() {
 		exprs := rowCtx.AllExpressionWithOptionalName()
@@ -101,9 +116,32 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 						"expected Record but got Primitive")
 				}
 			}
-			val, evalErr := evalExpr(ctx, c, nil, exprs[i].Expression())
+			// The pre-scan mirrors the SELECT path's registry gate: a
+			// function outside the Cascades-safe set rejects with Java's
+			// byte-equal "Unsupported operator <name>" before the walk.
+			if fn := findUnsupportedFunctionInParseTree(exprs[i].Expression()); fn != "" {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
+			}
+			// Severed arms (RFC-145): a scalar subquery or EXISTS inside a
+			// VALUES cell keeps its deliberate decline — the scalar-subquery
+			// atom is a Go-only grammar extension Java does not parse in this
+			// position, and the fold has no SubqueryPlanner. Typed-node scan,
+			// message contract pinned by TestFDB_RFC145_SeveredArms_InsertValues.
+			if atom := firstSubqueryOrExistsAtom(exprs[i].Expression()); atom != "" {
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+					"%s is not supported in this context", atom)
+			}
+			cell, walkErr := resolver.WalkExpressionForProjection(exprs[i].Expression())
+			if walkErr != nil {
+				if mapped := mapPredicateWalkError(walkErr); mapped != nil {
+					return nil, mapped
+				}
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+					"unsupported INSERT VALUES expression: %v", walkErr)
+			}
+			val, evalErr := cell.Evaluate(nil)
 			if evalErr != nil {
-				return nil, evalErr
+				return nil, translateExecError(evalErr)
 			}
 			if val == nil && fd.Cardinality() == protoreflect.Required {
 				return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
@@ -135,6 +173,28 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 	}
 
 	return values.NewArrayConstructorValue(values.UnknownType, rows), nil
+}
+
+// firstSubqueryOrExistsAtom walks an ANTLR expression tree with typed
+// nodes and reports the first severed subquery form found: "subquery"
+// for a scalar-subquery atom, "EXISTS" for an EXISTS atom, "" when the
+// tree has neither. The wording feeds the RFC-145 severed-arm message.
+func firstSubqueryOrExistsAtom(ctx antlr.Tree) string {
+	if ctx == nil {
+		return ""
+	}
+	switch ctx.(type) {
+	case *antlrgen.SubqueryExpressionAtomContext:
+		return "subquery"
+	case *antlrgen.ExistsExpressionAtomContext:
+		return "EXISTS"
+	}
+	for i := 0; i < ctx.GetChildCount(); i++ {
+		if found := firstSubqueryOrExistsAtom(ctx.GetChild(i)); found != "" {
+			return found
+		}
+	}
+	return ""
 }
 
 func colsContainFold(cols []string, name string) bool {

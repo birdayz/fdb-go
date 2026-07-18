@@ -9,7 +9,6 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
-	"google.golang.org/protobuf/proto"
 )
 
 // Scalar / specific function-call dispatch — the unified
@@ -218,44 +217,11 @@ func evalScalarFunctionCallCore(
 }
 
 // makeProtoExprEvaluator builds the exprEvaluator adapter for the proto path.
-// evalExpr returns (any, error); driver.Value is an alias for any so the
-// conversion is a no-op except we explicitly preserve nil → nil.
-func makeProtoExprEvaluator(ctx context.Context, conn *EmbeddedConnection, msg proto.Message) exprEvaluator {
-	return func(e antlrgen.IExpressionContext) (driver.Value, error) {
-		v, err := evalExpr(ctx, conn, msg, e)
-		if err != nil {
-			return nil, err
-		}
-		if v == nil {
-			return nil, nil
-		}
-		return driver.Value(v), nil
-	}
-}
-
 // makeMapExprEvaluator builds the exprEvaluator adapter for the map path.
 func makeMapExprEvaluator(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value) exprEvaluator {
 	return func(e antlrgen.IExpressionContext) (driver.Value, error) {
 		return evalExprOnMap(ctx, conn, row, e)
 	}
-}
-
-func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, fc antlrgen.IFunctionCallContext) (any, error) {
-	eval := makeProtoExprEvaluator(ctx, conn, msg)
-	// CASE WHEN's condition is value-context — Java accepts a bare
-	// BOOLEAN field (`CASE WHEN flag THEN …`) and converts via
-	// truthiness, matching the AND/OR/NOT operand rule. Pass
-	// allowBareField=true so the bare-FieldValue check at the
-	// top-level WHERE/HAVING entry doesn't fire here. (TODO #41a)
-	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
-		t, err := evalExprPredicateTri(ctx, conn, msg, e, true /* allowBareField */)
-		return t.IsTrue(), err
-	}
-	// fdb-relational's planner returns `RelationalException:
-	// Unsupported operator <name>` from the function-registry lookup
-	// when no entry matches; the default arm in
-	// evalScalarFunctionCallCore emits the byte-equal message.
-	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, fc)
 }
 
 func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, fc antlrgen.IFunctionCallContext) (driver.Value, error) {
