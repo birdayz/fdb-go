@@ -52,7 +52,7 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		if targetStage.Precedes(refStage) {
 			return
 		}
-		if n := len(t.Ref.FinalMembers()); n > 0 {
+		if len(t.Ref.FinalMembers()) > 0 {
 			// WS-P stage (c) status: the REWRITING OptimizeInputs
 			// routing prunes parent-chain-optimized groups to their
 			// winner before this boundary (Java's covered case). A
@@ -89,10 +89,8 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		return
 	}
 
-	// Observed-rounds evidence for the WS-P round-cap retirement: the
-	// epoch model makes maxRoundsPerRef obsolete; until stage (d)
-	// retires it, export the observed maximum so stress/conformance
-	// runs carry the evidence rather than a silent raise.
+	// Observed-rounds evidence: exported so stress/conformance runs can
+	// show how far below the divergence tripwire real workloads sit.
 	if r := t.Ref.ExplRounds() + 1; r > p.maxObservedExplRounds {
 		p.maxObservedExplRounds = r
 	}
@@ -100,13 +98,11 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 	p.push(&ExploreGroupTask{Phase: t.Phase, Ref: t.Ref})
 
 	// FINALS ROUTING (Java ExploreGroup: getFinalExpressions() →
-	// exploreExpressionAndOptimizeInputs — RFC-181 WS-P stage (a)).
-	// Under the still-intact dual insertion a final is USUALLY also an
-	// exploratory member and is explored by the member loop below, so
-	// this loop serves the finals whose exploratory twins were pruned,
-	// replaced, or deduped away during a Memo.Absorb — a LIVE set (the
-	// exists-shadow FDB suite exercises it), fully load-bearing at
-	// stage (b) when dual insertion dies and finals live only here.
+	// exploreExpressionAndOptimizeInputs). Physical yields insert as
+	// finals ONLY, so this loop is what explores them; the
+	// isExploratoryMember skip covers finals that are ALSO canonical
+	// members (FinalizeExpressionsRule promotes the same pointer),
+	// which the member loop below owns.
 	for _, expr := range t.Ref.FinalMembers() {
 		if isExploratoryMember(t.Ref, expr) {
 			continue // also an exploratory member — the member loop owns it

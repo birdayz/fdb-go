@@ -166,36 +166,6 @@ func MaximumCoverageMatches(
 	return result
 }
 
-func orderingPartCount(a *SingleMatchedAccess) int {
-	return len(a.partialMatch.GetMatchInfo().GetMatchedOrderingParts())
-}
-
-// indexOfEqualAccess returns the index of an already-selected access
-// with the same candidate and the same bound parameter prefix (aliases
-// AND their comparison ranges) — a true content duplicate whose scan
-// would be identical. -1 when none.
-func indexOfEqualAccess(selected []Vectored[*SingleMatchedAccess], probe *SingleMatchedAccess) int {
-	probePMI, ok := probe.partialMatch.(*PartialMatchImpl)
-	if !ok {
-		return -1
-	}
-	probePrefix := probePMI.GetBoundParameterPrefixMap()
-	for i, v := range selected {
-		a := v.Value
-		if a.partialMatch.GetMatchCandidate() != probe.partialMatch.GetMatchCandidate() {
-			continue
-		}
-		aPMI, ok := a.partialMatch.(*PartialMatchImpl)
-		if !ok {
-			continue
-		}
-		if equalParameterPrefixMaps(aPMI.GetBoundParameterPrefixMap(), probePrefix) {
-			return i
-		}
-	}
-	return -1
-}
-
 // equalParameterPrefixMaps compares two bound-parameter prefix maps by
 // alias set and semantically-equal comparison ranges.
 func equalParameterPrefixMaps(a, b map[values.CorrelationIdentifier]*predicates.ComparisonRange) bool {

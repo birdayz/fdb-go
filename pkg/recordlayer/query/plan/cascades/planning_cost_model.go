@@ -363,11 +363,13 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(opsA.inMemorySortCount, opsB.inMemorySortCount)
 	}
 
-	// Statistics-driven scalar cost — the Java CostModel analogue (Java
-	// compares plan costs after its ordinal rungs too). NOT a prune-to-1
-	// workaround: retiring it (WS-P stage (d) probe) regressed genuine
-	// selectivity decisions (equality-index preference, vector
-	// outer-limit folding), so it stays as the statistics rung.
+	// Statistics-driven scalar cost — a Go EXTENSION in the tiebreak
+	// slot. Java's PlanningCostModel is purely heuristic (ordinal rungs
+	// ending in a planHash tiebreak; no statistics rung exists), so this
+	// discriminator sits before the hash tiebreak rather than mirroring
+	// a Java rung. NOT a prune-to-1 workaround: retiring it (WS-P stage
+	// (d) probe) regressed genuine selectivity decisions (equality-index
+	// preference, vector outer-limit folding).
 	costA := properties.EstimateCostWith(a, stats)
 	costB := properties.EstimateCostWith(b, stats)
 	if costA.Less(costB) {
