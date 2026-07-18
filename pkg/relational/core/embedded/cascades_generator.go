@@ -1084,6 +1084,18 @@ const txPageTimeLimit = 4 * time.Second
 //     every resume). The per-tx FDB timeout is unaffected.
 func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	c := p.conn
+	// Go SQL statement tokens are ENGINE-PRIVATE (no ContinuationProto
+	// envelope, no version/plan/binding hashes, no resume entry point) —
+	// paging is internal to one statement execution. Until a real resume
+	// surface exists, a caller-supplied CONTINUATION option must reject
+	// LOUDLY: consuming it silently would re-run the statement from row 1
+	// while the caller believes they resumed (duplicate rows), and a
+	// JAVA-minted token could never be honored here anyway (its envelope
+	// binds to Java's plan serialization hashes).
+	if c.Options().Get(api.OptContinuation) != nil {
+		return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation,
+			"statement continuations are not supported: Go SQL tokens are engine-private and no resume entry point exists")
+	}
 	ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
 	if ssErr != nil {
 		return query.Result{}, ssErr

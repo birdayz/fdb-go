@@ -593,3 +593,24 @@ this needs a merged positional layout for multi-type rows (the analogue
 of Java's type-merge), which is a WS-N Phase D-adjacent arc; until then
 the decline arm keeps correctness. Pinned by
 TestIntersector_DeclinesLayoutlessLegs / DeclinesMixedLayoutLegs.
+
+## SQL statement continuations are engine-private (RFC-181 C2 decision)
+
+Java's fdb-relational wraps SQL continuations in a ContinuationProto
+envelope (version + plan_hash + binding_hash + execution_state) and
+gates resumes through PlanValidator. Go has no envelope and NO SQL
+resume entry point at all — statement paging is internal to one
+execution (`paginatingRows`), and tokens never cross the API boundary.
+The RECORD-LAYER continuation framing below the SQL layer is
+byte-identical and conformance-proven (including the magic
+KeyValueCursorContinuation wrapper); the SQL-layer envelope is not.
+
+Decision: Go SQL tokens are ENGINE-PRIVATE until a real resume surface
+exists. The boundary is loud, not silent: supplying api.OptContinuation
+fails the statement with ErrCodeUnsupportedOperation
+(cascadesPlan.Execute; pinned by TestOptContinuation_RejectsLoudly) —
+never silently ignored, which would replay from row 1 while the caller
+believes they resumed. Adopting the ContinuationProto envelope +
+PlanValidator hashes is the follow-up arc if/when a resume surface
+ships; hash values would deliberately differ per engine so cross-engine
+resume attempts REJECT loudly in both directions.
