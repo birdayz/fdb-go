@@ -1410,6 +1410,22 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >        rendering bridges + normLookup; kills N-F1).
 > 5. [ ] WS-N Phase D — metadata from the flowed type (positional ColumnDef; delete
 >        descriptorForColumn/innerByName/qualifyAndMergeColumns/colref.go; kills N-F4).
+>        Full agent handoff: shifts/handoff-ws-n-phase-d-typed-metadata.md.
+>        D1 OPENED: plan_visitor mints 0 (carve-out retirement removed the last);
+>        logical_predicate down to 11 (mostly justified error-arm unknowns +
+>        3 lazy-strip arms); pullUpToOutputField slots now carry the projected
+>        value's own type. Translator census (48 sites, 4 clusters):
+>        (1) leg/record-type synthesis from NAME lists (:418,:432,:442,:475,
+>        :524,:742,:749,:7978) — types derivable from catalog descriptors /
+>        leg output types; the HIGH-VALUE cluster (typed legs ⇒ positional
+>        types everywhere downstream);
+>        (2) ofOrdinal rebinds (:4550,:4565,:4714,:5719,:5725,:5757,:7541,
+>        :8207) — derivable from the input layout's field type once (1) lands;
+>        (3) lazy flat name reads (:4221,:4557,:4568,:4717,:5739,:6019,:6239,
+>        :6262,:6366,:6433,:8188,:8197) — documented correct-or-loud
+>        fallbacks, type arrives at resolution; drain with their producers;
+>        (4) honest unknowns (:293-316 7.6 model gap, :1304-1352 probe
+>        multi-returns, :6431 NULL literal, :8267,:8286) — justify or leave.
 > Interleaved at phase boundaries (independent wrong-rows P0s, each small+red-pinned):
 > - [x] P0.1 PK-intersection ordering gate (row DROPS, plain SQL) + reverse threading.
 >       Follow-up CLOSED: the AND-over-two-indexes SQL shape fires the path e2e

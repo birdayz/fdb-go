@@ -4830,14 +4830,16 @@ func pullUpToOutputField(v values.Value, fields []values.RecordConstructorField)
 	// the folded row is positional.
 	for i, f := range fields {
 		if f.Value != nil && f.Value == v {
-			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, values.UnknownType), true
+			// The slot's type IS the projected value's type (Phase D:
+			// type at birth — the flowed type, never Unknown when known).
+			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, f.Value.Type()), true
 		}
 	}
 	// Pass 2: structural semantic equality — for keys whose Value was rebuilt
 	// (not pointer-copied) but is structurally the projected expression.
 	for i, f := range fields {
 		if f.Value != nil && values.SemanticEqualsUnderAliasMap(v, f.Value, values.AliasMap{}) {
-			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, values.UnknownType), true
+			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, f.Value.Type()), true
 		}
 	}
 	return nil, false
