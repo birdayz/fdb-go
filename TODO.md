@@ -1576,10 +1576,26 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 >     ContainsFinal→ContainsExactly (unified_tasks.go:552 — without dual
 >     copies the checks coincide, Java's shape); audit EstimateOrdering/
 >     AllMembers consumers expecting physicals among Members().
-> The flip lands as ONE green commit. Then (c) prune-to-1 Verify at the
-> boundary; (d) retire 15b/15c + the round cap
-> (MaxObservedExplorationRounds evidence already exported). Each
-> checkpoint gates on stress + EXPLAIN parity per the Graefe amendment.
+> The flip lands as ONE green commit. FIRST ATTEMPT EXECUTED AND
+> REVERTED (findings, the flip's red harness): moves 1-5 build and the
+> epoch mechanics work, but plan FORMATION regressed — alternatives
+> that materialized via count-driven re-rounds go missing because the
+> parent-re-reaction channel is unported: when a CHILD group gains
+> physical members, Go's count model re-rounded the parent (rules
+> matching over child physicals re-fired); Java drives this through
+> OptimizeInputs/OptimizeGroup propagation instead, which Go's flip
+> must port BEFORE NeedsExploration can leave the count model. Red
+> harness that catches it (run these first next attempt):
+> TestBugHunt_CountColumnNotForcedCovering (COUNT(col) loses its Fetch
+> — wrong-rows class), TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans
+> (missing physicalUnorderedUnionWrapper alternative),
+> TestImplementRecursiveLevelUnion_Fires_AnyStrategy, and
+> TestAliasAwareInterningShadowDelta (exact count pins encode the
+> count-model world — re-baseline LAST, only once the rest is green).
+> Then (c) prune-to-1 Verify at the boundary; (d) retire 15b/15c + the
+> round cap (MaxObservedExplorationRounds evidence already exported).
+> Each checkpoint gates on stress + EXPLAIN parity per the Graefe
+> amendment.
 > Remaining otherwise: WS-N Phases B-D after the slices
 > (ConstraintsMap epoch port retiring dual-insertion + 15b/15c + round cap;
 > un-gate REWRITING OptimizeInputs; fix stale DIVERGENCES advancePlannerStage
