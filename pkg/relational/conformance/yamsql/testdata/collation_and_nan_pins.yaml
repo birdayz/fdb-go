@@ -1,0 +1,46 @@
+# collation_and_nan_pins.yaml — documented Go-right divergences and
+# edge-key dimensions (RFC-181 WS-T document-and-pin)
+#
+# SUPPLEMENTARY-PLANE ORDERING: Go orders strings by Unicode code point
+# (UTF-8 byte order), agreeing with its OWN index order — the wire.
+# Java's residual filter compares UTF-16 code units, which sorts
+# supplementary-plane characters (surrogate pairs, 0xD800-0xDFFF)
+# BELOW U+E000..U+FFFF — disagreeing with Java's OWN index order. Go is
+# self-consistent; the Java quirk is NOT ported (documented divergence).
+# U+FFFD (BMP, code point 0xFFFD) vs U+1F600 (supplementary, 0x1F600):
+# code-point order puts the emoji LAST; UTF-16 code-unit order would
+# put it first.
+name: collation_and_nan_pins
+schema_template: |
+  CREATE TABLE s (
+    id BIGINT NOT NULL,
+    v STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE d (
+    id BIGINT NOT NULL,
+    x DOUBLE,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO s VALUES (1, '😀'), (2, '�'), (3, 'z')
+  - INSERT INTO d VALUES (1, 1.5), (2, 2.5)
+tests:
+  # Code-point order: 'z' (U+007A) < U+FFFD < U+1F600. Index scan and
+  # residual comparison must agree on this order (self-consistency —
+  # the dimension where Java disagrees with itself).
+  - query: SELECT id FROM s ORDER BY v
+    rows:
+      - [3]
+      - [2]
+      - [1]
+  - query: SELECT id FROM s WHERE v > 'z' ORDER BY id
+    rows:
+      - [1]
+      - [2]
+  # NaN GROUP BY keys: every NaN groups as ONE key (the group-key
+  # comparison uses the total order where NaN = NaN), never one group
+  # per NaN occurrence.
+  - query: SELECT COUNT(*) FROM (SELECT x / CAST('NaN' AS DOUBLE) AS k FROM d) AS t GROUP BY k
+    rows:
+      - [2]
