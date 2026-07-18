@@ -100,7 +100,11 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 
 // stripTempTableInsertTop unwraps a TempTableInsert at the top of a leg plan
 // (Java's initialInnerPlanMatcher / recursive TempTableInsertExpression
-// matcher shapes take the plan UNDER the insert).
+// matcher shapes take the plan UNDER the insert). Match-surface divergence:
+// Java's matcher REQUIRES the insert top (the rule does not fire without
+// it), while this strip tolerates its absence — benign because the front
+// end always builds recursive legs insert-topped, and a hypothetical bare
+// leg would plan identically rather than silently mis-fire.
 func stripTempTableInsertTop(p plans.RecordQueryPlan) plans.RecordQueryPlan {
 	if ins, ok := p.(*plans.RecordQueryTempTableInsertPlan); ok {
 		return ins.GetInner()

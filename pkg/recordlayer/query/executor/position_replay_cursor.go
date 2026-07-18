@@ -86,6 +86,21 @@ func (c *positionReplayCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
 		if !r.HasNext() {
+			if !r.GetNoNextReason().IsSourceExhausted() {
+				// A resource limit cut the REPLAY itself short (an
+				// out-of-band base — today's eager bases stop only
+				// in-band, but the contract must not lie). Nothing
+				// advanced: re-emit the INCOMING token verbatim so a
+				// retry under a bigger budget resumes correctly.
+				buf, encErr := appendContValue(nil, c.resumeSkip)
+				if encErr == nil {
+					buf, encErr = appendContValue(buf, c.resumeCheck)
+				}
+				if encErr != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, encErr
+				}
+				return recordlayer.NewResultNoNext[QueryResult](r.GetNoNextReason(), recordlayer.NewBytesContinuation(buf)), nil
+			}
 			return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf(
 				"replay resume: the recursion produced %d rows, the continuation claims %d were emitted — the data changed under the token", c.emitted, c.resumeSkip)
 		}
