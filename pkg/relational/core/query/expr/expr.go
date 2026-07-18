@@ -467,7 +467,23 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
 	}
 	left, right = widenIntConstAgainstDouble(op, left, right)
+	op, left, right = narrowFloatConstAgainstInt(op, left, right)
 	left, right = promoteStringComparandToUuid(op, left, right)
+	// PLAN-TIME promotion gate (Java SemanticAnalyzer + PromoteValue
+	// lattice): a comparison whose operand types have NO common maximum
+	// (STRING vs a number, BOOLEAN vs a number, BYTES vs anything else)
+	// rejects 42804 at plan time with Java's exact message. The runtime
+	// dispatch degraded such pairs to UNKNOWN per row — silent empty
+	// results where Java errors, including the empty-table shape where
+	// no row was ever evaluated. UNKNOWN-typed operands (bound
+	// parameters, internal untyped expressions) keep the runtime path.
+	if lt, rt := left.Type(), right.Type(); lt != nil && rt != nil &&
+		lt.Code() != values.TypeCodeUnknown && rt.Code() != values.TypeCodeUnknown {
+		if values.MaximumType(lt, rt) == nil {
+			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
+		}
+	}
 	return predicates.NewComparisonPredicate(left, predicates.Comparison{
 		Type: op, Operand: right,
 	}), nil
@@ -597,6 +613,110 @@ func widenIntConstAgainstDouble(op predicates.ComparisonType, left, right values
 		return coerced, right
 	}
 	return left, coerced
+}
+
+// narrowFloatConstAgainstInt is widenIntConstAgainstDouble's INVERSE:
+// a DOUBLE/FLOAT compile-time CONSTANT compared against a non-constant
+// INT/LONG-typed value (an integer column) packs as a tuple-double
+// against int-encoded index/PK entries — a different tuple type code,
+// so an equality probe silently missed every row (`bigint_col = 1.0`
+// returned empty where Java compares 1 = 1.0 true) and range bounds
+// ordered by type code, not value. An INTEGRAL constant narrows to the
+// column's integer type (same value, correct tuple code); a
+// NON-integral bound rewrites to the equivalent integer predicate:
+//
+//	col >  1.5  ≡  col >= 2      col <  1.5  ≡  col <= 1
+//	col >= 1.5  ≡  col >= 2      col <= 1.5  ≡  col <= 1
+//
+// Equality/inequality against a non-integral constant stays as-is:
+// `=` matches nothing (value-correct on any path) and `<>` is served
+// by the residual comparison, which widens numerics itself.
+func narrowFloatConstAgainstInt(op predicates.ComparisonType, left, right values.Value) (predicates.ComparisonType, values.Value, values.Value) {
+	switch op {
+	case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
+		predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+	default:
+		return op, left, right
+	}
+	lc, rc := values.IsConstantValue(left), values.IsConstantValue(right)
+	if lc == rc {
+		return op, left, right
+	}
+	constV, colV := left, right
+	if rc {
+		constV, colV = right, left
+	}
+	ct, colt := constV.Type(), colV.Type()
+	if ct == nil || colt == nil {
+		return op, left, right
+	}
+	isFloatConst := ct.Code() == values.TypeCodeDouble || ct.Code() == values.TypeCodeFloat
+	isIntCol := colt.Code() == values.TypeCodeInt || colt.Code() == values.TypeCodeLong
+	if !isFloatConst || !isIntCol {
+		return op, left, right
+	}
+	cv, ok := values.EvaluateConstant(constV)
+	if !ok {
+		return op, left, right
+	}
+	f, fok := cv.(float64)
+	if !fok {
+		return op, left, right
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < math.MinInt64 || f >= math.MaxInt64 {
+		return op, left, right
+	}
+	integral := f == math.Trunc(f)
+	var n int64
+	if integral {
+		n = int64(f)
+	} else {
+		// Rewrite the bound to the tightest integer predicate. The op
+		// direction is relative to the COLUMN side: when the constant is
+		// on the LEFT (`1.5 < col`), the column-relative op is mirrored.
+		colRelOp := op
+		if lc {
+			switch op {
+			case predicates.ComparisonLessThan:
+				colRelOp = predicates.ComparisonGreaterThan
+			case predicates.ComparisonLessThanOrEq:
+				colRelOp = predicates.ComparisonGreaterThanEq
+			case predicates.ComparisonGreaterThan:
+				colRelOp = predicates.ComparisonLessThan
+			case predicates.ComparisonGreaterThanEq:
+				colRelOp = predicates.ComparisonLessThanOrEq
+			}
+		}
+		switch colRelOp {
+		case predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+			n = int64(math.Ceil(f))
+			colRelOp = predicates.ComparisonGreaterThanEq
+		case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq:
+			n = int64(math.Floor(f))
+			colRelOp = predicates.ComparisonLessThanOrEq
+		default:
+			// Equality family with a non-integral constant: leave as-is.
+			return op, left, right
+		}
+		if lc {
+			switch colRelOp {
+			case predicates.ComparisonGreaterThanEq:
+				op = predicates.ComparisonLessThanOrEq
+			case predicates.ComparisonLessThanOrEq:
+				op = predicates.ComparisonGreaterThanEq
+			}
+		} else {
+			op = colRelOp
+		}
+	}
+	// Typ: colt (the COLUMN's integer type) is load-bearing for the SARG
+	// packing path, exactly as in widenIntConstAgainstDouble.
+	coerced := &values.ConstantValue{Value: n, Typ: colt}
+	if lc {
+		return op, coerced, right
+	}
+	return op, left, coerced
 }
 
 // ResolveCast wraps v in a CastValue with the target type. Rejects

@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**328 scenarios · 2588 query/assertion cases** across 18 feature areas.
+**329 scenarios · 2598 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -32,7 +32,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Keys & primary keys | 5 | 132 |
 | Error codes & validation | 4 | 37 |
 | End-to-end scenarios | 3 | 20 |
-| Other | 25 | 175 |
+| Other | 26 | 185 |
 
 ## Aggregates & GROUP BY
 
@@ -431,6 +431,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `cascades_plan_shapes` | 9 | Tests that verify the Cascades planner produces correct results for |
 | `collation_and_nan_pins` | 3 | documented Go-right divergences and |
 | `comparison_edge_cases` | 9 | Edge cases in comparison operators |
+| `comparison_promotion_gate` | 10 | unpromotable comparisons reject at |
 | `computed_column_names` | 6 | Verifies that unnamed computed expressions in SELECT projections |
 | `empty_result_edge_cases_java` | 11 | Empty result handling in various |
 | `empty_table_operations` | 9 | Operations on empty tables |

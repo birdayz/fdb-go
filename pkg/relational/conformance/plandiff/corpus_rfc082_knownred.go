@@ -17,8 +17,9 @@ package plandiff
 // When the list reaches empty, the gate is a plain all-green gate.
 var rfc082KnownRed = map[string]bool{
 	// Go-too-lenient (withheld from annotation — fix-or-accept; reviewers):
+	// type_mismatch_boolean_eq_int removed: the plan-time promotion gate
+	// rejects bool = int with Java's 42804 — cross-engine equivalent.
 	"agg_in_where_rejected":        true, // WHERE COUNT(*)>0 accepted; should reject
-	"type_mismatch_boolean_eq_int": true, // bool = int returns empty; should reject
 	"cast_bigint_to_boolean_probe": true, // Go allows a cast Java disallows
 	// CAST edge cases (Go vs Java error/behaviour on overflow / malformed strings):
 	"cast_bigint_to_integer_overflow":               true,

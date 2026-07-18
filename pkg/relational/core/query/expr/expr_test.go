@@ -309,8 +309,12 @@ func TestResolver_ResolveComparison_NonConstantRHS(t *testing.T) {
 	a, s := buildScope(t)
 	r := expr.New(a, s)
 
+	// A TYPE-compatible pair (INT vs INT): the old id-vs-name fixture
+	// (INT vs STRING) now correctly rejects 42804 at plan time (the
+	// promotion gate) — this test pins the STRUCTURAL property that a
+	// non-constant RHS is preserved as the comparison operand.
 	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
-	rhs, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
+	rhs, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
 	pred, err := r.ResolveComparison(predicates.ComparisonEquals, left, rhs)
 	if err != nil {
 		t.Fatalf("ResolveComparison: %v", err)
