@@ -127,21 +127,35 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	if orderedExpr != nil {
 		if fw, isFetch := orderedExpr.(*physicalFetchFromPartialRecordWrapper); isFetch && isFullRangeFetch(fw) {
 			// Skip — InMemorySort(FullScan) is cheaper than Fetch(IndexScan(full-range)).
-		} else if ppe, ok := orderedExpr.(physicalPlanExpression); ok {
-			orderedInnerPlan := ppe.GetRecordQueryPlan()
-			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(orderedInnerPlan, groupingKeys, gb.GetAggregates())
-			// PIN the ordered child (FinalOf singleton), never memoize into
-			// the SHARED inner group: the grouping-key ordering is a
-			// CORRECTNESS precondition of streaming aggregation, and the agg
-			// wrapper's WithChildren relinks at extraction to whatever
-			// leaf-replaceable plan its child group resolves to — with the
-			// shared multi-member group that could be a cheaper UNORDERED
-			// member, silently splitting groups. Java bakes the concrete
-			// ordered child at rule time (memoizePlan); FinalOf is that
-			// discipline (finals-only at StagePlanned — no exploration can
-			// grow past the pin, and Get() exposes it to semantic identity).
-			orderedQ := expressions.ForEachQuantifier(expressions.FinalOf(orderedExpr))
-			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, orderedQ))
+		} else if _, ok := orderedExpr.(physicalPlanExpression); ok {
+			// PIN the whole ordering SPINE, not just the top expression: the
+			// grouping-key ordering is a CORRECTNESS precondition of
+			// streaming aggregation, and an order-PRESERVING delegator
+			// (Fetch/Filter) reports its ordering from SOME member of its
+			// source group while extraction's generic rebuild relinks that
+			// group to its winner — a cheaper UNORDERED sibling would put
+			// equal keys in separate runs and silently split groups.
+			// pinOrderedSpine bakes each delegation level to its cheapest
+			// satisfying member as a FinalOf singleton and verifies the pin
+			// reached the EXECUTABLE plan; a non-delegator passes through
+			// unchanged. Java bakes the concrete ordered child at rule time
+			// (memoizePlan); this is that discipline extended through the
+			// delegation spine. Declining (nil) keeps the InMemorySort
+			// alternative, which is always order-correct.
+			parts := make([]RequestedOrderingPart, len(groupingKeys))
+			for i, gk := range groupingKeys {
+				// Streaming aggregation needs equal keys ADJACENT — any
+				// consistent per-key direction works, matching the
+				// direction-agnostic admission above.
+				parts[i] = RequestedOrderingPart{Value: gk, SortOrder: RequestedSortOrderAny}
+			}
+			groupReq := NewRequestedOrdering(parts, DistinctnessPreserveDistinctness, false)
+			pinned := pinOrderedSpine(orderedExpr, groupReq, call.CostModel())
+			if pinnedPE, isPE := pinned.(physicalPlanExpression); pinned != nil && isPE {
+				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(pinnedPE.GetRecordQueryPlan(), groupingKeys, gb.GetAggregates())
+				orderedQ := expressions.ForEachQuantifier(expressions.FinalOf(pinned))
+				call.Yield(newPhysicalStreamingAggWrapper(aggPlan, orderedQ))
+			}
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -261,5 +262,96 @@ func TestStreamingAgg_OrderedChildPinned(t *testing.T) {
 	}
 	if got := findPhysicalPlan(childRef); got != orderedAgg.plan.GetInner() {
 		t.Fatalf("findPhysicalPlan over the pinned child = %T, want the ordered index plan — extraction would relink the agg onto an unordered child", got)
+	}
+}
+
+// TestImplementStreamingAgg_PinsOrderedSpine: when the ordered member the
+// rule selects is an order-preserving DELEGATOR (a predicates filter whose
+// HintOrdering reports the ordering of SOME source member) over a group
+// whose WINNER is a cheaper UNORDERED scan, yielding FinalOf(wrapper)
+// alone pins only the wrapper — extraction's generic rebuild relinks the
+// wrapper's source group to the unordered winner, and the streaming
+// aggregate runs over unordered input: equal keys arrive in separate runs
+// and the groups SILENTLY SPLIT. The yield must pin the whole ordering
+// spine (pinOrderedSpine, executable-child verified) so the filter's
+// source group is a singleton holding the ordered member.
+func TestImplementStreamingAgg_PinsOrderedSpine(t *testing.T) {
+	t.Parallel()
+
+	ordered := sortedMemberOn(t, "S")
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	srcRef := expressions.InitialOf(scan)
+	FireExpressionRule(NewPrimaryScanRule(), srcRef)
+	cheap := findPhysicalExpr(srcRef)
+	if cheap == nil {
+		t.Fatal("no physical scan")
+	}
+	srcRef.InsertFinal(cheap)
+	srcRef.Insert(ordered)
+	srcRef.InsertFinal(ordered)
+	srcRef.SetWinner(cheap)
+
+	filterWrapper := &physicalPredicatesFilterWrapper{
+		plan: plans.NewRecordQueryPredicatesFilterPlan(
+			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		),
+		innerQuant: expressions.ForEachQuantifier(srcRef),
+	}
+	innerRef := expressions.InitialOf(filterWrapper)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "S", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "S", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(innerRef),
+	)
+	gbRef := expressions.InitialOf(gb)
+
+	yielded := FireExpressionRule(NewImplementStreamingAggregationRule(), gbRef)
+	if len(yielded) == 0 {
+		t.Fatal("rule should fire")
+	}
+	// Find the ORDERED alternative: the agg wrapper whose child resolves to
+	// a predicates-filter wrapper (the delegator), not the in-memory sort.
+	var orderedAgg *physicalStreamingAggWrapper
+	var pinnedFilter *physicalPredicatesFilterWrapper
+	for _, y := range yielded {
+		aggW, ok := y.(*physicalStreamingAggWrapper)
+		if !ok {
+			continue
+		}
+		qs := aggW.GetQuantifiers()
+		if len(qs) != 1 {
+			continue
+		}
+		for _, m := range qs[0].GetRangesOver().AllMembers() {
+			if fw, isFilter := m.(*physicalPredicatesFilterWrapper); isFilter {
+				orderedAgg = aggW
+				pinnedFilter = fw
+			}
+		}
+	}
+	if orderedAgg == nil {
+		t.Fatal("no ordered (filter-delegator) streaming-agg alternative was yielded")
+	}
+	// The filter's OWN source group must be pinned to the ORDERED member —
+	// a group still holding the unordered winner rebuilds unordered at
+	// extraction and splits aggregate groups.
+	fqs := pinnedFilter.GetQuantifiers()
+	if len(fqs) != 1 {
+		t.Fatalf("filter wrapper must keep one quantifier, got %d", len(fqs))
+	}
+	members := fqs[0].GetRangesOver().AllMembers()
+	if len(members) != 1 || members[0] != ordered {
+		t.Fatalf("the ordered alternative's filter source group must be a SINGLETON holding the ordered member (spine pinned); got %d members, winner unordered=%v",
+			len(members), fqs[0].GetRangesOver().Winner() == cheap)
+	}
+	// And the pin must reach the EXECUTABLE plan: the filter's concrete
+	// child is the ordered member's plan, not the stale scan.
+	orderedPE := ordered.(physicalPlanExpression)
+	if !planHasDirectChild(pinnedFilter.GetRecordQueryPlan(), orderedPE.GetRecordQueryPlan()) {
+		t.Fatal("the pinned filter's concrete plan does not execute the ordered child (pin did not reach the executable plan)")
 	}
 }
