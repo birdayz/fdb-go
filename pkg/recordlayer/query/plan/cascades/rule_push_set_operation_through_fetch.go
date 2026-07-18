@@ -24,7 +24,8 @@ func (r *PushUnionThroughFetchRule) Matcher() matching.BindingMatcher { return r
 func (r *PushUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	unionW := matching.Get[*physicalUnionWrapper](call.Bindings, r.matcher)
 	pushSetOpThroughFetch(call, setOpPush{
-		quants: unionW.innerQuants,
+		quants:     unionW.innerQuants,
+		resultType: unionW.plan.GetResultType(),
 		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
 			return plans.NewRecordQueryUnionPlan(inners)
 		},
@@ -53,7 +54,8 @@ func (r *PushIntersectionThroughFetchRule) Matcher() matching.BindingMatcher { r
 func (r *PushIntersectionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	intW := matching.Get[*physicalIntersectionWrapper](call.Bindings, r.matcher)
 	pushSetOpThroughFetch(call, setOpPush{
-		quants: intW.innerQuants,
+		quants:     intW.innerQuants,
+		resultType: intW.plan.GetResultType(),
 		// The merge evaluates the comparison keys against child rows, so
 		// the pushed children (partial records) must be able to answer
 		// them — Java's getRequiredValues/tryPushValues gate.
@@ -88,7 +90,8 @@ func (r *PushUnorderedUnionThroughFetchRule) Matcher() matching.BindingMatcher {
 func (r *PushUnorderedUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	w := matching.Get[*physicalUnorderedUnionWrapper](call.Bindings, r.matcher)
 	pushSetOpThroughFetch(call, setOpPush{
-		quants: w.innerQuants,
+		quants:     w.innerQuants,
+		resultType: w.plan.GetResultType(),
 		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
 			return plans.NewRecordQueryUnorderedUnionPlan(inners)
 		},
@@ -99,6 +102,46 @@ func (r *PushUnorderedUnionThroughFetchRule) OnMatch(call *ImplementationRuleCal
 }
 
 var _ ImplementationRule = (*PushUnorderedUnionThroughFetchRule)(nil)
+
+// PushMergeSortUnionThroughFetchRule handles the ordered merge-sort
+// union — Go's analogue of Java's ordered union.
+// Java: PushSetOperationThroughFetchRule<RecordQueryUnionOnValuesPlan>.
+type PushMergeSortUnionThroughFetchRule struct {
+	matcher matching.BindingMatcher
+}
+
+func NewPushMergeSortUnionThroughFetchRule() *PushMergeSortUnionThroughFetchRule {
+	return &PushMergeSortUnionThroughFetchRule{
+		matcher: NewExpressionMatcher[*physicalMergeSortUnionWrapper]("phys_merge_sort_union_over_fetches"),
+	}
+}
+
+func (r *PushMergeSortUnionThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+func (r *PushMergeSortUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
+	w := matching.Get[*physicalMergeSortUnionWrapper](call.Bindings, r.matcher)
+	old := w.plan
+	pushSetOpThroughFetch(call, setOpPush{
+		quants: w.innerQuants,
+		// The ordered merge (and dedup when removeDuplicates) evaluates
+		// the comparison keys against child rows — pushable only when
+		// the partial records can answer them. The fetch above is a
+		// PK-preserving per-row map, so merging/deduping on translated
+		// keys below it is value-identical to doing it above.
+		requiredValues: old.GetComparisonKeys(),
+		resultType:     old.GetResultType(),
+		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
+			return plans.NewRecordQueryMergeSortUnionPlan(
+				inners, old.GetComparisonKeys(), old.IsReverse(), old.RemovesDuplicates(),
+			)
+		},
+		buildWrapper: func(p plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
+			return NewPhysicalMergeSortUnionWrapper(p.(*plans.RecordQueryMergeSortUnionPlan), qs)
+		},
+	})
+}
+
+var _ ImplementationRule = (*PushMergeSortUnionThroughFetchRule)(nil)
 
 // PushInUnionThroughFetchRule handles the InUnion case.
 // Java: PushSetOperationThroughFetchRule<RecordQueryInUnionOnValuesPlan>.
@@ -125,6 +168,7 @@ func (r *PushInUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		// and every leg must be pushable.
 		dynamic:        true,
 		requiredValues: old.GetComparisonKeys(),
+		resultType:     old.GetResultType(),
 		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
 			if len(inners) != 1 {
 				return nil
@@ -157,8 +201,14 @@ type setOpPush struct {
 	quants         []expressions.Quantifier
 	dynamic        bool
 	requiredValues []values.Value
-	rebuildPlan    func([]plans.RecordQueryPlan) plans.RecordQueryPlan
-	buildWrapper   func(plans.RecordQueryPlan, []expressions.Quantifier) expressions.RelationalExpression
+	// resultType is the ORIGINAL set-op plan's result type when it
+	// carries one (Java caps the new fetch with
+	// scalarOf(setOperationPlan.getResultType()) — the matched plan's
+	// output, not a leg's). Unknown → the first pushable leg's fetch
+	// type stands in (identical for homogeneous legs).
+	resultType   values.Type
+	rebuildPlan  func([]plans.RecordQueryPlan) plans.RecordQueryPlan
+	buildWrapper func(plans.RecordQueryPlan, []expressions.Quantifier) expressions.RelationalExpression
 }
 
 // pushSetOpThroughFetch pushes a set operation below its children's
@@ -218,30 +268,32 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 		return
 	}
 
-	// tryPushValues: keep only legs whose translation function answers
-	// every required value, and require the answers to agree across legs
-	// (Java declines everything on disagreement — a broken derivation
-	// path). The Go translation functions match by covered-column name,
-	// so the aliases are placeholders.
+	// tryPushValues (RecordQuerySetPlan.java:128-158), single pass per
+	// required value over the LIVE candidates: a leg whose translation
+	// function cannot answer a value drops out (it survives as a
+	// residual), but a translation that DISAGREES with a surviving leg's
+	// is a broken derivation path — decline everything, exactly when Java
+	// does. Splitting this into filter-then-agree would let a
+	// disagreeing leg exit via a later failure before the disagreement
+	// is seen. The Go translation functions match by covered-column
+	// name, so the aliases are placeholders.
 	sourceAlias := values.UniqueCorrelationIdentifier()
 	targetAlias := values.UniqueCorrelationIdentifier()
-	pushable := legs[:0:0]
+	alive := make(map[int]bool, len(legs))
 	for _, leg := range legs {
-		fn := leg.fw.plan.GetTranslateValueFunction()
-		ok := fn != nil
-		for _, rv := range p.requiredValues {
-			if ok {
-				_, ok = fn(rv, sourceAlias, targetAlias)
-			}
-		}
-		if ok {
-			pushable = append(pushable, leg)
-		}
+		alive[leg.idx] = true
 	}
 	for _, rv := range p.requiredValues {
 		var prev values.Value
-		for _, leg := range pushable {
-			tv, _ := leg.fw.plan.GetTranslateValueFunction()(rv, sourceAlias, targetAlias)
+		for _, leg := range legs {
+			if !alive[leg.idx] {
+				continue
+			}
+			tv, ok := leg.fw.plan.GetTranslateValueFunction()(rv, sourceAlias, targetAlias)
+			if !ok {
+				delete(alive, leg.idx)
+				continue
+			}
 			if prev == nil {
 				prev = tv
 				continue
@@ -249,6 +301,12 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 			if !values.SemanticEqualsUnderAliasMap(prev, tv, values.AliasMap{}) {
 				return
 			}
+		}
+	}
+	pushable := legs[:0:0]
+	for _, leg := range legs {
+		if alive[leg.idx] {
+			pushable = append(pushable, leg)
 		}
 	}
 	if p.dynamic {
@@ -296,9 +354,11 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	// Rebuild the set-op PLAN over the pushed INNER plans — Java's
 	// setOperationPlan.withChildrenReferences(newPushedInnerPlans). The
 	// old code passed the stale plan (children still the fetches) into
-	// the wrapper, so extraction executed Fetch(SetOp(Fetch(leg)…)):
-	// double-fetching every row while the cost model priced the pushed
-	// shape. Each child quantifier is a FinalOf singleton over the exact
+	// the wrapper, so extraction executed Fetch(SetOp(Fetch(leg)…))
+	// while the cost model priced the pushed shape — a cost-model lie
+	// (the executor's fetch is a per-row cap, so the double fetch costs
+	// wrong more than it re-reads today; the real I/O win arrives with
+	// covering execution). Each child quantifier is a FinalOf singleton over the exact
 	// expression whose plan is baked, so cost and ordering read what
 	// will execute.
 	innerPlans := make([]plans.RecordQueryPlan, len(pushable))
@@ -318,10 +378,15 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	setOpRef := call.MemoizeFinalExpression(setOpWrapper)
 
 	// The merged fetch's output is the original set-op's output — full
-	// records (Java: scalarOf(setOperationPlan.getResultType())); any
-	// pushable leg's fetch already produces exactly that.
+	// records (Java: scalarOf(setOperationPlan.getResultType())); when
+	// the matched plan doesn't carry a type (nil-children shells), any
+	// pushable leg's fetch produces exactly that for homogeneous legs.
+	resultType := p.resultType
+	if resultType == nil || resultType == values.UnknownType {
+		resultType = pushable[0].fw.plan.GetResultType()
+	}
 	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		newSetOpPlan, combined, pushable[0].fw.plan.GetResultType(), fetchIndexRecords,
+		newSetOpPlan, combined, resultType, fetchIndexRecords,
 	)
 	newFetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(
 		newFetchPlan, expressions.ForEachQuantifier(setOpRef),

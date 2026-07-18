@@ -813,3 +813,59 @@ func TestPushIntersectionThroughFetch_RequiredValuesGate(t *testing.T) {
 		t.Fatalf("comparison keys not preserved: %v", got)
 	}
 }
+
+// TestPushMergeSortUnionThroughFetch_Fires pins the ordered-union
+// instantiation (Java PushSetOperationThroughFetchRule over
+// RecordQueryUnionOnValuesPlan — PlanningRuleSet.java:158): the merge
+// pushes below the fetch when every leg's translation function answers
+// the comparison keys, and the rebuilt plan preserves keys, direction,
+// and dedup mode.
+func TestPushMergeSortUnionThroughFetch_Fires(t *testing.T) {
+	t.Parallel()
+
+	okFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
+		return v, true
+	}
+	var indexPlans []*plans.RecordQueryIndexPlan
+	makeChild := func(indexName string) expressions.Quantifier {
+		indexPlan := plans.NewRecordQueryIndexPlan(
+			indexName, nil, []string{"T"}, values.UnknownType, false,
+		)
+		indexPlans = append(indexPlans, indexPlan)
+		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
+			indexPlan, okFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+		)
+		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(indexWrapper))
+		fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		return expressions.ForEachQuantifier(expressions.InitialOf(fetchWrapper))
+	}
+	q1 := makeChild("idx_a")
+	q2 := makeChild("idx_b")
+
+	key := values.NewFieldValue(nil, "PK", values.NullableLong)
+	msu := NewPhysicalMergeSortUnionWrapper(
+		plans.NewRecordQueryMergeSortUnionPlan(nil, []values.Value{key}, true, true),
+		[]expressions.Quantifier{q1, q2},
+	)
+
+	yielded := FireImplementationRule(NewPushMergeSortUnionThroughFetchRule(), expressions.InitialOf(msu))
+	if len(yielded) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(yielded))
+	}
+	fw, ok := yielded[0].(*physicalFetchFromPartialRecordWrapper)
+	if !ok {
+		t.Fatalf("expected fetch wrapper, got %T", yielded[0])
+	}
+	mp, ok := fw.plan.GetInner().(*plans.RecordQueryMergeSortUnionPlan)
+	if !ok {
+		t.Fatalf("fetch inner: got %T, want *RecordQueryMergeSortUnionPlan", fw.plan.GetInner())
+	}
+	if got := mp.GetInners(); len(got) != 2 || got[0] != plans.RecordQueryPlan(indexPlans[0]) {
+		t.Fatalf("rebuilt children: %v", got)
+	}
+	if len(mp.GetComparisonKeys()) != 1 || !mp.IsReverse() || !mp.RemovesDuplicates() {
+		t.Fatalf("attributes not preserved: keys=%d reverse=%v dedup=%v",
+			len(mp.GetComparisonKeys()), mp.IsReverse(), mp.RemovesDuplicates())
+	}
+}
