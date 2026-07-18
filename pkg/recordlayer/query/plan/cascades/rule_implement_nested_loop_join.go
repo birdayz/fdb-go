@@ -1298,9 +1298,12 @@ func rebaseOuterLegValue(
 		// not reach the EXISTS path (they are handled by the data-access correlated
 		// probe machinery), and re-qualifying would invent a key like "E.A.B".
 		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok && !strings.Contains(fv.Field, ".") {
-			corr := strings.ToUpper(qov.Correlation.String())
+			// Exact: correlation-key namespace on both sides (B3b) — a
+			// fold here would let a quoted user alias cross into the
+			// lowercase machine namespace.
+			corr := qov.Correlation.Name()
 			for _, leg := range legAliases {
-				if leg != "" && strings.ToUpper(leg) == corr {
+				if leg != "" && leg == corr {
 					// This rewrite degrades the reference to a lazy dotted
 					// name over a merge correlation — a silent baked→lazy
 					// degradation for an eager ordinal node. It only fires

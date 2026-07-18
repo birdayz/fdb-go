@@ -2279,10 +2279,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						// (incl. the DUPLICATED-bare-leaf qualified output pin).
 						cr := colRef{table: col.qualifier, col: col.bare}
 						if bv := resolveQualifiedBaked(resolver, cr); bv != nil && !resolver.QualifierIsDuplicated(semantic.FromNormalized(cr.table)) {
-							// The structural bake is EXCLUDED for a duplicated
-							// qualifier: QOV(alias) cannot distinguish two
-							// same-named legs, so a dup reference takes the
-							// display-keyed arm below instead.
+							// A qualified projection's structural bake —
+							// duplicated qualifiers included (per-attribute
+							// resolution addresses one leg by its binding;
+							// the display-keyed carve-out this arm once
+							// deferred to is retired).
 							proj.ProjectedValues[i] = bv
 							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
 								if proj.Aliases == nil {
@@ -2946,11 +2947,16 @@ func resolveColumnRefStructural(resolver *expr.Resolver, bare, qualifier string,
 		if errors.As(err, &notFound) {
 			// Folded retry: derived/virtual schemas still REGISTER their
 			// columns folded (an alias "id" registers as "ID"), so a
-			// verbatim miss re-tries the folded spelling. Verbatim-first
-			// keeps case-significant names ("A.ID", quoted lowercase
-			// stored columns) winning; Phase D makes registrations
-			// case-faithful and retires this retry.
-			if _, retryErr := resolver.ResolveIdentifier(qual, semantic.FromNormalized(bare)); retryErr == nil {
+			// verbatim miss re-tries the folded spelling. This retry MUST
+			// fold — NewUnquoted on purpose, the one deliberate
+			// re-normalization: FromNormalized would re-issue the
+			// identical verbatim spelling and the exact-case lookup would
+			// miss again (a quoted-lowercase reference over a derived
+			// table's folded registration → spurious 42703).
+			// Verbatim-first keeps case-significant names ("A.ID", quoted
+			// lowercase stored columns) winning; Phase D makes
+			// registrations case-faithful and retires this retry.
+			if _, retryErr := resolver.ResolveIdentifier(qual, semantic.NewUnquoted(bare)); retryErr == nil {
 				return nil
 			}
 		}

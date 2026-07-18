@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"strings"
 
 	"google.golang.org/protobuf/proto"
 
@@ -401,7 +400,7 @@ func qualifyOuterPositional(row *PositionalRow, alias string) *PositionalRow {
 		RecordName: row.Type.RecordName,
 		Nullable:   row.Type.Nullable,
 		Fields:     row.Type.Fields,
-		Legs:       []values.RecordTypeLeg{{Name: strings.ToUpper(alias), Start: 0, Width: len(row.Type.Fields)}},
+		Legs:       []values.RecordTypeLeg{{Name: alias, Start: 0, Width: len(row.Type.Fields)}},
 	}
 	return &PositionalRow{Type: qualified, Slots: row.Slots}
 }

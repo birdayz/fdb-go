@@ -785,9 +785,13 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 			}
 		}
 		if code, ok := values.JavaAggregateResultCode(strings.ToUpper(call.Func), operandCode); ok {
-			// Aggregate outputs are NULLABLE except COUNT (Java: COUNT
-			// never null; SUM/MIN/MAX/AVG null on empty groups).
-			ft = values.NewPrimitiveType(code, strings.ToUpper(call.Func) != "COUNT")
+			// ALL aggregate outputs are declared NULLABLE — Java's
+			// CountValue.getResultType() is Type.primitiveType(LONG)
+			// (nullable default) even though COUNT is never null per
+			// group: a null-extended outer leg can surface a NULL count,
+			// so a not-null declaration would license wrong
+			// simplifications.
+			ft = values.NewPrimitiveType(code, true)
 		}
 		fields = append(fields, values.Field{Name: strings.ToUpper(name), FieldType: ft, Ordinal: len(fields)})
 	}
@@ -1314,6 +1318,11 @@ func existsInnerScopeCollidesOuter(esqs []logical.ExistsSubquery, outerLegs map[
 // (`B.d`) is already read bare off the merged QOV and must NOT be re-qualified —
 // a single-source unnest (`FROM t, t.arr`) flows under segment-0's own alias, so
 // the set is empty and the rebase is a no-op. RFC-142.
+// unnestOuterLegAliases is a USER-alias universe: outerBoundAliases
+// gathers user source aliases (canonical UPPER) and the merged machine
+// correlation — the only machine id in reach — is deleted before use, so
+// the consumers' folded lookups are total over same-case keys (fold ≡
+// exact here; machine q$N ids never enter this map).
 func unnestOuterLegAliases(op logical.LogicalOperator, mergedCorr values.CorrelationIdentifier) map[string]struct{} {
 	all := outerBoundAliases(op)
 	delete(all, strings.ToUpper(mergedCorr.Name()))
@@ -3615,9 +3624,12 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg, field string, multiAlias
 	}
 	if len(rt.Legs) > 0 {
 		for _, lw := range rt.Legs {
-			// Legs.Name is contractually UPPER (buriedLegBounds); field names are
-			// UPPER on both sides (ordinalLegType stores + caller passes ToUpper),
-			// so an exact == mirrors the flat FieldIndex fallback exactly.
+			// Legs.Name here belongs to the USER-alias universe (canonical
+			// UPPER post-B3a; buriedLegBounds gathers user leg aliases —
+			// machine mints never appear as buried legs); field names are
+			// UPPER on both sides (ordinalLegType stores + caller passes
+			// ToUpper), so an exact == mirrors the flat FieldIndex
+			// fallback exactly.
 			if lw.Name != leg {
 				continue
 			}

@@ -851,7 +851,7 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 			lastCorr = ""
 			continue
 		}
-		corr := strings.ToUpper(qov.Correlation.Name())
+		corr := qov.Correlation.Name()
 		if corr == lastCorr {
 			continue
 		}

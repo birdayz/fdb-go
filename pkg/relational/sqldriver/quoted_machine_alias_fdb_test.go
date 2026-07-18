@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -94,6 +95,40 @@ func TestFDB_QuotedMachineShapedAliases(t *testing.T) {
 	t.Run("order_by", func(t *testing.T) {
 		if got := ints(t, `SELECT "q$1".v FROM p AS "q$1" ORDER BY "q$1".v DESC`); !reflect.DeepEqual(got, []int64{20, 10}) {
 			t.Errorf("= %v, want [20 10]", got)
+		}
+	})
+	// FOLD COLLISION: two DIFFERENT quoted aliases whose canonical
+	// correlation keys would collide ("q$9" and "Q$9" both fold to Q$9).
+	// Java keeps quoted identifiers case-distinct end-to-end and answers
+	// with per-alias binding; Go reaches the same answer through the mint
+	// layer — the FROM-walk's folded seen-map treats the pair as
+	// duplicates and mints the later leg a distinct binding, so the
+	// runtime keys never collide and each alias resolves its own leg
+	// (EqualsIgnoreQuoting is case-exact). Both legs must answer their
+	// OWN columns; a first-span-wins misbind would serve the wrong leg.
+	// (Scope.AddSource additionally rejects an UNMINTED same-key pair —
+	// defense for scope builders without the mint layer.)
+	t.Run("fold_collision_per_alias_binding", func(t *testing.T) {
+		got := ints(t, `SELECT "q$9".id FROM p AS "q$9", q AS "Q$9"`)
+		sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+		if !reflect.DeepEqual(got, []int64{1, 1, 2, 2}) {
+			t.Errorf("first alias = %v, want multiset [1 1 2 2] (p.id per cross-join row)", got)
+		}
+		got = ints(t, `SELECT "Q$9".qid FROM p AS "q$9", q AS "Q$9"`)
+		sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+		if !reflect.DeepEqual(got, []int64{5, 5, 7, 7}) {
+			t.Errorf("second alias = %v, want multiset [5 5 7 7] (q.qid per cross-join row)", got)
+		}
+	})
+	// The FOLDED RETRY (resolveColumnRefStructural): a quoted-lowercase
+	// reference over a DERIVED table resolves through the folded
+	// registration ("id" registers as ID) — the retry must fold
+	// (NewUnquoted on purpose); re-issuing the verbatim spelling turned
+	// this legal query into a spurious 42703.
+	t.Run("quoted_lower_over_derived", func(t *testing.T) {
+		got := ints(t, `SELECT "id" FROM (SELECT id FROM p) AS d ORDER BY "id"`)
+		if !reflect.DeepEqual(got, []int64{1, 2}) {
+			t.Errorf("= %v, want [1 2]", got)
 		}
 	})
 	t.Run("group_by", func(t *testing.T) {

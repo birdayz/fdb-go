@@ -89,7 +89,9 @@ func TestMemoMerge_SchedulesSurvivor(t *testing.T) {
 	// Integrating refB's equivalent expression merges the two groups.
 	m.Integrate(refB, selB)
 	if refB.Canonical() == refB && refA.Canonical() == refA {
-		t.Skip("fixture did not merge — integrateOne's equivalence lookup changed; rebuild the fixture")
+		// No-skips: a fixture that stops exercising the merge is a broken
+		// pin, not an optional one.
+		t.Fatal("fixture did not merge — integrateOne's equivalence lookup changed; rebuild the fixture")
 	}
 	if len(scheduled) == 0 {
 		t.Fatal("the merge survivor must be scheduled for the re-round its Absorb re-arm requires")

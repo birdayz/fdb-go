@@ -122,6 +122,17 @@ func (s *Scope) AddSource(src ScopeSource) error {
 	}
 	for _, existing := range s.sources {
 		if !existing.Alias.EqualsIgnoreQuoting(src.Alias) {
+			// FOLD-COLLISION guard: two DIFFERENT aliases whose
+			// correlation keys canonicalize to the same upper form
+			// (`AS "q$1"` beside `AS "Q$1"`) would be two legs behind ONE
+			// runtime key — first-span-wins silent misbinding. Java keeps
+			// quoted identifiers case-distinct end-to-end and can never
+			// conflate them; we reject loudly. Equal-alias duplicates
+			// (the dup-FROM-alias class) keep distinct minted binding
+			// keys and are adjudicated per-attribute downstream.
+			if src.CorrelationName != "" && existing.CorrelationName == src.CorrelationName {
+				return &DuplicateAliasError{Alias: src.Alias}
+			}
 			continue
 		}
 		if existing.Shadowing || src.Shadowing {
