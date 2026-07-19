@@ -526,8 +526,12 @@ func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
 	const nestedIn = "SELECT * FROM t WHERE a IN (1,2) AND b = 3 AND c IN (4,5)"
 	planInvariantInJoin := errors.New("XX000: malformed query plan: plan-invariant: non-leaf plan *plans.RecordQueryInJoinPlan has no children")
 
-	if matchKnownGap(nestedIn, planInvariantInJoin) == nil {
-		t.Fatal("the documented nested-IN gap must be recognized")
+	// The ledger is EMPTY today (its one entry was retired when the nested-IN
+	// gap was fixed), so nothing may be declined — including the failure that
+	// entry used to cover. Every entry ever added must keep passing the
+	// near-miss cases below.
+	if gap := matchKnownGap(nestedIn, planInvariantInJoin); gap != nil {
+		t.Fatalf("ledger declined %q, but the nested-IN gap is FIXED — a retired entry must not linger", gap.name)
 	}
 	for _, tc := range []struct {
 		name string

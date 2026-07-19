@@ -335,20 +335,106 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 			return ph.GetRecordQueryPlan()
 		}
 	}
-	// Sole-shell reference: hand back the template so a caller that CAN
-	// complete it (its own WithChildren relink) still has something to work
-	// with. A caller that cannot leaves the plan malformed and the invariant
-	// check rejects it loudly at extraction — which is the current fate of
-	// the nested-IN shape (TestNestedIn_OverIntersection_GatePin). Resolving
-	// the shell here instead would have to re-enter WithChildren, and that
-	// path cannot carry a recursion bound across the interface boundary, so
-	// it is deliberately NOT attempted: an unbounded walk over a cyclic memo
-	// is a worse failure than a loud decline.
+	// Sole-shell reference: COMPLETE it here. The parent is about to embed
+	// this plan verbatim, so handing back a nil-inner template produces
+	// `Op(<nil>)` — the XX000 plan invariant (nested `IN`s over an
+	// intersection build exactly this chain: the outer level relinks fine
+	// while the inner one is never handed to WithChildren at all).
+	//
+	// completeShellPlan walks the SHELL's own quantifier and rebuilds via the
+	// plan's WithInner, so it never re-enters WithChildren. That is what
+	// makes the depth bound honest: an earlier attempt recursed back through
+	// WithChildren → findPhysicalPlan and reset its depth at every level,
+	// which is no bound at all.
 	if shell == nil {
 		return nil
 	}
-	if pe, ok := shell.(physicalPlanExpression); ok {
-		return pe.GetRecordQueryPlan()
+	return completeShellPlan(shell, 0)
+}
+
+// maxShellCompletionDepth bounds completeShellPlan. Shell chains are a few
+// unary wrappers deep in practice; the cap exists so a cyclic or
+// pathological memo yields nil (and a loud decline) rather than recursing
+// without end.
+const maxShellCompletionDepth = 32
+
+// completeShellPlan turns a nil-inner shell member into a fully-linked plan
+// by resolving its child reference and attaching the result with the plan's
+// own WithInner. Returns nil when the chain cannot be completed, in which
+// case the caller declines and the plan-invariant check reports loudly.
+func completeShellPlan(expr expressions.RelationalExpression, depth int) plans.RecordQueryPlan {
+	pe, ok := expr.(physicalPlanExpression)
+	if !ok {
+		return nil
+	}
+	plan := pe.GetRecordQueryPlan()
+	if plan == nil {
+		return nil
+	}
+	if !isNilInnerShell(expr) {
+		return plan // already complete
+	}
+	if depth >= maxShellCompletionDepth {
+		return nil
+	}
+	qs := expr.GetQuantifiers()
+	if len(qs) != 1 {
+		return nil // only unary shells are completable this way
+	}
+	inner := resolveInnerPlan(qs[0].GetRangesOver(), depth+1)
+	if inner == nil {
+		return nil
+	}
+	return planWithInner(plan, inner)
+}
+
+// resolveInnerPlan picks a child reference's plan, completing it first when
+// every member there is itself a shell. Mirrors findPhysicalPlan's member
+// preference (a valid member beats a template) while threading the depth.
+func resolveInnerPlan(ref *expressions.Reference, depth int) plans.RecordQueryPlan {
+	if ref == nil {
+		return nil
+	}
+	var shell expressions.RelationalExpression
+	for _, m := range ref.AllMembers() {
+		ph, ok := m.(physicalPlanExpression)
+		if !ok {
+			continue
+		}
+		if isNilInnerShell(m) {
+			if shell == nil {
+				shell = m
+			}
+			continue
+		}
+		return ph.GetRecordQueryPlan()
+	}
+	if shell == nil {
+		return nil
+	}
+	return completeShellPlan(shell, depth)
+}
+
+// planWithInner rebuilds a unary plan with a new inner, preserving every
+// other field. The type switch is the explicit list of plan types that can
+// appear as a nil-inner shell; anything else is not completable and the
+// caller declines rather than guessing.
+func planWithInner(p plans.RecordQueryPlan, inner plans.RecordQueryPlan) plans.RecordQueryPlan {
+	switch t := p.(type) {
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
+		return t.WithInner(inner)
+	case *plans.RecordQueryPredicatesFilterPlan:
+		return t.WithInner(inner)
+	case *plans.RecordQueryMapPlan:
+		return t.WithInner(inner)
+	case *plans.RecordQueryDistinctPlan:
+		return t.WithInner(inner)
+	case *plans.RecordQueryLimitPlan:
+		return t.WithInner(inner)
+	case *plans.RecordQueryInJoinPlan:
+		return t.WithInner(inner)
+	case *plans.RecordQueryInUnionPlan:
+		return t.WithInner(inner)
 	}
 	return nil
 }
@@ -415,7 +501,23 @@ func shouldRelinkInner(currentInner, candidate plans.RecordQueryPlan) bool {
 	if candidate == nil {
 		return false
 	}
-	return currentInner == nil || isLeafReplaceable(candidate)
+	// A MALFORMED current inner counts as no inner. The gate protects an
+	// existing, meaningful child from being swapped; a plan that itself has
+	// no child is not meaningful — it cannot execute. Without this, a
+	// wrapper holding a nil-inner shell (`InUnion(InJoin(<nil>))`, built by
+	// nested `IN`s) refused every relink because the SHELL's type is not
+	// leaf-replaceable, and the malformed plan survived to extraction.
+	if currentInner == nil || planIsShell(currentInner) {
+		return true
+	}
+	return isLeafReplaceable(candidate)
+}
+
+// planIsShell reports whether a plan is structurally incomplete: a non-leaf
+// carrying no children. Same authority as the expression-level
+// isNilInnerShell, applied to a bare plan.
+func planIsShell(p plans.RecordQueryPlan) bool {
+	return p != nil && len(p.GetChildren()) == 0 && !isGenuineLeafPlan(p)
 }
 
 // isLeafReplaceable reports whether a plan is safe to substitute as the

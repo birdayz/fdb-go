@@ -62,28 +62,34 @@ func TestInOverIntersection_RelinksResidual(t *testing.T) {
 	}
 }
 
-// TestNestedIn_OverIntersection_GatePin pins the one shape the relink fixes do
-// NOT reach: TWO IN predicates plus an indexed equality. The inner IN level's
-// wrapper is never handed to WithChildren at all, so its nil-inner snapshot
-// survives — an instance of RFC-167's nil-inner-shell architecture (the shell
-// is not a member of any reference the relink walks, so no amount of
-// per-wrapper relinking reaches it).
+// TestNestedIn_OverIntersection pins the shape that used to extract
+// `InJoin(<nil>)` and fail the XX000 plan invariant: TWO IN predicates plus
+// an indexed equality. It began life as a GATE PIN asserting that loud
+// decline; the gap is now closed, so it asserts the real plan instead.
 //
-// PRE-EXISTING and LOUD: identical failure on master before any of this
-// branch's changes, and it surfaces as the XX000 plan invariant — never wrong
-// rows. This is a GATE PIN, not an endorsement: it asserts the current loud
-// decline so the day the planner learns the shape this test goes RED and the
-// author replaces it with the real plan/row assertions.
-func TestNestedIn_OverIntersection_GatePin(t *testing.T) {
+// Two pieces closed it. (1) A wrapper holding a MALFORMED inner now always
+// relinks: the isLeafReplaceable gate exists to stop a meaningful child
+// being swapped, and a plan with no child is not meaningful — previously an
+// `InUnion` holding a nil-inner `InJoin` refused every relink because the
+// SHELL's type is not leaf-replaceable. (2) A reference whose members are
+// ALL shells is completed recursively (completeShellPlan), rebuilding
+// through each plan's WithInner rather than re-entering WithChildren —
+// which is what makes its depth bound real.
+func TestNestedIn_OverIntersection(t *testing.T) {
 	t.Parallel()
 	const q = "SELECT * FROM t_rd WHERE (b IN (7,5)) AND (c = 5) AND (a IN (5,9,3,10)) LIMIT 12"
 	plan, err := PlanQueryForTest(q, inRelinkSchema, nil)
-	if err == nil {
-		t.Fatalf("GATE PIN FIRED — nested IN over an intersection now plans as %s.\n"+
-			"The RFC-167 shell gap is (partly) closed: verify the plan is correct, then replace\n"+
-			"this gate pin with real plan-shape + FDB row assertions.", plan)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
 	}
-	if !strings.Contains(err.Error(), "plan-invariant") {
-		t.Fatalf("expected the loud plan-invariant decline, got a different error: %v", err)
+	if strings.Contains(plan, "<nil>") {
+		t.Fatalf("relink left a nil inner: %s", plan)
+	}
+	// Every IN level must carry a real child; the innermost access is the
+	// index scan for the equality.
+	for _, want := range []string{"InJoin(", "IndexScan("} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("want %s in the plan, got: %s", want, plan)
+		}
 	}
 }

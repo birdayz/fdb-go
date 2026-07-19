@@ -150,6 +150,16 @@ func runTest(ctx context.Context, db *sql.DB, t *Test) string {
 	}
 	defer rows.Close()
 
+	if len(t.Columns) > 0 {
+		cols, err := rows.Columns()
+		if err != nil {
+			return fmt.Sprintf("columns error: %v", err)
+		}
+		if d := diffColumns(t.Columns, cols); d != "" {
+			return d
+		}
+	}
+
 	actual, err := scanAll(rows)
 	if err != nil {
 		return fmt.Sprintf("scan error: %v", err)
@@ -259,4 +269,20 @@ func scanAll(rows *sql.Rows) ([][]any, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// diffColumns compares expected column names to the result's, in order and
+// case-insensitively (the engines agree on column identity, not on display
+// case). Returns "" when they match.
+func diffColumns(want, got []string) string {
+	if len(want) != len(got) {
+		return fmt.Sprintf("column count mismatch: expected %d %v, got %d %v", len(want), want, len(got), got)
+	}
+	for i := range want {
+		if !strings.EqualFold(want[i], got[i]) {
+			return fmt.Sprintf("column %d mismatch: expected %q, got %q (all: expected %v, got %v)",
+				i, want[i], got[i], want, got)
+		}
+	}
+	return ""
 }

@@ -246,21 +246,12 @@ type knownGap struct {
 
 // knownGaps is the whole ledger. Keep it SHORT and each entry NARROW: an
 // over-broad matcher silently converts real findings into declines.
-var knownGaps = []knownGap{
-	{
-		name: "nested-IN over an intersection extracts InJoin(<nil>) (RFC-167 shell gap)",
-		pin:  "TestNestedIn_OverIntersection_GatePin",
-		matches: func(sqlText string, err error) bool {
-			// Narrow on BOTH axes: the exact plan-invariant signature for the
-			// IN-join node, AND the specific query shape (two or more IN
-			// predicates). A plan-invariant failure on any other shape — or a
-			// different error on this shape — stays a finding.
-			return strings.Contains(err.Error(), "plan-invariant") &&
-				strings.Contains(err.Error(), "RecordQueryInJoinPlan") &&
-				strings.Count(strings.ToUpper(sqlText), " IN (") >= 2
-		},
-	},
-}
+//
+// Currently EMPTY — the one entry it ever held (nested `IN` extracting
+// `InJoin(<nil>)`) was retired when that gap was closed rather than left to
+// accumulate. An empty ledger is the goal state: every entry is a query the
+// engine cannot answer.
+var knownGaps = []knownGap{}
 
 // matchKnownGap returns the ledger entry covering this failure, or nil.
 func matchKnownGap(sqlText string, err error) *knownGap {

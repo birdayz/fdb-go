@@ -1,0 +1,75 @@
+# in_over_intersection.yaml — IN predicates layered over a pk-intersection.
+#
+# Found by the RFC-182 rowdiff harness. Three separate defects lived here:
+#   * a filter over a pk-intersection refused to relink (set operations were
+#     missing from the extraction allow-list), so the plan extracted
+#     `PredicatesFilter(<nil>)`; before compensation existed at all, the SAME
+#     queries silently DROPPED the IN residual and returned extra rows;
+#   * an IN-union wrapper never relinked, holding a stale snapshot;
+#   * two IN predicates produced `InJoin(<nil>)` because a wrapper holding a
+#     MALFORMED inner refused to replace it.
+# Each is a rows-level contract, so this is the yamsql (and therefore
+# cross-engine) home for them.
+name: in_over_intersection
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    a BIGINT,
+    b BIGINT,
+    c BIGINT,
+    s STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_b ON t (b)
+  CREATE INDEX idx_c ON t (c)
+setup:
+  - INSERT INTO t VALUES
+      (1, 9, 7, 5, 'x'),
+      (2, 9, 7, 6, 'y'),
+      (3, 1, 7, 5, 'x'),
+      (4, 9, 2, 5, 'y'),
+      (5, 3, 5, 5, 'x')
+tests:
+  # Two indexed equalities + an IN residual. The residual must be applied
+  # ABOVE the intersection: dropping it leaks id 3 (a=1 is not in the list).
+  - query: SELECT id FROM t WHERE b = 7 AND c = 5 AND a IN (9, 4)
+    rows:
+      - [1]
+  # Same shape under SELECT * — the projection variant that flips the cost
+  # winner to the intersection, which is how the dropped residual hid.
+  - query: SELECT id, a, b, c, s FROM t WHERE b = 7 AND c = 5 AND a IN (9, 4)
+    rows:
+      - [1, 9, 7, 5, x]
+  # An IN residual matching nothing must return no rows, not the whole
+  # intersection.
+  - query: SELECT id FROM t WHERE b = 7 AND c = 5 AND a IN (404)
+    rows: []
+  # IN plus a second, unindexed residual.
+  - query: SELECT id FROM t WHERE b = 7 AND c = 5 AND s = 'x' AND a IN (9, 1)
+    unordered: true
+    rows:
+      - [1]
+      - [3]
+  # TWO IN predicates plus an indexed equality — the shape that extracted
+  # InJoin(<nil>) and failed the plan invariant outright.
+  - query: SELECT id FROM t WHERE b IN (7, 5) AND c = 5 AND a IN (5, 9, 3, 10)
+    unordered: true
+    rows:
+      - [1]
+      - [5]
+  # …and under a LIMIT large enough not to truncate, so the shape is the
+  # same but the plan carries a limit wrapper.
+  - query: SELECT id FROM t WHERE b IN (7, 5) AND c = 5 AND a IN (5, 9, 3, 10) LIMIT 12
+    unordered: true
+    rows:
+      - [1]
+      - [5]
+  # DISTINCT + LIMIT over two indexed equalities: the projection was left
+  # below a set operation, so every column read failed the positional
+  # alignment guard.
+  - query: SELECT DISTINCT id FROM t WHERE b = 7 AND c = 5 LIMIT 27
+    columns: [ID]
+    unordered: true
+    rows:
+      - [1]
+      - [3]

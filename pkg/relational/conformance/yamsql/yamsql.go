@@ -71,6 +71,15 @@ type Test struct {
 	// PlanContains, if set, runs EXPLAIN on the query and asserts that
 	// the plan output contains this substring. Useful for verifying
 	// index scan, covering, sort elimination, etc.
+	// Columns asserts the result's COLUMN NAMES, in order. Without it a
+	// scenario proves only the values, so a query that returns the right
+	// rows under the wrong column names passes — the exact shape of the
+	// scalar-aggregate and LIMIT-through-projection alias bugs, one of
+	// which was a live Go-vs-Java divergence (RFC-082 select_count_alias).
+	// Comparison is case-insensitive: the engines agree on identity, not on
+	// display case.
+	Columns []string `yaml:"columns"`
+
 	PlanContains string `yaml:"plan_contains"`
 	// PlanNotContains, if set, asserts the plan does NOT contain this
 	// substring. Useful for negative assertions (no InMemorySort, no Fetch).
