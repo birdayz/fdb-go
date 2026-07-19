@@ -5544,13 +5544,39 @@ and its inverse (PushFilterThroughIntersection) interning against each other in
 the same memo group is the shape. GetCorrelatedTo then recurses forever on the
 resulting cyclic Reference.
 
-THE FIX (still gated — query-engine change, Graefe + Torvalds):
-  1. In this rule, reject or avoid the yield when `MemoizeExpression(newX)`
-     returns a reference reachable from the current reference (the same
-     cycle-would-form guard Java's memo interning applies), OR
-  2. Fix the interning so newX cannot intern to a reaching ancestor.
-  A bare visited-guard in GetCorrelatedTo is still WRONG — it would leave the
-  cyclic memo in place and only mask the symptom (principle #9). Fix the rule.
+CONFIRMED — the crash needs the INVERSE PAIR. A subprocess experiment
+(zz_inv, reverted) plans the seed three ways: all rules → CRASH; exclude
+`PushFilterThroughIntersectionRule` → SURVIVES; exclude
+`PullCommonFilterAboveIntersectionRule` → SURVIVES. So the two INVERSE rewrites
+interning against each other in one memo group are what close the cycle —
+neither alone does it.
+
+DEEPER ROOT CAUSE — BOTH RULES ARE GO-ONLY. Java (4.12.11.0) has NO rule that
+pushes a filter through, or pulls a filter above, an Intersection. Its
+filter/intersection rules are ImplementFilterRule, ImplementIntersectionRule,
+and filter PUSHDOWNS (PushDistinctBelowFilter, PushTypeFilterBelowFilter,
+PushReferencedFieldsThroughFilter, PushFilterThroughFetch) — none through an
+Intersection. Java filters intersections via the match-then-implement
+data-access mechanism (AbstractDataAccessRule), NOT logical commutation. And
+neither Go rule claims Java parity ("Ports Java's X"), unlike the ported rules
+around them.
+
+This is the query-engine skill's "Go-only rules are suspect" verbatim — the
+same shape as the retired Go-only IndexIntersectionRule. The
+Push/PullCommonFilter-Intersection PAIR is a Go invention, and its interning
+interaction produces a cyclic memo Java's rule set cannot.
+
+THE FIX (gated — query-engine change, Graefe + Torvalds), in Java-alignment
+order of preference:
+  1. REMOVE the Go-only rule pair (Push + PullCommonFilter through/above
+     Intersection); verify no corpus query loses a needed plan (they
+     shouldn't — Java plans these via data-access) and zero explain-diff drift
+     except intended.
+  2. If some optimization genuinely depends on them, keep them but guard the
+     cycle-forming yield in PullCommonFilter (reject when MemoizeExpression
+     returns a reference reachable from the current one).
+  A bare visited-guard in GetCorrelatedTo is WRONG either way — it leaves the
+  cyclic memo in place and masks the symptom (principle #9).
 
 The crash seed is NOT committed (it would red CI for a bug whose correct fix is
 gated); it is recorded above as an inline 4-byte reproducer instead.
