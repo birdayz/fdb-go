@@ -121,7 +121,19 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 			continue
 		}
 
-		innerExprs := partition.GetExpressions()
+		// GetPhysicalExpressions, not GetExpressions: innerPlans below comes from
+		// GetPlans, which FILTERS to physical members, while GetExpressions does
+		// not. Seeding a FINAL reference from the unfiltered list could memoize a
+		// non-physical member as a plan alternative, and the two lists are used
+		// together here — one seeds the memo reference, the other drives the plan
+		// chain.
+		//
+		// Latent, not live: instrumenting this site over the full 2407-query
+		// corpus found ZERO partitions where the two lists differ, which is why
+		// InJoin reports no unreachable edges. Fixed rather than left as a
+		// comment because the helper exists precisely for this pairing and had no
+		// caller.
+		innerExprs := partition.GetPhysicalExpressions()
 
 		for _, requestedOrdering := range requestedOrderings {
 			allOrderings := r.enumerateSourceOrderingsForRequestedOrdering(

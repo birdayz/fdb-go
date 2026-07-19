@@ -2775,6 +2775,16 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 	// which is beyond a lockstep-memoization change and must not be forced: the
 	// only shortcut is to reseed the outer reference from a fresh singleton, and
 	// narrowing a group is exactly what regressed the IN-join rule (RFC-183 §13).
+	// NOT COVERED BY THE RATCHET, and that is a corpus gap rather than a
+	// checker gap. TestCorpusPlanReachability reports zero unreachable edges,
+	// but instrumenting THIS yield over all 2407 corpus queries counts ZERO
+	// firings: the N-way EXISTS arm is never reached by any corpus query, so
+	// the ratchet is silent about it rather than vouching for it.
+	//
+	// So the divergence below is live and unmeasured: the first N-way EXISTS
+	// query anyone writes gets a FlatMap whose outer child is step1Plan while
+	// this group can only produce legExprs[0]. Read "0 unreachable edges" as
+	// zero over what the corpus exercises, never as zero over the code.
 	leftMemoRef := call.MemoizeExpression(legExprs[0])
 	call.Yield(newPhysicalFlatMapWrapper(
 		flatMapPlan,
