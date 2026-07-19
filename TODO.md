@@ -5401,16 +5401,43 @@ costing the whole N-way chain as `Scan(A)` — a memo-linkage bug. Pinned by
 `TestNWayProjectedExists_OuterQuantifierMatchesExecutedPlan`
 (pkg/relational/core/embedded). That fix does NOT make these plans executable.
 
-ALREADY TRIED AND REVERTED: rebasing the projected result value through
-`rebaseOuterLegValueOrdinal`, the same treatment `joinPreds`/`existPreds` get,
-and the obvious candidate since the RV is passed unrebased
-(rule_implement_nested_loop_join.go, "passed through unrebased"). It does NOT
-fix the binding failure — the defect is deeper in how multi-leg merged rows
-serve source-relative ordinals. Do not re-try that alone.
+ALREADY TRIED AND REVERTED — TWICE, and the second attempt proved the fix is
+ACTIVELY HARMFUL, not merely insufficient:
 
-No yamsql scenario is pinned: the corpus is a regression net, and pinning the
-error string would promote a defect to expected behaviour. Add the scenario as
-part of the fix.
+Rebasing the projected result value through `rebaseOuterLegValueOrdinal` (the
+same treatment `joinPreds`/`existPreds` get, and the obvious candidate since
+the RV is passed unrebased at rule_implement_nested_loop_join.go's
+"passed through unrebased"). DIAGNOSED PROPERLY the second time — the current
+code computes the rebase and then DISCARDS it (`flatMapResult = projected`, not
+the rebased value), and the rebase genuinely works: `A.V#1` (source-relative
+ordinal) -> `q$N.V#3` (merged-relative). Applying `flatMapResult = rebased`
+makes the projection RESOLVE, and a single-row query then EXECUTES correctly
+against real FDB (`[10, true]`).
+
+But a 3-row query then returns WRONG ROWS: `has_d` is TRUE for every row,
+including id=2 which is absent from `nd` (correct is false). So the local fix
+converts a LOUD CRASH into a SILENT WRONG-ROWS bug — the projection resolves
+but the EXISTS correlation over the merged row evaluates wrong. That is
+strictly worse (CLAUDE.md: "wrong rows green costs months"), which is why it is
+reverted and must NOT be applied piecemeal.
+
+WHAT THIS PROVES: the projection, the EXISTS correlation, and the ORDER BY key
+are COUPLED through the merged-row name model. The three failure surfaces are
+one defect:
+  1. projection `a.v` — source-relative ordinal over the merged row (rebase
+     makes it resolve but see above);
+  2. the EXISTS `has_d` — evaluates wrong (always true) once the row is merged;
+  3. ORDER BY `a.v` — the InMemorySort key stays source-relative above the
+     projected FlatMap output (rule_implement_in_memory_sort.go bakes
+     `sk.Value` as-is).
+A local rebase touches only (1) and breaks (2). The fix must make the merged
+multi-leg row present a coherent OUTPUT name model that all three resolve
+against — which is exactly the qualified/bare seam, and a workstream, not a
+rule tweak.
+
+No yamsql scenario is pinned: the corpus is a regression net; pinning the error
+string promotes a defect to expected behaviour, and pinning the wrong rows is
+worse. Add the scenario as part of the real fix.
 
 LIKELY THE SAME ROOT CAUSE AS THE COMMA-JOIN-OVER-NESTED-SHADOWING-CTE ENTRY
 above ("P.N vs merged-row keys [P.M N Q.M] — the qualified/bare name-model
