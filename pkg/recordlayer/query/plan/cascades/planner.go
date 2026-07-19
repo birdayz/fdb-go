@@ -20,7 +20,7 @@ import (
 // per-Reference exploration rounds for convergence, and fires rules at
 // per-(group, expression, rule) task granularity. Plan() drives both
 // phases and extracts the cost-cheapest plan via
-// properties.ExtractBestPlanFromSelector.
+// ExtractBestPlanFromSelector.
 //
 // Convergence: a Reference whose member set stops growing is committed
 // (Reference.CommitExploration); the stack drains; the planner returns.
@@ -80,10 +80,24 @@ type Planner struct {
 	// configuration.isRuleEnabled(rule). nil/empty = all rules enabled.
 	DisabledRules map[string]struct{}
 
-	// capErr carries a complexity-guard trip raised inside a task (tasks
-	// have no error channel — Java throws instead); the Plan loop checks
-	// it after every task.
+	// capErr carries a complexity-guard trip or a violated planner invariant
+	// raised inside a task (tasks have no error channel — Java throws
+	// instead); the Plan loop checks it after every task. One channel, not
+	// two: both are "a task decided planning cannot legitimately continue",
+	// and Java surfaces them the same way.
 	capErr error
+
+	// verifyOneFinal turns on RFC-183 P5's precondition check after the
+	// task stack drains; oneFinalViolations holds what it found. Off by
+	// default — it walks the whole reference graph.
+	verifyOneFinal     bool
+	oneFinalViolations []string
+
+	// reach is the optional RFC-183 plan-reachability tally, scoped to this
+	// Planner so two concurrent planning runs cannot sum into one number.
+	// nil = collect nothing, which is the production path and costs one nil
+	// compare per yield. See plan_reachability.go.
+	reach *ReachabilityCollector
 
 	tasksRun int
 
@@ -172,7 +186,7 @@ func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 // OrderedChildWinner returns the cheapest physical member of childRef whose
 // derived rich ordering satisfies sortExpr's keys, or nil when none does
 // (the sort must then be materialised). Implements the sort-elision hook of
-// properties.ExtractBestPlanFromSelector: satisfaction runs on the full
+// ExtractBestPlanFromSelector: satisfaction runs on the full
 // Value + four-state sort-order representation (RichOrdering.Satisfies), so
 // an ASC_NULLS_LAST sort is never elided against a natural-order ASC scan.
 func (p *Planner) OrderedChildWinner(sortExpr *expressions.LogicalSortExpression, childRef *expressions.Reference) expressions.RelationalExpression {
@@ -194,11 +208,11 @@ func (p *Planner) OrderingSourceRef(expr expressions.RelationalExpression) (*exp
 	if !ok {
 		return nil, false
 	}
-	return d.orderingSourceRef(), true
+	return d.OrderingSourceRef(), true
 }
 
 // TieBrokenCostLess supplies extraction's fallback GetBest with a
-// TOTAL-ORDER comparator (properties.TieBrokenCostSelector): the scalar
+// TOTAL-ORDER comparator (TieBrokenCostSelector): the scalar
 // cost comparator ties routinely and GetBest would otherwise resolve by
 // member insertion order, flipping picks across plannings.
 func (p *Planner) TieBrokenCostLess(stats properties.StatisticsProvider) func(a, b expressions.RelationalExpression) bool {
@@ -262,7 +276,7 @@ func (p *Planner) WithMaxTasks(n int) *Planner {
 // PhasePlanning via the unified task types (ExploreGroupTask,
 // TransformExprTask, TransformImplTask, OptimizeGroupTask,
 // OptimizeInputsTask). After the stack drains, extracts the best
-// plan via properties.ExtractBestPlanFromSelector.
+// plan via ExtractBestPlanFromSelector.
 //
 // Returns:
 //   - plan: the extracted RelationalExpression; nil if rootRef is empty.
@@ -310,7 +324,16 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 
 	// After the task-stack drains, each Reference's FinalMembers has
 	// been pruned to exactly one physical plan by OptimizeGroup.
-	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, p.stats)
+	//
+	// RFC-183 P5 checks that claim rather than trusting it: set
+	// RFC183_VERIFY_ONE_FINAL to have the planner report every reference
+	// that still holds two. It is the precondition for a plan holding a
+	// Quantifier instead of a raw child pointer (Java's getRangesOverPlan
+	// is getOnlyElement over the final expressions).
+	if p.verifyOneFinal {
+		p.oneFinalViolations = VerifyOneFinalPlanPerReference(rootRef)
+	}
+	plan, err := ExtractBestPlanFromSelector(rootRef, p, p.stats)
 	if err != nil {
 		return plan, p.tasksRun, err
 	}
@@ -463,7 +486,7 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		return
 	}
 
-	var requestedOrderings []*RequestedOrdering
+	var requestedOrderings []*properties.RequestedOrdering
 	if p.constraintMap != nil {
 		if orderings, ok := Get(p.constraintMap, ref, RequestedOrderingConstraintKey); ok {
 			requestedOrderings = orderings
@@ -535,7 +558,7 @@ func dataAccessCandidates(ref *expressions.Reference) []MatchCandidate {
 // by Insert dedup + the 10-round cap (RFC-148 §3c addendum). The
 // cross-candidate intersection keeps its own hasIntersectionFinal
 // guard.
-func (p *Planner) shouldConsumeMatches(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*RequestedOrdering) bool {
+func (p *Planner) shouldConsumeMatches(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering) bool {
 	if len(requestedOrderings) > 0 {
 		return true
 	}
@@ -553,7 +576,7 @@ func (p *Planner) shouldConsumeMatches(ref *expressions.Reference, candidates []
 // into data-access expressions and routes every result by safety:
 // physical plans and SAFE logical compensations go through
 // yieldUnknown; UNSAFE logical compensations go to InsertFinal.
-func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*RequestedOrdering) {
+func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering) {
 	for _, candidate := range candidates {
 		matches := GetPartialMatchesForCandidate(ref, candidate)
 		if len(matches) == 0 {
@@ -601,7 +624,7 @@ func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates 
 // explosion in MaximumCoverageMatches for queries with many indexes
 // (e.g., InList with 5+ candidates). hasIntersectionFinal prevents
 // re-creation when pushDataAccessTasks fires multiple times per ref.
-func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*RequestedOrdering) {
+func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering) {
 	if len(candidates) < 2 || len(candidates) > 4 || hasIntersectionFinal(ref) {
 		return
 	}

@@ -53,7 +53,7 @@ func TestTableFunctionPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	v := newTestStreamValue()
 	a := NewRecordQueryTableFunctionPlan(v)
 	b := NewRecordQueryTableFunctionPlan(v)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same stream value should be equal")
 	}
 }
@@ -64,7 +64,7 @@ func TestTableFunctionPlan_EqualsWithoutChildren_Different(t *testing.T) {
 	v2 := newTestStreamValue()
 	a := NewRecordQueryTableFunctionPlan(v1)
 	b := NewRecordQueryTableFunctionPlan(v2)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different stream values should not be equal")
 	}
 }
@@ -73,7 +73,7 @@ func TestTableFunctionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	p := NewRecordQueryTableFunctionPlan(nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if p.EqualsWithoutChildren(scan) {
+	if p.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("TableFunctionPlan should not equal a ScanPlan")
 	}
 }

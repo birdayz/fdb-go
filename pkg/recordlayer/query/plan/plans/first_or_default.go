@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -18,7 +19,8 @@ import (
 // mirrors the uncorrelated path (executor.EvaluateScalarSubquery). A user-written
 // LIMIT never sets strict: truncation is then the user's deliberate intent.
 type RecordQueryFirstOrDefaultPlan struct {
-	inner        RecordQueryPlan
+	PlanExprBase
+	innerQ       expressions.Quantifier
 	defaultValue values.Value
 	strict       bool
 }
@@ -27,7 +29,7 @@ type RecordQueryFirstOrDefaultPlan struct {
 // over the given inner plan and default value.
 func NewRecordQueryFirstOrDefaultPlan(inner RecordQueryPlan, defaultValue values.Value) *RecordQueryFirstOrDefaultPlan {
 	return &RecordQueryFirstOrDefaultPlan{
-		inner:        inner,
+		innerQ:       QuantifierOverPlan(inner),
 		defaultValue: defaultValue,
 	}
 }
@@ -36,14 +38,25 @@ func NewRecordQueryFirstOrDefaultPlan(inner RecordQueryPlan, defaultValue values
 // raises a cardinality violation (21000) when the inner yields more than one row.
 func NewRecordQueryFirstOrDefaultPlanStrict(inner RecordQueryPlan, defaultValue values.Value) *RecordQueryFirstOrDefaultPlan {
 	return &RecordQueryFirstOrDefaultPlan{
-		inner:        inner,
+		innerQ:       QuantifierOverPlan(inner),
 		defaultValue: defaultValue,
 		strict:       true,
 	}
 }
 
-// GetInner returns the wrapped inner plan.
-func (p *RecordQueryFirstOrDefaultPlan) GetInner() RecordQueryPlan { return p.inner }
+// GetInner returns the wrapped inner plan, dereferenced through the quantifier.
+func (p *RecordQueryFirstOrDefaultPlan) GetInner() RecordQueryPlan {
+	return planFromQuantifier(p.innerQ)
+}
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryFirstOrDefaultPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // GetDefaultValue returns the fallback value used when the inner plan
 // is empty.
@@ -55,23 +68,25 @@ func (p *RecordQueryFirstOrDefaultPlan) IsStrict() bool { return p.strict }
 
 // GetResultType returns the inner's result type.
 func (p *RecordQueryFirstOrDefaultPlan) GetResultType() values.Type {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return values.UnknownType
 	}
-	return p.inner.GetResultType()
+	return inner.GetResultType()
 }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryFirstOrDefaultPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares the default value by semantic Value identity
 // (RFC-176 P2 — see semanticValueEquals).
-func (p *RecordQueryFirstOrDefaultPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryFirstOrDefaultPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFirstOrDefaultPlan)
 	if !ok {
 		return false
@@ -94,8 +109,8 @@ func (p *RecordQueryFirstOrDefaultPlan) HashCodeWithoutChildren() uint64 {
 // Explain renders FirstOrDefault(inner) (StrictFirstOrDefault when strict).
 func (p *RecordQueryFirstOrDefaultPlan) Explain() string {
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	name := "FirstOrDefault"
 	if p.strict {
@@ -104,4 +119,27 @@ func (p *RecordQueryFirstOrDefaultPlan) Explain() string {
 	return fmt.Sprintf("%s(%s)", name, innerLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryFirstOrDefaultPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryFirstOrDefaultPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryFirstOrDefaultPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryFirstOrDefaultPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryFirstOrDefaultPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
+}
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryFirstOrDefaultPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

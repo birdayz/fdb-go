@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -120,17 +121,17 @@ func TestAdjustBindingsForInUnion_PromotesExplodeAlias(t *testing.T) {
 	eqRange := result.Range
 
 	a := &values.FieldValue{Field: "a", Typ: values.UnknownType}
-	ordering := NewRichOrdering(
-		map[values.Value][]OrderingBinding{
-			a: {FixedBinding(eqRange)},
+	ordering := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{
+			a: {properties.FixedBinding(eqRange)},
 		},
 		[]values.Value{a},
 		false,
 	)
 
-	req := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: a, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
+	req := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: a, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
 
 	adjusted := adjustBindingsForInUnion(ordering, explodeAliases, req)
 	if adjusted == nil {
@@ -144,7 +145,7 @@ func TestAdjustBindingsForInUnion_PromotesExplodeAlias(t *testing.T) {
 	if !bindings[0].IsSorted() {
 		t.Fatal("fixed binding referencing explode alias should be promoted to sorted")
 	}
-	if bindings[0].GetSortOrder() != ProvidedSortOrderAscending {
+	if bindings[0].GetSortOrder() != properties.ProvidedSortOrderAscending {
 		t.Fatal("promoted binding should match requested ascending direction")
 	}
 }
@@ -154,15 +155,15 @@ func TestAdjustBindingsForInUnion_KeepsNonExplodeFixed(t *testing.T) {
 	explodeAliases := map[values.CorrelationIdentifier]struct{}{}
 
 	a := &values.FieldValue{Field: "a", Typ: values.UnknownType}
-	ordering := NewRichOrdering(
-		map[values.Value][]OrderingBinding{
-			a: {FixedBinding(nil)},
+	ordering := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{
+			a: {properties.FixedBinding(nil)},
 		},
 		[]values.Value{a},
 		false,
 	)
 
-	req := NewRequestedOrdering(nil, DistinctnessNotDistinct, false)
+	req := properties.NewRequestedOrdering(nil, properties.DistinctnessNotDistinct, false)
 	adjusted := adjustBindingsForInUnion(ordering, explodeAliases, req)
 	if adjusted == nil {
 		t.Fatal("adjustment should succeed")
@@ -176,7 +177,7 @@ func TestAdjustBindingsForInUnion_KeepsNonExplodeFixed(t *testing.T) {
 
 func TestAdjustBindingsForInUnion_NilOrdering(t *testing.T) {
 	t.Parallel()
-	result := adjustBindingsForInUnion(nil, nil, PreserveOrdering())
+	result := adjustBindingsForInUnion(nil, nil, properties.PreserveOrdering())
 	if result != nil {
 		t.Fatal("nil ordering should return nil")
 	}

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -38,13 +39,13 @@ func TestOptimizeGroup_RetainsRequestedOrderingWinners(t *testing.T) {
 	ref.InsertFinal(cheap)
 	ref.InsertFinal(ordered)
 
-	reqX := NewRequestedOrdering(
-		[]RequestedOrderingPart{{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: RequestedSortOrderAscending}},
-		DistinctnessPreserveDistinctness, false)
+	reqX := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},
+		properties.DistinctnessPreserveDistinctness, false)
 
 	p := NewPlanner(nil, nil)
 	p.constraintMap = NewConstraintMap()
-	Set(p.constraintMap, ref, RequestedOrderingConstraintKey, []*RequestedOrdering{reqX})
+	Set(p.constraintMap, ref, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqX})
 
 	// Sanity: the cost model really ranks the scan below the sort, so the
 	// ordered member survives ONLY via requested-ordering retention.

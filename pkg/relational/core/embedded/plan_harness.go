@@ -37,62 +37,116 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 // plan families over this tree — per the RFC, plan-family classification
 // must come from a plan-type switch, never from string-matching EXPLAIN text.
 func PlanPhysicalForTest(sql, schemaDDL string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil)
+	return plan, err
+}
+
+// PlanPhysicalForTestWithReachability is PlanPhysicalForTest with RFC-183's
+// yield-time plan-reachability accounting routed into the caller's collector.
+//
+// Exists because that tally must belong to ONE measurement. It used to live in
+// package variables inside cascades, and the corpus ratchet consequently
+// summed three concurrent tests' planning into a single number (edges=53748
+// against a true 17916). A collector the caller owns cannot be added to, or
+// reset by, anyone it was not handed to.
+//
+// nil collector is legal and means "collect nothing" — identical to
+// PlanPhysicalForTest.
+func PlanPhysicalForTestWithReachability(
+	sql, schemaDDL string,
+	stats properties.StatisticsProvider,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, error) {
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, reach)
+	return plan, err
+}
+
+// planPhysicalForTest is PlanPhysicalForTest plus the optional RFC-183 P5
+// one-final check, whose result it RETURNS rather than parking in a package
+// variable.
+//
+// The flag and the violations used to be package-level globals. They were
+// guarded by a mutex that only serialized planAndVerifyOneFinal against
+// ITSELF: the reads live in this function, which ~40 parallel tests call
+// directly without ever taking that lock. So the flag was read concurrently
+// with being written (a genuine data race, -race flags it), and worse, a
+// concurrent caller would enable the check for itself and overwrite the
+// violations the real caller was about to read. The symptom is a SILENT
+// PASS — the one-final test reporting someone else's empty result.
+//
+// Threading it through a parameter deletes the shared state instead of
+// locking it. The signature widening is confined to this unexported helper,
+// so the ~40 call sites are untouched.
+//
+// reach is the same treatment applied to RFC-183's reachability tally, which
+// was package state in cascades for the same reason and failed the same way —
+// with the inverse symptom. The one-final globals could report someone else's
+// EMPTY result (a silent pass); the reachability globals reported everyone's
+// SUMMED result (edges=53748 for a true 17916). Both are the same bug: a
+// measurement whose scope is the process rather than the caller. nil = collect
+// nothing.
+func planPhysicalForTest(
+	sql, schemaDDL string,
+	stats properties.StatisticsProvider,
+	verifyOneFinal bool,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, []string, error) {
 	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
 	if err != nil {
-		return nil, fmt.Errorf("schema DDL: %w", err)
+		return nil, nil, fmt.Errorf("schema DDL: %w", err)
 	}
 	md := tmpl.Underlying()
 
 	root, err := parser.Parse(sql)
 	if err != nil {
-		return nil, fmt.Errorf("parse SQL: %w", err)
+		return nil, nil, fmt.Errorf("parse SQL: %w", err)
 	}
 	stmts := root.Statements()
 	if stmts == nil || len(stmts.AllStatement()) == 0 {
-		return nil, fmt.Errorf("no statements in SQL")
+		return nil, nil, fmt.Errorf("no statements in SQL")
 	}
 	sel := stmts.AllStatement()[0].SelectStatement()
 	if sel == nil {
-		return nil, fmt.Errorf("not a SELECT statement")
+		return nil, nil, fmt.Errorf("not a SELECT statement")
 	}
 	q := sel.Query()
 	if q == nil {
-		return nil, fmt.Errorf("malformed SELECT")
+		return nil, nil, fmt.Errorf("malformed SELECT")
 	}
 
 	visitor := NewPlanVisitor(md)
 	logicalOp, buildErr := visitor.VisitQuery(q)
 	if buildErr != nil {
-		return nil, buildErr
+		return nil, nil, buildErr
 	}
 	if logicalOp == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
+		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
 	}
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
+		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
 	if err := resolveQualifiedTableNames(logicalOp, "s"); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := validateTablesAndColumns(logicalOp, md); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if msg := findDistinctAggregate(logicalOp); msg != "" {
 		// Java rejects DISTINCT aggregates with UNSUPPORTED_QUERY (0AF00); match it.
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, msg)
+		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
 	if arityErr := query.ValidateCTEAliasArities(logicalOp); arityErr != nil {
-		return nil, arityErr
+		return nil, nil, arityErr
 	}
 	ref, _, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
 	if translateErr != nil {
 		// Surface the translator's typed diagnostic over the generic fallback —
 		// same precedence the production generator applies.
-		return nil, translateErr
+		return nil, nil, translateErr
 	}
 	if ref == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
+		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
 	rules := cascades.DefaultExpressionRules()
@@ -104,12 +158,26 @@ func PlanPhysicalForTest(sql, schemaDDL string, stats properties.StatisticsProvi
 		WithStatistics(stats).
 		WithMaxTasks(100_000)
 
+	// RFC-183 P5 precondition: does every reference reachable at extraction
+	// hold at most ONE physical final? That is what Java's getRangesOverPlan
+	// assumes. Off by default -- it walks the whole reference graph.
+	if verifyOneFinal {
+		planner.SetVerifyOneFinal(true)
+	}
+	// nil is the production path: the planner then pays one nil compare per
+	// yield and accumulates nothing.
+	planner.SetReachabilityCollector(reach)
+
 	bestExpr, _, planErr := planner.Plan(ref)
+	var oneFinalViolations []string
+	if verifyOneFinal {
+		oneFinalViolations = planner.OneFinalViolations()
+	}
 	if planErr != nil {
-		return nil, fmt.Errorf("planning failed: %w", planErr)
+		return nil, nil, fmt.Errorf("planning failed: %w", planErr)
 	}
 	if bestExpr == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "no plan found")
+		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "no plan found")
 	}
 
 	type planExtractor interface {
@@ -117,18 +185,18 @@ func PlanPhysicalForTest(sql, schemaDDL string, stats properties.StatisticsProvi
 	}
 	ph, ok := bestExpr.(planExtractor)
 	if !ok {
-		return nil, fmt.Errorf("best expression is not a physical plan: %T", bestExpr)
+		return nil, nil, fmt.Errorf("best expression is not a physical plan: %T", bestExpr)
 	}
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
-		return nil, fmt.Errorf("physical plan is nil")
+		return nil, nil, fmt.Errorf("physical plan is nil")
 	}
 	// RFC-164 WS-2: structural plan invariants — an always-on backstop that fails
 	// loudly on a malformed extracted plan (e.g. a relink that dropped a child).
 	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
-		return nil, fmt.Errorf("plan invariant violated: %w", err)
+		return nil, nil, fmt.Errorf("plan invariant violated: %w", err)
 	}
-	return physPlan, nil
+	return physPlan, oneFinalViolations, nil
 }
 
 // PlanQueryWithMetadata is like PlanQueryForTest but accepts pre-built
@@ -443,4 +511,22 @@ func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan, md *recordlayer.
 // that cannot be seeded through the SQL driver (no SQL array-literal form).
 func ResultColumnDefsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	return deriveColumnsFromPlan(plan, md)
+}
+
+// planAndVerifyOneFinal plans sql and returns every reference reachable at
+// extraction that holds more than one PHYSICAL final expression — RFC-183
+// P5's precondition (Java's getRangesOverPlan is getOnlyElement over the
+// final expressions, which throws on two).
+//
+// Safe under t.Parallel: verifyOneFinal is a per-Planner flag and the
+// violations are RETURNED, so nothing is shared between callers. This
+// previously said "Serialized: it flips package-level planner state" — true
+// of the deleted globals, false the moment they were threaded through, and
+// shipped stale by the very commit that fixed three other stale comments.
+func planAndVerifyOneFinal(sql, schema string) ([]string, error) {
+	_, violations, err := planPhysicalForTest(sql, schema, nil, true, nil)
+	if err != nil {
+		return nil, err
+	}
+	return violations, nil
 }

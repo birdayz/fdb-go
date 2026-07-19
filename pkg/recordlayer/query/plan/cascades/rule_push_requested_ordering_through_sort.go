@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // PushRequestedOrderingThroughSortRule is a PLANNING-phase
@@ -49,7 +50,7 @@ func (r *PushRequestedOrderingThroughSortRule) OnMatch(call *ImplementationRuleC
 	}
 
 	requestedOrdering := sortExpressionToRequestedOrdering(s)
-	call.PushConstraint(innerRef, []*RequestedOrdering{requestedOrdering})
+	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughSortRule)(nil)

@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -101,6 +102,7 @@ func (s *ParameterKeySource) String() string { return "$" + s.parameter }
 // taken from a KeysSource. This is a leaf plan (no children).
 // Mirrors Java's RecordQueryLoadByKeysPlan.
 type RecordQueryLoadByKeysPlan struct {
+	PlanExprBase
 	keysSource KeysSource
 }
 
@@ -132,7 +134,7 @@ func (p *RecordQueryLoadByKeysPlan) GetResultType() values.Type { return values.
 func (p *RecordQueryLoadByKeysPlan) GetChildren() []RecordQueryPlan { return nil }
 
 // EqualsWithoutChildren compares the key sources.
-func (p *RecordQueryLoadByKeysPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryLoadByKeysPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryLoadByKeysPlan)
 	if !ok {
 		return false
@@ -174,7 +176,23 @@ func tupleEquals(a, b tuple.Tuple) bool {
 }
 
 var (
-	_ RecordQueryPlan = (*RecordQueryLoadByKeysPlan)(nil)
-	_ KeysSource      = (*PrimaryKeysKeySource)(nil)
-	_ KeysSource      = (*ParameterKeySource)(nil)
+	_ RecordQueryPlan                  = (*RecordQueryLoadByKeysPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryLoadByKeysPlan)(nil)
+	_ KeysSource                       = (*PrimaryKeysKeySource)(nil)
+	_ KeysSource                       = (*ParameterKeySource)(nil)
 )
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryLoadByKeysPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryLoadByKeysPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryLoadByKeysPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

@@ -183,15 +183,15 @@ func TestRemoveCommonEqualityBoundParts_NoCommon(t *testing.T) {
 	t.Parallel()
 	keyA := &values.FieldValue{Field: "a"}
 	keyB := &values.FieldValue{Field: "b"}
-	o1 := NewRichOrdering(
-		map[values.Value][]OrderingBinding{keyA: {FixedBinding(nil)}},
+	o1 := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{keyA: {properties.FixedBinding(nil)}},
 		[]values.Value{keyA}, false,
 	)
-	o2 := NewRichOrdering(
-		map[values.Value][]OrderingBinding{keyB: {FixedBinding(nil)}},
+	o2 := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{keyB: {properties.FixedBinding(nil)}},
 		[]values.Value{keyB}, false,
 	)
-	result := removeCommonEqualityBoundParts([]*RichOrdering{o1, o2})
+	result := removeCommonEqualityBoundParts([]*properties.RichOrdering{o1, o2})
 	if len(result) != 2 {
 		t.Fatalf("expected 2 orderings, got %d", len(result))
 	}
@@ -204,21 +204,21 @@ func TestRemoveCommonEqualityBoundParts_CommonRemoved(t *testing.T) {
 	t.Parallel()
 	keyA := &values.FieldValue{Field: "a"}
 	keyB := &values.FieldValue{Field: "b"}
-	o1 := NewRichOrdering(
-		map[values.Value][]OrderingBinding{
-			keyA: {FixedBinding(nil)},
-			keyB: {SortedBinding(ProvidedSortOrderAscending)},
+	o1 := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{
+			keyA: {properties.FixedBinding(nil)},
+			keyB: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
 		},
 		[]values.Value{keyA, keyB}, false,
 	)
-	o2 := NewRichOrdering(
-		map[values.Value][]OrderingBinding{
-			keyA: {FixedBinding(nil)},
-			keyB: {SortedBinding(ProvidedSortOrderDescending)},
+	o2 := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{
+			keyA: {properties.FixedBinding(nil)},
+			keyB: {properties.SortedBinding(properties.ProvidedSortOrderDescending)},
 		},
 		[]values.Value{keyA, keyB}, false,
 	)
-	result := removeCommonEqualityBoundParts([]*RichOrdering{o1, o2})
+	result := removeCommonEqualityBoundParts([]*properties.RichOrdering{o1, o2})
 	if len(result) != 2 {
 		t.Fatalf("expected 2 orderings, got %d", len(result))
 	}
@@ -233,11 +233,11 @@ func TestRemoveCommonEqualityBoundParts_CommonRemoved(t *testing.T) {
 func TestRemoveCommonEqualityBoundParts_SingleOrdering(t *testing.T) {
 	t.Parallel()
 	keyA := &values.FieldValue{Field: "a"}
-	o := NewRichOrdering(
-		map[values.Value][]OrderingBinding{keyA: {FixedBinding(nil)}},
+	o := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{keyA: {properties.FixedBinding(nil)}},
 		[]values.Value{keyA}, false,
 	)
-	result := removeCommonEqualityBoundParts([]*RichOrdering{o})
+	result := removeCommonEqualityBoundParts([]*properties.RichOrdering{o})
 	if len(result) != 1 || len(result[0].GetKeys()) != 1 {
 		t.Fatal("single ordering should not be modified")
 	}

@@ -2,6 +2,8 @@ package cascades
 
 import (
 	"testing"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 func TestCrossProduct_TwoLists(t *testing.T) {
@@ -68,21 +70,21 @@ func TestCrossProduct_SingleElementLists(t *testing.T) {
 
 func TestOrderingBinding_Sorted(t *testing.T) {
 	t.Parallel()
-	b := SortedBinding(ProvidedSortOrderAscending)
+	b := properties.SortedBinding(properties.ProvidedSortOrderAscending)
 	if !b.IsSorted() {
 		t.Fatal("expected sorted")
 	}
 	if b.IsFixed() || b.IsChoose() {
 		t.Fatal("should not be fixed or choose")
 	}
-	if b.GetSortOrder() != ProvidedSortOrderAscending {
+	if b.GetSortOrder() != properties.ProvidedSortOrderAscending {
 		t.Fatal("wrong sort order")
 	}
 }
 
 func TestOrderingBinding_Fixed(t *testing.T) {
 	t.Parallel()
-	b := FixedBinding("eq-5")
+	b := properties.FixedBinding("eq-5")
 	if !b.IsFixed() {
 		t.Fatal("expected fixed")
 	}
@@ -96,7 +98,7 @@ func TestOrderingBinding_Fixed(t *testing.T) {
 
 func TestOrderingBinding_Choose(t *testing.T) {
 	t.Parallel()
-	b := ChooseBinding()
+	b := properties.ChooseBinding()
 	if !b.IsChoose() {
 		t.Fatal("expected choose")
 	}
@@ -107,16 +109,16 @@ func TestOrderingBinding_Choose(t *testing.T) {
 
 func TestProvidedSortOrder_IsDirectional(t *testing.T) {
 	t.Parallel()
-	directional := []ProvidedSortOrder{
-		ProvidedSortOrderAscending, ProvidedSortOrderDescending,
-		ProvidedSortOrderAscendingNullsLast, ProvidedSortOrderDescendingNullsFirst,
+	directional := []properties.ProvidedSortOrder{
+		properties.ProvidedSortOrderAscending, properties.ProvidedSortOrderDescending,
+		properties.ProvidedSortOrderAscendingNullsLast, properties.ProvidedSortOrderDescendingNullsFirst,
 	}
 	for _, s := range directional {
 		if !s.IsDirectional() {
 			t.Fatalf("%d should be directional", s)
 		}
 	}
-	nonDirectional := []ProvidedSortOrder{ProvidedSortOrderFixed, ProvidedSortOrderChoose}
+	nonDirectional := []properties.ProvidedSortOrder{properties.ProvidedSortOrderFixed, properties.ProvidedSortOrderChoose}
 	for _, s := range nonDirectional {
 		if s.IsDirectional() {
 			t.Fatalf("%d should not be directional", s)
@@ -126,13 +128,13 @@ func TestProvidedSortOrder_IsDirectional(t *testing.T) {
 
 func TestProvidedSortOrder_IsAnyDescending(t *testing.T) {
 	t.Parallel()
-	if !ProvidedSortOrderDescending.IsAnyDescending() {
+	if !properties.ProvidedSortOrderDescending.IsAnyDescending() {
 		t.Fatal("descending should be any-descending")
 	}
-	if !ProvidedSortOrderDescendingNullsFirst.IsAnyDescending() {
+	if !properties.ProvidedSortOrderDescendingNullsFirst.IsAnyDescending() {
 		t.Fatal("descending-nulls-first should be any-descending")
 	}
-	if ProvidedSortOrderAscending.IsAnyDescending() {
+	if properties.ProvidedSortOrderAscending.IsAnyDescending() {
 		t.Fatal("ascending should not be any-descending")
 	}
 }

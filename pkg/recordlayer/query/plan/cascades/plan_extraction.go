@@ -1,9 +1,10 @@
-package properties
+package cascades
 
 import (
 	"fmt"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -39,7 +40,7 @@ import (
 //
 // See ExtractBestPlanWith for the stats-bound variant.
 func ExtractBestPlan(ref *expressions.Reference) (expressions.RelationalExpression, error) {
-	return ExtractBestPlanWith(ref, DefaultStatistics{})
+	return ExtractBestPlanWith(ref, properties.DefaultStatistics{})
 }
 
 // ExtractBestPlanWith is ExtractBestPlan driven by a specific
@@ -49,12 +50,12 @@ func ExtractBestPlan(ref *expressions.Reference) (expressions.RelationalExpressi
 //
 // Pass nil for stats to use DefaultStatistics (equivalent to
 // ExtractBestPlan).
-func ExtractBestPlanWith(ref *expressions.Reference, stats StatisticsProvider) (expressions.RelationalExpression, error) {
+func ExtractBestPlanWith(ref *expressions.Reference, stats properties.StatisticsProvider) (expressions.RelationalExpression, error) {
 	if ref == nil || len(ref.AllMembers()) == 0 {
 		return nil, nil
 	}
 	if stats == nil {
-		stats = DefaultStatistics{}
+		stats = properties.DefaultStatistics{}
 	}
 	return extractBestPlanWithVisited(ref, stats, make(map[*expressions.Reference]bool))
 }
@@ -63,7 +64,7 @@ func ExtractBestPlanWith(ref *expressions.Reference, stats StatisticsProvider) (
 // ExtractBestPlanWith. The visited map prevents infinite recursion
 // when the Reference DAG contains back-edges (e.g. recursive CTE
 // expression trees).
-func extractBestPlanWithVisited(ref *expressions.Reference, stats StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
+func extractBestPlanWithVisited(ref *expressions.Reference, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
 	if ref == nil || len(ref.AllMembers()) == 0 {
 		return nil, nil
 	}
@@ -71,7 +72,7 @@ func extractBestPlanWithVisited(ref *expressions.Reference, stats StatisticsProv
 		return nil, nil
 	}
 	visited[ref] = true
-	best := ref.GetBest(tieBrokenLess(CostLessWith(stats)))
+	best := ref.GetBest(tieBrokenLess(properties.CostLessWith(stats)))
 	if best == nil {
 		return nil, nil
 	}
@@ -183,12 +184,12 @@ type BestMemberSelector interface {
 //
 // Pass nil sel to fall back to ExtractBestPlanWith(ref, stats)
 // (no selector path).
-func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelector, stats StatisticsProvider) (expressions.RelationalExpression, error) {
+func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelector, stats properties.StatisticsProvider) (expressions.RelationalExpression, error) {
 	if ref == nil || len(ref.AllMembers()) == 0 {
 		return nil, nil
 	}
 	if stats == nil {
-		stats = DefaultStatistics{}
+		stats = properties.DefaultStatistics{}
 	}
 	return extractBestPlanFromSelectorVisited(ref, sel, stats, make(map[*expressions.Reference]bool))
 }
@@ -198,7 +199,7 @@ func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelec
 // recursion when the Reference DAG contains back-edges (e.g.
 // recursive CTE expression trees where RecursiveUnion quantifiers
 // form cycles through the Memo).
-func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemberSelector, stats StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
+func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemberSelector, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
 	if ref == nil || len(ref.AllMembers()) == 0 {
 		return nil, nil
 	}
@@ -249,16 +250,16 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 // comparator through this seam; without it the fallbacks keep the raw
 // comparator (test-only paths).
 type TieBrokenCostSelector interface {
-	TieBrokenCostLess(stats StatisticsProvider) func(a, b expressions.RelationalExpression) bool
+	TieBrokenCostLess(stats properties.StatisticsProvider) func(a, b expressions.RelationalExpression) bool
 }
 
-func costLessFor(sel BestMemberSelector, stats StatisticsProvider) func(a, b expressions.RelationalExpression) bool {
+func costLessFor(sel BestMemberSelector, stats properties.StatisticsProvider) func(a, b expressions.RelationalExpression) bool {
 	if tb, ok := sel.(TieBrokenCostSelector); ok {
 		if less := tb.TieBrokenCostLess(stats); less != nil {
 			return less
 		}
 	}
-	return CostLessWith(stats)
+	return properties.CostLessWith(stats)
 }
 
 // SortElisionSelector is the optional extension of BestMemberSelector a
@@ -279,7 +280,7 @@ type SortElisionSelector interface {
 // with its ordering spine PINNED (sort eliminated). If not — or the
 // selector doesn't implement SortElisionSelector, or the spine cannot be
 // pinned — returns nil and the sort stays.
-func sortWinnerFromChild(sortExpr *expressions.LogicalSortExpression, sel BestMemberSelector, stats StatisticsProvider, visited map[*expressions.Reference]bool) expressions.RelationalExpression {
+func sortWinnerFromChild(sortExpr *expressions.LogicalSortExpression, sel BestMemberSelector, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) expressions.RelationalExpression {
 	elider, ok := sel.(SortElisionSelector)
 	if !ok {
 		return nil
@@ -318,7 +319,7 @@ func rebuildOrderedSpine(
 	sortExpr *expressions.LogicalSortExpression,
 	elider SortElisionSelector,
 	sel BestMemberSelector,
-	stats StatisticsProvider,
+	stats properties.StatisticsProvider,
 	visited map[*expressions.Reference]bool,
 	pinned map[*expressions.Reference]bool,
 ) (expressions.RelationalExpression, error) {
@@ -417,7 +418,7 @@ func planEmbedsDirectChild(plan, child plans.RecordQueryPlan) bool {
 // rebuilder as rebuildExpression but recurses through
 // extractBestPlanFromSelectorVisited to consult the selector at
 // every Reference, with cycle detection.
-func rebuildExpressionFromSelectorVisited(e expressions.RelationalExpression, sel BestMemberSelector, stats StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
+func rebuildExpressionFromSelectorVisited(e expressions.RelationalExpression, sel BestMemberSelector, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
 	if e == nil {
 		return nil, nil
 	}
@@ -438,25 +439,12 @@ func rebuildExpressionFromSelectorVisited(e expressions.RelationalExpression, se
 	return rebuildWithFreshChildren(e, freshChildren)
 }
 
-func bestFrom(members []expressions.RelationalExpression, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
-	if len(members) == 0 {
-		return nil
-	}
-	best := members[0]
-	for _, m := range members[1:] {
-		if less(m, best) {
-			best = m
-		}
-	}
-	return best
-}
-
 // rebuildExpressionVisited returns a fresh RelationalExpression of the
 // same concrete type as `e`, with each Quantifier's Reference replaced
 // by a singleton Reference holding the recursively-extracted best plan
 // of the original Reference under `stats`. The visited map provides
 // cycle detection.
-func rebuildExpressionVisited(e expressions.RelationalExpression, stats StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
+func rebuildExpressionVisited(e expressions.RelationalExpression, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
 	if e == nil {
 		return nil, nil
 	}
@@ -622,13 +610,4 @@ func isPhysicalPlan(e expressions.RelationalExpression) bool {
 	}
 	_, ok := e.(physicalPlanHolder)
 	return ok
-}
-
-func bestPhysicalFrom(members []expressions.RelationalExpression) expressions.RelationalExpression {
-	for _, m := range members {
-		if isPhysicalPlan(m) {
-			return m
-		}
-	}
-	return nil
 }

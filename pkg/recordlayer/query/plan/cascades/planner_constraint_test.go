@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -12,10 +13,10 @@ func TestConstraintMap_SetAndGet(t *testing.T) {
 	cm := NewConstraintMap()
 	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
 
-	orderings := []*RequestedOrdering{
-		NewRequestedOrdering([]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-		}, DistinctnessNotDistinct, false),
+	orderings := []*properties.RequestedOrdering{
+		properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+		}, properties.DistinctnessNotDistinct, false),
 	}
 	Set(cm, ref, RequestedOrderingConstraintKey, orderings)
 
@@ -63,11 +64,11 @@ func TestConstraintMap_DifferentRefs(t *testing.T) {
 	ref1 := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"A"}, nil))
 	ref2 := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"B"}, nil))
 
-	orderings1 := []*RequestedOrdering{PreserveOrdering()}
-	orderings2 := []*RequestedOrdering{
-		NewRequestedOrdering([]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "x", Typ: values.UnknownType}, SortOrder: RequestedSortOrderDescending},
-		}, DistinctnessDistinct, true),
+	orderings1 := []*properties.RequestedOrdering{properties.PreserveOrdering()}
+	orderings2 := []*properties.RequestedOrdering{
+		properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "x", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
+		}, properties.DistinctnessDistinct, true),
 	}
 
 	Set(cm, ref1, RequestedOrderingConstraintKey, orderings1)
@@ -98,7 +99,7 @@ func TestImplementationRuleCall_GetRequestedOrderings_WithConstraints(t *testing
 	t.Parallel()
 	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
 	cm := NewConstraintMap()
-	orderings := []*RequestedOrdering{PreserveOrdering()}
+	orderings := []*properties.RequestedOrdering{properties.PreserveOrdering()}
 	Set(cm, ref, RequestedOrderingConstraintKey, orderings)
 
 	call := &ImplementationRuleCall{
@@ -115,37 +116,37 @@ func TestImplementationRuleCall_GetRequestedOrderings_WithConstraints(t *testing
 // RequestedOrderingConstraint.combine: union with subsumption.
 func TestCombineRequestedOrderings(t *testing.T) {
 	t.Parallel()
-	partX := RequestedOrderingPart{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: RequestedSortOrderAscending}
-	partY := RequestedOrderingPart{Value: values.NewFlatFieldValue("Y", values.UnknownType), SortOrder: RequestedSortOrderAscending}
-	roX := NewRequestedOrdering([]RequestedOrderingPart{partX}, DistinctnessNotDistinct, false)
-	roXdup := NewRequestedOrdering([]RequestedOrderingPart{partX}, DistinctnessNotDistinct, false)
-	roY := NewRequestedOrdering([]RequestedOrderingPart{partY}, DistinctnessNotDistinct, false)
-	roXexh := NewRequestedOrdering([]RequestedOrderingPart{partX}, DistinctnessNotDistinct, true)
-	roXY := NewRequestedOrdering([]RequestedOrderingPart{partX, partY}, DistinctnessNotDistinct, false)
-	roXdistinct := NewRequestedOrdering([]RequestedOrderingPart{partX}, DistinctnessDistinct, false)
+	partX := properties.RequestedOrderingPart{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}
+	partY := properties.RequestedOrderingPart{Value: values.NewFlatFieldValue("Y", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}
+	roX := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{partX}, properties.DistinctnessNotDistinct, false)
+	roXdup := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{partX}, properties.DistinctnessNotDistinct, false)
+	roY := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{partY}, properties.DistinctnessNotDistinct, false)
+	roXexh := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{partX}, properties.DistinctnessNotDistinct, true)
+	roXY := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{partX, partY}, properties.DistinctnessNotDistinct, false)
+	roXdistinct := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{partX}, properties.DistinctnessDistinct, false)
 
 	// Distinct orderings union.
-	got, changed := CombineRequestedOrderings([]*RequestedOrdering{roX}, []*RequestedOrdering{roY})
+	got, changed := properties.CombineRequestedOrderings([]*properties.RequestedOrdering{roX}, []*properties.RequestedOrdering{roY})
 	if !changed || len(got) != 2 {
 		t.Fatalf("X + Y must union to 2, got %d (changed=%v)", len(got), changed)
 	}
 	// An exact duplicate is subsumed — nothing new (Java's Optional.empty).
-	got, changed = CombineRequestedOrderings([]*RequestedOrdering{roX}, []*RequestedOrdering{roXdup})
+	got, changed = properties.CombineRequestedOrderings([]*properties.RequestedOrdering{roX}, []*properties.RequestedOrdering{roXdup})
 	if changed || len(got) != 1 {
 		t.Fatalf("duplicate X must be subsumed, got %d (changed=%v)", len(got), changed)
 	}
 	// An exhaustive current subsumes a new ordering extending its prefix.
-	got, changed = CombineRequestedOrderings([]*RequestedOrdering{roXexh}, []*RequestedOrdering{roXY})
+	got, changed = properties.CombineRequestedOrderings([]*properties.RequestedOrdering{roXexh}, []*properties.RequestedOrdering{roXY})
 	if changed || len(got) != 1 {
 		t.Fatalf("exhaustive X must subsume (X,Y), got %d (changed=%v)", len(got), changed)
 	}
 	// A NON-exhaustive current does NOT prefix-subsume.
-	got, changed = CombineRequestedOrderings([]*RequestedOrdering{roX}, []*RequestedOrdering{roXY})
+	got, changed = properties.CombineRequestedOrderings([]*properties.RequestedOrdering{roX}, []*properties.RequestedOrdering{roXY})
 	if !changed || len(got) != 2 {
 		t.Fatalf("non-exhaustive X must NOT subsume (X,Y), got %d (changed=%v)", len(got), changed)
 	}
 	// Distinctness mismatch never subsumes.
-	got, changed = CombineRequestedOrderings([]*RequestedOrdering{roX}, []*RequestedOrdering{roXdistinct})
+	got, changed = properties.CombineRequestedOrderings([]*properties.RequestedOrdering{roX}, []*properties.RequestedOrdering{roXdistinct})
 	if !changed || len(got) != 2 {
 		t.Fatalf("distinctness mismatch must not subsume, got %d (changed=%v)", len(got), changed)
 	}
@@ -162,11 +163,11 @@ func TestPushConstraint_CombinesAcrossParents(t *testing.T) {
 	cm := NewConstraintMap()
 	call := &ImplementationRuleCall{Constraints: cm}
 
-	roX := NewRequestedOrdering([]RequestedOrderingPart{{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: RequestedSortOrderAscending}}, DistinctnessNotDistinct, false)
-	roY := NewRequestedOrdering([]RequestedOrderingPart{{Value: values.NewFlatFieldValue("Y", values.UnknownType), SortOrder: RequestedSortOrderDescending}}, DistinctnessNotDistinct, false)
+	roX := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}}, properties.DistinctnessNotDistinct, false)
+	roY := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("Y", values.UnknownType), SortOrder: properties.RequestedSortOrderDescending}}, properties.DistinctnessNotDistinct, false)
 
-	call.PushConstraint(childRef, []*RequestedOrdering{roX})
-	call.PushConstraint(childRef, []*RequestedOrdering{roY})
+	call.PushConstraint(childRef, []*properties.RequestedOrdering{roX})
+	call.PushConstraint(childRef, []*properties.RequestedOrdering{roY})
 
 	got, ok := Get(cm, childRef, RequestedOrderingConstraintKey)
 	if !ok || len(got) != 2 {
@@ -185,8 +186,8 @@ func TestConstraintMap_CanonicalKeys(t *testing.T) {
 	survivor.Absorb(loser)
 
 	cm := NewConstraintMap()
-	roX := NewRequestedOrdering([]RequestedOrderingPart{{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: RequestedSortOrderAscending}}, DistinctnessNotDistinct, false)
-	Set(cm, loser, RequestedOrderingConstraintKey, []*RequestedOrdering{roX})
+	roX := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}}, properties.DistinctnessNotDistinct, false)
+	Set(cm, loser, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{roX})
 	if got, ok := Get(cm, survivor, RequestedOrderingConstraintKey); !ok || len(got) != 1 {
 		t.Fatalf("constraint set via the forwarded alias must be visible via the canonical ref (ok=%v)", ok)
 	}

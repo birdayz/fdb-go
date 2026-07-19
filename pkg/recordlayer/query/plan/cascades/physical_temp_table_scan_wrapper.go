@@ -37,7 +37,7 @@ func (w *physicalTempTableScanWrapper) EqualsWithoutChildren(other expressions.R
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalTempTableScanWrapper) HashCodeWithoutChildren() uint64 {
@@ -49,15 +49,14 @@ func (w *physicalTempTableScanWrapper) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (w *physicalTempTableScanWrapper) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	return properties.Cost{
-		Cardinality: properties.LeafScanCardinality * physicalWrapperCostMultiplier,
-		CPU:         0,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalTempTableScanWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalTempTableScanWrapper) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: false}
+	return w.plan.HintOrdering()
 }
 
 func (w *physicalTempTableScanWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {

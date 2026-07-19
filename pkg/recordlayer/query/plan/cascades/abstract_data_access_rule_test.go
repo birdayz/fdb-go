@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -54,6 +55,7 @@ func (c *dataAccessTestCandidate) ToScanPlan(
 
 // testPlan is a minimal RecordQueryPlan for tests.
 type testPlan struct {
+	plans.PlanExprBase
 	name string
 	// resultType lets fixtures flow a real row layout (production match
 	// candidates always do) — the intersector's comparison-key baking
@@ -69,7 +71,7 @@ func (p *testPlan) GetResultType() values.Type {
 	return values.UnknownType
 }
 func (p *testPlan) GetChildren() []plans.RecordQueryPlan { return nil }
-func (p *testPlan) EqualsWithoutChildren(other plans.RecordQueryPlan) bool {
+func (p *testPlan) EqualsPlanWithoutChildren(other plans.RecordQueryPlan) bool {
 	o, ok := other.(*testPlan)
 	return ok && o.name == p.name
 }
@@ -204,7 +206,7 @@ func TestPrepareMatchesAndCompensations_ThreeMatches(t *testing.T) {
 	pm2 := makeDataAccessTestPartialMatch("idx2", 1, &testPlan{name: "scan2"})
 	pm3 := makeDataAccessTestPartialMatch("idx3", 2, &testPlan{name: "scan3"})
 
-	orderings := []*RequestedOrdering{PreserveOrdering()}
+	orderings := []*properties.RequestedOrdering{properties.PreserveOrdering()}
 	ctx := EmptyPlanContext()
 
 	accesses := PrepareMatchesAndCompensations(
@@ -268,7 +270,7 @@ func TestPrepareMatchesAndCompensations_SingleMatch(t *testing.T) {
 	pm := makeDataAccessTestPartialMatch("only", 5, &testPlan{name: "only_scan"})
 	accesses := PrepareMatchesAndCompensations(
 		[]PartialMatch{pm},
-		[]*RequestedOrdering{PreserveOrdering()},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		EmptyPlanContext(),
 	)
 	if len(accesses) != 1 {
@@ -292,7 +294,7 @@ func TestMaximumCoverageMatches_WrapsWithPositions(t *testing.T) {
 
 	matches := MaximumCoverageMatches(
 		[]PartialMatch{pm1, pm2, pm3},
-		[]*RequestedOrdering{PreserveOrdering()},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		EmptyPlanContext(),
 	)
 
@@ -338,7 +340,7 @@ func TestCreateScansForMatches_UsesCandidateToScanPlan(t *testing.T) {
 	// Build Vectored accesses.
 	accesses := MaximumCoverageMatches(
 		[]PartialMatch{pm1, pm2},
-		[]*RequestedOrdering{PreserveOrdering()},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		EmptyPlanContext(),
 	)
 
@@ -368,7 +370,7 @@ func TestDataAccessForMatchPartition_SingleMatch(t *testing.T) {
 	pm := makeDataAccessTestPartialMatch("idx", 2, plan)
 
 	exprs := DataAccessForMatchPartition(
-		[]*RequestedOrdering{PreserveOrdering()},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm},
 		EmptyPlanContext(),
 		nil, // no intersector for single match
@@ -392,7 +394,7 @@ func TestDataAccessForMatchPartition_NoMatches(t *testing.T) {
 	t.Parallel()
 
 	exprs := DataAccessForMatchPartition(
-		[]*RequestedOrdering{PreserveOrdering()},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		nil, // no matches
 		EmptyPlanContext(),
 		nil,
@@ -416,21 +418,21 @@ func TestDataAccessForMatchPartition_MultipleMatchesWithIntersector(t *testing.T
 
 	intersector := func(
 		accesses []Vectored[*SingleMatchedAccess],
-		orderings []*RequestedOrdering,
+		orderings []*properties.RequestedOrdering,
 	) *IntersectionResult {
 		intersectorCalled = true
 		if len(accesses) != 2 {
 			t.Fatalf("intersector received %d accesses, expected 2", len(accesses))
 		}
 		return NewIntersectionResult(
-			EmptyOrdering(),
+			properties.EmptyOrdering(),
 			NoCompensation,
 			[]expressions.RelationalExpression{intersectExpr},
 		)
 	}
 
 	exprs := DataAccessForMatchPartition(
-		[]*RequestedOrdering{PreserveOrdering()},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm1, pm2},
 		EmptyPlanContext(),
 		intersector,
@@ -468,7 +470,7 @@ func TestDataAccessForMatchPartition_MultipleMatchesNoIntersector(t *testing.T) 
 
 	// nil intersector -- should just return individual scans.
 	exprs := DataAccessForMatchPartition(
-		[]*RequestedOrdering{PreserveOrdering()},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm1, pm2},
 		EmptyPlanContext(),
 		nil,
@@ -487,13 +489,13 @@ func TestDataAccessForMatchPartition_IntersectorNoViable(t *testing.T) {
 
 	intersector := func(
 		_ []Vectored[*SingleMatchedAccess],
-		_ []*RequestedOrdering,
+		_ []*properties.RequestedOrdering,
 	) *IntersectionResult {
 		return NoViableIntersection()
 	}
 
 	exprs := DataAccessForMatchPartition(
-		[]*RequestedOrdering{PreserveOrdering()},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm1, pm2},
 		EmptyPlanContext(),
 		intersector,
@@ -538,7 +540,7 @@ func TestSatisfiesRequestedOrdering_Preserve(t *testing.T) {
 	t.Parallel()
 
 	pm := makeOrderingTestPartialMatch(nil)
-	dir := SatisfiesRequestedOrdering(pm, PreserveOrdering())
+	dir := SatisfiesRequestedOrdering(pm, properties.PreserveOrdering())
 	if dir == nil {
 		t.Fatal("PreserveOrdering should always be satisfied")
 	}
@@ -562,11 +564,11 @@ func TestSatisfiesRequestedOrdering_SingleAscending(t *testing.T) {
 	}
 	pm := makeOrderingTestPartialMatch(parts)
 
-	ro := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: fieldA, SortOrder: RequestedSortOrderAscending},
+	ro := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: fieldA, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct,
+		properties.DistinctnessNotDistinct,
 		false,
 	)
 
@@ -595,11 +597,11 @@ func TestSatisfiesRequestedOrdering_ReverseNeeded(t *testing.T) {
 	pm := makeOrderingTestPartialMatch(parts)
 
 	// Request ascending, but matched is descending → reverse scan.
-	ro := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: fieldA, SortOrder: RequestedSortOrderAscending},
+	ro := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: fieldA, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct,
+		properties.DistinctnessNotDistinct,
 		false,
 	)
 
@@ -644,11 +646,11 @@ func TestSatisfiesRequestedOrdering_EqualitySkip(t *testing.T) {
 
 	// Request ordering on b only — a is equality-bound so it is
 	// skipped during satisfaction.
-	ro := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: fieldB, SortOrder: RequestedSortOrderAscending},
+	ro := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: fieldB, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct,
+		properties.DistinctnessNotDistinct,
 		false,
 	)
 
@@ -678,11 +680,11 @@ func TestSatisfiesRequestedOrdering_NoMatch(t *testing.T) {
 	pm := makeOrderingTestPartialMatch(parts)
 
 	// Request ordering on field "b", which is not in the matched parts.
-	ro := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: fieldB, SortOrder: RequestedSortOrderAscending},
+	ro := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: fieldB, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct,
+		properties.DistinctnessNotDistinct,
 		false,
 	)
 
@@ -709,23 +711,23 @@ func TestSatisfiesAnyRequestedOrderings_MixedResults(t *testing.T) {
 	pm := makeOrderingTestPartialMatch(parts)
 
 	// First ordering: ascending on "a" — should be satisfied (forward).
-	roGood := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: fieldA, SortOrder: RequestedSortOrderAscending},
+	roGood := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: fieldA, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct,
+		properties.DistinctnessNotDistinct,
 		false,
 	)
 	// Second ordering: ascending on "b" — should NOT be satisfied.
-	roBad := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: fieldB, SortOrder: RequestedSortOrderAscending},
+	roBad := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: fieldB, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct,
+		properties.DistinctnessNotDistinct,
 		false,
 	)
 
-	satisfied, dir := SatisfiesAnyRequestedOrderings(pm, []*RequestedOrdering{roGood, roBad})
+	satisfied, dir := SatisfiesAnyRequestedOrderings(pm, []*properties.RequestedOrdering{roGood, roBad})
 	if dir == nil {
 		t.Fatal("at least one ordering should be satisfied")
 	}
@@ -768,4 +770,13 @@ func TestScanPlanExpression_EqualsWithoutChildren(t *testing.T) {
 	if e1.EqualsWithoutChildren(&stubRelExpr{name: "x"}, nil) {
 		t.Fatal("different expression types should not be equal")
 	}
+}
+
+func (t *testPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*testPlan)
+	return ok && t.EqualsPlanWithoutChildren(o)
+}
+
+func (t *testPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return t
 }

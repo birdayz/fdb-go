@@ -58,7 +58,7 @@ func (w *physicalRecursiveLevelUnionWrapper) EqualsWithoutChildren(other express
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalRecursiveLevelUnionWrapper) HashCodeWithoutChildren() uint64 {
@@ -73,28 +73,14 @@ func (w *physicalRecursiveLevelUnionWrapper) HashCodeWithoutChildren() uint64 {
 // HintCost: level-order traversal is O(initial + levels*recursive)
 // but levels are unknown at plan time. Use initial×recursive as a
 // pessimistic bound, same as the DFS wrapper.
-func (w *physicalRecursiveLevelUnionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) < 2 {
-		return properties.Cost{}
-	}
-	initCard := child[0].Cardinality
-	recCard := child[1].Cardinality
-	if initCard == 0 {
-		initCard = properties.LeafScanCardinality
-	}
-	if recCard == 0 {
-		recCard = properties.LeafScanCardinality
-	}
-	outCard := initCard * recCard * physicalWrapperCostMultiplier
-	cpu := (child[0].CPU + initCard*child[1].CPU) * physicalWrapperCostMultiplier
-	return properties.Cost{
-		Cardinality: outCard,
-		CPU:         cpu,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalRecursiveLevelUnionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalRecursiveLevelUnionWrapper) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: false}
+	return w.plan.HintOrdering()
 }
 
 func (w *physicalRecursiveLevelUnionWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {

@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -29,7 +30,7 @@ func (r *ImplementTempTableInsertRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	winner := getWinnerForOrdering(innerRef, PreserveOrdering(), call.CostModel())
+	winner := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
 	if winner == nil {
 		return
 	}

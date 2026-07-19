@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -82,7 +83,7 @@ func (r *PushRequestedOrderingThroughProjectionRule) OnMatch(call *Implementatio
 	alias := proj.GetInner().GetAlias()
 
 	// Translate each ordering through the result value.
-	var translated []*RequestedOrdering
+	var translated []*properties.RequestedOrdering
 	for _, reqOrd := range orderings {
 		pushed := reqOrd.PushDownThroughValue(resultValue, alias)
 		// PushDownThroughValue drops parts it cannot translate. If any

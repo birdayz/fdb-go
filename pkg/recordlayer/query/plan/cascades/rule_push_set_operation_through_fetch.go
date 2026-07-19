@@ -243,9 +243,10 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 		if fw == nil {
 			continue // residual leg — stays above the pushed fetch
 		}
-		// Resolve the fetch's inner from its quantifier, not from the
-		// fetch PLAN: push rules build nil-inner fetch shells whose real
-		// child lives in the wrapper quantifier (relinked at extraction).
+		// Resolve the fetch's inner from its quantifier, not from the fetch
+		// PLAN: the quantifier ranges over the child GROUP, so this sees the
+		// alternatives the group holds rather than only the one expression the
+		// wrapper happened to bake at build time.
 		innerExpr := findPhysicalExpr(fw.innerQuant.GetRangesOver())
 		if innerExpr == nil {
 			continue
@@ -379,8 +380,8 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 
 	// The merged fetch's output is the original set-op's output — full
 	// records (Java: scalarOf(setOperationPlan.getResultType())); when
-	// the matched plan doesn't carry a type (nil-children shells), any
-	// pushable leg's fetch produces exactly that for homogeneous legs.
+	// the matched plan doesn't carry a type, any pushable leg's fetch
+	// produces exactly that for homogeneous legs.
 	resultType := p.resultType
 	if resultType == nil || resultType == values.UnknownType {
 		resultType = pushable[0].fw.plan.GetResultType()

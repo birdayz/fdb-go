@@ -24,7 +24,7 @@ import (
 // none is stamped yet). less is the cost comparator; pass a stats-aware
 // comparator (call.CostModel()) so join sub-product winners are chosen by
 // real cardinality rather than the default-stats tie (RFC-041).
-func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+func getWinnerForOrdering(ref *expressions.Reference, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	if ref == nil {
 		return nil
 	}
@@ -55,7 +55,7 @@ func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrderin
 // member does. The comparator is wrapped with the deterministic plan-hash
 // tie-break so the chosen member is unique — cost ties otherwise resolve
 // by member iteration order, flipping the plan across plannings.
-func bestSatisfyingMember(ref *expressions.Reference, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+func bestSatisfyingMember(ref *expressions.Reference, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	if ref == nil || ordering == nil {
 		return nil
 	}
@@ -87,11 +87,11 @@ func bestSatisfyingMember(ref *expressions.Reference, ordering *RequestedOrderin
 // extraction-side rebuildOrderedSpine; this is the RULE-time twin for
 // yields that drop a sort during PLANNING (Java bakes concrete children at
 // rule time via memoizePlan, so it has no unpinned window at all).
-func pinOrderedSpine(expr expressions.RelationalExpression, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+func pinOrderedSpine(expr expressions.RelationalExpression, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	return pinOrderedSpineDepth(expr, ordering, less, 0)
 }
 
-func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool, depth int) expressions.RelationalExpression {
+func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool, depth int) expressions.RelationalExpression {
 	d, ok := expr.(orderingDelegator)
 	if !ok {
 		return expr
@@ -99,7 +99,7 @@ func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *Reque
 	if depth >= maxOrderingDelegationDepth {
 		return nil
 	}
-	srcRef := d.orderingSourceRef()
+	srcRef := d.OrderingSourceRef()
 	if srcRef == nil {
 		return nil
 	}
@@ -111,7 +111,7 @@ func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *Reque
 	if inner == nil {
 		return nil
 	}
-	rebuilder, ok := expr.(properties.WithChildren)
+	rebuilder, ok := expr.(WithChildren)
 	if !ok {
 		return nil
 	}
@@ -188,7 +188,7 @@ func lessWithHashTieBreak(less func(a, b expressions.RelationalExpression) bool)
 }
 
 // findBestValidPhysicalExpr returns the cheapest physical member of ref
-// under `less`, excluding nil-inner Fetch shells.
+// under `less`.
 func findBestValidPhysicalExpr(ref *expressions.Reference, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	if less == nil {
 		less = PlanningCostModelLess
@@ -196,9 +196,6 @@ func findBestValidPhysicalExpr(ref *expressions.Reference, less func(a, b expres
 	var best expressions.RelationalExpression
 	for _, m := range ref.AllMembers() {
 		if _, ok := m.(physicalPlanExpression); !ok {
-			continue
-		}
-		if isNilInnerFetch(m) {
 			continue
 		}
 		if best == nil || less(m, best) {
@@ -210,7 +207,7 @@ func findBestValidPhysicalExpr(ref *expressions.Reference, less func(a, b expres
 
 // getWinnerPlan returns the RecordQueryPlan from the winner for the
 // given ordering, or nil if no physical plan exists.
-func getWinnerPlan(ref *expressions.Reference, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) plans.RecordQueryPlan {
+func getWinnerPlan(ref *expressions.Reference, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) plans.RecordQueryPlan {
 	winner := getWinnerForOrdering(ref, ordering, less)
 	if winner == nil {
 		return nil
@@ -232,12 +229,12 @@ func getWinnerPlan(ref *expressions.Reference, ordering *RequestedOrdering, less
 // under-claims (the first known ordering may be a different ordering
 // than the one requested while a later member provides it).
 // Contract: a delegator is a SINGLE-quantifier wrapper (its one child IS
-// the ordering source) implementing properties.WithChildren for the
+// the ordering source) implementing WithChildren for the
 // relink. A multi-quantifier delegator would need per-quantifier routing
 // in pinOrderedSpine / rebuildOrderedSpine, which conservatively DECLINE
 // (sort kept) on anything else — implement the routing before adding one.
 type orderingDelegator interface {
-	orderingSourceRef() *expressions.Reference
+	OrderingSourceRef() *expressions.Reference
 }
 
 // maxOrderingDelegationDepth bounds the delegator chain walk. Physical
@@ -247,24 +244,19 @@ type orderingDelegator interface {
 const maxOrderingDelegationDepth = 64
 
 // memberSatisfiesOrdering reports whether a physical member's derived rich
-// ordering satisfies the requested ordering. Non-physical members and
-// nil-inner Fetch shells never satisfy (a Fetch shell's inner is resolved
-// only at extraction; costed without it, it ranks artificially cheap).
-// Order-preserving wrappers resolve through their source group (see
+// ordering satisfies the requested ordering. Non-physical members never
+// satisfy. Order-preserving wrappers resolve through their source group (see
 // orderingDelegator).
-func memberSatisfiesOrdering(m expressions.RelationalExpression, requested *RequestedOrdering) bool {
+func memberSatisfiesOrdering(m expressions.RelationalExpression, requested *properties.RequestedOrdering) bool {
 	return memberSatisfiesOrderingDepth(m, requested, 0)
 }
 
-func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested *RequestedOrdering, depth int) bool {
+func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested *properties.RequestedOrdering, depth int) bool {
 	// Physicality gates FIRST: a preserve request must not admit a logical
-	// member or a nil-inner Fetch shell either — bestSatisfyingMember
-	// promises "cheapest PHYSICAL member" unconditionally.
+	// member either — bestSatisfyingMember promises "cheapest PHYSICAL
+	// member" unconditionally.
 	pe, ok := m.(physicalPlanExpression)
 	if !ok {
-		return false
-	}
-	if isNilInnerFetch(m) {
 		return false
 	}
 	if requested == nil || requested.IsPreserve() {
@@ -274,7 +266,7 @@ func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested 
 		if depth >= maxOrderingDelegationDepth {
 			return false
 		}
-		srcRef := d.orderingSourceRef()
+		srcRef := d.OrderingSourceRef()
 		if srcRef == nil {
 			return false
 		}
@@ -291,3 +283,19 @@ func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested 
 	}
 	return ro.Satisfies(requested)
 }
+
+// Compile-time proof that the delegator PLANS answer OrderingSourceRef, not
+// just their physical wrappers (RFC-183 P5). The interface is satisfied from
+// package plans only because the method is exported — an unexported method
+// would confine the contract to this package.
+var (
+	_ orderingDelegator = (*plans.RecordQueryFilterPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryPredicatesFilterPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryTypeFilterPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryDistinctPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryProjectionPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryMapPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryLimitPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryDefaultOnEmptyPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryFetchFromPartialRecordPlan)(nil)
+)

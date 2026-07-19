@@ -4143,6 +4143,50 @@ order_by_pk_full 3.29s, scan_all_narrow 3.31s / _wide 3.47s, sparse_filter 2.94s
 needles/in_list ~10ms. The ~85% planner task-count reduction (rule index) shows up
 as faster end-to-end planning; no regression anywhere.**
 
+**2026-07-19 (RFC-183 — fully-linked plans at rule time, memo-linkage repairs):**
+baseline master vs branch, BOTH re-run on a quiet machine after the first
+comparison proved confounded. Aggregate and join paths improved substantially;
+everything else within +/-5% noise:
+
+    SUM by status (aggregate index)   24.28ms -> 5.51ms   -77%
+    GROUP BY status                   12.62ms -> 6.13ms   -51%
+    GROUP BY status COUNT only        10.40ms -> 5.08ms   -51%
+    JOIN 10 orders x customers        26.58ms -> 14.18ms  -47%
+    GROUP BY customer HAVING         183.7ms -> 130.3ms   -29%
+    PK lookups / scans / ORDER BY     within +/-5%
+
+**MECHANISM RETRACTED — the speedup is NOT attributable to this branch.**
+
+I originally recorded a mechanism here: AggregateDataAccessRule built its
+two-leg multi-intersection with NIL quantifiers, so the memo could not cost the
+aggregate-index legs, and that was "exactly the surface that moved". Both
+reviewers independently refused it on the same ground: a costing fix changes
+plan CHOICE, so if the winning plan is unchanged, no costing difference can
+make execution 4x faster — and this branch reports ZERO plan drift. The two
+claims were in tension and I did not notice.
+
+Checked instead of argued. EXPLAIN, master vs branch, using the stress schema
+INCLUDING its three aggregate indexes (my first attempt omitted them and so
+compared the wrong plans entirely):
+
+    SUM(amount) GROUP BY status   AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS)
+    COUNT(*)    GROUP BY status   AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS)
+    SUM ... GROUP BY customer_id  PredicatesFilter(AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, ...))
+
+BYTE-IDENTICAL on both sides. The plans do not change, so the latency delta is
+environment — caching, container warmth, run-to-run variance — not this work.
+A second branch sample reproduces ~5.5ms for SUM, so the BRANCH side is stable;
+there is exactly one master sample and it is the outlier.
+
+WHAT THIS COMPARISON ACTUALLY ESTABLISHES: no regression. Nothing here supports
+a performance claim, and the 2-4x table above must not be cited as one.
+
+The FIRST attempt at this comparison showed a uniform 30-90% SLOWDOWN across
+every query including full scans. That was pure machine load — the branch run
+overlapped a full Bazel suite with FDB containers. Load average was still 11.75
+when it looked "done"; instantaneous CPU idle (90%+) is the signal that
+actually matters. Discarded rather than reported.
+
 **2026-07-05 (RFC-173 item-1 commit 1 + fix round, PR #481 — dup-alias binding-id
 mint + binding-keyed seed, dark):** baseline master `8c179a025` 161.68s total vs
 branch `7f0f6848e` 165.14s (noise; branch equal-or-faster per metric: full scans
@@ -5329,3 +5373,127 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       columns both hit it). Single-source nested bodies work (pinned).
       Make the merged-row keys carry the qualified names the projection
       mints, or decline the shape at plan time.
+
+### [ ] N-way projected-EXISTS emits plans that cannot execute (RFC-183 §15 finding)
+
+`ImplementNestedLoopJoinRule.implementNWayJoinWithExistential` — the N-WAY FLAT
+EXISTENTIAL arm — produces plans that die at execution. Every query reaching it
+fails with:
+
+    correlated FieldValue "V" (correlation "A") evaluated against an
+    unbound/unrecognized context (*RowEvalContext (multi-leg row cannot serve a
+    source-relative ordinal)) — no frontier row resolved (planner/executor bug)
+
+Reproducer (a PROJECTED exists over >2 ForEach legs; a WHERE-EXISTS does NOT
+reach this arm — it needs N>2 ForEach quantifiers plus a trailing Existential in
+one flattened Select):
+
+    SELECT a.v, EXISTS (SELECT 1 FROM d WHERE d.id = a.id)
+    FROM a, b, c WHERE a.id = b.id AND b.id = c.id
+
+PRE-EXISTING, not introduced by RFC-183: confirmed by reverting that RFC's memo
+fix and re-running — identical failure. It is also why no corpus query reaches
+the arm (instrumenting the yield over all 2407 queries counts ZERO firings):
+the feature has never worked, so nobody could pin a scenario for it.
+
+RFC-183 SHIPS NO REGRESSION HERE — proven by plan parity, recorded because the
+commit titled "the N-way EXISTS local fix converts a crash into WRONG ROWS —
+do not ship" is easy to misread as "the branch ships wrong rows". It does not:
+that commit REVERTED the fix and changed only this TODO. The executed plan for
+the reproducer is BYTE-IDENTICAL on master and on the RFC-183 branch —
+
+    FlatMap(outer=PredicatesFilter(NestedLoopJoin(INNER,
+      NestedLoopJoin(INNER, Scan(NA), Scan(NB)), Scan(NC)), [2 preds]),
+      inner=FirstOrDefault(PredicatesFilter(Scan(ND), [1 preds])))
+
+so the branch crashes exactly where master crashes (correct-or-loud), and
+introduces NO silent wrong rows. The memo repoint changes costing/linkage, not
+the extracted plan. Do NOT block RFC-183's merge on this bug, and do NOT
+"resolve" it by applying the reverted `flatMapResult = rebased` — that is the
+change that produces wrong rows.
+
+Related but SEPARATE, already fixed on the RFC-183 branch: the same arm was
+costing the whole N-way chain as `Scan(A)` — a memo-linkage bug. Pinned by
+`TestNWayProjectedExists_OuterQuantifierMatchesExecutedPlan`
+(pkg/relational/core/embedded). That fix does NOT make these plans executable.
+
+ALREADY TRIED AND REVERTED — TWICE, and the second attempt proved the fix is
+ACTIVELY HARMFUL, not merely insufficient:
+
+Rebasing the projected result value through `rebaseOuterLegValueOrdinal` (the
+same treatment `joinPreds`/`existPreds` get, and the obvious candidate since
+the RV is passed unrebased at rule_implement_nested_loop_join.go's
+"passed through unrebased"). DIAGNOSED PROPERLY the second time — the current
+code computes the rebase and then DISCARDS it (`flatMapResult = projected`, not
+the rebased value), and the rebase genuinely works: `A.V#1` (source-relative
+ordinal) -> `q$N.V#3` (merged-relative). Applying `flatMapResult = rebased`
+makes the projection RESOLVE, and a single-row query then EXECUTES correctly
+against real FDB (`[10, true]`).
+
+But a 3-row query then returns WRONG ROWS: `has_d` is TRUE for every row,
+including id=2 which is absent from `nd` (correct is false). So the local fix
+converts a LOUD CRASH into a SILENT WRONG-ROWS bug — the projection resolves
+but the EXISTS correlation over the merged row evaluates wrong. That is
+strictly worse (CLAUDE.md: "wrong rows green costs months"), which is why it is
+reverted and must NOT be applied piecemeal.
+
+WHAT THIS PROVES: the projection, the EXISTS correlation, and the ORDER BY key
+are COUPLED through the merged-row name model. The three failure surfaces are
+one defect:
+  1. projection `a.v` — source-relative ordinal over the merged row (rebase
+     makes it resolve but see above);
+  2. the EXISTS `has_d` — evaluates wrong (always true) once the row is merged;
+  3. ORDER BY `a.v` — the InMemorySort key stays source-relative above the
+     projected FlatMap output (rule_implement_in_memory_sort.go bakes
+     `sk.Value` as-is).
+A local rebase touches only (1) and breaks (2). The fix must make the merged
+multi-leg row present a coherent OUTPUT name model that all three resolve
+against — which is exactly the qualified/bare seam, and a workstream, not a
+rule tweak.
+
+No yamsql scenario is pinned: the corpus is a regression net; pinning the error
+string promotes a defect to expected behaviour, and pinning the wrong rows is
+worse. Add the scenario as part of the real fix.
+
+LIKELY THE SAME ROOT CAUSE AS THE COMMA-JOIN-OVER-NESTED-SHADOWING-CTE ENTRY
+above ("P.N vs merged-row keys [P.M N Q.M] — the qualified/bare name-model
+seam, RFC-173 surface"). Dumping the FlatMap result value for the reproducer
+gives
+
+    RecordConstructorValue{Fields: [{Name: "A.V", ...}, {Name: "HAS_D", ...}]}
+
+i.e. a QUALIFIED field name ("A.V") evaluated against a merged multi-leg row —
+exactly the seam that entry describes. Treat the two as one defect until
+proven otherwise; fixing the name model on merged rows plausibly closes both.
+The guard that fires is values.go:902, keyed on
+RootIsLegRelativeUnpinned() && rowIsMultiLeg() — deliberate correct-or-loud,
+not the bug itself.
+
+Decide first whether the arm should be FIXED or REMOVED — it has never
+produced a working plan, so removing it and declining the shape at plan time
+(correct-or-loud) is a legitimate outcome rather than a retreat.
+
+### [ ] RFC-183 residual: 32 no-quantifier memo edges (RFC-184 W2/W3)
+
+RFC-183 drove genuine unreachable memo edges (a plan child its quantifier's
+group cannot produce) from 158 to 0. It left 32 edges of a DIFFERENT class:
+`scanPlanExpression`, the leaf adapter that reports no quantifiers while
+wrapping a `TypeFilter(Scan)` that has children — so the memo models no edge
+for that child. NOT a wrong-plan or wrong-rows defect today; the memo simply
+does not see those children.
+
+Ratcheted at a hard baseline of 32 by
+`TestCorpusPlanReachability` (pkg/relational/conformance/explaindiff), which
+FAILS if the count rises — so the class cannot grow unobserved.
+
+Closing it is RFC-184's W2/W3 (`rfcs/184-plan-identity-structural-elimination.md`,
+now on master), NOT a memoization change. Proven the hard way: retiring the
+adapter for the bare plan drove the count to 0 but drifted 57 corpus queries /
+49 shape flips — a point lookup became a full scan — because the adapter
+supplies scan-comparison correlations and ordering/cost properties the bare
+`PlanExprBase` does not. Plans must carry those properties first, verified
+property-by-property. The inert half (GetRecordQueryPlan on all 41 plan types)
+is already on the RFC-183 branch.
+
+Do NOT "fix" this by re-retiring the adapter without the property work — that
+is the change that caused the 49 shape flips.

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -25,13 +26,13 @@ func TestConstraintPropagation_DistinctUnionPushesToLegs(t *testing.T) {
 	rootRef := expressions.InitialOf(distinct)
 
 	cm := NewConstraintMap()
-	reqOrdering := NewRequestedOrdering([]RequestedOrderingPart{
+	reqOrdering := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{
 			Value:     &values.FieldValue{Field: "id", Typ: values.UnknownType},
-			SortOrder: RequestedSortOrderAscending,
+			SortOrder: properties.RequestedSortOrderAscending,
 		},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, rootRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrdering})
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, rootRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrdering})
 
 	for _, rule := range DefaultImplementationRules() {
 		FireImplementationRule(rule, rootRef, cm)

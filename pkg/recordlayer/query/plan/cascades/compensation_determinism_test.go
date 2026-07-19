@@ -144,14 +144,14 @@ func TestBestSatisfyingMember_WideOrderingsExact(t *testing.T) {
 	provider := newPhysicalInMemorySortWrapper(mk("I"), expressions.ForEachQuantifier(scanRef))
 	ref := expressions.InitialOf(provider)
 
-	req := func(ninth string) *RequestedOrdering {
-		parts := make([]RequestedOrderingPart, 9)
+	req := func(ninth string) *properties.RequestedOrdering {
+		parts := make([]properties.RequestedOrderingPart, 9)
 		for i := 0; i < 8; i++ {
 			f := fmt.Sprintf("C%d", i)
-			parts[i] = RequestedOrderingPart{Value: values.NewFlatFieldValue(f, values.UnknownType), SortOrder: RequestedSortOrderAscending}
+			parts[i] = properties.RequestedOrderingPart{Value: values.NewFlatFieldValue(f, values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}
 		}
-		parts[8] = RequestedOrderingPart{Value: values.NewFlatFieldValue(ninth, values.UnknownType), SortOrder: RequestedSortOrderAscending}
-		return NewRequestedOrdering(parts, DistinctnessPreserveDistinctness, false)
+		parts[8] = properties.RequestedOrderingPart{Value: values.NewFlatFieldValue(ninth, values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}
+		return properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false)
 	}
 
 	// Same first-8 prefix, DIFFERENT 9th column: never satisfied.

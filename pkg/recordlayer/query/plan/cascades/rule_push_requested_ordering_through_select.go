@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // PushRequestedOrderingThroughSelectRule is a PLANNING-phase
@@ -62,10 +63,10 @@ func (r *PushRequestedOrderingThroughSelectRule) OnMatch(call *ImplementationRul
 	// but we still proceed so that an empty push lands on the child.
 
 	resultValue := sel.GetResultValue()
-	var toBePushed []*RequestedOrdering
+	var toBePushed []*properties.RequestedOrdering
 	for _, o := range orderings {
 		if o.IsPreserve() {
-			toBePushed = append(toBePushed, PreserveOrdering())
+			toBePushed = append(toBePushed, properties.PreserveOrdering())
 		} else {
 			toBePushed = append(toBePushed, o.PushDownThroughValue(resultValue, innerQuantifier.GetAlias()))
 		}

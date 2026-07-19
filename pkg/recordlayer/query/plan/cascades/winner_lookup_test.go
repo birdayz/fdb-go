@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -27,7 +28,7 @@ func TestGetWinnerForOrdering_PreserveReturnsNoPropsWinner(t *testing.T) {
 	ref.SetWinner(physExpr)
 
 	// getWinnerForOrdering(PRESERVE) should return the stamped winner
-	winner := getWinnerForOrdering(ref, PreserveOrdering(), nil)
+	winner := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering(PRESERVE) returned nil")
 	}
@@ -46,7 +47,7 @@ func TestGetWinnerForOrdering_FallbackToFindBestWhenNoWinner(t *testing.T) {
 	FireExpressionRule(scanRule, ref)
 
 	// No winner stamped — getWinnerForOrdering should fall back to findBestValidPhysicalExpr
-	winner := getWinnerForOrdering(ref, PreserveOrdering(), nil)
+	winner := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering(PRESERVE) returned nil (fallback should work)")
 	}
@@ -76,10 +77,10 @@ func TestGetWinnerForOrdering_OrderingLookup(t *testing.T) {
 	ref.Insert(sorted)
 
 	// Look up by RequestedOrdering on the same column
-	parts := []RequestedOrderingPart{
-		{Value: values.NewFlatFieldValue("NAME", values.UnknownType), SortOrder: RequestedSortOrderAscending},
+	parts := []properties.RequestedOrderingPart{
+		{Value: values.NewFlatFieldValue("NAME", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending},
 	}
-	reqOrd := NewRequestedOrdering(parts, DistinctnessPreserveDistinctness, false)
+	reqOrd := properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false)
 
 	winner := getWinnerForOrdering(ref, reqOrd, nil)
 	if winner == nil {
@@ -129,32 +130,32 @@ func TestBestSatisfyingMember_CounterflowNullsGate(t *testing.T) {
 	natural := sortedMemberWithNulls(t, []string{"S"}, []bool{true})      // ASC NULLS FIRST (natural)
 	counterflow := sortedMemberWithNulls(t, []string{"S"}, []bool{false}) // ASC NULLS LAST
 
-	reqOn := func(so RequestedSortOrder) *RequestedOrdering {
-		return NewRequestedOrdering(
-			[]RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: so}},
-			DistinctnessPreserveDistinctness, false)
+	reqOn := func(so properties.RequestedSortOrder) *properties.RequestedOrdering {
+		return properties.NewRequestedOrdering(
+			[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: so}},
+			properties.DistinctnessPreserveDistinctness, false)
 	}
 
 	refNatural := expressions.InitialOf(natural)
-	if w := bestSatisfyingMember(refNatural, reqOn(RequestedSortOrderAscendingNullsLast), nil); w != nil {
+	if w := bestSatisfyingMember(refNatural, reqOn(properties.RequestedSortOrderAscendingNullsLast), nil); w != nil {
 		t.Fatalf("ASC NULLS LAST must not be satisfied by a natural-ASC provider; got %T", w)
 	}
-	if w := bestSatisfyingMember(refNatural, reqOn(RequestedSortOrderAscending), nil); w != natural {
+	if w := bestSatisfyingMember(refNatural, reqOn(properties.RequestedSortOrderAscending), nil); w != natural {
 		t.Fatalf("natural ASC request should be satisfied by the natural-ASC provider; got %T", w)
 	}
 
 	refCounter := expressions.InitialOf(counterflow)
-	if w := bestSatisfyingMember(refCounter, reqOn(RequestedSortOrderAscending), nil); w != nil {
+	if w := bestSatisfyingMember(refCounter, reqOn(properties.RequestedSortOrderAscending), nil); w != nil {
 		t.Fatalf("natural ASC must not be satisfied by an ASC-NULLS-LAST provider; got %T", w)
 	}
-	if w := bestSatisfyingMember(refCounter, reqOn(RequestedSortOrderAscendingNullsLast), nil); w != counterflow {
+	if w := bestSatisfyingMember(refCounter, reqOn(properties.RequestedSortOrderAscendingNullsLast), nil); w != counterflow {
 		t.Fatalf("ASC NULLS LAST request should be satisfied by the ASC-NULLS-LAST provider; got %T", w)
 	}
 
 	// getWinnerForOrdering falls back to the cheapest plan when nothing
 	// satisfies — it must not return the counterflow-mismatched member AS
 	// the satisfying winner, but it still returns a plan (the sort stays).
-	if w := getWinnerForOrdering(refNatural, reqOn(RequestedSortOrderAscendingNullsLast), nil); w != natural {
+	if w := getWinnerForOrdering(refNatural, reqOn(properties.RequestedSortOrderAscendingNullsLast), nil); w != natural {
 		t.Fatalf("fallback should return the cheapest member, got %T", w)
 	}
 }
@@ -196,7 +197,7 @@ func TestFindPhysicalPlanVsFindBestPhysicalExpr_InsertionOrderMatters(t *testing
 	t.Logf("findBestValidPhysicalExpr returned: %v (type %T)", best, best)
 
 	// Test getWinnerForOrdering with no winner stamped
-	winner := getWinnerForOrdering(ref, PreserveOrdering(), nil)
+	winner := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering returned nil")
 	}
@@ -269,7 +270,7 @@ func TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical(t *testing.T) {
 	}
 
 	// Verify getWinnerForOrdering(PRESERVE) finds something (no winners stamped)
-	winner := getWinnerForOrdering(ref, PreserveOrdering(), nil)
+	winner := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering(PRESERVE) returned nil — this is the bug")
 	}
@@ -351,9 +352,9 @@ func TestPinOrderedSpine(t *testing.T) {
 		innerQuant: expressions.ForEachQuantifier(srcRef),
 	}
 
-	reqS := NewRequestedOrdering(
-		[]RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: RequestedSortOrderAscending}},
-		DistinctnessPreserveDistinctness, false)
+	reqS := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},
+		properties.DistinctnessPreserveDistinctness, false)
 
 	pinned := pinOrderedSpine(wrapper, reqS, nil)
 	if pinned == nil {
@@ -417,9 +418,9 @@ func TestPinOrderedSpine_DeclinesWhenRelinkRefused(t *testing.T) {
 		innerQuant: expressions.ForEachQuantifier(srcRef),
 	}
 
-	reqS := NewRequestedOrdering(
-		[]RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: RequestedSortOrderAscending}},
-		DistinctnessPreserveDistinctness, false)
+	reqS := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},
+		properties.DistinctnessPreserveDistinctness, false)
 
 	if got := pinOrderedSpine(wrapper, reqS, nil); got != nil {
 		gotPE, _ := got.(physicalPlanExpression)

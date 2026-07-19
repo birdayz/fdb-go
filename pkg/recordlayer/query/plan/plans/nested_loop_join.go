@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -20,9 +21,17 @@ import (
 // `com.apple.foundationdb.record.query.plan.plans.RecordQueryFlatMapPlan`
 // which is the underlying implementation of nested-loop joins in the
 // Record Layer.
+//
+// The two legs are stored ONCE, as Quantifiers over References — Java's shape
+// (`RecordQueryFlatMapPlan`'s outer/inner `Quantifier.Physical`). The raw
+// `outer`/`inner` pointers they replace were a second storage location for the
+// same edges. They stay two separately-named fields rather than a slice
+// because the accessors and the join predicates address them by ROLE — the
+// outer is the driving side — not by position. RFC-183 P5 step 2.
 type RecordQueryNestedLoopJoinPlan struct {
-	outer       RecordQueryPlan
-	inner       RecordQueryPlan
+	PlanExprBase
+	outerQ      expressions.Quantifier
+	innerQ      expressions.Quantifier
 	predicates  []predicates.QueryPredicate
 	joinType    JoinType
 	outerAlias  string
@@ -82,8 +91,8 @@ func NewRecordQueryNestedLoopJoinPlan(
 	preds := make([]predicates.QueryPredicate, len(joinPredicates))
 	copy(preds, joinPredicates)
 	return &RecordQueryNestedLoopJoinPlan{
-		outer:       outer,
-		inner:       inner,
+		outerQ:      QuantifierOverPlan(outer),
+		innerQ:      QuantifierOverPlan(inner),
 		predicates:  preds,
 		joinType:    joinType,
 		outerAlias:  outerAlias,
@@ -94,22 +103,55 @@ func NewRecordQueryNestedLoopJoinPlan(
 
 func (p *RecordQueryNestedLoopJoinPlan) GetResultType() values.Type { return values.UnknownType }
 
+// GetChildren returns the outer leg then the inner leg, dereferenced through
+// the quantifiers. The pair is always two entries wide — a nil leg stays a nil
+// entry rather than shrinking the arity.
 func (p *RecordQueryNestedLoopJoinPlan) GetChildren() []RecordQueryPlan {
-	return []RecordQueryPlan{p.outer, p.inner}
+	return []RecordQueryPlan{p.GetOuter(), p.GetInner()}
 }
 
-func (p *RecordQueryNestedLoopJoinPlan) GetOuter() RecordQueryPlan    { return p.outer }
-func (p *RecordQueryNestedLoopJoinPlan) GetInner() RecordQueryPlan    { return p.inner }
-func (p *RecordQueryNestedLoopJoinPlan) GetJoinType() JoinType        { return p.joinType }
-func (p *RecordQueryNestedLoopJoinPlan) GetOuterAlias() string        { return p.outerAlias }
-func (p *RecordQueryNestedLoopJoinPlan) GetInnerAlias() string        { return p.innerAlias }
-func (p *RecordQueryNestedLoopJoinPlan) GetResultValue() values.Value { return p.resultValue }
+// GetQuantifiers reports the real leg quantifiers in GetChildren order
+// (outer, inner), overriding PlanExprBase's none. That order is what
+// WithQuantifiers indexes into.
+func (p *RecordQueryNestedLoopJoinPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.outerQ.GetRangesOver() == nil || p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.outerQ, p.innerQ}
+}
+
+// WithQuantifiers returns a copy ranging over the given leg quantifiers, in
+// GetQuantifiers order. The receiver is never mutated, which is what keeps a
+// memoized plan safe to share.
+func (p *RecordQueryNestedLoopJoinPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 2 {
+		return p
+	}
+	cp := *p
+	cp.outerQ = qs[0]
+	cp.innerQ = qs[1]
+	return &cp
+}
+
+func (p *RecordQueryNestedLoopJoinPlan) GetOuter() RecordQueryPlan {
+	return planFromQuantifier(p.outerQ)
+}
+
+func (p *RecordQueryNestedLoopJoinPlan) GetInner() RecordQueryPlan {
+	return planFromQuantifier(p.innerQ)
+}
+func (p *RecordQueryNestedLoopJoinPlan) GetJoinType() JoinType { return p.joinType }
+func (p *RecordQueryNestedLoopJoinPlan) GetOuterAlias() string { return p.outerAlias }
+func (p *RecordQueryNestedLoopJoinPlan) GetInnerAlias() string { return p.innerAlias }
+func (p *RecordQueryNestedLoopJoinPlan) GetResultValue() values.Value {
+	return p.resultValue
+}
 
 func (p *RecordQueryNestedLoopJoinPlan) GetPredicates() []predicates.QueryPredicate {
 	return p.predicates
 }
 
-func (p *RecordQueryNestedLoopJoinPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryNestedLoopJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryNestedLoopJoinPlan)
 	if !ok {
 		return false
@@ -163,15 +205,41 @@ func (p *RecordQueryNestedLoopJoinPlan) Explain() string {
 		sb.WriteString(fmt.Sprintf(", [%d preds]", len(p.predicates)))
 	}
 	sb.WriteString(", ")
-	if p.outer != nil {
-		sb.WriteString(p.outer.Explain())
+	if outer := p.GetOuter(); outer != nil {
+		sb.WriteString(outer.Explain())
 	}
 	sb.WriteString(", ")
-	if p.inner != nil {
-		sb.WriteString(p.inner.Explain())
+	if inner := p.GetInner(); inner != nil {
+		sb.WriteString(inner.Explain())
 	}
 	sb.WriteString(")")
 	return sb.String()
 }
 
-var _ RecordQueryPlan = (*RecordQueryNestedLoopJoinPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryNestedLoopJoinPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryNestedLoopJoinPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryNestedLoopJoinPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// GetCorrelatedToWithoutChildren walks this plan's own predicates, mirroring
+// physicalNestedLoopJoinWrapper. The predicates are this node's information — a
+// correlation reached only through them would be invisible to
+// correlation-driven rules if this returned the empty default.
+func (p *RecordQueryNestedLoopJoinPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, pred := range p.GetPredicates() {
+		for k := range predicates.GetCorrelatedToOfPredicate(pred) {
+			out[k] = struct{}{}
+		}
+	}
+	return out
+}
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryNestedLoopJoinPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

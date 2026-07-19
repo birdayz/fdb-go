@@ -79,14 +79,6 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			if !ok {
 				continue
 			}
-			// A nil-inner Fetch shell (the extraction template) must
-			// never be PLAN-EMBEDDED — its plan completes only via the
-			// wrapper's WithChildren relink; embedding it here bakes
-			// Fetch(<nil>) into the aggregate permanently (the XX000
-			// plan-invariant).
-			if isNilInnerFetch(m) {
-				continue
-			}
 			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(pe.GetRecordQueryPlan(), groupingKeys, gb.GetAggregates())
 			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(m))
 			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
@@ -161,14 +153,14 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			// (memoizePlan); this is that discipline extended through the
 			// delegation spine. Declining (nil) keeps the InMemorySort
 			// alternative, which is always order-correct.
-			parts := make([]RequestedOrderingPart, len(groupingKeys))
+			parts := make([]properties.RequestedOrderingPart, len(groupingKeys))
 			for i, gk := range groupingKeys {
 				// Streaming aggregation needs equal keys ADJACENT — any
 				// consistent per-key direction works, matching the
 				// direction-agnostic admission above.
-				parts[i] = RequestedOrderingPart{Value: gk, SortOrder: RequestedSortOrderAny}
+				parts[i] = properties.RequestedOrderingPart{Value: gk, SortOrder: properties.RequestedSortOrderAny}
 			}
-			groupReq := NewRequestedOrdering(parts, DistinctnessPreserveDistinctness, false)
+			groupReq := properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false)
 			pinned := pinOrderedSpine(orderedExpr, groupReq, call.CostModel())
 			if pinnedPE, isPE := pinned.(physicalPlanExpression); pinned != nil && isPE {
 				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(pinnedPE.GetRecordQueryPlan(), groupingKeys, gb.GetAggregates())

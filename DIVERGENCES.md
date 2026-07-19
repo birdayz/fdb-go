@@ -11,36 +11,6 @@ live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
 
 ## Intentional Architectural Decisions (no functional difference)
 
-### Shell completion is repair-at-EXTRACTION, not Java's bake-at-rule-time
-
-**Java:** rules memoize fully-linked plans (`memoizePlan` /
-`Reference.ofFinalExpressions`), so a plan entering the memo already has its
-children; extraction only reads.
-**Go:** rules yield an eagerly-snapshotted plan whose inner is filled later by
-`WithChildren`, which leaves nil-inner SHELLS in the memo. When a reference
-holds only shells, `findPhysicalPlan` now COMPLETES one on the spot
-(`completeShellPlan` → `resolveInnerPlan` → `planWithInner`) instead of
-handing the parent an `Op(<nil>)` that fails the plan invariant.
-
-The completed tree is **not inserted into the memo**: it is uncosted,
-unshared, and recomputed on each lookup. It is sound — the inner is filled
-from the very group the shell's quantifier ranges over, so memo-group
-equivalence holds — but it is repair, not architecture. Two guards keep the
-repair honest, and the second is NARROWER than it looks:
-- the recursion never re-enters `WithChildren`, so its depth bound is real;
-- an order-destroying candidate is never installed (`isOrderDestroying`) —
-  but ONLY at the `WithChildren` relink boundary, which is its single call
-  site (`shouldRelinkInner`). The recursive completion path
-  (`completeShellPlan` → `planWithInner`) applies no order check at all, so
-  a directly-completed `InUnion`/`InJoin` shell is unguarded; and even at
-  the relink boundary the check inspects only the candidate's OUTERMOST
-  node. The relink is ordering-blind while an IN-union merge-sorts its
-  child, so this is a real residual gap, not a covered one — it is
-  RFC-167's layer to remove, not something the guard closes.
-
-The real fix is RFC-167's deeper layer: rules that yield fully-linked plans,
-matching Java. Until then every shell-completion site is debt.
-
 ### PK-intersection declines a needed non-ForMatch compensation (conservative)
 
 **Java:** `createIntersectionAndCompensation` reapplies ANY compensation
@@ -426,13 +396,68 @@ written down with **"what invariant does Java carry that this drops?"** and each
 | **Simplified `RequestedSortOrder`** (NULLS axis was elided) | Full sort order incl. NULL placement (ASC→NULLS FIRST etc.) | wrong rows on ORDER BY | **COVERED** — NULLS axis restored (RFC-165) + `rfc165_nulls_ordering_test.go`; the NULLS-ORDER hunt bug is fixed + pinned. |
 | **Scalar cost fallback + Go-only tiebreakers** (15b `compareFlatMapVsNLJ`, 15c `EstimateCostWith`) — no `advancePlannerStage`, so Go's flat member list has ties Java's prune-to-1-winner avoids | Structural single-winner selection; total-order tie resolution | nondeterministic / wrong index pick | **PARTIAL** — cost ORDERING pinned by WS-4 `TestBoundSelectivity_CostMonotonicity` (#405 class); equality-tie determinism pinned by `TestPlanDeterminism_*` (#409). **TRACKED:** the InJoin inner correlated-equality tie (WS-4 #2, OPEN — RFC-167 Phase 1b). |
 | **Hand-rolled `AggregateDataAccessRule`** (aggregate-index matching, not Java's generic data-access) | Guard(match)==consumer(build/execute) — one classifier | wrong agg result / wrong index match (COUNT-COL class) | **COVERED for the known drift** — WS-3 `expressions.IsCountStar` is the single source of truth for the planner candidate + the executor group cursors (#413); group-key matcher deduped via `groupColEqualityIndex` (RFC-163). **TRACKED:** the translator's OWN count-star normalization (`aggregateNamesStableForUnion`) is deliberately a SEPARATE classifier (`cascades_translator.go` — different question/scope) → audit whether it should share (WS-3 other-guard/consumer-pairs); the `COUNT(NULL)` fold fidelity (Graefe follow-up). |
-| **`WithPrimaryKeyIntersector` discards `requestedOrderings`** (over-generates `Intersection` with no merged-ordering gate, vs Java's `WithPrimaryKeyDataAccessRule` common-ordering gate) | Every intersection leg shares a pk-monotonic ordering (the sorted-merge precondition) | wrong rows — a non-pk-ordered leg (value RANGE, or vector distance) feeds the pk-keyed sorted-merge and drops rows | **PARTIAL** — the VECTOR leg is excluded (RFC-167 Phase 4, #411, pinned by `TestFDB_VectorSearch_MultiPartition_InequalityResidualK2`). **TRACKED:** the VALUE-RANGE leg (`a=5 AND b>10`) is LATENT — generated but not selected on master (a cheaper shell wins); becomes a CANDIDATE wrong-rows path when RFC-167 Phase 1b makes shells stop winning — whether the sorted-merge actually drops rows for the range leg is RFC-167 **OQ#2** (currently unconfirmed: `MaximumCoverageMatches` or an inserted sort may prevent it). Fix approach is unblocked (**OQ#6** resolved — the vector-leg exclusion): port Java's `isCompatibleComparisonKey`/`enumerateSatisfyingComparisonKeyValues` gate (RFC-167 Phase 4 value-range, lands with Phase 1b). |
-| **Per-wrapper relink** (RFC-070 nil-inner shells across ~20 wrappers, vs Java's eager `memoizePlan` to concrete) | Every non-leaf plan has its child; deterministic relink to the cost winner; one final member | dropped/nil child (0 rows); nondeterministic plan/cache | **COVERED for the two proven classes** — WS-2 no-`<nil>`-child invariant (`ValidatePlanInvariants`, catches a dropped child on ANY wrapper, always-on) + WS-4 InJoin/InUnion binding-alias-invariant identity (#417). **TRACKED:** deterministic-relink-to-winner + prune-to-one-member (RFC-167 Phase 2/3); eliminate shells entirely (Phase 5, the north star). |
+| **`WithPrimaryKeyIntersector` discards `requestedOrderings`** (over-generates `Intersection` with no merged-ordering gate, vs Java's `WithPrimaryKeyDataAccessRule` common-ordering gate) | Every intersection leg shares a pk-monotonic ordering (the sorted-merge precondition) | wrong rows — a non-pk-ordered leg (value RANGE, or vector distance) feeds the pk-keyed sorted-merge and drops rows | **PARTIAL** — the VECTOR leg is excluded (RFC-167 Phase 4, #411, pinned by `TestFDB_VectorSearch_MultiPartition_InequalityResidualK2`). **TRACKED:** the VALUE-RANGE leg (`a=5 AND b>10`) is LATENT — generated but not selected. The old reason ("a cheaper shell wins") EXPIRED with RFC-183: shells no longer exist, and intersections roughly doubled in the corpus (7 → 13) once real costs applied. Re-verified after that change: no range-leg intersection is selected anywhere in the 2407-query corpus, and a direct probe of `a=5 AND b>10` (plus BETWEEN / two-range / range-plus-third-equality variants over separate single-column indexes) always keeps the range predicate as a RESIDUAL and only ever pairs EQUALITY legs. So what holds it latent is the intersector's own leg selection, not shell cost — a sturdier reason than the one it replaces, but still not a gate. Whether the sorted-merge would actually drop rows for a range leg remains RFC-167 **OQ#2** (unconfirmed: `MaximumCoverageMatches` or an inserted sort may prevent it). Fix approach is unblocked (**OQ#6** resolved — the vector-leg exclusion): port Java's `isCompatibleComparisonKey`/`enumerateSatisfyingComparisonKeyValues` gate (RFC-167 Phase 4 value-range, lands with Phase 1b). |
+| **Per-wrapper relink** (RFC-070 nil-inner shells across ~20 wrappers, vs Java's eager `memoizePlan` to concrete) | Every non-leaf plan has its child; deterministic relink to the cost winner; one final member | dropped/nil child (0 rows); nondeterministic plan/cache | **CLOSED for the shell half (RFC-183).** Rules now bake the concrete child at rule time, matching Java's memoizePlan-as-constructor-argument; `verifyChildrenMemoized` rejects a holed expression at yield, always-on (ports `CascadesRuleCall.verifyChildrenMemoized`); the ~600 lines of repair machinery are deleted, after instrumentation showed ZERO shells across the full suite and all 2407 corpus queries. `ValidatePlanInvariants` remains as the sink-side backstop. **STILL TRACKED:** prune-to-one-final-member, and retiring `findBestPhysicalPlan` — extraction's ad-hoc cost pick outside the cost framework, now wired to ONE site against `findPhysicalPlan`'s twenty. Do NOT "fix" that asymmetry by propagating the cheapest-selector: it is ordering-blind and turns `ORDER BY … DESC` into ASC (measured; see RFC-183 §10). The parent→child edge is still stored twice (quantifier Reference + embedded plan pointer) — unifying the hierarchies so the state is unrepresentable is RFC-183 P5. **P5's terminal step (deleting the wrappers) is BLOCKED and its premise is FALSIFIED — see RFC-183 §11.** The wrapper's quantifier and the plan's child pointer are NOT two copies of one fact: `rule_implement_nested_loop_join.go` builds compensating filters at :814, :828 and :841 that are never memoized, so the plan pointer holds what EXECUTES while the quantifier holds what the memo COSTS. Measured at rule time: 9868 edges, 472 semantically different. Collapsing them drops a `DefaultOnEmpty` (wrong outer-join NULLs) and residual filters (wrong rows). **A LIVE DEFECT falls out of the same finding: the memo is costing expressions that are not the ones that execute, today** — masked only because `WithChildren` never swaps. Prerequisite before any wrapper deletion: those three sites must memoize their compensating plans and range the quantifier over that reference, as `rule_implement_simple_select.go:97-117` already does. **RETRACTED:** an earlier revision of this row cited "1186 references hold multiple finals, 1125 multiple PHYSICAL finals" as P5's blocker. That measurement was taken at RULE TIME while rules were still firing, where groups legitimately hold alternatives; it says nothing about the extraction-time property P5 needs, which does hold (`TestOneFinalPlanPerReference`). Note also the split's stated rationale in `plans/plan.go:23-28` — "physical and logical plan trees live in different namespaces in Java" — is FALSE: `QueryPlan<T> extends RelationalExpression` (`QueryPlan.java:51`), so a Java plan IS a RelationalExpression; the comment conflates package separation (real) with hierarchy separation (not real). |
 | **Go-only physical-filter builders** (`ImplementIndexScanRule`, `ImplementSimpleSelectRule`, NLJ residual — extra paths past `Compensation`) | Index-only predicates never become an executable residual | panic / wrong plan on a vector `DistanceRank` residual | **COVERED** — `ImplementFilterRule` `!isIndexOnly()` gate (RFC-151) + the retained `validateNoIndexOnlyResidual` catch-all backstop (pinned by `TestVectorPlan_*`). **TRACKED end-state:** gate the remaining builders so the net can retire. |
 
 **Method for the next reservoir found:** name the Java invariant it drops, classify the risk
 (wrong-rows / nondeterminism / panic), and either wire a WS-2/4 structural invariant that makes
 the class un-shippable or file a tracked TODO — never leave it as a silent reservoir.
+
+## RFC-183 P5 residue — tracked, out of scope for the fully-linked-plans branch
+
+Four pre-existing items surfaced by the P5 review. None is caused by P5; all are filed here
+rather than fixed in-branch. Verified against Java 4.12.11.0.
+
+### `canCorrelate` — three divergences from Java, one of them in the UNSAFE direction
+
+`canCorrelate` decides whether an expression may be the ANCHOR of a correlation — whether
+bound aliases propagate from one child to its siblings. Java's default
+(`cascades/expressions/RelationalExpression.java:251`) is `false`.
+
+1. **`RecordQueryRecursiveLevelUnionPlan` — UNSAFE, fix first.** Go's
+   `plans/recursive_level_union.go:162` returns `true`. Java's
+   `RecordQueryRecursiveLevelUnionPlan.java` has **no `canCorrelate` override at all**, so Java
+   answers `false`. This is the one divergence that errs toward MORE correlation than Java
+   permits: claiming anchor status suppresses propagation of bound aliases past the operator,
+   which is a wrong-rows shape, not a missed-optimization one. Go's wrapper
+   (`physicalRecursiveLevelUnionWrapper`) says `true` too, so the plan side is a faithful copy of
+   an already-divergent wrapper — fixing it means fixing both, and `TestPlanWrapperFlagParity`
+   will hold them together. Note Java DOES override `canCorrelate() → true` on the sibling
+   `RecordQueryRecursiveDfsJoinPlan.java:156`, so the divergence is specific to the LEVEL union,
+   not to recursion generally.
+2. **`RecordQueryInJoinPlan`** — Java `:198` returns `true`; Go has no override, so `false`.
+   Conservative direction (Go propagates where Java anchors) — safe, costs optimization reach.
+3. **`RecordQueryInUnionPlan`** — Java `:230` returns `true`; Go has no override, so `false`.
+   Same conservative direction as (2).
+
+### Index metadata has a dual source of truth
+
+`HintRichOrdering` and the cost model still read `physicalIndexScanWrapper`'s own
+`columnNames`/`pkColumnNames`/`unique` fields, while `RecordQueryIndexPlan` now carries its own
+stamped copies (`WithIndexMetadata`). Two records of one fact that must not drift.
+`cascades/plan_rich_ordering_parity_test.go` pins that they agree today; the durable fix is the
+wrapper deletion (blocked, RFC-183 §11), after which only the plan's copy remains.
+
+### One `NewRecordQueryIndexPlan` construction is unstamped
+
+The correlated-index-scan build inside `ImplementNestedLoopJoinRule`'s existential path
+(`rule_implement_nested_loop_join.go`, the `correlatedIndexScan := plans.NewRecordQueryIndexPlan(`
+site) never calls `.WithIndexMetadata(...)`. Every other construction goes through
+`abstract_data_access_rule.go:454`, which stamps. An unstamped index plan answers
+`HintOrdering`/`HintRichOrdering` with the empty ordering — today harmless, because the memo asks
+the WRAPPER, which carries its own metadata. It becomes a live sort-elision bug the moment the
+plan-side bodies go live (see above).
+
+### The memo costs an expression that is not the one that executes — CURRENT BUG
+
+Not merely a gate on P5's terminal step: it is wrong **today**. See the **Per-wrapper relink** row
+above and RFC-183 §11 for the measurement (9868 rule-time edges, 472 semantically different) and
+the root cause (four rules build compensating plans they never memoize). What masks it is that
+`WithChildren` keeps `plan: w.plan` and swaps only quantifiers, so the divergent quantifier never
+reaches execution — the memo simply ranks alternatives by the cost of a DIFFERENT tree than the
+one it will run. Cost-model output is therefore unsound wherever a compensating operator was
+built locally, which is exactly the outer-join and residual-filter shapes.
 
 ## Quantifier identity: SQL-visible aliases vs Java's always-unique ids (W4-left F3 ruling)
 

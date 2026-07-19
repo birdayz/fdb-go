@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -28,13 +29,13 @@ func TestPushRequestedOrderingThroughProjection_PushesTranslatedOrdering(t *test
 
 	// Set the ordering constraint on the projection's Reference.
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{
 			Value:     &values.FieldValue{Field: "COL1", Typ: values.UnknownType},
-			SortOrder: RequestedSortOrderAscending,
+			SortOrder: properties.RequestedSortOrderAscending,
 		},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughProjectionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
@@ -70,7 +71,7 @@ func TestPushRequestedOrderingThroughProjection_PushesTranslatedOrdering(t *test
 	if fv.Field != "A" {
 		t.Fatalf("expected translated field 'A', got %q", fv.Field)
 	}
-	if parts[0].SortOrder != RequestedSortOrderAscending {
+	if parts[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatal("expected ASC sort order")
 	}
 }
@@ -96,13 +97,13 @@ func TestPushRequestedOrderingThroughProjection_AliasResolution(t *testing.T) {
 	projRef := expressions.InitialOf(proj)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{
 			Value:     &values.FieldValue{Field: "TOTAL", Typ: values.UnknownType},
-			SortOrder: RequestedSortOrderAscending,
+			SortOrder: properties.RequestedSortOrderAscending,
 		},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughProjectionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
@@ -146,13 +147,13 @@ func TestPushRequestedOrderingThroughProjection_NoMatchDoesNotPush(t *testing.T)
 	projRef := expressions.InitialOf(proj)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{
 			Value:     &values.FieldValue{Field: "NONEXISTENT", Typ: values.UnknownType},
-			SortOrder: RequestedSortOrderAscending,
+			SortOrder: properties.RequestedSortOrderAscending,
 		},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughProjectionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
@@ -187,13 +188,13 @@ func TestPushRequestedOrderingThroughProjection_DescPreserved(t *testing.T) {
 	projRef := expressions.InitialOf(proj)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{
 			Value:     &values.FieldValue{Field: "A", Typ: values.UnknownType},
-			SortOrder: RequestedSortOrderDescending,
+			SortOrder: properties.RequestedSortOrderDescending,
 		},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughProjectionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
@@ -210,7 +211,7 @@ func TestPushRequestedOrderingThroughProjection_DescPreserved(t *testing.T) {
 	if !ok {
 		t.Fatal("constraint not pushed")
 	}
-	if pushed[0].GetParts()[0].SortOrder != RequestedSortOrderDescending {
+	if pushed[0].GetParts()[0].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatal("expected DESC sort order preserved")
 	}
 }
@@ -235,17 +236,17 @@ func TestPushRequestedOrderingThroughProjection_MultipleSortKeys(t *testing.T) {
 	projRef := expressions.InitialOf(proj)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{
 			Value:     &values.FieldValue{Field: "A", Typ: values.UnknownType},
-			SortOrder: RequestedSortOrderAscending,
+			SortOrder: properties.RequestedSortOrderAscending,
 		},
 		{
 			Value:     &values.FieldValue{Field: "B", Typ: values.UnknownType},
-			SortOrder: RequestedSortOrderDescending,
+			SortOrder: properties.RequestedSortOrderDescending,
 		},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughProjectionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
@@ -266,10 +267,10 @@ func TestPushRequestedOrderingThroughProjection_MultipleSortKeys(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("expected 2 ordering parts, got %d", len(parts))
 	}
-	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "X" || parts[0].SortOrder != RequestedSortOrderAscending {
+	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "X" || parts[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatalf("first part: want X ASC, got %s %v", fv.Field, parts[0].SortOrder)
 	}
-	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "Y" || parts[1].SortOrder != RequestedSortOrderDescending {
+	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "Y" || parts[1].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("second part: want Y DESC, got %s %v", fv.Field, parts[1].SortOrder)
 	}
 }
@@ -287,13 +288,13 @@ func TestPushRequestedOrderingThroughProjection_NotConstraintOnlyDoesNotPush(t *
 	projRef := expressions.InitialOf(proj)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{
 			Value:     &values.FieldValue{Field: "A", Typ: values.UnknownType},
-			SortOrder: RequestedSortOrderAscending,
+			SortOrder: properties.RequestedSortOrderAscending,
 		},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughProjectionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
@@ -357,13 +358,13 @@ func TestPushRequestedOrderingThroughProjection_NoYield(t *testing.T) {
 	projRef := expressions.InitialOf(proj)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
 		{
 			Value:     &values.FieldValue{Field: "A", Typ: values.UnknownType},
-			SortOrder: RequestedSortOrderAscending,
+			SortOrder: properties.RequestedSortOrderAscending,
 		},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughProjectionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)

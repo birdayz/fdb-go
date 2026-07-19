@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // PushRequestedOrderingThroughRecursiveUnionRule is a PLANNING-phase
@@ -38,7 +39,7 @@ func (r *PushRequestedOrderingThroughRecursiveUnionRule) OnMatch(call *Implement
 
 	// Push only the preserve ordering (if any). Java filters the
 	// stream for RequestedOrdering.isPreserve() and takes the first.
-	var preserve *RequestedOrdering
+	var preserve *properties.RequestedOrdering
 	for _, o := range orderings {
 		if o.IsPreserve() {
 			preserve = o
@@ -49,7 +50,7 @@ func (r *PushRequestedOrderingThroughRecursiveUnionRule) OnMatch(call *Implement
 		return
 	}
 
-	toBePushed := []*RequestedOrdering{preserve}
+	toBePushed := []*properties.RequestedOrdering{preserve}
 
 	ru := call.Bindings.Get(r.matcher).(*expressions.RecursiveUnionExpression)
 

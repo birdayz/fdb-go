@@ -1,4 +1,4 @@
-package cascades
+package properties
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"

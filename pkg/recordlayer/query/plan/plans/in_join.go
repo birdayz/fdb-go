@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"reflect"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -24,7 +25,8 @@ const (
 // Mirrors Java's RecordQueryInJoinPlan hierarchy
 // (InValuesJoin, InParameterJoin, InComparandJoin).
 type RecordQueryInJoinPlan struct {
-	inner       RecordQueryPlan
+	PlanExprBase
+	innerQ      expressions.Quantifier
 	bindingName string
 	sorted      bool
 	reverse     bool
@@ -39,21 +41,30 @@ func NewRecordQueryInJoinPlan(
 	reverse bool,
 ) *RecordQueryInJoinPlan {
 	return &RecordQueryInJoinPlan{
-		inner:       inner,
+		innerQ:      QuantifierOverPlan(inner),
 		bindingName: bindingName,
 		sorted:      sorted,
 		reverse:     reverse,
 	}
 }
 
-func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan { return p.inner }
+func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryInJoinPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // WithInner returns a copy with the inner replaced and EVERY other field
 // preserved — the extraction-relink rebuild path; reconstructing via the
 // constructor risks silently dropping fields the setters carry.
 func (p *RecordQueryInJoinPlan) WithInner(inner RecordQueryPlan) *RecordQueryInJoinPlan {
 	cp := *p
-	cp.inner = inner
+	cp.innerQ = QuantifierOverPlan(inner)
 	return &cp
 }
 func (p *RecordQueryInJoinPlan) GetBindingName() string       { return p.bindingName }
@@ -65,20 +76,21 @@ func (p *RecordQueryInJoinPlan) GetSourceKind() InSourceKind  { return p.sourceK
 func (p *RecordQueryInJoinPlan) SetSourceKind(k InSourceKind) { p.sourceKind = k }
 
 func (p *RecordQueryInJoinPlan) GetResultType() values.Type {
-	if p.inner != nil {
-		return p.inner.GetResultType()
+	if inner := p.GetInner(); inner != nil {
+		return inner.GetResultType()
 	}
 	return values.UnknownType
 }
 
 func (p *RecordQueryInJoinPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
-func (p *RecordQueryInJoinPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryInJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInJoinPlan)
 	if !ok {
 		return false
@@ -132,9 +144,9 @@ func inValuesEqual(a, b []any) bool {
 }
 
 func (p *RecordQueryInJoinPlan) Explain() string {
-	inner := "<nil>"
-	if p.inner != nil {
-		inner = p.inner.Explain()
+	innerLabel := "<nil>"
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	dir := ""
 	if p.sorted {
@@ -147,7 +159,30 @@ func (p *RecordQueryInJoinPlan) Explain() string {
 	// The binding correlation alias (a process-global unique counter) is NOT
 	// rendered — it varies per planning invocation and would make the Explain
 	// nondeterministic (RFC-164 WS-4); "binding" marks its presence structurally.
-	return fmt.Sprintf("InJoin(%s, binding%s)", inner, dir)
+	return fmt.Sprintf("InJoin(%s, binding%s)", innerLabel, dir)
 }
 
-var _ RecordQueryPlan = (*RecordQueryInJoinPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryInJoinPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryInJoinPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryInJoinPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryInJoinPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
+}
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryInJoinPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

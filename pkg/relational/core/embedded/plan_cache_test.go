@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -128,14 +130,15 @@ func sameKeySet(t *testing.T, ctx string, got, want map[string]struct{}) {
 
 // stubPlan is a minimal RecordQueryPlan for cache testing.
 type stubPlan struct {
+	plans.PlanExprBase
 	label string
 }
 
-func (s *stubPlan) Explain() string                                        { return "stub:" + s.label }
-func (s *stubPlan) GetResultType() values.Type                             { return nil }
-func (s *stubPlan) GetChildren() []plans.RecordQueryPlan                   { return nil }
-func (s *stubPlan) EqualsWithoutChildren(other plans.RecordQueryPlan) bool { return false }
-func (s *stubPlan) HashCodeWithoutChildren() uint64                        { return 0 }
+func (s *stubPlan) Explain() string                                            { return "stub:" + s.label }
+func (s *stubPlan) GetResultType() values.Type                                 { return nil }
+func (s *stubPlan) GetChildren() []plans.RecordQueryPlan                       { return nil }
+func (s *stubPlan) EqualsPlanWithoutChildren(other plans.RecordQueryPlan) bool { return false }
+func (s *stubPlan) HashCodeWithoutChildren() uint64                            { return 0 }
 
 var _ plans.RecordQueryPlan = (*stubPlan)(nil)
 
@@ -753,4 +756,13 @@ func BenchmarkPlanCache_Miss(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		c.Get("SELECT nonexistent_query_99999")
 	}
+}
+
+func (s *stubPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*stubPlan)
+	return ok && s.EqualsPlanWithoutChildren(o)
+}
+
+func (s *stubPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return s
 }

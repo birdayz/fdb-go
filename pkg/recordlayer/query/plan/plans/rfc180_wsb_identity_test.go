@@ -68,7 +68,7 @@ func TestPlanIdentity_EqualImpliesSameHash_WSBStragglers(t *testing.T) {
 		for i := range instances {
 			for j := range instances {
 				a, c := instances[i], instances[j]
-				if a.EqualsWithoutChildren(c) &&
+				if a.EqualsPlanWithoutChildren(c) &&
 					a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
 					t.Errorf("%s: pool[%d] vs pool[%d]: equal but hash apart — equal⟹same-hash violated",
 						b.name, i, j)
@@ -76,7 +76,7 @@ func TestPlanIdentity_EqualImpliesSameHash_WSBStragglers(t *testing.T) {
 			}
 		}
 		first, dup := instances[0], instances[len(instances)-1]
-		if !first.EqualsWithoutChildren(dup) {
+		if !first.EqualsPlanWithoutChildren(dup) {
 			t.Errorf("%s: identical payloads rebuilt must compare equal", b.name)
 		}
 		if first.HashCodeWithoutChildren() != dup.HashCodeWithoutChildren() {
@@ -98,7 +98,7 @@ func TestInUnionPlan_ComparandsJoinIdentity(t *testing.T) {
 
 	a := NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
 	b := NewRecordQueryInUnionPlan(inner, []string{"b1"}, kB, false)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("in-union plans with different comparison keys must NOT compare equal")
 	}
 
@@ -106,14 +106,14 @@ func TestInUnionPlan_ComparandsJoinIdentity(t *testing.T) {
 	c := NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
 	a.SetInSources([][]any{{int64(1), int64(2)}})
 	c.SetInSources([][]any{{int64(1), int64(3)}})
-	if a.EqualsWithoutChildren(c) {
+	if a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("in-union plans with different IN-literals must NOT compare equal")
 	}
 
 	// Identical everything ⟹ equal + same hash.
 	d := NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
 	d.SetInSources([][]any{{int64(1), int64(2)}})
-	if !a.EqualsWithoutChildren(d) {
+	if !a.EqualsPlanWithoutChildren(d) {
 		t.Fatal("identical in-union plans must compare equal")
 	}
 	if a.HashCodeWithoutChildren() != d.HashCodeWithoutChildren() {
@@ -133,11 +133,11 @@ func TestIntersectionPlan_KeysJoinIdentity(t *testing.T) {
 
 	a := NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner, inner}, kA)
 	b := NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner, inner}, kB)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("intersection plans with different comparison keys must NOT compare equal")
 	}
 	c := NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner, inner}, kA)
-	if !a.EqualsWithoutChildren(c) {
+	if !a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("identical intersection plans must compare equal")
 	}
 	if a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
@@ -156,14 +156,14 @@ func TestUpdatePlan_TransformsJoinIdentity(t *testing.T) {
 	setB := []expressions.UpdateTransform{{FieldPath: "b", NewValue: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}}}
 
 	a := NewRecordQueryUpdatePlan(inner, "T", set1)
-	if a.EqualsWithoutChildren(NewRecordQueryUpdatePlan(inner, "T", set2)) {
+	if a.EqualsPlanWithoutChildren(NewRecordQueryUpdatePlan(inner, "T", set2)) {
 		t.Fatal("SET a=1 and SET a=2 must NOT compare equal")
 	}
-	if a.EqualsWithoutChildren(NewRecordQueryUpdatePlan(inner, "T", setB)) {
+	if a.EqualsPlanWithoutChildren(NewRecordQueryUpdatePlan(inner, "T", setB)) {
 		t.Fatal("SET a=1 and SET b=1 must NOT compare equal")
 	}
 	c := NewRecordQueryUpdatePlan(inner, "T", set1)
-	if !a.EqualsWithoutChildren(c) {
+	if !a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("identical update plans must compare equal")
 	}
 	if a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
@@ -185,23 +185,23 @@ func TestFlatMapAndNLJPlan_ResultValueJoinsIdentity(t *testing.T) {
 	rvB := values.NewFlatFieldValue("B", values.UnknownType)
 
 	fm := NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, rvA, false)
-	if fm.EqualsWithoutChildren(NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, rvB, false)) {
+	if fm.EqualsPlanWithoutChildren(NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, rvB, false)) {
 		t.Fatal("flat-map plans with different result values must NOT compare equal")
 	}
-	if fm.EqualsWithoutChildren(NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, rvA, true)) {
+	if fm.EqualsPlanWithoutChildren(NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, rvA, true)) {
 		t.Fatal("flat-map plans with different inheritOuterRecordProperties must NOT compare equal")
 	}
 	fmDup := NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, values.NewFlatFieldValue("A", values.UnknownType), false)
-	if !fm.EqualsWithoutChildren(fmDup) || fm.HashCodeWithoutChildren() != fmDup.HashCodeWithoutChildren() {
+	if !fm.EqualsPlanWithoutChildren(fmDup) || fm.HashCodeWithoutChildren() != fmDup.HashCodeWithoutChildren() {
 		t.Fatal("identical flat-map plans must compare equal and hash equal")
 	}
 
 	nlj := NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, "O", "I", rvA)
-	if nlj.EqualsWithoutChildren(NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, "O", "I", rvB)) {
+	if nlj.EqualsPlanWithoutChildren(NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, "O", "I", rvB)) {
 		t.Fatal("NLJ plans with different result values must NOT compare equal")
 	}
 	nljDup := NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, "O", "I", values.NewFlatFieldValue("A", values.UnknownType))
-	if !nlj.EqualsWithoutChildren(nljDup) || nlj.HashCodeWithoutChildren() != nljDup.HashCodeWithoutChildren() {
+	if !nlj.EqualsPlanWithoutChildren(nljDup) || nlj.HashCodeWithoutChildren() != nljDup.HashCodeWithoutChildren() {
 		t.Fatal("identical NLJ plans must compare equal and hash equal")
 	}
 }

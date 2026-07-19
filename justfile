@@ -58,6 +58,21 @@ feature-matrix:
 sql-coverage:
     go run ./cmd/gen-sql-coverage
 
+# RFC-183 §6: dump the planned PHYSICAL plan shape of every yamsql corpus query
+# to a diffable baseline. No FDB needed. Take one baseline BEFORE a planner
+# change and one after, then `just explain-diff` them — a plan that flips to a
+# different-but-still-correct shape passes every row-level test, so this is the
+# only check that can see it.
+#   just explain-baseline /tmp/before.txt
+explain-baseline OUT:
+    go run ./cmd/explain-differ dump -out {{OUT}}
+
+# Diff two baselines produced by `just explain-baseline`. Exits non-zero when
+# any plan shape moved.
+#   just explain-diff /tmp/before.txt /tmp/after.txt
+explain-diff OLD NEW:
+    go run ./cmd/explain-differ diff {{OLD}} {{NEW}}
+
 # Regenerate gomock mocks for api.* interfaces. Cleans mocks_*.go
 # first so removed interfaces / renamed files don't leave stale
 # mocks behind. Same-package output so tests elsewhere write

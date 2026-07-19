@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -22,13 +23,13 @@ func TestPushRequestedOrderingThroughInsert_PropagatesConstraint(t *testing.T) {
 	insRef := expressions.InitialOf(ins)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, insRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, insRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughInsertRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), ins)
@@ -98,13 +99,13 @@ func TestPushRequestedOrderingThroughInsert_NotConstraintOnlyDoesNotPush(t *test
 	insRef := expressions.InitialOf(ins)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, insRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, insRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughInsertRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), ins)
@@ -132,13 +133,13 @@ func TestPushRequestedOrderingThroughInsert_NoYield(t *testing.T) {
 	insRef := expressions.InitialOf(ins)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, insRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, insRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughInsertRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), ins)
@@ -169,13 +170,13 @@ func TestPushRequestedOrderingThroughUpdate_PropagatesConstraint(t *testing.T) {
 	updRef := expressions.InitialOf(upd)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderDescending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, updRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, updRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughUpdateRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), upd)
@@ -207,7 +208,7 @@ func TestPushRequestedOrderingThroughUpdate_PropagatesConstraint(t *testing.T) {
 	if !ok || fv.Field != "id" {
 		t.Fatalf("expected ordering on id, got %v", parts[0].Value)
 	}
-	if parts[0].SortOrder != RequestedSortOrderDescending {
+	if parts[0].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("expected DESC, got %v", parts[0].SortOrder)
 	}
 }
@@ -248,13 +249,13 @@ func TestPushRequestedOrderingThroughUpdate_NotConstraintOnlyDoesNotPush(t *test
 	updRef := expressions.InitialOf(upd)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, updRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, updRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughUpdateRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), upd)
@@ -282,13 +283,13 @@ func TestPushRequestedOrderingThroughUpdate_NoYield(t *testing.T) {
 	updRef := expressions.InitialOf(upd)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, updRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, updRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughUpdateRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), upd)
@@ -317,13 +318,13 @@ func TestPushRequestedOrderingThroughTempTableInsert_PropagatesConstraint(t *tes
 	ttiRef := expressions.InitialOf(tti)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughTempTableInsertRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), tti)
@@ -395,13 +396,13 @@ func TestPushRequestedOrderingThroughTempTableInsert_NotConstraintOnlyDoesNotPus
 	ttiRef := expressions.InitialOf(tti)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughTempTableInsertRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), tti)
@@ -430,13 +431,13 @@ func TestPushRequestedOrderingThroughTempTableInsert_NoYield(t *testing.T) {
 	ttiRef := expressions.InitialOf(tti)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughTempTableInsertRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), tti)

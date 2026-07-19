@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -71,32 +72,32 @@ func TestMatchedSortOrder_ArrowIndicator(t *testing.T) {
 
 func TestMatchedSortOrder_ToProvidedSortOrder(t *testing.T) {
 	t.Parallel()
-	if MatchedSortOrderAscending.ToProvidedSortOrder(false) != ProvidedSortOrderAscending {
+	if MatchedSortOrderAscending.ToProvidedSortOrder(false) != properties.ProvidedSortOrderAscending {
 		t.Fatal("asc forward")
 	}
-	if MatchedSortOrderDescending.ToProvidedSortOrder(false) != ProvidedSortOrderDescending {
+	if MatchedSortOrderDescending.ToProvidedSortOrder(false) != properties.ProvidedSortOrderDescending {
 		t.Fatal("desc forward")
 	}
 	// Reverse flips direction.
-	if MatchedSortOrderAscending.ToProvidedSortOrder(true) != ProvidedSortOrderDescending {
+	if MatchedSortOrderAscending.ToProvidedSortOrder(true) != properties.ProvidedSortOrderDescending {
 		t.Fatal("asc reverse")
 	}
-	if MatchedSortOrderDescending.ToProvidedSortOrder(true) != ProvidedSortOrderAscending {
+	if MatchedSortOrderDescending.ToProvidedSortOrder(true) != properties.ProvidedSortOrderAscending {
 		t.Fatal("desc reverse")
 	}
 	// NullsLast/NullsFirst (counterflow) variants — map by Direction.
 	// Forward preserves the Direction; reverse uses reverseDirection
 	// (ASC_NULLS_LAST<->DESC_NULLS_FIRST).
-	if MatchedSortOrderAscendingNullsLast.ToProvidedSortOrder(false) != ProvidedSortOrderAscendingNullsLast {
+	if MatchedSortOrderAscendingNullsLast.ToProvidedSortOrder(false) != properties.ProvidedSortOrderAscendingNullsLast {
 		t.Fatal("asc-nulls-last forward")
 	}
-	if MatchedSortOrderAscendingNullsLast.ToProvidedSortOrder(true) != ProvidedSortOrderDescendingNullsFirst {
+	if MatchedSortOrderAscendingNullsLast.ToProvidedSortOrder(true) != properties.ProvidedSortOrderDescendingNullsFirst {
 		t.Fatal("asc-nulls-last reverse")
 	}
-	if MatchedSortOrderDescendingNullsFirst.ToProvidedSortOrder(false) != ProvidedSortOrderDescendingNullsFirst {
+	if MatchedSortOrderDescendingNullsFirst.ToProvidedSortOrder(false) != properties.ProvidedSortOrderDescendingNullsFirst {
 		t.Fatal("desc-nulls-first forward")
 	}
-	if MatchedSortOrderDescendingNullsFirst.ToProvidedSortOrder(true) != ProvidedSortOrderAscendingNullsLast {
+	if MatchedSortOrderDescendingNullsFirst.ToProvidedSortOrder(true) != properties.ProvidedSortOrderAscendingNullsLast {
 		t.Fatal("desc-nulls-first reverse")
 	}
 }

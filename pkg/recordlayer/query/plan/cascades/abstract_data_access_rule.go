@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"hash/fnv"
 	"sort"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -35,7 +36,7 @@ import (
 // createIntersectionAndCompensation.
 type IntersectorFunc func(
 	accesses []Vectored[*SingleMatchedAccess],
-	requestedOrderings []*RequestedOrdering,
+	requestedOrderings []*properties.RequestedOrdering,
 ) *IntersectionResult
 
 // PrepareMatchesAndCompensations compensates and sorts partial matches
@@ -51,7 +52,7 @@ type IntersectorFunc func(
 // Ports Java's AbstractDataAccessRule.prepareMatchesAndCompensations.
 func PrepareMatchesAndCompensations(
 	partialMatches []PartialMatch,
-	requestedOrderings []*RequestedOrdering,
+	requestedOrderings []*properties.RequestedOrdering,
 	_ PlanContext,
 ) []*SingleMatchedAccess {
 	if len(partialMatches) == 0 {
@@ -147,7 +148,7 @@ func PrepareMatchesAndCompensations(
 // Ports Java's AbstractDataAccessRule.maximumCoverageMatches.
 func MaximumCoverageMatches(
 	partialMatches []PartialMatch,
-	requestedOrderings []*RequestedOrdering,
+	requestedOrderings []*properties.RequestedOrdering,
 	ctx PlanContext,
 ) []Vectored[*SingleMatchedAccess] {
 	accesses := PrepareMatchesAndCompensations(partialMatches, requestedOrderings, ctx)
@@ -334,7 +335,7 @@ func CreateScansForMatches(
 //
 // Ports Java's AbstractDataAccessRule.dataAccessForMatchPartition.
 func DataAccessForMatchPartition(
-	requestedOrderings []*RequestedOrdering,
+	requestedOrderings []*properties.RequestedOrdering,
 	partialMatches []PartialMatch,
 	ctx PlanContext,
 	intersector IntersectorFunc,
@@ -382,10 +383,7 @@ func DataAccessForMatchPartition(
 		// ordering property (sort elimination). Omitting them made the
 		// data-access scan look non-unique/unordered, so a non-unique
 		// index could beat the unique one and sorts weren't eliminated.
-		unique := false
-		if u, ok := cand.(interface{ IsUnique() bool }); ok {
-			unique = u.IsUnique()
-		}
+		unique := candidateUnique(cand)
 		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering, coveringCols, unique, cand.GetColumnNames(), candidatePKColumns(cand))
 
 		if comp.IsNeeded() {
@@ -435,6 +433,28 @@ func candidateScanProps(cand MatchCandidate) (unique bool, columnNames []string)
 // key part are not sort-ordered, so the PK suffix must not extend the
 // ordering there (Java's computeOrderingFromScanComparisons breaks the
 // sorted-suffix loop at a duplicating key part).
+// candidateUnique reports the candidate's UNIQUE flag, or false when the
+// candidate does not expose one.
+func candidateUnique(cand MatchCandidate) bool {
+	if u, ok := cand.(interface{ IsUnique() bool }); ok {
+		return u.IsUnique()
+	}
+	return false
+}
+
+// stampIndexMetadata returns idxPlan carrying the candidate's index key
+// columns, primary-key columns, and UNIQUE flag. Stamped at plan-creation
+// time (inside ToScanPlan) so that the SINGLE index-plan object shared by
+// the Fetch's inner quantifier and by the physical wrapper above it both
+// see the same metadata — stamping later would fork the two into copies
+// that disagree.
+func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan) *plans.RecordQueryIndexPlan {
+	if cand == nil || idxPlan == nil {
+		return idxPlan
+	}
+	return idxPlan.WithIndexMetadata(cand.GetColumnNames(), candidatePKColumns(cand), candidateUnique(cand))
+}
+
 func candidatePKColumns(cand MatchCandidate) []string {
 	if dup, ok := cand.(interface{ CreatesDuplicates() bool }); ok && dup.CreatesDuplicates() {
 		return nil
@@ -468,8 +488,10 @@ func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) exp
 // pins that the deferral works: a covered projection yields IndexScan(... COVERING)
 // with no Fetch; a non-covered one keeps the Fetch. (Costing nuance: the
 // intermediate Fetch wrapper is costed non-covering during winner selection,
-// before MergeProjectionAndFetch runs; it does not change the chosen
-// plan today and is folded into the template-aware costing work, RFC-076 step 3b.)
+// before MergeProjectionAndFetch runs; it does not change the chosen plan
+// today. This used to be deferred to "the template-aware costing work" — that
+// machinery existed only to cost trees with holes and was deleted with the
+// shells (RFC-183 P3), so the nuance now stands on its own.)
 //
 // For a bare IndexScan (no Fetch — e.g. a primary scan) isCovering IS applied
 // directly, since there is no fetch to defer to.
@@ -524,8 +546,28 @@ func (s *scanPlanExpression) GetQuantifiers() []expressions.Quantifier {
 
 func (s *scanPlanExpression) CanCorrelate() bool  { return false }
 func (s *scanPlanExpression) ChildrenAsSet() bool { return false }
+
+// HashCodeWithoutChildren mixes a class discriminator with the wrapped plan's
+// hash, matching every sibling adapter ("physcanwrap|", "physfilterwrap|",
+// "physmultiintersectionwrap|"). Without the tag this adapter hashed
+// identically to the bare plan and to any other adapter over the same node.
+//
+// That was sound but needlessly noisy: extra collisions are always safe here
+// (equality decides, and this adapter's equality is the deep plans.Equals
+// above), yet colliding BY CONSTRUCTION with unrelated expressions makes the
+// bucket longer for no reason and invites the next reader to conclude the
+// coarse hash is load-bearing.
+//
+// Node-local on purpose. Equality compares children deeply; the hash does not.
+// Equal objects still hash equal — the only direction that matters — and a
+// finer hash would repartition every memo bucket for no gain.
 func (s *scanPlanExpression) HashCodeWithoutChildren() uint64 {
-	return s.plan.HashCodeWithoutChildren()
+	h := fnv.New64a()
+	h.Write([]byte("scanplanexpr|"))
+	if s.plan != nil {
+		writeHash64(h, s.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
 }
 
 // GetCorrelatedToWithoutChildren reports the outer correlations the wrapped plan
@@ -541,12 +583,33 @@ func (s *scanPlanExpression) GetCorrelatedToWithoutChildren() map[values.Correla
 	return dataAccessExprCorrelations(s.plan)
 }
 
+// EqualsWithoutChildren compares the wrapped plans DEEPLY (plans.Equals), not
+// node-locally.
+//
+// Excluding children is the correct Cascades identity only when the children
+// are modelled as quantifiers, because the child GROUPS then carry that part
+// of the identity. This adapter reports NO quantifiers (GetQuantifiers above)
+// while wrapping a plan that has children, so a node-local compare leaves
+// nothing anywhere to tell two of them apart: TypeFilter([EMP], Scan(EMP, X))
+// and TypeFilter([EMP], Scan(EMP, Y)) differ only below the modelled surface,
+// compare EQUAL, and MemoizeExpression interns them into ONE group. The group
+// keeps whichever arrived first while the plan carries the other — so the memo
+// prices a key range that is not the one being scanned, and EXPLAIN cannot
+// show it because it never prints the comparison operand.
+//
+// physicalScanWrapper, the sibling adapter with the same no-quantifier shape,
+// already uses plans.Equals for precisely this reason; this was the outlier.
+//
+// Equality-only, deliberately: HashCodeWithoutChildren stays node-local.
+// Finer equality against a coarser hash is sound — equal objects still hash
+// equal, and the extra collisions simply fall through to this comparison —
+// whereas a finer hash would repartition every memo bucket for no gain.
 func (s *scanPlanExpression) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
 	o, ok := other.(*scanPlanExpression)
 	if !ok {
 		return false
 	}
-	return s.plan.EqualsWithoutChildren(o.plan)
+	return plans.Equals(s.plan, o.plan)
 }
 
 func (s *scanPlanExpression) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -577,12 +640,12 @@ func pkScanFromDataAccessPlan(plan plans.RecordQueryPlan) *plans.RecordQueryScan
 // physicalScanWrapper) reads as unordered and ImplementSortRule cannot
 // elide a sort it satisfies.
 func (s *scanPlanExpression) HintOrdering() properties.Ordering {
-	return pkScanOrdering(pkScanFromDataAccessPlan(s.plan))
+	return plans.PKScanOrdering(pkScanFromDataAccessPlan(s.plan))
 }
 
 // HintRichOrdering — the FIXED-equality-prefix PK ordering; see
 // pkScanRichOrdering.
-func (s *scanPlanExpression) HintRichOrdering() *RichOrdering {
+func (s *scanPlanExpression) HintRichOrdering() *properties.RichOrdering {
 	return pkScanRichOrdering(pkScanFromDataAccessPlan(s.plan))
 }
 
@@ -696,7 +759,7 @@ func comparisonRowCorrelated(c *predicates.Comparison) bool {
 // direction needed, or nil if the ordering is not satisfied.
 //
 // Ports Java's AbstractDataAccessRule.satisfiesRequestedOrdering.
-func SatisfiesRequestedOrdering(pm PartialMatch, ro *RequestedOrdering) *ScanDirection {
+func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrdering) *ScanDirection {
 	if ro.IsPreserve() {
 		both := ScanDirectionBoth
 		return &both
@@ -733,7 +796,7 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *RequestedOrdering) *ScanDir
 			opKey := values.ExplainValue(op.GetValue())
 			if reqKey == opKey {
 				reqSort := reqPart.SortOrder
-				if reqSort != RequestedSortOrderAny {
+				if reqSort != properties.RequestedSortOrderAny {
 					matchedSort := op.GetMatchedSortOrder()
 					// Java AbstractDataAccessRule.satisfiesRequestedOrdering
 					// (:820): the matched and requested NULL placement must
@@ -779,11 +842,11 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *RequestedOrdering) *ScanDir
 // Ports Java's AbstractDataAccessRule.satisfiesAnyRequestedOrderings.
 func SatisfiesAnyRequestedOrderings(
 	pm PartialMatch,
-	requestedOrderings []*RequestedOrdering,
-) ([]*RequestedOrdering, *ScanDirection) {
+	requestedOrderings []*properties.RequestedOrdering,
+) ([]*properties.RequestedOrdering, *ScanDirection) {
 	seenForward := false
 	seenReverse := false
-	var satisfying []*RequestedOrdering
+	var satisfying []*properties.RequestedOrdering
 
 	for _, ro := range requestedOrderings {
 		dir := SatisfiesRequestedOrdering(pm, ro)

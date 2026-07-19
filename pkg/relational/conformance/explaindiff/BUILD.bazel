@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "explaindiff",
+    srcs = ["explaindiff.go"],
+    importpath = "fdb.dev/pkg/relational/conformance/explaindiff",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/plans",
+        "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/embedded",
+    ],
+)
+
+go_test(
+    name = "explaindiff_test",
+    srcs = [
+        "explaindiff_internal_test.go",
+        "explaindiff_test.go",
+        "reachability_test.go",
+    ],
+    # keep: the tests plan every scenario in the yamsql corpus, which lives in
+    # a SIBLING package — so it is staged via that package's exported filegroup
+    # (a local glob cannot reach it) and read at ../yamsql/testdata, the same
+    # path `go test` sees. Without this the tests fail on a missing corpus
+    # under Bazel while passing under `go test`.
+    data = ["//pkg/relational/conformance/yamsql:testdata"],
+    embed = [":explaindiff"],
+    deps = ["//pkg/recordlayer/query/plan/cascades"],
+)

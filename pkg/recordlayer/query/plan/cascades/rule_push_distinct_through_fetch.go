@@ -61,9 +61,13 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	if fetchInnerExpr == nil {
 		return
 	}
+	fetchInnerPlan := bakedInnerPlan(fetchInnerExpr)
+	if fetchInnerPlan == nil {
+		return
+	}
 
 	// Build: Distinct(fetchInner)
-	newDistinctPlan := plans.NewRecordQueryDistinctPlan(nil)
+	newDistinctPlan := plans.NewRecordQueryDistinctPlan(fetchInnerPlan)
 	newDistinctQ := expressions.ForEachQuantifier(
 		call.MemoizeFinalExpressionsFromOther(fetchInnerRef, []expressions.RelationalExpression{fetchInnerExpr}),
 	)
@@ -74,7 +78,7 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 
 	// Build: Fetch(Distinct(fetchInner))
 	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		nil,
+		newDistinctPlan,
 		fetchW.plan.GetTranslateValueFunction(),
 		fetchW.plan.GetResultType(),
 		fetchW.plan.GetFetchIndexRecords(),

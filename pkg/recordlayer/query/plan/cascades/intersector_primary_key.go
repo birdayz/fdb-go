@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -20,7 +21,7 @@ import (
 func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 	return func(
 		accesses []Vectored[*SingleMatchedAccess],
-		_ []*RequestedOrdering,
+		_ []*properties.RequestedOrdering,
 	) *IntersectionResult {
 		if len(accesses) < 2 {
 			return NoViableIntersection()
@@ -151,7 +152,7 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 		}
 
 		return NewIntersectionResult(
-			NewRichOrdering(nil, nil, false),
+			properties.NewRichOrdering(nil, nil, false),
 			NoCompensation,
 			resultExprs,
 		)

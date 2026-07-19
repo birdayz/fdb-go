@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -16,10 +17,10 @@ func makeSingleMatchedAccess(t *testing.T) (*SingleMatchedAccess, *PartialMatchI
 	candidateTopAlias := values.NamedCorrelationIdentifier("top1")
 	translationMap := EmptyTranslationMap()
 
-	orderings := []*RequestedOrdering{
-		NewRequestedOrdering([]RequestedOrderingPart{
-			{Value: values.NewQueriedValue([]string{"T"}, values.UnknownType), SortOrder: RequestedSortOrderAscending},
-		}, DistinctnessNotDistinct, false),
+	orderings := []*properties.RequestedOrdering{
+		properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+			{Value: values.NewQueriedValue([]string{"T"}, values.UnknownType), SortOrder: properties.RequestedSortOrderAscending},
+		}, properties.DistinctnessNotDistinct, false),
 	}
 
 	sma := NewSingleMatchedAccess(pm, NoCompensation, candidateTopAlias, false, translationMap, orderings)
@@ -127,8 +128,8 @@ func TestSingleMatchedAccess_DefensiveCopy(t *testing.T) {
 	t.Parallel()
 
 	pm, _, _, _, _, _, _ := makeTestPartialMatch(t)
-	orderings := []*RequestedOrdering{
-		NewRequestedOrdering(nil, DistinctnessPreserveDistinctness, false),
+	orderings := []*properties.RequestedOrdering{
+		properties.NewRequestedOrdering(nil, properties.DistinctnessPreserveDistinctness, false),
 	}
 	sma := NewSingleMatchedAccess(
 		pm, NoCompensation,

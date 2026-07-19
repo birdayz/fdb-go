@@ -60,12 +60,12 @@ func TestBoundSelectivity_CostMonotonicity(t *testing.T) {
 		t.Fatalf("expected an inequality (range) range, got %v", rng.GetRangeType())
 	}
 
-	selEq, nEq, allEq := boundSelectivity([]*predicates.ComparisonRange{eq})
-	selRng, nRng, allEqRng := boundSelectivity([]*predicates.ComparisonRange{rng})
+	selEq, nEq, allEq := properties.BoundSelectivity([]*predicates.ComparisonRange{eq})
+	selRng, nRng, allEqRng := properties.BoundSelectivity([]*predicates.ComparisonRange{rng})
 
 	// (2a) An equality bound is strictly more selective (lower sel) than a range.
 	if !(selEq < selRng) {
-		t.Errorf("boundSelectivity(equality)=%v must be < boundSelectivity(range)=%v — else the planner prefers a range scan over a point probe",
+		t.Errorf("properties.BoundSelectivity(equality)=%v must be < properties.BoundSelectivity(range)=%v — else the planner prefers a range scan over a point probe",
 			selEq, selRng)
 	}
 	if nEq != 1 || !allEq {
@@ -77,11 +77,11 @@ func TestBoundSelectivity_CostMonotonicity(t *testing.T) {
 
 	// (2b) Monotonicity: adding ANY further bound only LOWERS selectivity
 	// (never estimates more rows) — each additional factor is in (0,1).
-	sel2Eq, _, _ := boundSelectivity([]*predicates.ComparisonRange{eq, eq})
+	sel2Eq, _, _ := properties.BoundSelectivity([]*predicates.ComparisonRange{eq, eq})
 	if !(sel2Eq < selEq) {
 		t.Errorf("adding an equality bound must lower selectivity: sel([eq,eq])=%v not < sel([eq])=%v", sel2Eq, selEq)
 	}
-	selEqRng, _, allEqBoth := boundSelectivity([]*predicates.ComparisonRange{eq, rng})
+	selEqRng, _, allEqBoth := properties.BoundSelectivity([]*predicates.ComparisonRange{eq, rng})
 	if !(selEqRng < selEq) || !(selEqRng < selRng) {
 		t.Errorf("adding a bound must lower selectivity below EITHER single bound: sel([eq,rng])=%v, sel([eq])=%v, sel([rng])=%v",
 			selEqRng, selEq, selRng)
@@ -91,14 +91,14 @@ func TestBoundSelectivity_CostMonotonicity(t *testing.T) {
 	}
 
 	// (3) Identity: no bounds → no selectivity reduction.
-	selNone, nNone, allEqNone := boundSelectivity(nil)
+	selNone, nNone, allEqNone := properties.BoundSelectivity(nil)
 	if selNone != 1.0 || nNone != 0 || !allEqNone {
 		t.Errorf("no bounds: sel=%v numBound=%d allEquality=%v, want 1.0, 0, true", selNone, nNone, allEqNone)
 	}
 
 	// (4) Empty / nil bounds are inert — they must not change selectivity or count
 	// (a dropped/unbound scan column must not spuriously make an access look cheaper).
-	selWithInert, nWithInert, allEqInert := boundSelectivity([]*predicates.ComparisonRange{predicates.EmptyComparisonRange(), eq, nil})
+	selWithInert, nWithInert, allEqInert := properties.BoundSelectivity([]*predicates.ComparisonRange{predicates.EmptyComparisonRange(), eq, nil})
 	if selWithInert != selEq || nWithInert != 1 || !allEqInert {
 		t.Errorf("empty/nil bounds must be skipped: sel=%v numBound=%d allEquality=%v, want %v, 1, true", selWithInert, nWithInert, allEqInert, selEq)
 	}

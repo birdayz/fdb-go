@@ -52,10 +52,22 @@ func TestInOverIntersection_RelinksResidual(t *testing.T) {
 			if strings.Contains(plan, "<nil>") {
 				t.Fatalf("relink dropped an inner: %s", plan)
 			}
-			if !strings.Contains(plan, "Intersection(") {
-				t.Errorf("want the pk-intersection retained, got: %s", plan)
+			// ONE CONTIGUOUS substring, not three scattered Contains checks.
+			//
+			// The previous form asserted "Intersection(", "PredicatesFilter("
+			// and the pred-count marker independently, and every one of those
+			// appears in the BUGGY plan too — the filter pushed BELOW the
+			// fetch, onto index entries that carry neither `a` nor `s`. The
+			// test passed against the defect it exists to pin, which is the
+			// same toothless shape already corrected further down this file.
+			//
+			// Nesting is the entire claim: the residual must sit ABOVE the
+			// fetch, because only the fetched record has the columns it reads.
+			const wantShape = "PredicatesFilter(Fetch(Intersection("
+			if !strings.Contains(plan, wantShape) {
+				t.Errorf("want residual ABOVE the fetch (%s), got: %s", wantShape, plan)
 			}
-			if !strings.Contains(plan, "PredicatesFilter(") || !strings.Contains(plan, tc.preds) {
+			if !strings.Contains(plan, tc.preds) {
 				t.Errorf("want the residual reapplied as %s, got: %s", tc.preds, plan)
 			}
 		})
@@ -67,14 +79,12 @@ func TestInOverIntersection_RelinksResidual(t *testing.T) {
 // an indexed equality. It began life as a GATE PIN asserting that loud
 // decline; the gap is now closed, so it asserts the real plan instead.
 //
-// Two pieces closed it. (1) A wrapper holding a MALFORMED inner now always
-// relinks: the isLeafReplaceable gate exists to stop a meaningful child
-// being swapped, and a plan with no child is not meaningful — previously an
-// `InUnion` holding a nil-inner `InJoin` refused every relink because the
-// SHELL's type is not leaf-replaceable. (2) A reference whose members are
-// ALL shells is completed recursively (completeShellPlan), rebuilding
-// through each plan's WithInner rather than re-entering WithChildren —
-// which is what makes its depth bound real.
+// The gap was a nil-inner "shell": an `InUnion` holding an `InJoin` whose
+// own inner was nil, to be relinked at extraction. RFC-183 removed that
+// state at its source — the push-through rules now construct the parent
+// with its concrete child, the way Java evaluates memoizePlan as a
+// constructor argument — so no repair-at-extraction is involved and this
+// test now pins the plan a fully-linked build produces directly.
 func TestNestedIn_OverIntersection(t *testing.T) {
 	t.Parallel()
 	const q = "SELECT * FROM t_rd WHERE (b IN (7,5)) AND (c = 5) AND (a IN (5,9,3,10)) LIMIT 12"
@@ -85,11 +95,69 @@ func TestNestedIn_OverIntersection(t *testing.T) {
 	if strings.Contains(plan, "<nil>") {
 		t.Fatalf("relink left a nil inner: %s", plan)
 	}
-	// Every IN level must carry a real child; the innermost access is the
-	// index scan for the equality.
-	for _, want := range []string{"InJoin(", "IndexScan("} {
+	// This assertion USED to demand `InJoin(` here, and that expectation
+	// encoded a wrong-rows bug rather than a healthy plan.
+	//
+	// Master planned this as
+	// `Fetch(InUnion(InJoin(PredicatesFilter(IndexScan(IDX_C,[=]),[2 preds]),
+	// binding),…))` — BOTH INs evaluated below the fetch on an idx_c index
+	// entry. A is not indexed at all, and B has its own index (idx_b) but that
+	// is irrelevant here: the entry being read is idx_c's, and it carries
+	// neither A nor B. So reaching the nested-InJoin shape required pushing
+	// predicates onto an index entry lacking their columns — see the
+	// covered-column check in tryTranslateValueRec
+	// (rule_push_filter_through_fetch.go). With the push correctly refused,
+	// the sound plan drives the indexed equality and re-applies both INs above
+	// the fetch. Asserting the sound shape is the point;
+	// TestInJoinBelowFetch_RelinksRealChild below keeps a real InJoin shape
+	// under test so that path itself stays exercised.
+	// ONE ORDERED SUBSTRING, not three loose ones. The earlier version
+	// asserted "IndexScan(IDX_C", "PredicatesFilter(" and "[2 preds]"
+	// separately — and every one of those appears in MASTER'S BUGGY PLAN
+	// (`Fetch(InUnion(InJoin(PredicatesFilter(IndexScan(IDX_C,[=]),[2 preds]),
+	// binding),…))`), so the test passed against the very bug it was rewritten
+	// to pin. Nesting is the whole claim here: the filter must sit ABOVE the
+	// fetch, not below it on an index entry that carries neither A nor B.
+	for _, want := range []string{"PredicatesFilter(Fetch(IndexScan(IDX_C", "[2 preds]"} {
 		if !strings.Contains(plan, want) {
 			t.Errorf("want %s in the plan, got: %s", want, plan)
 		}
+	}
+}
+
+// TestInJoinBelowFetch_RelinksRealChild is the sentinel
+// TestNestedIn_OverIntersection used to be: it keeps
+// PushInJoinThroughFetchRule's relink — the path that produced `InJoin(<nil>)`
+// — under test, on a query where the shape is SOUND.
+//
+// An IN over an indexed column pushes below the fetch as
+// `Fetch(InJoin(IndexScan(...)))`: the InJoin runs on index entries and the
+// fetch is lifted above it, so the whole scan is fetched once instead of once
+// per IN value. Every level must carry a real child.
+//
+// Deliberately a SINGLE IN. The nested two-IN shape is not soundly reachable
+// on any schema tried: with one index per column the planner falls back to
+// `PredicatesFilter(Scan(T))`, and with a composite (a,b) index it does the
+// same. Its former nested `InJoin(InJoin(...))` existed only because the A and
+// B predicates were being pushed onto an index entry that carried neither —
+// so demanding the nested shape would demand the bug back.
+func TestInJoinBelowFetch_RelinksRealChild(t *testing.T) {
+	t.Parallel()
+	const schema = `
+CREATE TABLE T_AB (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_a ON T_AB (a)
+CREATE INDEX idx_b ON T_AB (b)`
+	const q = "SELECT id, a FROM t_ab WHERE a IN (1,2) ORDER BY id"
+	plan, err := PlanQueryForTest(q, schema, nil)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if strings.Contains(plan, "<nil>") {
+		t.Fatalf("relink left a nil inner: %s", plan)
+	}
+	// The exact nesting matters: the InJoin must sit BELOW the fetch and hold
+	// the index scan. `InJoin(` alone would also match the un-pushed shape.
+	if !strings.Contains(plan, "Fetch(InJoin(IndexScan(IDX_A") {
+		t.Errorf("want Fetch(InJoin(IndexScan(IDX_A…))) with real children, got: %s", plan)
 	}
 }

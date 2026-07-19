@@ -1,4 +1,4 @@
-package cascades
+package properties
 
 import (
 	"testing"

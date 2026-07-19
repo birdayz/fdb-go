@@ -5,6 +5,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -100,7 +101,7 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 
 	requestedOrderings := call.GetRequestedOrderings()
 	if len(requestedOrderings) == 0 {
-		requestedOrderings = []*RequestedOrdering{PreserveOrdering()}
+		requestedOrderings = []*properties.RequestedOrdering{properties.PreserveOrdering()}
 	} else {
 		hasPreserve := false
 		for _, ro := range requestedOrderings {
@@ -110,7 +111,7 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 			}
 		}
 		if !hasPreserve {
-			requestedOrderings = append(requestedOrderings, PreserveOrdering())
+			requestedOrderings = append(requestedOrderings, properties.PreserveOrdering())
 		}
 	}
 
@@ -120,7 +121,19 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 			continue
 		}
 
-		innerExprs := partition.GetExpressions()
+		// GetPhysicalExpressions, not GetExpressions: innerPlans below comes from
+		// GetPlans, which FILTERS to physical members, while GetExpressions does
+		// not. Seeding a FINAL reference from the unfiltered list could memoize a
+		// non-physical member as a plan alternative, and the two lists are used
+		// together here — one seeds the memo reference, the other drives the plan
+		// chain.
+		//
+		// Latent, not live: instrumenting this site over the full 2407-query
+		// corpus found ZERO partitions where the two lists differ, which is why
+		// InJoin reports no unreachable edges. Fixed rather than left as a
+		// comment because the helper exists precisely for this pairing and had no
+		// caller.
+		innerExprs := partition.GetPhysicalExpressions()
 
 		for _, requestedOrdering := range requestedOrderings {
 			allOrderings := r.enumerateSourceOrderingsForRequestedOrdering(
@@ -177,9 +190,9 @@ func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
 	explodeQuantifiers []expressions.Quantifier,
 	explodeAliases map[values.CorrelationIdentifier]struct{},
 	explodeAliasMap map[values.CorrelationIdentifier]expressions.Quantifier,
-	requestedOrdering *RequestedOrdering,
+	requestedOrdering *properties.RequestedOrdering,
 ) [][]inJoinSource {
-	var richOrdering *RichOrdering
+	var richOrdering *properties.RichOrdering
 	for _, expr := range innerExprs {
 		if ph, ok := expr.(physicalPlanExpression); ok {
 			richOrdering = computeWrapperRichOrdering(ph)
@@ -209,7 +222,7 @@ func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
 			return nil
 		}
 
-		sortOrder := SortOrderOf(bindings)
+		sortOrder := properties.SortOrderOf(bindings)
 		if sortOrder.IsDirectional() {
 			return nil
 		}
@@ -270,7 +283,7 @@ func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
 // buildSourcesFromProvided walks the provided ordering (fallback when no
 // requested ordering is given).
 func (r *ImplementInJoinRule) buildSourcesFromProvided(
-	richOrdering *RichOrdering,
+	richOrdering *properties.RichOrdering,
 	explodeQuantifiers []expressions.Quantifier,
 	explodeAliases map[values.CorrelationIdentifier]struct{},
 	explodeAliasMap map[values.CorrelationIdentifier]expressions.Quantifier,
@@ -280,7 +293,7 @@ func (r *ImplementInJoinRule) buildSourcesFromProvided(
 
 	for _, key := range richOrdering.GetKeys() {
 		bindings := richOrdering.GetBindingMap()[key]
-		if !AreAllBindingsFixed(bindings) {
+		if !properties.AreAllBindingsFixed(bindings) {
 			continue
 		}
 		for _, b := range bindings {

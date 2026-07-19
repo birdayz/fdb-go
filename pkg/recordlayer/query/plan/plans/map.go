@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -14,7 +15,8 @@ import (
 // plan's result type, and at execution time each inner row is fed
 // through the value's Evaluate to produce the output row.
 type RecordQueryMapPlan struct {
-	inner       RecordQueryPlan
+	PlanExprBase
+	innerQ      expressions.Quantifier
 	resultValue values.Value
 }
 
@@ -22,16 +24,27 @@ type RecordQueryMapPlan struct {
 // plan and result value.
 func NewRecordQueryMapPlan(inner RecordQueryPlan, resultValue values.Value) *RecordQueryMapPlan {
 	return &RecordQueryMapPlan{
-		inner:       inner,
+		innerQ:      QuantifierOverPlan(inner),
 		resultValue: resultValue,
 	}
 }
 
-// GetInner returns the wrapped inner plan.
-func (p *RecordQueryMapPlan) GetInner() RecordQueryPlan { return p.inner }
+// GetInner returns the wrapped inner plan, dereferenced through the quantifier.
+func (p *RecordQueryMapPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryMapPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // GetResultValue returns the transformation value.
-func (p *RecordQueryMapPlan) GetResultValue() values.Value { return p.resultValue }
+func (p *RecordQueryMapPlan) GetResultValue() values.Value {
+	return p.resultValue
+}
 
 // GetResultType returns the result value's type.
 func (p *RecordQueryMapPlan) GetResultType() values.Type {
@@ -43,16 +56,17 @@ func (p *RecordQueryMapPlan) GetResultType() values.Type {
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryMapPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares the result value by semantic Value identity
 // (RFC-176 P2 — see semanticValueEquals), Java's
 // RecordQueryMapPlan.equalsWithoutChildren → semanticEqualsForResults.
-func (p *RecordQueryMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMapPlan)
 	if !ok {
 		return false
@@ -72,14 +86,17 @@ func (p *RecordQueryMapPlan) HashCodeWithoutChildren() uint64 {
 // Explain renders Map(inner, result).
 func (p *RecordQueryMapPlan) Explain() string {
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	resultLabel := values.ExplainValue(p.resultValue)
 	return fmt.Sprintf("Map(%s, %s)", innerLabel, resultLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryMapPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryMapPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryMapPlan)(nil)
+)
 
 // WithInner returns a copy with the inner replaced and every other field
 // preserved — the extraction-relink rebuild path (see findPhysicalPlan's
@@ -87,6 +104,26 @@ var _ RecordQueryPlan = (*RecordQueryMapPlan)(nil)
 // carry, so identity-preserving copy is the only safe form.
 func (p *RecordQueryMapPlan) WithInner(inner RecordQueryPlan) *RecordQueryMapPlan {
 	cp := *p
-	cp.inner = inner
+	cp.innerQ = QuantifierOverPlan(inner)
 	return &cp
 }
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryMapPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryMapPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
+}
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryMapPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

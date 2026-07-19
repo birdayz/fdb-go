@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -82,7 +83,7 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 	// Normal path: for each requested ordering, wrap the child winner.
 	orderings := call.GetRequestedOrderings()
 	if len(orderings) == 0 {
-		orderings = []*RequestedOrdering{PreserveOrdering()}
+		orderings = []*properties.RequestedOrdering{properties.PreserveOrdering()}
 	}
 
 	seen := make(map[expressions.RelationalExpression]bool)

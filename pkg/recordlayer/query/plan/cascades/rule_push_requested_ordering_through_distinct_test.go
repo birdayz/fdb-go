@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -20,13 +21,13 @@ func TestPushRequestedOrderingThroughDistinct_PropagatesConstraint(t *testing.T)
 	// Set a requested ordering constraint on the Distinct's Reference
 	// (as if pushed by a parent Sort rule).
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, distinctRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, distinctRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	// Fire the rule in constraintOnly mode.
 	rule := NewPushRequestedOrderingThroughDistinctRule()
@@ -60,7 +61,7 @@ func TestPushRequestedOrderingThroughDistinct_PropagatesConstraint(t *testing.T)
 	if !ok || fv.Field != "col1" {
 		t.Fatalf("expected ordering on col1, got %v", parts[0].Value)
 	}
-	if parts[0].SortOrder != RequestedSortOrderAscending {
+	if parts[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatal("expected ASC sort order")
 	}
 }
@@ -102,13 +103,13 @@ func TestPushRequestedOrderingThroughDistinct_NotConstraintOnlyDoesNotPush(t *te
 	distinctRef := expressions.InitialOf(distinct)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, distinctRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, distinctRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughDistinctRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), distinct)
@@ -137,14 +138,14 @@ func TestPushRequestedOrderingThroughDistinct_MultipleSortKeys(t *testing.T) {
 	distinctRef := expressions.InitialOf(distinct)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-			{Value: &values.FieldValue{Field: "b", Typ: values.UnknownType}, SortOrder: RequestedSortOrderDescending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+			{Value: &values.FieldValue{Field: "b", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, distinctRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, distinctRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughDistinctRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), distinct)
@@ -165,10 +166,10 @@ func TestPushRequestedOrderingThroughDistinct_MultipleSortKeys(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("expected 2 ordering parts, got %d", len(parts))
 	}
-	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "a" || parts[0].SortOrder != RequestedSortOrderAscending {
+	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "a" || parts[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatalf("first part: want a ASC, got %s %v", fv.Field, parts[0].SortOrder)
 	}
-	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "b" || parts[1].SortOrder != RequestedSortOrderDescending {
+	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "b" || parts[1].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("second part: want b DESC, got %s %v", fv.Field, parts[1].SortOrder)
 	}
 }
@@ -182,13 +183,13 @@ func TestPushRequestedOrderingThroughDistinct_DescPreserved(t *testing.T) {
 	distinctRef := expressions.InitialOf(distinct)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderDescending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, distinctRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, distinctRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughDistinctRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), distinct)
@@ -205,7 +206,7 @@ func TestPushRequestedOrderingThroughDistinct_DescPreserved(t *testing.T) {
 	if !ok {
 		t.Fatal("constraint not pushed to child Reference")
 	}
-	if pushed[0].GetParts()[0].SortOrder != RequestedSortOrderDescending {
+	if pushed[0].GetParts()[0].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatal("DESC should be preserved through Distinct")
 	}
 }
@@ -220,13 +221,13 @@ func TestPushRequestedOrderingThroughDistinct_NoYield(t *testing.T) {
 	distinctRef := expressions.InitialOf(distinct)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, distinctRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, distinctRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughDistinctRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), distinct)

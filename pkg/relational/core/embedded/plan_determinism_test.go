@@ -17,23 +17,22 @@ package embedded
 //
 // RFC-167 Phase 1a (inner-aware shell hash) additionally fixes the multi-equality
 // tie over several single-column indexes (`WHERE a=5 AND b=7 AND c=9` with
-// idx_a/idx_b/idx_c). Those three competing plans are SAME-TYPE nil-inner shells
-// (Fetch(PredicatesFilter(IndexScan))) whose embedded plan has GetChildren()==[],
-// so the bare stablePlanHash criterion-#17 tie-break was blind to the buried
-// index and the comparator returned a tie → selection fell to member-iteration
-// order. costExprHash now resolves the shell's inner STRUCTURALLY through the
-// quantifier graph (exprConcreteHash), surfacing the index identity so the
-// tie-break is a true total order and the cost-min is deterministic. Pure
-// tie-resolution — no plan-shape re-ranking (the cheapest member, a single-index
-// shell, still wins, now deterministically).
+// idx_a/idx_b/idx_c). Those three competing plans were SAME-TYPE nil-inner shells
+// (Fetch(PredicatesFilter(IndexScan))) whose embedded plan had GetChildren()==[],
+// so the stablePlanHash criterion-#17 tie-break was blind to the buried index and
+// the comparator returned a tie → selection fell to member-iteration order. The
+// fix at the time resolved the shell's inner through the quantifier graph; RFC-183
+// then removed the shell state entirely, so the embedded plan tree now carries the
+// index identity on its own and the plain stablePlanHash is a true total order.
+// Either way this is pure tie-resolution — no plan-shape re-ranking.
 //
 // DECOUPLED FOLLOW-ON (RFC-167 Phase 1b + 4): making shells stop winning over real
 // plans (the guard generalization) re-ranks the all-equality case to a 3-way
 // Intersection, which requires the primary-key ordering-gate (Phase 4) to be
 // correct — and that gate must use the full ordering machinery (a crude
 // "all-columns-equality-bound" gate breaks vector/partition-inequality cases).
-// Set-op / reverse-scan ties (which the hash fix already covers via the same
-// exprConcreteHash) get explicit nets there. Those are NOT in this change.
+// Set-op / reverse-scan ties (which the same hash tie-break already covers) get
+// explicit nets there. Those are NOT in this change.
 
 import (
 	"errors"

@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -114,12 +115,12 @@ func TestInJoinRule_OrderingAware_RichOrderingFromIndexScan(t *testing.T) {
 	}
 
 	aBindings := richOrd.GetBindingMap()[richOrd.GetKeys()[0]]
-	if !AreAllBindingsFixed(aBindings) {
+	if !properties.AreAllBindingsFixed(aBindings) {
 		t.Fatal("first key (equality-bound) should be fixed")
 	}
 
 	bBindings := richOrd.GetBindingMap()[richOrd.GetKeys()[1]]
-	sortOrder := SortOrderOf(bBindings)
+	sortOrder := properties.SortOrderOf(bBindings)
 	if !sortOrder.IsDirectional() {
 		t.Fatal("second key (non-equality) should be sorted/directional")
 	}

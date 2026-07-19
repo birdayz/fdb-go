@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -45,8 +46,8 @@ func (r *ImplementRecursiveLevelUnionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	initialWinner := getWinnerForOrdering(initialRef, PreserveOrdering(), call.CostModel())
-	recursiveWinner := getWinnerForOrdering(recursiveRef, PreserveOrdering(), call.CostModel())
+	initialWinner := getWinnerForOrdering(initialRef, properties.PreserveOrdering(), call.CostModel())
+	recursiveWinner := getWinnerForOrdering(recursiveRef, properties.PreserveOrdering(), call.CostModel())
 	if initialWinner == nil || recursiveWinner == nil {
 		return
 	}

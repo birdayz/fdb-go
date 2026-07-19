@@ -46,7 +46,7 @@ func TestBoundSelectivity(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			sel, n, allEq := boundSelectivity(tc.comps)
+			sel, n, allEq := properties.BoundSelectivity(tc.comps)
 			// Tolerance, not ==: the runtime does sequential float64 multiplies
 			// while the want is a compile-time constant product (different ULPs).
 			if math.Abs(sel-tc.wantSel) > 1e-12 {

@@ -106,7 +106,7 @@ func TestMultiIntersectionPlan_EqualsWithoutChildren_SameShape(t *testing.T) {
 	rv := &values.FieldValue{Field: "rv", Typ: values.NotNullString}
 	a := NewRecordQueryMultiIntersectionOnValuesPlan(nil, keys, rv)
 	b := NewRecordQueryMultiIntersectionOnValuesPlan(nil, keys, rv)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same-shape multi intersections should be equal")
 	}
 }
@@ -120,7 +120,7 @@ func TestMultiIntersectionPlan_EqualsWithoutChildren_DifferentKeyCount(t *testin
 	}
 	a := NewRecordQueryMultiIntersectionOnValuesPlan(nil, keys1, nil)
 	b := NewRecordQueryMultiIntersectionOnValuesPlan(nil, keys2, nil)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different key counts should NOT be equal")
 	}
 }
@@ -131,7 +131,7 @@ func TestMultiIntersectionPlan_EqualsWithoutChildren_DifferentKeys(t *testing.T)
 	keys2 := []values.Value{&values.FieldValue{Field: "y", Typ: values.NotNullLong}}
 	a := NewRecordQueryMultiIntersectionOnValuesPlan(nil, keys1, nil)
 	b := NewRecordQueryMultiIntersectionOnValuesPlan(nil, keys2, nil)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different key values should NOT be equal")
 	}
 }
@@ -142,7 +142,7 @@ func TestMultiIntersectionPlan_EqualsWithoutChildren_DifferentResultValue(t *tes
 	rv2 := &values.FieldValue{Field: "count", Typ: values.NotNullLong}
 	a := NewRecordQueryMultiIntersectionOnValuesPlan(nil, nil, rv1)
 	b := NewRecordQueryMultiIntersectionOnValuesPlan(nil, nil, rv2)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different result values should NOT be equal")
 	}
 }
@@ -151,7 +151,7 @@ func TestMultiIntersectionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	mi := NewRecordQueryMultiIntersectionOnValuesPlan(nil, nil, nil)
 	u := NewRecordQueryUnionPlan(nil)
-	if mi.EqualsWithoutChildren(u) {
+	if mi.EqualsPlanWithoutChildren(u) {
 		t.Fatal("MultiIntersection should not equal UnionPlan")
 	}
 }

@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // PlannerConstraint is a typed key for constraints that flow between
@@ -14,7 +15,7 @@ type PlannerConstraint[T any] struct {
 }
 
 // RequestedOrderingConstraintKey is the constraint key for requested orderings.
-var RequestedOrderingConstraintKey = &PlannerConstraint[[]*RequestedOrdering]{name: "requestedOrdering"}
+var RequestedOrderingConstraintKey = &PlannerConstraint[[]*properties.RequestedOrdering]{name: "requestedOrdering"}
 
 // ReferencedFieldsConstraintKey is the constraint key for referenced
 // fields. Pushed top-down by PushReferencedFieldsThrough* rules to
@@ -107,9 +108,9 @@ func combineForKey(key any) func(existing, pushed any) (any, bool) {
 	switch key {
 	case any(RequestedOrderingConstraintKey):
 		return func(existing, pushed any) (any, bool) {
-			cur, _ := existing.([]*RequestedOrdering)
-			add, _ := pushed.([]*RequestedOrdering)
-			return CombineRequestedOrderings(cur, add)
+			cur, _ := existing.([]*properties.RequestedOrdering)
+			add, _ := pushed.([]*properties.RequestedOrdering)
+			return properties.CombineRequestedOrderings(cur, add)
 		}
 	case any(ReferencedFieldsConstraintKey):
 		return func(existing, pushed any) (any, bool) {

@@ -61,7 +61,7 @@ func (w *physicalMultiIntersectionWrapper) EqualsWithoutChildren(other expressio
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalMultiIntersectionWrapper) HashCodeWithoutChildren() uint64 {
@@ -84,33 +84,16 @@ func (w *physicalMultiIntersectionWrapper) WithChildren(qs []expressions.Quantif
 // merge work. When children aren't available as quantifiers (leaf-style
 // embedding), estimates cardinality from DistinctSelectivity since
 // the output produces one row per distinct group.
-func (w *physicalMultiIntersectionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		groupCard := properties.LeafScanCardinality * properties.DistinctSelectivity
-		nChildren := len(w.plan.GetChildren())
-		if nChildren < 1 {
-			nChildren = 1
-		}
-		return properties.Cost{
-			Cardinality: groupCard,
-			CPU:         groupCard * properties.IntersectionCPU * float64(nChildren),
-		}
-	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return intersectionCost(child)
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalMultiIntersectionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 // HintOrdering: multi-intersection output is ordered by the comparison
 // key (grouping columns).
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalMultiIntersectionWrapper) HintOrdering() properties.Ordering {
-	if w.plan == nil {
-		return properties.Ordering{}
-	}
-	compKey := w.plan.GetComparisonKey()
-	if len(compKey) == 0 {
-		return properties.Ordering{}
-	}
-	return properties.Ordering{IsKnown: true, Keys: compKey}
+	return w.plan.HintOrdering()
 }
 
 func (w *physicalMultiIntersectionWrapper) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {

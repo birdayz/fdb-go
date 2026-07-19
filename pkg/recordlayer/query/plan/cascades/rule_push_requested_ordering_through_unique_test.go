@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -17,13 +18,13 @@ func TestPushRequestedOrderingThroughUnique_PropagatesConstraint(t *testing.T) {
 	uniqueRef := expressions.InitialOf(unique)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, uniqueRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, uniqueRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughUniqueRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), unique)
@@ -93,13 +94,13 @@ func TestPushRequestedOrderingThroughUnique_NotConstraintOnlyDoesNotPush(t *test
 	uniqueRef := expressions.InitialOf(unique)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, uniqueRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, uniqueRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughUniqueRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), unique)
@@ -127,13 +128,13 @@ func TestPushRequestedOrderingThroughUnique_DescPreserved(t *testing.T) {
 	uniqueRef := expressions.InitialOf(unique)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderDescending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, uniqueRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, uniqueRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughUniqueRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), unique)
@@ -150,7 +151,7 @@ func TestPushRequestedOrderingThroughUnique_DescPreserved(t *testing.T) {
 	if !ok {
 		t.Fatal("constraint not pushed to child Reference")
 	}
-	if pushed[0].GetParts()[0].SortOrder != RequestedSortOrderDescending {
+	if pushed[0].GetParts()[0].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatal("DESC should be preserved through Unique")
 	}
 }
@@ -164,13 +165,13 @@ func TestPushRequestedOrderingThroughUnique_NoYield(t *testing.T) {
 	uniqueRef := expressions.InitialOf(unique)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, uniqueRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, uniqueRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughUniqueRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), unique)

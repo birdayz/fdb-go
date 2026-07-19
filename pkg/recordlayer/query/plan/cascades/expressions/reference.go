@@ -118,6 +118,25 @@ func FinalOf(e RelationalExpression) *Reference {
 	return &Reference{finalMembers: []RelationalExpression{e}, plannerStage: StagePlanned}
 }
 
+// FinalOfAtStage returns a Reference holding e as its only FINAL member at
+// the CALLER'S stage, decoupling "which member set" from "which planner
+// stage".
+//
+// FinalOf bundles the two: it is the spine-pin shape, where StagePlanned is
+// load-bearing (nothing may explore the singleton past the pin). But
+// memoizePlan needs only the first half — a plan belongs in the FINAL set,
+// per Java's Reference.ofFinalExpressions — and forcing StagePlanned as a
+// side effect changes what ExploreGroupTask does with the reference, which is
+// a different decision entirely.
+//
+// That conflation is why MemoizeFinalExpression still mints via InitialOf and
+// lands plans in the EXPLORATORY set despite its name: the only
+// final-set constructor available also stamped a stage the caller did not
+// intend.
+func FinalOfAtStage(e RelationalExpression, stage PlannerStage) *Reference {
+	return &Reference{finalMembers: []RelationalExpression{e}, plannerStage: stage}
+}
+
 // Canonical follows the forwarding chain to the surviving Reference and
 // compresses the path so subsequent lookups are O(1). For a live
 // (non-forwarded) Reference it returns the receiver unchanged. Safe on

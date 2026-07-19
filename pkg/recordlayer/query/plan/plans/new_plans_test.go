@@ -87,10 +87,10 @@ func TestAggregateIndexPlan_EqualityAndHash(t *testing.T) {
 	b := NewRecordQueryAggregateIndexPlan(idx, "T", values.UnknownType, "SUM")
 	c := NewRecordQueryAggregateIndexPlan(idx, "T", values.UnknownType, "COUNT")
 
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("identical aggregate plans should be equal")
 	}
-	if a.EqualsWithoutChildren(c) {
+	if a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("different aggregate functions should not be equal")
 	}
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
@@ -167,10 +167,10 @@ func TestComparatorPlan_EqualityAndExplain(t *testing.T) {
 	b := NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 0, true, false)
 	c := NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 1, true, false)
 
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("identical comparator plans should be equal")
 	}
-	if a.EqualsWithoutChildren(c) {
+	if a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("different ref index should break equality")
 	}
 
@@ -224,10 +224,10 @@ func TestSelectorPlan_EqualityAndExplain(t *testing.T) {
 	b := NewRecordQuerySelectorPlan([]RecordQueryPlan{c1, c1}, sel2, false)
 	c := NewRecordQuerySelectorPlan([]RecordQueryPlan{c1, c1}, sel3, false)
 
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same probability selectors should be equal")
 	}
-	if a.EqualsWithoutChildren(c) {
+	if a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("different probabilities should break equality")
 	}
 	got := a.Explain()
@@ -297,13 +297,13 @@ func TestLoadByKeysPlan_Equality(t *testing.T) {
 	c := NewRecordQueryLoadByKeysPlanFromKeys([]tuple.Tuple{{int64(2)}})
 	d := NewRecordQueryLoadByKeysPlanFromParameter("p")
 
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same keys should be equal")
 	}
-	if a.EqualsWithoutChildren(c) {
+	if a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("different keys should not be equal")
 	}
-	if a.EqualsWithoutChildren(d) {
+	if a.EqualsPlanWithoutChildren(d) {
 		t.Fatal("keys source vs parameter source should not be equal")
 	}
 }
@@ -372,10 +372,10 @@ func TestScoreForRankPlan_Equality(t *testing.T) {
 	b := NewRecordQueryScoreForRankPlan(inner, []ScoreForRank{r2})
 	c := NewRecordQueryScoreForRankPlan(inner, []ScoreForRank{r3})
 
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same ranks should be equal")
 	}
-	if a.EqualsWithoutChildren(c) {
+	if a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("different index name should break equality")
 	}
 }
@@ -435,13 +435,13 @@ func TestTextIndexPlan_EqualityAndHash(t *testing.T) {
 	c := NewRecordQueryTextIndexPlan("idx", scan, true)
 	d := NewRecordQueryTextIndexPlan("other", scan, false)
 
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("identical text plans should be equal")
 	}
-	if a.EqualsWithoutChildren(c) {
+	if a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("reverse flag should break equality")
 	}
-	if a.EqualsWithoutChildren(d) {
+	if a.EqualsPlanWithoutChildren(d) {
 		t.Fatal("different index name should break equality")
 	}
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {

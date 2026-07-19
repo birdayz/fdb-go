@@ -60,7 +60,7 @@ func (w *physicalStreamingAggWrapper) EqualsWithoutChildren(other expressions.Re
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalStreamingAggWrapper) HashCodeWithoutChildren() uint64 {
@@ -86,43 +86,14 @@ func (w *physicalStreamingAggWrapper) WithChildren(qs []expressions.Quantifier) 
 // HintCost: streaming aggregation is cheap — one pass over sorted
 // input, output cardinality reduced by DistinctSelectivity. Cheaper
 // than hash because no hash table is built (O(1) memory per group).
-func (w *physicalStreamingAggWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	in := child[0].Cardinality
-	return properties.Cost{
-		Cardinality: in * properties.DistinctSelectivity * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.StreamingAggCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalStreamingAggWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalStreamingAggWrapper) HintOrdering() properties.Ordering {
-	if w.plan == nil || len(w.plan.GetGroupingKeys()) == 0 {
-		return properties.Ordering{IsKnown: false}
-	}
-	// The advertised ordering is over the aggregate's OUTPUT row: group key i
-	// flows as output column i, NAMED by the canonical group-key output name
-	// (AggregateKeyColumnName — the same authority the runtime output row and
-	// the ORDER-BY-over-aggregate bake use). Advertising the raw grouping-key
-	// VALUES (input-relative bakes over the pre-aggregate row) mis-rendered
-	// the provided keys and made a satisfied ORDER BY look unsatisfied — a
-	// spurious second InMemorySort above the aggregate; an evaluating consumer
-	// (a merge comparison key) would also have read the aggregate's output row
-	// with a dead pre-aggregate ordinal.
-	groupKeys := w.plan.GetGroupingKeys()
-	keys := make([]values.Value, len(groupKeys))
-	for i, k := range groupKeys {
-		keys[i] = values.NewFieldValueWithResolvedOrdinal(
-			expressions.AggregateKeyColumnName(k), i, values.UnknownType)
-	}
-	desc := make([]bool, len(keys))
-	if idx, ok := w.plan.GetInner().(*plans.RecordQueryIndexPlan); ok && idx.IsReverse() {
-		for i := range desc {
-			desc[i] = true
-		}
-	}
-	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+	return w.plan.HintOrdering()
 }
 
 func (w *physicalStreamingAggWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

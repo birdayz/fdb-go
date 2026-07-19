@@ -192,10 +192,10 @@ func TestStreamingAggPlan_EqualityAndHash(t *testing.T) {
 		},
 	)
 
-	if !p1.EqualsWithoutChildren(p2) {
+	if !p1.EqualsPlanWithoutChildren(p2) {
 		t.Fatal("identical plans should be equal")
 	}
-	if p1.EqualsWithoutChildren(p3) {
+	if p1.EqualsPlanWithoutChildren(p3) {
 		t.Fatal("different plans should not be equal")
 	}
 	if p1.HashCodeWithoutChildren() != p2.HashCodeWithoutChildren() {

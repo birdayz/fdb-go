@@ -21,7 +21,7 @@ func TestRecordQueryInJoinPlan_BindingAliasInvariant(t *testing.T) {
 	a := NewRecordQueryInJoinPlan(inner, "q$836", true, false)
 	b := NewRecordQueryInJoinPlan(inner, "q$2673", true, false) // same shape, different alias
 
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Error("InJoins differing only in the binding alias must be EqualsWithoutChildren-equal")
 	}
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
@@ -39,7 +39,7 @@ func TestRecordQueryInJoinPlan_BindingAliasInvariant(t *testing.T) {
 	// A GENUINE structural difference (scan direction) must still distinguish them —
 	// alias-invariance must not collapse real differences.
 	rev := NewRecordQueryInJoinPlan(inner, "q$836", true, true)
-	if a.EqualsWithoutChildren(rev) {
+	if a.EqualsPlanWithoutChildren(rev) {
 		t.Error("InJoins differing in reverse must NOT be equal")
 	}
 	if a.HashCodeWithoutChildren() == rev.HashCodeWithoutChildren() {
@@ -59,7 +59,7 @@ func TestRecordQueryInUnionPlan_BindingAliasInvariant(t *testing.T) {
 	a := NewRecordQueryInUnionPlan(inner, []string{"q$5"}, ck, false)
 	b := NewRecordQueryInUnionPlan(inner, []string{"q$99"}, ck, false) // same shape, different alias
 
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Error("InUnions differing only in binding aliases must be EqualsWithoutChildren-equal")
 	}
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
@@ -74,7 +74,7 @@ func TestRecordQueryInUnionPlan_BindingAliasInvariant(t *testing.T) {
 
 	// The binding COUNT is structural — a different number of IN columns must NOT be equal.
 	two := NewRecordQueryInUnionPlan(inner, []string{"q$5", "q$6"}, ck, false)
-	if a.EqualsWithoutChildren(two) {
+	if a.EqualsPlanWithoutChildren(two) {
 		t.Error("InUnions with a different number of bindings must NOT be equal")
 	}
 }

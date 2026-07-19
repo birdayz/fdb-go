@@ -262,6 +262,17 @@ func (t *TransformExprTask) Run(p *Planner) {
 	var yieldFn func(expressions.RelationalExpression) bool
 	if t.Phase == PhasePlanning {
 		yieldFn = func(expr expressions.RelationalExpression) bool {
+			// Same unconditional verifyChildrenMemoized as the two
+			// ImplementationRuleCall yield sites. This one carries most of
+			// the surface: as the comment above says, expression rules
+			// produce PHYSICAL wrappers during PLANNING, and they reach the
+			// memo here rather than through ImplementationRuleCall. Guarding
+			// only the implementation path would leave the large majority of
+			// physical yields unchecked and make the invariant decorative.
+			if err := verifyChildrenMemoized(expr, p.reach); err != nil {
+				p.capErr = err
+				return false
+			}
 			return t.Ref.InsertFinal(expr)
 		}
 	}
@@ -398,6 +409,12 @@ func (t *TransformImplTask) Run(p *Planner) {
 		// FinalizeExpressionsRule yields (they're already-explored
 		// exploratory members promoted to final).
 		for _, y := range call.yielded {
+			// Java's unconditional verifyChildrenMemoized, at the same point:
+			// before the yielded expression enters the memo.
+			if err := verifyChildrenMemoized(y, p.reach); err != nil {
+				p.capErr = err
+				return
+			}
 			t.Ref.InsertFinal(y)
 			if !isAlreadyExploratoryMember(t.Ref, y) {
 				// OptimizeInputs only for PHYSICAL yields — third of the three gated
@@ -451,6 +468,10 @@ func (t *TransformImplTask) Run(p *Planner) {
 				}
 				t.Rule.OnMatch(call)
 				for _, y := range call.yielded {
+					if err := verifyChildrenMemoized(y, p.reach); err != nil {
+						p.capErr = err
+						return
+					}
 					t.Ref.InsertFinal(y)
 					if !isAlreadyExploratoryMember(t.Ref, y) {
 						// NOTE: this 4th OptimizeInputs site — the
@@ -466,8 +487,7 @@ func (t *TransformImplTask) Run(p *Planner) {
 						// for JoinInner, no correlation gate on the swap), but that is
 						// HARMLESS: residual 0-row safety for any correlated leg is held
 						// DOWNSTREAM and independently of which site drives the optimize —
-						// by compensationSafeForYield's outer-correlation guard + B1a's
-						// isNilInnerFetch winner selection (defense-in-depth) — not by B1's
+						// by compensationSafeForYield's outer-correlation guard — not by B1's
 						// gating. B1 only removes a premature standalone prune (the
 						// :248 path above); it was never the sole 0-row guarantee.
 						p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
@@ -501,22 +521,13 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 
 	var bestFinal expressions.RelationalExpression
 	for _, m := range t.Ref.FinalMembers() {
-		if isNilInnerFetch(m) {
-			continue
-		}
 		if bestFinal == nil || costModel(m, bestFinal) {
 			bestFinal = m
 		}
 	}
 
 	if bestFinal == nil {
-		// No VALID final (only nil-inner Fetch shells, or nothing).
-		// Do NOT clear: an extraction template's shell must stay for
-		// the relink seam — under dual insertion the valid twin
-		// survived in the exploratory set, but with finals-only
-		// physical yields clearing would strand the template with an
-		// empty ref and the relink kept a nil inner (the XX000
-		// Fetch(<nil>) plan-invariant).
+		// No finals at all — nothing to prune to and no winner to stamp.
 		return
 	}
 

@@ -230,6 +230,22 @@ func oracleAggRows(c *Case, q Query) ([]Row, error) {
 	out := make([]Row, 0, len(groups))
 	for _, g := range groups {
 		agg := foldAgg(a, g.rows)
+		// An overflowing SUM makes the whole QUERY raise 22003, so the
+		// sentinel must survive HAVING. The engine hits the overflow while
+		// FOLDING — before any HAVING filter can discard the group — whereas
+		// HAVING here would compare against the sentinel, fail to get
+		// TriTrue, and `continue`, dropping the only evidence that an error
+		// is expected. AggResultOverflows would then report false and the
+		// runner would score the engine's CORRECT 22003 as a row mismatch.
+		//
+		// That is how `SELECT a AS g, SUM(a) AS agg FROM t_rd GROUP BY a
+		// HAVING SUM(a) > 2` came out red on 27 of 3000 seeds: four rows
+		// carry the generator's 2^62 boundary sentinel in `a`, so their group
+		// sums to 2^64.
+		if _, overflows := agg.(aggOverflow); overflows {
+			out = append(out, Row{"G": g.key, "AGG": agg})
+			continue
+		}
 		if a.HavingOn && a.Having != nil {
 			tb, err := predicates.NewLiteralComparison(a.Having.Op, a.Having.Lit).Eval(agg)
 			if err != nil {

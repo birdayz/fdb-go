@@ -38,8 +38,3 @@ func planHashRecursive(h hash.Hash64, p RecordQueryPlan, depth int) {
 		planHashRecursive(h, child, depth*31+i+1)
 	}
 }
-
-// PlanHashEqual reports whether two plans have the same hash.
-func PlanHashEqual(a, b RecordQueryPlan) bool {
-	return PlanHash(a) == PlanHash(b)
-}

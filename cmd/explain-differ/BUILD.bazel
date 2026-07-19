@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "explain-differ_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/explain-differ",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/relational/conformance/explaindiff",
+    ],
+)
+
+go_binary(
+    name = "explain-differ",
+    embed = [":explain-differ_lib"],
+    visibility = ["//visibility:public"],
+)

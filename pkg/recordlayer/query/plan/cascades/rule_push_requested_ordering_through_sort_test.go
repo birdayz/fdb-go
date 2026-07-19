@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -56,7 +57,7 @@ func TestPushRequestedOrderingThroughSort_PushesConstraint(t *testing.T) {
 	if !ok || fv.Field != "col1" {
 		t.Fatalf("expected ordering on col1, got %v", parts[0].Value)
 	}
-	if parts[0].SortOrder != RequestedSortOrderAscending {
+	if parts[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatal("expected ASC sort order")
 	}
 }
@@ -150,7 +151,7 @@ func TestPushRequestedOrderingThroughSort_DescKey(t *testing.T) {
 	if !ok {
 		t.Fatal("constraint not pushed")
 	}
-	if pushed[0].GetParts()[0].SortOrder != RequestedSortOrderDescending {
+	if pushed[0].GetParts()[0].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatal("expected DESC sort order")
 	}
 }
@@ -190,10 +191,10 @@ func TestPushRequestedOrderingThroughSort_MultipleSortKeys(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("expected 2 ordering parts, got %d", len(parts))
 	}
-	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "a" || parts[0].SortOrder != RequestedSortOrderAscending {
+	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "a" || parts[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatalf("first part: want a ASC, got %s %v", fv.Field, parts[0].SortOrder)
 	}
-	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "b" || parts[1].SortOrder != RequestedSortOrderDescending {
+	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "b" || parts[1].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("second part: want b DESC, got %s %v", fv.Field, parts[1].SortOrder)
 	}
 }

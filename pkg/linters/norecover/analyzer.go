@@ -49,6 +49,11 @@ var Allowlist = map[string]int{
 	"pkg/recordlayer/merge_cursor.go": 1,
 	// binding-tester harness binary (cgo-dependent build)
 	"cmd/fdb-stacktester/directory_ops.go": 1,
+	// RFC-183 EXPLAIN-differ: a planner panic on ONE corpus query becomes a
+	// <PLAN-PANIC: …> marker so the corpus-wide dump still completes. Nothing is
+	// swallowed — the marker is rendered into the baseline and TestNoPlanPanics
+	// fails on any entry carrying one.
+	"pkg/relational/conformance/explaindiff/explaindiff.go": 1,
 }
 
 // Analyzer is the nogo entry point, bound to the production allowlist above.

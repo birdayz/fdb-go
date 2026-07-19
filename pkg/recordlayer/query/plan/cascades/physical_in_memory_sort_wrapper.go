@@ -46,7 +46,7 @@ func (w *physicalInMemorySortWrapper) EqualsWithoutChildren(other expressions.Re
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalInMemorySortWrapper) HashCodeWithoutChildren() uint64 {
@@ -82,32 +82,17 @@ func (w *physicalInMemorySortWrapper) WithChildren(qs []expressions.Quantifier) 
 	return &physicalInMemorySortWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalInMemorySortWrapper) HintOrdering() properties.Ordering {
-	if w.plan == nil {
-		return properties.Ordering{}
-	}
-	keys := make([]values.Value, len(w.plan.GetSortKeys()))
-	desc := make([]bool, len(w.plan.GetSortKeys()))
-	nullsFirst := make([]bool, len(w.plan.GetSortKeys()))
-	for i, sk := range w.plan.GetSortKeys() {
-		keys[i] = &values.FieldValue{Field: sk.Field, Typ: values.UnknownType}
-		desc[i] = sk.Desc
-		nullsFirst[i] = sk.NullsFirst
-	}
-	// Carry NULL placement so a parent sort does not elide against a
-	// counterflow (e.g. ASC NULLS LAST) stream as if it were natural order.
-	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc, NullsFirst: nullsFirst}
+	return w.plan.HintOrdering()
 }
 
 // HintCost: in-memory sort is expensive — materialize + O(n log n).
 // Must be more expensive than index-based sort elimination so Cascades
 // prefers indexes when available.
-func (w *physicalInMemorySortWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return inMemorySortCost(child[0])
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalInMemorySortWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalInMemorySortWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

@@ -100,7 +100,7 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
 	a := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
 	b := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same predicates should be equal")
 	}
 }
@@ -111,7 +111,7 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_DifferentPredicateCount(t *t
 	p2 := predicates.NewConstantPredicate(predicates.TriFalse)
 	a := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{p1})
 	b := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{p1, p2})
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different predicate counts should not be equal")
 	}
 }
@@ -124,7 +124,7 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_DifferentPredicate(t *testin
 	b := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{
 		predicates.NewConstantPredicate(predicates.TriFalse),
 	})
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different predicates should not be equal")
 	}
 }
@@ -133,7 +133,7 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_BothEmpty(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryPredicatesFilterPlan(nil, nil)
 	b := NewRecordQueryPredicatesFilterPlan(nil, nil)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("two PredicatesFilterPlans with nil predicates should be equal")
 	}
 }
@@ -142,7 +142,7 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	pf := NewRecordQueryPredicatesFilterPlan(nil, nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if pf.EqualsWithoutChildren(scan) {
+	if pf.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("PredicatesFilterPlan should not equal ScanPlan")
 	}
 }
@@ -152,7 +152,7 @@ func TestPredicatesFilterPlan_EqualsWithoutChildren_NotEqualToFilterPlan(t *test
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
 	pf := NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
 	f := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, nil)
-	if pf.EqualsWithoutChildren(f) {
+	if pf.EqualsPlanWithoutChildren(f) {
 		t.Fatal("PredicatesFilterPlan should not equal FilterPlan")
 	}
 }
@@ -297,7 +297,7 @@ func TestMapPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	rv := &values.FieldValue{Field: "id", Typ: values.UnknownType}
 	a := NewRecordQueryMapPlan(nil, rv)
 	b := NewRecordQueryMapPlan(nil, rv)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same result value should be equal")
 	}
 }
@@ -306,7 +306,7 @@ func TestMapPlan_EqualsWithoutChildren_DifferentResultValue(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryMapPlan(nil, &values.FieldValue{Field: "id", Typ: values.UnknownType})
 	b := NewRecordQueryMapPlan(nil, &values.FieldValue{Field: "name", Typ: values.UnknownType})
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different result values should not be equal")
 	}
 }
@@ -315,7 +315,7 @@ func TestMapPlan_EqualsWithoutChildren_BothNilResultValue(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryMapPlan(nil, nil)
 	b := NewRecordQueryMapPlan(nil, nil)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("two MapPlans with nil result values should be equal")
 	}
 }
@@ -324,7 +324,7 @@ func TestMapPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	m := NewRecordQueryMapPlan(nil, nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if m.EqualsWithoutChildren(scan) {
+	if m.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("MapPlan should not equal ScanPlan")
 	}
 }
@@ -440,7 +440,7 @@ func TestFirstOrDefaultPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	dv := values.LiteralValue(int64(42))
 	a := NewRecordQueryFirstOrDefaultPlan(nil, dv)
 	b := NewRecordQueryFirstOrDefaultPlan(nil, dv)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same default value should be equal")
 	}
 }
@@ -449,7 +449,7 @@ func TestFirstOrDefaultPlan_EqualsWithoutChildren_DifferentDefaultValue(t *testi
 	t.Parallel()
 	a := NewRecordQueryFirstOrDefaultPlan(nil, values.LiteralValue(int64(1)))
 	b := NewRecordQueryFirstOrDefaultPlan(nil, values.LiteralValue(int64(2)))
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different default values should not be equal")
 	}
 }
@@ -458,7 +458,7 @@ func TestFirstOrDefaultPlan_EqualsWithoutChildren_BothNilDefaultValue(t *testing
 	t.Parallel()
 	a := NewRecordQueryFirstOrDefaultPlan(nil, nil)
 	b := NewRecordQueryFirstOrDefaultPlan(nil, nil)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("two FirstOrDefaultPlans with nil default values should be equal")
 	}
 }
@@ -467,7 +467,7 @@ func TestFirstOrDefaultPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	fod := NewRecordQueryFirstOrDefaultPlan(nil, nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if fod.EqualsWithoutChildren(scan) {
+	if fod.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("FirstOrDefaultPlan should not equal ScanPlan")
 	}
 }
@@ -478,7 +478,7 @@ func TestFirstOrDefaultPlan_EqualsWithoutChildren_NotEqualToMapPlan(t *testing.T
 	// concrete plan type is the first discriminator and must prevent a match.
 	fod := NewRecordQueryFirstOrDefaultPlan(nil, nil)
 	m := NewRecordQueryMapPlan(nil, nil)
-	if fod.EqualsWithoutChildren(m) {
+	if fod.EqualsPlanWithoutChildren(m) {
 		t.Fatal("FirstOrDefaultPlan should not equal MapPlan")
 	}
 }

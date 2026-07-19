@@ -109,7 +109,7 @@ func (c *AggregateIndexMatchCandidate) ToScanPlan(
 		}
 		comps = append(comps, cr)
 	}
-	return plans.NewRecordQueryIndexPlan(c.indexName, comps, c.recordTypes, values.UnknownType, reverse)
+	return stampIndexMetadata(c, plans.NewRecordQueryIndexPlan(c.indexName, comps, c.recordTypes, values.UnknownType, reverse))
 }
 
 // MatchesGroupBy reports whether this aggregate index can directly satisfy

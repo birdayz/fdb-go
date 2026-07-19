@@ -489,10 +489,7 @@ func findExpressionsByType(e expressions.RelationalExpression, stats properties.
 	}
 	if ph, ok := e.(physicalPlanExpression); ok {
 		if plan := ph.GetRecordQueryPlan(); plan != nil {
-			// Template-aware: resolves a nil-inner Fetch shell's buried data access via
-			// the expression graph (RFC-076 step 3b); falls through to the exact
-			// phantom-free concretePlanCounts for template-free plans.
-			return exprConcreteCounts(e, stats, ctx)
+			return concretePlanCounts(plan, ctx)
 		}
 	}
 	counts := expressionCounts{maxDataAccessCardinality: -1}
@@ -948,11 +945,8 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 	if stats == nil {
 		stats = properties.DefaultStatistics{}
 	}
-	// Template-aware: resolves a join inner that is a nil-inner Fetch shell to its real
-	// (ref-resolved) inner so the join order is costed honestly (RFC-076 step 3b);
-	// template-free plans fall through to the exact phantom-free concretePlanCost.
-	costA := exprConcreteCost(a, stats, ctx)
-	costB := exprConcreteCost(b, stats, ctx)
+	costA := concretePlanCost(planA, stats, ctx)
+	costB := concretePlanCost(planB, stats, ctx)
 
 	// A materialized NLJ vs a correlated FlatMap (DIFFERENT root join shapes) is a
 	// Go-ONLY comparison — Java keeps no materialized NLJ (RewriteOuterJoinRule
@@ -1049,12 +1043,10 @@ func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvid
 }
 
 // combineConcreteCost applies a plan node's per-operator cost formula to its
-// already-rolled-up child costs. Split out of concretePlanCost so the
-// template-aware cost (exprConcreteCost, RFC-076 step 3b) can supply child costs
-// that were resolved through the expression's quantifier graph — a nil-inner
-// Fetch template's real inner — instead of the empty/free children its plan tree
-// shows. The per-operator formulas (cost_formulas.go) are the single source of
-// truth shared with the physical-wrapper HintCost methods.
+// already-rolled-up child costs. Split out of concretePlanCost so the fold over
+// children is expressible independently of the recursion. The per-operator
+// formulas (cost_formulas.go) are the single source of truth shared with the
+// physical-wrapper HintCost methods.
 func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
 	c0 := func() properties.Cost {
 		if len(child) > 0 {
@@ -1077,54 +1069,54 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		if len(child) < 2 {
 			return properties.Cost{}
 		}
-		return flatMapCost(child[0], child[1])
+		return properties.FlatMapCost(child[0], child[1])
 	case *plans.RecordQueryNestedLoopJoinPlan:
 		if len(child) < 2 {
 			return properties.Cost{}
 		}
-		return nestedLoopJoinCost(child[0], child[1])
+		return properties.NestedLoopJoinCost(child[0], child[1])
 	case *plans.RecordQueryPredicatesFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return filterCost(c0(), len(pl.GetPredicates()))
+		return properties.FilterCost(c0(), len(pl.GetPredicates()))
 	case *plans.RecordQueryFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return filterCost(c0(), len(pl.GetPredicates()))
+		return properties.FilterCost(c0(), len(pl.GetPredicates()))
 	case *plans.RecordQueryTypeFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return typeFilterCost(c0())
+		return properties.TypeFilterCost(c0())
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return fetchCost(c0())
+		return properties.FetchCost(c0())
 	case *plans.RecordQueryMapPlan, *plans.RecordQueryProjectionPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return mapCost(c0())
+		return properties.MapCost(c0())
 	case *plans.RecordQueryFirstOrDefaultPlan:
-		return firstOrDefaultCost(c0())
+		return properties.FirstOrDefaultCost(c0())
 	case *plans.RecordQueryInMemorySortPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return inMemorySortCost(c0())
+		return properties.InMemorySortCost(c0())
 	case *plans.RecordQueryDistinctPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return distinctCost(c0())
+		return properties.DistinctCost(c0())
 	case *plans.RecordQueryIntersectionPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return intersectionCost(child)
+		return properties.IntersectionCost(child)
 	default:
 		// Transparent / unknown: roll up the first child's cardinality + summed CPU.
 		sumCPU := 0.0
@@ -1136,41 +1128,6 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		}
 		return properties.Cost{Cardinality: properties.LeafScanCardinality, CPU: properties.LeafScanCardinality * properties.ScanCPU}
 	}
-}
-
-// boundSelectivity computes the combined selectivity of a set of scan-comparison
-// bounds: each equality bound multiplies in EqualityBoundSelectivity and each open
-// range multiplies in RangeSelectivity. A point probe is more selective than a
-// range, so EqualityBoundSelectivity < RangeSelectivity (RFC-164 COST-SELECTIVITY);
-// using the generic residual FilterSelectivity (0.5) for an equality bound inverted
-// that and mis-picked the index. Empty/nil bounds are skipped. It also reports the
-// number of non-empty bounds and whether they are all equality, so each caller can
-// apply its own unique / point-lookup short-circuit.
-//
-// This is the SINGLE source for equality-vs-range bound costing, shared by
-// physicalScanWrapper.HintCost, physicalIndexScanWrapper.HintCost, and scanLikeCost.
-// It is centralised deliberately: the same loop duplicated across those sites is how
-// the inverted equality cost survived (in dead code) past the original fix.
-// LOW-NDV CAVEAT: statless, this assumes every equality is a high-cardinality point
-// (NDV≈10). A low-NDV equality (e.g. `status = ?`, a boolean) actually retains far
-// more than 10% — costing it cheaper than it is. Distinguishing that needs per-column
-// NDV statistics (not yet available here); see scanLikeCost's fullBindUnique note.
-func boundSelectivity(comps []*predicates.ComparisonRange) (sel float64, numBound int, allEquality bool) {
-	sel = 1.0
-	allEquality = true
-	for _, cr := range comps {
-		if cr == nil || cr.IsEmpty() {
-			continue
-		}
-		numBound++
-		if cr.IsEquality() {
-			sel *= properties.EqualityBoundSelectivity
-		} else {
-			allEquality = false
-			sel *= properties.RangeSelectivity
-		}
-	}
-	return sel, numBound, allEquality
 }
 
 // scanLikeCost is the metadata-independent leaf cost for the concrete join-ordering
@@ -1189,7 +1146,7 @@ func boundSelectivity(comps []*predicates.ComparisonRange) (sel float64, numBoun
 // index unique, so we conservatively fall through to the selectivity estimate; the
 // metadata-aware wrapper HintCost still recognises unique indexes for the memo cost.
 func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, stats properties.StatisticsProvider, fullBindUnique bool) properties.Cost {
-	sel, numBound, allEquality := boundSelectivity(comps)
+	sel, numBound, allEquality := properties.BoundSelectivity(comps)
 	if fullBindUnique && numBound > 0 && allEquality && numBound == len(comps) {
 		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
 	}
@@ -1222,39 +1179,6 @@ func planContainsJoin(p plans.RecordQueryPlan) bool {
 	return found
 }
 
-// planNodeIsStub reports whether a plan node is an UNRESOLVED push-through template:
-// a unary operator (Fetch, PredicatesFilter, Distinct, Map, TypeFilter, …) presented
-// with a nil inner. The data-access path builds chains of these shells
-// (Fetch(<nil>) → PredicatesFilter(<nil>) → … → scan); the real inner lives in the
-// expression's quantifier graph and is filled in at extraction via WithChildren. Every
-// such template implements GetInner() RecordQueryPlan; a genuine data-access LEAF
-// (Scan, IndexPlan, AggregateIndexPlan, VectorIndexPlan, TextIndexPlan, …) does not, so
-// the interface assertion precisely distinguishes a stub from a leaf.
-func planNodeIsStub(p plans.RecordQueryPlan) bool {
-	if g, ok := p.(interface{ GetInner() plans.RecordQueryPlan }); ok {
-		return g.GetInner() == nil
-	}
-	return false
-}
-
-// planTreeHasStub reports whether a concrete plan tree contains any unresolved
-// push-through template stub (planNodeIsStub). Such a stub's GetChildren() is empty, so
-// the buried data access under it is invisible to the concrete walks (concretePlanCounts
-// / concretePlanCost) — they cost/count it as a ~free leaf. When this returns true the
-// cost model must resolve the stub's real inner through the expression's quantifier graph
-// instead (exprConcreteCost / exprConcreteCounts, RFC-076 step 3b).
-func planTreeHasStub(p plans.RecordQueryPlan) bool {
-	found := false
-	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
-		if planNodeIsStub(n) {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
-}
-
 func firstPhysicalChild(ref *expressions.Reference) expressions.RelationalExpression {
 	for _, m := range ref.AllMembers() {
 		if _, ok := m.(physicalPlanExpression); ok {
@@ -1262,70 +1186,6 @@ func firstPhysicalChild(ref *expressions.Reference) expressions.RelationalExpres
 		}
 	}
 	return nil
-}
-
-// exprConcreteCost costs a physical expression's concrete plan tree, resolving any
-// nil-inner Fetch template to its REAL inner via the expression's quantifier graph
-// (RFC-076 step 3b). A template-free (fully-formed) plan is costed by the phantom-free
-// concretePlanCost directly; only a template child is ref-resolved, so the join
-// structure stays phantom-free (the RFC-069 invariant) while the buried data access is
-// no longer costed as the free empty shell its plan tree shows. Without this, a join
-// whose inner is a push-through Fetch template (`FlatMap(outer, Fetch(<nil>))`) costs
-// its inner as ~free, so a full-scan-driven join order wins over a far cheaper
-// selective-outer order (TestFDB_JoinSelPred_Repro once the ordering-constraint pass
-// (3a) makes the ordered template variant reachable).
-func exprConcreteCost(e expressions.RelationalExpression, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
-	if stats == nil {
-		stats = properties.DefaultStatistics{}
-	}
-	return exprConcreteCostRec(e, stats, ctx, map[*expressions.Reference]bool{})
-}
-
-func exprConcreteCostRec(e expressions.RelationalExpression, stats properties.StatisticsProvider, ctx PlanContext, visited map[*expressions.Reference]bool) properties.Cost {
-	ph, ok := e.(physicalPlanExpression)
-	if !ok {
-		return properties.Cost{}
-	}
-	plan := ph.GetRecordQueryPlan()
-	if plan == nil {
-		return properties.Cost{}
-	}
-	// Fast path: no template below this node — exact, phantom-free concrete cost.
-	if !planTreeHasStub(plan) {
-		return concretePlanCost(plan, stats, ctx)
-	}
-	// A template (nil-inner Fetch) is somewhere below. Cost children, preferring the
-	// concrete embedded child plan and ref-resolving ONLY the template children — so
-	// the join structure is costed from its concrete tree (phantom-free) and only the
-	// unresolved shell is descended into via the quantifier Reference.
-	quants := e.GetQuantifiers()
-	planKids := plan.GetChildren()
-	childCosts := make([]properties.Cost, 0, len(quants))
-	for i, q := range quants {
-		// Concrete embedded child that is itself template-free → cost it directly.
-		if i < len(planKids) && planKids[i] != nil && !planTreeHasStub(planKids[i]) {
-			childCosts = append(childCosts, concretePlanCost(planKids[i], stats, ctx))
-			continue
-		}
-		// Template child (or a nil-inner Fetch node, whose plan has 0 children but whose
-		// quantifier holds the real inner Reference) → resolve through the Reference.
-		if ref := q.GetRangesOver(); ref != nil && !visited[ref] {
-			visited[ref] = true
-			if child := bestPhysicalChild(ref, stats); child != nil {
-				childCosts = append(childCosts, exprConcreteCostRec(child, stats, ctx, visited))
-				continue
-			}
-		}
-		// Last resort (ref unresolvable / already visited via a cycle break): cost the
-		// concrete child as-is. For a genuine nil-inner Fetch (0 plan children, 1 quantifier)
-		// this branch is only reached on a memo cycle — unreachable in a valid DAG, where a
-		// nil-inner Fetch's inner ref resolves down to a physical scan that never points back
-		// up — and contributes the (free) shell cost for that one child rather than looping.
-		if i < len(planKids) {
-			childCosts = append(childCosts, concretePlanCost(planKids[i], stats, ctx))
-		}
-	}
-	return combineConcreteCost(plan, childCosts, stats, ctx)
 }
 
 // ===== Concrete-plan property walk (Java PlanningCostModel alignment, RFC-069) =====
@@ -1353,67 +1213,9 @@ func concretePlanCounts(p plans.RecordQueryPlan, ctx PlanContext) expressionCoun
 	return counts
 }
 
-// exprConcreteCounts computes the cost-model operator counts / provable max-cardinality
-// for a physical expression, resolving any nil-inner Fetch template through the
-// expression's quantifier graph (RFC-076 step 3b). A template-free plan is counted by
-// the phantom-free concretePlanCounts directly; only a template child is ref-resolved,
-// so criterion #2 (max-cardinality) and the data-access counts SEE the real buried index
-// scan instead of the free empty Fetch shell, while every concrete subtree is still
-// counted from its plan tree (phantom-free, the RFC-069 invariant).
-func exprConcreteCounts(e expressions.RelationalExpression, stats properties.StatisticsProvider, ctx PlanContext) expressionCounts {
-	if stats == nil {
-		stats = properties.DefaultStatistics{}
-	}
-	counts := expressionCounts{maxDataAccessCardinality: -1}
-	exprConcreteCountsRec(e, &counts, stats, ctx, map[*expressions.Reference]bool{})
-	// Java's max-of-max-cardinalities is unknown if ANY data access is unbounded.
-	if counts.unboundedDataAccess {
-		counts.maxDataAccessCardinality = -1
-	}
-	return counts
-}
-
-func exprConcreteCountsRec(e expressions.RelationalExpression, counts *expressionCounts, stats properties.StatisticsProvider, ctx PlanContext, visited map[*expressions.Reference]bool) {
-	ph, ok := e.(physicalPlanExpression)
-	if !ok {
-		return
-	}
-	plan := ph.GetRecordQueryPlan()
-	if plan == nil {
-		return
-	}
-	// Fast path: template-free subtree — merge its exact concrete counts.
-	if !planTreeHasStub(plan) {
-		mergeCounts(counts, concretePlanCounts(plan, ctx))
-		return
-	}
-	// Count THIS node only, then resolve children through the expression graph: a
-	// template-free concrete child contributes its exact concrete counts; a template
-	// child (or a nil-inner Fetch node) is descended via its quantifier Reference.
-	countConcreteNode(plan, counts, ctx)
-	quants := e.GetQuantifiers()
-	planKids := plan.GetChildren()
-	for i, q := range quants {
-		if i < len(planKids) && planKids[i] != nil && !planTreeHasStub(planKids[i]) {
-			mergeCounts(counts, concretePlanCounts(planKids[i], ctx))
-			continue
-		}
-		if ref := q.GetRangesOver(); ref != nil && !visited[ref] {
-			visited[ref] = true
-			if child := bestPhysicalChild(ref, stats); child != nil {
-				exprConcreteCountsRec(child, counts, stats, ctx, visited)
-				continue
-			}
-		}
-		if i < len(planKids) {
-			mergeCounts(counts, concretePlanCounts(planKids[i], ctx))
-		}
-	}
-}
-
 // mergeCounts adds src's operator counts into dst, taking the max of provable
 // max-cardinalities (-1 = unknown) and OR-ing the unbounded-access flag. The final
-// "unbounded ⇒ unknown" reset is applied once by exprConcreteCounts at the top.
+// "unbounded ⇒ unknown" reset is applied once by concretePlanCounts at the top.
 func mergeCounts(dst *expressionCounts, src expressionCounts) {
 	dst.scanCount += src.scanCount
 	dst.indexScanCount += src.indexScanCount
@@ -1452,9 +1254,8 @@ func walkConcretePlan(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pla
 // countConcreteNode adds plan node p's OWN operator contribution to counts (no
 // recursion) and returns skipChildren=true when the caller must NOT descend into p's
 // children — the full-PK point-probe case, which already accounts for its scan and
-// would otherwise be re-counted as unbounded. Split out of walkConcretePlan so the
-// template-aware exprConcreteCounts (RFC-076 step 3b) can count a node while resolving
-// its template children through the expression graph instead of the plan's children.
+// would otherwise be re-counted as unbounded. Split out of walkConcretePlan so a
+// node's own contribution is expressible independently of the descent.
 func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx PlanContext) (skipChildren bool) {
 	switch pl := p.(type) {
 	case *plans.RecordQueryScanPlan:
@@ -1487,10 +1288,9 @@ func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pl
 		counts.unboundedDataAccess = true
 	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
 		// A multi-aggregate intersection's children are aggregate-index scans
-		// baked into this plan (the template-aware exprConcreteCounts resolves
-		// children via the empty expression graph, not plan children, so without
-		// this case they go uncounted and the node ranks as a no-data-access
-		// node). Count the intersection as ONE logical grouped data access — read
+		// baked into this plan, and it reports no children to the walk, so
+		// without this case they go uncounted and the node ranks as a
+		// no-data-access node. Count it as ONE logical grouped data access — read
 		// the pre-aggregated groups, comparable to a single aggregate-index scan,
 		// NOT N independent accesses. Counting it as N made criterion #3 (fewer
 		// data accesses) prefer a single full Scan (count 1) over the intersection
@@ -1964,72 +1764,14 @@ func costExprDepth(e expressions.RelationalExpression, kind planMatchKind) int {
 }
 
 // costExprHash returns the deterministic tiebreak hash (criterion #17), over the
-// concrete plan for a physical expression and the logical memo otherwise.
-//
-// For a nil-inner SHELL (a push-through Fetch/Filter/Map/Distinct/InJoin template),
-// the embedded plan's GetChildren() is empty, so the bare stablePlanHash is blind
-// to the buried index — idx_a/idx_b/idx_c shells collapse to the SAME hash and the
-// tie-break returns 0, leaving selection to resolve by member-iteration order
-// (RFC-167 NONDETERMINISM). exprConcreteHash resolves the buried inner STRUCTURALLY
-// through the quantifier graph (mirroring exprConcreteCost) so the hash carries the
-// index identity. The fast path (no template below) keeps the cheap stablePlanHash.
+// concrete plan for a physical expression and the logical memo otherwise. A
+// physical expression's plan is fully linked at construction, so the plan tree
+// alone carries the buried data-access identity the tie-break needs.
 func costExprHash(e expressions.RelationalExpression) uint64 {
 	if ph, ok := e.(physicalPlanExpression); ok {
 		if plan := ph.GetRecordQueryPlan(); plan != nil {
-			if !planTreeHasStub(plan) {
-				return stablePlanHash(plan)
-			}
-			return exprConcreteHash(e, map[*expressions.Reference]bool{})
+			return stablePlanHash(plan)
 		}
 	}
 	return deepHashCode(e)
-}
-
-// exprConcreteHash is the template-aware structural hash for a physical expression
-// whose plan tree contains a nil-inner shell. It mirrors exprConcreteCostRec: it
-// folds the node's own HashCodeWithoutChildren with each child's hash, preferring
-// the concrete embedded child plan and resolving ONLY a template child through its
-// quantifier Reference — so the buried index/scan identity surfaces into the hash.
-// Resolution is STRUCTURAL (firstPhysicalChild), never cost-driven (no comparator
-// re-entry — Java's planHash is likewise a pure structural integer).
-func exprConcreteHash(e expressions.RelationalExpression, visited map[*expressions.Reference]bool) uint64 {
-	ph, ok := e.(physicalPlanExpression)
-	if !ok {
-		return deepHashCode(e)
-	}
-	plan := ph.GetRecordQueryPlan()
-	if plan == nil {
-		return deepHashCode(e)
-	}
-	if !planTreeHasStub(plan) {
-		return stablePlanHash(plan)
-	}
-	h := stablePlanNodeHash(plan)
-	quants := e.GetQuantifiers()
-	planKids := plan.GetChildren()
-	for i, q := range quants {
-		var childHash uint64
-		if i < len(planKids) && planKids[i] != nil && !planTreeHasStub(planKids[i]) {
-			childHash = stablePlanHash(planKids[i])
-		} else if ref := q.GetRangesOver(); ref != nil && !visited[ref] {
-			visited[ref] = true
-			// firstPhysicalChild (structural, AllMembers-order) — NOT bestPhysicalChild
-			// (cost). This matches what extraction relinks to for every shell type via
-			// findPhysicalPlan, so the hash equals stablePlanHash(the plan extraction
-			// emits). The lone exception is InMemorySort, which extracts via
-			// findBestPhysicalPlan (cost-best); harmless here because the sort-count
-			// discriminator (#~9) fires before #17, but a Phase-1b net should pin it.
-			if child := firstPhysicalChild(ref); child != nil {
-				childHash = exprConcreteHash(child, visited)
-			}
-		}
-		// Unlike exprConcreteCostRec's last-resort branch (ref nil/visited → fold the
-		// concrete child as-is), an unresolvable child folds a constant (childHash==0):
-		// deterministic, and that branch is DAG-unreachable for a genuine nil-inner
-		// shell (its inner ref resolves down to a physical scan that never points back up).
-		// ORDER-SENSITIVE fold — see stablePlanHash: a commutative XOR made
-		// swapped join operands hash equal and the tie-break blind.
-		h = h*0x100000001b3 ^ (childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142)
-	}
-	return h
 }

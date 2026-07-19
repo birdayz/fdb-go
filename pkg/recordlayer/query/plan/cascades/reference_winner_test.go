@@ -98,7 +98,7 @@ func TestSortElimination_ViaChildOrderedMember(t *testing.T) {
 	}
 	scanRef.Insert(orderedScan)
 
-	plan, err := properties.ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
+	plan, err := ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
 	if err != nil {
 		t.Fatalf("ExtractBestPlanFromSelector: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestSortElimination_PinsOrderedSpineThroughWrapper(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
-	plan, err := properties.ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
+	plan, err := ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
 	if err != nil {
 		t.Fatalf("ExtractBestPlanFromSelector: %v", err)
 	}
@@ -409,12 +409,12 @@ func TestPlan_OrderedMemberSelectable(t *testing.T) {
 
 	// OrderedIndexScanRule produces an ordered index scan at the sort
 	// level; bestSatisfyingMember must find it for a STATUS ASC request.
-	reqOrd := NewRequestedOrdering(
-		[]RequestedOrderingPart{{
+	reqOrd := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
 			Value:     &values.FieldValue{Field: "STATUS", Typ: values.UnknownType},
-			SortOrder: RequestedSortOrderAscending,
+			SortOrder: properties.RequestedSortOrderAscending,
 		}},
-		DistinctnessPreserveDistinctness, false)
+		properties.DistinctnessPreserveDistinctness, false)
 	winner := bestSatisfyingMember(sortRef, reqOrd, nil)
 	if winner == nil {
 		t.Fatal("expected an ordering-satisfying member for STATUS ASC")
@@ -512,7 +512,7 @@ func TestSortElimination_DeclinesWhenExtractionRelinkRefused(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
-	plan, err := properties.ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
+	plan, err := ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
 	if err != nil {
 		t.Fatalf("ExtractBestPlanFromSelector: %v", err)
 	}

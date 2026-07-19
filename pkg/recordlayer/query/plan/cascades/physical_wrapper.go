@@ -224,45 +224,10 @@ func IsPhysicalMap(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
-// IsPhysicalFirstOrDefault reports whether the given expression is
-// a physicalFirstOrDefaultWrapper.
-func IsPhysicalFirstOrDefault(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalFirstOrDefaultWrapper)
-	return ok
-}
-
-// IsPhysicalDefaultOnEmpty reports whether the given expression is
-// a physicalDefaultOnEmptyWrapper.
-func IsPhysicalDefaultOnEmpty(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalDefaultOnEmptyWrapper)
-	return ok
-}
-
-// IsPhysicalUnorderedUnion reports whether the given expression is
-// a physicalUnorderedUnionWrapper.
-func IsPhysicalUnorderedUnion(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalUnorderedUnionWrapper)
-	return ok
-}
-
-// IsPhysicalMergeSortUnion reports whether the given expression is
-// a physicalMergeSortUnionWrapper.
-func IsPhysicalMergeSortUnion(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalMergeSortUnionWrapper)
-	return ok
-}
-
 // IsPhysicalInJoin reports whether the given expression is
 // a physicalInJoinWrapper.
 func IsPhysicalInJoin(expr expressions.RelationalExpression) bool {
 	_, ok := expr.(*physicalInJoinWrapper)
-	return ok
-}
-
-// IsPhysicalInUnion reports whether the given expression is
-// a physicalInUnionWrapper.
-func IsPhysicalInUnion(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalInUnionWrapper)
 	return ok
 }
 
@@ -280,21 +245,6 @@ func ExplainPhysicalPlan(expr expressions.RelationalExpression) string {
 	return p.Explain()
 }
 
-// PhysicalIndexScanName returns the index name if expr is a
-// physicalIndexScanWrapper or a physicalFetchFromPartialRecordWrapper
-// whose inner plan is an index plan. Returns empty string otherwise.
-func PhysicalIndexScanName(expr expressions.RelationalExpression) string {
-	if w, ok := expr.(*physicalIndexScanWrapper); ok {
-		return w.plan.GetIndexName()
-	}
-	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
-		if ip, ok := fw.plan.GetInner().(*plans.RecordQueryIndexPlan); ok {
-			return ip.GetIndexName()
-		}
-	}
-	return ""
-}
-
 // extractChildPlanFromQuantifier gets the RecordQueryPlan from a
 // quantifier's Reference. Used by WithChildren implementations to
 // rebuild the plan with the freshly-extracted child plan during plan
@@ -307,114 +257,38 @@ func extractChildPlanFromQuantifier(q expressions.Quantifier) plans.RecordQueryP
 	return findPhysicalPlan(ref)
 }
 
-// findPhysicalPlan scans ref's members for the first physical-plan
-// expression and returns its underlying RecordQueryPlan. Returns nil
-// if no physical plan has been yielded into ref yet.
+// findPhysicalPlan returns a physical member's underlying RecordQueryPlan, or
+// nil if no physical plan has been yielded into ref yet.
+//
+// FINAL members are searched first. Java enumerates FINAL expressions only when
+// it looks for a plan (RecordQueryPlanMatchers.java:115) — a plan is by
+// definition a final expression there. Go's AllMembers() concatenates
+// exploratory members BEFORE final ones (Reference.AllMembers), so a bare
+// first-match scan over it inspects the exploratory set first and can return a
+// promoted-but-dominated expression instead of the group's plan.
+// FinalizeExpressionsRule promotes the SAME pointer into both sets, so an
+// expression really can sit in each.
+//
+// The exploratory fallback is kept deliberately: rules call this DURING
+// planning, before a group has been finalized, and returning nil there would
+// silently decline a rule that has a perfectly good child to hand.
 func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
-	// Delegates to resolveInnerPlan at depth 0 so there is ONE implementation
-	// of "prefer a valid member, else complete the sole shell" and the two
-	// cannot drift. See resolveInnerPlan for the member preference and
-	// completeShellPlan for why a sole-shell reference is completed rather
-	// than handed back as `Op(<nil>)` (the XX000 plan invariant).
-	return resolveInnerPlan(ref, 0)
-}
-
-// maxShellCompletionDepth bounds completeShellPlan. Shell chains are a few
-// unary wrappers deep in practice; the cap exists so a cyclic or
-// pathological memo yields nil (and a loud decline) rather than recursing
-// without end.
-const maxShellCompletionDepth = 32
-
-// completeShellPlan turns a nil-inner shell member into a fully-linked plan
-// by resolving its child reference and attaching the result with the plan's
-// own WithInner. Returns nil when the chain cannot be completed, in which
-// case the caller declines and the plan-invariant check reports loudly.
-func completeShellPlan(expr expressions.RelationalExpression, depth int) plans.RecordQueryPlan {
-	pe, ok := expr.(physicalPlanExpression)
-	if !ok {
-		return nil
-	}
-	plan := pe.GetRecordQueryPlan()
-	if plan == nil {
-		return nil
-	}
-	if !isNilInnerShell(expr) {
-		return plan // already complete
-	}
-	if depth >= maxShellCompletionDepth {
-		return nil
-	}
-	qs := expr.GetQuantifiers()
-	if len(qs) != 1 {
-		return nil // only unary shells are completable this way
-	}
-	inner := resolveInnerPlan(qs[0].GetRangesOver(), depth+1)
-	if inner == nil {
-		return nil
-	}
-	return planWithInner(plan, inner)
-}
-
-// resolveInnerPlan picks a child reference's plan, completing it first when
-// every member there is itself a shell. Mirrors findPhysicalPlan's member
-// preference (a valid member beats a template) while threading the depth.
-func resolveInnerPlan(ref *expressions.Reference, depth int) plans.RecordQueryPlan {
-	if ref == nil {
-		return nil
-	}
-	var shell expressions.RelationalExpression
-	for _, m := range ref.AllMembers() {
-		ph, ok := m.(physicalPlanExpression)
-		if !ok {
-			continue
+	if expr := findPhysicalExpr(ref); expr != nil {
+		if ph, ok := expr.(physicalPlanExpression); ok {
+			return ph.GetRecordQueryPlan()
 		}
-		if isNilInnerShell(m) {
-			if shell == nil {
-				shell = m
-			}
-			continue
-		}
-		return ph.GetRecordQueryPlan()
-	}
-	if shell == nil {
-		return nil
-	}
-	return completeShellPlan(shell, depth)
-}
-
-// planWithInner rebuilds a unary plan with a new inner, preserving every
-// other field. The type switch is the explicit list of plan types that can
-// appear as a nil-inner shell; anything else is not completable and the
-// caller declines rather than guessing.
-func planWithInner(p plans.RecordQueryPlan, inner plans.RecordQueryPlan) plans.RecordQueryPlan {
-	switch t := p.(type) {
-	case *plans.RecordQueryFetchFromPartialRecordPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryPredicatesFilterPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryMapPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryDistinctPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryLimitPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryInJoinPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryInUnionPlan:
-		return t.WithInner(inner)
 	}
 	return nil
 }
 
-// findBestPhysicalPlan returns the cheapest VALID physical member's plan
-// (excluding nil-inner Fetch shells) — the cost winner — for a push-through
-// WithChildren whose inner must relink to the winner rather than to whichever
-// physical member was yielded first. ref.AllMembers() interleaves exploratory
-// and final members in yield order, so "first physical" can be a dominated
-// alternative; when ordering constraints add ordered variants the first-yielded
-// member flips and the enforcer relinks onto the wrong (worse) join order
-// (RFC-076 TestFDB_JoinSelPred_Repro). Falls back to findPhysicalPlan (any
-// physical member, even a nil-inner shell) so a sole-template ref still relinks.
+// findBestPhysicalPlan returns the cheapest physical member's plan — the cost
+// winner — for a push-through WithChildren whose inner must relink to the
+// winner rather than to whichever physical member was yielded first.
+// ref.AllMembers() interleaves exploratory and final members in yield order, so
+// "first physical" can be a dominated alternative; when ordering constraints add
+// ordered variants the first-yielded member flips and the enforcer relinks onto
+// the wrong (worse) join order (RFC-076 TestFDB_JoinSelPred_Repro). Falls back
+// to findPhysicalPlan when no member ranks.
 func findBestPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	if ref == nil {
 		return nil
@@ -427,96 +301,94 @@ func findBestPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	return findPhysicalPlan(ref)
 }
 
-// findPhysicalExpr scans ref's members for the first physical-plan
-// expression and returns it as a RelationalExpression. Used by
-// implement rules to obtain the existing wrapper (already memoized
-// in the inner Reference by a prior implement-rule fire) without
+// findPhysicalExpr returns a physical-plan expression from ref, FINAL members
+// first. Used by implement rules to obtain the existing wrapper (already
+// memoized in the inner Reference by a prior implement-rule fire) without
 // re-wrapping from scratch.
+//
+// See findPhysicalPlan for why the final set is searched first and why the
+// exploratory fallback stays.
+//
+// The exploratory fallback still matters, but for a different reason than it
+// used to. MemoizeFinalExpression now genuinely lands plans in the FINAL set
+// (FinalOfAtStage), so the finals-first loop below is live at the
+// push-through sites rather than inert. What the fallback covers is rules
+// calling this MID-PLANNING, before a group has been finalized.
+//
+// A finals-ONLY tightening here is still not safe, and the reason is
+// measured: at these call sites 3821 references have ZERO final members
+// (against 2744 with exactly one), so refusing the exploratory set would make
+// a large fraction of rules silently decline. That number is also why P5's
+// terminal form is not reachable yet — see below.
+//
+// P5 BLOCKER, quantified. Java dereferences a quantifier straight to its plan:
+// Quantifier.Physical.getRangesOverPlan() is
+// Iterables.getOnlyElement(getRangesOver().getFinalExpressions()) — it REQUIRES
+// exactly one final expression. Go does not have that property: 1186
+// references here hold multiple finals (max 52), and 1125 hold multiple
+// PHYSICAL finals, so getOnlyElement would throw on every one. Making plans
+// hold quantifiers is therefore gated on universal prune-to-one-final-member,
+// which unified_tasks.go's stage-boundary arm records was ATTEMPTED AND
+// REVERTED: it lost canonical alternatives Go's PLANNING cannot re-derive
+// (RFC-153 buried-leg, cross-join-EXISTS). The root gate is Java per-phase
+// rule-set parity, tracked in DIVERGENCES.md.
+//
+// DO NOT make this cost-ranked. Picking the "cheapest" member here looks like
+// an obvious improvement — findBestPhysicalPlan does exactly that, and it is
+// wired to one site against this function's twenty — but it is wrong, and
+// measurably so: ranking with PlanningCostModelLess ignores the REQUESTED
+// ORDERING, so a rule asking for a child gets whichever member is cheapest
+// rather than one that satisfies the ordering its parent needs. Tried, and it
+// turned `SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC` into an ASCENDING
+// result (pinned by yamsql order_by_elimination#36) and moved 79 plan shapes.
+//
+// Cost is the memo's job, not a rule's. A rule wants A VALID CHILD; which
+// alternative wins is decided by OptimizeGroup under the ordering constraints,
+// and extraction then reads that winner through the ordering-aware winner
+// lookup. A cost comparison at rule time is a second, ordering-blind optimizer
+// running outside the cost framework.
 func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpression {
 	if ref == nil {
 		return nil
 	}
-	// Same nil-inner-shell preference as findPhysicalPlan.
-	var shell expressions.RelationalExpression
-	for _, m := range ref.AllMembers() {
+	for _, m := range ref.FinalMembers() {
 		if _, ok := m.(physicalPlanExpression); ok {
-			if isNilInnerFetch(m) {
-				if shell == nil {
-					shell = m
-				}
-				continue
-			}
 			return m
 		}
 	}
-	return shell
+	for _, m := range ref.Members() {
+		if _, ok := m.(physicalPlanExpression); ok {
+			return m
+		}
+	}
+	return nil
 }
 
-// shouldRelinkInner decides whether a wrapper's WithChildren may install
-// candidate as its embedded plan's inner.
+// bakedInnerPlan returns the concrete RecordQueryPlan that expr carries, for
+// use as a parent's child AT RULE TIME.
 //
-// The isLeafReplaceable gate exists to stop a join-structured child being
-// SWAPPED for a different one (extraction picks the join via quantifier
-// traversal, not by substitution). That protection is meaningless when the
-// wrapper currently holds NO inner at all: the alternatives there are an
-// equivalent member of the very reference the quantifier ranges over, or a
-// `Op(<nil>)` plan that fails the plan invariant outright. A malformed plan
-// is never the safer choice, so a shell relinks even where the gate would
-// refuse — nested `IN`s (`c IN (…) AND a IN (…)`) build exactly that shape
-// and previously extracted `InJoin(<nil>)`.
+// Java constructs a parent only from an already-memoized child: in
+// PushFilterThroughFetchRule.java:197-225 the
+// `Quantifier.physical(call.memoizePlan(innerPlan))` is evaluated as a
+// constructor ARGUMENT, so no window exists in which a parent lacks its
+// child. Go's rules must do the same — pass the child plan, never nil.
 //
-// ONE candidate is refused regardless of either arm: an order-destroying
-// plan (isOrderDestroying). This lookup never consults ordering while some
-// consumers merge-sort their child, so installing one would trade a loud
-// rejection for silently mis-ordered rows. That check runs FIRST.
-func shouldRelinkInner(currentInner, candidate plans.RecordQueryPlan) bool {
-	if candidate == nil {
-		return false
+// Returns nil when expr carries no plan, or carries a structurally
+// incomplete one. A rule that gets nil here declines to fire rather than
+// yielding a plan with a hole in it; the alternative is the shell that
+// extraction then has to repair.
+func bakedInnerPlan(expr expressions.RelationalExpression) plans.RecordQueryPlan {
+	pe, ok := expr.(physicalPlanExpression)
+	if !ok {
+		return nil
 	}
-	// An ORDER-DESTROYING candidate is never installed, no matter how
-	// malformed the current inner is. findPhysicalPlan picks the first
-	// non-shell member without consulting ordering, and consumers like the
-	// IN-union merge-sort their child on comparison keys — so admitting an
-	// unordered family here would trade a LOUD malformed-plan rejection for
-	// SILENTLY mis-ordered (and mis-deduped) rows. Declining keeps the loud
-	// failure, which is the correct direction. This guard covers the
-	// no-inner arm too, where the same hole pre-existed.
-	if isOrderDestroying(candidate) {
-		return false
+	p := pe.GetRecordQueryPlan()
+	// Structurally incomplete = a non-leaf carrying no children, per the
+	// plan-invariant authority (isGenuineLeafPlan).
+	if p == nil || (len(p.GetChildren()) == 0 && !isGenuineLeafPlan(p)) {
+		return nil
 	}
-	// A MALFORMED current inner counts as no inner. The gate protects an
-	// existing, meaningful child from being swapped; a plan that itself has
-	// no child is not meaningful — it cannot execute. Without this, a
-	// wrapper holding a nil-inner shell (`InUnion(InJoin(<nil>))`, built by
-	// nested `IN`s) refused every relink because the SHELL's type is not
-	// leaf-replaceable, and the malformed plan survived to extraction.
-	if currentInner == nil || planIsShell(currentInner) {
-		return true
-	}
-	return isLeafReplaceable(candidate)
-}
-
-// planIsShell reports whether a plan is structurally incomplete: a non-leaf
-// carrying no children. Same authority as the expression-level
-// isNilInnerShell, applied to a bare plan.
-func planIsShell(p plans.RecordQueryPlan) bool {
-	return p != nil && len(p.GetChildren()) == 0 && !isGenuineLeafPlan(p)
-}
-
-// isOrderDestroying reports whether a plan emits rows in NO guaranteed
-// order. Such a plan must never be installed as the inner of a wrapper by
-// an ordering-blind relink: a consumer that merge-sorts its child (the
-// IN-union's comparison keys, the pk-sorted intersection) would produce
-// mis-ordered and mis-deduped rows SILENTLY. These are exactly the families
-// isLeafReplaceable excludes for the same reason; naming them here keeps
-// the shell arm — which bypasses that gate — honest.
-func isOrderDestroying(p plans.RecordQueryPlan) bool {
-	switch p.(type) {
-	case *plans.RecordQueryUnorderedUnionPlan,
-		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
-		return true
-	}
-	return false
+	return p
 }
 
 // isLeafReplaceable reports whether a plan is safe to substitute as the
@@ -541,7 +413,7 @@ func isOrderDestroying(p plans.RecordQueryPlan) bool {
 // Three families stay OUT, each for its own reason:
 //   - InJoin / InUnion bind a correlation per IN value — join-like structure.
 //   - The UNORDERED set ops (UnorderedUnion, UnorderedPrimaryKeyDistinct):
-//     findPhysicalPlan picks the first non-shell member without consulting
+//     findPhysicalPlan picks the first physical member without consulting
 //     ordering, so admitting them would let an unordered member satisfy a
 //     relink whose consumer needs grouped/ordered input (streaming
 //     aggregation). Gate the relink on ordering compatibility before adding
@@ -595,7 +467,7 @@ type hashWriter interface {
 // than logical" — enough to flip ordering on equally-shaped
 // alternatives, small enough not to dominate the cost comparison
 // with structurally-different alternatives.
-const physicalWrapperCostMultiplier = 0.9
+const physicalWrapperCostMultiplier = properties.PhysicalWrapperCostMultiplier
 
 // physicalScanWrapper adapts a `*plans.RecordQueryScanPlan` to the
 // `expressions.RelationalExpression` interface so implementation rules
@@ -668,7 +540,7 @@ func (w *physicalScanWrapper) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-// WithChildren satisfies properties.WithChildren — scan is a leaf,
+// WithChildren satisfies WithChildren — scan is a leaf,
 // so qs must be empty. Returns the wrapper itself unchanged on
 // empty input.
 func (w *physicalScanWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
@@ -682,60 +554,25 @@ func (w *physicalScanWrapper) WithChildren(qs []expressions.Quantifier) (express
 // FullUnorderedScanExpression arm) and applies the physical-wrapper
 // discount so cost-driven extraction prefers the physical scan over
 // the logical one.
-func (w *physicalScanWrapper) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	if w.plan == nil {
-		card := stats.RecordTypeCardinality("")
-		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
-	}
-	comps := w.plan.GetScanComparisons()
-	// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY); see boundSelectivity.
-	sel, numBound, allEquality := boundSelectivity(comps)
-	if numBound > 0 && allEquality && numBound == len(comps) {
-		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
-	}
-	types := w.plan.GetRecordTypes()
-	total := 0.0
-	if len(types) == 0 {
-		total = stats.RecordTypeCardinality("")
-	} else {
-		for _, t := range types {
-			total += stats.RecordTypeCardinality(t)
-		}
-	}
-	card := total * sel * physicalWrapperCostMultiplier
-	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalScanWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 // HintOrdering: a scan produces rows in PK order when the scan
 // carries PK values (from WithPrimaryKey). Otherwise unknown.
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalScanWrapper) HintOrdering() properties.Ordering {
-	return pkScanOrdering(w.plan)
+	return w.plan.HintOrdering()
 }
 
 // HintRichOrdering — see pkScanRichOrdering.
-func (w *physicalScanWrapper) HintRichOrdering() *RichOrdering {
+func (w *physicalScanWrapper) HintRichOrdering() *properties.RichOrdering {
 	return pkScanRichOrdering(w.plan)
 }
 
 // pkScanOrdering derives the directional PK ordering of a primary scan:
 // PK columns in order, all ascending (descending under reverse).
-func pkScanOrdering(plan *plans.RecordQueryScanPlan) properties.Ordering {
-	if plan == nil {
-		return properties.Ordering{}
-	}
-	pk := plan.GetPrimaryKeyValues()
-	if len(pk) == 0 {
-		return properties.Ordering{}
-	}
-	desc := make([]bool, len(pk))
-	if plan.IsReverse() {
-		for i := range desc {
-			desc[i] = true
-		}
-	}
-	return properties.Ordering{IsKnown: true, Keys: pk, Descending: desc}
-}
-
 // pkScanRichOrdering returns a primary scan's PK ordering with bindings:
 // PK positions bound by an equality comparison become FixedBinding
 // entries, the rest SortedBinding. A primary scan is a value-index-like
@@ -749,30 +586,30 @@ func pkScanOrdering(plan *plans.RecordQueryScanPlan) properties.Ordering {
 // ASC and a DESC request wrongly keeps the sort. Shared by
 // physicalScanWrapper and the plan-backed leaf scanPlanExpression (the
 // data-access path memoizes a SARGed PK scan as the latter).
-func pkScanRichOrdering(plan *plans.RecordQueryScanPlan) *RichOrdering {
+func pkScanRichOrdering(plan *plans.RecordQueryScanPlan) *properties.RichOrdering {
 	if plan == nil {
-		return EmptyOrdering()
+		return properties.EmptyOrdering()
 	}
 	pk := plan.GetPrimaryKeyValues()
 	if len(pk) == 0 {
-		return EmptyOrdering()
+		return properties.EmptyOrdering()
 	}
 	comps := plan.GetScanComparisons()
-	bm := make(map[values.Value][]OrderingBinding, len(pk))
+	bm := make(map[values.Value][]properties.OrderingBinding, len(pk))
 	keys := make([]values.Value, 0, len(pk))
-	dir := ProvidedSortOrderAscending
+	dir := properties.ProvidedSortOrderAscending
 	if plan.IsReverse() {
-		dir = ProvidedSortOrderDescending
+		dir = properties.ProvidedSortOrderDescending
 	}
 	for i, key := range pk {
 		keys = append(keys, key)
 		if i < len(comps) && comps[i].IsEquality() {
-			bm[key] = []OrderingBinding{FixedBinding(comps[i])}
+			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
-			bm[key] = []OrderingBinding{SortedBinding(dir)}
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 		}
 	}
-	return NewRichOrdering(bm, keys, false)
+	return properties.NewRichOrdering(bm, keys, false)
 }
 
 func (w *physicalScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -855,31 +692,9 @@ func (w *physicalIndexScanWrapper) WithChildren(qs []expressions.Quantifier) (ex
 // a = 1 over PK (id) produces output sorted by (b, c, id). Mirrors the
 // full-key ordering of Java's
 // ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons.
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
-	if w.plan == nil || len(w.columnNames) == 0 {
-		return properties.Ordering{}
-	}
-	comps := w.plan.GetScanComparisons()
-	firstNonEq := 0
-	for i, cr := range comps {
-		if cr.IsEquality() {
-			firstNonEq = i + 1
-		} else {
-			break
-		}
-	}
-	rev := w.plan.IsReverse()
-	keys := make([]values.Value, 0, len(w.columnNames)-firstNonEq+len(w.pkColumnNames))
-	desc := make([]bool, 0, cap(keys))
-	for i := firstNonEq; i < len(w.columnNames); i++ {
-		keys = append(keys, &values.FieldValue{Field: w.columnNames[i], Typ: values.UnknownType})
-		desc = append(desc, rev)
-	}
-	for _, col := range trimmedPKSuffix(w.columnNames, w.pkColumnNames) {
-		keys = append(keys, &values.FieldValue{Field: col, Typ: values.UnknownType})
-		desc = append(desc, rev)
-	}
-	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+	return w.plan.HintOrdering()
 }
 
 // HintRichOrdering returns the full ordering with bindings: equality-bound
@@ -892,34 +707,34 @@ func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
 // PK) with Binding.fixed for the equality prefix and Binding.sorted for
 // the rest. This enables ordering-aware InJoin source matching and
 // RemoveSort-style elision in ImplementSortRule.
-func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
+func (w *physicalIndexScanWrapper) HintRichOrdering() *properties.RichOrdering {
 	if w.plan == nil || len(w.columnNames) == 0 {
-		return EmptyOrdering()
+		return properties.EmptyOrdering()
 	}
 	comps := w.plan.GetScanComparisons()
-	bm := make(map[values.Value][]OrderingBinding)
+	bm := make(map[values.Value][]properties.OrderingBinding)
 	keys := make([]values.Value, 0, len(w.columnNames)+len(w.pkColumnNames))
 
 	rev := w.plan.IsReverse()
-	dir := ProvidedSortOrderAscending
+	dir := properties.ProvidedSortOrderAscending
 	if rev {
-		dir = ProvidedSortOrderDescending
+		dir = properties.ProvidedSortOrderDescending
 	}
 	for i, col := range w.columnNames {
 		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
 		keys = append(keys, key)
 		if i < len(comps) && comps[i].IsEquality() {
-			bm[key] = []OrderingBinding{FixedBinding(comps[i])}
+			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
-			bm[key] = []OrderingBinding{SortedBinding(dir)}
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 		}
 	}
-	for _, col := range trimmedPKSuffix(w.columnNames, w.pkColumnNames) {
+	for _, col := range plans.TrimmedPKSuffix(w.columnNames, w.pkColumnNames) {
 		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
 		keys = append(keys, key)
-		bm[key] = []OrderingBinding{SortedBinding(dir)}
+		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 	}
-	return NewRichOrdering(bm, keys, w.unique)
+	return properties.NewRichOrdering(bm, keys, w.unique)
 }
 
 // trimmedPKSuffix returns the primary-key columns not already present in
@@ -927,25 +742,6 @@ func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
 // semantics as used by ValueIndexExpansionVisitor.fullKey: PK components
 // that appear in the index key are trimmed, the remainder is appended
 // after the index key.
-func trimmedPKSuffix(columnNames, pkColumnNames []string) []string {
-	if len(pkColumnNames) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(columnNames))
-	for _, c := range columnNames {
-		seen[c] = struct{}{}
-	}
-	suffix := make([]string, 0, len(pkColumnNames))
-	for _, col := range pkColumnNames {
-		if _, dup := seen[col]; dup {
-			continue
-		}
-		seen[col] = struct{}{}
-		suffix = append(suffix, col)
-	}
-	return suffix
-}
-
 // HintCost: index scans are cheaper than full table scans because
 // they read a subset of records. Apply a selectivity multiplier on
 // top of the physical-wrapper discount. Unique indexes with all
@@ -954,18 +750,9 @@ func trimmedPKSuffix(columnNames, pkColumnNames []string) []string {
 // Fetch I/O cost (FetchCPU per row) is NOT included here — it
 // belongs on the Fetch enforcer wrapper, which is eliminated for
 // covering scans.
-func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	base := indexBaseCardinality(w.plan, stats) * physicalWrapperCostMultiplier
-	if w.plan != nil {
-		// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY); see boundSelectivity.
-		sel, numBound, allEquality := boundSelectivity(w.plan.GetScanComparisons())
-		if w.unique && allEquality && numBound == len(w.columnNames) {
-			return properties.Cost{Cardinality: physicalWrapperCostMultiplier, CPU: 0}
-		}
-		base *= sel
-	}
-	cpu := base * properties.ScanCPU
-	return properties.Cost{Cardinality: base, CPU: cpu}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalIndexScanWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func indexBaseCardinality(plan *plans.RecordQueryIndexPlan, stats properties.StatisticsProvider) float64 {
@@ -1047,7 +834,7 @@ func (w *physicalFilterWrapper) EqualsWithoutChildren(other expressions.Relation
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1077,17 +864,14 @@ func (w *physicalFilterWrapper) WithChildren(qs []expressions.Quantifier) (expre
 // HintCost mirrors the LogicalFilter cost formula and applies the
 // physical-wrapper discount so cost-driven extraction prefers the
 // physical filter over the logical one.
-func (w *physicalFilterWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 || w.plan == nil {
-		return properties.Cost{}
-	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return filterCost(child[0], len(w.plan.GetPredicates()))
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalFilterWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalFilterWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalFilterWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 
@@ -1110,13 +894,6 @@ func (w *physicalFilterWrapper) WithQuantifiers(_ []expressions.Quantifier) expr
 }
 
 var _ expressions.RelationalExpression = (*physicalFilterWrapper)(nil)
-
-// IsPhysicalDistinct reports whether the given RelationalExpression is
-// a physicalDistinctWrapper.
-func IsPhysicalDistinct(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalDistinctWrapper)
-	return ok
-}
 
 // physicalDistinctWrapper adapts a `*plans.RecordQueryDistinctPlan` to
 // the RelationalExpression interface.
@@ -1163,7 +940,7 @@ func (w *physicalDistinctWrapper) EqualsWithoutChildren(other expressions.Relati
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1189,17 +966,14 @@ func (w *physicalDistinctWrapper) WithChildren(qs []expressions.Quantifier) (exp
 }
 
 // HintCost mirrors LogicalDistinct with the physical-wrapper discount.
-func (w *physicalDistinctWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return distinctCost(child[0])
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalDistinctWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalDistinctWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalDistinctWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 
@@ -1268,7 +1042,7 @@ func (w *physicalTypeFilterWrapper) EqualsWithoutChildren(other expressions.Rela
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1294,17 +1068,14 @@ func (w *physicalTypeFilterWrapper) WithChildren(qs []expressions.Quantifier) (e
 
 // HintCost mirrors LogicalTypeFilter with the physical-wrapper
 // discount.
-func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return typeFilterCost(child[0])
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalTypeFilterWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalTypeFilterWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 
@@ -1374,7 +1145,7 @@ func (w *physicalInsertWrapper) EqualsWithoutChildren(other expressions.Relation
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1401,15 +1172,9 @@ func (w *physicalInsertWrapper) WithChildren(qs []expressions.Quantifier) (expre
 // HintCost: INSERT cost is dominated by the per-row write cost
 // (Java's CascadesCostModel weights writes heavily). Mirrors the
 // LogicalDML write cost — sumCPU + cardinality * WriteCPU.
-func (w *physicalInsertWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	in := child[0].Cardinality
-	return properties.Cost{
-		Cardinality: in * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.WriteCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalInsertWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalInsertWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1463,7 +1228,7 @@ func (w *physicalDeleteWrapper) EqualsWithoutChildren(other expressions.Relation
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1488,15 +1253,9 @@ func (w *physicalDeleteWrapper) WithChildren(qs []expressions.Quantifier) (expre
 }
 
 // HintCost: DELETE write-heavy cost like INSERT.
-func (w *physicalDeleteWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	in := child[0].Cardinality
-	return properties.Cost{
-		Cardinality: in * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.WriteCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalDeleteWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalDeleteWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1550,7 +1309,7 @@ func (w *physicalUpdateWrapper) EqualsWithoutChildren(other expressions.Relation
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1575,15 +1334,9 @@ func (w *physicalUpdateWrapper) WithChildren(qs []expressions.Quantifier) (expre
 }
 
 // HintCost: UPDATE write-heavy cost like INSERT/DELETE.
-func (w *physicalUpdateWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	in := child[0].Cardinality
-	return properties.Cost{
-		Cardinality: in * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.WriteCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalUpdateWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalUpdateWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1644,7 +1397,7 @@ func (w *physicalUnionWrapper) EqualsWithoutChildren(other expressions.Relationa
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1666,17 +1419,9 @@ func (w *physicalUnionWrapper) WithChildren(qs []expressions.Quantifier) (expres
 
 // HintCost: UNION cardinality is sum of children, CPU is cumulative
 // + per-output-row merge work. Mirrors LogicalUnion.
-func (w *physicalUnionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	sumCard := 0.0
-	sumCPU := 0.0
-	for _, c := range child {
-		sumCard += c.Cardinality
-		sumCPU += c.CPU
-	}
-	return properties.Cost{
-		Cardinality: sumCard * physicalWrapperCostMultiplier,
-		CPU:         (sumCPU + sumCard*properties.UnionCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalUnionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalUnionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1743,7 +1488,7 @@ func (w *physicalIntersectionWrapper) EqualsWithoutChildren(other expressions.Re
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1768,9 +1513,9 @@ func (w *physicalIntersectionWrapper) WithChildren(qs []expressions.Quantifier) 
 // participant). CPU sums children + per-output-row merge work
 // (more expensive than Union — comparison-key-driven matching).
 // Mirrors LogicalIntersection.
-func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return intersectionCost(child)
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalIntersectionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1815,7 +1560,7 @@ func (w *physicalProjectionWrapper) EqualsWithoutChildren(other expressions.Rela
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalProjectionWrapper) HashCodeWithoutChildren() uint64 {
@@ -1833,12 +1578,15 @@ func (w *physicalProjectionWrapper) WithChildren(qs []expressions.Quantifier) (e
 	}
 	// Always relink to the extracted inner, including compound joins — do NOT
 	// gate on isLeafReplaceable here. A projection is a transparent unary cap
-	// (like the in-memory sort, RFC-069); MergeProjectionAndFetchRule /
-	// ImplementProjectionFinalRule build it over an InJoin whose plan carries a
-	// placeholder/nil inner (the join tracks its real child in its wrapper
-	// quantifier). WithChildren runs only at extraction, where qs[0] resolves
-	// to the fully-formed winner; without relinking, `SELECT id ... WHERE a IN
-	// (...)` extracts `Project([id], InJoin(<nil>))` (RFC-070). Wrappers that
+	// (like the in-memory sort, RFC-069). Historically
+	// MergeProjectionAndFetchRule / ImplementProjectionFinalRule built it over
+	// an InJoin whose plan carried a nil inner, and without relinking `SELECT
+	// id ... WHERE a IN (...)` extracted `Project([id], InJoin(<nil>))`
+	// (RFC-070). That nil-inner state no longer exists (RFC-183 — rules bake
+	// the concrete child), so this is now a plain structural rebuild rather
+	// than a repair; the relink still matters because qs[0] resolves to the
+	// extracted winner, which need not be the plan snapshot taken at build
+	// time. Wrappers that
 	// embed predicate/filter/DML semantics in their own plan (aggregation,
 	// delete/update) keep the leaf gate: their child quantifier need not carry
 	// the filtered inner, so relinking to it would drop the filter.
@@ -1849,19 +1597,14 @@ func (w *physicalProjectionWrapper) WithChildren(qs []expressions.Quantifier) (e
 	return &physicalProjectionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalProjectionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	return properties.Cost{
-		Cardinality: child[0].Cardinality * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + child[0].Cardinality*properties.ProjectionCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalProjectionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalProjectionWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalProjectionWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 
@@ -1937,8 +1680,9 @@ func (w *physicalValuesWrapper) WithChildren(qs []expressions.Quantifier) (expre
 	return w, nil
 }
 
-func (w *physicalValuesWrapper) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	return properties.Cost{Cardinality: 1, CPU: 0}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalValuesWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalValuesWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1973,7 +1717,7 @@ func (w *physicalAggregateIndexWrapper) EqualsWithoutChildren(other expressions.
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalAggregateIndexWrapper) HashCodeWithoutChildren() uint64 {
@@ -1992,37 +1736,18 @@ func (w *physicalAggregateIndexWrapper) WithChildren(qs []expressions.Quantifier
 	return w, nil
 }
 
-func (w *physicalAggregateIndexWrapper) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	tableCard := properties.LeafScanCardinality
-	if stats != nil {
-		tableCard = stats.RecordTypeCardinality(w.plan.GetRecordTypeName())
-	}
-	cardinality := tableCard * properties.DistinctSelectivity * physicalWrapperCostMultiplier
-	if cardinality < 1 {
-		cardinality = 1
-	}
-	return properties.Cost{
-		Cardinality: cardinality,
-		CPU:         cardinality * properties.ScanCPU,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalAggregateIndexWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalAggregateIndexWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return w
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalAggregateIndexWrapper) HintOrdering() properties.Ordering {
-	groupCols := w.plan.GetGroupCols()
-	if len(groupCols) == 0 {
-		return properties.Ordering{IsKnown: true}
-	}
-	keys := make([]values.Value, len(groupCols))
-	desc := make([]bool, len(groupCols))
-	for i, col := range groupCols {
-		keys[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
-		desc[i] = w.plan.IsReverse()
-	}
-	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+	return w.plan.HintOrdering()
 }
 
 // IsPhysicalAggregateIndex reports whether the expression is an aggregate

@@ -1721,13 +1721,13 @@ func TestPlanHarness_YieldUnknownReentryConverges(t *testing.T) {
 // TestPlanHarness_JoinLegResidualNoNilFetch is RFC-150 B1a's headline regression —
 // a PRE-EXISTING 0-row bug fixed here. A partition-SUBSEL join leg (t, joined by
 // sibling predicates t.fk=o.id and u.x=t.x on unindexed columns) materializes its
-// local residual (t.a>1) over IDX_K. The leg ref then holds a nil-inner Fetch SHELL
-// (the RFC-070 extraction template, real inner in the wrapper quantifier). The NLJ
-// rule selected join children via findBestPhysicalExpr — the one winner-selector
-// missing the isNilInnerFetch guard — picked the cheap nil shell and embedded its
-// plan directly (never WithChildren) → FlatMap(... inner=Fetch(<nil>)) → 0 rows, on
-// master AND every prior HEAD. Fix: the NLJ selects through the nil-safe
-// findBestValidPhysicalExpr (the guard its two sibling selectors already apply).
+// local residual (t.a>1) over IDX_K. The leg ref then held a nil-inner Fetch SHELL
+// (the RFC-070 extraction template, real inner in the wrapper quantifier), and the
+// NLJ rule picked that cheap shell and embedded its plan directly (never
+// WithChildren) → FlatMap(... inner=Fetch(<nil>)) → 0 rows, on master AND every
+// prior HEAD. RFC-183 removed the shell state itself (rules build the parent with
+// its concrete child), so the leg ref now holds a fully-linked plan whichever
+// selector reaches it; this test keeps pinning the rows.
 func TestPlanHarness_JoinLegResidualNoNilFetch(t *testing.T) {
 	t.Parallel()
 	schema := `CREATE TABLE o (id bigint, PRIMARY KEY (id))

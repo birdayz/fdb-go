@@ -11,6 +11,8 @@ package sqldriver_test
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -18,6 +20,39 @@ import (
 )
 
 const rowdiffSmokeSeeds = 25
+
+// rowdiffSeedRange returns the seed range to sweep. It defaults to the fast
+// smoke slice (seeds 1..25) and is widened by environment for the deep runs
+// the RFCs call for — RFC-183's exit criteria ask for >=50k seeds, which at
+// roughly 2.7 seeds/s is a multi-hour sweep that must not sit in `just test`.
+//
+//	ROWDIFF_SEEDS=50000 ROWDIFF_SEED_START=1 bazelisk test \
+//	  //pkg/relational/sqldriver:sqldriver_test --test_output=streamed \
+//	  --test_arg="--test.run=TestFDB_RowDiff_Smoke/random_seeds" \
+//	  --test_arg="--test.v" --test_timeout=36000 --nocache_test_results
+//
+// SEED_START exists so successive deep runs cover FRESH ranges instead of
+// re-walking the same seeds; a run that always starts at 1 re-proves what the
+// last one already proved.
+func rowdiffSeedRange(t *testing.T) (start, count uint64) {
+	t.Helper()
+	start, count = 1, rowdiffSmokeSeeds
+	if v := os.Getenv("ROWDIFF_SEED_START"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil || n == 0 {
+			t.Fatalf("ROWDIFF_SEED_START=%q: want a positive integer", v)
+		}
+		start = n
+	}
+	if v := os.Getenv("ROWDIFF_SEEDS"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil || n == 0 {
+			t.Fatalf("ROWDIFF_SEEDS=%q: want a positive integer", v)
+		}
+		count = n
+	}
+	return start, count
+}
 
 func TestFDB_RowDiff_Smoke(t *testing.T) {
 	t.Parallel()
@@ -46,11 +81,12 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 	// run (nightly covers fresh ranges via -seed-start).
 	t.Run("random_seeds", func(t *testing.T) {
 		t.Parallel()
+		seedStart, seedCount := rowdiffSeedRange(t)
 		start := time.Now()
 		histogram := map[string]int{}
 		executed := 0
-		for seed := uint64(1); seed <= rowdiffSmokeSeeds; seed++ {
-			res := rowdiff.RunSeed(ctx, setup, dbPath, clusterFilePath, seed)
+		for i := uint64(0); i < seedCount; i++ {
+			res := rowdiff.RunSeed(ctx, setup, dbPath, clusterFilePath, seedStart+i)
 			reportRowdiff(t, res)
 			for fam, n := range res.Histogram {
 				histogram[fam] += n
@@ -58,9 +94,9 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 			executed += res.Executed
 		}
 		elapsed := time.Since(start)
-		t.Logf("rowdiff smoke: %d seeds, %d comparisons in %s (%.1f seeds/s); plan-family histogram: %v",
-			rowdiffSmokeSeeds, executed, elapsed.Round(time.Millisecond),
-			float64(rowdiffSmokeSeeds)/elapsed.Seconds(), histogram)
+		t.Logf("rowdiff: seeds %d..%d (%d), %d comparisons in %s (%.1f seeds/s); plan-family histogram: %v",
+			seedStart, seedStart+seedCount-1, seedCount, executed, elapsed.Round(time.Millisecond),
+			float64(seedCount)/elapsed.Seconds(), histogram)
 	})
 }
 

@@ -6,6 +6,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -19,13 +20,13 @@ func TestPushRequestedOrderingThroughFilter_PropagatesConstraint(t *testing.T) {
 	filterRef := expressions.InitialOf(filter)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, filterRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, filterRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughFilterRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), filter)
@@ -97,13 +98,13 @@ func TestPushRequestedOrderingThroughFilter_NotConstraintOnlyDoesNotPush(t *test
 	filterRef := expressions.InitialOf(filter)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, filterRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, filterRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughFilterRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), filter)
@@ -132,13 +133,13 @@ func TestPushRequestedOrderingThroughFilter_NoYield(t *testing.T) {
 	filterRef := expressions.InitialOf(filter)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, filterRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, filterRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughFilterRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), filter)

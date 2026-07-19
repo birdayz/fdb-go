@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -20,21 +21,22 @@ import (
 // a literal LIMIT 0; the no-op-limit elimination / limit-merge rules decline on
 // a non-nil limitValue rather than reading the sentinel.
 type RecordQueryLimitPlan struct {
-	inner      RecordQueryPlan
+	PlanExprBase
+	innerQ     expressions.Quantifier
 	limit      int64
 	offset     int64
 	limitValue values.Value
 }
 
 func NewRecordQueryLimitPlan(inner RecordQueryPlan, limit, offset int64) *RecordQueryLimitPlan {
-	return &RecordQueryLimitPlan{inner: inner, limit: limit, offset: offset}
+	return &RecordQueryLimitPlan{innerQ: QuantifierOverPlan(inner), limit: limit, offset: offset}
 }
 
 // NewRecordQueryLimitPlanWithValue builds a LIMIT whose row cap is a runtime
 // Value, evaluated at execution against the bound parameters. The static limit
 // is the no-cap sentinel (-1); only limitValue is consulted.
 func NewRecordQueryLimitPlanWithValue(inner RecordQueryPlan, limitValue values.Value, offset int64) *RecordQueryLimitPlan {
-	return &RecordQueryLimitPlan{inner: inner, limit: -1, offset: offset, limitValue: limitValue}
+	return &RecordQueryLimitPlan{innerQ: QuantifierOverPlan(inner), limit: -1, offset: offset, limitValue: limitValue}
 }
 
 // GetLimitValue returns the optional runtime row-cap Value (nil for a static
@@ -46,17 +48,27 @@ func (p *RecordQueryLimitPlan) GetLimitValue() values.Value { return p.limitValu
 // around a folded leaf so the runtime limitValue is never dropped.
 func (p *RecordQueryLimitPlan) WithInner(inner RecordQueryPlan) *RecordQueryLimitPlan {
 	cp := *p
-	cp.inner = inner
+	cp.innerQ = QuantifierOverPlan(inner)
 	return &cp
+}
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryLimitPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
 }
 
 func (p *RecordQueryLimitPlan) GetResultType() values.Type { return values.UnknownType }
 
 func (p *RecordQueryLimitPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // GetInner exposes the single child so generic single-inner walkers
@@ -65,12 +77,12 @@ func (p *RecordQueryLimitPlan) GetChildren() []RecordQueryPlan {
 // derivation and ordering. Without this the LIMIT plan, when it sits at
 // the root (RFC-128 made the top-level LIMIT a real operator), is opaque
 // to column derivation and the result columns resolve wrong.
-func (p *RecordQueryLimitPlan) GetInner() RecordQueryPlan { return p.inner }
+func (p *RecordQueryLimitPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
 
 func (p *RecordQueryLimitPlan) GetLimit() int64  { return p.limit }
 func (p *RecordQueryLimitPlan) GetOffset() int64 { return p.offset }
 
-func (p *RecordQueryLimitPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryLimitPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryLimitPlan)
 	if !ok {
 		return false
@@ -109,10 +121,34 @@ func (p *RecordQueryLimitPlan) Explain() string {
 	if p.limitValue != nil {
 		capStr = values.ExplainValue(p.limitValue)
 	}
+	inner := p.GetInner()
 	if p.offset > 0 {
-		return fmt.Sprintf("Limit(%s, offset=%d, %s)", capStr, p.offset, p.inner.Explain())
+		return fmt.Sprintf("Limit(%s, offset=%d, %s)", capStr, p.offset, inner.Explain())
 	}
-	return fmt.Sprintf("Limit(%s, %s)", capStr, p.inner.Explain())
+	return fmt.Sprintf("Limit(%s, %s)", capStr, inner.Explain())
 }
 
-var _ RecordQueryPlan = (*RecordQueryLimitPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryLimitPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryLimitPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryLimitPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryLimitPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
+}
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryLimitPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

@@ -66,7 +66,7 @@ func TestExplodePlan_EqualsWithoutChildren_Same(t *testing.T) {
 	v := newTestArrayValue(1)
 	a := NewRecordQueryExplodePlan(v)
 	b := NewRecordQueryExplodePlan(v)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same collection value should be equal")
 	}
 }
@@ -77,7 +77,7 @@ func TestExplodePlan_EqualsWithoutChildren_Different(t *testing.T) {
 	v2 := newTestArrayValue(2)
 	a := NewRecordQueryExplodePlan(v1)
 	b := NewRecordQueryExplodePlan(v2)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different collection values should not be equal")
 	}
 }
@@ -86,7 +86,7 @@ func TestExplodePlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	p := NewRecordQueryExplodePlan(nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if p.EqualsWithoutChildren(scan) {
+	if p.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("ExplodePlan should not equal a ScanPlan")
 	}
 }
@@ -144,7 +144,7 @@ func TestExplodePlan_WithOrdinality(t *testing.T) {
 	if !ord.IsWithOrdinality() || plain.IsWithOrdinality() {
 		t.Fatal("IsWithOrdinality flag mismatch")
 	}
-	if plain.EqualsWithoutChildren(ord) {
+	if plain.EqualsPlanWithoutChildren(ord) {
 		t.Fatal("ordinal and non-ordinal Explode plans must NOT be equal")
 	}
 	if plain.HashCodeWithoutChildren() == ord.HashCodeWithoutChildren() {

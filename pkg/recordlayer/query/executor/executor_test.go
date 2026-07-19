@@ -24,11 +24,11 @@ import (
 	functions "fdb.dev/pkg/relational/core/functions"
 )
 
-type unsupportedTestPlan struct{}
+type unsupportedTestPlan struct{ plans.PlanExprBase }
 
 func (p *unsupportedTestPlan) GetResultType() values.Type           { return values.UnknownType }
 func (p *unsupportedTestPlan) GetChildren() []plans.RecordQueryPlan { return nil }
-func (p *unsupportedTestPlan) EqualsWithoutChildren(plans.RecordQueryPlan) bool {
+func (p *unsupportedTestPlan) EqualsPlanWithoutChildren(plans.RecordQueryPlan) bool {
 	return false
 }
 func (p *unsupportedTestPlan) HashCodeWithoutChildren() uint64 { return 0 }
@@ -5897,4 +5897,13 @@ func TestRecursiveResume_CorruptTokensFailLoudly(t *testing.T) {
 		t.Fatalf("fresh execution must still work: %v", err)
 	}
 	cursor.Close()
+}
+
+func (p *unsupportedTestPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*unsupportedTestPlan)
+	return ok && p.EqualsPlanWithoutChildren(o)
+}
+
+func (p *unsupportedTestPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
 }

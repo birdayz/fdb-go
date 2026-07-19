@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -46,8 +47,8 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	initialWinner := getWinnerForOrdering(initialRef, PreserveOrdering(), call.CostModel())
-	recursiveWinner := getWinnerForOrdering(recursiveRef, PreserveOrdering(), call.CostModel())
+	initialWinner := getWinnerForOrdering(initialRef, properties.PreserveOrdering(), call.CostModel())
+	recursiveWinner := getWinnerForOrdering(recursiveRef, properties.PreserveOrdering(), call.CostModel())
 	if initialWinner == nil || recursiveWinner == nil {
 		return
 	}
@@ -93,8 +94,53 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 		)
 	}
 
-	rootQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialWinner))
-	childQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveWinner))
+	// Memoize the STRIPPED plans, not the winners they came from.
+	//
+	// stripTempTableInsertTop removes a TempTableInsert from each leg for the
+	// PLAN, but initialWinner/recursiveWinner still carry it. Memoizing those
+	// left the quantifier resolving to
+	// `TempTableInsert(…, Project(PredicatesFilter(Scan(TREE))))` while the
+	// plan child was the bare `Project(PredicatesFilter(Scan(TREE)))` — 58
+	// divergent edges across the corpus (RFC-183 §12). The memo was costing a
+	// leg with plumbing the executed plan does not have.
+	//
+	// Note this is the INVERSE of the FlatMap sites in
+	// rule_implement_nested_loop_join.go, where the plan held compensating
+	// filters the quantifier lacked. Same defect class — plan and quantifier
+	// describing different expressions — reached from opposite directions,
+	// which is why there is no single mechanical rewrite for §12's remaining
+	// sites.
+	//
+	// scanPlanExpression is the existing plan-backed adapter for exactly this
+	// (see its other use for the buried-leg rebase): it makes the memoized
+	// expression report the plan actually being executed.
+	//
+	// MemoizeFinalExpression, NOT MemoizeExpression — the two legs must land in
+	// SEPARATE references.
+	//
+	// HISTORY, because the reason CHANGED and the old reason is now false:
+	// this originally guarded against an interning collapse. scanPlanExpression
+	// compared via EqualsPlanWithoutChildren (children excluded) and reports no
+	// quantifiers, so the memo could not tell two of them apart when their root
+	// nodes matched — and both legs here are RecordQueryProjectionPlan with the
+	// same projections (root `Project([ID,PARENT], TypeFilter(Scan))`, child
+	// `Project([ID,PARENT], Project(FlatMap(…)))`). They compared EQUAL and
+	// interned into ONE group, so the memo believed the two legs were the same
+	// expression. That collapse was introduced by an earlier revision of this
+	// very fix and is why the leg divergence fell only from 58 to 25.
+	//
+	// That mechanism NO LONGER EXISTS: scanPlanExpression now compares deeply
+	// (RFC-183 §15, abstract_data_access_rule.go), so these legs are distinct
+	// to the memo on their own. MemoizeExpression would very likely be safe
+	// here today.
+	//
+	// It stays MemoizeFinalExpression anyway, deliberately: the rule's
+	// correctness needs one reference PER LEG, and expressing that directly is
+	// better than depending on two structurally-similar plans happening to
+	// differ below the root. The guarantee should not be a coincidence of the
+	// data.
+	rootQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: rootPlan}))
+	childQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: childPlan}))
 	call.Yield(newPhysicalRecursiveDfsJoinWrapper(plan, rootQ, childQ))
 }
 

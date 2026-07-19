@@ -44,7 +44,7 @@ func (w *physicalFirstOrDefaultWrapper) EqualsWithoutChildren(other expressions.
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalFirstOrDefaultWrapper) HashCodeWithoutChildren() uint64 {
@@ -72,12 +72,9 @@ func (w *physicalFirstOrDefaultWrapper) WithChildren(qs []expressions.Quantifier
 	return &physicalFirstOrDefaultWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalFirstOrDefaultWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return firstOrDefaultCost(child[0])
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalFirstOrDefaultWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalFirstOrDefaultWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

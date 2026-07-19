@@ -55,7 +55,7 @@ func (w *physicalFetchFromPartialRecordWrapper) EqualsWithoutChildren(other expr
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalFetchFromPartialRecordWrapper) HashCodeWithoutChildren() uint64 {
@@ -73,12 +73,12 @@ func (w *physicalFetchFromPartialRecordWrapper) WithChildren(qs []expressions.Qu
 	}
 	// Always relink to the extracted inner, including compound joins — do NOT
 	// gate on isLeafReplaceable. A fetch is a transparent unary cap (like the
-	// projection and in-memory sort); PushInJoinThroughFetchRule builds
-	// `Fetch(InJoin(...))` with a nil-inner fetch plan (the InJoin lives in the
-	// wrapper quantifier). WithChildren runs only at extraction, where qs[0]
-	// resolves to the fully-formed winner; without relinking, `SELECT id+100
-	// ... WHERE a IN (...)` (where the expression is not pushable, so the fetch
-	// survives) extracts `Fetch(<nil>)` and returns 0 rows (RFC-070).
+	// projection and in-memory sort), so substituting the extraction winner for
+	// the build-time child is always sound here. WithChildren runs only at
+	// extraction, where qs[0] resolves to the fully-formed winner; the gate would
+	// instead pin the eager build-time snapshot, which is how
+	// `SELECT id+100 ... WHERE a IN (...)` (expression not pushable, so the fetch
+	// survives) once returned 0 rows (RFC-070).
 	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil {
 		newPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			innerPlan,
@@ -91,17 +91,14 @@ func (w *physicalFetchFromPartialRecordWrapper) WithChildren(qs []expressions.Qu
 	return NewPhysicalFetchFromPartialRecordWrapper(w.plan, qs[0]), nil
 }
 
-func (w *physicalFetchFromPartialRecordWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return fetchCost(child[0])
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalFetchFromPartialRecordWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalFetchFromPartialRecordWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalFetchFromPartialRecordWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 
@@ -119,17 +116,17 @@ func (w *physicalFetchFromPartialRecordWrapper) HintOrdering() properties.Orderi
 	return properties.Ordering{}
 }
 
-func (w *physicalFetchFromPartialRecordWrapper) HintRichOrdering() *RichOrdering {
+func (w *physicalFetchFromPartialRecordWrapper) HintRichOrdering() *properties.RichOrdering {
 	ref := w.innerQuant.GetRangesOver()
 	if ref == nil {
-		return EmptyOrdering()
+		return properties.EmptyOrdering()
 	}
 	for _, m := range ref.AllMembers() {
-		if rh, ok := m.(RichOrderingHinter); ok {
+		if rh, ok := m.(properties.RichOrderingHinter); ok {
 			return rh.HintRichOrdering()
 		}
 	}
-	return EmptyOrdering()
+	return properties.EmptyOrdering()
 }
 
 func (w *physicalFetchFromPartialRecordWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -151,54 +148,6 @@ func GetPhysicalFetchFromPartialRecordPlan(expr expressions.RelationalExpression
 		return nil
 	}
 	return w.plan
-}
-
-// isNilInnerFetch reports whether expr is a physicalFetchFromPartialRecordWrapper
-// whose embedded plan has a nil inner.
-//
-// Push-through-fetch rules (PushInJoinThroughFetchRule, PushFilterThroughFetchRule,
-// PushDistinctThroughFetchRule, PushSetOperationThroughFetchRule) create these
-// "shell" wrappers as part of the Cascades pattern: the wrapper's quantifier
-// tracks the real child reference, while plan.GetInner() is nil because the
-// plan is a template that gets assembled during extraction via WithChildren.
-//
-// This nil-inner state is architecturally intentional — setting the inner at
-// rule time would introduce stale plan references (the inner's own children
-// haven't been extracted yet), leading to incorrect explain output and plan
-// quality regressions. The Cascades framework resolves this during plan
-// extraction when WithChildren populates the inner from the quantifier graph.
-//
-// However, nil-inner fetch shells must NOT be selected as standalone winners
-// before extraction, because callers that inspect plan.GetInner() (e.g.
-// PhysicalIndexScanName, Explain) would get nil. Every site that selects a
-// "best" candidate from a set of physical expressions must call this guard.
-func isNilInnerFetch(expr expressions.RelationalExpression) bool {
-	return isNilInnerShell(expr)
-}
-
-// isNilInnerShell reports whether expr is ANY physical wrapper whose embedded
-// plan is a non-leaf carrying no child — the extraction TEMPLATE form, valid
-// only once a WithChildren relink fills its inner. Such a member must never be
-// picked as a standalone winner or as another wrapper's relink source: its plan
-// executes as `Op(<nil>)`.
-//
-// Structural, not a type list: it asks the plan-invariant authority
-// (isGenuineLeafPlan) whether this plan type is ALLOWED to have no children, so
-// a newly-added unary wrapper is covered the day it lands. The predecessor
-// checked only the Fetch wrapper, so nil-inner PredicatesFilter / Map / Distinct
-// / InJoin shells passed as valid and reached extraction — surfacing as the
-// XX000 `PredicatesFilter(<nil>)` plan-invariant on shapes like
-// `WHERE a=? AND b=? AND c IN (…)` over two indexes (RFC-167 finding 1).
-func isNilInnerShell(expr expressions.RelationalExpression) bool {
-	pe, ok := expr.(physicalPlanExpression)
-	if !ok {
-		return false
-	}
-	plan := pe.GetRecordQueryPlan()
-	if plan == nil {
-		return true
-	}
-	return len(plan.GetChildren()) == 0 && !isGenuineLeafPlan(plan)
 }
 
 var (

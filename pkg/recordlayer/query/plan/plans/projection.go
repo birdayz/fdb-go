@@ -4,6 +4,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -13,15 +14,16 @@ import (
 // / the MapPipelinedCursor mechanics. The seed models it as a distinct
 // plan node for clarity.
 type RecordQueryProjectionPlan struct {
+	PlanExprBase
 	projections []values.Value
 	aliases     []string
-	inner       RecordQueryPlan
+	innerQ      expressions.Quantifier
 }
 
 func NewRecordQueryProjectionPlan(projections []values.Value, inner RecordQueryPlan) *RecordQueryProjectionPlan {
 	return &RecordQueryProjectionPlan{
 		projections: projections,
-		inner:       inner,
+		innerQ:      QuantifierOverPlan(inner),
 	}
 }
 
@@ -29,14 +31,23 @@ func NewRecordQueryProjectionPlanWithAliases(projections []values.Value, aliases
 	return &RecordQueryProjectionPlan{
 		projections: projections,
 		aliases:     aliases,
-		inner:       inner,
+		innerQ:      QuantifierOverPlan(inner),
 	}
 }
 
 func (p *RecordQueryProjectionPlan) GetProjections() []values.Value { return p.projections }
 func (p *RecordQueryProjectionPlan) GetAliases() []string           { return p.aliases }
 
-func (p *RecordQueryProjectionPlan) GetInner() RecordQueryPlan { return p.inner }
+func (p *RecordQueryProjectionPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryProjectionPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // IsIdentity returns true if this projection passes all columns
 // through unchanged (a QuantifiedObjectValue that references the
@@ -53,10 +64,11 @@ func (p *RecordQueryProjectionPlan) IsIdentity() bool {
 func (p *RecordQueryProjectionPlan) GetResultType() values.Type { return values.UnknownType }
 
 func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares the projection lists by semantic Value
@@ -80,7 +92,7 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 // TestProjectionPlan_Identity_OrdinalVsLiteralHashField) now pin exactly
 // that, plus the matching injective discriminator in writeSemanticHash's
 // FieldValue arm.
-func (p *RecordQueryProjectionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryProjectionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryProjectionPlan)
 	if !ok {
 		return false
@@ -115,8 +127,8 @@ func (p *RecordQueryProjectionPlan) Explain() string {
 		b.WriteString(values.ExplainValue(v))
 	}
 	b.WriteString("], ")
-	if p.inner != nil {
-		b.WriteString(p.inner.Explain())
+	if inner := p.GetInner(); inner != nil {
+		b.WriteString(inner.Explain())
 	} else {
 		b.WriteString("<nil>")
 	}
@@ -124,4 +136,27 @@ func (p *RecordQueryProjectionPlan) Explain() string {
 	return b.String()
 }
 
-var _ RecordQueryPlan = (*RecordQueryProjectionPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryProjectionPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryProjectionPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryProjectionPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryProjectionPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
+}
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryProjectionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

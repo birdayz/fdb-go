@@ -49,7 +49,7 @@ func (w *physicalMergeSortUnionWrapper) EqualsWithoutChildren(other expressions.
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalMergeSortUnionWrapper) HashCodeWithoutChildren() uint64 {
@@ -67,21 +67,14 @@ func (w *physicalMergeSortUnionWrapper) WithChildren(qs []expressions.Quantifier
 	return &physicalMergeSortUnionWrapper{plan: w.plan, innerQuants: copied}, nil
 }
 
-func (w *physicalMergeSortUnionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	sumCard := 0.0
-	sumCPU := 0.0
-	for _, c := range child {
-		sumCard += c.Cardinality
-		sumCPU += c.CPU
-	}
-	return properties.Cost{
-		Cardinality: sumCard * physicalWrapperCostMultiplier,
-		CPU:         (sumCPU + sumCard*properties.UnionCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalMergeSortUnionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalMergeSortUnionWrapper) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: true, Keys: w.plan.GetComparisonKeys()}
+	return w.plan.HintOrdering()
 }
 
 func (w *physicalMergeSortUnionWrapper) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {

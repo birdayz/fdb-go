@@ -44,7 +44,7 @@ func (w *physicalInUnionWrapper) EqualsWithoutChildren(other expressions.Relatio
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalInUnionWrapper) HashCodeWithoutChildren() uint64 {
@@ -68,29 +68,20 @@ func (w *physicalInUnionWrapper) WithChildren(qs []expressions.Quantifier) (expr
 	// (RFC-070) and limit wrappers carry; isLeafReplaceable gates the SWAP
 	// of join-structured children, and an IN-union's inner is a plain
 	// sub-plan, so the gate applies here as it does for the in-join.
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); shouldRelinkInner(w.plan.GetInner(), innerPlan) {
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
 		return &physicalInUnionWrapper{plan: w.plan.WithInner(innerPlan), innerQuant: qs[0]}, nil
 	}
 	return &physicalInUnionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalInUnionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	inDims := float64(len(w.plan.GetBindingNames()))
-	if inDims < 1 {
-		inDims = 10
-	}
-	in := child[0].Cardinality
-	return properties.Cost{
-		Cardinality: in * inDims * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*inDims*properties.UnionCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalInUnionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalInUnionWrapper) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: true, Keys: w.plan.GetComparisonKeys()}
+	return w.plan.HintOrdering()
 }
 
 func (w *physicalInUnionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

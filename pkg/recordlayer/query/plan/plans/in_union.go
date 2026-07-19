@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"reflect"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -13,7 +14,8 @@ import (
 // executed once per IN-source value, and results are merge-sorted by
 // comparison keys. Mirrors Java's RecordQueryInUnionOnValuesPlan.
 type RecordQueryInUnionPlan struct {
-	inner          RecordQueryPlan
+	PlanExprBase
+	innerQ         expressions.Quantifier
 	bindingNames   []string
 	comparisonKeys []values.Value
 	reverse        bool
@@ -32,7 +34,7 @@ func NewRecordQueryInUnionPlan(
 	ck := make([]values.Value, len(comparisonKeys))
 	copy(ck, comparisonKeys)
 	return &RecordQueryInUnionPlan{
-		inner:          inner,
+		innerQ:         QuantifierOverPlan(inner),
 		bindingNames:   bn,
 		comparisonKeys: ck,
 		reverse:        reverse,
@@ -51,14 +53,23 @@ func NewRecordQueryInUnionPlanWithMaxSize(
 	return p
 }
 
-func (p *RecordQueryInUnionPlan) GetInner() RecordQueryPlan { return p.inner }
+func (p *RecordQueryInUnionPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryInUnionPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // WithInner returns a copy with the inner replaced and EVERY other field
 // preserved (bindingNames, comparisonKeys, reverse, maxSize, inSources) —
 // the extraction-relink rebuild path.
 func (p *RecordQueryInUnionPlan) WithInner(inner RecordQueryPlan) *RecordQueryInUnionPlan {
 	cp := *p
-	cp.inner = inner
+	cp.innerQ = QuantifierOverPlan(inner)
 	return &cp
 }
 func (p *RecordQueryInUnionPlan) GetBindingNames() []string         { return p.bindingNames }
@@ -69,20 +80,21 @@ func (p *RecordQueryInUnionPlan) GetInSources() [][]any             { return p.i
 func (p *RecordQueryInUnionPlan) SetInSources(sources [][]any)      { p.inSources = sources }
 
 func (p *RecordQueryInUnionPlan) GetResultType() values.Type {
-	if p.inner != nil {
-		return p.inner.GetResultType()
+	if inner := p.GetInner(); inner != nil {
+		return inner.GetResultType()
 	}
 	return values.UnknownType
 }
 
 func (p *RecordQueryInUnionPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
-func (p *RecordQueryInUnionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryInUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInUnionPlan)
 	if !ok {
 		return false
@@ -149,9 +161,9 @@ func (p *RecordQueryInUnionPlan) HashCodeWithoutChildren() uint64 {
 }
 
 func (p *RecordQueryInUnionPlan) Explain() string {
-	inner := "<nil>"
-	if p.inner != nil {
-		inner = p.inner.Explain()
+	innerLabel := "<nil>"
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	dir := "ASC"
 	if p.reverse {
@@ -159,7 +171,30 @@ func (p *RecordQueryInUnionPlan) Explain() string {
 	}
 	// The binding correlation aliases (process-global counters) are not rendered —
 	// only the COUNT of IN bindings is structural (RFC-164 WS-4; see in_join.go).
-	return fmt.Sprintf("InUnion(%s, bindings=%d, %s)", inner, len(p.bindingNames), dir)
+	return fmt.Sprintf("InUnion(%s, bindings=%d, %s)", innerLabel, len(p.bindingNames), dir)
 }
 
-var _ RecordQueryPlan = (*RecordQueryInUnionPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryInUnionPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryInUnionPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryInUnionPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryInUnionPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
+}
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryInUnionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

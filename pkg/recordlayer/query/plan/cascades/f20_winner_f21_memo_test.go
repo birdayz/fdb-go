@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -23,9 +24,9 @@ func TestGetWinnerForOrdering_DeterministicCheapestAmongSatisfyingMembers(t *tes
 	ref := expressions.InitialOf(w1)
 	ref.Insert(w2)
 
-	reqOrd := NewRequestedOrdering(
-		[]RequestedOrderingPart{{Value: values.NewFlatFieldValue("A", values.UnknownType), SortOrder: RequestedSortOrderAscending}},
-		DistinctnessPreserveDistinctness, false)
+	reqOrd := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("A", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},
+		properties.DistinctnessPreserveDistinctness, false)
 
 	// A rank map gives an explicit, controllable total order over the two members.
 	rankOf := func(cheapest expressions.RelationalExpression) func(a, b expressions.RelationalExpression) bool {

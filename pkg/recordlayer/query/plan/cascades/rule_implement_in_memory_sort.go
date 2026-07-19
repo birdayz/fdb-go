@@ -14,6 +14,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -55,7 +56,7 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	// Top-down: push ordering constraint to inner reference so
 	// downstream rules (index scans) can satisfy it.
 	requestedOrdering := sortExpressionToRequestedOrdering(s)
-	call.PushConstraint(innerRef, []*RequestedOrdering{requestedOrdering})
+	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
 
 	innerPlan := findPhysicalPlan(innerRef)
 	if innerPlan == nil {
@@ -129,7 +130,7 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 
 func (r *ImplementInMemorySortRule) GetRequestedOrderings(
 	_ expressions.RelationalExpression,
-) []*RequestedOrdering {
+) []*properties.RequestedOrdering {
 	return nil
 }
 

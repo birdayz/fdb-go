@@ -20,6 +20,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -34,10 +35,10 @@ func equalityRange(t *testing.T, literal any) *predicates.ComparisonRange {
 	return res.Range
 }
 
-func requestedParts(dirs map[string]RequestedSortOrder, order []string) []RequestedOrderingPart {
-	parts := make([]RequestedOrderingPart, 0, len(order))
+func requestedParts(dirs map[string]properties.RequestedSortOrder, order []string) []properties.RequestedOrderingPart {
+	parts := make([]properties.RequestedOrderingPart, 0, len(order))
 	for _, name := range order {
-		parts = append(parts, RequestedOrderingPart{
+		parts = append(parts, properties.RequestedOrderingPart{
 			Value:     &values.FieldValue{Field: name, Typ: values.UnknownType},
 			SortOrder: dirs[name],
 		})
@@ -67,17 +68,17 @@ func TestIndexScanRichOrdering_PKSuffixSatisfiesOrderByPK(t *testing.T) {
 		t.Fatal("nil rich ordering")
 	}
 
-	req := NewRequestedOrdering(
-		requestedParts(map[string]RequestedSortOrder{"ID": RequestedSortOrderAscending}, []string{"ID"}),
-		DistinctnessPreserveDistinctness, false)
+	req := properties.NewRequestedOrdering(
+		requestedParts(map[string]properties.RequestedSortOrder{"ID": properties.RequestedSortOrderAscending}, []string{"ID"}),
+		properties.DistinctnessPreserveDistinctness, false)
 	if !ord.Satisfies(req) {
 		t.Fatal("eq-prefixed forward index scan with PK suffix must satisfy ORDER BY pk ASC")
 	}
 
 	// A forward scan's PK suffix is ASC — a DESC request is NOT satisfied.
-	reqDesc := NewRequestedOrdering(
-		requestedParts(map[string]RequestedSortOrder{"ID": RequestedSortOrderDescending}, []string{"ID"}),
-		DistinctnessPreserveDistinctness, false)
+	reqDesc := properties.NewRequestedOrdering(
+		requestedParts(map[string]properties.RequestedSortOrder{"ID": properties.RequestedSortOrderDescending}, []string{"ID"}),
+		properties.DistinctnessPreserveDistinctness, false)
 	if ord.Satisfies(reqDesc) {
 		t.Fatal("forward index scan must NOT satisfy ORDER BY pk DESC")
 	}
@@ -100,9 +101,9 @@ func TestIndexScanRichOrdering_ReverseSatisfiesOrderByPKDesc(t *testing.T) {
 	}
 
 	ord := computeWrapperRichOrdering(w)
-	req := NewRequestedOrdering(
-		requestedParts(map[string]RequestedSortOrder{"ID": RequestedSortOrderDescending}, []string{"ID"}),
-		DistinctnessPreserveDistinctness, false)
+	req := properties.NewRequestedOrdering(
+		requestedParts(map[string]properties.RequestedSortOrder{"ID": properties.RequestedSortOrderDescending}, []string{"ID"}),
+		properties.DistinctnessPreserveDistinctness, false)
 	if !ord.Satisfies(req) {
 		t.Fatal("reverse eq-prefixed index scan with PK suffix must satisfy ORDER BY pk DESC")
 	}
@@ -126,12 +127,12 @@ func TestIndexScanRichOrdering_TrimPrimaryKey(t *testing.T) {
 	}
 
 	ord := computeWrapperRichOrdering(w)
-	req := NewRequestedOrdering(
-		requestedParts(map[string]RequestedSortOrder{
-			"A": RequestedSortOrderAscending,
-			"C": RequestedSortOrderAscending,
+	req := properties.NewRequestedOrdering(
+		requestedParts(map[string]properties.RequestedSortOrder{
+			"A": properties.RequestedSortOrderAscending,
+			"C": properties.RequestedSortOrderAscending,
 		}, []string{"A", "C"}),
-		DistinctnessPreserveDistinctness, false)
+		properties.DistinctnessPreserveDistinctness, false)
 	if !ord.Satisfies(req) {
 		t.Fatal("eq-bound index(B) over PK (A,B,C) must satisfy ORDER BY A, C (full key [B,A,C], B fixed)")
 	}
@@ -161,10 +162,10 @@ func TestScanRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 		t.Fatal("nil rich ordering")
 	}
 
-	for _, dir := range []RequestedSortOrder{RequestedSortOrderAscending, RequestedSortOrderDescending} {
-		req := NewRequestedOrdering(
-			requestedParts(map[string]RequestedSortOrder{"A": dir}, []string{"A"}),
-			DistinctnessPreserveDistinctness, false)
+	for _, dir := range []properties.RequestedSortOrder{properties.RequestedSortOrderAscending, properties.RequestedSortOrderDescending} {
+		req := properties.NewRequestedOrdering(
+			requestedParts(map[string]properties.RequestedSortOrder{"A": dir}, []string{"A"}),
+			properties.DistinctnessPreserveDistinctness, false)
 		if !ord.Satisfies(req) {
 			t.Fatalf("eq-bound PK prefix must be FIXED and satisfy ORDER BY A %v", dir)
 		}
@@ -172,12 +173,12 @@ func TestScanRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 
 	// The unbound remainder stays directional: B DESC is NOT satisfied by
 	// the forward scan.
-	reqBDesc := NewRequestedOrdering(
-		requestedParts(map[string]RequestedSortOrder{
-			"A": RequestedSortOrderDescending,
-			"B": RequestedSortOrderDescending,
+	reqBDesc := properties.NewRequestedOrdering(
+		requestedParts(map[string]properties.RequestedSortOrder{
+			"A": properties.RequestedSortOrderDescending,
+			"B": properties.RequestedSortOrderDescending,
 		}, []string{"A", "B"}),
-		DistinctnessPreserveDistinctness, false)
+		properties.DistinctnessPreserveDistinctness, false)
 	if ord.Satisfies(reqBDesc) {
 		t.Fatal("forward scan must NOT satisfy ORDER BY A DESC, B DESC (B is ASC)")
 	}
@@ -271,9 +272,9 @@ func TestScanPlanExpressionRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 		WithPrimaryKey([]values.Value{pkA, pkB}).
 		WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))})
 
-	reqADesc := NewRequestedOrdering(
-		requestedParts(map[string]RequestedSortOrder{"A": RequestedSortOrderDescending}, []string{"A"}),
-		DistinctnessPreserveDistinctness, false)
+	reqADesc := properties.NewRequestedOrdering(
+		requestedParts(map[string]properties.RequestedSortOrder{"A": properties.RequestedSortOrderDescending}, []string{"A"}),
+		properties.DistinctnessPreserveDistinctness, false)
 
 	bare := &scanPlanExpression{plan: scan}
 	if ord := computeWrapperRichOrdering(bare); ord == nil || !ord.Satisfies(reqADesc) {

@@ -453,7 +453,23 @@ func tryMultiAggregateIntersection(
 		childPlans, comparisonKey, resultValue,
 	)
 
-	wrapper := NewPhysicalMultiIntersectionWrapper(multiPlan, nil)
+	// Memoize each leg and hand the wrapper real quantifiers. Passing nil left
+	// a two-leg intersection with NO edges in the memo at all: both children
+	// executed while the optimizer could see neither, so nothing costed the
+	// legs and nothing could rewrite through them (6 unreachable edges,
+	// RFC-183 §14, ReasonNoQuantifier).
+	//
+	// MemoizeFinalExpression, not MemoizeExpression: a fresh singleton per leg.
+	// The legs here differ (SUM vs COUNT over different indexes) so interning
+	// would not collapse them today, but this is the construction that DID
+	// collapse the recursive-DFS legs, and the cost of being explicit is zero.
+	childQuants := make([]expressions.Quantifier, len(childPlans))
+	for i, cp := range childPlans {
+		childQuants[i] = expressions.NewPhysicalQuantifier(
+			call.MemoizeFinalExpression(&scanPlanExpression{plan: cp}))
+	}
+
+	wrapper := NewPhysicalMultiIntersectionWrapper(multiPlan, childQuants)
 	call.Yield(wrapper)
 }
 

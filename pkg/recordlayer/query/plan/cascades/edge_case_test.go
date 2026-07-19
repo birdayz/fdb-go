@@ -331,11 +331,11 @@ func TestEdge_RichOrdering_MultiKeyOrdering(t *testing.T) {
 	b := fieldVal("b")
 	c := fieldVal("c")
 
-	o := NewRichOrdering(
-		map[values.Value][]OrderingBinding{
-			a: {SortedBinding(ProvidedSortOrderAscending)},
-			b: {SortedBinding(ProvidedSortOrderDescending)},
-			c: {SortedBinding(ProvidedSortOrderAscending)},
+	o := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{
+			a: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
+			b: {properties.SortedBinding(properties.ProvidedSortOrderDescending)},
+			c: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a, b, c},
 		false,
@@ -343,20 +343,20 @@ func TestEdge_RichOrdering_MultiKeyOrdering(t *testing.T) {
 
 	// Request only first 2 keys — should be satisfied because the
 	// provided ordering is a superset (covers the prefix).
-	req := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: a, SortOrder: RequestedSortOrderAscending},
-		{Value: b, SortOrder: RequestedSortOrderDescending},
-	}, DistinctnessNotDistinct, false)
+	req := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: a, SortOrder: properties.RequestedSortOrderAscending},
+		{Value: b, SortOrder: properties.RequestedSortOrderDescending},
+	}, properties.DistinctnessNotDistinct, false)
 
 	if !o.Satisfies(req) {
 		t.Fatal("ordering with 3 keys should satisfy a request for the first 2")
 	}
 
 	// Request the first 2 but with wrong direction on second key.
-	reqBad := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: a, SortOrder: RequestedSortOrderAscending},
-		{Value: b, SortOrder: RequestedSortOrderAscending}, // want asc, provided desc
-	}, DistinctnessNotDistinct, false)
+	reqBad := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: a, SortOrder: properties.RequestedSortOrderAscending},
+		{Value: b, SortOrder: properties.RequestedSortOrderAscending}, // want asc, provided desc
+	}, properties.DistinctnessNotDistinct, false)
 
 	if o.Satisfies(reqBad) {
 		t.Fatal("ordering should NOT satisfy request when direction mismatches on second key")

@@ -4,6 +4,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -22,6 +23,7 @@ import (
 // continuation, scan-comparison thunk. Those land when consumers
 // (Batch A index rules) need them.
 type RecordQueryScanPlan struct {
+	PlanExprBase
 	recordTypes     []string
 	flowedType      values.Type
 	reverse         bool
@@ -93,7 +95,7 @@ func (p *RecordQueryScanPlan) GetResultType() values.Type { return p.flowedType 
 // GetChildren returns the empty slice — scans are leaves.
 func (p *RecordQueryScanPlan) GetChildren() []RecordQueryPlan { return nil }
 
-func (p *RecordQueryScanPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryScanPlan)
 	if !ok {
 		return false
@@ -204,4 +206,39 @@ func typeEquals(a, b values.Type) bool {
 	return a.Equals(b)
 }
 
-var _ RecordQueryPlan = (*RecordQueryScanPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryScanPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryScanPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryScanPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryScanPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// GetCorrelatedToWithoutChildren reports the correlations reached through this
+// scan's comparison operands, mirroring physicalScanWrapper.
+func (p *RecordQueryScanPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return scanComparisonCorrelations(p.GetScanComparisons())
+}
+
+// GetRecordQueryPlan returns the plan itself.
+//
+// This method, present on every plan type, is what lets a bare plan stand in
+// for a physical wrapper in the memo: cascades recognises a physical
+// expression by asserting `RelationalExpression + GetRecordQueryPlan()`
+// (physical_wrapper.go's physicalPlanExpression), and step 1 already gave
+// plans the RelationalExpression half.
+//
+// It is deliberately PER-TYPE rather than a method on PlanExprBase. The
+// embedded base is a zero-size struct with no back-pointer to the value that
+// embeds it, so a base implementation could only ever return nil or itself —
+// never the outer plan. Go has no `self` type; each type must name itself.
+func (p *RecordQueryScanPlan) GetRecordQueryPlan() RecordQueryPlan { return p }
