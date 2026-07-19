@@ -5678,18 +5678,39 @@ pre-RFC-183 master (15dc17a82).
   for). So Plan's tolerance of a non-physical root is INTENTIONAL, not the bug.
   Erroring universally would break rule-isolation testing.
 
-  So the real question is only (a): WHY does the degenerate
-  `Union(TypeFilter(Scan), TypeFilter(Scan))` with UnknownType legs fail to
-  implement to a physical UnorderedUnion under FULL implementation rules?
-  Confirmed the root group ends with ONE member, the LogicalUnionExpression,
-  and ZERO physical/final members — ImplementUnorderedUnion never produced a
-  physical alternative for this shape. Candidates: a type/column precondition
-  on the union legs that UnknownType fails, or a genuine coverage gap. If the
-  shape is unreachable from real SQL (all real unions carry concrete types),
-  this is fuzz-only and the FuzzPlanner_PlanFullPipeline assertion is arguably
-  too strict for degenerate inputs; if reachable, it is a real
-  implementation-coverage gap. Determine which before any fix. Whatever the
-  fix, it is NOT an extraction-error change (refuted above).
+  So the real question is only (a): WHY does the seed's union fail to implement?
+  NARROWED to a precise TRIGGER and three REFUTED hypotheses:
+
+  TRIGGER = ASYMMETRIC LEGS. buildFuzzExpression([35,4,4,1]) is NOT the
+  symmetric union I first assumed; it is
+  `Union(TypeFilter(TypeFilter(Scan)), TypeFilter(Filter(Scan)))` — one leg
+  nests a TypeFilter, the other a Filter. Direct-construction isolation:
+    - Union(Scan, Scan)                        -> implements
+    - Union(TF(Scan), TF(Scan))                -> implements
+    - Union(TF(TF(Scan)), TF(TF(Scan)))        -> implements (symmetric nested)
+    - Union(TF(Filter(Scan)), TF(Filter(Scan)))-> implements (symmetric filter)
+    - Union(TF(TF(Scan)), TF(Filter(Scan)))    -> does NOT implement  <-- seed
+  Each leg implements STANDALONE; only the asymmetric UNION fails.
+
+  REFUTED:
+    (b) extraction-error — breaks four isolation tests (above).
+    rule-selection — the seed fails under FULL DefaultExpressionRules too, not
+      just the sparse selectRules(b) subset.
+    planExprs[0]-ordering — ImplementUnorderedUnion collects childPlans from
+      planExprs[0] only; changing it to scan the whole partition for a physical
+      expr does NOT fix the seed, so it is not "physical present but not first."
+      One asymmetric leg has NO physical expression in the partition at all.
+
+  REMAINING ROOT CAUSE (open): why does one leg of an ASYMMETRIC union end with
+  no physical member when it implements standalone and in a SYMMETRIC union?
+  This is an exploration/partition-interaction issue (memo task ordering or
+  crossProductPartitions/RollUpPlanPartitions dropping one leg's physical
+  alternative when the sibling leg has a different shape), not a missing rule
+  and not extraction. Needs a focused trace of the two legs' partitions at the
+  moment ImplementUnorderedUnion fires. Low severity (fuzz-degenerate, returns
+  logical not physical), so gated behind higher-value work — but the trigger
+  and the three dead ends are now pinned so the next attempt starts from the
+  partition interaction, not from scratch.
 
 CLEAN (no crash in the sweep): FuzzPlanner_E2E_NoPanic,
 FuzzExtractBestPlan_SingletonInvariant, FuzzMemo_MemoizeInvariant,
