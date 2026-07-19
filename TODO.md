@@ -1743,19 +1743,38 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > jobs don't contend with per-PR CI. Also: the last two Nightly Fuzz runs FAILED (06-29, 06-30) — a
 > separate real signal to investigate (a fuzz target has been red for two nights; no-unrelated-flakes rule).
 >
-> **ROOT-CAUSED 2026-07-20 — the engine-fuzz job is red on master because of TWO planner fuzz crash
-> classes, BOTH fixed and both-gated on branch `fix-intersection-filter-cycle` but NOT YET MERGED:**
-> The 2026-07-19 run (id 29676882700) failed the "SQL Engine + Record Layer Fuzz" job on three cascades
-> targets: `FuzzPlanner_WithBatchA_NoPanic` ("Plan succeeded but root Reference has no BestMember stamp",
-> seed 9bd9b3661b501312) = **CLASS 2** (the no-BestMember stage-transition bug — a merged/unfinalized group
-> crossing REWRITING→PLANNING with no finals and never re-exploring), and `FuzzPlanner_Idempotence` +
-> `FuzzPlanner_InitialMemberPreserved` = **CLASS 1** (the Go-only filter/set-op commutation rules'
-> cyclic-memo GetCorrelatedTo stack overflow). Nearly every SUBSTANTIVE (40-70min) nightly run has failed on
-> these; the short "success" runs are window-skips (runner became available outside 00:00-07:00 UTC).
-> Fixes: **RFC-185** removes the four Go-only rules (CLASS 1); **fuzz bug 2** adds
-> `Reference.AdvanceStagePreservingMembers` (CLASS 2). All three nightly-failing targets pass on the branch
-> at/above the nightly's 90s per-target budget (WithBatchA 120s, the other two 90s). **ACTION: merge the
-> branch to master — the red safety net stays red until the (already-gated) fix lands.**
+> **ROOT-CAUSED 2026-07-20 — the Nightly Fuzz is CHRONICALLY RED on master across MULTIPLE INDEPENDENT
+> jobs/targets, not one bug. A full triage of the recent red runs (via `gh run view --log`):**
+>
+> **engine-fuzz job** (SQL Engine + Record Layer Fuzz) — five distinct causes, four now handled on branch
+> `fix-intersection-filter-cycle` (all both-gated where they touch the planner), NONE yet merged:
+> - **CLASS 1** — Go-only filter/set-op commutation rules' cyclic-memo `GetCorrelatedTo` stack overflow.
+>   Hits `FuzzPlanner_Idempotence`, `FuzzPlanner_InitialMemberPreserved`, `FuzzPlanner_MemoConsistency`,
+>   `FuzzPlanner_Determinism` (07-19). FIXED by **RFC-185** (removes the four rules).
+> - **CLASS 2** — no-BestMember stage-transition (merged/unfinalized group crosses REWRITING→PLANNING with
+>   no finals, never re-explores). Hits `FuzzPlanner_WithBatchA_NoPanic` (07-19, seed 9bd9b3661b501312) and
+>   `FuzzPlanner_PlanFullPipeline`. FIXED by **fuzz bug 2** (`Reference.AdvanceStagePreservingMembers`).
+> - **CLASS 4** — `FuzzMessageTypeFromDescriptor` (07-16) stack overflow on a self-referential
+>   nullable-array wrapper descriptor (`message M { repeated M values = 1; }`). FIXED (commit be1d377b7 —
+>   guard-before-unwrap + thread visited).
+> - **CLASS 3** — `FuzzGetCorrelatedToOfValue` (07-18). NO production bug (exhaustive proof: the walker is
+>   correct); that red was an older revision or a fuzz-infra hiccup. The target was a FAKE safety net
+>   (subset-only oracle) — strengthened to an equality oracle (commit 7e0803887).
+> - `FuzzPipeline_NoPanic` (07-15) — planner; clean on branch at 120s (CLASS 1/2).
+> All planner targets pass on the branch at/above the nightly's 90s per-target budget.
+>
+> **STILL OPEN — NOT on this branch, separate subsystems (a merge does NOT green these):**
+> - **Binding Tester Stress** (07-14, 07-11, 07-08): `0/50 pass, 50 fail`, every seed exiting 1 in ~5s with
+>   FDB ALIVE. 50/50 identical fast failures ⇒ almost certainly a HARNESS/ENV/build problem on the runner,
+>   not 50 logic bugs. Needs its own look (run `just binding-stress` locally to confirm infra vs real).
+> - **Differential Serialization Fuzzer** (07-14, 07-11): `FAIL: FuzzGetValueReply` — a real Go-vs-C++ WIRE
+>   serialization divergence in `cmd/fdb-diff-oracle` (fdbgo GetValue reply). Its crash seed was not
+>   uploaded. Needs the C++ oracle to reproduce; own fdbgo cycle.
+>
+> **ACTION: (1) merge the branch → clears the CLASS 1/2/3/4 + FuzzPipeline engine-fuzz reds; (2) then
+> triage binding-stress (likely infra) and the diff-oracle FuzzGetValueReply wire divergence separately.**
+> The window-skip "success" runs (short 5s/4m runs when the runner woke outside 00:00-07:00 UTC) mask how
+> consistently the substantive runs fail.
 
 > ## [ ] INFRA — stress-1M thresholds violated on MASTER (baseline rot; INVESTIGATE)
 > Discovered by RFC-176 P2's stress gate (PR #453): on an idle box, **current master violates the
