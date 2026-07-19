@@ -775,3 +775,82 @@ property P5 needs, and 158 is a baseline that must only ever fall. It was
 not shipped here because a test asserting a number nobody has triaged is a
 tripwire without a diagnosis; the classes above need field-level
 confirmation first.
+
+## 15. Resolved: 158 -> 0. One outlier adapter, not four defect classes
+
+The §14 classes are closed. Genuine unreachable edges across the 2407-query
+corpus are **zero**, ratcheted by a test (`TestCorpusPlanReachability`) that
+is proven by mutation rather than by watching it pass.
+
+Trajectory, all measured:
+
+| class | §12 | §14 | final |
+|---|---|---|---|
+| FlatMap | 392 | 101 | **0** |
+| RecursiveDfsJoin | 58 | 25 | **0** |
+| InJoin | 20 | 0 | 0 (artifact, §13) |
+| Projection | 15 | 15 | **0** |
+| UnorderedUnion | 10 | 10 | **0** |
+| PredicatesFilter | 7 | 7 | **0** |
+| **total** | **343** | **158** | **0** |
+
+Three fixes closed real, distinct defects: the recursive-DFS legs interning
+into one group, the UNION column-rename `Map` living only in the plan, and
+three FlatMap existential compensation chains memoized out of lockstep.
+
+**The remaining 84 were one defect, not three classes.** FlatMap 62,
+Projection 15 and PredicatesFilter 7 all fell to a single change:
+`scanPlanExpression.EqualsWithoutChildren` compared node-locally
+(`EqualsPlanWithoutChildren`) while reporting NO quantifiers. Excluding
+children is the correct Cascades identity only when children are modelled as
+quantifiers, because the child GROUPS then carry that part of the identity.
+With neither, `TypeFilter([EMP], Scan(EMP, X))` and
+`TypeFilter([EMP], Scan(EMP, Y))` compare equal and intern into one group —
+the group keeps one, the plan carries the other, and the memo prices a key
+range that is not the one being scanned. `physicalScanWrapper`, the sibling
+adapter with the identical shape, already used `plans.Equals` for exactly this
+reason; this was the outlier.
+
+### What §14 got wrong, and why it matters methodologically
+
+§14 read the four classes as four independent root causes and predicted "no
+mechanical sweep". That was wrong, and the reason is instructive: the classes
+were named after the PARENT plan type, which is where the symptom surfaces,
+not where the defect lives. Every one of those parents had a scan-shaped child
+memoized through the same adapter. Bucketing by symptom manufactured four
+problems out of one.
+
+The shape also actively misled. The field-level dump showed scans missing
+comparisons entirely, and scans with DIFFERENT comparands rendering
+identically — both of which read as a SARG pushed into the plan but not the
+memo. Reading the pushdown site refuted that: `ImplementFilterRule` builds the
+plan and the quantifier from the same `winner`, correctly. Only then did
+interning remain as the sole way the two could diverge.
+
+### Retained findings
+
+- **Explain is lossy and hid the deciding field four times now** — the
+  `[2 preds]` conjunction, the uncovered-column predicate, `Scan(T,[=])` with
+  differing operands, and the identical-rendering PredicatesFilter pair.
+  Reachability is decided by `plans.Equals`, never by rendered text; the
+  diagnostic prints fields for the same reason.
+- **Zero drift plus a green suite also describes a change that did nothing.**
+  An earlier revision of the final fix, applied one layer away in
+  `planEqualsAsExpression`, produced exactly that signature — 84 unchanged —
+  and was reverted rather than kept as a plausible no-op. Only the count
+  moving distinguishes the two.
+- **Narrowing a group is never the fix.** Reseeding a reference to the single
+  member the plan uses destroyed the `InUnion` alternative and regressed
+  `IN (…) ORDER BY id`. Every fix here ADDS reachability. The one site that
+  could only be repaired by replacement (the N-way join outer edge) was left
+  unconverted rather than narrowed.
+
+### Still open
+
+38 edges where a plan child has NO quantifier at all (TypeFilter 32,
+MultiIntersection 6). These are leaf adapters that model no quantifier for
+their plan children by design, so they are reported separately and NOT counted
+as defects — folding them into the headline would restate §12's over-count in
+a new form. Their identity is now sound, which is what §15 fixes; what remains
+is the modelling gap, and P5 step 2 (real quantifier storage on plans) is what
+closes it.
