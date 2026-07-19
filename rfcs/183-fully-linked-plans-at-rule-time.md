@@ -609,3 +609,61 @@ all 9868 edges and are probably deletable today, but deleting only those
 would leave the memo holding a mix of plans and wrappers with every
 consumer needing both paths — worse than either endpoint. Prerequisite
 first, then all 35 together.
+
+## 12. §11's prerequisite is systematic, not local — re-measured
+
+§11 named "the four rules that build compensating plans" as P5's
+prerequisite. That undercounts it. After the FlatMap fix landed
+(`3179c0696`), the divergence was re-measured at every yield across the
+2407-query corpus:
+
+```
+edges=17728  semantic_mismatch=343        (was 472 before the fix)
+  FlatMap                233   (was 392)
+  RecursiveDfsJoin        58
+  InJoin                  20   <- not in §11's list
+  Projection              15
+  UnorderedUnion          10   <- not in §11's list
+  PredicatesFilter         7
+```
+
+Two things this establishes.
+
+**The fix works, and it is per-SITE, not per-rule.** FlatMap fell 392 -> 233
+because `rule_implement_nested_loop_join.go` contains FIVE
+`NewRecordQueryFlatMapPlan` construction sites (`:565`, `:876`, `:2320`,
+`:2667`, `:2882`) and seven `newPhysicalFlatMapWrapper` sites. One was
+fixed. The remaining 233 are the other four.
+
+**Two parent types §11 never listed also diverge** — InJoin (20) and
+UnorderedUnion (10) — so the survey that produced §11's list was itself
+incomplete. Example shapes:
+
+```
+InJoin           q->PredicatesFilter(Scan(PRODUCTS), [1 preds])
+                 plan-child->Scan(PRODUCTS, [=])
+UnorderedUnion   q->Project([ID,COL1,COL2], Scan(T1))
+                 plan-child->Map(Project(...), {W: ID, X: COL1, Y: COL2})
+```
+
+So "build a compensating operator locally and leave the quantifier pointing
+at the uncompensated input" is a PATTERN in the rule set, not a defect in
+four places. Every instance both mis-prices the plan in the memo and blocks
+the wrapper deletion.
+
+Caveat on the measurement: the probe compared `findPhysicalPlan(quantifier)`
+against the plan's child by pointer, falling back to `plans.Equals`. At
+least one reported class (Projection, 15) renders IDENTICALLY on both sides,
+so some of the 343 are equality-predicate false positives rather than true
+divergences. The InJoin, UnorderedUnion, RecursiveDfsJoin and
+PredicatesFilter examples above are textually different and are real. A
+permanent version of this probe should be built as a proper invariant test —
+it measures exactly the property P5 needs — but it needs the
+false-positive class understood first, which is why it was not landed as a
+test here.
+
+**Consequence for scope.** P5's terminal step is gated on roughly ten
+construction sites across six parent types, each needing the lockstep
+memoization treatment and each capable of moving plans on its own. That is
+its own RFC, not a paragraph in this one. RFC-183 delivers P0-P4 and P5
+steps 1a-2; the terminal deletion does not land here.
