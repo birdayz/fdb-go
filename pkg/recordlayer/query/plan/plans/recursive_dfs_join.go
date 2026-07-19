@@ -178,3 +178,6 @@ func (p *RecordQueryRecursiveDfsJoinPlan) EqualsWithoutChildren(other expression
 // CanCorrelate reports that this operator anchors a correlation between its
 // children (the seed leg binds what the recursive leg reads), mirroring physicalRecursiveDfsJoinWrapper.
 func (p *RecordQueryRecursiveDfsJoinPlan) CanCorrelate() bool { return true }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryRecursiveDfsJoinPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

@@ -179,3 +179,6 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(qs []expressi
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

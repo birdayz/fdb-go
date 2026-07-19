@@ -118,3 +118,6 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) WithQuantifiers(qs []expres
 	cp.innerQ = qs[0]
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

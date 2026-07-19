@@ -188,3 +188,6 @@ func (p *RecordQueryPredicatesFilterPlan) GetCorrelatedToWithoutChildren() map[v
 	}
 	return out
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryPredicatesFilterPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

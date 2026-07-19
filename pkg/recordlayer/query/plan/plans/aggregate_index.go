@@ -173,3 +173,6 @@ func (p *RecordQueryAggregateIndexPlan) EqualsWithoutChildren(other expressions.
 func (p *RecordQueryAggregateIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return p
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryAggregateIndexPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

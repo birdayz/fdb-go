@@ -96,3 +96,6 @@ func (p *RecordQueryDefaultOnEmptyPlan) WithQuantifiers(qs []expressions.Quantif
 	cp.innerQ = qs[0]
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryDefaultOnEmptyPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

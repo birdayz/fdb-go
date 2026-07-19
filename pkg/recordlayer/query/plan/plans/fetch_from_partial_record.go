@@ -187,3 +187,6 @@ func (p *RecordQueryFetchFromPartialRecordPlan) WithQuantifiers(qs []expressions
 	cp.innerQ = qs[0]
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryFetchFromPartialRecordPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

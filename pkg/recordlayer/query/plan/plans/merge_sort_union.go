@@ -162,3 +162,6 @@ func (p *RecordQueryMergeSortUnionPlan) WithQuantifiers(qs []expressions.Quantif
 // ChildrenAsSet reports that the legs of this set operation are commutative,
 // mirroring physicalMergeSortUnionWrapper.
 func (p *RecordQueryMergeSortUnionPlan) ChildrenAsSet() bool { return true }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryMergeSortUnionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

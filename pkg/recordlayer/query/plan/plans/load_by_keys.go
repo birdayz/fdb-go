@@ -193,3 +193,6 @@ func (p *RecordQueryLoadByKeysPlan) EqualsWithoutChildren(other expressions.Rela
 func (p *RecordQueryLoadByKeysPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return p
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryLoadByKeysPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

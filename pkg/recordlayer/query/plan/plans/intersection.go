@@ -152,3 +152,6 @@ func (p *RecordQueryIntersectionPlan) WithQuantifiers(qs []expressions.Quantifie
 // ChildrenAsSet reports that the legs of this set operation are commutative,
 // mirroring physicalIntersectionWrapper.
 func (p *RecordQueryIntersectionPlan) ChildrenAsSet() bool { return true }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryIntersectionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

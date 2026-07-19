@@ -179,3 +179,6 @@ func (p *RecordQueryInMemorySortPlan) WithQuantifiers(qs []expressions.Quantifie
 	cp.innerQ = qs[0]
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryInMemorySortPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

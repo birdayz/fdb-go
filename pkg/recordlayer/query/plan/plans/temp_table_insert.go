@@ -109,3 +109,6 @@ func (p *RecordQueryTempTableInsertPlan) WithQuantifiers(qs []expressions.Quanti
 	cp.innerQ = qs[0]
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryTempTableInsertPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

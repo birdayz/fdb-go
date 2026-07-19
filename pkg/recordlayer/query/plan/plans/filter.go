@@ -133,3 +133,6 @@ func (p *RecordQueryFilterPlan) WithQuantifiers(qs []expressions.Quantifier) exp
 	cp.innerQ = qs[0]
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryFilterPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

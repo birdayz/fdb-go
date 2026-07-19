@@ -120,3 +120,6 @@ func (p *RecordQueryDistinctPlan) WithInner(inner RecordQueryPlan) *RecordQueryD
 	cp.innerQ = QuantifierOverPlan(inner)
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryDistinctPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

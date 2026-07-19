@@ -240,3 +240,6 @@ func (p *RecordQueryNestedLoopJoinPlan) GetCorrelatedToWithoutChildren() map[val
 	}
 	return out
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryNestedLoopJoinPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

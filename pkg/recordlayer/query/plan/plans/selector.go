@@ -216,3 +216,6 @@ func (p *RecordQuerySelectorPlan) WithQuantifiers(qs []expressions.Quantifier) e
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQuerySelectorPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

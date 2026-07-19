@@ -123,3 +123,6 @@ func (p *RecordQueryTextIndexPlan) EqualsWithoutChildren(other expressions.Relat
 func (p *RecordQueryTextIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return p
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryTextIndexPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

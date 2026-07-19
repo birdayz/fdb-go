@@ -160,3 +160,6 @@ func (p *RecordQueryRecursiveLevelUnionPlan) EqualsWithoutChildren(other express
 // CanCorrelate reports that this operator anchors a correlation between its
 // children (each level binds what the next level reads), mirroring physicalRecursiveLevelUnionWrapper.
 func (p *RecordQueryRecursiveLevelUnionPlan) CanCorrelate() bool { return true }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryRecursiveLevelUnionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

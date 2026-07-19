@@ -117,3 +117,6 @@ func (p *RecordQueryUnionPlan) WithQuantifiers(qs []expressions.Quantifier) expr
 // ChildrenAsSet reports that the legs of this set operation are commutative,
 // mirroring physicalUnionWrapper.
 func (p *RecordQueryUnionPlan) ChildrenAsSet() bool { return true }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryUnionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

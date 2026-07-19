@@ -198,3 +198,6 @@ func (p *RecordQueryComparatorPlan) WithQuantifiers(qs []expressions.Quantifier)
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryComparatorPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

@@ -297,3 +297,6 @@ func (p *RecordQueryIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expre
 func (p *RecordQueryIndexPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return scanComparisonCorrelations(p.GetScanComparisons())
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryIndexPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

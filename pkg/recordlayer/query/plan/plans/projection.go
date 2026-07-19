@@ -157,3 +157,6 @@ func (p *RecordQueryProjectionPlan) WithQuantifiers(qs []expressions.Quantifier)
 	cp.innerQ = qs[0]
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryProjectionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

@@ -155,3 +155,6 @@ func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other expressions.Relatio
 // CanCorrelate reports that this operator anchors a correlation between its
 // children (the outer leg binds the value the inner leg reads), mirroring physicalFlatMapWrapper.
 func (p *RecordQueryFlatMapPlan) CanCorrelate() bool { return true }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryFlatMapPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

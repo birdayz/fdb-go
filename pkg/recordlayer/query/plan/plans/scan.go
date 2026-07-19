@@ -228,3 +228,17 @@ func (p *RecordQueryScanPlan) WithQuantifiers(_ []expressions.Quantifier) expres
 func (p *RecordQueryScanPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return scanComparisonCorrelations(p.GetScanComparisons())
 }
+
+// GetRecordQueryPlan returns the plan itself.
+//
+// This method, present on every plan type, is what lets a bare plan stand in
+// for a physical wrapper in the memo: cascades recognises a physical
+// expression by asserting `RelationalExpression + GetRecordQueryPlan()`
+// (physical_wrapper.go's physicalPlanExpression), and step 1 already gave
+// plans the RelationalExpression half.
+//
+// It is deliberately PER-TYPE rather than a method on PlanExprBase. The
+// embedded base is a zero-size struct with no back-pointer to the value that
+// embeds it, so a base implementation could only ever return nil or itself —
+// never the outer plan. Go has no `self` type; each type must name itself.
+func (p *RecordQueryScanPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

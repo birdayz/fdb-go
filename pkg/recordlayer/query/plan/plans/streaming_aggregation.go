@@ -164,3 +164,6 @@ func (p *RecordQueryStreamingAggregationPlan) WithQuantifiers(qs []expressions.Q
 	cp.innerQ = qs[0]
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryStreamingAggregationPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

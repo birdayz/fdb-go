@@ -187,3 +187,6 @@ func (p *RecordQueryScoreForRankPlan) WithQuantifiers(qs []expressions.Quantifie
 	cp.innerQ = qs[0]
 	return &cp
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryScoreForRankPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

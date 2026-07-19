@@ -114,3 +114,6 @@ func (p *RecordQueryExplodePlan) GetCorrelatedToWithoutChildren() map[values.Cor
 	}
 	return map[values.CorrelationIdentifier]struct{}{}
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryExplodePlan) GetRecordQueryPlan() RecordQueryPlan { return p }

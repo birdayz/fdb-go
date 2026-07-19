@@ -62,3 +62,6 @@ func (p *RecordQueryTempTableScanPlan) EqualsWithoutChildren(other expressions.R
 func (p *RecordQueryTempTableScanPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return p
 }
+
+// GetRecordQueryPlan returns the plan itself.
+func (p *RecordQueryTempTableScanPlan) GetRecordQueryPlan() RecordQueryPlan { return p }
