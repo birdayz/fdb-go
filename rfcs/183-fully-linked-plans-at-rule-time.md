@@ -667,3 +667,58 @@ construction sites across six parent types, each needing the lockstep
 memoization treatment and each capable of moving plans on its own. That is
 its own RFC, not a paragraph in this one. RFC-183 delivers P0-P4 and P5
 steps 1a-2; the terminal deletion does not land here.
+
+## 13. §12's measurement over-counts — group multiplicity is not divergence
+
+Attempting the InJoin site produced a regression that invalidates part of
+§12's count, and the correction matters more than the fix would have.
+
+**What was attempted.** `rule_implement_in_join.go` seeds its memo reference
+from `partition.GetExpressions()` (ALL inner expressions) while seeding its
+plan chain from one `innerPlan` of `partition.GetPlans()`. That looked like
+the same plan-vs-quantifier divergence as the FlatMap and DFS sites, so the
+reference was narrowed to the single expression corresponding to the chosen
+plan.
+
+**What broke.** `SELECT id, name FROM items WHERE id IN (2,5,7) ORDER BY id`
+regressed from `InUnion` (an order-preserving merge of the IN branches) to
+`InJoin` under an `InMemorySort`. Narrowing the reference collapsed the
+group and destroyed the alternatives a downstream rule needed. Reverted; the
+corpus returns to zero drift and yamsql passes.
+
+**Why the measurement was wrong here.** §12's probe compared
+`findPhysicalPlan(quantifier)` — the FIRST member of the referenced group —
+against the parent plan's child. That conflates two different things:
+
+1. **True divergence**: the plan holds an operator the quantifier's group
+   CANNOT produce. FlatMap (compensating filters never memoized) and
+   RecursiveDfsJoin (a TempTableInsert stripped from the plan only) are
+   this. These are defects — the memo costs an expression that does not
+   execute.
+2. **Ordinary group multiplicity**: the quantifier ranges over a group
+   holding several alternatives and the plan is built on one of them. That
+   is Cascades working exactly as designed. A group is *supposed* to hold
+   alternatives; "first member != chosen plan" is not a defect, it is the
+   memo doing its job.
+
+The InJoin 20 is category 2, and quite possibly Projection (15),
+UnorderedUnion (10) and PredicatesFilter (7) are too — all four are shapes
+where a rule legitimately builds one plan over a multi-member group. Only
+the two already fixed are confirmed category 1.
+
+**So §12's 343 is an upper bound, not a defect count.** A correct probe must
+ask whether the plan's child is REACHABLE from the quantifier's group at all
+— not whether it equals the group's first member. Until that distinction is
+built into the measurement, the remaining sites cannot be triaged, and
+"fixing" a category-2 site actively removes plan alternatives.
+
+**A `PlanPartition` contract violation was found and fixed on the way**,
+independent of the above. `GetPlans` documented "plans[i] corresponds to
+exprs[i]" but filters non-physical members while `GetExpressions` does not,
+so a single non-physical member shifts every later index and silently
+mispairs. The doc now states the truth and `GetPhysicalExpressions` provides
+the genuinely aligned pairing. Also noted: `NewPlanPartition` records
+map-iteration order, which would be a real nondeterminism source — but it is
+NOT the production path (`toPartitionsFromMap` feeds `addExpression` from an
+ordered slice), so an earlier claim that the planner had nondeterministic
+partition order was wrong and is retracted here.

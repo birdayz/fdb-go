@@ -19,6 +19,14 @@ type PlanPartition struct {
 }
 
 // NewPlanPartition creates a partition from property maps.
+//
+// NOT the production path — toPartitionsFromMap is, and it feeds
+// addExpression from pm.Expressions(), an ordered slice, so orderedExprs is
+// deterministic there. This constructor iterates its input MAP, so the
+// order it records is Go's randomized map-iteration order. Harmless while
+// nothing in the planner calls it; a real nondeterminism source the moment
+// something does, since GetExpressions hands that order to rules that
+// enumerate alternatives from it.
 func NewPlanPartition(
 	partitionProps properties.PropertyMap,
 	exprProps map[expressions.RelationalExpression]properties.PropertyMap,
@@ -45,14 +53,49 @@ func (p *PlanPartition) GetExpressions() []expressions.RelationalExpression {
 	return result
 }
 
-// GetPlans returns the underlying RecordQueryPlans, in the same order
-// as GetExpressions. plans[i] corresponds to exprs[i].
+// GetPlans returns the underlying RecordQueryPlans of the PHYSICAL members,
+// in GetExpressions order.
+//
+// It does NOT index-align with GetExpressions, and used to claim it did
+// ("plans[i] corresponds to exprs[i]"). It skips any non-physical member, so
+// one such member shifts every later index and silently pairs a plan with
+// the wrong expression. Callers that need the pairing must use
+// GetPhysicalExpressions, which applies the identical filter — that pair IS
+// aligned by construction.
+//
+// The stale claim mattered: rule_implement_in_join.go seeds its reference
+// from GetExpressions and its plan from GetPlans, which is exactly the
+// mispairing this enables (RFC-183 §12).
 func (p *PlanPartition) GetPlans() []plans.RecordQueryPlan {
 	exprs := p.GetExpressions()
 	result := make([]plans.RecordQueryPlan, 0, len(exprs))
 	for _, e := range exprs {
 		if ph, ok := e.(physicalPlanExpression); ok {
 			result = append(result, ph.GetRecordQueryPlan())
+		}
+	}
+	return result
+}
+
+// GetPhysicalExpressions returns the PHYSICAL members in GetExpressions
+// order — the expression-side twin of GetPlans, applying the identical
+// filter so the two ARE index-aligned:
+//
+//	exprs := p.GetPhysicalExpressions()
+//	plns  := p.GetPlans()
+//	// exprs[i] is the expression whose plan is plns[i]
+//
+// This exists because GetExpressions and GetPlans are NOT aligned (see
+// GetPlans). A caller needing an expression together with its plan — the
+// IN-join rule seeds a memo reference from one and a plan chain from the
+// other — must pair them through this rather than by indexing
+// GetExpressions.
+func (p *PlanPartition) GetPhysicalExpressions() []expressions.RelationalExpression {
+	exprs := p.GetExpressions()
+	result := make([]expressions.RelationalExpression, 0, len(exprs))
+	for _, e := range exprs {
+		if _, ok := e.(physicalPlanExpression); ok {
+			result = append(result, e)
 		}
 	}
 	return result
