@@ -231,7 +231,7 @@ func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpre
 	case 7:
 		// Intersection over two random children with a single
 		// FieldValue comparison key — exercises IntersectionMerge,
-		// IntersectionSingletonElim, PushFilterThroughIntersection.
+		// IntersectionSingletonElim.
 		left := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		right := buildFuzzExpression(b, (start+2)%len(b), depth+1)
 		ql := expressions.ForEachQuantifier(expressions.InitialOf(left))
