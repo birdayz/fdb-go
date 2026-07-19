@@ -299,6 +299,7 @@ go_test(
         "projected_exists_round6_fdb_test.go",
         "projected_exists_round7_fdb_test.go",
         "projected_exists_round8_fdb_test.go",
+        "projection_over_setop_columns_fdb_test.go",
         "quality_probes_test.go",
         "quoted_machine_alias_fdb_test.go",
         "rcte_crossjoin_probe_test.go",

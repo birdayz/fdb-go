@@ -3267,6 +3267,21 @@ type multiInnerPlan interface {
 
 func findUnionPlan(p plans.RecordQueryPlan) []plans.RecordQueryPlan {
 	for {
+		// STOP at a node that defines the output schema itself. The descent
+		// exists to reach a top-level set operation wearing unary hats
+		// (Fetch/Limit/…), whose legs then supply the columns — but a set
+		// operation BELOW a projection or aggregation is an input to it, not
+		// the output shape. Descending past one derived the columns from an
+		// intersection leg's full record (every field of the table) while the
+		// plan emitted the projection's single slot, so every read failed the
+		// positional-alignment guard: `SELECT DISTINCT id … WHERE a=? AND b=?
+		// LIMIT k` over two indexes planned `Limit(Project([ID], Intersection))`
+		// and reported 3 columns for a 1-column row. Returning nil here lets
+		// deriveColumnsFromPlan's unary recursion reach the schema-defining
+		// node, which has a dedicated arm.
+		if definesOutputSchema(p) {
+			return nil
+		}
 		if mi, ok := p.(multiInnerPlan); ok {
 			inners := mi.GetInners()
 			if len(inners) > 0 {
@@ -3280,6 +3295,23 @@ func findUnionPlan(p plans.RecordQueryPlan) []plans.RecordQueryPlan {
 			return nil
 		}
 	}
+}
+
+// definesOutputSchema reports whether a plan node determines the result's
+// column list rather than passing its input's through. These are exactly the
+// types deriveColumnsFromPlan handles with a dedicated arm before it consults
+// findUnionPlan; keeping the two in sync is what makes the descent safe.
+func definesOutputSchema(p plans.RecordQueryPlan) bool {
+	switch p.(type) {
+	case *plans.RecordQueryProjectionPlan,
+		*plans.RecordQueryStreamingAggregationPlan,
+		*plans.RecordQueryAggregateIndexPlan,
+		*plans.RecordQueryMultiIntersectionOnValuesPlan,
+		*plans.RecordQueryNestedLoopJoinPlan,
+		*plans.RecordQueryFlatMapPlan:
+		return true
+	}
+	return false
 }
 
 func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
