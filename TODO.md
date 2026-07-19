@@ -5498,7 +5498,19 @@ is already on the RFC-183 branch.
 Do NOT "fix" this by re-retiring the adapter without the property work — that
 is the change that caused the 49 shape flips.
 
-### [ ] FUZZ: GetCorrelatedTo stack-overflows on a cyclic reference graph (PRE-EXISTING)
+### [x] FUZZ: GetCorrelatedTo stack-overflows on a cyclic reference graph (PRE-EXISTING) — FIXED by RFC-185
+
+RESOLVED: the cyclic memo was constructed only by the Go-only filter/set-op
+commutation rule family (Push/PullCommonFilter through/above Intersection and
+Union). RFC-185 removed all four rules (both review gates ACK: RFC-review +
+implementation-review). With no rule constructing a cyclic memo, GetCorrelatedTo
+has no cyclic input; the four previously-crashing fuzz targets are clean at
+670k-925k execs, zero corpus drift. GetCorrelatedTo's missing cycle-guard is
+deliberately NOT added — a guard masks a cyclic memo (principle #9), and the
+crash was the honest surfacing of a rule bug now removed at the source. If a
+future rule reintroduces a cyclic memo, that is the bug to fix, not the guard to
+add. The diagnosis below is retained as the record of how it was found.
+
 
 `FuzzPlanner_MemoConsistency` and `FuzzPlanner_Determinism` crash with
 `fatal error: stack overflow`, unbounded recursion at
