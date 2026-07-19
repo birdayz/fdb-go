@@ -342,6 +342,69 @@ func TestDiffRows_Offset(t *testing.T) {
 // TestKnownGaps_LedgerIsNarrow guards the suppression hole: the known-gap
 // ledger converts a real engine failure into a DECLINE, so an over-broad
 // matcher silently hides bugs. Every near-miss below must stay a FINDING.
+func TestOracle_SelfJoin(t *testing.T) {
+	t.Parallel()
+	// C points at another row's ID, so `L.C = R.ID` is a meaningful join.
+	c := &Case{
+		Table: templateTable(),
+		Rows: []Row{
+			{"ID": int64(1), "A": int64(0), "B": int64(0), "C": int64(2), "S": "x", "F": false},
+			{"ID": int64(2), "A": int64(1), "B": int64(0), "C": int64(3), "S": "y", "F": false},
+			{"ID": int64(3), "A": int64(0), "B": int64(0), "C": nil, "S": "z", "F": false},
+		},
+	}
+	q := Query{
+		Join:    &JoinSpec{LeftCol: "C", RightCol: "ID", Inner: true},
+		OrderBy: []OrderKey{{Col: "ID", Qual: "L"}, {Col: "ID", Qual: "R"}},
+	}
+	proj := []string{"L.ID", "R.ID"}
+	got, err := OracleRows(c, q, proj)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	// 1→2 and 2→3 match; row 3 has C = NULL and joins to nothing.
+	if len(got) != 2 {
+		t.Fatalf("self-join produced %d rows, want 2: %v", len(got), got)
+	}
+	if got[0]["L_ID"] != int64(1) || got[0]["R_ID"] != int64(2) {
+		t.Errorf("row 0 = %v, want L_ID=1 R_ID=2", got[0])
+	}
+	if got[1]["L_ID"] != int64(2) || got[1]["R_ID"] != int64(3) {
+		t.Errorf("row 1 = %v, want L_ID=2 R_ID=3", got[1])
+	}
+
+	// A qualified single-sided filter narrows one side only.
+	q.Where = &BoolNode{Leaf: &Pred{Col: "S", Op: predicates.ComparisonEquals, Lit: "y", Qual: "L"}}
+	got, err = OracleRows(c, q, proj)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if len(got) != 1 || got[0]["L_ID"] != int64(2) {
+		t.Fatalf("filtered self-join = %v, want the single L_ID=2 row", got)
+	}
+}
+
+func TestJoinSQL_RendersUniqueOutputAliases(t *testing.T) {
+	t.Parallel()
+	c := &Case{Table: templateTable()}
+	q := Query{Join: &JoinSpec{LeftCol: "C", RightCol: "ID", Inner: true}}
+	sqlText := c.SQL(q, []string{"L.ID", "R.ID"})
+	// Both sides project ID; without distinct aliases the harness's
+	// name-keyed rows would collapse them and weaken every join comparison.
+	if !strings.Contains(sqlText, "l.id AS l_id") || !strings.Contains(sqlText, "r.id AS r_id") {
+		t.Fatalf("join projection must alias both sides uniquely: %s", sqlText)
+	}
+	if !strings.Contains(sqlText, "JOIN t_rd AS r ON l.c = r.id") {
+		t.Fatalf("unexpected join rendering: %s", sqlText)
+	}
+	// The comma form must carry the join equality in the WHERE instead.
+	q.Join.Inner = false
+	sqlText = c.SQL(q, []string{"L.ID", "R.ID"})
+	if !strings.Contains(sqlText, "t_rd AS l, t_rd AS r") || !strings.Contains(sqlText, "WHERE l.c = r.id") {
+		t.Fatalf("comma-join must move the equality into WHERE: %s", sqlText)
+	}
+}
+
 func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
 	t.Parallel()
 	const nestedIn = "SELECT * FROM t WHERE a IN (1,2) AND b = 3 AND c IN (4,5)"
@@ -413,7 +476,7 @@ func TestRenderSQL_Shapes(t *testing.T) {
 	t.Parallel()
 	c := Generate(42)
 	for _, q := range c.Queries {
-		for _, proj := range c.Projections() {
+		for _, proj := range c.ProjectionsFor(q) {
 			s := c.SQL(q, proj)
 			if !strings.HasPrefix(s, "SELECT ") || !strings.Contains(s, " FROM t_rd") {
 				t.Fatalf("malformed SQL: %s", s)

@@ -22,6 +22,9 @@ import (
 // the expected sequence is total), original insertion order otherwise (the
 // caller compares as a multiset in that case).
 func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
+	if q.Join != nil {
+		return oracleJoinRows(c, q, projection)
+	}
 	var out []Row
 	for _, r := range c.Rows {
 		if q.Where != nil {
@@ -84,6 +87,73 @@ func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
 	// (any min(k,|M|)-subset unordered; exact prefix ordered, valid because
 	// generated sort keys are ID-suffixed total orders).
 	return projected, nil
+}
+
+// oracleJoinRows evaluates a self-join as the textbook nested loop over the
+// case's authoritative rows: every (l, r) pair whose join key matches and
+// whose WHERE evaluates TRUE. No engine semantics are reimplemented — the
+// join equality and every filter leaf go through the same
+// predicates.Comparison evaluation the single-table path uses; only the
+// PLANNER (join order, access selection, correlated probes) is removed.
+//
+// Rows are keyed "<QUAL>.<COL>" while combined, then projected to the
+// unique output aliases the renderer emits (l_id, r_a, …).
+func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
+	joinCmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, nil)
+
+	var combined []Row
+	for _, l := range c.Rows {
+		for _, r := range c.Rows {
+			tb, err := joinCmp.EvalAgainst(l[q.Join.LeftCol], r[q.Join.RightCol])
+			if err != nil {
+				return nil, err
+			}
+			if tb != predicates.TriTrue {
+				continue
+			}
+			row := make(Row, 2*(len(c.Table.Cols)+1))
+			for k, v := range l {
+				row["L."+k] = v
+			}
+			for k, v := range r {
+				row["R."+k] = v
+			}
+			if q.Where != nil {
+				wb, err := evalBool(q.Where, row)
+				if err != nil {
+					return nil, err
+				}
+				if wb != predicates.TriTrue {
+					continue
+				}
+			}
+			combined = append(combined, row)
+		}
+	}
+
+	if len(q.OrderBy) > 0 {
+		sort.SliceStable(combined, func(i, j int) bool {
+			for _, k := range q.OrderBy {
+				key := k.Qual + "." + k.Col
+				cmp := compareSortKey(combined[i][key], combined[j][key], k)
+				if cmp == 0 {
+					continue
+				}
+				return cmp < 0
+			}
+			return false
+		})
+	}
+
+	out := make([]Row, 0, len(combined))
+	for _, row := range combined {
+		p := make(Row, len(projection))
+		for _, qualified := range projection {
+			p[strings.ToUpper(joinOutputAlias(qualified))] = row[qualified]
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 // distinctKey renders a projected row to a typed dedup key (same typed
@@ -168,18 +238,18 @@ func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 	switch {
 	case p.RhsCol != "":
 		// Column-vs-column: the engine's own two-sided evaluation.
-		return predicates.NewLiteralComparison(p.Op, nil).EvalAgainst(r[p.Col], r[p.RhsCol])
+		return predicates.NewLiteralComparison(p.Op, nil).EvalAgainst(r[predKey(p.Qual, p.Col)], r[predKey(p.RhsQual, p.RhsCol)])
 	case p.IsBetween:
 		// SQL desugaring: v >= lo AND v <= hi, Kleene AND over the
 		// engine's own comparisons.
-		lo, err := predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, p.Lit).Eval(r[p.Col])
+		lo, err := predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, p.Lit).Eval(r[predKey(p.Qual, p.Col)])
 		if err != nil {
 			return predicates.TriUnknown, err
 		}
 		if lo == predicates.TriFalse {
 			return predicates.TriFalse, nil
 		}
-		hi, err := predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, p.BetweenHi).Eval(r[p.Col])
+		hi, err := predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, p.BetweenHi).Eval(r[predKey(p.Qual, p.Col)])
 		if err != nil {
 			return predicates.TriUnknown, err
 		}
@@ -191,9 +261,9 @@ func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 		}
 		return predicates.TriTrue, nil
 	case p.Op == predicates.ComparisonIn:
-		return predicates.NewLiteralComparison(predicates.ComparisonIn, p.InList).Eval(r[p.Col])
+		return predicates.NewLiteralComparison(predicates.ComparisonIn, p.InList).Eval(r[predKey(p.Qual, p.Col)])
 	default:
-		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(r[p.Col])
+		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(r[predKey(p.Qual, p.Col)])
 	}
 }
 
@@ -265,4 +335,14 @@ func colNames(t TableDef) []string {
 		names = append(names, c.Name)
 	}
 	return names
+}
+
+// predKey is the Row key a predicate operand reads: bare column in a
+// single-table query, "<QUAL>.<COL>" in a join (where oracleJoinRows keys
+// each side's fields by its alias).
+func predKey(qual, col string) string {
+	if qual == "" {
+		return col
+	}
+	return qual + "." + col
 }

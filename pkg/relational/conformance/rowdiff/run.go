@@ -111,7 +111,7 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 	}
 
 	for _, q := range c.Queries {
-		for _, projection := range c.Projections() {
+		for _, projection := range c.ProjectionsFor(q) {
 			sqlText := c.SQL(q, projection)
 
 			// Plan-family telemetry from the TYPED plan tree (never EXPLAIN

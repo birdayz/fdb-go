@@ -52,7 +52,14 @@ func (r *PushLimitThroughProjectionRule) OnMatch(call *ExpressionRuleCall) {
 	limitRef := expressions.InitialOf(newLimit)
 	limitQ := expressions.ForEachQuantifier(limitRef)
 
-	newProj := expressions.NewLogicalProjectionExpression(proj.GetProjectedValues(), limitQ)
+	// Carry the projection's output ALIASES across the rebuild. Dropping
+	// them changed only the result METADATA, so rows stayed correct while
+	// every aliased column reverted to its base name:
+	// `SELECT l.id AS l_id, r.id AS r_id FROM t AS l JOIN t AS r ON …
+	// LIMIT k` reported two columns both named ID. Same query without the
+	// LIMIT — no push, no rebuild — kept l_id/r_id.
+	newProj := expressions.NewLogicalProjectionExpressionWithAliases(
+		proj.GetProjectedValues(), proj.GetAliases(), limitQ)
 	call.Yield(newProj)
 }
 

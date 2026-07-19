@@ -224,6 +224,7 @@ go_test(
         "like_escape_probe_test.go",
         "like_pattern_probe_test.go",
         "limit_offset_paging_probe_test.go",
+        "limit_projection_alias_fdb_test.go",
         "limit_zero_fdb_test.go",
         "materialization_ordinal_alignment_test.go",
         "materialized_nlj_null_test.go",

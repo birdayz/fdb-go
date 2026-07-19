@@ -73,6 +73,11 @@ type Pred struct {
 	// (`a < b`) instead of column-vs-literal. Non-sargable, so it forces
 	// residual filters and different plan shapes than a literal comparison.
 	RhsCol string
+	// Qual / RhsQual are the table-alias qualifiers in a JOIN query ("L" or
+	// "R"); empty in single-table queries. The oracle keys joined rows by
+	// "<QUAL>.<COL>", so these select the side each operand reads.
+	Qual    string
+	RhsQual string
 	// Negated renders `NOT (…)` around the leaf (and `NOT IN` for IN).
 	Negated bool
 }
@@ -104,11 +109,33 @@ type OrderKey struct {
 	Col   string
 	Desc  bool
 	Nulls NullsPlacement
+	// Qual is the table-alias qualifier in a JOIN query ("L"/"R"), empty
+	// otherwise.
+	Qual string
+}
+
+// JoinSpec is a SELF-join of the case's table under aliases L and R, joined
+// on `L.<LeftCol> = R.<RightCol>`. A self-join exercises the whole join
+// planner (NLJ, join ordering, correlated index access) without needing a
+// second table, and keeps the oracle a plain nested loop over one row set.
+//
+// Join queries always project EXPLICITLY ALIASED columns (l_id, r_a, …):
+// unaliased `l.id, r.id` would yield two output columns both named ID, and
+// the harness keys rows by column name, so the duplicate would collapse and
+// silently weaken the comparison.
+type JoinSpec struct {
+	LeftCol  string
+	RightCol string
+	// Inner renders `JOIN … ON …`; when false the join is expressed as a
+	// comma cross-join with the equality moved into the WHERE — the same
+	// logical query, a different parse path into the planner.
+	Inner bool
 }
 
 // Query is one generated query body; the runner executes it under every
 // projection variant and cross-checks row identity via ID.
 type Query struct {
+	Join     *JoinSpec // nil = single-table query
 	Where    *BoolNode // nil = no WHERE
 	OrderBy  []OrderKey
 	Limit    int  // 0 = no LIMIT
@@ -140,6 +167,33 @@ func (c *Case) Projections() [][]string {
 	return [][]string{nil /* SELECT * */, {"ID"}, narrow, reversed}
 }
 
+// joinProjections are the projection variants for a JOIN query. Every entry
+// is a qualified column ("L.ID"); the renderer emits a unique alias per
+// entry so no two output columns share a name.
+func (c *Case) joinProjections() [][]string {
+	var wide []string
+	for _, side := range []string{"L", "R"} {
+		wide = append(wide, side+".ID")
+		for _, col := range c.Table.Cols {
+			wide = append(wide, side+"."+col.Name)
+		}
+	}
+	return [][]string{
+		wide,
+		{"L.ID", "R.ID"},
+		{"R.ID", "L.ID", "L.B"},
+	}
+}
+
+// ProjectionsFor returns the projection variants appropriate to the query
+// (join queries never use `SELECT *` — see JoinSpec).
+func (c *Case) ProjectionsFor(q Query) [][]string {
+	if q.Join != nil {
+		return c.joinProjections()
+	}
+	return c.Projections()
+}
+
 // Generate builds the Case for a seed. Same seed → identical Case.
 func Generate(seed uint64) *Case {
 	rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
@@ -149,6 +203,12 @@ func Generate(seed uint64) *Case {
 	nQueries := 4 + rng.IntN(5)
 	queries := make([]Query, 0, nQueries)
 	for i := 0; i < nQueries; i++ {
+		// ~1/4 self-joins: the join planner is a large surface and the
+		// oracle stays a plain nested loop over the same authoritative rows.
+		if rng.IntN(4) == 0 {
+			queries = append(queries, genJoinQuery(rng, table))
+			continue
+		}
 		queries = append(queries, genQuery(rng, table))
 	}
 	return &Case{Seed: seed, Table: table, Rows: rows, Queries: queries}
@@ -218,6 +278,89 @@ func genRows(rng *rand.Rand, table TableDef) []Row {
 		rows = append(rows, r)
 	}
 	return rows
+}
+
+// genJoinQuery builds a self-join: `t AS l JOIN t AS r ON l.X = r.Y`, plus a
+// small conjunction of qualified single-sided predicates. Both operands of
+// the join key are drawn from the indexed columns where possible so the
+// planner has a correlated-access option, not only a nested-loop scan.
+func genJoinQuery(rng *rand.Rand, table TableDef) Query {
+	indexed := map[string]bool{}
+	for _, idx := range table.Indexes {
+		for _, c := range idx.Cols {
+			indexed[c] = true
+		}
+	}
+	// Join key: both sides must be the SAME TYPE — the engine rejects a
+	// cross-type comparison with 42804, which is correct behaviour, so
+	// generating one tests nothing but the error path. BIGINT columns only
+	// (ID plus the numeric value columns): they are the join-key shape real
+	// schemas use, and STRING/BOOLEAN keys add no planner coverage.
+	// Prefer an indexed column on the right (the probed side) so a
+	// correlated index access is available; ID is always indexed (pk).
+	rightCandidates := []string{"ID"}
+	for _, col := range table.Cols {
+		if col.Type == ColBigint && indexed[col.Name] {
+			rightCandidates = append(rightCandidates, col.Name)
+		}
+	}
+	leftCandidates := []string{"ID"}
+	for _, col := range table.Cols {
+		if col.Type == ColBigint {
+			leftCandidates = append(leftCandidates, col.Name)
+		}
+	}
+
+	spec := &JoinSpec{
+		LeftCol:  leftCandidates[rng.IntN(len(leftCandidates))],
+		RightCol: rightCandidates[rng.IntN(len(rightCandidates))],
+		Inner:    rng.IntN(2) == 0,
+	}
+
+	// 1-2 qualified single-sided filter leaves, biased to indexed columns so
+	// each side can drive an index access.
+	var leaves []*Pred
+	n := 1 + rng.IntN(2)
+	for i := 0; i < n; i++ {
+		col := table.Cols[rng.IntN(len(table.Cols))]
+		p := genPred(rng, col, indexed[col.Name])
+		p.Qual = []string{"L", "R"}[rng.IntN(2)]
+		if p.RhsCol != "" {
+			// genPred only ever pairs BIGINT columns for a column-vs-column
+			// leaf, so crossing sides here stays type-compatible. A
+			// cross-side comparison is an extra join predicate — its own
+			// useful shape — so take it a third of the time.
+			p.RhsQual = p.Qual
+			if rng.IntN(3) == 0 {
+				p.RhsQual = []string{"L", "R"}[rng.IntN(2)]
+			}
+		}
+		leaves = append(leaves, p)
+	}
+
+	kids := make([]*BoolNode, len(leaves))
+	for i, l := range leaves {
+		kids[i] = &BoolNode{Leaf: l}
+	}
+	var where *BoolNode
+	if len(kids) == 1 {
+		where = kids[0]
+	} else {
+		where = &BoolNode{And: true, Kids: kids}
+	}
+
+	q := Query{Join: spec, Where: where}
+	// A total ORDER BY over both sides' ids keeps the ordered comparison exact.
+	if rng.IntN(2) == 0 {
+		q.OrderBy = []OrderKey{
+			{Col: "ID", Qual: "L", Desc: rng.IntN(2) == 0},
+			{Col: "ID", Qual: "R"},
+		}
+		if rng.IntN(3) == 0 {
+			q.Limit = 1 + rng.IntN(20)
+		}
+	}
+	return q
 }
 
 func genQuery(rng *rand.Rand, table TableDef) Query {
@@ -483,6 +626,14 @@ func (c *Case) SQL(q Query, projection []string) string {
 	}
 	if projection == nil {
 		b.WriteString("*")
+	} else if q.Join != nil {
+		// Qualified columns, each with a unique alias (l_id, r_a, …) so no
+		// two output columns share a name.
+		outs := make([]string, len(projection))
+		for i, p := range projection {
+			outs[i] = fmt.Sprintf("%s AS %s", strings.ToLower(p), joinOutputAlias(p))
+		}
+		b.WriteString(strings.Join(outs, ", "))
 	} else {
 		lower := make([]string, len(projection))
 		for i, p := range projection {
@@ -491,16 +642,44 @@ func (c *Case) SQL(q Query, projection []string) string {
 		b.WriteString(strings.Join(lower, ", "))
 	}
 	b.WriteString(" FROM ")
-	b.WriteString(strings.ToLower(c.Table.Name))
-	if q.Where != nil {
+	tbl := strings.ToLower(c.Table.Name)
+	switch {
+	case q.Join == nil:
+		b.WriteString(tbl)
+	case q.Join.Inner:
+		fmt.Fprintf(&b, "%s AS l JOIN %s AS r ON l.%s = r.%s",
+			tbl, tbl, strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
+	default:
+		// Comma cross-join; the equality moves into the WHERE below.
+		fmt.Fprintf(&b, "%s AS l, %s AS r", tbl, tbl)
+	}
+	// WHERE: the comma-join form carries the join equality as its first
+	// conjunct, ahead of any generated filters.
+	joinEq := ""
+	if q.Join != nil && !q.Join.Inner {
+		joinEq = fmt.Sprintf("l.%s = r.%s",
+			strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
+	}
+	if joinEq != "" || q.Where != nil {
 		b.WriteString(" WHERE ")
-		renderBool(&b, q.Where)
+		if joinEq != "" {
+			b.WriteString(joinEq)
+			if q.Where != nil {
+				b.WriteString(" AND ")
+			}
+		}
+		if q.Where != nil {
+			renderBool(&b, q.Where)
+		}
 	}
 	if len(q.OrderBy) > 0 {
 		b.WriteString(" ORDER BY ")
 		for i, k := range q.OrderBy {
 			if i > 0 {
 				b.WriteString(", ")
+			}
+			if k.Qual != "" {
+				b.WriteString(strings.ToLower(k.Qual) + ".")
 			}
 			b.WriteString(strings.ToLower(k.Col))
 			if k.Desc {
@@ -523,6 +702,12 @@ func (c *Case) SQL(q Query, projection []string) string {
 	return b.String()
 }
 
+// joinOutputAlias turns a qualified column ("L.ID") into a unique output
+// alias ("l_id").
+func joinOutputAlias(qualified string) string {
+	return strings.ToLower(strings.ReplaceAll(qualified, ".", "_"))
+}
+
 func renderBool(b *strings.Builder, n *BoolNode) {
 	if n.Not {
 		b.WriteString("NOT (")
@@ -531,6 +716,9 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 	if n.Leaf != nil {
 		p := n.Leaf
 		col := strings.ToLower(p.Col)
+		if p.Qual != "" {
+			col = strings.ToLower(p.Qual) + "." + col
+		}
 		// NOT IN renders inline; every other negated leaf wraps in NOT (…).
 		negWrap := p.Negated && p.Op != predicates.ComparisonIn
 		if negWrap {
@@ -556,7 +744,11 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 		case p.Op == predicates.ComparisonLike:
 			fmt.Fprintf(b, "%s LIKE %s", col, renderLiteral(p.Lit))
 		case p.RhsCol != "":
-			fmt.Fprintf(b, "%s %s %s", col, opSQL(p.Op), strings.ToLower(p.RhsCol))
+			rhs := strings.ToLower(p.RhsCol)
+			if p.RhsQual != "" {
+				rhs = strings.ToLower(p.RhsQual) + "." + rhs
+			}
+			fmt.Fprintf(b, "%s %s %s", col, opSQL(p.Op), rhs)
 		default:
 			fmt.Fprintf(b, "%s %s %s", col, opSQL(p.Op), renderLiteral(p.Lit))
 		}
