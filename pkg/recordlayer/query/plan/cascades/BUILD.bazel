@@ -206,6 +206,7 @@ go_library(
         "vector_index_match_candidate.go",
         "windowed_index_match_candidate.go",
         "winner_lookup.go",
+        "yield_invariants.go",
     ],
     importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades",
     visibility = ["//visibility:public"],
@@ -842,6 +843,7 @@ go_test(
         "rebase_ordinal_layout_test.go",
         "memo_reexplore_test.go",
         "shell_completion_test.go",
+        "yield_invariants.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

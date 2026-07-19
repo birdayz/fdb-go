@@ -85,11 +85,58 @@ func TestNestedIn_OverIntersection(t *testing.T) {
 	if strings.Contains(plan, "<nil>") {
 		t.Fatalf("relink left a nil inner: %s", plan)
 	}
-	// Every IN level must carry a real child; the innermost access is the
-	// index scan for the equality.
-	for _, want := range []string{"InJoin(", "IndexScan("} {
+	// This assertion USED to demand `InJoin(` here, and that expectation
+	// encoded a wrong-rows bug rather than a healthy plan.
+	//
+	// Only C is served by an index scan (idx_c). Reaching a nested
+	// `InJoin(InJoin(PredicatesFilter(IndexScan(IDX_C), [2 preds])))` required
+	// pushing the A and B predicates BENEATH the fetch, onto an idx_c index
+	// entry that carries neither column — see the covered-column check in
+	// tryTranslateValueRec (rule_push_filter_through_fetch.go). With the push
+	// correctly refused, the only sound plan drives the indexed equality and
+	// re-applies both INs above the fetch. Asserting the sound shape is the
+	// point; TestNestedIn_LegitimateInJoin below keeps a real nested-InJoin
+	// shape under test so the relink path itself stays exercised.
+	for _, want := range []string{"IndexScan(IDX_C", "PredicatesFilter(", "[2 preds]"} {
 		if !strings.Contains(plan, want) {
 			t.Errorf("want %s in the plan, got: %s", want, plan)
 		}
+	}
+}
+
+// TestInJoinBelowFetch_RelinksRealChild is the sentinel
+// TestNestedIn_OverIntersection used to be: it keeps
+// PushInJoinThroughFetchRule's relink — the path that produced `InJoin(<nil>)`
+// — under test, on a query where the shape is SOUND.
+//
+// An IN over an indexed column pushes below the fetch as
+// `Fetch(InJoin(IndexScan(...)))`: the InJoin runs on index entries and the
+// fetch is lifted above it, so the whole scan is fetched once instead of once
+// per IN value. Every level must carry a real child.
+//
+// Deliberately a SINGLE IN. The nested two-IN shape is not soundly reachable
+// on any schema tried: with one index per column the planner falls back to
+// `PredicatesFilter(Scan(T))`, and with a composite (a,b) index it does the
+// same. Its former nested `InJoin(InJoin(...))` existed only because the A and
+// B predicates were being pushed onto an index entry that carried neither —
+// so demanding the nested shape would demand the bug back.
+func TestInJoinBelowFetch_RelinksRealChild(t *testing.T) {
+	t.Parallel()
+	const schema = `
+CREATE TABLE T_AB (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_a ON T_AB (a)
+CREATE INDEX idx_b ON T_AB (b)`
+	const q = "SELECT id, a FROM t_ab WHERE a IN (1,2) ORDER BY id"
+	plan, err := PlanQueryForTest(q, schema, nil)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if strings.Contains(plan, "<nil>") {
+		t.Fatalf("relink left a nil inner: %s", plan)
+	}
+	// The exact nesting matters: the InJoin must sit BELOW the fetch and hold
+	// the index scan. `InJoin(` alone would also match the un-pushed shape.
+	if !strings.Contains(plan, "Fetch(InJoin(IndexScan(IDX_A") {
+		t.Errorf("want Fetch(InJoin(IndexScan(IDX_A…))) with real children, got: %s", plan)
 	}
 }

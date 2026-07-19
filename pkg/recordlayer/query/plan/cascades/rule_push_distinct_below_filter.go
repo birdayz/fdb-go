@@ -65,7 +65,12 @@ func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	newDistinctPlan := plans.NewRecordQueryDistinctPlan(nil)
+	filterInnerPlan := bakedInnerPlan(filterInnerExpr)
+	if filterInnerPlan == nil {
+		return
+	}
+
+	newDistinctPlan := plans.NewRecordQueryDistinctPlan(filterInnerPlan)
 	newDistinctQ := expressions.ForEachQuantifier(
 		call.MemoizeFinalExpressionsFromOther(filterInnerRef, []expressions.RelationalExpression{filterInnerExpr}),
 	)
@@ -83,7 +88,7 @@ func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
 	rebasedPreds := rebasePredicates(filterW.plan.GetPredicates(), oldAlias, newAlias)
 
 	// Build: Filter([P'], Distinct(inner))
-	newFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, rebasedPreds)
+	newFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(newDistinctPlan, rebasedPreds)
 	newFilterWrapper := NewPhysicalPredicatesFilterWrapper(newFilterPlan, newQOverDistinct)
 
 	call.Yield(newFilterWrapper)

@@ -398,6 +398,12 @@ func (t *TransformImplTask) Run(p *Planner) {
 		// FinalizeExpressionsRule yields (they're already-explored
 		// exploratory members promoted to final).
 		for _, y := range call.yielded {
+			// Java's unconditional verifyChildrenMemoized, at the same point:
+			// before the yielded expression enters the memo.
+			if err := verifyChildrenMemoized(y); err != nil {
+				p.capErr = err
+				return
+			}
 			t.Ref.InsertFinal(y)
 			if !isAlreadyExploratoryMember(t.Ref, y) {
 				// OptimizeInputs only for PHYSICAL yields — third of the three gated
@@ -451,6 +457,10 @@ func (t *TransformImplTask) Run(p *Planner) {
 				}
 				t.Rule.OnMatch(call)
 				for _, y := range call.yielded {
+					if err := verifyChildrenMemoized(y); err != nil {
+						p.capErr = err
+						return
+					}
 					t.Ref.InsertFinal(y)
 					if !isAlreadyExploratoryMember(t.Ref, y) {
 						// NOTE: this 4th OptimizeInputs site — the

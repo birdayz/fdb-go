@@ -80,9 +80,11 @@ type Planner struct {
 	// configuration.isRuleEnabled(rule). nil/empty = all rules enabled.
 	DisabledRules map[string]struct{}
 
-	// capErr carries a complexity-guard trip raised inside a task (tasks
-	// have no error channel — Java throws instead); the Plan loop checks
-	// it after every task.
+	// capErr carries a complexity-guard trip or a violated planner invariant
+	// raised inside a task (tasks have no error channel — Java throws
+	// instead); the Plan loop checks it after every task. One channel, not
+	// two: both are "a task decided planning cannot legitimately continue",
+	// and Java surfaces them the same way.
 	capErr error
 
 	tasksRun int

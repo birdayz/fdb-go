@@ -86,9 +86,15 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	if fetchInnerExpr == nil {
 		return
 	}
+	// Bake the child plan bottom-up: every plan this rule constructs below
+	// carries its real child, so nothing downstream has to relink a hole.
+	fetchInnerPlan := bakedInnerPlan(fetchInnerExpr)
+	if fetchInnerPlan == nil {
+		return
+	}
 
 	// Build: Filter(pushed, fetchInner)
-	pushedFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, pushed)
+	pushedFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(fetchInnerPlan, pushed)
 	innerQ := expressions.ForEachQuantifier(
 		call.MemoizeFinalExpressionsFromOther(fetchInnerRef, []expressions.RelationalExpression{fetchInnerExpr}),
 	)
@@ -99,7 +105,7 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 
 	// Build: Fetch(Filter(pushed, fetchInner))
 	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		nil,
+		pushedFilterPlan,
 		fetchPlan.GetTranslateValueFunction(),
 		fetchPlan.GetResultType(),
 		fetchPlan.GetFetchIndexRecords(),
@@ -118,7 +124,7 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		// Rebase residual predicates to use the new fetch quantifier alias.
 		rebasedResidual := rebasePredicates(residual, oldInnerAlias, newQOverFetch.GetAlias())
 
-		residualFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, rebasedResidual)
+		residualFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(newFetchPlan, rebasedResidual)
 		residualFilterWrapper := NewPhysicalPredicatesFilterWrapper(residualFilterPlan, newQOverFetch)
 		call.Yield(residualFilterWrapper)
 	}
@@ -238,9 +244,88 @@ func tryTranslateValueRec(
 	if _, isConst := v.(*values.ConstantValue); isConst {
 		return v
 	}
+	// An ACCESSOR is a column read out of the row the fetch consumes, so it
+	// must ALWAYS be validated against the fetch's covered columns — BEFORE
+	// the uncorrelated-pass-through below, and regardless of whether it
+	// carries a correlation at all.
+	//
+	// After ordinalization a bare column reference is a FieldValue with
+	// Child == nil (a baked leaf / resolved ordinal), and such a value has an
+	// EMPTY correlation set. The pass-through below reads "not correlated to
+	// the source ⇒ nothing to translate ⇒ push it unchanged", which is true
+	// for a genuinely foreign value (an outer correlation, a literal) but
+	// FALSE for a column of the very row being fetched: pushing it unchanged
+	// asserts the column exists on the INDEX ENTRY. Nothing downstream
+	// catches that — tryTranslateValue's final guard only looks for residual
+	// correlation to oldAlias, which an ordinalized field never has — so the
+	// predicate rides below the fetch reading a column the index does not
+	// cover and the query returns WRONG ROWS. Concretely: with INDEX idx_k ON
+	// t(k), `k = 5 AND (a > 1 OR b < 2)` pushed `(A > 1 OR B < 2)` beneath the
+	// fetch onto a k-only index entry.
+	//
+	// Routing every accessor through PushValue closes it: the covered-column
+	// check in buildTranslateValueFunction (match_candidate_index.go) is then
+	// the single authority on whether a column survives the fetch. This
+	// matches Java, where pushValueThroughFetch matches the WHOLE value tree
+	// against the candidate's provided index Values via semanticEquals
+	// (ScanWithFetchMatchCandidate.java:51-76) — an uncovered column simply
+	// fails to match, correlation never enters into it.
+	// An ACCESSOR is a column read out of a row, and the ONLY authority on
+	// whether a column survives the fetch is the fetch's covered-column set.
+	// Every FieldValue therefore goes through PushValue — deliberately
+	// WITHOUT consulting correlation first.
+	//
+	// Correlation cannot be the discriminator here. After ordinalization a
+	// bare column is a FieldValue with Child == nil and an EMPTY correlation
+	// set, so the "uncorrelated ⇒ nothing to translate ⇒ push unchanged"
+	// shortcut below would carry it through the fetch untouched and assert
+	// the column exists on the INDEX ENTRY. Nothing downstream catches that:
+	// tryTranslateValue's final guard only looks for residual correlation to
+	// oldAlias, which an ordinalized field never has. The predicate then
+	// rides below the fetch reading a column the index does not cover and the
+	// query returns WRONG ROWS — with INDEX idx_k ON t(k), `k = 5 AND (a > 1
+	// OR b < 2)` pushed `(A > 1 OR B < 2)` onto a k-only index entry.
+	//
+	// Nor can "correlated to some OTHER alias ⇒ foreign row ⇒ pass through"
+	// stand in: a column of the fetched row is correlated to the TABLE alias
+	// while oldAlias is the filter's QUANTIFIER alias, so that test
+	// misclassifies own-row columns as foreign and reopens the hole on join
+	// legs. (The two alias namespaces are a known, separate defect.) Asking
+	// the covered-column set is namespace-independent and answers the
+	// question that actually matters.
+	//
+	// Java has no such hole: pushValueThroughFetch matches the WHOLE value
+	// tree against the candidate's provided index Values via semanticEquals
+	// (ScanWithFetchMatchCandidate.java:51-76), so an uncovered column simply
+	// fails to match and correlation never enters into it.
+	if _, isAccessor := v.(*values.FieldValue); isAccessor {
+		translated, ok := fetchPlan.PushValue(v, oldAlias, newAlias)
+		if !ok {
+			return nil // the index does not cover this column — not pushable
+		}
+		if _, ofSource := values.GetCorrelatedToOfValue(v)[oldAlias]; !ofSource {
+			// Covered, and already expressed in the target domain. Return it
+			// UNCHANGED: PushValue answers two questions at once — "is this
+			// column covered?" and "what does it look like past the fetch?" —
+			// and only the first applies here. Its rewrite builds a fresh
+			// FieldValue over the target QOV, discarding the resolved ordinal
+			// and leaving the runtime to fail the row lookup with "ordinal
+			// -1". Use it purely as the coverage oracle.
+			return v
+		}
+		return translated
+	}
 	// Check if the value is correlated to the source alias.
+	//
+	// The pass-through is guarded by valueReadsAColumn for the same reason the
+	// accessor branch above exists: a COMPOSITE over ordinalized fields — say
+	// ArithmeticValue(FieldValue{A}, FieldValue{B}) for `a + b > 3` — has an
+	// empty correlation set of its own, so an unguarded shortcut hands the
+	// whole expression through the fetch without ever examining the columns it
+	// reads. The accessor branch never sees them: the composite returns first.
+	// Recursing instead routes every leaf through the covered-column check.
 	correlated := values.GetCorrelatedToOfValue(v)
-	if _, isCorrelated := correlated[oldAlias]; !isCorrelated {
+	if _, isCorrelated := correlated[oldAlias]; !isCorrelated && !valueReadsAColumn(v) {
 		return v
 	}
 	// Try direct translation first (leaf values like FieldValue, QOV).
@@ -265,6 +350,29 @@ func tryTranslateValueRec(
 	}
 	// Reconstruct with translated children.
 	return values.WithChildren(v, translated)
+}
+
+// valueReadsAColumn reports whether evaluating v requires reading a column out
+// of a row — i.e. whether its tree contains an accessor anywhere.
+//
+// This is the property the "uncorrelated ⇒ push through unchanged" shortcut in
+// tryTranslateValueRec actually needs to test. Correlation is the wrong proxy
+// for it: after ordinalization a bare column is a FieldValue with Child == nil
+// and NO correlation, so a value can read half the record and still look
+// perfectly uncorrelated.
+func valueReadsAColumn(v values.Value) bool {
+	if v == nil {
+		return false
+	}
+	if _, ok := v.(*values.FieldValue); ok {
+		return true
+	}
+	for _, c := range v.Children() {
+		if valueReadsAColumn(c) {
+			return true
+		}
+	}
+	return false
 }
 
 func tryPushAndPredicate(

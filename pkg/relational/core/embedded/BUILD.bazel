@@ -95,6 +95,7 @@ go_test(
         "plan_determinism_test.go",
         "plan_harness_test.go",
         "plan_logging_test.go",
+        "push_filter_covered_columns_test.go",
         "query_hash_test.go",
         "resource_limits_test.go",
         "rfc152_outer_join_materialization_test.go",

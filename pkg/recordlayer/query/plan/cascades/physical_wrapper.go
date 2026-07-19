@@ -452,6 +452,31 @@ func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpressi
 	return shell
 }
 
+// bakedInnerPlan returns the concrete RecordQueryPlan that expr carries, for
+// use as a parent's child AT RULE TIME.
+//
+// Java constructs a parent only from an already-memoized child: in
+// PushFilterThroughFetchRule.java:197-225 the
+// `Quantifier.physical(call.memoizePlan(innerPlan))` is evaluated as a
+// constructor ARGUMENT, so no window exists in which a parent lacks its
+// child. Go's rules must do the same — pass the child plan, never nil.
+//
+// Returns nil when expr carries no plan, or carries a structurally
+// incomplete one. A rule that gets nil here declines to fire rather than
+// yielding a plan with a hole in it; the alternative is the shell that
+// extraction then has to repair.
+func bakedInnerPlan(expr expressions.RelationalExpression) plans.RecordQueryPlan {
+	pe, ok := expr.(physicalPlanExpression)
+	if !ok {
+		return nil
+	}
+	p := pe.GetRecordQueryPlan()
+	if p == nil || planIsShell(p) {
+		return nil
+	}
+	return p
+}
+
 // shouldRelinkInner decides whether a wrapper's WithChildren may install
 // candidate as its embedded plan's inner.
 //

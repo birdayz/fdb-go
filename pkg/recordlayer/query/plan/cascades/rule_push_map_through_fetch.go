@@ -91,7 +91,16 @@ func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 
 	// Build: Map(translatedResultValue, fetchInner)
 	// The fetch is eliminated entirely.
-	pushedMapPlan := plans.NewRecordQueryMapPlan(nil, pushedResultValue)
+	//
+	// The child plan is read AFTER the covering rewrite above: the rewritten
+	// wrapper carries a different (covering) index plan, and baking the
+	// pre-rewrite plan would put a non-covering scan under a map whose fetch
+	// has been eliminated.
+	fetchInnerPlan := bakedInnerPlan(fetchInnerExpr)
+	if fetchInnerPlan == nil {
+		return
+	}
+	pushedMapPlan := plans.NewRecordQueryMapPlan(fetchInnerPlan, pushedResultValue)
 	newInnerQ := expressions.ForEachQuantifier(
 		call.MemoizeFinalExpressionsFromOther(fetchInnerRef, []expressions.RelationalExpression{fetchInnerExpr}),
 	)

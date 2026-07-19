@@ -54,6 +54,7 @@ allowlist (file → permitted AST count). Keep the two in sync.
 | `pkg/relational/core/embedded/cascades_generator.go` | 1 | executor eval bridge: panic → SQL error |
 | `pkg/recordlayer/merge_cursor.go` | 1 | `tuple.Pack()` on user-derived comparison keys → cursor error |
 | `cmd/fdb-stacktester/directory_ops.go` | 1 | binding-tester harness binary (cgo-dependent build) |
+| `pkg/relational/conformance/explaindiff/explaindiff.go` | 1 | RFC-183 EXPLAIN-differ: a planner panic on one corpus query → `<PLAN-PANIC: …>` marker, so the corpus-wide dump completes instead of aborting. Surfaced, not swallowed: `TestNoPlanPanics` fails on any marker. |
 
 None silently swallow: each maps to a returned error / failed future / logged-and-failed conn.
 

@@ -73,12 +73,16 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	if fetchInnerExpr == nil {
 		return
 	}
+	fetchInnerPlan := bakedInnerPlan(fetchInnerExpr)
+	if fetchInnerPlan == nil {
+		return
+	}
 
 	// Build: InJoin(fetchInner)
 	// Create a new InJoinPlan with the fetch's inner as its child.
 	inJoinPlan := inJoinW.plan
 	pushedInJoinPlan := plans.NewRecordQueryInJoinPlan(
-		nil, // inner is tracked by wrapper, not plan
+		fetchInnerPlan,
 		inJoinPlan.GetBindingName(),
 		inJoinPlan.IsSorted(),
 		inJoinPlan.IsReverse(),
@@ -98,7 +102,7 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 
 	// Build: Fetch(InJoin(fetchInner))
 	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		nil,
+		pushedInJoinPlan,
 		fetchPlan.GetTranslateValueFunction(),
 		fetchPlan.GetResultType(),
 		fetchPlan.GetFetchIndexRecords(),
