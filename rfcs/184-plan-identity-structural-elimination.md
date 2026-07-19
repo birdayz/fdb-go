@@ -1,17 +1,43 @@
 # RFC-184 — Eliminating the plan/memo divergence class: one edge, one identity, one instrument
 
-**Status:** DRAFT — not yet reviewed. Requires Graefe ACK (Cascades alignment)
-and Torvalds ACK (code quality) before implementation, per the query-engine gate.
+**Status:** ACK-WITH-CHANGES from Graefe and Torvalds (2026-07-19); changes
+folded, DELTA re-confirmation pending. Requires both ACKs before implementation,
+per the query-engine gate.
 **Tracks:** RFC-183 §11–§15 (the measurements this RFC acts on), RFC-176
 (semantic plan identity), RFC-182 (the row-soundness harness).
-**Supersedes:** RFC-183's P5 terminal step, which §12 correctly refused to
-attempt as a paragraph in another RFC.
+**Supersedes:** RFC-183's P5 terminal step, which RFC-183 §12 correctly refused
+to attempt as a paragraph in another RFC.
+
+**Provenance (read first).** Every code citation, line number, and §N reference
+in this RFC resolves against the **RFC-183 implementation branch**
+(`rfc183-fully-linked-plans`, commit `a71aa6388`), NOT against `master`. On that
+branch RFC-183 is 856 lines with §8–§15, it is *ACK-WITH-CHANGES from Graefe and
+Torvalds with changes folded*, `plan_reachability.go` and
+`TestCorpusPlanReachability` exist, the shell architecture is deleted, and the
+identity method is named `EqualsPlanWithoutChildren`. On `master` none of that is
+true yet — `master` carries only RFC-183 §1–§7 (174 lines), the shell machinery
+is still present, and the method is named `EqualsWithoutChildren`. A reviewer
+auditing this RFC must check out `a71aa6388`; auditing against `master` will
+appear to refute citations that are in fact correct.
+
+**Hard prerequisite (load-bearing, not a footnote).** RFC-184's W2 **is**
+RFC-183's deferred P5. It presupposes RFC-183 P0–P4 landed, ACK'd, **and merged
+to master**. As of this writing RFC-183 is ACK'd on its branch but **unmerged,
+unpushed, no PR** (`git merge-base --is-ancestor rfc183-fully-linked-plans
+master` → NO). Therefore RFC-184 cannot be *implemented* — and arguably cannot
+*merge* — before RFC-183 lands on master. This dependency is stated again in §7's
+dependency table; it is not optional and it is not hidden.
 
 ## 1. Why this RFC exists
 
 RFC-183 closed six defects and drove genuine unreachable plan/memo edges across
-the 2407-query corpus from 343 to **0**. That is real progress and it is
-ratcheted (`TestCorpusPlanReachability`, proven by mutation).
+the 2407-query corpus to **0**, ratcheted by `TestCorpusPlanReachability` and
+proven by mutation. The honest trajectory is **343 → 158 → 0**, not "343 → 0":
+the raw 343 was an over-count (RFC-183 §12) that conflated legitimate group
+multiplicity with true divergence; asking the right reachability question (§14)
+corrected the baseline to 158; §15 drove that to 0. Quoting "343 → 0" would
+overstate the delta against the instrument's own honest count, so this RFC does
+not.
 
 It is also not a fix for the *class*. Every one of those six defects was
 detected, not prevented. The invariant that now holds is enforced by a test that
@@ -88,41 +114,71 @@ quantifier over the uncompensated input. Collapsing those by deletion drops a
 rows), silently.
 
 So the prerequisite is not wrapper deletion. It is: **every rule that builds a
-compensating plan must memoize it and range the quantifier over that
-reference.** §12 measured this as systematic — roughly ten construction sites
-across six parent types — not local to four rules. RFC-183 §15 has since closed
-the reachability symptom at all of them, which means the sites are now in
-lockstep; what has *not* been done is removing the ability to fall out of
-lockstep.
+compensating plan must memoize it and range the quantifier over the *compensated*
+reference.** RFC-183 §12 measured this as systematic — roughly ten construction
+sites across six parent types — not local to four rules. RFC-183 §15 closed the
+reachability *symptom* at all of them, which means the sites agree for every
+query in the 2407-corpus; what has *not* been done is removing the ability to
+fall out of lockstep. Critically — and this is Graefe's gate on W2 — **corpus
+reachability = 0 is necessary but not sufficient** for this precondition: a rule
+can range over the compensated reference for all 2407 corpus queries and still
+drop the compensation on a shape the corpus does not contain. Establishing
+sufficiency is what W4 exists for, and why §7 makes W4 *gate* W2 rather than
+trail it.
 
 ### Proposed end state
 
 Plans store children **only** as quantifiers. `GetChildren()` resolves through
-the reference. The ~4043 LOC of `physical_*_wrapper.go` collapses, and the
-1760-line `physical_wrapper.go` loses its reason to exist. Then plan/memo
-disagreement is not a bug you can write.
+the reference. The 22 `physical_*_wrapper.go` files (**2283 LOC**) collapse; the
+separate 1760-line `physical_wrapper.go` loses most of its reason to exist —
+though not all of it: `scanComparisonCorrelations`, `dataAccessExprCorrelations`,
+and the ordering derivations are genuine helpers that **relocate** onto the
+plans-as-expressions when the wrappers go, they do not vanish. (The "~4043 LOC"
+figure an earlier draft attached to `physical_*_wrapper.go` was wrong: 4043 is
+the *combined* count of the 22 wrapper files plus `physical_wrapper.go`.) Once
+the collapse is done, plan/memo disagreement is not a bug you can write.
 
-**Caveat that must survive review:** §15 leaves **38 edges where a plan child
-has no quantifier at all** (TypeFilter 32, MultiIntersection 6). I classified
-those as a modelling gap in leaf adapters rather than defects, and deliberately
-did not fold them into the headline count. That is a judgment call and a
-reviewer may well disagree; it is called out here rather than buried because
-this RFC's step 1 is exactly what closes them.
+**The severity-class argument (Graefe's strongest justification for W2, stated
+explicitly).** Collapsing to single quantifier-based storage does not eliminate
+winner-selection — a group still holds alternatives and a wrong winner is still
+possible. What it eliminates is a whole severity class: today the plan pointer
+can execute an expression the memo never costed (fiction → potentially wrong
+rows, silent). After W2, `GetChildren` resolves to a *valid, costed member of
+the group that was actually evaluated* — at worst a suboptimal winner, never
+fiction. That is a **soundness bug (tier 1) downgraded to a cost-quality concern
+(tier 3, regression-detectable)**. That downgrade is the real Cascades payoff,
+and it is stronger than "delete some adapters."
 
-## 3. Second-order cause — identity is hand-rolled, 75 times
+**The 38 no-quantifier edges are defects, not a modelling gap.** An earlier draft
+classified the plan children with no modeled quantifier (TypeFilter 32,
+MultiIntersection 6) as benign. Graefe's review corrects this and he is right in
+strict Cascades terms: a plan child with **no quantifier** is a subtree the memo
+**cannot cost, cannot explore, and cannot apply rules to** — the instrument
+emits them as `ReasonNoQuantifier` *violations*, and this is *more* fundamental
+than `ReasonAbsent` (a group exists and the plan drifted off it), because here
+**no group exists at all** for a subtree the executor will run. Their observable
+cost impact today is plausibly nil but **unverified**, which is exactly the
+"believed harmless because the corpus didn't punish it" reasoning this RFC
+exists to reject. So the honest headline is **"0 `ReasonAbsent`, 38
+`ReasonNoQuantifier` outstanding"**, and closing the 38 is a W2 exit criterion
+(§7). Step 1 (real quantifier storage on plans) is what closes them.
+
+## 3. Second-order cause — identity is hand-rolled, ~77 times
 
 `RecordQueryPlan` requires each implementation to supply its own
-`EqualsPlanWithoutChildren` and `HashCodeWithoutChildren` (`plan.go:76-84`).
-Measured today:
+`EqualsPlanWithoutChildren` and `HashCodeWithoutChildren` (`plan.go:76-84`, on
+the RFC-183 branch — on `master` the method is still the older
+`EqualsWithoutChildren`). Measured on `a71aa6388`:
 
 - **41** plan types in `plans/` implement the pair by hand;
-- **34** files in `cascades/` implement `EqualsWithoutChildren` for the adapter
-  side;
+- **36** adapter `EqualsWithoutChildren` methods across **24** files in
+  `cascades/`;
 - **22** `physical_*_wrapper.go` files, each also hand-implementing correlation
   and quantifier reporting.
 
-Every hand-written copy of a structural invariant is a place to get it wrong,
-and two of the six recent bugs were exactly that:
+That is **~77 hand-written identity implementations**, each a copy of the same
+structural invariant. Every copy is a place to get it wrong, and two of the six
+recent bugs were exactly that:
 
 - `scanPlanExpression.EqualsWithoutChildren` compared node-locally **while
   reporting no quantifiers** — so children contributed to identity from neither
@@ -136,8 +192,9 @@ and two of the six recent bugs were exactly that:
 The invariant being violated is subtle and nowhere stated in the code:
 **excluding children from identity is only correct when children are modelled as
 quantifiers**, because the child *groups* then carry that part of the identity.
-An adapter with neither is silently unsound. That rule currently lives in 75
-independent heads.
+An adapter with neither is silently unsound — it over-merges two non-equivalent
+expressions into one memo group (an interning-soundness violation). That rule
+currently lives in ~77 independent heads.
 
 ### Proposed end state
 
@@ -147,15 +204,15 @@ list — rather than being restated per type. Options, in preference order:
 1. **Structural default.** A shared implementation over declared fields +
    quantifiers; types opt out only with a documented reason. Removes the failure
    mode entirely for the common case.
-2. **Generation.** Emit the pair from the type definition. Mechanical, but keeps
-   75 artifacts.
+2. **Generation.** Emit the pair from the type definition (the Calcite /
+   CockroachDB `optgen` approach). Mechanical, but keeps ~77 artifacts.
 3. **Conformance test over all implementers.** Weakest — detects rather than
    prevents — but cheap and worth doing *immediately* regardless of which of the
    above lands, because it is the only item here that ships this week.
 
 Note this is downstream of §2: once children are quantifiers everywhere, the
 "exclude children" rule becomes universally correct and the hazard largely
-evaporates. **Sequencing matters — do not generate 75 copies of an invariant we
+evaporates. **Sequencing matters — do not generate ~77 copies of an invariant we
 are about to make structural.**
 
 ## 4. The instrument gap — what diffgen does not cover
@@ -262,33 +319,24 @@ ours, because it determines whether the answer is "adopt the known fix" or
 | Problem | Status | Implication |
 |---|---|---|
 | Cost-model unverifiability | Universal, permanent | Tier 3. Manage, never solve. |
-| Memo identity fragility | Universal — Calcite, others | Known industry fix: **generate** identity (CockroachDB does). We hand-write it 75×. Below standard, not novel. |
-| Group multiplicity vs. chosen plan | Universal, by design | Not a defect. §13 already learned this the expensive way. |
-| **Dual-storage child edge** | **Self-inflicted** | Ours alone. See below. |
+| Memo identity fragility | Universal — Calcite, others | Known industry fix: **generate** identity (CockroachDB does). We hand-write it ~77×. Below standard, not novel. |
+| Group multiplicity vs. chosen plan | Universal, by design | Not a defect. RFC-183 §13 already learned this the expensive way. |
+| **Dual-storage child edge** | **Self-inflicted** | Ours alone. |
 
-The dual edge comes from port *sequencing*, not from Cascades. The executor's
-plan tree was ported first (mirroring `RecordQueryPlan`), Cascades second, and
-the halves were glued with adapters so plans could pretend to be expressions.
-Java needs no adapters because `RecordQueryPlan` **is** a `RelationalExpression`
-— one hierarchy from the start. The wrapper layer is the seam between two
-independently-ported halves, and the seam is the bug family. A textbook instance
-of the repo's own 1:1-port principle: we diverged architecturally and the bill
-arrived later.
+The dual edge is the only self-inflicted one, and it comes from port
+*sequencing*: the executor's plan tree was ported first, Cascades second, and
+the halves glued with adapters so plans could pretend to be expressions — where
+Java needs none because `RecordQueryPlan` **is** a `RelationalExpression`. The
+nuance that stops this overcorrecting: two representations is not the sin —
+serious engines lower an optimized plan into a separate executable tree — the
+sin is that ours are two *mutable* slots that **coexist during search and drift
+while rules fire**, with no forcing function to keep them equal. Lowering is
+one-way after search; this is not.
 
-**An important nuance so this does not overcorrect:** having two representations
-is *not* the sin. Serious engines routinely lower an optimized physical plan
-into a separate executable tree. The difference is that lowering is a **one-way
-transformation after search completes**. Ours are two mutable slots that
-**coexist during search and drift while rules fire**. The defect is not duality
-— it is simultaneity with no forcing function to keep the slots equal.
-
-### Expect the discovery rate to rise before it falls
-
-Every new instrument surfaces a backlog of already-latent defects. If W1 ships
-and cost diffs begin firing, that will *look* like a regression caused by the
-refactor and will not be one. The failure mode to guard against is someone
-reading the spike as "the instrument is broken" and disabling it. Stated here so
-it is on the record before it happens.
+One operational warning: expect the discovery rate to *rise* before it falls.
+Every new instrument surfaces a backlog of already-latent defects, so when W1
+ships and cost diffs begin firing, that spike is the instrument working, not the
+refactor regressing — do not read it as a reason to disable the instrument.
 
 ## 7. Plan
 
@@ -297,17 +345,37 @@ later step deletes.
 
 | WS | Tier | Work | Depends on |
 |---|---|---|---|
-| **W0** | 2 | Conformance test over all `RecordQueryPlan` / adapter implementers: identity must not exclude children unless quantifiers are reported. Ships immediately. | — |
+| **P** | — | **RFC-183 P0–P4 merged to master.** Not a workstream of this RFC — an external precondition. W2 is RFC-183's P5 and cannot begin until its predecessor lands. | — |
+| **W0** | 2 | Conformance test over all `RecordQueryPlan` / adapter implementers: identity must not exclude children unless quantifiers are reported. Ships immediately (against the RFC-183 branch). | — |
 | **W1** | 3 | Differ emits cost + ordering; baseline header splits identical / both-error / skipped; one corpus variant planned under real statistics. | — |
-| **W2** | 1 | Plans store children **only** as quantifiers; wrapper layer collapses. The terminal step RFC-183 deferred. | W0, W1 (W1 is the instrument that can see W2 regress) |
-| **W3** | 2 | Identity derived structurally rather than 75× by hand. | W2 |
-| **W4** | 2 | Generative harness asserts memo invariants, not just row-level truth. | W0 |
+| **W4** | 2 | Generative harness asserts memo invariants (reachability, arity, identity/hash), not just row-level truth — over shapes the corpus does not contain. | W0 |
+| **W2** | 1 | Plans store children **only** as quantifiers; wrapper layer collapses. RFC-183's deferred P5. | **P**, W0, W1, **W4** |
+| **W3** | 2 | Identity derived structurally rather than ~77× by hand. | W2 |
 
-**W1 before W2 is not optional.** W2 moves costs by construction; without a
-cost-aware differ, a flipped-but-still-correct plan passes every existing test
-while silently regressing plan quality. That is precisely the failure mode
-RFC-183's §11 note describes — "compiled, passed the suite, returned wrong rows"
-— and the zero-drift gate that protected P0–P4 cannot protect W2.
+**W4 gates W2 — this is Graefe's required re-sequencing, not the original
+ordering.** W2 is sound only if every compensating rule memoizes-then-ranges the
+quantifier over the *compensated* reference; drop that anywhere and collapse
+silently loses a `DefaultOnEmpty` or a residual filter (wrong rows). Corpus
+reachability = 0 (RFC-183 §15) is *necessary but not sufficient* — it proves
+lockstep for 2407 written queries, not for shapes nobody wrote. W4 is the only
+instrument that can establish sufficiency, by asserting the memo invariants over
+*generated* shapes. So W4 must land and cover the compensation sites before W2
+collapses anything. The alternative Graefe accepts is an exhaustive per-rule
+enumeration proving every compensating rule memoizes-then-ranges; W4 is the
+cheaper and more durable of the two.
+
+**W1 before W2, correctly stated.** The original draft said "W2 moves costs by
+construction" — that is wrong and would misdirect anyone watching the differ.
+The memo's *search-time* costs do not move; the memo always costed the
+quantifier's group. What W2 changes is the **extracted** plan: at a divergent
+edge, extraction stops following the raw plan pointer and follows the group's
+cost-winning member instead. In the non-divergent majority nothing moves; at a
+divergent edge the extracted plan changes to the one that was *actually costed* —
+a **correction** (cost ≤ prior), not a regression. W1 exists to make those
+extraction corrections **visible** and confirm each is a correction, not a silent
+quality regression from a wrong winner pick. You are changing which expression
+extraction yields; you must be able to see the delta. That is why W1 is a
+prerequisite, not caution.
 
 ### Exit criteria
 
@@ -315,24 +383,28 @@ RFC-183's §11 note describes — "compiled, passed the suite, returned wrong ro
   standard — a test that only ever passes proves nothing).
 - **W1:** cost/ordering diffs are stable across a no-op change. If they are not,
   that instability is a finding and blocks W2 until understood.
-- **W2:** corpus reachability stays at 0; row-diff and 1M stress unchanged;
-  the 38 no-quantifier edges reach 0. Explicitly **not** "green suite".
+- **W4:** the harness reproduces at least one historical defect from this batch
+  when the fix is reverted, **and** exercises every compensating-rule site
+  (FlatMap, RecursiveDfsJoin, InJoin, UnorderedUnion, PredicatesFilter,
+  Projection) with generated shapes — because that coverage is what licenses W2.
+- **W2:** `ReasonAbsent` reachability stays at 0; the 38 `ReasonNoQuantifier`
+  edges reach 0; row-diff and 1M stress unchanged; every extraction delta W1
+  surfaces is a confirmed correction (cost ≤ prior), not a regression. Explicitly
+  **not** "green suite".
 - **W3:** count of hand-written identity implementations falls; no behavioral
   change (zero drift under W1's cost-aware differ).
-- **W4:** the harness reproduces at least one historical defect from this batch
-  when the fix is reverted.
 
 ### Measurable targets
 
 Every number below is countable today, so progress is not a matter of opinion.
 Anything without a current measurement is marked as such rather than guessed.
 
-| Metric | Today | Target |
+| Metric | Today (on `a71aa6388`) | Target |
 |---|---|---|
-| Unreachable plan/memo edges (corpus) | 0 | 0, and **unrepresentable** after W2 |
-| Plan children with no quantifier | 38 | 0 |
+| `ReasonAbsent` reachability edges (corpus) | 0 | 0, and **unrepresentable** after W2 |
+| `ReasonNoQuantifier` edges (plan children with no quantifier) | 38 (TypeFilter 32, MultiIntersection 6) | 0 |
 | Storage locations for the child edge | 2 | 1 |
-| Hand-written identity implementations | 75 (41 + 34) | ≤ 5, each with a documented opt-out reason |
+| Hand-written identity implementations | ~77 (41 plan + 36 adapter across 24 files) | ≤ 5, each with a documented opt-out reason |
 | Differ blind axes | 3 (cost, ordering, statistics) | 0 |
 | Corpus plan-type coverage | ~25 of 41 | 41 of 41, or a recorded reason a type is unreachable from SQL |
 | "Identical" entries that are both-sides errors | ~255, uncounted | reported separately |
@@ -342,26 +414,20 @@ The last row is the one that actually encodes §6's principle: it moves checks
 from corpus tests to `Yield`, i.e. from *detection over 2407 queries* to
 *prevention over all inputs*.
 
-### The standing regime — what runs forever
+### The standing regime — two new rules
 
-W0–W4 are one-time work. What keeps the classes closed afterwards is a regime,
-and it should be written down rather than assumed:
+W0–W4 are one-time work; a small regime keeps the classes closed. Most of it is
+already repo policy (mutation-prove tests; fields-not-rendered-text diagnostics;
+nightly generative harness treated as CI under the red-nightly rule) and is not
+restated here. The two rules that are *new* and load-bearing:
 
-1. **Every memo invariant is asserted at the construction choke point**, not
-   only checked over a corpus. Corpus tests remain as ratchets, never as the
-   primary guarantee.
-2. **Every invariant test is mutation-proven.** RFC-183 §15 caught a "fix" that
-   changed nothing and still went green — a test that has never been observed to
-   fail proves nothing about the property it names.
-3. **Every planner-touching change runs the cost-aware differ**, not just the
-   suite. This is what makes tier-3 manageable: we cannot verify cost, but we
+1. **Every memo invariant is asserted at the construction choke point (`Yield`),
+   not only checked over a corpus.** Corpus tests remain as ratchets, never as
+   the primary guarantee. This is the detection→prevention move; without it the
+   classes reopen the moment someone writes a rule the corpus doesn't exercise.
+2. **Every planner-touching change runs the cost-aware differ, not just the
+   suite.** This is what makes tier-3 manageable: we cannot verify cost, but we
    can refuse to let it move unnoticed.
-4. **Diagnostics compare fields, never rendered text.** Explain hid the deciding
-   field four separate times on RFC-183. This is now a standing rule, not a
-   lesson.
-5. **The generative harness runs nightly and is treated as CI.** Per the repo's
-   red-nightly rule: a red safety net is always in scope, and no freeze exempts
-   triage of one.
 
 ### What is explicitly out of scope
 
@@ -374,34 +440,38 @@ if it did.
 
 ## 8. Risks and unknowns
 
-1. **W2 is a semantic change, not a deletion.** RFC-183 §11 proved this. Two
+1. **W2 is a semantic change, not a deletion.** RFC-183 §11 proved this; two
    independent attempts refused it for two different correct reasons. The
-   prerequisite (all compensating plans memoized in lockstep) now appears
-   satisfied by §15, but "appears satisfied at 2407 queries" is exactly the
-   confidence level that has been wrong before.
-2. **Cost instability may be pre-existing and large.** W1 may reveal that cost
-   is not reproducible across unrelated changes, which would be a bigger finding
-   than anything in this RFC and would reorder it.
-3. **The 38 no-quantifier edges may not be a modelling gap.** They are currently
-   excluded from the headline on my judgment. If a reviewer reads them as
-   defects, the §15 "zero" needs restating.
-4. **Structural identity may not be expressible cleanly in Go** without
+   compensation-memoization precondition appears satisfied by RFC-183 §15, but
+   "appears satisfied at 2407 queries" is exactly the confidence level that has
+   been wrong before — which is why this RFC makes **W4 a blocking gate on W2**
+   (§7) rather than leaving this as a noted risk. The residual risk is that W4's
+   generated coverage still misses a compensation shape; mitigated by the
+   exhaustive per-rule enumeration Graefe accepts as the alternative gate.
+2. **RFC-183 does not merge.** W2 is its P5; if RFC-183 stays unmerged, RFC-184
+   is inert. This is the single largest external dependency and it is outside
+   this RFC's control (see the §7 prerequisite row **P**).
+3. **Cost instability may be pre-existing and large.** W1 may reveal that cost
+   is not reproducible across unrelated changes — a bigger finding than anything
+   in this RFC, and one that would reorder it.
+4. **Some of the 38 `ReasonNoQuantifier` edges may have real cost impact.** They
+   are now correctly classified as defects (§2), but whether any is
+   *observable* today is unmeasured. If W1's cost-aware differ shows one of them
+   moving a plan, it escalates from "memo-visibility defect, latent" to "active
+   mispricing" and jumps the queue.
+5. **Structural identity may not be expressible cleanly in Go** without
    reflection costs on a hot path. Fallback is W3 option 2 (generation).
 
 ## 9. What this RFC does not claim
 
-- **It does not claim the engine can be made bug-free.** §6 is explicit: tier 1
-  reaches zero, tier 2 reaches "orders of magnitude better", tier 3 never
-  reaches correctness at all. A reviewer should reject any later summary of this
-  RFC that flattens those into one promise.
-- It does not claim the current state is broken. Reachability is 0, ratcheted,
-  and mutation-proven; three of the six defects are now impossible to
-  reintroduce silently.
-- It does not claim diffgen is bad. It claims diffgen is **blind on the cost
-  axis**, which happens to be where this bug family lives, and that reading
-  `differing=0` as coverage is the actual hazard.
-- It does not claim W2 is a cleanup. It is a semantic change to how the memo and
-  the executor agree, and it gets a full Graefe review on that basis.
-- It does not claim the dual-edge problem is normal for optimizers. Identity
-  fragility and cost blindness are universal; the dual edge is ours, and §6
-  says so rather than hiding it behind "every engine has this".
+Folded from Torvalds' cut of a longer section — one line worth keeping: **a
+reviewer should reject any later summary of this RFC that flattens the three
+tiers (§6) into a single "bug-free" promise.** Tier 1 reaches zero by
+construction; tier 2 reaches orders-of-magnitude by derivation and generative
+testing; tier 3 (cost, plan quality) never reaches correctness at all and is
+managed by regression detection only. The RFC also does not claim the current
+state is broken (reachability is 0, ratcheted, mutation-proven on the RFC-183
+branch), does not claim diffgen is bad (only blind on the cost axis), and does
+not claim the dual edge is normal for optimizers (identity fragility and cost
+blindness are; the dual edge is self-inflicted — §6).
+
