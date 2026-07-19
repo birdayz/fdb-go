@@ -5,7 +5,10 @@ go_library(
     srcs = ["main.go"],
     importpath = "fdb.dev/cmd/explain-differ",
     visibility = ["//visibility:private"],
-    deps = ["//pkg/relational/conformance/explaindiff"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/relational/conformance/explaindiff",
+    ],
 )
 
 go_binary(

@@ -48,6 +48,11 @@ func verifyChildrenMemoized(expr expressions.RelationalExpression) error {
 				"yield-invariant: %T quantifier %d ranges over an empty reference — its child was never memoized", expr, i)
 		}
 	}
+	// Reachability is ACCOUNTED here, not enforced: RFC-183 inherited a
+	// population of unreachable edges and is driving it to zero. See
+	// plan_reachability.go for why it graduates to a hard error only at zero.
+	recordReachability(expr)
+
 	return verifyNoShell(expr)
 }
 

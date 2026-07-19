@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/relational/conformance/explaindiff"
 )
 
@@ -76,6 +77,19 @@ func dump(args []string) {
 	baseline, st, err := explaindiff.GenerateBaseline(*testdata)
 	if err != nil {
 		log.Fatalf("generate baseline: %v", err)
+	}
+	// RFC-183 plan-reachability tally over the whole corpus. The differ is the
+	// only harness that plans every corpus query without FDB, which makes it
+	// the natural place to measure — but the two answer different questions and
+	// must not be confused: the baseline compares EXTRACTED PLANS, so it stays
+	// green through reachability defects by construction (extraction reads the
+	// plan and never consults the memo).
+	if p := os.Getenv("RFC183_REACHABILITY_OUT"); p != "" {
+		if err := os.WriteFile(p, []byte(cascades.ReachabilityReport(40)), 0o644); err != nil {
+			log.Fatalf("write reachability report %s: %v", p, err)
+		}
+		fmt.Fprintf(os.Stderr, "explain-differ: reachability -> %s (%d unreachable)\n",
+			p, cascades.ReachabilityCount())
 	}
 	if *out == "" {
 		fmt.Print(baseline)

@@ -80,15 +80,42 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 		// columns when they differ. This is the Cascades-native
 		// approach — column renaming is a plan-level operation, not
 		// an executor band-aid.
-		firstCols := physicalPlanColumnNames(childPlans[0])
-		if len(firstCols) > 0 {
-			for i := 1; i < len(childPlans); i++ {
-				branchCols := physicalPlanColumnNames(childPlans[i])
-				if len(branchCols) == len(firstCols) && !colNamesEqual(branchCols, firstCols) {
-					childPlans[i] = plans.NewRecordQueryMapPlan(
-						childPlans[i],
-						columnRenameValue(branchCols, firstCols),
-					)
+		// The renaming Map is a COMPENSATING operator, so the branch
+		// quantifier advances with it. Without that, the Map existed only in
+		// the plan and nothing in the quantifier's group could produce it —
+		// the memo costed the un-renamed branch while the renamed one
+		// executed (10 unreachable edges, RFC-183 §14).
+		//
+		// This only ADDS reachability; the group keeps every member it had.
+		// Narrowing a group to the one member the plan happens to use is a
+		// different and WRONG change — doing that to the IN-join rule
+		// destroyed the InUnion alternative and regressed
+		// `IN (…) ORDER BY id`. A group holding alternatives is the memo
+		// working correctly.
+		//
+		// MemoizeFinalExpression, not MemoizeExpression: two branches that
+		// rename to the same shape would otherwise intern together, which is
+		// exactly how the recursive-DFS legs collapsed into one group.
+		//
+		// childPlans appends only for members that are physical while
+		// newQuantifiers appends unconditionally, so the two can fall out of
+		// step; renaming under a mismatched index would attach a Map to the
+		// wrong branch. Skip the rename entirely rather than guess.
+		if len(childPlans) == len(newQuantifiers) {
+			firstCols := physicalPlanColumnNames(childPlans[0])
+			if len(firstCols) > 0 {
+				for i := 1; i < len(childPlans); i++ {
+					branchCols := physicalPlanColumnNames(childPlans[i])
+					if len(branchCols) == len(firstCols) && !colNamesEqual(branchCols, firstCols) {
+						mapPlan := plans.NewRecordQueryMapPlan(
+							childPlans[i],
+							columnRenameValue(branchCols, firstCols),
+						)
+						childPlans[i] = mapPlan
+						newQuantifiers[i] = expressions.NewPhysicalQuantifier(
+							call.MemoizeFinalExpression(
+								NewPhysicalMapWrapper(mapPlan, newQuantifiers[i])))
+					}
 				}
 			}
 		}

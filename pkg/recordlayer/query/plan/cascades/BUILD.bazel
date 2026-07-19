@@ -64,6 +64,7 @@ go_library(
         "plan_extraction.go",
         "plan_invariants.go",
         "plan_properties.go",
+        "plan_reachability.go",
         "planner.go",
         "planner_constraint.go",
         "planner_phase.go",
@@ -838,6 +839,7 @@ go_test(
         "plan_extraction_test.go",
         "plan_rich_ordering_parity_test.go",
         "plan_expression_flag_parity_test.go",
+        "plan_reachability.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

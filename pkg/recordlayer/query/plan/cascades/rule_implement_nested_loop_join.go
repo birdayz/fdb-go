@@ -2170,12 +2170,27 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		innerJoinPlan = fmPlan
 		step1Expr = newPhysicalFlatMapWrapper(fmPlan, leftQ, rightQ)
 	} else {
-		innerJoinPlan = plans.NewRecordQueryNestedLoopJoinPlan(
+		nljPlan := plans.NewRecordQueryNestedLoopJoinPlan(
 			leftPlan, rightPlan,
 			joinPreds,
 			joinType,
 			leftAlias, rightAlias,
 			step1RV,
+		)
+		innerJoinPlan = nljPlan
+		// step1Expr was `leftExpr` — the LEFT LEG ALONE — while the plan holds the
+		// whole join, so the step-2 FlatMap's outer child was not reachable from
+		// its quantifier's group (RFC-183 §14). Range it over a physical NLJ
+		// wrapper built on BOTH legs' memoized quantifiers instead; the
+		// correlatedStep1 branch above already does exactly this with its FlatMap
+		// wrapper. Both legs keep their own interned groups, so this only ADDS
+		// reachability — no group is narrowed.
+		step1Expr = newPhysicalNestedLoopJoinWrapper(
+			nljPlan,
+			expressions.NamedForEachQuantifier(
+				values.NamedCorrelationIdentifier(leftAlias), call.MemoizeExpression(leftExpr)),
+			expressions.NamedForEachQuantifier(
+				values.NamedCorrelationIdentifier(rightAlias), call.MemoizeExpression(rightExpr)),
 		)
 	}
 
@@ -2292,11 +2307,21 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		}
 	}
 
+	// Each compensating operator is MEMOIZED and its quantifier ADVANCES in
+	// LOCKSTEP with the plan (RFC-183 §14). See the ALIAS CONTRACT note at the
+	// yield: PRESERVE existCorr on every step, never fresh.
+	innerQ := expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(existExpr))
+
 	var belowFOD plans.RecordQueryPlan = existPlan
 	if len(existPreds) > 0 {
-		belowFOD = plans.NewRecordQueryPredicatesFilterPlanWithAlias(existPlan, existPreds, existCorr)
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(existPlan, existPreds, existCorr)
+		belowFOD = belowFODFilter
+		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
+			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
 	}
 	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+	innerQ = expressions.NamedPhysicalQuantifier(existCorr,
+		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, innerQ)))
 
 	var flatMapInner plans.RecordQueryPlan = fodPlan
 	if hasExistsFilter {
@@ -2305,7 +2330,10 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(existCorr), cmp)
-		flatMapInner = plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, existCorr)
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, existCorr)
+		flatMapInner = residualFilter
+		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
+			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, innerQ)))
 	}
 
 	// The FlatMap's result value.
@@ -2370,14 +2398,18 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		flatMapResult, false,
 	)
 
-	// Bind the wrapper quantifiers with the FlatMap plan's REAL outer/inner aliases
-	// (mergedOuterCorr/existCorr), not fresh ones — same EXISTS correlation-leak fix
-	// as buildExistsFlatMap above (the same leak class): a fresh outer alias fails to
-	// subtract the FOD inner's correlation to mergedOuterCorr, leaking it upward.
+	// ALIAS CONTRACT — PRESERVE the FlatMap plan's REAL outer/inner aliases
+	// (mergedOuterCorr/existCorr), never fresh ones: same EXISTS correlation-leak
+	// class as buildExistsFlatMap — a fresh outer alias fails to subtract the FOD
+	// inner's correlation to mergedOuterCorr, leaking it upward.
+	//
+	// The outer quantifier ranges over step1Expr. In the correlatedStep1 branch
+	// that IS a wrapper over innerJoinPlan, so the edge already resolves. In the
+	// materialized-NLJ branch it was `leftExpr` — ONE LEG of a two-leg join — so
+	// the plan held the whole NestedLoopJoin while the group could only produce
+	// its left input. Wrapping the NLJ over both legs' memoized quantifiers makes
+	// the join reachable without narrowing either leg's group.
 	leftMemoRef := call.MemoizeExpression(step1Expr)
-	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
-		expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(existExpr)))
-	innerQ := expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(fodWrapper))
 	call.Yield(newPhysicalFlatMapWrapper(
 		flatMapPlan,
 		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
@@ -2681,11 +2713,22 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		}
 	}
 
+	// Each compensating operator is MEMOIZED and its quantifier ADVANCES in
+	// LOCKSTEP with the plan (RFC-183 §14), mirroring the 2-leg arm. ALIAS
+	// CONTRACT — PRESERVE existCorr on every step, never fresh: the EXISTS
+	// correlation-leak class documented at the 2-leg arm's yield.
+	innerQ := expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(existExpr))
+
 	var belowFOD plans.RecordQueryPlan = existPlan
 	if len(existPreds) > 0 {
-		belowFOD = plans.NewRecordQueryPredicatesFilterPlanWithAlias(existPlan, existPreds, existCorr)
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(existPlan, existPreds, existCorr)
+		belowFOD = belowFODFilter
+		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
+			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
 	}
 	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+	innerQ = expressions.NamedPhysicalQuantifier(existCorr,
+		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, innerQ)))
 
 	var flatMapInner plans.RecordQueryPlan = fodPlan
 	if hasExistsFilter {
@@ -2694,7 +2737,10 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(existCorr), cmp)
-		flatMapInner = plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, existCorr)
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, existCorr)
+		flatMapInner = residualFilter
+		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
+			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, innerQ)))
 	}
 
 	// The FlatMap result value: for a PROJECTED-EXISTS fold (the RV references
@@ -2717,13 +2763,19 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		flatMapResult, false,
 	)
 
-	// The wrapper's outer quantifier ranges over leg[0]'s memoized expression
-	// (the 2-leg arm's step1Expr convention — memo/cost bookkeeping; execution
-	// is driven by flatMapPlan's direct child pointers, not the quantifiers).
+	// The wrapper's outer quantifier ranges over leg[0]'s memoized expression.
+	//
+	// This edge is a KNOWN, UNCONVERTED divergence: step1Plan is the N-leg
+	// cross-product NLJ chain (optionally under a merged-row predicate filter),
+	// while the group can only produce leg[0]. The 2-leg arm's fix — wrap the
+	// materialized NLJ over both legs' quantifiers — does not transfer here,
+	// because topNLJ is built by a separate N-ary construction whose per-level
+	// intermediate plans are not surfaced, so there is no per-level quantifier to
+	// advance in lockstep. Converting it means restructuring that construction,
+	// which is beyond a lockstep-memoization change and must not be forced: the
+	// only shortcut is to reseed the outer reference from a fresh singleton, and
+	// narrowing a group is exactly what regressed the IN-join rule (RFC-183 §13).
 	leftMemoRef := call.MemoizeExpression(legExprs[0])
-	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
-		expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(existExpr)))
-	innerQ := expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(fodWrapper))
 	call.Yield(newPhysicalFlatMapWrapper(
 		flatMapPlan,
 		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
@@ -2905,11 +2957,43 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 	hasExistsFilter, negated bool,
 	innerResiduals, outerResiduals []predicates.QueryPredicate,
 ) {
+	// Each compensating operator is MEMOIZED and its quantifier ADVANCES in
+	// LOCKSTEP with the plan, so the memo costs the expression that actually
+	// executes (RFC-183 §14). Previously only the FirstOrDefault level was
+	// memoized: the existential residual filter above it and the outer-residual
+	// filter existed ONLY in the plan pointer, so the FlatMap's child was not
+	// reachable from its quantifier's group at all.
+	//
+	// ALIAS CONTRACT — PRESERVE (NamedPhysicalQuantifier over
+	// outerCorrelation/innerCorrelation), never fresh. The FOD inner reports its
+	// correlation to outerCorrelation; Reference.GetCorrelatedTo subtracts each
+	// member's quantifier aliases from its children's correlations, so a fresh
+	// alias fails to subtract it and a COMPLETED correlated-EXISTS FlatMap leaks
+	// outerCorrelation upward → an enclosing multiway join sees the subplan as
+	// still externally correlated and skips valid alternatives (the EXISTS twin
+	// of the yieldGeneralFlatMap leak). This is the OPPOSITE of
+	// implementExistentialSelect's chain, which must mint FRESH aliases — see the
+	// two-sites-two-contracts note in buildCorrelatedFlatMapPlan. The distinction
+	// is not cosmetic and neither site may be "harmonized" onto the other.
+	//
+	// The BASE quantifiers deliberately keep ranging over outerExpr/innerExpr's
+	// interned groups. correlatedInner is a SARG-pushed rewrite of innerExpr's
+	// scan, so the base edge still diverges — but repairing it means REPLACING
+	// the reference with a fresh singleton rather than wrapping it, which
+	// destroys the alternatives the group holds. That is the exact move that
+	// regressed the IN-join rule (RFC-183 §13); only ADD reachability here.
+	rightQ := expressions.NamedPhysicalQuantifier(innerCorrelation, call.MemoizeExpression(innerExpr))
+
 	var belowFOD plans.RecordQueryPlan = correlatedInner
 	if len(innerResiduals) > 0 {
-		belowFOD = plans.NewRecordQueryPredicatesFilterPlanWithAlias(correlatedInner, innerResiduals, innerCorrelation)
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(correlatedInner, innerResiduals, innerCorrelation)
+		belowFOD = belowFODFilter
+		rightQ = expressions.NamedPhysicalQuantifier(innerCorrelation,
+			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, rightQ)))
 	}
 	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+	rightQ = expressions.NamedPhysicalQuantifier(innerCorrelation,
+		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, rightQ)))
 
 	var flatMapInner plans.RecordQueryPlan = fodPlan
 	if hasExistsFilter {
@@ -2918,12 +3002,20 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(innerCorrelation), cmp)
-		flatMapInner = plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, innerCorrelation)
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, innerCorrelation)
+		flatMapInner = residualFilter
+		rightQ = expressions.NamedPhysicalQuantifier(innerCorrelation,
+			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, rightQ)))
 	}
+
+	leftQ := expressions.NamedForEachQuantifier(outerCorrelation, call.MemoizeExpression(outerExpr))
 
 	var flatMapOuter plans.RecordQueryPlan = outerPlan
 	if len(outerResiduals) > 0 {
-		flatMapOuter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerResiduals, outerCorrelation)
+		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerResiduals, outerCorrelation)
+		flatMapOuter = outerFilter
+		leftQ = expressions.NamedForEachQuantifier(outerCorrelation,
+			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(outerFilter, leftQ)))
 	}
 
 	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
@@ -2931,16 +3023,6 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 		outerCorrelation, innerCorrelation,
 		resultValue, false,
 	)
-	// Bind the wrapper quantifiers with the FlatMap plan's REAL outer/inner aliases
-	// (outerCorrelation/innerCorrelation), not fresh ones — the FOD inner reports
-	// its correlation to outerCorrelation, so a fresh outer alias would fail to
-	// subtract it and a completed correlated-EXISTS FlatMap would leak
-	// outerCorrelation upward → misroute an enclosing multiway join (the EXISTS twin
-	// of the yieldGeneralFlatMap:453-454 leak).
-	leftQ := expressions.NamedForEachQuantifier(outerCorrelation, call.MemoizeExpression(outerExpr))
-	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
-		expressions.NamedPhysicalQuantifier(innerCorrelation, call.MemoizeExpression(innerExpr)))
-	rightQ := expressions.NamedPhysicalQuantifier(innerCorrelation, call.MemoizeExpression(fodWrapper))
 	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
 }
 
