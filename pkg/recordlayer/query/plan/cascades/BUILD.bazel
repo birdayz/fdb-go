@@ -222,6 +222,7 @@ go_test(
         "abstract_data_access_rule_test.go",
         "alias_aware_interning_shadow_delta_test.go",
         "alias_map_test.go",
+        "asymmetric_union_planning_test.go",
         "benchmark_test.go",
         "comparison_simplify_test.go",
         "compensation_determinism_test.go",
@@ -824,6 +825,7 @@ go_test(
         "plan_rich_ordering_parity_test.go",
         "plan_expression_flag_parity_test.go",
         "plan_reachability.go",
+        "asymmetric_union_planning_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

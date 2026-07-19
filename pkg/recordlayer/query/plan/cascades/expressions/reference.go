@@ -547,11 +547,33 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 // Stage returns the current planner stage.
 func (r *Reference) Stage() PlannerStage { r = r.Canonical(); return r.plannerStage }
 
-// SetStage updates the planner stage without clearing members. Used
-// when a Reference created ad-hoc during a phase (by rule yields)
-// has no finals to promote — its members are already valid at the
-// target stage level.
-func (r *Reference) SetStage(s PlannerStage) { r = r.Canonical(); r.plannerStage = s }
+// AdvanceStagePreservingMembers is the stage-boundary transition for a
+// group that has NO finals to promote as the next stage's seed — its
+// exploratory members carry over unchanged. It resets the per-stage
+// exploration bookkeeping, because exploration progress is PER STAGE: a
+// group whose logical members survived from REWRITING must re-explore in
+// PLANNING so its implement rules fire and it acquires a physical member.
+// Without that reset a merged/unfinalized group crossing this path would
+// keep its REWRITING "explorationDone" state, NeedsExploration would stay
+// false, and it would never implement — its parent (e.g. a union leg)
+// then has no physical child and fails to plan.
+//
+// Mirrors AdvancePlannerStage's reset EXCEPT the finals→members promotion
+// (there are no finals here) and the member wipe that would empty the
+// group. Members, partial matches, and forwarding are untouched. A group
+// created fresh during a phase (rule yield, already at explorationNever)
+// takes this path too; the reset is a no-op for it.
+func (r *Reference) AdvanceStagePreservingMembers(newStage PlannerStage) {
+	r = r.Canonical()
+	r.plannerStage = newStage
+	r.planProperties = nil
+	r.explState = explorationNever
+	r.explRounds = 0
+	r.winner = nil
+	if r.constraintsMap != nil {
+		r.constraintsMap.AdvancePlannerStage()
+	}
+}
 
 // NeedsExploration is Java Reference.needsExploration: EPOCH-driven
 // (RFC-181 WS-P stage (b) — the convergence handover). A Reference
