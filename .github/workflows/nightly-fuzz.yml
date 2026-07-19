@@ -63,6 +63,10 @@ jobs:
         if: steps.window.outputs.ok == 'true'
         run: bazelisk build //cmd/fdb-diff-oracle:fdb-diff-oracle_test
 
+      - name: Build fuzzrun (fuzz failure classifier)
+        if: steps.window.outputs.ok == 'true'
+        run: bazelisk build //cmd/fuzzrun
+
       - name: Resolve Bazel Go SDK
         if: steps.window.outputs.ok == 'true'
         id: go-sdk
@@ -101,6 +105,7 @@ jobs:
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
+          FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
           TARGETS=$(grep -rhoP '^func \KFuzz\w+' cmd/fdb-diff-oracle/*_test.go | sort -u)
           if [ -z "$TARGETS" ]; then
             echo "::error::no Fuzz targets discovered in cmd/fdb-diff-oracle — fuzz gate is a no-op"
@@ -114,13 +119,9 @@ jobs:
             if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
             i=$((i+1))
             echo "=== $target (2m) ==="
-            OUTPUT=$(timeout 150 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
-                -run='^$' -fuzz="^${target}\$" -fuzztime=2m ./cmd/fdb-diff-oracle/ 2>&1) || {
-              echo "FAIL: $target (exit code $?)"
-              echo "$OUTPUT"
-              FAILED=1
-            }
-            echo "$OUTPUT" | tail -3
+            "$FUZZRUN" -label "$target" -tail 3 -- \
+              timeout 150 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
+                -run='^$' -fuzz="^${target}\$" -fuzztime=2m ./cmd/fdb-diff-oracle/ || FAILED=1
             echo ""
           done
           exit $FAILED
@@ -268,6 +269,8 @@ jobs:
         # for the non-selected targets are still replayed by the per-PR/CI gates.
         run: |
           mkdir -p /tmp/fuzz-cache
+          bazelisk build //cmd/fuzzrun
+          FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
           VALID=$(bazelisk query 'kind(go_test, //pkg/fdbgo/...)' 2>/dev/null)
           PAIRS=""
           for f in $(grep -rl '^func Fuzz' pkg/fdbgo/ --include='*_test.go'); do
@@ -294,14 +297,12 @@ jobs:
             i=$((i+1))
             target="${pair%|*}"; fn="${pair#*|}"
             echo "=== $target $fn (90s) ==="
-            bazelisk test "$target" \
-              --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
-              --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
-              --sandbox_writable_path=/tmp/fuzz-cache \
-              --test_timeout=300 --nocache_test_results --test_output=errors || {
-                echo "::error::fuzz FAIL: $target $fn"
-                FAILED=1
-              }
+            "$FUZZRUN" -label "$target $fn" -- \
+              bazelisk test "$target" \
+                --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
+                --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
+                --sandbox_writable_path=/tmp/fuzz-cache \
+                --test_timeout=300 --nocache_test_results --test_output=errors || FAILED=1
           done
           exit $FAILED
 
@@ -358,6 +359,8 @@ jobs:
         # DISCOVERED, not hard-listed; an empty discovery fails the job (no-op guard).
         run: |
           mkdir -p /tmp/fuzz-cache
+          bazelisk build //cmd/fuzzrun
+          FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
           VALID=$(bazelisk query 'kind(go_test, //pkg/relational/... + //pkg/recordlayer/... + //pkg/rabitq/...)' 2>/dev/null)
           PAIRS=""
           for f in $(grep -rl '^func Fuzz' pkg/relational pkg/recordlayer pkg/rabitq --include='*_test.go'); do
@@ -384,14 +387,12 @@ jobs:
             i=$((i+1))
             target="${pair%|*}"; fn="${pair#*|}"
             echo "=== $target $fn (90s) ==="
-            bazelisk test "$target" \
-              --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
-              --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
-              --sandbox_writable_path=/tmp/fuzz-cache \
-              --test_timeout=300 --nocache_test_results --test_output=errors || {
-                echo "::error::fuzz FAIL: $target $fn"
-                FAILED=1
-              }
+            "$FUZZRUN" -label "$target $fn" -- \
+              bazelisk test "$target" \
+                --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
+                --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
+                --sandbox_writable_path=/tmp/fuzz-cache \
+                --test_timeout=300 --nocache_test_results --test_output=errors || FAILED=1
           done
           exit $FAILED
 
