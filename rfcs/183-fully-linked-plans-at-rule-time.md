@@ -722,3 +722,56 @@ map-iteration order, which would be a real nondeterminism source — but it is
 NOT the production path (`toPartitionsFromMap` feeds `addExpression` from an
 ordered slice), so an earlier claim that the planner had nondeterministic
 partition order was wrong and is retracted here.
+
+## 14. The reachability probe — 343 becomes 158, and InJoin is exonerated
+
+§13 said the remaining sites could not be triaged until the measurement
+asked the right question. That probe now exists and has been run.
+
+**The right question** is not "does the quantifier's group have the plan's
+child as its FIRST member" but "is the plan's child REACHABLE from the group
+at all" — i.e. does any physical member of the group carry that plan (by
+pointer or `plans.Equals`). A group holding alternatives is Cascades working;
+a group that cannot produce what executes is the defect.
+
+```
+edges=17728  UNREACHABLE=158  reachable-in-multi-member-group=1394  avgGroup=1.18
+  FlatMap            101
+  RecursiveDfsJoin    25
+  Projection          15
+  UnorderedUnion      10
+  PredicatesFilter     7
+```
+
+**InJoin disappears from the list.** Its 20 were reachable inside
+multi-member groups — precisely the category-2 false positives §13 predicted,
+and precisely why narrowing its reference regressed `IN (…) ORDER BY id`.
+That prediction being confirmed is the strongest evidence the category split
+is the right model.
+
+**1394 edges** are reachable-but-not-first. The §12 probe would have counted
+every one of them as a defect. That is the scale of the over-count.
+
+**What the 158 are.** FlatMap 101 comes from the three
+`NewRecordQueryFlatMapPlan` sites not yet converted (`:565` is now fixed via
+`buildCorrelatedFlatMapPlan`; `:2320`, `:2667`, `:2882` remain).
+RecursiveDfsJoin fell 58 -> 25, so that rule has a second path beyond the one
+fixed. UnorderedUnion's plan child is a `Map(...)` the group does not hold.
+PredicatesFilter's differs in scan comparisons.
+
+**A caveat that has now bitten three times.** Every Projection example
+renders IDENTICALLY on both sides — `TypeFilter([T], Scan(T,[=]))` versus the
+same string — yet compares unequal. `TypeFilter.EqualsPlanWithoutChildren`
+compares only record types and `plans.Equals` recurses, so the difference is
+in the child `Scan`, whose `[=]` rendering is LOSSY: two scans with different
+comparison operands print the same text. So those 15 cannot be dismissed as
+artifacts, and neither can they be confirmed from the dump. Explain has now
+hidden the deciding field three separate times on this RFC — the `[2 preds]`
+-> `[1 preds]` conjunction, the uncovered-column predicate, and this. Any
+triage of the remaining classes must inspect fields, not rendered text.
+
+**This probe should become a ratcheting test** — it measures exactly the
+property P5 needs, and 158 is a baseline that must only ever fall. It was
+not shipped here because a test asserting a number nobody has triaged is a
+tripwire without a diagnosis; the classes above need field-level
+confirmation first.
