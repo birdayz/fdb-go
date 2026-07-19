@@ -52,10 +52,22 @@ func TestInOverIntersection_RelinksResidual(t *testing.T) {
 			if strings.Contains(plan, "<nil>") {
 				t.Fatalf("relink dropped an inner: %s", plan)
 			}
-			if !strings.Contains(plan, "Intersection(") {
-				t.Errorf("want the pk-intersection retained, got: %s", plan)
+			// ONE CONTIGUOUS substring, not three scattered Contains checks.
+			//
+			// The previous form asserted "Intersection(", "PredicatesFilter("
+			// and the pred-count marker independently, and every one of those
+			// appears in the BUGGY plan too — the filter pushed BELOW the
+			// fetch, onto index entries that carry neither `a` nor `s`. The
+			// test passed against the defect it exists to pin, which is the
+			// same toothless shape already corrected further down this file.
+			//
+			// Nesting is the entire claim: the residual must sit ABOVE the
+			// fetch, because only the fetched record has the columns it reads.
+			const wantShape = "PredicatesFilter(Fetch(Intersection("
+			if !strings.Contains(plan, wantShape) {
+				t.Errorf("want residual ABOVE the fetch (%s), got: %s", wantShape, plan)
 			}
-			if !strings.Contains(plan, "PredicatesFilter(") || !strings.Contains(plan, tc.preds) {
+			if !strings.Contains(plan, tc.preds) {
 				t.Errorf("want the residual reapplied as %s, got: %s", tc.preds, plan)
 			}
 		})

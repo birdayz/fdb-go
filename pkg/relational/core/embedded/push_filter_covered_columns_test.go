@@ -147,6 +147,22 @@ func TestPushFilter_NeverPushesUncoveredColumnBelowFetch(t *testing.T) {
 	}
 }
 
+// consumption says HOW a covered column must be consumed. Asserting the
+// specific mechanism keeps each case falsifiable: a case whose column folds
+// entirely into the scan bounds leaves both the above- and below-fetch
+// predicate lists empty, so a bare "not stranded above" check passes
+// vacuously no matter what the rule does.
+type consumption int
+
+const (
+	// consumedByBounds: folded into the index scan's key range, so no
+	// residual predicate survives anywhere.
+	consumedByBounds consumption = iota
+	// consumedByFilterBelow: kept as a predicate, but evaluated on the index
+	// entry BELOW the fetch.
+	consumedByFilterBelow
+)
+
 // TestPushFilter_StillPushesCoveredColumns is the other half: the fix must not
 // over-decline. A predicate whose columns ARE covered must still push below
 // the fetch — that pushdown is the whole point of the rule, and a guard that
@@ -159,12 +175,19 @@ func TestPushFilter_StillPushesCoveredColumns(t *testing.T) {
 		CREATE INDEX idx_kv ON t(k, v)`
 
 	for _, tc := range []struct {
-		name string
-		sql  string
-		want string // a column expected to be evaluated BELOW the fetch
+		name       string
+		sql        string
+		want       string      // the covered column
+		consumedBy consumption // where it must be consumed
 	}{
-		{name: "covered_second_column", sql: "SELECT * FROM t WHERE k = 5 AND v > 1", want: "V"},
-		{name: "covered_or", sql: "SELECT * FROM t WHERE k = 5 AND (v > 1 OR v < 0)", want: "V"},
+		// consumedBy states WHERE the covered column must end up. Without it
+		// these cases were only asserting a negative ("not above the fetch"),
+		// and covered_second_column folds BOTH predicates into the scan bounds
+		// — `Fetch(IndexScan(IDX_KV, [=, <>]))`, above and below both EMPTY —
+		// so its assertion could not fail for any implementation. A test that
+		// cannot fail is not evidence.
+		{name: "covered_second_column", sql: "SELECT * FROM t WHERE k = 5 AND v > 1", want: "V", consumedBy: consumedByBounds},
+		{name: "covered_or", sql: "SELECT * FROM t WHERE k = 5 AND (v > 1 OR v < 0)", want: "V", consumedBy: consumedByFilterBelow},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
@@ -187,6 +210,28 @@ func TestPushFilter_StillPushesCoveredColumns(t *testing.T) {
 				t.Errorf("covered column %s is stranded as a residual ABOVE the fetch — "+
 					"the covered-column guard is over-declining.\n  above: %s\n  plan:  %s",
 					tc.want, strings.Join(above, " ; "), plan)
+			}
+
+			// Positively assert the mechanism, so neither case can pass by
+			// producing nothing at all.
+			switch tc.consumedBy {
+			case consumedByBounds:
+				// Fully folded into the key range: no residual survives
+				// anywhere, above or below.
+				if len(below) != 0 || len(above) != 0 {
+					t.Errorf("want %s folded into the scan BOUNDS with no residual, "+
+						"got above=%v below=%v\n  plan: %s", tc.want, above, below, plan)
+				}
+				if strings.Contains(plan, "PredicatesFilter(") {
+					t.Errorf("want %s folded into the scan BOUNDS, but a PredicatesFilter survives: %s",
+						tc.want, plan)
+				}
+			case consumedByFilterBelow:
+				// Kept as a predicate, but evaluated on the index entry.
+				if !strings.Contains(strings.Join(below, " ; "), tc.want+"#") {
+					t.Errorf("want %s evaluated BELOW the fetch, got below=%v\n  plan: %s",
+						tc.want, below, plan)
+				}
 			}
 		})
 	}
