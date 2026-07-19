@@ -5497,3 +5497,44 @@ is already on the RFC-183 branch.
 
 Do NOT "fix" this by re-retiring the adapter without the property work — that
 is the change that caused the 49 shape flips.
+
+### [ ] FUZZ: GetCorrelatedTo stack-overflows on a cyclic reference graph (PRE-EXISTING)
+
+`FuzzPlanner_MemoConsistency` and `FuzzPlanner_Determinism` crash with
+`fatal error: stack overflow`, unbounded recursion at
+`expressions/reference.go:752` — `GetCorrelatedTo` recursing through
+`childRef.GetCorrelatedTo()` with NO visited-set / cycle guard.
+
+REPRODUCER (4 bytes): `[]byte("\x7fyy1")` = [127, 121, 121, 49].
+
+    go test ./pkg/recordlayer/query/plan/cascades/ \
+      -run='^$' -fuzz='^FuzzPlanner_MemoConsistency$' -fuzztime=20s
+
+PRE-EXISTING, not an RFC-183 regression — PROVEN: the identical seed
+stack-overflows on pre-RFC-183 master (15dc17a82), and RFC-183 left
+GetCorrelatedTo's body byte-unchanged (verified by `git diff 15dc17a82..HEAD`
+on that function). Found by running the planner fuzz targets after the RFC-183
+merge (fuzz is non-negotiable for planner changes — this is fuzz doing its
+job).
+
+ROOT CAUSE — the cycle is created during RULE APPLICATION, not by the harness:
+`buildFuzzExpression` builds a strictly ACYCLIC tree (depth <= 3, fresh
+`InitialOf` children), so a 1e9-byte recursion is impossible from the input
+alone. Some rewrite rule in `exploreRewriting` produces a Reference that
+transitively ranges over itself, and GetCorrelatedTo (no cycle guard) then
+recurses forever.
+
+NOT a quick inline fix, and NOT to be papered over with a bare visited-set
+guard in GetCorrelatedTo — that would MASK the rule that builds the cyclic
+reference (principle #9). The real work is:
+  1. Identify WHICH rule creates the self-referential Reference (instrument
+     Reference.Insert or post-rule to detect a ref reachable from itself).
+  2. Decide whether that cycle is ever legitimate (a shared subexpression that
+     only LOOKS cyclic through Canonical()) or always a bug.
+  3. Fix at the source (the rule) if it's a bug; add a guard ONLY if cycles
+     are legitimate and match Java's `RelationalExpression.getCorrelatedTo`
+     cycle handling.
+
+Query-engine change → needs the Graefe + Torvalds gate. The crash seed is NOT
+committed (it would red CI for a bug whose correct fix is gated); it is
+recorded above as an inline reproducer instead.
