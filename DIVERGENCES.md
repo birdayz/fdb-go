@@ -26,11 +26,17 @@ The completed tree is **not inserted into the memo**: it is uncosted,
 unshared, and recomputed on each lookup. It is sound — the inner is filled
 from the very group the shell's quantifier ranges over, so memo-group
 equivalence holds — but it is repair, not architecture. Two guards keep the
-repair honest: the recursion never re-enters `WithChildren` (so its depth
-bound is real), and an order-destroying candidate is never installed
-(`isOrderDestroying`), because the relink is ordering-blind and an IN-union
-merge-sorts its child — silently mis-ordered rows would be worse than the
-loud decline it replaces.
+repair honest, and the second is NARROWER than it looks:
+- the recursion never re-enters `WithChildren`, so its depth bound is real;
+- an order-destroying candidate is never installed (`isOrderDestroying`) —
+  but ONLY at the `WithChildren` relink boundary, which is its single call
+  site (`shouldRelinkInner`). The recursive completion path
+  (`completeShellPlan` → `planWithInner`) applies no order check at all, so
+  a directly-completed `InUnion`/`InJoin` shell is unguarded; and even at
+  the relink boundary the check inspects only the candidate's OUTERMOST
+  node. The relink is ordering-blind while an IN-union merge-sorts its
+  child, so this is a real residual gap, not a covered one — it is
+  RFC-167's layer to remove, not something the guard closes.
 
 The real fix is RFC-167's deeper layer: rules that yield fully-linked plans,
 matching Java. Until then every shell-completion site is debt.
