@@ -5368,6 +5368,20 @@ No yamsql scenario is pinned: the corpus is a regression net, and pinning the
 error string would promote a defect to expected behaviour. Add the scenario as
 part of the fix.
 
+LIKELY THE SAME ROOT CAUSE AS THE COMMA-JOIN-OVER-NESTED-SHADOWING-CTE ENTRY
+above ("P.N vs merged-row keys [P.M N Q.M] — the qualified/bare name-model
+seam, RFC-173 surface"). Dumping the FlatMap result value for the reproducer
+gives
+
+    RecordConstructorValue{Fields: [{Name: "A.V", ...}, {Name: "HAS_D", ...}]}
+
+i.e. a QUALIFIED field name ("A.V") evaluated against a merged multi-leg row —
+exactly the seam that entry describes. Treat the two as one defect until
+proven otherwise; fixing the name model on merged rows plausibly closes both.
+The guard that fires is values.go:902, keyed on
+RootIsLegRelativeUnpinned() && rowIsMultiLeg() — deliberate correct-or-loud,
+not the bug itself.
+
 Decide first whether the arm should be FIXED or REMOVED — it has never
 produced a working plan, so removing it and declining the shape at plan time
 (correct-or-loud) is a legitimate outcome rather than a retreat.
