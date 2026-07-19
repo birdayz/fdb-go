@@ -445,9 +445,14 @@ func shouldRelinkInner(currentInner, candidate plans.RecordQueryPlan) bool {
 //     relink whose consumer needs grouped/ordered input (streaming
 //     aggregation). Gate the relink on ordering compatibility before adding
 //     them.
-//   - MultiIntersectionOnValues DEFINES its own output schema (it has a
-//     dedicated arm in deriveColumnsFromPlan and appears in
-//     definesOutputSchema), which is precisely what must not be swapped.
+//   - MultiIntersectionOnValues intersects on VALUES and computes its own
+//     output shape rather than flowing a record type through, so it fails
+//     this gate's schema-preservation test; and nothing needs it — no
+//     observed shape puts one under a relinking wrapper. (Membership here is
+//     independent of definesOutputSchema in cascades_generator.go: that gate
+//     governs a column-derivation DESCENT, this one governs plan
+//     SUBSTITUTION. StreamingAggregation and AggregateIndex sit in both and
+//     belong in both. Do not reason from one list to the other.)
 func isLeafReplaceable(p plans.RecordQueryPlan) bool {
 	switch p.(type) {
 	case *plans.RecordQueryScanPlan,
