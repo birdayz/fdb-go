@@ -3,6 +3,7 @@ package cascades
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
@@ -2775,17 +2776,68 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 	// which is beyond a lockstep-memoization change and must not be forced: the
 	// only shortcut is to reseed the outer reference from a fresh singleton, and
 	// narrowing a group is exactly what regressed the IN-join rule (RFC-183 §13).
-	// NOT COVERED BY THE RATCHET, and that is a corpus gap rather than a
-	// checker gap. TestCorpusPlanReachability reports zero unreachable edges,
-	// but instrumenting THIS yield over all 2407 corpus queries counts ZERO
-	// firings: the N-way EXISTS arm is never reached by any corpus query, so
-	// the ratchet is silent about it rather than vouching for it.
+	nwayOuterProbe.Add(1)
+	// THIS ARM HAS NEVER PRODUCED AN EXECUTABLE PLAN.
 	//
-	// So the divergence below is live and unmeasured: the first N-way EXISTS
-	// query anyone writes gets a FlatMap whose outer child is step1Plan while
-	// this group can only produce legExprs[0]. Read "0 unreachable edges" as
-	// zero over what the corpus exercises, never as zero over the code.
-	leftMemoRef := call.MemoizeExpression(legExprs[0])
+	// It is unreachable from the corpus (instrumenting this yield over all
+	// 2407 queries counts ZERO firings), and the reason is not that nobody
+	// wrote the query — it is that the query does not work. The arm needs a
+	// PROJECTED exists over >2 ForEach legs, e.g.
+	//
+	//   SELECT a.v, EXISTS (SELECT 1 FROM d WHERE d.id = a.id)
+	//   FROM a, b, c WHERE a.id = b.id AND b.id = c.id
+	//
+	// which plans fine and then dies at execution, on master and on this
+	// branch alike:
+	//
+	//   correlated FieldValue "V" (correlation "A") evaluated against an
+	//   unbound/unrecognized context (*RowEvalContext (multi-leg row cannot
+	//   serve a source-relative ordinal)) — no frontier row resolved
+	//   (planner/executor bug)
+	//
+	// So the memo divergence repaired below was real but not the headline: a
+	// three-way join was being costed as `Scan(A)`. The larger defect is that
+	// the resulting plan cannot run at all.
+	//
+	// NOT the projected result value alone. Rebasing it through
+	// rebaseOuterLegValueOrdinal — the same treatment joinPreds and existPreds
+	// already get, and the obvious candidate since the RV is passed unrebased —
+	// does NOT fix it. That was tried and reverted rather than left in as a
+	// plausible-looking no-op. The binding failure is somewhere deeper in how
+	// multi-leg merged rows serve source-relative ordinals.
+	//
+	// No corpus query is pinned for this: the corpus is a regression net, and
+	// growing it around a known-broken feature would pin the breakage rather
+	// than catch it. The arm needs fixing or removing — a distinct
+	// executor/ordinal-binding workstream, not a memo-linkage change.
+	// The outer quantifier ranges over the plan that ACTUALLY executes.
+	//
+	// It used to range over legExprs[0], i.e. `Scan(A)`, while the plan's
+	// outer child is the whole N-way chain
+	// `PredicatesFilter(NLJ(NLJ(Scan(A), Scan(B)), Scan(C)), [2 preds])`.
+	// The optimizer was costing one table scan for a three-way join.
+	//
+	// The previous comment here argued that the only alternative was to
+	// "reseed the outer reference from a fresh singleton", and rejected that
+	// as the group-narrowing that regressed the IN-join rule. That conflates
+	// two different operations:
+	//
+	//   NARROWING removes members from a group that legitimately holds
+	//   alternatives — which is what destroyed the InUnion alternative and
+	//   regressed `IN (…) ORDER BY id`. Still forbidden.
+	//
+	//   REPOINTING moves a quantifier off a group that CANNOT produce its
+	//   plan child and onto one that can. legExprs[0]'s group is untouched
+	//   and keeps every member it had; nothing is removed from anything.
+	//
+	// There were no valid alternatives to lose here: the group could not
+	// produce what executes, so every "alternative" it offered was one the
+	// plan would never use. This is the same repair the recursive-DFS legs
+	// and the multi-intersection legs got.
+	//
+	// MemoizeFinalExpression for a fresh singleton per construction — two
+	// N-way chains that happen to share a root must not intern together.
+	leftMemoRef := call.MemoizeFinalExpression(&scanPlanExpression{plan: step1Plan})
 	call.Yield(newPhysicalFlatMapWrapper(
 		flatMapPlan,
 		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
@@ -3203,3 +3255,7 @@ func correlatedFastPathOperand(
 }
 
 var _ ExpressionRule = (*ImplementNestedLoopJoinRule)(nil)
+
+var nwayOuterProbe atomic.Int64
+
+func NWayOuterYieldCount() int64 { return nwayOuterProbe.Load() }
