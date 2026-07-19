@@ -94,8 +94,28 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 		)
 	}
 
-	rootQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialWinner))
-	childQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveWinner))
+	// Memoize the STRIPPED plans, not the winners they came from.
+	//
+	// stripTempTableInsertTop removes a TempTableInsert from each leg for the
+	// PLAN, but initialWinner/recursiveWinner still carry it. Memoizing those
+	// left the quantifier resolving to
+	// `TempTableInsert(…, Project(PredicatesFilter(Scan(TREE))))` while the
+	// plan child was the bare `Project(PredicatesFilter(Scan(TREE)))` — 58
+	// divergent edges across the corpus (RFC-183 §12). The memo was costing a
+	// leg with plumbing the executed plan does not have.
+	//
+	// Note this is the INVERSE of the FlatMap sites in
+	// rule_implement_nested_loop_join.go, where the plan held compensating
+	// filters the quantifier lacked. Same defect class — plan and quantifier
+	// describing different expressions — reached from opposite directions,
+	// which is why there is no single mechanical rewrite for §12's remaining
+	// sites.
+	//
+	// scanPlanExpression is the existing plan-backed adapter for exactly this
+	// (see its other use for the buried-leg rebase): it makes the memoized
+	// expression report the plan actually being executed.
+	rootQ := expressions.ForEachQuantifier(call.MemoizeExpression(&scanPlanExpression{plan: rootPlan}))
+	childQ := expressions.ForEachQuantifier(call.MemoizeExpression(&scanPlanExpression{plan: childPlan}))
 	call.Yield(newPhysicalRecursiveDfsJoinWrapper(plan, rootQ, childQ))
 }
 
