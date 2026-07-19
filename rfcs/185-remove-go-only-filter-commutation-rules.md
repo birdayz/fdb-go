@@ -14,14 +14,25 @@ inverse:
 - `PushFilterThroughUnionRule` (:47)
 - `PullCommonFilterAboveUnionRule` (:63)
 
-They are **broken and useless**: the inverse pair interns into a **cyclic
+They are **broken and unexercised**: the inverse pair interns into a **cyclic
 memo** (planner stack overflow, or non-termination if the cycle is guarded),
-and on the 2407-query corpus they **fire 2598 times combined and change zero
-winning plans**. This RFC proposes removing all four.
+and on the 2407-query corpus they **never once perform their rewrite** (zero
+yields). This RFC proposes removing all four.
 
-The grounds are brokenness + measured uselessness, NOT "Java lacks them" —
-Go-only read-side rules are explicitly permitted when they earn their keep
-(CLAUDE.md). These do not earn it, and they crash.
+The grounds are brokenness + the rewrite being unreachable from the corpus, NOT
+"Java lacks them" — Go-only read-side rules are explicitly permitted when they
+earn their keep (CLAUDE.md). These do not earn it, and they crash when they do
+fire.
+
+CORRECTION FROM THE FIRST DRAFT (caught by Torvalds' delta review, which asked
+exactly this): the first draft claimed the rules "fire 1282x and change zero
+winning plans". That counted MATCHER ENTRIES, not rewrites — the matcher
+matches any LogicalFilter, and OnMatch bails immediately (`if !ok { return }`)
+when the filter's inner is not the target set operation. Instrumenting the
+actual `call.Yield` instead gives ZERO yields across all 2407 corpus queries.
+So the honest claim is stronger for removal AND more precise: the rules never
+perform their rewrite on any real query; the only inputs that make them yield
+are fuzz-generated Filter-over-set-op shapes, and those crash.
 
 ## The bug (structural, not a one-seed fluke)
 
@@ -46,26 +57,38 @@ RFC-183 left `GetCorrelatedTo` byte-unchanged.
 
 ## Measured evidence
 
-**Fire counts on the 2407-query corpus** (instrumented each `OnMatch`, ran
-`cmd/explain-differ`):
+**Yield counts on the 2407-query corpus** (instrumented each `call.Yield`, ran
+`cmd/explain-differ`): **all four rules yield ZERO times.** The rewrite never
+fires on any real query. (Matcher ENTRIES were 1282/1282/34/0 — the matcher
+matches every LogicalFilter — but every entry bails before yielding because the
+inner is not the target set operation. The entry count is not the rewrite
+count; the yield count is.)
 
-| rule | corpus fires |
-|---|---|
-| PushFilterThroughIntersection | 1282 |
-| PushFilterThroughUnion | 1282 |
-| PullCommonFilterAboveUnion | 34 |
-| PullCommonFilterAboveIntersection | **0** |
+Confirmed the instrumentation is not silently broken: exploring 256
+fuzz-generated inputs with it in place yields non-zero (`push_union:59
+pull_union:18`, etc.). So zero on the corpus is a real "never rewrites," not a
+dead counter.
 
-This closes the "zero-drift is vacuous" hole (Torvalds #2): the rules are NOT
-untested-dead — the push rules fire 1282 times each. Zero-drift therefore means
-"fires heavily, never wins," i.e. pure planning overhead, which is a STRONGER
-removal argument than dead code. Note the cycle-creating rule
-(PullCommonFilterAboveIntersection) fires ZERO times on the corpus — the crash
-is fuzz-only; no real query reaches it.
+This reframes Torvalds' #2 honestly rather than papering it: zero-drift on the
+corpus is EXPECTED because the rules never rewrite there — the corpus does not
+contain Filter-over-set-op shapes. Zero-drift alone therefore does NOT prove
+the rewrite is useless in general; it proves the corpus does not exercise it.
+The removal case does not rest on "useless" — it rests on:
+
+1. The rules CRASH when they do fire (the cyclic memo), and the only observed
+   firings are fuzz inputs that crash.
+2. On the entire corpus they never rewrite, so removing them is drift-free
+   there by construction.
+3. OPEN (does not block removal, but stated plainly): whether a real front-end
+   query can even produce a Filter directly over an Intersection/Union of
+   common-filtered legs. Intersections arise from index data-access already
+   below any filter, so the trigger shape may be unreachable from real SQL — if
+   so the rules are pure fuzz-only crash surface. This is asserted as plausible,
+   NOT proven; the removal stands on (1)+(2) regardless.
 
 **Zero explain-diff drift** across all 2407 queries when all four rules are
-removed (`explain-differ diff`: `identical=2407 differing=0 shape_flips=0`).
-The removed rules fire 2598 times yet change no Explain and no Shape.
+removed (`explain-differ diff`: `identical=2407 differing=0 shape_flips=0`) —
+consistent with, and explained by, the zero-yield finding above.
 
 **Crash class cleared** — with the rules removed, the four previously-crashing
 fuzz targets run clean at 700k–790k execs each (MemoConsistency 793k,
@@ -79,9 +102,9 @@ ordering, explain-only (nil stats), single run**. A winner-flip to a
 same-shape / different-ordering plan is invisible to it. Two things bound this
 risk:
 
-1. The removed rules fire 2598× and change no Explain/Shape — a winner-flip
-   would almost always change one of those; a pure ordering flip that changes
-   neither is the only blind spot.
+1. The removed rules never yield on the corpus (measured), so there is no
+   winner to flip there at all — the differ blindness is moot for this change
+   on this corpus. It matters only for the OPEN question of unseen real queries.
 2. The go/no-go is not "zero drift" alone. It is: zero drift AND the fallback
    for any future query that would want these plans is the match-then-implement
    DATA-ACCESS path (how Java reaches them), never a resurrected cyclic rule.
@@ -100,8 +123,8 @@ inverse-pair fixpoint (dedup) and maps the intermediate onto an ancestor group
 
 This does not prove NO cycle-safe redesign exists — only that the naive guard
 fails and that these specific rules are the wrong thing to preserve, given they
-never win. A cycle-safe redesign would be resurrecting rules that produce zero
-winning plans; not worth it.
+never rewrite on the corpus. A cycle-safe redesign would be resurrecting rules
+whose only observed firings are fuzz inputs that crash; not worth it.
 
 Correction to an earlier draft (Graefe c): dropping EITHER rule of a pair
 breaks the cycle, so "only removal converges" was overstated. Removal is
@@ -115,11 +138,11 @@ Remove the four rules, their four unit tests, and their four registry lines.
 
 Union removal is drift-free (the 2407-query measurement includes Union-bearing
 queries) and fuzz-clean, and PullCommonFilterAboveUnion/PushFilterThroughUnion
-fire 34/1282× with zero winning plans — same "fires, never wins" as the
-Intersection pair. The Union CYCLE itself is by STRUCTURAL ANALOGY (same
+yield ZERO times on the corpus — same never-rewrites-here as the Intersection
+pair. The Union CYCLE itself is by STRUCTURAL ANALOGY (same
 inverse-intern shape); it has not been reproduced by a fuzz seed. Implementation
 must attempt a Union reproducer in the fuzz run; the removal stands on
-zero-drift + fires-never-wins regardless, but the analogy is labeled, not
+zero-drift + never-rewrites-on-corpus regardless, but the analogy is labeled, not
 asserted as reproduced.
 
 ## Verification plan (implementation, separately gated)
@@ -128,8 +151,8 @@ asserted as reproduced.
 2. The four crashing fuzz targets clean at ≥200k execs; attempt a Union
    reproducer.
 3. Full `just test` green; removed rules' unit tests deleted with them.
-4. Confirm planning time does not regress (removing 2598 useless fires should
-   if anything reduce it).
+4. Confirm planning time does not regress (removing four never-yielding rules
+   removes their per-Filter matcher work, so if anything it reduces it).
 
 ## What I am asking for
 
