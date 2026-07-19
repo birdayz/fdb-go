@@ -167,23 +167,18 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 		eq(t, "limit_5_folds", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 5) ORDER BY p.id"), []int64{1, 2, 3})
 	})
 
-	// Unparsed LIMIT (LIMIT 0.0 / 0L): parseLimitClause can't ParseInt these and
-	// silently leaves the -1 no-limit sentinel — a SEPARATE PRE-EXISTING bug
-	// (standalone `... LIMIT 0.0` returns ALL rows; correct is []). The fold's
-	// finer guard (LIMIT clause present && sq.limit < 1) correctly DECLINES to
-	// fold it always-true; the declined fallback answers [1] (the pre-existing
-	// correlated-drop behavior), which is itself the residual (correct []). This
-	// pins the exact residual as a flip-sentinel: it flips when the booked
-	// parseLimitClause-reject lands (then LIMIT 0.0 rejects or enforces 0). Not
-	// laundered — the [1] is documented as pre-existing, NOT accepted as correct.
-	t.Run("limit_unparsed_residual_not_always_true", func(t *testing.T) {
+	// Invalid LIMIT literal (LIMIT 0.0 / 0L): a decimalLiteral that is not a
+	// valid integer is now REJECTED with a loud 42601 syntax error, never
+	// silently dropped. Before the parseLimitClause-reject, `... LIMIT 0.0`
+	// left the -1 no-limit sentinel and returned ALL rows (standalone) / the
+	// [1] correlated-drop residual (this EXISTS shape). The reject lands at
+	// plan time, so QueryContext returns the error directly.
+	t.Run("limit_invalid_literal_rejected", func(t *testing.T) {
 		for _, lim := range []string{"LIMIT 0.0", "LIMIT 0L"} {
-			v := ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id "+lim+") ORDER BY p.id")
-			if len(v) == 3 {
-				t.Fatalf("%s: wrongly FOLDED to always-true [1 2 3] (unparsed LIMIT must decline)", lim)
-			}
-			if len(v) != 1 || v[0] != 1 {
-				t.Fatalf("%s: pre-existing residual changed from [1] to %v — parseLimitClause-reject may have landed; assert the corrected rows", lim, v)
+			rows, qErr := db.QueryContext(ctx, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id "+lim+") ORDER BY p.id")
+			if qErr == nil {
+				rows.Close()
+				t.Fatalf("%s: expected a 42601 syntax error (LIMIT must be an integer literal), got a successful query", lim)
 			}
 		}
 	})
@@ -204,13 +199,30 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 	// aggregate-EXISTS execution residual (the declined path actually applying
 	// LIMIT/OFFSET to the collapsed one-row aggregate) is fixed.
 	t.Run("offset_declines_not_always_true", func(t *testing.T) {
-		for _, off := range []string{"LIMIT 1 OFFSET 2", "LIMIT 1 OFFSET 1.0", "LIMIT 1 OFFSET 1L"} {
-			v := ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id "+off+") ORDER BY p.id")
-			if len(v) == 3 {
-				t.Fatalf("%s: wrongly FOLDED to always-true [1 2 3] (a row-skipping/unverifiable OFFSET must decline)", off)
-			}
-			if len(v) != 1 || v[0] != 1 {
-				t.Fatalf("%s: pre-existing residual changed from [1] to %v — parseLimitClause-reject may have landed; assert corrected rows", off, v)
+		// OFFSET 2 parses cleanly: the fold declines (a row-skipping offset is
+		// unverifiable) and the un-folded correlated path answers [1]. This is
+		// the pre-existing residual (strictly []); it flips only when the
+		// SEPARATE aggregate-EXISTS execution residual is fixed, NOT by the
+		// parseLimitClause-reject (which does not touch a valid integer).
+		v := ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 2) ORDER BY p.id")
+		if len(v) == 3 {
+			t.Fatalf("OFFSET 2: wrongly FOLDED to always-true [1 2 3] (a row-skipping OFFSET must decline)")
+		}
+		if len(v) != 1 || v[0] != 1 {
+			t.Fatalf("OFFSET 2: pre-existing residual changed from [1] to %v — assert corrected rows if the execution residual was fixed", v)
+		}
+	})
+
+	// Invalid OFFSET literal (OFFSET 1.0 / 1L): same reject as an invalid LIMIT
+	// literal — a non-integer decimalLiteral in OFFSET is 42601, not a silent
+	// offset=0. Before the reject these left sq.offset=0, and reading it alone
+	// would wrongly fold `LIMIT 1 OFFSET 1.0` to always-true.
+	t.Run("offset_invalid_literal_rejected", func(t *testing.T) {
+		for _, off := range []string{"LIMIT 1 OFFSET 1.0", "LIMIT 1 OFFSET 1L"} {
+			rows, qErr := db.QueryContext(ctx, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id "+off+") ORDER BY p.id")
+			if qErr == nil {
+				rows.Close()
+				t.Fatalf("%s: expected a 42601 syntax error (OFFSET must be an integer literal), got a successful query", off)
 			}
 		}
 	})

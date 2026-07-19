@@ -1611,7 +1611,10 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// sq.offset — unlike the live VisitSimpleTable path which reads the
 	// clause directly. Without this a per-branch UNION LIMIT is silently
 	// dropped (RFC-128 §4.7).
-	sq.limit, sq.offset = parseLimitClause(simpleTable)
+	var limitErr error
+	if sq.limit, sq.offset, limitErr = parseLimitClause(simpleTable); limitErr != nil {
+		return nil, limitErr
+	}
 	return sq, nil
 }
 

@@ -2913,22 +2913,22 @@ Positive-WHERE is the cleanest sub-case to land first; NOT-EXISTS + projected fo
 Four-gate each.
 </details>
 
-### [ ] query-engine (PRE-EXISTING, surfaced fixing the EXISTS-aggregate fold): `parseLimitClause` silently ignores an unparseable LIMIT/OFFSET literal → the clause is dropped
-`parseLimitClause` (plan_visitor.go:1404) does `strconv.ParseInt(atom.GetText())` and leaves the -1 no-limit
-sentinel on failure, so a syntactically-accepted but non-integer LIMIT literal (`LIMIT 0.0`, `LIMIT 0L`) is
-SILENTLY DROPPED: `SELECT p.id FROM p LIMIT 0.0` returns ALL rows (correct is 0 rows). Grammar:
-`limitClauseAtom : decimalLiteral | preparedStatementParameter` — so a DecimalLiteral atom whose text fails
-ParseInt is an INVALID literal and should be REJECTED (loud syntax error), while a preparedStatementParameter
-(`LIMIT ?`) stays a parameter. Fix: parseLimitClause returns an error when a DecimalLiteral atom fails
-ParseInt; thread it through the 3 callers (plan_visitor.go:475/:1441, select_parser.go:1392). Applies to
-BOTH the limit and the offset atom — `LIMIT 1 OFFSET 1.0` / `OFFSET 1L` are the same silent-drop on the
-offset side (offset stays 0, so `... OFFSET 1.0` skips nothing when it should skip a row). This makes
-`LIMIT 0.0` / `OFFSET 1.0` correct-or-loud everywhere. Flip-sentinels (both in
-`exists_over_aggregate_fdb_test.go`): `limit_unparsed_residual_not_always_true` and
-`offset_declines_not_always_true` (the `OFFSET 1.0`/`1L` cases) — the EXISTS fold already DECLINES both via
-limitClauseKeepsSingleRow (every atom must ParseInt cleanly), so its declined fallback [1] flips when this
-reject lands. NOTE (Graefe): the `OFFSET 2` case in `offset_declines_not_always_true` parses fine, so the
-parse-reject does NOT touch it — its [1]→[] flip belongs to the SEPARATE residual below, not this item.
+### [x] query-engine (PRE-EXISTING, surfaced fixing the EXISTS-aggregate fold): `parseLimitClause` silently ignores an unparseable LIMIT/OFFSET literal → the clause is dropped — FIXED
+FIXED. `parseLimitClause` did `strconv.ParseInt(atom.GetText())` and left the -1 no-limit / 0-offset
+sentinel on failure, so a syntactically-accepted but non-integer LIMIT literal (`LIMIT 0.0`, `LIMIT 0L`) was
+SILENTLY DROPPED: `SELECT p.id FROM p LIMIT 0.0` returned ALL rows (correct is 0). Fix: a new `resolveLimitAtom`
+helper rejects a `decimalLiteral` atom that fails ParseInt with a loud 42601 syntax error, while a
+`preparedStatementParameter` (`LIMIT ?`) still returns unresolved (parameter binding unchanged — separate
+concern). `parseLimitClause` now returns `(limit, offset, err)`, threaded through all callers (visitLimit +
+its call site, the qualified-star rebuild re-read, extractFromSimpleTable; limitClauseKeepsSingleRow ignores
+the error since it pre-checks every atom). Applies to BOTH the limit and offset atom, so `LIMIT 1 OFFSET 1.0`
+/ `OFFSET 1L` reject too. Also dropped the dead positional-`LIMIT a,b` fallback (the grammar is
+`LIMIT limit=... (OFFSET offset=...)?` — both atoms are labeled, no positional form). Pinned:
+`TestFDB_InvalidLimitLiteralRejected_RFC128` (standalone: bad literals → 42601, plus `LIMIT 0`→0 rows and
+`LIMIT 2 OFFSET 3` positive controls) + the rewritten flip-sentinels in `exists_over_aggregate_fdb_test.go`
+(`limit_invalid_literal_rejected`, `offset_invalid_literal_rejected`; `offset_declines_not_always_true`'s
+`OFFSET 2` case stays [1] — it parses fine, its flip belongs to the SEPARATE execution residual below). Full
+suite green.
 
 ### [ ] query-engine (PRE-EXISTING residual, booked; strictly wrong but honestly pinned): the DECLINED correlated `EXISTS`-over-non-grouped-aggregate path ignores LIMIT/OFFSET and uses plain row-existence
 When the always-true fold correctly DECLINES (a row-eliminating/unverifiable LIMIT/OFFSET, e.g. `LIMIT 1
