@@ -29,7 +29,7 @@ import (
 // a follow-up shift gated on the rule chain producing these plans.
 type RecordQueryInsertPlan struct {
 	PlanExprBase
-	inner            RecordQueryPlan
+	innerQ           expressions.Quantifier
 	targetRecordType string
 	targetType       values.Type
 }
@@ -40,14 +40,23 @@ func NewRecordQueryInsertPlan(inner RecordQueryPlan, targetRecordType string, ta
 		targetType = values.UnknownType
 	}
 	return &RecordQueryInsertPlan{
-		inner:            inner,
+		innerQ:           QuantifierOverPlan(inner),
 		targetRecordType: targetRecordType,
 		targetType:       targetType,
 	}
 }
 
-// GetInner returns the source plan.
-func (p *RecordQueryInsertPlan) GetInner() RecordQueryPlan { return p.inner }
+// GetInner returns the source plan, dereferenced through the quantifier.
+func (p *RecordQueryInsertPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryInsertPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // GetTargetRecordType returns the destination record-type name.
 func (p *RecordQueryInsertPlan) GetTargetRecordType() string { return p.targetRecordType }
@@ -59,18 +68,20 @@ func (p *RecordQueryInsertPlan) GetTargetType() values.Type { return p.targetTyp
 // GetResultType returns the inner's result type — INSERT typically
 // returns the inserted rows for cursor consumption.
 func (p *RecordQueryInsertPlan) GetResultType() values.Type {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return values.UnknownType
 	}
-	return p.inner.GetResultType()
+	return inner.GetResultType()
 }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryInsertPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares targetRecordType + targetType.
@@ -96,8 +107,8 @@ func (p *RecordQueryInsertPlan) HashCodeWithoutChildren() uint64 {
 // Explain renders Insert(target, inner).
 func (p *RecordQueryInsertPlan) Explain() string {
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	return fmt.Sprintf("Insert(%s, %s)", p.targetRecordType, innerLabel)
 }
@@ -113,8 +124,13 @@ func (p *RecordQueryInsertPlan) EqualsWithoutChildren(other expressions.Relation
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryInsertPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryInsertPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }

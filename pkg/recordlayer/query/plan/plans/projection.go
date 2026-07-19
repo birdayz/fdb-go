@@ -17,13 +17,13 @@ type RecordQueryProjectionPlan struct {
 	PlanExprBase
 	projections []values.Value
 	aliases     []string
-	inner       RecordQueryPlan
+	innerQ      expressions.Quantifier
 }
 
 func NewRecordQueryProjectionPlan(projections []values.Value, inner RecordQueryPlan) *RecordQueryProjectionPlan {
 	return &RecordQueryProjectionPlan{
 		projections: projections,
-		inner:       inner,
+		innerQ:      QuantifierOverPlan(inner),
 	}
 }
 
@@ -31,14 +31,23 @@ func NewRecordQueryProjectionPlanWithAliases(projections []values.Value, aliases
 	return &RecordQueryProjectionPlan{
 		projections: projections,
 		aliases:     aliases,
-		inner:       inner,
+		innerQ:      QuantifierOverPlan(inner),
 	}
 }
 
 func (p *RecordQueryProjectionPlan) GetProjections() []values.Value { return p.projections }
 func (p *RecordQueryProjectionPlan) GetAliases() []string           { return p.aliases }
 
-func (p *RecordQueryProjectionPlan) GetInner() RecordQueryPlan { return p.inner }
+func (p *RecordQueryProjectionPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryProjectionPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // IsIdentity returns true if this projection passes all columns
 // through unchanged (a QuantifiedObjectValue that references the
@@ -55,10 +64,11 @@ func (p *RecordQueryProjectionPlan) IsIdentity() bool {
 func (p *RecordQueryProjectionPlan) GetResultType() values.Type { return values.UnknownType }
 
 func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares the projection lists by semantic Value
@@ -117,8 +127,8 @@ func (p *RecordQueryProjectionPlan) Explain() string {
 		b.WriteString(values.ExplainValue(v))
 	}
 	b.WriteString("], ")
-	if p.inner != nil {
-		b.WriteString(p.inner.Explain())
+	if inner := p.GetInner(); inner != nil {
+		b.WriteString(inner.Explain())
 	} else {
 		b.WriteString("<nil>")
 	}
@@ -137,8 +147,13 @@ func (p *RecordQueryProjectionPlan) EqualsWithoutChildren(other expressions.Rela
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryProjectionPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryProjectionPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }

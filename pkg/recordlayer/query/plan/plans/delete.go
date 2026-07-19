@@ -21,38 +21,49 @@ import (
 //   - targetRecordType: the destination record type name
 type RecordQueryDeletePlan struct {
 	PlanExprBase
-	inner            RecordQueryPlan
+	innerQ           expressions.Quantifier
 	targetRecordType string
 }
 
 // NewRecordQueryDeletePlan constructs the DELETE plan.
 func NewRecordQueryDeletePlan(inner RecordQueryPlan, targetRecordType string) *RecordQueryDeletePlan {
 	return &RecordQueryDeletePlan{
-		inner:            inner,
+		innerQ:           QuantifierOverPlan(inner),
 		targetRecordType: targetRecordType,
 	}
 }
 
-// GetInner returns the source plan.
-func (p *RecordQueryDeletePlan) GetInner() RecordQueryPlan { return p.inner }
+// GetInner returns the source plan, dereferenced through the quantifier.
+func (p *RecordQueryDeletePlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
 
 // GetTargetRecordType returns the destination record-type name.
 func (p *RecordQueryDeletePlan) GetTargetRecordType() string { return p.targetRecordType }
 
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryDeletePlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
+
 // GetResultType returns the inner's result type.
 func (p *RecordQueryDeletePlan) GetResultType() values.Type {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return values.UnknownType
 	}
-	return p.inner.GetResultType()
+	return inner.GetResultType()
 }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryDeletePlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares targetRecordType.
@@ -75,8 +86,8 @@ func (p *RecordQueryDeletePlan) HashCodeWithoutChildren() uint64 {
 // Explain renders Delete(target, inner).
 func (p *RecordQueryDeletePlan) Explain() string {
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	return fmt.Sprintf("Delete(%s, %s)", p.targetRecordType, innerLabel)
 }
@@ -92,8 +103,13 @@ func (p *RecordQueryDeletePlan) EqualsWithoutChildren(other expressions.Relation
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryDeletePlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryDeletePlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }

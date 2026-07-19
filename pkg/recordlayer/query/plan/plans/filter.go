@@ -23,7 +23,7 @@ import (
 type RecordQueryFilterPlan struct {
 	PlanExprBase
 	predicates []predicates.QueryPredicate
-	inner      RecordQueryPlan
+	innerQ     expressions.Quantifier
 }
 
 // NewRecordQueryFilterPlan constructs a filter over the given
@@ -31,31 +31,42 @@ type RecordQueryFilterPlan struct {
 func NewRecordQueryFilterPlan(preds []predicates.QueryPredicate, inner RecordQueryPlan) *RecordQueryFilterPlan {
 	return &RecordQueryFilterPlan{
 		predicates: append([]predicates.QueryPredicate(nil), preds...),
-		inner:      inner,
+		innerQ:     QuantifierOverPlan(inner),
 	}
 }
 
 // GetPredicates returns the predicate list (read-only).
 func (p *RecordQueryFilterPlan) GetPredicates() []predicates.QueryPredicate { return p.predicates }
 
-// GetInner returns the wrapped inner plan.
-func (p *RecordQueryFilterPlan) GetInner() RecordQueryPlan { return p.inner }
+// GetInner returns the wrapped inner plan, dereferenced through the quantifier.
+func (p *RecordQueryFilterPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryFilterPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // GetResultType returns the inner's result type (filter doesn't
 // reshape rows).
 func (p *RecordQueryFilterPlan) GetResultType() values.Type {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return values.UnknownType
 	}
-	return p.inner.GetResultType()
+	return inner.GetResultType()
 }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryFilterPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares the predicate list pairwise via
@@ -95,8 +106,8 @@ func (p *RecordQueryFilterPlan) HashCodeWithoutChildren() uint64 {
 // Explain renders Filter([P1, P2], inner).
 func (p *RecordQueryFilterPlan) Explain() string {
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	return fmt.Sprintf("Filter([%d preds], %s)", len(p.predicates), innerLabel)
 }
@@ -112,8 +123,13 @@ func (p *RecordQueryFilterPlan) EqualsWithoutChildren(other expressions.Relation
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryFilterPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryFilterPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }

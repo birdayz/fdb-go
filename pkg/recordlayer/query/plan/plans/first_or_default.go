@@ -20,7 +20,7 @@ import (
 // LIMIT never sets strict: truncation is then the user's deliberate intent.
 type RecordQueryFirstOrDefaultPlan struct {
 	PlanExprBase
-	inner        RecordQueryPlan
+	innerQ       expressions.Quantifier
 	defaultValue values.Value
 	strict       bool
 }
@@ -29,7 +29,7 @@ type RecordQueryFirstOrDefaultPlan struct {
 // over the given inner plan and default value.
 func NewRecordQueryFirstOrDefaultPlan(inner RecordQueryPlan, defaultValue values.Value) *RecordQueryFirstOrDefaultPlan {
 	return &RecordQueryFirstOrDefaultPlan{
-		inner:        inner,
+		innerQ:       QuantifierOverPlan(inner),
 		defaultValue: defaultValue,
 	}
 }
@@ -38,14 +38,25 @@ func NewRecordQueryFirstOrDefaultPlan(inner RecordQueryPlan, defaultValue values
 // raises a cardinality violation (21000) when the inner yields more than one row.
 func NewRecordQueryFirstOrDefaultPlanStrict(inner RecordQueryPlan, defaultValue values.Value) *RecordQueryFirstOrDefaultPlan {
 	return &RecordQueryFirstOrDefaultPlan{
-		inner:        inner,
+		innerQ:       QuantifierOverPlan(inner),
 		defaultValue: defaultValue,
 		strict:       true,
 	}
 }
 
-// GetInner returns the wrapped inner plan.
-func (p *RecordQueryFirstOrDefaultPlan) GetInner() RecordQueryPlan { return p.inner }
+// GetInner returns the wrapped inner plan, dereferenced through the quantifier.
+func (p *RecordQueryFirstOrDefaultPlan) GetInner() RecordQueryPlan {
+	return planFromQuantifier(p.innerQ)
+}
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryFirstOrDefaultPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // GetDefaultValue returns the fallback value used when the inner plan
 // is empty.
@@ -57,18 +68,20 @@ func (p *RecordQueryFirstOrDefaultPlan) IsStrict() bool { return p.strict }
 
 // GetResultType returns the inner's result type.
 func (p *RecordQueryFirstOrDefaultPlan) GetResultType() values.Type {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return values.UnknownType
 	}
-	return p.inner.GetResultType()
+	return inner.GetResultType()
 }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryFirstOrDefaultPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares the default value by semantic Value identity
@@ -96,8 +109,8 @@ func (p *RecordQueryFirstOrDefaultPlan) HashCodeWithoutChildren() uint64 {
 // Explain renders FirstOrDefault(inner) (StrictFirstOrDefault when strict).
 func (p *RecordQueryFirstOrDefaultPlan) Explain() string {
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	name := "FirstOrDefault"
 	if p.strict {
@@ -117,8 +130,13 @@ func (p *RecordQueryFirstOrDefaultPlan) EqualsWithoutChildren(other expressions.
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryFirstOrDefaultPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryFirstOrDefaultPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }

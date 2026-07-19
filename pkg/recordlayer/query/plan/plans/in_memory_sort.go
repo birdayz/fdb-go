@@ -41,35 +41,48 @@ type SortKey struct {
 // when an index exists.
 type RecordQueryInMemorySortPlan struct {
 	PlanExprBase
-	inner    RecordQueryPlan
+	innerQ   expressions.Quantifier
 	sortKeys []SortKey
 }
 
 func NewRecordQueryInMemorySortPlan(inner RecordQueryPlan, sortKeys []SortKey) *RecordQueryInMemorySortPlan {
 	keys := make([]SortKey, len(sortKeys))
 	copy(keys, sortKeys)
-	return &RecordQueryInMemorySortPlan{inner: inner, sortKeys: keys}
+	return &RecordQueryInMemorySortPlan{innerQ: QuantifierOverPlan(inner), sortKeys: keys}
 }
 
-func (p *RecordQueryInMemorySortPlan) GetInner() RecordQueryPlan { return p.inner }
-func (p *RecordQueryInMemorySortPlan) GetSortKeys() []SortKey    { return p.sortKeys }
+func (p *RecordQueryInMemorySortPlan) GetInner() RecordQueryPlan {
+	return planFromQuantifier(p.innerQ)
+}
+func (p *RecordQueryInMemorySortPlan) GetSortKeys() []SortKey { return p.sortKeys }
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryInMemorySortPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // GetResultType returns the inner plan's result type: an in-memory sort
 // reorders rows but preserves the inner's row shape, so it flows the inner's
 // type through (matching pass-through plans like Filter / Fetch). Nil inner
 // degrades to UnknownType.
 func (p *RecordQueryInMemorySortPlan) GetResultType() values.Type {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return values.UnknownType
 	}
-	return p.inner.GetResultType()
+	return inner.GetResultType()
 }
 
 func (p *RecordQueryInMemorySortPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares the sort keys by SEMANTIC identity (RFC-176 P2
@@ -138,11 +151,11 @@ func (p *RecordQueryInMemorySortPlan) Explain() string {
 		}
 		keys[i] = k.Field + " " + dir
 	}
-	inner := "<nil>"
-	if p.inner != nil {
-		inner = p.inner.Explain()
+	innerLabel := "<nil>"
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
-	return fmt.Sprintf("InMemorySort([%s], %s)", strings.Join(keys, ", "), inner)
+	return fmt.Sprintf("InMemorySort([%s], %s)", strings.Join(keys, ", "), innerLabel)
 }
 
 var (
@@ -156,8 +169,13 @@ func (p *RecordQueryInMemorySortPlan) EqualsWithoutChildren(other expressions.Re
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryInMemorySortPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryInMemorySortPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }

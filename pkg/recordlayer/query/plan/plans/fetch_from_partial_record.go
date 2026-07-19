@@ -37,7 +37,7 @@ const (
 //   - A FetchIndexRecords mode.
 type RecordQueryFetchFromPartialRecordPlan struct {
 	PlanExprBase
-	inner                  RecordQueryPlan
+	innerQ                 expressions.Quantifier
 	translateValueFunction TranslateValueFunction
 	resultType             values.Type
 	fetchIndexRecords      FetchIndexRecords
@@ -57,15 +57,27 @@ func NewRecordQueryFetchFromPartialRecordPlan(
 		translateValueFunction = UnableToTranslate
 	}
 	return &RecordQueryFetchFromPartialRecordPlan{
-		inner:                  inner,
+		innerQ:                 QuantifierOverPlan(inner),
 		translateValueFunction: translateValueFunction,
 		resultType:             resultType,
 		fetchIndexRecords:      fetchIndexRecords,
 	}
 }
 
-// GetInner returns the inner plan (typically a covering index scan).
-func (p *RecordQueryFetchFromPartialRecordPlan) GetInner() RecordQueryPlan { return p.inner }
+// GetInner returns the inner plan (typically a covering index scan),
+// dereferenced through the quantifier.
+func (p *RecordQueryFetchFromPartialRecordPlan) GetInner() RecordQueryPlan {
+	return planFromQuantifier(p.innerQ)
+}
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryFetchFromPartialRecordPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // GetResultType returns the full record type post-fetch.
 func (p *RecordQueryFetchFromPartialRecordPlan) GetResultType() values.Type { return p.resultType }
@@ -98,10 +110,11 @@ func (p *RecordQueryFetchFromPartialRecordPlan) PushValue(
 // RecordQueryFetchFromPartialRecordPlan.isReverse() which returns
 // getChild().isReverse().
 func (p *RecordQueryFetchFromPartialRecordPlan) IsReverse() bool {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return false
 	}
-	if rev, ok := p.inner.(interface{ IsReverse() bool }); ok {
+	if rev, ok := inner.(interface{ IsReverse() bool }); ok {
 		return rev.IsReverse()
 	}
 	return false
@@ -109,10 +122,11 @@ func (p *RecordQueryFetchFromPartialRecordPlan) IsReverse() bool {
 
 // GetChildren returns the inner plan.
 func (p *RecordQueryFetchFromPartialRecordPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares fetch mode (inner is the caller's
@@ -136,8 +150,8 @@ func (p *RecordQueryFetchFromPartialRecordPlan) HashCodeWithoutChildren() uint64
 // Explain renders Fetch(inner).
 func (p *RecordQueryFetchFromPartialRecordPlan) Explain() string {
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	return fmt.Sprintf("Fetch(%s)", innerLabel)
 }
@@ -153,7 +167,7 @@ var (
 // carry, so identity-preserving copy is the only safe form.
 func (p *RecordQueryFetchFromPartialRecordPlan) WithInner(inner RecordQueryPlan) *RecordQueryFetchFromPartialRecordPlan {
 	cp := *p
-	cp.inner = inner
+	cp.innerQ = QuantifierOverPlan(inner)
 	return &cp
 }
 
@@ -163,8 +177,13 @@ func (p *RecordQueryFetchFromPartialRecordPlan) EqualsWithoutChildren(other expr
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryFetchFromPartialRecordPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryFetchFromPartialRecordPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }

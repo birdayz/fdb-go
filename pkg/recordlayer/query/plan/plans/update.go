@@ -19,7 +19,7 @@ import (
 // Result type: same as inner.
 type RecordQueryUpdatePlan struct {
 	PlanExprBase
-	inner            RecordQueryPlan
+	innerQ           expressions.Quantifier
 	targetRecordType string
 	transforms       []expressions.UpdateTransform
 }
@@ -29,14 +29,23 @@ func NewRecordQueryUpdatePlan(inner RecordQueryPlan, targetRecordType string, tr
 	copied := make([]expressions.UpdateTransform, len(transforms))
 	copy(copied, transforms)
 	return &RecordQueryUpdatePlan{
-		inner:            inner,
+		innerQ:           QuantifierOverPlan(inner),
 		targetRecordType: targetRecordType,
 		transforms:       copied,
 	}
 }
 
-// GetInner returns the source plan.
-func (p *RecordQueryUpdatePlan) GetInner() RecordQueryPlan { return p.inner }
+// GetInner returns the source plan, dereferenced through the quantifier.
+func (p *RecordQueryUpdatePlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryUpdatePlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // GetTargetRecordType returns the destination record-type name.
 func (p *RecordQueryUpdatePlan) GetTargetRecordType() string { return p.targetRecordType }
@@ -46,18 +55,20 @@ func (p *RecordQueryUpdatePlan) GetTransforms() []expressions.UpdateTransform { 
 
 // GetResultType returns the inner's result type.
 func (p *RecordQueryUpdatePlan) GetResultType() values.Type {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return values.UnknownType
 	}
-	return p.inner.GetResultType()
+	return inner.GetResultType()
 }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryUpdatePlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares targetRecordType + the transforms BY VALUE
@@ -110,8 +121,8 @@ func (p *RecordQueryUpdatePlan) HashCodeWithoutChildren() uint64 {
 // Explain renders Update(target, [N transforms], inner).
 func (p *RecordQueryUpdatePlan) Explain() string {
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	return fmt.Sprintf("Update(%s, [%d transforms], %s)", p.targetRecordType, len(p.transforms), innerLabel)
 }
@@ -127,8 +138,13 @@ func (p *RecordQueryUpdatePlan) EqualsWithoutChildren(other expressions.Relation
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryUpdatePlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryUpdatePlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }

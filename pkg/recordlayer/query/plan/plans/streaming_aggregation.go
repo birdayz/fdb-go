@@ -22,7 +22,7 @@ import (
 // used instead.
 type RecordQueryStreamingAggregationPlan struct {
 	PlanExprBase
-	inner        RecordQueryPlan
+	innerQ       expressions.Quantifier
 	groupingKeys []values.Value
 	aggregates   []expressions.AggregateSpec
 }
@@ -33,13 +33,25 @@ func NewRecordQueryStreamingAggregationPlan(
 	aggregates []expressions.AggregateSpec,
 ) *RecordQueryStreamingAggregationPlan {
 	return &RecordQueryStreamingAggregationPlan{
-		inner:        inner,
+		innerQ:       QuantifierOverPlan(inner),
 		groupingKeys: groupingKeys,
 		aggregates:   aggregates,
 	}
 }
 
-func (p *RecordQueryStreamingAggregationPlan) GetInner() RecordQueryPlan       { return p.inner }
+func (p *RecordQueryStreamingAggregationPlan) GetInner() RecordQueryPlan {
+	return planFromQuantifier(p.innerQ)
+}
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryStreamingAggregationPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
+
 func (p *RecordQueryStreamingAggregationPlan) GetGroupingKeys() []values.Value { return p.groupingKeys }
 func (p *RecordQueryStreamingAggregationPlan) GetAggregates() []expressions.AggregateSpec {
 	return p.aggregates
@@ -72,10 +84,11 @@ func (p *RecordQueryStreamingAggregationPlan) OutputRecordType() *values.RecordT
 }
 
 func (p *RecordQueryStreamingAggregationPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 func (p *RecordQueryStreamingAggregationPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
@@ -124,8 +137,8 @@ func (p *RecordQueryStreamingAggregationPlan) Explain() string {
 		keys[i] = values.ExplainValue(k)
 	}
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	return fmt.Sprintf("StreamingAgg(keys=[%s], %s)", strings.Join(keys, ", "), innerLabel)
 }
@@ -141,8 +154,13 @@ func (p *RecordQueryStreamingAggregationPlan) EqualsWithoutChildren(other expres
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryStreamingAggregationPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryStreamingAggregationPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }

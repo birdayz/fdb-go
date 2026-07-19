@@ -16,7 +16,7 @@ import (
 // through the value's Evaluate to produce the output row.
 type RecordQueryMapPlan struct {
 	PlanExprBase
-	inner       RecordQueryPlan
+	innerQ      expressions.Quantifier
 	resultValue values.Value
 }
 
@@ -24,13 +24,22 @@ type RecordQueryMapPlan struct {
 // plan and result value.
 func NewRecordQueryMapPlan(inner RecordQueryPlan, resultValue values.Value) *RecordQueryMapPlan {
 	return &RecordQueryMapPlan{
-		inner:       inner,
+		innerQ:      QuantifierOverPlan(inner),
 		resultValue: resultValue,
 	}
 }
 
-// GetInner returns the wrapped inner plan.
-func (p *RecordQueryMapPlan) GetInner() RecordQueryPlan { return p.inner }
+// GetInner returns the wrapped inner plan, dereferenced through the quantifier.
+func (p *RecordQueryMapPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryMapPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // GetResultValue returns the transformation value.
 func (p *RecordQueryMapPlan) GetResultValue() values.Value {
@@ -47,10 +56,11 @@ func (p *RecordQueryMapPlan) GetResultType() values.Type {
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryMapPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares the result value by semantic Value identity
@@ -76,8 +86,8 @@ func (p *RecordQueryMapPlan) HashCodeWithoutChildren() uint64 {
 // Explain renders Map(inner, result).
 func (p *RecordQueryMapPlan) Explain() string {
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	resultLabel := values.ExplainValue(p.resultValue)
 	return fmt.Sprintf("Map(%s, %s)", innerLabel, resultLabel)
@@ -94,7 +104,7 @@ var (
 // carry, so identity-preserving copy is the only safe form.
 func (p *RecordQueryMapPlan) WithInner(inner RecordQueryPlan) *RecordQueryMapPlan {
 	cp := *p
-	cp.inner = inner
+	cp.innerQ = QuantifierOverPlan(inner)
 	return &cp
 }
 
@@ -104,8 +114,13 @@ func (p *RecordQueryMapPlan) EqualsWithoutChildren(other expressions.RelationalE
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryMapPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryMapPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }

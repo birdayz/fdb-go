@@ -44,8 +44,8 @@ func (s *ScoreForRank) CallString() string {
 // This is a STRUCTURE-ONLY port — no execution logic.
 type RecordQueryScoreForRankPlan struct {
 	PlanExprBase
-	inner RecordQueryPlan
-	ranks []ScoreForRank
+	innerQ expressions.Quantifier
+	ranks  []ScoreForRank
 }
 
 // NewRecordQueryScoreForRankPlan constructs a score-for-rank plan.
@@ -53,20 +53,31 @@ func NewRecordQueryScoreForRankPlan(inner RecordQueryPlan, ranks []ScoreForRank)
 	copied := make([]ScoreForRank, len(ranks))
 	copy(copied, ranks)
 	return &RecordQueryScoreForRankPlan{
-		inner: inner,
-		ranks: copied,
+		innerQ: QuantifierOverPlan(inner),
+		ranks:  copied,
 	}
 }
 
-// GetInner returns the wrapped inner plan.
-func (p *RecordQueryScoreForRankPlan) GetInner() RecordQueryPlan { return p.inner }
+// GetInner returns the wrapped inner plan, dereferenced through the quantifier.
+func (p *RecordQueryScoreForRankPlan) GetInner() RecordQueryPlan {
+	return planFromQuantifier(p.innerQ)
+}
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryScoreForRankPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // GetRanks returns the list of ScoreForRank entries.
 func (p *RecordQueryScoreForRankPlan) GetRanks() []ScoreForRank { return p.ranks }
 
 // IsReverse delegates to the inner plan.
 func (p *RecordQueryScoreForRankPlan) IsReverse() bool {
-	if c, ok := p.inner.(interface{ IsReverse() bool }); ok {
+	if c, ok := p.GetInner().(interface{ IsReverse() bool }); ok {
 		return c.IsReverse()
 	}
 	return false
@@ -76,18 +87,20 @@ func (p *RecordQueryScoreForRankPlan) IsReverse() bool {
 // doesn't reshape rows — it binds scores into the evaluation context,
 // then delegates row production to the inner plan).
 func (p *RecordQueryScoreForRankPlan) GetResultType() values.Type {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return values.UnknownType
 	}
-	return p.inner.GetResultType()
+	return inner.GetResultType()
 }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryScoreForRankPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares the ranks list.
@@ -143,8 +156,8 @@ func (p *RecordQueryScoreForRankPlan) HashCodeWithoutChildren() uint64 {
 // Explain renders ScoreForRank([rank1, rank2], inner).
 func (p *RecordQueryScoreForRankPlan) Explain() string {
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	parts := make([]string, len(p.ranks))
 	for i, r := range p.ranks {
@@ -164,8 +177,13 @@ func (p *RecordQueryScoreForRankPlan) EqualsWithoutChildren(other expressions.Re
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryScoreForRankPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryScoreForRankPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }

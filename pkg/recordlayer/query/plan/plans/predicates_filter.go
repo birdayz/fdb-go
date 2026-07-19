@@ -21,7 +21,7 @@ import (
 // than the legacy comparison-based filter.
 type RecordQueryPredicatesFilterPlan struct {
 	PlanExprBase
-	inner      RecordQueryPlan
+	innerQ     expressions.Quantifier
 	predicates []predicates.QueryPredicate
 	innerAlias values.CorrelationIdentifier
 }
@@ -30,7 +30,7 @@ type RecordQueryPredicatesFilterPlan struct {
 // over the given inner plan and predicate list.
 func NewRecordQueryPredicatesFilterPlan(inner RecordQueryPlan, preds []predicates.QueryPredicate) *RecordQueryPredicatesFilterPlan {
 	return &RecordQueryPredicatesFilterPlan{
-		inner:      inner,
+		innerQ:     QuantifierOverPlan(inner),
 		predicates: append([]predicates.QueryPredicate(nil), preds...),
 	}
 }
@@ -41,14 +41,25 @@ func NewRecordQueryPredicatesFilterPlan(inner RecordQueryPlan, preds []predicate
 // context.withBinding(CORRELATION, getInner().getAlias(), queryResult).
 func NewRecordQueryPredicatesFilterPlanWithAlias(inner RecordQueryPlan, preds []predicates.QueryPredicate, alias values.CorrelationIdentifier) *RecordQueryPredicatesFilterPlan {
 	return &RecordQueryPredicatesFilterPlan{
-		inner:      inner,
+		innerQ:     QuantifierOverPlan(inner),
 		predicates: append([]predicates.QueryPredicate(nil), preds...),
 		innerAlias: alias,
 	}
 }
 
-// GetInner returns the wrapped inner plan.
-func (p *RecordQueryPredicatesFilterPlan) GetInner() RecordQueryPlan { return p.inner }
+// GetInner returns the wrapped inner plan, dereferenced through the quantifier.
+func (p *RecordQueryPredicatesFilterPlan) GetInner() RecordQueryPlan {
+	return planFromQuantifier(p.innerQ)
+}
+
+// GetQuantifiers reports the real child quantifier, overriding
+// PlanExprBase's none.
+func (p *RecordQueryPredicatesFilterPlan) GetQuantifiers() []expressions.Quantifier {
+	if p.innerQ.GetRangesOver() == nil {
+		return nil
+	}
+	return []expressions.Quantifier{p.innerQ}
+}
 
 // GetInnerAlias returns the correlation alias under which the current
 // row is bound during predicate evaluation. Zero value means no binding.
@@ -64,18 +75,20 @@ func (p *RecordQueryPredicatesFilterPlan) GetPredicates() []predicates.QueryPred
 // GetResultType returns the inner's result type (filter doesn't
 // reshape rows).
 func (p *RecordQueryPredicatesFilterPlan) GetResultType() values.Type {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return values.UnknownType
 	}
-	return p.inner.GetResultType()
+	return inner.GetResultType()
 }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryPredicatesFilterPlan) GetChildren() []RecordQueryPlan {
-	if p.inner == nil {
+	inner := p.GetInner()
+	if inner == nil {
 		return nil
 	}
-	return []RecordQueryPlan{p.inner}
+	return []RecordQueryPlan{inner}
 }
 
 // EqualsWithoutChildren compares the predicate list pairwise via
@@ -124,8 +137,8 @@ func (p *RecordQueryPredicatesFilterPlan) HashCodeWithoutChildren() uint64 {
 // Explain renders PredicatesFilter(inner, [pred1, pred2, ...]).
 func (p *RecordQueryPredicatesFilterPlan) Explain() string {
 	innerLabel := "<nil>"
-	if p.inner != nil {
-		innerLabel = p.inner.Explain()
+	if inner := p.GetInner(); inner != nil {
+		innerLabel = inner.Explain()
 	}
 	return fmt.Sprintf("PredicatesFilter(%s, [%d preds])", innerLabel, len(p.predicates))
 }
@@ -141,7 +154,7 @@ var (
 // carry, so identity-preserving copy is the only safe form.
 func (p *RecordQueryPredicatesFilterPlan) WithInner(inner RecordQueryPlan) *RecordQueryPredicatesFilterPlan {
 	cp := *p
-	cp.inner = inner
+	cp.innerQ = QuantifierOverPlan(inner)
 	return &cp
 }
 
@@ -151,10 +164,15 @@ func (p *RecordQueryPredicatesFilterPlan) EqualsWithoutChildren(other expression
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryPredicatesFilterPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// WithQuantifiers returns a copy ranging over the given child quantifier —
+// Java's copy-on-write withChild(Reference).
+func (p *RecordQueryPredicatesFilterPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != 1 {
+		return p
+	}
+	cp := *p
+	cp.innerQ = qs[0]
+	return &cp
 }
 
 // GetCorrelatedToWithoutChildren walks this plan's own predicates, mirroring
