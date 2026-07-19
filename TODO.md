@@ -4223,10 +4223,33 @@ clean). The enabling wrong-rows fix (pk-intersection residual compensation +
 adjusted-MaxMatchMap reader) landed in the same branch, pinned by
 `TestFDB_IntersectionResidualCompensation` + corpus dimension.
 
-- [ ] **RFC-182 P2** — continuation-resume dimension, LIMIT (§3 membership rule),
-  IN/BETWEEN/IS NULL/LIKE, the minimizer + yamsql draft emitter (§6), the
-  forced-alternative mode (disable dominant plan families so losing memo
-  alternatives get row-checked), non-correlated EXISTS/IN if feasible.
+- [x] **RFC-182 P2 (grammar half)** — IN/BETWEEN/LIKE/IS NULL leaves, LIMIT
+  (§3 membership rule), SELECT DISTINCT, nullable sort keys + NULLS
+  FIRST/LAST. Found 5 pre-existing bugs (RFC §12 table); 4 fixed + pinned,
+  1 gate-pinned (see the nested-IN item below).
+- [ ] **RFC-182 P2 (remainder)** — continuation-resume dimension, the
+  minimizer + yamsql draft emitter (§6), the forced-alternative mode
+  (disable dominant plan families so losing memo alternatives get
+  row-checked), non-correlated EXISTS/IN if feasible.
+- [ ] **`LogicalProjectionExpression` identity ignores its output ALIASES**
+  (`EqualsWithoutChildren` / `HashCodeWithoutChildren`). Aliases are output
+  schema but not expression identity, so the memo cannot tell an aliased
+  projection from a de-aliased one and the survivor of a merge is arbitrary
+  — which is WHY two separate alias-dropping rebuilds
+  (`PushLimitThroughProjectionRule`, `properties/extract.go`) stayed
+  invisible until a generative harness compared column names. Either fold
+  aliases into identity or assert alias-equality on merge. (Graefe, RFC-182
+  P2 join review.) Also: `plans.NewRecordQueryProjectionPlan` now has zero
+  non-test callers — delete it, it is the attractive nuisance that made the
+  plan-side version of this bug easy to write.
+- [ ] **Nested IN over an intersection extracts `InJoin(<nil>)`** (RFC-167
+  shell instance). `WHERE b IN (…) AND c = ? AND a IN (…)`: the inner IN
+  wrapper is never handed to WithChildren, so no per-wrapper relink reaches
+  its nil-inner snapshot. PRE-EXISTING on master and LOUD (XX000, never
+  wrong rows). Gate-pinned by
+  `TestNestedIn_OverIntersection_GatePin` — that pin goes RED the day the
+  planner learns the shape, and the author then replaces it with real
+  plan + row assertions.
 - [ ] **RFC-182 P3** — Oracle J (Java `runSql` via plandiff runner), java-compat
   profile, three-way triage, INFRA/DECLINE/MISMATCH signature ledger
   (Go=M/Java≠M entries ONLY — Go≠M always fails), nightly target; REQUIRED:

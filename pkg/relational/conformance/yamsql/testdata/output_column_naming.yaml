@@ -1,0 +1,70 @@
+# output_column_naming.yaml — a query's OUTPUT COLUMN NAMES are part of its
+# contract, not just its rows.
+#
+# Every case here is a bug the RFC-182 rowdiff harness found. All of them
+# returned CORRECT ROWS while reporting the wrong column names, so a
+# rows-only scenario passes on the broken engine — which is exactly why the
+# `columns:` assertion exists. Two of them are also cross-engine parity
+# cases: Java gets the naming right, and RFC-082's known-red list carried
+# `select_count_alias` ("COUNT(*) AS cnt drops the alias") until the scalar
+# aggregate fix landed.
+name: output_column_naming
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    a BIGINT,
+    b BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_a ON t (a)
+  CREATE INDEX idx_b ON t (b)
+setup:
+  - INSERT INTO t VALUES (1, 2, 5), (2, 2, 5), (3, 3, 5), (4, 2, 6)
+tests:
+  # SCALAR aggregate: no projection sits above the StreamingAgg, so the
+  # alias had nowhere to live and the column came back as MAX(A).
+  - query: SELECT MAX(a) AS agg FROM t
+    columns: [AGG]
+    rows:
+      - [3]
+  - query: SELECT COUNT(*) AS cnt FROM t
+    columns: [CNT]
+    rows:
+      - [4]
+  - query: SELECT SUM(a) AS total FROM t
+    columns: [TOTAL]
+    rows:
+      - [9]
+  # An UNALIASED scalar aggregate keeps the generated expression name —
+  # the fix must not invent an alias where the user wrote none.
+  - query: SELECT MAX(a) FROM t
+    columns: ["MAX(A)"]
+    rows:
+      - [3]
+  # GROUPED aggregate: already correct (a projection above it carries the
+  # aliases), pinned so the two paths cannot drift apart.
+  - query: SELECT b AS g, MAX(a) AS agg FROM t GROUP BY b
+    columns: [G, AGG]
+    unordered: true
+    rows:
+      - [5, 3]
+      - [6, 2]
+  # LIMIT pushed below a projection rebuilt it WITHOUT the alias vector, so
+  # a self-join reported two columns both named ID.
+  - query: SELECT l.id AS l_id, r.id AS r_id FROM t AS l JOIN t AS r ON l.a = r.b ORDER BY l.id, r.id LIMIT 20
+    columns: [L_ID, R_ID]
+    rows: []
+  - query: SELECT id AS renamed FROM t ORDER BY id LIMIT 2
+    columns: [RENAMED]
+    rows:
+      - [1]
+      - [2]
+  # Control: the same projection WITHOUT a LIMIT never took the push path,
+  # so it was already correct — both must stay correct together.
+  - query: SELECT id AS renamed FROM t ORDER BY id
+    columns: [RENAMED]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]

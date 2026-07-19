@@ -381,3 +381,64 @@ templates, comparator sensitivity tests), `cmd/sql-diff-stress`,
 Smoke budget (§6): measured 4.1–4.8 seeds/s; 25-seed smoke ≈ 6s + template
 seeds ≈ 0.4s, far inside the ≤2 min budget, sharing the sqldriver suite
 container (no extra startup).
+
+## 12. P2 landing note — grammar extension (2026-07-19)
+
+Generator grew the SQL surface toward what the parser accepts: `IN`,
+`BETWEEN`, `LIKE`, `IS [NOT] NULL` leaves; `LIMIT`; `SELECT DISTINCT`;
+nullable sort keys with explicit `NULLS FIRST`/`NULLS LAST`. Oracle M grew
+the matching semantics — `BETWEEN` desugared to `>=`/`<=` through the
+engine's own comparisons (not a reimplementation), `DISTINCT` deduped over
+the PROJECTED row, NULL placement following the engine's Java/FDB default
+(NULLS FIRST ascending, NULLS LAST descending) with explicit overrides —
+and the comparator implements §3's LIMIT membership rule.
+
+**Bugs found by the extension, all pre-existing on master:**
+
+| # | Symptom | Root cause | Status |
+|---|---|---|---|
+| 1 | `PredicatesFilter(<nil>)` XX000; **wrong rows** (dropped residual) before compensation landed | set operations missing from `isLeafReplaceable`, so a filter over a pk-intersection refused to relink | fixed, pinned |
+| 2 | `InUnion(PredicatesFilter(<nil>))` | `physicalInUnionWrapper.WithChildren` had NO relink — held the stale pre-relink snapshot | fixed, pinned |
+| 3 | nil-inner filter/map/distinct shells picked as valid plans | shell guard was Fetch-only (RFC-167 finding 1); now structural via `isGenuineLeafPlan` + recursive shell resolution | fixed, pinned |
+| 4 | `InJoin(<nil>)` XX000 on TWO `IN` predicates | inner IN wrapper never handed to `WithChildren` — deeper RFC-167 shell instance | gate-pinned, filed |
+| 5 | every column read fails XX000 on `SELECT DISTINCT id … LIMIT k` over two indexes | `findUnionPlan` descended through the PROJECTION to a nested intersection and derived columns from a leg's full record | fixed, pinned |
+| 6 | output column ALIASES silently dropped: `SELECT l.id AS l_id, r.id AS r_id … LIMIT k` reports two columns both named `ID` | `PushLimitThroughProjectionRule` rebuilt the projection with the non-aliased constructor | fixed, pinned |
+
+Finding 6 came from the second grammar tranche (NOT / NOT IN /
+column-vs-column / OFFSET / **self-joins**). It is metadata-only — rows
+were always correct — which is exactly the divergence class a rows-only
+corpus structurally cannot see, and the reason the harness compares column
+names and types rather than values alone.
+
+Two GENERATOR bugs were found and fixed in the same pass, before either
+could be mistaken for an engine finding: type-incompatible join keys (the
+engine's 42804 rejection is correct behaviour) and join projections
+without unique aliases (two columns named `ID` collapse in the harness's
+name-keyed rows and would have silently weakened every join comparison).
+Both are worth recording — when a differential harness reports a
+divergence, the harness is a suspect too.
+
+Findings 1 and 5 are the pattern the RFC was built for: each needs a
+three-way interaction (indexed conjunction + residual + projection variant;
+DISTINCT + LIMIT + intersection) that the hand-written corpora never
+crossed. #4 is loud and pre-existing; it stays gate-pinned rather than
+papered over, and goes red the day the planner learns the shape.
+
+**Strategic note (Graefe, P2 review).** Every bug in this table is a
+symptom of ONE architectural divergence, and the per-wrapper relink is a
+patch on it, not a cure. Java has no shell window at all: `memoizePlan` /
+`Reference.ofFinalExpressions` bake concrete children at RULE time, and
+`WithPrimaryKeyDataAccessRule` applies `Compensation` before memoizing, so
+an intersection is already complete when it enters the memo. Go takes an
+eager plan snapshot at yield time and re-links it afterwards through
+`WithChildren`, which is what creates nil-inner shells, the Fetch-only
+guard that missed them, the stale-snapshot wrappers, and the unreachable
+nested-IN shell (#4). Closing the class means adopting Java's
+bake-at-rule-time discipline (RFC-167's deeper layer) — the relink fixes
+here buy correctness on the reachable shapes while that lands.
+
+The one guard NOT added: resolving a sole-shell reference recursively.
+It was implemented, then removed — the recursion would re-enter through
+`WithChildren`, which cannot carry a depth bound across the interface
+boundary, so the "cap" reset at every level and guarded nothing (Torvalds,
+P2 review). A loud decline beats an unbounded walk over a cyclic memo.

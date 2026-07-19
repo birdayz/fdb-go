@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**332 scenarios · 2644 query/assertion cases** across 18 feature areas.
+**334 scenarios · 2659 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -19,7 +19,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Joins | 61 | 267 |
 | Subqueries (EXISTS / IN / scalar) | 43 | 290 |
 | CTEs | 12 | 105 |
-| Set operations (UNION / INTERSECT / EXCEPT) | 10 | 54 |
+| Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 210 |
 | Ordering & pagination | 13 | 114 |
 | Scalar functions & expressions | 33 | 358 |
@@ -32,7 +32,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Keys & primary keys | 5 | 132 |
 | Error codes & validation | 4 | 37 |
 | End-to-end scenarios | 3 | 20 |
-| Other | 27 | 198 |
+| Other | 28 | 206 |
 
 ## Aggregates & GROUP BY
 
@@ -226,6 +226,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `and_index_intersection` | 4 | AND over two indexed columns executes |
 | `and_index_intersection_composite_pk` | 2 | 2-key pk merge |
 | `composite_aggregate_intersection` | 7 | Multi-aggregate queries using |
+| `in_over_intersection` | 7 | IN predicates layered over a pk-intersection. |
 | `union` | 2 | UNION / UNION ALL — set operations over SELECT results. |
 | `union_aggregate_java` | 7 | Aggregate over UNION ALL patterns from |
 | `union_columns` | 12 | UNION column-binding: SQL standard is positional, not name-based. |
@@ -449,6 +450,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `multi_feature_integer` | 11 | Integration tests combining multiple SQL features against INTEGER (INT32) |
 | `multi_operator_pipeline` | 6 | Tests that exercise multiple Cascades operators working together |
 | `negative_values` | 6 | Negative numbers and zero edge cases |
+| `output_column_naming` | 8 | a query's OUTPUT COLUMN NAMES are part of its |
 | `parse_channel_pins` | 5 | dotted display names survive the parser→IR |
 | `quoted_identifier_pins` | 4 | quoted-identifier shapes that must keep |
 | `select_no_from` | 6 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |

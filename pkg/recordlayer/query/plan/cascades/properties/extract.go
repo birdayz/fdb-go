@@ -507,8 +507,11 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		if len(freshChildren) != 1 {
 			return nil, fmt.Errorf("LogicalProjectionExpression: expected 1 child, got %d", len(freshChildren))
 		}
-		return expressions.NewLogicalProjectionExpression(
-			ex.GetProjectedValues(), freshChildren[0],
+		// WithAliases: this is the extraction rebuild, so dropping the alias
+		// vector here loses the output column names of every rebuilt
+		// projection — the same defect PushLimitThroughProjectionRule had.
+		return expressions.NewLogicalProjectionExpressionWithAliases(
+			ex.GetProjectedValues(), ex.GetAliases(), freshChildren[0],
 		), nil
 
 	case *expressions.LogicalSortExpression:

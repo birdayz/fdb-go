@@ -147,6 +147,448 @@ func TestIsInfraError_Classification(t *testing.T) {
 	}
 }
 
+func TestOracle_P2Leaves(t *testing.T) {
+	t.Parallel()
+	c := &Case{
+		Table: templateTable(),
+		Rows: []Row{
+			{"ID": int64(1), "A": int64(3), "B": int64(0), "C": int64(0), "S": "alpha", "F": false},
+			{"ID": int64(2), "A": int64(7), "B": int64(0), "C": int64(0), "S": "beta", "F": false},
+			{"ID": int64(3), "A": nil, "B": int64(0), "C": int64(0), "S": "gamma", "F": false},
+		},
+	}
+	ids := func(q Query) []int64 {
+		t.Helper()
+		rows, err := OracleRows(c, q, []string{"ID"})
+		if err != nil {
+			t.Fatalf("oracle: %v", err)
+		}
+		var out []int64
+		for _, r := range rows {
+			out = append(out, r["ID"].(int64))
+		}
+		return out
+	}
+
+	// IN: NULL row never qualifies; members do.
+	got := ids(Query{Where: &BoolNode{Leaf: &Pred{Col: "A", Op: predicates.ComparisonIn, InList: []any{int64(3), int64(9)}}}})
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("IN: got %v, want [1]", got)
+	}
+	// BETWEEN: inclusive bounds; NULL drops.
+	got = ids(Query{Where: &BoolNode{Leaf: &Pred{Col: "A", Op: predicates.ComparisonGreaterThanEq, Lit: int64(3), BetweenHi: int64(7), IsBetween: true}}})
+	if len(got) != 2 {
+		t.Fatalf("BETWEEN 3 AND 7: got %v, want [1 2]", got)
+	}
+	// LIKE: engine pattern semantics (% and _).
+	got = ids(Query{Where: &BoolNode{Leaf: &Pred{Col: "S", Op: predicates.ComparisonLike, Lit: "%eta"}}})
+	if len(got) != 1 || got[0] != 2 {
+		t.Fatalf("LIKE %%eta: got %v, want [2]", got)
+	}
+}
+
+func TestOracle_NullsPlacementAndDistinct(t *testing.T) {
+	t.Parallel()
+	c := &Case{
+		Table: templateTable(),
+		Rows: []Row{
+			{"ID": int64(1), "A": int64(5), "B": int64(0), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(2), "A": nil, "B": int64(0), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(3), "A": int64(1), "B": int64(0), "C": int64(0), "S": "y", "F": false},
+		},
+	}
+	firstID := func(q Query) int64 {
+		t.Helper()
+		rows, err := OracleRows(c, q, []string{"ID"})
+		if err != nil || len(rows) == 0 {
+			t.Fatalf("oracle: %v rows=%v", err, rows)
+		}
+		return rows[0]["ID"].(int64)
+	}
+
+	// Default ASC → NULLS FIRST (Java/FDB tuple order).
+	if id := firstID(Query{OrderBy: []OrderKey{{Col: "A"}, {Col: "ID"}}}); id != 2 {
+		t.Fatalf("ASC default: first ID %d, want 2 (NULL first)", id)
+	}
+	// Explicit NULLS LAST overrides.
+	if id := firstID(Query{OrderBy: []OrderKey{{Col: "A", Nulls: NullsLast}, {Col: "ID"}}}); id != 3 {
+		t.Fatalf("ASC NULLS LAST: first ID %d, want 3", id)
+	}
+	// Default DESC → NULLS LAST.
+	if id := firstID(Query{OrderBy: []OrderKey{{Col: "A", Desc: true}, {Col: "ID"}}}); id != 1 {
+		t.Fatalf("DESC default: first ID %d, want 1 (5 first, NULL last)", id)
+	}
+
+	// DISTINCT over a narrow projection dedups projected rows.
+	rows, err := OracleRows(c, Query{Distinct: true}, []string{"S"})
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("DISTINCT s: got %d rows, want 2", len(rows))
+	}
+}
+
+func TestDiffRows_LimitMembership(t *testing.T) {
+	t.Parallel()
+	cols := []string{"ID"}
+	r := func(id int64) Row { return Row{"ID": id} }
+	oracle := []Row{r(1), r(2), r(3)}
+
+	// min(k,|M|): engine must return exactly 2 for LIMIT 2 over |M|=3.
+	if d := diffRows([]Row{r(1), r(3)}, cols, oracle, Query{Limit: 2}); d != "" {
+		t.Fatalf("valid 2-subset flagged: %s", d)
+	}
+	// Any 2-subset is valid, but a non-member is not.
+	if d := diffRows([]Row{r(1), r(9)}, cols, oracle, Query{Limit: 2}); d == "" {
+		t.Fatal("non-member row not flagged")
+	}
+	// Duplicate consumption: engine may not repeat a row the oracle has once.
+	if d := diffRows([]Row{r(1), r(1)}, cols, oracle, Query{Limit: 2}); d == "" {
+		t.Fatal("duplicated row not flagged")
+	}
+	// |M| < k clamp: engine must return ALL 3, not fewer.
+	if d := diffRows([]Row{r(1), r(2)}, cols, oracle, Query{Limit: 10}); d == "" {
+		t.Fatal("|M|<k short result not flagged")
+	}
+	if d := diffRows([]Row{r(1), r(2), r(3)}, cols, oracle, Query{Limit: 10}); d != "" {
+		t.Fatalf("|M|<k full result flagged: %s", d)
+	}
+	// Ordered + LIMIT: exact prefix required.
+	ordered := Query{OrderBy: []OrderKey{{Col: "ID"}}, Limit: 2}
+	if d := diffRows([]Row{r(1), r(2)}, cols, oracle, ordered); d != "" {
+		t.Fatalf("valid ordered prefix flagged: %s", d)
+	}
+	if d := diffRows([]Row{r(1), r(3)}, cols, oracle, ordered); d == "" {
+		t.Fatal("non-prefix ordered result not flagged")
+	}
+}
+
+func TestOracle_NotAndColumnComparison(t *testing.T) {
+	t.Parallel()
+	c := &Case{
+		Table: templateTable(),
+		Rows: []Row{
+			{"ID": int64(1), "A": int64(5), "B": int64(3), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(2), "A": int64(2), "B": int64(9), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(3), "A": nil, "B": int64(4), "C": int64(0), "S": "x", "F": false},
+		},
+	}
+	ids := func(q Query) []int64 {
+		t.Helper()
+		rows, err := OracleRows(c, q, []string{"ID"})
+		if err != nil {
+			t.Fatalf("oracle: %v", err)
+		}
+		var out []int64
+		for _, r := range rows {
+			out = append(out, r["ID"].(int64))
+		}
+		return out
+	}
+
+	// Column-vs-column: A > B holds only for id 1 (5>3); the NULL row is UNKNOWN.
+	got := ids(Query{Where: &BoolNode{Leaf: &Pred{Col: "A", Op: predicates.ComparisonGreaterThan, RhsCol: "B"}}})
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("A > B: got %v, want [1]", got)
+	}
+	// NOT on a leaf: NOT (A > B) is TRUE only for id 2; the NULL row stays
+	// UNKNOWN under Kleene negation and must NOT appear.
+	got = ids(Query{Where: &BoolNode{Leaf: &Pred{Col: "A", Op: predicates.ComparisonGreaterThan, RhsCol: "B", Negated: true}}})
+	if len(got) != 1 || got[0] != 2 {
+		t.Fatalf("NOT (A > B): got %v, want [2] (NULL row must stay UNKNOWN)", got)
+	}
+	// NOT on a whole node.
+	got = ids(Query{Where: &BoolNode{Not: true, And: true, Kids: []*BoolNode{
+		{Leaf: &Pred{Col: "A", Op: predicates.ComparisonEquals, Lit: int64(5)}},
+	}}})
+	if len(got) != 1 || got[0] != 2 {
+		t.Fatalf("NOT (A = 5): got %v, want [2]", got)
+	}
+	// NOT IN: negation over a membership list, NULL still UNKNOWN.
+	got = ids(Query{Where: &BoolNode{Leaf: &Pred{
+		Col: "A", Op: predicates.ComparisonIn, InList: []any{int64(5)}, Negated: true,
+	}}})
+	if len(got) != 1 || got[0] != 2 {
+		t.Fatalf("A NOT IN (5): got %v, want [2]", got)
+	}
+}
+
+func TestDiffRows_Offset(t *testing.T) {
+	t.Parallel()
+	cols := []string{"ID"}
+	r := func(id int64) Row { return Row{"ID": id} }
+	oracle := []Row{r(1), r(2), r(3), r(4)}
+	ordered := func(limit, offset int) Query {
+		return Query{OrderBy: []OrderKey{{Col: "ID"}}, Limit: limit, Offset: offset}
+	}
+
+	// OFFSET 1 LIMIT 2 over [1 2 3 4] → [2 3].
+	if d := diffRows([]Row{r(2), r(3)}, cols, oracle, ordered(2, 1)); d != "" {
+		t.Fatalf("valid offset window flagged: %s", d)
+	}
+	if d := diffRows([]Row{r(1), r(2)}, cols, oracle, ordered(2, 1)); d == "" {
+		t.Fatal("engine ignoring OFFSET not flagged")
+	}
+	// OFFSET past the end yields nothing.
+	if d := diffRows(nil, cols, oracle, ordered(2, 10)); d != "" {
+		t.Fatalf("offset past end should yield no rows: %s", d)
+	}
+	if d := diffRows([]Row{r(1)}, cols, oracle, ordered(2, 10)); d == "" {
+		t.Fatal("rows past a beyond-end offset not flagged")
+	}
+}
+
+func TestOracle_SelfJoin(t *testing.T) {
+	t.Parallel()
+	// C points at another row's ID, so `L.C = R.ID` is a meaningful join.
+	c := &Case{
+		Table: templateTable(),
+		Rows: []Row{
+			{"ID": int64(1), "A": int64(0), "B": int64(0), "C": int64(2), "S": "x", "F": false},
+			{"ID": int64(2), "A": int64(1), "B": int64(0), "C": int64(3), "S": "y", "F": false},
+			{"ID": int64(3), "A": int64(0), "B": int64(0), "C": nil, "S": "z", "F": false},
+		},
+	}
+	q := Query{
+		Join:    &JoinSpec{LeftCol: "C", RightCol: "ID", Inner: true},
+		OrderBy: []OrderKey{{Col: "ID", Qual: "L"}, {Col: "ID", Qual: "R"}},
+	}
+	proj := []string{"L.ID", "R.ID"}
+	got, err := OracleRows(c, q, proj)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	// 1→2 and 2→3 match; row 3 has C = NULL and joins to nothing.
+	if len(got) != 2 {
+		t.Fatalf("self-join produced %d rows, want 2: %v", len(got), got)
+	}
+	if got[0]["L_ID"] != int64(1) || got[0]["R_ID"] != int64(2) {
+		t.Errorf("row 0 = %v, want L_ID=1 R_ID=2", got[0])
+	}
+	if got[1]["L_ID"] != int64(2) || got[1]["R_ID"] != int64(3) {
+		t.Errorf("row 1 = %v, want L_ID=2 R_ID=3", got[1])
+	}
+
+	// A qualified single-sided filter narrows one side only.
+	q.Where = &BoolNode{Leaf: &Pred{Col: "S", Op: predicates.ComparisonEquals, Lit: "y", Qual: "L"}}
+	got, err = OracleRows(c, q, proj)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if len(got) != 1 || got[0]["L_ID"] != int64(2) {
+		t.Fatalf("filtered self-join = %v, want the single L_ID=2 row", got)
+	}
+}
+
+func TestJoinSQL_RendersUniqueOutputAliases(t *testing.T) {
+	t.Parallel()
+	c := &Case{Table: templateTable()}
+	q := Query{Join: &JoinSpec{LeftCol: "C", RightCol: "ID", Inner: true}}
+	sqlText := c.SQL(q, []string{"L.ID", "R.ID"})
+	// Both sides project ID; without distinct aliases the harness's
+	// name-keyed rows would collapse them and weaken every join comparison.
+	if !strings.Contains(sqlText, "l.id AS l_id") || !strings.Contains(sqlText, "r.id AS r_id") {
+		t.Fatalf("join projection must alias both sides uniquely: %s", sqlText)
+	}
+	if !strings.Contains(sqlText, "JOIN t_rd AS r ON l.c = r.id") {
+		t.Fatalf("unexpected join rendering: %s", sqlText)
+	}
+	// The comma form must carry the join equality in the WHERE instead.
+	q.Join.Inner = false
+	sqlText = c.SQL(q, []string{"L.ID", "R.ID"})
+	if !strings.Contains(sqlText, "t_rd AS l, t_rd AS r") || !strings.Contains(sqlText, "WHERE l.c = r.id") {
+		t.Fatalf("comma-join must move the equality into WHERE: %s", sqlText)
+	}
+}
+
+// TestOracle_Aggregates pins the ONE oracle path that restates SQL
+// semantics instead of sharing the engine's (see AggSpec). Every rule it
+// restates is asserted here, because a wrong aggregate oracle produces
+// false findings that waste a reader's trust.
+func TestOracle_Aggregates(t *testing.T) {
+	t.Parallel()
+	c := &Case{
+		Table: templateTable(),
+		Rows: []Row{
+			{"ID": int64(1), "A": int64(5), "B": int64(1), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(2), "A": nil, "B": int64(1), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(3), "A": int64(7), "B": int64(2), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(4), "A": nil, "B": nil, "C": int64(0), "S": "x", "F": false},
+		},
+	}
+	one := func(q Query) Row {
+		t.Helper()
+		rows, err := OracleRows(c, q, nil)
+		if err != nil {
+			t.Fatalf("oracle: %v", err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("want exactly 1 row, got %d: %v", len(rows), rows)
+		}
+		return rows[0]
+	}
+
+	// COUNT(*) counts rows INCLUDING null-valued ones; COUNT(col) does not.
+	if got := one(Query{Agg: &AggSpec{Func: AggCountStar}})["AGG"]; got != int64(4) {
+		t.Errorf("COUNT(*) = %v, want 4", got)
+	}
+	if got := one(Query{Agg: &AggSpec{Func: AggCountCol, Col: "A"}})["AGG"]; got != int64(2) {
+		t.Errorf("COUNT(A) = %v, want 2 (NULLs excluded)", got)
+	}
+	// SUM/MIN/MAX skip NULLs.
+	if got := one(Query{Agg: &AggSpec{Func: AggSum, Col: "A"}})["AGG"]; got != int64(12) {
+		t.Errorf("SUM(A) = %v, want 12", got)
+	}
+	if got := one(Query{Agg: &AggSpec{Func: AggMin, Col: "A"}})["AGG"]; got != int64(5) {
+		t.Errorf("MIN(A) = %v, want 5", got)
+	}
+
+	// A scalar aggregate over an EMPTY input still returns one row:
+	// COUNT → 0, SUM → NULL.
+	never := &BoolNode{Leaf: &Pred{Col: "A", Op: predicates.ComparisonEquals, Lit: int64(999)}}
+	if got := one(Query{Agg: &AggSpec{Func: AggCountStar}, Where: never})["AGG"]; got != int64(0) {
+		t.Errorf("COUNT(*) over empty = %v, want 0", got)
+	}
+	if got := one(Query{Agg: &AggSpec{Func: AggSum, Col: "A"}, Where: never})["AGG"]; got != nil {
+		t.Errorf("SUM over empty = %v, want NULL", got)
+	}
+
+	// GROUPED: a NULL key is its OWN group, and an all-NULL group's SUM is NULL.
+	rows, err := OracleRows(c, Query{Agg: &AggSpec{Func: AggSum, Col: "A", GroupBy: "B"}}, nil)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("GROUP BY B: want 3 groups (1, 2, NULL), got %d: %v", len(rows), rows)
+	}
+	byKey := map[any]any{}
+	for _, r := range rows {
+		byKey[r["G"]] = r["AGG"]
+	}
+	if byKey[int64(1)] != int64(5) {
+		t.Errorf("group B=1: SUM(A) = %v, want 5 (the NULL A skipped)", byKey[int64(1)])
+	}
+	if byKey[nil] != nil {
+		t.Errorf("group B=NULL: SUM(A) = %v, want NULL (its only row has A NULL)", byKey[nil])
+	}
+	// A grouped aggregate over an empty input returns NO rows.
+	rows, err = OracleRows(c, Query{Agg: &AggSpec{Func: AggCountStar, GroupBy: "B"}, Where: never}, nil)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("grouped aggregate over empty input = %v, want no rows", rows)
+	}
+
+	// HAVING filters on the aggregate; a NULL aggregate never passes.
+	rows, err = OracleRows(c, Query{Agg: &AggSpec{
+		Func: AggSum, Col: "A", GroupBy: "B", HavingOn: true,
+		Having: &Pred{Op: predicates.ComparisonGreaterThan, Lit: int64(6)},
+	}}, nil)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["G"] != int64(2) {
+		t.Errorf("HAVING SUM(A) > 6 = %v, want just the B=2 group", rows)
+	}
+}
+
+// TestJoinProjections_AliasesAreUnique guards the harness's own blind spot:
+// rows are keyed by output column NAME, so two projected columns that
+// collapse to one alias would silently compare only one of them — the same
+// duplicate-name failure mode as the bug this work was written to catch.
+// Uniqueness currently holds by construction (a fixed column pool × two
+// sides); this asserts it instead of trusting it.
+func TestJoinProjections_AliasesAreUnique(t *testing.T) {
+	t.Parallel()
+	for _, seed := range []uint64{1, 2, 3, 500000, 700001} {
+		c := Generate(seed)
+		for _, proj := range c.joinProjections() {
+			seen := map[string]string{}
+			for _, qualified := range proj {
+				alias := joinOutputAlias(qualified)
+				if prev, dup := seen[alias]; dup {
+					t.Fatalf("seed %d: %q and %q both alias to %q — the comparison would silently collapse",
+						seed, prev, qualified, alias)
+				}
+				seen[alias] = qualified
+			}
+		}
+	}
+}
+
+// TestKnownGaps_LedgerIsNarrow guards the suppression hole: the known-gap
+// ledger converts a real engine failure into a DECLINE, so an over-broad
+// matcher silently hides bugs. Every near-miss below must stay a FINDING.
+func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
+	t.Parallel()
+	const nestedIn = "SELECT * FROM t WHERE a IN (1,2) AND b = 3 AND c IN (4,5)"
+	planInvariantInJoin := errors.New("XX000: malformed query plan: plan-invariant: non-leaf plan *plans.RecordQueryInJoinPlan has no children")
+
+	// The PRODUCTION ledger is empty (its one entry was retired when the
+	// nested-IN gap was fixed), so nothing may be declined — including the
+	// failure that entry used to cover.
+	if gap := matchKnownGap(nestedIn, planInvariantInJoin); gap != nil {
+		t.Fatalf("ledger declined %q, but the nested-IN gap is FIXED — a retired entry must not linger", gap.name)
+	}
+
+	// The narrowness cases below run against an INJECTED ledger holding the
+	// retired entry verbatim. Testing the empty production ledger would pass
+	// vacuously and stop guarding the suppression hole the day someone adds
+	// a real entry; this keeps the matcher's shape under test regardless.
+	ledger := []knownGap{{
+		name: "nested-IN over an intersection extracts InJoin(<nil>)",
+		pin:  "TestNestedIn_OverIntersection",
+		matches: func(sqlText string, err error) bool {
+			return strings.Contains(err.Error(), "plan-invariant") &&
+				strings.Contains(err.Error(), "RecordQueryInJoinPlan") &&
+				strings.Count(strings.ToUpper(sqlText), " IN (") >= 2
+		},
+	}}
+	if matchGapIn(ledger, nestedIn, planInvariantInJoin) == nil {
+		t.Fatal("the injected entry must match its own documented shape")
+	}
+	for _, tc := range []struct {
+		name string
+		sql  string
+		err  error
+	}{
+		{
+			// Same error, ONE IN — a different (undocumented) shape.
+			name: "single_IN_stays_a_finding",
+			sql:  "SELECT * FROM t WHERE a IN (1,2) AND b = 3",
+			err:  planInvariantInJoin,
+		},
+		{
+			// Same shape, a DIFFERENT plan node — not the documented gap.
+			name: "other_plan_node_stays_a_finding",
+			sql:  nestedIn,
+			err:  errors.New("XX000: plan-invariant: non-leaf plan *plans.RecordQueryPredicatesFilterPlan has no children"),
+		},
+		{
+			// Same shape, a wholly different error class.
+			name: "other_error_stays_a_finding",
+			sql:  nestedIn,
+			err:  errors.New("XX000: result row carries no positional output row aligned to column ID"),
+		},
+		{
+			// A ROW divergence must never be declinable — no error at all.
+			name: "row_mismatch_stays_a_finding",
+			sql:  nestedIn,
+			err:  errors.New("row count: engine 3, oracle expects 2"),
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if gap := matchGapIn(ledger, tc.sql, tc.err); gap != nil {
+				t.Fatalf("ledger over-matched (%q) — this must stay a finding", gap.name)
+			}
+		})
+	}
+}
+
 func TestFinalizeResult_MismatchPrecedence(t *testing.T) {
 	t.Parallel()
 	// A confirmed mismatch must never be masked by a later infra failure on
@@ -170,7 +612,7 @@ func TestRenderSQL_Shapes(t *testing.T) {
 	t.Parallel()
 	c := Generate(42)
 	for _, q := range c.Queries {
-		for _, proj := range c.Projections() {
+		for _, proj := range c.ProjectionsFor(q) {
 			s := c.SQL(q, proj)
 			if !strings.HasPrefix(s, "SELECT ") || !strings.Contains(s, " FROM t_rd") {
 				t.Fatalf("malformed SQL: %s", s)

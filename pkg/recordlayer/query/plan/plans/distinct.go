@@ -68,3 +68,13 @@ func (p *RecordQueryDistinctPlan) Explain() string {
 }
 
 var _ RecordQueryPlan = (*RecordQueryDistinctPlan)(nil)
+
+// WithInner returns a copy with the inner replaced and every other field
+// preserved — the extraction-relink rebuild path (see findPhysicalPlan's
+// shell completion). A constructor rebuild would drop fields the setters
+// carry, so identity-preserving copy is the only safe form.
+func (p *RecordQueryDistinctPlan) WithInner(inner RecordQueryPlan) *RecordQueryDistinctPlan {
+	cp := *p
+	cp.inner = inner
+	return &cp
+}

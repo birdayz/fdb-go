@@ -3267,6 +3267,21 @@ type multiInnerPlan interface {
 
 func findUnionPlan(p plans.RecordQueryPlan) []plans.RecordQueryPlan {
 	for {
+		// STOP at a node that defines the output schema itself. The descent
+		// exists to reach a top-level set operation wearing unary hats
+		// (Fetch/Limit/…), whose legs then supply the columns — but a set
+		// operation BELOW a projection or aggregation is an input to it, not
+		// the output shape. Descending past one derived the columns from an
+		// intersection leg's full record (every field of the table) while the
+		// plan emitted the projection's single slot, so every read failed the
+		// positional-alignment guard: `SELECT DISTINCT id … WHERE a=? AND b=?
+		// LIMIT k` over two indexes planned `Limit(Project([ID], Intersection))`
+		// and reported 3 columns for a 1-column row. Returning nil here lets
+		// deriveColumnsFromPlan's unary recursion reach the schema-defining
+		// node, which has a dedicated arm.
+		if definesOutputSchema(p) {
+			return nil
+		}
 		if mi, ok := p.(multiInnerPlan); ok {
 			inners := mi.GetInners()
 			if len(inners) > 0 {
@@ -3280,6 +3295,28 @@ func findUnionPlan(p plans.RecordQueryPlan) []plans.RecordQueryPlan {
 			return nil
 		}
 	}
+}
+
+// definesOutputSchema reports whether a plan node determines the result's
+// column list rather than passing its input's through. It lists every type
+// deriveColumnsFromPlan handles with a dedicated arm BEFORE it consults
+// findUnionPlan — including the two recursive-CTE arms, which derive from
+// their seed / initial state. Keeping the two in sync is what makes the
+// descent safe; a type with a dedicated arm that is missing here would be
+// descended past and lose its schema.
+func definesOutputSchema(p plans.RecordQueryPlan) bool {
+	switch p.(type) {
+	case *plans.RecordQueryProjectionPlan,
+		*plans.RecordQueryStreamingAggregationPlan,
+		*plans.RecordQueryAggregateIndexPlan,
+		*plans.RecordQueryMultiIntersectionOnValuesPlan,
+		*plans.RecordQueryNestedLoopJoinPlan,
+		*plans.RecordQueryFlatMapPlan,
+		*plans.RecordQueryRecursiveDfsJoinPlan,
+		*plans.RecordQueryRecursiveLevelUnionPlan:
+		return true
+	}
+	return false
 }
 
 func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
@@ -3437,7 +3474,8 @@ func gatheredExplodeElement(p plans.RecordQueryPlan) (string, string, values.Val
 			collType := exp.GetCollectionValue().Type()
 			if arr, isArr := collType.(*values.ArrayType); isArr && arr.ElementType != nil {
 				return fm.GetInnerAlias().Name(), collField, values.NewQuantifiedObjectValueOfType(
-					fm.GetInnerAlias(), arr.ElementType)
+					fm.GetInnerAlias(), arr.ElementType,
+				)
 			}
 			return fm.GetInnerAlias().Name(), collField, nil
 		}
@@ -3766,8 +3804,23 @@ func buildAggColumns(
 		// aggregated leg's own column. Far-leg aggregate-operand typing is a
 		// separate axis outside this rider's group-key scope.
 		typeName := aggregateResultType(a, firstDesc)
+		// A user-written alias is the OUTPUT column name and must win over the
+		// generated `MAX(A)` spelling. A GROUPED aggregate keeps a projection
+		// above it that already carries the alias, so this arm was only ever
+		// reached for a SCALAR aggregate — whose plan is the bare
+		// StreamingAgg, with nowhere else for the alias to live. Without this,
+		// `SELECT MAX(a) AS agg FROM t` reported the column as `MAX(A)` while
+		// the grouped form of the same query correctly reported `AGG`.
+		// Name stays the generated spelling: it is the datum lookup key the
+		// aggregate cursor writes (see the group-key comment above); Label is
+		// what Rows.Columns() surfaces.
+		label := ""
+		if a.Alias != "" {
+			label = strings.ToUpper(a.Alias)
+		}
 		cols = append(cols, executor.ColumnDef{
 			Name:     strings.ToUpper(name),
+			Label:    label,
 			TypeName: typeName,
 			Nullable: api.ColumnNullable,
 		})

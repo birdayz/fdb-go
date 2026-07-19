@@ -60,12 +60,10 @@ func (w *physicalInJoinWrapper) WithChildren(qs []expressions.Quantifier) (expre
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalInJoinWrapper.WithChildren: expected 1, got %d", len(qs))
 	}
-	if childPlan := extractChildPlanFromQuantifier(qs[0]); childPlan != nil && isLeafReplaceable(childPlan) {
-		rebuilt := plans.NewRecordQueryInJoinPlan(
-			childPlan, w.plan.GetBindingName(), w.plan.IsSorted(), w.plan.IsReverse())
-		rebuilt.SetInValues(w.plan.GetInValues())
-		rebuilt.SetSourceKind(w.plan.GetSourceKind())
-		return &physicalInJoinWrapper{plan: rebuilt, innerQuant: qs[0]}, nil
+	if childPlan := extractChildPlanFromQuantifier(qs[0]); shouldRelinkInner(w.plan.GetInner(), childPlan) {
+		// WithInner, not a constructor rebuild: the constructor drops
+		// inValues/sourceKind unless every setter is replayed.
+		return &physicalInJoinWrapper{plan: w.plan.WithInner(childPlan), innerQuant: qs[0]}, nil
 	}
 	return &physicalInJoinWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }

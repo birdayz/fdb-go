@@ -55,32 +55,127 @@ type TableDef struct {
 // int64, string, bool, or nil.
 type Row map[string]any
 
-// Pred is one comparison leaf: COL <op> literal, or COL IS [NOT] NULL.
+// Pred is one comparison leaf: COL <op> literal, COL IS [NOT] NULL,
+// COL IN (…), COL BETWEEN lo AND hi, or COL LIKE pattern.
 type Pred struct {
 	Col string
 	Op  predicates.ComparisonType
-	Lit any // nil for IS NULL / IS NOT NULL
+	Lit any // nil for IS NULL / IS NOT NULL; the pattern for LIKE; lo for BETWEEN
+
+	// InList holds the membership list for Op == ComparisonIn.
+	InList []any
+	// BetweenHi holds the inclusive upper bound when IsBetween (rendered as
+	// BETWEEN; the oracle evaluates it as >=Lit AND <=BetweenHi with the
+	// engine's own comparisons, which is the SQL desugaring).
+	BetweenHi any
+	IsBetween bool
+	// RhsCol, when non-empty, makes this a COLUMN-vs-COLUMN comparison
+	// (`a < b`) instead of column-vs-literal. Non-sargable, so it forces
+	// residual filters and different plan shapes than a literal comparison.
+	RhsCol string
+	// Qual / RhsQual are the table-alias qualifiers in a JOIN query ("L" or
+	// "R"); empty in single-table queries. The oracle keys joined rows by
+	// "<QUAL>.<COL>", so these select the side each operand reads.
+	Qual    string
+	RhsQual string
+	// Negated renders `NOT (…)` around the leaf (and `NOT IN` for IN).
+	Negated bool
 }
 
 // BoolNode is the AND/OR tree over leaves. Exactly one of Leaf / Kids is set.
+// Not negates the whole node (Kleene NOT: NOT UNKNOWN stays UNKNOWN).
 type BoolNode struct {
 	Leaf *Pred
 	And  bool // valid when len(Kids) > 0
 	Kids []*BoolNode
+	Not  bool
 }
 
-// OrderKey is one ORDER BY component. P1 restricts sort keys to NOT NULL
-// columns (the NULLS placement axis is a named P2 dimension).
+// NullsPlacement is an ORDER BY key's NULL position. Default follows the
+// engine's Java/FDB-parity rule: NULLS FIRST ascending, NULLS LAST
+// descending (tuple order). Explicit placements render as NULLS FIRST/LAST.
+type NullsPlacement int
+
+const (
+	NullsDefault NullsPlacement = iota
+	NullsFirst
+	NullsLast
+)
+
+// OrderKey is one ORDER BY component. Nullable sort keys are allowed; keys
+// are always suffixed with ID by the generator so the total order stays
+// unique and the ordered comparator exact.
 type OrderKey struct {
-	Col  string
-	Desc bool
+	Col   string
+	Desc  bool
+	Nulls NullsPlacement
+	// Qual is the table-alias qualifier in a JOIN query ("L"/"R"), empty
+	// otherwise.
+	Qual string
+}
+
+// JoinSpec is a SELF-join of the case's table under aliases L and R, joined
+// on `L.<LeftCol> = R.<RightCol>`. A self-join exercises the whole join
+// planner (NLJ, join ordering, correlated index access) without needing a
+// second table, and keeps the oracle a plain nested loop over one row set.
+//
+// Join queries always project EXPLICITLY ALIASED columns (l_id, r_a, …):
+// unaliased `l.id, r.id` would yield two output columns both named ID, and
+// the harness keys rows by column name, so the duplicate would collapse and
+// silently weaken the comparison.
+type JoinSpec struct {
+	LeftCol  string
+	RightCol string
+	// Inner renders `JOIN … ON …`; when false the join is expressed as a
+	// comma cross-join with the equality moved into the WHERE — the same
+	// logical query, a different parse path into the planner.
+	Inner bool
+}
+
+// AggFunc is a supported aggregate. AVG is deliberately absent: its
+// result type and rounding are their own semantic axis (integer vs
+// floating division), and getting that wrong in the oracle would produce
+// false findings rather than real ones.
+type AggFunc int
+
+const (
+	AggCountStar AggFunc = iota // COUNT(*)   — counts rows, NULLs included
+	AggCountCol                 // COUNT(col) — counts NON-NULL values only
+	AggSum
+	AggMin
+	AggMax
+)
+
+// AggSpec is one aggregate query: optional GROUP BY key plus one aggregate
+// over a BIGINT column.
+//
+// HONESTY NOTE (RFC-182 §7 / §12): unlike every other oracle path, the
+// aggregate evaluation here is a REIMPLEMENTATION — aggregation is not
+// expressible through the engine's per-row Comparison evaluation, so this
+// is the one place the oracle restates SQL semantics rather than sharing
+// the engine's. The restated rules are the well-defined ones (SUM/MIN/MAX
+// ignore NULLs and yield NULL for an all-NULL or empty group; COUNT(*)
+// counts rows; COUNT(col) counts non-NULLs; a NULL grouping key is its own
+// group), and a divergence here is investigated on BOTH sides before it is
+// called an engine bug.
+type AggSpec struct {
+	Func     AggFunc
+	Col      string // aggregated column ("" for COUNT(*))
+	GroupBy  string // "" = scalar aggregate over the whole input
+	Having   *Pred  // optional filter on the aggregate result
+	HavingOn bool
 }
 
 // Query is one generated query body; the runner executes it under every
 // projection variant and cross-checks row identity via ID.
 type Query struct {
-	Where   *BoolNode // nil = no WHERE
-	OrderBy []OrderKey
+	Agg      *AggSpec  // nil = not an aggregate query
+	Join     *JoinSpec // nil = single-table query
+	Where    *BoolNode // nil = no WHERE
+	OrderBy  []OrderKey
+	Limit    int  // 0 = no LIMIT
+	Offset   int  // 0 = no OFFSET (only emitted alongside LIMIT + ORDER BY)
+	Distinct bool // SELECT DISTINCT (ORDER BY keys ⊆ projection enforced by generator)
 }
 
 // Case is everything one seed produces.
@@ -107,6 +202,129 @@ func (c *Case) Projections() [][]string {
 	return [][]string{nil /* SELECT * */, {"ID"}, narrow, reversed}
 }
 
+// joinProjections are the projection variants for a JOIN query. Every entry
+// is a qualified column ("L.ID"); the renderer emits a unique alias per
+// entry so no two output columns share a name.
+func (c *Case) joinProjections() [][]string {
+	var wide []string
+	for _, side := range []string{"L", "R"} {
+		wide = append(wide, side+".ID")
+		for _, col := range c.Table.Cols {
+			wide = append(wide, side+"."+col.Name)
+		}
+	}
+	return [][]string{
+		wide,
+		{"L.ID", "R.ID"},
+		{"R.ID", "L.ID", "L.B"},
+	}
+}
+
+// ProjectionsFor returns the projection variants appropriate to the query
+// (join queries never use `SELECT *` — see JoinSpec; an aggregate's output
+// list is fixed by its own shape).
+func (c *Case) ProjectionsFor(q Query) [][]string {
+	switch {
+	case q.Agg != nil:
+		return [][]string{nil}
+	case q.Join != nil:
+		return c.joinProjections()
+	}
+	return c.Projections()
+}
+
+// aggOutputCols is the aggregate query's output column list, in order:
+// the grouping key (when present) followed by the aggregate, both aliased.
+func aggOutputCols(a *AggSpec) []string {
+	if a.GroupBy != "" {
+		return []string{"G", "AGG"}
+	}
+	return []string{"AGG"}
+}
+
+// genAggQuery builds `SELECT [g,] <agg> FROM t [WHERE …] [GROUP BY g]
+// [HAVING …]`. The WHERE is biased to indexed columns so the aggregate can
+// sit over an index access — the shape where a residual filter dropped by
+// the aggregate data-access path produced silently wrong sums.
+func genAggQuery(rng *rand.Rand, table TableDef) Query {
+	indexed := map[string]bool{}
+	for _, idx := range table.Indexes {
+		for _, c := range idx.Cols {
+			indexed[c] = true
+		}
+	}
+	bigints := []string{"A", "B", "C"}
+
+	spec := &AggSpec{}
+	switch rng.IntN(5) {
+	case 0:
+		spec.Func = AggCountStar
+	case 1:
+		spec.Func, spec.Col = AggCountCol, bigints[rng.IntN(len(bigints))]
+	case 2:
+		spec.Func, spec.Col = AggSum, bigints[rng.IntN(len(bigints))]
+	case 3:
+		spec.Func, spec.Col = AggMin, bigints[rng.IntN(len(bigints))]
+	default:
+		spec.Func, spec.Col = AggMax, bigints[rng.IntN(len(bigints))]
+	}
+	// GROUP BY two thirds of the time; prefer an indexed key so the
+	// aggregate-index / streaming-aggregation paths are reachable.
+	if rng.IntN(3) != 0 {
+		keys := []string{}
+		for _, col := range table.Cols {
+			if col.Type == ColBigint && indexed[col.Name] {
+				keys = append(keys, col.Name)
+			}
+		}
+		if len(keys) == 0 {
+			keys = bigints
+		}
+		spec.GroupBy = keys[rng.IntN(len(keys))]
+	}
+
+	q := Query{Agg: spec}
+	// A WHERE over an INDEXED column plus (often) an unindexed residual —
+	// the AGG-RESIDUAL shape.
+	if rng.IntN(3) != 0 {
+		var leaves []*Pred
+		for _, col := range table.Cols {
+			if indexed[col.Name] && col.Type == ColBigint {
+				leaves = append(leaves, &Pred{
+					Col: col.Name, Op: predicates.ComparisonEquals, Lit: int64(rng.IntN(6)),
+				})
+				break
+			}
+		}
+		if len(leaves) > 0 && rng.IntN(2) == 0 {
+			leaves = append(leaves, &Pred{
+				Col: "S", Op: predicates.ComparisonEquals,
+				Lit: []string{"alpha", "beta", "gamma"}[rng.IntN(3)],
+			})
+		}
+		switch len(leaves) {
+		case 0:
+		case 1:
+			q.Where = &BoolNode{Leaf: leaves[0]}
+		default:
+			kids := make([]*BoolNode, len(leaves))
+			for i, l := range leaves {
+				kids[i] = &BoolNode{Leaf: l}
+			}
+			q.Where = &BoolNode{And: true, Kids: kids}
+		}
+	}
+	// HAVING on the aggregate result, only for grouped queries.
+	if spec.GroupBy != "" && rng.IntN(3) == 0 {
+		spec.HavingOn = true
+		spec.Having = &Pred{
+			Op:  []predicates.ComparisonType{predicates.ComparisonGreaterThan, predicates.ComparisonLessThanOrEq}[rng.IntN(2)],
+			Lit: int64(rng.IntN(4)),
+		}
+	}
+	return q
+}
+
 // Generate builds the Case for a seed. Same seed → identical Case.
 func Generate(seed uint64) *Case {
 	rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
@@ -116,6 +334,18 @@ func Generate(seed uint64) *Case {
 	nQueries := 4 + rng.IntN(5)
 	queries := make([]Query, 0, nQueries)
 	for i := 0; i < nQueries; i++ {
+		// ~1/4 self-joins: the join planner is a large surface and the
+		// oracle stays a plain nested loop over the same authoritative rows.
+		switch {
+		case rng.IntN(4) == 0:
+			queries = append(queries, genJoinQuery(rng, table))
+			continue
+		case rng.IntN(4) == 0:
+			// Aggregates: the surface where a dropped residual produced
+			// silently wrong SUMs (the AGG-RESIDUAL class).
+			queries = append(queries, genAggQuery(rng, table))
+			continue
+		}
 		queries = append(queries, genQuery(rng, table))
 	}
 	return &Case{Seed: seed, Table: table, Rows: rows, Queries: queries}
@@ -187,6 +417,102 @@ func genRows(rng *rand.Rand, table TableDef) []Row {
 	return rows
 }
 
+// genJoinQuery builds a self-join: `t AS l JOIN t AS r ON l.X = r.Y`, plus a
+// small conjunction of qualified single-sided predicates. Both operands of
+// the join key are drawn from the indexed columns where possible so the
+// planner has a correlated-access option, not only a nested-loop scan.
+func genJoinQuery(rng *rand.Rand, table TableDef) Query {
+	indexed := map[string]bool{}
+	for _, idx := range table.Indexes {
+		for _, c := range idx.Cols {
+			indexed[c] = true
+		}
+	}
+	// Join key: both sides must be the SAME TYPE — the engine rejects a
+	// cross-type comparison with 42804, which is correct behaviour, so
+	// generating one tests nothing but the error path. BIGINT columns only
+	// (ID plus the numeric value columns): they are the join-key shape real
+	// schemas use, and STRING/BOOLEAN keys add no planner coverage.
+	// Prefer an indexed column on the right (the probed side) so a
+	// correlated index access is available; ID is always indexed (pk).
+	rightCandidates := []string{"ID"}
+	for _, col := range table.Cols {
+		if col.Type == ColBigint && indexed[col.Name] {
+			rightCandidates = append(rightCandidates, col.Name)
+		}
+	}
+	leftCandidates := []string{"ID"}
+	for _, col := range table.Cols {
+		if col.Type == ColBigint {
+			leftCandidates = append(leftCandidates, col.Name)
+		}
+	}
+
+	spec := &JoinSpec{
+		LeftCol:  leftCandidates[rng.IntN(len(leftCandidates))],
+		RightCol: rightCandidates[rng.IntN(len(rightCandidates))],
+		Inner:    rng.IntN(2) == 0,
+	}
+
+	// 1-2 qualified single-sided filter leaves, biased to indexed columns so
+	// each side can drive an index access.
+	var leaves []*Pred
+	n := 1 + rng.IntN(2)
+	for i := 0; i < n; i++ {
+		col := table.Cols[rng.IntN(len(table.Cols))]
+		p := genPred(rng, col, indexed[col.Name])
+		p.Qual = []string{"L", "R"}[rng.IntN(2)]
+		leaves = append(leaves, p)
+	}
+
+	// A CROSS-SIDE column comparison (`l.a > r.b`) — a theta/non-equi
+	// residual on top of the join equality, which the single-sided leaves
+	// above can never produce. BIGINT columns only, so the two operands stay
+	// type-compatible.
+	if rng.IntN(3) == 0 {
+		bigints := []string{"A", "B", "C"}
+		ops := []predicates.ComparisonType{
+			predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+			predicates.ComparisonNotEquals, predicates.ComparisonLessThanOrEq,
+		}
+		leaves = append(leaves, &Pred{
+			Col: bigints[rng.IntN(len(bigints))], Qual: "L",
+			Op:     ops[rng.IntN(len(ops))],
+			RhsCol: bigints[rng.IntN(len(bigints))], RhsQual: "R",
+		})
+	}
+
+	kids := make([]*BoolNode, len(leaves))
+	for i, l := range leaves {
+		kids[i] = &BoolNode{Leaf: l}
+	}
+	var where *BoolNode
+	if len(kids) == 1 {
+		where = kids[0]
+	} else {
+		where = &BoolNode{And: true, Kids: kids}
+	}
+
+	q := Query{Join: spec, Where: where}
+	// A total ORDER BY over both sides' ids keeps the ordered comparison exact.
+	if rng.IntN(2) == 0 {
+		q.OrderBy = []OrderKey{
+			{Col: "ID", Qual: "L", Desc: rng.IntN(2) == 0},
+			{Col: "ID", Qual: "R"},
+		}
+		if rng.IntN(3) == 0 {
+			q.Limit = 1 + rng.IntN(20)
+		}
+	} else if rng.IntN(4) == 0 {
+		// UNORDERED join + LIMIT — the exact shape that exposed the dropped
+		// projection aliases. Without this arm the generator could never
+		// regenerate its own finding; the comparator handles it via the
+		// sub-multiset membership rule.
+		q.Limit = 1 + rng.IntN(20)
+	}
+	return q
+}
+
 func genQuery(rng *rand.Rand, table TableDef) Query {
 	indexed := map[string]bool{}
 	for _, idx := range table.Indexes {
@@ -227,6 +553,30 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 		}
 	}
 
+	// Column-vs-column leaf (~1/7): non-sargable, so it forces a residual
+	// filter and reaches plan shapes literal comparisons never do. Same-typed
+	// columns only — cross-type comparison semantics are their own axis.
+	if rng.IntN(7) == 0 {
+		bigints := []string{"A", "B", "C"}
+		l := bigints[rng.IntN(len(bigints))]
+		r := bigints[rng.IntN(len(bigints))]
+		if l != r {
+			ops := []predicates.ComparisonType{
+				predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+				predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+				predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+			}
+			leaves = append(leaves, &Pred{Col: l, Op: ops[rng.IntN(len(ops))], RhsCol: r})
+		}
+	}
+
+	// NOT on a leaf (~1/8 each): `NOT (a = 1)` / `a NOT IN (…)`.
+	for _, lf := range leaves {
+		if rng.IntN(8) == 0 {
+			lf.Negated = true
+		}
+	}
+
 	var where *BoolNode
 	if len(leaves) == 1 {
 		where = &BoolNode{Leaf: leaves[0]}
@@ -258,16 +608,52 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 	}
 
 	var orderBy []OrderKey
-	switch rng.IntN(3) {
+	switch rng.IntN(4) {
 	case 0:
 		orderBy = []OrderKey{{Col: "ID", Desc: rng.IntN(2) == 0}}
 	case 1:
 		// B is the NOT NULL sortable value column; append ID for a total
 		// order so the oracle's expected sequence is unique.
 		orderBy = []OrderKey{{Col: "B", Desc: rng.IntN(2) == 0}, {Col: "ID"}}
+	case 2:
+		// NULLABLE sort key (A, C, or S) with a NULLS placement drawn from
+		// {default, FIRST, LAST}; ID suffix keeps the total order unique.
+		col := []string{"A", "C", "S"}[rng.IntN(3)]
+		orderBy = []OrderKey{
+			{Col: col, Desc: rng.IntN(2) == 0, Nulls: NullsPlacement(rng.IntN(3))},
+			{Col: "ID"},
+		}
 	}
 
-	return Query{Where: where, OrderBy: orderBy}
+	q := Query{Where: where, OrderBy: orderBy}
+
+	// DISTINCT on ~1/6 of queries. ORDER BY is dropped for DISTINCT — the
+	// projection variants do not all contain every sort key, and SQL
+	// requires DISTINCT's ORDER BY ⊆ projection; the unordered multiset
+	// comparison stays exact.
+	if rng.IntN(6) == 0 {
+		q.Distinct = true
+		q.OrderBy = nil
+	}
+
+	// LIMIT on ~1/4 of queries: small values exercise the boundary, large
+	// values exercise the |M| < k clamp.
+	if rng.IntN(4) == 0 {
+		q.Limit = 1 + rng.IntN(30)
+		// OFFSET only with a total ORDER BY: without one the skipped prefix
+		// is implementation-defined and the result is not a checkable set.
+		if len(q.OrderBy) > 0 && rng.IntN(3) == 0 {
+			q.Offset = rng.IntN(5)
+		}
+	}
+
+	// NOT around the whole WHERE (~1/10) — exercises the negation
+	// normalization (DeMorgan) the planner applies before matching.
+	if q.Where != nil && rng.IntN(10) == 0 {
+		q.Where = &BoolNode{Not: true, And: true, Kids: []*BoolNode{q.Where}}
+	}
+
+	return q
 }
 
 func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
@@ -278,6 +664,28 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 			op = predicates.ComparisonIsNotNull
 		}
 		return &Pred{Col: col.Name, Op: op}
+	}
+
+	// P2 leaf kinds: IN (~1/8), BETWEEN (~1/10, BIGINT), LIKE (~1/6, STRING).
+	switch {
+	case col.Type != ColBoolean && rng.IntN(8) == 0:
+		n := 2 + rng.IntN(3)
+		list := make([]any, 0, n)
+		for i := 0; i < n; i++ {
+			if col.Type == ColBigint {
+				list = append(list, int64(rng.IntN(12)))
+			} else {
+				list = append(list, []string{"", "alpha", "beta", "gamma", "delta", "zeta"}[rng.IntN(6)])
+			}
+		}
+		return &Pred{Col: col.Name, Op: predicates.ComparisonIn, InList: list}
+	case col.Type == ColBigint && rng.IntN(10) == 0:
+		lo := int64(rng.IntN(10)) - 1
+		hi := lo + int64(rng.IntN(6))
+		return &Pred{Col: col.Name, Op: predicates.ComparisonGreaterThanEq, Lit: lo, BetweenHi: hi, IsBetween: true}
+	case col.Type == ColString && rng.IntN(6) == 0:
+		pat := []string{"%a%", "al%", "%ta", "_eta", "%e%a%", "alpha", "%"}[rng.IntN(7)]
+		return &Pred{Col: col.Name, Op: predicates.ComparisonLike, Lit: pat}
 	}
 
 	var ops []predicates.ComparisonType
@@ -361,10 +769,24 @@ func (c *Case) InsertSQL() string {
 
 // SQL renders one query under a projection (nil = SELECT *).
 func (c *Case) SQL(q Query, projection []string) string {
+	if q.Agg != nil {
+		return c.aggSQL(q)
+	}
 	var b strings.Builder
 	b.WriteString("SELECT ")
+	if q.Distinct {
+		b.WriteString("DISTINCT ")
+	}
 	if projection == nil {
 		b.WriteString("*")
+	} else if q.Join != nil {
+		// Qualified columns, each with a unique alias (l_id, r_a, …) so no
+		// two output columns share a name.
+		outs := make([]string, len(projection))
+		for i, p := range projection {
+			outs[i] = fmt.Sprintf("%s AS %s", strings.ToLower(p), joinOutputAlias(p))
+		}
+		b.WriteString(strings.Join(outs, ", "))
 	} else {
 		lower := make([]string, len(projection))
 		for i, p := range projection {
@@ -373,10 +795,35 @@ func (c *Case) SQL(q Query, projection []string) string {
 		b.WriteString(strings.Join(lower, ", "))
 	}
 	b.WriteString(" FROM ")
-	b.WriteString(strings.ToLower(c.Table.Name))
-	if q.Where != nil {
+	tbl := strings.ToLower(c.Table.Name)
+	switch {
+	case q.Join == nil:
+		b.WriteString(tbl)
+	case q.Join.Inner:
+		fmt.Fprintf(&b, "%s AS l JOIN %s AS r ON l.%s = r.%s",
+			tbl, tbl, strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
+	default:
+		// Comma cross-join; the equality moves into the WHERE below.
+		fmt.Fprintf(&b, "%s AS l, %s AS r", tbl, tbl)
+	}
+	// WHERE: the comma-join form carries the join equality as its first
+	// conjunct, ahead of any generated filters.
+	joinEq := ""
+	if q.Join != nil && !q.Join.Inner {
+		joinEq = fmt.Sprintf("l.%s = r.%s",
+			strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
+	}
+	if joinEq != "" || q.Where != nil {
 		b.WriteString(" WHERE ")
-		renderBool(&b, q.Where)
+		if joinEq != "" {
+			b.WriteString(joinEq)
+			if q.Where != nil {
+				b.WriteString(" AND ")
+			}
+		}
+		if q.Where != nil {
+			renderBool(&b, q.Where)
+		}
 	}
 	if len(q.OrderBy) > 0 {
 		b.WriteString(" ORDER BY ")
@@ -384,26 +831,123 @@ func (c *Case) SQL(q Query, projection []string) string {
 			if i > 0 {
 				b.WriteString(", ")
 			}
+			if k.Qual != "" {
+				b.WriteString(strings.ToLower(k.Qual) + ".")
+			}
 			b.WriteString(strings.ToLower(k.Col))
 			if k.Desc {
 				b.WriteString(" DESC")
 			}
+			switch k.Nulls {
+			case NullsFirst:
+				b.WriteString(" NULLS FIRST")
+			case NullsLast:
+				b.WriteString(" NULLS LAST")
+			}
+		}
+	}
+	if q.Limit > 0 {
+		fmt.Fprintf(&b, " LIMIT %d", q.Limit)
+		if q.Offset > 0 {
+			fmt.Fprintf(&b, " OFFSET %d", q.Offset)
 		}
 	}
 	return b.String()
 }
 
+// aggExprSQL renders the aggregate call.
+func aggExprSQL(a *AggSpec) string {
+	col := strings.ToLower(a.Col)
+	switch a.Func {
+	case AggCountStar:
+		return "COUNT(*)"
+	case AggCountCol:
+		return "COUNT(" + col + ")"
+	case AggSum:
+		return "SUM(" + col + ")"
+	case AggMin:
+		return "MIN(" + col + ")"
+	default:
+		return "MAX(" + col + ")"
+	}
+}
+
+// aggSQL renders an aggregate query. Both output columns are aliased so the
+// harness's name-keyed rows have stable, unique keys regardless of how the
+// engine spells a computed column.
+func (c *Case) aggSQL(q Query) string {
+	a := q.Agg
+	var b strings.Builder
+	b.WriteString("SELECT ")
+	if a.GroupBy != "" {
+		fmt.Fprintf(&b, "%s AS g, ", strings.ToLower(a.GroupBy))
+	}
+	fmt.Fprintf(&b, "%s AS agg FROM %s", aggExprSQL(a), strings.ToLower(c.Table.Name))
+	if q.Where != nil {
+		b.WriteString(" WHERE ")
+		renderBool(&b, q.Where)
+	}
+	if a.GroupBy != "" {
+		fmt.Fprintf(&b, " GROUP BY %s", strings.ToLower(a.GroupBy))
+		if a.HavingOn && a.Having != nil {
+			fmt.Fprintf(&b, " HAVING %s %s %s", aggExprSQL(a), opSQL(a.Having.Op), renderLiteral(a.Having.Lit))
+		}
+	}
+	return b.String()
+}
+
+// joinOutputAlias turns a qualified column ("L.ID") into a unique output
+// alias ("l_id").
+func joinOutputAlias(qualified string) string {
+	return strings.ToLower(strings.ReplaceAll(qualified, ".", "_"))
+}
+
 func renderBool(b *strings.Builder, n *BoolNode) {
+	if n.Not {
+		b.WriteString("NOT (")
+		defer b.WriteString(")")
+	}
 	if n.Leaf != nil {
 		p := n.Leaf
 		col := strings.ToLower(p.Col)
-		switch p.Op {
-		case predicates.ComparisonIsNull:
+		if p.Qual != "" {
+			col = strings.ToLower(p.Qual) + "." + col
+		}
+		// NOT IN renders inline; every other negated leaf wraps in NOT (…).
+		negWrap := p.Negated && p.Op != predicates.ComparisonIn
+		if negWrap {
+			b.WriteString("NOT (")
+		}
+		switch {
+		case p.IsBetween:
+			fmt.Fprintf(b, "%s BETWEEN %s AND %s", col, renderLiteral(p.Lit), renderLiteral(p.BetweenHi))
+		case p.Op == predicates.ComparisonIsNull:
 			fmt.Fprintf(b, "%s IS NULL", col)
-		case predicates.ComparisonIsNotNull:
+		case p.Op == predicates.ComparisonIsNotNull:
 			fmt.Fprintf(b, "%s IS NOT NULL", col)
+		case p.Op == predicates.ComparisonIn:
+			lits := make([]string, len(p.InList))
+			for i, v := range p.InList {
+				lits[i] = renderLiteral(v)
+			}
+			kw := "IN"
+			if p.Negated {
+				kw = "NOT IN"
+			}
+			fmt.Fprintf(b, "%s %s (%s)", col, kw, strings.Join(lits, ", "))
+		case p.Op == predicates.ComparisonLike:
+			fmt.Fprintf(b, "%s LIKE %s", col, renderLiteral(p.Lit))
+		case p.RhsCol != "":
+			rhs := strings.ToLower(p.RhsCol)
+			if p.RhsQual != "" {
+				rhs = strings.ToLower(p.RhsQual) + "." + rhs
+			}
+			fmt.Fprintf(b, "%s %s %s", col, opSQL(p.Op), rhs)
 		default:
 			fmt.Fprintf(b, "%s %s %s", col, opSQL(p.Op), renderLiteral(p.Lit))
+		}
+		if negWrap {
+			b.WriteString(")")
 		}
 		return
 	}

@@ -77,7 +77,7 @@ func run(seeds, seedStart uint64, templates bool) int {
 
 	start := time.Now()
 	histogram := map[string]int{}
-	var executed, mismatches, infra int
+	var executed, mismatches, infra, declines int
 
 	report := func(label string, res *rowdiff.SeedResult) {
 		executed += res.Executed
@@ -86,6 +86,10 @@ func run(seeds, seedStart uint64, templates bool) int {
 		}
 		for _, pe := range res.PlanErrors {
 			fmt.Fprintf(os.Stderr, "%s plan-error: %s\n", label, pe)
+		}
+		declines += len(res.Declines)
+		for _, d := range res.Declines {
+			fmt.Fprintf(os.Stderr, "%s DECLINE: %s\n", label, d)
 		}
 		// Report each dimension independently of Kind: a seed can hold
 		// confirmed mismatches AND a later infra failure (mismatch takes
@@ -126,7 +130,7 @@ func run(seeds, seedStart uint64, templates bool) int {
 		seeds, seedStart, executed, elapsed.Round(time.Millisecond),
 		float64(seeds)/elapsed.Seconds())
 	fmt.Printf("plan-family histogram: %v\n", histogram)
-	fmt.Printf("outcomes: %d mismatches, %d infra\n", mismatches, infra)
+	fmt.Printf("outcomes: %d mismatches, %d infra, %d known-gap declines\n", mismatches, infra, declines)
 
 	switch {
 	case mismatches > 0:
