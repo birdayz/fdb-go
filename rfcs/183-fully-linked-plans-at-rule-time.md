@@ -269,22 +269,31 @@ class with it, descends from that misreading. Note also there is no import
 cycle in the way: `plans` already imports `expressions`, and `expressions`
 never imports `plans`.
 
-*The actual blocker is one-final-member, and it is quantified.* Java
-dereferences a quantifier straight to its plan —
-`Quantifier.Physical.getRangesOverPlan()` is
-`Iterables.getOnlyElement(getRangesOver().getFinalExpressions())`, which
-REQUIRES exactly one final expression. Measured across the corpus at the
-child-resolution sites: **1186 references hold multiple finals (max 52), and
-1125 hold multiple PHYSICAL finals** — `getOnlyElement` would throw on every
-one. (3821 hold zero, which is why a finals-only lookup is also unsafe.)
+*~~The actual blocker is one-final-member, and it is quantified.~~*
+**RETRACTED — this paragraph was wrong, and it stood at HEAD for several
+commits after the evidence against it existed.**
 
-So P5 is gated on universal prune-to-one-final-member, which
-`unified_tasks.go`'s stage-boundary arm records was **attempted and
-reverted**: a forced boundary prune lost canonical alternatives Go's PLANNING
-cannot re-derive (RFC-153 buried-leg, cross-join-EXISTS shapes). That in turn
-is gated on Java per-phase rule-set parity — the RESIDUAL already tracked at
-DIVERGENCES.md. The dependency chain is
-P5 ← one-final-member ← prune-to-1 ← PLANNING re-derivation parity.
+It claimed P5 was gated on universal prune-to-one-final-member, citing
+"1186 references hold multiple finals (max 52), 1125 multiple PHYSICAL
+finals". That measurement was taken at RULE TIME, while rules were still
+firing, where a group legitimately holds alternatives — the whole point of a
+memo. It says nothing about the property P5 actually needs, which is
+one-final-member AT EXTRACTION, after the stack drains and OptimizeGroup has
+pruned. Measured there: ZERO violations across the corpus and the entire
+test suite, pinned by `TestOneFinalPlanPerReference`.
+
+So prune-to-1 and PLANNING re-derivation parity are NOT P5 blockers. They
+remain open items in their own right (DIVERGENCES.md), but they are not on
+this critical path.
+
+The real blocker is in §11, and it is a different thing entirely: the two
+storage locations do not hold the same fact.
+
+Kept rather than deleted because the failure mode generalises — a
+measurement taken at the wrong point in the pipeline produced a confident,
+specific, wrong number that then propagated into the authoritative
+divergence list. The number was never the problem; the missing question
+"measured WHERE?" was.
 
 **What landed here.** The one link that was genuinely unblocked:
 `MemoizeFinalExpression` now lands plans in the FINAL set, via a new

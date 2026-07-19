@@ -19,11 +19,41 @@ import (
 //     ordering satisfaction and extraction-time sort elision can resolve
 //     through the SOURCE, and their HintOrdering inherits from it.
 //
-// A delegator plan resolves through its OWN child quantifier — the concrete
-// child plan — whereas the physical wrapper of the same operator resolves
-// through the memo GROUP it was built over. Those are different questions
-// (one concrete child vs. every explored alternative), which is why the two
-// are not collapsed: the memo keeps asking the wrapper.
+// WHY THE DELEGATOR BODIES DUPLICATE THE WRAPPERS' RATHER THAN DELEGATING
+//
+// Not mechanism: the two sides are byte-identical loops, both over
+// AllMembers(). The difference is the PROVENANCE of the reference each one
+// walks.
+//
+//   - A wrapper's quantifier ranges over a SHARED MEMO GROUP — the group the
+//     wrapper was built over, holding every alternative exploration has
+//     yielded into it. Walking its members asks "does any explored
+//     alternative provide an order?"
+//   - A plan's quantifier ranges over a FRESH SINGLETON: QuantifierOverPlan
+//     mints a new FinalOfAtStage reference per child, so the set holds
+//     exactly the one child plan that was put there. Walking its members asks
+//     "what order does MY concrete child produce?"
+//
+// Same loop, different set, different question. Collapsing them would make
+// one of the two questions unanswerable, which is why the memo keeps asking
+// the wrapper.
+//
+// UNREACHABLE TODAY — DELIBERATELY KEPT
+//
+// The 9 delegator HintOrdering bodies, the 9 OrderingSourceRef methods, and
+// the 4 HintRichOrdering bodies below are WRITE-ONLY: nothing in production
+// calls them. Every ordering question the memo asks still goes to the
+// physical wrapper. They are staging for the wrapper deletion that would flip
+// the caller over — and that deletion is BLOCKED, by RFC-183 §11: four rules
+// build compensating plans they never memoize, so a plan's quantifier and its
+// plan pointer are two DIFFERENT facts (what the memo costs vs. what
+// executes), and collapsing them drops DefaultOnEmpty wrappers and residual
+// filters silently. Until those rules memoize, these bodies stay unreachable.
+//
+// They are kept rather than deleted because re-deriving them at deletion time
+// is where a transcription slip would land, and the parity tests in
+// cascades/plan_rich_ordering_parity_test.go are what hold them honest in the
+// meantime.
 
 // orderingSourceOf returns the reference a single-child plan's ordering flows
 // from — its one child quantifier's group.
@@ -38,16 +68,53 @@ func orderingSourceOf(p RecordQueryPlan) *expressions.Reference {
 // inheritOrdering returns the first known ordering among a reference's
 // members. After exploration the ordering-providing alternative may not be
 // the first member, so every member is consulted.
+//
+// FINAL members first, then exploratory — the same discipline RFC-183 §10
+// applied to findPhysicalExpr, for the same reason: Java consults FINAL
+// expressions only, and AllMembers() concatenates exploratory members BEFORE
+// final ones, so a bare AllMembers() scan answers from a promoted-but-
+// dominated alternative when both sets hold a member. The exploratory
+// fallback stays because a reference can be consulted before finalization.
+//
+// On the singleton references a plan's quantifier actually ranges over
+// (see this file's header) the two orders coincide, so this is a no-op today
+// — it is correct for the day the provenance changes, which is the same day
+// the wrapper's version stops being the one that runs.
 func inheritOrdering(ref *expressions.Reference) properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
 	}
-	for _, m := range ref.AllMembers() {
+	for _, m := range ref.FinalMembers() {
+		if o := properties.EstimateOrdering(m); o.IsKnown {
+			return o
+		}
+	}
+	for _, m := range ref.Members() {
 		if o := properties.EstimateOrdering(m); o.IsKnown {
 			return o
 		}
 	}
 	return properties.Ordering{}
+}
+
+// richOrderingOf returns the rich ordering a reference's members provide,
+// FINAL members first — see inheritOrdering for why the order matters and why
+// the exploratory fallback stays.
+func richOrderingOf(ref *expressions.Reference) *properties.RichOrdering {
+	if ref == nil {
+		return properties.EmptyOrdering()
+	}
+	for _, m := range ref.FinalMembers() {
+		if rh, ok := m.(properties.RichOrderingHinter); ok {
+			return rh.HintRichOrdering()
+		}
+	}
+	for _, m := range ref.Members() {
+		if rh, ok := m.(properties.RichOrderingHinter); ok {
+			return rh.HintRichOrdering()
+		}
+	}
+	return properties.EmptyOrdering()
 }
 
 // --- delegators -------------------------------------------------------------
@@ -473,20 +540,9 @@ func (p *RecordQueryVectorIndexPlan) HintRichOrdering() *properties.RichOrdering
 // index scan's rich ordering, so inherit it from the source.
 //
 // This DUPLICATES the physical wrapper's body rather than delegating to it,
-// for the same reason the plain-ordering delegators do (see this file's
-// header): the wrapper resolves through the memo GROUP it was built over,
-// consulting every explored alternative, while the plan resolves through its
-// OWN concrete child quantifier. Those are different questions and must stay
-// two answers.
+// for the reason this file's header gives: same loop, but the wrapper walks a
+// shared memo group while the plan walks the fresh singleton its own child
+// quantifier ranges over. Two questions, two answers.
 func (p *RecordQueryFetchFromPartialRecordPlan) HintRichOrdering() *properties.RichOrdering {
-	ref := p.OrderingSourceRef()
-	if ref == nil {
-		return properties.EmptyOrdering()
-	}
-	for _, m := range ref.AllMembers() {
-		if rh, ok := m.(properties.RichOrderingHinter); ok {
-			return rh.HintRichOrdering()
-		}
-	}
-	return properties.EmptyOrdering()
+	return richOrderingOf(p.OrderingSourceRef())
 }

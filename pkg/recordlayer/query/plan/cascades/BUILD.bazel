@@ -284,6 +284,7 @@ go_test(
         "plan_context_builder_test.go",
         "plan_context_test.go",
         "plan_executability_test.go",
+        "plan_expression_flag_parity_test.go",
         "plan_extraction_fuzz_test.go",
         "plan_extraction_test.go",
         "plan_invariants_test.go",
@@ -836,6 +837,7 @@ go_test(
         "plan_extraction_fuzz_test.go",
         "plan_extraction_test.go",
         "plan_rich_ordering_parity_test.go",
+        "plan_expression_flag_parity_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

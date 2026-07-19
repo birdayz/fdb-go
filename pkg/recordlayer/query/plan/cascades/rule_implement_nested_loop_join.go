@@ -809,11 +809,34 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// | [residual existential filter]. The residual filter — Java's
 	// toResidualPredicate of the ExistentialValuePredicate — is what makes the
 	// pure-map FlatMap behave as a semi-join for WHERE-EXISTS.
+	// Each compensating operator is MEMOIZED and its quantifier advances in
+	// LOCKSTEP with the plan, so the memo costs the expression that actually
+	// executes. See the block comment at the yield for what this replaces.
+	//
+	// The advancing quantifiers mint FRESH aliases (NewPhysicalQuantifier),
+	// which is not an oversight — it is the only correct choice, and getting
+	// it wrong is a silent wrong-rows bug. TWO alias namespaces are in play
+	// (see :662-665): the FlatMap binds its rows under the SOURCE aliases
+	// (T1/T2) carried in innerCorr/outerCorr and stored in the PLAN, while a
+	// quantifier's alias is Cascades bookkeeping. Forcing quants[1]'s alias
+	// onto every step here makes the below-FOD filter, the FirstOrDefault and
+	// the residual filter share one alias; alias-aware memo interning then
+	// collapses them and a predicate DISAPPEARS — measured as [2 preds] ->
+	// [1 preds] on 20 EXISTS-shaped corpus queries, with the plan tree
+	// otherwise unchanged and the whole suite still green.
+	innerQ := expressions.NamedPhysicalQuantifier(
+		quants[1].GetAlias(), call.MemoizeExpression(innerExpr))
+
 	var belowFOD plans.RecordQueryPlan = innerPlan
 	if len(joinPreds) > 0 {
-		belowFOD = plans.NewRecordQueryPredicatesFilterPlanWithAlias(innerPlan, joinPreds, innerCorr)
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(innerPlan, joinPreds, innerCorr)
+		belowFOD = belowFODFilter
+		innerQ = expressions.NewPhysicalQuantifier(
+			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
 	}
 	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+	innerQ = expressions.NewPhysicalQuantifier(
+		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, innerQ)))
 
 	var flatMapInner plans.RecordQueryPlan = fodPlan
 	if hasExistsFilter {
@@ -825,7 +848,10 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(innerCorr), cmp)
-		flatMapInner = plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, innerCorr)
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, innerCorr)
+		flatMapInner = residualFilter
+		innerQ = expressions.NewPhysicalQuantifier(
+			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, innerQ)))
 	}
 
 	// outerOnlyPreds deliberately keep the buried-leg references the
@@ -836,9 +862,15 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// masked-conjunct pin (`d.id = 3 AND NOT EXISTS …`) exercises exactly
 	// this path. The below-FOD preds needed the rebase because THEIR row
 	// context is the inner scan's frontier row, not the outer's.
+	outerQ := expressions.NamedPhysicalQuantifier(
+		quants[0].GetAlias(), call.MemoizeExpression(outerExpr))
+
 	var flatMapOuter plans.RecordQueryPlan = outerPlan
 	if len(outerOnlyPreds) > 0 {
-		flatMapOuter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerOnlyPreds, outerCorr)
+		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerOnlyPreds, outerCorr)
+		flatMapOuter = outerFilter
+		outerQ = expressions.NewPhysicalQuantifier(
+			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(outerFilter, outerQ)))
 	}
 
 	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
@@ -847,15 +879,26 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		resultValue, false,
 	)
 
-	// The FlatMap wrapper needs the outer + inner physical quantifiers for
-	// Cascades bookkeeping and cost. Range the inner quantifier over the FOD
-	// wrapper (the existential one-row inner) so cost/ordering see the
-	// FirstOrDefault, not the raw subquery.
-	outerQuant := expressions.NamedPhysicalQuantifier(quants[0].GetAlias(), call.MemoizeExpression(outerExpr))
-	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
-		expressions.NamedPhysicalQuantifier(quants[1].GetAlias(), call.MemoizeExpression(innerExpr)))
-	innerQuant := expressions.NewPhysicalQuantifier(call.MemoizeExpression(fodWrapper))
-	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, outerQuant, innerQuant))
+	// The quantifiers now range over the SAME compensated expressions the plan
+	// holds — that is what the lockstep chains above buy.
+	//
+	// They did not before. This rule built three compensating filters locally
+	// (the below-FOD join-pred filter, the above-FOD existential residual, and
+	// the outer-only filter) and memoized NONE of them, while the quantifiers
+	// ranged over the raw outer and inner. So the plan pointer held what
+	// EXECUTES and the quantifier held what the memo COSTS, and they were
+	// different expressions — 472 semantically-divergent edges across the
+	// corpus, FlatMap alone accounting for 392.
+	//
+	// Two consequences. The memo costed an expression that is not the one that
+	// runs, under-pricing these joins by the selectivity of the filters it
+	// could not see. And it made the wrapper layer undeletable: collapsing to
+	// the quantifier would silently drop a DefaultOnEmpty (wrong outer-join
+	// NULLs) and the residuals (wrong rows) — why RFC-183 P5's terminal step
+	// refused twice.
+	//
+	// rule_implement_simple_select.go:97-117 always had this shape.
+	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, outerQ, innerQ))
 }
 
 // remapExistentialResultValue rebases an existential SelectExpression's result

@@ -1557,3 +1557,136 @@ func (s *stubPlan) EqualsWithoutChildren(other expressions.RelationalExpression,
 func (s *stubPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return s
 }
+
+// The getOnlyElement guard on a plan's child dereference must actually FIRE.
+//
+// It cannot be reached through any production path — QuantifierOverPlan mints a
+// fresh singleton per child, so a plan never points at a shared memo group (see
+// planFromQuantifier). That is exactly why it needs a direct test: a guard whose
+// only justification is "this state is unreachable" is also a guard nobody has
+// ever seen work, and the day the provenance changes is the wrong day to find
+// out it was mis-wired.
+func TestPlanFromQuantifier_PanicsOnMultipleFinalPlans(t *testing.T) {
+	t.Parallel()
+
+	a, b := distinctStub("A"), distinctStub("B")
+
+	// A reference holding TWO distinct plan-typed FINAL members — the shared-memo-
+	// group shape a plan quantifier is not supposed to be able to see.
+	ref := expressions.FinalOfAtStage(a, expressions.StageCanonical)
+	if !ref.InsertFinal(b) {
+		t.Fatal("setup: second final member was not inserted")
+	}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("dereferencing a two-final-plan reference must panic, but did not")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "plan-invariant") {
+			t.Errorf("panic message = %v, want one tagged plan-invariant", r)
+		}
+	}()
+
+	planFromQuantifier(expressions.NewPhysicalQuantifier(ref))
+}
+
+// The same two members in the EXPLORATORY set must NOT panic: a group holding
+// several alternatives before it is pruned is the normal mid-planning state, and
+// Java's getOnlyElement contract applies only to the final set.
+func TestPlanFromQuantifier_ToleratesMultipleExploratoryPlans(t *testing.T) {
+	t.Parallel()
+
+	a, b := distinctStub("A"), distinctStub("B")
+
+	ref := expressions.InitialOf(a)
+	if !ref.Insert(b) {
+		t.Fatal("setup: second exploratory member was not inserted")
+	}
+
+	got := planFromQuantifier(expressions.NewPhysicalQuantifier(ref))
+	if got != RecordQueryPlan(a) {
+		t.Errorf("exploratory fallback returned %v, want the first member A", got)
+	}
+}
+
+// One plan reachable through two DISTINCT final members (a wrapper plus the plan
+// it wraps) is one answer, not an ambiguity — the transitional shape the wrapper
+// retirement produces must not trip the guard.
+func TestPlanFromQuantifier_SamePlanViaWrapperAndPlanIsNotAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	a := distinctStub("A")
+
+	ref := expressions.FinalOfAtStage(a, expressions.StageCanonical)
+	if !ref.InsertFinal(&stubPlanWrapper{wrapped: a}) {
+		t.Fatal("setup: wrapper member was not inserted")
+	}
+
+	got := planFromQuantifier(expressions.NewPhysicalQuantifier(ref))
+	if got != RecordQueryPlan(a) {
+		t.Errorf("got %v, want the single underlying plan A", got)
+	}
+}
+
+// stubPlanWrapper is a RelationalExpression that is NOT itself a
+// RecordQueryPlan but exposes one — the shape of the physical wrappers in the
+// cascades package, which this package cannot import.
+type stubPlanWrapper struct {
+	wrapped RecordQueryPlan
+}
+
+func (w *stubPlanWrapper) GetRecordQueryPlan() RecordQueryPlan { return w.wrapped }
+func (w *stubPlanWrapper) GetResultValue() values.Value        { return nil }
+func (w *stubPlanWrapper) GetQuantifiers() []expressions.Quantifier {
+	return nil
+}
+func (w *stubPlanWrapper) CanCorrelate() bool  { return false }
+func (w *stubPlanWrapper) ChildrenAsSet() bool { return false }
+func (w *stubPlanWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return nil
+}
+
+func (w *stubPlanWrapper) EqualsWithoutChildren(expressions.RelationalExpression, *expressions.AliasMap) bool {
+	return false
+}
+func (w *stubPlanWrapper) HashCodeWithoutChildren() uint64 { return 0 }
+func (w *stubPlanWrapper) WithQuantifiers([]expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
+// distinctStubPlan is stubPlan with REAL equality. stubPlan reports every
+// instance equal, which is fine for the child-slot tests above but makes a
+// Reference dedup two instances into one member — defeating any test that needs
+// a group to genuinely hold two.
+type distinctStubPlan struct {
+	PlanExprBase
+	label string
+}
+
+func (s *distinctStubPlan) GetResultType() values.Type     { return values.UnknownType }
+func (s *distinctStubPlan) GetChildren() []RecordQueryPlan { return nil }
+func (s *distinctStubPlan) Explain() string                { return s.label }
+func (s *distinctStubPlan) HashCodeWithoutChildren() uint64 {
+	var h uint64 = 14695981039346656037
+	for _, c := range s.label {
+		h = (h ^ uint64(c)) * 1099511628211
+	}
+	return h
+}
+
+func (s *distinctStubPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
+	o, ok := other.(*distinctStubPlan)
+	return ok && o.label == s.label
+}
+
+func distinctStub(label string) *distinctStubPlan { return &distinctStubPlan{label: label} }
+
+func (s *distinctStubPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(s, other)
+}
+
+func (s *distinctStubPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return s
+}

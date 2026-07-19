@@ -3,10 +3,24 @@ package plans
 import "fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 
 // Compile-time proof that every physical plan answers the cost and ordering
-// questions the memo asks (RFC-183 P5). These assertions are the guard that
-// keeps a newly added plan type from silently falling back to the cost model's
-// pessimistic default arm — the failure mode is invisible at runtime because
-// the default arm always returns *a* number.
+// questions the memo asks (RFC-183 P5).
+//
+// What these assertions do NOT do is guard a runtime dispatch. The memo asks
+// the physical WRAPPER, not the plan: every consulting site gates on
+// cascades.physicalPlanExpression (winner_lookup.go:258 and friends), whose
+// GetRecordQueryPlan() method no plan implements — a plan IS the plan, it does
+// not return one. So a plan that failed to implement CostHinter would not fall
+// through to the cost model's pessimistic default arm; it would simply never
+// be asked. That arm is reached with a wrapper receiver, and it is the
+// wrapper's own contract list that guards it.
+//
+// What these assertions ARE is a COMPLETENESS check on the plan-side bodies,
+// which are staging for the wrapper deletion RFC-183 §11 defers. The bodies
+// are unreachable today (see ordering.go's header), so nothing at runtime
+// would notice a newly added plan type that answers no hint — it would go
+// missing silently and surface only when the deletion flips the caller over.
+// A build break here is the substitute for the runtime signal that does not
+// exist yet.
 
 var (
 	_ properties.CostHinter = (*RecordQueryScanPlan)(nil)

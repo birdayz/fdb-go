@@ -178,3 +178,16 @@ func (c *ExpressionRuleCall) GetRequestedOrderings() []*properties.RequestedOrde
 func (c *ExpressionRuleCall) Yielded() []expressions.RelationalExpression {
 	return c.yieldedExps
 }
+
+// MemoizeFinalExpression creates a NEW Reference holding expr as its single
+// FINAL member, without interning into the shared memo — Java's memoizePlan
+// (Reference.ofFinalExpressions). The ImplementationRuleCall twin.
+//
+// MemoizeExpression above INTERNS: it asks the memo for a group and may hand
+// back an existing one. That is right for a canonical logical expression, and
+// wrong for a COMPENSATING physical operator a rule just built, which is not
+// equivalent to anything already in the memo and must not be deduped against
+// it.
+func (c *ExpressionRuleCall) MemoizeFinalExpression(expr expressions.RelationalExpression) *expressions.Reference {
+	return expressions.FinalOfAtStage(expr, expressions.StageCanonical)
+}

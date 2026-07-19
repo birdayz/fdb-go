@@ -99,7 +99,14 @@ func TestNestedIn_OverIntersection(t *testing.T) {
 	// the fetch. Asserting the sound shape is the point;
 	// TestInJoinBelowFetch_RelinksRealChild below keeps a real InJoin shape
 	// under test so that path itself stays exercised.
-	for _, want := range []string{"IndexScan(IDX_C", "PredicatesFilter(", "[2 preds]"} {
+	// ONE ORDERED SUBSTRING, not three loose ones. The earlier version
+	// asserted "IndexScan(IDX_C", "PredicatesFilter(" and "[2 preds]"
+	// separately — and every one of those appears in MASTER'S BUGGY PLAN
+	// (`Fetch(InUnion(InJoin(PredicatesFilter(IndexScan(IDX_C,[=]),[2 preds]),
+	// binding),…))`), so the test passed against the very bug it was rewritten
+	// to pin. Nesting is the whole claim here: the filter must sit ABOVE the
+	// fetch, not below it on an index entry that carries neither A nor B.
+	for _, want := range []string{"PredicatesFilter(Fetch(IndexScan(IDX_C", "[2 preds]"} {
 		if !strings.Contains(plan, want) {
 			t.Errorf("want %s in the plan, got: %s", want, plan)
 		}

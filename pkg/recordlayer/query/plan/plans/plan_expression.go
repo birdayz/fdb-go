@@ -1,6 +1,8 @@
 package plans
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -187,22 +189,66 @@ func planFromQuantifier(q expressions.Quantifier) RecordQueryPlan {
 	if ref == nil {
 		return nil
 	}
-	if p := planFromMembers(ref.FinalMembers()); p != nil {
+	if p := onlyPlanFromFinalMembers(ref.FinalMembers()); p != nil {
 		return p
 	}
-	return planFromMembers(ref.Members())
+	return firstPlanFromMembers(ref.Members())
 }
 
-func planFromMembers(members []expressions.RelationalExpression) RecordQueryPlan {
+// onlyPlanFromFinalMembers is Java's `Iterables.getOnlyElement` half of
+// getRangesOverPlan: a FINALIZED group has exactly one answer, and a
+// quantifier dereferencing it that finds two has no basis for picking. Java
+// throws there; so do we.
+//
+// The guard cannot fire today, and the reason is provenance, not luck: every
+// reference a plan's quantifier ranges over is minted by QuantifierOverPlan,
+// which builds a FRESH FinalOfAtStage singleton per child. A plan therefore
+// never points at a shared memo group, so its final set holds exactly the one
+// member that was put there. The guard goes live the moment that changes —
+// i.e. the moment plan quantifiers point at shared references — which is
+// precisely when silently taking the first member would start choosing an
+// arbitrary plan out of a set of real alternatives.
+//
+// Counted by DISTINCT plan, not by member: while the wrapper layer is being
+// retired a group's final set can legitimately hold both a wrapper and the
+// plan it wraps — two members, one answer, no ambiguity.
+func onlyPlanFromFinalMembers(members []expressions.RelationalExpression) RecordQueryPlan {
+	var found RecordQueryPlan
 	for _, m := range members {
-		if p, ok := m.(RecordQueryPlan); ok {
+		p := planOfMember(m)
+		if p == nil || p == found {
+			continue
+		}
+		if found != nil {
+			panic(fmt.Sprintf(
+				"plan-invariant: quantifier ranges over a reference with %d plan-typed final members (%T and %T) — a plan's child reference must be a singleton",
+				len(members), found, p))
+		}
+		found = p
+	}
+	return found
+}
+
+// firstPlanFromMembers serves the EXPLORATORY fallback, where a multi-member
+// set is the normal, expected state: the group holds every alternative
+// explored so far and has not been pruned to a winner. No getOnlyElement
+// contract applies, so the first plan-typed member answers.
+func firstPlanFromMembers(members []expressions.RelationalExpression) RecordQueryPlan {
+	for _, m := range members {
+		if p := planOfMember(m); p != nil {
 			return p
 		}
-		if w, ok := m.(interface{ GetRecordQueryPlan() RecordQueryPlan }); ok {
-			if p := w.GetRecordQueryPlan(); p != nil {
-				return p
-			}
-		}
+	}
+	return nil
+}
+
+// planOfMember returns the plan a member IS, or the plan it wraps, or nil.
+func planOfMember(m expressions.RelationalExpression) RecordQueryPlan {
+	if p, ok := m.(RecordQueryPlan); ok {
+		return p
+	}
+	if w, ok := m.(interface{ GetRecordQueryPlan() RecordQueryPlan }); ok {
+		return w.GetRecordQueryPlan()
 	}
 	return nil
 }

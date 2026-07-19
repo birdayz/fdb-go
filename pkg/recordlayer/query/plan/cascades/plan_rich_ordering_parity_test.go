@@ -19,6 +19,7 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -207,5 +208,150 @@ func TestRichOrderingParity_PrimaryScanWithoutPK(t *testing.T) {
 	assertRichOrderingsEqual(t, w.HintRichOrdering(), scan.HintRichOrdering())
 	if len(scan.HintRichOrdering().GetKeys()) != 0 {
 		t.Fatal("PK-less primary scan must provide no ordering keys")
+	}
+}
+
+// A K-NN probe's neighbours come back in distance order, which is not a column
+// ordering — both sides must report EMPTY rather than synthesizing one. This is
+// the case where "no ordering" is the answer, and where a delegating
+// re-derivation would be most tempting to get wrong by falling through to the
+// caller's synthesize-from-HintOrdering fallback.
+func TestRichOrderingParity_VectorIndexScan(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		prefixCompare []*predicates.ComparisonRange
+	}{
+		{name: "unprefixed K-NN"},
+		{
+			name:          "partition-prefixed K-NN",
+			prefixCompare: []*predicates.ComparisonRange{equalityRange(t, "tenant-a")},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			vec := plans.NewRecordQueryVectorIndexPlan(
+				"VIDX", tc.prefixCompare,
+				values.LiteralValue([]float64{1, 2, 3}),
+				values.LiteralValue(10),
+				predicates.ComparisonDistanceRankLessThanOrEq,
+				nil, nil, []string{"DOCS"}, values.UnknownType,
+			)
+			w := &physicalVectorIndexScanWrapper{plan: vec}
+
+			assertRichOrderingsEqual(t, w.HintRichOrdering(), vec.HintRichOrdering())
+			if len(vec.HintRichOrdering().GetKeys()) != 0 {
+				t.Fatal("a K-NN probe must advertise no ordering keys")
+			}
+		})
+	}
+}
+
+// Fetch is the divergent one: it is the only rich-ordering DELEGATOR, so the
+// two bodies resolve through structurally DIFFERENT references. The wrapper's
+// quantifier ranges over the shared memo group it was built over — whose member
+// is the index WRAPPER — while the plan's quantifier is the fresh singleton
+// QuantifierOverPlan minted, whose member is the index PLAN itself. Parity here
+// is the assertion that those two paths land on the same answer, which is
+// exactly what the gated wrapper deletion would rely on and what nothing else
+// covers.
+func TestRichOrderingParity_FetchFromPartialRecord(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		columnNames   []string
+		pkColumnNames []string
+		unique        bool
+		reverse       bool
+		ranges        []*predicates.ComparisonRange
+	}{
+		{
+			name:          "covering scan, eq prefix, PK suffix",
+			columnNames:   []string{"STATUS"},
+			pkColumnNames: []string{"ID"},
+			ranges:        []*predicates.ComparisonRange{equalityRange(t, "active")},
+		},
+		{
+			name:          "reverse covering scan",
+			columnNames:   []string{"STATUS"},
+			pkColumnNames: []string{"ID"},
+			reverse:       true,
+			ranges:        []*predicates.ComparisonRange{equalityRange(t, "active")},
+		},
+		{
+			name:          "unique covering scan, no comparisons",
+			columnNames:   []string{"EMAIL"},
+			pkColumnNames: []string{"ID"},
+			unique:        true,
+		},
+		{
+			name:          "multi-column index, partial eq prefix",
+			columnNames:   []string{"A", "B", "C"},
+			pkColumnNames: []string{"ID"},
+			ranges:        []*predicates.ComparisonRange{equalityRange(t, int64(1))},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			idx := plans.NewRecordQueryIndexPlan(
+				"IDX", tc.ranges, []string{"T"}, values.UnknownType, tc.reverse,
+			).WithIndexMetadata(tc.columnNames, tc.pkColumnNames, tc.unique)
+
+			// The plan's own child edge: QuantifierOverPlan mints a fresh
+			// singleton holding the index PLAN.
+			fetch := plans.NewRecordQueryFetchFromPartialRecordPlan(
+				idx, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+			)
+
+			// The wrapper's child edge: a memo group holding the index WRAPPER,
+			// as ImplementFetch builds it.
+			idxWrapper := &physicalIndexScanWrapper{
+				plan:          idx,
+				columnNames:   tc.columnNames,
+				pkColumnNames: tc.pkColumnNames,
+				unique:        tc.unique,
+			}
+			w := NewPhysicalFetchFromPartialRecordWrapper(
+				fetch,
+				expressions.NewPhysicalQuantifier(
+					expressions.FinalOfAtStage(idxWrapper, expressions.StageCanonical)),
+			)
+
+			assertRichOrderingsEqual(t, w.HintRichOrdering(), fetch.HintRichOrdering())
+
+			// And both must equal the source scan's ordering — a fetch preserves
+			// it. Without this a mutually-empty pair would pass vacuously.
+			assertRichOrderingsEqual(t, idx.HintRichOrdering(), fetch.HintRichOrdering())
+		})
+	}
+}
+
+// A fetch over a source that provides no rich ordering yields empty on both
+// sides — the nil/empty-source arm of the delegator.
+func TestRichOrderingParity_FetchOverUnorderedSource(t *testing.T) {
+	t.Parallel()
+
+	// A PK-less primary scan models no ordering.
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	fetch := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		scan, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+	)
+	w := NewPhysicalFetchFromPartialRecordWrapper(
+		fetch,
+		expressions.NewPhysicalQuantifier(
+			expressions.FinalOfAtStage(&physicalScanWrapper{plan: scan}, expressions.StageCanonical)),
+	)
+
+	assertRichOrderingsEqual(t, w.HintRichOrdering(), fetch.HintRichOrdering())
+	if len(fetch.HintRichOrdering().GetKeys()) != 0 {
+		t.Fatal("a fetch over an unordered source must provide no ordering keys")
 	}
 }
