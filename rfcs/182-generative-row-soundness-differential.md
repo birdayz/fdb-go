@@ -402,6 +402,21 @@ and the comparator implements §3's LIMIT membership rule.
 | 3 | nil-inner filter/map/distinct shells picked as valid plans | shell guard was Fetch-only (RFC-167 finding 1); now structural via `isGenuineLeafPlan` + recursive shell resolution | fixed, pinned |
 | 4 | `InJoin(<nil>)` XX000 on TWO `IN` predicates | inner IN wrapper never handed to `WithChildren` — deeper RFC-167 shell instance | gate-pinned, filed |
 | 5 | every column read fails XX000 on `SELECT DISTINCT id … LIMIT k` over two indexes | `findUnionPlan` descended through the PROJECTION to a nested intersection and derived columns from a leg's full record | fixed, pinned |
+| 6 | output column ALIASES silently dropped: `SELECT l.id AS l_id, r.id AS r_id … LIMIT k` reports two columns both named `ID` | `PushLimitThroughProjectionRule` rebuilt the projection with the non-aliased constructor | fixed, pinned |
+
+Finding 6 came from the second grammar tranche (NOT / NOT IN /
+column-vs-column / OFFSET / **self-joins**). It is metadata-only — rows
+were always correct — which is exactly the divergence class a rows-only
+corpus structurally cannot see, and the reason the harness compares column
+names and types rather than values alone.
+
+Two GENERATOR bugs were found and fixed in the same pass, before either
+could be mistaken for an engine finding: type-incompatible join keys (the
+engine's 42804 rejection is correct behaviour) and join projections
+without unique aliases (two columns named `ID` collapse in the harness's
+name-keyed rows and would have silently weakened every join comparison).
+Both are worth recording — when a differential harness reports a
+divergence, the harness is a suspect too.
 
 Findings 1 and 5 are the pattern the RFC was built for: each needs a
 three-way interaction (indexed conjunction + residual + projection variant;
