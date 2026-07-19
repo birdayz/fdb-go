@@ -4143,6 +4143,35 @@ order_by_pk_full 3.29s, scan_all_narrow 3.31s / _wide 3.47s, sparse_filter 2.94s
 needles/in_list ~10ms. The ~85% planner task-count reduction (rule index) shows up
 as faster end-to-end planning; no regression anywhere.**
 
+**2026-07-19 (RFC-183 — fully-linked plans at rule time, memo-linkage repairs):**
+baseline master vs branch, BOTH re-run on a quiet machine after the first
+comparison proved confounded. Aggregate and join paths improved substantially;
+everything else within +/-5% noise:
+
+    SUM by status (aggregate index)   24.28ms -> 5.51ms   -77%
+    GROUP BY status                   12.62ms -> 6.13ms   -51%
+    GROUP BY status COUNT only        10.40ms -> 5.08ms   -51%
+    JOIN 10 orders x customers        26.58ms -> 14.18ms  -47%
+    GROUP BY customer HAVING         183.7ms -> 130.3ms   -29%
+    PK lookups / scans / ORDER BY     within +/-5%
+
+Mechanism is coherent rather than mysterious: AggregateDataAccessRule was
+constructing its two-leg multi-intersection with NIL quantifiers, so the memo
+held no edges for either aggregate-index leg and could not cost them. Fixing
+that is exactly the aggregate/join surface that moved.
+
+CAVEAT, stated because the number is flattering: ONE run per side. The deltas
+are 2-4x with a plausible mechanism and five metrics moving together, which is
+why it is recorded — but it is not a multi-run study, and a single sample of a
+77% improvement deserves the same suspicion as a single sample of a 77%
+regression.
+
+The FIRST attempt at this comparison showed a uniform 30-90% SLOWDOWN across
+every query including full scans. That was pure machine load — the branch run
+overlapped a full Bazel suite with FDB containers. Load average was still 11.75
+when it looked "done"; instantaneous CPU idle (90%+) is the signal that
+actually matters. Discarded rather than reported.
+
 **2026-07-05 (RFC-173 item-1 commit 1 + fix round, PR #481 — dup-alias binding-id
 mint + binding-keyed seed, dark):** baseline master `8c179a025` 161.68s total vs
 branch `7f0f6848e` 165.14s (noise; branch equal-or-faster per metric: full scans
