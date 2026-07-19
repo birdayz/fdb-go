@@ -5666,16 +5666,30 @@ pre-RFC-183 master (15dc17a82).
   canonicalization gap (HasWinner canonicalizes, reference.go:313,329); the
   root's winner is genuinely nil because nothing physical was ever chosen.
 
-  Two sub-questions for the gated fix: (a) WHY does `Union(TypeFilter(Scan),
-  TypeFilter(Scan))` fail to implement to a physical UnorderedUnion (column/
-  type mismatch in the fuzz shape, or an implementation-rule coverage gap)?
-  (b) Regardless of (a), extraction must ERROR when the root has no physical
-  plan rather than silently return a logical expression — a successful Plan
-  must be physical. Query-engine change; implementation-review gate.
+  REFUTED sub-question (b). The first note said "extraction must ERROR when the
+  root has no physical plan." That was TESTED and is WRONG: adding an
+  isPhysicalPlan check + error in extractBestPlanFromSelectorVisited (after the
+  GetBest fallback) causes ZERO corpus drift but breaks four cascades unit
+  tests — TestPlanner_GenerateDataAccess_NoMatchesIsNoOp,
+  _PlanningPhase_AlwaysRuns, _GenerateDataAccess_BottomUp, _Plan_FullPipeline —
+  which deliberately plan with LIMITED rule sets and RELY on Plan tolerantly
+  returning a non-physical result (a bare FullUnorderedScan / LogicalFilter /
+  LogicalDistinct that the isolation test never gave an implementation rule
+  for). So Plan's tolerance of a non-physical root is INTENTIONAL, not the bug.
+  Erroring universally would break rule-isolation testing.
 
-  Full implementation rules are used in the harness
-  (WithImplementationRules(DefaultImplementationRules())), so this is NOT a
-  rule-selection artifact — the union genuinely does not implement.
+  So the real question is only (a): WHY does the degenerate
+  `Union(TypeFilter(Scan), TypeFilter(Scan))` with UnknownType legs fail to
+  implement to a physical UnorderedUnion under FULL implementation rules?
+  Confirmed the root group ends with ONE member, the LogicalUnionExpression,
+  and ZERO physical/final members — ImplementUnorderedUnion never produced a
+  physical alternative for this shape. Candidates: a type/column precondition
+  on the union legs that UnknownType fails, or a genuine coverage gap. If the
+  shape is unreachable from real SQL (all real unions carry concrete types),
+  this is fuzz-only and the FuzzPlanner_PlanFullPipeline assertion is arguably
+  too strict for degenerate inputs; if reachable, it is a real
+  implementation-coverage gap. Determine which before any fix. Whatever the
+  fix, it is NOT an extraction-error change (refuted above).
 
 CLEAN (no crash in the sweep): FuzzPlanner_E2E_NoPanic,
 FuzzExtractBestPlan_SingletonInvariant, FuzzMemo_MemoizeInvariant,
