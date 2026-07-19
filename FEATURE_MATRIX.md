@@ -11,11 +11,11 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**334 scenarios · 2659 query/assertion cases** across 18 feature areas.
+**334 scenarios · 2664 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
-| Aggregates & GROUP BY | 49 | 315 |
+| Aggregates & GROUP BY | 49 | 320 |
 | Joins | 61 | 267 |
 | Subqueries (EXISTS / IN / scalar) | 43 | 290 |
 | CTEs | 12 | 105 |
@@ -77,7 +77,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `group_by_multi` | 12 | Multi-column GROUP BY plus GROUP BY on arbitrary expressions. |
 | `group_by_null` | 2 | swingshift-35 commit b059485e: groupByKey no longer uses fmt.Sprintf |
 | `group_by_proj_expr` | 5 | SELECT projection of an EXPRESSION on group-by columns |
-| `group_by_validation` | 24 | Java's groupby-tests.yamsql validates that SELECT columns must |
+| `group_by_validation` | 29 | Java's groupby-tests.yamsql validates that SELECT columns must |
 | `having` | 23 | HAVING filters grouped results (post-aggregate). |
 | `having_avg` | 2 | HAVING with AVG aggregate |
 | `limit_aggregate` | 3 | LIMIT with GROUP BY aggregates |

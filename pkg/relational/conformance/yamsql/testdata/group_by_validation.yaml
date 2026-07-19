@@ -188,3 +188,35 @@ tests:
     rows:
       - [10]
       - [20]
+
+  # HAVING is subject to the SAME grouping rule as the SELECT list:
+  # a base column referenced in HAVING that is neither grouped nor
+  # aggregated is a 42803 grouping error. Before the fix, `id`
+  # silently resolved to the group key's colliding ordinal and the
+  # query returned WRONG ROWS (validateGroupByProjection never walked
+  # the HAVING clause).
+  - query: SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING id > 2
+    error_code: "42803"
+  # Second manifestation: when the ungrouped HAVING column's base
+  # ordinal is beyond the aggregated row width it used to leak an
+  # internal "ordinal resolution ... malformed plan"; now a clean
+  # 42803.
+  - query: SELECT col1 FROM t1 GROUP BY col1 HAVING col2 > 5
+    error_code: "42803"
+  # Positive: a GROUPED column in HAVING is valid. col1=20 passes
+  # `col1 > 15`; its SUM(col2)=300.
+  - query: SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING col1 > 15 ORDER BY col1
+    rows:
+      - [20, 300]
+  # Positive: an AGGREGATE in HAVING is valid (harvestColumnRefs skips
+  # the aggregate operand). MAX(col2): col1=10→200, col1=20→300; only
+  # col1=20 passes `MAX(col2) > 250`.
+  - query: SELECT col1 FROM t1 GROUP BY col1 HAVING MAX(col2) > 250 ORDER BY col1
+    rows:
+      - [20]
+  # Positive (false-positive guard): an EXPRESSION over a grouped
+  # column in HAVING is valid — the grouped column `col1` covers the
+  # `col1 + 1` reference. col1=20 → 21 > 15 true; SUM(col2)=300.
+  - query: SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING col1 + 1 > 15 ORDER BY col1
+    rows:
+      - [20, 300]

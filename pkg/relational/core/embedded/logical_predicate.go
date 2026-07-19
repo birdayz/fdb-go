@@ -4198,6 +4198,45 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 		}
 	}
 
+	// HAVING obeys the SAME grouping rule as the SELECT list: a base column
+	// referenced OUTSIDE an aggregate must be covered by GROUP BY, else it is a
+	// 42803 grouping error. harvestColumnRefs skips aggregate-call operands
+	// (SUM(v)'s v never reaches here), so only non-aggregated refs are checked.
+	// "Covered" = the column is a GROUP BY key OR appears inside a GROUP BY
+	// EXPRESSION key, so `GROUP BY k+1 HAVING k+1 > 5` stays valid. Only genuine
+	// base columns of a KNOWN source are flagged (the tableFields guard) — an
+	// aggregate OUTPUT ALIAS or a derived/CTE source (tableFields == nil) is
+	// left to downstream resolution. Without this, `HAVING id > 2` with id
+	// neither grouped nor aggregated silently read the group key at id's
+	// colliding ordinal (wrong rows), or leaked an internal
+	// "ordinal resolution ... malformed plan" when id's base ordinal exceeded
+	// the aggregated row width. Mirrors the SELECT-list/aggCols validation above.
+	if sq.havingExpr != nil {
+		groupByColumns := make(map[string]bool)
+		for _, gb := range sq.groupBy {
+			if gb.expr != nil {
+				for _, c := range harvestColumnRefs(gb.expr) {
+					groupByColumns[parseColRef(strings.ToUpper(c)).bare()] = true
+				}
+				continue
+			}
+			groupByColumns[parseColRef(strings.ToUpper(gb.display)).bare()] = true
+			if gb.qualified {
+				groupByColumns[strings.ToUpper(gb.bare)] = true
+			}
+		}
+		for _, ref := range harvestColumnRefs(sq.havingExpr) {
+			bare := parseColRef(strings.ToUpper(ref)).bare()
+			if groupByColumns[bare] {
+				continue
+			}
+			if tableFields != nil && tableFields[bare] {
+				return api.NewErrorf(api.ErrCodeGroupingError,
+					"column %q must appear in the GROUP BY clause or be used in an aggregate function", ref)
+			}
+		}
+	}
+
 	if len(sq.aggCols) > 0 {
 		for _, ac := range sq.aggCols {
 			if ac.aggFunc != "" || !ac.visible {
