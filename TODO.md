@@ -5621,3 +5621,39 @@ families, not a local patch):
 
 All experiments were bounded and reverted; no code change is on this branch —
 only this diagnosis.
+
+### [ ] FUZZ sweep result: two distinct PRE-EXISTING planner crash classes
+
+Swept the cascades planner/memo/extraction fuzz targets after the RFC-183
+merge. Two distinct crash classes, BOTH pre-existing (neither is an RFC-183
+regression), plus a clean set:
+
+CLASS 1 — cyclic-memo stack overflow (GetCorrelatedTo, reference.go:752).
+Confirmed on FuzzPlanner_MemoConsistency, _Determinism, _Idempotence,
+_InitialMemberPreserved — all the full-exploration targets that run
+DefaultExpressionRules on a seed reaching the Go-only Push/PullCommonFilter-
+Intersection pair. Single root cause (the Go-only rule family, above); fixing
+it clears this whole class.
+
+CLASS 2 — "Plan succeeded but root Reference has no BestMember stamp"
+(FuzzPlanner_PlanFullPipeline, planner_fuzz_test.go:115). DISTINCT from class 1
+(instant assertion, not a stack overflow). Reproducing 34-byte seed
+`311028b5ee5f305a`. PRE-EXISTING — proven: the identical seed fails on
+pre-RFC-183 master (15dc17a82).
+  Mechanism, as far as bounded diagnosis goes: `p.Plan(ref)` returns nil error
+  and a non-nil plan, yet `ref.HasWinner()` is false. NOT a canonicalization
+  gap — HasWinner/Winner already canonicalize (reference.go:313,329), so a
+  post-merge `ref` pointer would still find the canonical winner. So the
+  canonical root's `winner` is genuinely nil after a successful extraction:
+  some planning path yields an extractable plan without stamping the root's
+  OPTIMIZE winner. OPEN: whether that is a real planner invariant gap or the
+  test assertion is over-strict for a valid trivial-plan case. Needs the gated
+  investigation to settle; query-engine change either way.
+
+CLEAN (no crash in the sweep): FuzzPlanner_E2E_NoPanic,
+FuzzExtractBestPlan_SingletonInvariant, FuzzMemo_MemoizeInvariant,
+FuzzPlanner_ProjectionPipeline_NoPanic — extraction, memo-invariant, and
+projection paths are robust to these inputs.
+
+Crash seeds NOT committed (they would red CI for gated bugs); recorded as
+hashes/reproducers. All experiments reverted; tree clean.
