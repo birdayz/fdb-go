@@ -480,7 +480,7 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		return
 	}
 
-	var requestedOrderings []*RequestedOrdering
+	var requestedOrderings []*properties.RequestedOrdering
 	if p.constraintMap != nil {
 		if orderings, ok := Get(p.constraintMap, ref, RequestedOrderingConstraintKey); ok {
 			requestedOrderings = orderings
@@ -552,7 +552,7 @@ func dataAccessCandidates(ref *expressions.Reference) []MatchCandidate {
 // by Insert dedup + the 10-round cap (RFC-148 §3c addendum). The
 // cross-candidate intersection keeps its own hasIntersectionFinal
 // guard.
-func (p *Planner) shouldConsumeMatches(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*RequestedOrdering) bool {
+func (p *Planner) shouldConsumeMatches(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering) bool {
 	if len(requestedOrderings) > 0 {
 		return true
 	}
@@ -570,7 +570,7 @@ func (p *Planner) shouldConsumeMatches(ref *expressions.Reference, candidates []
 // into data-access expressions and routes every result by safety:
 // physical plans and SAFE logical compensations go through
 // yieldUnknown; UNSAFE logical compensations go to InsertFinal.
-func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*RequestedOrdering) {
+func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering) {
 	for _, candidate := range candidates {
 		matches := GetPartialMatchesForCandidate(ref, candidate)
 		if len(matches) == 0 {
@@ -618,7 +618,7 @@ func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates 
 // explosion in MaximumCoverageMatches for queries with many indexes
 // (e.g., InList with 5+ candidates). hasIntersectionFinal prevents
 // re-creation when pushDataAccessTasks fires multiple times per ref.
-func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*RequestedOrdering) {
+func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering) {
 	if len(candidates) < 2 || len(candidates) > 4 || hasIntersectionFinal(ref) {
 		return
 	}

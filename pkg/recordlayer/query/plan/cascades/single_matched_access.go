@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -21,7 +22,7 @@ type SingleMatchedAccess struct {
 	candidateTopAlias            values.CorrelationIdentifier
 	reverseScanOrder             bool
 	topToTopTranslationMap       TranslationMap
-	satisfyingRequestedOrderings []*RequestedOrdering
+	satisfyingRequestedOrderings []*properties.RequestedOrdering
 
 	// Lazily computed pulled-up group-by mappings. Java uses
 	// Suppliers.memoize with adjustGroupByMappings(Quantifier.current(),
@@ -43,10 +44,10 @@ func NewSingleMatchedAccess(
 	candidateTopAlias values.CorrelationIdentifier,
 	reverseScanOrder bool,
 	topToTopTranslationMap TranslationMap,
-	satisfyingRequestedOrderings []*RequestedOrdering,
+	satisfyingRequestedOrderings []*properties.RequestedOrdering,
 ) *SingleMatchedAccess {
 	// Defensive copy of orderings.
-	orderings := make([]*RequestedOrdering, len(satisfyingRequestedOrderings))
+	orderings := make([]*properties.RequestedOrdering, len(satisfyingRequestedOrderings))
 	copy(orderings, satisfyingRequestedOrderings)
 
 	return &SingleMatchedAccess{
@@ -88,7 +89,7 @@ func (s *SingleMatchedAccess) GetTopToTopTranslationMap() TranslationMap {
 
 // GetSatisfyingRequestedOrderings returns the set of requested orderings
 // that this access satisfies.
-func (s *SingleMatchedAccess) GetSatisfyingRequestedOrderings() []*RequestedOrdering {
+func (s *SingleMatchedAccess) GetSatisfyingRequestedOrderings() []*properties.RequestedOrdering {
 	return s.satisfyingRequestedOrderings
 }
 

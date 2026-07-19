@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -17,13 +18,13 @@ func TestPushRequestedOrderingThroughDelete_PropagatesConstraint(t *testing.T) {
 	delRef := expressions.InitialOf(del)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, delRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, delRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughDeleteRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), del)
@@ -93,13 +94,13 @@ func TestPushRequestedOrderingThroughDelete_NotConstraintOnlyDoesNotPush(t *test
 	delRef := expressions.InitialOf(del)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, delRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, delRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughDeleteRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), del)
@@ -127,13 +128,13 @@ func TestPushRequestedOrderingThroughDelete_NoYield(t *testing.T) {
 	delRef := expressions.InitialOf(del)
 
 	cm := NewConstraintMap()
-	ordering := NewRequestedOrdering(
-		[]RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+	ordering := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
 		},
-		DistinctnessNotDistinct, false,
+		properties.DistinctnessNotDistinct, false,
 	)
-	Set(cm, delRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+	Set(cm, delRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
 
 	rule := NewPushRequestedOrderingThroughDeleteRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), del)

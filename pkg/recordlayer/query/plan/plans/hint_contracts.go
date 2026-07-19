@@ -76,3 +76,14 @@ var (
 	_ properties.OrderingHinter = (*RecordQueryTempTableInsertPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryTempTableScanPlan)(nil)
 )
+
+// Rich orderings are answered only by the plans whose ordering actually
+// carries bindings (the scans) plus the delegator that inherits one. Every
+// other plan is served by the caller's synthesize-from-HintOrdering fallback,
+// so this list is deliberately short rather than exhaustive.
+var (
+	_ properties.RichOrderingHinter = (*RecordQueryScanPlan)(nil)
+	_ properties.RichOrderingHinter = (*RecordQueryIndexPlan)(nil)
+	_ properties.RichOrderingHinter = (*RecordQueryVectorIndexPlan)(nil)
+	_ properties.RichOrderingHinter = (*RecordQueryFetchFromPartialRecordPlan)(nil)
+)

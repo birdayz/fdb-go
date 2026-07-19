@@ -62,7 +62,7 @@ func (c *ImplementationRuleCall) YieldFinalExpression(expr expressions.Relationa
 // GetRequestedOrderings returns the requested orderings for this
 // Reference, if set by a parent rule. Returns nil if no ordering
 // constraint is set.
-func (c *ImplementationRuleCall) GetRequestedOrderings() []*RequestedOrdering {
+func (c *ImplementationRuleCall) GetRequestedOrderings() []*properties.RequestedOrdering {
 	orderings, ok := Get(c.Constraints, c.Reference, RequestedOrderingConstraintKey)
 	if !ok {
 		return nil
@@ -86,7 +86,7 @@ func (c *ImplementationRuleCall) IsConstraintOnly() bool {
 // prune the clobbered parents' ordered alternatives.
 func (c *ImplementationRuleCall) PushConstraint(
 	childRef *expressions.Reference,
-	orderings []*RequestedOrdering,
+	orderings []*properties.RequestedOrdering,
 ) {
 	// Set IS the combiner (Java pushProperty): the former pre-combine
 	// here duplicated it. A SUBSUMED push schedules no re-exploration —

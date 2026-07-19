@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -22,10 +23,10 @@ func TestPushRequestedOrderingThroughUnion_PushesToAllBranches(t *testing.T) {
 	unionRef := expressions.InitialOf(union)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, unionRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, unionRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughUnionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), union)
@@ -59,7 +60,7 @@ func TestPushRequestedOrderingThroughUnion_PushesToAllBranches(t *testing.T) {
 		if !ok || fv.Field != "col1" {
 			t.Fatalf("child %d: expected ordering on col1, got %v", i, parts[0].Value)
 		}
-		if parts[0].SortOrder != RequestedSortOrderAscending {
+		if parts[0].SortOrder != properties.RequestedSortOrderAscending {
 			t.Fatalf("child %d: expected ASC sort order", i)
 		}
 	}
@@ -77,10 +78,10 @@ func TestPushRequestedOrderingThroughUnion_FirstBranchExhaustive(t *testing.T) {
 	unionRef := expressions.InitialOf(union)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false) // not exhaustive
-	Set(cm, unionRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false) // not exhaustive
+	Set(cm, unionRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughUnionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), union)
@@ -158,10 +159,10 @@ func TestPushRequestedOrderingThroughUnion_NotConstraintOnlyIsNoOp(t *testing.T)
 	unionRef := expressions.InitialOf(union)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, unionRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, unionRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughUnionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), union)
@@ -195,11 +196,11 @@ func TestPushRequestedOrderingThroughUnion_ThreeBranches(t *testing.T) {
 	unionRef := expressions.InitialOf(union)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-		{Value: &values.FieldValue{Field: "b", Typ: values.UnknownType}, SortOrder: RequestedSortOrderDescending},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, unionRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+		{Value: &values.FieldValue{Field: "b", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, unionRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughUnionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), union)
@@ -235,10 +236,10 @@ func TestPushRequestedOrderingThroughUnion_NoYield(t *testing.T) {
 	unionRef := expressions.InitialOf(union)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, unionRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, unionRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughUnionRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), union)

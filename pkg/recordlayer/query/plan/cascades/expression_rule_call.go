@@ -163,7 +163,7 @@ func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpres
 // GetRequestedOrderings returns the requested orderings for this
 // Reference from the constraint map, if available. Returns nil if no
 // ordering constraint is set or no constraint map is present.
-func (c *ExpressionRuleCall) GetRequestedOrderings() []*RequestedOrdering {
+func (c *ExpressionRuleCall) GetRequestedOrderings() []*properties.RequestedOrdering {
 	orderings, ok := Get(c.Constraints, c.Reference, RequestedOrderingConstraintKey)
 	if !ok {
 		return nil

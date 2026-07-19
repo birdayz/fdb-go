@@ -373,3 +373,120 @@ func (p *RecordQueryTempTableInsertPlan) HintOrdering() properties.Ordering {
 func (p *RecordQueryTempTableScanPlan) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: false}
 }
+
+// --- rich orderings ---------------------------------------------------------
+//
+// HintRichOrdering is the binding-carrying form of HintOrdering: it keeps the
+// distinction between a key that is EQUALITY-BOUND (FixedBinding — every row
+// holds the same value, so the key satisfies a request in EITHER direction)
+// and one that is merely SORTED in a given direction. That distinction is what
+// lets `WHERE a = 1 ORDER BY a DESC` elide its sort over a forward scan, and
+// plain Ordering cannot express it.
+//
+// Only the plans whose ordering carries bindings implement it. Everything else
+// is served by the caller's fallback, which synthesizes a sorted-only binding
+// map from HintOrdering.
+
+// HintRichOrdering returns a primary scan's PK ordering with bindings: PK
+// positions bound by an equality comparison become FixedBinding entries, the
+// rest SortedBinding. A primary scan is a value-index-like candidate in Java
+// (PrimaryScanMatchCandidate implements ValueIndexLikeMatchCandidate), so its
+// ordering comes from the same computeOrderingFromScanComparisons: the
+// equality prefix is Binding.fixed, which is compatible with ANY requested
+// direction.
+func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
+	if p == nil {
+		return properties.EmptyOrdering()
+	}
+	pk := p.GetPrimaryKeyValues()
+	if len(pk) == 0 {
+		return properties.EmptyOrdering()
+	}
+	comps := p.GetScanComparisons()
+	bm := make(map[values.Value][]properties.OrderingBinding, len(pk))
+	keys := make([]values.Value, 0, len(pk))
+	dir := properties.ProvidedSortOrderAscending
+	if p.IsReverse() {
+		dir = properties.ProvidedSortOrderDescending
+	}
+	for i, key := range pk {
+		keys = append(keys, key)
+		if i < len(comps) && comps[i].IsEquality() {
+			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
+		} else {
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+		}
+	}
+	return properties.NewRichOrdering(bm, keys, false)
+}
+
+// HintRichOrdering returns the index scan's full ordering with bindings:
+// equality-bound prefix columns become FixedBinding entries (carrying the
+// comparison), non-equality suffix columns become SortedBinding entries. The
+// trimmed primary-key suffix continues the sorted keys — this is what lets an
+// equality-prefixed scan (status = ?) satisfy ORDER BY pk, exactly as Java's
+// ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons derives the
+// ordering over getFullKeyExpression() (index key + trimmed PK) with
+// Binding.fixed for the equality prefix and Binding.sorted for the rest.
+//
+// Note this differs from HintOrdering, which DROPS the equality prefix
+// entirely; here the prefix is retained as fixed, which is strictly more
+// information.
+func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
+	if p == nil || len(p.GetColumnNames()) == 0 {
+		return properties.EmptyOrdering()
+	}
+	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
+	comps := p.GetScanComparisons()
+	bm := make(map[values.Value][]properties.OrderingBinding)
+	keys := make([]values.Value, 0, len(columnNames)+len(pkColumnNames))
+
+	dir := properties.ProvidedSortOrderAscending
+	if p.IsReverse() {
+		dir = properties.ProvidedSortOrderDescending
+	}
+	for i, col := range columnNames {
+		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
+		keys = append(keys, key)
+		if i < len(comps) && comps[i].IsEquality() {
+			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
+		} else {
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+		}
+	}
+	for _, col := range TrimmedPKSuffix(columnNames, pkColumnNames) {
+		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
+		keys = append(keys, key)
+		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+	}
+	return properties.NewRichOrdering(bm, keys, p.IsUnique())
+}
+
+// HintRichOrdering: an HNSW probe returns its neighbours in distance order,
+// which is not a column ordering the planner models. Empty rather than a
+// synthesized fallback, so no caller mistakes distance order for key order.
+func (p *RecordQueryVectorIndexPlan) HintRichOrdering() *properties.RichOrdering {
+	return properties.EmptyOrdering()
+}
+
+// HintRichOrdering: fetching the full record per index entry preserves the
+// index scan's rich ordering, so inherit it from the source.
+//
+// This DUPLICATES the physical wrapper's body rather than delegating to it,
+// for the same reason the plain-ordering delegators do (see this file's
+// header): the wrapper resolves through the memo GROUP it was built over,
+// consulting every explored alternative, while the plan resolves through its
+// OWN concrete child quantifier. Those are different questions and must stay
+// two answers.
+func (p *RecordQueryFetchFromPartialRecordPlan) HintRichOrdering() *properties.RichOrdering {
+	ref := p.OrderingSourceRef()
+	if ref == nil {
+		return properties.EmptyOrdering()
+	}
+	for _, m := range ref.AllMembers() {
+		if rh, ok := m.(properties.RichOrderingHinter); ok {
+			return rh.HintRichOrdering()
+		}
+	}
+	return properties.EmptyOrdering()
+}

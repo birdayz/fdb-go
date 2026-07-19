@@ -66,7 +66,7 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 
 	requestedOrderings := call.GetRequestedOrderings()
 	if len(requestedOrderings) == 0 {
-		requestedOrderings = []*RequestedOrdering{PreserveOrdering()}
+		requestedOrderings = []*properties.RequestedOrdering{properties.PreserveOrdering()}
 	}
 
 	legPartitions := make([][]*PlanPartition, len(unionQs))
@@ -93,14 +93,14 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 	for _, requestedOrdering := range requestedOrderings {
 		for _, q := range unionQs {
 			if ref := q.GetRangesOver(); ref != nil {
-				call.PushConstraint(ref, []*RequestedOrdering{requestedOrdering})
+				call.PushConstraint(ref, []*properties.RequestedOrdering{requestedOrdering})
 			}
 		}
 
 		iter := NewCrossProductIterator(legPartitions)
 		type mergeEntry struct {
-			merged  *RichOrdering
-			current *RichOrdering
+			merged  *properties.RichOrdering
+			current *properties.RichOrdering
 		}
 		var merge []mergeEntry
 
@@ -112,10 +112,10 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 				continue
 			}
 
-			orderings := make([]*RichOrdering, len(combo))
+			orderings := make([]*properties.RichOrdering, len(combo))
 			for i, partition := range combo {
 				exprs := partition.GetExpressions()
-				var ro *RichOrdering
+				var ro *properties.RichOrdering
 				for _, expr := range exprs {
 					if ph, ok := expr.(physicalPlanExpression); ok {
 						ro = computeWrapperRichOrdering(ph)
@@ -124,11 +124,11 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 				}
 				if ro == nil {
 					o := partition.GetOrdering()
-					bm := make(map[values.Value][]OrderingBinding)
+					bm := make(map[values.Value][]properties.OrderingBinding)
 					for _, k := range o.Keys {
-						bm[k] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+						bm[k] = []properties.OrderingBinding{properties.SortedBinding(properties.ProvidedSortOrderAscending)}
 					}
-					ro = NewRichOrdering(bm, o.Keys, false)
+					ro = properties.NewRichOrdering(bm, o.Keys, false)
 				}
 				orderings[i] = ro
 			}
@@ -144,12 +144,12 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 			for len(merge) < len(orderings) {
 				if len(merge) == 0 {
 					merge = append(merge, mergeEntry{
-						merged:  CreateUnionOrdering(orderings[0]),
+						merged:  properties.CreateUnionOrdering(orderings[0]),
 						current: orderings[0],
 					})
 				} else {
 					lastMerged := merge[len(merge)-1].merged
-					merged := MergeOrderings(lastMerged, orderings[len(merge)])
+					merged := properties.MergeOrderings(lastMerged, orderings[len(merge)])
 					if !isPrimaryKeyCompatibleWithOrdering(pkValues, merged) {
 						iter.Skip(len(merge))
 						break
@@ -172,8 +172,8 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 	call *ImplementationRuleCall,
 	combo []*PlanPartition,
-	mergedOrdering *RichOrdering,
-	requestedOrdering *RequestedOrdering,
+	mergedOrdering *properties.RichOrdering,
+	requestedOrdering *properties.RequestedOrdering,
 ) {
 	if len(combo) < 2 {
 		return
@@ -182,7 +182,7 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 	satisfyingKeys := mergedOrdering.EnumerateSatisfyingComparisonKeyValues(requestedOrdering)
 	for _, comparisonKeyValues := range satisfyingKeys {
 		comparisonParts := mergedOrdering.DirectionalOrderingParts(
-			comparisonKeyValues, requestedOrdering, ProvidedSortOrderFixed)
+			comparisonKeyValues, requestedOrdering, properties.ProvidedSortOrderFixed)
 		isReverse := ResolveComparisonDirection(comparisonParts)
 		comparisonParts = AdjustFixedBindings(comparisonParts, isReverse)
 
@@ -199,15 +199,15 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 		// verified) and baked as the ONE child over a FinalOf singleton.
 		// An unpinnable leg skips this comparison-key candidate — the
 		// in-memory-sort alternative still competes.
-		legReqParts := make([]RequestedOrderingPart, len(comparisonParts))
+		legReqParts := make([]properties.RequestedOrderingPart, len(comparisonParts))
 		for i, p := range comparisonParts {
-			so := RequestedSortOrderAny
-			if p.SortOrder != ProvidedSortOrderFixed {
+			so := properties.RequestedSortOrderAny
+			if p.SortOrder != properties.ProvidedSortOrderFixed {
 				so = p.SortOrder.ToRequestedSortOrder()
 			}
-			legReqParts[i] = RequestedOrderingPart{Value: p.Value, SortOrder: so}
+			legReqParts[i] = properties.RequestedOrderingPart{Value: p.Value, SortOrder: so}
 		}
-		legReq := NewRequestedOrdering(legReqParts, DistinctnessPreserveDistinctness, false)
+		legReq := properties.NewRequestedOrdering(legReqParts, properties.DistinctnessPreserveDistinctness, false)
 
 		tieBrokenLess := lessWithHashTieBreak(call.CostModel())
 		var childPlans []plans.RecordQueryPlan
@@ -258,7 +258,7 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 	}
 }
 
-func richOrderingEquals(a, b *RichOrdering) bool {
+func richOrderingEquals(a, b *properties.RichOrdering) bool {
 	if a == b {
 		return true
 	}
@@ -278,7 +278,7 @@ func richOrderingEquals(a, b *RichOrdering) bool {
 	return true
 }
 
-func removeCommonEqualityBoundParts(orderings []*RichOrdering) []*RichOrdering {
+func removeCommonEqualityBoundParts(orderings []*properties.RichOrdering) []*properties.RichOrdering {
 	if len(orderings) <= 1 {
 		return orderings
 	}
@@ -321,10 +321,10 @@ func removeCommonEqualityBoundParts(orderings []*RichOrdering) []*RichOrdering {
 		keysToRemove[e.key] = struct{}{}
 	}
 
-	result := make([]*RichOrdering, len(orderings))
+	result := make([]*properties.RichOrdering, len(orderings))
 	for i, o := range orderings {
 		var filteredKeys []values.Value
-		filteredBindings := make(map[values.Value][]OrderingBinding)
+		filteredBindings := make(map[values.Value][]properties.OrderingBinding)
 		for _, key := range o.GetKeys() {
 			keyStr := values.ExplainValue(key)
 			if _, remove := keysToRemove[keyStr]; remove {
@@ -335,12 +335,12 @@ func removeCommonEqualityBoundParts(orderings []*RichOrdering) []*RichOrdering {
 				filteredBindings[key] = bs
 			}
 		}
-		result[i] = NewRichOrdering(filteredBindings, filteredKeys, o.IsDistinct())
+		result[i] = properties.NewRichOrdering(filteredBindings, filteredKeys, o.IsDistinct())
 	}
 	return result
 }
 
-func explainBinding(b OrderingBinding) string {
+func explainBinding(b properties.OrderingBinding) string {
 	comp := b.GetComparison()
 	if comp == nil {
 		return "fixed"
@@ -351,7 +351,7 @@ func explainBinding(b OrderingBinding) string {
 	return "fixed"
 }
 
-func isPrimaryKeyCompatibleWithOrdering(pkValues []values.Value, ordering *RichOrdering) bool {
+func isPrimaryKeyCompatibleWithOrdering(pkValues []values.Value, ordering *properties.RichOrdering) bool {
 	if ordering == nil || len(ordering.GetKeys()) == 0 {
 		return len(pkValues) == 0
 	}
@@ -389,7 +389,7 @@ func getCommonPK(partitions []*PlanPartition) []values.Value {
 			return nil
 		}
 		for i := range firstPK {
-			if !valuesEqual(firstPK[i], otherPK[i]) {
+			if !values.ValuesStructurallyEqual(firstPK[i], otherPK[i]) {
 				return nil
 			}
 		}

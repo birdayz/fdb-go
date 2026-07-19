@@ -74,8 +74,8 @@ func (w *physicalVectorIndexScanWrapper) HintOrdering() properties.Ordering {
 	return w.plan.HintOrdering()
 }
 
-func (w *physicalVectorIndexScanWrapper) HintRichOrdering() *RichOrdering {
-	return EmptyOrdering()
+func (w *physicalVectorIndexScanWrapper) HintRichOrdering() *properties.RichOrdering {
+	return properties.EmptyOrdering()
 }
 
 // HintCost: a K-NN vector scan returns at most k rows (a small, bounded

@@ -35,7 +35,7 @@ import (
 // createIntersectionAndCompensation.
 type IntersectorFunc func(
 	accesses []Vectored[*SingleMatchedAccess],
-	requestedOrderings []*RequestedOrdering,
+	requestedOrderings []*properties.RequestedOrdering,
 ) *IntersectionResult
 
 // PrepareMatchesAndCompensations compensates and sorts partial matches
@@ -51,7 +51,7 @@ type IntersectorFunc func(
 // Ports Java's AbstractDataAccessRule.prepareMatchesAndCompensations.
 func PrepareMatchesAndCompensations(
 	partialMatches []PartialMatch,
-	requestedOrderings []*RequestedOrdering,
+	requestedOrderings []*properties.RequestedOrdering,
 	_ PlanContext,
 ) []*SingleMatchedAccess {
 	if len(partialMatches) == 0 {
@@ -147,7 +147,7 @@ func PrepareMatchesAndCompensations(
 // Ports Java's AbstractDataAccessRule.maximumCoverageMatches.
 func MaximumCoverageMatches(
 	partialMatches []PartialMatch,
-	requestedOrderings []*RequestedOrdering,
+	requestedOrderings []*properties.RequestedOrdering,
 	ctx PlanContext,
 ) []Vectored[*SingleMatchedAccess] {
 	accesses := PrepareMatchesAndCompensations(partialMatches, requestedOrderings, ctx)
@@ -334,7 +334,7 @@ func CreateScansForMatches(
 //
 // Ports Java's AbstractDataAccessRule.dataAccessForMatchPartition.
 func DataAccessForMatchPartition(
-	requestedOrderings []*RequestedOrdering,
+	requestedOrderings []*properties.RequestedOrdering,
 	partialMatches []PartialMatch,
 	ctx PlanContext,
 	intersector IntersectorFunc,
@@ -603,7 +603,7 @@ func (s *scanPlanExpression) HintOrdering() properties.Ordering {
 
 // HintRichOrdering — the FIXED-equality-prefix PK ordering; see
 // pkScanRichOrdering.
-func (s *scanPlanExpression) HintRichOrdering() *RichOrdering {
+func (s *scanPlanExpression) HintRichOrdering() *properties.RichOrdering {
 	return pkScanRichOrdering(pkScanFromDataAccessPlan(s.plan))
 }
 
@@ -717,7 +717,7 @@ func comparisonRowCorrelated(c *predicates.Comparison) bool {
 // direction needed, or nil if the ordering is not satisfied.
 //
 // Ports Java's AbstractDataAccessRule.satisfiesRequestedOrdering.
-func SatisfiesRequestedOrdering(pm PartialMatch, ro *RequestedOrdering) *ScanDirection {
+func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrdering) *ScanDirection {
 	if ro.IsPreserve() {
 		both := ScanDirectionBoth
 		return &both
@@ -754,7 +754,7 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *RequestedOrdering) *ScanDir
 			opKey := values.ExplainValue(op.GetValue())
 			if reqKey == opKey {
 				reqSort := reqPart.SortOrder
-				if reqSort != RequestedSortOrderAny {
+				if reqSort != properties.RequestedSortOrderAny {
 					matchedSort := op.GetMatchedSortOrder()
 					// Java AbstractDataAccessRule.satisfiesRequestedOrdering
 					// (:820): the matched and requested NULL placement must
@@ -800,11 +800,11 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *RequestedOrdering) *ScanDir
 // Ports Java's AbstractDataAccessRule.satisfiesAnyRequestedOrderings.
 func SatisfiesAnyRequestedOrderings(
 	pm PartialMatch,
-	requestedOrderings []*RequestedOrdering,
-) ([]*RequestedOrdering, *ScanDirection) {
+	requestedOrderings []*properties.RequestedOrdering,
+) ([]*properties.RequestedOrdering, *ScanDirection) {
 	seenForward := false
 	seenReverse := false
-	var satisfying []*RequestedOrdering
+	var satisfying []*properties.RequestedOrdering
 
 	for _, ro := range requestedOrderings {
 		dir := SatisfiesRequestedOrdering(pm, ro)

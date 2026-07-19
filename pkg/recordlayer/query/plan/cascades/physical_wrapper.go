@@ -224,45 +224,10 @@ func IsPhysicalMap(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
-// IsPhysicalFirstOrDefault reports whether the given expression is
-// a physicalFirstOrDefaultWrapper.
-func IsPhysicalFirstOrDefault(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalFirstOrDefaultWrapper)
-	return ok
-}
-
-// IsPhysicalDefaultOnEmpty reports whether the given expression is
-// a physicalDefaultOnEmptyWrapper.
-func IsPhysicalDefaultOnEmpty(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalDefaultOnEmptyWrapper)
-	return ok
-}
-
-// IsPhysicalUnorderedUnion reports whether the given expression is
-// a physicalUnorderedUnionWrapper.
-func IsPhysicalUnorderedUnion(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalUnorderedUnionWrapper)
-	return ok
-}
-
-// IsPhysicalMergeSortUnion reports whether the given expression is
-// a physicalMergeSortUnionWrapper.
-func IsPhysicalMergeSortUnion(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalMergeSortUnionWrapper)
-	return ok
-}
-
 // IsPhysicalInJoin reports whether the given expression is
 // a physicalInJoinWrapper.
 func IsPhysicalInJoin(expr expressions.RelationalExpression) bool {
 	_, ok := expr.(*physicalInJoinWrapper)
-	return ok
-}
-
-// IsPhysicalInUnion reports whether the given expression is
-// a physicalInUnionWrapper.
-func IsPhysicalInUnion(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalInUnionWrapper)
 	return ok
 }
 
@@ -278,21 +243,6 @@ func ExplainPhysicalPlan(expr expressions.RelationalExpression) string {
 		return ""
 	}
 	return p.Explain()
-}
-
-// PhysicalIndexScanName returns the index name if expr is a
-// physicalIndexScanWrapper or a physicalFetchFromPartialRecordWrapper
-// whose inner plan is an index plan. Returns empty string otherwise.
-func PhysicalIndexScanName(expr expressions.RelationalExpression) string {
-	if w, ok := expr.(*physicalIndexScanWrapper); ok {
-		return w.plan.GetIndexName()
-	}
-	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
-		if ip, ok := fw.plan.GetInner().(*plans.RecordQueryIndexPlan); ok {
-			return ip.GetIndexName()
-		}
-	}
-	return ""
 }
 
 // extractChildPlanFromQuantifier gets the RecordQueryPlan from a
@@ -617,7 +567,7 @@ func (w *physicalScanWrapper) HintOrdering() properties.Ordering {
 }
 
 // HintRichOrdering — see pkScanRichOrdering.
-func (w *physicalScanWrapper) HintRichOrdering() *RichOrdering {
+func (w *physicalScanWrapper) HintRichOrdering() *properties.RichOrdering {
 	return pkScanRichOrdering(w.plan)
 }
 
@@ -636,30 +586,30 @@ func (w *physicalScanWrapper) HintRichOrdering() *RichOrdering {
 // ASC and a DESC request wrongly keeps the sort. Shared by
 // physicalScanWrapper and the plan-backed leaf scanPlanExpression (the
 // data-access path memoizes a SARGed PK scan as the latter).
-func pkScanRichOrdering(plan *plans.RecordQueryScanPlan) *RichOrdering {
+func pkScanRichOrdering(plan *plans.RecordQueryScanPlan) *properties.RichOrdering {
 	if plan == nil {
-		return EmptyOrdering()
+		return properties.EmptyOrdering()
 	}
 	pk := plan.GetPrimaryKeyValues()
 	if len(pk) == 0 {
-		return EmptyOrdering()
+		return properties.EmptyOrdering()
 	}
 	comps := plan.GetScanComparisons()
-	bm := make(map[values.Value][]OrderingBinding, len(pk))
+	bm := make(map[values.Value][]properties.OrderingBinding, len(pk))
 	keys := make([]values.Value, 0, len(pk))
-	dir := ProvidedSortOrderAscending
+	dir := properties.ProvidedSortOrderAscending
 	if plan.IsReverse() {
-		dir = ProvidedSortOrderDescending
+		dir = properties.ProvidedSortOrderDescending
 	}
 	for i, key := range pk {
 		keys = append(keys, key)
 		if i < len(comps) && comps[i].IsEquality() {
-			bm[key] = []OrderingBinding{FixedBinding(comps[i])}
+			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
-			bm[key] = []OrderingBinding{SortedBinding(dir)}
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 		}
 	}
-	return NewRichOrdering(bm, keys, false)
+	return properties.NewRichOrdering(bm, keys, false)
 }
 
 func (w *physicalScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -757,34 +707,34 @@ func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
 // PK) with Binding.fixed for the equality prefix and Binding.sorted for
 // the rest. This enables ordering-aware InJoin source matching and
 // RemoveSort-style elision in ImplementSortRule.
-func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
+func (w *physicalIndexScanWrapper) HintRichOrdering() *properties.RichOrdering {
 	if w.plan == nil || len(w.columnNames) == 0 {
-		return EmptyOrdering()
+		return properties.EmptyOrdering()
 	}
 	comps := w.plan.GetScanComparisons()
-	bm := make(map[values.Value][]OrderingBinding)
+	bm := make(map[values.Value][]properties.OrderingBinding)
 	keys := make([]values.Value, 0, len(w.columnNames)+len(w.pkColumnNames))
 
 	rev := w.plan.IsReverse()
-	dir := ProvidedSortOrderAscending
+	dir := properties.ProvidedSortOrderAscending
 	if rev {
-		dir = ProvidedSortOrderDescending
+		dir = properties.ProvidedSortOrderDescending
 	}
 	for i, col := range w.columnNames {
 		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
 		keys = append(keys, key)
 		if i < len(comps) && comps[i].IsEquality() {
-			bm[key] = []OrderingBinding{FixedBinding(comps[i])}
+			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
-			bm[key] = []OrderingBinding{SortedBinding(dir)}
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 		}
 	}
 	for _, col := range plans.TrimmedPKSuffix(w.columnNames, w.pkColumnNames) {
 		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
 		keys = append(keys, key)
-		bm[key] = []OrderingBinding{SortedBinding(dir)}
+		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 	}
-	return NewRichOrdering(bm, keys, w.unique)
+	return properties.NewRichOrdering(bm, keys, w.unique)
 }
 
 // trimmedPKSuffix returns the primary-key columns not already present in
@@ -944,13 +894,6 @@ func (w *physicalFilterWrapper) WithQuantifiers(_ []expressions.Quantifier) expr
 }
 
 var _ expressions.RelationalExpression = (*physicalFilterWrapper)(nil)
-
-// IsPhysicalDistinct reports whether the given RelationalExpression is
-// a physicalDistinctWrapper.
-func IsPhysicalDistinct(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalDistinctWrapper)
-	return ok
-}
 
 // physicalDistinctWrapper adapts a `*plans.RecordQueryDistinctPlan` to
 // the RelationalExpression interface.

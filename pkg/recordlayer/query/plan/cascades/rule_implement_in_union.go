@@ -6,6 +6,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -33,7 +34,7 @@ import (
 // legitimate record-boundary resolution, same as Java's Message field access),
 // and a positional merge row fails LOUD (OrdinalResolutionError) — never a
 // silent wrong slot.
-func bakeMergeComparisonKeys(keys []values.Value, requested *RequestedOrdering, rowType values.Type) []values.Value {
+func bakeMergeComparisonKeys(keys []values.Value, requested *properties.RequestedOrdering, rowType values.Type) []values.Value {
 	var reqByCol map[string]values.Value
 	if requested != nil {
 		for _, part := range requested.GetParts() {
@@ -231,7 +232,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 
 	requestedOrderings := call.GetRequestedOrderings()
 	if len(requestedOrderings) == 0 {
-		requestedOrderings = []*RequestedOrdering{PreserveOrdering()}
+		requestedOrderings = []*properties.RequestedOrdering{properties.PreserveOrdering()}
 	}
 
 	for _, partition := range partitions {
@@ -241,7 +242,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		}
 		innerExprs := partition.GetExpressions()
 
-		var richOrdering *RichOrdering
+		var richOrdering *properties.RichOrdering
 		for _, expr := range innerExprs {
 			if ph, ok := expr.(physicalPlanExpression); ok {
 				richOrdering = computeWrapperRichOrdering(ph)
@@ -263,7 +264,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 			satisfyingKeys := adjustedOrdering.EnumerateSatisfyingComparisonKeyValues(requestedOrdering)
 			for _, comparisonKeyValues := range satisfyingKeys {
 				comparisonParts := adjustedOrdering.DirectionalOrderingParts(
-					comparisonKeyValues, requestedOrdering, ProvidedSortOrderFixed)
+					comparisonKeyValues, requestedOrdering, properties.ProvidedSortOrderFixed)
 				isReverse := ResolveComparisonDirection(comparisonParts)
 				comparisonParts = AdjustFixedBindings(comparisonParts, isReverse)
 
@@ -288,15 +289,15 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				// and bake THAT plan over a FinalOf singleton; an unpinnable
 				// partition skips this candidate — the sort-based
 				// alternative still plans.
-				legReqParts := make([]RequestedOrderingPart, len(comparisonParts))
+				legReqParts := make([]properties.RequestedOrderingPart, len(comparisonParts))
 				for i, p := range comparisonParts {
-					so := RequestedSortOrderAny
-					if p.SortOrder != ProvidedSortOrderFixed {
+					so := properties.RequestedSortOrderAny
+					if p.SortOrder != properties.ProvidedSortOrderFixed {
 						so = p.SortOrder.ToRequestedSortOrder()
 					}
-					legReqParts[i] = RequestedOrderingPart{Value: p.Value, SortOrder: so}
+					legReqParts[i] = properties.RequestedOrderingPart{Value: p.Value, SortOrder: so}
 				}
-				legReq := NewRequestedOrdering(legReqParts, DistinctnessPreserveDistinctness, false)
+				legReq := properties.NewRequestedOrdering(legReqParts, properties.DistinctnessPreserveDistinctness, false)
 				tieBrokenLess := lessWithHashTieBreak(call.CostModel())
 				var best expressions.RelationalExpression
 				for _, pe := range innerExprs {
@@ -351,30 +352,30 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 // promoted to directional (sorted) bindings. This enables the InUnion
 // to merge-sort output by those keys.
 func adjustBindingsForInUnion(
-	ordering *RichOrdering,
+	ordering *properties.RichOrdering,
 	explodeAliases map[values.CorrelationIdentifier]struct{},
-	requestedOrdering *RequestedOrdering,
-) *RichOrdering {
+	requestedOrdering *properties.RequestedOrdering,
+) *properties.RichOrdering {
 	if ordering == nil || len(ordering.GetKeys()) == 0 {
 		return nil
 	}
 
 	reqMap := requestedOrdering.GetValueRequestedSortOrderMap()
-	adjustedBM := make(map[values.Value][]OrderingBinding, len(ordering.GetBindingMap()))
+	adjustedBM := make(map[values.Value][]properties.OrderingBinding, len(ordering.GetBindingMap()))
 
 	for val, bindings := range ordering.GetBindingMap() {
-		sortOrder := SortOrderOf(bindings)
+		sortOrder := properties.SortOrderOf(bindings)
 		if sortOrder.IsDirectional() {
-			adjustedBM[val] = []OrderingBinding{SortedBinding(sortOrder)}
+			adjustedBM[val] = []properties.OrderingBinding{properties.SortedBinding(sortOrder)}
 			continue
 		}
 
-		if !AreAllBindingsFixed(bindings) || HasMultipleFixedBindings(bindings) {
+		if !properties.AreAllBindingsFixed(bindings) || properties.HasMultipleFixedBindings(bindings) {
 			adjustedBM[val] = bindings
 			continue
 		}
 
-		b := SingleFixedBinding(bindings)
+		b := properties.SingleFixedBinding(bindings)
 		comp := b.GetComparison()
 		if comp == nil {
 			adjustedBM[val] = bindings
@@ -408,16 +409,16 @@ func adjustBindingsForInUnion(
 
 		if reqSort, ok := reqMap[val]; ok && reqSort.IsDirectional() {
 			if reqSort.IsAnyAscending() {
-				adjustedBM[val] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+				adjustedBM[val] = []properties.OrderingBinding{properties.SortedBinding(properties.ProvidedSortOrderAscending)}
 			} else {
-				adjustedBM[val] = []OrderingBinding{SortedBinding(ProvidedSortOrderDescending)}
+				adjustedBM[val] = []properties.OrderingBinding{properties.SortedBinding(properties.ProvidedSortOrderDescending)}
 			}
 		} else {
-			adjustedBM[val] = []OrderingBinding{ChooseBinding()}
+			adjustedBM[val] = []properties.OrderingBinding{properties.ChooseBinding()}
 		}
 	}
 
-	return NewRichOrdering(adjustedBM, ordering.GetKeys(), ordering.IsDistinct())
+	return properties.NewRichOrdering(adjustedBM, ordering.GetKeys(), ordering.IsDistinct())
 }
 
 var _ ImplementationRule = (*ImplementInUnionRule)(nil)

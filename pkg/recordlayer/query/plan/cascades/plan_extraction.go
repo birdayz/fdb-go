@@ -439,19 +439,6 @@ func rebuildExpressionFromSelectorVisited(e expressions.RelationalExpression, se
 	return rebuildWithFreshChildren(e, freshChildren)
 }
 
-func bestFrom(members []expressions.RelationalExpression, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
-	if len(members) == 0 {
-		return nil
-	}
-	best := members[0]
-	for _, m := range members[1:] {
-		if less(m, best) {
-			best = m
-		}
-	}
-	return best
-}
-
 // rebuildExpressionVisited returns a fresh RelationalExpression of the
 // same concrete type as `e`, with each Quantifier's Reference replaced
 // by a singleton Reference holding the recursively-extracted best plan
@@ -623,13 +610,4 @@ func isPhysicalPlan(e expressions.RelationalExpression) bool {
 	}
 	_, ok := e.(physicalPlanHolder)
 	return ok
-}
-
-func bestPhysicalFrom(members []expressions.RelationalExpression) expressions.RelationalExpression {
-	for _, m := range members {
-		if isPhysicalPlan(m) {
-			return m
-		}
-	}
-	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -90,7 +91,7 @@ func (s MatchedSortOrder) ArrowIndicator() string {
 // The mapping is by direction (Java's Direction enum), not by Go
 // constant name. Both enums use the same iota ordering that maps to
 // the same underlying Direction values.
-func (s MatchedSortOrder) ToProvidedSortOrder(isReverse bool) ProvidedSortOrder {
+func (s MatchedSortOrder) ToProvidedSortOrder(isReverse bool) properties.ProvidedSortOrder {
 	// Map by TupleOrdering.Direction. Forward uses the same Direction;
 	// reverse uses reverseDirection() (ASC_NULLS_FIRST<->DESC_NULLS_LAST,
 	// ASC_NULLS_LAST<->DESC_NULLS_FIRST). Mirrors Java
@@ -99,26 +100,26 @@ func (s MatchedSortOrder) ToProvidedSortOrder(isReverse bool) ProvidedSortOrder 
 	if isReverse {
 		switch s {
 		case MatchedSortOrderAscending: // ASC_NULLS_FIRST -> DESC_NULLS_LAST
-			return ProvidedSortOrderDescending
+			return properties.ProvidedSortOrderDescending
 		case MatchedSortOrderDescending: // DESC_NULLS_LAST -> ASC_NULLS_FIRST
-			return ProvidedSortOrderAscending
+			return properties.ProvidedSortOrderAscending
 		case MatchedSortOrderAscendingNullsLast: // ASC_NULLS_LAST -> DESC_NULLS_FIRST
-			return ProvidedSortOrderDescendingNullsFirst
+			return properties.ProvidedSortOrderDescendingNullsFirst
 		case MatchedSortOrderDescendingNullsFirst: // DESC_NULLS_FIRST -> ASC_NULLS_LAST
-			return ProvidedSortOrderAscendingNullsLast
+			return properties.ProvidedSortOrderAscendingNullsLast
 		}
 	}
 	switch s {
 	case MatchedSortOrderAscending: // ASC_NULLS_FIRST
-		return ProvidedSortOrderAscending
+		return properties.ProvidedSortOrderAscending
 	case MatchedSortOrderDescending: // DESC_NULLS_LAST
-		return ProvidedSortOrderDescending
+		return properties.ProvidedSortOrderDescending
 	case MatchedSortOrderAscendingNullsLast: // ASC_NULLS_LAST
-		return ProvidedSortOrderAscendingNullsLast
+		return properties.ProvidedSortOrderAscendingNullsLast
 	case MatchedSortOrderDescendingNullsFirst: // DESC_NULLS_FIRST
-		return ProvidedSortOrderDescendingNullsFirst
+		return properties.ProvidedSortOrderDescendingNullsFirst
 	}
-	return ProvidedSortOrderAscending
+	return properties.ProvidedSortOrderAscending
 }
 
 // MatchedOrderingPart is an OrderingPart that has been bound by a

@@ -6,6 +6,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -522,7 +523,7 @@ func TestPushCrossCandidateIntersection_StillFires(t *testing.T) {
 	p := NewPlanner(nil, ctx)
 	p.pushCrossCandidateIntersection(ref,
 		[]MatchCandidate{pmA.GetMatchCandidate(), pmB.GetMatchCandidate()},
-		[]*RequestedOrdering{PreserveOrdering()})
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()})
 
 	found := false
 	for _, m := range ref.FinalMembers() {

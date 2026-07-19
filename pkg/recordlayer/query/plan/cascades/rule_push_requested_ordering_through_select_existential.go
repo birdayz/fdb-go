@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // PushRequestedOrderingThroughSelectExistentialRule is a PLANNING-phase
@@ -49,7 +50,7 @@ func (r *PushRequestedOrderingThroughSelectExistentialRule) OnMatch(call *Implem
 		}
 		// Push preserve ordering — existential children are
 		// unconstrained in ordering.
-		call.PushConstraint(childRef, []*RequestedOrdering{PreserveOrdering()})
+		call.PushConstraint(childRef, []*properties.RequestedOrdering{properties.PreserveOrdering()})
 	}
 }
 

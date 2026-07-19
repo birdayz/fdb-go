@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -36,8 +37,8 @@ func (s *stubRelExpr) WithQuantifiers(_ []expressions.Quantifier) expressions.Re
 func TestIntersectionResult_NewAndGetters(t *testing.T) {
 	t.Parallel()
 
-	ordering := NewRichOrdering(
-		map[values.Value][]OrderingBinding{},
+	ordering := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{},
 		nil,
 		false,
 	)
@@ -104,7 +105,7 @@ func TestIntersectionResult_NilOrderingWithExprs_Panics(t *testing.T) {
 func TestIntersectionResult_DefensiveCopy(t *testing.T) {
 	t.Parallel()
 
-	ordering := EmptyOrdering()
+	ordering := properties.EmptyOrdering()
 	exprs := []expressions.RelationalExpression{&stubRelExpr{name: "a"}, &stubRelExpr{name: "b"}}
 	result := NewIntersectionResult(ordering, NoCompensation, exprs)
 
@@ -127,7 +128,7 @@ func TestIntersectionResult_String(t *testing.T) {
 		t.Fatalf("expected 'no common ordering' in %q", s)
 	}
 
-	viable := NewIntersectionResult(EmptyOrdering(), NoCompensation, nil)
+	viable := NewIntersectionResult(properties.EmptyOrdering(), NoCompensation, nil)
 	s2 := viable.String()
 	if s2 == "" {
 		t.Fatal("expected non-empty string for viable result")
@@ -141,7 +142,7 @@ func TestIntersectionResult_String(t *testing.T) {
 func TestIntersectionInfo_NewAndGetters(t *testing.T) {
 	t.Parallel()
 
-	ordering := EmptyOrdering()
+	ordering := properties.EmptyOrdering()
 	comp := ImpossibleCompensation
 	expr := &stubRelExpr{name: "idx1"}
 	info := NewIntersectionInfo(ordering, comp, []expressions.RelationalExpression{expr}, 42)
@@ -163,7 +164,7 @@ func TestIntersectionInfo_NewAndGetters(t *testing.T) {
 func TestIntersectionInfo_UnknownCardinality(t *testing.T) {
 	t.Parallel()
 
-	info := NewIntersectionInfo(EmptyOrdering(), NoCompensation, nil, CardinalityUnknown)
+	info := NewIntersectionInfo(properties.EmptyOrdering(), NoCompensation, nil, CardinalityUnknown)
 	if info.GetMaxCardinality() != CardinalityUnknown {
 		t.Fatalf("expected CardinalityUnknown (-1), got %d", info.GetMaxCardinality())
 	}
@@ -172,7 +173,7 @@ func TestIntersectionInfo_UnknownCardinality(t *testing.T) {
 func TestIntersectionInfo_OfSingleAccess(t *testing.T) {
 	t.Parallel()
 
-	ordering := EmptyOrdering()
+	ordering := properties.EmptyOrdering()
 	expr := &stubRelExpr{name: "single"}
 	info := IntersectionInfoOfSingleAccess(ordering, NoCompensation, expr, 100)
 
@@ -187,7 +188,7 @@ func TestIntersectionInfo_OfSingleAccess(t *testing.T) {
 func TestIntersectionInfo_OfImpossibleAccess(t *testing.T) {
 	t.Parallel()
 
-	info := IntersectionInfoOfImpossibleAccess(EmptyOrdering(), ImpossibleCompensation)
+	info := IntersectionInfoOfImpossibleAccess(properties.EmptyOrdering(), ImpossibleCompensation)
 	if len(info.GetExpressions()) != 0 {
 		t.Fatal("expected empty expressions for impossible access")
 	}
@@ -203,7 +204,7 @@ func TestIntersectionInfo_OfIntersection(t *testing.T) {
 		&stubRelExpr{name: "a"},
 		&stubRelExpr{name: "b"},
 	}
-	info := IntersectionInfoOfIntersection(EmptyOrdering(), NoCompensation, exprs)
+	info := IntersectionInfoOfIntersection(properties.EmptyOrdering(), NoCompensation, exprs)
 
 	if len(info.GetExpressions()) != 2 {
 		t.Fatalf("expected 2 expressions, got %d", len(info.GetExpressions()))
@@ -216,7 +217,7 @@ func TestIntersectionInfo_OfIntersection(t *testing.T) {
 func TestIntersectionInfo_EvictExpressions(t *testing.T) {
 	t.Parallel()
 
-	info := IntersectionInfoOfSingleAccess(EmptyOrdering(), NoCompensation, &stubRelExpr{name: "x"}, 10)
+	info := IntersectionInfoOfSingleAccess(properties.EmptyOrdering(), NoCompensation, &stubRelExpr{name: "x"}, 10)
 	if len(info.GetExpressions()) != 1 {
 		t.Fatal("expected 1 expression before eviction")
 	}
@@ -230,7 +231,7 @@ func TestIntersectionInfo_DefensiveCopy(t *testing.T) {
 	t.Parallel()
 
 	exprs := []expressions.RelationalExpression{&stubRelExpr{name: "orig"}}
-	info := NewIntersectionInfo(EmptyOrdering(), NoCompensation, exprs, 5)
+	info := NewIntersectionInfo(properties.EmptyOrdering(), NoCompensation, exprs, 5)
 
 	exprs[0] = &stubRelExpr{name: "mutated"}
 	if info.GetExpressions()[0].(*stubRelExpr).name == "mutated" {

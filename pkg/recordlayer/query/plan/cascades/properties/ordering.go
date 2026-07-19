@@ -181,3 +181,14 @@ func IsOrdered(e expressions.RelationalExpression) bool {
 type OrderingHinter interface {
 	HintOrdering() Ordering
 }
+
+// RichOrderingHinter is the optional interface an expression implements to
+// provide its full ordering WITH bindings — the equality-bound (fixed) vs.
+// merely sorted distinction that plain Ordering cannot express. Callers that
+// find it absent synthesize a binding map from HintOrdering instead.
+//
+// It lives here, beside OrderingHinter, so that both the physical wrappers in
+// cascades and the plans (which cannot import cascades) can implement it.
+type RichOrderingHinter interface {
+	HintRichOrdering() *RichOrdering
+}

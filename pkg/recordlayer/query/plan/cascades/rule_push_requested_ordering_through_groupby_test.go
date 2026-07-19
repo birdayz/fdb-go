@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -29,11 +30,11 @@ func TestPushRequestedOrderingThroughGroupBy_AllKeysMatch(t *testing.T) {
 	gbRef := expressions.InitialOf(gb)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-		{Value: &values.FieldValue{Field: "b", Typ: values.UnknownType}, SortOrder: RequestedSortOrderDescending},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, gbRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+		{Value: &values.FieldValue{Field: "b", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, gbRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughGroupByRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), gb)
@@ -61,10 +62,10 @@ func TestPushRequestedOrderingThroughGroupBy_AllKeysMatch(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("expected 2 ordering parts (all keys consumed), got %d", len(parts))
 	}
-	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "a" || parts[0].SortOrder != RequestedSortOrderAscending {
+	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "a" || parts[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatalf("first part: want a ASC, got %s %v", fv.Field, parts[0].SortOrder)
 	}
-	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "b" || parts[1].SortOrder != RequestedSortOrderDescending {
+	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "b" || parts[1].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("second part: want b DESC, got %s %v", fv.Field, parts[1].SortOrder)
 	}
 }
@@ -91,10 +92,10 @@ func TestPushRequestedOrderingThroughGroupBy_PartialMatchAppendsRemaining(t *tes
 	gbRef := expressions.InitialOf(gb)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, gbRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, gbRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughGroupByRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), gb)
@@ -116,15 +117,15 @@ func TestPushRequestedOrderingThroughGroupBy_PartialMatchAppendsRemaining(t *tes
 		t.Fatalf("expected 3 ordering parts (1 matched + 2 appended), got %d", len(parts))
 	}
 	// First: a ASC (from request)
-	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "a" || parts[0].SortOrder != RequestedSortOrderAscending {
+	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "a" || parts[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatalf("first part: want a ASC, got %s %v", fv.Field, parts[0].SortOrder)
 	}
 	// Second: b ANY (appended remaining)
-	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "b" || parts[1].SortOrder != RequestedSortOrderAny {
+	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "b" || parts[1].SortOrder != properties.RequestedSortOrderAny {
 		t.Fatalf("second part: want b ANY, got %s %v", fv.Field, parts[1].SortOrder)
 	}
 	// Third: c ANY (appended remaining)
-	if fv := parts[2].Value.(*values.FieldValue); fv.Field != "c" || parts[2].SortOrder != RequestedSortOrderAny {
+	if fv := parts[2].Value.(*values.FieldValue); fv.Field != "c" || parts[2].SortOrder != properties.RequestedSortOrderAny {
 		t.Fatalf("third part: want c ANY, got %s %v", fv.Field, parts[2].SortOrder)
 	}
 }
@@ -147,10 +148,10 @@ func TestPushRequestedOrderingThroughGroupBy_NonMatchingKeyDoesNotPush(t *testin
 	gbRef := expressions.InitialOf(gb)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "x", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, gbRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "x", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, gbRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughGroupByRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), gb)
@@ -218,10 +219,10 @@ func TestPushRequestedOrderingThroughGroupBy_NotConstraintOnlyIsNoOp(t *testing.
 	gbRef := expressions.InitialOf(gb)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, gbRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, gbRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughGroupByRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), gb)
@@ -256,10 +257,10 @@ func TestPushRequestedOrderingThroughGroupBy_CaseInsensitiveMatch(t *testing.T) 
 	gbRef := expressions.InitialOf(gb)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "COL1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, gbRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "COL1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, gbRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughGroupByRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), gb)
@@ -297,10 +298,10 @@ func TestPushRequestedOrderingThroughGroupBy_EmptyGroupKeysPreserves(t *testing.
 	gbRef := expressions.InitialOf(gb)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "x", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, gbRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "x", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, gbRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughGroupByRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), gb)
@@ -337,10 +338,10 @@ func TestPushRequestedOrderingThroughGroupBy_NoYield(t *testing.T) {
 	gbRef := expressions.InitialOf(gb)
 
 	cm := NewConstraintMap()
-	reqOrd := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
-	Set(cm, gbRef, RequestedOrderingConstraintKey, []*RequestedOrdering{reqOrd})
+	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
+	Set(cm, gbRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
 	rule := NewPushRequestedOrderingThroughGroupByRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), gb)

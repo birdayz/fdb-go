@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // ---------------------------------------------------------------------------
@@ -18,7 +19,7 @@ import (
 //
 // Ports Java's AbstractDataAccessRule.IntersectionResult.
 type IntersectionResult struct {
-	commonOrdering *RichOrdering
+	commonOrdering *properties.RichOrdering
 	compensation   Compensation
 	expressions    []expressions.RelationalExpression
 }
@@ -27,7 +28,7 @@ type IntersectionResult struct {
 // commonOrdering is nil the expressions slice must be empty (mirrors
 // Java's Verify.verify precondition).
 func NewIntersectionResult(
-	ordering *RichOrdering,
+	ordering *properties.RichOrdering,
 	comp Compensation,
 	exprs []expressions.RelationalExpression,
 ) *IntersectionResult {
@@ -63,7 +64,7 @@ func (r *IntersectionResult) IsViable() bool {
 
 // GetCommonOrdering returns the common intersection ordering. Panics
 // if the intersection is not viable.
-func (r *IntersectionResult) GetCommonOrdering() *RichOrdering {
+func (r *IntersectionResult) GetCommonOrdering() *properties.RichOrdering {
 	if r.commonOrdering == nil {
 		panic("IntersectionResult: no common ordering (not viable)")
 	}
@@ -100,7 +101,7 @@ func (r *IntersectionResult) String() string {
 //
 // Ports Java's AbstractDataAccessRule.IntersectionInfo.
 type IntersectionInfo struct {
-	ordering       *RichOrdering
+	ordering       *properties.RichOrdering
 	compensation   Compensation
 	expressions    []expressions.RelationalExpression
 	maxCardinality int64 // -1 = unknown
@@ -112,7 +113,7 @@ const CardinalityUnknown int64 = -1
 
 // NewIntersectionInfo creates an IntersectionInfo with all fields.
 func NewIntersectionInfo(
-	ordering *RichOrdering,
+	ordering *properties.RichOrdering,
 	comp Compensation,
 	exprs []expressions.RelationalExpression,
 	maxCard int64,
@@ -131,7 +132,7 @@ func NewIntersectionInfo(
 // single data access (one expression). Mirrors Java's
 // IntersectionInfo.ofSingleAccess().
 func IntersectionInfoOfSingleAccess(
-	ordering *RichOrdering,
+	ordering *properties.RichOrdering,
 	comp Compensation,
 	expr expressions.RelationalExpression,
 	maxCard int64,
@@ -148,7 +149,7 @@ func IntersectionInfoOfSingleAccess(
 // an impossible access (no expressions, unknown cardinality). Mirrors
 // Java's IntersectionInfo.ofImpossibleAccess().
 func IntersectionInfoOfImpossibleAccess(
-	ordering *RichOrdering,
+	ordering *properties.RichOrdering,
 	comp Compensation,
 ) *IntersectionInfo {
 	return &IntersectionInfo{
@@ -163,7 +164,7 @@ func IntersectionInfoOfImpossibleAccess(
 // computed intersection (multiple expressions, unknown cardinality).
 // Mirrors Java's IntersectionInfo.ofIntersection().
 func IntersectionInfoOfIntersection(
-	ordering *RichOrdering,
+	ordering *properties.RichOrdering,
 	comp Compensation,
 	exprs []expressions.RelationalExpression,
 ) *IntersectionInfo {
@@ -178,7 +179,7 @@ func IntersectionInfoOfIntersection(
 }
 
 // GetOrdering returns the ordering for this access.
-func (i *IntersectionInfo) GetOrdering() *RichOrdering {
+func (i *IntersectionInfo) GetOrdering() *properties.RichOrdering {
 	return i.ordering
 }
 

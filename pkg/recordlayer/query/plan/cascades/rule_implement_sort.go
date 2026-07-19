@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -42,7 +43,7 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 
 	// Top-down: push ordering constraint to inner reference so
 	// downstream rules (index scans) can satisfy it.
-	call.PushConstraint(innerRef, []*RequestedOrdering{requestedOrdering})
+	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
 
 	if requestedOrdering.IsPreserve() {
 		for _, m := range innerRef.AllMembers() {
@@ -82,9 +83,9 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			}
 		}
 
-		preserveDistinctReq := NewRequestedOrdering(
+		preserveDistinctReq := properties.NewRequestedOrdering(
 			requestedParts,
-			DistinctnessPreserveDistinctness,
+			properties.DistinctnessPreserveDistinctness,
 			requestedOrdering.IsExhaustive(),
 		)
 		if !ordering.Satisfies(preserveDistinctReq) {
@@ -144,43 +145,43 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 
 func (r *ImplementSortRule) GetRequestedOrderings(
 	expr expressions.RelationalExpression,
-) []*RequestedOrdering {
+) []*properties.RequestedOrdering {
 	s, ok := expr.(*expressions.LogicalSortExpression)
 	if !ok {
 		return nil
 	}
-	return []*RequestedOrdering{sortExpressionToRequestedOrdering(s)}
+	return []*properties.RequestedOrdering{sortExpressionToRequestedOrdering(s)}
 }
 
-func sortExpressionToRequestedOrdering(s *expressions.LogicalSortExpression) *RequestedOrdering {
+func sortExpressionToRequestedOrdering(s *expressions.LogicalSortExpression) *properties.RequestedOrdering {
 	keys := s.GetSortKeys()
 	if len(keys) == 0 {
-		return PreserveOrdering()
+		return properties.PreserveOrdering()
 	}
-	parts := make([]RequestedOrderingPart, len(keys))
+	parts := make([]properties.RequestedOrderingPart, len(keys))
 	for i, k := range keys {
 		// Carry the explicit NULL placement (k.NullsFirst, nil = natural:
 		// ASC→FIRST, DESC→LAST). An explicit non-natural placement maps to the
 		// *NullsLast/*NullsFirst variant so the satisfaction check retains the
 		// sort instead of eliding it against an opposite-null-placement scan.
-		var sortOrder RequestedSortOrder
+		var sortOrder properties.RequestedSortOrder
 		if !k.Reverse {
-			sortOrder = RequestedSortOrderAscending
+			sortOrder = properties.RequestedSortOrderAscending
 			if k.NullsFirst != nil && !*k.NullsFirst {
-				sortOrder = RequestedSortOrderAscendingNullsLast
+				sortOrder = properties.RequestedSortOrderAscendingNullsLast
 			}
 		} else {
-			sortOrder = RequestedSortOrderDescending
+			sortOrder = properties.RequestedSortOrderDescending
 			if k.NullsFirst != nil && *k.NullsFirst {
-				sortOrder = RequestedSortOrderDescendingNullsFirst
+				sortOrder = properties.RequestedSortOrderDescendingNullsFirst
 			}
 		}
-		parts[i] = RequestedOrderingPart{
+		parts[i] = properties.RequestedOrderingPart{
 			Value:     k.Value,
 			SortOrder: sortOrder,
 		}
 	}
-	return NewRequestedOrdering(parts, DistinctnessNotDistinct, false)
+	return properties.NewRequestedOrdering(parts, properties.DistinctnessNotDistinct, false)
 }
 
 // strictlyOrderedIfUnique checks whether the given expression is a unique
@@ -250,7 +251,7 @@ func makeStrictlySorted(expr expressions.RelationalExpression) expressions.Relat
 // computePartitionOrdering returns the ordering of the first physical
 // plan in the partition. All members share the same ordering by
 // construction (partitions are keyed on ordering properties).
-func computePartitionOrdering(partition *PlanPartition) *RichOrdering {
+func computePartitionOrdering(partition *PlanPartition) *properties.RichOrdering {
 	for _, expr := range partition.GetExpressions() {
 		if ph, ok := expr.(physicalPlanExpression); ok {
 			return computeWrapperRichOrdering(ph)

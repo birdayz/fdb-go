@@ -261,7 +261,7 @@ func commonPKFromChildren(children []plans.RecordQueryPlan) any {
 			return nil
 		}
 		for i := range pk {
-			if !valuesEqual(pk[i], firstPK[i]) {
+			if !values.ValuesStructurallyEqual(pk[i], firstPK[i]) {
 				return nil
 			}
 		}
@@ -276,22 +276,15 @@ func computeWrapperOrdering(w physicalPlanExpression) properties.Ordering {
 	return properties.Ordering{}
 }
 
-// RichOrderingHinter is the optional interface a wrapper implements
-// to provide full ordering info with bindings. Falls back to
-// converting from HintOrdering if not implemented.
-type RichOrderingHinter interface {
-	HintRichOrdering() *RichOrdering
-}
-
-func computeWrapperRichOrdering(w physicalPlanExpression) *RichOrdering {
-	if rh, ok := w.(RichOrderingHinter); ok {
+func computeWrapperRichOrdering(w physicalPlanExpression) *properties.RichOrdering {
+	if rh, ok := w.(properties.RichOrderingHinter); ok {
 		return rh.HintRichOrdering()
 	}
 	o := computeWrapperOrdering(w)
 	if !o.IsKnown || len(o.Keys) == 0 {
-		return EmptyOrdering()
+		return properties.EmptyOrdering()
 	}
-	bm := make(map[values.Value][]OrderingBinding, len(o.Keys))
+	bm := make(map[values.Value][]properties.OrderingBinding, len(o.Keys))
 	for i, k := range o.Keys {
 		// Map (descending, nulls-first) -> the matching ProvidedSortOrder,
 		// including the counterflow variants. NullsFirstAt defaults to the
@@ -301,20 +294,20 @@ func computeWrapperRichOrdering(w physicalPlanExpression) *RichOrdering {
 		// keeps a parent sort from eliding against it incorrectly.
 		desc := o.DescendingAt(i)
 		nullsFirst := o.NullsFirstAt(i)
-		var dir ProvidedSortOrder
+		var dir properties.ProvidedSortOrder
 		switch {
 		case !desc && nullsFirst:
-			dir = ProvidedSortOrderAscending // ASC_NULLS_FIRST
+			dir = properties.ProvidedSortOrderAscending // ASC_NULLS_FIRST
 		case !desc && !nullsFirst:
-			dir = ProvidedSortOrderAscendingNullsLast // ASC_NULLS_LAST (counterflow)
+			dir = properties.ProvidedSortOrderAscendingNullsLast // ASC_NULLS_LAST (counterflow)
 		case desc && !nullsFirst:
-			dir = ProvidedSortOrderDescending // DESC_NULLS_LAST
+			dir = properties.ProvidedSortOrderDescending // DESC_NULLS_LAST
 		default: // desc && nullsFirst
-			dir = ProvidedSortOrderDescendingNullsFirst // DESC_NULLS_FIRST (counterflow)
+			dir = properties.ProvidedSortOrderDescendingNullsFirst // DESC_NULLS_FIRST (counterflow)
 		}
-		bm[k] = []OrderingBinding{SortedBinding(dir)}
+		bm[k] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 	}
-	return NewRichOrdering(bm, o.Keys, false)
+	return properties.NewRichOrdering(bm, o.Keys, false)
 }
 
 // computeRefPlanProperties computes and stores plan properties for all

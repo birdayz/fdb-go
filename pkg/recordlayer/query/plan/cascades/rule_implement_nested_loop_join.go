@@ -7,6 +7,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -604,7 +605,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		return
 	}
 
-	outerExpr := getWinnerForOrdering(outerRef, PreserveOrdering(), call.CostModel())
+	outerExpr := getWinnerForOrdering(outerRef, properties.PreserveOrdering(), call.CostModel())
 	if outerExpr == nil {
 		return
 	}
@@ -614,7 +615,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	}
 	outerPlan := outerPh.GetRecordQueryPlan()
 
-	innerExpr := getWinnerForOrdering(innerRef, PreserveOrdering(), call.CostModel())
+	innerExpr := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
 	if innerExpr == nil {
 		return
 	}
@@ -1880,9 +1881,9 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		return
 	}
 
-	leftExpr := getWinnerForOrdering(leftRef, PreserveOrdering(), call.CostModel())
-	rightExpr := getWinnerForOrdering(rightRef, PreserveOrdering(), call.CostModel())
-	existExpr := getWinnerForOrdering(existRef, PreserveOrdering(), call.CostModel())
+	leftExpr := getWinnerForOrdering(leftRef, properties.PreserveOrdering(), call.CostModel())
+	rightExpr := getWinnerForOrdering(rightRef, properties.PreserveOrdering(), call.CostModel())
+	existExpr := getWinnerForOrdering(existRef, properties.PreserveOrdering(), call.CostModel())
 	if leftExpr == nil || rightExpr == nil || existExpr == nil {
 		return
 	}
@@ -2388,7 +2389,7 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		if quants[i].IsNullOnEmpty() {
 			return
 		}
-		expr := getWinnerForOrdering(ref, PreserveOrdering(), call.CostModel())
+		expr := getWinnerForOrdering(ref, properties.PreserveOrdering(), call.CostModel())
 		if expr == nil {
 			return
 		}
@@ -2432,7 +2433,7 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		}
 	}
 
-	existExpr := getWinnerForOrdering(existRef, PreserveOrdering(), call.CostModel())
+	existExpr := getWinnerForOrdering(existRef, properties.PreserveOrdering(), call.CostModel())
 	if existExpr == nil {
 		return
 	}

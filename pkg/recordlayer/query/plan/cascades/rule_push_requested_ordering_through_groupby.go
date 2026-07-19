@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -67,23 +68,23 @@ func (r *PushRequestedOrderingThroughGroupByRule) OnMatch(call *ImplementationRu
 
 	groupingKeys := gb.GetGroupingKeys()
 
-	var synthesized []*RequestedOrdering
+	var synthesized []*properties.RequestedOrdering
 	for _, reqOrd := range orderings {
 		if reqOrd.IsPreserve() {
 			// Preserve ordering: push the grouping keys with ANY sort
 			// order. Scalar aggregation (no grouping keys) trivially
 			// satisfies any ordering.
 			if len(groupingKeys) == 0 {
-				synthesized = append(synthesized, PreserveOrdering())
+				synthesized = append(synthesized, properties.PreserveOrdering())
 			} else {
-				parts := make([]RequestedOrderingPart, len(groupingKeys))
+				parts := make([]properties.RequestedOrderingPart, len(groupingKeys))
 				for i, gk := range groupingKeys {
-					parts[i] = RequestedOrderingPart{
+					parts[i] = properties.RequestedOrderingPart{
 						Value:     gk,
-						SortOrder: RequestedSortOrderAny,
+						SortOrder: properties.RequestedSortOrderAny,
 					}
 				}
-				synthesized = append(synthesized, NewRequestedOrdering(parts, DistinctnessPreserveDistinctness, false))
+				synthesized = append(synthesized, properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false))
 			}
 			continue
 		}
@@ -91,7 +92,7 @@ func (r *PushRequestedOrderingThroughGroupByRule) OnMatch(call *ImplementationRu
 		if len(groupingKeys) == 0 {
 			// No grouping keys — scalar aggregation produces 0-1 rows.
 			// Any ordering is trivially satisfied.
-			synthesized = append(synthesized, PreserveOrdering())
+			synthesized = append(synthesized, properties.PreserveOrdering())
 			continue
 		}
 
@@ -109,7 +110,7 @@ func (r *PushRequestedOrderingThroughGroupByRule) OnMatch(call *ImplementationRu
 // synthesizeGroupByOrdering checks that every ordering part matches a
 // grouping key and returns a synthesized ordering covering all grouping
 // keys. Returns nil if the ordering is incompatible.
-func synthesizeGroupByOrdering(reqOrd *RequestedOrdering, groupingKeys []values.Value) *RequestedOrdering {
+func synthesizeGroupByOrdering(reqOrd *properties.RequestedOrdering, groupingKeys []values.Value) *properties.RequestedOrdering {
 	// Build a map of grouping key field names for quick lookup.
 	type groupKeyEntry struct {
 		index int
@@ -126,7 +127,7 @@ func synthesizeGroupByOrdering(reqOrd *RequestedOrdering, groupingKeys []values.
 	}
 
 	consumed := make([]bool, len(groupingKeys))
-	parts := make([]RequestedOrderingPart, 0, len(groupingKeys))
+	parts := make([]properties.RequestedOrderingPart, 0, len(groupingKeys))
 
 	for _, p := range reqOrd.GetParts() {
 		fv, ok := p.Value.(*values.FieldValue)
@@ -149,14 +150,14 @@ func synthesizeGroupByOrdering(reqOrd *RequestedOrdering, groupingKeys []values.
 	// Append remaining grouping keys with ANY sort order.
 	for i, gk := range groupingKeys {
 		if !consumed[i] {
-			parts = append(parts, RequestedOrderingPart{
+			parts = append(parts, properties.RequestedOrderingPart{
 				Value:     gk,
-				SortOrder: RequestedSortOrderAny,
+				SortOrder: properties.RequestedSortOrderAny,
 			})
 		}
 	}
 
-	return NewRequestedOrdering(parts, reqOrd.GetDistinctness(), reqOrd.IsExhaustive())
+	return properties.NewRequestedOrdering(parts, reqOrd.GetDistinctness(), reqOrd.IsExhaustive())
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughGroupByRule)(nil)

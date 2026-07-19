@@ -65,31 +65,31 @@ func TestProvidedSortOrder_IsCompatibleWithRequestedSortOrder_TruthTable(t *test
 	t.Parallel()
 	cases := []struct {
 		name     string
-		provided ProvidedSortOrder
-		reqd     RequestedSortOrder
+		provided properties.ProvidedSortOrder
+		reqd     properties.RequestedSortOrder
 		want     bool
 	}{
 		// ANY request is always compatible.
-		{"asc-first vs any", ProvidedSortOrderAscending, RequestedSortOrderAny, true},
-		{"asc-last vs any", ProvidedSortOrderAscendingNullsLast, RequestedSortOrderAny, true},
+		{"asc-first vs any", properties.ProvidedSortOrderAscending, properties.RequestedSortOrderAny, true},
+		{"asc-last vs any", properties.ProvidedSortOrderAscendingNullsLast, properties.RequestedSortOrderAny, true},
 		// FIXED / CHOOSE provided is always compatible (constant / free).
-		{"fixed vs asc-last", ProvidedSortOrderFixed, RequestedSortOrderAscendingNullsLast, true},
-		{"choose vs desc-first", ProvidedSortOrderChoose, RequestedSortOrderDescendingNullsFirst, true},
+		{"fixed vs asc-last", properties.ProvidedSortOrderFixed, properties.RequestedSortOrderAscendingNullsLast, true},
+		{"choose vs desc-first", properties.ProvidedSortOrderChoose, properties.RequestedSortOrderDescendingNullsFirst, true},
 		// Natural ascending: ASC_NULLS_FIRST.
-		{"asc-first vs asc", ProvidedSortOrderAscending, RequestedSortOrderAscending, true},
-		{"asc-first vs asc-nulls-last", ProvidedSortOrderAscending, RequestedSortOrderAscendingNullsLast, false}, // THE bug
-		{"asc-first vs desc", ProvidedSortOrderAscending, RequestedSortOrderDescending, false},
-		{"asc-first vs desc-nulls-first", ProvidedSortOrderAscending, RequestedSortOrderDescendingNullsFirst, false},
+		{"asc-first vs asc", properties.ProvidedSortOrderAscending, properties.RequestedSortOrderAscending, true},
+		{"asc-first vs asc-nulls-last", properties.ProvidedSortOrderAscending, properties.RequestedSortOrderAscendingNullsLast, false}, // THE bug
+		{"asc-first vs desc", properties.ProvidedSortOrderAscending, properties.RequestedSortOrderDescending, false},
+		{"asc-first vs desc-nulls-first", properties.ProvidedSortOrderAscending, properties.RequestedSortOrderDescendingNullsFirst, false},
 		// Counterflow ascending: ASC_NULLS_LAST.
-		{"asc-last vs asc-nulls-last", ProvidedSortOrderAscendingNullsLast, RequestedSortOrderAscendingNullsLast, true},
-		{"asc-last vs asc", ProvidedSortOrderAscendingNullsLast, RequestedSortOrderAscending, false},
+		{"asc-last vs asc-nulls-last", properties.ProvidedSortOrderAscendingNullsLast, properties.RequestedSortOrderAscendingNullsLast, true},
+		{"asc-last vs asc", properties.ProvidedSortOrderAscendingNullsLast, properties.RequestedSortOrderAscending, false},
 		// Natural descending: DESC_NULLS_LAST.
-		{"desc-last vs desc", ProvidedSortOrderDescending, RequestedSortOrderDescending, true},
-		{"desc-last vs desc-nulls-first", ProvidedSortOrderDescending, RequestedSortOrderDescendingNullsFirst, false}, // symmetric bug
-		{"desc-last vs asc", ProvidedSortOrderDescending, RequestedSortOrderAscending, false},
+		{"desc-last vs desc", properties.ProvidedSortOrderDescending, properties.RequestedSortOrderDescending, true},
+		{"desc-last vs desc-nulls-first", properties.ProvidedSortOrderDescending, properties.RequestedSortOrderDescendingNullsFirst, false}, // symmetric bug
+		{"desc-last vs asc", properties.ProvidedSortOrderDescending, properties.RequestedSortOrderAscending, false},
 		// Counterflow descending: DESC_NULLS_FIRST.
-		{"desc-first vs desc-nulls-first", ProvidedSortOrderDescendingNullsFirst, RequestedSortOrderDescendingNullsFirst, true},
-		{"desc-first vs desc", ProvidedSortOrderDescendingNullsFirst, RequestedSortOrderDescending, false},
+		{"desc-first vs desc-nulls-first", properties.ProvidedSortOrderDescendingNullsFirst, properties.RequestedSortOrderDescendingNullsFirst, true},
+		{"desc-first vs desc", properties.ProvidedSortOrderDescendingNullsFirst, properties.RequestedSortOrderDescending, false},
 	}
 	for _, c := range cases {
 		if got := c.provided.IsCompatibleWithRequestedSortOrder(c.reqd); got != c.want {
@@ -105,24 +105,24 @@ func TestProvidedSortOrder_IsCompatibleWithRequestedSortOrder_TruthTable(t *test
 func TestRichOrdering_Satisfies_CounterflowNulls(t *testing.T) {
 	t.Parallel()
 	a := fieldVal("a")
-	o := NewRichOrdering(
-		map[values.Value][]OrderingBinding{
-			a: {SortedBinding(ProvidedSortOrderAscending)}, // forward scan = ASC_NULLS_FIRST
+	o := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{
+			a: {properties.SortedBinding(properties.ProvidedSortOrderAscending)}, // forward scan = ASC_NULLS_FIRST
 		},
 		[]values.Value{a},
 		false,
 	)
 
-	ascNullsLast := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: a, SortOrder: RequestedSortOrderAscendingNullsLast},
-	}, DistinctnessNotDistinct, false)
+	ascNullsLast := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: a, SortOrder: properties.RequestedSortOrderAscendingNullsLast},
+	}, properties.DistinctnessNotDistinct, false)
 	if o.Satisfies(ascNullsLast) {
 		t.Fatal("ASC_NULLS_FIRST ordering must NOT satisfy an ASC NULLS LAST request (sort must be retained)")
 	}
 
-	ascNatural := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: a, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
+	ascNatural := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: a, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
 	if !o.Satisfies(ascNatural) {
 		t.Fatal("ASC_NULLS_FIRST ordering must still satisfy a plain ASC request (natural-order elision preserved)")
 	}
@@ -135,23 +135,23 @@ func TestRichOrdering_Satisfies_CounterflowNulls(t *testing.T) {
 func TestEnumerateSatisfyingComparisonKeyValues_RefusesCounterflow(t *testing.T) {
 	t.Parallel()
 	a := fieldVal("a")
-	o := NewRichOrdering(
-		map[values.Value][]OrderingBinding{
-			a: {SortedBinding(ProvidedSortOrderAscending)},
+	o := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{
+			a: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
 		},
 		[]values.Value{a},
 		false,
 	)
-	counterflow := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: a, SortOrder: RequestedSortOrderAscendingNullsLast},
-	}, DistinctnessNotDistinct, false)
+	counterflow := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: a, SortOrder: properties.RequestedSortOrderAscendingNullsLast},
+	}, properties.DistinctnessNotDistinct, false)
 	if got := o.EnumerateSatisfyingComparisonKeyValues(counterflow); got != nil {
 		t.Fatalf("counterflow request must yield no satisfying comparison keys, got %v", got)
 	}
 	// Sanity: the natural request still enumerates.
-	natural := NewRequestedOrdering([]RequestedOrderingPart{
-		{Value: a, SortOrder: RequestedSortOrderAscending},
-	}, DistinctnessNotDistinct, false)
+	natural := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+		{Value: a, SortOrder: properties.RequestedSortOrderAscending},
+	}, properties.DistinctnessNotDistinct, false)
 	if got := o.EnumerateSatisfyingComparisonKeyValues(natural); got == nil {
 		t.Fatal("natural ASC request should still enumerate a satisfying comparison key")
 	}

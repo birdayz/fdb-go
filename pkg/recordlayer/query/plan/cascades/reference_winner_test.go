@@ -409,12 +409,12 @@ func TestPlan_OrderedMemberSelectable(t *testing.T) {
 
 	// OrderedIndexScanRule produces an ordered index scan at the sort
 	// level; bestSatisfyingMember must find it for a STATUS ASC request.
-	reqOrd := NewRequestedOrdering(
-		[]RequestedOrderingPart{{
+	reqOrd := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
 			Value:     &values.FieldValue{Field: "STATUS", Typ: values.UnknownType},
-			SortOrder: RequestedSortOrderAscending,
+			SortOrder: properties.RequestedSortOrderAscending,
 		}},
-		DistinctnessPreserveDistinctness, false)
+		properties.DistinctnessPreserveDistinctness, false)
 	winner := bestSatisfyingMember(sortRef, reqOrd, nil)
 	if winner == nil {
 		t.Fatal("expected an ordering-satisfying member for STATUS ASC")

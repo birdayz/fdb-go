@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // PushRequestedOrderingThroughUnionRule is a PLANNING-phase
@@ -56,7 +57,7 @@ func (r *PushRequestedOrderingThroughUnionRule) OnMatch(call *ImplementationRule
 	// Java: the first quantifier needs to produce all possible orderings;
 	// the other ones get specifically requested by the union
 	// implementation rule.
-	exhaustive := make([]*RequestedOrdering, len(orderings))
+	exhaustive := make([]*properties.RequestedOrdering, len(orderings))
 	for i, o := range orderings {
 		exhaustive[i] = o.Exhaustive()
 	}

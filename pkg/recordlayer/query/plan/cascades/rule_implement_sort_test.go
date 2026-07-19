@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -25,10 +26,10 @@ func TestImplementSortRule_GetRequestedOrderings(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("expected 2 parts, got %d", len(parts))
 	}
-	if parts[0].SortOrder != RequestedSortOrderAscending {
+	if parts[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatal("first key should be ascending")
 	}
-	if parts[1].SortOrder != RequestedSortOrderDescending {
+	if parts[1].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatal("second key should be descending")
 	}
 }
@@ -60,7 +61,7 @@ func TestSortExpressionToRequestedOrdering(t *testing.T) {
 	if req.Size() != 1 {
 		t.Fatalf("expected 1 part, got %d", req.Size())
 	}
-	if req.GetParts()[0].SortOrder != RequestedSortOrderAscending {
+	if req.GetParts()[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatal("expected ascending")
 	}
 }

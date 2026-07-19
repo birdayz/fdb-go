@@ -116,17 +116,17 @@ func (w *physicalFetchFromPartialRecordWrapper) HintOrdering() properties.Orderi
 	return properties.Ordering{}
 }
 
-func (w *physicalFetchFromPartialRecordWrapper) HintRichOrdering() *RichOrdering {
+func (w *physicalFetchFromPartialRecordWrapper) HintRichOrdering() *properties.RichOrdering {
 	ref := w.innerQuant.GetRangesOver()
 	if ref == nil {
-		return EmptyOrdering()
+		return properties.EmptyOrdering()
 	}
 	for _, m := range ref.AllMembers() {
-		if rh, ok := m.(RichOrderingHinter); ok {
+		if rh, ok := m.(properties.RichOrderingHinter); ok {
 			return rh.HintRichOrdering()
 		}
 	}
-	return EmptyOrdering()
+	return properties.EmptyOrdering()
 }
 
 func (w *physicalFetchFromPartialRecordWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

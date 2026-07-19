@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -23,7 +24,7 @@ import (
 // none is stamped yet). less is the cost comparator; pass a stats-aware
 // comparator (call.CostModel()) so join sub-product winners are chosen by
 // real cardinality rather than the default-stats tie (RFC-041).
-func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+func getWinnerForOrdering(ref *expressions.Reference, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	if ref == nil {
 		return nil
 	}
@@ -54,7 +55,7 @@ func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrderin
 // member does. The comparator is wrapped with the deterministic plan-hash
 // tie-break so the chosen member is unique — cost ties otherwise resolve
 // by member iteration order, flipping the plan across plannings.
-func bestSatisfyingMember(ref *expressions.Reference, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+func bestSatisfyingMember(ref *expressions.Reference, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	if ref == nil || ordering == nil {
 		return nil
 	}
@@ -86,11 +87,11 @@ func bestSatisfyingMember(ref *expressions.Reference, ordering *RequestedOrderin
 // extraction-side rebuildOrderedSpine; this is the RULE-time twin for
 // yields that drop a sort during PLANNING (Java bakes concrete children at
 // rule time via memoizePlan, so it has no unpinned window at all).
-func pinOrderedSpine(expr expressions.RelationalExpression, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+func pinOrderedSpine(expr expressions.RelationalExpression, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	return pinOrderedSpineDepth(expr, ordering, less, 0)
 }
 
-func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool, depth int) expressions.RelationalExpression {
+func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool, depth int) expressions.RelationalExpression {
 	d, ok := expr.(orderingDelegator)
 	if !ok {
 		return expr
@@ -206,7 +207,7 @@ func findBestValidPhysicalExpr(ref *expressions.Reference, less func(a, b expres
 
 // getWinnerPlan returns the RecordQueryPlan from the winner for the
 // given ordering, or nil if no physical plan exists.
-func getWinnerPlan(ref *expressions.Reference, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) plans.RecordQueryPlan {
+func getWinnerPlan(ref *expressions.Reference, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) plans.RecordQueryPlan {
 	winner := getWinnerForOrdering(ref, ordering, less)
 	if winner == nil {
 		return nil
@@ -246,11 +247,11 @@ const maxOrderingDelegationDepth = 64
 // ordering satisfies the requested ordering. Non-physical members never
 // satisfy. Order-preserving wrappers resolve through their source group (see
 // orderingDelegator).
-func memberSatisfiesOrdering(m expressions.RelationalExpression, requested *RequestedOrdering) bool {
+func memberSatisfiesOrdering(m expressions.RelationalExpression, requested *properties.RequestedOrdering) bool {
 	return memberSatisfiesOrderingDepth(m, requested, 0)
 }
 
-func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested *RequestedOrdering, depth int) bool {
+func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested *properties.RequestedOrdering, depth int) bool {
 	// Physicality gates FIRST: a preserve request must not admit a logical
 	// member either — bestSatisfyingMember promises "cheapest PHYSICAL
 	// member" unconditionally.
