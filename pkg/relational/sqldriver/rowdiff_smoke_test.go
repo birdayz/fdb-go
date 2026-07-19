@@ -69,6 +69,11 @@ func reportRowdiff(t *testing.T, res *rowdiff.SeedResult) {
 	for _, pe := range res.PlanErrors {
 		t.Logf("seed %d plan-error: %s", res.Seed, pe)
 	}
+	// Known-gap declines are logged, never silent: a growing bucket here means
+	// the ledger is masking more than it should.
+	for _, d := range res.Declines {
+		t.Logf("seed %d DECLINE: %s", res.Seed, d)
+	}
 	// Each dimension reports independently of Kind: a seed can hold
 	// confirmed mismatches AND a later infra failure. INFRA is not a
 	// soundness finding, but the smoke shares the suite's healthy

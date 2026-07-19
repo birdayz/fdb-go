@@ -132,36 +132,73 @@ func compareSortKey(a, b any, k OrderKey) int {
 }
 
 func evalBool(n *BoolNode, r Row) (predicates.TriBool, error) {
+	tb, err := evalBoolInner(n, r)
+	if err != nil || !n.Not {
+		return tb, err
+	}
+	// Kleene NOT: NOT UNKNOWN stays UNKNOWN.
+	switch tb {
+	case predicates.TriTrue:
+		return predicates.TriFalse, nil
+	case predicates.TriFalse:
+		return predicates.TriTrue, nil
+	}
+	return predicates.TriUnknown, nil
+}
+
+func evalBoolInner(n *BoolNode, r Row) (predicates.TriBool, error) {
 	if n.Leaf != nil {
 		p := n.Leaf
-		switch {
-		case p.IsBetween:
-			// SQL desugaring: v >= lo AND v <= hi, Kleene AND over the
-			// engine's own comparisons.
-			lo, err := predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, p.Lit).Eval(r[p.Col])
-			if err != nil {
-				return predicates.TriUnknown, err
-			}
-			if lo == predicates.TriFalse {
-				return predicates.TriFalse, nil
-			}
-			hi, err := predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, p.BetweenHi).Eval(r[p.Col])
-			if err != nil {
-				return predicates.TriUnknown, err
-			}
-			if hi == predicates.TriFalse {
-				return predicates.TriFalse, nil
-			}
-			if lo == predicates.TriUnknown || hi == predicates.TriUnknown {
-				return predicates.TriUnknown, nil
-			}
-			return predicates.TriTrue, nil
-		case p.Op == predicates.ComparisonIn:
-			return predicates.NewLiteralComparison(predicates.ComparisonIn, p.InList).Eval(r[p.Col])
-		default:
-			return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(r[p.Col])
+		tb, err := evalLeaf(p, r)
+		if err != nil || !p.Negated {
+			return tb, err
 		}
+		switch tb {
+		case predicates.TriTrue:
+			return predicates.TriFalse, nil
+		case predicates.TriFalse:
+			return predicates.TriTrue, nil
+		}
+		return predicates.TriUnknown, nil
 	}
+	return evalBoolTree(n, r)
+}
+
+func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
+	switch {
+	case p.RhsCol != "":
+		// Column-vs-column: the engine's own two-sided evaluation.
+		return predicates.NewLiteralComparison(p.Op, nil).EvalAgainst(r[p.Col], r[p.RhsCol])
+	case p.IsBetween:
+		// SQL desugaring: v >= lo AND v <= hi, Kleene AND over the
+		// engine's own comparisons.
+		lo, err := predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, p.Lit).Eval(r[p.Col])
+		if err != nil {
+			return predicates.TriUnknown, err
+		}
+		if lo == predicates.TriFalse {
+			return predicates.TriFalse, nil
+		}
+		hi, err := predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, p.BetweenHi).Eval(r[p.Col])
+		if err != nil {
+			return predicates.TriUnknown, err
+		}
+		if hi == predicates.TriFalse {
+			return predicates.TriFalse, nil
+		}
+		if lo == predicates.TriUnknown || hi == predicates.TriUnknown {
+			return predicates.TriUnknown, nil
+		}
+		return predicates.TriTrue, nil
+	case p.Op == predicates.ComparisonIn:
+		return predicates.NewLiteralComparison(predicates.ComparisonIn, p.InList).Eval(r[p.Col])
+	default:
+		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(r[p.Col])
+	}
+}
+
+// evalBoolTree combines child truth values with Kleene AND/OR.
+func evalBoolTree(n *BoolNode, r Row) (predicates.TriBool, error) {
 	if n.And {
 		result := predicates.TriTrue
 		for _, kid := range n.Kids {

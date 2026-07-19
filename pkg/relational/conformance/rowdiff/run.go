@@ -55,6 +55,7 @@ type SeedResult struct {
 	InfraErr   error
 	Histogram  map[string]int // plan family → query count
 	PlanErrors []string       // first few embedded-planner failures (diagnostics for the plan-error bucket)
+	Declines   []string       // documented known-gap declines (RFC-182 §4), never silent
 	Executed   int            // query×projection executions compared
 }
 
@@ -141,6 +142,14 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 					res.InfraErr = fmt.Errorf("query %q: %w", sqlText, err)
 					return finalizeResult(res)
 				}
+				if gap := matchKnownGap(sqlText, err); gap != nil {
+					// DECLINE, not a finding: a documented limitation with a
+					// live pin. Recorded (never silent) so the rate stays
+					// visible and a growing bucket is noticed.
+					res.Declines = append(res.Declines,
+						fmt.Sprintf("%s [pin: %s]: %s", gap.name, gap.pin, sqlText))
+					continue
+				}
 				res.Mismatches = append(res.Mismatches, &Mismatch{
 					Seed: c.Seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
 					Detail: fmt.Sprintf("engine error: %v", err),
@@ -215,6 +224,45 @@ func queryRows(ctx context.Context, db *sql.DB, sqlText string) ([]Row, []string
 	return out, upper, rows.Err()
 }
 
+// knownGap is one documented engine limitation the harness is allowed to
+// classify as DECLINE instead of MISMATCH (RFC-182 §4). Membership is
+// deliberately expensive to obtain: every entry needs a LIVE PIN that fails
+// the day the limitation lifts, and a TODO.md entry — otherwise this list
+// becomes the suppression hole §4 warns about.
+type knownGap struct {
+	name    string
+	pin     string // the live test that goes red when the gap closes
+	matches func(sqlText string, err error) bool
+}
+
+// knownGaps is the whole ledger. Keep it SHORT and each entry NARROW: an
+// over-broad matcher silently converts real findings into declines.
+var knownGaps = []knownGap{
+	{
+		name: "nested-IN over an intersection extracts InJoin(<nil>) (RFC-167 shell gap)",
+		pin:  "TestNestedIn_OverIntersection_GatePin",
+		matches: func(sqlText string, err error) bool {
+			// Narrow on BOTH axes: the exact plan-invariant signature for the
+			// IN-join node, AND the specific query shape (two or more IN
+			// predicates). A plan-invariant failure on any other shape — or a
+			// different error on this shape — stays a finding.
+			return strings.Contains(err.Error(), "plan-invariant") &&
+				strings.Contains(err.Error(), "RecordQueryInJoinPlan") &&
+				strings.Count(strings.ToUpper(sqlText), " IN (") >= 2
+		},
+	},
+}
+
+// matchKnownGap returns the ledger entry covering this failure, or nil.
+func matchKnownGap(sqlText string, err error) *knownGap {
+	for i := range knownGaps {
+		if knownGaps[i].matches(sqlText, err) {
+			return &knownGaps[i]
+		}
+	}
+	return nil
+}
+
 // isInfraError classifies the KNOWN transport/context failure signatures as
 // infrastructure. The set is deliberately narrow: an unrecognized error is a
 // finding, so a genuine engine defect can never hide behind the INFRA class.
@@ -256,6 +304,16 @@ func diffRows(engine []Row, cols []string, oracle []Row, q Query) string {
 			parts = append(parts, fmt.Sprintf("%s=%v(%T)", c, r[c], r[c]))
 		}
 		return strings.Join(parts, "|")
+	}
+
+	// OFFSET is generated only alongside a total ORDER BY, so the skipped
+	// prefix is well-defined: drop it from the oracle before comparing.
+	if q.Offset > 0 {
+		if q.Offset >= len(oracle) {
+			oracle = nil
+		} else {
+			oracle = oracle[q.Offset:]
+		}
 	}
 
 	want := len(oracle)

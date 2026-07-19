@@ -69,13 +69,21 @@ type Pred struct {
 	// engine's own comparisons, which is the SQL desugaring).
 	BetweenHi any
 	IsBetween bool
+	// RhsCol, when non-empty, makes this a COLUMN-vs-COLUMN comparison
+	// (`a < b`) instead of column-vs-literal. Non-sargable, so it forces
+	// residual filters and different plan shapes than a literal comparison.
+	RhsCol string
+	// Negated renders `NOT (…)` around the leaf (and `NOT IN` for IN).
+	Negated bool
 }
 
 // BoolNode is the AND/OR tree over leaves. Exactly one of Leaf / Kids is set.
+// Not negates the whole node (Kleene NOT: NOT UNKNOWN stays UNKNOWN).
 type BoolNode struct {
 	Leaf *Pred
 	And  bool // valid when len(Kids) > 0
 	Kids []*BoolNode
+	Not  bool
 }
 
 // NullsPlacement is an ORDER BY key's NULL position. Default follows the
@@ -104,6 +112,7 @@ type Query struct {
 	Where    *BoolNode // nil = no WHERE
 	OrderBy  []OrderKey
 	Limit    int  // 0 = no LIMIT
+	Offset   int  // 0 = no OFFSET (only emitted alongside LIMIT + ORDER BY)
 	Distinct bool // SELECT DISTINCT (ORDER BY keys ⊆ projection enforced by generator)
 }
 
@@ -251,6 +260,30 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 		}
 	}
 
+	// Column-vs-column leaf (~1/7): non-sargable, so it forces a residual
+	// filter and reaches plan shapes literal comparisons never do. Same-typed
+	// columns only — cross-type comparison semantics are their own axis.
+	if rng.IntN(7) == 0 {
+		bigints := []string{"A", "B", "C"}
+		l := bigints[rng.IntN(len(bigints))]
+		r := bigints[rng.IntN(len(bigints))]
+		if l != r {
+			ops := []predicates.ComparisonType{
+				predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+				predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+				predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+			}
+			leaves = append(leaves, &Pred{Col: l, Op: ops[rng.IntN(len(ops))], RhsCol: r})
+		}
+	}
+
+	// NOT on a leaf (~1/8 each): `NOT (a = 1)` / `a NOT IN (…)`.
+	for _, lf := range leaves {
+		if rng.IntN(8) == 0 {
+			lf.Negated = true
+		}
+	}
+
 	var where *BoolNode
 	if len(leaves) == 1 {
 		where = &BoolNode{Leaf: leaves[0]}
@@ -314,6 +347,17 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 	// values exercise the |M| < k clamp.
 	if rng.IntN(4) == 0 {
 		q.Limit = 1 + rng.IntN(30)
+		// OFFSET only with a total ORDER BY: without one the skipped prefix
+		// is implementation-defined and the result is not a checkable set.
+		if len(q.OrderBy) > 0 && rng.IntN(3) == 0 {
+			q.Offset = rng.IntN(5)
+		}
+	}
+
+	// NOT around the whole WHERE (~1/10) — exercises the negation
+	// normalization (DeMorgan) the planner applies before matching.
+	if q.Where != nil && rng.IntN(10) == 0 {
+		q.Where = &BoolNode{Not: true, And: true, Kids: []*BoolNode{q.Where}}
 	}
 
 	return q
@@ -472,14 +516,26 @@ func (c *Case) SQL(q Query, projection []string) string {
 	}
 	if q.Limit > 0 {
 		fmt.Fprintf(&b, " LIMIT %d", q.Limit)
+		if q.Offset > 0 {
+			fmt.Fprintf(&b, " OFFSET %d", q.Offset)
+		}
 	}
 	return b.String()
 }
 
 func renderBool(b *strings.Builder, n *BoolNode) {
+	if n.Not {
+		b.WriteString("NOT (")
+		defer b.WriteString(")")
+	}
 	if n.Leaf != nil {
 		p := n.Leaf
 		col := strings.ToLower(p.Col)
+		// NOT IN renders inline; every other negated leaf wraps in NOT (…).
+		negWrap := p.Negated && p.Op != predicates.ComparisonIn
+		if negWrap {
+			b.WriteString("NOT (")
+		}
 		switch {
 		case p.IsBetween:
 			fmt.Fprintf(b, "%s BETWEEN %s AND %s", col, renderLiteral(p.Lit), renderLiteral(p.BetweenHi))
@@ -492,11 +548,20 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 			for i, v := range p.InList {
 				lits[i] = renderLiteral(v)
 			}
-			fmt.Fprintf(b, "%s IN (%s)", col, strings.Join(lits, ", "))
+			kw := "IN"
+			if p.Negated {
+				kw = "NOT IN"
+			}
+			fmt.Fprintf(b, "%s %s (%s)", col, kw, strings.Join(lits, ", "))
 		case p.Op == predicates.ComparisonLike:
 			fmt.Fprintf(b, "%s LIKE %s", col, renderLiteral(p.Lit))
+		case p.RhsCol != "":
+			fmt.Fprintf(b, "%s %s %s", col, opSQL(p.Op), strings.ToLower(p.RhsCol))
 		default:
 			fmt.Fprintf(b, "%s %s %s", col, opSQL(p.Op), renderLiteral(p.Lit))
+		}
+		if negWrap {
+			b.WriteString(")")
 		}
 		return
 	}

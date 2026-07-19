@@ -264,6 +264,132 @@ func TestDiffRows_LimitMembership(t *testing.T) {
 	}
 }
 
+func TestOracle_NotAndColumnComparison(t *testing.T) {
+	t.Parallel()
+	c := &Case{
+		Table: templateTable(),
+		Rows: []Row{
+			{"ID": int64(1), "A": int64(5), "B": int64(3), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(2), "A": int64(2), "B": int64(9), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(3), "A": nil, "B": int64(4), "C": int64(0), "S": "x", "F": false},
+		},
+	}
+	ids := func(q Query) []int64 {
+		t.Helper()
+		rows, err := OracleRows(c, q, []string{"ID"})
+		if err != nil {
+			t.Fatalf("oracle: %v", err)
+		}
+		var out []int64
+		for _, r := range rows {
+			out = append(out, r["ID"].(int64))
+		}
+		return out
+	}
+
+	// Column-vs-column: A > B holds only for id 1 (5>3); the NULL row is UNKNOWN.
+	got := ids(Query{Where: &BoolNode{Leaf: &Pred{Col: "A", Op: predicates.ComparisonGreaterThan, RhsCol: "B"}}})
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("A > B: got %v, want [1]", got)
+	}
+	// NOT on a leaf: NOT (A > B) is TRUE only for id 2; the NULL row stays
+	// UNKNOWN under Kleene negation and must NOT appear.
+	got = ids(Query{Where: &BoolNode{Leaf: &Pred{Col: "A", Op: predicates.ComparisonGreaterThan, RhsCol: "B", Negated: true}}})
+	if len(got) != 1 || got[0] != 2 {
+		t.Fatalf("NOT (A > B): got %v, want [2] (NULL row must stay UNKNOWN)", got)
+	}
+	// NOT on a whole node.
+	got = ids(Query{Where: &BoolNode{Not: true, And: true, Kids: []*BoolNode{
+		{Leaf: &Pred{Col: "A", Op: predicates.ComparisonEquals, Lit: int64(5)}},
+	}}})
+	if len(got) != 1 || got[0] != 2 {
+		t.Fatalf("NOT (A = 5): got %v, want [2]", got)
+	}
+	// NOT IN: negation over a membership list, NULL still UNKNOWN.
+	got = ids(Query{Where: &BoolNode{Leaf: &Pred{
+		Col: "A", Op: predicates.ComparisonIn, InList: []any{int64(5)}, Negated: true,
+	}}})
+	if len(got) != 1 || got[0] != 2 {
+		t.Fatalf("A NOT IN (5): got %v, want [2]", got)
+	}
+}
+
+func TestDiffRows_Offset(t *testing.T) {
+	t.Parallel()
+	cols := []string{"ID"}
+	r := func(id int64) Row { return Row{"ID": id} }
+	oracle := []Row{r(1), r(2), r(3), r(4)}
+	ordered := func(limit, offset int) Query {
+		return Query{OrderBy: []OrderKey{{Col: "ID"}}, Limit: limit, Offset: offset}
+	}
+
+	// OFFSET 1 LIMIT 2 over [1 2 3 4] → [2 3].
+	if d := diffRows([]Row{r(2), r(3)}, cols, oracle, ordered(2, 1)); d != "" {
+		t.Fatalf("valid offset window flagged: %s", d)
+	}
+	if d := diffRows([]Row{r(1), r(2)}, cols, oracle, ordered(2, 1)); d == "" {
+		t.Fatal("engine ignoring OFFSET not flagged")
+	}
+	// OFFSET past the end yields nothing.
+	if d := diffRows(nil, cols, oracle, ordered(2, 10)); d != "" {
+		t.Fatalf("offset past end should yield no rows: %s", d)
+	}
+	if d := diffRows([]Row{r(1)}, cols, oracle, ordered(2, 10)); d == "" {
+		t.Fatal("rows past a beyond-end offset not flagged")
+	}
+}
+
+// TestKnownGaps_LedgerIsNarrow guards the suppression hole: the known-gap
+// ledger converts a real engine failure into a DECLINE, so an over-broad
+// matcher silently hides bugs. Every near-miss below must stay a FINDING.
+func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
+	t.Parallel()
+	const nestedIn = "SELECT * FROM t WHERE a IN (1,2) AND b = 3 AND c IN (4,5)"
+	planInvariantInJoin := errors.New("XX000: malformed query plan: plan-invariant: non-leaf plan *plans.RecordQueryInJoinPlan has no children")
+
+	if matchKnownGap(nestedIn, planInvariantInJoin) == nil {
+		t.Fatal("the documented nested-IN gap must be recognized")
+	}
+	for _, tc := range []struct {
+		name string
+		sql  string
+		err  error
+	}{
+		{
+			// Same error, ONE IN — a different (undocumented) shape.
+			name: "single_IN_stays_a_finding",
+			sql:  "SELECT * FROM t WHERE a IN (1,2) AND b = 3",
+			err:  planInvariantInJoin,
+		},
+		{
+			// Same shape, a DIFFERENT plan node — not the documented gap.
+			name: "other_plan_node_stays_a_finding",
+			sql:  nestedIn,
+			err:  errors.New("XX000: plan-invariant: non-leaf plan *plans.RecordQueryPredicatesFilterPlan has no children"),
+		},
+		{
+			// Same shape, a wholly different error class.
+			name: "other_error_stays_a_finding",
+			sql:  nestedIn,
+			err:  errors.New("XX000: result row carries no positional output row aligned to column ID"),
+		},
+		{
+			// A ROW divergence must never be declinable — no error at all.
+			name: "row_mismatch_stays_a_finding",
+			sql:  nestedIn,
+			err:  errors.New("row count: engine 3, oracle expects 2"),
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if gap := matchKnownGap(tc.sql, tc.err); gap != nil {
+				t.Fatalf("ledger over-matched (%q) — this must stay a finding", gap.name)
+			}
+		})
+	}
+}
+
 func TestFinalizeResult_MismatchPrecedence(t *testing.T) {
 	t.Parallel()
 	// A confirmed mismatch must never be masked by a later infra failure on
