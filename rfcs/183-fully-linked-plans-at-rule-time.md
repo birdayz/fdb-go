@@ -430,9 +430,14 @@ Status of each, with the evidence rather than an assertion.
   it: `ROWDIFF_SEEDS`/`ROWDIFF_SEED_START` widen the smoke slice, with
   SEED_START so successive deep runs cover FRESH ranges instead of re-walking
   seeds 1..N. A 3000-seed sweep (56,962 comparisons) was run here; ≥50k
-  belongs to the nightly. The criterion was aspirational as written — a gate
-  nobody can run in a shift measures nothing — and it is now runnable and
-  explicitly unfinished rather than quietly ticked.
+  runs nightly via `.github/workflows/nightly-rowdiff.yml`, which rotates
+  SEED_START by day-of-year so successive nights cover FRESH ranges instead of
+  re-proving seeds 1..50000. Both reviewers independently made the same point
+  on the first draft of this line — "belongs to the nightly" is prose until
+  something actually runs it — which is why the workflow exists rather than
+  the sentence. The criterion was aspirational as written (a gate nobody can
+  run in a shift measures nothing); it is now runnable, wired, and explicitly
+  unfinished-at-this-HEAD rather than quietly ticked.
 
   **That sweep found the harness red on master, and it was a FALSE
   POSITIVE.** 27 of 3000 seeds failed with `22003: long overflow`; master

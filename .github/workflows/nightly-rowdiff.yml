@@ -1,0 +1,143 @@
+name: Nightly RowDiff
+
+# RFC-182's generative row-soundness differential harness runs 25 seeds in the
+# PR suite — enough to keep the plan-family templates honest, nowhere near
+# enough to find anything. RFC-183's exit criteria ask for >=50k seeds, which
+# at ~3.7 seeds/s is a ~3.75h sweep that cannot live in `just test`. This job
+# is where that scale actually happens.
+#
+# It does NOT gate PRs (far too heavy); a red run here is a release blocker,
+# surfaced like the nightly-fuzz and nightly-stress failures.
+#
+# The 25-seed smoke slice being all anyone ran is exactly how 27 seeds stayed
+# red on master unnoticed (an oracle false positive on int64 SUM overflow under
+# HAVING, fixed in 288f9be15). A safety net nobody runs at scale measures the
+# first 25 seeds and nothing else.
+on:
+  schedule:
+    # 00:17 UTC daily — an off-minute, early in the nightly window so the
+    # ~3.75h sweep finishes well before the 04:23 stress job wants the runner.
+    - cron: '17 0 * * *'
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: 'Seed count (default 50000)'
+        required: false
+        default: '50000'
+      seed_start:
+        description: 'First seed (default: rotated by day-of-year)'
+        required: false
+
+jobs:
+  rowdiff:
+    name: RowDiff deep sweep (row soundness vs the oracle)
+    runs-on: hetzner-fdb
+    timeout-minutes: 300
+
+    steps:
+      - name: Check nightly window
+        # Same reasoning as nightly-stress: a `schedule` trigger fires the
+        # WORKFLOW, but GitHub dispatches the JOB whenever hetzner-fdb (our
+        # single self-hosted slot) frees up, which a backlog can delay by
+        # hours — landing a ~4h sweep in the middle of the workday. The check
+        # MUST run here, as the first step on the runner actually allocated;
+        # a pre-queue gate passes at dispatch time and is stale by the time
+        # this runner is free. `workflow_dispatch` always proceeds.
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HOUR=$(date -u +%-H)
+          # 00:00-02:00 UTC only: this sweep runs ~3.75h, so a later start
+          # would collide with the 04:23 stress job for the single slot.
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 2 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-02:00 window for this ~4h sweep (the self-hosted queue delayed dispatch) — skipping to protect the stress job's slot and daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.window.outputs.ok == 'true'
+        uses: actions/checkout@v5
+
+      - name: Check Docker (mandatory — else the gate silently no-ops)
+        if: steps.window.outputs.ok == 'true'
+        # TestFDB_RowDiff_Smoke takes the allowed `FDB not available (no
+        # Docker)` skip when there is no container, so without Docker the
+        # `bazelisk test` below reports SUCCESS having compared ZERO rows.
+        # Fail loudly here instead, so a green run always means the sweep
+        # actually executed.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the rowdiff sweep would skip (exit 0) and the gate would silently pass with no coverage"; exit 1; }
+
+      - name: Resolve seed range
+        if: steps.window.outputs.ok == 'true'
+        id: seeds
+        # ROTATE the start seed. Re-walking seeds 1..50000 every night
+        # re-proves what last night already proved; the generator's space is
+        # effectively unbounded, so fresh ranges are free coverage. Day-of-year
+        # gives a deterministic, non-overlapping window per night that a
+        # failure report can name exactly ("seeds 2500001..2550000") and anyone
+        # can replay with ROWDIFF_SEED_START.
+        run: |
+          SEEDS="${{ github.event.inputs.seeds }}"
+          SEEDS="${SEEDS:-50000}"
+          START="${{ github.event.inputs.seed_start }}"
+          if [ -z "$START" ]; then
+            DOY=$(date -u +%-j)
+            START=$(( 1 + DOY * SEEDS ))
+          fi
+          echo "seeds=$SEEDS" >> "$GITHUB_OUTPUT"
+          echo "start=$START" >> "$GITHUB_OUTPUT"
+          echo "Sweeping seeds $START..$(( START + SEEDS - 1 )) ($SEEDS seeds)"
+
+      - name: Run rowdiff deep sweep
+        if: steps.window.outputs.ok == 'true'
+        id: sweep
+        # pipefail is REQUIRED: GitHub Actions runs `bash -e` but NOT pipefail,
+        # so `bazelisk test … | tee` would return tee's exit (0) and SILENTLY
+        # PASS a red sweep — the cardinal CI sin.
+        run: |
+          set -o pipefail
+          bazelisk test //pkg/relational/sqldriver:sqldriver_test \
+            --test_output=streamed \
+            --test_arg="--test.run=TestFDB_RowDiff_Smoke" \
+            --test_arg="--test.v" \
+            --test_timeout=17400 \
+            --nocache_test_results \
+            --test_env=ROWDIFF_SEEDS=${{ steps.seeds.outputs.seeds }} \
+            --test_env=ROWDIFF_SEED_START=${{ steps.seeds.outputs.start }} \
+            2>&1 | tee rowdiff-output.txt
+
+      - name: Report sweep summary
+        # Runs on success OR failure, but not when the sweep step was skipped
+        # (Docker preflight aborted, or outside the window) — else this greps a
+        # non-existent file and reports a misleading empty summary.
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.sweep.outcome != 'skipped' }}
+        run: |
+          {
+            echo "## RowDiff deep sweep ($(date -u +%FT%TZ))"
+            echo ""
+            echo "Seeds \`${{ steps.seeds.outputs.start }}\`..\`$(( ${{ steps.seeds.outputs.start }} + ${{ steps.seeds.outputs.seeds }} - 1 ))\`"
+            echo ""
+            echo '```'
+            # grep -m N (NOT `grep | head -N`): head closes the pipe early on
+            # more matches → grep SIGPIPEs → under `bash -eo pipefail` the
+            # `|| echo` fallback ALSO fires, printing a spurious "no matches"
+            # line beside real ones.
+            grep -m 60 -E 'MISMATCH|INFRA|DECLINE|rowdiff: seeds|plan-error' \
+              rowdiff-output.txt || echo "(clean — no mismatches, infra failures or declines)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sweep output
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.sweep.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rowdiff-output
+          path: rowdiff-output.txt
+          retention-days: 30
+          if-no-files-found: ignore
