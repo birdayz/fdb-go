@@ -54,6 +54,7 @@ func (c *dataAccessTestCandidate) ToScanPlan(
 
 // testPlan is a minimal RecordQueryPlan for tests.
 type testPlan struct {
+	plans.PlanExprBase
 	name string
 	// resultType lets fixtures flow a real row layout (production match
 	// candidates always do) — the intersector's comparison-key baking
@@ -768,4 +769,13 @@ func TestScanPlanExpression_EqualsWithoutChildren(t *testing.T) {
 	if e1.EqualsWithoutChildren(&stubRelExpr{name: "x"}, nil) {
 		t.Fatal("different expression types should not be equal")
 	}
+}
+
+func (t *testPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*testPlan)
+	return ok && t.EqualsPlanWithoutChildren(o)
+}
+
+func (t *testPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return t
 }

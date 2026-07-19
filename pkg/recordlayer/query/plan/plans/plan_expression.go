@@ -95,6 +95,75 @@ func (PlanExprBase) GetResultValue() values.Value {
 	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
 }
 
+// QuantifierOverPlan wraps a child plan in the Quantifier a parent plan
+// stores it as — the Go spelling of Java's `Quantifier.physical(
+// call.memoizePlan(childPlan))`.
+//
+// StageCanonical, not StagePlanned: the stage records how far the PLANNER has
+// processed a reference and is a separate decision from which member set the
+// expression belongs in (see FinalOfAtStage). A plan's child belongs in the
+// FINAL set — it is a plan — but stamping StagePlanned here would change what
+// ExploreGroupTask does with the reference.
+//
+// Returns the zero Quantifier for a nil child so a leaf-shaped construction
+// does not fabricate an empty reference.
+func QuantifierOverPlan(child RecordQueryPlan) expressions.Quantifier {
+	if child == nil {
+		return expressions.Quantifier{}
+	}
+	return expressions.NewPhysicalQuantifier(
+		expressions.FinalOfAtStage(child, expressions.StageCanonical))
+}
+
+// planFromQuantifier dereferences a child quantifier to THE plan it ranges
+// over. Ports Java's Quantifier.Physical.getRangesOverPlan():
+//
+//	(RecordQueryPlan) Iterables.getOnlyElement(
+//	        getRangesOver().getFinalExpressions())
+//
+// Java can say getOnlyElement because a group is pruned to one final
+// expression by the time anything dereferences it. That property holds here
+// too — verified across the whole corpus and pinned by
+// TestOneFinalPlanPerReference — which is what makes this step possible at
+// all; without it a quantifier would have no single answer and the parent
+// would need a second stored pointer, which is exactly the duplication that
+// produced the nil-inner shell class.
+//
+// Two accommodations Java does not need, both temporary:
+//   - a member may still be a physical WRAPPER rather than a plan while the
+//     wrapper layer is being retired, so a member exposing
+//     GetRecordQueryPlan() is unwrapped. Matched structurally because the
+//     wrapper interface lives in the cascades package, which this package
+//     cannot import.
+//   - the exploratory set is consulted when the final set is empty, for
+//     references built mid-planning before finalization.
+//
+// Both go away with the wrappers.
+func planFromQuantifier(q expressions.Quantifier) RecordQueryPlan {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return nil
+	}
+	if p := planFromMembers(ref.FinalMembers()); p != nil {
+		return p
+	}
+	return planFromMembers(ref.Members())
+}
+
+func planFromMembers(members []expressions.RelationalExpression) RecordQueryPlan {
+	for _, m := range members {
+		if p, ok := m.(RecordQueryPlan); ok {
+			return p
+		}
+		if w, ok := m.(interface{ GetRecordQueryPlan() RecordQueryPlan }); ok {
+			if p := w.GetRecordQueryPlan(); p != nil {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
 // planEqualsAsExpression is the shared body of every plan's
 // EqualsWithoutChildren(RelationalExpression, *AliasMap).
 //

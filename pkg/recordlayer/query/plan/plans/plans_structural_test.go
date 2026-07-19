@@ -10,7 +10,10 @@ import (
 )
 
 // stubPlan is a minimal RecordQueryPlan for use as an inner child.
-type stubPlan struct{ label string }
+type stubPlan struct {
+	PlanExprBase
+	label string
+}
 
 func (s *stubPlan) GetResultType() values.Type                     { return values.UnknownType }
 func (s *stubPlan) GetChildren() []RecordQueryPlan                 { return nil }
@@ -1545,4 +1548,12 @@ func BenchmarkProjectionPlan_HashCodeWithoutChildren(b *testing.B) {
 	for b.Loop() {
 		_ = p.HashCodeWithoutChildren()
 	}
+}
+
+func (s *stubPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(s, other)
+}
+
+func (s *stubPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return s
 }
