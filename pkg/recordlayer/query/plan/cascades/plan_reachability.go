@@ -48,12 +48,17 @@ type ReachabilityViolation struct {
 	ParentExplain string
 	ChildExplain  string
 	GroupExplain  string
+
+	// Divergence names the first node where the executed child and the
+	// nearest group member stop being equal. Explain alone cannot answer
+	// this: some violations render identically on both sides.
+	Divergence string
 }
 
 func (v ReachabilityViolation) String() string {
 	return fmt.Sprintf("%s child[%d/%d] %s\n   parent-> %s\n   plan-child-> %s\n   group-> %s",
 		v.ParentType, v.ChildIndex, v.NumChildren, v.Reason,
-		v.ParentExplain, v.ChildExplain, v.GroupExplain)
+		v.ParentExplain, v.ChildExplain, v.GroupExplain) + divergenceLine(v.Divergence)
 }
 
 // Reasons. A group holding MULTIPLE members including the plan's child is
@@ -164,6 +169,7 @@ func collectReachability(expr expressions.RelationalExpression, plan plans.Recor
 				Reason:        ReasonAbsent,
 				ParentExplain: safeExplain(plan), ChildExplain: safeExplain(child),
 				GroupExplain: explainMembers(members),
+				Divergence:   firstDivergence(child, members),
 			})
 		}
 	}
@@ -330,4 +336,85 @@ func sortedKeys(m map[string]int) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// firstDivergence localises WHY a child is unreachable: it walks the child and
+// the nearest group member in parallel and names the first node where they
+// stop being equal.
+//
+// This exists because rendered explain repeatedly cannot answer the question.
+// Several PredicatesFilter violations render byte-identical on both sides
+// while plans.Equals rejects them, so the deciding field is one Explain does
+// not print. Without this, the only available move is to guess — and guessing
+// from a lossy rendering is how a working fix nearly got reverted (a
+// `[2 preds]` -> `[1 preds]` change that was a CONJUNCTION, not a dropped
+// predicate) and how InJoin was briefly miscounted as 20 real defects.
+//
+// Reports the node TYPE and the shallow field dump of both sides. A node-local
+// mismatch means the defect is at that node; a child-count mismatch means the
+// shapes diverge structurally above it.
+func firstDivergence(child plans.RecordQueryPlan, members []expressions.RelationalExpression) string {
+	var best plans.RecordQueryPlan
+	for _, m := range members {
+		if mp, ok := m.(physicalPlanExpression); ok {
+			if p := mp.GetRecordQueryPlan(); p != nil {
+				best = p
+				break
+			}
+		}
+	}
+	if best == nil {
+		return "no physical member to compare against"
+	}
+	return describeDivergence(child, best, "")
+}
+
+func describeDivergence(a, b plans.RecordQueryPlan, path string) string {
+	if a == nil || b == nil {
+		return fmt.Sprintf("%s: nil vs non-nil (%T / %T)", pathOr(path), a, b)
+	}
+	if fmt.Sprintf("%T", a) != fmt.Sprintf("%T", b) {
+		return fmt.Sprintf("%s: node TYPE differs: %T vs %T", pathOr(path), a, b)
+	}
+	if !a.EqualsPlanWithoutChildren(b) {
+		// Node-local: same type, differing fields. This is the case explain
+		// cannot show — print the shallow struct dumps so the field is named.
+		return fmt.Sprintf("%s: node-local fields differ on %T\n      plan-side:  %s\n      group-side: %s",
+			pathOr(path), a, shallowFields(a), shallowFields(b))
+	}
+	ac, bc := a.GetChildren(), b.GetChildren()
+	if len(ac) != len(bc) {
+		return fmt.Sprintf("%s: child COUNT differs on %T: %d vs %d", pathOr(path), a, len(ac), len(bc))
+	}
+	for i := range ac {
+		if !plans.Equals(ac[i], bc[i]) {
+			return describeDivergence(ac[i], bc[i], fmt.Sprintf("%s/%T[%d]", path, a, i))
+		}
+	}
+	return "equal by plans.Equals (unexpected — the caller only calls this on a mismatch)"
+}
+
+func pathOr(p string) string {
+	if p == "" {
+		return "<root>"
+	}
+	return p
+}
+
+// shallowFields dumps a plan node WITHOUT its children, so the output names
+// the differing field rather than re-printing the whole subtree.
+func shallowFields(p plans.RecordQueryPlan) string {
+	s := fmt.Sprintf("%+v", p)
+	const max = 300
+	if len(s) > max {
+		return s[:max] + "…(truncated)"
+	}
+	return s
+}
+
+func divergenceLine(d string) string {
+	if d == "" {
+		return ""
+	}
+	return "\n   why-> " + d
 }
