@@ -486,8 +486,11 @@ func ResultColumnDefsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordM
 // P5's precondition (Java's getRangesOverPlan is getOnlyElement over the
 // final expressions, which throws on two).
 //
-// Serialized: it flips package-level planner state, so concurrent callers
-// would read each other's results.
+// Safe under t.Parallel: verifyOneFinal is a per-Planner flag and the
+// violations are RETURNED, so nothing is shared between callers. This
+// previously said "Serialized: it flips package-level planner state" — true
+// of the deleted globals, false the moment they were threaded through, and
+// shipped stale by the very commit that fixed three other stale comments.
 func planAndVerifyOneFinal(sql, schema string) ([]string, error) {
 	_, violations, err := planPhysicalForTest(sql, schema, nil, true)
 	if err != nil {

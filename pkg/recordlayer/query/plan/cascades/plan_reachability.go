@@ -479,3 +479,31 @@ func EnableReachabilityCollection() func() {
 		reachMu.Unlock()
 	}
 }
+
+// NoQuantifierCount returns edges whose plan child has NO quantifier at all.
+//
+// Excluded from ReachabilityCount because it is dominated by leaf adapters
+// that model no quantifier by design — but MEASURED AND RATCHETED separately,
+// not waved through. The two-leg intersection that executed with zero memo
+// edges (AggregateDataAccessRule passing nil quantifiers) was exactly a
+// ReasonNoQuantifier bug, so a ratchet blind to this class cannot catch that
+// defect recurring. "Explained by a category" is not "checked".
+func NoQuantifierCount() int {
+	reachMu.Lock()
+	defer reachMu.Unlock()
+	n := 0
+	for _, v := range reachViolations {
+		if v.Reason == ReasonNoQuantifier {
+			n++
+		}
+	}
+	return n
+}
+
+// ReachabilityEdges returns every plan child walked, compared or not — the
+// denominator for the proportional anti-blindness check.
+func ReachabilityEdges() int {
+	reachMu.Lock()
+	defer reachMu.Unlock()
+	return reachEdges
+}
