@@ -562,12 +562,33 @@ func (s *scanPlanExpression) GetCorrelatedToWithoutChildren() map[values.Correla
 	return dataAccessExprCorrelations(s.plan)
 }
 
+// EqualsWithoutChildren compares the wrapped plans DEEPLY (plans.Equals), not
+// node-locally.
+//
+// Excluding children is the correct Cascades identity only when the children
+// are modelled as quantifiers, because the child GROUPS then carry that part
+// of the identity. This adapter reports NO quantifiers (GetQuantifiers above)
+// while wrapping a plan that has children, so a node-local compare leaves
+// nothing anywhere to tell two of them apart: TypeFilter([EMP], Scan(EMP, X))
+// and TypeFilter([EMP], Scan(EMP, Y)) differ only below the modelled surface,
+// compare EQUAL, and MemoizeExpression interns them into ONE group. The group
+// keeps whichever arrived first while the plan carries the other — so the memo
+// prices a key range that is not the one being scanned, and EXPLAIN cannot
+// show it because it never prints the comparison operand.
+//
+// physicalScanWrapper, the sibling adapter with the same no-quantifier shape,
+// already uses plans.Equals for precisely this reason; this was the outlier.
+//
+// Equality-only, deliberately: HashCodeWithoutChildren stays node-local.
+// Finer equality against a coarser hash is sound — equal objects still hash
+// equal, and the extra collisions simply fall through to this comparison —
+// whereas a finer hash would repartition every memo bucket for no gain.
 func (s *scanPlanExpression) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
 	o, ok := other.(*scanPlanExpression)
 	if !ok {
 		return false
 	}
-	return s.plan.EqualsPlanWithoutChildren(o.plan)
+	return plans.Equals(s.plan, o.plan)
 }
 
 func (s *scanPlanExpression) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
