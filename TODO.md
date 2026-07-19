@@ -5472,3 +5472,28 @@ not the bug itself.
 Decide first whether the arm should be FIXED or REMOVED — it has never
 produced a working plan, so removing it and declining the shape at plan time
 (correct-or-loud) is a legitimate outcome rather than a retreat.
+
+### [ ] RFC-183 residual: 32 no-quantifier memo edges (RFC-184 W2/W3)
+
+RFC-183 drove genuine unreachable memo edges (a plan child its quantifier's
+group cannot produce) from 158 to 0. It left 32 edges of a DIFFERENT class:
+`scanPlanExpression`, the leaf adapter that reports no quantifiers while
+wrapping a `TypeFilter(Scan)` that has children — so the memo models no edge
+for that child. NOT a wrong-plan or wrong-rows defect today; the memo simply
+does not see those children.
+
+Ratcheted at a hard baseline of 32 by
+`TestCorpusPlanReachability` (pkg/relational/conformance/explaindiff), which
+FAILS if the count rises — so the class cannot grow unobserved.
+
+Closing it is RFC-184's W2/W3 (`rfcs/184-plan-identity-structural-elimination.md`,
+now on master), NOT a memoization change. Proven the hard way: retiring the
+adapter for the bare plan drove the count to 0 but drifted 57 corpus queries /
+49 shape flips — a point lookup became a full scan — because the adapter
+supplies scan-comparison correlations and ordering/cost properties the bare
+`PlanExprBase` does not. Plans must carry those properties first, verified
+property-by-property. The inert half (GetRecordQueryPlan on all 41 plan types)
+is already on the RFC-183 branch.
+
+Do NOT "fix" this by re-retiring the adapter without the property work — that
+is the change that caused the 49 shape flips.
