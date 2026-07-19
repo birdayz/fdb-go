@@ -68,9 +68,6 @@ type Test struct {
 	// classifier treat both key forms identically. Without this, an `error:`
 	// pin leaves ErrorCode empty and is mis-classified as a positive result.
 	Error string `yaml:"error"`
-	// PlanContains, if set, runs EXPLAIN on the query and asserts that
-	// the plan output contains this substring. Useful for verifying
-	// index scan, covering, sort elimination, etc.
 	// Columns asserts the result's COLUMN NAMES, in order. Without it a
 	// scenario proves only the values, so a query that returns the right
 	// rows under the wrong column names passes — the exact shape of the
@@ -80,6 +77,9 @@ type Test struct {
 	// display case.
 	Columns []string `yaml:"columns"`
 
+	// PlanContains, if set, runs EXPLAIN on the query and asserts that
+	// the plan output contains this substring. Useful for verifying
+	// index scan, covering, sort elimination, etc.
 	PlanContains string `yaml:"plan_contains"`
 	// PlanNotContains, if set, asserts the plan does NOT contain this
 	// substring. Useful for negative assertions (no InMemorySort, no Fetch).

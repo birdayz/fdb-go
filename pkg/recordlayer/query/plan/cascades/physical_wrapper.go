@@ -311,45 +311,12 @@ func extractChildPlanFromQuantifier(q expressions.Quantifier) plans.RecordQueryP
 // expression and returns its underlying RecordQueryPlan. Returns nil
 // if no physical plan has been yielded into ref yet.
 func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
-	if ref == nil {
-		return nil
-	}
-	// A nil-inner shell (the extraction template) is never a valid standalone
-	// pick — it only works via a WithChildren relink. Prefer any VALID
-	// physical; fall back to a shell only when nothing else exists (a
-	// sole-template ref that a later relink completes). With finals-only
-	// physical yields the member order changed, and a first-pick without this
-	// guard grabbed a shell ahead of the valid alternative — the embedded
-	// shell plan then reached extraction as Op(<nil>) (the XX000
-	// plan-invariant). The guard covers EVERY unary wrapper, not just Fetch
-	// (see isNilInnerShell).
-	var shell expressions.RelationalExpression
-	for _, m := range ref.AllMembers() {
-		if ph, ok := m.(physicalPlanExpression); ok {
-			if isNilInnerShell(m) {
-				if shell == nil {
-					shell = m
-				}
-				continue
-			}
-			return ph.GetRecordQueryPlan()
-		}
-	}
-	// Sole-shell reference: COMPLETE it here. The parent is about to embed
-	// this plan verbatim, so handing back a nil-inner template produces
-	// `Op(<nil>)` — the XX000 plan invariant (nested `IN`s over an
-	// intersection build exactly this chain: the outer level relinks fine
-	// while the inner one is never handed to WithChildren at all).
-	//
-	// completeShellPlan walks the SHELL's own quantifier and rebuilds via the
-	// plan's WithInner, so it never re-enters WithChildren. That is what
-	// makes the depth bound honest: an earlier attempt recursed back through
-	// WithChildren → findPhysicalPlan and reset its depth at every level,
-	// which is no bound at all.
-	if shell == nil {
-		return nil
-	}
-	return completeShellPlan(shell, 0)
+	// Delegates to resolveInnerPlan at depth 0 so there is ONE implementation
+	// of "prefer a valid member, else complete the sole shell" and the two
+	// cannot drift. See resolveInnerPlan for the member preference and
+	// completeShellPlan for why a sole-shell reference is completed rather
+	// than handed back as `Op(<nil>)` (the XX000 plan invariant).
+	return resolveInnerPlan(ref, 0)
 }
 
 // maxShellCompletionDepth bounds completeShellPlan. Shell chains are a few
@@ -501,6 +468,17 @@ func shouldRelinkInner(currentInner, candidate plans.RecordQueryPlan) bool {
 	if candidate == nil {
 		return false
 	}
+	// An ORDER-DESTROYING candidate is never installed, no matter how
+	// malformed the current inner is. findPhysicalPlan picks the first
+	// non-shell member without consulting ordering, and consumers like the
+	// IN-union merge-sort their child on comparison keys — so admitting an
+	// unordered family here would trade a LOUD malformed-plan rejection for
+	// SILENTLY mis-ordered (and mis-deduped) rows. Declining keeps the loud
+	// failure, which is the correct direction. This guard covers the
+	// no-inner arm too, where the same hole pre-existed.
+	if isOrderDestroying(candidate) {
+		return false
+	}
 	// A MALFORMED current inner counts as no inner. The gate protects an
 	// existing, meaningful child from being swapped; a plan that itself has
 	// no child is not meaningful — it cannot execute. Without this, a
@@ -518,6 +496,22 @@ func shouldRelinkInner(currentInner, candidate plans.RecordQueryPlan) bool {
 // isNilInnerShell, applied to a bare plan.
 func planIsShell(p plans.RecordQueryPlan) bool {
 	return p != nil && len(p.GetChildren()) == 0 && !isGenuineLeafPlan(p)
+}
+
+// isOrderDestroying reports whether a plan emits rows in NO guaranteed
+// order. Such a plan must never be installed as the inner of a wrapper by
+// an ordering-blind relink: a consumer that merge-sorts its child (the
+// IN-union's comparison keys, the pk-sorted intersection) would produce
+// mis-ordered and mis-deduped rows SILENTLY. These are exactly the families
+// isLeafReplaceable excludes for the same reason; naming them here keeps
+// the shell arm — which bypasses that gate — honest.
+func isOrderDestroying(p plans.RecordQueryPlan) bool {
+	switch p.(type) {
+	case *plans.RecordQueryUnorderedUnionPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+		return true
+	}
+	return false
 }
 
 // isLeafReplaceable reports whether a plan is safe to substitute as the

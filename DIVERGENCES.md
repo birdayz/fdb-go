@@ -11,6 +11,30 @@ live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
 
 ## Intentional Architectural Decisions (no functional difference)
 
+### Shell completion is repair-at-EXTRACTION, not Java's bake-at-rule-time
+
+**Java:** rules memoize fully-linked plans (`memoizePlan` /
+`Reference.ofFinalExpressions`), so a plan entering the memo already has its
+children; extraction only reads.
+**Go:** rules yield an eagerly-snapshotted plan whose inner is filled later by
+`WithChildren`, which leaves nil-inner SHELLS in the memo. When a reference
+holds only shells, `findPhysicalPlan` now COMPLETES one on the spot
+(`completeShellPlan` → `resolveInnerPlan` → `planWithInner`) instead of
+handing the parent an `Op(<nil>)` that fails the plan invariant.
+
+The completed tree is **not inserted into the memo**: it is uncosted,
+unshared, and recomputed on each lookup. It is sound — the inner is filled
+from the very group the shell's quantifier ranges over, so memo-group
+equivalence holds — but it is repair, not architecture. Two guards keep the
+repair honest: the recursion never re-enters `WithChildren` (so its depth
+bound is real), and an order-destroying candidate is never installed
+(`isOrderDestroying`), because the relink is ordering-blind and an IN-union
+merge-sorts its child — silently mis-ordered rows would be worse than the
+loud decline it replaces.
+
+The real fix is RFC-167's deeper layer: rules that yield fully-linked plans,
+matching Java. Until then every shell-completion site is debt.
+
 ### PK-intersection declines a needed non-ForMatch compensation (conservative)
 
 **Java:** `createIntersectionAndCompensation` reapplies ANY compensation
