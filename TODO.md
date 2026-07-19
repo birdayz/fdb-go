@@ -5524,17 +5524,33 @@ alone. Some rewrite rule in `exploreRewriting` produces a Reference that
 transitively ranges over itself, and GetCorrelatedTo (no cycle guard) then
 recurses forever.
 
-NOT a quick inline fix, and NOT to be papered over with a bare visited-set
-guard in GetCorrelatedTo — that would MASK the rule that builds the cyclic
-reference (principle #9). The real work is:
-  1. Identify WHICH rule creates the self-referential Reference (instrument
-     Reference.Insert or post-rule to detect a ref reachable from itself).
-  2. Decide whether that cycle is ever legitimate (a shared subexpression that
-     only LOOKS cyclic through Canonical()) or always a bug.
-  3. Fix at the source (the rule) if it's a bug; add a guard ONLY if cycles
-     are legitimate and match Java's `RelationalExpression.getCorrelatedTo`
-     cycle handling.
+THE OFFENDING RULE — IDENTIFIED. Instrumenting `Reference.Insert` to detect a
+just-inserted member that transitively reaches its own reference points at:
 
-Query-engine change → needs the Graefe + Torvalds gate. The crash seed is NOT
-committed (it would red CI for a bug whose correct fix is gated); it is
-recorded above as an inline reproducer instead.
+  **`PullCommonFilterAboveIntersectionRule.OnMatch`
+  (rule_pull_common_filter_above_intersection.go:59)**
+
+That rule turns `Intersection(Filter([P],A), Filter([P],B))` into
+`Filter([P], Intersection(A,B))` — the REVERSE of
+PushFilterThroughIntersection. It builds `newX = Intersection(A,B)` from the
+filters' inner quantifiers, calls `newXQ := ForEachQuantifier(
+call.MemoizeExpression(newX))`, and yields `Filter([P], newXQ)`.
+
+MECHANISM: `MemoizeExpression` INTERNS — it may return an EXISTING reference.
+When `newX` interns to a reference that transitively reaches the reference
+currently being explored (the one holding the original intersection), the
+yielded Filter's quantifier points back into it and closes a cycle. This rule
+and its inverse (PushFilterThroughIntersection) interning against each other in
+the same memo group is the shape. GetCorrelatedTo then recurses forever on the
+resulting cyclic Reference.
+
+THE FIX (still gated — query-engine change, Graefe + Torvalds):
+  1. In this rule, reject or avoid the yield when `MemoizeExpression(newX)`
+     returns a reference reachable from the current reference (the same
+     cycle-would-form guard Java's memo interning applies), OR
+  2. Fix the interning so newX cannot intern to a reaching ancestor.
+  A bare visited-guard in GetCorrelatedTo is still WRONG — it would leave the
+  cyclic memo in place and only mask the symptom (principle #9). Fix the rule.
+
+The crash seed is NOT committed (it would red CI for a bug whose correct fix is
+gated); it is recorded above as an inline 4-byte reproducer instead.
