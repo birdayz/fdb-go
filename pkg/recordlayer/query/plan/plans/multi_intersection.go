@@ -62,10 +62,26 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) GetComparisonKey() []values.V
 	return p.comparisonKey
 }
 
-// GetResultValue returns the Value expression that constructs the
-// merged output row.
+// GetResultValue returns the Value expression that constructs the merged
+// output row, falling back to the FIRST stream's flowed object value when this
+// plan carries none.
+//
+// The fallback is physicalMultiIntersectionWrapper's, adopted here now that
+// the plan owns its child quantifiers: the wrapper answered
+// innerQuants[0].GetFlowedObjectValue() because the plan had no quantifiers of
+// its own to ask. It does now, so the wrapper holds no information the plan
+// lacks and becomes deletable.
+//
+// The final arm defers to PlanExprBase rather than repeating its fresh
+// stand-in, so a 0-stream plan answers exactly what every other plan answers.
 func (p *RecordQueryMultiIntersectionOnValuesPlan) GetResultValue() values.Value {
-	return p.resultValue
+	if p.resultValue != nil {
+		return p.resultValue
+	}
+	if len(p.childQs) == 0 {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.childQs[0].GetFlowedObjectValue()
 }
 
 // GetResultType returns the result Value's type if a resultValue is
@@ -139,13 +155,7 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsWithoutChildren(other e
 }
 
 // GetQuantifiers reports the real child quantifiers, overriding PlanExprBase's
-// none.
-//
-// This plan now has the quantifiers physicalMultiIntersectionWrapper needed
-// for its GetResultValue nil-fallback (first inner's flowed object value), but
-// adopting that fallback here is deliberately NOT part of this step: it would
-// change what GetResultValue answers, and this step is storage-only. The
-// wrapper keeps owning the fallback until the wrapper layer is retired.
+// none. These are also what GetResultValue's nil-fallback reads.
 func (p *RecordQueryMultiIntersectionOnValuesPlan) GetQuantifiers() []expressions.Quantifier {
 	if len(p.childQs) == 0 {
 		return nil
