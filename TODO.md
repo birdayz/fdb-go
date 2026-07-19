@@ -5329,3 +5329,45 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       columns both hit it). Single-source nested bodies work (pinned).
       Make the merged-row keys carry the qualified names the projection
       mints, or decline the shape at plan time.
+
+### [ ] N-way projected-EXISTS emits plans that cannot execute (RFC-183 §15 finding)
+
+`ImplementNestedLoopJoinRule.implementNWayJoinWithExistential` — the N-WAY FLAT
+EXISTENTIAL arm — produces plans that die at execution. Every query reaching it
+fails with:
+
+    correlated FieldValue "V" (correlation "A") evaluated against an
+    unbound/unrecognized context (*RowEvalContext (multi-leg row cannot serve a
+    source-relative ordinal)) — no frontier row resolved (planner/executor bug)
+
+Reproducer (a PROJECTED exists over >2 ForEach legs; a WHERE-EXISTS does NOT
+reach this arm — it needs N>2 ForEach quantifiers plus a trailing Existential in
+one flattened Select):
+
+    SELECT a.v, EXISTS (SELECT 1 FROM d WHERE d.id = a.id)
+    FROM a, b, c WHERE a.id = b.id AND b.id = c.id
+
+PRE-EXISTING, not introduced by RFC-183: confirmed by reverting that RFC's memo
+fix and re-running — identical failure. It is also why no corpus query reaches
+the arm (instrumenting the yield over all 2407 queries counts ZERO firings):
+the feature has never worked, so nobody could pin a scenario for it.
+
+Related but SEPARATE, already fixed on the RFC-183 branch: the same arm was
+costing the whole N-way chain as `Scan(A)` — a memo-linkage bug. Pinned by
+`TestNWayProjectedExists_OuterQuantifierMatchesExecutedPlan`
+(pkg/relational/core/embedded). That fix does NOT make these plans executable.
+
+ALREADY TRIED AND REVERTED: rebasing the projected result value through
+`rebaseOuterLegValueOrdinal`, the same treatment `joinPreds`/`existPreds` get,
+and the obvious candidate since the RV is passed unrebased
+(rule_implement_nested_loop_join.go, "passed through unrebased"). It does NOT
+fix the binding failure — the defect is deeper in how multi-leg merged rows
+serve source-relative ordinals. Do not re-try that alone.
+
+No yamsql scenario is pinned: the corpus is a regression net, and pinning the
+error string would promote a defect to expected behaviour. Add the scenario as
+part of the fix.
+
+Decide first whether the arm should be FIXED or REMOVED — it has never
+produced a working plan, so removing it and declining the shape at plan time
+(correct-or-loud) is a legitimate outcome rather than a retreat.

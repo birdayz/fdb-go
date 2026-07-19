@@ -30,13 +30,8 @@ import (
 // not print scan-comparison operands — which is why the report carries a
 // field-level dump.
 //
-// Deliberately ONE test over one corpus run, holding both assertions. The
-// collector is process-global, so splitting the "is it clean" and "is it
-// actually looking" checks into two t.Parallel tests let either one's
-// ResetReachability clear the other's tally mid-flight — a race whose most
-// likely symptom is a SILENT PASS, which is worse than the flake.
-// DELIBERATELY NOT t.Parallel — the one place in this repo where that is
-// correct, and it was found by this test failing rather than by reasoning.
+// DELIBERATELY NOT t.Parallel, found by this test failing rather than by
+// reasoning.
 //
 // The collector is process-global. Several other tests in this package plan
 // the SAME corpus (TestNoPlanPanics, TestShapeAccompaniesEverySuccessfulPlan,
@@ -72,11 +67,10 @@ func TestCorpusPlanReachability(t *testing.T) {
 	if st.Queries == 0 {
 		t.Fatal("no queries planned — the reachability tally would be vacuously zero")
 	}
-	// Assert on COMPARED edges, not total edges. Total edges counts every plan
-	// child unconditionally, before any comparison happens, so it stays in the
-	// thousands even if the checker silently stopped comparing anything — a
-	// guard that cannot fail. Only the compared count separates "clean" from
-	// "not looking".
+	// Assert on COMPARED edges, not total edges: total counts every plan child
+	// unconditionally, before any comparison, so it stays in the thousands even
+	// if the checker silently stopped comparing.
+	//
 	// PROPORTIONAL, not "> 0". A floor of one is barely a floor: 17884 edges
 	// collapsing to 3 would still pass while the checker had gone almost
 	// entirely blind. The compared count should track the total edge count
@@ -102,7 +96,12 @@ func TestCorpusPlanReachability(t *testing.T) {
 	const knownNoQuantifierEdges = 32
 	if n := cascades.NoQuantifierCount(); n > knownNoQuantifierEdges {
 		t.Errorf("no-quantifier edges rose to %d (known baseline %d) — a rule is "+
-			"constructing a plan whose children the memo does not model\n\n%s",
+			"constructing a plan whose children the memo does not model.\n\n"+
+			"ONE LEGITIMATE CAUSE, before you go hunting a regression: fixing the "+
+			"N-way projected-EXISTS arm so it starts firing will ADD "+
+			"scanPlanExpression wrappers and push this count UP. That is the "+
+			"ratchet barking at a real fix, not at a defect — raise the baseline "+
+			"in that case, and only in that case.\n\n%s",
 			n, knownNoQuantifierEdges, report)
 	}
 

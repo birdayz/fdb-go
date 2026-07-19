@@ -2837,6 +2837,16 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 	//
 	// MemoizeFinalExpression for a fresh singleton per construction — two
 	// N-way chains that happen to share a root must not intern together.
+	//
+	// HONEST ABOUT WHAT THIS BUYS. scanPlanExpression reports no quantifiers, so
+	// the N-way chain becomes OPAQUE to the memo: this converts a detectable
+	// unreachable edge into the no-quantifier class ratcheted at 32, and the
+	// reachability edge is now satisfied VACUOUSLY. The win is costing — the
+	// leaf carries the real plan's cost instead of one leg's — not memo
+	// insight. Structure below the chain is not modelled and no rule can
+	// rewrite through it. Same trade the recursive-DFS and multi-intersection
+	// legs make; it is the right one only because the alternative was costing
+	// a three-way join as a single table scan.
 	leftMemoRef := call.MemoizeFinalExpression(&scanPlanExpression{plan: step1Plan})
 	call.Yield(newPhysicalFlatMapWrapper(
 		flatMapPlan,
