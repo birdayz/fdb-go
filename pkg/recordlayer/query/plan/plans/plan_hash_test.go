@@ -54,11 +54,16 @@ func TestPlanHash_DepthMatters(t *testing.T) {
 	}
 }
 
-func TestPlanHashEqual(t *testing.T) {
+func TestPlanHash_IdenticalScansAgree(t *testing.T) {
 	t.Parallel()
 	scanA := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	scanB := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if !PlanHashEqual(scanA, scanB) {
-		t.Fatal("identical scans should be hash-equal")
+	// Hash AGREEMENT only. Deliberately not spelled as an equality helper:
+	// plan equality is now finer than PlanHash (RFC-183 §15 compares scan
+	// children structurally while the hash stays node-local), so a
+	// "PlanHashEqual" predicate would answer a question nobody should ask.
+	// Equal plans still hash equal; unequal plans MAY collide.
+	if PlanHash(scanA) != PlanHash(scanB) {
+		t.Fatal("identical scans should hash the same")
 	}
 }

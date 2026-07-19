@@ -114,25 +114,31 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// scanPlanExpression is the existing plan-backed adapter for exactly this
 	// (see its other use for the buried-leg rebase): it makes the memoized
 	// expression report the plan actually being executed.
-	// MemoizeFinalExpression, NOT MemoizeExpression — the two legs must land
-	// in SEPARATE references.
 	//
-	// MemoizeExpression interns, and scanPlanExpression is indistinguishable
-	// to the memo when two plans share a root node: it hashes and compares via
-	// EqualsPlanWithoutChildren (children excluded) and reports NO quantifiers,
-	// so the memo has nothing left to tell two of them apart. Both legs here
-	// are RecordQueryProjectionPlan with the same projections — root is
-	// Project([ID,PARENT], TypeFilter(Scan)), child is Project([ID,PARENT],
-	// Project(FlatMap(…))) — so they compare EQUAL and intern into ONE group.
-	// rootQ and childQ then range over the same single-member reference, and
-	// the memo believes the two legs are the same expression.
+	// MemoizeFinalExpression, NOT MemoizeExpression — the two legs must land in
+	// SEPARATE references.
 	//
-	// That collapse was introduced by an earlier revision of this very fix and
-	// is why the leg divergence only fell from 58 to 25 rather than to zero
-	// (RFC-183 §14). It stayed invisible to tests and to the corpus differ
-	// because WithChildren keeps `plan: w.plan`, so EXTRACTION reads the plan
-	// and never notices — the damage is confined to costing and bookkeeping,
-	// which is the exact defect this fix exists to remove.
+	// HISTORY, because the reason CHANGED and the old reason is now false:
+	// this originally guarded against an interning collapse. scanPlanExpression
+	// compared via EqualsPlanWithoutChildren (children excluded) and reports no
+	// quantifiers, so the memo could not tell two of them apart when their root
+	// nodes matched — and both legs here are RecordQueryProjectionPlan with the
+	// same projections (root `Project([ID,PARENT], TypeFilter(Scan))`, child
+	// `Project([ID,PARENT], Project(FlatMap(…)))`). They compared EQUAL and
+	// interned into ONE group, so the memo believed the two legs were the same
+	// expression. That collapse was introduced by an earlier revision of this
+	// very fix and is why the leg divergence fell only from 58 to 25.
+	//
+	// That mechanism NO LONGER EXISTS: scanPlanExpression now compares deeply
+	// (RFC-183 §15, abstract_data_access_rule.go), so these legs are distinct
+	// to the memo on their own. MemoizeExpression would very likely be safe
+	// here today.
+	//
+	// It stays MemoizeFinalExpression anyway, deliberately: the rule's
+	// correctness needs one reference PER LEG, and expressing that directly is
+	// better than depending on two structurally-similar plans happening to
+	// differ below the root. The guarantee should not be a coincidence of the
+	// data.
 	rootQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: rootPlan}))
 	childQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: childPlan}))
 	call.Yield(newPhysicalRecursiveDfsJoinWrapper(plan, rootQ, childQ))

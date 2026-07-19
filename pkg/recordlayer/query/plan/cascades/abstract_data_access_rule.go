@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"hash/fnv"
 	"sort"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -545,8 +546,28 @@ func (s *scanPlanExpression) GetQuantifiers() []expressions.Quantifier {
 
 func (s *scanPlanExpression) CanCorrelate() bool  { return false }
 func (s *scanPlanExpression) ChildrenAsSet() bool { return false }
+
+// HashCodeWithoutChildren mixes a class discriminator with the wrapped plan's
+// hash, matching every sibling adapter ("physcanwrap|", "physfilterwrap|",
+// "physmultiintersectionwrap|"). Without the tag this adapter hashed
+// identically to the bare plan and to any other adapter over the same node.
+//
+// That was sound but needlessly noisy: extra collisions are always safe here
+// (equality decides, and this adapter's equality is the deep plans.Equals
+// above), yet colliding BY CONSTRUCTION with unrelated expressions makes the
+// bucket longer for no reason and invites the next reader to conclude the
+// coarse hash is load-bearing.
+//
+// Node-local on purpose. Equality compares children deeply; the hash does not.
+// Equal objects still hash equal — the only direction that matters — and a
+// finer hash would repartition every memo bucket for no gain.
 func (s *scanPlanExpression) HashCodeWithoutChildren() uint64 {
-	return s.plan.HashCodeWithoutChildren()
+	h := fnv.New64a()
+	h.Write([]byte("scanplanexpr|"))
+	if s.plan != nil {
+		writeHash64(h, s.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
 }
 
 // GetCorrelatedToWithoutChildren reports the outer correlations the wrapped plan

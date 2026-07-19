@@ -5,14 +5,27 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 // Compile-time proof that every physical plan answers the cost and ordering
 // questions the memo asks (RFC-183 P5).
 //
-// What these assertions do NOT do is guard a runtime dispatch. The memo asks
-// the physical WRAPPER, not the plan: every consulting site gates on
-// cascades.physicalPlanExpression (winner_lookup.go:258 and friends), whose
-// GetRecordQueryPlan() method no plan implements — a plan IS the plan, it does
-// not return one. So a plan that failed to implement CostHinter would not fall
-// through to the cost model's pessimistic default arm; it would simply never
-// be asked. That arm is reached with a wrapper receiver, and it is the
-// wrapper's own contract list that guards it.
+// What these assertions do NOT do is guard a runtime dispatch — though NOT for
+// the reason an earlier version of this comment gave.
+//
+// The dispatch does not gate on cascades.physicalPlanExpression. It gates on
+// the hint interfaces themselves: `e.(CostHinter)` (properties/cost.go:645)
+// and `e.(OrderingHinter)` (properties/ordering.go:145). Plans DO satisfy
+// those — that is what the assertions below assert — so the old claim that a
+// plan "would simply never be asked" because it lacks GetRecordQueryPlan was
+// wrong about the mechanism.
+//
+// The bodies are nevertheless unreachable today, for a different reason:
+// nothing ever presents a BARE plan as the expression being costed or ordered.
+// Every such receiver is still a physical wrapper. Measured, not assumed —
+// instrumenting both dispatch sites to count `*plans.*` receivers over the
+// full 2407-query corpus yields ZERO on each. A plan that failed to implement
+// CostHinter would therefore still not reach the pessimistic default arm; it
+// would just never be consulted.
+//
+// This distinction matters for the deletion: the day a bare plan is yielded in
+// place of a wrapper, these bodies go live all at once, and it will be the
+// hint interfaces that route to them — not any wrapper-shaped gate.
 //
 // What these assertions ARE is a COMPLETENESS check on the plan-side bodies,
 // which are staging for the wrapper deletion RFC-183 §11 defers. The bodies
