@@ -71,12 +71,12 @@ func (w *physicalFlatMapWrapper) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) < 2 {
-		return properties.Cost{}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	if hc, ok := w.plan.(properties.CostHinter); ok {
+		return hc.HintCost(child, stats)
 	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return flatMapCost(child[0], child[1])
+	return properties.Cost{}
 }
 
 // HintOrdering conservatively reports NO known ordering.
@@ -101,7 +101,11 @@ func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost, _ properties.
 // wrong propagated ordering removes a needed sort and silently mis-orders rows. Keeping
 // Unknown is the conservative, correct choice; enabling join-sort-elimination is future
 // work with its own test bar.
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalFlatMapWrapper) HintOrdering() properties.Ordering {
+	if oh, ok := w.plan.(properties.OrderingHinter); ok {
+		return oh.HintOrdering()
+	}
 	return properties.Ordering{IsKnown: false}
 }
 

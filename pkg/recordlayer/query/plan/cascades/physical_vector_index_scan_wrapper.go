@@ -69,8 +69,9 @@ var _ expressions.RelationalExpression = (*physicalVectorIndexScanWrapper)(nil)
 
 // HintOrdering: an HNSW scan returns rows in distance order, which is not a
 // column ordering the planner models — report unknown (empty) ordering.
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalVectorIndexScanWrapper) HintOrdering() properties.Ordering {
-	return properties.Ordering{}
+	return w.plan.HintOrdering()
 }
 
 func (w *physicalVectorIndexScanWrapper) HintRichOrdering() *RichOrdering {
@@ -94,12 +95,9 @@ func (w *physicalVectorIndexScanWrapper) HintRichOrdering() *RichOrdering {
 // on COST wherever the fold rule yielded it — the design intent stated at
 // defaultVectorHorizon — deterministically, hash-independent. Pinned by
 // TestVectorPlan_TighterOuterLimitDoesNotFold / _NoResidualFoldsToSelfLimiting.
-func (w *physicalVectorIndexScanWrapper) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	card := vectorScanCardinality(w.plan)
-	return properties.Cost{
-		Cardinality: card * physicalWrapperCostMultiplier,
-		CPU:         card * properties.ScanCPU * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalVectorIndexScanWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 // defaultVectorHorizon is the bounded re-ranked horizon an ordered-stream scan

@@ -382,10 +382,7 @@ func DataAccessForMatchPartition(
 		// ordering property (sort elimination). Omitting them made the
 		// data-access scan look non-unique/unordered, so a non-unique
 		// index could beat the unique one and sorts weren't eliminated.
-		unique := false
-		if u, ok := cand.(interface{ IsUnique() bool }); ok {
-			unique = u.IsUnique()
-		}
+		unique := candidateUnique(cand)
 		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering, coveringCols, unique, cand.GetColumnNames(), candidatePKColumns(cand))
 
 		if comp.IsNeeded() {
@@ -435,6 +432,28 @@ func candidateScanProps(cand MatchCandidate) (unique bool, columnNames []string)
 // key part are not sort-ordered, so the PK suffix must not extend the
 // ordering there (Java's computeOrderingFromScanComparisons breaks the
 // sorted-suffix loop at a duplicating key part).
+// candidateUnique reports the candidate's UNIQUE flag, or false when the
+// candidate does not expose one.
+func candidateUnique(cand MatchCandidate) bool {
+	if u, ok := cand.(interface{ IsUnique() bool }); ok {
+		return u.IsUnique()
+	}
+	return false
+}
+
+// stampIndexMetadata returns idxPlan carrying the candidate's index key
+// columns, primary-key columns, and UNIQUE flag. Stamped at plan-creation
+// time (inside ToScanPlan) so that the SINGLE index-plan object shared by
+// the Fetch's inner quantifier and by the physical wrapper above it both
+// see the same metadata — stamping later would fork the two into copies
+// that disagree.
+func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan) *plans.RecordQueryIndexPlan {
+	if cand == nil || idxPlan == nil {
+		return idxPlan
+	}
+	return idxPlan.WithIndexMetadata(cand.GetColumnNames(), candidatePKColumns(cand), candidateUnique(cand))
+}
+
 func candidatePKColumns(cand MatchCandidate) []string {
 	if dup, ok := cand.(interface{ CreatesDuplicates() bool }); ok && dup.CreatesDuplicates() {
 		return nil
@@ -579,7 +598,7 @@ func pkScanFromDataAccessPlan(plan plans.RecordQueryPlan) *plans.RecordQueryScan
 // physicalScanWrapper) reads as unordered and ImplementSortRule cannot
 // elide a sort it satisfies.
 func (s *scanPlanExpression) HintOrdering() properties.Ordering {
-	return pkScanOrdering(pkScanFromDataAccessPlan(s.plan))
+	return plans.PKScanOrdering(pkScanFromDataAccessPlan(s.plan))
 }
 
 // HintRichOrdering — the FIXED-equality-prefix PK ordering; see

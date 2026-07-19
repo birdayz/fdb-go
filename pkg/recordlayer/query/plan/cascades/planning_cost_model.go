@@ -1069,54 +1069,54 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		if len(child) < 2 {
 			return properties.Cost{}
 		}
-		return flatMapCost(child[0], child[1])
+		return properties.FlatMapCost(child[0], child[1])
 	case *plans.RecordQueryNestedLoopJoinPlan:
 		if len(child) < 2 {
 			return properties.Cost{}
 		}
-		return nestedLoopJoinCost(child[0], child[1])
+		return properties.NestedLoopJoinCost(child[0], child[1])
 	case *plans.RecordQueryPredicatesFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return filterCost(c0(), len(pl.GetPredicates()))
+		return properties.FilterCost(c0(), len(pl.GetPredicates()))
 	case *plans.RecordQueryFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return filterCost(c0(), len(pl.GetPredicates()))
+		return properties.FilterCost(c0(), len(pl.GetPredicates()))
 	case *plans.RecordQueryTypeFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return typeFilterCost(c0())
+		return properties.TypeFilterCost(c0())
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return fetchCost(c0())
+		return properties.FetchCost(c0())
 	case *plans.RecordQueryMapPlan, *plans.RecordQueryProjectionPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return mapCost(c0())
+		return properties.MapCost(c0())
 	case *plans.RecordQueryFirstOrDefaultPlan:
-		return firstOrDefaultCost(c0())
+		return properties.FirstOrDefaultCost(c0())
 	case *plans.RecordQueryInMemorySortPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return inMemorySortCost(c0())
+		return properties.InMemorySortCost(c0())
 	case *plans.RecordQueryDistinctPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return distinctCost(c0())
+		return properties.DistinctCost(c0())
 	case *plans.RecordQueryIntersectionPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return intersectionCost(child)
+		return properties.IntersectionCost(child)
 	default:
 		// Transparent / unknown: roll up the first child's cardinality + summed CPU.
 		sumCPU := 0.0
@@ -1128,41 +1128,6 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		}
 		return properties.Cost{Cardinality: properties.LeafScanCardinality, CPU: properties.LeafScanCardinality * properties.ScanCPU}
 	}
-}
-
-// boundSelectivity computes the combined selectivity of a set of scan-comparison
-// bounds: each equality bound multiplies in EqualityBoundSelectivity and each open
-// range multiplies in RangeSelectivity. A point probe is more selective than a
-// range, so EqualityBoundSelectivity < RangeSelectivity (RFC-164 COST-SELECTIVITY);
-// using the generic residual FilterSelectivity (0.5) for an equality bound inverted
-// that and mis-picked the index. Empty/nil bounds are skipped. It also reports the
-// number of non-empty bounds and whether they are all equality, so each caller can
-// apply its own unique / point-lookup short-circuit.
-//
-// This is the SINGLE source for equality-vs-range bound costing, shared by
-// physicalScanWrapper.HintCost, physicalIndexScanWrapper.HintCost, and scanLikeCost.
-// It is centralised deliberately: the same loop duplicated across those sites is how
-// the inverted equality cost survived (in dead code) past the original fix.
-// LOW-NDV CAVEAT: statless, this assumes every equality is a high-cardinality point
-// (NDV≈10). A low-NDV equality (e.g. `status = ?`, a boolean) actually retains far
-// more than 10% — costing it cheaper than it is. Distinguishing that needs per-column
-// NDV statistics (not yet available here); see scanLikeCost's fullBindUnique note.
-func boundSelectivity(comps []*predicates.ComparisonRange) (sel float64, numBound int, allEquality bool) {
-	sel = 1.0
-	allEquality = true
-	for _, cr := range comps {
-		if cr == nil || cr.IsEmpty() {
-			continue
-		}
-		numBound++
-		if cr.IsEquality() {
-			sel *= properties.EqualityBoundSelectivity
-		} else {
-			allEquality = false
-			sel *= properties.RangeSelectivity
-		}
-	}
-	return sel, numBound, allEquality
 }
 
 // scanLikeCost is the metadata-independent leaf cost for the concrete join-ordering
@@ -1181,7 +1146,7 @@ func boundSelectivity(comps []*predicates.ComparisonRange) (sel float64, numBoun
 // index unique, so we conservatively fall through to the selectivity estimate; the
 // metadata-aware wrapper HintCost still recognises unique indexes for the memo cost.
 func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, stats properties.StatisticsProvider, fullBindUnique bool) properties.Cost {
-	sel, numBound, allEquality := boundSelectivity(comps)
+	sel, numBound, allEquality := properties.BoundSelectivity(comps)
 	if fullBindUnique && numBound > 0 && allEquality && numBound == len(comps) {
 		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
 	}

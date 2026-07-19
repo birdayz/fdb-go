@@ -81,28 +81,14 @@ func (w *physicalPredicatesFilterWrapper) WithChildren(qs []expressions.Quantifi
 	return &physicalPredicatesFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalPredicatesFilterWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 || w.plan == nil {
-		return properties.Cost{}
-	}
-	in := child[0].Cardinality
-	numPreds := len(w.plan.GetPredicates())
-	if numPreds == 0 {
-		numPreds = 1
-	}
-	sel := properties.FilterSelectivity
-	for i := 1; i < numPreds; i++ {
-		sel *= properties.FilterSelectivity
-	}
-	return properties.Cost{
-		Cardinality: in * sel * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.FilterCPU*float64(numPreds)) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalPredicatesFilterWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalPredicatesFilterWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalPredicatesFilterWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 

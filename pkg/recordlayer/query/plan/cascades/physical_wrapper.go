@@ -517,7 +517,7 @@ type hashWriter interface {
 // than logical" — enough to flip ordering on equally-shaped
 // alternatives, small enough not to dominate the cost comparison
 // with structurally-different alternatives.
-const physicalWrapperCostMultiplier = 0.9
+const physicalWrapperCostMultiplier = properties.PhysicalWrapperCostMultiplier
 
 // physicalScanWrapper adapts a `*plans.RecordQueryScanPlan` to the
 // `expressions.RelationalExpression` interface so implementation rules
@@ -604,34 +604,16 @@ func (w *physicalScanWrapper) WithChildren(qs []expressions.Quantifier) (express
 // FullUnorderedScanExpression arm) and applies the physical-wrapper
 // discount so cost-driven extraction prefers the physical scan over
 // the logical one.
-func (w *physicalScanWrapper) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	if w.plan == nil {
-		card := stats.RecordTypeCardinality("")
-		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
-	}
-	comps := w.plan.GetScanComparisons()
-	// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY); see boundSelectivity.
-	sel, numBound, allEquality := boundSelectivity(comps)
-	if numBound > 0 && allEquality && numBound == len(comps) {
-		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
-	}
-	types := w.plan.GetRecordTypes()
-	total := 0.0
-	if len(types) == 0 {
-		total = stats.RecordTypeCardinality("")
-	} else {
-		for _, t := range types {
-			total += stats.RecordTypeCardinality(t)
-		}
-	}
-	card := total * sel * physicalWrapperCostMultiplier
-	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalScanWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 // HintOrdering: a scan produces rows in PK order when the scan
 // carries PK values (from WithPrimaryKey). Otherwise unknown.
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalScanWrapper) HintOrdering() properties.Ordering {
-	return pkScanOrdering(w.plan)
+	return w.plan.HintOrdering()
 }
 
 // HintRichOrdering — see pkScanRichOrdering.
@@ -641,23 +623,6 @@ func (w *physicalScanWrapper) HintRichOrdering() *RichOrdering {
 
 // pkScanOrdering derives the directional PK ordering of a primary scan:
 // PK columns in order, all ascending (descending under reverse).
-func pkScanOrdering(plan *plans.RecordQueryScanPlan) properties.Ordering {
-	if plan == nil {
-		return properties.Ordering{}
-	}
-	pk := plan.GetPrimaryKeyValues()
-	if len(pk) == 0 {
-		return properties.Ordering{}
-	}
-	desc := make([]bool, len(pk))
-	if plan.IsReverse() {
-		for i := range desc {
-			desc[i] = true
-		}
-	}
-	return properties.Ordering{IsKnown: true, Keys: pk, Descending: desc}
-}
-
 // pkScanRichOrdering returns a primary scan's PK ordering with bindings:
 // PK positions bound by an equality comparison become FixedBinding
 // entries, the rest SortedBinding. A primary scan is a value-index-like
@@ -777,31 +742,9 @@ func (w *physicalIndexScanWrapper) WithChildren(qs []expressions.Quantifier) (ex
 // a = 1 over PK (id) produces output sorted by (b, c, id). Mirrors the
 // full-key ordering of Java's
 // ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons.
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
-	if w.plan == nil || len(w.columnNames) == 0 {
-		return properties.Ordering{}
-	}
-	comps := w.plan.GetScanComparisons()
-	firstNonEq := 0
-	for i, cr := range comps {
-		if cr.IsEquality() {
-			firstNonEq = i + 1
-		} else {
-			break
-		}
-	}
-	rev := w.plan.IsReverse()
-	keys := make([]values.Value, 0, len(w.columnNames)-firstNonEq+len(w.pkColumnNames))
-	desc := make([]bool, 0, cap(keys))
-	for i := firstNonEq; i < len(w.columnNames); i++ {
-		keys = append(keys, &values.FieldValue{Field: w.columnNames[i], Typ: values.UnknownType})
-		desc = append(desc, rev)
-	}
-	for _, col := range trimmedPKSuffix(w.columnNames, w.pkColumnNames) {
-		keys = append(keys, &values.FieldValue{Field: col, Typ: values.UnknownType})
-		desc = append(desc, rev)
-	}
-	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+	return w.plan.HintOrdering()
 }
 
 // HintRichOrdering returns the full ordering with bindings: equality-bound
@@ -836,7 +779,7 @@ func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
 			bm[key] = []OrderingBinding{SortedBinding(dir)}
 		}
 	}
-	for _, col := range trimmedPKSuffix(w.columnNames, w.pkColumnNames) {
+	for _, col := range plans.TrimmedPKSuffix(w.columnNames, w.pkColumnNames) {
 		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
 		keys = append(keys, key)
 		bm[key] = []OrderingBinding{SortedBinding(dir)}
@@ -849,25 +792,6 @@ func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
 // semantics as used by ValueIndexExpansionVisitor.fullKey: PK components
 // that appear in the index key are trimmed, the remainder is appended
 // after the index key.
-func trimmedPKSuffix(columnNames, pkColumnNames []string) []string {
-	if len(pkColumnNames) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(columnNames))
-	for _, c := range columnNames {
-		seen[c] = struct{}{}
-	}
-	suffix := make([]string, 0, len(pkColumnNames))
-	for _, col := range pkColumnNames {
-		if _, dup := seen[col]; dup {
-			continue
-		}
-		seen[col] = struct{}{}
-		suffix = append(suffix, col)
-	}
-	return suffix
-}
-
 // HintCost: index scans are cheaper than full table scans because
 // they read a subset of records. Apply a selectivity multiplier on
 // top of the physical-wrapper discount. Unique indexes with all
@@ -876,18 +800,9 @@ func trimmedPKSuffix(columnNames, pkColumnNames []string) []string {
 // Fetch I/O cost (FetchCPU per row) is NOT included here — it
 // belongs on the Fetch enforcer wrapper, which is eliminated for
 // covering scans.
-func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	base := indexBaseCardinality(w.plan, stats) * physicalWrapperCostMultiplier
-	if w.plan != nil {
-		// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY); see boundSelectivity.
-		sel, numBound, allEquality := boundSelectivity(w.plan.GetScanComparisons())
-		if w.unique && allEquality && numBound == len(w.columnNames) {
-			return properties.Cost{Cardinality: physicalWrapperCostMultiplier, CPU: 0}
-		}
-		base *= sel
-	}
-	cpu := base * properties.ScanCPU
-	return properties.Cost{Cardinality: base, CPU: cpu}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalIndexScanWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func indexBaseCardinality(plan *plans.RecordQueryIndexPlan, stats properties.StatisticsProvider) float64 {
@@ -999,17 +914,14 @@ func (w *physicalFilterWrapper) WithChildren(qs []expressions.Quantifier) (expre
 // HintCost mirrors the LogicalFilter cost formula and applies the
 // physical-wrapper discount so cost-driven extraction prefers the
 // physical filter over the logical one.
-func (w *physicalFilterWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 || w.plan == nil {
-		return properties.Cost{}
-	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return filterCost(child[0], len(w.plan.GetPredicates()))
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalFilterWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalFilterWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalFilterWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 
@@ -1111,17 +1023,14 @@ func (w *physicalDistinctWrapper) WithChildren(qs []expressions.Quantifier) (exp
 }
 
 // HintCost mirrors LogicalDistinct with the physical-wrapper discount.
-func (w *physicalDistinctWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return distinctCost(child[0])
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalDistinctWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalDistinctWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalDistinctWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 
@@ -1216,17 +1125,14 @@ func (w *physicalTypeFilterWrapper) WithChildren(qs []expressions.Quantifier) (e
 
 // HintCost mirrors LogicalTypeFilter with the physical-wrapper
 // discount.
-func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return typeFilterCost(child[0])
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalTypeFilterWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalTypeFilterWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 
@@ -1323,15 +1229,9 @@ func (w *physicalInsertWrapper) WithChildren(qs []expressions.Quantifier) (expre
 // HintCost: INSERT cost is dominated by the per-row write cost
 // (Java's CascadesCostModel weights writes heavily). Mirrors the
 // LogicalDML write cost — sumCPU + cardinality * WriteCPU.
-func (w *physicalInsertWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	in := child[0].Cardinality
-	return properties.Cost{
-		Cardinality: in * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.WriteCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalInsertWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalInsertWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1410,15 +1310,9 @@ func (w *physicalDeleteWrapper) WithChildren(qs []expressions.Quantifier) (expre
 }
 
 // HintCost: DELETE write-heavy cost like INSERT.
-func (w *physicalDeleteWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	in := child[0].Cardinality
-	return properties.Cost{
-		Cardinality: in * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.WriteCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalDeleteWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalDeleteWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1497,15 +1391,9 @@ func (w *physicalUpdateWrapper) WithChildren(qs []expressions.Quantifier) (expre
 }
 
 // HintCost: UPDATE write-heavy cost like INSERT/DELETE.
-func (w *physicalUpdateWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	in := child[0].Cardinality
-	return properties.Cost{
-		Cardinality: in * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.WriteCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalUpdateWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalUpdateWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1588,17 +1476,9 @@ func (w *physicalUnionWrapper) WithChildren(qs []expressions.Quantifier) (expres
 
 // HintCost: UNION cardinality is sum of children, CPU is cumulative
 // + per-output-row merge work. Mirrors LogicalUnion.
-func (w *physicalUnionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	sumCard := 0.0
-	sumCPU := 0.0
-	for _, c := range child {
-		sumCard += c.Cardinality
-		sumCPU += c.CPU
-	}
-	return properties.Cost{
-		Cardinality: sumCard * physicalWrapperCostMultiplier,
-		CPU:         (sumCPU + sumCard*properties.UnionCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalUnionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalUnionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1690,9 +1570,9 @@ func (w *physicalIntersectionWrapper) WithChildren(qs []expressions.Quantifier) 
 // participant). CPU sums children + per-output-row merge work
 // (more expensive than Union — comparison-key-driven matching).
 // Mirrors LogicalIntersection.
-func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return intersectionCost(child)
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalIntersectionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1774,19 +1654,14 @@ func (w *physicalProjectionWrapper) WithChildren(qs []expressions.Quantifier) (e
 	return &physicalProjectionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalProjectionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	return properties.Cost{
-		Cardinality: child[0].Cardinality * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + child[0].Cardinality*properties.ProjectionCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalProjectionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalProjectionWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalProjectionWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 
@@ -1862,8 +1737,9 @@ func (w *physicalValuesWrapper) WithChildren(qs []expressions.Quantifier) (expre
 	return w, nil
 }
 
-func (w *physicalValuesWrapper) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	return properties.Cost{Cardinality: 1, CPU: 0}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalValuesWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalValuesWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -1917,37 +1793,18 @@ func (w *physicalAggregateIndexWrapper) WithChildren(qs []expressions.Quantifier
 	return w, nil
 }
 
-func (w *physicalAggregateIndexWrapper) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	tableCard := properties.LeafScanCardinality
-	if stats != nil {
-		tableCard = stats.RecordTypeCardinality(w.plan.GetRecordTypeName())
-	}
-	cardinality := tableCard * properties.DistinctSelectivity * physicalWrapperCostMultiplier
-	if cardinality < 1 {
-		cardinality = 1
-	}
-	return properties.Cost{
-		Cardinality: cardinality,
-		CPU:         cardinality * properties.ScanCPU,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalAggregateIndexWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 func (w *physicalAggregateIndexWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return w
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalAggregateIndexWrapper) HintOrdering() properties.Ordering {
-	groupCols := w.plan.GetGroupCols()
-	if len(groupCols) == 0 {
-		return properties.Ordering{IsKnown: true}
-	}
-	keys := make([]values.Value, len(groupCols))
-	desc := make([]bool, len(groupCols))
-	for i, col := range groupCols {
-		keys[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
-		desc[i] = w.plan.IsReverse()
-	}
-	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+	return w.plan.HintOrdering()
 }
 
 // IsPhysicalAggregateIndex reports whether the expression is an aggregate

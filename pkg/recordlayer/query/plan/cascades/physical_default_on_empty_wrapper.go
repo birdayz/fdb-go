@@ -67,19 +67,14 @@ func (w *physicalDefaultOnEmptyWrapper) WithChildren(qs []expressions.Quantifier
 	return &physicalDefaultOnEmptyWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalDefaultOnEmptyWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	return properties.Cost{
-		Cardinality: child[0].Cardinality * physicalWrapperCostMultiplier,
-		CPU:         child[0].CPU * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalDefaultOnEmptyWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalDefaultOnEmptyWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalDefaultOnEmptyWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 

@@ -202,7 +202,7 @@ func (p *Planner) OrderingSourceRef(expr expressions.RelationalExpression) (*exp
 	if !ok {
 		return nil, false
 	}
-	return d.orderingSourceRef(), true
+	return d.OrderingSourceRef(), true
 }
 
 // TieBrokenCostLess supplies extraction's fallback GetBest with a

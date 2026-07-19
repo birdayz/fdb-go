@@ -61,31 +61,15 @@ func (w *physicalLimitWrapper) HashCodeWithoutChildren() uint64 {
 }
 
 // HintCost: LIMIT reduces cardinality to min(child, limit).
-func (w *physicalLimitWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	outCard := child[0].Cardinality
-	// A runtime cap (GetLimitValue != nil) is unknown at plan time — leave the
-	// child cardinality unreduced (conservative) rather than reading the -1
-	// sentinel as "no rows".
-	if w.plan != nil && w.plan.GetLimitValue() == nil {
-		if l := w.plan.GetLimit(); l == 0 {
-			outCard = 0 // LIMIT 0 → no rows (not "no cap").
-		} else if l > 0 && float64(l) < outCard {
-			outCard = float64(l)
-		}
-	}
-	return properties.Cost{
-		Cardinality: outCard * physicalWrapperCostMultiplier,
-		CPU:         child[0].CPU * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalLimitWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
 // HintOrdering: LIMIT preserves inner ordering.
-// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// OrderingSourceRef: this wrapper PRESERVES its input's order (see
 // orderingDelegator in winner_lookup.go).
-func (w *physicalLimitWrapper) orderingSourceRef() *expressions.Reference {
+func (w *physicalLimitWrapper) OrderingSourceRef() *expressions.Reference {
 	return w.innerQuant.GetRangesOver()
 }
 

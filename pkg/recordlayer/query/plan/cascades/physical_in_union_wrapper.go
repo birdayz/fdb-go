@@ -74,23 +74,14 @@ func (w *physicalInUnionWrapper) WithChildren(qs []expressions.Quantifier) (expr
 	return &physicalInUnionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalInUnionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	inDims := float64(len(w.plan.GetBindingNames()))
-	if inDims < 1 {
-		inDims = 10
-	}
-	in := child[0].Cardinality
-	return properties.Cost{
-		Cardinality: in * inDims * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*inDims*properties.UnionCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalInUnionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalInUnionWrapper) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: true, Keys: w.plan.GetComparisonKeys()}
+	return w.plan.HintOrdering()
 }
 
 func (w *physicalInUnionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

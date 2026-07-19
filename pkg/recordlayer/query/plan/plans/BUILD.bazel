@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "aggregate_index.go",
         "comparator.go",
+        "cost.go",
         "default_on_empty.go",
         "delete.go",
         "distinct.go",
@@ -13,6 +14,7 @@ go_library(
         "filter.go",
         "first_or_default.go",
         "flat_map.go",
+        "hint_contracts.go",
         "in_join.go",
         "in_memory_sort.go",
         "in_union.go",
@@ -25,6 +27,7 @@ go_library(
         "merge_sort_union.go",
         "multi_intersection.go",
         "nested_loop_join.go",
+        "ordering.go",
         "plan.go",
         "plan_expression.go",
         "plan_hash.go",
@@ -56,6 +59,7 @@ go_library(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",
     ],
 )

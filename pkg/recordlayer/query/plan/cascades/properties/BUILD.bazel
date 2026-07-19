@@ -6,6 +6,7 @@ go_library(
         "cardinality.go",
         "comparisons_property.go",
         "cost.go",
+        "cost_formulas.go",
         "derivations_property.go",
         "expression_count_property.go",
         "field_with_comparison_count_property.go",

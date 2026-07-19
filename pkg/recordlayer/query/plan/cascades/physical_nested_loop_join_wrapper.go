@@ -86,16 +86,14 @@ func (w *physicalNestedLoopJoinWrapper) HashCodeWithoutChildren() uint64 {
 
 // HintCost: nested-loop join is O(outer × inner). The join predicate
 // selectivity reduces the output cardinality.
-func (w *physicalNestedLoopJoinWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) < 2 {
-		return properties.Cost{}
-	}
-	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
-	return nestedLoopJoinCost(child[0], child[1])
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalNestedLoopJoinWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalNestedLoopJoinWrapper) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: false}
+	return w.plan.HintOrdering()
 }
 
 func (w *physicalNestedLoopJoinWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {

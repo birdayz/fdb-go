@@ -313,6 +313,7 @@ func (c *WindowedIndexScanMatchCandidate) ToScanPlan(
 		c.flowedType,
 		reverse,
 	)
+	indexPlan = stampIndexMetadata(c, indexPlan)
 
 	// Wrap in a FetchFromPartialRecordPlan with the index's translate
 	// function for covering-index push-through.

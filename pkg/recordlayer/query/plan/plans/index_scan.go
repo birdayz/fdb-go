@@ -41,6 +41,26 @@ type RecordQueryIndexPlan struct {
 	strictlySorted  bool
 	covering        bool
 	coveringColumns []string
+
+	// columnNames is the index's key column list, in index-key order. It
+	// drives the ordering the scan provides: the non-equality-bound suffix
+	// of these columns is sorted.
+	columnNames []string
+	// pkColumnNames is the record type's primary-key column list, used to
+	// extend the ordering past the index key: a value index's entries are
+	// (index key, primary key), so the scan's output order covers the
+	// trimmed PK suffix too. Mirrors Java's
+	// ValueIndexExpansionVisitor.fullKey(index, primaryKey) — the ordering in
+	// ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons is
+	// derived over the FULL key (index root + trimPrimaryKey'd PK), which is
+	// what lets an equality-prefixed scan (status = ?) satisfy ORDER BY pk.
+	// Empty for fan-out (createsDuplicates) indexes, where positions past the
+	// fan-out are not sort-ordered (Java breaks the sorted-suffix loop at a
+	// duplicating key part).
+	pkColumnNames []string
+	// unique reports whether the index is declared UNIQUE — an all-equality
+	// scan over a unique index's full key yields at most one row.
+	unique bool
 }
 
 // NewRecordQueryIndexPlan constructs an index scan plan.
@@ -89,7 +109,39 @@ func (p *RecordQueryIndexPlan) WithScanComparisons(comps []*predicates.Compariso
 		strictlySorted:  p.strictlySorted,
 		covering:        p.covering,
 		coveringColumns: p.coveringColumns,
+		columnNames:     p.columnNames,
+		pkColumnNames:   p.pkColumnNames,
+		unique:          p.unique,
 	}
+}
+
+// GetColumnNames returns the index's key column names, in index-key order.
+func (p *RecordQueryIndexPlan) GetColumnNames() []string { return p.columnNames }
+
+// GetPKColumnNames returns the record type's primary-key column names.
+func (p *RecordQueryIndexPlan) GetPKColumnNames() []string { return p.pkColumnNames }
+
+// IsUnique reports whether the scanned index is declared UNIQUE.
+func (p *RecordQueryIndexPlan) IsUnique() bool { return p.unique }
+
+// WithIndexMetadata returns a shallow copy carrying the index's key columns,
+// the record type's primary-key columns, and the UNIQUE flag. These describe
+// the INDEX, not the scan: they are inputs to ordering derivation and to the
+// point-lookup arm of the cost model.
+//
+// They are deliberately NOT part of HashCodeWithoutChildren /
+// EqualsPlanWithoutChildren. Node identity for an index scan is (index name,
+// scan comparisons, record types, reverse, strictlySorted, covering) — two
+// scans of the same index with the same comparisons ARE the same memo node,
+// and the metadata is a function of the index they both name, so folding it
+// into the hash could only ever split identical nodes apart and shift memo
+// dedup without changing what the nodes mean.
+func (p *RecordQueryIndexPlan) WithIndexMetadata(columnNames, pkColumnNames []string, unique bool) *RecordQueryIndexPlan {
+	cp := *p
+	cp.columnNames = columnNames
+	cp.pkColumnNames = pkColumnNames
+	cp.unique = unique
+	return &cp
 }
 
 // GetRecordTypes returns the covered record types.

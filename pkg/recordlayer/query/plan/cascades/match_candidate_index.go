@@ -234,7 +234,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// have. PK columns already in the index key are trimmed
 	// (Index.trimPrimaryKey), matching fullKey construction.
 	if !c.createsDuplicates && len(parts) == len(c.columnNames) {
-		for _, col := range trimmedPKSuffix(c.columnNames, c.pkColumnNames) {
+		for _, col := range plans.TrimmedPKSuffix(c.columnNames, c.pkColumnNames) {
 			colValue := values.NewFieldValue(nil, col, values.UnknownType)
 			sortOrder := MatchedSortOrderAscending
 			if isReverse {
@@ -310,6 +310,7 @@ func (c *ValueIndexScanMatchCandidate) ToScanPlan(
 		c.flowedType,
 		reverse,
 	)
+	indexPlan = stampIndexMetadata(c, indexPlan)
 
 	// Build the TranslateValueFunction for this index: translates
 	// FieldValues whose field name matches a covered index column.

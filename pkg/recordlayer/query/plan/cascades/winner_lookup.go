@@ -98,7 +98,7 @@ func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *Reque
 	if depth >= maxOrderingDelegationDepth {
 		return nil
 	}
-	srcRef := d.orderingSourceRef()
+	srcRef := d.OrderingSourceRef()
 	if srcRef == nil {
 		return nil
 	}
@@ -233,7 +233,7 @@ func getWinnerPlan(ref *expressions.Reference, ordering *RequestedOrdering, less
 // in pinOrderedSpine / rebuildOrderedSpine, which conservatively DECLINE
 // (sort kept) on anything else — implement the routing before adding one.
 type orderingDelegator interface {
-	orderingSourceRef() *expressions.Reference
+	OrderingSourceRef() *expressions.Reference
 }
 
 // maxOrderingDelegationDepth bounds the delegator chain walk. Physical
@@ -265,7 +265,7 @@ func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested 
 		if depth >= maxOrderingDelegationDepth {
 			return false
 		}
-		srcRef := d.orderingSourceRef()
+		srcRef := d.OrderingSourceRef()
 		if srcRef == nil {
 			return false
 		}
@@ -282,3 +282,19 @@ func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested 
 	}
 	return ro.Satisfies(requested)
 }
+
+// Compile-time proof that the delegator PLANS answer OrderingSourceRef, not
+// just their physical wrappers (RFC-183 P5). The interface is satisfied from
+// package plans only because the method is exported — an unexported method
+// would confine the contract to this package.
+var (
+	_ orderingDelegator = (*plans.RecordQueryFilterPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryPredicatesFilterPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryTypeFilterPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryDistinctPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryProjectionPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryMapPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryLimitPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryDefaultOnEmptyPlan)(nil)
+	_ orderingDelegator = (*plans.RecordQueryFetchFromPartialRecordPlan)(nil)
+)

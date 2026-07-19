@@ -70,28 +70,14 @@ func (w *physicalRecursiveDfsJoinWrapper) HashCodeWithoutChildren() uint64 {
 
 // HintCost: recursive DFS is O(root + depth*child) but depth is
 // unknown at plan time. Use root×child as a pessimistic upper bound.
-func (w *physicalRecursiveDfsJoinWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) < 2 {
-		return properties.Cost{}
-	}
-	rootCard := child[0].Cardinality
-	childCard := child[1].Cardinality
-	if rootCard == 0 {
-		rootCard = properties.LeafScanCardinality
-	}
-	if childCard == 0 {
-		childCard = properties.LeafScanCardinality
-	}
-	outCard := rootCard * childCard * physicalWrapperCostMultiplier
-	cpu := (child[0].CPU + rootCard*child[1].CPU) * physicalWrapperCostMultiplier
-	return properties.Cost{
-		Cardinality: outCard,
-		CPU:         cpu,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalRecursiveDfsJoinWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalRecursiveDfsJoinWrapper) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: false}
+	return w.plan.HintOrdering()
 }
 
 func (w *physicalRecursiveDfsJoinWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {

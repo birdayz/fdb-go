@@ -68,32 +68,14 @@ func (w *physicalInJoinWrapper) WithChildren(qs []expressions.Quantifier) (expre
 	return &physicalInJoinWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalInJoinWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	inListLen := float64(len(w.plan.GetInValues()))
-	if inListLen < 1 {
-		inListLen = 10 // parameterized IN — values not bound at plan time
-	}
-	// InJoin is a correlated index probe: for each IN value, the inner
-	// plan does an equality point-lookup returning ~1 row. The child's
-	// standalone cardinality overstates this (it reports the index's
-	// selectivity against the full table). Use inListLen as the output
-	// cardinality (one row per IN value for well-distributed data).
-	return properties.Cost{
-		Cardinality: inListLen * physicalWrapperCostMultiplier,
-		CPU:         inListLen * (properties.ScanCPU + properties.FetchCPU) * physicalWrapperCostMultiplier,
-	}
+// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
+func (w *physicalInJoinWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return w.plan.HintCost(child, stats)
 }
 
+// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
 func (w *physicalInJoinWrapper) HintOrdering() properties.Ordering {
-	// InJoin iterates IN-values one at a time. Each batch preserves
-	// the inner scan's ordering, but the GLOBAL result ordering depends
-	// on the IN-source order, not the inner scan. Don't claim the
-	// inner's ordering — it would cause sort elimination to remove a
-	// necessary ORDER BY.
-	return properties.Ordering{}
+	return w.plan.HintOrdering()
 }
 
 func (w *physicalInJoinWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
