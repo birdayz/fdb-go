@@ -67,7 +67,9 @@ func verifyNoShell(expr expressions.RelationalExpression) error {
 	if plan == nil {
 		return fmt.Errorf("yield-invariant: physical expression %T carries no plan", expr)
 	}
-	if planIsShell(plan) {
+	// Structurally incomplete = a non-leaf carrying no children, per the
+	// plan-invariant authority (isGenuineLeafPlan).
+	if len(plan.GetChildren()) == 0 && !isGenuineLeafPlan(plan) {
 		return fmt.Errorf(
 			"yield-invariant: %T yielded a nil-inner shell (plan %T has no children) — "+
 				"rules must construct a plan with its child already attached, the way Java "+

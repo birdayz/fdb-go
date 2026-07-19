@@ -476,8 +476,7 @@ func (t *TransformImplTask) Run(p *Planner) {
 						// for JoinInner, no correlation gate on the swap), but that is
 						// HARMLESS: residual 0-row safety for any correlated leg is held
 						// DOWNSTREAM and independently of which site drives the optimize —
-						// by compensationSafeForYield's outer-correlation guard + B1a's
-						// isNilInnerFetch winner selection (defense-in-depth) — not by B1's
+						// by compensationSafeForYield's outer-correlation guard — not by B1's
 						// gating. B1 only removes a premature standalone prune (the
 						// :248 path above); it was never the sole 0-row guarantee.
 						p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
@@ -511,22 +510,13 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 
 	var bestFinal expressions.RelationalExpression
 	for _, m := range t.Ref.FinalMembers() {
-		if isNilInnerFetch(m) {
-			continue
-		}
 		if bestFinal == nil || costModel(m, bestFinal) {
 			bestFinal = m
 		}
 	}
 
 	if bestFinal == nil {
-		// No VALID final (only nil-inner Fetch shells, or nothing).
-		// Do NOT clear: an extraction template's shell must stay for
-		// the relink seam — under dual insertion the valid twin
-		// survived in the exploratory set, but with finals-only
-		// physical yields clearing would strand the template with an
-		// empty ref and the relink kept a nil inner (the XX000
-		// Fetch(<nil>) plan-invariant).
+		// No finals at all — nothing to prune to and no winner to stamp.
 		return
 	}
 

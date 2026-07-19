@@ -1,7 +1,9 @@
 # RFC-183 — Rules yield fully-linked plans: delete the nil-inner shell architecture
 
 **Status:** ACK-WITH-CHANGES from Graefe and Torvalds (2026-07-19); changes
-folded in this revision. Implementation may start at P0.
+folded. **P0 and P1 are implemented and landed** (76d6d06a6) — see §9 for
+what P0 actually reported, including a wrong-rows bug it surfaced on
+master. P2/P3 follow.
 **Tracks:** RFC-167's deeper layer (the nil-inner-shell finding), promoted to its own design at the owner's request after RFC-182 P2 patched a fourth repair site.
 **Relates to:** RFC-070 (deferred child linkage — the origin), RFC-076 (`findBestPhysicalPlan`), RFC-182 (the harness that keeps surfacing this class).
 
@@ -271,6 +273,100 @@ last, but no longer contingent.
    only N-ary case, is already converted and clean.
 5. ~~Always-on vs debug-only invariants.~~ **Resolved** (P1): always-on,
    matching Java.
+
+## 9. P0 report (implemented)
+
+**Outcome A on the shell question, Outcome B on cost.** Both, and the
+second is the valuable half.
+
+**Shells are gone, proven rather than assumed.** `isNilInnerShell` was
+instrumented to log every observation, then run across the entire Go test
+suite and all 2407 corpus queries: **zero observations in both.** The
+machinery in §3a is dead code, so P2 deletes on evidence.
+
+**Baking was behaviour-neutral, as §5 predicted.** No plan changed because
+a child got frozen earlier.
+
+**But P0 found a wrong-rows bug on master, exactly as an exit gate should.**
+Giving the malformed alternative a real (cheaper) cost made it start
+WINNING. `PushFilterThroughFetchRule` pushed predicates beneath a fetch
+without checking the index covers the columns they read — with `INDEX idx_k
+ON t(k)`, `k = 5 AND (a > 1 OR b < 2)` planned as
+`Fetch(PredicatesFilter(IndexScan(IDX_K), [(A > 1 OR B < 2)]))`, evaluating
+A and B on an index entry carrying only K and the primary key.
+
+The mechanism is a shortcut in `tryTranslateValueRec`: "not correlated to
+the source alias" is read as "foreign value, push through unchanged". After
+ordinalization a bare column is a `FieldValue` with `Child == nil` and an
+EMPTY correlation set, so it took the shortcut and never met the
+covered-column check. The final residual-correlation guard cannot catch it
+either — an ordinalized field never carries that correlation. A composite
+over such fields (`a + b > 3`) has an empty correlation set of its own and
+slipped through the same way; that second instance was found by the new
+tests, not by the corpus.
+
+Note what this says about the RFC's own framing. §5 argued the "stale plan
+references" comment was folklore and that the real risk was
+`findPhysicalExpr`'s shell fallback. The folklore claim held. The predicted
+risk never materialised — outcome C did not fire. The bug that did surface
+was in neither list: it lived in the *pushability* test, not in the linkage
+machinery. P0's value was not confirming its own hypothesis but running a
+cost perturbation broad enough to shake out a latent defect no hypothesis
+had named.
+
+**Corpus: 31 shape flips over 2407 queries, 0 plan regressions.** Dominant
+class is the correctness fix. The rest are improvements the real costs
+unlocked: the Fetch eliminated outright on covering scans, InJoin pushed
+below the fetch, a two-index Intersection chosen over single-index-plus-
+residual.
+
+**Why nothing caught it before.** The bug is in which plans are GENERATED;
+the malformed alternative carried a stub cost and usually lost. Every test
+asserted rows, or a substring of the WINNING plan. None asserted that an
+unsound alternative is never generated. The unprobed dimension was "is the
+pushed predicate evaluable on the partial record" — now pinned by
+`TestPushFilter_NeverPushesUncoveredColumnBelowFetch` (and its
+over-declining twin, since a guard that refused everything would also pass).
+
+**One test was pinning the bug.** `TestNestedIn_OverIntersection` demanded
+`InJoin(` on a query where that shape was only reachable by pushing A and B
+onto an `idx_c` entry carrying neither. It now asserts the sound plan;
+`TestInJoinBelowFetch_RelinksRealChild` keeps the relink path covered on a
+query where the shape is sound.
+
+## 10. WS-S report: the selector item, and why half of it was wrong
+
+WS-S came out of the gate as "`findBestPhysicalPlan` (cheapest) is wired to 1
+site while `findPhysicalPlan` (first-member) serves 20 — a live correctness
+bug." It is two claims, and they did not survive equally.
+
+**The member-set half was real and is fixed.** `AllMembers()` concatenates
+exploratory members BEFORE final ones, so a first-match scan inspected the
+exploratory set first; Java enumerates FINAL expressions only
+(`RecordQueryPlanMatchers.java:115`), and FinalizeExpressionsRule promotes the
+same pointer into both sets, so an expression really can sit in each.
+`findPhysicalExpr`/`findPhysicalPlan` now search finals first, with the
+exploratory fallback kept because rules call them mid-planning before a group
+is finalized. Zero plan drift across 2407 queries — a latent misordering, not
+an active one, but a real divergence closed.
+
+**The selector half is wrong, and was falsified by experiment.** Ranking
+members with `PlanningCostModelLess` at rule time ignores the REQUESTED
+ORDERING. Wiring it in turned `SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC`
+into an ASCENDING result and moved 79 plan shapes. A rule wants *a valid
+child*; which alternative wins belongs to OptimizeGroup under the ordering
+constraints, and extraction reads that winner through the ordering-aware
+lookup.
+
+So the 1-vs-20 asymmetry is not the bug it appears to be — the anomaly is the
+ONE site, not the twenty. `findBestPhysicalPlan` is precisely the "ad-hoc
+second optimizer running at extraction outside the cost framework" the gate
+itself objected to; the correct direction is to retire it into the memo's
+winner lookup, not to propagate it. That is a follow-up, not a P2 deletion:
+removing it needs the RFC-076 shape it was introduced for
+(`TestFDB_JoinSelPred_Repro`) re-verified against ordering-aware winner
+selection. The hazard is now documented at `findPhysicalExpr` so the next
+person who spots the asymmetry does not "fix" it the obvious way.
 
 ## 8. Success criteria
 

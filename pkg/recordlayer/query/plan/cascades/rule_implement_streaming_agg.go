@@ -79,14 +79,6 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			if !ok {
 				continue
 			}
-			// A nil-inner Fetch shell (the extraction template) must
-			// never be PLAN-EMBEDDED — its plan completes only via the
-			// wrapper's WithChildren relink; embedding it here bakes
-			// Fetch(<nil>) into the aggregate permanently (the XX000
-			// plan-invariant).
-			if isNilInnerFetch(m) {
-				continue
-			}
 			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(pe.GetRecordQueryPlan(), groupingKeys, gb.GetAggregates())
 			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(m))
 			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))

@@ -68,7 +68,7 @@ func (w *physicalInUnionWrapper) WithChildren(qs []expressions.Quantifier) (expr
 	// (RFC-070) and limit wrappers carry; isLeafReplaceable gates the SWAP
 	// of join-structured children, and an IN-union's inner is a plain
 	// sub-plan, so the gate applies here as it does for the in-join.
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); shouldRelinkInner(w.plan.GetInner(), innerPlan) {
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
 		return &physicalInUnionWrapper{plan: w.plan.WithInner(innerPlan), innerQuant: qs[0]}, nil
 	}
 	return &physicalInUnionWrapper{plan: w.plan, innerQuant: qs[0]}, nil

@@ -67,14 +67,12 @@ func TestInOverIntersection_RelinksResidual(t *testing.T) {
 // an indexed equality. It began life as a GATE PIN asserting that loud
 // decline; the gap is now closed, so it asserts the real plan instead.
 //
-// Two pieces closed it. (1) A wrapper holding a MALFORMED inner now always
-// relinks: the isLeafReplaceable gate exists to stop a meaningful child
-// being swapped, and a plan with no child is not meaningful — previously an
-// `InUnion` holding a nil-inner `InJoin` refused every relink because the
-// SHELL's type is not leaf-replaceable. (2) A reference whose members are
-// ALL shells is completed recursively (completeShellPlan), rebuilding
-// through each plan's WithInner rather than re-entering WithChildren —
-// which is what makes its depth bound real.
+// The gap was a nil-inner "shell": an `InUnion` holding an `InJoin` whose
+// own inner was nil, to be relinked at extraction. RFC-183 removed that
+// state at its source — the push-through rules now construct the parent
+// with its concrete child, the way Java evaluates memoizePlan as a
+// constructor argument — so no repair-at-extraction is involved and this
+// test now pins the plan a fully-linked build produces directly.
 func TestNestedIn_OverIntersection(t *testing.T) {
 	t.Parallel()
 	const q = "SELECT * FROM t_rd WHERE (b IN (7,5)) AND (c = 5) AND (a IN (5,9,3,10)) LIMIT 12"
@@ -95,8 +93,8 @@ func TestNestedIn_OverIntersection(t *testing.T) {
 	// tryTranslateValueRec (rule_push_filter_through_fetch.go). With the push
 	// correctly refused, the only sound plan drives the indexed equality and
 	// re-applies both INs above the fetch. Asserting the sound shape is the
-	// point; TestNestedIn_LegitimateInJoin below keeps a real nested-InJoin
-	// shape under test so the relink path itself stays exercised.
+	// point; TestInJoinBelowFetch_RelinksRealChild below keeps a real InJoin
+	// shape under test so that path itself stays exercised.
 	for _, want := range []string{"IndexScan(IDX_C", "PredicatesFilter(", "[2 preds]"} {
 		if !strings.Contains(plan, want) {
 			t.Errorf("want %s in the plan, got: %s", want, plan)

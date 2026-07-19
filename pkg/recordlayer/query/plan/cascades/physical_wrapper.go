@@ -307,114 +307,38 @@ func extractChildPlanFromQuantifier(q expressions.Quantifier) plans.RecordQueryP
 	return findPhysicalPlan(ref)
 }
 
-// findPhysicalPlan scans ref's members for the first physical-plan
-// expression and returns its underlying RecordQueryPlan. Returns nil
-// if no physical plan has been yielded into ref yet.
+// findPhysicalPlan returns a physical member's underlying RecordQueryPlan, or
+// nil if no physical plan has been yielded into ref yet.
+//
+// FINAL members are searched first. Java enumerates FINAL expressions only when
+// it looks for a plan (RecordQueryPlanMatchers.java:115) — a plan is by
+// definition a final expression there. Go's AllMembers() concatenates
+// exploratory members BEFORE final ones (Reference.AllMembers), so a bare
+// first-match scan over it inspects the exploratory set first and can return a
+// promoted-but-dominated expression instead of the group's plan.
+// FinalizeExpressionsRule promotes the SAME pointer into both sets, so an
+// expression really can sit in each.
+//
+// The exploratory fallback is kept deliberately: rules call this DURING
+// planning, before a group has been finalized, and returning nil there would
+// silently decline a rule that has a perfectly good child to hand.
 func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
-	// Delegates to resolveInnerPlan at depth 0 so there is ONE implementation
-	// of "prefer a valid member, else complete the sole shell" and the two
-	// cannot drift. See resolveInnerPlan for the member preference and
-	// completeShellPlan for why a sole-shell reference is completed rather
-	// than handed back as `Op(<nil>)` (the XX000 plan invariant).
-	return resolveInnerPlan(ref, 0)
-}
-
-// maxShellCompletionDepth bounds completeShellPlan. Shell chains are a few
-// unary wrappers deep in practice; the cap exists so a cyclic or
-// pathological memo yields nil (and a loud decline) rather than recursing
-// without end.
-const maxShellCompletionDepth = 32
-
-// completeShellPlan turns a nil-inner shell member into a fully-linked plan
-// by resolving its child reference and attaching the result with the plan's
-// own WithInner. Returns nil when the chain cannot be completed, in which
-// case the caller declines and the plan-invariant check reports loudly.
-func completeShellPlan(expr expressions.RelationalExpression, depth int) plans.RecordQueryPlan {
-	pe, ok := expr.(physicalPlanExpression)
-	if !ok {
-		return nil
-	}
-	plan := pe.GetRecordQueryPlan()
-	if plan == nil {
-		return nil
-	}
-	if !isNilInnerShell(expr) {
-		return plan // already complete
-	}
-	if depth >= maxShellCompletionDepth {
-		return nil
-	}
-	qs := expr.GetQuantifiers()
-	if len(qs) != 1 {
-		return nil // only unary shells are completable this way
-	}
-	inner := resolveInnerPlan(qs[0].GetRangesOver(), depth+1)
-	if inner == nil {
-		return nil
-	}
-	return planWithInner(plan, inner)
-}
-
-// resolveInnerPlan picks a child reference's plan, completing it first when
-// every member there is itself a shell. Mirrors findPhysicalPlan's member
-// preference (a valid member beats a template) while threading the depth.
-func resolveInnerPlan(ref *expressions.Reference, depth int) plans.RecordQueryPlan {
-	if ref == nil {
-		return nil
-	}
-	var shell expressions.RelationalExpression
-	for _, m := range ref.AllMembers() {
-		ph, ok := m.(physicalPlanExpression)
-		if !ok {
-			continue
+	if expr := findPhysicalExpr(ref); expr != nil {
+		if ph, ok := expr.(physicalPlanExpression); ok {
+			return ph.GetRecordQueryPlan()
 		}
-		if isNilInnerShell(m) {
-			if shell == nil {
-				shell = m
-			}
-			continue
-		}
-		return ph.GetRecordQueryPlan()
-	}
-	if shell == nil {
-		return nil
-	}
-	return completeShellPlan(shell, depth)
-}
-
-// planWithInner rebuilds a unary plan with a new inner, preserving every
-// other field. The type switch is the explicit list of plan types that can
-// appear as a nil-inner shell; anything else is not completable and the
-// caller declines rather than guessing.
-func planWithInner(p plans.RecordQueryPlan, inner plans.RecordQueryPlan) plans.RecordQueryPlan {
-	switch t := p.(type) {
-	case *plans.RecordQueryFetchFromPartialRecordPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryPredicatesFilterPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryMapPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryDistinctPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryLimitPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryInJoinPlan:
-		return t.WithInner(inner)
-	case *plans.RecordQueryInUnionPlan:
-		return t.WithInner(inner)
 	}
 	return nil
 }
 
-// findBestPhysicalPlan returns the cheapest VALID physical member's plan
-// (excluding nil-inner Fetch shells) — the cost winner — for a push-through
-// WithChildren whose inner must relink to the winner rather than to whichever
-// physical member was yielded first. ref.AllMembers() interleaves exploratory
-// and final members in yield order, so "first physical" can be a dominated
-// alternative; when ordering constraints add ordered variants the first-yielded
-// member flips and the enforcer relinks onto the wrong (worse) join order
-// (RFC-076 TestFDB_JoinSelPred_Repro). Falls back to findPhysicalPlan (any
-// physical member, even a nil-inner shell) so a sole-template ref still relinks.
+// findBestPhysicalPlan returns the cheapest physical member's plan — the cost
+// winner — for a push-through WithChildren whose inner must relink to the
+// winner rather than to whichever physical member was yielded first.
+// ref.AllMembers() interleaves exploratory and final members in yield order, so
+// "first physical" can be a dominated alternative; when ordering constraints add
+// ordered variants the first-yielded member flips and the enforcer relinks onto
+// the wrong (worse) join order (RFC-076 TestFDB_JoinSelPred_Repro). Falls back
+// to findPhysicalPlan when no member ranks.
 func findBestPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	if ref == nil {
 		return nil
@@ -427,29 +351,43 @@ func findBestPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	return findPhysicalPlan(ref)
 }
 
-// findPhysicalExpr scans ref's members for the first physical-plan
-// expression and returns it as a RelationalExpression. Used by
-// implement rules to obtain the existing wrapper (already memoized
-// in the inner Reference by a prior implement-rule fire) without
+// findPhysicalExpr returns a physical-plan expression from ref, FINAL members
+// first. Used by implement rules to obtain the existing wrapper (already
+// memoized in the inner Reference by a prior implement-rule fire) without
 // re-wrapping from scratch.
+//
+// See findPhysicalPlan for why the final set is searched first and why the
+// exploratory fallback stays.
+//
+// DO NOT make this cost-ranked. Picking the "cheapest" member here looks like
+// an obvious improvement — findBestPhysicalPlan does exactly that, and it is
+// wired to one site against this function's twenty — but it is wrong, and
+// measurably so: ranking with PlanningCostModelLess ignores the REQUESTED
+// ORDERING, so a rule asking for a child gets whichever member is cheapest
+// rather than one that satisfies the ordering its parent needs. Tried, and it
+// turned `SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC` into an ASCENDING
+// result (pinned by yamsql order_by_elimination#36) and moved 79 plan shapes.
+//
+// Cost is the memo's job, not a rule's. A rule wants A VALID CHILD; which
+// alternative wins is decided by OptimizeGroup under the ordering constraints,
+// and extraction then reads that winner through the ordering-aware winner
+// lookup. A cost comparison at rule time is a second, ordering-blind optimizer
+// running outside the cost framework.
 func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpression {
 	if ref == nil {
 		return nil
 	}
-	// Same nil-inner-shell preference as findPhysicalPlan.
-	var shell expressions.RelationalExpression
-	for _, m := range ref.AllMembers() {
+	for _, m := range ref.FinalMembers() {
 		if _, ok := m.(physicalPlanExpression); ok {
-			if isNilInnerFetch(m) {
-				if shell == nil {
-					shell = m
-				}
-				continue
-			}
 			return m
 		}
 	}
-	return shell
+	for _, m := range ref.Members() {
+		if _, ok := m.(physicalPlanExpression); ok {
+			return m
+		}
+	}
+	return nil
 }
 
 // bakedInnerPlan returns the concrete RecordQueryPlan that expr carries, for
@@ -471,77 +409,12 @@ func bakedInnerPlan(expr expressions.RelationalExpression) plans.RecordQueryPlan
 		return nil
 	}
 	p := pe.GetRecordQueryPlan()
-	if p == nil || planIsShell(p) {
+	// Structurally incomplete = a non-leaf carrying no children, per the
+	// plan-invariant authority (isGenuineLeafPlan).
+	if p == nil || (len(p.GetChildren()) == 0 && !isGenuineLeafPlan(p)) {
 		return nil
 	}
 	return p
-}
-
-// shouldRelinkInner decides whether a wrapper's WithChildren may install
-// candidate as its embedded plan's inner.
-//
-// The isLeafReplaceable gate exists to stop a join-structured child being
-// SWAPPED for a different one (extraction picks the join via quantifier
-// traversal, not by substitution). That protection is meaningless when the
-// wrapper currently holds NO inner at all: the alternatives there are an
-// equivalent member of the very reference the quantifier ranges over, or a
-// `Op(<nil>)` plan that fails the plan invariant outright. A malformed plan
-// is never the safer choice, so a shell relinks even where the gate would
-// refuse — nested `IN`s (`c IN (…) AND a IN (…)`) build exactly that shape
-// and previously extracted `InJoin(<nil>)`.
-//
-// ONE candidate is refused regardless of either arm: an order-destroying
-// plan (isOrderDestroying). This lookup never consults ordering while some
-// consumers merge-sort their child, so installing one would trade a loud
-// rejection for silently mis-ordered rows. That check runs FIRST.
-func shouldRelinkInner(currentInner, candidate plans.RecordQueryPlan) bool {
-	if candidate == nil {
-		return false
-	}
-	// An ORDER-DESTROYING candidate is never installed, no matter how
-	// malformed the current inner is. findPhysicalPlan picks the first
-	// non-shell member without consulting ordering, and consumers like the
-	// IN-union merge-sort their child on comparison keys — so admitting an
-	// unordered family here would trade a LOUD malformed-plan rejection for
-	// SILENTLY mis-ordered (and mis-deduped) rows. Declining keeps the loud
-	// failure, which is the correct direction. This guard covers the
-	// no-inner arm too, where the same hole pre-existed.
-	if isOrderDestroying(candidate) {
-		return false
-	}
-	// A MALFORMED current inner counts as no inner. The gate protects an
-	// existing, meaningful child from being swapped; a plan that itself has
-	// no child is not meaningful — it cannot execute. Without this, a
-	// wrapper holding a nil-inner shell (`InUnion(InJoin(<nil>))`, built by
-	// nested `IN`s) refused every relink because the SHELL's type is not
-	// leaf-replaceable, and the malformed plan survived to extraction.
-	if currentInner == nil || planIsShell(currentInner) {
-		return true
-	}
-	return isLeafReplaceable(candidate)
-}
-
-// planIsShell reports whether a plan is structurally incomplete: a non-leaf
-// carrying no children. Same authority as the expression-level
-// isNilInnerShell, applied to a bare plan.
-func planIsShell(p plans.RecordQueryPlan) bool {
-	return p != nil && len(p.GetChildren()) == 0 && !isGenuineLeafPlan(p)
-}
-
-// isOrderDestroying reports whether a plan emits rows in NO guaranteed
-// order. Such a plan must never be installed as the inner of a wrapper by
-// an ordering-blind relink: a consumer that merge-sorts its child (the
-// IN-union's comparison keys, the pk-sorted intersection) would produce
-// mis-ordered and mis-deduped rows SILENTLY. These are exactly the families
-// isLeafReplaceable excludes for the same reason; naming them here keeps
-// the shell arm — which bypasses that gate — honest.
-func isOrderDestroying(p plans.RecordQueryPlan) bool {
-	switch p.(type) {
-	case *plans.RecordQueryUnorderedUnionPlan,
-		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
-		return true
-	}
-	return false
 }
 
 // isLeafReplaceable reports whether a plan is safe to substitute as the
@@ -566,7 +439,7 @@ func isOrderDestroying(p plans.RecordQueryPlan) bool {
 // Three families stay OUT, each for its own reason:
 //   - InJoin / InUnion bind a correlation per IN value — join-like structure.
 //   - The UNORDERED set ops (UnorderedUnion, UnorderedPrimaryKeyDistinct):
-//     findPhysicalPlan picks the first non-shell member without consulting
+//     findPhysicalPlan picks the first physical member without consulting
 //     ordering, so admitting them would let an unordered member satisfy a
 //     relink whose consumer needs grouped/ordered input (streaming
 //     aggregation). Gate the relink on ordering compatibility before adding

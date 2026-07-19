@@ -188,7 +188,7 @@ func lessWithHashTieBreak(less func(a, b expressions.RelationalExpression) bool)
 }
 
 // findBestValidPhysicalExpr returns the cheapest physical member of ref
-// under `less`, excluding nil-inner Fetch shells.
+// under `less`.
 func findBestValidPhysicalExpr(ref *expressions.Reference, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	if less == nil {
 		less = PlanningCostModelLess
@@ -196,9 +196,6 @@ func findBestValidPhysicalExpr(ref *expressions.Reference, less func(a, b expres
 	var best expressions.RelationalExpression
 	for _, m := range ref.AllMembers() {
 		if _, ok := m.(physicalPlanExpression); !ok {
-			continue
-		}
-		if isNilInnerFetch(m) {
 			continue
 		}
 		if best == nil || less(m, best) {
@@ -247,10 +244,8 @@ type orderingDelegator interface {
 const maxOrderingDelegationDepth = 64
 
 // memberSatisfiesOrdering reports whether a physical member's derived rich
-// ordering satisfies the requested ordering. Non-physical members and
-// nil-inner Fetch shells never satisfy (a Fetch shell's inner is resolved
-// only at extraction; costed without it, it ranks artificially cheap).
-// Order-preserving wrappers resolve through their source group (see
+// ordering satisfies the requested ordering. Non-physical members never
+// satisfy. Order-preserving wrappers resolve through their source group (see
 // orderingDelegator).
 func memberSatisfiesOrdering(m expressions.RelationalExpression, requested *RequestedOrdering) bool {
 	return memberSatisfiesOrderingDepth(m, requested, 0)
@@ -258,13 +253,10 @@ func memberSatisfiesOrdering(m expressions.RelationalExpression, requested *Requ
 
 func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested *RequestedOrdering, depth int) bool {
 	// Physicality gates FIRST: a preserve request must not admit a logical
-	// member or a nil-inner Fetch shell either — bestSatisfyingMember
-	// promises "cheapest PHYSICAL member" unconditionally.
+	// member either — bestSatisfyingMember promises "cheapest PHYSICAL
+	// member" unconditionally.
 	pe, ok := m.(physicalPlanExpression)
 	if !ok {
-		return false
-	}
-	if isNilInnerFetch(m) {
 		return false
 	}
 	if requested == nil || requested.IsPreserve() {

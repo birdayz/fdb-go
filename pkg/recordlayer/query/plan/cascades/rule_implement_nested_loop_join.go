@@ -94,15 +94,13 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// order (drive from the smaller side) wins; under default stats every
 	// table is LeafScanCardinality and selection ties to FROM-order (RFC-041).
 	costModel := call.CostModel()
-	// Select join children through the NIL-SAFE winner path (skips nil-inner Fetch
-	// SHELLS — the RFC-070 extraction template `Fetch(nil, …)` whose real inner
-	// lives in the wrapper quantifier and is resolved only via WithChildren). The
-	// NLJ embeds the child's plan DIRECTLY (GetRecordQueryPlan, never WithChildren),
-	// so a nil-inner shell selected here renders `Fetch(<nil>)` → 0 rows. Every
-	// "best physical candidate" site must apply this guard (the wrapper's contract,
-	// physical_fetch_from_partial_record_wrapper.go); the two sibling selectors
-	// (getWinnerForOrdering, findBestValidPhysicalExpr) do — this one regressed.
-	// (RFC-150 B1a: the join-leg 0-row bug `... AND t.a>1 AND t.fk=o.id AND u.x=t.x`.)
+	// Select join children through the COST-BEST physical member rather than the
+	// first-yielded one. The NLJ embeds the child's plan DIRECTLY
+	// (GetRecordQueryPlan, never WithChildren), so whatever is picked here is what
+	// executes — first-member order is not a selection criterion.
+	// (RFC-150 B1a: the join-leg 0-row bug `... AND t.a>1 AND t.fk=o.id AND u.x=t.x`,
+	// where the first member was a nil-inner Fetch shell; RFC-183 removed that state
+	// at its source, and cost-best selection remains correct on its own terms.)
 	leftExpr := findBestValidPhysicalExpr(leftRef, costModel)
 	rightExpr := findBestValidPhysicalExpr(rightRef, costModel)
 	if leftExpr == nil || rightExpr == nil {
