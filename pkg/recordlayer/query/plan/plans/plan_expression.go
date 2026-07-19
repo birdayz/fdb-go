@@ -115,6 +115,48 @@ func QuantifierOverPlan(child RecordQueryPlan) expressions.Quantifier {
 		expressions.FinalOfAtStage(child, expressions.StageCanonical))
 }
 
+// QuantifiersOverPlans is QuantifierOverPlan across an N-ary plan's child
+// list — the Go spelling of Java's
+// `children.stream().map(c -> Quantifier.physical(call.memoizePlan(c)))`.
+//
+// ORDER IS LOAD-BEARING and preserved exactly. Several of the plans that use
+// this report ChildrenAsSet — Union, Intersection, MergeSortUnion — but that
+// flag is about when two EXPRESSIONS are equivalent, not about whether this
+// plan may reshuffle its own legs: Comparator indexes its reference plan by
+// position, Selector picks by position, and every Explain renders legs in
+// order. Index i in must stay index i out.
+//
+// A nil child yields the zero Quantifier, matching QuantifierOverPlan, so a
+// list containing one round-trips back to a nil at the same position rather
+// than shrinking the arity.
+func QuantifiersOverPlans(children []RecordQueryPlan) []expressions.Quantifier {
+	qs := make([]expressions.Quantifier, len(children))
+	for i, child := range children {
+		qs[i] = QuantifierOverPlan(child)
+	}
+	return qs
+}
+
+// plansFromQuantifiers is planFromQuantifier across a child-quantifier list,
+// the read side of QuantifiersOverPlans and positionally its exact inverse.
+//
+// Builds a fresh slice on every call rather than caching one: the quantifiers
+// are the single storage location for the parent->child edges now, and a
+// cached plan slice would reintroduce the second location this step exists to
+// delete. The cost is a small allocation per GetChildren; the benefit is that
+// the two can never disagree.
+//
+// Always non-nil for a non-nil argument length, so a 0-leg set operation still
+// hands back the empty-not-nil slice its callers saw when the legs were stored
+// raw.
+func plansFromQuantifiers(qs []expressions.Quantifier) []RecordQueryPlan {
+	children := make([]RecordQueryPlan, len(qs))
+	for i, q := range qs {
+		children[i] = planFromQuantifier(q)
+	}
+	return children
+}
+
 // planFromQuantifier dereferences a child quantifier to THE plan it ranges
 // over. Ports Java's Quantifier.Physical.getRangesOverPlan():
 //

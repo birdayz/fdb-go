@@ -19,33 +19,39 @@ import (
 //
 // Result type matches the first inner's result type. All inners
 // must produce row-compatible streams (the planner's responsibility).
+//
+// The legs are stored ONCE, as Quantifiers over References — Java's shape
+// (`RecordQuerySetPlan`'s `List<Quantifier.Physical> quantifiers`). The raw
+// `inners []RecordQueryPlan` slice they replace was a second storage location
+// for the same edges. RFC-183 P5 step 2.
 type RecordQueryUnionPlan struct {
 	PlanExprBase
-	inners []RecordQueryPlan
+	childQs []expressions.Quantifier
 }
 
 // NewRecordQueryUnionPlan constructs a UNION ALL over the given
 // inner plans.
 func NewRecordQueryUnionPlan(inners []RecordQueryPlan) *RecordQueryUnionPlan {
-	copied := make([]RecordQueryPlan, len(inners))
-	copy(copied, inners)
-	return &RecordQueryUnionPlan{inners: copied}
+	return &RecordQueryUnionPlan{childQs: QuantifiersOverPlans(inners)}
 }
 
-// GetInners returns the union's inner plans (read-only).
-func (p *RecordQueryUnionPlan) GetInners() []RecordQueryPlan { return p.inners }
+// GetInners returns the union's inner plans, dereferenced through the
+// quantifiers and in leg order.
+func (p *RecordQueryUnionPlan) GetInners() []RecordQueryPlan {
+	return plansFromQuantifiers(p.childQs)
+}
 
 // GetResultType returns the first inner's result type, or
 // UnknownType if there are no inners.
 func (p *RecordQueryUnionPlan) GetResultType() values.Type {
-	if len(p.inners) == 0 {
+	if len(p.childQs) == 0 {
 		return values.UnknownType
 	}
-	return p.inners[0].GetResultType()
+	return planFromQuantifier(p.childQs[0]).GetResultType()
 }
 
 // GetChildren returns the inner plans.
-func (p *RecordQueryUnionPlan) GetChildren() []RecordQueryPlan { return p.inners }
+func (p *RecordQueryUnionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
 
 // EqualsWithoutChildren is a constant-discriminated equality —
 // union has no operator-specific node-info beyond its children.
@@ -63,8 +69,9 @@ func (p *RecordQueryUnionPlan) HashCodeWithoutChildren() uint64 {
 
 // Explain renders Union(inner1, inner2, ...).
 func (p *RecordQueryUnionPlan) Explain() string {
-	parts := make([]string, len(p.inners))
-	for i, inner := range p.inners {
+	inners := p.GetInners()
+	parts := make([]string, len(inners))
+	for i, inner := range inners {
 		if inner == nil {
 			parts[i] = "<nil>"
 		} else {
@@ -85,10 +92,26 @@ func (p *RecordQueryUnionPlan) EqualsWithoutChildren(other expressions.Relationa
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryUnionPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// GetQuantifiers reports the real leg quantifiers, overriding PlanExprBase's
+// none.
+func (p *RecordQueryUnionPlan) GetQuantifiers() []expressions.Quantifier {
+	if len(p.childQs) == 0 {
+		return nil
+	}
+	return p.childQs
+}
+
+// WithQuantifiers returns a copy ranging over the given leg quantifiers —
+// Java's copy-on-write withChildrenReferences. The receiver is never mutated,
+// which is what keeps a memoized plan safe to share; the incoming slice is
+// copied so the caller cannot alias the copy's storage either.
+func (p *RecordQueryUnionPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != len(p.childQs) {
+		return p
+	}
+	cp := *p
+	cp.childQs = append([]expressions.Quantifier(nil), qs...)
+	return &cp
 }
 
 // ChildrenAsSet reports that the legs of this set operation are commutative,

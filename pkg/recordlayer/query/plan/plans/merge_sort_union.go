@@ -17,9 +17,14 @@ import (
 // Mirrors Java's RecordQueryUnionOnValuesPlan (which extends
 // RecordQueryUnionPlan with comparison key values + reverse flag +
 // distinct flag).
+//
+// The legs are stored ONCE, as Quantifiers over References — Java's shape
+// (`RecordQuerySetPlan`'s `List<Quantifier.Physical> quantifiers`). The raw
+// `inners []RecordQueryPlan` slice they replace was a second storage location
+// for the same edges. RFC-183 P5 step 2.
 type RecordQueryMergeSortUnionPlan struct {
 	PlanExprBase
-	inners           []RecordQueryPlan
+	childQs          []expressions.Quantifier
 	comparisonKeys   []values.Value
 	reverse          bool
 	removeDuplicates bool
@@ -31,31 +36,34 @@ func NewRecordQueryMergeSortUnionPlan(
 	reverse bool,
 	removeDuplicates bool,
 ) *RecordQueryMergeSortUnionPlan {
-	copiedInners := make([]RecordQueryPlan, len(inners))
-	copy(copiedInners, inners)
 	copiedKeys := make([]values.Value, len(comparisonKeys))
 	copy(copiedKeys, comparisonKeys)
 	return &RecordQueryMergeSortUnionPlan{
-		inners:           copiedInners,
+		childQs:          QuantifiersOverPlans(inners),
 		comparisonKeys:   copiedKeys,
 		reverse:          reverse,
 		removeDuplicates: removeDuplicates,
 	}
 }
 
-func (p *RecordQueryMergeSortUnionPlan) GetInners() []RecordQueryPlan      { return p.inners }
+// GetInners returns the legs, dereferenced through the quantifiers and in
+// merge order — which the merge itself depends on.
+func (p *RecordQueryMergeSortUnionPlan) GetInners() []RecordQueryPlan {
+	return plansFromQuantifiers(p.childQs)
+}
+
 func (p *RecordQueryMergeSortUnionPlan) GetComparisonKeys() []values.Value { return p.comparisonKeys }
 func (p *RecordQueryMergeSortUnionPlan) IsReverse() bool                   { return p.reverse }
 func (p *RecordQueryMergeSortUnionPlan) RemovesDuplicates() bool           { return p.removeDuplicates }
 
 func (p *RecordQueryMergeSortUnionPlan) GetResultType() values.Type {
-	if len(p.inners) == 0 {
+	if len(p.childQs) == 0 {
 		return values.UnknownType
 	}
-	return p.inners[0].GetResultType()
+	return planFromQuantifier(p.childQs[0]).GetResultType()
 }
 
-func (p *RecordQueryMergeSortUnionPlan) GetChildren() []RecordQueryPlan { return p.inners }
+func (p *RecordQueryMergeSortUnionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
 
 // EqualsWithoutChildren compares reverse + removeDuplicates flags and the
 // comparison keys (semantic Value identity — see semanticValueEquals). The
@@ -97,8 +105,9 @@ func (p *RecordQueryMergeSortUnionPlan) HashCodeWithoutChildren() uint64 {
 }
 
 func (p *RecordQueryMergeSortUnionPlan) Explain() string {
-	parts := make([]string, len(p.inners))
-	for i, inner := range p.inners {
+	inners := p.GetInners()
+	parts := make([]string, len(inners))
+	for i, inner := range inners {
 		if inner == nil {
 			parts[i] = "<nil>"
 		} else {
@@ -128,10 +137,26 @@ func (p *RecordQueryMergeSortUnionPlan) EqualsWithoutChildren(other expressions.
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryMergeSortUnionPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// GetQuantifiers reports the real leg quantifiers, overriding PlanExprBase's
+// none.
+func (p *RecordQueryMergeSortUnionPlan) GetQuantifiers() []expressions.Quantifier {
+	if len(p.childQs) == 0 {
+		return nil
+	}
+	return p.childQs
+}
+
+// WithQuantifiers returns a copy ranging over the given leg quantifiers —
+// Java's copy-on-write withChildrenReferences. The receiver is never mutated,
+// which is what keeps a memoized plan safe to share; the incoming slice is
+// copied so the caller cannot alias the copy's storage either.
+func (p *RecordQueryMergeSortUnionPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != len(p.childQs) {
+		return p
+	}
+	cp := *p
+	cp.childQs = append([]expressions.Quantifier(nil), qs...)
+	return &cp
 }
 
 // ChildrenAsSet reports that the legs of this set operation are commutative,

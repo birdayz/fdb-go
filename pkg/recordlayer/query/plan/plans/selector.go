@@ -74,9 +74,15 @@ func (s *RelativeProbabilityPlanSelector) GetProbabilities() []int { return s.pr
 // RecordQuerySelectorPlan selects one of its children to be executed
 // at runtime. The selector determines which child plan to use via
 // a PlanSelector policy. Mirrors Java's RecordQuerySelectorPlan.
+//
+// The children are stored ONCE, as Quantifiers over References — Java's shape
+// (`RecordQuerySetPlan`'s `List<Quantifier.Physical> quantifiers`). The raw
+// `children []RecordQueryPlan` slice they replace was a second storage
+// location for the same edges. RFC-183 P5 step 2. Child ORDER is load-bearing:
+// PlanSelector returns an index into it.
 type RecordQuerySelectorPlan struct {
 	PlanExprBase
-	children     []RecordQueryPlan
+	childQs      []expressions.Quantifier
 	planSelector PlanSelector
 	reverse      bool
 }
@@ -91,10 +97,8 @@ func NewRecordQuerySelectorPlan(
 	if len(children) == 0 {
 		panic("selector plan should have at least one plan")
 	}
-	cpChildren := make([]RecordQueryPlan, len(children))
-	copy(cpChildren, children)
 	return &RecordQuerySelectorPlan{
-		children:     cpChildren,
+		childQs:      QuantifiersOverPlans(children),
 		planSelector: planSelector,
 		reverse:      reverse,
 	}
@@ -127,14 +131,17 @@ func (p *RecordQuerySelectorPlan) IsReverse() bool { return p.reverse }
 // GetResultType returns the first child's result type, or UnknownType
 // if there are no children.
 func (p *RecordQuerySelectorPlan) GetResultType() values.Type {
-	if len(p.children) == 0 {
+	if len(p.childQs) == 0 {
 		return values.UnknownType
 	}
-	return p.children[0].GetResultType()
+	return planFromQuantifier(p.childQs[0]).GetResultType()
 }
 
-// GetChildren returns the child plans.
-func (p *RecordQuerySelectorPlan) GetChildren() []RecordQueryPlan { return p.children }
+// GetChildren returns the child plans, dereferenced through the quantifiers
+// and in the order PlanSelector's index refers to.
+func (p *RecordQuerySelectorPlan) GetChildren() []RecordQueryPlan {
+	return plansFromQuantifiers(p.childQs)
+}
 
 // EqualsWithoutChildren compares reverse flag and plan selector.
 func (p *RecordQuerySelectorPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
@@ -160,8 +167,9 @@ func (p *RecordQuerySelectorPlan) HashCodeWithoutChildren() uint64 {
 
 // Explain renders Selector(child1, child2, ..., selector).
 func (p *RecordQuerySelectorPlan) Explain() string {
-	parts := make([]string, len(p.children))
-	for i, child := range p.children {
+	children := p.GetChildren()
+	parts := make([]string, len(children))
+	for i, child := range children {
 		if child == nil {
 			parts[i] = "<nil>"
 		} else {
@@ -183,8 +191,28 @@ func (p *RecordQuerySelectorPlan) EqualsWithoutChildren(other expressions.Relati
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQuerySelectorPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// GetQuantifiers reports the real child quantifiers, overriding PlanExprBase's
+// none.
+func (p *RecordQuerySelectorPlan) GetQuantifiers() []expressions.Quantifier {
+	if len(p.childQs) == 0 {
+		return nil
+	}
+	return p.childQs
+}
+
+// WithQuantifiers returns a copy ranging over the given child quantifiers —
+// Java's copy-on-write withChildrenReferences. The receiver is never mutated,
+// which is what keeps a memoized plan safe to share; the incoming slice is
+// copied so the caller cannot alias the copy's storage either.
+//
+// The arity check keeps the PlanSelector's index meaningful: a probability
+// list is sized to the child count at construction, so only a same-length
+// replacement is admissible.
+func (p *RecordQuerySelectorPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != len(p.childQs) {
+		return p
+	}
+	cp := *p
+	cp.childQs = append([]expressions.Quantifier(nil), qs...)
+	return &cp
 }

@@ -19,11 +19,16 @@ import (
 // Mirrors Java's RecordQueryMultiIntersectionOnValuesPlan which extends
 // RecordQueryIntersectionPlan and adds a resultValue that constructs the
 // merged output row from quantifier bindings.
+//
+// The children are stored ONCE, as Quantifiers over References — Java's shape
+// (`RecordQuerySetPlan`'s `List<Quantifier.Physical> quantifiers`). The raw
+// `children []RecordQueryPlan` slice they replace was a second storage
+// location for the same edges. RFC-183 P5 step 2.
 type RecordQueryMultiIntersectionOnValuesPlan struct {
 	PlanExprBase
-	children      []RecordQueryPlan // N input plans (one per aggregate index)
-	comparisonKey []values.Value    // grouping columns to match on
-	resultValue   values.Value      // result constructor (grouping + aggregates)
+	childQs       []expressions.Quantifier // N input plans (one per aggregate index)
+	comparisonKey []values.Value           // grouping columns to match on
+	resultValue   values.Value             // result constructor (grouping + aggregates)
 }
 
 // NewRecordQueryMultiIntersectionOnValuesPlan constructs an N-way
@@ -35,20 +40,20 @@ func NewRecordQueryMultiIntersectionOnValuesPlan(
 	comparisonKey []values.Value,
 	resultValue values.Value,
 ) *RecordQueryMultiIntersectionOnValuesPlan {
-	cpChildren := make([]RecordQueryPlan, len(children))
-	copy(cpChildren, children)
 	cpKeys := make([]values.Value, len(comparisonKey))
 	copy(cpKeys, comparisonKey)
 	return &RecordQueryMultiIntersectionOnValuesPlan{
-		children:      cpChildren,
+		childQs:       QuantifiersOverPlans(children),
 		comparisonKey: cpKeys,
 		resultValue:   resultValue,
 	}
 }
 
-// GetChildren returns the input plans.
+// GetChildren returns the input plans, dereferenced through the quantifiers
+// and in stream order — resultValue's pick-up columns are positional per
+// stream.
 func (p *RecordQueryMultiIntersectionOnValuesPlan) GetChildren() []RecordQueryPlan {
-	return p.children
+	return plansFromQuantifiers(p.childQs)
 }
 
 // GetComparisonKey returns the grouping-column values used to match
@@ -105,8 +110,9 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HashCodeWithoutChildren() uin
 
 // Explain renders MultiIntersection(child1, child2, ...; keys=[...]).
 func (p *RecordQueryMultiIntersectionOnValuesPlan) Explain() string {
-	parts := make([]string, len(p.children))
-	for i, child := range p.children {
+	children := p.GetChildren()
+	parts := make([]string, len(children))
+	for i, child := range children {
 		if child == nil {
 			parts[i] = "<nil>"
 		} else {
@@ -132,8 +138,34 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsWithoutChildren(other e
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// GetQuantifiers reports the real child quantifiers, overriding PlanExprBase's
+// none.
+//
+// This plan now has the quantifiers physicalMultiIntersectionWrapper needed
+// for its GetResultValue nil-fallback (first inner's flowed object value), but
+// adopting that fallback here is deliberately NOT part of this step: it would
+// change what GetResultValue answers, and this step is storage-only. The
+// wrapper keeps owning the fallback until the wrapper layer is retired.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) GetQuantifiers() []expressions.Quantifier {
+	if len(p.childQs) == 0 {
+		return nil
+	}
+	return p.childQs
+}
+
+// WithQuantifiers returns a copy ranging over the given child quantifiers —
+// Java's copy-on-write withChildrenReferences. The receiver is never mutated,
+// which is what keeps a memoized plan safe to share; the incoming slice is
+// copied so the caller cannot alias the copy's storage either.
+//
+// The arity check matters more here than for a plain set operation:
+// resultValue picks up one aggregate per stream by position, so a
+// different-length child list would not describe the same row.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != len(p.childQs) {
+		return p
+	}
+	cp := *p
+	cp.childQs = append([]expressions.Quantifier(nil), qs...)
+	return &cp
 }

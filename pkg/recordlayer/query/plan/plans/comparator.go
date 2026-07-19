@@ -23,9 +23,15 @@ import (
 //   - reverse: whether the children produce results in reverse order.
 //   - abortOnComparisonFailure: whether to abort execution when a
 //     comparison mismatch is detected (used in testing).
+//
+// The children are stored ONCE, as Quantifiers over References — Java's shape
+// (`RecordQuerySetPlan`'s `List<Quantifier.Physical> quantifiers`). The raw
+// `children []RecordQueryPlan` slice they replace was a second storage
+// location for the same edges. RFC-183 P5 step 2. Child ORDER is doubly
+// load-bearing here: referencePlanIndex indexes into it.
 type RecordQueryComparatorPlan struct {
 	PlanExprBase
-	children                 []RecordQueryPlan
+	childQs                  []expressions.Quantifier
 	comparisonKeyValues      []values.Value
 	referencePlanIndex       int
 	reverse                  bool
@@ -47,12 +53,10 @@ func NewRecordQueryComparatorPlan(
 	if referencePlanIndex < 0 || referencePlanIndex >= len(children) {
 		panic("reference plan index should be within the range of sub plans")
 	}
-	cpChildren := make([]RecordQueryPlan, len(children))
-	copy(cpChildren, children)
 	cpKeys := make([]values.Value, len(comparisonKeyValues))
 	copy(cpKeys, comparisonKeyValues)
 	return &RecordQueryComparatorPlan{
-		children:                 cpChildren,
+		childQs:                  QuantifiersOverPlans(children),
 		comparisonKeyValues:      cpKeys,
 		referencePlanIndex:       referencePlanIndex,
 		reverse:                  reverse,
@@ -79,14 +83,17 @@ func (p *RecordQueryComparatorPlan) AbortOnComparisonFailure() bool {
 // GetResultType returns the first child's result type, or UnknownType
 // if there are no children.
 func (p *RecordQueryComparatorPlan) GetResultType() values.Type {
-	if len(p.children) == 0 {
+	if len(p.childQs) == 0 {
 		return values.UnknownType
 	}
-	return p.children[0].GetResultType()
+	return planFromQuantifier(p.childQs[0]).GetResultType()
 }
 
-// GetChildren returns the child plans.
-func (p *RecordQueryComparatorPlan) GetChildren() []RecordQueryPlan { return p.children }
+// GetChildren returns the child plans, dereferenced through the quantifiers
+// and in the order referencePlanIndex indexes into.
+func (p *RecordQueryComparatorPlan) GetChildren() []RecordQueryPlan {
+	return plansFromQuantifiers(p.childQs)
+}
 
 // EqualsWithoutChildren compares comparison keys (semantic Value identity —
 // see semanticValueEquals), reference index, and reverse flag. The keys join
@@ -137,8 +144,9 @@ func (p *RecordQueryComparatorPlan) HashCodeWithoutChildren() uint64 {
 
 // Explain renders Comparator(child1, child2, ..., ref=N).
 func (p *RecordQueryComparatorPlan) Explain() string {
-	parts := make([]string, len(p.children))
-	for i, child := range p.children {
+	children := p.GetChildren()
+	parts := make([]string, len(children))
+	for i, child := range children {
 		if child == nil {
 			parts[i] = "<nil>"
 		} else {
@@ -165,8 +173,28 @@ func (p *RecordQueryComparatorPlan) EqualsWithoutChildren(other expressions.Rela
 	return planEqualsAsExpression(p, other)
 }
 
-// WithQuantifiers returns this plan unchanged — it has no quantifiers to
-// replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryComparatorPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+// GetQuantifiers reports the real child quantifiers, overriding PlanExprBase's
+// none.
+func (p *RecordQueryComparatorPlan) GetQuantifiers() []expressions.Quantifier {
+	if len(p.childQs) == 0 {
+		return nil
+	}
+	return p.childQs
+}
+
+// WithQuantifiers returns a copy ranging over the given child quantifiers —
+// Java's copy-on-write withChildrenReferences. The receiver is never mutated,
+// which is what keeps a memoized plan safe to share; the incoming slice is
+// copied so the caller cannot alias the copy's storage either.
+//
+// The arity check is what keeps referencePlanIndex in range: it was validated
+// against the child count at construction, so a same-length replacement cannot
+// invalidate it.
+func (p *RecordQueryComparatorPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
+	if len(qs) != len(p.childQs) {
+		return p
+	}
+	cp := *p
+	cp.childQs = append([]expressions.Quantifier(nil), qs...)
+	return &cp
 }
