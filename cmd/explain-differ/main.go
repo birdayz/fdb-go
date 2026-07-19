@@ -74,22 +74,32 @@ func dump(args []string) {
 		log.Fatal(err)
 	}
 
-	baseline, st, err := explaindiff.GenerateBaseline(*testdata)
-	if err != nil {
-		log.Fatalf("generate baseline: %v", err)
-	}
 	// RFC-183 plan-reachability tally over the whole corpus. The differ is the
 	// only harness that plans every corpus query without FDB, which makes it
 	// the natural place to measure — but the two answer different questions and
 	// must not be confused: the baseline compares EXTRACTED PLANS, so it stays
 	// green through reachability defects by construction (extraction reads the
 	// plan and never consults the memo).
-	if p := os.Getenv("RFC183_REACHABILITY_OUT"); p != "" {
-		if err := os.WriteFile(p, []byte(cascades.ReachabilityReport(40)), 0o644); err != nil {
-			log.Fatalf("write reachability report %s: %v", p, err)
+	//
+	// The collector is constructed HERE and handed down, rather than switched
+	// on through package state inside cascades. Either env var arms it; nil
+	// means the planner accumulates nothing.
+	reachOut := os.Getenv("RFC183_REACHABILITY_OUT")
+	var reach *cascades.ReachabilityCollector
+	if reachOut != "" || os.Getenv("RFC183_REACHABILITY") != "" {
+		reach = cascades.NewReachabilityCollector()
+	}
+
+	baseline, st, err := explaindiff.GenerateBaselineWithReachability(*testdata, reach)
+	if err != nil {
+		log.Fatalf("generate baseline: %v", err)
+	}
+	if reachOut != "" {
+		if err := os.WriteFile(reachOut, []byte(reach.Report(40)), 0o644); err != nil {
+			log.Fatalf("write reachability report %s: %v", reachOut, err)
 		}
 		fmt.Fprintf(os.Stderr, "explain-differ: reachability -> %s (%d unreachable)\n",
-			p, cascades.ReachabilityCount())
+			reachOut, reach.Count())
 	}
 	if *out == "" {
 		fmt.Print(baseline)

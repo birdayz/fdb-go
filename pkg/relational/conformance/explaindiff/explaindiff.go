@@ -50,6 +50,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/conformance/yamsql"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -125,6 +126,16 @@ func (e Entry) UnexpectedlyFailed() bool { return e.Failed() && e.ErrorPin == ""
 // The returned slice is sorted by (file, index) and is byte-stable across
 // runs: no map iteration, no timestamps, no addresses.
 func Collect(dir string) ([]Entry, Stats, error) {
+	return collect(dir, nil)
+}
+
+// CollectWithReachability is Collect with RFC-183's yield-time plan-reachability
+// accounting routed into the caller's collector. nil = collect nothing.
+func CollectWithReachability(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats, error) {
+	return collect(dir, reach)
+}
+
+func collect(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
 	if err != nil {
 		return nil, Stats{}, fmt.Errorf("glob %s: %w", dir, err)
@@ -150,7 +161,7 @@ func Collect(dir string) ([]Entry, Stats, error) {
 				continue
 			}
 			st.Queries++
-			e := planOne(base, i, t.Query, t.EffectiveErrorCode(), s.SchemaTemplate)
+			e := planOne(base, i, t.Query, t.EffectiveErrorCode(), s.SchemaTemplate, reach)
 			if e.Failed() {
 				st.PlanErrors++
 			}
@@ -182,9 +193,9 @@ type Stats struct {
 
 // planOne plans a single query against the scenario's schema template,
 // converting any error OR panic into a stable marker entry.
-func planOne(file string, idx int, sql, errorPin, schemaTemplate string) Entry {
+func planOne(file string, idx int, sql, errorPin, schemaTemplate string, reach *cascades.ReachabilityCollector) Entry {
 	e := Entry{File: file, Index: idx, ErrorPin: errorPin, SQL: collapse(sql)}
-	plan, err := planGuarded(sql, schemaTemplate)
+	plan, err := planGuarded(sql, schemaTemplate, reach)
 	var pe *panicErr
 	switch {
 	case errors.As(err, &pe):
@@ -240,7 +251,7 @@ func (p *panicErr) Error() string { return "PANIC " + p.value }
 // planGuarded runs the full Cascades pipeline and converts a panic into an
 // error. A panic must not abort the corpus walk: the whole point is that
 // every query gets a line, including the ones that blow up.
-func planGuarded(sql, schemaTemplate string) (plan plans.RecordQueryPlan, err error) {
+func planGuarded(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plan plans.RecordQueryPlan, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			plan, err = nil, &panicErr{value: fmt.Sprint(r)}
@@ -248,7 +259,12 @@ func planGuarded(sql, schemaTemplate string) (plan plans.RecordQueryPlan, err er
 	}()
 	// Statistics are nil: planner defaults. See the package doc — the
 	// baseline is a regression key, not a live-cardinality prediction.
-	return embedded.PlanPhysicalForTest(sql, schemaTemplate, nil)
+	//
+	// reach is threaded rather than switched on globally: the tally belongs to
+	// whoever asked for it. A corpus walk under t.Parallel alongside sibling
+	// walks is exactly the shape that made the old package-level tally report
+	// 3x its true value.
+	return embedded.PlanPhysicalForTestWithReachability(sql, schemaTemplate, nil, reach)
 }
 
 // shapeOf renders the plan's structural skeleton: the Go type of each node,
@@ -742,7 +758,19 @@ func RenderDiff(r DiffReport) string {
 // render. Used by cmd/explain-differ and by the package's own tests, so the
 // tool and the tests can never drift apart.
 func GenerateBaseline(dir string) (string, Stats, error) {
-	entries, st, err := Collect(dir)
+	return GenerateBaselineWithReachability(dir, nil)
+}
+
+// GenerateBaselineWithReachability is GenerateBaseline with RFC-183's
+// yield-time plan-reachability accounting routed into the caller's collector.
+//
+// The collector is a PARAMETER, so a corpus walk's tally is the corpus walk's
+// alone. The reachability ratchet and several sibling tests in this package all
+// plan this same corpus under t.Parallel; when the tally was package state in
+// cascades they summed into one number and the ratchet read edges=53748 for a
+// true 17916. nil = collect nothing.
+func GenerateBaselineWithReachability(dir string, reach *cascades.ReachabilityCollector) (string, Stats, error) {
+	entries, st, err := collect(dir, reach)
 	if err != nil {
 		return "", Stats{}, err
 	}

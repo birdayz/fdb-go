@@ -6,6 +6,7 @@ go_library(
     importpath = "fdb.dev/pkg/relational/conformance/explaindiff",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/plans",
         "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/embedded",

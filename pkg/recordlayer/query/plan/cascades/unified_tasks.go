@@ -269,7 +269,7 @@ func (t *TransformExprTask) Run(p *Planner) {
 			// memo here rather than through ImplementationRuleCall. Guarding
 			// only the implementation path would leave the large majority of
 			// physical yields unchecked and make the invariant decorative.
-			if err := verifyChildrenMemoized(expr); err != nil {
+			if err := verifyChildrenMemoized(expr, p.reach); err != nil {
 				p.capErr = err
 				return false
 			}
@@ -411,7 +411,7 @@ func (t *TransformImplTask) Run(p *Planner) {
 		for _, y := range call.yielded {
 			// Java's unconditional verifyChildrenMemoized, at the same point:
 			// before the yielded expression enters the memo.
-			if err := verifyChildrenMemoized(y); err != nil {
+			if err := verifyChildrenMemoized(y, p.reach); err != nil {
 				p.capErr = err
 				return
 			}
@@ -468,7 +468,7 @@ func (t *TransformImplTask) Run(p *Planner) {
 				}
 				t.Rule.OnMatch(call)
 				for _, y := range call.yielded {
-					if err := verifyChildrenMemoized(y); err != nil {
+					if err := verifyChildrenMemoized(y, p.reach); err != nil {
 						p.capErr = err
 						return
 					}

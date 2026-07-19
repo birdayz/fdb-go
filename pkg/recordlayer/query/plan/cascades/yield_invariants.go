@@ -33,7 +33,10 @@ import (
 // an always-on structural backstop in this package. The two are complementary:
 // this one guards the EXPRESSION at yield time (the source), that one guards
 // the extracted PLAN tree (the sink).
-func verifyChildrenMemoized(expr expressions.RelationalExpression) error {
+// reach is the optional per-Planner reachability tally; nil collects nothing.
+// It is a PARAMETER rather than package state because a tally shared across
+// concurrent planners is not a measurement — see ReachabilityCollector.
+func verifyChildrenMemoized(expr expressions.RelationalExpression, reach *ReachabilityCollector) error {
 	if expr == nil {
 		return fmt.Errorf("yield-invariant: rule yielded a nil expression")
 	}
@@ -51,7 +54,7 @@ func verifyChildrenMemoized(expr expressions.RelationalExpression) error {
 	// Reachability is ACCOUNTED here, not enforced: RFC-183 inherited a
 	// population of unreachable edges and is driving it to zero. See
 	// plan_reachability.go for why it graduates to a hard error only at zero.
-	recordReachability(expr)
+	reach.record(expr)
 
 	return verifyNoShell(expr)
 }

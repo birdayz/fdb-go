@@ -2,7 +2,6 @@ package cascades
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -223,14 +222,31 @@ func safeExplain(p plans.RecordQueryPlan) string {
 	return p.Explain()
 }
 
-// Corpus-wide accounting.
+// ReachabilityCollector accumulates the plan-reachability tally for the
+// planning runs a caller deliberately points at it. Attach one to a Planner
+// with SetReachabilityCollector; a Planner with none collects nothing.
 //
-// Off unless RFC183_REACHABILITY is set, so production planning pays only a
-// single already-loaded bool. It is opt-in rather than always-on because the
-// invariant is not yet clean: RFC-183 inherited a population of violations and
-// is driving it to zero, so failing hard here today would simply disable the
-// planner. Once the count reaches zero this graduates into verifyNoShell's
-// company as an unconditional error — that is the whole point of measuring.
+// SCOPED TO AN INSTANCE, DELIBERATELY. This tally used to live in package
+// variables behind a package mutex, and that shape produced exactly the class
+// of failure this file exists to prevent — a number that reads as a
+// measurement while being an artifact. The corpus ratchet reported
+// edges=53748 / no-quantifier=96, precisely 3x the true 17916/32, because
+// sibling tests in the same package plan the SAME corpus under t.Parallel and
+// their planning accumulated into the tally. The mutex was no defence: it
+// serialised the writes perfectly and still summed three tests into one
+// answer. Locking shared state does not make it unshared.
+//
+// The symptom there was an INFLATED count, which at least fails loudly against
+// a ratchet. The dangerous direction is the other one: a concurrent Reset
+// clearing a tally mid-flight yields a SILENT PASS — zero defects because
+// nothing was counted. An instance nobody else holds cannot be reset by anyone
+// else, so the question does not arise.
+//
+// Collection is opt-in rather than always-on because the invariant is not yet
+// clean: RFC-183 inherited a population of violations and is driving it to
+// zero, so failing hard here today would simply disable the planner. Once the
+// count reaches zero this graduates into verifyNoShell's company as an
+// unconditional error — that is the whole point of measuring.
 //
 // Collection happens at YIELD time, which is the only place the memo and the
 // plan are both in hand. Groups legitimately hold alternatives at that moment,
@@ -240,29 +256,44 @@ func safeExplain(p plans.RecordQueryPlan) string {
 // against a single member — that reintroduces the retracted error, and
 // narrowing a group to its used member is a real regression (it destroyed the
 // InUnion alternative when tried on the IN-join rule).
-var (
-	reachOnce       sync.Once
-	reachEnabled    bool
-	reachMu         sync.Mutex
-	reachEdges      int
-	reachCompared   int
-	reachViolations []ReachabilityViolation
-)
-
-func reachabilityEnabled() bool {
-	reachOnce.Do(func() {
-		reachMu.Lock()
-		defer reachMu.Unlock()
-		reachEnabled = reachEnabled || os.Getenv("RFC183_REACHABILITY") != ""
-	})
-	reachMu.Lock()
-	defer reachMu.Unlock()
-	return reachEnabled
+//
+// The mutex remains because ONE collector may still legitimately be shared:
+// the corpus harness threads a single collector through a whole baseline walk,
+// and nothing promises that walk stays single-goroutine. It guards this
+// instance's fields only, and makes no claim about anyone else's.
+type ReachabilityCollector struct {
+	mu         sync.Mutex
+	edges      int
+	compared   int
+	violations []ReachabilityViolation
 }
 
-// recordReachability accounts one yielded expression.
-func recordReachability(expr expressions.RelationalExpression) {
-	if !reachabilityEnabled() {
+// NewReachabilityCollector returns a collector ready to be attached to a
+// Planner. The zero value is equally usable; this exists so call sites read as
+// "I am creating an instrument", not "I am declaring a variable".
+func NewReachabilityCollector() *ReachabilityCollector {
+	return &ReachabilityCollector{}
+}
+
+// SetReachabilityCollector points this planner's yield-time reachability
+// accounting at c. nil (the default) collects nothing.
+//
+// There is no global "enable" switch by design. Turning collection on used to
+// mean flipping a package bool, which enabled it for every planner in the
+// process — including ones belonging to unrelated concurrent tests, whose
+// yields then landed in the caller's tally. Enabling is now inseparable from
+// naming the destination.
+func (p *Planner) SetReachabilityCollector(c *ReachabilityCollector) { p.reach = c }
+
+// record accounts one yielded expression.
+//
+// A nil receiver collects nothing, and that is the ONLY cost a Planner without
+// a collector pays: one nil compare on a pointer the task loop already holds.
+// It is a method on the nil pointer rather than a check at every call site so
+// the "off" path cannot be got wrong at one of the three yield sites — the
+// asymmetry that let the old global's env check drift out of reach.
+func (c *ReachabilityCollector) record(expr expressions.RelationalExpression) {
+	if c == nil {
 		return
 	}
 	ph, ok := expr.(physicalPlanExpression)
@@ -276,28 +307,32 @@ func recordReachability(expr expressions.RelationalExpression) {
 	var v []ReachabilityViolation
 	comparedEdges := collectReachability(expr, plan, &v)
 
-	reachMu.Lock()
-	defer reachMu.Unlock()
-	reachEdges += len(plan.GetChildren())
-	reachCompared += comparedEdges
-	reachViolations = append(reachViolations, v...)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.edges += len(plan.GetChildren())
+	c.compared += comparedEdges
+	c.violations = append(c.violations, v...)
 }
 
-// ReachabilityReport renders the accumulated tally: per-plan-type counts by
-// reason, plus samples. Safe to call with collection disabled (reports zero).
-func ReachabilityReport(maxSamples int) string {
-	reachMu.Lock()
-	defer reachMu.Unlock()
+// Report renders the accumulated tally: per-plan-type counts by reason, plus
+// samples. Safe on a nil collector (reports zero) so a diagnostic path never
+// has to branch on whether collection was on.
+func (c *ReachabilityCollector) Report(maxSamples int) string {
+	if c == nil {
+		return "edges=0 compared=0 UNREACHABLE=0 (no collector attached)\n"
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	byType := map[string]int{}
 	byReason := map[string]int{}
-	for _, v := range reachViolations {
+	for _, v := range c.violations {
 		byType[v.ParentType]++
 		byReason[v.Reason]++
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "edges=%d compared=%d UNREACHABLE=%d\n", reachEdges, reachCompared, len(reachViolations))
+	fmt.Fprintf(&b, "edges=%d compared=%d UNREACHABLE=%d\n", c.edges, c.compared, len(c.violations))
 
 	fmt.Fprintf(&b, "\nby reason:\n")
 	for _, r := range sortedKeys(byReason) {
@@ -309,11 +344,11 @@ func ReachabilityReport(maxSamples int) string {
 	}
 
 	fmt.Fprintf(&b, "\nsamples:\n")
-	for i, v := range reachViolations {
+	for i, v := range c.violations {
 		if i >= maxSamples {
 			// Never truncate silently: a capped list that reads as
 			// complete is how a partial measurement gets quoted as a total.
-			fmt.Fprintf(&b, "  ... %d more suppressed\n", len(reachViolations)-maxSamples)
+			fmt.Fprintf(&b, "  ... %d more suppressed\n", len(c.violations)-maxSamples)
 			break
 		}
 		fmt.Fprintf(&b, "%s\n", v)
@@ -321,15 +356,21 @@ func ReachabilityReport(maxSamples int) string {
 	return b.String()
 }
 
-// ResetReachability clears the tally so a test can measure one planning run in
-// isolation.
-func ResetReachability() {
-	reachMu.Lock()
-	defer reachMu.Unlock()
-	reachEdges, reachCompared, reachViolations = 0, 0, nil
+// Reset clears the tally so one caller can measure several runs separately.
+//
+// Kept because a long-lived collector is a legitimate shape, NOT because
+// anything needs to undo another caller's accumulation — that was the old
+// global's job and the reason it could silently zero a live measurement.
+func (c *ReachabilityCollector) Reset() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.edges, c.compared, c.violations = 0, 0, nil
 }
 
-// ReachabilityCount returns the count of GENUINE defects: a plan child its
+// Count returns the count of GENUINE defects: a plan child its
 // quantifier's group cannot produce (ReasonAbsent), plus a quantifier ranging
 // over an empty reference (ReasonEmptyGroup, a mis-seeded reference).
 //
@@ -347,24 +388,37 @@ func ResetReachability() {
 // a new form — a big number whose bulk is architecture working as intended.
 // They are reported separately by ReachabilityReport and tracked as a
 // modelling gap, not silently dropped.
-func ReachabilityCount() int {
-	reachMu.Lock()
-	defer reachMu.Unlock()
+func (c *ReachabilityCollector) Count() int {
+	return c.countReason(ReasonAbsent, ReasonEmptyGroup)
+}
+
+// ComparedEdges returns the number of edges actually compared against a group
+// — the anti-blindness signal. See collectReachability.
+func (c *ReachabilityCollector) ComparedEdges() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.compared
+}
+
+func (c *ReachabilityCollector) countReason(reasons ...string) int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	n := 0
-	for _, v := range reachViolations {
-		if v.Reason == ReasonAbsent || v.Reason == ReasonEmptyGroup {
-			n++
+	for _, v := range c.violations {
+		for _, r := range reasons {
+			if v.Reason == r {
+				n++
+				break
+			}
 		}
 	}
 	return n
-}
-
-// ReachabilityComparedEdges returns the number of edges actually compared
-// against a group — the anti-blindness signal. See countComparedEdges.
-func ReachabilityComparedEdges() int {
-	reachMu.Lock()
-	defer reachMu.Unlock()
-	return reachCompared
 }
 
 func sortedKeys(m map[string]int) []string {
@@ -457,29 +511,6 @@ func divergenceLine(d string) string {
 	return "\n   why-> " + d
 }
 
-// EnableReachabilityCollection turns collection on programmatically, for the
-// corpus ratchet test. Returns a restore func.
-//
-// Exists so the test does not have to juggle RFC183_REACHABILITY around a
-// sync.Once that latches on first use — a shape where the assertion silently
-// measures nothing if any earlier call in the process got there first. A test
-// that reports zero because it collected nothing is worse than no test.
-func EnableReachabilityCollection() func() {
-	reachMu.Lock()
-	prev := reachEnabled
-	reachEnabled = true
-	reachMu.Unlock()
-	// Deliberately does NOT consume reachOnce: the once-body ORs the env var
-	// in rather than assigning, so whichever path runs first, neither can
-	// switch the other off.
-	ResetReachability()
-	return func() {
-		reachMu.Lock()
-		reachEnabled = prev
-		reachMu.Unlock()
-	}
-}
-
 // NoQuantifierCount returns edges whose plan child has NO quantifier at all.
 //
 // Excluded from ReachabilityCount because it is dominated by leaf adapters
@@ -488,22 +519,17 @@ func EnableReachabilityCollection() func() {
 // edges (AggregateDataAccessRule passing nil quantifiers) was exactly a
 // ReasonNoQuantifier bug, so a ratchet blind to this class cannot catch that
 // defect recurring. "Explained by a category" is not "checked".
-func NoQuantifierCount() int {
-	reachMu.Lock()
-	defer reachMu.Unlock()
-	n := 0
-	for _, v := range reachViolations {
-		if v.Reason == ReasonNoQuantifier {
-			n++
-		}
-	}
-	return n
+func (c *ReachabilityCollector) NoQuantifierCount() int {
+	return c.countReason(ReasonNoQuantifier)
 }
 
-// ReachabilityEdges returns every plan child walked, compared or not — the
-// denominator for the proportional anti-blindness check.
-func ReachabilityEdges() int {
-	reachMu.Lock()
-	defer reachMu.Unlock()
-	return reachEdges
+// Edges returns every plan child walked, compared or not — the denominator for
+// the proportional anti-blindness check.
+func (c *ReachabilityCollector) Edges() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.edges
 }

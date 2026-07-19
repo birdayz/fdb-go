@@ -37,7 +37,27 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 // plan families over this tree — per the RFC, plan-family classification
 // must come from a plan-type switch, never from string-matching EXPLAIN text.
 func PlanPhysicalForTest(sql, schemaDDL string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
-	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false)
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil)
+	return plan, err
+}
+
+// PlanPhysicalForTestWithReachability is PlanPhysicalForTest with RFC-183's
+// yield-time plan-reachability accounting routed into the caller's collector.
+//
+// Exists because that tally must belong to ONE measurement. It used to live in
+// package variables inside cascades, and the corpus ratchet consequently
+// summed three concurrent tests' planning into a single number (edges=53748
+// against a true 17916). A collector the caller owns cannot be added to, or
+// reset by, anyone it was not handed to.
+//
+// nil collector is legal and means "collect nothing" — identical to
+// PlanPhysicalForTest.
+func PlanPhysicalForTestWithReachability(
+	sql, schemaDDL string,
+	stats properties.StatisticsProvider,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, error) {
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, reach)
 	return plan, err
 }
 
@@ -57,10 +77,19 @@ func PlanPhysicalForTest(sql, schemaDDL string, stats properties.StatisticsProvi
 // Threading it through a parameter deletes the shared state instead of
 // locking it. The signature widening is confined to this unexported helper,
 // so the ~40 call sites are untouched.
+//
+// reach is the same treatment applied to RFC-183's reachability tally, which
+// was package state in cascades for the same reason and failed the same way —
+// with the inverse symptom. The one-final globals could report someone else's
+// EMPTY result (a silent pass); the reachability globals reported everyone's
+// SUMMED result (edges=53748 for a true 17916). Both are the same bug: a
+// measurement whose scope is the process rather than the caller. nil = collect
+// nothing.
 func planPhysicalForTest(
 	sql, schemaDDL string,
 	stats properties.StatisticsProvider,
 	verifyOneFinal bool,
+	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, []string, error) {
 	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
 	if err != nil {
@@ -135,6 +164,9 @@ func planPhysicalForTest(
 	if verifyOneFinal {
 		planner.SetVerifyOneFinal(true)
 	}
+	// nil is the production path: the planner then pays one nil compare per
+	// yield and accumulates nothing.
+	planner.SetReachabilityCollector(reach)
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	var oneFinalViolations []string
@@ -492,7 +524,7 @@ func ResultColumnDefsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordM
 // of the deleted globals, false the moment they were threaded through, and
 // shipped stale by the very commit that fixed three other stale comments.
 func planAndVerifyOneFinal(sql, schema string) ([]string, error) {
-	_, violations, err := planPhysicalForTest(sql, schema, nil, true)
+	_, violations, err := planPhysicalForTest(sql, schema, nil, true, nil)
 	if err != nil {
 		return nil, err
 	}

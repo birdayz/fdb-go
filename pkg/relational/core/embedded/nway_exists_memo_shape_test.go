@@ -40,11 +40,13 @@ CREATE TABLE nd (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))`
 	             FROM na a, nb b, nc c
 	             WHERE a.id = b.id AND b.id = c.id`
 
-	restore := cascades.EnableReachabilityCollection()
-	defer restore()
+	// The collector is OWNED BY THIS TEST and threaded into the planner, so
+	// t.Parallel is safe: a tally shared across concurrent planners is not a
+	// measurement (RFC-183, ReachabilityCollector).
+	reach := cascades.NewReachabilityCollector()
 
 	firedBefore := cascades.NWayOuterYieldCount()
-	if _, err := PlanQueryForTest(sql, schema, nil); err != nil {
+	if _, err := PlanPhysicalForTestWithReachability(sql, schema, nil, reach); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	fired := cascades.NWayOuterYieldCount() - firedBefore
@@ -53,15 +55,24 @@ CREATE TABLE nd (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))`
 	// which is exactly how this divergence stayed invisible for so long. If a
 	// planner change stops routing this shape here, that is a real signal and
 	// should fail loudly rather than silently voiding the check.
+	//
+	// NWayOuterYieldCount is still a process-global counter, i.e. the same shape
+	// as the shared-tally bug the ReachabilityCollector threading just deleted.
+	// It is safe HERE, and only because of how it is used: a concurrent test
+	// planning this shape could only inflate `fired`, and this guard fails on
+	// ZERO. Inflation cannot produce a false pass. The assertion that actually
+	// decides the test — reach.Count() — reads a collector owned by this test.
+	// Do not reuse this counter for anything that fails on a HIGH value without
+	// scoping it first.
 	if fired == 0 {
 		t.Fatalf("the N-way projected-EXISTS arm did not fire for %q — "+
 			"this test no longer covers what it claims", sql)
 	}
 
-	if n := cascades.ReachabilityCount(); n != 0 {
+	if n := reach.Count(); n != 0 {
 		t.Errorf("%d unreachable edge(s): the FlatMap's outer quantifier ranges over a "+
 			"group that cannot produce the N-way chain it executes, so the memo is "+
 			"costing a different plan than the one that runs\n\n%s",
-			n, cascades.ReachabilityReport(5))
+			n, reach.Report(5))
 	}
 }

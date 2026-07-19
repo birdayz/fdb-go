@@ -30,33 +30,36 @@ import (
 // not print scan-comparison operands — which is why the report carries a
 // field-level dump.
 //
-// DELIBERATELY NOT t.Parallel, found by this test failing rather than by
-// reasoning.
+// Deliberately ONE test over one corpus run, holding both assertions: the "is
+// it clean" and "is it actually looking" checks are two readings of the SAME
+// measurement, and splitting them would plan the corpus twice to answer one
+// question.
 //
-// The collector is process-global. Several other tests in this package plan
-// the SAME corpus (TestNoPlanPanics, TestShapeAccompaniesEverySuccessfulPlan,
-// TestBaselineIsDeterministic, ...), and with t.Parallel their planning
-// accumulated into this tally: the full-package run reported edges=53748 and
+// The collector is OWNED BY THIS TEST and threaded down through
+// GenerateBaselineWithReachability -> planGuarded ->
+// embedded.PlanPhysicalForTestWithReachability -> the Planner, so t.Parallel is
+// safe and correct here. It was not always: the tally used to be package state
+// in cascades, and several sibling tests in this package plan the SAME corpus
+// (TestNoPlanPanics, TestShapeAccompaniesEverySuccessfulPlan,
+// TestBaselineIsDeterministic, ...). Under t.Parallel their planning
+// accumulated into this tally and the full-package run reported edges=53748 /
 // no-quantifier=96 — exactly 3x the true 17916/32 — while every standalone
 // `-run TestCorpusPlanReachability` invocation passed, because then only one
 // test was planning.
 //
-// A non-parallel test runs to completion before the parallel ones resume, so
-// this one owns the instrument while it measures. The proper fix is to thread
-// the collector instead of sharing it (the plan_harness globals got exactly
-// that treatment); until the collector is threaded, exclusivity here is what
-// keeps the number meaningful.
-//
-// Do NOT add t.Parallel to this test. It will not fail loudly — it will
-// silently inflate every count in proportion to how many other corpus tests
-// happen to be running.
+// That was patched by dropping t.Parallel, which bought exclusivity by
+// serialising the whole package against this one test — a workaround that left
+// the shared instrument in place. Scoping the collector to a Planner deletes
+// the sharing instead of scheduling around it, so the number is now the number
+// no matter who else is planning.
 func TestCorpusPlanReachability(t *testing.T) {
-	restore := cascades.EnableReachabilityCollection()
-	defer restore()
+	t.Parallel()
+
+	reach := cascades.NewReachabilityCollector()
 
 	// Planning the corpus is what populates the tally; the baseline text
 	// itself is checked by the explain-differ gate, not here.
-	_, st, err := explaindiff.GenerateBaseline(corpusDir)
+	_, st, err := explaindiff.GenerateBaselineWithReachability(corpusDir, reach)
 	if err != nil {
 		t.Fatalf("generate baseline: %v", err)
 	}
@@ -76,14 +79,20 @@ func TestCorpusPlanReachability(t *testing.T) {
 	// entirely blind. The compared count should track the total edge count
 	// closely — everything except the known no-quantifier adapters — so
 	// require it to stay within 10%.
-	report := cascades.ReachabilityReport(20)
-	edges, compared := cascades.ReachabilityEdges(), cascades.ReachabilityComparedEdges()
+	report := reach.Report(20)
+	edges, compared := reach.Edges(), reach.ComparedEdges()
+	// Log the headline counts unconditionally. A ratchet that only speaks when
+	// it fails cannot be checked for having drifted into measuring the wrong
+	// population — which is exactly how the 3x inflation stayed invisible: the
+	// test was green, so nobody read the numbers. `-v` now prints them.
+	t.Logf("reachability: edges=%d compared=%d unreachable=%d no-quantifier=%d over %d queries",
+		edges, compared, reach.Count(), reach.NoQuantifierCount(), st.Queries)
 	if compared < edges*9/10 {
 		t.Fatalf("collector compared only %d of %d edges over %d queries — "+
 			"this assertion is blind, not clean\n%s", compared, edges, st.Queries, report)
 	}
 
-	// The no-quantifier class is EXCLUDED from ReachabilityCount (leaf
+	// The no-quantifier class is EXCLUDED from reach.Count (leaf
 	// adapters model no quantifier by design) but is ratcheted here rather
 	// than merely reported. It is not a benign category: the two-leg
 	// intersection that executed with zero memo edges was a no-quantifier
@@ -94,7 +103,7 @@ func TestCorpusPlanReachability(t *testing.T) {
 	// fall — closing it needs plans to carry the correlation and ordering
 	// properties the wrappers carry (RFC-183 §15, RFC-184 W2/W3).
 	const knownNoQuantifierEdges = 32
-	if n := cascades.NoQuantifierCount(); n > knownNoQuantifierEdges {
+	if n := reach.NoQuantifierCount(); n > knownNoQuantifierEdges {
 		t.Errorf("no-quantifier edges rose to %d (known baseline %d) — a rule is "+
 			"constructing a plan whose children the memo does not model.\n\n"+
 			"ONE LEGITIMATE CAUSE, before you go hunting a regression: fixing the "+
@@ -105,7 +114,7 @@ func TestCorpusPlanReachability(t *testing.T) {
 			n, knownNoQuantifierEdges, report)
 	}
 
-	if n := cascades.ReachabilityCount(); n != 0 {
+	if n := reach.Count(); n != 0 {
 		t.Errorf("%d unreachable plan edges across %d planned queries; "+
 			"a plan executes a child its quantifier's group cannot produce, "+
 			"so the memo is costing an expression that will never run\n\n%s",

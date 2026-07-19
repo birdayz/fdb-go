@@ -93,6 +93,12 @@ type Planner struct {
 	verifyOneFinal     bool
 	oneFinalViolations []string
 
+	// reach is the optional RFC-183 plan-reachability tally, scoped to this
+	// Planner so two concurrent planning runs cannot sum into one number.
+	// nil = collect nothing, which is the production path and costs one nil
+	// compare per yield. See plan_reachability.go.
+	reach *ReachabilityCollector
+
 	tasksRun int
 
 	// costModel is the comparator for OptimizeGroupTask. Defaults
