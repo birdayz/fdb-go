@@ -255,9 +255,17 @@ var knownGaps = []knownGap{}
 
 // matchKnownGap returns the ledger entry covering this failure, or nil.
 func matchKnownGap(sqlText string, err error) *knownGap {
-	for i := range knownGaps {
-		if knownGaps[i].matches(sqlText, err) {
-			return &knownGaps[i]
+	return matchGapIn(knownGaps, sqlText, err)
+}
+
+// matchGapIn is matchKnownGap over an explicit ledger. Split out so the
+// narrowness test can inject entries: with the production ledger empty,
+// asserting against it would pass vacuously and stop guarding the
+// suppression hole the moment someone adds a real entry.
+func matchGapIn(ledger []knownGap, sqlText string, err error) *knownGap {
+	for i := range ledger {
+		if ledger[i].matches(sqlText, err) {
+			return &ledger[i]
 		}
 	}
 	return nil

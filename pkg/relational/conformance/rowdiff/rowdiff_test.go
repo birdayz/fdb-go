@@ -526,12 +526,28 @@ func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
 	const nestedIn = "SELECT * FROM t WHERE a IN (1,2) AND b = 3 AND c IN (4,5)"
 	planInvariantInJoin := errors.New("XX000: malformed query plan: plan-invariant: non-leaf plan *plans.RecordQueryInJoinPlan has no children")
 
-	// The ledger is EMPTY today (its one entry was retired when the nested-IN
-	// gap was fixed), so nothing may be declined — including the failure that
-	// entry used to cover. Every entry ever added must keep passing the
-	// near-miss cases below.
+	// The PRODUCTION ledger is empty (its one entry was retired when the
+	// nested-IN gap was fixed), so nothing may be declined — including the
+	// failure that entry used to cover.
 	if gap := matchKnownGap(nestedIn, planInvariantInJoin); gap != nil {
 		t.Fatalf("ledger declined %q, but the nested-IN gap is FIXED — a retired entry must not linger", gap.name)
+	}
+
+	// The narrowness cases below run against an INJECTED ledger holding the
+	// retired entry verbatim. Testing the empty production ledger would pass
+	// vacuously and stop guarding the suppression hole the day someone adds
+	// a real entry; this keeps the matcher's shape under test regardless.
+	ledger := []knownGap{{
+		name: "nested-IN over an intersection extracts InJoin(<nil>)",
+		pin:  "TestNestedIn_OverIntersection",
+		matches: func(sqlText string, err error) bool {
+			return strings.Contains(err.Error(), "plan-invariant") &&
+				strings.Contains(err.Error(), "RecordQueryInJoinPlan") &&
+				strings.Count(strings.ToUpper(sqlText), " IN (") >= 2
+		},
+	}}
+	if matchGapIn(ledger, nestedIn, planInvariantInJoin) == nil {
+		t.Fatal("the injected entry must match its own documented shape")
 	}
 	for _, tc := range []struct {
 		name string
@@ -566,7 +582,7 @@ func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if gap := matchKnownGap(tc.sql, tc.err); gap != nil {
+			if gap := matchGapIn(ledger, tc.sql, tc.err); gap != nil {
 				t.Fatalf("ledger over-matched (%q) — this must stay a finding", gap.name)
 			}
 		})

@@ -461,9 +461,14 @@ func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpressi
 // wrapper currently holds NO inner at all: the alternatives there are an
 // equivalent member of the very reference the quantifier ranges over, or a
 // `Op(<nil>)` plan that fails the plan invariant outright. A malformed plan
-// is never the safer choice, so a shell always relinks — nested `IN`s
-// (`c IN (…) AND a IN (…)`) build exactly that shape and previously
-// extracted `InJoin(<nil>)`.
+// is never the safer choice, so a shell relinks even where the gate would
+// refuse — nested `IN`s (`c IN (…) AND a IN (…)`) build exactly that shape
+// and previously extracted `InJoin(<nil>)`.
+//
+// ONE candidate is refused regardless of either arm: an order-destroying
+// plan (isOrderDestroying). This lookup never consults ordering while some
+// consumers merge-sort their child, so installing one would trade a loud
+// rejection for silently mis-ordered rows. That check runs FIRST.
 func shouldRelinkInner(currentInner, candidate plans.RecordQueryPlan) bool {
 	if candidate == nil {
 		return false
