@@ -112,7 +112,6 @@ go_test(
         "value_compare_test.go",
         "vector_ddl_test.go",
         "vector_plan_test.go",
-        "zz_expl2_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":embedded"],

@@ -854,3 +854,76 @@ as defects — folding them into the headline would restate §12's over-count in
 a new form. Their identity is now sound, which is what §15 fixes; what remains
 is the modelling gap, and P5 step 2 (real quantifier storage on plans) is what
 closes it.
+
+## 16. Reconciliation — the delivered state after delta review
+
+§15 was written mid-stream and its "Still open" section is now stale in three
+ways. This section is the truthful final record; where it disagrees with §15,
+believe §16.
+
+### The residual is 32, not 38, and it is all one adapter
+
+§15 reported "38 edges (TypeFilter 32, MultiIntersection 6)". The
+MultiIntersection 6 were a REAL DEFECT, not a modelling gap: `AggregateDataAccessRule`
+constructed its two-leg multi-intersection with `nil` quantifiers, so the memo
+held no edge for either aggregate-index leg. Fixed by memoizing each leg and
+passing real quantifiers (Graefe delta finding 1). MultiIntersection 6 -> 0.
+
+The residual is **32, all `scanPlanExpression`** — the leaf adapter that reports
+no quantifiers while wrapping a `TypeFilter(Scan)` that has children. The
+ratchet reports them under the WRAPPED plan type (`TypeFilterPlan`); the
+EXPRESSION is the adapter. Both labels are correct on different axes.
+
+These 32 are ratcheted at a hard baseline (`TestCorpusPlanReachability`), so the
+class cannot grow unobserved — which matters, because MultiIntersection proved a
+no-quantifier edge can be a live bug, not a benign category.
+
+### Retiring the adapter is a workstream, not a fold
+
+§15 pointed at "P5 step 2 (real quantifier storage on plans)". That was
+attempted: `GetRecordQueryPlan` was added to all 41 plan types (the inert
+half, landed), and then `scanPlanExpression` was replaced with the bare plan.
+The counter went 32 -> 0 with every edge modelled — and 57 corpus queries
+drifted, 49 shape flips, including `WHERE id = 1` degrading from a point lookup
+to a full scan and PK-prefix `ORDER BY` gaining an `InMemorySort`. The adapter
+is not pure: it supplies scan-comparison correlations and ordering/cost
+properties the bare `PlanExprBase` does not. Reverted. Closing the 32 requires
+plans to carry those properties, verified property-by-property — RFC-184's
+W2/W3, not a memoization change.
+
+### The N-way outer edge WAS converted, and exposed a live executor bug
+
+§15 said the N-way join outer edge "was left unconverted rather than narrowed".
+It was converted — by REPOINTING the outer quantifier at the executed plan
+(distinct from narrowing: `legExprs[0]`'s group keeps every member; the
+quantifier moves off a group that cannot produce its child onto one that can).
+That fixed a 3-way join being costed as `Scan(A)`.
+
+Finding the corpus query to cover it (Graefe's carry-forward) surfaced a larger,
+PRE-EXISTING bug: the N-way projected-EXISTS arm has never produced an
+executable plan. Every query reaching it dies with "multi-leg row cannot serve
+a source-relative ordinal". A proper debugging session established the fix is
+NOT local: rebasing the projected result value makes a single-row query
+execute, but a three-row query then returns WRONG ROWS (the EXISTS flag is
+always true) — converting a loud crash into silent corruption. Projection,
+EXISTS correlation, and ORDER BY key are one coupled defect through the
+merged-row name model (the qualified/bare seam). Tracked in TODO.md as its own
+RFC-scoped workstream; NOT fixed here, because a partial fix is worse than the
+crash.
+
+### Instruments corrected along the way
+
+Three measurement defects were found and fixed AFTER §15, each by mutating the
+check rather than reading it: `ReachabilityCount` filtered to one reason code
+(a partial zero); the anti-blindness guard counted in a separate walk and so
+could not detect a blind checker; and the collector was process-global, so a
+`t.Parallel` sibling test inflated the tally non-deterministically (53763 /
+53748 / 53761 across runs, not a stable 3x). The collector is now threaded
+through a `ReachabilityCollector` owned by its caller.
+
+### No performance claim
+
+The 1M stress comparison shows NO REGRESSION. An initial 2-4x aggregate speedup
+was recorded and then RETRACTED: EXPLAIN on both sides is byte-identical, so
+identical plans cannot differ in runtime by costing, and the delta was
+environment. This RFC makes no performance claim.
