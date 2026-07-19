@@ -24,14 +24,25 @@ func FuzzGetCorrelatedToOfValue(f *testing.F) {
 		}
 		v, expected := buildFuzzValue(b, 0, 0)
 		got := GetCorrelatedToOfValue(v)
-		// Soundness: every alias the walker reports must be in the
-		// expected set.
-		for k := range got {
-			if _, ok := expected[k]; !ok {
-				t.Fatalf("walker reported alias %v not in constructed set %v", k, expected)
+		// EXACT equality, not subset. `expected` is the construction-time
+		// ground truth (buildFuzzValue records each QuantifiedObjectValue's
+		// alias WITHOUT ever calling GetCorrelatedToOfValue), so demanding
+		// got == expected catches BOTH failure directions:
+		//   - fabrication: got has an alias the tree never contained;
+		//   - under-reporting: the walker forgot a node — e.g. it stopped
+		//     recursing into ArithmeticValue.Right, or dropped the QOV case.
+		// The former subset-only check (got ⊆ expected) silently passed every
+		// under-reporting regression, making this a fake safety net.
+		if len(got) != len(expected) {
+			t.Fatalf("GetCorrelatedToOfValue = %v, want exactly %v", got, expected)
+		}
+		for k := range expected {
+			if _, ok := got[k]; !ok {
+				t.Fatalf("GetCorrelatedToOfValue = %v missing alias %v (want exactly %v)", got, k, expected)
 			}
 		}
-		// Constants: pure literal tree → empty set.
+		// Constants: pure literal tree → empty set (redundant with the
+		// equality above, kept as an explicit boundary assertion).
 		if _, ok := v.(*ConstantValue); ok && len(got) != 0 {
 			t.Fatalf("ConstantValue yielded correlations: %v", got)
 		}
