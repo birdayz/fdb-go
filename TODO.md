@@ -5396,6 +5396,22 @@ fix and re-running — identical failure. It is also why no corpus query reaches
 the arm (instrumenting the yield over all 2407 queries counts ZERO firings):
 the feature has never worked, so nobody could pin a scenario for it.
 
+RFC-183 SHIPS NO REGRESSION HERE — proven by plan parity, recorded because the
+commit titled "the N-way EXISTS local fix converts a crash into WRONG ROWS —
+do not ship" is easy to misread as "the branch ships wrong rows". It does not:
+that commit REVERTED the fix and changed only this TODO. The executed plan for
+the reproducer is BYTE-IDENTICAL on master and on the RFC-183 branch —
+
+    FlatMap(outer=PredicatesFilter(NestedLoopJoin(INNER,
+      NestedLoopJoin(INNER, Scan(NA), Scan(NB)), Scan(NC)), [2 preds]),
+      inner=FirstOrDefault(PredicatesFilter(Scan(ND), [1 preds])))
+
+so the branch crashes exactly where master crashes (correct-or-loud), and
+introduces NO silent wrong rows. The memo repoint changes costing/linkage, not
+the extracted plan. Do NOT block RFC-183's merge on this bug, and do NOT
+"resolve" it by applying the reverted `flatMapResult = rebased` — that is the
+change that produces wrong rows.
+
 Related but SEPARATE, already fixed on the RFC-183 branch: the same arm was
 costing the whole N-way chain as `Scan(A)` — a memo-linkage bug. Pinned by
 `TestNWayProjectedExists_OuterQuantifierMatchesExecutedPlan`
