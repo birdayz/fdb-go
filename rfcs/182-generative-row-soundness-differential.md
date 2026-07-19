@@ -381,3 +381,30 @@ templates, comparator sensitivity tests), `cmd/sql-diff-stress`,
 Smoke budget (§6): measured 4.1–4.8 seeds/s; 25-seed smoke ≈ 6s + template
 seeds ≈ 0.4s, far inside the ≤2 min budget, sharing the sqldriver suite
 container (no extra startup).
+
+## 12. P2 landing note — grammar extension (2026-07-19)
+
+Generator grew the SQL surface toward what the parser accepts: `IN`,
+`BETWEEN`, `LIKE`, `IS [NOT] NULL` leaves; `LIMIT`; `SELECT DISTINCT`;
+nullable sort keys with explicit `NULLS FIRST`/`NULLS LAST`. Oracle M grew
+the matching semantics — `BETWEEN` desugared to `>=`/`<=` through the
+engine's own comparisons (not a reimplementation), `DISTINCT` deduped over
+the PROJECTED row, NULL placement following the engine's Java/FDB default
+(NULLS FIRST ascending, NULLS LAST descending) with explicit overrides —
+and the comparator implements §3's LIMIT membership rule.
+
+**Bugs found by the extension, all pre-existing on master:**
+
+| # | Symptom | Root cause | Status |
+|---|---|---|---|
+| 1 | `PredicatesFilter(<nil>)` XX000; **wrong rows** (dropped residual) before compensation landed | set operations missing from `isLeafReplaceable`, so a filter over a pk-intersection refused to relink | fixed, pinned |
+| 2 | `InUnion(PredicatesFilter(<nil>))` | `physicalInUnionWrapper.WithChildren` had NO relink — held the stale pre-relink snapshot | fixed, pinned |
+| 3 | nil-inner filter/map/distinct shells picked as valid plans | shell guard was Fetch-only (RFC-167 finding 1); now structural via `isGenuineLeafPlan` + recursive shell resolution | fixed, pinned |
+| 4 | `InJoin(<nil>)` XX000 on TWO `IN` predicates | inner IN wrapper never handed to `WithChildren` — deeper RFC-167 shell instance | gate-pinned, filed |
+| 5 | every column read fails XX000 on `SELECT DISTINCT id … LIMIT k` over two indexes | `findUnionPlan` descended through the PROJECTION to a nested intersection and derived columns from a leg's full record | fixed, pinned |
+
+Findings 1 and 5 are the pattern the RFC was built for: each needs a
+three-way interaction (indexed conjunction + residual + projection variant;
+DISTINCT + LIMIT + intersection) that the hand-written corpora never
+crossed. #4 is loud and pre-existing; it stays gate-pinned rather than
+papered over, and goes red the day the planner learns the shape.
