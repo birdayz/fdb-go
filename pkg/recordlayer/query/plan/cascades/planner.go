@@ -87,6 +87,12 @@ type Planner struct {
 	// and Java surfaces them the same way.
 	capErr error
 
+	// verifyOneFinal turns on RFC-183 P5's precondition check after the
+	// task stack drains; oneFinalViolations holds what it found. Off by
+	// default — it walks the whole reference graph.
+	verifyOneFinal     bool
+	oneFinalViolations []string
+
 	tasksRun int
 
 	// costModel is the comparator for OptimizeGroupTask. Defaults
@@ -312,6 +318,15 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 
 	// After the task-stack drains, each Reference's FinalMembers has
 	// been pruned to exactly one physical plan by OptimizeGroup.
+	//
+	// RFC-183 P5 checks that claim rather than trusting it: set
+	// RFC183_VERIFY_ONE_FINAL to have the planner report every reference
+	// that still holds two. It is the precondition for a plan holding a
+	// Quantifier instead of a raw child pointer (Java's getRangesOverPlan
+	// is getOnlyElement over the final expressions).
+	if p.verifyOneFinal {
+		p.oneFinalViolations = VerifyOneFinalPlanPerReference(rootRef)
+	}
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, p.stats)
 	if err != nil {
 		return plan, p.tasksRun, err

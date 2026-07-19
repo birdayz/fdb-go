@@ -17,6 +17,7 @@ go_library(
         "expression_partition.go",
         "expression_rule_adapter.go",
         "expression_rule_call.go",
+        "final_member_invariant.go",
         "graph_expansion.go",
         "group_by_mappings.go",
         "implementation_rule.go",
@@ -840,6 +841,7 @@ go_test(
         "rebase_ordinal_layout_test.go",
         "memo_reexplore_test.go",
         "yield_invariants.go",
+        "final_member_invariant.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

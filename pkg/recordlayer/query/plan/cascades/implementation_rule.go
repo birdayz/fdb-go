@@ -107,12 +107,20 @@ func (c *ImplementationRuleCall) MemoizeFinalExpressionsFromOther(
 	source *expressions.Reference,
 	exprs []expressions.RelationalExpression,
 ) *expressions.Reference {
+	// FINAL set, CANONICAL stage. These are plans, and Java's memoizePlan
+	// lands plans in the final set (Reference.ofFinalExpressions) — minting
+	// via InitialOf put them in the EXPLORATORY set, so every reference built
+	// here had an empty FinalMembers() and the name said the opposite of what
+	// happened. FinalOf is not the right constructor either: it also stamps
+	// StagePlanned, which is the SPINE-PIN decision, not the memoize
+	// decision, and forcing it here changes what ExploreGroupTask does with
+	// the reference.
 	var ref *expressions.Reference
 	for i, e := range exprs {
 		if i == 0 {
-			ref = expressions.InitialOf(e)
+			ref = expressions.FinalOfAtStage(e, expressions.StageCanonical)
 		} else {
-			ref.Insert(e)
+			ref.InsertFinal(e)
 		}
 	}
 	if ref == nil {
@@ -124,12 +132,14 @@ func (c *ImplementationRuleCall) MemoizeFinalExpressionsFromOther(
 	return ref
 }
 
-// MemoizeFinalExpression creates a new Reference with a single
-// expression member.
+// MemoizeFinalExpression creates a new Reference holding expr as its single
+// FINAL member — Java's memoizePlan (Reference.ofFinalExpressions). Stage
+// stays CANONICAL: see MemoizeFinalExpressionsFromOther for why the final-set
+// placement and the planner stage are separate decisions.
 func (c *ImplementationRuleCall) MemoizeFinalExpression(
 	expr expressions.RelationalExpression,
 ) *expressions.Reference {
-	return expressions.InitialOf(expr)
+	return expressions.FinalOfAtStage(expr, expressions.StageCanonical)
 }
 
 // FireImplementationRule runs an ImplementationRule against a Reference,

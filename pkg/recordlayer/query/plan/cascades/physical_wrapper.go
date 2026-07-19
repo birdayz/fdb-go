@@ -359,21 +359,29 @@ func findBestPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 // See findPhysicalPlan for why the final set is searched first and why the
 // exploratory fallback stays.
 //
-// CAVEAT — the exploratory fallback is currently doing all the work at the
-// push-through sites. `MemoizeFinalExpression`/`MemoizeFinalExpressionsFromOther`
-// mint their Reference with `expressions.InitialOf`, which lands the expression
-// in the EXPLORATORY set despite the "Final" in those names, so the references
-// those rules build have an empty `FinalMembers()` and the finals-first loop
-// below is a no-op for them. Java's memoizePlan lands plans in the final set
-// (`Reference.ofFinalExpressions`), and `expressions.FinalOf` is that shape.
+// The exploratory fallback still matters, but for a different reason than it
+// used to. MemoizeFinalExpression now genuinely lands plans in the FINAL set
+// (FinalOfAtStage), so the finals-first loop below is live at the
+// push-through sites rather than inert. What the fallback covers is rules
+// calling this MID-PLANNING, before a group has been finalized.
 //
-// Do NOT "obviously" swap InitialOf for FinalOf: it was tried and it is not a
-// drop-in. FinalOf also sets StagePlanned, which changes what exploration may
-// do — the swap replans `UNION ALL` from UnorderedUnion to Union (breaking the
-// continuation pin in TestFDB_UnorderedUnion_Continuation_ResumeAcrossPages),
-// shifts alias-aware interning counts, and moves 18 plan shapes. Landing it
-// needs its own change with those consequences worked through; until then a
-// finals-ONLY tightening here would silently break every push-through rule.
+// A finals-ONLY tightening here is still not safe, and the reason is
+// measured: at these call sites 3821 references have ZERO final members
+// (against 2744 with exactly one), so refusing the exploratory set would make
+// a large fraction of rules silently decline. That number is also why P5's
+// terminal form is not reachable yet — see below.
+//
+// P5 BLOCKER, quantified. Java dereferences a quantifier straight to its plan:
+// Quantifier.Physical.getRangesOverPlan() is
+// Iterables.getOnlyElement(getRangesOver().getFinalExpressions()) — it REQUIRES
+// exactly one final expression. Go does not have that property: 1186
+// references here hold multiple finals (max 52), and 1125 hold multiple
+// PHYSICAL finals, so getOnlyElement would throw on every one. Making plans
+// hold quantifiers is therefore gated on universal prune-to-one-final-member,
+// which unified_tasks.go's stage-boundary arm records was ATTEMPTED AND
+// REVERTED: it lost canonical alternatives Go's PLANNING cannot re-derive
+// (RFC-153 buried-leg, cross-join-EXISTS). The root gate is Java per-phase
+// rule-set parity, tracked in DIVERGENCES.md.
 //
 // DO NOT make this cost-ranked. Picking the "cheapest" member here looks like
 // an obvious improvement — findBestPhysicalPlan does exactly that, and it is

@@ -89,6 +89,7 @@ go_test(
         "logical_qualify_test.go",
         "mint_distinct_test.go",
         "nulls_order_test.go",
+        "one_final_member_test.go",
         "parse_decimal_test.go",
         "plan_cache_planner_bench_test.go",
         "plan_cache_test.go",

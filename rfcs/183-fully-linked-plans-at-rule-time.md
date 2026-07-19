@@ -243,15 +243,62 @@ the shell path. The pins arbitrate the fact that the parent→child edge is
 stored *twice*; they become deletable only when that duplication is removed
 — i.e. at P5, not before. Any pin cleanup is folded into P5.
 
-**P5 — TERMINAL, not optional.** Make `plans.RecordQueryPlan` a
-`RelationalExpression` holding quantifiers, deleting the
-`physical_*_wrapper.go` layer. The edge is stored twice today — quantifier
-`Reference` *and* embedded plan pointer — and a shell is precisely the state
-where the two disagree. P1-P4 make them agree *at construction*; nothing
-structurally prevents later divergence, which is exactly what
-`shouldRelinkInner` and `pinOrderedSpine` exist to arbitrate. **Duplication
-is the disease; nil is a symptom.** Large; touches the executor. Sequenced
-last, but no longer contingent.
+**P5 — TERMINAL, and its real blocker is NOT size.** Make
+`plans.RecordQueryPlan` a `RelationalExpression` holding quantifiers,
+deleting the `physical_*_wrapper.go` layer. The edge is stored twice today —
+quantifier `Reference` *and* embedded plan pointer — and a shell is precisely
+the state where the two disagree. P1-P4 make them agree *at construction*;
+nothing structurally prevents later divergence. **Duplication is the disease;
+nil is a symptom.**
+
+This draft said "large; touches the executor." Size is not what blocks it.
+Investigated, with two findings.
+
+*The stated rationale for the split is factually wrong about Java.*
+`plan.go:23-28` justifies a separate package by claiming "physical and logical
+plan trees live in different namespaces in Java." They do not:
+`QueryPlan<T> extends PlanHashable, RelationalExpression` (`QueryPlan.java:51`)
+and `RecordQueryPlan extends QueryPlan<…>` (`RecordQueryPlan.java:73`) — in
+Java a plan **is** a RelationalExpression. The comment conflates *package*
+separation (which Java has, and Go correctly mirrors) with *hierarchy*
+separation (which Java does not have). The whole wrapper layer, and the shell
+class with it, descends from that misreading. Note also there is no import
+cycle in the way: `plans` already imports `expressions`, and `expressions`
+never imports `plans`.
+
+*The actual blocker is one-final-member, and it is quantified.* Java
+dereferences a quantifier straight to its plan —
+`Quantifier.Physical.getRangesOverPlan()` is
+`Iterables.getOnlyElement(getRangesOver().getFinalExpressions())`, which
+REQUIRES exactly one final expression. Measured across the corpus at the
+child-resolution sites: **1186 references hold multiple finals (max 52), and
+1125 hold multiple PHYSICAL finals** — `getOnlyElement` would throw on every
+one. (3821 hold zero, which is why a finals-only lookup is also unsafe.)
+
+So P5 is gated on universal prune-to-one-final-member, which
+`unified_tasks.go`'s stage-boundary arm records was **attempted and
+reverted**: a forced boundary prune lost canonical alternatives Go's PLANNING
+cannot re-derive (RFC-153 buried-leg, cross-join-EXISTS shapes). That in turn
+is gated on Java per-phase rule-set parity — the RESIDUAL already tracked at
+DIVERGENCES.md. The dependency chain is
+P5 ← one-final-member ← prune-to-1 ← PLANNING re-derivation parity.
+
+**What landed here.** The one link that was genuinely unblocked:
+`MemoizeFinalExpression` now lands plans in the FINAL set, via a new
+`FinalOfAtStage` that separates member-set placement from planner stage. That
+conflation was the whole reason the earlier `FinalOf` attempt broke a
+continuation pin and moved 18 shapes — it was the STAGE, not the final-set
+placement. Zero drift, suite green, and `findPhysicalExpr`'s finals-first
+ordering is now live instead of inert.
+
+**A P5 that does not wait for parity is possible** and should be costed
+before anyone attempts the terminal form: let plans hold the quantifier and
+have `GetChildren()` resolve through the SAME winner-lookup the wrappers use
+today, rather than `getOnlyElement`. That stores the edge ONCE — the actual
+property — without needing prune-to-1, and re-frames the remaining divergence
+honestly as "resolution policy is winner-lookup", a consequence of the
+re-derivation gap rather than of the hierarchy split. Surface: 45 plan types,
+~506 non-test `GetChildren()` call sites, plus the executor.
 
 ## 7. Riskiest unknowns
 

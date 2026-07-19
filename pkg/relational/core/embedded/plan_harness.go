@@ -3,6 +3,7 @@ package embedded
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
@@ -104,7 +105,18 @@ func PlanPhysicalForTest(sql, schemaDDL string, stats properties.StatisticsProvi
 		WithStatistics(stats).
 		WithMaxTasks(100_000)
 
+	// RFC-183 P5 precondition: does every reference reachable at extraction
+	// hold at most ONE physical final? That is what Java's getRangesOverPlan
+	// assumes. Off by default (it walks the whole reference graph);
+	// planAndVerifyOneFinal turns it on.
+	if verifyOneFinalEnabled {
+		planner.SetVerifyOneFinal(true)
+	}
+
 	bestExpr, _, planErr := planner.Plan(ref)
+	if verifyOneFinalEnabled {
+		lastOneFinalViolations = planner.OneFinalViolations()
+	}
 	if planErr != nil {
 		return nil, fmt.Errorf("planning failed: %w", planErr)
 	}
@@ -443,4 +455,42 @@ func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan, md *recordlayer.
 // that cannot be seeded through the SQL driver (no SQL array-literal form).
 func ResultColumnDefsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	return deriveColumnsFromPlan(plan, md)
+}
+
+// verifyOneFinalEnabled / lastOneFinalViolations back planAndVerifyOneFinal.
+//
+// Package-level rather than threaded through PlanPhysicalForTest's signature:
+// the check is a diagnostic for one test, and widening the signature of a
+// helper called from ~40 places to carry it would be the tail wagging the dog.
+// Guarded by verifyOneFinalMu because tests run in parallel.
+var (
+	verifyOneFinalMu       sync.Mutex
+	verifyOneFinalEnabled  bool
+	lastOneFinalViolations []string
+)
+
+// planAndVerifyOneFinal plans sql and returns every reference reachable at
+// extraction that holds more than one PHYSICAL final expression — RFC-183
+// P5's precondition (Java's getRangesOverPlan is getOnlyElement over the
+// final expressions, which throws on two).
+//
+// Serialized: it flips package-level planner state, so concurrent callers
+// would read each other's results.
+func planAndVerifyOneFinal(sql, schema string) ([]string, error) {
+	verifyOneFinalMu.Lock()
+	defer verifyOneFinalMu.Unlock()
+
+	verifyOneFinalEnabled = true
+	lastOneFinalViolations = nil
+	defer func() {
+		verifyOneFinalEnabled = false
+		lastOneFinalViolations = nil
+	}()
+
+	if _, err := PlanPhysicalForTest(sql, schema, nil); err != nil {
+		return nil, err
+	}
+	out := make([]string, len(lastOneFinalViolations))
+	copy(out, lastOneFinalViolations)
+	return out, nil
 }
