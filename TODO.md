@@ -3479,7 +3479,16 @@ projection site makes `SELECT v WHERE v=…` / covering `SELECT v` silently wron
 current clean XX000). Stub to implement first: `key_expression_validate.go:isTupleField` (currently
 `return false`).
 
-### [ ] query-engine: nested derived tables drop ALIAS-introduced column names beyond one level (likely Go divergence, found 2026-06-28)
+### [x] query-engine: nested derived tables drop ALIAS-introduced column names beyond one level — STALE, already resolved
+
+RESOLVED (stale entry — the sentinel now pins the WORKING behavior). The failing
+case `SELECT x FROM (SELECT x FROM (SELECT a AS x FROM t) i) s` now resolves `x`
+through any nesting depth and returns [10 20 30]:
+`nested_derived_table_probe_test.go`'s `two_level_inner_alias` asserts success
+(no 42703) and passes green. Identifier resolution keeps the OUTPUT column name
+verbatim (no source-name reverse-map), so an inner alias is not buried under the
+source column beyond one level. The original diagnosis below is retained as the
+record of the investigation; the reach gap it describes no longer exists.
 
 Derived tables (subquery in FROM) are supported and cross-engine-tested (plandiff
 corpus has `FROM (SELECT … ) AS t` entries). But an alias introduced in an INNER
