@@ -3298,9 +3298,12 @@ func findUnionPlan(p plans.RecordQueryPlan) []plans.RecordQueryPlan {
 }
 
 // definesOutputSchema reports whether a plan node determines the result's
-// column list rather than passing its input's through. These are exactly the
-// types deriveColumnsFromPlan handles with a dedicated arm before it consults
-// findUnionPlan; keeping the two in sync is what makes the descent safe.
+// column list rather than passing its input's through. It lists every type
+// deriveColumnsFromPlan handles with a dedicated arm BEFORE it consults
+// findUnionPlan — including the two recursive-CTE arms, which derive from
+// their seed / initial state. Keeping the two in sync is what makes the
+// descent safe; a type with a dedicated arm that is missing here would be
+// descended past and lose its schema.
 func definesOutputSchema(p plans.RecordQueryPlan) bool {
 	switch p.(type) {
 	case *plans.RecordQueryProjectionPlan,
@@ -3308,7 +3311,9 @@ func definesOutputSchema(p plans.RecordQueryPlan) bool {
 		*plans.RecordQueryAggregateIndexPlan,
 		*plans.RecordQueryMultiIntersectionOnValuesPlan,
 		*plans.RecordQueryNestedLoopJoinPlan,
-		*plans.RecordQueryFlatMapPlan:
+		*plans.RecordQueryFlatMapPlan,
+		*plans.RecordQueryRecursiveDfsJoinPlan,
+		*plans.RecordQueryRecursiveLevelUnionPlan:
 		return true
 	}
 	return false

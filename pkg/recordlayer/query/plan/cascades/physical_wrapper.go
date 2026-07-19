@@ -314,14 +314,15 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	if ref == nil {
 		return nil
 	}
-	// A nil-inner Fetch shell (the extraction template) is never a valid
-	// standalone pick — it only works via a WithChildren relink. Prefer
-	// any VALID physical; fall back to a shell only when nothing else
-	// exists (a sole-template ref that a later relink completes). With
-	// finals-only physical yields the member order changed, and a
-	// first-pick without this guard grabbed a shell ahead of the valid
-	// alternative — the embedded shell plan then reached extraction as
-	// Fetch(<nil>) (the XX000 plan-invariant).
+	// A nil-inner shell (the extraction template) is never a valid standalone
+	// pick — it only works via a WithChildren relink. Prefer any VALID
+	// physical; fall back to a shell only when nothing else exists (a
+	// sole-template ref that a later relink completes). With finals-only
+	// physical yields the member order changed, and a first-pick without this
+	// guard grabbed a shell ahead of the valid alternative — the embedded
+	// shell plan then reached extraction as Op(<nil>) (the XX000
+	// plan-invariant). The guard covers EVERY unary wrapper, not just Fetch
+	// (see isNilInnerShell).
 	var shell expressions.RelationalExpression
 	for _, m := range ref.AllMembers() {
 		if ph, ok := m.(physicalPlanExpression); ok {
@@ -334,49 +335,22 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 			return ph.GetRecordQueryPlan()
 		}
 	}
-	// Only shells here. Returning a shell's plan verbatim embeds `Op(<nil>)`
-	// in the parent — the XX000 plan-invariant. Resolve it RECURSIVELY
-	// instead: relink the shell against its own child first (its
-	// WithChildren re-runs this lookup one level down) and hand the parent
-	// the completed plan. Nested `IN`s over a compensated intersection build
-	// exactly this chain of sole-shell references.
-	return resolveShellPlan(shell, 0)
-}
-
-// maxShellResolveDepth bounds the recursive shell relink. Shell chains are a
-// handful of unary wrappers deep in practice; the cap keeps a cyclic or
-// pathological memo from recursing without end (it returns nil, and the
-// caller then declines rather than embedding a malformed plan).
-const maxShellResolveDepth = 16
-
-func resolveShellPlan(shell expressions.RelationalExpression, depth int) plans.RecordQueryPlan {
-	if shell == nil || depth >= maxShellResolveDepth {
+	// Sole-shell reference: hand back the template so a caller that CAN
+	// complete it (its own WithChildren relink) still has something to work
+	// with. A caller that cannot leaves the plan malformed and the invariant
+	// check rejects it loudly at extraction — which is the current fate of
+	// the nested-IN shape (TestNestedIn_OverIntersection_GatePin). Resolving
+	// the shell here instead would have to re-enter WithChildren, and that
+	// path cannot carry a recursion bound across the interface boundary, so
+	// it is deliberately NOT attempted: an unbounded walk over a cyclic memo
+	// is a worse failure than a loud decline.
+	if shell == nil {
 		return nil
 	}
-	pe, ok := shell.(physicalPlanExpression)
-	if !ok {
-		return nil
-	}
-	qs := shell.GetQuantifiers()
-	rebuilder, canRebuild := shell.(properties.WithChildren)
-	if !canRebuild || len(qs) != 1 {
+	if pe, ok := shell.(physicalPlanExpression); ok {
 		return pe.GetRecordQueryPlan()
 	}
-	rebuilt, err := rebuilder.WithChildren(qs)
-	if err != nil || rebuilt == nil {
-		return pe.GetRecordQueryPlan()
-	}
-	rebuiltPE, ok := rebuilt.(physicalPlanExpression)
-	if !ok {
-		return pe.GetRecordQueryPlan()
-	}
-	if isNilInnerShell(rebuilt) {
-		// The relink did not complete this level (its child reference is
-		// itself shell-only, or the wrapper declined). Give up rather than
-		// hand back a malformed plan.
-		return nil
-	}
-	return rebuiltPE.GetRecordQueryPlan()
+	return nil
 }
 
 // findBestPhysicalPlan returns the cheapest VALID physical member's plan
@@ -452,17 +426,28 @@ func shouldRelinkInner(currentInner, candidate plans.RecordQueryPlan) bool {
 // and must NOT be swapped — extraction already picks the right join plan
 // via quantifier traversal.
 //
-// Set operations over ONE record type (intersection / union of index scans
-// merged on the primary key) are leaf-adjacent in exactly this sense: they
-// flow that record type's schema unchanged and carry no join structure, so
-// they belong in the list. They were absent only because no shape put one
-// under a relinking wrapper until compensated pk-intersections started
-// carrying residual filters — a filter over such an intersection then kept
-// its eagerly-snapshotted nil-inner plan and extracted
+// ORDER-PRESERVING set operations over ONE record type (intersection / union
+// of index scans merged on the primary key) are leaf-adjacent in exactly this
+// sense: they flow that record type's schema unchanged and carry no join
+// structure, so they belong in the list. They were absent only because no
+// shape put one under a relinking wrapper until compensated pk-intersections
+// started carrying residual filters — a filter over such an intersection then
+// kept its eagerly-snapshotted nil-inner plan and extracted
 // `PredicatesFilter(<nil>)` (XX000 plan-invariant), and before the
 // compensation landed the very same queries silently DROPPED the residual
-// (wrong rows). Their IN-variants (InJoin/InUnion) stay OUT: those bind a
-// correlation per IN value, which is join-like structure.
+// (wrong rows).
+//
+// Three families stay OUT, each for its own reason:
+//   - InJoin / InUnion bind a correlation per IN value — join-like structure.
+//   - The UNORDERED set ops (UnorderedUnion, UnorderedPrimaryKeyDistinct):
+//     findPhysicalPlan picks the first non-shell member without consulting
+//     ordering, so admitting them would let an unordered member satisfy a
+//     relink whose consumer needs grouped/ordered input (streaming
+//     aggregation). Gate the relink on ordering compatibility before adding
+//     them.
+//   - MultiIntersectionOnValues DEFINES its own output schema (it has a
+//     dedicated arm in deriveColumnsFromPlan and appears in
+//     definesOutputSchema), which is precisely what must not be swapped.
 func isLeafReplaceable(p plans.RecordQueryPlan) bool {
 	switch p.(type) {
 	case *plans.RecordQueryScanPlan,
@@ -477,11 +462,8 @@ func isLeafReplaceable(p plans.RecordQueryPlan) bool {
 		*plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQueryAggregateIndexPlan,
 		*plans.RecordQueryIntersectionPlan,
-		*plans.RecordQueryMultiIntersectionOnValuesPlan,
 		*plans.RecordQueryUnionPlan,
-		*plans.RecordQueryUnorderedUnionPlan,
-		*plans.RecordQueryMergeSortUnionPlan,
-		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+		*plans.RecordQueryMergeSortUnionPlan:
 		return true
 	}
 	return false

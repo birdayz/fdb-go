@@ -408,3 +408,22 @@ three-way interaction (indexed conjunction + residual + projection variant;
 DISTINCT + LIMIT + intersection) that the hand-written corpora never
 crossed. #4 is loud and pre-existing; it stays gate-pinned rather than
 papered over, and goes red the day the planner learns the shape.
+
+**Strategic note (Graefe, P2 review).** Every bug in this table is a
+symptom of ONE architectural divergence, and the per-wrapper relink is a
+patch on it, not a cure. Java has no shell window at all: `memoizePlan` /
+`Reference.ofFinalExpressions` bake concrete children at RULE time, and
+`WithPrimaryKeyDataAccessRule` applies `Compensation` before memoizing, so
+an intersection is already complete when it enters the memo. Go takes an
+eager plan snapshot at yield time and re-links it afterwards through
+`WithChildren`, which is what creates nil-inner shells, the Fetch-only
+guard that missed them, the stale-snapshot wrappers, and the unreachable
+nested-IN shell (#4). Closing the class means adopting Java's
+bake-at-rule-time discipline (RFC-167's deeper layer) — the relink fixes
+here buy correctness on the reachable shapes while that lands.
+
+The one guard NOT added: resolving a sole-shell reference recursively.
+It was implemented, then removed — the recursion would re-enter through
+`WithChildren`, which cannot carry a depth bound across the interface
+boundary, so the "cap" reset at every level and guarded nothing (Torvalds,
+P2 review). A loud decline beats an unbounded walk over a cyclic memo.
