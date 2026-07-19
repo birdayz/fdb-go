@@ -4155,16 +4155,31 @@ everything else within +/-5% noise:
     GROUP BY customer HAVING         183.7ms -> 130.3ms   -29%
     PK lookups / scans / ORDER BY     within +/-5%
 
-Mechanism is coherent rather than mysterious: AggregateDataAccessRule was
-constructing its two-leg multi-intersection with NIL quantifiers, so the memo
-held no edges for either aggregate-index leg and could not cost them. Fixing
-that is exactly the aggregate/join surface that moved.
+**MECHANISM RETRACTED — the speedup is NOT attributable to this branch.**
 
-CAVEAT, stated because the number is flattering: ONE run per side. The deltas
-are 2-4x with a plausible mechanism and five metrics moving together, which is
-why it is recorded — but it is not a multi-run study, and a single sample of a
-77% improvement deserves the same suspicion as a single sample of a 77%
-regression.
+I originally recorded a mechanism here: AggregateDataAccessRule built its
+two-leg multi-intersection with NIL quantifiers, so the memo could not cost the
+aggregate-index legs, and that was "exactly the surface that moved". Both
+reviewers independently refused it on the same ground: a costing fix changes
+plan CHOICE, so if the winning plan is unchanged, no costing difference can
+make execution 4x faster — and this branch reports ZERO plan drift. The two
+claims were in tension and I did not notice.
+
+Checked instead of argued. EXPLAIN, master vs branch, using the stress schema
+INCLUDING its three aggregate indexes (my first attempt omitted them and so
+compared the wrong plans entirely):
+
+    SUM(amount) GROUP BY status   AggregateIndex(SUM, SUM_AMOUNT_BY_STATUS, [STATUS], ORDERS)
+    COUNT(*)    GROUP BY status   AggregateIndex(COUNT, COUNT_BY_STATUS, [STATUS], ORDERS)
+    SUM ... GROUP BY customer_id  PredicatesFilter(AggregateIndex(SUM, SUM_AMOUNT_BY_CUSTOMER, ...))
+
+BYTE-IDENTICAL on both sides. The plans do not change, so the latency delta is
+environment — caching, container warmth, run-to-run variance — not this work.
+A second branch sample reproduces ~5.5ms for SUM, so the BRANCH side is stable;
+there is exactly one master sample and it is the outlier.
+
+WHAT THIS COMPARISON ACTUALLY ESTABLISHES: no regression. Nothing here supports
+a performance claim, and the 2-4x table above must not be cited as one.
 
 The FIRST attempt at this comparison showed a uniform 30-90% SLOWDOWN across
 every query including full scans. That was pure machine load — the branch run

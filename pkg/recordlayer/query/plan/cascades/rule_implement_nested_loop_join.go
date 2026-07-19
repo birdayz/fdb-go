@@ -2764,18 +2764,9 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		flatMapResult, false,
 	)
 
-	// The wrapper's outer quantifier ranges over leg[0]'s memoized expression.
-	//
-	// This edge is a KNOWN, UNCONVERTED divergence: step1Plan is the N-leg
-	// cross-product NLJ chain (optionally under a merged-row predicate filter),
-	// while the group can only produce leg[0]. The 2-leg arm's fix — wrap the
-	// materialized NLJ over both legs' quantifiers — does not transfer here,
-	// because topNLJ is built by a separate N-ary construction whose per-level
-	// intermediate plans are not surfaced, so there is no per-level quantifier to
-	// advance in lockstep. Converting it means restructuring that construction,
-	// which is beyond a lockstep-memoization change and must not be forced: the
-	// only shortcut is to reseed the outer reference from a fresh singleton, and
-	// narrowing a group is exactly what regressed the IN-join rule (RFC-183 §13).
+	// Counts firings so TestNWayProjectedExists can assert the arm actually ran
+	// before checking reachability — see that test for why the global is safe
+	// here and when it must be scoped.
 	nwayOuterProbe.Add(1)
 	// THIS ARM HAS NEVER PRODUCED AN EXECUTABLE PLAN.
 	//

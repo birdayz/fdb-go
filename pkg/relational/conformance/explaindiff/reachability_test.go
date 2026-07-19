@@ -99,9 +99,17 @@ func TestCorpusPlanReachability(t *testing.T) {
 	// bug, so leaving the class unasserted means the ratchet cannot catch
 	// that defect recurring.
 	//
-	// 32 is the current population, all scanPlanExpression. It must only ever
-	// fall — closing it needs plans to carry the correlation and ordering
-	// properties the wrappers carry (RFC-183 §15, RFC-184 W2/W3).
+	// 32 is the current population. It must only ever fall — closing it needs
+	// plans to carry the correlation and ordering properties the wrappers
+	// carry (RFC-183 §15, RFC-184 W2/W3).
+	//
+	// The report below labels all 32 as "TypeFilterPlan" while this is
+	// elsewhere described as a scanPlanExpression problem. Both are right and
+	// they are not the same axis: the EXPRESSION is scanPlanExpression (the
+	// adapter that reports no quantifiers, so the memo models no child), and
+	// the report groups by planTypeName of the WRAPPED PLAN, which for this
+	// adapter is the TypeFilter(Scan) it holds. Do not read the two as
+	// contradicting each other, and do not "correct" one to match the other.
 	const knownNoQuantifierEdges = 32
 	if n := reach.NoQuantifierCount(); n > knownNoQuantifierEdges {
 		t.Errorf("no-quantifier edges rose to %d (known baseline %d) — a rule is "+

@@ -58,12 +58,22 @@ CREATE TABLE nd (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))`
 	//
 	// NWayOuterYieldCount is still a process-global counter, i.e. the same shape
 	// as the shared-tally bug the ReachabilityCollector threading just deleted.
-	// It is safe HERE, and only because of how it is used: a concurrent test
-	// planning this shape could only inflate `fired`, and this guard fails on
-	// ZERO. Inflation cannot produce a false pass. The assertion that actually
-	// decides the test — reach.Count() — reads a collector owned by this test.
-	// Do not reuse this counter for anything that fails on a HIGH value without
-	// scoping it first.
+	//
+	// It is safe today ONLY because no other caller fires this arm — zero corpus
+	// queries reach it, and this is the only test that plans the shape. That is
+	// a fact about the current test set, NOT a property of the design.
+	//
+	// An earlier version of this comment argued "inflation cannot produce a
+	// false pass". That was wrong, and wrong in the direction that matters:
+	// inflation is precisely the false-pass vector for a fail-on-ZERO guard.
+	// The guard asks "did MY planning fire the arm"; a concurrent caller firing
+	// it answers yes on this test's behalf, `fired > 0` passes, and
+	// reach.Count() == 0 then passes VACUOUSLY — exactly the vacuous pass this
+	// guard exists to prevent.
+	//
+	// So: the moment a second caller fires this arm, scope the counter onto the
+	// Planner the way the reachability collector already is. Do not reuse it
+	// elsewhere before then.
 	if fired == 0 {
 		t.Fatalf("the N-way projected-EXISTS arm did not fire for %q — "+
 			"this test no longer covers what it claims", sql)
