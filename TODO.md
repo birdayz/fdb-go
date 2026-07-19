@@ -4231,6 +4231,17 @@ adjusted-MaxMatchMap reader) landed in the same branch, pinned by
   minimizer + yamsql draft emitter (§6), the forced-alternative mode
   (disable dominant plan families so losing memo alternatives get
   row-checked), non-correlated EXISTS/IN if feasible.
+- [ ] **`LogicalProjectionExpression` identity ignores its output ALIASES**
+  (`EqualsWithoutChildren` / `HashCodeWithoutChildren`). Aliases are output
+  schema but not expression identity, so the memo cannot tell an aliased
+  projection from a de-aliased one and the survivor of a merge is arbitrary
+  — which is WHY two separate alias-dropping rebuilds
+  (`PushLimitThroughProjectionRule`, `properties/extract.go`) stayed
+  invisible until a generative harness compared column names. Either fold
+  aliases into identity or assert alias-equality on merge. (Graefe, RFC-182
+  P2 join review.) Also: `plans.NewRecordQueryProjectionPlan` now has zero
+  non-test callers — delete it, it is the attractive nuisance that made the
+  plan-side version of this bug easy to write.
 - [ ] **Nested IN over an intersection extracts `InJoin(<nil>)`** (RFC-167
   shell instance). `WHERE b IN (…) AND c = ? AND a IN (…)`: the inner IN
   wrapper is never handed to WithChildren, so no per-wrapper relink reaches
