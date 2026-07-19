@@ -114,8 +114,27 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// scanPlanExpression is the existing plan-backed adapter for exactly this
 	// (see its other use for the buried-leg rebase): it makes the memoized
 	// expression report the plan actually being executed.
-	rootQ := expressions.ForEachQuantifier(call.MemoizeExpression(&scanPlanExpression{plan: rootPlan}))
-	childQ := expressions.ForEachQuantifier(call.MemoizeExpression(&scanPlanExpression{plan: childPlan}))
+	// MemoizeFinalExpression, NOT MemoizeExpression — the two legs must land
+	// in SEPARATE references.
+	//
+	// MemoizeExpression interns, and scanPlanExpression is indistinguishable
+	// to the memo when two plans share a root node: it hashes and compares via
+	// EqualsPlanWithoutChildren (children excluded) and reports NO quantifiers,
+	// so the memo has nothing left to tell two of them apart. Both legs here
+	// are RecordQueryProjectionPlan with the same projections — root is
+	// Project([ID,PARENT], TypeFilter(Scan)), child is Project([ID,PARENT],
+	// Project(FlatMap(…))) — so they compare EQUAL and intern into ONE group.
+	// rootQ and childQ then range over the same single-member reference, and
+	// the memo believes the two legs are the same expression.
+	//
+	// That collapse was introduced by an earlier revision of this very fix and
+	// is why the leg divergence only fell from 58 to 25 rather than to zero
+	// (RFC-183 §14). It stayed invisible to tests and to the corpus differ
+	// because WithChildren keeps `plan: w.plan`, so EXTRACTION reads the plan
+	// and never notices — the damage is confined to costing and bookkeeping,
+	// which is the exact defect this fix exists to remove.
+	rootQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: rootPlan}))
+	childQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: childPlan}))
 	call.Yield(newPhysicalRecursiveDfsJoinWrapper(plan, rootQ, childQ))
 }
 
