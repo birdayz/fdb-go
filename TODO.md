@@ -5640,15 +5640,30 @@ CLASS 2 — "Plan succeeded but root Reference has no BestMember stamp"
 (instant assertion, not a stack overflow). Reproducing 34-byte seed
 `311028b5ee5f305a`. PRE-EXISTING — proven: the identical seed fails on
 pre-RFC-183 master (15dc17a82).
-  Mechanism, as far as bounded diagnosis goes: `p.Plan(ref)` returns nil error
-  and a non-nil plan, yet `ref.HasWinner()` is false. NOT a canonicalization
-  gap — HasWinner/Winner already canonicalize (reference.go:313,329), so a
-  post-merge `ref` pointer would still find the canonical winner. So the
-  canonical root's `winner` is genuinely nil after a successful extraction:
-  some planning path yields an extractable plan without stamping the root's
-  OPTIMIZE winner. OPEN: whether that is a real planner invariant gap or the
-  test assertion is over-strict for a valid trivial-plan case. Needs the gated
-  investigation to settle; query-engine change either way.
+  SETTLED — it is a REAL planner bug, not an over-strict test. A deterministic
+  search (not fuzzing) reproduces it at `b=[35 4 4 1]` = op 5 → UNION of two
+  TypeFilter(Scan) children, i.e. `Union(TypeFilter(Scan), TypeFilter(Scan))`.
+  The value `p.Plan` returns for it is a `*expressions.LogicalUnionExpression`
+  — a LOGICAL, UNIMPLEMENTED expression — with nil error and no root winner.
+
+  So `ExtractBestPlanFromSelector` fell back to a LOGICAL member because the
+  root union has no PHYSICAL final (ImplementUnorderedUnion never produced one
+  for this shape), and returned it instead of erroring. `Plan` therefore hands
+  a caller a logical expression as if it were a physical plan — a downstream
+  consumer expecting `plans.RecordQueryPlan` gets a logical node. NOT a
+  canonicalization gap (HasWinner canonicalizes, reference.go:313,329); the
+  root's winner is genuinely nil because nothing physical was ever chosen.
+
+  Two sub-questions for the gated fix: (a) WHY does `Union(TypeFilter(Scan),
+  TypeFilter(Scan))` fail to implement to a physical UnorderedUnion (column/
+  type mismatch in the fuzz shape, or an implementation-rule coverage gap)?
+  (b) Regardless of (a), extraction must ERROR when the root has no physical
+  plan rather than silently return a logical expression — a successful Plan
+  must be physical. Query-engine change; implementation-review gate.
+
+  Full implementation rules are used in the harness
+  (WithImplementationRules(DefaultImplementationRules())), so this is NOT a
+  rule-selection artifact — the union genuinely does not implement.
 
 CLEAN (no crash in the sweep): FuzzPlanner_E2E_NoPanic,
 FuzzExtractBestPlan_SingletonInvariant, FuzzMemo_MemoizeInvariant,
