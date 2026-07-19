@@ -1,7 +1,6 @@
 package explaindiff_test
 
 import (
-	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
@@ -55,9 +54,14 @@ func TestCorpusPlanReachability(t *testing.T) {
 	if st.Queries == 0 {
 		t.Fatal("no queries planned — the reachability tally would be vacuously zero")
 	}
+	// Assert on COMPARED edges, not total edges. Total edges counts every plan
+	// child unconditionally, before any comparison happens, so it stays in the
+	// thousands even if the checker silently stopped comparing anything — a
+	// guard that cannot fail. Only the compared count separates "clean" from
+	// "not looking".
 	report := cascades.ReachabilityReport(20)
-	if strings.Contains(report, "edges=0 ") {
-		t.Fatalf("collector walked ZERO plan edges over %d queries — "+
+	if compared := cascades.ReachabilityComparedEdges(); compared == 0 {
+		t.Fatalf("collector compared ZERO edges against a group over %d queries — "+
 			"this assertion is blind, not clean\n%s", st.Queries, report)
 	}
 

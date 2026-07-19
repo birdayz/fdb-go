@@ -231,6 +231,7 @@ var (
 	reachEnabled    bool
 	reachMu         sync.Mutex
 	reachEdges      int
+	reachCompared   int
 	reachViolations []ReachabilityViolation
 )
 
@@ -260,10 +261,37 @@ func recordReachability(expr expressions.RelationalExpression) {
 	}
 	v := CheckPlanReachability(expr)
 
+	compared := countComparedEdges(expr, plan)
+
 	reachMu.Lock()
 	defer reachMu.Unlock()
 	reachEdges += len(plan.GetChildren())
+	reachCompared += compared
 	reachViolations = append(reachViolations, v...)
+}
+
+// countComparedEdges counts only the edges actually CHECKED against a group —
+// a child with a quantifier ranging over a non-empty reference.
+//
+// reachEdges counts every plan child unconditionally, which makes it useless
+// as an anti-blindness signal: if the checker silently stopped comparing
+// anything, reachEdges would still be in the thousands while the violation
+// count sat at zero, and the ratchet would read green. Only this number can
+// distinguish "clean" from "not looking".
+func countComparedEdges(expr expressions.RelationalExpression, plan plans.RecordQueryPlan) int {
+	quants := expr.GetQuantifiers()
+	n := 0
+	for i, child := range plan.GetChildren() {
+		if child == nil || i >= len(quants) {
+			continue
+		}
+		ref := quants[i].GetRangesOver()
+		if ref == nil || len(ref.AllMembers()) == 0 {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // ReachabilityReport renders the accumulated tally: per-plan-type counts by
@@ -280,7 +308,7 @@ func ReachabilityReport(maxSamples int) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "edges=%d UNREACHABLE=%d\n", reachEdges, len(reachViolations))
+	fmt.Fprintf(&b, "edges=%d compared=%d UNREACHABLE=%d\n", reachEdges, reachCompared, len(reachViolations))
 
 	fmt.Fprintf(&b, "\nby reason:\n")
 	for _, r := range sortedKeys(byReason) {
@@ -309,30 +337,45 @@ func ReachabilityReport(maxSamples int) string {
 func ResetReachability() {
 	reachMu.Lock()
 	defer reachMu.Unlock()
-	reachEdges, reachViolations = 0, nil
+	reachEdges, reachCompared, reachViolations = 0, 0, nil
 }
 
-// ReachabilityCount returns the count of GENUINE unreachable edges
-// (ReasonAbsent): a child the plan executes that its quantifier's group cannot
-// produce.
+// ReachabilityCount returns the count of GENUINE defects: a plan child its
+// quantifier's group cannot produce (ReasonAbsent), plus a quantifier ranging
+// over an empty reference (ReasonEmptyGroup, a mis-seeded reference).
 //
-// ReasonNoQuantifier is deliberately excluded from the headline. It is
-// dominated by leaf adapters — scanPlanExpression and friends report no
-// quantifiers BY DESIGN while wrapping a plan that has children — so folding
-// it in would restate RFC-183 §12's over-count in a new form: a big number
-// whose bulk is architecture working as intended. Those cases are still
-// reported by reason in ReachabilityReport, and deserve their own triage
-// rather than a silent merge into this one.
+// BOTH are defects, so both are counted. An earlier revision counted only
+// ReasonAbsent, which made the headline "0" a zero of ONE reason code: an
+// EmptyGroup regression would have slipped through the ratchet silently while
+// the number still read zero. EmptyGroup happens to be 0 across the corpus
+// today, so that filtering did not inflate any published figure — but a
+// ratchet that cannot see a whole class of the defect it guards is exactly
+// the "green while broken" failure this file exists to prevent.
+//
+// ReasonNoQuantifier is the ONLY exclusion, and it is a real one rather than
+// convenience: those are leaf adapters that model no quantifier for a plan
+// child BY DESIGN. Folding them in would restate RFC-183 §12's over-count in
+// a new form — a big number whose bulk is architecture working as intended.
+// They are reported separately by ReachabilityReport and tracked as a
+// modelling gap, not silently dropped.
 func ReachabilityCount() int {
 	reachMu.Lock()
 	defer reachMu.Unlock()
 	n := 0
 	for _, v := range reachViolations {
-		if v.Reason == ReasonAbsent {
+		if v.Reason == ReasonAbsent || v.Reason == ReasonEmptyGroup {
 			n++
 		}
 	}
 	return n
+}
+
+// ReachabilityComparedEdges returns the number of edges actually compared
+// against a group — the anti-blindness signal. See countComparedEdges.
+func ReachabilityComparedEdges() int {
+	reachMu.Lock()
+	defer reachMu.Unlock()
+	return reachCompared
 }
 
 func sortedKeys(m map[string]int) []string {
