@@ -17,6 +17,7 @@ go_test(
     srcs = [
         "explaindiff_internal_test.go",
         "explaindiff_test.go",
+        "reachability_test.go",
     ],
     # keep: the tests plan every scenario in the yamsql corpus, which lives in
     # a SIBLING package — so it is staged via that package's exported filegroup
@@ -25,4 +26,5 @@ go_test(
     # under Bazel while passing under `go test`.
     data = ["//pkg/relational/conformance/yamsql:testdata"],
     embed = [":explaindiff"],
+    deps = ["//pkg/recordlayer/query/plan/cascades"],
 )

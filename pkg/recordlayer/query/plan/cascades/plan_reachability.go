@@ -235,7 +235,13 @@ var (
 )
 
 func reachabilityEnabled() bool {
-	reachOnce.Do(func() { reachEnabled = os.Getenv("RFC183_REACHABILITY") != "" })
+	reachOnce.Do(func() {
+		reachMu.Lock()
+		defer reachMu.Unlock()
+		reachEnabled = reachEnabled || os.Getenv("RFC183_REACHABILITY") != ""
+	})
+	reachMu.Lock()
+	defer reachMu.Unlock()
 	return reachEnabled
 }
 
@@ -417,4 +423,27 @@ func divergenceLine(d string) string {
 		return ""
 	}
 	return "\n   why-> " + d
+}
+
+// EnableReachabilityCollection turns collection on programmatically, for the
+// corpus ratchet test. Returns a restore func.
+//
+// Exists so the test does not have to juggle RFC183_REACHABILITY around a
+// sync.Once that latches on first use — a shape where the assertion silently
+// measures nothing if any earlier call in the process got there first. A test
+// that reports zero because it collected nothing is worse than no test.
+func EnableReachabilityCollection() func() {
+	reachMu.Lock()
+	prev := reachEnabled
+	reachEnabled = true
+	reachMu.Unlock()
+	// Deliberately does NOT consume reachOnce: the once-body ORs the env var
+	// in rather than assigning, so whichever path runs first, neither can
+	// switch the other off.
+	ResetReachability()
+	return func() {
+		reachMu.Lock()
+		reachEnabled = prev
+		reachMu.Unlock()
+	}
 }
