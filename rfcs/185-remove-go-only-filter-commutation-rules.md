@@ -1,8 +1,26 @@
 # RFC-185: Remove the filter/set-operation commutation rule family
 
-**Status:** Draft, revised after Graefe + Torvalds RFC-review. Both gave
-ACK-WITH-CHANGES; this revision folds their required evidence. Seeking the
-delta re-confirmation before implementation.
+**Status:** RFC-review PASSED. Graefe ACK; Torvalds ACK (on the corrected
+yield-count premise). Cleared to implement, with the N-run diff + Union
+reproducer as the implementation-review go/no-go.
+
+## Why removal is safe (the load-bearing argument — Torvalds)
+
+Removal is **monotonically safe**, and this — not "never rewrites on the
+corpus" — is what licenses it: the rules crash whenever the inverse pair
+activates. A rule set in which any Filter-over-set-op leads (via the present
+inverse partner) to a cyclic memo has no reachable state where it yields a
+*winning* plan. So:
+
+- If the trigger shape is UNREACHABLE from real queries → removal is a no-op.
+- If it is REACHABLE → today's behavior is a crash, and falling through to the
+  match-then-implement data-access path (how Java reaches these plans) strictly
+  beats a crash.
+
+Either way removal cannot regress a real query. The residual — a PUSH rule
+firing ALONE (its pull partner not matching, non-common legs) and distributing
+where data-access cannot — is bounded by the data-access fallback and the N-run
+explain-diff gate.
 
 ## Summary
 
@@ -137,13 +155,16 @@ Remove the four rules, their four unit tests, and their four registry lines.
 ## Union (Torvalds #5, Graefe d)
 
 Union removal is drift-free (the 2407-query measurement includes Union-bearing
-queries) and fuzz-clean, and PullCommonFilterAboveUnion/PushFilterThroughUnion
-yield ZERO times on the corpus — same never-rewrites-here as the Intersection
-pair. The Union CYCLE itself is by STRUCTURAL ANALOGY (same
-inverse-intern shape); it has not been reproduced by a fuzz seed. Implementation
-must attempt a Union reproducer in the fuzz run; the removal stands on
-zero-drift + never-rewrites-on-corpus regardless, but the analogy is labeled, not
-asserted as reproduced.
+queries) and the pair yields ZERO times on the corpus — same never-rewrites-here
+as the Intersection pair.
+
+The Union CYCLE is now REPRODUCED, not merely analogous. Isolating the Union
+pair (removing the two Intersection rules from the registry, keeping the Union
+pair) and fuzzing `FuzzPlanner_MemoConsistency` and `FuzzPlanner_Determinism`
+crashes BOTH — so `PushFilterThroughUnion` + `PullCommonFilterAboveUnion` close
+the same cyclic memo on their own, exactly like the Intersection pair. The
+earlier "structural analogy" caveat is retired: all four rules are
+independently confirmed to participate in the crash class.
 
 ## Verification plan (implementation, separately gated)
 
