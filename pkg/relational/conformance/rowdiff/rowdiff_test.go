@@ -402,6 +402,98 @@ func TestJoinSQL_RendersUniqueOutputAliases(t *testing.T) {
 	}
 }
 
+// TestOracle_Aggregates pins the ONE oracle path that restates SQL
+// semantics instead of sharing the engine's (see AggSpec). Every rule it
+// restates is asserted here, because a wrong aggregate oracle produces
+// false findings that waste a reader's trust.
+func TestOracle_Aggregates(t *testing.T) {
+	t.Parallel()
+	c := &Case{
+		Table: templateTable(),
+		Rows: []Row{
+			{"ID": int64(1), "A": int64(5), "B": int64(1), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(2), "A": nil, "B": int64(1), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(3), "A": int64(7), "B": int64(2), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(4), "A": nil, "B": nil, "C": int64(0), "S": "x", "F": false},
+		},
+	}
+	one := func(q Query) Row {
+		t.Helper()
+		rows, err := OracleRows(c, q, nil)
+		if err != nil {
+			t.Fatalf("oracle: %v", err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("want exactly 1 row, got %d: %v", len(rows), rows)
+		}
+		return rows[0]
+	}
+
+	// COUNT(*) counts rows INCLUDING null-valued ones; COUNT(col) does not.
+	if got := one(Query{Agg: &AggSpec{Func: AggCountStar}})["AGG"]; got != int64(4) {
+		t.Errorf("COUNT(*) = %v, want 4", got)
+	}
+	if got := one(Query{Agg: &AggSpec{Func: AggCountCol, Col: "A"}})["AGG"]; got != int64(2) {
+		t.Errorf("COUNT(A) = %v, want 2 (NULLs excluded)", got)
+	}
+	// SUM/MIN/MAX skip NULLs.
+	if got := one(Query{Agg: &AggSpec{Func: AggSum, Col: "A"}})["AGG"]; got != int64(12) {
+		t.Errorf("SUM(A) = %v, want 12", got)
+	}
+	if got := one(Query{Agg: &AggSpec{Func: AggMin, Col: "A"}})["AGG"]; got != int64(5) {
+		t.Errorf("MIN(A) = %v, want 5", got)
+	}
+
+	// A scalar aggregate over an EMPTY input still returns one row:
+	// COUNT → 0, SUM → NULL.
+	never := &BoolNode{Leaf: &Pred{Col: "A", Op: predicates.ComparisonEquals, Lit: int64(999)}}
+	if got := one(Query{Agg: &AggSpec{Func: AggCountStar}, Where: never})["AGG"]; got != int64(0) {
+		t.Errorf("COUNT(*) over empty = %v, want 0", got)
+	}
+	if got := one(Query{Agg: &AggSpec{Func: AggSum, Col: "A"}, Where: never})["AGG"]; got != nil {
+		t.Errorf("SUM over empty = %v, want NULL", got)
+	}
+
+	// GROUPED: a NULL key is its OWN group, and an all-NULL group's SUM is NULL.
+	rows, err := OracleRows(c, Query{Agg: &AggSpec{Func: AggSum, Col: "A", GroupBy: "B"}}, nil)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("GROUP BY B: want 3 groups (1, 2, NULL), got %d: %v", len(rows), rows)
+	}
+	byKey := map[any]any{}
+	for _, r := range rows {
+		byKey[r["G"]] = r["AGG"]
+	}
+	if byKey[int64(1)] != int64(5) {
+		t.Errorf("group B=1: SUM(A) = %v, want 5 (the NULL A skipped)", byKey[int64(1)])
+	}
+	if byKey[nil] != nil {
+		t.Errorf("group B=NULL: SUM(A) = %v, want NULL (its only row has A NULL)", byKey[nil])
+	}
+	// A grouped aggregate over an empty input returns NO rows.
+	rows, err = OracleRows(c, Query{Agg: &AggSpec{Func: AggCountStar, GroupBy: "B"}, Where: never}, nil)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("grouped aggregate over empty input = %v, want no rows", rows)
+	}
+
+	// HAVING filters on the aggregate; a NULL aggregate never passes.
+	rows, err = OracleRows(c, Query{Agg: &AggSpec{
+		Func: AggSum, Col: "A", GroupBy: "B", HavingOn: true,
+		Having: &Pred{Op: predicates.ComparisonGreaterThan, Lit: int64(6)},
+	}}, nil)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["G"] != int64(2) {
+		t.Errorf("HAVING SUM(A) > 6 = %v, want just the B=2 group", rows)
+	}
+}
+
 // TestJoinProjections_AliasesAreUnique guards the harness's own blind spot:
 // rows are keyed by output column NAME, so two projected columns that
 // collapse to one alias would silently compare only one of them — the same

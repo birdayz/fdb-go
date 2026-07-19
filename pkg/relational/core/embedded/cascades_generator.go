@@ -3474,7 +3474,8 @@ func gatheredExplodeElement(p plans.RecordQueryPlan) (string, string, values.Val
 			collType := exp.GetCollectionValue().Type()
 			if arr, isArr := collType.(*values.ArrayType); isArr && arr.ElementType != nil {
 				return fm.GetInnerAlias().Name(), collField, values.NewQuantifiedObjectValueOfType(
-					fm.GetInnerAlias(), arr.ElementType)
+					fm.GetInnerAlias(), arr.ElementType,
+				)
 			}
 			return fm.GetInnerAlias().Name(), collField, nil
 		}
@@ -3803,8 +3804,23 @@ func buildAggColumns(
 		// aggregated leg's own column. Far-leg aggregate-operand typing is a
 		// separate axis outside this rider's group-key scope.
 		typeName := aggregateResultType(a, firstDesc)
+		// A user-written alias is the OUTPUT column name and must win over the
+		// generated `MAX(A)` spelling. A GROUPED aggregate keeps a projection
+		// above it that already carries the alias, so this arm was only ever
+		// reached for a SCALAR aggregate — whose plan is the bare
+		// StreamingAgg, with nowhere else for the alias to live. Without this,
+		// `SELECT MAX(a) AS agg FROM t` reported the column as `MAX(A)` while
+		// the grouped form of the same query correctly reported `AGG`.
+		// Name stays the generated spelling: it is the datum lookup key the
+		// aggregate cursor writes (see the group-key comment above); Label is
+		// what Rows.Columns() surfaces.
+		label := ""
+		if a.Alias != "" {
+			label = strings.ToUpper(a.Alias)
+		}
 		cols = append(cols, executor.ColumnDef{
 			Name:     strings.ToUpper(name),
+			Label:    label,
 			TypeName: typeName,
 			Nullable: api.ColumnNullable,
 		})

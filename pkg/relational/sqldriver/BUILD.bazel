@@ -319,6 +319,7 @@ go_test(
         "row_value_constructor_probe_test.go",
         "rowdiff_smoke_test.go",
         "rows_affected_probe_test.go",
+        "scalar_aggregate_alias_fdb_test.go",
         "scalar_derived_source_decline_fdb_test.go",
         "scalar_math_probe_test.go",
         "scalar_subq_correlated_card_test.go",

@@ -2,6 +2,7 @@ package rowdiff
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -22,6 +23,9 @@ import (
 // the expected sequence is total), original insertion order otherwise (the
 // caller compares as a multiset in that case).
 func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
+	if q.Agg != nil {
+		return oracleAggRows(c, q)
+	}
 	if q.Join != nil {
 		return oracleJoinRows(c, q, projection)
 	}
@@ -161,6 +165,155 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// oracleAggRows evaluates an aggregate query: filter (through the engine's
+// own comparisons), partition by the grouping key, fold, then HAVING.
+//
+// This is the ONE oracle path that restates SQL semantics instead of
+// sharing the engine's — aggregation has no per-row Comparison equivalent
+// (see AggSpec's honesty note). The restated rules, all of them the
+// well-defined ones:
+//   - COUNT(*) counts ROWS, NULLs included; COUNT(col) counts NON-NULL values.
+//   - SUM/MIN/MAX ignore NULLs, and yield NULL when a group has no non-NULL
+//     value at all.
+//   - A NULL grouping key forms its OWN group (SQL groups NULLs together).
+//   - A scalar aggregate over an empty input still returns ONE row:
+//     COUNT → 0, SUM/MIN/MAX → NULL. A GROUPED aggregate over an empty
+//     input returns NO rows.
+//   - HAVING compares the aggregate result; a NULL aggregate never passes.
+//
+// Results are unordered (no ORDER BY is generated for aggregates), so the
+// comparator treats them as a multiset.
+func oracleAggRows(c *Case, q Query) ([]Row, error) {
+	a := q.Agg
+
+	var kept []Row
+	for _, r := range c.Rows {
+		if q.Where != nil {
+			tb, err := evalBool(q.Where, r)
+			if err != nil {
+				return nil, err
+			}
+			if tb != predicates.TriTrue {
+				continue
+			}
+		}
+		kept = append(kept, r)
+	}
+
+	// Scalar aggregate: one group over everything, emitted even when empty.
+	if a.GroupBy == "" {
+		return []Row{{"AGG": foldAgg(a, kept)}}, nil
+	}
+
+	// Grouped: partition on the key, NULL forming its own group. Insertion
+	// order is kept for determinism; the comparator is multiset-based.
+	type group struct {
+		key  any
+		rows []Row
+	}
+	var groups []*group
+	index := map[string]*group{}
+	for _, r := range kept {
+		k := r[a.GroupBy]
+		gk := fmt.Sprintf("%v(%T)", k, k) // typed key: 1 and "1" are distinct groups
+		g, ok := index[gk]
+		if !ok {
+			g = &group{key: k}
+			index[gk] = g
+			groups = append(groups, g)
+		}
+		g.rows = append(g.rows, r)
+	}
+
+	out := make([]Row, 0, len(groups))
+	for _, g := range groups {
+		agg := foldAgg(a, g.rows)
+		if a.HavingOn && a.Having != nil {
+			tb, err := predicates.NewLiteralComparison(a.Having.Op, a.Having.Lit).Eval(agg)
+			if err != nil {
+				return nil, err
+			}
+			if tb != predicates.TriTrue {
+				continue
+			}
+		}
+		out = append(out, Row{"G": g.key, "AGG": agg})
+	}
+	return out, nil
+}
+
+// errAggOverflow is foldAgg's sentinel for "SUM overflows int64 here", i.e.
+// the engine is REQUIRED to raise 22003 rather than return a row. It is a
+// distinct value (not an error) because it flows through the row slot.
+type aggOverflow struct{}
+
+var errAggOverflow = aggOverflow{}
+
+// AggResultOverflows reports whether the oracle's expected result for this
+// query is an int64 SUM overflow — in which case the engine's 22003 is the
+// CORRECT outcome and any row it returned instead would be the finding.
+func AggResultOverflows(rows []Row) bool {
+	for _, r := range rows {
+		if _, ok := r["AGG"].(aggOverflow); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// foldAgg folds one group's rows into the aggregate value. Returns nil for
+// a SQL NULL result, or errAggOverflow when an int64 SUM overflows.
+func foldAgg(a *AggSpec, rows []Row) any {
+	switch a.Func {
+	case AggCountStar:
+		return int64(len(rows))
+	case AggCountCol:
+		var n int64
+		for _, r := range rows {
+			if r[a.Col] != nil {
+				n++
+			}
+		}
+		return n
+	}
+	// SUM / MIN / MAX: NULL-skipping, NULL when no non-NULL value exists.
+	var acc int64
+	seen := false
+	for _, r := range rows {
+		v, ok := r[a.Col].(int64)
+		if !ok {
+			continue // NULL (or a non-BIGINT the generator never produces)
+		}
+		if !seen {
+			acc, seen = v, true
+			continue
+		}
+		switch a.Func {
+		case AggSum:
+			// int64 overflow is a REAL engine outcome (22003), not a
+			// divergence: the generator seeds boundary values deliberately.
+			// Detect it here so the runner can expect the error instead of
+			// reporting a bogus row difference.
+			if (v > 0 && acc > math.MaxInt64-v) || (v < 0 && acc < math.MinInt64-v) {
+				return errAggOverflow
+			}
+			acc += v
+		case AggMin:
+			if v < acc {
+				acc = v
+			}
+		case AggMax:
+			if v > acc {
+				acc = v
+			}
+		}
+	}
+	if !seen {
+		return nil
+	}
+	return acc
 }
 
 // distinctKey renders a projected row to a typed dedup key (same typed

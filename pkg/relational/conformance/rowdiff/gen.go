@@ -132,9 +132,44 @@ type JoinSpec struct {
 	Inner bool
 }
 
+// AggFunc is a supported aggregate. AVG is deliberately absent: its
+// result type and rounding are their own semantic axis (integer vs
+// floating division), and getting that wrong in the oracle would produce
+// false findings rather than real ones.
+type AggFunc int
+
+const (
+	AggCountStar AggFunc = iota // COUNT(*)   — counts rows, NULLs included
+	AggCountCol                 // COUNT(col) — counts NON-NULL values only
+	AggSum
+	AggMin
+	AggMax
+)
+
+// AggSpec is one aggregate query: optional GROUP BY key plus one aggregate
+// over a BIGINT column.
+//
+// HONESTY NOTE (RFC-182 §7 / §12): unlike every other oracle path, the
+// aggregate evaluation here is a REIMPLEMENTATION — aggregation is not
+// expressible through the engine's per-row Comparison evaluation, so this
+// is the one place the oracle restates SQL semantics rather than sharing
+// the engine's. The restated rules are the well-defined ones (SUM/MIN/MAX
+// ignore NULLs and yield NULL for an all-NULL or empty group; COUNT(*)
+// counts rows; COUNT(col) counts non-NULLs; a NULL grouping key is its own
+// group), and a divergence here is investigated on BOTH sides before it is
+// called an engine bug.
+type AggSpec struct {
+	Func     AggFunc
+	Col      string // aggregated column ("" for COUNT(*))
+	GroupBy  string // "" = scalar aggregate over the whole input
+	Having   *Pred  // optional filter on the aggregate result
+	HavingOn bool
+}
+
 // Query is one generated query body; the runner executes it under every
 // projection variant and cross-checks row identity via ID.
 type Query struct {
+	Agg      *AggSpec  // nil = not an aggregate query
 	Join     *JoinSpec // nil = single-table query
 	Where    *BoolNode // nil = no WHERE
 	OrderBy  []OrderKey
@@ -186,12 +221,108 @@ func (c *Case) joinProjections() [][]string {
 }
 
 // ProjectionsFor returns the projection variants appropriate to the query
-// (join queries never use `SELECT *` — see JoinSpec).
+// (join queries never use `SELECT *` — see JoinSpec; an aggregate's output
+// list is fixed by its own shape).
 func (c *Case) ProjectionsFor(q Query) [][]string {
-	if q.Join != nil {
+	switch {
+	case q.Agg != nil:
+		return [][]string{nil}
+	case q.Join != nil:
 		return c.joinProjections()
 	}
 	return c.Projections()
+}
+
+// aggOutputCols is the aggregate query's output column list, in order:
+// the grouping key (when present) followed by the aggregate, both aliased.
+func aggOutputCols(a *AggSpec) []string {
+	if a.GroupBy != "" {
+		return []string{"G", "AGG"}
+	}
+	return []string{"AGG"}
+}
+
+// genAggQuery builds `SELECT [g,] <agg> FROM t [WHERE …] [GROUP BY g]
+// [HAVING …]`. The WHERE is biased to indexed columns so the aggregate can
+// sit over an index access — the shape where a residual filter dropped by
+// the aggregate data-access path produced silently wrong sums.
+func genAggQuery(rng *rand.Rand, table TableDef) Query {
+	indexed := map[string]bool{}
+	for _, idx := range table.Indexes {
+		for _, c := range idx.Cols {
+			indexed[c] = true
+		}
+	}
+	bigints := []string{"A", "B", "C"}
+
+	spec := &AggSpec{}
+	switch rng.IntN(5) {
+	case 0:
+		spec.Func = AggCountStar
+	case 1:
+		spec.Func, spec.Col = AggCountCol, bigints[rng.IntN(len(bigints))]
+	case 2:
+		spec.Func, spec.Col = AggSum, bigints[rng.IntN(len(bigints))]
+	case 3:
+		spec.Func, spec.Col = AggMin, bigints[rng.IntN(len(bigints))]
+	default:
+		spec.Func, spec.Col = AggMax, bigints[rng.IntN(len(bigints))]
+	}
+	// GROUP BY two thirds of the time; prefer an indexed key so the
+	// aggregate-index / streaming-aggregation paths are reachable.
+	if rng.IntN(3) != 0 {
+		keys := []string{}
+		for _, col := range table.Cols {
+			if col.Type == ColBigint && indexed[col.Name] {
+				keys = append(keys, col.Name)
+			}
+		}
+		if len(keys) == 0 {
+			keys = bigints
+		}
+		spec.GroupBy = keys[rng.IntN(len(keys))]
+	}
+
+	q := Query{Agg: spec}
+	// A WHERE over an INDEXED column plus (often) an unindexed residual —
+	// the AGG-RESIDUAL shape.
+	if rng.IntN(3) != 0 {
+		var leaves []*Pred
+		for _, col := range table.Cols {
+			if indexed[col.Name] && col.Type == ColBigint {
+				leaves = append(leaves, &Pred{
+					Col: col.Name, Op: predicates.ComparisonEquals, Lit: int64(rng.IntN(6)),
+				})
+				break
+			}
+		}
+		if len(leaves) > 0 && rng.IntN(2) == 0 {
+			leaves = append(leaves, &Pred{
+				Col: "S", Op: predicates.ComparisonEquals,
+				Lit: []string{"alpha", "beta", "gamma"}[rng.IntN(3)],
+			})
+		}
+		switch len(leaves) {
+		case 0:
+		case 1:
+			q.Where = &BoolNode{Leaf: leaves[0]}
+		default:
+			kids := make([]*BoolNode, len(leaves))
+			for i, l := range leaves {
+				kids[i] = &BoolNode{Leaf: l}
+			}
+			q.Where = &BoolNode{And: true, Kids: kids}
+		}
+	}
+	// HAVING on the aggregate result, only for grouped queries.
+	if spec.GroupBy != "" && rng.IntN(3) == 0 {
+		spec.HavingOn = true
+		spec.Having = &Pred{
+			Op:  []predicates.ComparisonType{predicates.ComparisonGreaterThan, predicates.ComparisonLessThanOrEq}[rng.IntN(2)],
+			Lit: int64(rng.IntN(4)),
+		}
+	}
+	return q
 }
 
 // Generate builds the Case for a seed. Same seed → identical Case.
@@ -205,8 +336,14 @@ func Generate(seed uint64) *Case {
 	for i := 0; i < nQueries; i++ {
 		// ~1/4 self-joins: the join planner is a large surface and the
 		// oracle stays a plain nested loop over the same authoritative rows.
-		if rng.IntN(4) == 0 {
+		switch {
+		case rng.IntN(4) == 0:
 			queries = append(queries, genJoinQuery(rng, table))
+			continue
+		case rng.IntN(4) == 0:
+			// Aggregates: the surface where a dropped residual produced
+			// silently wrong SUMs (the AGG-RESIDUAL class).
+			queries = append(queries, genAggQuery(rng, table))
 			continue
 		}
 		queries = append(queries, genQuery(rng, table))
@@ -632,6 +769,9 @@ func (c *Case) InsertSQL() string {
 
 // SQL renders one query under a projection (nil = SELECT *).
 func (c *Case) SQL(q Query, projection []string) string {
+	if q.Agg != nil {
+		return c.aggSQL(q)
+	}
 	var b strings.Builder
 	b.WriteString("SELECT ")
 	if q.Distinct {
@@ -710,6 +850,47 @@ func (c *Case) SQL(q Query, projection []string) string {
 		fmt.Fprintf(&b, " LIMIT %d", q.Limit)
 		if q.Offset > 0 {
 			fmt.Fprintf(&b, " OFFSET %d", q.Offset)
+		}
+	}
+	return b.String()
+}
+
+// aggExprSQL renders the aggregate call.
+func aggExprSQL(a *AggSpec) string {
+	col := strings.ToLower(a.Col)
+	switch a.Func {
+	case AggCountStar:
+		return "COUNT(*)"
+	case AggCountCol:
+		return "COUNT(" + col + ")"
+	case AggSum:
+		return "SUM(" + col + ")"
+	case AggMin:
+		return "MIN(" + col + ")"
+	default:
+		return "MAX(" + col + ")"
+	}
+}
+
+// aggSQL renders an aggregate query. Both output columns are aliased so the
+// harness's name-keyed rows have stable, unique keys regardless of how the
+// engine spells a computed column.
+func (c *Case) aggSQL(q Query) string {
+	a := q.Agg
+	var b strings.Builder
+	b.WriteString("SELECT ")
+	if a.GroupBy != "" {
+		fmt.Fprintf(&b, "%s AS g, ", strings.ToLower(a.GroupBy))
+	}
+	fmt.Fprintf(&b, "%s AS agg FROM %s", aggExprSQL(a), strings.ToLower(c.Table.Name))
+	if q.Where != nil {
+		b.WriteString(" WHERE ")
+		renderBool(&b, q.Where)
+	}
+	if a.GroupBy != "" {
+		fmt.Fprintf(&b, " GROUP BY %s", strings.ToLower(a.GroupBy))
+		if a.HavingOn && a.Having != nil {
+			fmt.Fprintf(&b, " HAVING %s %s %s", aggExprSQL(a), opSQL(a.Having.Op), renderLiteral(a.Having.Lit))
 		}
 	}
 	return b.String()

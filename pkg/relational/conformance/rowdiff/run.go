@@ -142,6 +142,15 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 					res.InfraErr = fmt.Errorf("query %q: %w", sqlText, err)
 					return finalizeResult(res)
 				}
+				// An int64 SUM overflow: 22003 is the CORRECT engine outcome
+				// for this data, so verify the oracle agrees it overflows
+				// rather than counting the error as a divergence. If the
+				// oracle does NOT overflow, the 22003 stays a finding.
+				if strings.Contains(err.Error(), "22003") {
+					if oracle, oErr := OracleRows(c, q, projection); oErr == nil && AggResultOverflows(oracle) {
+						continue
+					}
+				}
 				if gap := matchKnownGap(sqlText, err); gap != nil {
 					// DECLINE, not a finding: a documented limitation with a
 					// live pin. Recorded (never silent) so the rate stays
