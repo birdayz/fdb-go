@@ -243,6 +243,9 @@ the shell path. The pins arbitrate the fact that the parent→child edge is
 stored *twice*; they become deletable only when that duplication is removed
 — i.e. at P5, not before. Any pin cleanup is folded into P5.
 
+**P5 STATUS: the premise below is FALSE for a measured subset. Read §11
+before acting on any of it.**
+
 **P5 — TERMINAL, and its real blocker is NOT size.** Make
 `plans.RecordQueryPlan` a `RelationalExpression` holding quantifiers,
 deleting the `physical_*_wrapper.go` layer. The edge is stored twice today —
@@ -507,3 +510,93 @@ Status of each, with the evidence rather than an assertion.
   Worth stating because it generalises: a differential harness that emits
   false positives is worse than no harness, because the next REAL finding
   gets waved off as "that overflow thing again."
+
+## 11. P5 is FALSIFIED as specified — the two edges are not two copies
+
+This RFC's load-bearing claim is that a plan's parent→child edge is stored
+twice, that the copies can drift apart, and that a nil-inner shell is
+exactly the drifted state — so collapsing to one storage location makes the
+bug class unrepresentable. **That is false for a measured subset of edges,
+and the measurement is what P5's final step produced instead of a
+deletion.**
+
+### The measurement
+
+`TestOneFinalPlanPerReference` pins one-final-member **at extraction**, and
+its own doc says mid-planning groups legitimately hold many. Nothing had
+ever measured RULE TIME. Instrumenting `ExpressionRuleCall.Yield` — the
+single choke point covering every construction path, including the four
+composite-literal wrappers a `New*Wrapper` grep misses — over the full
+2407-query corpus:
+
+```
+total=9868  mismatch=667  semantic_diff=472  multi_final_groups=0  nil_resolve=0
+by parent:  FlatMap=392  RecursiveDfsJoin=58  Projection=15  PredicatesFilter=7
+```
+
+`multi_final_groups=0` kills the obvious hypothesis: this is not ambiguous
+groups. **472 edges resolve, through the quantifier, to a semantically
+DIFFERENT plan than the plan pointer holds.** For example the quantifier
+reaches `TypeFilter([DEPT], Scan(DEPT,[=]))` while the plan child is
+`DefaultOnEmpty(TypeFilter([DEPT], Scan(DEPT,[=])))`.
+
+### Why, in one line of source
+
+`rule_implement_nested_loop_join.go:839` builds a compensating plan LOCALLY
+and never memoizes it:
+
+```go
+flatMapOuter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerOnlyPreds, outerCorr)
+flatMapPlan  := plans.NewRecordQueryFlatMapPlan(flatMapOuter, …)          // filter is in the PLAN
+outerQuant   := …NamedPhysicalQuantifier(…, call.MemoizeExpression(outerExpr))  // UNFILTERED outer
+```
+
+The filter exists only in the plan pointer; no Reference holds it, so no
+quantifier can reach it. The code states the split outright at :853 — "the
+FlatMap wrapper needs the outer + inner physical quantifiers for Cascades
+**bookkeeping and cost**" — and `WithChildren` enforces it by keeping
+`plan: w.plan` and swapping only quantifiers. `isLeafReplaceable` says the
+same thing from the other side: compound joins "encode predicate semantics
+in their structure and must NOT be swapped."
+
+So the two edges are not redundant storage. They are **two different
+facts**: the plan pointer is what EXECUTES, the quantifier is what the memo
+COSTS. Deleting the wrapper forces the swap those comments forbid, dropping
+a `DefaultOnEmpty` (wrong outer-join NULL semantics) and residual filters
+(wrong rows) — silently, not as a crash.
+
+### What this does and does not invalidate
+
+Everything P0-P4 and P5 steps 1-2 established still holds and is still
+worth having: shells are gone at their source, the hierarchy is unified,
+plans carry quantifiers, plans answer all 76 cost/ordering hints, and the
+one-final-member property is real AT EXTRACTION. Zero plan drift throughout.
+
+What is invalidated is the terminal claim — that deleting the wrappers is a
+deletion. It is not. While a rule deliberately puts different things in the
+two slots, collapsing them is a semantic change, not a simplification.
+
+### The actual prerequisite
+
+Not wrapper work. The four rules that build compensating plans must MEMOIZE
+them and range the quantifier over THAT reference — which
+`rule_implement_simple_select.go:97-117` already does correctly with its
+fod/doe/filter chain. Then the two edges agree by construction and
+collapsing is safe.
+
+That changes memo contents, therefore costing, therefore plans: it will
+move shapes on its own and cannot be verified by the zero-drift gate that
+protected every step so far. It needs its own RFC step and a Graefe ACK
+before any wrapper deletion is attempted again.
+
+### A note on process
+
+Two independent attempts at this step refused, for two DIFFERENT reasons —
+the first on an import cycle it proved with a compiled probe, the second on
+this. Both refusals were correct and both were cheaper than the forced
+version, which would have compiled, passed the suite, and returned wrong
+rows on outer joins. The remaining 31 wrapper types never mismatched across
+all 9868 edges and are probably deletable today, but deleting only those
+would leave the memo holding a mix of plans and wrappers with every
+consumer needing both paths — worse than either endpoint. Prerequisite
+first, then all 35 together.
