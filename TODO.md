@@ -5580,3 +5580,44 @@ order of preference:
 
 The crash seed is NOT committed (it would red CI for a bug whose correct fix is
 gated); it is recorded above as an inline 4-byte reproducer instead.
+
+### [ ] The fix is REMOVAL, not a guard — proven; and it is a Go-only FAMILY
+
+Continued the DFS on the cyclic-reference crash by trying both candidate fixes
+on the 4-byte seed. Decisive:
+
+GUARD IS WRONG. Extending MemoizeExpression's existing direct-self-loop guard
+(`ref.Canonical() == c.Reference.Canonical()` → return fresh InitialOf) to
+TRANSITIVE reachability stops the stack overflow but converts it into
+NON-CONVERGENCE: "exploration did not converge — possible non-terminating rule
+interaction". Interning is what makes the inverse-rule fixpoint terminate;
+declining it to break the cycle makes Push/PullCommonFilter ping-pong forever,
+each pass adding a fresh member. Crash and non-termination are two faces of the
+same problem — you cannot keep these rules AND have both a finite, acyclic
+memo.
+
+REMOVAL IS RIGHT. With the Push/PullCommonFilter-Intersection pair removed from
+the rule registry, the same seed CONVERGES cleanly and instantly. Java reaches
+the same plans via match-then-implement data access; the rules add nothing Java
+lacks.
+
+IT IS A FAMILY, not a pair. The same Go-only inverse shape exists for UNION:
+`PushFilterThroughUnionRule` + `PullCommonFilterAboveUnionRule`. Java has no
+filter-through/above-Union rule either. The Union pair is almost certainly the
+same latent cyclic-memo / non-termination hazard and should be removed in the
+same change (verify with a fuzz seed that reaches it).
+
+THE FIX (RFC + Graefe ACK — this is an architectural decision, removing rule
+families, not a local patch):
+  - Remove PushFilterThroughIntersection + PullCommonFilterAboveIntersection
+    and PushFilterThroughUnion + PullCommonFilterAboveUnion (4 rules, 4 tests,
+    4 registry lines).
+  - VERIFY zero explain-diff drift across the 2407-query corpus (Java plans
+    these via data-access, so drift is expected to be zero; any drift is a
+    query that leaned on the Go-only rule and must be re-examined).
+  - Re-run the planner fuzz targets to confirm the crash class is gone.
+  A guard in MemoizeExpression or GetCorrelatedTo is NOT the fix (guard →
+  non-termination, proven above; GetCorrelatedTo guard → masks the cyclic memo).
+
+All experiments were bounded and reverted; no code change is on this branch —
+only this diagnosis.
