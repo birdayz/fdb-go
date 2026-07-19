@@ -68,7 +68,7 @@ func (p *RecordQueryUpdatePlan) GetChildren() []RecordQueryPlan {
 // comparison is order-stable. Java's targetType/coercionTrie/
 // computationValue have no Go counterpart yet; they join identity when
 // they land.
-func (p *RecordQueryUpdatePlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryUpdatePlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryUpdatePlan)
 	if !ok {
 		return false

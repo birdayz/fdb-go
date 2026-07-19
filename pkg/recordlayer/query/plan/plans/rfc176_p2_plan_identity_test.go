@@ -101,7 +101,7 @@ func TestPlanIdentity_EqualImpliesSameHash_AllNine_RFC176(t *testing.T) {
 		for i := range instances {
 			for j := range instances {
 				a, c := instances[i], instances[j]
-				if a.EqualsWithoutChildren(c) &&
+				if a.EqualsPlanWithoutChildren(c) &&
 					a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
 					t.Errorf("%s: pool[%d] vs pool[%d]: equal but hash apart — equal⟹same-hash violated",
 						b.name, i, j)
@@ -111,7 +111,7 @@ func TestPlanIdentity_EqualImpliesSameHash_AllNine_RFC176(t *testing.T) {
 		// Non-vacuousness guard: pool[0] and the trailing duplicate are the
 		// same payload rebuilt — they MUST compare equal and hash equal.
 		first, dup := instances[0], instances[len(instances)-1]
-		if !first.EqualsWithoutChildren(dup) {
+		if !first.EqualsPlanWithoutChildren(dup) {
 			t.Errorf("%s: identical payloads rebuilt must compare equal", b.name)
 		}
 		if first.HashCodeWithoutChildren() != dup.HashCodeWithoutChildren() {
@@ -134,7 +134,7 @@ func TestComparatorPlan_KeysJoinIdentity_RFC176(t *testing.T) {
 
 	a := NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 0, false, false)
 	b := NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kB, 0, false, false)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatalf("comparator plans with different comparison keys must NOT compare equal "+
 			"(key-count-only equality + rendering-keyed hash = equal⟹same-hash violation): hashes %#x vs %#x",
 			a.HashCodeWithoutChildren(), b.HashCodeWithoutChildren())
@@ -143,16 +143,16 @@ func TestComparatorPlan_KeysJoinIdentity_RFC176(t *testing.T) {
 	// Genuinely equal plans (same keys, ref index, reverse) stay equal and
 	// hash equal; the non-Value discriminators still break equality.
 	c := NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 0, false, false)
-	if !a.EqualsWithoutChildren(c) {
+	if !a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("identical comparator plans must compare equal")
 	}
 	if a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
 		t.Fatal("identical comparator plans must hash equal")
 	}
-	if a.EqualsWithoutChildren(NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 1, false, false)) {
+	if a.EqualsPlanWithoutChildren(NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 1, false, false)) {
 		t.Fatal("different reference plan index must break equality")
 	}
-	if a.EqualsWithoutChildren(NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 0, true, false)) {
+	if a.EqualsPlanWithoutChildren(NewRecordQueryComparatorPlan([]RecordQueryPlan{inner, inner}, kA, 0, true, false)) {
 		t.Fatal("different reverse flag must break equality")
 	}
 }
@@ -169,23 +169,23 @@ func TestMergeSortUnionPlan_KeysJoinIdentity_RFC176(t *testing.T) {
 
 	a := NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, false, true)
 	b := NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kB, false, true)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatalf("merge-sort-union plans with different comparison keys must NOT compare equal "+
 			"(key-count-only equality + rendering-keyed hash = equal⟹same-hash violation): hashes %#x vs %#x",
 			a.HashCodeWithoutChildren(), b.HashCodeWithoutChildren())
 	}
 
 	c := NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, false, true)
-	if !a.EqualsWithoutChildren(c) {
+	if !a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("identical merge-sort-union plans must compare equal")
 	}
 	if a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
 		t.Fatal("identical merge-sort-union plans must hash equal")
 	}
-	if a.EqualsWithoutChildren(NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, true, true)) {
+	if a.EqualsPlanWithoutChildren(NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, true, true)) {
 		t.Fatal("different reverse flag must break equality")
 	}
-	if a.EqualsWithoutChildren(NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, false, false)) {
+	if a.EqualsPlanWithoutChildren(NewRecordQueryMergeSortUnionPlan([]RecordQueryPlan{inner, inner}, kA, false, false)) {
 		t.Fatal("different removeDuplicates flag must break equality")
 	}
 }
@@ -228,7 +228,7 @@ func TestPlanIdentity_SemanticHashAliasInvariant_RFC176(t *testing.T) {
 			t.Errorf("%s: hash must be alias-invariant — alias-renamed twins must share a hash bucket (%#x vs %#x)",
 				p.name, p.a.HashCodeWithoutChildren(), p.b.HashCodeWithoutChildren())
 		}
-		if p.a.EqualsWithoutChildren(p.b) {
+		if p.a.EqualsPlanWithoutChildren(p.b) {
 			t.Errorf("%s: equality under the EMPTY alias map is alias-literal — q1 vs q2 must NOT compare equal", p.name)
 		}
 	}
@@ -280,16 +280,16 @@ func TestPlanIdentity_NilValueArms_RFC176(t *testing.T) {
 	for _, p := range pairs {
 		t.Run(p.name, func(t *testing.T) {
 			t.Parallel()
-			if !p.bothNil.EqualsWithoutChildren(p.bothNilB) {
+			if !p.bothNil.EqualsPlanWithoutChildren(p.bothNilB) {
 				t.Error("nil Value vs nil Value must compare equal")
 			}
 			if p.bothNil.HashCodeWithoutChildren() != p.bothNilB.HashCodeWithoutChildren() {
 				t.Error("nil Value vs nil Value must hash equal")
 			}
-			if p.bothNil.EqualsWithoutChildren(p.oneNil) {
+			if p.bothNil.EqualsPlanWithoutChildren(p.oneNil) {
 				t.Error("nil Value vs non-nil Value must NOT compare equal")
 			}
-			if !p.oneNil.EqualsWithoutChildren(p.nonNil) {
+			if !p.oneNil.EqualsPlanWithoutChildren(p.nonNil) {
 				t.Error("same non-nil Value must compare equal")
 			}
 			if p.oneNil.HashCodeWithoutChildren() != p.nonNil.HashCodeWithoutChildren() {
@@ -320,7 +320,7 @@ func TestPlanIdentity_VectorLiteralConstant_RFC176(t *testing.T) {
 
 	// Equal-content DISTINCT slice instances: equal, no panic, hash coherent.
 	a, b := mk([]float64{1, 0, 0}), mk([]float64{1, 0, 0})
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("equal-content []float64 literals must compare equal")
 	}
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
@@ -329,31 +329,31 @@ func TestPlanIdentity_VectorLiteralConstant_RFC176(t *testing.T) {
 	// Different content: unequal AND hash-discriminated (the "?"-rendering
 	// era collapsed different vectors to one identity).
 	c := mk([]float64{0, 1, 0})
-	if a.EqualsWithoutChildren(c) {
+	if a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("different []float64 literals must NOT compare equal")
 	}
 	if a.HashCodeWithoutChildren() == c.HashCodeWithoutChildren() {
 		t.Fatal("different []float64 literals must not share a hash")
 	}
-	if a.EqualsWithoutChildren(mk([]float64{1, 0})) {
+	if a.EqualsPlanWithoutChildren(mk([]float64{1, 0})) {
 		t.Fatal("different-length []float64 literals must NOT compare equal")
 	}
 
 	// []float32 twin.
 	f1, f2 := mk([]float32{1, 2}), mk([]float32{1, 2})
-	if !f1.EqualsWithoutChildren(f2) {
+	if !f1.EqualsPlanWithoutChildren(f2) {
 		t.Fatal("equal-content []float32 literals must compare equal")
 	}
 	if f1.HashCodeWithoutChildren() != f2.HashCodeWithoutChildren() {
 		t.Fatal("equal-content []float32 literals must hash equal")
 	}
-	if f1.EqualsWithoutChildren(mk([]float32{1, 3})) {
+	if f1.EqualsPlanWithoutChildren(mk([]float32{1, 3})) {
 		t.Fatal("different []float32 literals must NOT compare equal")
 	}
 
 	// Cross-element-type: same numbers, different slice type — distinct
 	// literals (a half-precision vector is not a double vector).
-	if mk([]float64{1, 2}).EqualsWithoutChildren(mk([]float32{1, 2})) {
+	if mk([]float64{1, 2}).EqualsPlanWithoutChildren(mk([]float32{1, 2})) {
 		t.Fatal("[]float64 vs []float32 literals must NOT compare equal")
 	}
 
@@ -361,7 +361,7 @@ func TestPlanIdentity_VectorLiteralConstant_RFC176(t *testing.T) {
 	// []byte arm — no caller distinguishes a missing vector from a
 	// zero-length one) and hash-coherent.
 	n, e := mk([]float64(nil)), mk([]float64{})
-	if !n.EqualsWithoutChildren(e) {
+	if !n.EqualsPlanWithoutChildren(e) {
 		t.Fatal("nil and empty []float64 literals compare equal (len-based, matches the []byte arm)")
 	}
 	if n.HashCodeWithoutChildren() != e.HashCodeWithoutChildren() {
@@ -374,13 +374,13 @@ func TestPlanIdentity_VectorLiteralConstant_RFC176(t *testing.T) {
 	// UNEQUAL (equality strictly finer than the hash — a refinement split,
 	// never a wrong unification). RED under float == on the pre-fix commit.
 	z, nz := mk([]float64{0}), mk([]float64{math.Copysign(0, -1)})
-	if z.EqualsWithoutChildren(nz) {
+	if z.EqualsPlanWithoutChildren(nz) {
 		t.Fatal("+0 and -0 vector literals must NOT compare equal (bitwise element identity)")
 	}
 	// Identical-bit NaNs: EQUAL under bitwise identity (float == would call
 	// them unequal) and hash-coherent (%v renders both as NaN).
 	nan1, nan2 := mk([]float64{math.NaN()}), mk([]float64{math.NaN()})
-	if !nan1.EqualsWithoutChildren(nan2) {
+	if !nan1.EqualsPlanWithoutChildren(nan2) {
 		t.Fatal("identical-bit NaN vector literals must compare equal (bitwise element identity)")
 	}
 	if nan1.HashCodeWithoutChildren() != nan2.HashCodeWithoutChildren() {

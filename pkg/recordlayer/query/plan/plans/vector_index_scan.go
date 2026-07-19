@@ -188,7 +188,7 @@ func (p *RecordQueryVectorIndexPlan) GetChildren() []RecordQueryPlan { return ni
 
 // EqualsWithoutChildren compares index name, prefix comparison shape, and
 // the query-vector / k / ef_search node-info.
-func (p *RecordQueryVectorIndexPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryVectorIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryVectorIndexPlan)
 	if !ok || p.indexName != o.indexName {
 		return false

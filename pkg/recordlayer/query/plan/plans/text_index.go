@@ -67,7 +67,7 @@ func (p *RecordQueryTextIndexPlan) GetResultType() values.Type { return values.U
 func (p *RecordQueryTextIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 
 // EqualsWithoutChildren compares index name, text scan, and reverse.
-func (p *RecordQueryTextIndexPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryTextIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTextIndexPlan)
 	if !ok {
 		return false

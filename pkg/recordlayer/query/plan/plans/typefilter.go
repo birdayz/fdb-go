@@ -52,7 +52,7 @@ func (p *RecordQueryTypeFilterPlan) GetChildren() []RecordQueryPlan {
 }
 
 // EqualsWithoutChildren compares record-type sets.
-func (p *RecordQueryTypeFilterPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryTypeFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTypeFilterPlan)
 	if !ok {
 		return false

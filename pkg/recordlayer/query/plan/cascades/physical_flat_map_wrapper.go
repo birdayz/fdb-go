@@ -59,7 +59,7 @@ func (w *physicalFlatMapWrapper) EqualsWithoutChildren(other expressions.Relatio
 	if w.plan == nil || o.plan == nil {
 		return w.plan == nil && o.plan == nil
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalFlatMapWrapper) HashCodeWithoutChildren() uint64 {

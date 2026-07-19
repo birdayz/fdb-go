@@ -69,7 +69,7 @@ func (p *RecordQueryRecursiveLevelUnionPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.initialState, p.recursiveState}
 }
 
-func (p *RecordQueryRecursiveLevelUnionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryRecursiveLevelUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryRecursiveLevelUnionPlan)
 	if !ok {
 		return false

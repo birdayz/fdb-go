@@ -35,7 +35,7 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 // produce a record stream when executed against an FDBRecordStore.
 //
 // The seed exposes node-information accessors (GetResultType,
-// GetChildren, EqualsWithoutChildren, HashCodeWithoutChildren) and
+// GetChildren, EqualsPlanWithoutChildren, HashCodeWithoutChildren) and
 // an Explain method for diagnostic rendering. Execute is NOT in the
 // seed surface — wiring to FDBRecordStore is a follow-up shift gated
 // on the rule chain being able to produce these plans end-to-end.
@@ -48,14 +48,14 @@ type RecordQueryPlan interface {
 	// Read-only; callers must not mutate.
 	GetChildren() []RecordQueryPlan
 
-	// EqualsWithoutChildren reports whether this plan's node-
+	// EqualsPlanWithoutChildren reports whether this plan's node-
 	// information matches `other`'s. Children are not consulted —
 	// caller's job (typically by recursing into GetChildren).
-	EqualsWithoutChildren(other RecordQueryPlan) bool
+	EqualsPlanWithoutChildren(other RecordQueryPlan) bool
 
 	// HashCodeWithoutChildren returns the structural hash of this
 	// node's node-information. Must be consistent with
-	// EqualsWithoutChildren: x.Equals(y) implies x.Hash() == y.Hash().
+	// EqualsPlanWithoutChildren: x.Equals(y) implies x.Hash() == y.Hash().
 	HashCodeWithoutChildren() uint64
 
 	// Explain returns a single-line human-readable label for this
@@ -74,7 +74,7 @@ func Equals(a, b RecordQueryPlan) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		return false
 	}
 	ac := a.GetChildren()

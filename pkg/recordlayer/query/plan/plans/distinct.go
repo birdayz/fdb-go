@@ -46,7 +46,7 @@ func (p *RecordQueryDistinctPlan) GetChildren() []RecordQueryPlan {
 // EqualsWithoutChildren — distinct plans are interchangeable on
 // node-info alone (no operator-specific data); compares only the
 // concrete type.
-func (p *RecordQueryDistinctPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	_, ok := other.(*RecordQueryDistinctPlan)
 	return ok
 }

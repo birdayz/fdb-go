@@ -47,7 +47,7 @@ func (p *RecordQueryUnionPlan) GetChildren() []RecordQueryPlan { return p.inners
 
 // EqualsWithoutChildren is a constant-discriminated equality —
 // union has no operator-specific node-info beyond its children.
-func (p *RecordQueryUnionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	_, ok := other.(*RecordQueryUnionPlan)
 	return ok
 }

@@ -69,7 +69,7 @@ func (p *testPlan) GetResultType() values.Type {
 	return values.UnknownType
 }
 func (p *testPlan) GetChildren() []plans.RecordQueryPlan { return nil }
-func (p *testPlan) EqualsWithoutChildren(other plans.RecordQueryPlan) bool {
+func (p *testPlan) EqualsPlanWithoutChildren(other plans.RecordQueryPlan) bool {
 	o, ok := other.(*testPlan)
 	return ok && o.name == p.name
 }

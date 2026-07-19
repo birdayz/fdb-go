@@ -53,7 +53,7 @@ func (w *physicalPredicatesFilterWrapper) EqualsWithoutChildren(other expression
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalPredicatesFilterWrapper) HashCodeWithoutChildren() uint64 {

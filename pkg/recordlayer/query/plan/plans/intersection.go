@@ -66,7 +66,7 @@ func (p *RecordQueryIntersectionPlan) GetChildren() []RecordQueryPlan { return p
 // `reverse`; Go's intersection has no reverse field because the implement
 // rules only emit forward intersections — when reverse intersections land,
 // the field joins identity here and in the hash.
-func (p *RecordQueryIntersectionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryIntersectionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryIntersectionPlan)
 	if !ok {
 		return false

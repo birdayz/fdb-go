@@ -89,7 +89,7 @@ func (p *RecordQueryScoreForRankPlan) GetChildren() []RecordQueryPlan {
 }
 
 // EqualsWithoutChildren compares the ranks list.
-func (p *RecordQueryScoreForRankPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryScoreForRankPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryScoreForRankPlan)
 	if !ok {
 		return false

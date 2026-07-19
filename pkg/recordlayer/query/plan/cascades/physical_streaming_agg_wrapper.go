@@ -60,7 +60,7 @@ func (w *physicalStreamingAggWrapper) EqualsWithoutChildren(other expressions.Re
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalStreamingAggWrapper) HashCodeWithoutChildren() uint64 {

@@ -12,11 +12,11 @@ import (
 // stubPlan is a minimal RecordQueryPlan for use as an inner child.
 type stubPlan struct{ label string }
 
-func (s *stubPlan) GetResultType() values.Type                 { return values.UnknownType }
-func (s *stubPlan) GetChildren() []RecordQueryPlan             { return nil }
-func (s *stubPlan) Explain() string                            { return s.label }
-func (s *stubPlan) EqualsWithoutChildren(RecordQueryPlan) bool { return true }
-func (s *stubPlan) HashCodeWithoutChildren() uint64            { return 0 }
+func (s *stubPlan) GetResultType() values.Type                     { return values.UnknownType }
+func (s *stubPlan) GetChildren() []RecordQueryPlan                 { return nil }
+func (s *stubPlan) Explain() string                                { return s.label }
+func (s *stubPlan) EqualsPlanWithoutChildren(RecordQueryPlan) bool { return true }
+func (s *stubPlan) HashCodeWithoutChildren() uint64                { return 0 }
 
 func stub(label string) *stubPlan { return &stubPlan{label: label} }
 
@@ -96,7 +96,7 @@ func TestLimitPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryLimitPlan(nil, 10, 5)
 	b := NewRecordQueryLimitPlan(nil, 10, 5)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same limit+offset should be equal")
 	}
 }
@@ -105,7 +105,7 @@ func TestLimitPlan_EqualsWithoutChildren_DifferentLimit(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryLimitPlan(nil, 10, 0)
 	b := NewRecordQueryLimitPlan(nil, 20, 0)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different limits should not be equal")
 	}
 }
@@ -114,7 +114,7 @@ func TestLimitPlan_EqualsWithoutChildren_DifferentOffset(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryLimitPlan(nil, 10, 0)
 	b := NewRecordQueryLimitPlan(nil, 10, 5)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different offsets should not be equal")
 	}
 }
@@ -123,7 +123,7 @@ func TestLimitPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	lim := NewRecordQueryLimitPlan(nil, 10, 0)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if lim.EqualsWithoutChildren(scan) {
+	if lim.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("LimitPlan should not equal ScanPlan")
 	}
 }
@@ -224,7 +224,7 @@ func TestFilterPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
 	a := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, nil)
 	b := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, nil)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same predicates should be equal")
 	}
 }
@@ -235,7 +235,7 @@ func TestFilterPlan_EqualsWithoutChildren_DifferentPredicateCount(t *testing.T) 
 	p2 := predicates.NewConstantPredicate(predicates.TriFalse)
 	a := NewRecordQueryFilterPlan([]predicates.QueryPredicate{p1}, nil)
 	b := NewRecordQueryFilterPlan([]predicates.QueryPredicate{p1, p2}, nil)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different predicate counts should not be equal")
 	}
 }
@@ -248,7 +248,7 @@ func TestFilterPlan_EqualsWithoutChildren_DifferentPredicate(t *testing.T) {
 	b := NewRecordQueryFilterPlan([]predicates.QueryPredicate{
 		predicates.NewConstantPredicate(predicates.TriFalse),
 	}, nil)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different predicates should not be equal")
 	}
 }
@@ -257,7 +257,7 @@ func TestFilterPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	f := NewRecordQueryFilterPlan(nil, nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if f.EqualsWithoutChildren(scan) {
+	if f.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("FilterPlan should not equal ScanPlan")
 	}
 }
@@ -381,7 +381,7 @@ func TestInMemorySortPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	}
 	a := NewRecordQueryInMemorySortPlan(nil, keys)
 	b := NewRecordQueryInMemorySortPlan(nil, keys)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same sort keys should be equal")
 	}
 }
@@ -395,7 +395,7 @@ func TestInMemorySortPlan_EqualsWithoutChildren_DifferentKeyCount(t *testing.T) 
 		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
 		{Field: "name", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
 	})
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different key counts should not be equal")
 	}
 }
@@ -411,7 +411,7 @@ func TestInMemorySortPlan_EqualsWithoutChildren_DifferentDesc(t *testing.T) {
 	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
 		{Field: "id", ValueExpr: fv, Desc: true},
 	})
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different direction flags should not be equal")
 	}
 }
@@ -424,7 +424,7 @@ func TestInMemorySortPlan_EqualsWithoutChildren_DifferentValue(t *testing.T) {
 	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
 		{Field: "name", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
 	})
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different keys should not be equal")
 	}
 }
@@ -433,7 +433,7 @@ func TestInMemorySortPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	s := NewRecordQueryInMemorySortPlan(nil, nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if s.EqualsWithoutChildren(scan) {
+	if s.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("InMemorySortPlan should not equal ScanPlan")
 	}
 }
@@ -479,7 +479,7 @@ func TestInMemorySortPlan_SemanticSortKeyIdentity(t *testing.T) {
 	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
 		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Desc: true, NullsFirst: true},
 	})
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("semantically-equal sort keys with distinct ValueExpr instances must be EqualsWithoutChildren-equal (F41)")
 	}
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
@@ -499,7 +499,7 @@ func TestInMemorySortPlan_SortKeyValueDistinguishes(t *testing.T) {
 	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
 		{Field: "k", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
 	})
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different sort Values (same display Field) must NOT be EqualsWithoutChildren-equal (F41)")
 	}
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
@@ -576,7 +576,7 @@ func TestDistinctPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryDistinctPlan(nil)
 	b := NewRecordQueryDistinctPlan(nil)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("two DistinctPlans should be equal (type-only discriminator)")
 	}
 }
@@ -585,7 +585,7 @@ func TestDistinctPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	d := NewRecordQueryDistinctPlan(nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if d.EqualsWithoutChildren(scan) {
+	if d.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("DistinctPlan should not equal ScanPlan")
 	}
 }
@@ -654,7 +654,7 @@ func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 	if !strings.Contains(p01.Explain(), "X#0") || !strings.Contains(p01.Explain(), "X#1") {
 		t.Fatalf("explain must render resolved ordinals (X#0, X#1), got %q", p01.Explain())
 	}
-	if p01.EqualsWithoutChildren(p00) {
+	if p01.EqualsPlanWithoutChildren(p00) {
 		t.Fatal("plans reading (slot0,slot1) vs (slot0,slot0) must NOT compare equal — memo unification would let extraction pick the wrong slot")
 	}
 	if p01.HashCodeWithoutChildren() == p00.HashCodeWithoutChildren() {
@@ -667,7 +667,7 @@ func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 			values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
 			values.NewFieldValueWithResolvedOrdinal("X", 1, values.UnknownType),
 		}, []string{"A", "B"}, inner)
-	if !p01.EqualsWithoutChildren(p01b) {
+	if !p01.EqualsPlanWithoutChildren(p01b) {
 		t.Fatal("identical ordinal reads must compare equal")
 	}
 	if p01.HashCodeWithoutChildren() != p01b.HashCodeWithoutChildren() {
@@ -696,7 +696,7 @@ func TestProjectionPlan_Identity_OrdinalVsLiteralHashField(t *testing.T) {
 		[]values.Value{values.NewFlatFieldValue("X#0", values.UnknownType)},
 		[]string{"A"}, inner)
 
-	if ordinalPlan.EqualsWithoutChildren(literalPlan) {
+	if ordinalPlan.EqualsPlanWithoutChildren(literalPlan) {
 		t.Fatal("ordinal read of X@0 and a name-read of a field literally named X#0 must NOT compare equal")
 	}
 	if ordinalPlan.HashCodeWithoutChildren() == literalPlan.HashCodeWithoutChildren() {
@@ -756,7 +756,7 @@ func TestProjectionPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	projs := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
 	a := NewRecordQueryProjectionPlan(projs, nil)
 	b := NewRecordQueryProjectionPlan(projs, nil)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same projections should be equal")
 	}
 }
@@ -769,7 +769,7 @@ func TestProjectionPlan_EqualsWithoutChildren_DifferentColumns(t *testing.T) {
 	b := NewRecordQueryProjectionPlan([]values.Value{
 		&values.FieldValue{Field: "name", Typ: values.UnknownType},
 	}, nil)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different projection columns should not be equal")
 	}
 }
@@ -783,7 +783,7 @@ func TestProjectionPlan_EqualsWithoutChildren_DifferentCount(t *testing.T) {
 		&values.FieldValue{Field: "id", Typ: values.UnknownType},
 		&values.FieldValue{Field: "name", Typ: values.UnknownType},
 	}, nil)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different projection counts should not be equal")
 	}
 }
@@ -792,7 +792,7 @@ func TestProjectionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	p := NewRecordQueryProjectionPlan(nil, nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if p.EqualsWithoutChildren(scan) {
+	if p.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("ProjectionPlan should not equal ScanPlan")
 	}
 }
@@ -872,7 +872,7 @@ func TestUnionPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	a := NewRecordQueryUnionPlan(nil)
 	b := NewRecordQueryUnionPlan([]RecordQueryPlan{stub("X")})
 	// Union equality is type-only (no operator params).
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("any two UnionPlans should be EqualsWithoutChildren")
 	}
 }
@@ -881,7 +881,7 @@ func TestUnionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	u := NewRecordQueryUnionPlan(nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if u.EqualsWithoutChildren(scan) {
+	if u.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("UnionPlan should not equal ScanPlan")
 	}
 }
@@ -947,7 +947,7 @@ func TestIntersectionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	i := NewRecordQueryIntersectionPlan(nil, nil)
 	u := NewRecordQueryUnionPlan(nil)
-	if i.EqualsWithoutChildren(u) {
+	if i.EqualsPlanWithoutChildren(u) {
 		t.Fatal("IntersectionPlan should not equal UnionPlan")
 	}
 }
@@ -1051,7 +1051,7 @@ func TestValuesPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	cols := []values.Value{values.LiteralValue(int64(1))}
 	a := NewRecordQueryValuesPlan(cols)
 	b := NewRecordQueryValuesPlan(cols)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same columns should be equal")
 	}
 }
@@ -1060,7 +1060,7 @@ func TestValuesPlan_EqualsWithoutChildren_DifferentValues(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
 	b := NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(2))})
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different column values should not be equal")
 	}
 }
@@ -1072,7 +1072,7 @@ func TestValuesPlan_EqualsWithoutChildren_DifferentCount(t *testing.T) {
 		values.LiteralValue(int64(1)),
 		values.LiteralValue(int64(2)),
 	})
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different column counts should not be equal")
 	}
 }
@@ -1081,7 +1081,7 @@ func TestValuesPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	v := NewRecordQueryValuesPlan(nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if v.EqualsWithoutChildren(scan) {
+	if v.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("ValuesPlan should not equal ScanPlan")
 	}
 }
@@ -1190,7 +1190,7 @@ func TestScanPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	b := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same params should be equal")
 	}
 }
@@ -1199,7 +1199,7 @@ func TestScanPlan_EqualsWithoutChildren_DifferentTypes(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	b := NewRecordQueryScanPlan([]string{"U"}, values.UnknownType, false)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different record types should not be equal")
 	}
 }
@@ -1208,7 +1208,7 @@ func TestScanPlan_EqualsWithoutChildren_DifferentReverse(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	b := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, true)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different reverse flags should not be equal")
 	}
 }
@@ -1217,7 +1217,7 @@ func TestScanPlan_EqualsWithoutChildren_DifferentFlowedType(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
 	b := NewRecordQueryScanPlan([]string{"T"}, values.NotNullString, false)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different flowed types should not be equal")
 	}
 }
@@ -1226,7 +1226,7 @@ func TestScanPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	s := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	d := NewRecordQueryDistinctPlan(nil)
-	if s.EqualsWithoutChildren(d) {
+	if s.EqualsPlanWithoutChildren(d) {
 		t.Fatal("ScanPlan should not equal DistinctPlan")
 	}
 }
@@ -1333,7 +1333,7 @@ func TestStreamingAggPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	}
 	a := NewRecordQueryStreamingAggregationPlan(nil, keys, aggs)
 	b := NewRecordQueryStreamingAggregationPlan(nil, keys, aggs)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same keys+aggs should be equal")
 	}
 }
@@ -1344,7 +1344,7 @@ func TestStreamingAggPlan_EqualsWithoutChildren_DifferentGroupingKeys(t *testing
 		[]values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}, nil)
 	b := NewRecordQueryStreamingAggregationPlan(nil,
 		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}}, nil)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different grouping keys should not be equal")
 	}
 }
@@ -1359,7 +1359,7 @@ func TestStreamingAggPlan_EqualsWithoutChildren_DifferentAggFunction(t *testing.
 	b := NewRecordQueryStreamingAggregationPlan(nil, keys, []expressions.AggregateSpec{
 		{Function: expressions.AggMax, Operand: operand},
 	})
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different aggregate functions should not be equal")
 	}
 }
@@ -1373,7 +1373,7 @@ func TestStreamingAggPlan_EqualsWithoutChildren_DifferentAggOperand(t *testing.T
 	b := NewRecordQueryStreamingAggregationPlan(nil, keys, []expressions.AggregateSpec{
 		{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "qty", Typ: values.UnknownType}},
 	})
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different aggregate operands should not be equal")
 	}
 }
@@ -1382,7 +1382,7 @@ func TestStreamingAggPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	s := NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if s.EqualsWithoutChildren(scan) {
+	if s.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("StreamingAgg should not equal ScanPlan")
 	}
 }

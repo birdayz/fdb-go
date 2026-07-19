@@ -132,7 +132,7 @@ func (p *RecordQueryLoadByKeysPlan) GetResultType() values.Type { return values.
 func (p *RecordQueryLoadByKeysPlan) GetChildren() []RecordQueryPlan { return nil }
 
 // EqualsWithoutChildren compares the key sources.
-func (p *RecordQueryLoadByKeysPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryLoadByKeysPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryLoadByKeysPlan)
 	if !ok {
 		return false

@@ -115,7 +115,7 @@ func (p *RecordQueryFetchFromPartialRecordPlan) GetChildren() []RecordQueryPlan 
 
 // EqualsWithoutChildren compares fetch mode (inner is the caller's
 // responsibility via children).
-func (p *RecordQueryFetchFromPartialRecordPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryFetchFromPartialRecordPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
 		return false

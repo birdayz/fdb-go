@@ -80,7 +80,7 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 // TestProjectionPlan_Identity_OrdinalVsLiteralHashField) now pin exactly
 // that, plus the matching injective discriminator in writeSemanticHash's
 // FieldValue arm.
-func (p *RecordQueryProjectionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryProjectionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryProjectionPlan)
 	if !ok {
 		return false

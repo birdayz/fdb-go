@@ -44,7 +44,7 @@ func (w *physicalTempTableInsertWrapper) EqualsWithoutChildren(other expressions
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalTempTableInsertWrapper) HashCodeWithoutChildren() uint64 {

@@ -77,7 +77,7 @@ func (p *RecordQueryInMemorySortPlan) GetChildren() []RecordQueryPlan {
 // plan — pointer identity would spuriously split them into distinct memo members
 // (the incomplete-F21 case). Field is DISPLAY-ONLY but folded so an explain-name
 // difference still separates identities; Desc / NullsFirst are the direction.
-func (p *RecordQueryInMemorySortPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryInMemorySortPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInMemorySortPlan)
 	if !ok {
 		return false

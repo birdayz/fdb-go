@@ -88,7 +88,7 @@ func (p *RecordQueryRecursiveDfsJoinPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.root, p.child}
 }
 
-func (p *RecordQueryRecursiveDfsJoinPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryRecursiveDfsJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryRecursiveDfsJoinPlan)
 	if !ok {
 		return false

@@ -46,7 +46,7 @@ func (p *RecordQueryTempTableInsertPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
-func (p *RecordQueryTempTableInsertPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryTempTableInsertPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTempTableInsertPlan)
 	if !ok {
 		return false

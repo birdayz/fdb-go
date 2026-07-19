@@ -28,7 +28,7 @@ type unsupportedTestPlan struct{}
 
 func (p *unsupportedTestPlan) GetResultType() values.Type           { return values.UnknownType }
 func (p *unsupportedTestPlan) GetChildren() []plans.RecordQueryPlan { return nil }
-func (p *unsupportedTestPlan) EqualsWithoutChildren(plans.RecordQueryPlan) bool {
+func (p *unsupportedTestPlan) EqualsPlanWithoutChildren(plans.RecordQueryPlan) bool {
 	return false
 }
 func (p *unsupportedTestPlan) HashCodeWithoutChildren() uint64 { return 0 }

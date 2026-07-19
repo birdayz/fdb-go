@@ -67,7 +67,7 @@ func TestRecordQueryScanPlan_EqualsAndHash(t *testing.T) {
 	t.Parallel()
 	a := plans.NewRecordQueryScanPlan([]string{"T", "U"}, values.UnknownType, false)
 	b := plans.NewRecordQueryScanPlan([]string{"U", "T"}, values.UnknownType, false) // dedup-sort means same canonical form
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("scan plans with same canonical type-set should be equal")
 	}
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
@@ -75,11 +75,11 @@ func TestRecordQueryScanPlan_EqualsAndHash(t *testing.T) {
 	}
 
 	c := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if a.EqualsWithoutChildren(c) {
+	if a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("plans over different type sets should NOT be equal")
 	}
 	d := plans.NewRecordQueryScanPlan([]string{"T", "U"}, values.UnknownType, true)
-	if a.EqualsWithoutChildren(d) {
+	if a.EqualsPlanWithoutChildren(d) {
 		t.Fatal("plans with different reverse flag should NOT be equal")
 	}
 }

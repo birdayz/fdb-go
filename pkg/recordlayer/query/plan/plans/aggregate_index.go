@@ -114,7 +114,7 @@ func (p *RecordQueryAggregateIndexPlan) GetChildren() []RecordQueryPlan { return
 
 // EqualsWithoutChildren compares index plan, record type name, and
 // result type.
-func (p *RecordQueryAggregateIndexPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryAggregateIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryAggregateIndexPlan)
 	if !ok {
 		return false
@@ -126,7 +126,7 @@ func (p *RecordQueryAggregateIndexPlan) EqualsWithoutChildren(other RecordQueryP
 		return false
 	}
 	// Compare the embedded index plan structurally.
-	if !p.indexPlan.EqualsWithoutChildren(o.indexPlan) {
+	if !p.indexPlan.EqualsPlanWithoutChildren(o.indexPlan) {
 		return false
 	}
 	return true

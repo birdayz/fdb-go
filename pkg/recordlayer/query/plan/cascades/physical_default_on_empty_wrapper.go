@@ -44,7 +44,7 @@ func (w *physicalDefaultOnEmptyWrapper) EqualsWithoutChildren(other expressions.
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalDefaultOnEmptyWrapper) HashCodeWithoutChildren() uint64 {

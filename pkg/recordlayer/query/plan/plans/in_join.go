@@ -78,7 +78,7 @@ func (p *RecordQueryInJoinPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
-func (p *RecordQueryInJoinPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryInJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInJoinPlan)
 	if !ok {
 		return false

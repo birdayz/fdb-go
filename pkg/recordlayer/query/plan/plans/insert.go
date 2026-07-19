@@ -72,7 +72,7 @@ func (p *RecordQueryInsertPlan) GetChildren() []RecordQueryPlan {
 }
 
 // EqualsWithoutChildren compares targetRecordType + targetType.
-func (p *RecordQueryInsertPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryInsertPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInsertPlan)
 	if !ok {
 		return false

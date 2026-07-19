@@ -86,7 +86,7 @@ func TestUnorderedUnionPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	a := NewRecordQueryUnorderedUnionPlan(nil)
 	b := NewRecordQueryUnorderedUnionPlan([]RecordQueryPlan{stub("X")})
 	// Unordered union equality is type-only.
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("any two UnorderedUnionPlans should be EqualsWithoutChildren")
 	}
 }
@@ -95,7 +95,7 @@ func TestUnorderedUnionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	u := NewRecordQueryUnorderedUnionPlan(nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if u.EqualsWithoutChildren(scan) {
+	if u.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("UnorderedUnionPlan should not equal ScanPlan")
 	}
 }
@@ -104,7 +104,7 @@ func TestUnorderedUnionPlan_EqualsWithoutChildren_NotEqualToOrderedUnion(t *test
 	t.Parallel()
 	uu := NewRecordQueryUnorderedUnionPlan(nil)
 	ou := NewRecordQueryUnionPlan(nil)
-	if uu.EqualsWithoutChildren(ou) {
+	if uu.EqualsPlanWithoutChildren(ou) {
 		t.Fatal("UnorderedUnionPlan should not equal UnionPlan")
 	}
 }

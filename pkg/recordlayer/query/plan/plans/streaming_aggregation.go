@@ -77,7 +77,7 @@ func (p *RecordQueryStreamingAggregationPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
-func (p *RecordQueryStreamingAggregationPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryStreamingAggregationPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryStreamingAggregationPlan)
 	if !ok {
 		return false

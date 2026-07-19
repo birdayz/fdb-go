@@ -969,7 +969,7 @@ func (w *physicalFilterWrapper) EqualsWithoutChildren(other expressions.Relation
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1085,7 +1085,7 @@ func (w *physicalDistinctWrapper) EqualsWithoutChildren(other expressions.Relati
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1190,7 +1190,7 @@ func (w *physicalTypeFilterWrapper) EqualsWithoutChildren(other expressions.Rela
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1296,7 +1296,7 @@ func (w *physicalInsertWrapper) EqualsWithoutChildren(other expressions.Relation
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1385,7 +1385,7 @@ func (w *physicalDeleteWrapper) EqualsWithoutChildren(other expressions.Relation
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1472,7 +1472,7 @@ func (w *physicalUpdateWrapper) EqualsWithoutChildren(other expressions.Relation
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1566,7 +1566,7 @@ func (w *physicalUnionWrapper) EqualsWithoutChildren(other expressions.Relationa
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1665,7 +1665,7 @@ func (w *physicalIntersectionWrapper) EqualsWithoutChildren(other expressions.Re
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 // HashCodeWithoutChildren mixes class + plan's hash.
@@ -1737,7 +1737,7 @@ func (w *physicalProjectionWrapper) EqualsWithoutChildren(other expressions.Rela
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalProjectionWrapper) HashCodeWithoutChildren() uint64 {
@@ -1898,7 +1898,7 @@ func (w *physicalAggregateIndexWrapper) EqualsWithoutChildren(other expressions.
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalAggregateIndexWrapper) HashCodeWithoutChildren() uint64 {

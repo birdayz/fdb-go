@@ -68,7 +68,7 @@ func (p *RecordQueryFlatMapPlan) InheritOuterRecordProperties() bool {
 // it from equals — Go compares it in BOTH so the equal⟹same-hash memo
 // invariant holds (two plans differing only in that flag null-extend
 // differently; they are not interchangeable).
-func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryFlatMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)
 	if !ok {
 		return false

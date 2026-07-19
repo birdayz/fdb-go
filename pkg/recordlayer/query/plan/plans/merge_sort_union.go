@@ -60,7 +60,7 @@ func (p *RecordQueryMergeSortUnionPlan) GetChildren() []RecordQueryPlan { return
 // keys join equality per RFC-176 §1: before P2, equality checked only the key
 // COUNT while the hash folded the full keys — different-key plans compared
 // equal yet hashed apart, a live plan-level equal⟹same-hash violation.
-func (p *RecordQueryMergeSortUnionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryMergeSortUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMergeSortUnionPlan)
 	if !ok {
 		return false

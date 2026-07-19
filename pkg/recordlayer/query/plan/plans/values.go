@@ -25,7 +25,7 @@ func (p *RecordQueryValuesPlan) GetResultType() values.Type { return values.Unkn
 
 func (p *RecordQueryValuesPlan) GetChildren() []RecordQueryPlan { return nil }
 
-func (p *RecordQueryValuesPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryValuesPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryValuesPlan)
 	if !ok {
 		return false

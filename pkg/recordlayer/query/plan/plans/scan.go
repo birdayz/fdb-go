@@ -93,7 +93,7 @@ func (p *RecordQueryScanPlan) GetResultType() values.Type { return p.flowedType 
 // GetChildren returns the empty slice — scans are leaves.
 func (p *RecordQueryScanPlan) GetChildren() []RecordQueryPlan { return nil }
 
-func (p *RecordQueryScanPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryScanPlan)
 	if !ok {
 		return false

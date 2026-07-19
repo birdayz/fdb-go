@@ -39,7 +39,7 @@ func TestTempTableScanPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	alias := values.NamedCorrelationIdentifier("tt_same")
 	a := NewRecordQueryTempTableScanPlan(alias)
 	b := NewRecordQueryTempTableScanPlan(alias)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same-alias TempTableScanPlans should be EqualsWithoutChildren")
 	}
 }
@@ -48,7 +48,7 @@ func TestTempTableScanPlan_EqualsWithoutChildren_DifferentAlias(t *testing.T) {
 	t.Parallel()
 	a := NewRecordQueryTempTableScanPlan(values.NamedCorrelationIdentifier("tt_a"))
 	b := NewRecordQueryTempTableScanPlan(values.NamedCorrelationIdentifier("tt_b"))
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different-alias TempTableScanPlans should not be equal")
 	}
 }
@@ -57,7 +57,7 @@ func TestTempTableScanPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	scan := NewRecordQueryTempTableScanPlan(values.NamedCorrelationIdentifier("tt"))
 	other := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if scan.EqualsWithoutChildren(other) {
+	if scan.EqualsPlanWithoutChildren(other) {
 		t.Fatal("TempTableScanPlan should not equal a RecordQueryScanPlan")
 	}
 }
@@ -162,7 +162,7 @@ func TestTempTableInsertPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	alias := values.NamedCorrelationIdentifier("tti_eq")
 	a := NewRecordQueryTempTableInsertPlan(nil, alias, true)
 	b := NewRecordQueryTempTableInsertPlan(nil, alias, true)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same alias+owning TempTableInsertPlans should be equal")
 	}
 }
@@ -171,7 +171,7 @@ func TestTempTableInsertPlan_EqualsWithoutChildren_DifferentAlias(t *testing.T) 
 	t.Parallel()
 	a := NewRecordQueryTempTableInsertPlan(nil, values.NamedCorrelationIdentifier("a"), true)
 	b := NewRecordQueryTempTableInsertPlan(nil, values.NamedCorrelationIdentifier("b"), true)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different-alias TempTableInsertPlans should not be equal")
 	}
 }
@@ -181,7 +181,7 @@ func TestTempTableInsertPlan_EqualsWithoutChildren_DifferentOwning(t *testing.T)
 	alias := values.NamedCorrelationIdentifier("tti_ow")
 	a := NewRecordQueryTempTableInsertPlan(nil, alias, true)
 	b := NewRecordQueryTempTableInsertPlan(nil, alias, false)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different-owning TempTableInsertPlans should not be equal")
 	}
 }
@@ -190,7 +190,7 @@ func TestTempTableInsertPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	ins := NewRecordQueryTempTableInsertPlan(nil, values.NamedCorrelationIdentifier("tti"), true)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if ins.EqualsWithoutChildren(scan) {
+	if ins.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("TempTableInsertPlan should not equal a RecordQueryScanPlan")
 	}
 }
@@ -308,7 +308,7 @@ func TestRecursiveDfsJoinPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	corr := values.NamedCorrelationIdentifier("prior")
 	a := NewRecordQueryRecursiveDfsJoinPlan(nil, nil, corr, DfsPreorder)
 	b := NewRecordQueryRecursiveDfsJoinPlan(nil, nil, corr, DfsPreorder)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same correlation+strategy RecursiveDfsJoinPlans should be equal")
 	}
 }
@@ -317,7 +317,7 @@ func TestRecursiveDfsJoinPlan_EqualsWithoutChildren_DifferentCorrelation(t *test
 	t.Parallel()
 	a := NewRecordQueryRecursiveDfsJoinPlan(nil, nil, values.NamedCorrelationIdentifier("c1"), DfsPreorder)
 	b := NewRecordQueryRecursiveDfsJoinPlan(nil, nil, values.NamedCorrelationIdentifier("c2"), DfsPreorder)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different-correlation RecursiveDfsJoinPlans should not be equal")
 	}
 }
@@ -327,7 +327,7 @@ func TestRecursiveDfsJoinPlan_EqualsWithoutChildren_DifferentStrategy(t *testing
 	corr := values.NamedCorrelationIdentifier("prior")
 	a := NewRecordQueryRecursiveDfsJoinPlan(nil, nil, corr, DfsPreorder)
 	b := NewRecordQueryRecursiveDfsJoinPlan(nil, nil, corr, DfsPostorder)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different-strategy RecursiveDfsJoinPlans should not be equal")
 	}
 }
@@ -336,7 +336,7 @@ func TestRecursiveDfsJoinPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	p := NewRecordQueryRecursiveDfsJoinPlan(nil, nil, values.NamedCorrelationIdentifier("c"), DfsPreorder)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if p.EqualsWithoutChildren(scan) {
+	if p.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("RecursiveDfsJoinPlan should not equal a RecordQueryScanPlan")
 	}
 }
@@ -478,7 +478,7 @@ func TestRecursiveLevelUnionPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	ia := values.NamedCorrelationIdentifier("insert")
 	a := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, sa, ia)
 	b := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, sa, ia)
-	if !a.EqualsWithoutChildren(b) {
+	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same aliases should be equal")
 	}
 }
@@ -488,7 +488,7 @@ func TestRecursiveLevelUnionPlan_EqualsWithoutChildren_DifferentScanAlias(t *tes
 	ia := values.NamedCorrelationIdentifier("insert")
 	a := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, values.NamedCorrelationIdentifier("s1"), ia)
 	b := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, values.NamedCorrelationIdentifier("s2"), ia)
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different scan alias should not be equal")
 	}
 }
@@ -498,7 +498,7 @@ func TestRecursiveLevelUnionPlan_EqualsWithoutChildren_DifferentInsertAlias(t *t
 	sa := values.NamedCorrelationIdentifier("scan")
 	a := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, sa, values.NamedCorrelationIdentifier("i1"))
 	b := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, sa, values.NamedCorrelationIdentifier("i2"))
-	if a.EqualsWithoutChildren(b) {
+	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different insert alias should not be equal")
 	}
 }
@@ -509,7 +509,7 @@ func TestRecursiveLevelUnionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 		values.NamedCorrelationIdentifier("s"),
 		values.NamedCorrelationIdentifier("i"))
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if p.EqualsWithoutChildren(scan) {
+	if p.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("should not equal a different plan type")
 	}
 }

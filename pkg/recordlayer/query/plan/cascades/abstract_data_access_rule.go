@@ -548,7 +548,7 @@ func (s *scanPlanExpression) EqualsWithoutChildren(other expressions.RelationalE
 	if !ok {
 		return false
 	}
-	return s.plan.EqualsWithoutChildren(o.plan)
+	return s.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (s *scanPlanExpression) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

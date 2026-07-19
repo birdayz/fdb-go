@@ -35,7 +35,7 @@ func (p *RecordQueryUnorderedUnionPlan) GetResultType() values.Type {
 
 func (p *RecordQueryUnorderedUnionPlan) GetChildren() []RecordQueryPlan { return p.inners }
 
-func (p *RecordQueryUnorderedUnionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryUnorderedUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	_, ok := other.(*RecordQueryUnorderedUnionPlan)
 	return ok
 }

@@ -58,7 +58,7 @@ func (w *physicalRecursiveLevelUnionWrapper) EqualsWithoutChildren(other express
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalRecursiveLevelUnionWrapper) HashCodeWithoutChildren() uint64 {

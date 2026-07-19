@@ -109,7 +109,7 @@ func (p *RecordQueryNestedLoopJoinPlan) GetPredicates() []predicates.QueryPredic
 	return p.predicates
 }
 
-func (p *RecordQueryNestedLoopJoinPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryNestedLoopJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryNestedLoopJoinPlan)
 	if !ok {
 		return false

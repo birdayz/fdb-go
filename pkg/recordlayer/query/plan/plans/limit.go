@@ -70,7 +70,7 @@ func (p *RecordQueryLimitPlan) GetInner() RecordQueryPlan { return p.inner }
 func (p *RecordQueryLimitPlan) GetLimit() int64  { return p.limit }
 func (p *RecordQueryLimitPlan) GetOffset() int64 { return p.offset }
 
-func (p *RecordQueryLimitPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryLimitPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryLimitPlan)
 	if !ok {
 		return false

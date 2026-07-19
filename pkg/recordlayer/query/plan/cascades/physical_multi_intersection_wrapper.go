@@ -61,7 +61,7 @@ func (w *physicalMultiIntersectionWrapper) EqualsWithoutChildren(other expressio
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalMultiIntersectionWrapper) HashCodeWithoutChildren() uint64 {

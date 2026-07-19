@@ -71,7 +71,7 @@ func (p *RecordQueryFirstOrDefaultPlan) GetChildren() []RecordQueryPlan {
 
 // EqualsWithoutChildren compares the default value by semantic Value identity
 // (RFC-176 P2 — see semanticValueEquals).
-func (p *RecordQueryFirstOrDefaultPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryFirstOrDefaultPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFirstOrDefaultPlan)
 	if !ok {
 		return false

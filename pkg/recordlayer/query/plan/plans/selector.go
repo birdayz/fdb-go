@@ -135,7 +135,7 @@ func (p *RecordQuerySelectorPlan) GetResultType() values.Type {
 func (p *RecordQuerySelectorPlan) GetChildren() []RecordQueryPlan { return p.children }
 
 // EqualsWithoutChildren compares reverse flag and plan selector.
-func (p *RecordQuerySelectorPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQuerySelectorPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQuerySelectorPlan)
 	if !ok {
 		return false

@@ -78,7 +78,7 @@ func (p *RecordQueryPredicatesFilterPlan) GetChildren() []RecordQueryPlan {
 
 // EqualsWithoutChildren compares the predicate list pairwise via
 // PredicateEquals.
-func (p *RecordQueryPredicatesFilterPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryPredicatesFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryPredicatesFilterPlan)
 	if !ok {
 		return false

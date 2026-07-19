@@ -25,7 +25,7 @@ func (p *RecordQueryTempTableScanPlan) GetResultType() values.Type { return valu
 
 func (p *RecordQueryTempTableScanPlan) GetChildren() []RecordQueryPlan { return nil }
 
-func (p *RecordQueryTempTableScanPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryTempTableScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTempTableScanPlan)
 	if !ok {
 		return false

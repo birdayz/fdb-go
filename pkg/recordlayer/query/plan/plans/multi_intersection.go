@@ -73,7 +73,7 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) GetResultType() values.Type {
 // EqualsWithoutChildren matches MultiIntersectionOnValuesPlan with the same
 // comparison key and resultValue by semantic Value identity (RFC-176 P2 —
 // see semanticValueEquals).
-func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMultiIntersectionOnValuesPlan)
 	if !ok {
 		return false

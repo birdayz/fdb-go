@@ -142,7 +142,7 @@ func (p *RecordQueryIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 // materialize the wrong-comparand scan. Mirrors Java's
 // RecordQueryIndexPlan.equalsWithoutChildren, which compares
 // Objects.equals(scanParameters, that.scanParameters) — full comparand equality.
-func (p *RecordQueryIndexPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryIndexPlan)
 	if !ok {
 		return false

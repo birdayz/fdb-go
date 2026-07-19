@@ -131,11 +131,11 @@ type stubPlan struct {
 	label string
 }
 
-func (s *stubPlan) Explain() string                                        { return "stub:" + s.label }
-func (s *stubPlan) GetResultType() values.Type                             { return nil }
-func (s *stubPlan) GetChildren() []plans.RecordQueryPlan                   { return nil }
-func (s *stubPlan) EqualsWithoutChildren(other plans.RecordQueryPlan) bool { return false }
-func (s *stubPlan) HashCodeWithoutChildren() uint64                        { return 0 }
+func (s *stubPlan) Explain() string                                            { return "stub:" + s.label }
+func (s *stubPlan) GetResultType() values.Type                                 { return nil }
+func (s *stubPlan) GetChildren() []plans.RecordQueryPlan                       { return nil }
+func (s *stubPlan) EqualsPlanWithoutChildren(other plans.RecordQueryPlan) bool { return false }
+func (s *stubPlan) HashCodeWithoutChildren() uint64                            { return 0 }
 
 var _ plans.RecordQueryPlan = (*stubPlan)(nil)
 

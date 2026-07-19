@@ -72,7 +72,7 @@ func (w *physicalNestedLoopJoinWrapper) EqualsWithoutChildren(other expressions.
 	if !ok {
 		return false
 	}
-	return w.plan.EqualsWithoutChildren(o.plan)
+	return w.plan.EqualsPlanWithoutChildren(o.plan)
 }
 
 func (w *physicalNestedLoopJoinWrapper) HashCodeWithoutChildren() uint64 {

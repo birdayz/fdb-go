@@ -54,7 +54,7 @@ func (p *RecordQueryDeletePlan) GetChildren() []RecordQueryPlan {
 }
 
 // EqualsWithoutChildren compares targetRecordType.
-func (p *RecordQueryDeletePlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryDeletePlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryDeletePlan)
 	if !ok {
 		return false

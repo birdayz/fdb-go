@@ -52,7 +52,7 @@ func (p *RecordQueryMapPlan) GetChildren() []RecordQueryPlan {
 // EqualsWithoutChildren compares the result value by semantic Value identity
 // (RFC-176 P2 — see semanticValueEquals), Java's
 // RecordQueryMapPlan.equalsWithoutChildren → semanticEqualsForResults.
-func (p *RecordQueryMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMapPlan)
 	if !ok {
 		return false

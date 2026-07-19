@@ -60,7 +60,7 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetChildren() []RecordQuery
 // EqualsWithoutChildren — PK-distinct plans have no node-specific data
 // beyond the concrete type. Mirrors Java where equalsWithoutChildren
 // only checks `getClass() == otherExpression.getClass()`.
-func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	_, ok := other.(*RecordQueryUnorderedPrimaryKeyDistinctPlan)
 	return ok
 }

@@ -93,7 +93,7 @@ func (p *RecordQueryComparatorPlan) GetChildren() []RecordQueryPlan { return p.c
 // different keys compared equal yet hashed apart — a live plan-level
 // equal⟹same-hash violation (a hash-first memo lookup misses the "equal"
 // member and inserts a duplicate).
-func (p *RecordQueryComparatorPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
+func (p *RecordQueryComparatorPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryComparatorPlan)
 	if !ok {
 		return false
