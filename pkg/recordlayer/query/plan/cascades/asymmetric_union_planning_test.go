@@ -6,6 +6,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // A union whose two legs implement to physical plans via DIFFERENT rewrite
@@ -46,7 +47,7 @@ func union(legs ...expressions.RelationalExpression) expressions.RelationalExpre
 	return expressions.NewLogicalUnionExpression(qs)
 }
 
-func planAndAssertWinner(t *testing.T, root expressions.RelationalExpression) {
+func planAndAssertWinner(t *testing.T, root expressions.RelationalExpression) expressions.RelationalExpression {
 	t.Helper()
 	ref := expressions.InitialOf(root)
 	p := NewPlanner(DefaultExpressionRules(), nil).
@@ -66,6 +67,19 @@ func planAndAssertWinner(t *testing.T, root expressions.RelationalExpression) {
 	if !p.HasBestMember(ref) {
 		t.Fatal("Plan succeeded but root Reference has no BestMember stamp")
 	}
+	return plan
+}
+
+// physicalPlanOf unwraps the planned expression to its RecordQueryPlan,
+// failing if the root is still a non-physical (logical) expression — which is
+// exactly the no-plan regression this file guards.
+func physicalPlanOf(t *testing.T, expr expressions.RelationalExpression) plans.RecordQueryPlan {
+	t.Helper()
+	ph, ok := expr.(physicalPlanExpression)
+	if !ok {
+		t.Fatalf("planned root is %T, not a physical plan expression", expr)
+	}
+	return ph.GetRecordQueryPlan()
 }
 
 func TestAsymmetricUnion_BothLegsPlan(t *testing.T) {
@@ -78,7 +92,21 @@ func TestAsymmetricUnion_BothLegsPlan(t *testing.T) {
 		typeFilter(typeFilter(scanExpr())),
 		typeFilter(trueFilter(scanExpr())),
 	)
-	planAndAssertWinner(t, root)
+	plan := physicalPlanOf(t, planAndAssertWinner(t, root))
+	// Tighter than "a winner exists": the extracted plan must be a physical
+	// union with BOTH legs present. Before the fix the merged leg had no
+	// physical member, so the union had < 2 children and could not form at all.
+	// Which physical union (ordered RecordQueryUnionPlan vs concatenating
+	// RecordQueryUnorderedUnionPlan) wins is a cost-model choice — either is a
+	// valid implementation; the regression was NO physical union whatsoever.
+	switch plan.(type) {
+	case *plans.RecordQueryUnionPlan, *plans.RecordQueryUnorderedUnionPlan:
+	default:
+		t.Fatalf("root plan is %T, want a physical union plan", plan)
+	}
+	if n := len(plan.GetChildren()); n != 2 {
+		t.Fatalf("union has %d children, want 2 (both legs implemented)", n)
+	}
 }
 
 func TestAsymmetricUnion_SymmetricStillPlans(t *testing.T) {

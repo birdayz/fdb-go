@@ -5701,16 +5701,28 @@ pre-RFC-183 master (15dc17a82).
       expr does NOT fix the seed, so it is not "physical present but not first."
       One asymmetric leg has NO physical expression in the partition at all.
 
-  REMAINING ROOT CAUSE (open): why does one leg of an ASYMMETRIC union end with
-  no physical member when it implements standalone and in a SYMMETRIC union?
-  This is an exploration/partition-interaction issue (memo task ordering or
-  crossProductPartitions/RollUpPlanPartitions dropping one leg's physical
-  alternative when the sibling leg has a different shape), not a missing rule
-  and not extraction. Needs a focused trace of the two legs' partitions at the
-  moment ImplementUnorderedUnion fires. Low severity (fuzz-degenerate, returns
-  logical not physical), so gated behind higher-value work — but the trigger
-  and the three dead ends are now pinned so the next attempt starts from the
-  partition interaction, not from scratch.
+  RESOLVED (commit "cascades: reset per-stage exploration on the no-finals
+  stage boundary"). Root cause found via a full memo dump on the asymmetric
+  shape: constant-true filter elimination makes `Filter([TriTrue],Scan) ≡ Scan`,
+  so the right leg's group MERGES with the left leg's inner TypeFilter group.
+  That merged group reaches the REWRITING→PLANNING boundary with ZERO final
+  members (Go tolerates unfinalized groups via ExploreGroupTask's
+  `len(FinalMembers())>0` guard; Java finalizes universally so never hits this).
+  With no finals it cannot take AdvancePlannerStage (which would empty it), so
+  it fell to the plain stage-set path that changed the stage but did NOT reset
+  the per-stage exploration bookkeeping. The group kept its REWRITING
+  `explorationDone` state → NeedsExploration=false → ExploreGroupTask returned
+  early → ImplementTypeFilter never fired → no physical member → the union saw
+  an empty leg partition and bailed → root had no winner while Plan() reported
+  success. Fix: `Reference.AdvanceStagePreservingMembers` resets exploration
+  state (explState, rounds, winner, planProperties, constraints epoch) while
+  keeping members, so surviving logical members re-explore and implement in
+  PLANNING. The dead no-reset SetStage method was removed. Pinned by
+  asymmetric_union_planning_test.go + the `[]byte{35,4,4,1}` seed in
+  FuzzPlanner_PlanFullPipeline; five planner fuzz targets clean at 45s each;
+  full suite green. Third refuted hypothesis (planExprs[0]-ordering) was right
+  that "one leg has NO physical expression" — the reason was the exploration
+  reset, not the partition machinery.
 
 CLEAN (no crash in the sweep): FuzzPlanner_E2E_NoPanic,
 FuzzExtractBestPlan_SingletonInvariant, FuzzMemo_MemoizeInvariant,
