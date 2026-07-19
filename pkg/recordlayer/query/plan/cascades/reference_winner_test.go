@@ -98,7 +98,7 @@ func TestSortElimination_ViaChildOrderedMember(t *testing.T) {
 	}
 	scanRef.Insert(orderedScan)
 
-	plan, err := properties.ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
+	plan, err := ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
 	if err != nil {
 		t.Fatalf("ExtractBestPlanFromSelector: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestSortElimination_PinsOrderedSpineThroughWrapper(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
-	plan, err := properties.ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
+	plan, err := ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
 	if err != nil {
 		t.Fatalf("ExtractBestPlanFromSelector: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestSortElimination_DeclinesWhenExtractionRelinkRefused(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
-	plan, err := properties.ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
+	plan, err := ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
 	if err != nil {
 		t.Fatalf("ExtractBestPlanFromSelector: %v", err)
 	}

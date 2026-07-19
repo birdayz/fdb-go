@@ -20,7 +20,7 @@ import (
 // per-Reference exploration rounds for convergence, and fires rules at
 // per-(group, expression, rule) task granularity. Plan() drives both
 // phases and extracts the cost-cheapest plan via
-// properties.ExtractBestPlanFromSelector.
+// ExtractBestPlanFromSelector.
 //
 // Convergence: a Reference whose member set stops growing is committed
 // (Reference.CommitExploration); the stack drains; the planner returns.
@@ -180,7 +180,7 @@ func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 // OrderedChildWinner returns the cheapest physical member of childRef whose
 // derived rich ordering satisfies sortExpr's keys, or nil when none does
 // (the sort must then be materialised). Implements the sort-elision hook of
-// properties.ExtractBestPlanFromSelector: satisfaction runs on the full
+// ExtractBestPlanFromSelector: satisfaction runs on the full
 // Value + four-state sort-order representation (RichOrdering.Satisfies), so
 // an ASC_NULLS_LAST sort is never elided against a natural-order ASC scan.
 func (p *Planner) OrderedChildWinner(sortExpr *expressions.LogicalSortExpression, childRef *expressions.Reference) expressions.RelationalExpression {
@@ -206,7 +206,7 @@ func (p *Planner) OrderingSourceRef(expr expressions.RelationalExpression) (*exp
 }
 
 // TieBrokenCostLess supplies extraction's fallback GetBest with a
-// TOTAL-ORDER comparator (properties.TieBrokenCostSelector): the scalar
+// TOTAL-ORDER comparator (TieBrokenCostSelector): the scalar
 // cost comparator ties routinely and GetBest would otherwise resolve by
 // member insertion order, flipping picks across plannings.
 func (p *Planner) TieBrokenCostLess(stats properties.StatisticsProvider) func(a, b expressions.RelationalExpression) bool {
@@ -270,7 +270,7 @@ func (p *Planner) WithMaxTasks(n int) *Planner {
 // PhasePlanning via the unified task types (ExploreGroupTask,
 // TransformExprTask, TransformImplTask, OptimizeGroupTask,
 // OptimizeInputsTask). After the stack drains, extracts the best
-// plan via properties.ExtractBestPlanFromSelector.
+// plan via ExtractBestPlanFromSelector.
 //
 // Returns:
 //   - plan: the extracted RelationalExpression; nil if rootRef is empty.
@@ -327,7 +327,7 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	if p.verifyOneFinal {
 		p.oneFinalViolations = VerifyOneFinalPlanPerReference(rootRef)
 	}
-	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, p.stats)
+	plan, err := ExtractBestPlanFromSelector(rootRef, p, p.stats)
 	if err != nil {
 		return plan, p.tasksRun, err
 	}

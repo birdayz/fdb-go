@@ -1,12 +1,24 @@
-package properties
+package cascades
 
 import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+// scan returns a Reference holding a single FullUnorderedScan over
+// the given record types.
+func scan(types ...string) *expressions.Reference {
+	return expressions.InitialOf(expressions.NewFullUnorderedScanExpression(types, nil))
+}
+
+// scanQ wraps `scan(types...)` in a ForEach Quantifier.
+func scanQ(types ...string) expressions.Quantifier {
+	return expressions.ForEachQuantifier(scan(types...))
+}
 
 func TestExtractBestPlan_NilOrEmptyReturnsNil(t *testing.T) {
 	t.Parallel()
@@ -201,7 +213,7 @@ func TestExtractBestPlanWith_NilStats(t *testing.T) {
 
 func TestExtractBestPlanWith_NilRef(t *testing.T) {
 	t.Parallel()
-	got, err := ExtractBestPlanWith(nil, DefaultStatistics{})
+	got, err := ExtractBestPlanWith(nil, properties.DefaultStatistics{})
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
@@ -212,7 +224,7 @@ func TestExtractBestPlanWith_NilRef(t *testing.T) {
 
 func TestExtractBestPlanWith_EmptyRef(t *testing.T) {
 	t.Parallel()
-	got, err := ExtractBestPlanWith(&expressions.Reference{}, DefaultStatistics{})
+	got, err := ExtractBestPlanWith(&expressions.Reference{}, properties.DefaultStatistics{})
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
@@ -477,5 +489,49 @@ func TestExtractBestPlan_ExplodeFieldTieDeterministic(t *testing.T) {
 	ba := winner(t, build("ARR2", "ARR1"))
 	if ab != ba {
 		t.Fatalf("explode-field-tied winner depends on insertion order: →%s vs →%s", ab, ba)
+	}
+}
+
+// BenchmarkExtractBestPlan_DeepTree pins ExtractBestPlan perf on a
+// 5-deep Filter chain. Each Reference has a single member; the
+// extractor walks every Quantifier and rebuilds the tree.
+func BenchmarkExtractBestPlan_DeepTree(b *testing.B) {
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	innerQ := scanQ("Order")
+	for i := 0; i < 5; i++ {
+		f := expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{pred}, innerQ,
+		)
+		innerQ = expressions.ForEachQuantifier(expressions.InitialOf(f))
+	}
+	r := innerQ.GetRangesOver()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = ExtractBestPlan(r)
+	}
+}
+
+// BenchmarkExtractBestPlan_WideAlternatives pins ExtractBestPlan
+// perf when the top-level Reference has 5 distinct Filter members
+// over a shared inner. Memoisation kicks in for the cost computation.
+func BenchmarkExtractBestPlan_WideAlternatives(b *testing.B) {
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	innerScan := scan("Order")
+	r := expressions.InitialOf(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(innerScan),
+	))
+	for i := 2; i <= 5; i++ {
+		preds := make([]predicates.QueryPredicate, i)
+		for j := range preds {
+			preds[j] = pred
+		}
+		r.Insert(expressions.NewLogicalFilterExpression(
+			preds, expressions.ForEachQuantifier(innerScan),
+		))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = ExtractBestPlan(r)
 	}
 }

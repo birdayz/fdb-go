@@ -590,7 +590,7 @@ func (w *physicalScanWrapper) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-// WithChildren satisfies properties.WithChildren — scan is a leaf,
+// WithChildren satisfies WithChildren — scan is a leaf,
 // so qs must be empty. Returns the wrapper itself unchanged on
 // empty input.
 func (w *physicalScanWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {

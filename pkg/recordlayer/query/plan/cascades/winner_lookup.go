@@ -2,7 +2,6 @@ package cascades
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -111,7 +110,7 @@ func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *Reque
 	if inner == nil {
 		return nil
 	}
-	rebuilder, ok := expr.(properties.WithChildren)
+	rebuilder, ok := expr.(WithChildren)
 	if !ok {
 		return nil
 	}
@@ -229,7 +228,7 @@ func getWinnerPlan(ref *expressions.Reference, ordering *RequestedOrdering, less
 // under-claims (the first known ordering may be a different ordering
 // than the one requested while a later member provides it).
 // Contract: a delegator is a SINGLE-quantifier wrapper (its one child IS
-// the ordering source) implementing properties.WithChildren for the
+// the ordering source) implementing WithChildren for the
 // relink. A multi-quantifier delegator would need per-quantifier routing
 // in pinOrderedSpine / rebuildOrderedSpine, which conservatively DECLINE
 // (sort kept) on anything else — implement the routing before adding one.
