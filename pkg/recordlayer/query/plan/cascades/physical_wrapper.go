@@ -359,6 +359,22 @@ func findBestPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 // See findPhysicalPlan for why the final set is searched first and why the
 // exploratory fallback stays.
 //
+// CAVEAT — the exploratory fallback is currently doing all the work at the
+// push-through sites. `MemoizeFinalExpression`/`MemoizeFinalExpressionsFromOther`
+// mint their Reference with `expressions.InitialOf`, which lands the expression
+// in the EXPLORATORY set despite the "Final" in those names, so the references
+// those rules build have an empty `FinalMembers()` and the finals-first loop
+// below is a no-op for them. Java's memoizePlan lands plans in the final set
+// (`Reference.ofFinalExpressions`), and `expressions.FinalOf` is that shape.
+//
+// Do NOT "obviously" swap InitialOf for FinalOf: it was tried and it is not a
+// drop-in. FinalOf also sets StagePlanned, which changes what exploration may
+// do — the swap replans `UNION ALL` from UnorderedUnion to Union (breaking the
+// continuation pin in TestFDB_UnorderedUnion_Continuation_ResumeAcrossPages),
+// shifts alias-aware interning counts, and moves 18 plan shapes. Landing it
+// needs its own change with those consequences worked through; until then a
+// finals-ONLY tightening here would silently break every push-through rule.
+//
 // DO NOT make this cost-ranked. Picking the "cheapest" member here looks like
 // an obvious improvement — findBestPhysicalPlan does exactly that, and it is
 // wired to one site against this function's twenty — but it is wrong, and
@@ -1731,12 +1747,15 @@ func (w *physicalProjectionWrapper) WithChildren(qs []expressions.Quantifier) (e
 	}
 	// Always relink to the extracted inner, including compound joins — do NOT
 	// gate on isLeafReplaceable here. A projection is a transparent unary cap
-	// (like the in-memory sort, RFC-069); MergeProjectionAndFetchRule /
-	// ImplementProjectionFinalRule build it over an InJoin whose plan carries a
-	// placeholder/nil inner (the join tracks its real child in its wrapper
-	// quantifier). WithChildren runs only at extraction, where qs[0] resolves
-	// to the fully-formed winner; without relinking, `SELECT id ... WHERE a IN
-	// (...)` extracts `Project([id], InJoin(<nil>))` (RFC-070). Wrappers that
+	// (like the in-memory sort, RFC-069). Historically
+	// MergeProjectionAndFetchRule / ImplementProjectionFinalRule built it over
+	// an InJoin whose plan carried a nil inner, and without relinking `SELECT
+	// id ... WHERE a IN (...)` extracted `Project([id], InJoin(<nil>))`
+	// (RFC-070). That nil-inner state no longer exists (RFC-183 — rules bake
+	// the concrete child), so this is now a plain structural rebuild rather
+	// than a repair; the relink still matters because qs[0] resolves to the
+	// extracted winner, which need not be the plan snapshot taken at build
+	// time. Wrappers that
 	// embed predicate/filter/DML semantics in their own plan (aggregation,
 	// delete/update) keep the leaf gate: their child quantifier need not carry
 	// the filtered inner, so relinking to it would drop the filter.

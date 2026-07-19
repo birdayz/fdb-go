@@ -262,6 +262,17 @@ func (t *TransformExprTask) Run(p *Planner) {
 	var yieldFn func(expressions.RelationalExpression) bool
 	if t.Phase == PhasePlanning {
 		yieldFn = func(expr expressions.RelationalExpression) bool {
+			// Same unconditional verifyChildrenMemoized as the two
+			// ImplementationRuleCall yield sites. This one carries most of
+			// the surface: as the comment above says, expression rules
+			// produce PHYSICAL wrappers during PLANNING, and they reach the
+			// memo here rather than through ImplementationRuleCall. Guarding
+			// only the implementation path would leave the large majority of
+			// physical yields unchecked and make the invariant decorative.
+			if err := verifyChildrenMemoized(expr); err != nil {
+				p.capErr = err
+				return false
+			}
 			return t.Ref.InsertFinal(expr)
 		}
 	}

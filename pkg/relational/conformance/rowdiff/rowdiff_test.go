@@ -636,3 +636,99 @@ func TestRenderLiteral_StringEscaping(t *testing.T) {
 		t.Fatalf("nil: got %s", got)
 	}
 }
+
+// TestOracle_SumOverflowSurvivesHaving pins a harness FALSE POSITIVE that made
+// 27 of 3000 seeds red while the engine was behaving correctly.
+//
+// An int64 SUM overflow is a real engine outcome: it raises 22003, and the
+// oracle models that with an aggOverflow sentinel that AggResultOverflows
+// looks for in the result rows. But the sentinel was emitted INTO the row and
+// only then filtered by HAVING — which compares against it, never gets
+// TriTrue, and drops the group. The sole evidence that an error was expected
+// disappeared, AggResultOverflows returned false, and the runner scored the
+// engine's correct 22003 as a row mismatch.
+//
+// The engine hits the overflow while FOLDING, before HAVING can discard
+// anything, so the sentinel must survive the filter. Found by
+// `SELECT a AS g, SUM(a) AS agg FROM t_rd GROUP BY a HAVING SUM(a) > 2` where
+// four rows carry the generator's 2^62 boundary value in A.
+//
+// The unprobed dimension was overflow COMBINED WITH having; overflow alone was
+// already covered, which is why this survived.
+func TestOracle_SumOverflowSurvivesHaving(t *testing.T) {
+	t.Parallel()
+	const big = int64(4611686018427387904) // 2^62; four of these overflow int64
+	c := &Case{
+		Rows: []Row{
+			{"ID": int64(1), "A": big, "B": int64(0), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(2), "A": big, "B": int64(0), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(3), "A": big, "B": int64(0), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(4), "A": big, "B": int64(0), "C": int64(0), "S": "x", "F": false},
+		},
+	}
+	for _, tc := range []struct {
+		name string
+		agg  *AggSpec
+	}{
+		{
+			name: "grouped_sum_overflow_no_having",
+			agg:  &AggSpec{Func: AggSum, Col: "A", GroupBy: "A"},
+		},
+		{
+			// The regression: HAVING must not swallow the overflow signal.
+			name: "grouped_sum_overflow_with_having",
+			agg: &AggSpec{
+				Func: AggSum, Col: "A", GroupBy: "A", HavingOn: true,
+				Having: &Pred{Col: "A", Op: predicates.ComparisonGreaterThan, Lit: int64(2)},
+			},
+		},
+		{
+			name: "scalar_sum_overflow_with_having",
+			agg: &AggSpec{
+				Func: AggSum, Col: "A", HavingOn: true,
+				Having: &Pred{Col: "A", Op: predicates.ComparisonGreaterThan, Lit: int64(2)},
+			},
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rows, err := OracleRows(c, Query{Agg: tc.agg}, nil)
+			if err != nil {
+				t.Fatalf("oracle: %v", err)
+			}
+			if !AggResultOverflows(rows) {
+				t.Errorf("SUM overflow not reported — the runner would score the engine's "+
+					"correct 22003 as a mismatch. rows=%v", rows)
+			}
+		})
+	}
+}
+
+// TestOracle_HavingStillFiltersWithoutOverflow is the other half: the overflow
+// bypass must not turn HAVING into a no-op for ordinary aggregates.
+func TestOracle_HavingStillFiltersWithoutOverflow(t *testing.T) {
+	t.Parallel()
+	c := &Case{
+		Rows: []Row{
+			{"ID": int64(1), "A": int64(1), "B": int64(0), "C": int64(0), "S": "x", "F": false},
+			{"ID": int64(2), "A": int64(9), "B": int64(0), "C": int64(0), "S": "x", "F": false},
+		},
+	}
+	rows, err := OracleRows(c, Query{Agg: &AggSpec{
+		Func: AggSum, Col: "A", GroupBy: "A", HavingOn: true,
+		Having: &Pred{Col: "A", Op: predicates.ComparisonGreaterThan, Lit: int64(5)},
+	}}, nil)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if AggResultOverflows(rows) {
+		t.Fatalf("no overflow expected here, got the sentinel: %v", rows)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("HAVING SUM(A) > 5 should keep exactly the A=9 group, got %d rows: %v", len(rows), rows)
+	}
+	if got := rows[0]["AGG"]; got != int64(9) {
+		t.Errorf("AGG = %v, want 9", got)
+	}
+}

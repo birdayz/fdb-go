@@ -244,32 +244,6 @@ func tryTranslateValueRec(
 	if _, isConst := v.(*values.ConstantValue); isConst {
 		return v
 	}
-	// An ACCESSOR is a column read out of the row the fetch consumes, so it
-	// must ALWAYS be validated against the fetch's covered columns — BEFORE
-	// the uncorrelated-pass-through below, and regardless of whether it
-	// carries a correlation at all.
-	//
-	// After ordinalization a bare column reference is a FieldValue with
-	// Child == nil (a baked leaf / resolved ordinal), and such a value has an
-	// EMPTY correlation set. The pass-through below reads "not correlated to
-	// the source ⇒ nothing to translate ⇒ push it unchanged", which is true
-	// for a genuinely foreign value (an outer correlation, a literal) but
-	// FALSE for a column of the very row being fetched: pushing it unchanged
-	// asserts the column exists on the INDEX ENTRY. Nothing downstream
-	// catches that — tryTranslateValue's final guard only looks for residual
-	// correlation to oldAlias, which an ordinalized field never has — so the
-	// predicate rides below the fetch reading a column the index does not
-	// cover and the query returns WRONG ROWS. Concretely: with INDEX idx_k ON
-	// t(k), `k = 5 AND (a > 1 OR b < 2)` pushed `(A > 1 OR B < 2)` beneath the
-	// fetch onto a k-only index entry.
-	//
-	// Routing every accessor through PushValue closes it: the covered-column
-	// check in buildTranslateValueFunction (match_candidate_index.go) is then
-	// the single authority on whether a column survives the fetch. This
-	// matches Java, where pushValueThroughFetch matches the WHOLE value tree
-	// against the candidate's provided index Values via semanticEquals
-	// (ScanWithFetchMatchCandidate.java:51-76) — an uncovered column simply
-	// fails to match, correlation never enters into it.
 	// An ACCESSOR is a column read out of a row, and the ONLY authority on
 	// whether a column survives the fetch is the fetch's covered-column set.
 	// Every FieldValue therefore goes through PushValue — deliberately

@@ -59,7 +59,9 @@ func usage() {
         -out defaults to stdout. No FDB required.
 
   explain-differ diff OLD NEW
-        Diff two baselines entry-by-entry. Exits 1 when they differ.
+        Diff two baselines entry-by-entry.
+        Exit 0 = clean, 1 = the baselines differ, 2 = unusable input
+        (same file twice, empty/truncated baseline, stale format version).
 `)
 }
 
@@ -97,16 +99,26 @@ func diff(args []string) {
 		os.Exit(2)
 	}
 
-	oldEntries, err := explaindiff.LoadBaseline(fs.Arg(0))
+	oldB, err := explaindiff.LoadBaseline(fs.Arg(0))
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		os.Exit(2)
 	}
-	newEntries, err := explaindiff.LoadBaseline(fs.Arg(1))
+	newB, err := explaindiff.LoadBaseline(fs.Arg(1))
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		os.Exit(2)
+	}
+	// Exit 2, not 1: an unusable input pair is an operator error, distinct
+	// from "the baselines legitimately differ". A CI gate that treats every
+	// non-zero exit the same still stops; one that reads the code can tell
+	// a real drift from a broken invocation.
+	if err := explaindiff.ValidateDiffInputs(oldB, newB); err != nil {
+		log.Print(err)
+		os.Exit(2)
 	}
 
-	rep := explaindiff.Diff(oldEntries, newEntries)
+	rep := explaindiff.Diff(oldB.Entries, newB.Entries)
 	fmt.Print(explaindiff.RenderDiff(rep))
 	if !rep.Clean() {
 		os.Exit(1)

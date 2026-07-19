@@ -86,15 +86,19 @@ func TestNestedIn_OverIntersection(t *testing.T) {
 	// This assertion USED to demand `InJoin(` here, and that expectation
 	// encoded a wrong-rows bug rather than a healthy plan.
 	//
-	// Only C is served by an index scan (idx_c). Reaching a nested
-	// `InJoin(InJoin(PredicatesFilter(IndexScan(IDX_C), [2 preds])))` required
-	// pushing the A and B predicates BENEATH the fetch, onto an idx_c index
-	// entry that carries neither column — see the covered-column check in
-	// tryTranslateValueRec (rule_push_filter_through_fetch.go). With the push
-	// correctly refused, the only sound plan drives the indexed equality and
-	// re-applies both INs above the fetch. Asserting the sound shape is the
-	// point; TestInJoinBelowFetch_RelinksRealChild below keeps a real InJoin
-	// shape under test so that path itself stays exercised.
+	// Master planned this as
+	// `Fetch(InUnion(InJoin(PredicatesFilter(IndexScan(IDX_C,[=]),[2 preds]),
+	// binding),…))` — BOTH INs evaluated below the fetch on an idx_c index
+	// entry. A is not indexed at all, and B has its own index (idx_b) but that
+	// is irrelevant here: the entry being read is idx_c's, and it carries
+	// neither A nor B. So reaching the nested-InJoin shape required pushing
+	// predicates onto an index entry lacking their columns — see the
+	// covered-column check in tryTranslateValueRec
+	// (rule_push_filter_through_fetch.go). With the push correctly refused,
+	// the sound plan drives the indexed equality and re-applies both INs above
+	// the fetch. Asserting the sound shape is the point;
+	// TestInJoinBelowFetch_RelinksRealChild below keeps a real InJoin shape
+	// under test so that path itself stays exercised.
 	for _, want := range []string{"IndexScan(IDX_C", "PredicatesFilter(", "[2 preds]"} {
 		if !strings.Contains(plan, want) {
 			t.Errorf("want %s in the plan, got: %s", want, plan)

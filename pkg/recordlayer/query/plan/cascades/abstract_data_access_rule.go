@@ -468,8 +468,10 @@ func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) exp
 // pins that the deferral works: a covered projection yields IndexScan(... COVERING)
 // with no Fetch; a non-covered one keeps the Fetch. (Costing nuance: the
 // intermediate Fetch wrapper is costed non-covering during winner selection,
-// before MergeProjectionAndFetch runs; it does not change the chosen
-// plan today and is folded into the template-aware costing work, RFC-076 step 3b.)
+// before MergeProjectionAndFetch runs; it does not change the chosen plan
+// today. This used to be deferred to "the template-aware costing work" — that
+// machinery existed only to cost trees with holes and was deleted with the
+// shells (RFC-183 P3), so the nuance now stands on its own.)
 //
 // For a bare IndexScan (no Fetch — e.g. a primary scan) isCovering IS applied
 // directly, since there is no fetch to defer to.

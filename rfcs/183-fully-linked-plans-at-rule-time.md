@@ -328,6 +328,30 @@ pushed predicate evaluable on the partial record" — now pinned by
 `TestPushFilter_NeverPushesUncoveredColumnBelowFetch` (and its
 over-declining twin, since a guard that refused everything would also pass).
 
+**P1 landed the ASSERTION but not the memo REGISTRATION — stated plainly so
+it is not read as implied-done.** Java's `verifyChildrenMemoized` asserts memo
+membership (`traversal.getRefs().contains(rangesOver)`); Go's asserts only
+that the child reference is non-nil and non-empty. Three §6 items did not
+land: `MemoizeFinalExpression` still returns a bare `InitialOf`
+(`implementation_rule.go:129-133`), and neither
+`Verify(len(finalMembers)==1)` in `AdvancePlannerStage` nor
+`GetOnlyElementAsPlan` exists. `verifyNoShell` — which Java needs no analogue
+of — does cover the actual defect class, so this is a shortfall against the
+RFC rather than against safety; with repair deleted, the alternative to a
+loud abort is `Op(<nil>)` reaching the executor.
+
+The registration item is NOT a rename. `InitialOf` lands the expression in
+the EXPLORATORY set, so every reference the push-through rules mint has an
+empty `FinalMembers()` — which also means §10's finals-first ordering is a
+no-op at exactly those sites and rides entirely on the exploratory fallback.
+Swapping to `FinalOf` (Java's `ofFinalExpressions` shape) was tried: it also
+sets `StagePlanned`, and it replans `UNION ALL` from UnorderedUnion to Union
+— breaking `TestFDB_UnorderedUnion_Continuation_ResumeAcrossPages`, a
+continuation pin — shifts alias-aware interning counts, and moves 18 plan
+shapes. It needs its own change with those consequences worked through.
+Carried to P5, with the hazard documented at `findPhysicalExpr` so a
+finals-only tightening cannot land on top of it by accident.
+
 **One test was pinning the bug.** `TestNestedIn_OverIntersection` demanded
 `InJoin(` on a query where that shape was only reachable by pushing A and B
 onto an `idx_c` entry carrying neither. It now asserts the sound plan;
@@ -368,16 +392,66 @@ removing it needs the RFC-076 shape it was introduced for
 selection. The hazard is now documented at `findPhysicalExpr` so the next
 person who spots the asymmetry does not "fix" it the obvious way.
 
+**The follow-up covers TWO sites, not one.**
+`rule_implement_nested_loop_join.go:97-105` also selects join children through
+`findBestValidPhysicalExpr`, and its original justification — skipping
+nil-inner shells — evaporated in this very change. So there are now two
+ordering-blind ad-hoc selectors, one of which has outlived its stated reason.
+Both retire together.
+
 ## 8. Success criteria
 
-- `isNilInnerShell` / `isNilInnerFetch` have no production callers, and §3a
-  is deleted in full. (The draft's `grep -c "shell"` trending to zero is
+Status of each, with the evidence rather than an assertion.
+
+- **MET** — `isNilInnerShell`/`isNilInnerFetch` are deleted outright, along
+  with the rest of §3a. (The draft's `grep -c "shell"` trending to zero is
   dropped — a vanity metric that rewards renaming.)
-- §3b and §3c survive intact and are demonstrably still exercised.
-- The EXPLAIN-differ exists and shows no unexplained plan-shape change
-  across the yamsql corpus.
-- The RFC-182 harness runs clean at ≥50k seeds across the full grammar,
-  including the shapes that produced findings 1-4.
-- 1M stress within noise of the pre-change baseline.
-- DIVERGENCES.md's "repair-at-EXTRACTION" section is **deleted**, not
-  amended — the debt is gone rather than re-described.
+- **MET** — §3b and §3c survive: `findPhysicalPlan` (20 callers),
+  `isLeafReplaceable` (13), and the ordering-pin family (5, all implement
+  rules) are intact and exercised.
+- **MET** — the EXPLAIN-differ exists (2407 queries, ~3s, no FDB) and reports
+  2407/2407 identical for every change after P0. P0's own 31 flips are
+  enumerated and accounted for in §9.
+- **MET** — DIVERGENCES.md's "repair-at-EXTRACTION" section is deleted, not
+  amended. The adjacent value-range-intersection row was also re-verified:
+  its stated reason for staying latent ("a cheaper shell wins") expired with
+  this change, and the corpus was re-checked (intersections 7 → 13, none with
+  a range leg) plus a direct probe of `a=5 AND b>10` and variants, which
+  always keep the range predicate as a residual.
+- **MET, with the baseline caveat that predates this work** — 1M stress is
+  green: full scans 3.26-3.98s, point lookups and index equality at 0.01s.
+  Note the recorded baseline table is *already* failing on its own base
+  (TODO.md:1748-1760: master and branch measured noise-identical on every
+  violated row, with all 23 EXPLAINs byte-identical). That is an open item
+  with its own decision path; this change is not implicated in it.
+- **PARTIAL — stated plainly rather than claimed.** The RFC-182 harness at
+  ≥50k seeds is a multi-hour sweep (~3.7 seeds/s), so it is not something
+  this change can honestly tick. What landed instead is the ability to run
+  it: `ROWDIFF_SEEDS`/`ROWDIFF_SEED_START` widen the smoke slice, with
+  SEED_START so successive deep runs cover FRESH ranges instead of re-walking
+  seeds 1..N. A 3000-seed sweep (56,962 comparisons) was run here; ≥50k
+  belongs to the nightly. The criterion was aspirational as written — a gate
+  nobody can run in a shift measures nothing — and it is now runnable and
+  explicitly unfinished rather than quietly ticked.
+
+  **That sweep found the harness red on master, and it was a FALSE
+  POSITIVE.** 27 of 3000 seeds failed with `22003: long overflow`; master
+  fails the same seeds identically, so it predates this work and was hidden
+  only because the smoke slice is 25 seeds. The engine was correct: the
+  generator plants a 2^62 boundary value, four rows carry it in one group, so
+  `SUM(a)` reaches 2^64 and 22003 (`numeric_value_out_of_range`) is the right
+  answer. The ORACLE models that with an `aggOverflow` sentinel — but emitted
+  it into the row and only THEN applied HAVING, which compares against the
+  sentinel, never gets TriTrue, and drops the group. The evidence that an
+  error was expected vanished, `AggResultOverflows` returned false, and the
+  runner scored correct engine behaviour as a soundness mismatch. The engine
+  hits the overflow while FOLDING, before HAVING can discard anything, so the
+  sentinel now survives the filter (`oracle.go`). Pinned red→green by
+  `TestOracle_SumOverflowSurvivesHaving`, with
+  `TestOracle_HavingStillFiltersWithoutOverflow` as the inverse so a bypass
+  that turned HAVING into a no-op cannot pass. The unprobed dimension was
+  overflow COMBINED WITH having; overflow alone was already covered.
+
+  Worth stating because it generalises: a differential harness that emits
+  false positives is worse than no harness, because the next REAL finding
+  gets waved off as "that overflow thing again."
