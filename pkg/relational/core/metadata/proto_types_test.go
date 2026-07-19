@@ -81,7 +81,7 @@ func TestUnwrapWrappedArray_MatchesJavaPattern(t *testing.T) {
 			descriptorpb.FieldDescriptorProto_LABEL_REPEATED),
 	})
 
-	dt, ok := unwrapWrappedArray(wrapper)
+	dt, ok := unwrapWrappedArray(wrapper, map[string]bool{})
 	if !ok {
 		t.Fatal("unwrapWrappedArray returned ok=false on canonical wrapped-array shape")
 	}
@@ -102,7 +102,7 @@ func TestUnwrapWrappedArray_RejectsNonMatching(t *testing.T) {
 		stringField("items", 1, descriptorpb.FieldDescriptorProto_TYPE_INT32,
 			descriptorpb.FieldDescriptorProto_LABEL_REPEATED),
 	})
-	if _, ok := unwrapWrappedArray(wrongName); ok {
+	if _, ok := unwrapWrappedArray(wrongName, map[string]bool{}); ok {
 		t.Error("unwrapWrappedArray accepted wrong field name")
 	}
 
@@ -111,7 +111,7 @@ func TestUnwrapWrappedArray_RejectsNonMatching(t *testing.T) {
 		stringField("values", 1, descriptorpb.FieldDescriptorProto_TYPE_INT32,
 			descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL),
 	})
-	if _, ok := unwrapWrappedArray(singular); ok {
+	if _, ok := unwrapWrappedArray(singular, map[string]bool{}); ok {
 		t.Error("unwrapWrappedArray accepted non-repeated field")
 	}
 
@@ -122,13 +122,13 @@ func TestUnwrapWrappedArray_RejectsNonMatching(t *testing.T) {
 		stringField("extra", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING,
 			descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL),
 	})
-	if _, ok := unwrapWrappedArray(twoFields); ok {
+	if _, ok := unwrapWrappedArray(twoFields, map[string]bool{}); ok {
 		t.Error("unwrapWrappedArray accepted two-field message")
 	}
 
 	// Regular non-wrapper messages must still be rejected.
 	orderMD := gen.File_record_layer_demo_proto.Messages().ByName("Order")
-	if _, ok := unwrapWrappedArray(orderMD); ok {
+	if _, ok := unwrapWrappedArray(orderMD, map[string]bool{}); ok {
 		t.Error("unwrapWrappedArray accepted Order (multi-field real table)")
 	}
 
@@ -137,7 +137,7 @@ func TestUnwrapWrappedArray_RejectsNonMatching(t *testing.T) {
 	// otherwise match the wrapper shape. Must be rejected so maps
 	// still route to the UnresolvedType("map") path.
 	mapMD := buildMapValuesMessage(t)
-	if _, ok := unwrapWrappedArray(mapMD); ok {
+	if _, ok := unwrapWrappedArray(mapMD, map[string]bool{}); ok {
 		t.Error("unwrapWrappedArray accepted a map<...> values field")
 	}
 }
@@ -296,6 +296,71 @@ func TestMessageTypeFromDescriptor_RecursiveMessageTerminates(t *testing.T) {
 	}
 }
 
+func TestMessageTypeFromDescriptor_RecursiveWrappedArrayTerminates(t *testing.T) {
+	t.Parallel()
+
+	// Build `message M { repeated M values = 1; }` — the self-referential
+	// NULLABLE-ARRAY WRAPPER shape. The field is named exactly "values"
+	// (wrappedArrayFieldName), so it is BOTH a wrapper (unwrapWrappedArray
+	// matches) AND a cycle. The old walk consulted unwrapWrappedArray BEFORE
+	// the visited guard, and unwrap restarted the element walk with a fresh
+	// visited set → infinite recursion → stack overflow (the intermittent
+	// FuzzMessageTypeFromDescriptor nightly crash). The distinct field name
+	// is why the `children` test above did not catch it.
+	fileName := "test_recursive_wrapped.proto"
+	pkg := "test.recwrap"
+	syntax := "proto2"
+	mName := "M"
+	valuesName := "values"
+	valuesNum := int32(1)
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	mTypeName := ".test.recwrap.M"
+
+	m := &descriptorpb.DescriptorProto{
+		Name: &mName,
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     &valuesName,
+				Number:   &valuesNum,
+				Type:     &msgType,
+				TypeName: &mTypeName,
+				Label:    &repeated,
+			},
+		},
+	}
+	file := &descriptorpb.FileDescriptorProto{
+		Name:        &fileName,
+		Package:     &pkg,
+		Syntax:      &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{m},
+	}
+	fd, err := protodesc.NewFile(file, nil)
+	if err != nil {
+		t.Fatalf("protodesc.NewFile: %v", err)
+	}
+
+	// Must TERMINATE (no stack overflow) and produce a well-typed fixed point.
+	mMD := fd.Messages().Get(0)
+	st, err := messageTypeFromDescriptor(mMD, true)
+	if err != nil {
+		t.Fatalf("messageTypeFromDescriptor(M): %v", err)
+	}
+	if st.NumFields() != 1 {
+		t.Fatalf("M struct field count = %d, want 1", st.NumFields())
+	}
+	// values is repeated → ArrayType; its element is the Unresolved cycle
+	// placeholder because re-entering M hits the guard (now checked before
+	// unwrap).
+	arr, ok := st.Fields()[0].Type().(*api.ArrayType)
+	if !ok {
+		t.Fatalf("values type %T, want *ArrayType", st.Fields()[0].Type())
+	}
+	if _, ok := arr.ElementType().(*api.UnresolvedType); !ok {
+		t.Errorf("values element type %T, want *UnresolvedType (cycle placeholder)", arr.ElementType())
+	}
+}
+
 func TestMessageTypeFromDescriptor_UUIDFallbackStructShape(t *testing.T) {
 	t.Parallel()
 
@@ -362,6 +427,35 @@ func FuzzMessageTypeFromDescriptor(f *testing.F) {
 		},
 	}
 	if b, err := proto.Marshal(seed2); err == nil {
+		f.Add(b)
+	}
+	// Seed 3: self-referential NULLABLE-ARRAY WRAPPER — the field is named
+	// exactly "values" (wrappedArrayFieldName), so it is both a wrapper shape
+	// and a cycle. This is the shape that stack-overflowed the nightly
+	// (unwrapWrappedArray ran before the visited guard and reset the walk);
+	// seed 2's "children" name did not reach the unwrap path.
+	valuesName := "values"
+	valuesNum := int32(1)
+	seed3 := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("seed3.proto"),
+		Package: proto.String("test"),
+		Syntax:  &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{
+			{
+				Name: &msgName,
+				Field: []*descriptorpb.FieldDescriptorProto{
+					{
+						Name:     &valuesName,
+						Number:   &valuesNum,
+						Type:     &msgType,
+						TypeName: &treeTypeName,
+						Label:    &repeated,
+					},
+				},
+			},
+		},
+	}
+	if b, err := proto.Marshal(seed3); err == nil {
 		f.Add(b)
 	}
 	// Pathological bytes.
