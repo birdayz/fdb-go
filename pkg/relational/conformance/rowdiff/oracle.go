@@ -99,6 +99,13 @@ func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
 // Rows are keyed "<QUAL>.<COL>" while combined, then projected to the
 // unique output aliases the renderer emits (l_id, r_a, …).
 func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
+	if q.Distinct {
+		// The single-table path dedups projected rows; this one does not.
+		// genJoinQuery never sets Distinct, so rather than carry an untested
+		// second implementation, fail loudly if that ever changes.
+		return nil, fmt.Errorf("rowdiff: DISTINCT is not implemented for join queries — " +
+			"add dedup to oracleJoinRows (mirroring the single-table path) before generating it")
+	}
 	joinCmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, nil)
 
 	var combined []Row
@@ -134,7 +141,7 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 	if len(q.OrderBy) > 0 {
 		sort.SliceStable(combined, func(i, j int) bool {
 			for _, k := range q.OrderBy {
-				key := k.Qual + "." + k.Col
+				key := predKey(k.Qual, k.Col)
 				cmp := compareSortKey(combined[i][key], combined[j][key], k)
 				if cmp == 0 {
 					continue

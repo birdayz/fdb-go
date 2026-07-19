@@ -325,17 +325,24 @@ func genJoinQuery(rng *rand.Rand, table TableDef) Query {
 		col := table.Cols[rng.IntN(len(table.Cols))]
 		p := genPred(rng, col, indexed[col.Name])
 		p.Qual = []string{"L", "R"}[rng.IntN(2)]
-		if p.RhsCol != "" {
-			// genPred only ever pairs BIGINT columns for a column-vs-column
-			// leaf, so crossing sides here stays type-compatible. A
-			// cross-side comparison is an extra join predicate — its own
-			// useful shape — so take it a third of the time.
-			p.RhsQual = p.Qual
-			if rng.IntN(3) == 0 {
-				p.RhsQual = []string{"L", "R"}[rng.IntN(2)]
-			}
-		}
 		leaves = append(leaves, p)
+	}
+
+	// A CROSS-SIDE column comparison (`l.a > r.b`) — a theta/non-equi
+	// residual on top of the join equality, which the single-sided leaves
+	// above can never produce. BIGINT columns only, so the two operands stay
+	// type-compatible.
+	if rng.IntN(3) == 0 {
+		bigints := []string{"A", "B", "C"}
+		ops := []predicates.ComparisonType{
+			predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+			predicates.ComparisonNotEquals, predicates.ComparisonLessThanOrEq,
+		}
+		leaves = append(leaves, &Pred{
+			Col: bigints[rng.IntN(len(bigints))], Qual: "L",
+			Op:     ops[rng.IntN(len(ops))],
+			RhsCol: bigints[rng.IntN(len(bigints))], RhsQual: "R",
+		})
 	}
 
 	kids := make([]*BoolNode, len(leaves))
@@ -359,6 +366,12 @@ func genJoinQuery(rng *rand.Rand, table TableDef) Query {
 		if rng.IntN(3) == 0 {
 			q.Limit = 1 + rng.IntN(20)
 		}
+	} else if rng.IntN(4) == 0 {
+		// UNORDERED join + LIMIT — the exact shape that exposed the dropped
+		// projection aliases. Without this arm the generator could never
+		// regenerate its own finding; the comparator handles it via the
+		// sub-multiset membership rule.
+		q.Limit = 1 + rng.IntN(20)
 	}
 	return q
 }

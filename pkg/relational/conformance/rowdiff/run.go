@@ -400,6 +400,14 @@ func classifyPlan(p plans.RecordQueryPlan) []string {
 			sawFilter = true
 		case *plans.RecordQueryInJoinPlan:
 			fams["InJoin"] = true
+		case *plans.RecordQueryFlatMapPlan:
+			// The join family. Without this arm a join reported only as
+			// IndexScan+residual, so the histogram — the RFC's coverage
+			// evidence — could not tell a real index-nested-loop from a
+			// degenerate scan, and a regression to the latter was invisible.
+			fams["Join"] = true
+		case *plans.RecordQueryNestedLoopJoinPlan:
+			fams["Join"] = true
 		case *plans.RecordQueryInMemorySortPlan:
 			fams["Sort"] = true
 		}

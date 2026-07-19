@@ -339,9 +339,6 @@ func TestDiffRows_Offset(t *testing.T) {
 	}
 }
 
-// TestKnownGaps_LedgerIsNarrow guards the suppression hole: the known-gap
-// ledger converts a real engine failure into a DECLINE, so an over-broad
-// matcher silently hides bugs. Every near-miss below must stay a FINDING.
 func TestOracle_SelfJoin(t *testing.T) {
 	t.Parallel()
 	// C points at another row's ID, so `L.C = R.ID` is a meaningful join.
@@ -405,6 +402,33 @@ func TestJoinSQL_RendersUniqueOutputAliases(t *testing.T) {
 	}
 }
 
+// TestJoinProjections_AliasesAreUnique guards the harness's own blind spot:
+// rows are keyed by output column NAME, so two projected columns that
+// collapse to one alias would silently compare only one of them — the same
+// duplicate-name failure mode as the bug this work was written to catch.
+// Uniqueness currently holds by construction (a fixed column pool × two
+// sides); this asserts it instead of trusting it.
+func TestJoinProjections_AliasesAreUnique(t *testing.T) {
+	t.Parallel()
+	for _, seed := range []uint64{1, 2, 3, 500000, 700001} {
+		c := Generate(seed)
+		for _, proj := range c.joinProjections() {
+			seen := map[string]string{}
+			for _, qualified := range proj {
+				alias := joinOutputAlias(qualified)
+				if prev, dup := seen[alias]; dup {
+					t.Fatalf("seed %d: %q and %q both alias to %q — the comparison would silently collapse",
+						seed, prev, qualified, alias)
+				}
+				seen[alias] = qualified
+			}
+		}
+	}
+}
+
+// TestKnownGaps_LedgerIsNarrow guards the suppression hole: the known-gap
+// ledger converts a real engine failure into a DECLINE, so an over-broad
+// matcher silently hides bugs. Every near-miss below must stay a FINDING.
 func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
 	t.Parallel()
 	const nestedIn = "SELECT * FROM t WHERE a IN (1,2) AND b = 3 AND c IN (4,5)"
