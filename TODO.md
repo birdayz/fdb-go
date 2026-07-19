@@ -1742,6 +1742,20 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > from a reliable cron outside GitHub) so they fire on time; (d) a dedicated nightly runner so scheduled
 > jobs don't contend with per-PR CI. Also: the last two Nightly Fuzz runs FAILED (06-29, 06-30) — a
 > separate real signal to investigate (a fuzz target has been red for two nights; no-unrelated-flakes rule).
+>
+> **ROOT-CAUSED 2026-07-20 — the engine-fuzz job is red on master because of TWO planner fuzz crash
+> classes, BOTH fixed and both-gated on branch `fix-intersection-filter-cycle` but NOT YET MERGED:**
+> The 2026-07-19 run (id 29676882700) failed the "SQL Engine + Record Layer Fuzz" job on three cascades
+> targets: `FuzzPlanner_WithBatchA_NoPanic` ("Plan succeeded but root Reference has no BestMember stamp",
+> seed 9bd9b3661b501312) = **CLASS 2** (the no-BestMember stage-transition bug — a merged/unfinalized group
+> crossing REWRITING→PLANNING with no finals and never re-exploring), and `FuzzPlanner_Idempotence` +
+> `FuzzPlanner_InitialMemberPreserved` = **CLASS 1** (the Go-only filter/set-op commutation rules'
+> cyclic-memo GetCorrelatedTo stack overflow). Nearly every SUBSTANTIVE (40-70min) nightly run has failed on
+> these; the short "success" runs are window-skips (runner became available outside 00:00-07:00 UTC).
+> Fixes: **RFC-185** removes the four Go-only rules (CLASS 1); **fuzz bug 2** adds
+> `Reference.AdvanceStagePreservingMembers` (CLASS 2). All three nightly-failing targets pass on the branch
+> at/above the nightly's 90s per-target budget (WithBatchA 120s, the other two 90s). **ACTION: merge the
+> branch to master — the red safety net stays red until the (already-gated) fix lands.**
 
 > ## [ ] INFRA — stress-1M thresholds violated on MASTER (baseline rot; INVESTIGATE)
 > Discovered by RFC-176 P2's stress gate (PR #453): on an idle box, **current master violates the
