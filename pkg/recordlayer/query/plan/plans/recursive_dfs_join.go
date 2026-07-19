@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -33,6 +34,7 @@ func (s DfsTraversalStrategy) String() string {
 // "prior" row. Mirrors Java's
 // `com.apple.foundationdb.record.query.plan.plans.RecordQueryRecursiveDfsJoinPlan`.
 type RecordQueryRecursiveDfsJoinPlan struct {
+	PlanExprBase
 	root              RecordQueryPlan
 	child             RecordQueryPlan
 	priorCorrelation  values.CorrelationIdentifier
@@ -123,4 +125,23 @@ func (p *RecordQueryRecursiveDfsJoinPlan) Explain() string {
 	return sb.String()
 }
 
-var _ RecordQueryPlan = (*RecordQueryRecursiveDfsJoinPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryRecursiveDfsJoinPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryRecursiveDfsJoinPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryRecursiveDfsJoinPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryRecursiveDfsJoinPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// CanCorrelate reports that this operator anchors a correlation between its
+// children (the seed leg binds what the recursive leg reads), mirroring physicalRecursiveDfsJoinWrapper.
+func (p *RecordQueryRecursiveDfsJoinPlan) CanCorrelate() bool { return true }

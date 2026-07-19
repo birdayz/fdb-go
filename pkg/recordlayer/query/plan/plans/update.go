@@ -18,6 +18,7 @@ import (
 //
 // Result type: same as inner.
 type RecordQueryUpdatePlan struct {
+	PlanExprBase
 	inner            RecordQueryPlan
 	targetRecordType string
 	transforms       []expressions.UpdateTransform
@@ -115,4 +116,19 @@ func (p *RecordQueryUpdatePlan) Explain() string {
 	return fmt.Sprintf("Update(%s, [%d transforms], %s)", p.targetRecordType, len(p.transforms), innerLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryUpdatePlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryUpdatePlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryUpdatePlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryUpdatePlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryUpdatePlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

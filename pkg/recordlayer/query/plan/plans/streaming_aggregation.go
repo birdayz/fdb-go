@@ -21,6 +21,7 @@ import (
 // a sort is needed first, or the hash-aggregate path (future) is
 // used instead.
 type RecordQueryStreamingAggregationPlan struct {
+	PlanExprBase
 	inner        RecordQueryPlan
 	groupingKeys []values.Value
 	aggregates   []expressions.AggregateSpec
@@ -129,4 +130,19 @@ func (p *RecordQueryStreamingAggregationPlan) Explain() string {
 	return fmt.Sprintf("StreamingAgg(keys=[%s], %s)", strings.Join(keys, ", "), innerLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryStreamingAggregationPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryStreamingAggregationPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryStreamingAggregationPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryStreamingAggregationPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryStreamingAggregationPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

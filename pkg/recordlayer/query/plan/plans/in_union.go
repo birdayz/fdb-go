@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"reflect"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -13,6 +14,7 @@ import (
 // executed once per IN-source value, and results are merge-sorted by
 // comparison keys. Mirrors Java's RecordQueryInUnionOnValuesPlan.
 type RecordQueryInUnionPlan struct {
+	PlanExprBase
 	inner          RecordQueryPlan
 	bindingNames   []string
 	comparisonKeys []values.Value
@@ -162,4 +164,19 @@ func (p *RecordQueryInUnionPlan) Explain() string {
 	return fmt.Sprintf("InUnion(%s, bindings=%d, %s)", inner, len(p.bindingNames), dir)
 }
 
-var _ RecordQueryPlan = (*RecordQueryInUnionPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryInUnionPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryInUnionPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryInUnionPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryInUnionPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

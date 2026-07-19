@@ -26,6 +26,7 @@ go_library(
         "multi_intersection.go",
         "nested_loop_join.go",
         "plan.go",
+        "plan_expression.go",
         "plan_hash.go",
         "predicates_filter.go",
         "projection.go",

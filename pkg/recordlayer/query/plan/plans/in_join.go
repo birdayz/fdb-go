@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"reflect"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -24,6 +25,7 @@ const (
 // Mirrors Java's RecordQueryInJoinPlan hierarchy
 // (InValuesJoin, InParameterJoin, InComparandJoin).
 type RecordQueryInJoinPlan struct {
+	PlanExprBase
 	inner       RecordQueryPlan
 	bindingName string
 	sorted      bool
@@ -150,4 +152,19 @@ func (p *RecordQueryInJoinPlan) Explain() string {
 	return fmt.Sprintf("InJoin(%s, binding%s)", inner, dir)
 }
 
-var _ RecordQueryPlan = (*RecordQueryInJoinPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryInJoinPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryInJoinPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryInJoinPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryInJoinPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

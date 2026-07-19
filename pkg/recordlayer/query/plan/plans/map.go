@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -14,6 +15,7 @@ import (
 // plan's result type, and at execution time each inner row is fed
 // through the value's Evaluate to produce the output row.
 type RecordQueryMapPlan struct {
+	PlanExprBase
 	inner       RecordQueryPlan
 	resultValue values.Value
 }
@@ -31,7 +33,9 @@ func NewRecordQueryMapPlan(inner RecordQueryPlan, resultValue values.Value) *Rec
 func (p *RecordQueryMapPlan) GetInner() RecordQueryPlan { return p.inner }
 
 // GetResultValue returns the transformation value.
-func (p *RecordQueryMapPlan) GetResultValue() values.Value { return p.resultValue }
+func (p *RecordQueryMapPlan) GetResultValue() values.Value {
+	return p.resultValue
+}
 
 // GetResultType returns the result value's type.
 func (p *RecordQueryMapPlan) GetResultType() values.Type {
@@ -79,7 +83,10 @@ func (p *RecordQueryMapPlan) Explain() string {
 	return fmt.Sprintf("Map(%s, %s)", innerLabel, resultLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryMapPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryMapPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryMapPlan)(nil)
+)
 
 // WithInner returns a copy with the inner replaced and every other field
 // preserved — the extraction-relink rebuild path (see findPhysicalPlan's
@@ -89,4 +96,16 @@ func (p *RecordQueryMapPlan) WithInner(inner RecordQueryPlan) *RecordQueryMapPla
 	cp := *p
 	cp.inner = inner
 	return &cp
+}
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryMapPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryMapPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
 }

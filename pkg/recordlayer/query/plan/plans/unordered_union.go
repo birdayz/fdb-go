@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -15,6 +16,7 @@ import (
 // Distinct from RecordQueryUnionPlan which does merge-sorted output.
 // This plan simply concatenates children in implementation order.
 type RecordQueryUnorderedUnionPlan struct {
+	PlanExprBase
 	inners []RecordQueryPlan
 }
 
@@ -58,4 +60,23 @@ func (p *RecordQueryUnorderedUnionPlan) Explain() string {
 	return fmt.Sprintf("UnorderedUnion(%s)", strings.Join(parts, ", "))
 }
 
-var _ RecordQueryPlan = (*RecordQueryUnorderedUnionPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryUnorderedUnionPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryUnorderedUnionPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryUnorderedUnionPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryUnorderedUnionPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// ChildrenAsSet reports that the legs of this set operation are commutative,
+// mirroring physicalUnorderedUnionWrapper.
+func (p *RecordQueryUnorderedUnionPlan) ChildrenAsSet() bool { return true }

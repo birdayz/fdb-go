@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -20,6 +21,7 @@ import (
 // This is a STRUCTURE-ONLY port — no execution logic. The hash-set
 // dedup belongs in the execution layer.
 type RecordQueryUnorderedPrimaryKeyDistinctPlan struct {
+	PlanExprBase
 	inner RecordQueryPlan
 }
 
@@ -82,4 +84,19 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) Explain() string {
 	return fmt.Sprintf("UnorderedPrimaryKeyDistinct(%s)", innerLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryUnorderedPrimaryKeyDistinctPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryUnorderedPrimaryKeyDistinctPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryUnorderedPrimaryKeyDistinctPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

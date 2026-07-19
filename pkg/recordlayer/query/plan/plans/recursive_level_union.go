@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -14,6 +15,7 @@ import (
 // level using two temp tables (scan/insert) that are flipped between
 // levels. Mirrors Java's RecordQueryRecursiveLevelUnionPlan.
 type RecordQueryRecursiveLevelUnionPlan struct {
+	PlanExprBase
 	initialState         RecordQueryPlan
 	recursiveState       RecordQueryPlan
 	tempTableScanAlias   values.CorrelationIdentifier
@@ -107,4 +109,23 @@ func (p *RecordQueryRecursiveLevelUnionPlan) Explain() string {
 	return sb.String()
 }
 
-var _ RecordQueryPlan = (*RecordQueryRecursiveLevelUnionPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryRecursiveLevelUnionPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryRecursiveLevelUnionPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryRecursiveLevelUnionPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryRecursiveLevelUnionPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// CanCorrelate reports that this operator anchors a correlation between its
+// children (each level binds what the next level reads), mirroring physicalRecursiveLevelUnionWrapper.
+func (p *RecordQueryRecursiveLevelUnionPlan) CanCorrelate() bool { return true }

@@ -10,6 +10,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -39,6 +40,7 @@ type SortKey struct {
 // The cost model ensures index-based sort elimination is preferred
 // when an index exists.
 type RecordQueryInMemorySortPlan struct {
+	PlanExprBase
 	inner    RecordQueryPlan
 	sortKeys []SortKey
 }
@@ -143,4 +145,19 @@ func (p *RecordQueryInMemorySortPlan) Explain() string {
 	return fmt.Sprintf("InMemorySort([%s], %s)", strings.Join(keys, ", "), inner)
 }
 
-var _ RecordQueryPlan = (*RecordQueryInMemorySortPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryInMemorySortPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryInMemorySortPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryInMemorySortPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryInMemorySortPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

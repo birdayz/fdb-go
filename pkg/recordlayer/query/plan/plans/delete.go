@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -19,6 +20,7 @@ import (
 //     filter/scan that selects the target rows)
 //   - targetRecordType: the destination record type name
 type RecordQueryDeletePlan struct {
+	PlanExprBase
 	inner            RecordQueryPlan
 	targetRecordType string
 }
@@ -79,4 +81,19 @@ func (p *RecordQueryDeletePlan) Explain() string {
 	return fmt.Sprintf("Delete(%s, %s)", p.targetRecordType, innerLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryDeletePlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryDeletePlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryDeletePlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryDeletePlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryDeletePlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

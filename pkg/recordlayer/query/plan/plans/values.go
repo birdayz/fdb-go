@@ -4,6 +4,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -12,6 +13,7 @@ import (
 // LogicalValuesExpression. Mirrors SQL's VALUES (a, b, c) at execution
 // time.
 type RecordQueryValuesPlan struct {
+	PlanExprBase
 	columns []values.Value
 }
 
@@ -63,4 +65,19 @@ func (p *RecordQueryValuesPlan) Explain() string {
 	return b.String()
 }
 
-var _ RecordQueryPlan = (*RecordQueryValuesPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryValuesPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryValuesPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryValuesPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryValuesPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -15,6 +16,7 @@ import (
 //
 // Result type matches inner — distinct doesn't reshape rows.
 type RecordQueryDistinctPlan struct {
+	PlanExprBase
 	inner RecordQueryPlan
 }
 
@@ -67,7 +69,22 @@ func (p *RecordQueryDistinctPlan) Explain() string {
 	return fmt.Sprintf("Distinct(%s)", innerLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryDistinctPlan)(nil)
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryDistinctPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryDistinctPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+var (
+	_ RecordQueryPlan                  = (*RecordQueryDistinctPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryDistinctPlan)(nil)
+)
 
 // WithInner returns a copy with the inner replaced and every other field
 // preserved — the extraction-relink rebuild path (see findPhysicalPlan's

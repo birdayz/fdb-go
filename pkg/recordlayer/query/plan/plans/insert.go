@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -27,6 +28,7 @@ import (
 // Execute is NOT in the seed surface — wiring to FDBRecordStore is
 // a follow-up shift gated on the rule chain producing these plans.
 type RecordQueryInsertPlan struct {
+	PlanExprBase
 	inner            RecordQueryPlan
 	targetRecordType string
 	targetType       values.Type
@@ -100,4 +102,19 @@ func (p *RecordQueryInsertPlan) Explain() string {
 	return fmt.Sprintf("Insert(%s, %s)", p.targetRecordType, innerLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryInsertPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryInsertPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryInsertPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryInsertPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryInsertPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

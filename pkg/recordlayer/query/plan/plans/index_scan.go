@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -31,6 +32,7 @@ import (
 // (RecordQueryFetchFromPartialRecordPlan in Java) when covering-index
 // rules port.
 type RecordQueryIndexPlan struct {
+	PlanExprBase
 	indexName       string
 	scanComparisons []*predicates.ComparisonRange
 	recordTypes     []string
@@ -221,4 +223,25 @@ func (p *RecordQueryIndexPlan) Explain() string {
 	return b.String()
 }
 
-var _ RecordQueryPlan = (*RecordQueryIndexPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryIndexPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryIndexPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryIndexPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// GetCorrelatedToWithoutChildren reports the correlations reached through this
+// scan's comparison operands, mirroring physicalIndexScanWrapper.
+func (p *RecordQueryIndexPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return scanComparisonCorrelations(p.GetScanComparisons())
+}

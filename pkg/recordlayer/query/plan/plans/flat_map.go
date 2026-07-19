@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -22,6 +23,7 @@ import (
 // earlier in-memory leftOuter/innerHadMatch flag pair re-decided the extension per
 // page and was the F2 spurious-null resume bug; it was removed as dead code.
 type RecordQueryFlatMapPlan struct {
+	PlanExprBase
 	outer                        RecordQueryPlan
 	inner                        RecordQueryPlan
 	outerAlias                   values.CorrelationIdentifier
@@ -57,6 +59,7 @@ func (p *RecordQueryFlatMapPlan) GetInner() RecordQueryPlan                   { 
 func (p *RecordQueryFlatMapPlan) GetOuterAlias() values.CorrelationIdentifier { return p.outerAlias }
 func (p *RecordQueryFlatMapPlan) GetInnerAlias() values.CorrelationIdentifier { return p.innerAlias }
 func (p *RecordQueryFlatMapPlan) GetResultValue() values.Value                { return p.resultValue }
+
 func (p *RecordQueryFlatMapPlan) InheritOuterRecordProperties() bool {
 	return p.inheritOuterRecordProperties
 }
@@ -100,4 +103,23 @@ func (p *RecordQueryFlatMapPlan) Explain() string {
 	return fmt.Sprintf("FlatMap(outer=%s, inner=%s)", p.outer.Explain(), p.inner.Explain())
 }
 
-var _ RecordQueryPlan = (*RecordQueryFlatMapPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryFlatMapPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryFlatMapPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryFlatMapPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// CanCorrelate reports that this operator anchors a correlation between its
+// children (the outer leg binds the value the inner leg reads), mirroring physicalFlatMapWrapper.
+func (p *RecordQueryFlatMapPlan) CanCorrelate() bool { return true }

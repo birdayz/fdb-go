@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -34,6 +35,7 @@ type TextScan struct {
 // This is a STRUCTURE-ONLY port — no execution logic. It implements
 // RecordQueryPlan as a leaf plan (no children).
 type RecordQueryTextIndexPlan struct {
+	PlanExprBase
 	indexName string
 	textScan  TextScan
 	reverse   bool
@@ -105,4 +107,19 @@ func (p *RecordQueryTextIndexPlan) Explain() string {
 	return fmt.Sprintf("TextIndexScan(%s, %s%s)", p.indexName, p.textScan.TextComparison, dir)
 }
 
-var _ RecordQueryPlan = (*RecordQueryTextIndexPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryTextIndexPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryTextIndexPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryTextIndexPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryTextIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

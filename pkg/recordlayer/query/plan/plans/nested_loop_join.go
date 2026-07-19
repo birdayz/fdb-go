@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -21,6 +22,7 @@ import (
 // which is the underlying implementation of nested-loop joins in the
 // Record Layer.
 type RecordQueryNestedLoopJoinPlan struct {
+	PlanExprBase
 	outer       RecordQueryPlan
 	inner       RecordQueryPlan
 	predicates  []predicates.QueryPredicate
@@ -98,12 +100,14 @@ func (p *RecordQueryNestedLoopJoinPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.outer, p.inner}
 }
 
-func (p *RecordQueryNestedLoopJoinPlan) GetOuter() RecordQueryPlan    { return p.outer }
-func (p *RecordQueryNestedLoopJoinPlan) GetInner() RecordQueryPlan    { return p.inner }
-func (p *RecordQueryNestedLoopJoinPlan) GetJoinType() JoinType        { return p.joinType }
-func (p *RecordQueryNestedLoopJoinPlan) GetOuterAlias() string        { return p.outerAlias }
-func (p *RecordQueryNestedLoopJoinPlan) GetInnerAlias() string        { return p.innerAlias }
-func (p *RecordQueryNestedLoopJoinPlan) GetResultValue() values.Value { return p.resultValue }
+func (p *RecordQueryNestedLoopJoinPlan) GetOuter() RecordQueryPlan { return p.outer }
+func (p *RecordQueryNestedLoopJoinPlan) GetInner() RecordQueryPlan { return p.inner }
+func (p *RecordQueryNestedLoopJoinPlan) GetJoinType() JoinType     { return p.joinType }
+func (p *RecordQueryNestedLoopJoinPlan) GetOuterAlias() string     { return p.outerAlias }
+func (p *RecordQueryNestedLoopJoinPlan) GetInnerAlias() string     { return p.innerAlias }
+func (p *RecordQueryNestedLoopJoinPlan) GetResultValue() values.Value {
+	return p.resultValue
+}
 
 func (p *RecordQueryNestedLoopJoinPlan) GetPredicates() []predicates.QueryPredicate {
 	return p.predicates
@@ -174,4 +178,33 @@ func (p *RecordQueryNestedLoopJoinPlan) Explain() string {
 	return sb.String()
 }
 
-var _ RecordQueryPlan = (*RecordQueryNestedLoopJoinPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryNestedLoopJoinPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryNestedLoopJoinPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryNestedLoopJoinPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryNestedLoopJoinPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// GetCorrelatedToWithoutChildren walks this plan's own predicates, mirroring
+// physicalNestedLoopJoinWrapper. The predicates are this node's information — a
+// correlation reached only through them would be invisible to
+// correlation-driven rules if this returned the empty default.
+func (p *RecordQueryNestedLoopJoinPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, pred := range p.GetPredicates() {
+		for k := range predicates.GetCorrelatedToOfPredicate(pred) {
+			out[k] = struct{}{}
+		}
+	}
+	return out
+}

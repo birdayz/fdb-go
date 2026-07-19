@@ -3,6 +3,7 @@ package plans
 import (
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -10,6 +11,7 @@ import (
 // exist, or a single row with the default value if the inner is empty.
 // Mirrors Java's RecordQueryDefaultOnEmptyPlan.
 type RecordQueryDefaultOnEmptyPlan struct {
+	PlanExprBase
 	inner        RecordQueryPlan
 	defaultValue values.Value
 }
@@ -60,4 +62,19 @@ func (p *RecordQueryDefaultOnEmptyPlan) Explain() string {
 	return "DefaultOnEmpty(" + inner + ")"
 }
 
-var _ RecordQueryPlan = (*RecordQueryDefaultOnEmptyPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryDefaultOnEmptyPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryDefaultOnEmptyPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryDefaultOnEmptyPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryDefaultOnEmptyPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

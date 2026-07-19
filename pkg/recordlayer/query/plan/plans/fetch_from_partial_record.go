@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -35,6 +36,7 @@ const (
 //   - A result type (the full record type post-fetch).
 //   - A FetchIndexRecords mode.
 type RecordQueryFetchFromPartialRecordPlan struct {
+	PlanExprBase
 	inner                  RecordQueryPlan
 	translateValueFunction TranslateValueFunction
 	resultType             values.Type
@@ -140,7 +142,10 @@ func (p *RecordQueryFetchFromPartialRecordPlan) Explain() string {
 	return fmt.Sprintf("Fetch(%s)", innerLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryFetchFromPartialRecordPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryFetchFromPartialRecordPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryFetchFromPartialRecordPlan)(nil)
+)
 
 // WithInner returns a copy with the inner replaced and every other field
 // preserved — the extraction-relink rebuild path (see findPhysicalPlan's
@@ -150,4 +155,16 @@ func (p *RecordQueryFetchFromPartialRecordPlan) WithInner(inner RecordQueryPlan)
 	cp := *p
 	cp.inner = inner
 	return &cp
+}
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryFetchFromPartialRecordPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryFetchFromPartialRecordPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
 }

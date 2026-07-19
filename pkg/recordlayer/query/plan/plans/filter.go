@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -20,6 +21,7 @@ import (
 // separate concepts. ImplementFilterRule (B5 Batch A) lifts a
 // LogicalFilter into this plan.
 type RecordQueryFilterPlan struct {
+	PlanExprBase
 	predicates []predicates.QueryPredicate
 	inner      RecordQueryPlan
 }
@@ -99,4 +101,19 @@ func (p *RecordQueryFilterPlan) Explain() string {
 	return fmt.Sprintf("Filter([%d preds], %s)", len(p.predicates), innerLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryFilterPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryFilterPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryFilterPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryFilterPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryFilterPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

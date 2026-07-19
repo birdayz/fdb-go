@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -11,6 +12,7 @@ import (
 // stream of element values. Leaf plan (no children). Mirrors Java's
 // RecordQueryExplodePlan.
 type RecordQueryExplodePlan struct {
+	PlanExprBase
 	collectionValue values.Value
 	// withOrdinality, when true, makes executePlan emit a 2-field record
 	// (element, 1-based ordinal) per element instead of the bare element.
@@ -87,4 +89,28 @@ func (p *RecordQueryExplodePlan) Explain() string {
 	return fmt.Sprintf("Explode(%s)", name)
 }
 
-var _ RecordQueryPlan = (*RecordQueryExplodePlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryExplodePlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryExplodePlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryExplodePlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryExplodePlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// GetCorrelatedToWithoutChildren reports the correlations of this plan's
+// collection value, mirroring physicalExplodeWrapper.
+func (p *RecordQueryExplodePlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	if v := p.GetCollectionValue(); v != nil {
+		return values.GetCorrelatedToOfValue(v)
+	}
+	return map[values.CorrelationIdentifier]struct{}{}
+}

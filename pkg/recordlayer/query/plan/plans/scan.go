@@ -4,6 +4,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -22,6 +23,7 @@ import (
 // continuation, scan-comparison thunk. Those land when consumers
 // (Batch A index rules) need them.
 type RecordQueryScanPlan struct {
+	PlanExprBase
 	recordTypes     []string
 	flowedType      values.Type
 	reverse         bool
@@ -204,4 +206,25 @@ func typeEquals(a, b values.Type) bool {
 	return a.Equals(b)
 }
 
-var _ RecordQueryPlan = (*RecordQueryScanPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryScanPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryScanPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryScanPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryScanPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// GetCorrelatedToWithoutChildren reports the correlations reached through this
+// scan's comparison operands, mirroring physicalScanWrapper.
+func (p *RecordQueryScanPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return scanComparisonCorrelations(p.GetScanComparisons())
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -18,6 +19,7 @@ import (
 // mirrors the uncorrelated path (executor.EvaluateScalarSubquery). A user-written
 // LIMIT never sets strict: truncation is then the user's deliberate intent.
 type RecordQueryFirstOrDefaultPlan struct {
+	PlanExprBase
 	inner        RecordQueryPlan
 	defaultValue values.Value
 	strict       bool
@@ -104,4 +106,19 @@ func (p *RecordQueryFirstOrDefaultPlan) Explain() string {
 	return fmt.Sprintf("%s(%s)", name, innerLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryFirstOrDefaultPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryFirstOrDefaultPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryFirstOrDefaultPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryFirstOrDefaultPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryFirstOrDefaultPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

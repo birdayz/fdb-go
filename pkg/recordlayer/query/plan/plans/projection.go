@@ -4,6 +4,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -13,6 +14,7 @@ import (
 // / the MapPipelinedCursor mechanics. The seed models it as a distinct
 // plan node for clarity.
 type RecordQueryProjectionPlan struct {
+	PlanExprBase
 	projections []values.Value
 	aliases     []string
 	inner       RecordQueryPlan
@@ -124,4 +126,19 @@ func (p *RecordQueryProjectionPlan) Explain() string {
 	return b.String()
 }
 
-var _ RecordQueryPlan = (*RecordQueryProjectionPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryProjectionPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryProjectionPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryProjectionPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryProjectionPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

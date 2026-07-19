@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -19,6 +20,7 @@ import (
 // RecordQueryIntersectionPlan and adds a resultValue that constructs the
 // merged output row from quantifier bindings.
 type RecordQueryMultiIntersectionOnValuesPlan struct {
+	PlanExprBase
 	children      []RecordQueryPlan // N input plans (one per aggregate index)
 	comparisonKey []values.Value    // grouping columns to match on
 	resultValue   values.Value      // result constructor (grouping + aggregates)
@@ -119,4 +121,19 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) Explain() string {
 		strings.Join(parts, ", "), strings.Join(keys, ", "))
 }
 
-var _ RecordQueryPlan = (*RecordQueryMultiIntersectionOnValuesPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryMultiIntersectionOnValuesPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryMultiIntersectionOnValuesPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

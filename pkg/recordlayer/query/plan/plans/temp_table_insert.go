@@ -3,6 +3,7 @@ package plans
 import (
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -12,6 +13,7 @@ import (
 // Mirrors Java's
 // `com.apple.foundationdb.record.query.plan.plans.RecordQueryTempTableInsertPlan`.
 type RecordQueryTempTableInsertPlan struct {
+	PlanExprBase
 	inner          RecordQueryPlan
 	tempTableAlias values.CorrelationIdentifier
 	owning         bool
@@ -74,4 +76,19 @@ func (p *RecordQueryTempTableInsertPlan) Explain() string {
 	return "TempTableInsert(" + p.tempTableAlias.Name() + ", " + inner + ")"
 }
 
-var _ RecordQueryPlan = (*RecordQueryTempTableInsertPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryTempTableInsertPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryTempTableInsertPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryTempTableInsertPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryTempTableInsertPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

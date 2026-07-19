@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -26,6 +27,7 @@ import (
 // Leaf node — reads index entries (primaryKey + distance) directly from the
 // HNSW subspace; a fetch step loads the base records.
 type RecordQueryVectorIndexPlan struct {
+	PlanExprBase
 	indexName string
 	// prefixComparisons are the partition-key equality ranges that select the
 	// HNSW partition (one per partition column, left-to-right).
@@ -285,4 +287,19 @@ func eqIntPtr(a, b *int) bool {
 	return *a == *b
 }
 
-var _ RecordQueryPlan = (*RecordQueryVectorIndexPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryVectorIndexPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryVectorIndexPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryVectorIndexPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryVectorIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

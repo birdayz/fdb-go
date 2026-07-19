@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -17,6 +18,7 @@ import (
 // RecordQueryUnionPlan with comparison key values + reverse flag +
 // distinct flag).
 type RecordQueryMergeSortUnionPlan struct {
+	PlanExprBase
 	inners           []RecordQueryPlan
 	comparisonKeys   []values.Value
 	reverse          bool
@@ -115,4 +117,23 @@ func (p *RecordQueryMergeSortUnionPlan) Explain() string {
 		strings.Join(parts, ", "), len(p.comparisonKeys), dir, dedup)
 }
 
-var _ RecordQueryPlan = (*RecordQueryMergeSortUnionPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryMergeSortUnionPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryMergeSortUnionPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryMergeSortUnionPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryMergeSortUnionPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// ChildrenAsSet reports that the legs of this set operation are commutative,
+// mirroring physicalMergeSortUnionWrapper.
+func (p *RecordQueryMergeSortUnionPlan) ChildrenAsSet() bool { return true }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -16,6 +17,7 @@ import (
 //
 // Result type: same as inner (filter doesn't reshape rows).
 type RecordQueryTypeFilterPlan struct {
+	PlanExprBase
 	recordTypes []string
 	inner       RecordQueryPlan
 }
@@ -88,4 +90,19 @@ func (p *RecordQueryTypeFilterPlan) Explain() string {
 	return fmt.Sprintf("TypeFilter(%v, %s)", p.recordTypes, innerLabel)
 }
 
-var _ RecordQueryPlan = (*RecordQueryTypeFilterPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryTypeFilterPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryTypeFilterPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryTypeFilterPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryTypeFilterPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

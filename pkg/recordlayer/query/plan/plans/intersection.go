@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -22,6 +23,7 @@ import (
 // responsibility); the comparison-key columns are matched against
 // each row to determine intersection membership.
 type RecordQueryIntersectionPlan struct {
+	PlanExprBase
 	inners              []RecordQueryPlan
 	comparisonKeyValues []values.Value
 }
@@ -107,4 +109,23 @@ func (p *RecordQueryIntersectionPlan) Explain() string {
 	return fmt.Sprintf("Intersection(%s)", strings.Join(parts, ", "))
 }
 
-var _ RecordQueryPlan = (*RecordQueryIntersectionPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryIntersectionPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryIntersectionPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryIntersectionPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryIntersectionPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// ChildrenAsSet reports that the legs of this set operation are commutative,
+// mirroring physicalIntersectionWrapper.
+func (p *RecordQueryIntersectionPlan) ChildrenAsSet() bool { return true }

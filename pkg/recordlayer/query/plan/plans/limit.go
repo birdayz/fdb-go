@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -20,6 +21,7 @@ import (
 // a literal LIMIT 0; the no-op-limit elimination / limit-merge rules decline on
 // a non-nil limitValue rather than reading the sentinel.
 type RecordQueryLimitPlan struct {
+	PlanExprBase
 	inner      RecordQueryPlan
 	limit      int64
 	offset     int64
@@ -115,4 +117,19 @@ func (p *RecordQueryLimitPlan) Explain() string {
 	return fmt.Sprintf("Limit(%s, %s)", capStr, p.inner.Explain())
 }
 
-var _ RecordQueryPlan = (*RecordQueryLimitPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryLimitPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryLimitPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryLimitPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryLimitPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

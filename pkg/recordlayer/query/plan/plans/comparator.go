@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -23,6 +24,7 @@ import (
 //   - abortOnComparisonFailure: whether to abort execution when a
 //     comparison mismatch is detected (used in testing).
 type RecordQueryComparatorPlan struct {
+	PlanExprBase
 	children                 []RecordQueryPlan
 	comparisonKeyValues      []values.Value
 	referencePlanIndex       int
@@ -152,4 +154,19 @@ func (p *RecordQueryComparatorPlan) Explain() string {
 		len(p.comparisonKeyValues), dir)
 }
 
-var _ RecordQueryPlan = (*RecordQueryComparatorPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryComparatorPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryComparatorPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryComparatorPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryComparatorPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -74,6 +75,7 @@ func (s *RelativeProbabilityPlanSelector) GetProbabilities() []int { return s.pr
 // at runtime. The selector determines which child plan to use via
 // a PlanSelector policy. Mirrors Java's RecordQuerySelectorPlan.
 type RecordQuerySelectorPlan struct {
+	PlanExprBase
 	children     []RecordQueryPlan
 	planSelector PlanSelector
 	reverse      bool
@@ -170,4 +172,19 @@ func (p *RecordQuerySelectorPlan) Explain() string {
 		strings.Join(parts, ", "), p.planSelector.String())
 }
 
-var _ RecordQueryPlan = (*RecordQuerySelectorPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQuerySelectorPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQuerySelectorPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQuerySelectorPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQuerySelectorPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}

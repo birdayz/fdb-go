@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -19,6 +20,7 @@ import (
 // predicate hierarchy (ValuePredicate, ExistentialValuePredicate, etc.) rather
 // than the legacy comparison-based filter.
 type RecordQueryPredicatesFilterPlan struct {
+	PlanExprBase
 	inner      RecordQueryPlan
 	predicates []predicates.QueryPredicate
 	innerAlias values.CorrelationIdentifier
@@ -128,7 +130,10 @@ func (p *RecordQueryPredicatesFilterPlan) Explain() string {
 	return fmt.Sprintf("PredicatesFilter(%s, [%d preds])", innerLabel, len(p.predicates))
 }
 
-var _ RecordQueryPlan = (*RecordQueryPredicatesFilterPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryPredicatesFilterPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryPredicatesFilterPlan)(nil)
+)
 
 // WithInner returns a copy with the inner replaced and every other field
 // preserved — the extraction-relink rebuild path (see findPhysicalPlan's
@@ -138,4 +143,30 @@ func (p *RecordQueryPredicatesFilterPlan) WithInner(inner RecordQueryPlan) *Reco
 	cp := *p
 	cp.inner = inner
 	return &cp
+}
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryPredicatesFilterPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryPredicatesFilterPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
+
+// GetCorrelatedToWithoutChildren walks this plan's own predicates, mirroring
+// physicalPredicatesFilterWrapper. The predicates are this node's information — a
+// correlation reached only through them would be invisible to
+// correlation-driven rules if this returned the empty default.
+func (p *RecordQueryPredicatesFilterPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, pred := range p.GetPredicates() {
+		for k := range predicates.GetCorrelatedToOfPredicate(pred) {
+			out[k] = struct{}{}
+		}
+	}
+	return out
 }

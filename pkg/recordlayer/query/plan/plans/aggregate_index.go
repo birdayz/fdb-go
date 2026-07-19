@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -20,6 +21,7 @@ import (
 //   - aggregateFunction: the name of the aggregate function
 //     (e.g. "SUM", "COUNT", "MIN", "MAX").
 type RecordQueryAggregateIndexPlan struct {
+	PlanExprBase
 	indexPlan         *RecordQueryIndexPlan
 	recordTypeName    string
 	resultType        values.Type
@@ -155,4 +157,19 @@ func (p *RecordQueryAggregateIndexPlan) Explain() string {
 		p.aggregateFunction, p.indexPlan.GetIndexName(), p.recordTypeName)
 }
 
-var _ RecordQueryPlan = (*RecordQueryAggregateIndexPlan)(nil)
+var (
+	_ RecordQueryPlan                  = (*RecordQueryAggregateIndexPlan)(nil)
+	_ expressions.RelationalExpression = (*RecordQueryAggregateIndexPlan)(nil)
+)
+
+// EqualsWithoutChildren is the RelationalExpression-shaped comparison; see
+// planEqualsAsExpression.
+func (p *RecordQueryAggregateIndexPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	return planEqualsAsExpression(p, other)
+}
+
+// WithQuantifiers returns this plan unchanged — it has no quantifiers to
+// replace while children are raw pointers (RFC-183 P5 step 1).
+func (p *RecordQueryAggregateIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return p
+}
