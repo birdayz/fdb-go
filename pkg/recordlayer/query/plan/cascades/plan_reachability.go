@@ -104,9 +104,21 @@ func CheckPlanReachability(expr expressions.RelationalExpression) []Reachability
 	return out
 }
 
-func collectReachability(expr expressions.RelationalExpression, plan plans.RecordQueryPlan, out *[]ReachabilityViolation) {
+// collectReachability appends violations and returns the number of edges it
+// ACTUALLY compared against a group.
+//
+// The compared count is produced HERE, incremented immediately before the
+// member scan, and not by a sibling helper. An earlier revision computed it in
+// a separate countComparedEdges walk, which made the anti-blindness guard
+// unable to detect the very failure it names: stubbing this function to return
+// immediately left the checker totally blind, yet the separate counter still
+// reported 17884 compared edges and the ratchet went GREEN. A guard that
+// cannot observe the thing it guards is worse than none, because it reads as
+// coverage.
+func collectReachability(expr expressions.RelationalExpression, plan plans.RecordQueryPlan, out *[]ReachabilityViolation) int {
 	children := plan.GetChildren()
 	quants := expr.GetQuantifiers()
+	compared := 0
 
 	for i, child := range children {
 		if child == nil {
@@ -152,6 +164,7 @@ func collectReachability(expr expressions.RelationalExpression, plan plans.Recor
 		// Reachable if ANY member produces this child. A group legitimately
 		// holds alternatives; the plan being built on one of them is the
 		// optimizer choosing, not diverging.
+		compared++
 		found := false
 		for _, m := range members {
 			mp, ok := m.(physicalPlanExpression)
@@ -173,6 +186,7 @@ func collectReachability(expr expressions.RelationalExpression, plan plans.Recor
 			})
 		}
 	}
+	return compared
 }
 
 func planTypeName(p plans.RecordQueryPlan) string {
@@ -259,39 +273,14 @@ func recordReachability(expr expressions.RelationalExpression) {
 	if plan == nil {
 		return
 	}
-	v := CheckPlanReachability(expr)
-
-	compared := countComparedEdges(expr, plan)
+	var v []ReachabilityViolation
+	comparedEdges := collectReachability(expr, plan, &v)
 
 	reachMu.Lock()
 	defer reachMu.Unlock()
 	reachEdges += len(plan.GetChildren())
-	reachCompared += compared
+	reachCompared += comparedEdges
 	reachViolations = append(reachViolations, v...)
-}
-
-// countComparedEdges counts only the edges actually CHECKED against a group —
-// a child with a quantifier ranging over a non-empty reference.
-//
-// reachEdges counts every plan child unconditionally, which makes it useless
-// as an anti-blindness signal: if the checker silently stopped comparing
-// anything, reachEdges would still be in the thousands while the violation
-// count sat at zero, and the ratchet would read green. Only this number can
-// distinguish "clean" from "not looking".
-func countComparedEdges(expr expressions.RelationalExpression, plan plans.RecordQueryPlan) int {
-	quants := expr.GetQuantifiers()
-	n := 0
-	for i, child := range plan.GetChildren() {
-		if child == nil || i >= len(quants) {
-			continue
-		}
-		ref := quants[i].GetRangesOver()
-		if ref == nil || len(ref.AllMembers()) == 0 {
-			continue
-		}
-		n++
-	}
-	return n
 }
 
 // ReachabilityReport renders the accumulated tally: per-plan-type counts by
