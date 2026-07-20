@@ -30,6 +30,9 @@ func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
 	if q.Join != nil {
 		return oracleJoinRows(c, q, projection)
 	}
+	if q.ThreeWay != nil {
+		return oracleThreeWayJoin(c, q, projection)
+	}
 	// A non-correlated scalar subquery is evaluated ONCE, its value shared by
 	// every outer row (that is the whole point of "non-correlated").
 	var scalarVal any
@@ -212,6 +215,15 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 		}
 	}
 
+	return sortAndProjectJoin(combined, q, projection), nil
+}
+
+// sortAndProjectJoin applies the query's ORDER BY (if any) to the combined join
+// rows and projects each to the aliased output columns (L_ID, M_A, …). Shared
+// by the 2-way and 3-way join oracles so their ordering and projection are
+// identical by construction. The oracle never applies LIMIT (§3): diffRows owns
+// the LIMIT membership rule.
+func sortAndProjectJoin(combined []Row, q Query, projection []string) []Row {
 	if len(q.OrderBy) > 0 {
 		sort.SliceStable(combined, func(i, j int) bool {
 			for _, k := range q.OrderBy {
@@ -225,7 +237,6 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 			return false
 		})
 	}
-
 	out := make([]Row, 0, len(combined))
 	for _, row := range combined {
 		p := make(Row, len(projection))
@@ -234,7 +245,58 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 		}
 		out = append(out, p)
 	}
-	return out, nil
+	return out
+}
+
+// oracleThreeWayJoin evaluates a 3-way self-join as a plain triple nested loop
+// over the authoritative rows: L↔M on the first key, M↔R on the second, then
+// the post-join WHERE. Independent of any build order the planner picks — that
+// order-independence is exactly what the differential checks.
+func oracleThreeWayJoin(c *Case, q Query, projection []string) ([]Row, error) {
+	s := q.ThreeWay
+	eq := predicates.NewLiteralComparison(predicates.ComparisonEquals, nil)
+	var combined []Row
+	for _, l := range c.Rows {
+		for _, m := range c.Rows {
+			lm, err := eq.EvalAgainst(l[s.LMLeft], m[s.LMRight])
+			if err != nil {
+				return nil, err
+			}
+			if lm != predicates.TriTrue {
+				continue
+			}
+			for _, r := range c.Rows {
+				mr, err := eq.EvalAgainst(m[s.MRMid], r[s.MRRight])
+				if err != nil {
+					return nil, err
+				}
+				if mr != predicates.TriTrue {
+					continue
+				}
+				row := make(Row, 3*(len(c.Table.Cols)+1))
+				for k, v := range l {
+					row["L."+k] = v
+				}
+				for k, v := range m {
+					row["M."+k] = v
+				}
+				for k, v := range r {
+					row["R."+k] = v
+				}
+				if q.Where != nil {
+					wb, werr := evalBool(q.Where, row)
+					if werr != nil {
+						return nil, werr
+					}
+					if wb != predicates.TriTrue {
+						continue
+					}
+				}
+				combined = append(combined, row)
+			}
+		}
+	}
+	return sortAndProjectJoin(combined, q, projection), nil
 }
 
 // scalarSubValue evaluates a non-correlated aggregate scalar subquery: fold the

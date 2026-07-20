@@ -238,14 +238,34 @@ type ScalarSubSpec struct {
 	Filter   *Pred                     // optional inner WHERE (Qual empty; col op literal); nil = whole table
 }
 
+// ThreeWayJoinSpec is a 3-way self-join over the case's table under aliases L,
+// M, R, chained `L.LMLeft = M.LMRight` and `M.MRMid = R.MRRight`. A 3-way join
+// exercises JOIN ORDERING — the planner picks among 3! build orders and must
+// keep every join key correct through the chosen order — which the 2-way
+// self-join cannot reach. INNER only: mixing an outer leg in would hit the
+// documented multi-leg source-relative-ordinal executor gap (see
+// TestFDB_LeftJoinPkOrdinal_KnownExecutorGap), a separate workstream. The oracle
+// stays a plain triple nested loop over the same authoritative rows.
+type ThreeWayJoinSpec struct {
+	LMLeft  string // L column of the L↔M key
+	LMRight string // M column of the L↔M key
+	MRMid   string // M column of the M↔R key
+	MRRight string // R column of the M↔R key
+	// Comma expresses the joins as a 3-way comma cross-join with both
+	// equalities in the WHERE; otherwise chained `JOIN … ON`. Same logical
+	// query, a different parse path into the planner.
+	Comma bool
+}
+
 // Query is one generated query body; the runner executes it under every
 // projection variant and cross-checks row identity via ID.
 type Query struct {
-	Agg       *AggSpec       // nil = not an aggregate query
-	Join      *JoinSpec      // nil = single-table query
-	Exists    *ExistsSpec    // non-nil = append a correlated [NOT] EXISTS to WHERE
-	ScalarSub *ScalarSubSpec // non-nil = append a scalar-subquery comparison to WHERE
-	Where     *BoolNode      // nil = no WHERE
+	Agg       *AggSpec          // nil = not an aggregate query
+	Join      *JoinSpec         // nil = single-table query
+	ThreeWay  *ThreeWayJoinSpec // non-nil = 3-way self-join
+	Exists    *ExistsSpec       // non-nil = append a correlated [NOT] EXISTS to WHERE
+	ScalarSub *ScalarSubSpec    // non-nil = append a scalar-subquery comparison to WHERE
+	Where     *BoolNode         // nil = no WHERE
 	OrderBy   []OrderKey
 	Limit     int  // 0 = no LIMIT
 	Offset    int  // 0 = no OFFSET (only emitted alongside LIMIT + ORDER BY)
@@ -294,6 +314,22 @@ func (c *Case) joinProjections() [][]string {
 	}
 }
 
+// threeWayProjections are the projection variants for a 3-way join query.
+func (c *Case) threeWayProjections() [][]string {
+	var wide []string
+	for _, side := range []string{"L", "M", "R"} {
+		wide = append(wide, side+".ID")
+		for _, col := range c.Table.Cols {
+			wide = append(wide, side+"."+col.Name)
+		}
+	}
+	return [][]string{
+		wide,
+		{"L.ID", "M.ID", "R.ID"},
+		{"R.ID", "M.ID", "L.ID", "M.B"},
+	}
+}
+
 // ProjectionsFor returns the projection variants appropriate to the query
 // (join queries never use `SELECT *` — see JoinSpec; an aggregate's output
 // list is fixed by its own shape).
@@ -303,6 +339,8 @@ func (c *Case) ProjectionsFor(q Query) [][]string {
 		return [][]string{nil}
 	case q.Join != nil:
 		return c.joinProjections()
+	case q.ThreeWay != nil:
+		return c.threeWayProjections()
 	}
 	return c.Projections()
 }
@@ -372,6 +410,75 @@ func existsSQL(e *ExistsSpec, tbl string) string {
 	}
 	b.WriteString(")")
 	return b.String()
+}
+
+// genThreeWayJoin builds a 3-way self-join chain `L JOIN M ON L.k=M.k JOIN R ON
+// M.k=R.k` (or the comma form), plus a small conjunction of qualified
+// single-sided predicates. Each key's probed side prefers an indexed column so
+// the planner has correlated-index access across whichever build order it picks.
+func genThreeWayJoin(rng *rand.Rand, table TableDef) Query {
+	indexed := map[string]bool{}
+	for _, idx := range table.Indexes {
+		for _, cc := range idx.Cols {
+			indexed[cc] = true
+		}
+	}
+	allBig := []string{"ID"}
+	// The PROBED side of each key (LMRight/MRRight) is heavily weighted toward
+	// the unique pk. A domain-0..9 key on BOTH sides makes each self-join leg
+	// fan out ~n/10, so a 3-way chain over 120 rows yields ~17k result rows and
+	// an O(n^3) oracle — tripling sweep wall-clock. Probing the pk keeps most
+	// chains bounded (each step matches ≤1 row) while still exercising join
+	// ORDERING and correlated index access, which is the point.
+	probed := []string{"ID", "ID", "ID"} // ID weighted 3x
+	for _, col := range table.Cols {
+		if col.Type == ColBigint {
+			allBig = append(allBig, col.Name)
+			if indexed[col.Name] {
+				probed = append(probed, col.Name)
+			}
+		}
+	}
+	spec := &ThreeWayJoinSpec{
+		LMLeft:  allBig[rng.IntN(len(allBig))],
+		LMRight: probed[rng.IntN(len(probed))],
+		MRMid:   allBig[rng.IntN(len(allBig))],
+		MRRight: probed[rng.IntN(len(probed))],
+		Comma:   rng.IntN(2) == 0,
+	}
+
+	// 1-2 qualified single-sided filters (Qual L/M/R). AND-only (no top-level
+	// OR), so the comma form's `joinEq AND <where>` needs no parenthesization.
+	var leaves []*Pred
+	n := 1 + rng.IntN(2)
+	sides := []string{"L", "M", "R"}
+	for i := 0; i < n; i++ {
+		col := table.Cols[rng.IntN(len(table.Cols))]
+		p := genPred(rng, col, indexed[col.Name])
+		p.Qual = sides[rng.IntN(len(sides))]
+		leaves = append(leaves, p)
+	}
+	kids := make([]*BoolNode, len(leaves))
+	for i, l := range leaves {
+		kids[i] = &BoolNode{Leaf: l}
+	}
+	var where *BoolNode
+	if len(kids) == 1 {
+		where = kids[0]
+	} else {
+		where = &BoolNode{And: true, Kids: kids}
+	}
+
+	q := Query{ThreeWay: spec, Where: where}
+	// A total ORDER BY over all three ids keeps the ordered comparison exact.
+	if rng.IntN(2) == 0 {
+		q.OrderBy = []OrderKey{
+			{Col: "ID", Qual: "L", Desc: rng.IntN(2) == 0},
+			{Col: "ID", Qual: "M"},
+			{Col: "ID", Qual: "R"},
+		}
+	}
+	return q
 }
 
 // genScalarSub builds a non-correlated aggregate scalar subquery comparison.
@@ -531,6 +638,14 @@ func Generate(seed uint64) *Case {
 		// ~1/4 self-joins: the join planner is a large surface and the
 		// oracle stays a plain nested loop over the same authoritative rows.
 		switch {
+		case rng.IntN(10) == 0:
+			// 3-way self-join — exercises join ORDERING (3! build orders).
+			// Rarer than 2-way: the planner explores far more build orders for a
+			// 3-way chain, so each such query costs ~15x a single-table one; a
+			// higher rate would blow the nightly deep-sweep timeout for little
+			// extra coverage (thousands of 3-way samples still accrue per night).
+			queries = append(queries, genThreeWayJoin(rng, table))
+			continue
 		case rng.IntN(4) == 0:
 			queries = append(queries, genJoinQuery(rng, table))
 			continue
@@ -1023,7 +1138,7 @@ func (c *Case) SQL(q Query, projection []string) string {
 	}
 	if projection == nil {
 		b.WriteString("*")
-	} else if q.Join != nil {
+	} else if q.Join != nil || q.ThreeWay != nil {
 		// Qualified columns, each with a unique alias (l_id, r_a, …) so no
 		// two output columns share a name.
 		outs := make([]string, len(projection))
@@ -1041,6 +1156,15 @@ func (c *Case) SQL(q Query, projection []string) string {
 	b.WriteString(" FROM ")
 	tbl := strings.ToLower(c.Table.Name)
 	switch {
+	case q.ThreeWay != nil:
+		s := q.ThreeWay
+		if s.Comma {
+			fmt.Fprintf(&b, "%s AS l, %s AS m, %s AS r", tbl, tbl, tbl)
+		} else {
+			fmt.Fprintf(&b, "%s AS l JOIN %s AS m ON l.%s = m.%s JOIN %s AS r ON m.%s = r.%s",
+				tbl, tbl, strings.ToLower(s.LMLeft), strings.ToLower(s.LMRight),
+				tbl, strings.ToLower(s.MRMid), strings.ToLower(s.MRRight))
+		}
 	case q.Join == nil:
 		b.WriteString(tbl)
 	case q.Join.LeftOuter:
@@ -1059,6 +1183,12 @@ func (c *Case) SQL(q Query, projection []string) string {
 	if q.Join != nil && !q.Join.Inner {
 		joinEq = fmt.Sprintf("l.%s = r.%s",
 			strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
+	}
+	if q.ThreeWay != nil && q.ThreeWay.Comma {
+		s := q.ThreeWay
+		joinEq = fmt.Sprintf("l.%s = m.%s AND m.%s = r.%s",
+			strings.ToLower(s.LMLeft), strings.ToLower(s.LMRight),
+			strings.ToLower(s.MRMid), strings.ToLower(s.MRRight))
 	}
 	// Build the WHERE as a list of top-level AND conjuncts: the join equality
 	// (comma-join queries), the boolean predicate tree, and the appended

@@ -2,9 +2,15 @@ name: Nightly RowDiff
 
 # RFC-182's generative row-soundness differential harness runs 25 seeds in the
 # PR suite — enough to keep the plan-family templates honest, nowhere near
-# enough to find anything. RFC-183's exit criteria ask for >=50k seeds, which
-# at ~3.7 seeds/s is a ~3.75h sweep that cannot live in `just test`. This job
-# is where that scale actually happens.
+# enough to find anything. RFC-183's exit criteria ask for >=50k seeds; this
+# job is where that scale actually happens.
+#
+# Seed budget (~18k, down from 50k): the generator now emits 3-way self-joins,
+# whose Cascades build-order search costs ~15x a single-table query, dropping
+# throughput from ~3.7 to ~1.5 seeds/s. To keep the un-paged sweep near ~3.3h
+# (leaving room for the paging step inside the 5h job), it covers ~18k seeds/
+# night. The day-of-year seed rotation still accumulates >50k across a few
+# nights, and the 3-way class alone adds thousands of samples every night.
 #
 # It does NOT gate PRs (far too heavy); a red run here is a release blocker,
 # surfaced like the nightly-fuzz and nightly-stress failures.
@@ -21,9 +27,9 @@ on:
   workflow_dispatch:
     inputs:
       seeds:
-        description: 'Seed count (default 50000)'
+        description: 'Seed count (default 18000; 3-way joins ~15x/query slow the sweep)'
         required: false
-        default: '50000'
+        default: '18000'
       seed_start:
         description: 'First seed (default: rotated by day-of-year)'
         required: false
@@ -76,7 +82,7 @@ jobs:
       - name: Resolve seed range
         if: steps.window.outputs.ok == 'true'
         id: seeds
-        # ROTATE the start seed. Re-walking seeds 1..50000 every night
+        # ROTATE the start seed. Re-walking the same window every night
         # re-proves what last night already proved; the generator's space is
         # effectively unbounded, so fresh ranges are free coverage. Day-of-year
         # gives a deterministic, non-overlapping window per night that a
@@ -84,7 +90,7 @@ jobs:
         # can replay with ROWDIFF_SEED_START.
         run: |
           SEEDS="${{ github.event.inputs.seeds }}"
-          SEEDS="${SEEDS:-50000}"
+          SEEDS="${SEEDS:-18000}"
           START="${{ github.event.inputs.seed_start }}"
           if [ -z "$START" ]; then
             DOY=$(date -u +%-j)
