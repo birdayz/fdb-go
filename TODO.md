@@ -1480,8 +1480,22 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
        The code comment's Java-parity claim is only HALF true: Java's
        `RecordQueryUnorderedPrimaryKeyDistinctPlan` also uses a fresh HashSet per page but dedups by
        PRIMARY KEY (unique per record), so the hazard doesn't bite it; Go routes `SELECT DISTINCT
-       col` (dedup by projected VALUE) through the same fresh-set shape, where it DOES bite. Verify
-       whether Java routes value-distinct through a sorted/group-by distinct that resumes cleanly.
+       col` (dedup by projected VALUE) through the same fresh-set shape, where it DOES bite.
+       DEFINITIVELY RESOLVED (2026-07-20, read the Java source): Java's fdb-relational SQL layer
+       does NOT dedup SELECT DISTINCT AT ALL. `QueryVisitor.visitSimpleTable` never reads the
+       DISTINCT token; there is NO `.DISTINCT()` consumer anywhere in relational-core; all 3
+       Java yamsql SELECT-DISTINCT tests use already-distinct data (prove parsing, not dedup).
+       So there is no Java value-distinct path to match — Go's is a pure read-side EXTENSION and
+       the continuation is Go-internal. IMPLEMENTATION NOW TRACTABLE (all pieces confirmed to
+       exist): (a) InMemorySort physical operator exists (RecordQueryInMemorySortPlan +
+       MemorySortContinuation, resume-clean); (b) streaming dedup cursor + DedupContinuation
+       (innerContinuation+lastValue) exist in pkg/recordlayer/dedup_cursor.go (no prod callers —
+       ready to wire); (c) the streaming-agg rule's InMemorySort+pinOrderedSpine pattern is the
+       exact template; (d) per-column sort keys built via
+       values.NewFieldValueWithResolvedOrdinal(col, i, typ) over the inner's RecordType (see
+       rule_aggregate_data_access.go:418). CAVEAT: inserting InMemorySort under every non-elided
+       distinct churns EXPLAIN for all SELECT-DISTINCT plan-shape tests — expect broad manifest
+       churn; the elision path (PK/unique-key coverage) MUST be preserved.
        FIX DESIGN (ordering-aware distinct arc — Graefe-gated, wire-compat-sensitive, ~multi-piece):
          (1) EXECUTOR: a STREAMING distinct — when the input is ordered by the distinct key, emit a
              row only when its key differs from the previous emitted key; carry ONLY that last key

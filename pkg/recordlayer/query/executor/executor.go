@@ -1540,15 +1540,21 @@ func executeDistinct(
 	// key string per distinct row, held for the whole scan). Charge each NEW
 	// key's bytes against the statement memory budget via boundedSet.
 	//
-	// The set is rebuilt FRESH per page (nothing of it rides the
-	// continuation), so duplicates whose occurrences straddle an internal
-	// page break are re-admitted. Java's RecordQueryUnorderedDistinctPlan
-	// has the IDENTICAL fresh-HashSet shape — cross-page dedup is a known
-	// weakness of the operator in both engines, not a divergence — but
-	// Go's automatic internal paging surfaces it inside one statement,
-	// where Java only hits it on client-driven resumes. A fix means
-	// carrying the seen-set (or a sorted-input requirement) through the
-	// continuation — an ordering-aware arc, tracked in TODO.md.
+	// KNOWN BUG (TODO.md C5): the set is rebuilt FRESH per page (nothing of
+	// it rides the continuation), so a duplicate whose run straddles a page
+	// break is re-admitted — `SELECT DISTINCT <non-unique-col>` over a result
+	// larger than one page returns WRONG ROWS. This is NOT Java parity: Java's
+	// fdb-relational SQL layer does NOT implement SELECT DISTINCT dedup at all
+	// (QueryVisitor.visitSimpleTable never reads the DISTINCT token; no
+	// `.DISTINCT()` consumer exists in relational-core; its record-layer
+	// RecordQueryUnordered[PrimaryKey]DistinctPlan operators exist but the SQL
+	// layer never routes SELECT DISTINCT through them — they dedup index-OR
+	// output by PK, whose duplicates are LOCAL, not value-distinct across a
+	// scan). SELECT DISTINCT is a GO-ONLY read-side extension
+	// (rule_implement_distinct_final.go header), so this continuation is
+	// GO-INTERNAL — there is no Java wire format to match, and the fix (an
+	// ordered STREAMING distinct that carries only the last emitted key) is
+	// unblocked. Tracked in TODO.md C5.
 	seen := newBoundedSet[string](props.State)
 	filtered := &filterResultCursor{
 		inner: innerCursor,
