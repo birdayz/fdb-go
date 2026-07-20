@@ -35,13 +35,9 @@ func TestImplementUnionRule_FiresAfterAllChildrenImplemented(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementUnionRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalUnionWrapper)
+	plan, ok := yielded[0].(*plans.RecordQueryUnionPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalUnionWrapper", yielded[0])
-	}
-	plan := wrap.GetPlan()
-	if plan == nil {
-		t.Fatal("wrapper has no plan")
+		t.Fatalf("yield = %T, want *plans.RecordQueryUnionPlan", yielded[0])
 	}
 	inners := plan.GetInners()
 	if len(inners) != 2 {
@@ -117,8 +113,8 @@ func TestImplementUnionRule_ThreeChildren(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementUnionRule yielded %d, want 1", len(yielded))
 	}
-	wrap := yielded[0].(*physicalUnionWrapper)
-	if got := len(wrap.GetPlan().GetInners()); got != 3 {
+	plan := yielded[0].(*plans.RecordQueryUnionPlan)
+	if got := len(plan.GetInners()); got != 3 {
 		t.Fatalf("union plan inners = %d, want 3", got)
 	}
 }

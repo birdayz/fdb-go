@@ -253,7 +253,7 @@ func TestPlanner_DeleteOverScanProducesPhysicalDelete(t *testing.T) {
 // implementation. Physical yields land ONLY in FinalMembers and
 // OptimizeGroup prunes finals to the winner (Java's prune-to-1), so a
 // SPECIFIC union wrapper type is no longer guaranteed to be visible
-// after Plan() — the ordered physicalUnionWrapper competes with the
+// after Plan() — the ordered RecordQueryUnionPlan competes with the
 // sibling unordered implementation and either may win. The wrapper's
 // FORMATION is pinned by the direct-fire tests in
 // rule_implement_union_test.go; this test pins that the full planner
@@ -278,7 +278,7 @@ func TestPlanner_UnionOverTwoScansProducesPhysicalUnion(t *testing.T) {
 	var unionPlan plans.RecordQueryPlan
 	isPhysicalUnion := func(expr expressions.RelationalExpression) bool {
 		switch w := expr.(type) {
-		case *physicalUnionWrapper:
+		case *plans.RecordQueryUnionPlan:
 			unionPlan = w.GetRecordQueryPlan()
 			return true
 		case *physicalUnorderedUnionWrapper:

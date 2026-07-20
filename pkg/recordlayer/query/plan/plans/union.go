@@ -34,6 +34,16 @@ func NewRecordQueryUnionPlan(inners []RecordQueryPlan) *RecordQueryUnionPlan {
 	return &RecordQueryUnionPlan{childQs: QuantifiersOverPlans(inners)}
 }
 
+// NewRecordQueryUnionPlanFromQuantifiers builds the union directly over the
+// LIVE leg quantifiers the implement rule already memoized, rather than
+// snapshotting bare plans. The plan is then its own cascades expression
+// carrying the leg edges once — no wrapper storing a second copy (RFC-184 W2).
+func NewRecordQueryUnionPlanFromQuantifiers(childQs []expressions.Quantifier) *RecordQueryUnionPlan {
+	cp := make([]expressions.Quantifier, len(childQs))
+	copy(cp, childQs)
+	return &RecordQueryUnionPlan{childQs: cp}
+}
+
 // GetInners returns the union's inner plans, dereferenced through the
 // quantifiers and in leg order.
 func (p *RecordQueryUnionPlan) GetInners() []RecordQueryPlan {
@@ -118,9 +128,29 @@ func (p *RecordQueryUnionPlan) WithQuantifiers(qs []expressions.Quantifier) expr
 	return &cp
 }
 
-// ChildrenAsSet reports that the legs of this set operation are commutative,
-// mirroring physicalUnionWrapper.
+// ChildrenAsSet reports that the legs of this set operation are commutative —
+// UNION children are bag-equivalent regardless of order.
 func (p *RecordQueryUnionPlan) ChildrenAsSet() bool { return true }
+
+// GetResultValue flows the first leg's object value (union legs are
+// column-aligned by construction, so any leg's row shape stands in). Falls back
+// to a fresh quantified object value when there are no legs.
+func (p *RecordQueryUnionPlan) GetResultValue() values.Value {
+	if len(p.childQs) == 0 {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.childQs[0].GetFlowedObjectValue()
+}
+
+// WithChildren rebuilds over fresh leg quantifiers — the optional interface
+// plan extraction uses to preserve the strict-singleton invariant. Delegates to
+// WithQuantifiers; the leg count must match.
+func (p *RecordQueryUnionPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != len(p.childQs) {
+		return nil, fmt.Errorf("RecordQueryUnionPlan.WithChildren: expected %d legs, got %d", len(p.childQs), len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
+}
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryUnionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

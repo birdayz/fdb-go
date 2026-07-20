@@ -141,7 +141,7 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 		switch w := f.(type) {
 		case *physicalUnorderedUnionWrapper:
 			unionPlan = w.GetRecordQueryPlan()
-		case *physicalUnionWrapper:
+		case *plans.RecordQueryUnionPlan:
 			unionPlan = w.GetRecordQueryPlan()
 		}
 		if unionPlan != nil {

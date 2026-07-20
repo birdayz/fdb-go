@@ -18,7 +18,7 @@ import (
 // reduction that picks a unified row-shape Value across children. Go
 // approximates by returning the first child's flowed object value —
 // union legs are column-aligned by construction, so any child's shape
-// stands in (physicalUnionWrapper does the same).
+// stands in (the bare RecordQueryUnionPlan does the same).
 type LogicalUnionExpression struct {
 	quantifiers []Quantifier
 }

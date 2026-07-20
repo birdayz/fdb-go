@@ -197,8 +197,8 @@ func TestImplementFilterRule_FiresOverPhysicalIntersection(t *testing.T) {
 }
 
 // TestImplementFilterRule_FiresOverPhysicalUnion pins that
-// ImplementFilterRule fires when the inner Reference contains a
-// physicalUnionWrapper — closes the 7-wrapper symmetry gap caught
+// ImplementFilterRule fires when the inner Reference contains a bare
+// physical RecordQueryUnionPlan — closes the 7-wrapper symmetry gap caught
 // by the reviewer's late-shift batch review.
 //
 // Filter(Union(Scan, Scan)) should physically implement to
@@ -227,7 +227,7 @@ func TestImplementFilterRule_FiresOverPhysicalUnion(t *testing.T) {
 	FireExpressionRule(NewPrimaryScanRule(), refB)
 	// Step 2: Implement the union.
 	FireExpressionRule(NewImplementUnionRule(), unionRef)
-	// Step 3: Now Filter's inner Reference has a physicalUnionWrapper.
+	// Step 3: Now Filter's inner Reference has a bare RecordQueryUnionPlan.
 	yielded := FireExpressionRule(NewImplementFilterRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementFilterRule yielded %d, want 1 (Filter over physical Union)", len(yielded))

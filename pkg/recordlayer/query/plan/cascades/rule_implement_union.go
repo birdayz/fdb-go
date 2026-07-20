@@ -47,7 +47,6 @@ func (r *ImplementUnionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	innerPlans := make([]plans.RecordQueryPlan, 0, len(children))
 	winners := make([]expressions.RelationalExpression, 0, len(children))
 	for _, q := range children {
 		innerRef := q.GetRangesOver()
@@ -58,26 +57,21 @@ func (r *ImplementUnionRule) OnMatch(call *ExpressionRuleCall) {
 		if winner == nil {
 			return // any child not physical → skip the whole rule fire
 		}
-		ph, ok := winner.(physicalPlanExpression)
-		if !ok {
+		if _, ok := winner.(physicalPlanExpression); !ok {
 			return
 		}
-		innerPlans = append(innerPlans, ph.GetRecordQueryPlan())
 		winners = append(winners, winner)
 	}
 
-	unionPlan := plans.NewRecordQueryUnionPlan(innerPlans)
-
-	// Reuse the existing physical wrapper expressions from each child
-	// Reference rather than re-wrapping from scratch.
+	// Each leg ranges over its OPTIMIZE winner as a singleton memo edge.
 	childQs := make([]expressions.Quantifier, 0, len(winners))
 	for _, winner := range winners {
 		childQs = append(childQs, expressions.ForEachQuantifier(call.MemoizeExpression(winner)))
 	}
 
-	// We need a wrapper for the union plan too. Since UnionPlan has
-	// N children (not 1), we use a generic UnionWrapper.
-	call.Yield(NewPhysicalUnionWrapper(unionPlan, childQs))
+	// The union is its own cascades expression carrying those live leg edges
+	// (RFC-184 W2) — no wrapper storing a second snapshot of the legs.
+	call.Yield(plans.NewRecordQueryUnionPlanFromQuantifiers(childQs))
 }
 
 var _ ExpressionRule = (*ImplementUnionRule)(nil)

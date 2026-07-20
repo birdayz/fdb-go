@@ -71,7 +71,15 @@ func extractBestPlanWithVisited(ref *expressions.Reference, stats properties.Sta
 	if visited[ref] {
 		return nil, nil
 	}
+	// Stack-scoped, not permanent: mark the ref while its subtree is on the
+	// recursion stack (so a back-edge — recursive-CTE cycle — still short-
+	// circuits above), then unmark on the way up. A permanent mark also
+	// de-dups a SHARED sub-DAG, returning nil the second time the same ref is
+	// reached as a legitimately-separate child (e.g. two UNION legs both
+	// scanning t1) — which drops that child. Extraction produces a TREE from a
+	// memoized DAG; each reference must re-extract. Mirrors extractTieBreakHash.
 	visited[ref] = true
+	defer delete(visited, ref)
 	best := ref.GetBest(tieBrokenLess(properties.CostLessWith(stats)))
 	if best == nil {
 		return nil, nil
@@ -219,7 +227,12 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 	if visited[ref] {
 		return nil, nil
 	}
+	// Stack-scoped, not permanent — see extractBestPlanWithVisited: the mark
+	// guards a recursion-stack back-edge (recursive-CTE cycle), but must be
+	// lifted on the way up so a SHARED sub-DAG reached as two separate children
+	// re-extracts instead of dropping to nil.
 	visited[ref] = true
+	defer delete(visited, ref)
 
 	// OPTIMIZE-winner path: if the Reference has a physical winner
 	// stamped, use it directly. Non-physical winners fall through to

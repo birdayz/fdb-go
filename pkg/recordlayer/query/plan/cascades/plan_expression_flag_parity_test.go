@@ -46,9 +46,11 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 	}{
 		// --- the four ChildrenAsSet overrides ---
 		{
+			// Union lost its wrapper (RFC-184 W2) but keeps the non-default
+			// ChildrenAsSet=true override, so the plan side stays pinned here
+			// with no wrapper pair (wrap nil → wrapper checks skip).
 			name:          "Union",
 			plan:          &plans.RecordQueryUnionPlan{},
-			wrap:          &physicalUnionWrapper{},
 			childrenAsSet: true,
 		},
 		{

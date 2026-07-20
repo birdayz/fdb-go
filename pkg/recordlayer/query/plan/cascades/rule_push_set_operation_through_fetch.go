@@ -15,22 +15,24 @@ type PushUnionThroughFetchRule struct {
 
 func NewPushUnionThroughFetchRule() *PushUnionThroughFetchRule {
 	return &PushUnionThroughFetchRule{
-		matcher: NewExpressionMatcher[*physicalUnionWrapper]("phys_union_over_fetches"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryUnionPlan]("phys_union_over_fetches"),
 	}
 }
 
 func (r *PushUnionThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *PushUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
-	unionW := matching.Get[*physicalUnionWrapper](call.Bindings, r.matcher)
+	unionW := matching.Get[*plans.RecordQueryUnionPlan](call.Bindings, r.matcher)
 	pushSetOpThroughFetch(call, setOpPush{
-		quants:     unionW.innerQuants,
-		resultType: unionW.plan.GetResultType(),
+		quants:     unionW.GetQuantifiers(),
+		resultType: unionW.GetResultType(),
 		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
 			return plans.NewRecordQueryUnionPlan(inners)
 		},
-		buildWrapper: func(p plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
-			return NewPhysicalUnionWrapper(p.(*plans.RecordQueryUnionPlan), qs)
+		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
+			// Collapsed: the union is its own cascades expression over the live
+			// pushed-down quantifiers (RFC-184 W2); the snapshot plan is unused.
+			return plans.NewRecordQueryUnionPlanFromQuantifiers(qs)
 		},
 	})
 }

@@ -440,10 +440,10 @@ func TestPushUnionThroughFetch_AllChildrenHaveFetches(t *testing.T) {
 	q1 := makeChild("idx_a")
 	q2 := makeChild("idx_b")
 
-	unionPlan := plans.NewRecordQueryUnionPlan(nil)
-	unionWrapper := NewPhysicalUnionWrapper(unionPlan, []expressions.Quantifier{q1, q2})
+	// The union is its own cascades expression (RFC-184 W2).
+	unionExpr := plans.NewRecordQueryUnionPlanFromQuantifiers([]expressions.Quantifier{q1, q2})
 
-	ref := expressions.InitialOf(unionWrapper)
+	ref := expressions.InitialOf(unionExpr)
 
 	rule := NewPushUnionThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -484,10 +484,10 @@ func TestPushUnionThroughFetch_DoesNotFire_OnlyOneChildHasFetch(t *testing.T) {
 	scanRef := expressions.InitialOf(scanWrapper)
 	q2 := expressions.ForEachQuantifier(scanRef)
 
-	unionPlan := plans.NewRecordQueryUnionPlan(nil)
-	unionWrapper := NewPhysicalUnionWrapper(unionPlan, []expressions.Quantifier{q1, q2})
+	// The union is its own cascades expression (RFC-184 W2).
+	unionExpr := plans.NewRecordQueryUnionPlanFromQuantifiers([]expressions.Quantifier{q1, q2})
 
-	ref := expressions.InitialOf(unionWrapper)
+	ref := expressions.InitialOf(unionExpr)
 
 	rule := NewPushUnionThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -609,10 +609,12 @@ func TestPushUnionThroughFetch_RebuildsPlanOverPushedInners(t *testing.T) {
 	q1 := makeChild("idx_a")
 	q2 := makeChild("idx_b")
 
-	stale := plans.NewRecordQueryUnionPlan(nil)
-	unionWrapper := NewPhysicalUnionWrapper(stale, []expressions.Quantifier{q1, q2})
+	// The union is its own cascades expression (RFC-184 W2) — there is no
+	// separate plan-snapshot to go stale; the pushed union is built fresh from
+	// the live pushed-down leg quantifiers.
+	unionExpr := plans.NewRecordQueryUnionPlanFromQuantifiers([]expressions.Quantifier{q1, q2})
 
-	yielded := FireImplementationRule(NewPushUnionThroughFetchRule(), expressions.InitialOf(unionWrapper))
+	yielded := FireImplementationRule(NewPushUnionThroughFetchRule(), expressions.InitialOf(unionExpr))
 	if len(yielded) != 1 {
 		t.Fatalf("expected 1 yielded, got %d", len(yielded))
 	}
@@ -633,15 +635,17 @@ func TestPushUnionThroughFetch_RebuildsPlanOverPushedInners(t *testing.T) {
 			t.Fatalf("union child %d: got %T (%v), want the pushed INDEX plan — a Fetch child here is the double-fetch bug", i, inner, inner.Explain())
 		}
 	}
-	// The union wrapper below the fetch must carry the rebuilt plan too,
-	// not the stale snapshot.
+	// The union below the fetch must itself be the rebuilt bare plan carrying
+	// the pushed index legs — the double-fetch bug would leave Fetch children.
 	setOpExpr := findPhysicalExpr(fw.GetInnerQuantifier().GetRangesOver())
-	uw, ok := setOpExpr.(*physicalUnionWrapper)
+	uw, ok := setOpExpr.(*plans.RecordQueryUnionPlan)
 	if !ok {
-		t.Fatalf("fetch child expr: got %T, want *physicalUnionWrapper", setOpExpr)
+		t.Fatalf("fetch child expr: got %T, want *plans.RecordQueryUnionPlan", setOpExpr)
 	}
-	if uw.plan == stale {
-		t.Fatal("union wrapper still carries the STALE plan snapshot (children = fetches)")
+	for i, inner := range uw.GetInners() {
+		if inner != plans.RecordQueryPlan(indexPlans[i]) {
+			t.Fatalf("pushed union child %d: got %T, want the pushed INDEX plan (a Fetch child is the double-fetch bug)", i, inner)
+		}
 	}
 }
 
@@ -726,19 +730,18 @@ func TestPushUnionThroughFetch_PartialPush(t *testing.T) {
 	scanWrapper := &physicalScanWrapper{plan: scanPlan}
 	q3 := expressions.ForEachQuantifier(expressions.InitialOf(scanWrapper))
 
-	unionWrapper := NewPhysicalUnionWrapper(
-		plans.NewRecordQueryUnionPlan(nil), []expressions.Quantifier{q1, q2, q3},
-	)
+	// The union is its own cascades expression (RFC-184 W2).
+	unionExpr := plans.NewRecordQueryUnionPlanFromQuantifiers([]expressions.Quantifier{q1, q2, q3})
 
-	yielded := FireImplementationRule(NewPushUnionThroughFetchRule(), expressions.InitialOf(unionWrapper))
+	yielded := FireImplementationRule(NewPushUnionThroughFetchRule(), expressions.InitialOf(unionExpr))
 	if len(yielded) != 1 {
 		t.Fatalf("expected Case-2 partial push to yield once, got %d", len(yielded))
 	}
-	outer, ok := yielded[0].(*physicalUnionWrapper)
+	outer, ok := yielded[0].(*plans.RecordQueryUnionPlan)
 	if !ok {
-		t.Fatalf("expected outer union wrapper, got %T", yielded[0])
+		t.Fatalf("expected outer union plan, got %T", yielded[0])
 	}
-	outers := outer.plan.GetInners()
+	outers := outer.GetInners()
 	if len(outers) != 2 {
 		t.Fatalf("outer union arity: got %d, want 2 (merged fetch + residual scan)", len(outers))
 	}

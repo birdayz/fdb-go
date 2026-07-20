@@ -102,7 +102,7 @@ func TestComputeDistinctRecords_UnionPlanIsFalse(t *testing.T) {
 	scanW := &physicalScanWrapper{plan: scan}
 	innerRef := expressions.InitialOf(scanW)
 	qs := []expressions.Quantifier{expressions.ForEachQuantifier(innerRef)}
-	uw := NewPhysicalUnionWrapper(up, qs)
+	uw := plans.NewRecordQueryUnionPlanFromQuantifiers(qs)
 	got := computeDistinctRecords(uw, up)
 	if got {
 		t.Fatal("no-dedup UNION ALL plan must NOT report distinct records")

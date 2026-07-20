@@ -113,7 +113,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- Set operations (union, intersection) ---
 
-	case *physicalUnionWrapper:
+	// The union is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryUnionPlan:
 		// RecordQueryUnionPlan is a simple UNION ALL — no comparison keys.
 		return derivationsForSetPlan(w, nil)
 
