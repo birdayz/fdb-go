@@ -27,13 +27,16 @@ type RecordQueryDistinctPlan struct {
 	// Streaming selects the resume-clean adjacent-dedup executor
 	// (distinctStreamCursor) instead of the fresh-per-page hash-set. It is
 	// sound ONLY when the inner is ordered by the dedup key (equal rows
-	// adjacent). Every site that builds OR rebuilds a distinct decides it from
-	// the inner's derived ordering via distinctStreamingEligible — the
-	// implement rule, the physical-wrapper rebuild (via WithInner, copy-on-
-	// write), and the push-distinct-below-filter / -through-fetch rules (which
-	// recompute against their new inner, since a push preserves ordering but
-	// changes which inner the distinct sits over). Default false is the safe
-	// hash-set fallback. See TODO.md C5.
+	// adjacent). Two site kinds set it, and the distinction matters:
+	//   - Sites that build a distinct over a NEW/DIFFERENT inner RE-DERIVE it
+	//     from that inner's ordering via distinctStreamingEligible: the
+	//     implement rule, and the push-distinct-below-filter / -through-fetch
+	//     rules (a push preserves ordering but changes WHICH inner the distinct
+	//     sits over, so the decision must be recomputed).
+	//   - The physical-wrapper rebuild (WithChildren → WithInner, copy-on-write)
+	//     COPIES the flag unchanged — sound only because shell completion
+	//     relinks the SAME, identically-ordered inner, not a different one.
+	// Default false is the safe hash-set fallback. See TODO.md C5.
 	Streaming bool
 }
 

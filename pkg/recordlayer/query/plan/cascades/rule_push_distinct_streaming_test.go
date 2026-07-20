@@ -68,3 +68,62 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 			"cross-page-buggy hash-set")
 	}
 }
+
+// TestPushDistinctThroughFetch_PreservesStreaming is the symmetric pin for the
+// second rebuild site: pushing a distinct through a fetch (Distinct(Fetch(inner))
+// → Fetch(Distinct(inner))) must likewise re-derive the streaming mode against
+// the fetch's inner. A fetch preserves ordering, so a distinct over an ordered
+// inner stays streaming-eligible; the constructor rebuild would otherwise drop
+// it to the cross-page-buggy hash-set (TODO C5).
+func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
+	t.Parallel()
+
+	gRec := values.NewRecordType("", false, []values.Field{
+		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
+	})
+	scanPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
+	scanWrapper := &physicalIndexScanWrapper{plan: scanPlan}
+	scanRef := expressions.InitialOf(scanWrapper)
+
+	sortKeys := []plans.SortKey{{
+		Field:      "G",
+		NullsFirst: true,
+		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
+	}}
+	sortPlan := plans.NewRecordQueryInMemorySortPlan(scanPlan, sortKeys)
+	sortWrapper := newPhysicalInMemorySortWrapper(sortPlan, expressions.ForEachQuantifier(scanRef))
+	sortRef := expressions.InitialOf(sortWrapper)
+
+	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
+		return v, true
+	}
+	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		sortPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+	)
+	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, expressions.ForEachQuantifier(sortRef))
+	fetchRef := expressions.InitialOf(fetchWrapper)
+
+	distinctPlan := plans.NewRecordQueryDistinctPlan(fetchPlan)
+	distinctWrapper := NewPhysicalDistinctWrapper(distinctPlan, expressions.ForEachQuantifier(fetchRef))
+	ref := expressions.InitialOf(distinctWrapper)
+
+	rule := NewPushDistinctThroughFetchRule()
+	yielded := FireImplementationRule(rule, ref)
+	if len(yielded) != 1 {
+		t.Fatalf("expected 1 yielded (Fetch(Distinct(inner))), got %d", len(yielded))
+	}
+	fw, ok := yielded[0].(*physicalFetchFromPartialRecordWrapper)
+	if !ok {
+		t.Fatalf("expected physicalFetchFromPartialRecordWrapper, got %T", yielded[0])
+	}
+	inner := fw.plan.GetInner()
+	dp, ok := inner.(*plans.RecordQueryDistinctPlan)
+	if !ok {
+		t.Fatalf("fetch's inner = %T, want *RecordQueryDistinctPlan", inner)
+	}
+	if !dp.Streaming {
+		t.Fatal("pushed distinct must be Streaming=true — the fetch's inner is ordered by the " +
+			"dedup key G, so a constructor rebuild that dropped Streaming would revert to the " +
+			"cross-page-buggy hash-set")
+	}
+}

@@ -1474,16 +1474,32 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
        `RecordQueryDistinctPlan.Streaming`, set by ImplementDistinctFinalRule when
        `orderingSatisfiesGroupingKeys(EstimateOrdering(inner), projected-dedup-cols)` holds; executor
        distinctStreamCursor (distinct_stream.go). Pinned by TestFDB_SelectDistinct_CrossPageDedup
-       (N=50, scanLimit=2, incl. LIMIT/OFFSET). REMAINING: the UNORDERED case (`SELECT DISTINCT col`
+       (N=50, scanLimit=2, incl. LIMIT/OFFSET). REMAINING (needs a DESIGN pass, not a mechanical
+       extension — do NOT just insert an InMemorySort): the UNORDERED case (`SELECT DISTINCT col`
        with no ORDER BY and no covering index → primary scan) still uses the fresh-per-page hash-set
-       and re-admits. The fix is to REQUEST the dedup-key ordering so the planner inserts an
-       InMemorySort (then stream) — but that insertion MUST NOT disturb the DISTINCT +
-       ORDER-BY-on-a-NON-projected-column semantic (`SELECT DISTINCT v ORDER BY id`: dedup by v,
-       output ordered by id via a first-occurrence sort BELOW the distinct — sorting by v there would
-       destroy the required id order). So the InMemorySort must only be inserted when no conflicting
-       output ordering is required. That is the delicate remaining piece; the ordering-DETECTION step
-       (this fix) is deliberately separated from it and is safe (only ever flips to streaming when
-       the ordering already proves adjacency, else unchanged hash-set).
+       and re-admits across pages. Two candidate fixes, each with a real drawback — the choice is a
+       genuine trade-off that should get a Graefe design ACK before implementation:
+         (A) REQUEST the dedup-key ordering → planner inserts an InMemorySort, then stream. CORRECT
+             and bounded-continuation, BUT the InMemorySort BUFFERS EVERY input row (memory-bounded +
+             spills) to emit few distinct rows — a severe memory regression for the COMMON
+             low-cardinality / high-row shape (`SELECT DISTINCT status FROM huge`: 2 distinct values,
+             10M rows → buffer 10M to emit 2, where today's hash-set holds 2 keys). The streaming-agg
+             analogy does NOT transfer: GROUP BY must see every row to aggregate anyway, so its
+             InMemorySort adds no extra buffering; DISTINCT's hash-set specifically AVOIDS materializing
+             the input, so an always-sort forfeits that. Also must not disturb the DISTINCT +
+             ORDER-BY-on-a-NON-projected-column semantic (`SELECT DISTINCT v ORDER BY id`: dedup by v,
+             output ordered by id via a first-occurrence sort — sorting by v destroys the id order), so
+             gate on `GetRequestedOrderings()` being empty / a subset of the dedup cols.
+         (B) Keep the hash-set but carry the seen-set THROUGH the continuation (bounded by the
+             statement memory budget the set is already charged against). Memory-efficient and small
+             continuation for the common LOW-cardinality case; the continuation grows with cardinality,
+             but so would (A)'s sort buffer — and the budget already caps it. Simpler (executor-only,
+             no planner/plan-shape churn) and no memory regression, at the cost of a larger continuation
+             on high-cardinality distinct.
+       Likely answer: (B) for the general unordered case (memory-parity with today + resume-clean), or
+       a cardinality-aware choice between (A) and (B). The ordering-DETECTION step already shipped
+       (case-1) is deliberately separated from this and is safe on its own (only ever streams when the
+       ordering already proves adjacency, else unchanged hash-set).
        ORIGINAL DIAGNOSIS (kept for the unordered follow-up): `executeDistinct` (executor.go ~1552)
        rebuilt the `seen` hash-set FRESH per page, so any `SELECT DISTINCT <non-unique-col>` over a
        table larger than one page returned WRONG ROWS. Adversarial
