@@ -36,6 +36,9 @@ func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
 	if q.Union != nil {
 		return oracleUnionRows(c, q, projection)
 	}
+	if q.Derived != nil {
+		return oracleDerivedRows(c, q, projection)
+	}
 	// A non-correlated scalar subquery is evaluated ONCE, its value shared by
 	// every outer row (that is the whole point of "non-correlated").
 	var scalarVal any
@@ -84,6 +87,15 @@ func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
 		out = append(out, r)
 	}
 
+	return finalizeSingleTable(out, q, projection, c), nil
+}
+
+// finalizeSingleTable applies a single-table query's ORDER BY, projection, and
+// SELECT DISTINCT to the filtered rows. Shared by the plain and derived-table
+// paths so their ordering/projection/dedup are identical by construction. It
+// deliberately does NOT apply q.Limit — the oracle returns the full result
+// multiset and diffRows applies the §3 LIMIT membership rule.
+func finalizeSingleTable(out []Row, q Query, projection []string, c *Case) []Row {
 	if len(q.OrderBy) > 0 {
 		sort.SliceStable(out, func(i, j int) bool {
 			for _, k := range q.OrderBy {
@@ -110,9 +122,8 @@ func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
 		projected = append(projected, p)
 	}
 
-	// SELECT DISTINCT: dedup the PROJECTED rows (SQL semantics — distinct
-	// over the output columns). Insertion order kept; the comparator treats
-	// DISTINCT results as unordered multisets (generator drops ORDER BY).
+	// SELECT DISTINCT: dedup the PROJECTED rows (SQL semantics — distinct over
+	// the output columns).
 	if q.Distinct {
 		seen := make(map[string]struct{}, len(projected))
 		dedup := projected[:0]
@@ -126,12 +137,7 @@ func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
 		}
 		projected = dedup
 	}
-
-	// NOTE: the oracle deliberately does NOT apply q.Limit — it returns the
-	// full result multiset, and diffRows applies the §3 membership rule
-	// (any min(k,|M|)-subset unordered; exact prefix ordered, valid because
-	// generated sort keys are ID-suffixed total orders).
-	return projected, nil
+	return projected
 }
 
 // oracleJoinRows evaluates a self-join as the textbook nested loop over the
@@ -233,6 +239,38 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 	}
 
 	return sortAndProjectJoin(combined, q, projection), nil
+}
+
+// oracleDerivedRows evaluates a derived-table query. The inner is SELECT *, so
+// the derived table equals the flattened `WHERE Inner AND Outer`: filter the
+// rows by both, then finalize (ORDER BY / project / DISTINCT) exactly as a plain
+// single-table query. If the engine's flattening or scope resolution disagrees,
+// the differential catches it.
+func oracleDerivedRows(c *Case, q Query, projection []string) ([]Row, error) {
+	d := q.Derived
+	var out []Row
+	for _, r := range c.Rows {
+		if d.Inner != nil {
+			tb, err := evalBool(d.Inner, r)
+			if err != nil {
+				return nil, err
+			}
+			if tb != predicates.TriTrue {
+				continue
+			}
+		}
+		if d.Outer != nil {
+			tb, err := evalBool(d.Outer, r)
+			if err != nil {
+				return nil, err
+			}
+			if tb != predicates.TriTrue {
+				continue
+			}
+		}
+		out = append(out, r)
+	}
+	return finalizeSingleTable(out, q, projection, c), nil
 }
 
 // oracleUnionRows evaluates a UNION [ALL] of two single-table branches: filter

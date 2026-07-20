@@ -321,6 +321,21 @@ type UnionSpec struct {
 	All   bool      // UNION ALL (no dedup) vs UNION (dedup)
 }
 
+// DerivedSpec is a subquery in FROM (a derived table):
+//
+//	SELECT <proj> FROM (SELECT * FROM t WHERE <Inner>) d [WHERE <Outer>]
+//
+// The inner is SELECT * so the derived table is a pass-through equal to the
+// flattened `WHERE Inner AND Outer` — which is exactly what it tests: whether
+// the planner FLATTENS the derived table and pushes the outer predicate through
+// the subquery scope. A flattening or scope-resolution bug is a wrong-rows
+// divergence. Outer references the derived columns unqualified (d is the only
+// source).
+type DerivedSpec struct {
+	Inner *BoolNode // WHERE inside the subquery
+	Outer *BoolNode // WHERE over the derived table (nil = none)
+}
+
 // Query is one generated query body; the runner executes it under every
 // projection variant and cross-checks row identity via ID.
 type Query struct {
@@ -328,6 +343,7 @@ type Query struct {
 	Join      *JoinSpec         // nil = single-table query
 	ThreeWay  *ThreeWayJoinSpec // non-nil = 3-way self-join
 	Union     *UnionSpec        // non-nil = UNION [ALL] of two single-table branches
+	Derived   *DerivedSpec      // non-nil = subquery in FROM (derived table)
 	Exists    *ExistsSpec       // non-nil = append a correlated [NOT] EXISTS to WHERE
 	ScalarSub *ScalarSubSpec    // non-nil = append a scalar-subquery comparison to WHERE
 	Where     *BoolNode         // nil = no WHERE
@@ -584,6 +600,29 @@ func genUnionQuery(rng *rand.Rand, table TableDef) Query {
 	}}
 }
 
+// genDerivedQuery builds `SELECT <proj> FROM (SELECT * FROM t WHERE <inner>) d
+// [WHERE <outer>]`, optionally DISTINCT or ORDER BY on the outer.
+func genDerivedQuery(rng *rand.Rand, table TableDef) Query {
+	indexed := map[string]bool{}
+	for _, idx := range table.Indexes {
+		for _, cc := range idx.Cols {
+			indexed[cc] = true
+		}
+	}
+	q := Query{Derived: &DerivedSpec{Inner: genBranchWhere(rng, table, indexed)}}
+	if rng.IntN(3) != 0 {
+		q.Derived.Outer = genBranchWhere(rng, table, indexed)
+	}
+	// DISTINCT (unordered multiset) OR an ID ORDER BY — not both, mirroring the
+	// plain path (DISTINCT results are compared unordered).
+	if rng.IntN(6) == 0 {
+		q.Distinct = true
+	} else if rng.IntN(2) == 0 {
+		q.OrderBy = []OrderKey{{Col: "ID"}}
+	}
+	return q
+}
+
 // genScalarSub builds a non-correlated aggregate scalar subquery comparison.
 // The outer and aggregated columns are BIGINTs; ~half the time an inner filter
 // (often selective enough to leave the subquery empty) exercises the
@@ -760,6 +799,10 @@ func Generate(seed uint64) *Case {
 		case rng.IntN(6) == 0:
 			// UNION [ALL] of two single-table branches — set-op dedup.
 			queries = append(queries, genUnionQuery(rng, table))
+			continue
+		case rng.IntN(6) == 0:
+			// Derived table (subquery in FROM) — planner flattening / pushdown.
+			queries = append(queries, genDerivedQuery(rng, table))
 			continue
 		}
 		queries = append(queries, genQuery(rng, table))
@@ -1256,6 +1299,9 @@ func (c *Case) SQL(q Query, projection []string) string {
 	if q.Union != nil {
 		return c.unionSQL(q, projection)
 	}
+	if q.Derived != nil {
+		return c.derivedSQL(q, projection)
+	}
 	var b strings.Builder
 	b.WriteString("SELECT ")
 	if q.Distinct {
@@ -1430,6 +1476,42 @@ func (c *Case) unionSQL(q Query, projection []string) string {
 		op = "UNION ALL"
 	}
 	return branch(u.Left) + " " + op + " " + branch(u.Right)
+}
+
+// derivedSQL renders `SELECT <proj> FROM (SELECT * FROM t WHERE <inner>) d
+// [WHERE <outer>] [ORDER BY id]`. The outer references derived columns
+// unqualified (d is the only source).
+func (c *Case) derivedSQL(q Query, projection []string) string {
+	d := q.Derived
+	tbl := strings.ToLower(c.Table.Name)
+	var b strings.Builder
+	b.WriteString("SELECT ")
+	if q.Distinct {
+		b.WriteString("DISTINCT ")
+	}
+	if projection == nil {
+		b.WriteString("*")
+	} else {
+		lower := make([]string, len(projection))
+		for i, p := range projection {
+			lower[i] = strings.ToLower(p)
+		}
+		b.WriteString(strings.Join(lower, ", "))
+	}
+	fmt.Fprintf(&b, " FROM (SELECT * FROM %s", tbl)
+	if d.Inner != nil {
+		b.WriteString(" WHERE ")
+		renderBool(&b, d.Inner)
+	}
+	b.WriteString(") d")
+	if d.Outer != nil {
+		b.WriteString(" WHERE ")
+		renderBool(&b, d.Outer)
+	}
+	if len(q.OrderBy) > 0 {
+		b.WriteString(" ORDER BY id")
+	}
+	return b.String()
 }
 
 func (c *Case) aggSQL(q Query) string {
