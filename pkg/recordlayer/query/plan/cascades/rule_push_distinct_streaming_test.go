@@ -24,7 +24,7 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
 	})
 	scanPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
-	scanWrapper := &physicalIndexScanWrapper{plan: scanPlan}
+	scanWrapper := scanPlan
 	scanRef := expressions.InitialOf(scanWrapper)
 
 	sortKeys := []plans.SortKey{{
@@ -82,7 +82,7 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
 	})
 	scanPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
-	scanWrapper := &physicalIndexScanWrapper{plan: scanPlan}
+	scanWrapper := scanPlan
 	scanRef := expressions.InitialOf(scanWrapper)
 
 	sortKeys := []plans.SortKey{{

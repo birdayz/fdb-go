@@ -63,16 +63,11 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		if fetchInnerRef == nil {
 			continue
 		}
-		if idxW := findIndexScanWrapper(fetchInnerRef); idxW != nil {
-			coveredPlan := idxW.plan.WithCovering(idxW.columnNames)
-			coveringIdxW := &physicalIndexScanWrapper{
-				plan:          coveredPlan,
-				columnNames:   idxW.columnNames,
-				pkColumnNames: idxW.pkColumnNames,
-				unique:        idxW.unique,
-				covering:      true,
-			}
-			coveringRef := call.MemoizeExpression(coveringIdxW)
+		if idxPlan := findIndexScanPlan(fetchInnerRef); idxPlan != nil {
+			// The covering index scan is its own cascades expression (RFC-184 W2);
+			// WithCovering preserves the metadata already on the plan (struct copy).
+			coveredPlan := idxPlan.WithCovering(idxPlan.GetColumnNames())
+			coveringRef := call.MemoizeExpression(coveredPlan)
 			cq := expressions.ForEachQuantifier(coveringRef)
 			wrapPlan := plans.NewRecordQueryProjectionPlanWithAliases(
 				projectedValues, proj.GetAliases(), coveredPlan)

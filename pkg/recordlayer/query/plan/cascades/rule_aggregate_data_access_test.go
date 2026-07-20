@@ -42,7 +42,7 @@ func TestAggregateDataAccessRule_Fires(t *testing.T) {
 		t.Fatal("AggregateDataAccessRule didn't fire")
 	}
 	if !IsPhysicalAggregateIndex(results[0]) {
-		t.Fatalf("expected physicalAggregateIndexWrapper, got %T", results[0])
+		t.Fatalf("expected *plans.RecordQueryAggregateIndexPlan, got %T", results[0])
 	}
 }
 

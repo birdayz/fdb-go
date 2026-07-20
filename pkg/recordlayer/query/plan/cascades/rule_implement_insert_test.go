@@ -28,11 +28,10 @@ func TestImplementInsertRule_FiresAfterScanImplemented(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementInsertRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalInsertWrapper)
+	plan, ok := yielded[0].(*plans.RecordQueryInsertPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalInsertWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryInsertPlan", yielded[0])
 	}
-	plan := wrap.GetPlan()
 	if got := plan.GetTargetRecordType(); got != "Order" {
 		t.Fatalf("target = %q, want %q", got, "Order")
 	}
@@ -78,11 +77,10 @@ func TestImplementDeleteRule_FiresAfterScanImplemented(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementDeleteRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalDeleteWrapper)
+	plan, ok := yielded[0].(*plans.RecordQueryDeletePlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalDeleteWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryDeletePlan", yielded[0])
 	}
-	plan := wrap.GetPlan()
 	if got := plan.GetTargetRecordType(); got != "Order" {
 		t.Fatalf("target = %q, want %q", got, "Order")
 	}
@@ -130,11 +128,10 @@ func TestImplementUpdateRule_FiresAfterScanImplemented(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementUpdateRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalUpdateWrapper)
+	plan, ok := yielded[0].(*plans.RecordQueryUpdatePlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalUpdateWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryUpdatePlan", yielded[0])
 	}
-	plan := wrap.GetPlan()
 	if got := plan.GetTargetRecordType(); got != "Order" {
 		t.Fatalf("target = %q, want %q", got, "Order")
 	}

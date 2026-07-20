@@ -61,6 +61,15 @@ type RecordQueryIndexPlan struct {
 	// unique reports whether the index is declared UNIQUE — an all-equality
 	// scan over a unique index's full key yields at most one row.
 	unique bool
+	// resultValue is the stable per-instance QuantifiedObjectValue standing for
+	// the rows this leaf emits — minted once at construction, returned by
+	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
+	// instance). A bare leaf that stands as its own Cascades expression must
+	// present a consistent row identity across repeated interrogations, the role
+	// physicalIndexScanWrapper's fresh-per-call GetResultValue could not (RFC-184
+	// W2). Carried through every With* struct-copy. nil for struct-literal test
+	// plans that bypass the constructor — GetResultValue falls back to PlanExprBase.
+	resultValue values.Value
 }
 
 // NewRecordQueryIndexPlan constructs an index scan plan.
@@ -82,7 +91,19 @@ func NewRecordQueryIndexPlan(
 		recordTypes:     dedupSortedStrings(recordTypes),
 		flowedType:      flowedType,
 		reverse:         reverse,
+		resultValue:     values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
 	}
+}
+
+// GetResultValue returns the index scan's STABLE per-instance result value — the
+// single correlation identity a bare index scan carries as its own memo
+// expression (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
+// struct-literal test plans that bypass the constructor (resultValue is nil).
+func (p *RecordQueryIndexPlan) GetResultValue() values.Value {
+	if p.resultValue == nil {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.resultValue
 }
 
 // GetIndexName returns the index name.
@@ -112,6 +133,7 @@ func (p *RecordQueryIndexPlan) WithScanComparisons(comps []*predicates.Compariso
 		columnNames:     p.columnNames,
 		pkColumnNames:   p.pkColumnNames,
 		unique:          p.unique,
+		resultValue:     p.resultValue,
 	}
 }
 

@@ -66,13 +66,12 @@ func TestImplementValuesRule_Fires(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementValuesRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalValuesWrapper)
+	plan, ok := yielded[0].(*plans.RecordQueryValuesPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalValuesWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryValuesPlan", yielded[0])
 	}
-	plan := wrap.GetPlan()
 	if plan == nil {
-		t.Fatal("wrapper has no plan")
+		t.Fatal("nil values plan")
 	}
 }
 

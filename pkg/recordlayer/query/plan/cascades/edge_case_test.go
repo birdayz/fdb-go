@@ -99,7 +99,7 @@ func TestEdge_ComputeRefPlanProperties_MultiplePlans(t *testing.T) {
 	scanW := &physicalScanWrapper{plan: scan}
 
 	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
-	idxW := &physicalIndexScanWrapper{plan: idx, unique: true}
+	idxW := idx.WithIndexMetadata(nil, nil, true)
 
 	ref := expressions.InitialOf(scanW)
 	ref.Insert(idxW)

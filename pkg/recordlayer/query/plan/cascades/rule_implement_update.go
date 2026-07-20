@@ -46,13 +46,14 @@ func (r *ImplementUpdateRule) OnMatch(call *ExpressionRuleCall) {
 	if winner == nil {
 		return
 	}
-	ph, ok := winner.(physicalPlanExpression)
-	if !ok {
+	if _, ok := winner.(physicalPlanExpression); !ok {
 		return
 	}
-	updPlan := plans.NewRecordQueryUpdatePlan(ph.GetRecordQueryPlan(), upd.GetTargetRecordType(), upd.GetTransforms())
+	// The UPDATE plan is its own cascades expression now (RFC-184 W2) — it carries
+	// the live child edge directly, no physicalUpdateWrapper.
 	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-	call.Yield(NewPhysicalUpdateWrapper(updPlan, innerQ))
+	updPlan := plans.NewRecordQueryUpdatePlanFromQuantifier(innerQ, upd.GetTargetRecordType(), upd.GetTransforms())
+	call.Yield(updPlan)
 }
 
 var _ ExpressionRule = (*ImplementUpdateRule)(nil)

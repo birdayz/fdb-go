@@ -27,8 +27,8 @@ func TestComputeDistinctRecords_ScanIsTrue(t *testing.T) {
 func TestComputeDistinctRecords_UniqueIndexIsTrue(t *testing.T) {
 	t.Parallel()
 	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
-	wrapper := &physicalIndexScanWrapper{plan: idx, unique: true}
-	got := computeDistinctRecords(wrapper, idx)
+	wrapper := idx.WithIndexMetadata(nil, nil, true)
+	got := computeDistinctRecords(wrapper, wrapper)
 	if !got {
 		t.Fatal("unique index scan should produce distinct records")
 	}
@@ -37,8 +37,8 @@ func TestComputeDistinctRecords_UniqueIndexIsTrue(t *testing.T) {
 func TestComputeDistinctRecords_NonUniqueIndexIsFalse(t *testing.T) {
 	t.Parallel()
 	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
-	wrapper := &physicalIndexScanWrapper{plan: idx, unique: false}
-	got := computeDistinctRecords(wrapper, idx)
+	wrapper := idx.WithIndexMetadata(nil, nil, false)
+	got := computeDistinctRecords(wrapper, wrapper)
 	if got {
 		t.Fatal("non-unique index scan should NOT produce distinct records")
 	}

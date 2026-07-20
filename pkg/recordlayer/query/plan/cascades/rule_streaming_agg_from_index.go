@@ -98,18 +98,13 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		if !aggregatesCoveredByIndex(gb.GetAggregates(), colNames) {
 			continue
 		}
-		idxPlan = idxPlan.WithCovering(colNames)
-		idxWrapper := &physicalIndexScanWrapper{
-			plan:          idxPlan,
-			columnNames:   colNames,
-			pkColumnNames: candidatePKColumns(cand),
-			unique:        cand.IsUnique(),
-			covering:      true,
-		}
+		// The covering index scan is its own cascades expression now (RFC-184 W2) —
+		// covering lives on the plan (WithCovering), index metadata is threaded on.
+		idxPlan = idxPlan.WithCovering(colNames).WithIndexMetadata(colNames, candidatePKColumns(cand), cand.IsUnique())
 		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
 			idxPlan, groupingKeys, gb.GetAggregates(),
 		)
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
+		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxPlan))
 		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
 	}
 }

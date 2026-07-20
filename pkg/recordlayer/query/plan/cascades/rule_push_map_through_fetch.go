@@ -77,16 +77,11 @@ func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Mark the inner index scan as covering since the fetch is eliminated.
-	if idxW, ok := fetchInnerExpr.(*physicalIndexScanWrapper); ok && !idxW.covering {
-		coveredPlan := idxW.plan.WithCovering(idxW.columnNames)
-		fetchInnerExpr = &physicalIndexScanWrapper{
-			plan:          coveredPlan,
-			columnNames:   idxW.columnNames,
-			pkColumnNames: idxW.pkColumnNames,
-			unique:        idxW.unique,
-			covering:      true,
-		}
+	// Mark the inner index scan as covering since the fetch is eliminated. The
+	// index scan is its own cascades expression (RFC-184 W2); WithCovering
+	// preserves the metadata already on the plan (struct copy).
+	if idxPlan, ok := fetchInnerExpr.(*plans.RecordQueryIndexPlan); ok && !idxPlan.IsCovering() {
+		fetchInnerExpr = idxPlan.WithCovering(idxPlan.GetColumnNames())
 	}
 
 	// Build: Map(translatedResultValue, fetchInner)

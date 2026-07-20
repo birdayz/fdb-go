@@ -859,7 +859,8 @@ func compensationInnerScanSafe(f *expressions.LogicalFilterExpression) bool {
 				if !v.IsOrderedStream() && !residualSelectsWholePartitions(f, v) {
 					return false
 				}
-			case *physicalAggregateIndexWrapper:
+			// The aggregate-index plan is its own Cascades expression now (RFC-184 W2).
+			case *plans.RecordQueryAggregateIndexPlan:
 				return false
 			}
 		}

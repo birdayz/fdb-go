@@ -30,11 +30,32 @@ func NewRecordQueryTypeFilterPlan(recordTypes []string, inner RecordQueryPlan) *
 	}
 }
 
+// NewRecordQueryTypeFilterPlanFromQuantifier builds a type filter whose child is
+// a LIVE memo quantifier (the implementation rule passes
+// ForEachQuantifier(MemoizeExpression(winner))) instead of a snapshot over a
+// single plan. This makes the plan its own cascades expression carrying its child
+// edge directly: the memo holds it without a physical wrapper, and GetInner /
+// GetQuantifiers / OrderingSourceRef / GetResultValue all resolve through the one
+// live edge (RFC-184 W2). recordTypes is normalised (sorted + deduped).
+func NewRecordQueryTypeFilterPlanFromQuantifier(recordTypes []string, innerQ expressions.Quantifier) *RecordQueryTypeFilterPlan {
+	return &RecordQueryTypeFilterPlan{
+		recordTypes: dedupSortedStrings(recordTypes),
+		innerQ:      innerQ,
+	}
+}
+
 // GetRecordTypes returns the canonical record-type-name list.
 func (p *RecordQueryTypeFilterPlan) GetRecordTypes() []string { return p.recordTypes }
 
 // GetInner returns the wrapped inner plan, dereferenced through the quantifier.
 func (p *RecordQueryTypeFilterPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetResultValue returns the flowed object value of the live child quantifier —
+// a type filter passes its inner's rows through, so the result identity is the
+// inner's, the value physicalTypeFilterWrapper.GetResultValue supplied (RFC-184 W2).
+func (p *RecordQueryTypeFilterPlan) GetResultValue() values.Value {
+	return p.innerQ.GetFlowedObjectValue()
+}
 
 // GetQuantifiers reports the real child quantifier, overriding
 // PlanExprBase's none.
@@ -108,6 +129,18 @@ func (p *RecordQueryTypeFilterPlan) WithQuantifiers(qs []expressions.Quantifier)
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). Because the plan carries its child as a single LIVE memo edge, the
+// relink is exactly a quantifier swap: WithQuantifiers preserves the record-type
+// set, and GetInner re-resolves through the new singleton reference. This replaces
+// physicalTypeFilterWrapper.WithChildren (RFC-184 W2).
+func (p *RecordQueryTypeFilterPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryTypeFilterPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

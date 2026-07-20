@@ -346,8 +346,8 @@ func TestSortElim_DescSortEliminated(t *testing.T) {
 	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) && !IsPhysicalFetchFromPartialRecord(plan) {
 		t.Fatalf("DESC sort should be eliminated by a reverse index scan; got %T", plan)
 	}
-	if w, ok := plan.(*physicalIndexScanWrapper); ok {
-		if !w.plan.IsReverse() {
+	if w, ok := plan.(*plans.RecordQueryIndexPlan); ok {
+		if !w.IsReverse() {
 			t.Fatal("DESC sort elimination should produce a reverse index scan")
 		}
 	} else if fw, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
@@ -369,11 +369,7 @@ func TestStrictlySorted_UniqueIndexFullCoverage(t *testing.T) {
 	t.Parallel()
 
 	idx := plans.NewRecordQueryIndexPlan("idx_u", nil, []string{"T"}, values.UnknownType, false)
-	w := &physicalIndexScanWrapper{
-		plan:        idx,
-		columnNames: []string{"A", "B"},
-		unique:      true,
-	}
+	w := idx.WithIndexMetadata([]string{"A", "B"}, nil, true)
 
 	// numKeys == len(columnNames): full coverage.
 	if !strictlyOrderedIfUnique(w, 2) {
@@ -392,11 +388,7 @@ func TestStrictlySorted_UniqueIndexPartialCoverage(t *testing.T) {
 	t.Parallel()
 
 	idx := plans.NewRecordQueryIndexPlan("idx_u", nil, []string{"T"}, values.UnknownType, false)
-	w := &physicalIndexScanWrapper{
-		plan:        idx,
-		columnNames: []string{"A", "B", "C"},
-		unique:      true,
-	}
+	w := idx.WithIndexMetadata([]string{"A", "B", "C"}, nil, true)
 
 	// numKeys < len(columnNames): partial coverage.
 	if strictlyOrderedIfUnique(w, 2) {
@@ -414,11 +406,7 @@ func TestStrictlySorted_NonUniqueIndex(t *testing.T) {
 	t.Parallel()
 
 	idx := plans.NewRecordQueryIndexPlan("idx_nu", nil, []string{"T"}, values.UnknownType, false)
-	w := &physicalIndexScanWrapper{
-		plan:        idx,
-		columnNames: []string{"A"},
-		unique:      false,
-	}
+	w := idx.WithIndexMetadata([]string{"A"}, nil, false)
 
 	if strictlyOrderedIfUnique(w, 1) {
 		t.Fatal("non-unique index should NOT be strictly ordered even with full coverage")
@@ -446,44 +434,40 @@ func TestStrictlyOrderedIfUnique_NonIndexExpression(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestMakeStrictlySorted_IndexScan: makeStrictlySorted on a
-// physicalIndexScanWrapper creates a new wrapper whose inner plan has
-// strictlySorted=true.
+// *plans.RecordQueryIndexPlan creates a new plan whose strictlySorted
+// flag is true.
 func TestMakeStrictlySorted_IndexScan(t *testing.T) {
 	t.Parallel()
 
 	idx := plans.NewRecordQueryIndexPlan("idx_x", nil, []string{"T"}, values.UnknownType, false)
-	orig := &physicalIndexScanWrapper{
-		plan:        idx,
-		columnNames: []string{"A", "B"},
-		unique:      true,
-	}
+	orig := idx.WithIndexMetadata([]string{"A", "B"}, nil, true)
 
 	result := makeStrictlySorted(orig)
 
-	// Must return a new physicalIndexScanWrapper, not the same pointer.
-	resultW, ok := result.(*physicalIndexScanWrapper)
+	// Must return a new *plans.RecordQueryIndexPlan, not the same pointer.
+	resultW, ok := result.(*plans.RecordQueryIndexPlan)
 	if !ok {
-		t.Fatal("makeStrictlySorted should return a physicalIndexScanWrapper")
+		t.Fatal("makeStrictlySorted should return a *plans.RecordQueryIndexPlan")
 	}
 	if resultW == orig {
-		t.Fatal("makeStrictlySorted should return a new wrapper, not the original")
+		t.Fatal("makeStrictlySorted should return a new plan, not the original")
 	}
 
-	// The inner plan should be strictlySorted.
-	if !resultW.plan.IsStrictlySorted() {
+	// The result plan should be strictlySorted.
+	if !resultW.IsStrictlySorted() {
 		t.Fatal("result plan should be strictlySorted")
 	}
 
 	// Original must be unmodified.
-	if orig.plan.IsStrictlySorted() {
+	if orig.IsStrictlySorted() {
 		t.Fatal("original plan should remain non-strictlySorted")
 	}
 
 	// Metadata preserved.
-	if len(resultW.columnNames) != 2 || resultW.columnNames[0] != "A" || resultW.columnNames[1] != "B" {
-		t.Fatalf("columnNames = %v, want [A B]", resultW.columnNames)
+	if cols := resultW.GetColumnNames(); len(cols) != 2 || cols[0] != "A" || cols[1] != "B" {
+		t.Fatalf("columnNames = %v, want [A B]", cols)
 	}
-	if !resultW.unique {
+	if !resultW.IsUnique() {
 		t.Fatal("unique flag should be preserved")
 	}
 }
@@ -508,15 +492,11 @@ func TestMakeStrictlySorted_Idempotent(t *testing.T) {
 	t.Parallel()
 
 	idx := plans.NewRecordQueryIndexPlan("idx_idem", nil, []string{"T"}, values.UnknownType, false)
-	orig := &physicalIndexScanWrapper{
-		plan:        idx.WithStrictlySorted(),
-		columnNames: []string{"A"},
-		unique:      true,
-	}
+	orig := idx.WithStrictlySorted().WithIndexMetadata([]string{"A"}, nil, true)
 
 	result := makeStrictlySorted(orig)
-	resultW := result.(*physicalIndexScanWrapper)
-	if !resultW.plan.IsStrictlySorted() {
+	resultW := result.(*plans.RecordQueryIndexPlan)
+	if !resultW.IsStrictlySorted() {
 		t.Fatal("double makeStrictlySorted should still be strictlySorted")
 	}
 }
@@ -551,12 +531,12 @@ func buildStatusActiveIndexScan(t *testing.T, cand MatchCandidate) expressions.R
 		if !ok {
 			t.Fatalf("expected RecordQueryIndexPlan inside Fetch, got %T", fetchPlan.GetInner())
 		}
-		idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, columnNames: cand.GetColumnNames(), unique: cand.IsUnique()}
+		idxWrapper := innerIdx.WithIndexMetadata(cand.GetColumnNames(), nil, cand.IsUnique())
 		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(idxWrapper))
 		return fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	}
 	if ip := extractIndexPlan(idxPlan); ip != nil {
-		return &physicalIndexScanWrapper{plan: ip, columnNames: cand.GetColumnNames(), unique: cand.IsUnique()}
+		return ip.WithIndexMetadata(cand.GetColumnNames(), nil, cand.IsUnique())
 	}
 	t.Fatalf("candidate ToScanPlan produced unexpected plan %T", idxPlan)
 	return nil
@@ -566,7 +546,7 @@ func buildStatusActiveIndexScan(t *testing.T, cand MatchCandidate) expressions.R
 // marks a plan as strictlySorted when a unique index covers all sort keys.
 //
 // Setup: a LogicalSortExpression(DATE ASC) whose inner Reference contains
-// a single physicalIndexScanWrapper for unique index (STATUS, DATE) with
+// a single *plans.RecordQueryIndexPlan for unique index (STATUS, DATE) with
 // STATUS equality-bound. The inner Reference has pre-computed plan
 // properties so ToPlanPartitions uses the PlanPropertiesMap path
 // (as it would during a real Plan() call).
@@ -610,8 +590,8 @@ func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 	// With Fetch wrappers, look for an index plan at any level.
 	var foundStrictly *plans.RecordQueryIndexPlan
 	for _, e := range yielded {
-		if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan.IsStrictlySorted() {
-			foundStrictly = w.plan
+		if w, ok := e.(*plans.RecordQueryIndexPlan); ok && w.IsStrictlySorted() {
+			foundStrictly = w
 		}
 		if fw, ok := e.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			if inner := extractIndexPlan(fw.GetRecordQueryPlan()); inner != nil && inner.IsStrictlySorted() {
@@ -659,8 +639,8 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 
 	// The rule should yield the plan (sort eliminated) but NOT strictlySorted.
 	for _, e := range yielded {
-		if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan.IsStrictlySorted() {
-			t.Fatalf("non-unique index should NOT produce a strictlySorted plan; got %s", w.plan.Explain())
+		if w, ok := e.(*plans.RecordQueryIndexPlan); ok && w.IsStrictlySorted() {
+			t.Fatalf("non-unique index should NOT produce a strictlySorted plan; got %s", w.Explain())
 		}
 		if fw, ok := e.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			if inner := extractIndexPlan(fw.GetRecordQueryPlan()); inner != nil && inner.IsStrictlySorted() {

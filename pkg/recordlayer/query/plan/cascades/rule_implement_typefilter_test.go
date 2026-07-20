@@ -26,11 +26,10 @@ func TestImplementTypeFilterRule_FiresAfterScanImplemented(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementTypeFilterRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalTypeFilterWrapper)
+	plan, ok := yielded[0].(*plans.RecordQueryTypeFilterPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalTypeFilterWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryTypeFilterPlan", yielded[0])
 	}
-	plan := wrap.GetPlan()
 	rts := plan.GetRecordTypes()
 	if len(rts) != 1 || rts[0] != "Order" {
 		t.Fatalf("record types = %v, want [Order]", rts)

@@ -501,8 +501,10 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 			// Covering is decided downstream by MergeProjectionAndFetchRule (see
 			// the doc above) — do not consult isCovering/coveringColumns here.
 			_ = coveringColumns
-			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, unique: unique, columnNames: columnNames, pkColumnNames: pkColumnNames}
-			idxRef := expressions.InitialOf(idxWrapper)
+			// The index scan is its own cascades expression now (RFC-184 W2) — a bare
+			// leaf carrying its index metadata (columns/pk/unique) on the plan.
+			idxLeaf := innerIdx.WithIndexMetadata(columnNames, pkColumnNames, unique)
+			idxRef := expressions.InitialOf(idxLeaf)
 			fetchQ := expressions.ForEachQuantifier(idxRef)
 			// The fetch is its own cascades expression carrying the live idxRef
 			// edge (RFC-184 W2).
@@ -518,7 +520,11 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 		if isCovering {
 			idxPlan = idxPlan.WithCovering(coveringColumns)
 		}
-		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering, unique: unique, columnNames: columnNames, pkColumnNames: pkColumnNames}
+		// The index scan is its own cascades expression now (RFC-184 W2) — the
+		// covering flag lives on the plan (WithCovering above); index metadata
+		// (columns/pk/unique) is threaded onto the plan so its HintRichOrdering and
+		// the cost model read the same facts the wrapper used to carry separately.
+		return idxPlan.WithIndexMetadata(columnNames, pkColumnNames, unique)
 	}
 	if vecPlan, ok := plan.(*plans.RecordQueryVectorIndexPlan); ok {
 		// The vector scan is its own Cascades expression now (RFC-184 W2) — a bare

@@ -88,16 +88,11 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	if idxW, ok := fetchInnerExpr.(*physicalIndexScanWrapper); ok && !idxW.covering {
-		coveredPlan := idxW.plan.WithCovering(idxW.columnNames)
-		coveringIdxW := &physicalIndexScanWrapper{
-			plan:          coveredPlan,
-			columnNames:   idxW.columnNames,
-			pkColumnNames: idxW.pkColumnNames,
-			unique:        idxW.unique,
-			covering:      true,
-		}
-		coveringRef := expressions.InitialOf(coveringIdxW)
+	if idxPlan, ok := fetchInnerExpr.(*plans.RecordQueryIndexPlan); ok && !idxPlan.IsCovering() {
+		// The covering index scan is its own cascades expression (RFC-184 W2);
+		// WithCovering preserves the metadata already on the plan (struct copy).
+		coveredPlan := idxPlan.WithCovering(idxPlan.GetColumnNames())
+		coveringRef := expressions.InitialOf(coveredPlan)
 		innerQ := expressions.ForEachQuantifier(coveringRef)
 		wrapPlan := plans.NewRecordQueryProjectionPlanWithAliases(
 			projectedValues, projW.plan.GetAliases(), coveredPlan)

@@ -93,30 +93,24 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		// --- a sample of the false/false majority, so a spurious override
 		// added to either side is caught too, not just a dropped one ---
 		{name: "Scan", plan: &plans.RecordQueryScanPlan{}, wrap: &physicalScanWrapper{}},
-		{name: "IndexScan", plan: &plans.RecordQueryIndexPlan{}, wrap: &physicalIndexScanWrapper{}},
 		{name: "PredicatesFilter", plan: &plans.RecordQueryPredicatesFilterPlan{}, wrap: &physicalPredicatesFilterWrapper{}},
-		{name: "TypeFilter", plan: &plans.RecordQueryTypeFilterPlan{}, wrap: &physicalTypeFilterWrapper{}},
 		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}, wrap: &physicalNestedLoopJoinWrapper{}},
 		{name: "InJoin", plan: &plans.RecordQueryInJoinPlan{}, wrap: &physicalInJoinWrapper{}},
 		{name: "InUnion", plan: &plans.RecordQueryInUnionPlan{}, wrap: &physicalInUnionWrapper{}},
 		{name: "MultiIntersection", plan: &plans.RecordQueryMultiIntersectionOnValuesPlan{}, wrap: &physicalMultiIntersectionWrapper{}},
 		{name: "StreamingAggregation", plan: &plans.RecordQueryStreamingAggregationPlan{}, wrap: &physicalStreamingAggWrapper{}},
 		{name: "InMemorySort", plan: &plans.RecordQueryInMemorySortPlan{}, wrap: &physicalInMemorySortWrapper{}},
-		{name: "Distinct", plan: &plans.RecordQueryDistinctPlan{}, wrap: &physicalDistinctWrapper{}},
 		{name: "Projection", plan: &plans.RecordQueryProjectionPlan{}, wrap: &physicalProjectionWrapper{}},
 		{name: "FirstOrDefault", plan: &plans.RecordQueryFirstOrDefaultPlan{}, wrap: &physicalFirstOrDefaultWrapper{}},
-		// Limit / FetchFromPartialRecord / Map / DefaultOnEmpty / Explode /
-		// TableFunction / TempTableScan / TempTableInsert / VectorIndexScan have no
-		// physical wrapper since RFC-184 W2 — the memo holds the *plans.RecordQuery…
-		// plan directly, so their false/false flags are exercised on the live
-		// production path (no parity pair to check). FirstOrDefault and
-		// StreamingAggregation KEEP their wrappers (collapse deferred — not
-		// identity-neutral in the correlated / deferred-winner paths).
-		{name: "AggregateIndex", plan: &plans.RecordQueryAggregateIndexPlan{}, wrap: &physicalAggregateIndexWrapper{}},
-		{name: "Insert", plan: &plans.RecordQueryInsertPlan{}, wrap: &physicalInsertWrapper{}},
-		{name: "Delete", plan: &plans.RecordQueryDeletePlan{}, wrap: &physicalDeleteWrapper{}},
-		{name: "Update", plan: &plans.RecordQueryUpdatePlan{}, wrap: &physicalUpdateWrapper{}},
-		{name: "Values", plan: &plans.RecordQueryValuesPlan{}, wrap: &physicalValuesWrapper{}},
+		{name: "Distinct", plan: &plans.RecordQueryDistinctPlan{}, wrap: &physicalDistinctWrapper{}},
+		// IndexScan / Limit / FetchFromPartialRecord / Map / DefaultOnEmpty / Explode /
+		// TableFunction / TempTableScan / TempTableInsert / VectorIndexScan / Values /
+		// AggregateIndex / TypeFilter / Insert / Delete / Update have no physical
+		// wrapper since RFC-184 W2 — the memo holds the *plans.RecordQuery… plan
+		// directly, so their false/false flags are exercised on the live production
+		// path (no parity pair to check). FirstOrDefault, StreamingAggregation and
+		// Distinct KEEP their wrappers (collapse deferred — not identity-neutral in
+		// the correlated / deferred-winner paths).
 	}
 
 	for _, tc := range cases {

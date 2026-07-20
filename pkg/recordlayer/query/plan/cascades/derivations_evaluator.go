@@ -47,8 +47,9 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	case *physicalScanWrapper:
 		return derivationsForScan(w.plan)
 
-	case *physicalIndexScanWrapper:
-		return derivationsForIndexScan(w.plan)
+	// An index scan is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryIndexPlan:
+		return derivationsForIndexScan(w)
 
 	case *scanPlanExpression:
 		if sp, ok := w.plan.(*plans.RecordQueryScanPlan); ok {
@@ -67,7 +68,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	case *physicalDistinctWrapper:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalDeleteWrapper:
+	// A DELETE is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryDeletePlan:
 		return derivationsFromSingleChildExpr(w)
 
 	// A fetch is its own physical expression now (RFC-184 W2) — same
@@ -105,7 +107,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- TypeFilter: restrict QueriedValue record types ---
 
-	case *physicalTypeFilterWrapper:
+	// A type filter is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryTypeFilterPlan:
 		return derivationsForTypeFilter(w)
 
 	// --- Set operations (union, intersection) ---
@@ -170,15 +173,16 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- Values ---
 
-	case *physicalValuesWrapper:
+	// A values plan is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryValuesPlan:
 		return derivationsForValues(w)
 
-	// --- DML: Insert / Update ---
+	// --- DML: Insert / Update (their own physical expressions now, RFC-184 W2) ---
 
-	case *physicalInsertWrapper:
+	case *plans.RecordQueryInsertPlan:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalUpdateWrapper:
+	case *plans.RecordQueryUpdatePlan:
 		return derivationsFromSingleChildExpr(w)
 
 	// --- NestedLoopJoin ---
@@ -331,12 +335,12 @@ func derivationsForMap(w *plans.RecordQueryMapPlan) *properties.Derivations {
 
 // --- TypeFilter ---
 
-func derivationsForTypeFilter(w *physicalTypeFilterWrapper) *properties.Derivations {
+func derivationsForTypeFilter(w *plans.RecordQueryTypeFilterPlan) *properties.Derivations {
 	childDerivs := properties.DerivationsFromSingleChild(w)
 	childResults := childDerivs.ResultValues
 
 	filteredTypes := make(map[string]struct{})
-	for _, rt := range w.plan.GetRecordTypes() {
+	for _, rt := range w.GetRecordTypes() {
 		filteredTypes[rt] = struct{}{}
 	}
 
@@ -356,7 +360,7 @@ func derivationsForTypeFilter(w *physicalTypeFilterWrapper) *properties.Derivati
 					intersected = append(intersected, rt)
 				}
 			}
-			return values.NewQueriedValue(intersected, w.plan.GetResultType())
+			return values.NewQueriedValue(intersected, w.GetResultType())
 		})
 		resultVals = append(resultVals, replaced)
 	}
@@ -707,7 +711,7 @@ func derivationsForTempTableScan(w *plans.RecordQueryTempTableScanPlan) *propert
 
 // --- Values ---
 
-func derivationsForValues(w *physicalValuesWrapper) *properties.Derivations {
+func derivationsForValues(w *plans.RecordQueryValuesPlan) *properties.Derivations {
 	resultValue := w.GetResultValue()
 	vals := []values.Value{resultValue}
 	return &properties.Derivations{

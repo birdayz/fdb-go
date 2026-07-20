@@ -57,11 +57,7 @@ func TestIndexScanRichOrdering_PKSuffixSatisfiesOrderByPK(t *testing.T) {
 		"IDX_STATUS",
 		[]*predicates.ComparisonRange{equalityRange(t, "active")},
 		[]string{"T"}, values.UnknownType, false)
-	w := &physicalIndexScanWrapper{
-		plan:          idx,
-		columnNames:   []string{"STATUS"},
-		pkColumnNames: []string{"ID"},
-	}
+	w := idx.WithIndexMetadata([]string{"STATUS"}, []string{"ID"}, false)
 
 	ord := computeWrapperRichOrdering(w)
 	if ord == nil {
@@ -94,11 +90,7 @@ func TestIndexScanRichOrdering_ReverseSatisfiesOrderByPKDesc(t *testing.T) {
 		"IDX_STATUS",
 		[]*predicates.ComparisonRange{equalityRange(t, "active")},
 		[]string{"T"}, values.UnknownType, true /* reverse */)
-	w := &physicalIndexScanWrapper{
-		plan:          idx,
-		columnNames:   []string{"STATUS"},
-		pkColumnNames: []string{"ID"},
-	}
+	w := idx.WithIndexMetadata([]string{"STATUS"}, []string{"ID"}, false)
 
 	ord := computeWrapperRichOrdering(w)
 	req := properties.NewRequestedOrdering(
@@ -120,11 +112,7 @@ func TestIndexScanRichOrdering_TrimPrimaryKey(t *testing.T) {
 		"KVW_B",
 		[]*predicates.ComparisonRange{equalityRange(t, int64(20))},
 		[]string{"KVW"}, values.UnknownType, false)
-	w := &physicalIndexScanWrapper{
-		plan:          idx,
-		columnNames:   []string{"B"},
-		pkColumnNames: []string{"A", "B", "C"},
-	}
+	w := idx.WithIndexMetadata([]string{"B"}, []string{"A", "B", "C"}, false)
 
 	ord := computeWrapperRichOrdering(w)
 	req := properties.NewRequestedOrdering(

@@ -308,11 +308,7 @@ func TestImplementInJoinRule_WithIndexScanInner(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", []*predicates.ComparisonRange{eqRange},
 		[]string{"T"}, values.UnknownType, false)
-	iw := &physicalIndexScanWrapper{
-		plan:        indexPlan,
-		columnNames: []string{"a"},
-		unique:      false,
-	}
+	iw := indexPlan.WithIndexMetadata([]string{"a"}, nil, false)
 	innerRef := expressions.InitialOf(iw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(iw)

@@ -146,14 +146,19 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 				"IDX", tc.ranges, []string{"T"}, values.UnknownType, tc.reverse,
 			).WithIndexMetadata(tc.columnNames, tc.pkColumnNames, tc.unique)
 
-			w := &physicalIndexScanWrapper{
-				plan:          idx,
-				columnNames:   tc.columnNames,
-				pkColumnNames: tc.pkColumnNames,
-				unique:        tc.unique,
+			// The index scan is its own cascades expression now (RFC-184 W2): the
+			// memo asks the PLAN's HintRichOrdering directly (no physicalIndexScanWrapper
+			// to compare against). Exercise the plan-side body over the stamped-
+			// metadata input; the end-to-end ordering shapes are pinned by the yamsql
+			// sort-elimination corpus (differ=0 at the wrapper deletion confirmed the
+			// port matches).
+			got := idx.HintRichOrdering()
+			if got == nil {
+				t.Fatal("nil rich ordering")
 			}
-
-			assertRichOrderingsEqual(t, w.HintRichOrdering(), idx.HintRichOrdering())
+			if len(tc.columnNames) > 0 && len(got.GetKeys()) == 0 {
+				t.Errorf("expected non-empty rich ordering for columns %v", tc.columnNames)
+			}
 		})
 	}
 }
@@ -306,30 +311,16 @@ func TestRichOrderingParity_FetchFromPartialRecord(t *testing.T) {
 				"IDX", tc.ranges, []string{"T"}, values.UnknownType, tc.reverse,
 			).WithIndexMetadata(tc.columnNames, tc.pkColumnNames, tc.unique)
 
-			// The plan's own child edge: QuantifierOverPlan mints a fresh
-			// singleton holding the index PLAN.
+			// The fetch's child edge: QuantifierOverPlan mints a fresh singleton
+			// holding the index PLAN, which is its own cascades expression now
+			// (RFC-184 W2 — no physicalIndexScanWrapper).
 			fetch := plans.NewRecordQueryFetchFromPartialRecordPlan(
 				idx, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 			)
 
-			// The wrapper's child edge: a memo group holding the index WRAPPER,
-			// as ImplementFetch builds it.
-			idxWrapper := &physicalIndexScanWrapper{
-				plan:          idx,
-				columnNames:   tc.columnNames,
-				pkColumnNames: tc.pkColumnNames,
-				unique:        tc.unique,
-			}
-			w := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
-				expressions.NewPhysicalQuantifier(
-					expressions.FinalOfAtStage(idxWrapper, expressions.StageCanonical)),
-				fetch.GetTranslateValueFunction(), fetch.GetResultType(), fetch.GetFetchIndexRecords(),
-			)
-
-			assertRichOrderingsEqual(t, w.HintRichOrdering(), fetch.HintRichOrdering())
-
-			// And both must equal the source scan's ordering — a fetch preserves
-			// it. Without this a mutually-empty pair would pass vacuously.
+			// The fetch must delegate the source index scan's rich ordering — a fetch
+			// preserves it. Non-vacuous: the index carries a real ordering from its
+			// stamped metadata.
 			assertRichOrderingsEqual(t, idx.HintRichOrdering(), fetch.HintRichOrdering())
 		})
 	}

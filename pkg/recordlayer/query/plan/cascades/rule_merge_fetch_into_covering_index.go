@@ -53,20 +53,22 @@ func (r *MergeFetchIntoCoveringIndexRule) OnMatch(call *ImplementationRuleCall) 
 	// index provides all needed columns. In Go, we check the index
 	// scan wrapper's `covering` flag (set by the data access pipeline
 	// when the index is known to cover all referenced fields).
-	var indexW *physicalIndexScanWrapper
+	// The index scan is its own cascades expression now (RFC-184 W2) — carrying its
+	// covering flag on the plan, no physicalIndexScanWrapper.
+	var indexPlan *plans.RecordQueryIndexPlan
 	for _, m := range innerRef.AllMembers() {
-		if iw, ok := m.(*physicalIndexScanWrapper); ok {
-			if iw.covering {
-				indexW = iw
+		if ip, ok := m.(*plans.RecordQueryIndexPlan); ok {
+			if ip.IsCovering() {
+				indexPlan = ip
 				break
 			}
 		}
 	}
-	if indexW == nil {
+	if indexPlan == nil {
 		return
 	}
 
-	call.Yield(indexW)
+	call.Yield(indexPlan)
 }
 
 var _ ImplementationRule = (*MergeFetchIntoCoveringIndexRule)(nil)

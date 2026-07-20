@@ -103,7 +103,8 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			idxPlan, recordTypeName, values.UnknownType, aggCand.aggFunction.String(),
 		).WithGroupColumns(aggCand.groupCols, aggCand.aggColumn)
 
-		call.Yield(&physicalAggregateIndexWrapper{plan: aggPlan})
+		// The aggregate-index plan is its own cascades expression now (RFC-184 W2).
+		call.Yield(aggPlan)
 		singleMatched = true
 	}
 	if singleMatched {

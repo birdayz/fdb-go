@@ -91,11 +91,7 @@ func TestSortElimination_ViaChildOrderedMember(t *testing.T) {
 	if idxPlan == nil {
 		t.Fatal("could not extract index plan from candidate")
 	}
-	orderedScan := &physicalIndexScanWrapper{
-		plan:        idxPlan,
-		columnNames: []string{"STATUS"},
-		unique:      false,
-	}
+	orderedScan := idxPlan.WithIndexMetadata([]string{"STATUS"}, nil, false)
 	scanRef.Insert(orderedScan)
 
 	plan, err := ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
@@ -156,11 +152,7 @@ func TestSortElimination_CounterflowNullsNotElidedAtExtraction(t *testing.T) {
 	if idxPlan == nil {
 		t.Fatal("could not extract index plan from candidate")
 	}
-	orderedScan := &physicalIndexScanWrapper{
-		plan:        idxPlan,
-		columnNames: []string{"STATUS"},
-		unique:      false,
-	}
+	orderedScan := idxPlan.WithIndexMetadata([]string{"STATUS"}, nil, false)
 	scanRef.Insert(orderedScan)
 
 	// The natural-ASC index scan does NOT satisfy ASC NULLS LAST: the
@@ -197,11 +189,7 @@ func TestSortElimination_PinsOrderedSpineThroughWrapper(t *testing.T) {
 	if idxPlan == nil {
 		t.Fatal("could not extract index plan from candidate")
 	}
-	orderedScan := &physicalIndexScanWrapper{
-		plan:        idxPlan,
-		columnNames: []string{"STATUS"},
-		unique:      false,
-	}
+	orderedScan := idxPlan.WithIndexMetadata([]string{"STATUS"}, nil, false)
 
 	// The wrapper's child group: cheap unordered scan (stamped overall
 	// winner) + the ordered index scan.
@@ -420,7 +408,7 @@ func TestPlan_OrderedMemberSelectable(t *testing.T) {
 		t.Fatal("expected an ordering-satisfying member for STATUS ASC")
 	}
 	if !IsPhysicalIndexScan(winner) && !IsPhysicalFetchFromPartialRecord(winner) {
-		t.Fatalf("expected physicalIndexScanWrapper or *plans.RecordQueryFetchFromPartialRecordPlan, got %T", winner)
+		t.Fatalf("expected *plans.RecordQueryIndexPlan or *plans.RecordQueryFetchFromPartialRecordPlan, got %T", winner)
 	}
 }
 

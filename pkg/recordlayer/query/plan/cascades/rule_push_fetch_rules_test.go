@@ -15,7 +15,7 @@ func TestMergeFetchIntoCoveringIndex_FiresOnFetchOverIndex(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_name", nil, []string{"MyRecord"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan, covering: true}
+	indexWrapper := indexPlan.WithCovering(nil)
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
@@ -32,8 +32,8 @@ func TestMergeFetchIntoCoveringIndex_FiresOnFetchOverIndex(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("expected 1 yielded, got %d", len(yielded))
 	}
-	if _, ok := yielded[0].(*physicalIndexScanWrapper); !ok {
-		t.Fatalf("expected physicalIndexScanWrapper, got %T", yielded[0])
+	if _, ok := yielded[0].(*plans.RecordQueryIndexPlan); !ok {
+		t.Fatalf("expected *plans.RecordQueryIndexPlan, got %T", yielded[0])
 	}
 }
 
@@ -44,7 +44,7 @@ func TestMergeFetchIntoCoveringIndex_DoesNotFireOnNonCoveringIndex(t *testing.T)
 		"idx_name", nil, []string{"MyRecord"}, values.UnknownType, false,
 	)
 	// NOT marked as covering — MergeFetch should NOT fire.
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan, covering: false}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
@@ -95,7 +95,7 @@ func TestPushDistinctThroughFetch_Fires(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
@@ -132,7 +132,7 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	translateFn := func(v values.Value, _, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
@@ -177,7 +177,7 @@ func TestPushFilterThroughFetch_NoPushable(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	// TranslateValueFunction that NEVER succeeds.
@@ -282,7 +282,7 @@ func TestPushFilterThroughFetch_PartialPush(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	// The filter's inner quantifier alias — predicates inside the
@@ -345,7 +345,7 @@ func TestPushMapThroughFetch_Fires(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
@@ -386,7 +386,7 @@ func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	// UnableToTranslate — map can't be pushed.
@@ -425,7 +425,7 @@ func TestPushUnionThroughFetch_AllChildrenHaveFetches(t *testing.T) {
 		indexPlan := plans.NewRecordQueryIndexPlan(
 			indexName, nil, []string{"T"}, values.UnknownType, false,
 		)
-		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		indexWrapper := indexPlan
 		indexRef := expressions.InitialOf(indexWrapper)
 
 		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
@@ -468,7 +468,7 @@ func TestPushUnionThroughFetch_DoesNotFire_OnlyOneChildHasFetch(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
@@ -526,7 +526,7 @@ func TestFieldValueChild_PushFilterDecision(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	// TranslateValueFunction that succeeds for FieldValues with field "x"
@@ -598,7 +598,7 @@ func TestPushUnionThroughFetch_RebuildsPlanOverPushedInners(t *testing.T) {
 			indexName, nil, []string{"T"}, values.UnknownType, false,
 		)
 		indexPlans = append(indexPlans, indexPlan)
-		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		indexWrapper := indexPlan
 		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 		)
@@ -658,7 +658,7 @@ func TestPushInUnionThroughFetch_Fires(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
@@ -711,7 +711,7 @@ func TestPushUnionThroughFetch_PartialPush(t *testing.T) {
 			indexName, nil, []string{"T"}, values.UnknownType, false,
 		)
 		indexPlans = append(indexPlans, indexPlan)
-		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		indexWrapper := indexPlan
 		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 		)
@@ -772,7 +772,7 @@ func TestPushIntersectionThroughFetch_RequiredValuesGate(t *testing.T) {
 		indexPlan := plans.NewRecordQueryIndexPlan(
 			indexName, nil, []string{"T"}, values.UnknownType, false,
 		)
-		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		indexWrapper := indexPlan
 		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			indexPlan, fn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 		)
@@ -832,7 +832,7 @@ func TestPushMergeSortUnionThroughFetch_Fires(t *testing.T) {
 			indexName, nil, []string{"T"}, values.UnknownType, false,
 		)
 		indexPlans = append(indexPlans, indexPlan)
-		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		indexWrapper := indexPlan
 		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			indexPlan, okFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 		)

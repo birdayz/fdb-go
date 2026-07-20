@@ -87,8 +87,8 @@ func TestMemoizeLeaf_IndexScanComparandNotCollapsed(t *testing.T) {
 	t.Parallel()
 
 	m := NewMemo(nil)
-	w5 := &physicalIndexScanWrapper{plan: eqIndexScan(t, int64(5)), columnNames: []string{"c"}}
-	w7 := &physicalIndexScanWrapper{plan: eqIndexScan(t, int64(7)), columnNames: []string{"c"}}
+	w5 := eqIndexScan(t, int64(5)).WithIndexMetadata([]string{"c"}, nil, false)
+	w7 := eqIndexScan(t, int64(7)).WithIndexMetadata([]string{"c"}, nil, false)
 
 	ref5 := m.MemoizeExpression(w5)
 	ref7 := m.MemoizeExpression(w7)
@@ -98,7 +98,7 @@ func TestMemoizeLeaf_IndexScanComparandNotCollapsed(t *testing.T) {
 
 	// An identical-comparand scan MUST still intern into the SAME Reference
 	// (dedup preserved for genuine twins).
-	w5b := &physicalIndexScanWrapper{plan: eqIndexScan(t, int64(5)), columnNames: []string{"c"}}
+	w5b := eqIndexScan(t, int64(5)).WithIndexMetadata([]string{"c"}, nil, false)
 	ref5b := m.MemoizeExpression(w5b)
 	if ref5 != ref5b {
 		t.Error("identical IndexScan([= 5]) must intern into the SAME Reference")

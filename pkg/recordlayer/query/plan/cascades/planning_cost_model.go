@@ -452,13 +452,13 @@ func scanProvableMaxCard(plan *plans.RecordQueryScanPlan) (float64, bool) {
 
 // indexProvableMaxCard returns an index scan's PROVABLE max cardinality and whether it is known:
 // 1 ONLY when the index is UNIQUE and every index column is equality-bound; otherwise unknown.
-func indexProvableMaxCard(w *physicalIndexScanWrapper) (float64, bool) {
-	if w.plan == nil || !w.unique {
+func indexProvableMaxCard(p *plans.RecordQueryIndexPlan) (float64, bool) {
+	if p == nil || !p.IsUnique() {
 		return 0, false
 	}
 	numBound := 0
 	allEquality := true
-	for _, cr := range w.plan.GetScanComparisons() {
+	for _, cr := range p.GetScanComparisons() {
 		if !cr.IsEmpty() {
 			numBound++
 			if !cr.IsEquality() {
@@ -466,7 +466,7 @@ func indexProvableMaxCard(w *physicalIndexScanWrapper) (float64, bool) {
 			}
 		}
 	}
-	if numBound > 0 && allEquality && numBound == len(w.columnNames) {
+	if numBound > 0 && allEquality && numBound == len(p.GetColumnNames()) {
 		return 1, true
 	}
 	return 0, false
@@ -553,7 +553,8 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		} else {
 			counts.unboundedDataAccess = true
 		}
-	case *physicalAggregateIndexWrapper:
+	// The aggregate-index plan is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryAggregateIndexPlan:
 		counts.coveringIndexCount++
 		// Aggregate access groups rows — no provable ≤1 bound (Java: unknown).
 		counts.unboundedDataAccess = true
@@ -562,8 +563,11 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		counts.indexScanCount++
 		// Top-K vector scan — no provable ≤1 bound (Java: unknown).
 		counts.unboundedDataAccess = true
-	case *physicalIndexScanWrapper:
-		if w.covering {
+	// An index scan is its own physical expression now (RFC-184 W2) — counted
+	// exactly like the physicalIndexScanWrapper that used to carry it, reading its
+	// covering flag and column metadata from the plan.
+	case *plans.RecordQueryIndexPlan:
+		if w.IsCovering() {
 			counts.coveringIndexCount++
 		} else {
 			counts.indexScanCount++
@@ -575,18 +579,17 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		} else {
 			counts.unboundedDataAccess = true
 		}
-		totalCols := len(w.columnNames)
+		totalCols := len(w.GetColumnNames())
 		boundCols := 0
-		if w.plan != nil {
-			for _, cr := range w.plan.GetScanComparisons() {
-				if !cr.IsEmpty() {
-					boundCols++
-				}
+		for _, cr := range w.GetScanComparisons() {
+			if !cr.IsEmpty() {
+				boundCols++
 			}
 		}
 		counts.unmatchedFieldCount += totalCols - boundCols
-	case *physicalTypeFilterWrapper:
-		counts.typeFilterCount += len(w.plan.GetRecordTypes())
+	// A type filter is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryTypeFilterPlan:
+		counts.typeFilterCount += len(w.GetRecordTypes())
 	case *physicalFilterWrapper:
 		_ = w // regular filter, not counted as predicates filter
 	case *physicalPredicatesFilterWrapper:
@@ -764,8 +767,8 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 	if e == nil {
 		return nil
 	}
-	if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan != nil {
-		return equalityAliasesFromRanges(w.plan.GetScanComparisons())
+	if p, ok := e.(*plans.RecordQueryIndexPlan); ok {
+		return equalityAliasesFromRanges(p.GetScanComparisons())
 	}
 	_, isIntersection := e.(*physicalIntersectionWrapper)
 	_, isMultiIntersection := e.(*physicalMultiIntersectionWrapper)
@@ -865,7 +868,7 @@ func expressionDepthRec(e expressions.RelationalExpression, match func(expressio
 }
 
 func isTypeFilterExpression(e expressions.RelationalExpression) bool {
-	_, ok := e.(*physicalTypeFilterWrapper)
+	_, ok := e.(*plans.RecordQueryTypeFilterPlan)
 	return ok
 }
 
@@ -879,7 +882,8 @@ func isFetchExpression(e expressions.RelationalExpression) bool {
 	if ok {
 		return true
 	}
-	_, ok = e.(*physicalIndexScanWrapper)
+	// A bare index scan is its own physical expression now (RFC-184 W2).
+	_, ok = e.(*plans.RecordQueryIndexPlan)
 	return ok
 }
 

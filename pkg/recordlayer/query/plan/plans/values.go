@@ -14,13 +14,36 @@ import (
 type RecordQueryValuesPlan struct {
 	PlanExprBase
 	columns []values.Value
+	// resultValue is the stable per-instance QuantifiedObjectValue standing for
+	// the single row this plan emits — minted once at construction, returned by
+	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
+	// instance). A bare leaf that stands as its own Cascades expression must
+	// present a consistent row identity across repeated interrogations, the role
+	// physicalValuesWrapper's fresh-per-call GetResultValue could not (RFC-184 W2).
+	// nil for struct-literal test plans that bypass the constructor —
+	// GetResultValue falls back to PlanExprBase's fresh QOV there.
+	resultValue values.Value
 }
 
 func NewRecordQueryValuesPlan(columns []values.Value) *RecordQueryValuesPlan {
-	return &RecordQueryValuesPlan{columns: columns}
+	return &RecordQueryValuesPlan{
+		columns:     columns,
+		resultValue: values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	}
 }
 
 func (p *RecordQueryValuesPlan) GetColumns() []values.Value { return p.columns }
+
+// GetResultValue returns the values plan's STABLE per-instance result value —
+// the single correlation identity a bare values plan carries as its own memo
+// expression (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
+// struct-literal test plans that bypass the constructor (resultValue is nil).
+func (p *RecordQueryValuesPlan) GetResultValue() values.Value {
+	if p.resultValue == nil {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.resultValue
+}
 
 func (p *RecordQueryValuesPlan) GetResultType() values.Type { return values.UnknownType }
 

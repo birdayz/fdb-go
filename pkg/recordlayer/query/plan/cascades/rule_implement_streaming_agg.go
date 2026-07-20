@@ -52,16 +52,12 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	groupingKeys := gb.GetGroupingKeys()
 	if len(groupingKeys) == 0 {
 		if isCountOnlyAggregation(gb.GetAggregates()) {
-			if idxWrapper := findIndexScanWrapper(innerRef); idxWrapper != nil && !idxWrapper.covering {
-				coveringWrapper := &physicalIndexScanWrapper{
-					plan:          idxWrapper.plan.WithCovering(nil),
-					columnNames:   idxWrapper.columnNames,
-					pkColumnNames: idxWrapper.pkColumnNames,
-					unique:        idxWrapper.unique,
-					covering:      true,
-				}
-				coveringQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringWrapper))
-				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(coveringWrapper.plan, groupingKeys, gb.GetAggregates())
+			if idxPlan := findIndexScanPlan(innerRef); idxPlan != nil && !idxPlan.IsCovering() {
+				// The covering index scan is its own cascades expression (RFC-184 W2);
+				// WithCovering preserves the metadata already on the plan (struct copy).
+				coveringPlan := idxPlan.WithCovering(nil)
+				coveringQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringPlan))
+				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(coveringPlan, groupingKeys, gb.GetAggregates())
 				call.Yield(newPhysicalStreamingAggWrapper(aggPlan, coveringQ))
 			}
 		}
@@ -221,11 +217,11 @@ func isFullRangeFetch(fw *plans.RecordQueryFetchFromPartialRecordPlan) bool {
 	if innerRef == nil {
 		return true
 	}
-	idxWrapper := findIndexScanWrapper(innerRef)
-	if idxWrapper == nil || idxWrapper.plan == nil {
+	idxPlan := findIndexScanPlan(innerRef)
+	if idxPlan == nil {
 		return true
 	}
-	for _, cr := range idxWrapper.plan.GetScanComparisons() {
+	for _, cr := range idxPlan.GetScanComparisons() {
 		if !cr.IsEmpty() {
 			return false
 		}
@@ -233,21 +229,23 @@ func isFullRangeFetch(fw *plans.RecordQueryFetchFromPartialRecordPlan) bool {
 	return true
 }
 
-// findIndexScanWrapper scans the Reference for a physicalIndexScanWrapper,
-// traversing through Fetch wrappers. The Fetch operator is a transparent
-// enforcer — rules that need index properties look through it.
-func findIndexScanWrapper(ref *expressions.Reference) *physicalIndexScanWrapper {
+// findIndexScanPlan scans the Reference for a bare *plans.RecordQueryIndexPlan,
+// traversing through Fetch operators. The Fetch operator is a transparent
+// enforcer — rules that need index properties look through it. Since RFC-184 W2
+// the index scan is its own cascades expression (no physicalIndexScanWrapper),
+// carrying its metadata (columns/pk/unique/covering) on the plan itself.
+func findIndexScanPlan(ref *expressions.Reference) *plans.RecordQueryIndexPlan {
 	if ref == nil {
 		return nil
 	}
 	for _, m := range ref.AllMembers() {
-		if w, ok := m.(*physicalIndexScanWrapper); ok {
-			return w
+		if p, ok := m.(*plans.RecordQueryIndexPlan); ok {
+			return p
 		}
 		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			if innerRef := fw.GetInnerQuantifier().GetRangesOver(); innerRef != nil {
-				if w := findIndexScanWrapper(innerRef); w != nil {
-					return w
+				if p := findIndexScanPlan(innerRef); p != nil {
+					return p
 				}
 			}
 		}

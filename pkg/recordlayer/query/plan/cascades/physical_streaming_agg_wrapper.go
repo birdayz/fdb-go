@@ -19,8 +19,8 @@ func IsPhysicalStreamingAgg(expr expressions.RelationalExpression) bool {
 
 // physicalStreamingAggWrapper adapts a
 // *plans.RecordQueryStreamingAggregationPlan to the
-// RelationalExpression interface. Single inner Quantifier — same
-// shape as physicalDistinctWrapper.
+// RelationalExpression interface. Single inner Quantifier — the same
+// single-inner delegator shape the collapsed unary plans carry directly.
 type physicalStreamingAggWrapper struct {
 	plan       *plans.RecordQueryStreamingAggregationPlan
 	innerQuant expressions.Quantifier

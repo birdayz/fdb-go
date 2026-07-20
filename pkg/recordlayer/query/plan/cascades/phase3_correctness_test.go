@@ -209,7 +209,7 @@ func TestPlanner_ProjectionOverScanProducesPhysicalProjection(t *testing.T) {
 }
 
 // TestPlanner_InsertOverScanProducesPhysicalInsert verifies that
-// InsertExpression over a Scan produces a physicalInsertWrapper.
+// InsertExpression over a Scan produces a bare *plans.RecordQueryInsertPlan (RFC-184 W2).
 func TestPlanner_InsertOverScanProducesPhysicalInsert(t *testing.T) {
 	t.Parallel()
 
@@ -224,12 +224,12 @@ func TestPlanner_InsertOverScanProducesPhysicalInsert(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalInsert) {
-		t.Fatal("expected physicalInsertWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryInsertPlan in explored members")
 	}
 }
 
 // TestPlanner_DeleteOverScanProducesPhysicalDelete verifies that
-// DeleteExpression over a Scan produces a physicalDeleteWrapper.
+// DeleteExpression over a Scan produces a bare *plans.RecordQueryDeletePlan (RFC-184 W2).
 func TestPlanner_DeleteOverScanProducesPhysicalDelete(t *testing.T) {
 	t.Parallel()
 
@@ -244,7 +244,7 @@ func TestPlanner_DeleteOverScanProducesPhysicalDelete(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalDelete) {
-		t.Fatal("expected physicalDeleteWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryDeletePlan in explored members")
 	}
 }
 
@@ -388,8 +388,8 @@ func TestPlanner_FilterOverScanProducesPhysicalFilter(t *testing.T) {
 }
 
 // TestPlanner_TypeFilterOverScanProducesPhysicalTypeFilter verifies
-// that a LogicalTypeFilterExpression over a scan produces a
-// physicalTypeFilterWrapper.
+// that a LogicalTypeFilterExpression over a scan produces a bare
+// *plans.RecordQueryTypeFilterPlan (RFC-184 W2).
 func TestPlanner_TypeFilterOverScanProducesPhysicalTypeFilter(t *testing.T) {
 	t.Parallel()
 
@@ -404,11 +404,11 @@ func TestPlanner_TypeFilterOverScanProducesPhysicalTypeFilter(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	isPhysicalTypeFilter := func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalTypeFilterWrapper)
+		_, ok := expr.(*plans.RecordQueryTypeFilterPlan)
 		return ok
 	}
 	if !containsPhysical(ref, isPhysicalTypeFilter) {
-		t.Fatal("expected physicalTypeFilterWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryTypeFilterPlan in explored members")
 	}
 }
 
@@ -476,7 +476,7 @@ func explainPlan(expr expressions.RelationalExpression) string {
 }
 
 // TestPlanner_UpdateOverScanProducesPhysicalUpdate verifies that an
-// UpdateExpression over a scan produces a physicalUpdateWrapper.
+// UpdateExpression over a scan produces a bare *plans.RecordQueryUpdatePlan (RFC-184 W2).
 func TestPlanner_UpdateOverScanProducesPhysicalUpdate(t *testing.T) {
 	t.Parallel()
 
@@ -493,7 +493,7 @@ func TestPlanner_UpdateOverScanProducesPhysicalUpdate(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalUpdate) {
-		t.Fatal("expected physicalUpdateWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryUpdatePlan in explored members")
 	}
 }
 
@@ -532,7 +532,8 @@ func TestPlanner_RecursiveLevelUnionProducesPhysicalLevelUnion(t *testing.T) {
 }
 
 // TestPlanner_ValuesProducesPhysicalValues verifies that a
-// LogicalValuesExpression produces a physicalValuesWrapper.
+// LogicalValuesExpression produces a bare *plans.RecordQueryValuesPlan
+// (RFC-184 W2 collapsed the physicalValuesWrapper).
 func TestPlanner_ValuesProducesPhysicalValues(t *testing.T) {
 	t.Parallel()
 
@@ -546,10 +547,10 @@ func TestPlanner_ValuesProducesPhysicalValues(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	isPhysicalValues := func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalValuesWrapper)
+		_, ok := expr.(*plans.RecordQueryValuesPlan)
 		return ok
 	}
 	if !containsPhysical(ref, isPhysicalValues) {
-		t.Fatal("expected physicalValuesWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryValuesPlan in explored members")
 	}
 }

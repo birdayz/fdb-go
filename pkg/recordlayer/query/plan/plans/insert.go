@@ -46,8 +46,33 @@ func NewRecordQueryInsertPlan(inner RecordQueryPlan, targetRecordType string, ta
 	}
 }
 
+// NewRecordQueryInsertPlanFromQuantifier builds an INSERT whose child is a LIVE
+// memo quantifier (the implementation rule passes
+// ForEachQuantifier(MemoizeExpression(winner))) instead of a snapshot over a
+// single plan. This makes the plan its own cascades expression carrying its
+// child edge directly: the memo holds it without a physical wrapper, and
+// GetInner / GetQuantifiers / GetResultValue all resolve through the one live
+// edge (RFC-184 W2).
+func NewRecordQueryInsertPlanFromQuantifier(innerQ expressions.Quantifier, targetRecordType string, targetType values.Type) *RecordQueryInsertPlan {
+	if targetType == nil {
+		targetType = values.UnknownType
+	}
+	return &RecordQueryInsertPlan{
+		innerQ:           innerQ,
+		targetRecordType: targetRecordType,
+		targetType:       targetType,
+	}
+}
+
 // GetInner returns the source plan, dereferenced through the quantifier.
 func (p *RecordQueryInsertPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetResultValue returns the flowed object value of the live child quantifier —
+// INSERT passes its inner's rows through, so the result identity is the inner's,
+// the value physicalInsertWrapper.GetResultValue supplied (RFC-184 W2).
+func (p *RecordQueryInsertPlan) GetResultValue() values.Value {
+	return p.innerQ.GetFlowedObjectValue()
+}
 
 // GetQuantifiers reports the real child quantifier, overriding
 // PlanExprBase's none.
@@ -133,6 +158,18 @@ func (p *RecordQueryInsertPlan) WithQuantifiers(qs []expressions.Quantifier) exp
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). Because the plan carries its child as a single LIVE memo edge, the
+// relink is exactly a quantifier swap: WithQuantifiers preserves the target and
+// type, and GetInner re-resolves through the new singleton reference. This
+// replaces physicalInsertWrapper.WithChildren (RFC-184 W2).
+func (p *RecordQueryInsertPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryInsertPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

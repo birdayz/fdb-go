@@ -42,13 +42,14 @@ func (r *ImplementDeleteRule) OnMatch(call *ExpressionRuleCall) {
 	if winner == nil {
 		return
 	}
-	ph, ok := winner.(physicalPlanExpression)
-	if !ok {
+	if _, ok := winner.(physicalPlanExpression); !ok {
 		return
 	}
-	delPlan := plans.NewRecordQueryDeletePlan(ph.GetRecordQueryPlan(), del.GetTargetRecordType())
+	// The DELETE plan is its own cascades expression now (RFC-184 W2) — it carries
+	// the live child edge directly, no physicalDeleteWrapper.
 	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-	call.Yield(NewPhysicalDeleteWrapper(delPlan, innerQ))
+	delPlan := plans.NewRecordQueryDeletePlanFromQuantifier(innerQ, del.GetTargetRecordType())
+	call.Yield(delPlan)
 }
 
 var _ ExpressionRule = (*ImplementDeleteRule)(nil)
