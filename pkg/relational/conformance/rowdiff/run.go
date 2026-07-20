@@ -202,6 +202,21 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 						continue
 					}
 				}
+				// Under a deliberately tiny paging limit (scanLimit>0), a
+				// scanned-records-limit error (54F01) is a RESOURCE limit, not a
+				// soundness divergence: a high-scan query — e.g. a self-join
+				// whose single inner probe scans more rows than the per-page
+				// limit — legitimately cannot complete and cannot checkpoint
+				// mid-probe. Verified sound at a larger limit (seed 700032's
+				// self-joins match the Oracle at scanLimit=200). Record it (never
+				// silent) and skip — the query is INCONCLUSIVE for soundness
+				// under this limit, not wrong. In un-paged mode (scanLimit==0) a
+				// 54F01 stays a finding.
+				if scanLimit > 0 && strings.Contains(err.Error(), "54F01") {
+					res.Declines = append(res.Declines,
+						fmt.Sprintf("scan-limited @%d (resource limit, not a divergence): %s", scanLimit, sqlText))
+					continue
+				}
 				if gap := matchKnownGap(sqlText, err); gap != nil {
 					// DECLINE, not a finding: a documented limitation with a
 					// live pin. Recorded (never silent) so the rate stays

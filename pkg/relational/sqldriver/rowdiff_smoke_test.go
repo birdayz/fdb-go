@@ -120,7 +120,14 @@ func TestFDB_RowDiff_Paging(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 
 	seedStart, seedCount := rowdiffSeedRange(t)
-	const scanLimit = 4
+	scanLimit := 4
+	if v := os.Getenv("ROWDIFF_SCAN_LIMIT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			t.Fatalf("ROWDIFF_SCAN_LIMIT=%q: want a positive integer", v)
+		}
+		scanLimit = n
+	}
 	start := time.Now()
 	histogram := map[string]int{}
 	executed := 0
