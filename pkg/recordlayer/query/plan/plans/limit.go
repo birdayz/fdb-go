@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -82,38 +81,28 @@ func (p *RecordQueryLimitPlan) GetInner() RecordQueryPlan { return planFromQuant
 func (p *RecordQueryLimitPlan) GetLimit() int64  { return p.limit }
 func (p *RecordQueryLimitPlan) GetOffset() int64 { return p.offset }
 
+// structuralKey lists the fields that distinguish this LIMIT in the memo: the
+// static cap, the offset, and the optional runtime cap Value. Children are
+// excluded (structural identity is without-children). The same key drives both
+// EqualsPlanWithoutChildren and HashCodeWithoutChildren, so the two can never
+// disagree on which fields matter. This is a behaviour-preserving refactor: the
+// runtime cap keeps its original ValuesStructurallyEqual primitive (StructVal)
+// and its SemanticHashCode hash, exactly as the hand-rolled pair had them.
+func (p *RecordQueryLimitPlan) structuralKey() *structuralKey {
+	k := newStructuralKey().Int64(p.limit).Int64(p.offset)
+	if p.limitValue != nil {
+		k.StructVal(p.limitValue)
+	}
+	return k
+}
+
 func (p *RecordQueryLimitPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryLimitPlan)
-	if !ok {
-		return false
-	}
-	if (p.limitValue == nil) != (o.limitValue == nil) {
-		return false
-	}
-	if p.limitValue != nil && !values.ValuesStructurallyEqual(p.limitValue, o.limitValue) {
-		return false
-	}
-	return p.limit == o.limit && p.offset == o.offset
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryLimitPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("limit|"))
-	b := [16]byte{}
-	for i := 0; i < 8; i++ {
-		b[i] = byte(p.limit >> (i * 8))
-		b[8+i] = byte(p.offset >> (i * 8))
-	}
-	h.Write(b[:])
-	if p.limitValue != nil {
-		var v [8]byte
-		hv := values.SemanticHashCode(p.limitValue)
-		for i := 0; i < 8; i++ {
-			v[i] = byte(hv >> (i * 8))
-		}
-		h.Write(v[:])
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("limit|")
 }
 
 func (p *RecordQueryLimitPlan) Explain() string {

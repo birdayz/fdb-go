@@ -1,9 +1,7 @@
 package plans
 
 import (
-	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -93,27 +91,19 @@ func (p *RecordQueryPredicatesFilterPlan) GetChildren() []RecordQueryPlan {
 
 // EqualsWithoutChildren compares the predicate list pairwise via
 // PredicateEquals.
+// structuralKey lists the fields that distinguish this filter in the memo: the
+// binding alias and the predicate list. Children are excluded. innerAlias is
+// identity — it is the correlation the predicates resolve the current row
+// under, so two filters differing only in binding alias evaluate differently
+// and must not collapse into one memo group (the same field-class as the
+// NLJ/FlatMap outer/inner aliases).
+func (p *RecordQueryPredicatesFilterPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Alias(p.innerAlias).Preds(p.predicates)
+}
+
 func (p *RecordQueryPredicatesFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryPredicatesFilterPlan)
-	if !ok {
-		return false
-	}
-	// innerAlias is identity: it is the correlation the predicates resolve
-	// the current row under, so two filters differing only in binding alias
-	// evaluate differently and must not collapse into one memo group (the
-	// same field-class as the NLJ/FlatMap outer/inner aliases).
-	if p.innerAlias != o.innerAlias {
-		return false
-	}
-	if len(p.predicates) != len(o.predicates) {
-		return false
-	}
-	for i := range p.predicates {
-		if !predicates.PredicateEquals(p.predicates[i], o.predicates[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + per-predicate
@@ -122,16 +112,7 @@ func (p *RecordQueryPredicatesFilterPlan) EqualsPlanWithoutChildren(other Record
 // display text: renderings are for humans, carry no identity contract, and
 // drift independently of equality.
 func (p *RecordQueryPredicatesFilterPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("predicatesfilterplan|"))
-	h.Write([]byte(p.innerAlias.Name()))
-	h.Write([]byte{0})
-	var buf [8]byte
-	for _, pr := range p.predicates {
-		binary.BigEndian.PutUint64(buf[:], predicates.SemanticHashCode(pr))
-		h.Write(buf[:])
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("predicatesfilterplan|")
 }
 
 // Explain renders PredicatesFilter(inner, [pred1, pred2, ...]).

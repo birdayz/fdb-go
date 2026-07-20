@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -102,44 +101,30 @@ func (p *RecordQueryComparatorPlan) GetChildren() []RecordQueryPlan {
 // different keys compared equal yet hashed apart — a live plan-level
 // equal⟹same-hash violation (a hash-first memo lookup misses the "equal"
 // member and inserts a duplicate).
+// structuralKey lists the fields that distinguish this comparator in the memo:
+// reverse flag, reference-plan index, and the comparison-key Values. Children
+// are excluded. abortOnComparisonFailure is intentionally NOT included — it is
+// an execution/debug flag (abort vs continue on a detected mismatch), not a
+// plan-shape discriminator: two comparators differing only in it produce the
+// same rows, so collapsing them in the memo is correct. The hand-rolled
+// equals/hash it replaces excluded it for the same reason; this refactor
+// preserves that memo identity exactly.
+func (p *RecordQueryComparatorPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Bool(p.reverse).
+		Int(p.referencePlanIndex).
+		Values(p.comparisonKeyValues)
+}
+
 func (p *RecordQueryComparatorPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryComparatorPlan)
-	if !ok {
-		return false
-	}
-	if p.reverse != o.reverse {
-		return false
-	}
-	if p.referencePlanIndex != o.referencePlanIndex {
-		return false
-	}
-	if len(p.comparisonKeyValues) != len(o.comparisonKeyValues) {
-		return false
-	}
-	for i, k := range p.comparisonKeyValues {
-		if !semanticValueEquals(k, o.comparisonKeyValues[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes comparison keys (semantic Value hashes),
 // reference index, and reverse flag.
 func (p *RecordQueryComparatorPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("comparatorplan|"))
-	for _, k := range p.comparisonKeyValues {
-		writeValueHash(h, k)
-	}
-	// Mix in referencePlanIndex as two bytes (little-endian).
-	h.Write([]byte{byte(p.referencePlanIndex), byte(p.referencePlanIndex >> 8)})
-	if p.reverse {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("comparatorplan|")
 }
 
 // Explain renders Comparator(child1, child2, ..., ref=N).
