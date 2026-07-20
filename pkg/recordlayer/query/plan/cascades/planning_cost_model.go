@@ -641,10 +641,8 @@ func countResidualPredicatesRec(e expressions.RelationalExpression, count *int) 
 }
 
 func compareRecursiveCTE(a, b expressions.RelationalExpression) int {
-	_, aDFS := a.(*physicalRecursiveDfsJoinWrapper)
-	_, bDFS := b.(*physicalRecursiveDfsJoinWrapper)
-	_, aLevel := a.(*physicalRecursiveLevelUnionWrapper)
-	_, bLevel := b.(*physicalRecursiveLevelUnionWrapper)
+	aDFS, aLevel := recursiveCTEKind(a)
+	bDFS, bLevel := recursiveCTEKind(b)
 
 	if aDFS && bLevel {
 		return -1
@@ -653,6 +651,30 @@ func compareRecursiveCTE(a, b expressions.RelationalExpression) int {
 		return 1
 	}
 	return 0
+}
+
+// recursiveCTEKind classifies an expression by its CONCRETE recursive-CTE plan
+// type (via GetRecordQueryPlan), NOT the Cascades wrapper Go type. The physical
+// wrappers are an implementation detail slated for deletion (RFC-184 W2); keying
+// off the embedded plan keeps this DFS-over-LevelUnion tie-breaker alive once the
+// wrappers are gone (a wrapper type-assert would return 0 → the decision would
+// drop to a hash tie-break and RFC-130 would regress to the double-charging level
+// union). Belt-and-suspenders: the cost term
+// (plans.RecordQueryRecursiveLevelUnionPlan.HintCost) already makes the DFS join
+// strictly cheaper, so the scalar-cost fallback also prefers DFS — but a
+// structural preference that survives identity changes is cheap insurance.
+func recursiveCTEKind(e expressions.RelationalExpression) (isDFS, isLevel bool) {
+	ph, ok := e.(physicalPlanExpression)
+	if !ok {
+		return false, false
+	}
+	switch ph.GetRecordQueryPlan().(type) {
+	case *plans.RecordQueryRecursiveDfsJoinPlan:
+		return true, false
+	case *plans.RecordQueryRecursiveLevelUnionPlan:
+		return false, true
+	}
+	return false, false
 }
 
 // compareInPlan implements Java's flipFlop(compareInOperator(a,b), compareInOperator(b,a)).
