@@ -26,6 +26,7 @@ go_test(
         "arith_oracle_test.go",
         "exists_oracle_test.go",
         "left_join_oracle_test.go",
+        "right_join_oracle_test.go",
         "rowdiff_test.go",
         "scalar_sub_oracle_test.go",
         "three_way_oracle_test.go",

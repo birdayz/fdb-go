@@ -167,55 +167,95 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 	}
 
 	var combined []Row
-	for _, l := range c.Rows {
-		matched := false // any r satisfying the ON equality, before the WHERE
+	emit := func(row Row) error {
+		ok, err := applyWhere(row)
+		if err != nil {
+			return err
+		}
+		if ok {
+			combined = append(combined, row)
+		}
+		return nil
+	}
+
+	// `matched` tracks ON-equality matches only — a preserved row that matched
+	// but was then dropped by the WHERE is NOT re-emitted NULL-extended (it
+	// matched the join; the WHERE removed it), exactly as SQL.
+	if q.Join.RightOuter {
+		// RIGHT OUTER: preserve every R row, NULL-extend unmatched L.
 		for _, r := range c.Rows {
-			tb, err := joinCmp.EvalAgainst(l[q.Join.LeftCol], r[q.Join.RightCol])
-			if err != nil {
-				return nil, err
+			matched := false
+			for _, l := range c.Rows {
+				tb, err := joinCmp.EvalAgainst(l[q.Join.LeftCol], r[q.Join.RightCol])
+				if err != nil {
+					return nil, err
+				}
+				if tb != predicates.TriTrue {
+					continue
+				}
+				matched = true
+				if err := emit(mkPairRow(c, l, r)); err != nil {
+					return nil, err
+				}
 			}
-			if tb != predicates.TriTrue {
-				continue
-			}
-			matched = true
-			row := make(Row, 2*(len(c.Table.Cols)+1))
-			for k, v := range l {
-				row["L."+k] = v
-			}
-			for k, v := range r {
-				row["R."+k] = v
-			}
-			ok, err := applyWhere(row)
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				combined = append(combined, row)
+			if !matched {
+				if err := emit(mkPairRow(c, nil, r)); err != nil {
+					return nil, err
+				}
 			}
 		}
-		// LEFT OUTER: an unmatched left row survives, NULL-extended on the
-		// right. `matched` tracks ON-equality matches only — a left row that
-		// matched some r but was then dropped by the WHERE is NOT re-emitted
-		// here (it matched the join; the WHERE removed it), exactly as SQL.
-		if q.Join.LeftOuter && !matched {
-			row := make(Row, 2*(len(c.Table.Cols)+1))
-			for k, v := range l {
-				row["L."+k] = v
+	} else {
+		// INNER or LEFT OUTER: preserve L, NULL-extend unmatched R for LEFT.
+		for _, l := range c.Rows {
+			matched := false
+			for _, r := range c.Rows {
+				tb, err := joinCmp.EvalAgainst(l[q.Join.LeftCol], r[q.Join.RightCol])
+				if err != nil {
+					return nil, err
+				}
+				if tb != predicates.TriTrue {
+					continue
+				}
+				matched = true
+				if err := emit(mkPairRow(c, l, r)); err != nil {
+					return nil, err
+				}
 			}
-			for k := range l {
-				row["R."+k] = nil // right side is NULL for an unmatched left row
-			}
-			ok, err := applyWhere(row)
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				combined = append(combined, row)
+			if q.Join.LeftOuter && !matched {
+				if err := emit(mkPairRow(c, l, nil)); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
 
 	return sortAndProjectJoin(combined, q, projection), nil
+}
+
+// mkPairRow builds a combined 2-way join row keyed "L.<col>" / "R.<col>". A nil
+// side is NULL-extended (all its columns nil) — the outer-join case.
+func mkPairRow(c *Case, l, r Row) Row {
+	row := make(Row, 2*(len(c.Table.Cols)+1))
+	putJoinSide(row, c, "L", l)
+	putJoinSide(row, c, "R", r)
+	return row
+}
+
+// putJoinSide writes one side's columns ("ID" plus the table columns) into row
+// under the "<side>." prefix, or NULLs them all when src is nil.
+func putJoinSide(row Row, c *Case, side string, src Row) {
+	if src != nil {
+		row[side+".ID"] = src["ID"]
+	} else {
+		row[side+".ID"] = nil
+	}
+	for _, col := range c.Table.Cols {
+		if src != nil {
+			row[side+"."+col.Name] = src[col.Name]
+		} else {
+			row[side+"."+col.Name] = nil
+		}
+	}
 }
 
 // sortAndProjectJoin applies the query's ORDER BY (if any) to the combined join

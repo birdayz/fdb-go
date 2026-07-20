@@ -150,6 +150,12 @@ type JoinSpec struct {
 	// LEFT JOIN back toward inner semantics — the oracle applies the WHERE
 	// post-join over the NULL-extended row, exactly as SQL does.
 	LeftOuter bool
+	// RightOuter makes the ON-join a RIGHT OUTER JOIN: the mirror of LeftOuter,
+	// preserving every RIGHT row and NULL-extending unmatched LEFT. Implies
+	// Inner and is mutually exclusive with LeftOuter. `A RIGHT JOIN B` is
+	// semantically `B LEFT JOIN A`, so this exercises the engine's RIGHT→LEFT
+	// normalization — a rewrite bug there is a wrong-rows divergence.
+	RightOuter bool
 }
 
 // AggFunc is a supported aggregate. AVG is deliberately absent: its
@@ -761,15 +767,17 @@ func genJoinQuery(rng *rand.Rand, table TableDef) Query {
 		LeftCol:  leftCandidates[rng.IntN(len(leftCandidates))],
 		RightCol: rightCandidates[rng.IntN(len(rightCandidates))],
 	}
-	// Join syntax/type: comma cross-join, INNER … ON, or LEFT OUTER … ON
-	// (each ~1/3). LEFT OUTER needs the ON form, so it sets Inner too.
-	switch rng.IntN(3) {
+	// Join syntax/type: comma cross-join, INNER … ON, LEFT OUTER … ON, or
+	// RIGHT OUTER … ON. The OUTER forms need the ON form, so they set Inner too.
+	switch rng.IntN(4) {
 	case 0:
 		spec.Inner = false // comma cross-join (equality moves to WHERE)
 	case 1:
 		spec.Inner = true // INNER … ON
-	default:
+	case 2:
 		spec.Inner, spec.LeftOuter = true, true // LEFT OUTER … ON
+	default:
+		spec.Inner, spec.RightOuter = true, true // RIGHT OUTER … ON
 	}
 
 	// 1-2 qualified single-sided filter leaves, biased to indexed columns so
@@ -1169,6 +1177,9 @@ func (c *Case) SQL(q Query, projection []string) string {
 		b.WriteString(tbl)
 	case q.Join.LeftOuter:
 		fmt.Fprintf(&b, "%s AS l LEFT JOIN %s AS r ON l.%s = r.%s",
+			tbl, tbl, strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
+	case q.Join.RightOuter:
+		fmt.Fprintf(&b, "%s AS l RIGHT JOIN %s AS r ON l.%s = r.%s",
 			tbl, tbl, strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
 	case q.Join.Inner:
 		fmt.Fprintf(&b, "%s AS l JOIN %s AS r ON l.%s = r.%s",
