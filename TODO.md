@@ -1491,15 +1491,21 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
              output ordered by id via a first-occurrence sort — sorting by v destroys the id order), so
              gate on `GetRequestedOrderings()` being empty / a subset of the dedup cols.
          (B) Keep the hash-set but carry the seen-set THROUGH the continuation (bounded by the
-             statement memory budget the set is already charged against). Memory-efficient and small
-             continuation for the common LOW-cardinality case; the continuation grows with cardinality,
-             but so would (A)'s sort buffer — and the budget already caps it. Simpler (executor-only,
-             no planner/plan-shape churn) and no memory regression, at the cost of a larger continuation
-             on high-cardinality distinct.
-       Likely answer: (B) for the general unordered case (memory-parity with today + resume-clean), or
-       a cardinality-aware choice between (A) and (B). The ordering-DETECTION step already shipped
-       (case-1) is deliberately separated from this and is safe on its own (only ever streams when the
-       ordering already proves adjacency, else unchanged hash-set).
+             statement memory budget the set is already charged against; boundedSet.m is enumerable).
+             Fixes BOTH the unordered case-2 AND the ORDER-BY-non-output-column case-3 (it does not
+             rely on ordering at all — just makes the existing hash-set resume-clean). Memory-parity
+             with today and a SMALL continuation for the common LOW-cardinality shape (executor-only,
+             no planner/plan-shape churn). Cost: the seen-set grows monotonically, so every page
+             re-sends the full set-so-far → O(pages × distinct-keys) CUMULATIVE work/transfer, heavy
+             for high cardinality (where today is merely wrong). Needs a Go-internal continuation proto
+             (proto/relational/, since DISTINCT is Go-only — no Java wire to match).
+       No clean mechanical winner: (A) trades a correctness bug for a MEMORY regression on
+       low-cardinality/high-row; (B) trades it for CUMULATIVE-TRANSFER on high cardinality. This is a
+       genuine DESIGN decision (likely (B), or a cardinality-aware A/B choice) that needs a Graefe
+       design ACK BEFORE implementation, per the query-engine RFC-first gate — do NOT unilaterally
+       ship either. The ordering-DETECTION step already shipped (case-1) is deliberately separated from
+       this and is safe on its own (only ever streams when the ordering already proves adjacency, else
+       unchanged hash-set).
        ORIGINAL DIAGNOSIS (kept for the unordered follow-up): `executeDistinct` (executor.go ~1552)
        rebuilt the `seen` hash-set FRESH per page, so any `SELECT DISTINCT <non-unique-col>` over a
        table larger than one page returned WRONG ROWS. Adversarial
