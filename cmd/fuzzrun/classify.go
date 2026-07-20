@@ -85,7 +85,9 @@ var (
 	// witness above for a log truncated to just the stats lines. Anchored rather
 	// than a substring so a target that happens to log the word "minimizing"
 	// cannot trigger a false red.
-	minimizingStatsRE = regexp.MustCompile(`(?m)^fuzz: elapsed: .*, minimizing$`)
+	// `\r?$` because anchoring cost the CRLF tolerance a substring match had: a log
+	// captured through a CRLF-translating path would otherwise slip the backstop.
+	minimizingStatsRE = regexp.MustCompile(`(?m)^fuzz: elapsed: .*, minimizing\r?$`)
 )
 
 // classify decides whether a non-zero fuzz run is a genuine finding or the known

@@ -141,7 +141,14 @@ func gate(label string, w io.Writer, retryDeadline int64, run func() runResult) 
 		fmt.Fprintf(w, "fuzzrun: %v\n", r2.err)
 	}
 	fmt.Fprintf(w, "::error::fuzz FAIL: %s (failed again on retry, exit %d)\n", label, r2.exitCode)
-	return 1, false
+	// Still a race sighting, so still counted: `raced` means "this target exhibited
+	// the race", which is what -racelog documents and what the summary needs. Two
+	// consecutive races is p² only while the runs are independent; under the
+	// systematic regression the summary exists to catch, p approaches 1 and this
+	// becomes the DOMINANT case. Excluding it would drop the one line explaining a
+	// wall of per-target failures, exactly when that explanation matters most.
+	// The job still goes red — the exit code is unchanged.
+	return 1, classify(r2) == verdictDeadlineRace
 }
 
 // runCommand runs argv, streaming its output to w as it arrives while also capturing

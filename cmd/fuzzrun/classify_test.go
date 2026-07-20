@@ -248,3 +248,15 @@ func TestVerdictString(t *testing.T) {
 		t.Errorf("verdictDeadlineRace.String() = %q", verdictDeadlineRace.String())
 	}
 }
+
+// The minimization backstop must survive a CRLF-translated log: anchoring the regex
+// is what made this reachable, so it gets pinned.
+func TestClassify_MinimizationBackstopToleratesCRLF(t *testing.T) {
+	t.Parallel()
+	out := "fuzz: elapsed: 1m30s, minimizing\r\n" +
+		"--- FAIL: FuzzRYWCache (90.02s)\r\n" +
+		"    context deadline exceeded\r\n"
+	if got := classify(runResult{output: out, exitCode: 1}); got != verdictRealFailure {
+		t.Errorf("classify = %v, want %v", got, verdictRealFailure)
+	}
+}

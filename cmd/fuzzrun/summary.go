@@ -34,7 +34,13 @@ func summarizeRaces(racelogPath string, total int, w io.Writer) int {
 	fmt.Fprintf(w, "::warning::%d of %d fuzz targets hit the golang/go#72104 budget-expiry "+
 		"race tonight: %s\n", len(labels), total, strings.Join(labels, ", "))
 
-	if total > 0 && len(labels)*systematicRaceDenominator > total*systematicRaceNumerator {
+	// minSystematicSample keeps a tiny run from reading as systematic: 1 of 1 is a
+	// majority arithmetically but says nothing at a ~1% per-run rate. Today's
+	// rotations are 6 / ~9 / ~33 targets so this is unreachable, but the summary
+	// must not become a false red the first time someone runs a one-target job.
+	const minSystematicSample = 3
+	if total >= minSystematicSample &&
+		len(labels)*systematicRaceDenominator > total*systematicRaceNumerator {
 		fmt.Fprintf(w, "::error::the budget-expiry race hit %d of %d targets — that is "+
 			"systematic, not incidental (it is normally ~1%% per run). The Go toolchain's "+
 			"fuzz coordinator has most likely changed; re-verify cmd/fuzzrun's assumptions "+

@@ -6,13 +6,19 @@ import (
 	"testing"
 )
 
+// writeRaceLog always CREATES the file, even with no labels. That is deliberate:
+// the workflow allocates the log with mktemp, so a night with no races leaves an
+// EMPTY file, never a missing one. A helper that skipped creation would test only
+// the missing-file path and leave production's actual no-race path unpinned.
 func writeRaceLog(t *testing.T, labels ...string) string {
 	t.Helper()
 	path := t.TempDir() + "/races"
+	body := ""
 	if len(labels) > 0 {
-		if err := os.WriteFile(path, []byte(strings.Join(labels, "\n")+"\n"), 0o644); err != nil {
-			t.Fatalf("writing race log: %v", err)
-		}
+		body = strings.Join(labels, "\n") + "\n"
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("writing race log: %v", err)
 	}
 	return path
 }
@@ -30,6 +36,9 @@ func TestSummarizeRaces(t *testing.T) {
 		// Incidental — warn, but the gate still passes.
 		"one of 33": {[]string{"FuzzA"}, 33, 0, []string{"::warning::", "1 of 33"}},
 		"half of 6": {[]string{"FuzzA", "FuzzB", "FuzzC"}, 6, 0, []string{"::warning::"}},
+		// Below the minimum sample a "majority" means nothing — warn, never fail.
+		"one of one": {[]string{"FuzzA"}, 1, 0, []string{"::warning::", "1 of 1"}},
+		"two of two": {[]string{"FuzzA", "FuzzB"}, 2, 0, []string{"::warning::"}},
 		// Systematic — a majority means the toolchain changed, not bad luck.
 		"majority of 6": {
 			[]string{"FuzzA", "FuzzB", "FuzzC", "FuzzD"},

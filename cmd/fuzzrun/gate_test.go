@@ -199,9 +199,13 @@ func TestGate_RacedSignal(t *testing.T) {
 		outcomes  []runResult
 		wantRaced bool
 	}{
-		"clean pass":              {[]runResult{pass()}, false},
-		"race, retry clean":       {[]runResult{raceFailure(), pass()}, true},
-		"race, retry raced again": {[]runResult{raceFailure(), raceFailure()}, false},
+		"clean pass":        {[]runResult{pass()}, false},
+		"race, retry clean": {[]runResult{raceFailure(), pass()}, true},
+		// Counted even though the job goes red: the target DID exhibit the race, which
+		// is what -racelog documents. Under a systematic regression this becomes the
+		// DOMINANT case, so excluding it would drop the one summary line that explains
+		// a wall of per-target failures.
+		"race, retry raced again": {[]runResult{raceFailure(), raceFailure()}, true},
 		"real finding":            {[]runResult{{output: "boom\n", exitCode: 1}}, false},
 	}
 	for name, tc := range cases {
