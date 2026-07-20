@@ -1568,50 +1568,46 @@ func executeDistinct(
 		return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 	}
 
-	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	// Hash path (UNORDERED input): dedup by the packed dedup key via a
+	// memory-budget-charged set that RIDES THE CONTINUATION (TODO.md C5).
+	// Carrying the seen-set makes the hash distinct
+	// resume-clean: a duplicate whose run straddles a scanned-rows page boundary
+	// is not re-admitted (the fresh-per-page set used to lose its state across
+	// the internal-paging Execute boundary and return WRONG ROWS). This fixes
+	// both the unordered case and DISTINCT + ORDER-BY-on-a-non-output-column,
+	// neither of which the ordering-detection streaming path (above) reaches.
+	//
+	// SELECT DISTINCT is a Go-only extension — Java's SQL layer never dedups it,
+	// and Java's value-distinct HashSet is likewise un-carried across
+	// continuations — so this continuation is Go-internal
+	// (gen.DistinctHashContinuation) with no Java wire format to match. The set
+	// is bounded by the statement memory budget; a high-cardinality DISTINCT
+	// that would blow the continuation fails LOUDLY on the budget (never silent
+	// wrong rows), the signal that the cost-based sort-distinct follow-up should
+	// have been chosen.
+	seen := newBoundedSet[string](props.State)
+	innerCont := continuation
+	if len(continuation) > 0 {
+		var dc gen.DistinctHashContinuation
+		if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+			return nil, fmt.Errorf("invalid distinct-hash continuation: %w", uerr)
+		}
+		innerCont = dc.GetInnerContinuation()
+		// Rebuild (and re-charge) the seen-set from the prior page.
+		for _, k := range dc.GetSeenKeys() {
+			if _, aerr := seen.Add(string(k), int64(len(k))); aerr != nil {
+				return nil, aerr
+			}
+		}
+	}
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerCont, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
 	}
-
-	// RFC-130: the distinct seen-set is a cardinality-growing buffer (one
-	// key string per distinct row, held for the whole scan). Charge each NEW
-	// key's bytes against the statement memory budget via boundedSet.
-	//
-	// KNOWN BUG (TODO.md C5): the set is rebuilt FRESH per page (nothing of
-	// it rides the continuation), so a duplicate whose run straddles a page
-	// break is re-admitted — `SELECT DISTINCT <non-unique-col>` over a result
-	// larger than one page returns WRONG ROWS. This is NOT Java parity: Java's
-	// fdb-relational SQL layer does NOT implement SELECT DISTINCT dedup at all
-	// (QueryVisitor.visitSimpleTable never reads the DISTINCT token; no
-	// `.DISTINCT()` consumer exists in relational-core; its record-layer
-	// RecordQueryUnordered[PrimaryKey]DistinctPlan operators exist but the SQL
-	// layer never routes SELECT DISTINCT through them — they dedup index-OR
-	// output by PK, whose duplicates are LOCAL, not value-distinct across a
-	// scan). SELECT DISTINCT is a GO-ONLY read-side extension
-	// (rule_implement_distinct_final.go header), so this continuation is
-	// GO-INTERNAL — there is no Java wire format to match, and the fix (an
-	// ordered STREAMING distinct that carries only the last emitted key) is
-	// unblocked. Tracked in TODO.md C5.
-	seen := newBoundedSet[string](props.State)
-	filtered := &filterResultCursor{
-		inner: innerCursor,
-		pred: func(qr QueryResult) (bool, error) {
-			key, err := distinctKey(qr)
-			if err != nil {
-				return false, err
-			}
-			added, err := seen.Add(key, int64(len(key)))
-			if err != nil {
-				return false, err
-			}
-			return added, nil
-		},
-	}
-	// Live-bytes model: the seen-set is rebuilt (and re-charged) per page;
-	// release its tally at page teardown. The hook reads Charged() at close
-	// time because the set grows while the page streams.
+	// Live-bytes model: the set is charged as it grows (and on resume rebuild);
+	// release its tally at page teardown.
 	return newCloseHookCursor(
-		applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit),
+		applySkipLimit(&distinctHashCursor{inner: innerCursor, seen: seen}, props.Skip, props.ReturnedRowLimit),
 		func() { props.State.ReleaseMemory(seen.Charged()) },
 	), nil
 }

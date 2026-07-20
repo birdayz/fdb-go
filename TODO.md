@@ -1467,8 +1467,17 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > - [x] P0.7 PushSetOperationThroughFetch rebuild over pushed inners (Graefe+Torvalds ACK;
 >       single-pass tryPushValues, dynamic InUnion arm live, Case-2 partial push,
 >       ordered-union instantiation, e2e Fetch(Union(IndexScan…)) pin)
- - [ ] C5 follow-up: DISTINCT cross-page dedup — **ORDERED-INPUT PATH FIXED (2026-07-20); unordered
-       path remains.** FIXED: over input already ordered by the dedup key (`SELECT DISTINCT col
+ - [ ] C5 follow-up: DISTINCT cross-page dedup — **CORRECTNESS FIXED end-to-end (2026-07-20); only a
+       cost/perf optimization remains.** Both paths now resume-clean: ORDERED input streams (carries
+       the last key), UNORDERED input (incl. DISTINCT + ORDER-BY-non-output-column) uses the hash
+       cursor that carries its whole seen-set through gen.DistinctHashContinuation (Approach B,
+       Graefe-ACK'd; distinctHashCursor in distinct_stream.go). Pinned by
+       TestFDB_SelectDistinct_CrossPageDedup_Unordered (g=id%10 scattered, scanLimit=2). REMAINING
+       (perf, NOT correctness): enumerate a cost-based sort-distinct alternative so a high-NDV DISTINCT
+       (where the seen-set would blow the memory budget → today a LOUD budget error, never wrong rows)
+       routes to a sort instead — Graefe's phase-2. Until then high-cardinality unordered DISTINCT over
+       a huge table errors on the budget rather than completing; that is a performance limit, not a
+       wrong-rows bug. FIXED: over input already ordered by the dedup key (`SELECT DISTINCT col
        ORDER BY col`, or a covering ordered index), a resume-clean STREAMING distinct now dedups
        adjacent rows and carries ONLY the last emitted key through the DedupContinuation —
        `RecordQueryDistinctPlan.Streaming`, set by ImplementDistinctFinalRule when

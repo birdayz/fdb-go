@@ -119,6 +119,66 @@ func TestFDB_SelectDistinct_CrossPageDedup(t *testing.T) {
 	}
 }
 
+// TestFDB_SelectDistinct_CrossPageDedup_Unordered pins the HASH-path fix
+// (Approach B): with no ORDER BY and no index on the dedup column,
+// the input is UNORDERED, so the planner keeps the hash distinct (streaming's
+// adjacency precondition fails). The resume-clean hash cursor must carry its
+// seen-set through the scanned-rows continuation so duplicates SCATTERED across
+// pages are not re-admitted. g = id % 10 interleaves every value across the
+// whole scan — worst case for the fresh-per-page set.
+func TestFDB_SelectDistinct_CrossPageDedup_Unordered(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_distinct_unord", "distinctunord",
+		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
+	ctx := context.Background()
+
+	const scanLimit = 2
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+	})
+
+	const distinctVals = 10
+	const total = 50
+	for id := 1; id <= total; id++ {
+		if _, err := conn.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO t (id, g) VALUES (%d, %d)", id, id%distinctVals)); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	// No ORDER BY, no index on g → unordered primary scan → hash path.
+	rows, err := conn.QueryContext(ctx, "SELECT DISTINCT g FROM t")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	seen := map[int64]bool{}
+	var got []int64
+	for rows.Next() {
+		var g int64
+		if err := rows.Scan(&g); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, g)
+		seen[g] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	if len(got) != distinctVals {
+		t.Fatalf("unordered SELECT DISTINCT g over %d-row scan-limit pages = %d rows %v, want %d distinct "+
+			"(a fresh-per-page hash-set re-admits scattered straddling duplicates)",
+			scanLimit, len(got), got, distinctVals)
+	}
+	for v := int64(0); v < distinctVals; v++ {
+		if !seen[v] {
+			t.Fatalf("unordered DISTINCT dropped value %d (got %v)", v, got)
+		}
+	}
+}
+
 // TestFDB_SelectDistinct_CrossPageDedup_WithFilter pins cross-page DISTINCT
 // dedup when a WHERE predicate on a non-indexed column is present: the input is
 // ordered for the distinct by an in-memory sort (driven by ORDER BY g) sitting

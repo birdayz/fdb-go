@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "catalog_data.pb.go",
         "catalog_data_vtproto.pb.go",
+        "distinct_continuation.pb.go",
+        "distinct_continuation_vtproto.pb.go",
         "index_build.pb.go",
         "index_build_vtproto.pb.go",
         "keyspace.pb.go",

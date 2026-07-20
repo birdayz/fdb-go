@@ -1,0 +1,29 @@
+// Go-internal continuation for the hash-based SELECT DISTINCT executor.
+//
+// SELECT DISTINCT is a Go-only read-side extension — Java's fdb-relational SQL
+// layer never dedups it, and Java's record-layer value-distinct
+// (RecordQueryUnorderedDistinctPlan) uses a fresh-per-page HashSet that is NOT
+// carried across continuations. There is therefore NO Java wire format to
+// match here; this continuation is purely Go-internal, so it lives in the Go
+// relational proto set rather than the Apple mirror.
+syntax = "proto2";
+
+package com.apple.foundationdb.relational.cursors;
+
+option go_package = "fdb.dev/gen";
+
+// DistinctHashContinuation is the resume state of executeDistinct's non-
+// streaming (hash) path: the inner cursor position plus every dedup key already
+// emitted. Carrying the seen-set makes the hash distinct resume-clean — a
+// duplicate whose run straddles a scanned-rows page boundary is not re-admitted
+// (TODO C5). The set is bounded by the statement memory
+// budget it is charged against, so an over-budget high-cardinality DISTINCT
+// fails loudly (the existing budget error) rather than emitting wrong rows; the
+// cost-based sort-vs-hash choice that routes such shapes to a sort is a
+// follow-up.
+message DistinctHashContinuation {
+    // innerContinuation is the wrapped inner cursor's resume bytes.
+    optional bytes innerContinuation = 1;
+    // seenKeys are the packed dedup keys (distinctKey) already emitted.
+    repeated bytes seenKeys = 2;
+}

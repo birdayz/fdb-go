@@ -137,6 +137,17 @@ func (s *boundedSet[K]) Len() int {
 	return len(s.m)
 }
 
+// Keys returns the set's keys in unspecified order — for serializing the
+// DISTINCT dedup seen-set into a resume-clean continuation (TODO C5). Callers
+// that need a stable byte encoding must sort.
+func (s *boundedSet[K]) Keys() []K {
+	out := make([]K, 0, len(s.m))
+	for k := range s.m {
+		out = append(out, k)
+	}
+	return out
+}
+
 // estimateQueryResultBytes returns an approximate resident-byte estimate for a
 // QueryResult, for charging against the statement memory budget (RFC-130). It
 // is intentionally NOT exact heap size — a ceiling signal, not a measurement —
