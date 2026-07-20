@@ -1421,6 +1421,25 @@ the query executes — then delete the `knownGaps` entry and assert zero rows). 
 3-way join binds a column's ordinal when that column appears as both a join key and per-leg filters across
 the legs — the ordinal resolves to -1 in the runtime row today.
 
+### [investigated, not shipped] rowdiff — 4-way joins: measured-infeasible for the always-on differential
+Implemented and isolation-validated a 4-way self-join generator + a HASH-JOIN oracle (indexes on the probed
+columns → O(n+matches), not the O(n⁴) a nested loop would cost), then MEASURED it against real FDB and
+**reverted the generation** — two evidence-based reasons, not speculation:
+1. **Prohibitive planning cost.** Each 4-way query costs ~10s in the Cascades build-order search (measured:
+   60 4-way-inclusive seeds ran at 0.3 seeds/s vs ~1.5 for 3-way). A NON-selective join key (e.g. `m.a = p.a`
+   over the 0..9 domain) is pathological — one such query pinned a core at 145% for **11+ minutes**. Forcing
+   every probed side to the unique pk bounds the blowup (the previously-stalling range then completes clean),
+   but even bounded, ~10s/query makes a 50k nightly take tens of hours at any meaningful rate. Note the
+   pathological-planning case may itself be a planner-performance defect (unbounded 4-way build-order search),
+   distinct from the ordinal-binding soundness gaps.
+2. **Yield is the already-tracked ordinal family.** A generated 4-way join hit the SAME
+   "not resolvable in the runtime row / ordinal -1" defect (seed 1006000182, a `JOIN … ON m.id = p.id`
+   shared-key chain) and was correctly DECLINED by the existing knownGaps signature-matcher — i.e. 4-way
+   re-exercises the 3-way/multi-leg ordinal-binding gaps, surfacing no NEW soundness class.
+**To include it later:** either the Cascades 4-way planning cost drops, or run it as a dedicated low-rate
+sweep separate from the main nightly. The hash-join oracle pattern (buildKeyIndex / joinKey) is the reusable
+piece if revived.
+
 ---
 
 # NEXT
