@@ -61,9 +61,11 @@ func TestCheckPlanCost_SpuriousSort(t *testing.T) {
 func TestCostInvariant_PurePlannerSweep(t *testing.T) {
 	t.Parallel()
 	// Each seed drives a full Cascades planning pass per query×projection, so
-	// the committed budget is modest (still thousands of plans). A wider
-	// validation run is available via ROWDIFF_COST_SWEEP_SEEDS=N.
-	seeds := uint64(250)
+	// the committed budget is modest (still thousands of plans). It is smaller
+	// under the race detector (costSweepDefaultSeeds is build-tagged) so the
+	// serial sweep stays within the test timeout. A wider validation run is
+	// available via ROWDIFF_COST_SWEEP_SEEDS=N.
+	seeds := uint64(costSweepDefaultSeeds)
 	if s := os.Getenv("ROWDIFF_COST_SWEEP_SEEDS"); s != "" {
 		if n, err := strconv.ParseUint(s, 10, 64); err == nil && n > 0 {
 			seeds = n
