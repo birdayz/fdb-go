@@ -45,6 +45,7 @@ go_test(
         "aggregate_over_mixed_nesting_outer_join_fdb_test.go",
         "ambiguous_column_probe_test.go",
         "ambiguous_column_star_test.go",
+        "arith_overflow_predicate_fdb_test.go",
         "arith_precedence_probe_test.go",
         "arithmetic_edge_probe_test.go",
         "array_cardinality_fdb_test.go",

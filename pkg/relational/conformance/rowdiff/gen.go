@@ -904,8 +904,18 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 		pat := []string{"%a%", "al%", "%ta", "_eta", "%e%a%", "alpha", "%"}[rng.IntN(7)]
 		return &Pred{Col: col.Name, Op: predicates.ComparisonLike, Lit: pat}
 	case col.Type == ColBigint && rng.IntN(9) == 0:
-		// Arithmetic LHS: (col - col2) <cmp> lit. Subtraction only (no overflow
-		// over the value domain), so no 22003 path; a NULL operand → UNKNOWN.
+		// Arithmetic LHS: (col - col2) <cmp> lit. SUBTRACTION ONLY, and not
+		// merely because it can't overflow over the value domain — +/* are
+		// fundamentally out of scope for this differential. Overflow inside a
+		// predicate is evaluated per row, so whether it raises 22003 depends on
+		// the PLAN's evaluation order (a filter-first plan never computes the
+		// arithmetic for rows it excludes — verified plan-stable in
+		// TestFDB_ArithOverflowInPredicate_PlanStable). The oracle is a
+		// full-scan that evaluates the arithmetic for EVERY row, so on
+		// `g=20 AND (a+b)>0` it would overflow while a filter-first engine plan
+		// returns rows — a false divergence. The oracle deliberately does not
+		// model the planner, so it cannot replicate that order; subtraction (no
+		// overflow, order-independent) is the only arithmetic it can check.
 		bigints := []string{"A", "B", "C"}
 		cmp := []predicates.ComparisonType{
 			predicates.ComparisonEquals, predicates.ComparisonNotEquals,
