@@ -1421,20 +1421,47 @@ the query executes — then delete the `knownGaps` entry and assert zero rows). 
 3-way join binds a column's ordinal when that column appears as both a join key and per-leg filters across
 the legs — the ordinal resolves to -1 in the runtime row today.
 
-**Root-cause traced (RFC-182 shift, values.go read path):** `FieldValue.evaluateOrdinal` fails at
-`resolveOrdinal()` returning FALSE — i.e. `f.Resolved == nil`, an UNBAKED node reaching the executor (there is
-no runtime name→ordinal fallback by design; every ordinal must bind at plan time). The leg-baking pass
-`rebaseOuterLegValue` (rule_implement_nested_loop_join.go) bakes a leg-matched `FieldValue{Field, Child:QOV(leg)}`
-to `NewCorrelatedFieldValueWithResolvedOrdinal(...)` ONLY when the merged `legLayout[qualField]` (e.g. "R.C")
-is present; on a MISS it falls through to `values.NewFieldValue(...)` — an unbaked lazy node — which is exactly
-the -1 at runtime. So the gap is a merged-row positional layout that does not carry an entry for the shared
-column's qualified reference on every leg (that arm is also noted "dead-in-effect today — the box substrate
-rebases upstream", so for the PLAIN comma/ON 3-way the miss is likely in the plain-join merged-layout
-construction, not this EXISTS-path arm). This is RFC-173 ordinal-resolution-migration architecture (TODO top:
-that migration is the FROZEN sole priority) and the SAME multi-leg workstream as the entry above, whose obvious
-`rebaseOuterLegValueOrdinal` fix was tried and reverted — a gated, determinism-sensitive executor change, not a
-one-liner. Fix direction: ensure the merged-outer-row positional layout carries every leg column's qualified
-ordinal so the shared-column reference is BORN BAKED, without regressing the shapes the reverted fix broke.
+**ROOT CAUSE — DEFINITIVELY TRACED (RFC-182 shift, live instrumentation of the pin query).** Supersedes the
+earlier merged-layout/FlatMap-frontier hypotheses. Full evidence chain:
+
+1. **Plan (EXPLAIN):** left-deep FlatMap —
+   `FlatMap(outer=FlatMap(outer=Fetch(IndexScan IDX_C [=])[l.c=1], inner=Scan(T)[l.a=m.id]), inner=Fetch(PredicatesFilter(IndexScan IDX_C [=]), [1 pred]))`.
+2. **The failing predicate is NOT `r.c IS NULL`.** Instrumenting the residual PredicatesFilter shows the dying
+   predicate is the JOIN EQUALITY `m.c = r.c` (ComparisonEquals) reapplied as a residual above the IDX_C scan:
+   `LHS = FieldValue{field=C, corr=$m(merged outer), baked=TRUE}` ✓, `RHS = FieldValue{field=C, corr=q$NNNN(candidate base quantifier), baked=FALSE}` ✗.
+   So the unbaked node is the INNER/indexed side (`r.c`) of the reapplied join equality — over a QUANTIFIER
+   alias, `Resolved==nil` → `resolveOrdinal()` false → ordinal -1.
+3. **Birth site (instrumented `NewFieldValue`):** the lazy `r.c` is minted by
+   `ValueIndexScanMatchCandidate.ColumnValue` (`match_candidate_index.go:127`, via `index_expansion.go:66`) —
+   the index's per-column PLACEHOLDER value `NewFieldValue(base, "C")`, intentionally UNBAKED because a
+   match-candidate value is compared by name and NEVER evaluated (see `NewFlatFieldValue` doc).
+4. **Why it reaches the executor:** `expr.go` BORN-BAKES every SQL column ref (`NewCorrelatedFieldValueWithResolvedOrdinal`,
+   expr.go:278/296) and `WithChildren` PRESERVES `Resolved` (replace.go:429), so the query's own `r.c` is always
+   baked — the ONLY way an unbaked node reaches runtime is a fresh lazy `NewFieldValue`. Here the candidate
+   PLACEHOLDER leaks into the executable residual: `r.c` is referenced by BOTH `m.c = r.c` (sargable equality)
+   AND `r.c IS NULL` (sargable-for-match, `match_max_match_map.go:72`) on the SINGLE indexed column c; they
+   cannot co-sarg one index column, so the equality is reapplied as a residual — and that reapplication takes
+   the indexed side from the candidate placeholder (lazy) instead of the query's baked `r.c`. The 2-way analog
+   / single-c-reference cases never trigger the two-comparisons-on-one-indexed-column contention, so they stay
+   baked (matches the pin's "remove ANY factor → works").
+5. **Generalized (NOT IS-NULL-specific):** the differential sweep independently hit the SAME defect on a
+   DIFFERENT shape — seed 3002111, indexes `[IDX_A IDX_AB IDX_B]`, query
+   `… JOIN m ON l.b=m.b JOIN r ON m.b=r.b WHERE m.b=8 AND l.b=7` — where indexed column `b` is bound by FOUR
+   sargable comparisons across the legs (two join keys + two equality filters, no IS NULL). Confirms the trigger
+   is generally "≥2 sargable-for-match comparisons on ONE indexed column shared across join legs", of which the
+   IDX_C + `IS NULL` pin is one instance.
+
+**FIX DIRECTIONS (both are FROZEN RFC-173 index-match compensation machinery — Graefe+Torvalds gate + full
+determinism sweep across every index-match shape REQUIRED; do NOT ship unGated):**
+  (a) Bake `ColumnValue` against the record-type ordinal so a leaked placeholder still evaluates — BUT this
+      changes the candidate Value consumed by ALL of predicate-matching / sort-matching / covering-index /
+      max-match-map, and `semantic_hash.go` makes baked≠lazy by contract → wide blast radius, risks matching
+      (this is the class of change the reverted `rebaseOuterLegValueOrdinal` fix belongs to).
+  (b) At the residual reapplication, carry the QUERY's baked reference (Java's
+      `PredicateCompensationFunction.ofPredicate(queryPredicate)`) instead of the candidate placeholder — OR
+      suppress the REDUNDANT residual entirely (the equality already IS the `[=]` sarg; reapplying it as a
+      residual is redundant and only fires under the shared-column contention). (b) is narrower than (a) but
+      still core match/compensation code.
 
 ### [investigated, not shipped] rowdiff — 4-way joins: measured-infeasible for the always-on differential
 Implemented and isolation-validated a 4-way self-join generator + a HASH-JOIN oracle (indexes on the probed
