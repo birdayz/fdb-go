@@ -106,9 +106,6 @@ jobs:
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
           FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
-          # Refuse retries past this point so a systematic race can't double every
-          # target and blow the job's timeout-minutes (45) with no log to read.
-          RETRY_DEADLINE=$(( $(date +%s) + 30*60 ))
           TARGETS=$(grep -rhoP '^func \KFuzz\w+' cmd/fdb-diff-oracle/*_test.go | sort -u)
           if [ -z "$TARGETS" ]; then
             echo "::error::no Fuzz targets discovered in cmd/fdb-diff-oracle — fuzz gate is a no-op"
@@ -116,14 +113,30 @@ jobs:
           fi
           ROTATE=$(( 10#$(date -u +%j) % 3 ))
           echo "Discovered $(echo "$TARGETS" | wc -l) oracle fuzz targets; active rotation offset=$ROTATE (of 3)"
-          FAILED=0
+          # Select first so TOTAL is known: the retry cutoff below has to reserve a
+          # first run for every target still queued, which needs the count up front.
+          SELECTED=""
           i=0
+          for target in $TARGETS; do
+            if [ $(( i % 3 )) -eq "$ROTATE" ]; then SELECTED="$SELECTED $target"; fi
+            i=$((i+1))
+          done
+          TOTAL=$(echo $SELECTED | wc -w)
+          # PER_TARGET is one attempt's worst case (the `timeout 150` cap plus a little
+          # process overhead). STEP_END leaves the rest of timeout-minutes (45) for the
+          # oracle build and checkout steps that precede this one.
+          PER_TARGET=170
+          STEP_END=$(( $(date +%s) + 30*60 ))
+          FAILED=0
           RAN=0
           RACELOG=$(mktemp)
-          for target in $TARGETS; do
-            if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
-            i=$((i+1))
+          for target in $SELECTED; do
             RAN=$((RAN+1))
+            # Allow a confirming retry only if this retry AND one run of every target
+            # still queued both still fit. Without the reservation term a systematic
+            # race doubles the early targets and the job is killed part-way through the
+            # rest — losing the -summarize diagnosis in the one case it exists for.
+            RETRY_DEADLINE=$(( STEP_END - (TOTAL - RAN + 1) * PER_TARGET ))
             echo "=== $target (2m) ==="
             "$FUZZRUN" -label "$target" -deadline "$RETRY_DEADLINE" -racelog "$RACELOG" -- \
               timeout 150 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
@@ -278,8 +291,6 @@ jobs:
           mkdir -p /tmp/fuzz-cache
           bazelisk build //cmd/fuzzrun
           FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
-          # Retries refused past this point (job timeout-minutes: 60).
-          RETRY_DEADLINE=$(( $(date +%s) + 40*60 ))
           VALID=$(bazelisk query 'kind(go_test, //pkg/fdbgo/...)' 2>/dev/null)
           PAIRS=""
           for f in $(grep -rl '^func Fuzz' pkg/fdbgo/ --include='*_test.go'); do
@@ -299,15 +310,31 @@ jobs:
           fi
           ROTATE=$(( 10#$(date -u +%j) % 3 ))
           echo "Discovered $(echo $PAIRS | wc -w) (target,func) pairs; active rotation offset=$ROTATE (of 3)"
-          FAILED=0
+          # Select first so TOTAL is known: the retry cutoff below has to reserve a
+          # first run for every pair still queued, which needs the count up front.
+          SELECTED=""
           i=0
+          for pair in $PAIRS; do
+            if [ $(( i % 3 )) -eq "$ROTATE" ]; then SELECTED="$SELECTED $pair"; fi
+            i=$((i+1))
+          done
+          TOTAL=$(echo $SELECTED | wc -w)
+          # PER_TARGET is one attempt's worst case: the 90s budget plus bazel's
+          # per-test overhead on a warm cache. STEP_END leaves the remainder of
+          # timeout-minutes (60) for checkout and the steps before this one.
+          PER_TARGET=110
+          STEP_END=$(( $(date +%s) + 40*60 ))
+          FAILED=0
           RAN=0
           RACELOG=$(mktemp)
-          for pair in $PAIRS; do
-            if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
-            i=$((i+1))
+          for pair in $SELECTED; do
             RAN=$((RAN+1))
             target="${pair%|*}"; fn="${pair#*|}"
+            # Allow a confirming retry only if this retry AND one run of every pair
+            # still queued both still fit. Without the reservation term a systematic
+            # race doubles the early pairs and the job is killed part-way through the
+            # rest — losing the -summarize diagnosis in the one case it exists for.
+            RETRY_DEADLINE=$(( STEP_END - (TOTAL - RAN + 1) * PER_TARGET ))
             echo "=== $target $fn (90s) ==="
             "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -racelog "$RACELOG" -- \
               bazelisk test "$target" \
@@ -374,9 +401,6 @@ jobs:
           mkdir -p /tmp/fuzz-cache
           bazelisk build //cmd/fuzzrun
           FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
-          # This job is the tight one: ~33 targets x 90s ~= 50min of a 75min budget,
-          # so an unbounded retry storm would be killed mid-run. Refuse past 60min.
-          RETRY_DEADLINE=$(( $(date +%s) + 60*60 ))
           VALID=$(bazelisk query 'kind(go_test, //pkg/relational/... + //pkg/recordlayer/... + //pkg/rabitq/...)' 2>/dev/null)
           PAIRS=""
           for f in $(grep -rl '^func Fuzz' pkg/relational pkg/recordlayer pkg/rabitq --include='*_test.go'); do
@@ -396,15 +420,34 @@ jobs:
           fi
           ROTATE=$(( 10#$(date -u +%j) % 3 ))
           echo "Discovered $(echo $PAIRS | wc -w) (target,func) pairs; active rotation offset=$ROTATE (of 3)"
-          FAILED=0
+          # Select first so TOTAL is known: the retry cutoff below has to reserve a
+          # first run for every pair still queued, which needs the count up front.
+          SELECTED=""
           i=0
+          for pair in $PAIRS; do
+            if [ $(( i % 3 )) -eq "$ROTATE" ]; then SELECTED="$SELECTED $pair"; fi
+            i=$((i+1))
+          done
+          TOTAL=$(echo $SELECTED | wc -w)
+          # PER_TARGET is one attempt's worst case: the 90s budget plus bazel's
+          # per-test overhead on a warm cache. This job is the tight one — ~33 pairs
+          # x PER_TARGET is already ~60min of mandatory work inside timeout-minutes
+          # (75) — so STEP_END is set just above that, leaving room for a handful of
+          # retries. Set it BELOW the mandatory total and the reservation term goes
+          # permanently negative, silently disabling retries altogether.
+          PER_TARGET=110
+          STEP_END=$(( $(date +%s) + 68*60 ))
+          FAILED=0
           RAN=0
           RACELOG=$(mktemp)
-          for pair in $PAIRS; do
-            if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
-            i=$((i+1))
+          for pair in $SELECTED; do
             RAN=$((RAN+1))
             target="${pair%|*}"; fn="${pair#*|}"
+            # Allow a confirming retry only if this retry AND one run of every pair
+            # still queued both still fit. Without the reservation term a systematic
+            # race doubles the early pairs and the job is killed part-way through the
+            # rest — losing the -summarize diagnosis in the one case it exists for.
+            RETRY_DEADLINE=$(( STEP_END - (TOTAL - RAN + 1) * PER_TARGET ))
             echo "=== $target $fn (90s) ==="
             "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -racelog "$RACELOG" -- \
               bazelisk test "$target" \

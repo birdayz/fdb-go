@@ -1798,8 +1798,13 @@ wide, not exotic. The `fuzz: minimizing` witness line (`fuzz.go:265`, logged imm
 `c.crashMinimizing` is set) is what catches it. Revert-proven: removing the marker turns the regression
 red.
 
-The confirming retry is skipped past a per-job `-deadline` so a systematic race cannot double every target
-and blow `timeout-minutes` (engine-fuzz is the tight one: ~33 targets × 90s ≈ 50min of a 75min budget).
+The confirming retry is skipped past a per-job `-deadline` so a systematic race cannot blow
+`timeout-minutes`. The cutoff is computed **per iteration** and reserves one run for every target still
+queued (`STEP_END - (TOTAL - RAN + 1) * PER_TARGET`): a flat cutoff was not enough, because under a
+systematic race the early targets double up and the remaining mandatory first attempts still overran —
+engine-fuzz landed at ~79min against a 75min timeout, killing the job before `-summarize` could report
+the very thing it exists to report. Note `STEP_END` must sit ABOVE the job's mandatory total
+(targets × PER_TARGET) or the reservation term goes permanently negative and silently disables retries.
 Skipping it **passes** rather than fails: the classifier is authoritative, so going red there would
 re-introduce the very false red this tool removes — and would do it exactly when the race is most
 frequent. Output is streamed rather than buffered, so a job killed mid-run still has the in-flight
