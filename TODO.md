@@ -1439,9 +1439,32 @@ never exercises this. If reachable, the fix is to yield an EMPTY cursor (not run
 set is empty, and pin it with a yamsql/FDB test; if `IN ()` is a hard parse error and no empty-set path exists,
 document the branch as defensively-dead. Do NOT fold into the multi-leg PR (separate logical change).
 
-### [ ] Executor/ordinal-binding — 3-way join shared-column ordinal not resolvable (malformed plan)
+### [x] Executor/ordinal-binding — 3-way join shared-column ordinal not resolvable — FIXED
+**FIXED** (branch fix-threeway-shared-col-ordinal, stacked on #501). Root cause: when
+`PushFilterThroughFetchRule` pushes the join key `m.c = r.c` below the index Fetch, it translates `r.c` into the
+index-scan domain via `ValueIndexScanMatchCandidate.buildTranslateValueFunction`, which produced a bare
+`NewFieldValue` — DROPPING the reference's baked ordinal. The lazy node then dies loud when the equality loses
+the index bound to a competing `r.c IS NULL` and is evaluated as a residual. Fix: the translate function
+PRESERVES the incoming baked ordinal (`NewCorrelatedFieldValueWithResolvedOrdinal`) — the fetch's inner presents
+a logical-slot-shaped partial record so the full-record ordinal reads the same slot; correct-or-loud otherwise
+(index-layout rows guarded). Regression: `TestFDB_ThreeWaySharedColOrdinal_Regression` (0 rows); knownGaps ledger
+now EMPTY (both tracked defects fixed). Gate: query-engine change → Graefe+Torvalds.
+
+**FOLLOW-UP — parallel latent defect (NOT fixed here):** `WindowedIndexScanMatchCandidate.buildTranslateValueFunction`
+(windowed/RANK/vector indexes, windowed_index_match_candidate.go ~247) has the IDENTICAL ordinal-drop
+(`NewFieldValue`, no ordinal). The SAME single-accessor fix would apply. **Safety de-risked (this shift):** the
+executor's wrong-slot guard is GENERIC, not value-index-specific — `executeIndexScan` (executor.go:287) is the
+single index-scan path, and it NEVER serves an index-layout row to a baked ordinal: `coveringLogicalOrdinals`
+either presents a logical-slot-shaped covering row OR falls back to a full-record fetch (executor.go:335-375).
+So the single-accessor gate is correct-or-loud for the windowed candidate too. **Open question is REACHABILITY:**
+windowed/rank/permuted indexes route through the AGGREGATE paths (executor_new_plans.go), not a
+covering-scan-with-pushed-filter path, so a windowed `Fetch` + pushed-below-fetch predicate may not be
+producible at all (latent-dead, like the InUnion defensive arm). NOT bundled into this ACK'd value-index change
+(would force another gate lap for a different candidate type). To close: confirm reachability with a
+windowed-index query; if reachable, apply the identical single-accessor gate + a fused-collision unit test; if
+unreachable, apply defensively (unit-proven, correct-or-loud) or leave documented. (Original symptom, for reference:)
 A 3-WAY join in which the SAME column is referenced across all three legs — a filter on the first
-(`l.c = 1`), the m↔r join key (`m.c = r.c`), and a filter on the third (`r.c IS NULL`) — plans but **dies at
+(`l.c = 1`), the m↔r join key (`m.c = r.c`), and a filter on the third (`r.c IS NULL`) — planned but **died at
 execution**: `ordinal resolution: field "C" not resolvable in the runtime row (ordinal -1, row columns
 [ID A B C S F]) — malformed plan`. Removing ANY one factor (drop a leg to 2-way / drop the m.c=r.c join /
 drop either c-filter) fixes it. Fails LOUD; the query's correct result is EMPTY (m.c=r.c can never hold when

@@ -313,34 +313,25 @@ type knownGap struct {
 // knownGaps is the whole ledger. Keep it SHORT and each entry NARROW: an
 // over-broad matcher silently converts real findings into declines.
 //
-// An empty ledger is the goal state: every entry is a query the engine cannot
-// answer. The one entry below is a KNOWN executor/ordinal-binding defect
-// (booked as its own workstream in rule_implement_nested_loop_join.go ~2785),
-// pinned live and TODO-tracked; retire it the day that workstream lands.
+// An empty ledger is the GOAL STATE, and the ledger is now EMPTY: every
+// generative divergence the harness has surfaced has been root-caused and
+// fixed. Two entries were retired once their root causes landed:
 //
-// The former LEFT-OUTER-PK-join multi-leg entry was RETIRED once its root cause
-// was fixed: an InJoin (the lowering of `… IN (…)`) is now a row-layout-preserving
-// passthrough in unwrapToJoinPlan, so the in-memory sort's source-relative
-// ORDER-BY key resolves through the join's leg windows instead of going loud.
-// Regression: TestFDB_LeftJoinPkOrdinal_InJoinSortRegression.
-var knownGaps = []knownGap{
-	{
-		// A 3-way join in which the same column is referenced across all three
-		// legs (a filter on one, the m↔r join key, and a filter on the third)
-		// plans but dies at execution: "field … not resolvable in the runtime
-		// row (ordinal -1 …) — malformed plan". Same ordinal-binding family as
-		// the multi-leg gap above, distinct signature. Fails LOUD (never wrong
-		// rows — the query's correct result is empty), so matching its signature
-		// cannot mask a soundness bug. A distinct executor/ordinal-binding
-		// workstream, not fixable inline.
-		name: "3-way join shared-column ordinal not resolvable (malformed plan)",
-		pin:  "TestFDB_ThreeWaySharedColOrdinal_KnownGap",
-		matches: func(sqlText string, err error) bool {
-			return strings.Contains(err.Error(), "not resolvable in the runtime row") &&
-				strings.Contains(err.Error(), "ordinal -1")
-		},
-	},
-}
+//   - LEFT-OUTER-PK-join multi-leg source-relative ordinal: an InJoin/InUnion
+//     (the lowering of `… IN (…)`) is now a row-layout-preserving passthrough in
+//     unwrapToJoinPlan, so an in-memory sort's source-relative key resolves
+//     through the join's leg windows. Regression:
+//     TestFDB_LeftJoinPkOrdinal_InJoinSortRegression.
+//   - 3-way shared-column ordinal: ValueIndexScanMatchCandidate's fetch
+//     TranslateValueFunction now PRESERVES the baked ordinal when pushing a
+//     predicate below the index Fetch (it was dropping it → a lazy reference
+//     that died loud when evaluated as a residual). Regression:
+//     TestFDB_ThreeWaySharedColOrdinal_Regression.
+//
+// Re-adding an entry is deliberately expensive: it needs a LIVE PIN that fails
+// the day the limitation lifts, and a TODO.md entry — otherwise this list
+// becomes the suppression hole §4 warns about.
+var knownGaps = []knownGap{}
 
 // matchKnownGap returns the ledger entry covering this failure, or nil.
 func matchKnownGap(sqlText string, err error) *knownGap {

@@ -408,6 +408,40 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 				}
 			}
 			if _, covered := coveredColumns[strings.ToUpper(v.Field)]; covered {
+				// PRESERVE the baked ordinal when rebasing the correlation to the
+				// index-scan target — but ONLY for a SINGLE-ACCESSOR path
+				// (Resolved.Single). The fetch's inner presents its partial record
+				// in the record's LOGICAL slot layout (descriptor-shaped, non-covered
+				// fields nil — the covering-scan row-shaping in executor.go /
+				// flat_map_cursor.go). A pushed-below-fetch predicate references
+				// COVERED COLUMNS in that record domain, whose frontier IS the record
+				// descriptor — the SAME layout as the target — so a single-column
+				// ordinal reads the same slot (an index-LAYOUT covering row is
+				// separately guarded to refuse a baked ordinal rather than misread).
+				//
+				// The single-accessor gate is load-bearing: a FUSED multi-accessor
+				// path (composeFieldOverField collapses `t.addr.city` into ONE node —
+				// Child=QOV, Resolved=[ADDR,CITY], Field="CITY") passes the
+				// bare-source allowlist above, but its Root() ordinal is ADDR's;
+				// baking it single-accessor would drop the descent and, if a covered
+				// column shares the leaf name, silently read the WRONG slot (wrong
+				// rows). Resolved.Single() admits only the flat covered-column shape
+				// (both the source-relative and the frontier-pinned single-accessor
+				// forms the join/merge machinery produces for `r.c`); a multi-accessor
+				// path falls through to the lazy branch (correct-or-loud).
+				//
+				// Dropping the ordinal for the flat case WAS the bug: a pushed
+				// predicate later evaluated as a residual (a join key on an indexed
+				// column that lost the index bound to a competing IS NULL) hit the
+				// executor's no-name-fallback path and failed LOUD (ordinal -1).
+				if v.Resolved != nil {
+					if acc, single := v.Resolved.Single(); single {
+						return values.NewCorrelatedFieldValueWithResolvedOrdinal(
+							values.NewQuantifiedObjectValue(targetAlias),
+							v.Field, acc.Ordinal, v.Typ,
+						), true
+					}
+				}
 				return values.NewFieldValue(
 					values.NewQuantifiedObjectValue(targetAlias),
 					v.Field, v.Typ,
