@@ -1,6 +1,10 @@
 package plans
 
-import "testing"
+import (
+	"testing"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+)
 
 // TestStructuralKey_MemoInvariantAndFieldSensitivity locks the contract every
 // centralized plan key relies on: equal keys hash equal (the memo dedup
@@ -79,4 +83,35 @@ func assertPlanKeyUnequal(t *testing.T, a, b RecordQueryPlan) {
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Errorf("expected EqualsPlanWithoutChildren false")
 	}
+}
+
+// TestMigratedPlans_StructuralKeyContract pins each additionally-migrated plan:
+// equal instances agree (and hash equal), and every identifying field is
+// load-bearing. One block per plan — the per-plan net the reviewers asked for.
+func TestMigratedPlans_StructuralKeyContract(t *testing.T) {
+	t.Parallel()
+	scan := NewRecordQueryScanPlan(nil, nil, false)
+
+	// distinct — Streaming is the sole identifying field.
+	d1 := NewRecordQueryDistinctPlan(scan)
+	assertPlanKeyEqual(t, d1, NewRecordQueryDistinctPlan(scan))
+	dStream := NewRecordQueryDistinctPlan(scan)
+	dStream.Streaming = true
+	assertPlanKeyUnequal(t, d1, dStream)
+
+	// typefilter — the record-type list (dedupSortedStrings-normalized at
+	// construction, so equality is on the normalized set; length/content
+	// distinguish).
+	assertPlanKeyEqual(t,
+		NewRecordQueryTypeFilterPlan([]string{"A", "B"}, scan),
+		NewRecordQueryTypeFilterPlan([]string{"B", "A"}, scan)) // both normalize to [A,B]
+	assertPlanKeyUnequal(t,
+		NewRecordQueryTypeFilterPlan([]string{"A"}, scan),
+		NewRecordQueryTypeFilterPlan([]string{"A", "B"}, scan))
+
+	// default_on_empty — the default Value.
+	nv := values.NewNullValue(values.UnknownType)
+	assertPlanKeyEqual(t,
+		NewRecordQueryDefaultOnEmptyPlan(scan, nv),
+		NewRecordQueryDefaultOnEmptyPlan(scan, nv))
 }

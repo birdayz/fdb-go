@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -82,20 +81,18 @@ func (p *RecordQueryDistinctPlan) GetQuantifiers() []expressions.Quantifier {
 // operator-specific data; a streaming and a hash-set distinct dedup to the same
 // rows but are NOT execution-interchangeable (streaming assumes ordered input),
 // so they must not be conflated in the memo.
+func (p *RecordQueryDistinctPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Bool(p.Streaming)
+}
+
 func (p *RecordQueryDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryDistinctPlan)
-	return ok && o.Streaming == p.Streaming
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren discriminates on type and the Streaming mode.
 func (p *RecordQueryDistinctPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	if p.Streaming {
-		h.Write([]byte("distinctplan|streaming"))
-	} else {
-		h.Write([]byte("distinctplan"))
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("distinctplan|")
 }
 
 // Explain renders Distinct(inner). The Streaming mode is an execution-only

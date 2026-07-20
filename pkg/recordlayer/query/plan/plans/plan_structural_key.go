@@ -26,6 +26,7 @@ const (
 	partBool partKind = iota
 	partInt
 	partStr
+	partStrs
 	partValue
 	partStructVal
 	partValues
@@ -40,6 +41,7 @@ type part struct {
 	b     bool
 	i     int64
 	s     string
+	ss    []string
 	v     values.Value
 	vs    []values.Value
 	preds []predicates.QueryPredicate
@@ -67,6 +69,13 @@ func (k *structuralKey) Int64(i int64) *structuralKey {
 
 func (k *structuralKey) Str(s string) *structuralKey {
 	k.parts = append(k.parts, part{kind: partStr, s: s})
+	return k
+}
+
+// Strs folds an ORDERED string slice (record-type lists, column-name lists).
+// Order and length are load-bearing.
+func (k *structuralKey) Strs(ss []string) *structuralKey {
+	k.parts = append(k.parts, part{kind: partStrs, ss: ss})
 	return k
 }
 
@@ -128,6 +137,16 @@ func partEqual(a, b part) bool {
 		return a.i == b.i
 	case partStr:
 		return a.s == b.s
+	case partStrs:
+		if len(a.ss) != len(b.ss) {
+			return false
+		}
+		for i := range a.ss {
+			if a.ss[i] != b.ss[i] {
+				return false
+			}
+		}
+		return true
 	case partValue:
 		return semanticValueEquals(a.v, b.v)
 	case partStructVal:
@@ -178,6 +197,14 @@ func (k *structuralKey) Hash(discriminator string) uint64 {
 			binary.BigEndian.PutUint64(buf[:], uint64(len(p.s)))
 			h.Write(buf[:])
 			h.Write([]byte(p.s))
+		case partStrs:
+			binary.BigEndian.PutUint64(buf[:], uint64(len(p.ss)))
+			h.Write(buf[:])
+			for _, s := range p.ss {
+				binary.BigEndian.PutUint64(buf[:], uint64(len(s)))
+				h.Write(buf[:])
+				h.Write([]byte(s))
+			}
 		case partValue, partStructVal:
 			writeValueHash(h, p.v)
 		case partValues:

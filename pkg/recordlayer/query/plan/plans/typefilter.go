@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -64,32 +63,20 @@ func (p *RecordQueryTypeFilterPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
+// structuralKey identifies a type filter by its ORDERED record-type set.
+func (p *RecordQueryTypeFilterPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Strs(p.recordTypes)
+}
+
 // EqualsWithoutChildren compares record-type sets.
 func (p *RecordQueryTypeFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTypeFilterPlan)
-	if !ok {
-		return false
-	}
-	if len(p.recordTypes) != len(o.recordTypes) {
-		return false
-	}
-	for i := range p.recordTypes {
-		if p.recordTypes[i] != o.recordTypes[i] {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes class + record-type set.
 func (p *RecordQueryTypeFilterPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("typefilterplan|"))
-	for _, name := range p.recordTypes {
-		h.Write([]byte(name))
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("typefilterplan|")
 }
 
 // Explain renders TypeFilter([T1, T2], inner).

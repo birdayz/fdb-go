@@ -1,8 +1,6 @@
 package plans
 
 import (
-	"hash/fnv"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -52,19 +50,17 @@ func (p *RecordQueryDefaultOnEmptyPlan) GetChildren() []RecordQueryPlan {
 
 // EqualsWithoutChildren compares the default value by semantic Value identity
 // (RFC-176 P2 — see semanticValueEquals).
+func (p *RecordQueryDefaultOnEmptyPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Value(p.defaultValue)
+}
+
 func (p *RecordQueryDefaultOnEmptyPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryDefaultOnEmptyPlan)
-	if !ok {
-		return false
-	}
-	return semanticValueEquals(p.defaultValue, o.defaultValue)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryDefaultOnEmptyPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("defaultonemptyplan|"))
-	writeValueHash(h, p.defaultValue)
-	return h.Sum64()
+	return p.structuralKey().Hash("defaultonemptyplan|")
 }
 
 func (p *RecordQueryDefaultOnEmptyPlan) Explain() string {
