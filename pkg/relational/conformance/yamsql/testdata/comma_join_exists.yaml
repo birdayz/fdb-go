@@ -1,0 +1,61 @@
+# comma_join_exists.yaml
+#
+# Regression for the removed Go-only `eliminateRedundantCrossJoin` rewrite.
+# That rule fired when a comma-join operand and a correlated EXISTS were over
+# the SAME base table with a structurally-mirroring correlation, and it
+# REPLACED the fan-out join with an EXISTS semi-join (dropping the joined
+# table's rows AND columns). A comma-join is a fan-out (one row per match); a
+# semi-join dedups to at-most-one — never equivalent when the joined table's
+# columns are projected, nor even for a bare projection (row multiplicity
+# differs without DISTINCT). The rewrite had no Java analogue and no pinning
+# test; it produced WRONG ROWS and, when the joined column was projected, a
+# hard "ordinal resolution ... malformed plan". Removed; these pin the correct
+# fan-out.
+name: comma_join_exists
+schema_template: |
+  CREATE TABLE p (id BIGINT NOT NULL, region BIGINT, PRIMARY KEY (id))
+  CREATE TABLE e (eid BIGINT NOT NULL, eref BIGINT, sal BIGINT, PRIMARY KEY (eid))
+setup:
+  - INSERT INTO p VALUES (1, 10), (2, 20)
+  # p=1 has two e rows (one with sal>600 → EXISTS true); p=2 has one e row (sal<=600 → EXISTS false).
+  - INSERT INTO e VALUES (100, 1, 500), (101, 1, 700), (102, 2, 550)
+tests:
+  # THE BUG: the comma-join fans p=1 out to BOTH matching e rows, and the
+  # correlated EXISTS(sal>600) is satisfied for p=1 (e101). e's projected
+  # column (eid) must be the real per-row value, not p.id. p=2 is filtered
+  # (its only e row has sal<=600).
+  - query: |-
+      SELECT p.id, e.eid FROM p, e
+      WHERE p.id = e.eref
+        AND EXISTS (SELECT 1 FROM e e2 WHERE e2.eref = p.id AND e2.sal > 600)
+      ORDER BY p.id, e.eid
+    rows:
+      - [1, 100]
+      - [1, 101]
+  # Crash variant: projecting the joined table's column `e.sal` used to hard-
+  # error "field SAL not resolvable ... row columns [ID REGION]" because e was
+  # erased from the runtime row. Now returns e's real sal values.
+  - query: |-
+      SELECT p.id, e.sal FROM p, e
+      WHERE p.id = e.eref
+        AND EXISTS (SELECT 1 FROM e e2 WHERE e2.eref = p.id AND e2.sal > 600)
+      ORDER BY p.id, e.sal
+    rows:
+      - [1, 500]
+      - [1, 700]
+  # Bare projection still fans out: `SELECT p.id` (no DISTINCT) must keep the
+  # duplicate row per matching e — the old rewrite collapsed these to one.
+  - query: |-
+      SELECT p.id FROM p, e
+      WHERE p.id = e.eref
+        AND EXISTS (SELECT 1 FROM e e2 WHERE e2.eref = p.id AND e2.sal > 600)
+      ORDER BY p.id
+    rows:
+      - [1]
+      - [1]
+  # Control: the same comma-join WITHOUT the EXISTS — plain fan-out, all rows.
+  - query: SELECT p.id, e.eid FROM p, e WHERE p.id = e.eref ORDER BY p.id, e.eid
+    rows:
+      - [1, 100]
+      - [1, 101]
+      - [2, 102]

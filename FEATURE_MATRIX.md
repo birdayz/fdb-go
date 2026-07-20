@@ -11,12 +11,12 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**334 scenarios · 2664 query/assertion cases** across 18 feature areas.
+**335 scenarios · 2668 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
 | Aggregates & GROUP BY | 49 | 320 |
-| Joins | 61 | 267 |
+| Joins | 62 | 271 |
 | Subqueries (EXISTS / IN / scalar) | 43 | 290 |
 | CTEs | 12 | 105 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 |
@@ -93,6 +93,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Scenario | Cases | What it pins |
 |---|--:|---|
 | `coalesce_in_join` | 2 | COALESCE in JOIN and aggregate contexts |
+| `comma_join_exists` | 4 | Regression for the removed Go-only `eliminateRedundantCrossJoin` rewrite. |
 | `composite_pk_join` | 3 | Joins on composite primary key tables |
 | `count_distinct_join` | 3 | COUNT(DISTINCT col) against rows materialised from a JOIN or |
 | `cross_join` | 5 | CROSS JOIN / comma-join / no-ON INNER JOIN all produce the |

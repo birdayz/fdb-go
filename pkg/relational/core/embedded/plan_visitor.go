@@ -1110,14 +1110,6 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 				"EXISTS within an OR (disjunction) is not supported")
 		}
-		if len(sq.joins) > 0 && len(existsPlanner.subqueries) == 1 {
-			esq := existsPlanner.subqueries[0]
-			if esq.JoinPredicate != nil {
-				if eliminated := eliminateRedundantCrossJoin(op, sq, pred, esq); eliminated {
-					return op, nil
-				}
-			}
-		}
 		combined, qErr := combineQualifyPred(v.md, v.schemaName, sq, v.cteScopes, pred)
 		if qErr != nil {
 			return nil, qErr
