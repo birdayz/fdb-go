@@ -763,6 +763,24 @@ func evalBoolInner(n *BoolNode, r Row) (predicates.TriBool, error) {
 
 func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 	switch {
+	case p.NumFn != nil:
+		// ABS / MOD over BIGINT — Go's abs and % match the engine over the
+		// value domain (no MinInt64 → no ABS overflow; % follows the dividend's
+		// sign like SQL MOD; the MOD divisor is a nonzero literal → no divzero).
+		// A NULL column makes the result NULL → the comparison is UNKNOWN.
+		v, ok := r[p.NumFn.Col].(int64)
+		if !ok {
+			return predicates.TriUnknown, nil
+		}
+		var result int64
+		if p.NumFn.Fn == NumFnMod {
+			result = v % p.NumFn.Mod
+		} else if v < 0 {
+			result = -v
+		} else {
+			result = v
+		}
+		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(result)
 	case p.StrFn != nil:
 		// UPPER/LOWER/LENGTH over the ASCII string domain — Go's strings.ToUpper
 		// / ToLower / len match the engine's semantics there (verified by probe).

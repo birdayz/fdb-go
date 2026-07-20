@@ -97,6 +97,10 @@ type Pred struct {
 	// `<Fn>(<StrCol>) <Op> Lit` (UPPER/LOWER vs a string Lit, LENGTH vs an int
 	// Lit). Single-table only. A NULL column makes the result NULL → UNKNOWN.
 	StrFn *StrFnSpec
+	// NumFn, when non-nil, makes the leaf's LHS a numeric-function call
+	// `ABS(col) <Op> Lit` or `MOD(col, k) <Op> Lit`. Single-table only. A NULL
+	// column makes the result NULL → UNKNOWN.
+	NumFn *NumFnSpec
 	// Negated renders `NOT (…)` around the leaf (and `NOT IN` for IN).
 	Negated bool
 }
@@ -304,6 +308,26 @@ const (
 type StrFnSpec struct {
 	Fn  StrFnKind
 	Col string // the STRING column (only "S" today)
+}
+
+// NumFnKind is a scalar numeric function whose semantics match Go's over the
+// generator's BIGINT domain (verified by probe): ABS never overflows (no
+// MinInt64 in {-1, 2^62, 0..9}), and MOD follows the dividend's sign exactly as
+// Go's % does. MOD's divisor is always a nonzero literal, so there is no
+// division-by-zero path.
+type NumFnKind int
+
+const (
+	NumFnAbs NumFnKind = iota // ABS(col)
+	NumFnMod                  // MOD(col, Mod)
+)
+
+// NumFnSpec is a numeric-function predicate LHS: `ABS(col) <Op> Lit` or
+// `MOD(col, Mod) <Op> Lit`.
+type NumFnSpec struct {
+	Fn  NumFnKind
+	Col string // BIGINT column
+	Mod int64  // nonzero divisor for MOD (unused for ABS)
 }
 
 // UnionSpec is a set operation between two single-table branches over the same
@@ -1061,6 +1085,11 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 		leaves = append(leaves, genStrFnLeaf(rng))
 	}
 
+	// Numeric-function leaf (~1/8): `ABS(col) op lit` / `MOD(col, k) op lit`.
+	if rng.IntN(8) == 0 {
+		leaves = append(leaves, genNumFnLeaf(rng))
+	}
+
 	// NOT on a leaf (~1/8 each): `NOT (a = 1)` / `a NOT IN (…)`.
 	for _, lf := range leaves {
 		if rng.IntN(8) == 0 {
@@ -1582,6 +1611,13 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 			b.WriteString("NOT (")
 		}
 		switch {
+		case p.NumFn != nil:
+			col := strings.ToLower(p.NumFn.Col)
+			if p.NumFn.Fn == NumFnMod {
+				fmt.Fprintf(b, "MOD(%s, %d) %s %s", col, p.NumFn.Mod, opSQL(p.Op), renderLiteral(p.Lit))
+			} else {
+				fmt.Fprintf(b, "ABS(%s) %s %s", col, opSQL(p.Op), renderLiteral(p.Lit))
+			}
 		case p.StrFn != nil:
 			fmt.Fprintf(b, "%s(%s) %s %s",
 				strFnSQL(p.StrFn.Fn), strings.ToLower(p.StrFn.Col), opSQL(p.Op), renderLiteral(p.Lit))
@@ -1716,6 +1752,28 @@ func genStrFnLeaf(rng *rand.Rand) *Pred {
 		spec.Fn = StrFnLength
 		return &Pred{StrFn: spec, Op: op, Lit: int64(rng.IntN(9))}
 	}
+}
+
+// genNumFnLeaf builds a single-table numeric-function predicate leaf. ABS
+// compares against a small int; MOD uses a nonzero literal divisor (2..8) and
+// compares against a literal spanning the signed remainder range.
+func genNumFnLeaf(rng *rand.Rand) *Pred {
+	bigints := []string{"A", "B", "C"}
+	ops := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
+	spec := &NumFnSpec{Col: bigints[rng.IntN(len(bigints))]}
+	if rng.IntN(2) == 0 {
+		spec.Fn = NumFnAbs
+		return &Pred{NumFn: spec, Op: ops[rng.IntN(len(ops))], Lit: int64(rng.IntN(10))}
+	}
+	spec.Fn = NumFnMod
+	spec.Mod = int64(2 + rng.IntN(7)) // 2..8, nonzero → no divzero
+	// The Go/SQL remainder ranges -(Mod-1)..(Mod-1); span it so matches occur.
+	lit := int64(rng.IntN(int(2*spec.Mod-1))) - (spec.Mod - 1)
+	return &Pred{NumFn: spec, Op: ops[rng.IntN(len(ops))], Lit: lit}
 }
 
 // strFnSQL renders a string function's SQL name.

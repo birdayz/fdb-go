@@ -28,6 +28,7 @@ go_test(
         "derived_oracle_test.go",
         "exists_oracle_test.go",
         "left_join_oracle_test.go",
+        "num_fn_oracle_test.go",
         "right_join_oracle_test.go",
         "rowdiff_test.go",
         "scalar_sub_oracle_test.go",
