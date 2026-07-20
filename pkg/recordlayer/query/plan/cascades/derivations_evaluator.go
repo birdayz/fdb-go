@@ -70,7 +70,9 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	case *physicalDeleteWrapper:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalFetchFromPartialRecordWrapper:
+	// A fetch is its own physical expression now (RFC-184 W2) — same
+	// single-child passthrough derivations the physicalFetchFromPartialRecordWrapper carried.
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return derivationsFromSingleChildExpr(w)
 
 	case *physicalTempTableInsertWrapper:
@@ -91,7 +93,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- Map: translate result value through child results ---
 
-	case *physicalMapWrapper:
+	// A map/projection is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryMapPlan:
 		return derivationsForMap(w)
 
 	// --- Projection: translate through child results ---
@@ -299,16 +302,17 @@ func collectValuesFromPredicateRecursive(pred predicates.QueryPredicate, out *[]
 
 // --- Map ---
 
-func derivationsForMap(w *physicalMapWrapper) *properties.Derivations {
-	childDerivs := properties.DerivationsFromQuantifier(w.innerQuant)
+func derivationsForMap(w *plans.RecordQueryMapPlan) *properties.Derivations {
+	innerQuant := w.GetInnerQuantifier()
+	childDerivs := properties.DerivationsFromQuantifier(innerQuant)
 	childResults := childDerivs.ResultValues
-	resultValue := w.plan.GetResultValue()
+	resultValue := w.GetResultValue()
 
 	var resultVals []values.Value
 	var localVals []values.Value
 	localVals = append(localVals, childDerivs.LocalValues...)
 
-	alias := w.innerQuant.GetAlias()
+	alias := innerQuant.GetAlias()
 	for _, childResult := range childResults {
 		translated := properties.TranslateCorrelation(resultValue, alias, childResult)
 		resultVals = append(resultVals, translated)

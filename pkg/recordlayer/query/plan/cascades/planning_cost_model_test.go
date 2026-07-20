@@ -640,7 +640,7 @@ func TestPlanningCostModelLess_Criterion10_IndexScanFetchCount(t *testing.T) {
 	indexBRef := expressions.InitialOf(indexB)
 	indexBQ := expressions.NewPhysicalQuantifier(indexBRef)
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(idxBPlan, nil, nil, plans.FetchIndexRecordsPrimaryKey)
-	planB := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, indexBQ)
+	planB := fetchPlan.WithQuantifiers([]expressions.Quantifier{indexBQ})
 
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
 		NewValueIndexScanMatchCandidate("idx_a", []string{"T"}, []string{"a"}, nil, values.UnknownType, false, nil),
@@ -888,7 +888,7 @@ func TestPlanningCostModelLess_Criterion14_MapPredicatesFilterCount(t *testing.T
 	filterRef := expressions.InitialOf(oneFilter)
 	filterQ := expressions.ForEachQuantifier(filterRef)
 	mapPlan := plans.NewRecordQueryMapPlan(filterPlan, &values.ConstantValue{Value: int64(0), Typ: values.TypeInt})
-	withMap := NewPhysicalMapWrapper(mapPlan, filterQ)
+	withMap := mapPlan.WithQuantifiers([]expressions.Quantifier{filterQ})
 
 	opsA := findExpressionsByType(oneFilter, nil, nil)
 	opsB := findExpressionsByType(withMap, nil, nil)

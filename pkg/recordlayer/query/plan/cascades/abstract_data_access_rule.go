@@ -504,7 +504,14 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, unique: unique, columnNames: columnNames, pkColumnNames: pkColumnNames}
 			idxRef := expressions.InitialOf(idxWrapper)
 			fetchQ := expressions.ForEachQuantifier(idxRef)
-			return NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+			// The fetch is its own cascades expression carrying the live idxRef
+			// edge (RFC-184 W2).
+			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+				fetchQ,
+				fetchPlan.GetTranslateValueFunction(),
+				fetchPlan.GetResultType(),
+				fetchPlan.GetFetchIndexRecords(),
+			)
 		}
 	}
 	if idxPlan, ok := plan.(*plans.RecordQueryIndexPlan); ok {

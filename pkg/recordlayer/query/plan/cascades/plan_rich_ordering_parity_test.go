@@ -319,10 +319,10 @@ func TestRichOrderingParity_FetchFromPartialRecord(t *testing.T) {
 				pkColumnNames: tc.pkColumnNames,
 				unique:        tc.unique,
 			}
-			w := NewPhysicalFetchFromPartialRecordWrapper(
-				fetch,
+			w := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 				expressions.NewPhysicalQuantifier(
 					expressions.FinalOfAtStage(idxWrapper, expressions.StageCanonical)),
+				fetch.GetTranslateValueFunction(), fetch.GetResultType(), fetch.GetFetchIndexRecords(),
 			)
 
 			assertRichOrderingsEqual(t, w.HintRichOrdering(), fetch.HintRichOrdering())
@@ -344,10 +344,10 @@ func TestRichOrderingParity_FetchOverUnorderedSource(t *testing.T) {
 	fetch := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		scan, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
-	w := NewPhysicalFetchFromPartialRecordWrapper(
-		fetch,
+	w := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 		expressions.NewPhysicalQuantifier(
 			expressions.FinalOfAtStage(&physicalScanWrapper{plan: scan}, expressions.StageCanonical)),
+		fetch.GetTranslateValueFunction(), fetch.GetResultType(), fetch.GetFetchIndexRecords(),
 	)
 
 	assertRichOrderingsEqual(t, w.HintRichOrdering(), fetch.HintRichOrdering())

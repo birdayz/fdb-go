@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // MergeFetchIntoCoveringIndexRule eliminates a
@@ -32,16 +33,16 @@ type MergeFetchIntoCoveringIndexRule struct {
 
 func NewMergeFetchIntoCoveringIndexRule() *MergeFetchIntoCoveringIndexRule {
 	return &MergeFetchIntoCoveringIndexRule{
-		matcher: NewExpressionMatcher[*physicalFetchFromPartialRecordWrapper]("phys_fetch_over_index"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryFetchFromPartialRecordPlan]("phys_fetch_over_index"),
 	}
 }
 
 func (r *MergeFetchIntoCoveringIndexRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *MergeFetchIntoCoveringIndexRule) OnMatch(call *ImplementationRuleCall) {
-	fetchW := matching.Get[*physicalFetchFromPartialRecordWrapper](call.Bindings, r.matcher)
+	fetchW := matching.Get[*plans.RecordQueryFetchFromPartialRecordPlan](call.Bindings, r.matcher)
 
-	innerRef := fetchW.innerQuant.GetRangesOver()
+	innerRef := fetchW.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return
 	}

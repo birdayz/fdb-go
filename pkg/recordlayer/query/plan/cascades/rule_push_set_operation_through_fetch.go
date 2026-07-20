@@ -223,7 +223,7 @@ type setOpPush struct {
 func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	type fetchLeg struct {
 		idx       int
-		fw        *physicalFetchFromPartialRecordWrapper
+		fw        *plans.RecordQueryFetchFromPartialRecordPlan
 		innerExpr expressions.RelationalExpression
 		innerPlan plans.RecordQueryPlan
 	}
@@ -233,9 +233,9 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 		if ref == nil {
 			return
 		}
-		var fw *physicalFetchFromPartialRecordWrapper
+		var fw *plans.RecordQueryFetchFromPartialRecordPlan
 		for _, m := range ref.AllMembers() {
-			if f, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
+			if f, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 				fw = f
 				break
 			}
@@ -247,7 +247,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 		// PLAN: the quantifier ranges over the child GROUP, so this sees the
 		// alternatives the group holds rather than only the one expression the
 		// wrapper happened to bake at build time.
-		innerExpr := findPhysicalExpr(fw.innerQuant.GetRangesOver())
+		innerExpr := findPhysicalExpr(fw.GetInnerQuantifier().GetRangesOver())
 		if innerExpr == nil {
 			continue
 		}
@@ -290,7 +290,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 			if !alive[leg.idx] {
 				continue
 			}
-			tv, ok := leg.fw.plan.GetTranslateValueFunction()(rv, sourceAlias, targetAlias)
+			tv, ok := leg.fw.GetTranslateValueFunction()(rv, sourceAlias, targetAlias)
 			if !ok {
 				delete(alive, leg.idx)
 				continue
@@ -320,9 +320,9 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 
 	// All pushable legs must share one fetch mode (Java declines on
 	// mismatch rather than splitting further).
-	fetchIndexRecords := pushable[0].fw.plan.GetFetchIndexRecords()
+	fetchIndexRecords := pushable[0].fw.GetFetchIndexRecords()
 	for _, leg := range pushable[1:] {
-		if leg.fw.plan.GetFetchIndexRecords() != fetchIndexRecords {
+		if leg.fw.GetFetchIndexRecords() != fetchIndexRecords {
 			return
 		}
 	}
@@ -332,7 +332,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	// iff EVERY leg translates it, and to semantically equal values.
 	legFns := make([]plans.TranslateValueFunction, len(pushable))
 	for i, leg := range pushable {
-		legFns[i] = leg.fw.plan.GetTranslateValueFunction()
+		legFns[i] = leg.fw.GetTranslateValueFunction()
 	}
 	combined := func(v values.Value, sa, ta values.CorrelationIdentifier) (values.Value, bool) {
 		var prev values.Value
@@ -384,17 +384,16 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	// produces exactly that for homogeneous legs.
 	resultType := p.resultType
 	if resultType == nil || resultType == values.UnknownType {
-		resultType = pushable[0].fw.plan.GetResultType()
+		resultType = pushable[0].fw.GetResultType()
 	}
-	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		newSetOpPlan, combined, resultType, fetchIndexRecords,
-	)
-	newFetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(
-		newFetchPlan, expressions.ForEachQuantifier(setOpRef),
+	// The merged fetch is its own cascades expression carrying the live setOpRef
+	// edge (RFC-184 W2).
+	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+		expressions.ForEachQuantifier(setOpRef), combined, resultType, fetchIndexRecords,
 	)
 
 	if len(pushable) == len(p.quants) {
-		call.Yield(newFetchWrapper)
+		call.Yield(newFetchPlan)
 		return
 	}
 
@@ -407,7 +406,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	}
 	outerPlans := []plans.RecordQueryPlan{newFetchPlan}
 	outerQuants := []expressions.Quantifier{
-		expressions.ForEachQuantifier(call.MemoizeFinalExpression(newFetchWrapper)),
+		expressions.ForEachQuantifier(call.MemoizeFinalExpression(newFetchPlan)),
 	}
 	for i, q := range p.quants {
 		if isPushed[i] {

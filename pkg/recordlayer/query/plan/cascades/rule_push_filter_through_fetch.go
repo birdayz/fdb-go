@@ -42,10 +42,10 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Find the fetch wrapper in the filter's inner.
-	var fetchW *physicalFetchFromPartialRecordWrapper
+	// Find the fetch in the filter's inner.
+	var fetchW *plans.RecordQueryFetchFromPartialRecordPlan
 	for _, m := range innerRef.AllMembers() {
-		if fw, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
+		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			fetchW = fw
 			break
 		}
@@ -54,7 +54,7 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	fetchPlan := fetchW.plan
+	fetchPlan := fetchW
 	queryPredicates := filterW.plan.GetPredicates()
 
 	oldInnerAlias := filterW.innerQuant.GetAlias()
@@ -78,7 +78,7 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	// Get the fetch's inner (covering index scan).
-	fetchInnerRef := fetchW.innerQuant.GetRangesOver()
+	fetchInnerRef := fetchW.GetInnerQuantifier().GetRangesOver()
 	if fetchInnerRef == nil {
 		return
 	}
@@ -103,22 +103,22 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// Memoize the pushed filter.
 	pushedFilterRef := call.MemoizeFinalExpression(pushedFilterWrapper)
 
-	// Build: Fetch(Filter(pushed, fetchInner))
-	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		pushedFilterPlan,
+	// Build: Fetch(Filter(pushed, fetchInner)) as its own cascades expression
+	// carrying the live pushedFilterRef edge (RFC-184 W2).
+	newFetchQ := expressions.ForEachQuantifier(pushedFilterRef)
+	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+		newFetchQ,
 		fetchPlan.GetTranslateValueFunction(),
 		fetchPlan.GetResultType(),
 		fetchPlan.GetFetchIndexRecords(),
 	)
-	newFetchQ := expressions.ForEachQuantifier(pushedFilterRef)
-	newFetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(newFetchPlan, newFetchQ)
 
 	if len(residual) == 0 {
 		// Case 2: all pushed.
-		call.Yield(newFetchWrapper)
+		call.Yield(newFetchPlan)
 	} else {
 		// Case 3: some residual.
-		fetchRef := call.MemoizeFinalExpression(newFetchWrapper)
+		fetchRef := call.MemoizeFinalExpression(newFetchPlan)
 		newQOverFetch := expressions.ForEachQuantifier(fetchRef)
 
 		// Rebase residual predicates to use the new fetch quantifier alias.

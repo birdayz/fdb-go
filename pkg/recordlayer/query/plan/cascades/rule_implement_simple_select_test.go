@@ -144,8 +144,8 @@ func TestImplementSimpleSelectRule_WithProjection(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("should yield a map wrapper for non-trivial result")
 	}
-	if _, ok := results[0].(*physicalMapWrapper); !ok {
-		t.Fatalf("expected physicalMapWrapper for projection, got %T", results[0])
+	if _, ok := results[0].(*plans.RecordQueryMapPlan); !ok {
+		t.Fatalf("expected *plans.RecordQueryMapPlan for projection, got %T", results[0])
 	}
 }
 

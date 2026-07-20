@@ -330,7 +330,8 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 			foundScan = true
 		case *physicalPredicatesFilterWrapper:
 			foundPredicatesFilter = true
-		case *physicalMapWrapper:
+		// RFC-184 W2: a map/projection is its own physical expression.
+		case *plans.RecordQueryMapPlan:
 			foundMap = true
 		}
 	}
@@ -339,7 +340,7 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 		t.Fatal("unexpected physicalPredicatesFilterWrapper — Select has no predicates, should pass through")
 	}
 	if foundMap {
-		t.Fatal("unexpected physicalMapWrapper — Select has simple QOV result, should pass through")
+		t.Fatal("unexpected *plans.RecordQueryMapPlan — Select has simple QOV result, should pass through")
 	}
 	if !foundScan {
 		types := make([]string, len(finals))

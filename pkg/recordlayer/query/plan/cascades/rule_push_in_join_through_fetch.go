@@ -50,10 +50,10 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Find the fetch wrapper in the InJoin's inner.
-	var fetchW *physicalFetchFromPartialRecordWrapper
+	// Find the fetch in the InJoin's inner.
+	var fetchW *plans.RecordQueryFetchFromPartialRecordPlan
 	for _, m := range innerRef.AllMembers() {
-		if fw, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
+		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			fetchW = fw
 			break
 		}
@@ -62,10 +62,10 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	fetchPlan := fetchW.plan
+	fetchPlan := fetchW
 
 	// Get the fetch's inner (covering index scan).
-	fetchInnerRef := fetchW.innerQuant.GetRangesOver()
+	fetchInnerRef := fetchW.GetInnerQuantifier().GetRangesOver()
 	if fetchInnerRef == nil {
 		return
 	}
@@ -100,17 +100,17 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// Memoize the pushed InJoin.
 	pushedInJoinRef := call.MemoizeFinalExpression(pushedInJoinWrapper)
 
-	// Build: Fetch(InJoin(fetchInner))
-	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		pushedInJoinPlan,
+	// Build: Fetch(InJoin(fetchInner)) as its own cascades expression carrying
+	// the live pushedInJoinRef edge (RFC-184 W2).
+	newFetchQ := expressions.ForEachQuantifier(pushedInJoinRef)
+	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+		newFetchQ,
 		fetchPlan.GetTranslateValueFunction(),
 		fetchPlan.GetResultType(),
 		fetchPlan.GetFetchIndexRecords(),
 	)
-	newFetchQ := expressions.ForEachQuantifier(pushedInJoinRef)
-	newFetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(newFetchPlan, newFetchQ)
 
-	call.Yield(newFetchWrapper)
+	call.Yield(newFetchPlan)
 }
 
 var _ ImplementationRule = (*PushInJoinThroughFetchRule)(nil)

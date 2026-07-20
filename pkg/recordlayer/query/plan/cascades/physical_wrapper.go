@@ -218,10 +218,33 @@ func IsPhysicalPredicatesFilter(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
-// IsPhysicalMap reports whether the given expression is a physicalMapWrapper.
+// IsPhysicalMap reports whether the given expression is a physical map. Since
+// RFC-184 W2 the memo holds *plans.RecordQueryMapPlan directly (no
+// physicalMapWrapper), so this is a bare type check on the plan.
 func IsPhysicalMap(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalMapWrapper)
+	_, ok := expr.(*plans.RecordQueryMapPlan)
 	return ok
+}
+
+// IsPhysicalFetchFromPartialRecord reports whether the given
+// RelationalExpression is a physical fetch. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryFetchFromPartialRecordPlan directly (no
+// physicalFetchFromPartialRecordWrapper), so this is a bare type check on the
+// plan.
+func IsPhysicalFetchFromPartialRecord(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan)
+	return ok
+}
+
+// GetPhysicalFetchFromPartialRecordPlan returns the plan if expr is a physical
+// fetch, nil otherwise. Since RFC-184 W2 the memo holds the bare plan, so this
+// is a bare type assertion.
+func GetPhysicalFetchFromPartialRecordPlan(expr expressions.RelationalExpression) *plans.RecordQueryFetchFromPartialRecordPlan {
+	p, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if !ok {
+		return nil
+	}
+	return p
 }
 
 // IsPhysicalInJoin reports whether the given expression is

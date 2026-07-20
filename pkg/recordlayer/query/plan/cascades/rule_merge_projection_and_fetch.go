@@ -45,10 +45,10 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Find the fetch wrapper in the projection's inner.
-	var fetchW *physicalFetchFromPartialRecordWrapper
+	// Find the fetch in the projection's inner.
+	var fetchW *plans.RecordQueryFetchFromPartialRecordPlan
 	for _, m := range innerRef.AllMembers() {
-		if fw, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
+		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			fetchW = fw
 			break
 		}
@@ -57,7 +57,7 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	fetchPlan := fetchW.plan
+	fetchPlan := fetchW
 	projectedValues := projW.plan.GetProjections()
 
 	oldInnerAlias := projW.innerQuant.GetAlias()
@@ -79,7 +79,7 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// All fields in the projection are already available underneath
 	// the fetch. We don't need the projection nor the fetch — yield
 	// the fetch's inner child directly, marked as covering.
-	fetchInnerRef := fetchW.innerQuant.GetRangesOver()
+	fetchInnerRef := fetchW.GetInnerQuantifier().GetRangesOver()
 	if fetchInnerRef == nil {
 		return
 	}

@@ -135,16 +135,16 @@ func distinctRecordsForRef(ref *expressions.Reference) bool {
 // the output and distinctness is not preserved — matching Java's
 // DistinctRecordsProperty.evaluateAtExpression for RecordQueryMapPlan.
 func computeDistinctRecordsForMap(w physicalPlanExpression) bool {
-	mw, ok := w.(*physicalMapWrapper)
+	mw, ok := w.(*plans.RecordQueryMapPlan)
 	if !ok {
 		return false
 	}
-	rv := mw.plan.GetResultValue()
+	rv := mw.GetResultValue()
 	qov, ok := rv.(*values.QuantifiedObjectValue)
 	if !ok {
 		return false
 	}
-	if qov.Correlation == mw.innerQuant.GetAlias() {
+	if qov.Correlation == mw.GetInnerQuantifier().GetAlias() {
 		return distinctRecordsFromChildRef(w)
 	}
 	return false

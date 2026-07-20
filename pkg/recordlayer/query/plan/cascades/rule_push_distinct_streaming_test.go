@@ -100,7 +100,7 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		sortPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, expressions.ForEachQuantifier(sortRef))
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(sortRef)})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	distinctPlan := plans.NewRecordQueryDistinctPlan(fetchPlan)
@@ -112,11 +112,11 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("expected 1 yielded (Fetch(Distinct(inner))), got %d", len(yielded))
 	}
-	fw, ok := yielded[0].(*physicalFetchFromPartialRecordWrapper)
+	fw, ok := yielded[0].(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
-		t.Fatalf("expected physicalFetchFromPartialRecordWrapper, got %T", yielded[0])
+		t.Fatalf("expected *plans.RecordQueryFetchFromPartialRecordPlan, got %T", yielded[0])
 	}
-	inner := fw.plan.GetInner()
+	inner := fw.GetInner()
 	dp, ok := inner.(*plans.RecordQueryDistinctPlan)
 	if !ok {
 		t.Fatalf("fetch's inner = %T, want *RecordQueryDistinctPlan", inner)

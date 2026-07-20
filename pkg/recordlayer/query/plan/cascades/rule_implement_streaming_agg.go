@@ -136,7 +136,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	// consumed by the index) are kept — they read fewer rows.
 	orderedExpr := findOrderedPhysicalExpr(innerRef, groupingKeys)
 	if orderedExpr != nil {
-		if fw, isFetch := orderedExpr.(*physicalFetchFromPartialRecordWrapper); isFetch && isFullRangeFetch(fw) {
+		if fw, isFetch := orderedExpr.(*plans.RecordQueryFetchFromPartialRecordPlan); isFetch && isFullRangeFetch(fw) {
 			// Skip — InMemorySort(FullScan) is cheaper than Fetch(IndexScan(full-range)).
 		} else if _, ok := orderedExpr.(physicalPlanExpression); ok {
 			// PIN the whole ordering SPINE, not just the top expression: the
@@ -216,8 +216,8 @@ func orderingSatisfiesGroupingKeys(o properties.Ordering, groupingKeys []values.
 // no bound comparison ranges — i.e., it scans the entire index. A full-range
 // Fetch reads every row via random PK lookups, which is always worse than
 // a sequential full scan + in-memory sort.
-func isFullRangeFetch(fw *physicalFetchFromPartialRecordWrapper) bool {
-	innerRef := fw.innerQuant.GetRangesOver()
+func isFullRangeFetch(fw *plans.RecordQueryFetchFromPartialRecordPlan) bool {
+	innerRef := fw.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return true
 	}
@@ -244,8 +244,8 @@ func findIndexScanWrapper(ref *expressions.Reference) *physicalIndexScanWrapper 
 		if w, ok := m.(*physicalIndexScanWrapper); ok {
 			return w
 		}
-		if fw, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
-			if innerRef := fw.innerQuant.GetRangesOver(); innerRef != nil {
+		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+			if innerRef := fw.GetInnerQuantifier().GetRangesOver(); innerRef != nil {
 				if w := findIndexScanWrapper(innerRef); w != nil {
 					return w
 				}

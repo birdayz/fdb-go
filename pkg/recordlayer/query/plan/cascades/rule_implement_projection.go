@@ -43,15 +43,15 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 	// scan participates in sort elimination and cost comparison.
 	projectedValues := proj.GetProjectedValues()
 	for _, m := range innerRef.AllMembers() {
-		fetchW, ok := m.(*physicalFetchFromPartialRecordWrapper)
+		fetchW, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan)
 		if !ok {
 			continue
 		}
-		srcAlias := fetchW.innerQuant.GetAlias()
+		srcAlias := fetchW.GetInnerQuantifier().GetAlias()
 		tgtAlias := values.UniqueCorrelationIdentifier()
 		allPushable := true
 		for _, v := range projectedValues {
-			if _, ok := fetchW.plan.PushValue(v, srcAlias, tgtAlias); !ok {
+			if _, ok := fetchW.PushValue(v, srcAlias, tgtAlias); !ok {
 				allPushable = false
 				break
 			}
@@ -59,7 +59,7 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		if !allPushable {
 			continue
 		}
-		fetchInnerRef := fetchW.innerQuant.GetRangesOver()
+		fetchInnerRef := fetchW.GetInnerQuantifier().GetRangesOver()
 		if fetchInnerRef == nil {
 			continue
 		}

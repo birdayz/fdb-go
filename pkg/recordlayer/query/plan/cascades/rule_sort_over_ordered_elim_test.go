@@ -350,7 +350,7 @@ func TestSortElim_DescSortEliminated(t *testing.T) {
 		if !w.plan.IsReverse() {
 			t.Fatal("DESC sort elimination should produce a reverse index scan")
 		}
-	} else if fw, ok := plan.(*physicalFetchFromPartialRecordWrapper); ok {
+	} else if fw, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		if innerIdx := extractIndexPlan(fw.GetRecordQueryPlan()); innerIdx != nil {
 			if !innerIdx.IsReverse() {
 				t.Fatal("DESC sort elimination should produce a reverse index scan")
@@ -553,7 +553,7 @@ func buildStatusActiveIndexScan(t *testing.T, cand MatchCandidate) expressions.R
 		}
 		idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, columnNames: cand.GetColumnNames(), unique: cand.IsUnique()}
 		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(idxWrapper))
-		return NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		return fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	}
 	if ip := extractIndexPlan(idxPlan); ip != nil {
 		return &physicalIndexScanWrapper{plan: ip, columnNames: cand.GetColumnNames(), unique: cand.IsUnique()}
@@ -613,7 +613,7 @@ func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 		if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan.IsStrictlySorted() {
 			foundStrictly = w.plan
 		}
-		if fw, ok := e.(*physicalFetchFromPartialRecordWrapper); ok {
+		if fw, ok := e.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			if inner := extractIndexPlan(fw.GetRecordQueryPlan()); inner != nil && inner.IsStrictlySorted() {
 				foundStrictly = inner
 			}
@@ -662,7 +662,7 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 		if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan.IsStrictlySorted() {
 			t.Fatalf("non-unique index should NOT produce a strictlySorted plan; got %s", w.plan.Explain())
 		}
-		if fw, ok := e.(*physicalFetchFromPartialRecordWrapper); ok {
+		if fw, ok := e.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			if inner := extractIndexPlan(fw.GetRecordQueryPlan()); inner != nil && inner.IsStrictlySorted() {
 				t.Fatalf("non-unique index should NOT produce a strictlySorted plan; got %s", inner.Explain())
 			}

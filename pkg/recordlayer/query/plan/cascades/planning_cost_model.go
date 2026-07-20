@@ -590,7 +590,8 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		_ = w // regular filter, not counted as predicates filter
 	case *physicalPredicatesFilterWrapper:
 		counts.predicatesFilterCount++
-	case *physicalMapWrapper:
+	// A map/projection is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryMapPlan:
 		counts.mapCount++
 	case *physicalInJoinWrapper:
 		counts.inJoinCount++
@@ -601,7 +602,8 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	case *physicalNestedLoopJoinWrapper:
 		counts.nestedLoopJoinCount++
 		counts.nljPredicateCount += len(w.plan.GetPredicates())
-	case *physicalFetchFromPartialRecordWrapper:
+	// A fetch is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		counts.fetchCount++
 	case *physicalInMemorySortWrapper:
 		counts.inMemorySortCount++
@@ -872,7 +874,7 @@ func isDistinctExpression(e expressions.RelationalExpression) bool {
 }
 
 func isFetchExpression(e expressions.RelationalExpression) bool {
-	_, ok := e.(*physicalFetchFromPartialRecordWrapper)
+	_, ok := e.(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if ok {
 		return true
 	}

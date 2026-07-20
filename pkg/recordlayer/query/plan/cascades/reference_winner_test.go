@@ -420,7 +420,7 @@ func TestPlan_OrderedMemberSelectable(t *testing.T) {
 		t.Fatal("expected an ordering-satisfying member for STATUS ASC")
 	}
 	if !IsPhysicalIndexScan(winner) && !IsPhysicalFetchFromPartialRecord(winner) {
-		t.Fatalf("expected physicalIndexScanWrapper or physicalFetchFromPartialRecordWrapper, got %T", winner)
+		t.Fatalf("expected physicalIndexScanWrapper or *plans.RecordQueryFetchFromPartialRecordPlan, got %T", winner)
 	}
 }
 

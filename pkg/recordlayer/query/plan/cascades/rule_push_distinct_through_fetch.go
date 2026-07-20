@@ -40,10 +40,10 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Find the fetch wrapper in distinct's inner.
-	var fetchW *physicalFetchFromPartialRecordWrapper
+	// Find the fetch in distinct's inner.
+	var fetchW *plans.RecordQueryFetchFromPartialRecordPlan
 	for _, m := range innerRef.AllMembers() {
-		if fw, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
+		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			fetchW = fw
 			break
 		}
@@ -53,7 +53,7 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	// Get the fetch's inner (the covering index scan).
-	fetchInnerRef := fetchW.innerQuant.GetRangesOver()
+	fetchInnerRef := fetchW.GetInnerQuantifier().GetRangesOver()
 	if fetchInnerRef == nil {
 		return
 	}
@@ -83,17 +83,17 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// Memoize the distinct.
 	distinctRef := call.MemoizeFinalExpression(newDistinctWrapper)
 
-	// Build: Fetch(Distinct(fetchInner))
-	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		newDistinctPlan,
-		fetchW.plan.GetTranslateValueFunction(),
-		fetchW.plan.GetResultType(),
-		fetchW.plan.GetFetchIndexRecords(),
-	)
+	// Build: Fetch(Distinct(fetchInner)) as its own cascades expression carrying
+	// the live distinctRef edge (RFC-184 W2).
 	newFetchQ := expressions.ForEachQuantifier(distinctRef)
-	newFetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(newFetchPlan, newFetchQ)
+	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+		newFetchQ,
+		fetchW.GetTranslateValueFunction(),
+		fetchW.GetResultType(),
+		fetchW.GetFetchIndexRecords(),
+	)
 
-	call.Yield(newFetchWrapper)
+	call.Yield(newFetchPlan)
 }
 
 var _ ImplementationRule = (*PushDistinctThroughFetchRule)(nil)

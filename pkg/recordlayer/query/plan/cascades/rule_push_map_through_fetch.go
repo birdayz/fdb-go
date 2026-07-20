@@ -27,24 +27,24 @@ type PushMapThroughFetchRule struct {
 
 func NewPushMapThroughFetchRule() *PushMapThroughFetchRule {
 	return &PushMapThroughFetchRule{
-		matcher: NewExpressionMatcher[*physicalMapWrapper]("phys_map_over_fetch"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryMapPlan]("phys_map_over_fetch"),
 	}
 }
 
 func (r *PushMapThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
-	mapW := matching.Get[*physicalMapWrapper](call.Bindings, r.matcher)
+	mapW := matching.Get[*plans.RecordQueryMapPlan](call.Bindings, r.matcher)
 
-	innerRef := mapW.innerQuant.GetRangesOver()
+	innerRef := mapW.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return
 	}
 
-	// Find the fetch wrapper in the map's inner.
-	var fetchW *physicalFetchFromPartialRecordWrapper
+	// Find the fetch in the map's inner.
+	var fetchW *plans.RecordQueryFetchFromPartialRecordPlan
 	for _, m := range innerRef.AllMembers() {
-		if fw, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
+		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			fetchW = fw
 			break
 		}
@@ -53,13 +53,13 @@ func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	fetchPlan := fetchW.plan
-	resultValue := mapW.plan.GetResultValue()
+	fetchPlan := fetchW
+	resultValue := mapW.GetResultValue()
 
 	// Try to push the result value through the fetch. Uses recursive
 	// decomposition so composite values (RecordConstructorValue, etc.)
 	// are translated leaf-by-leaf matching Java's mapMaybe approach.
-	oldAlias := mapW.innerQuant.GetAlias()
+	oldAlias := mapW.GetInnerQuantifier().GetAlias()
 	newInnerAlias := values.UniqueCorrelationIdentifier()
 
 	pushedResultValue := tryTranslateValue(fetchPlan, oldAlias, newInnerAlias, resultValue)
@@ -68,7 +68,7 @@ func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	// Get the fetch's inner (covering index scan).
-	fetchInnerRef := fetchW.innerQuant.GetRangesOver()
+	fetchInnerRef := fetchW.GetInnerQuantifier().GetRangesOver()
 	if fetchInnerRef == nil {
 		return
 	}
@@ -100,13 +100,14 @@ func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	if fetchInnerPlan == nil {
 		return
 	}
-	pushedMapPlan := plans.NewRecordQueryMapPlan(fetchInnerPlan, pushedResultValue)
 	newInnerQ := expressions.ForEachQuantifier(
 		call.MemoizeFinalExpressionsFromOther(fetchInnerRef, []expressions.RelationalExpression{fetchInnerExpr}),
 	)
-	pushedMapWrapper := NewPhysicalMapWrapper(pushedMapPlan, newInnerQ)
+	// The pushed projection (Map) is its own cascades expression carrying the
+	// live newInnerQ edge (RFC-184 W2).
+	pushedMapPlan := plans.NewRecordQueryMapPlanFromQuantifier(newInnerQ, pushedResultValue)
 
-	call.Yield(pushedMapWrapper)
+	call.Yield(pushedMapPlan)
 }
 
 var _ ImplementationRule = (*PushMapThroughFetchRule)(nil)

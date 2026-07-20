@@ -128,9 +128,10 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 					innerQuantifier.GetAlias(): currentQuant.GetAlias(),
 				})
 			}
-			mapPlan := plans.NewRecordQueryMapPlan(currentPlan, mapResultValue)
-			mapWrapper := NewPhysicalMapWrapper(mapPlan, currentQuant)
-			call.YieldFinalExpression(mapWrapper)
+			// The projection (Map) is its own cascades expression carrying the
+			// live currentQuant edge (RFC-184 W2).
+			mapPlan := plans.NewRecordQueryMapPlanFromQuantifier(currentQuant, mapResultValue)
+			call.YieldFinalExpression(mapPlan)
 		}
 	}
 }

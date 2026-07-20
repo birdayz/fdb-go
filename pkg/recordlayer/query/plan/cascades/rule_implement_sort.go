@@ -192,8 +192,8 @@ func strictlyOrderedIfUnique(expr expressions.RelationalExpression, numKeys int)
 	if w, ok := expr.(*physicalIndexScanWrapper); ok {
 		return w.unique && numKeys >= len(w.columnNames)
 	}
-	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
-		ref := fw.innerQuant.GetRangesOver()
+	if fw, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+		ref := fw.GetInnerQuantifier().GetRangesOver()
 		if ref == nil {
 			return false
 		}
@@ -220,10 +220,10 @@ func makeStrictlySorted(expr expressions.RelationalExpression) expressions.Relat
 			covering:      w.covering,
 		}
 	}
-	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
-		inner := fw.GetPlan().GetInner()
+	if fw, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+		inner := fw.GetInner()
 		if idxPlan, ok := inner.(*plans.RecordQueryIndexPlan); ok {
-			origW := findIndexScanWrapper(fw.innerQuant.GetRangesOver())
+			origW := findIndexScanWrapper(fw.GetInnerQuantifier().GetRangesOver())
 			if origW == nil {
 				return expr
 			}
@@ -236,13 +236,14 @@ func makeStrictlySorted(expr expressions.RelationalExpression) expressions.Relat
 			}
 			newIdxRef := expressions.InitialOf(newIdxWrapper)
 			newFetchQ := expressions.ForEachQuantifier(newIdxRef)
-			newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
-				newIdxPlan,
-				fw.GetPlan().GetTranslateValueFunction(),
-				fw.GetPlan().GetResultType(),
-				fw.GetPlan().GetFetchIndexRecords(),
+			// The fetch is its own cascades expression carrying the live newIdxRef
+			// edge (RFC-184 W2).
+			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+				newFetchQ,
+				fw.GetTranslateValueFunction(),
+				fw.GetResultType(),
+				fw.GetFetchIndexRecords(),
 			)
-			return NewPhysicalFetchFromPartialRecordWrapper(newFetchPlan, newFetchQ)
 		}
 	}
 	return expr

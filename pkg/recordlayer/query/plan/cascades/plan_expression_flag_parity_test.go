@@ -97,7 +97,6 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		{name: "VectorIndexScan", plan: &plans.RecordQueryVectorIndexPlan{}, wrap: &physicalVectorIndexScanWrapper{}},
 		{name: "PredicatesFilter", plan: &plans.RecordQueryPredicatesFilterPlan{}, wrap: &physicalPredicatesFilterWrapper{}},
 		{name: "TypeFilter", plan: &plans.RecordQueryTypeFilterPlan{}, wrap: &physicalTypeFilterWrapper{}},
-		{name: "FetchFromPartialRecord", plan: &plans.RecordQueryFetchFromPartialRecordPlan{}, wrap: &physicalFetchFromPartialRecordWrapper{}},
 		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}, wrap: &physicalNestedLoopJoinWrapper{}},
 		{name: "InJoin", plan: &plans.RecordQueryInJoinPlan{}, wrap: &physicalInJoinWrapper{}},
 		{name: "InUnion", plan: &plans.RecordQueryInUnionPlan{}, wrap: &physicalInUnionWrapper{}},
@@ -105,11 +104,11 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		{name: "StreamingAggregation", plan: &plans.RecordQueryStreamingAggregationPlan{}, wrap: &physicalStreamingAggWrapper{}},
 		{name: "InMemorySort", plan: &plans.RecordQueryInMemorySortPlan{}, wrap: &physicalInMemorySortWrapper{}},
 		{name: "Distinct", plan: &plans.RecordQueryDistinctPlan{}, wrap: &physicalDistinctWrapper{}},
-		{name: "Map", plan: &plans.RecordQueryMapPlan{}, wrap: &physicalMapWrapper{}},
 		{name: "Projection", plan: &plans.RecordQueryProjectionPlan{}, wrap: &physicalProjectionWrapper{}},
-		// Limit has no physical wrapper since RFC-184 W2 — the memo holds
-		// *plans.RecordQueryLimitPlan directly, so its false/false flags are
-		// exercised on the live production path (no parity pair to check).
+		// Limit / FetchFromPartialRecord / Map have no physical wrapper since RFC-184
+		// W2 — the memo holds the *plans.RecordQuery… plan directly, so their
+		// false/false flags are exercised on the live production path (no parity pair
+		// to check).
 		{name: "DefaultOnEmpty", plan: &plans.RecordQueryDefaultOnEmptyPlan{}, wrap: &physicalDefaultOnEmptyWrapper{}},
 		{name: "FirstOrDefault", plan: &plans.RecordQueryFirstOrDefaultPlan{}, wrap: &physicalFirstOrDefaultWrapper{}},
 		{name: "Explode", plan: &plans.RecordQueryExplodePlan{}, wrap: &physicalExplodeWrapper{}},
