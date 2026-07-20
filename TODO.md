@@ -1803,8 +1803,18 @@ The confirming retry is skipped past a per-job `-deadline` so a systematic race 
 queued (`STEP_END - (TOTAL - RAN + 1) * PER_TARGET`): a flat cutoff was not enough, because under a
 systematic race the early targets double up and the remaining mandatory first attempts still overran —
 engine-fuzz landed at ~79min against a 75min timeout, killing the job before `-summarize` could report
-the very thing it exists to report. Note `STEP_END` must sit ABOVE the job's mandatory total
-(targets × PER_TARGET) or the reservation term goes permanently negative and silently disables retries.
+the very thing it exists to report. `STEP_END` is anchored to `JOB_START` (stamped into `$GITHUB_ENV` by each job's first
+step) rather than to the fuzz step, because `timeout-minutes` runs from job start and the preamble — the
+C++ oracle build especially — can eat an unpredictable slice of it.
+
+Two properties are guarded because both fail *silently*: `STEP_END` must sit ABOVE the mandatory total
+(`TOTAL × PER_TARGET`) or the reservation term goes permanently negative and disables retries with no
+symptom; and `TOTAL` is **discovered**, so adding roughly a dozen engine fuzz targets — a couple of shifts
+of ordinary work — walks the rotation into the timeout on its own. A pre-loop check emits `::warning::`
+when no retry can fit and `::error::` when one run of every target no longer fits at all. `PER_TARGET`
+additionally self-corrects upward from the observed pace, but that estimate is used **only** to throttle
+retries, never to fail the job: an over-estimate that declines a retry is safe, whereas one that fails a
+job would reintroduce exactly the false red this whole item removes.
 Skipping it **passes** rather than fails: the classifier is authoritative, so going red there would
 re-introduce the very false red this tool removes — and would do it exactly when the race is most
 frequent. Output is streamed rather than buffered, so a job killed mid-run still has the in-flight
