@@ -146,7 +146,7 @@ func TestPlanner_GroupByProducesAggregation(t *testing.T) {
 // TestPlanner_RecursiveUnionProducesDfsJoin verifies that a
 // RecursiveUnionExpression with PREORDER strategy wrapping a
 // TempTableScanExpression and a scan as the recursive step produces a
-// physicalRecursiveDfsJoinWrapper.
+// plans.RecordQueryRecursiveDfsJoinPlan.
 func TestPlanner_RecursiveUnionProducesDfsJoin(t *testing.T) {
 	t.Parallel()
 
@@ -176,7 +176,7 @@ func TestPlanner_RecursiveUnionProducesDfsJoin(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalRecursiveDfsJoin) {
-		t.Fatal("expected physicalRecursiveDfsJoinWrapper in explored members")
+		t.Fatal("expected plans.RecordQueryRecursiveDfsJoinPlan in explored members")
 	}
 }
 
@@ -303,7 +303,7 @@ func TestPlanner_UnionOverTwoScansProducesPhysicalUnion(t *testing.T) {
 
 // TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection
 // verifies that a LogicalIntersectionExpression over two scans
-// produces a physicalIntersectionWrapper.
+// produces a physical RecordQueryIntersectionPlan.
 func TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection(t *testing.T) {
 	t.Parallel()
 
@@ -325,7 +325,7 @@ func TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection(t *testing
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalIntersection) {
-		t.Fatal("expected physicalIntersectionWrapper in explored members")
+		t.Fatal("expected physical RecordQueryIntersectionPlan in explored members")
 	}
 }
 
@@ -499,7 +499,7 @@ func TestPlanner_UpdateOverScanProducesPhysicalUpdate(t *testing.T) {
 
 // TestPlanner_RecursiveLevelUnionProducesPhysicalLevelUnion verifies
 // that a RecursiveUnionExpression with TraversalLevel strategy
-// produces a physicalRecursiveLevelUnionWrapper.
+// produces a plans.RecordQueryRecursiveLevelUnionPlan.
 func TestPlanner_RecursiveLevelUnionProducesPhysicalLevelUnion(t *testing.T) {
 	t.Parallel()
 
@@ -527,7 +527,7 @@ func TestPlanner_RecursiveLevelUnionProducesPhysicalLevelUnion(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalRecursiveLevelUnion) {
-		t.Fatal("expected physicalRecursiveLevelUnionWrapper in explored members")
+		t.Fatal("expected plans.RecordQueryRecursiveLevelUnionPlan in explored members")
 	}
 }
 

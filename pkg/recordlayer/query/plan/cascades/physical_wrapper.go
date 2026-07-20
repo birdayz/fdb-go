@@ -155,29 +155,32 @@ func IsPhysicalIndexScan(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
-// IsPhysicalIntersection reports whether the given RelationalExpression
-// is a physicalIntersectionWrapper.
+// IsPhysicalIntersection reports whether the given RelationalExpression is an
+// intersection. Since RFC-184 W2 the memo holds *plans.RecordQueryIntersectionPlan
+// directly (no physicalIntersectionWrapper), so this is a bare type check.
 func IsPhysicalIntersection(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalIntersectionWrapper)
+	_, ok := expr.(*plans.RecordQueryIntersectionPlan)
 	return ok
 }
 
-// IsPhysicalMultiIntersection reports whether the given
-// RelationalExpression is a physicalMultiIntersectionWrapper.
+// IsPhysicalMultiIntersection reports whether the given RelationalExpression is a
+// multi-intersection. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryMultiIntersectionOnValuesPlan directly (no
+// physicalMultiIntersectionWrapper), so this is a bare type check.
 func IsPhysicalMultiIntersection(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalMultiIntersectionWrapper)
+	_, ok := expr.(*plans.RecordQueryMultiIntersectionOnValuesPlan)
 	return ok
 }
 
-// GetPhysicalMultiIntersectionPlan returns the underlying
-// RecordQueryMultiIntersectionOnValuesPlan if expr is a
-// physicalMultiIntersectionWrapper, nil otherwise.
+// GetPhysicalMultiIntersectionPlan returns the plan if expr is a
+// multi-intersection, nil otherwise. Since RFC-184 W2 the memo holds the bare
+// plan, so this is a bare type assertion.
 func GetPhysicalMultiIntersectionPlan(expr expressions.RelationalExpression) *plans.RecordQueryMultiIntersectionOnValuesPlan {
-	w, ok := expr.(*physicalMultiIntersectionWrapper)
+	p, ok := expr.(*plans.RecordQueryMultiIntersectionOnValuesPlan)
 	if !ok {
 		return nil
 	}
-	return w.plan
+	return p
 }
 
 // IsPhysicalFilter reports whether the given RelationalExpression is
@@ -254,6 +257,24 @@ func GetPhysicalFetchFromPartialRecordPlan(expr expressions.RelationalExpression
 // a physicalInJoinWrapper.
 func IsPhysicalInJoin(expr expressions.RelationalExpression) bool {
 	_, ok := expr.(*physicalInJoinWrapper)
+	return ok
+}
+
+// IsPhysicalRecursiveLevelUnion reports whether the given RelationalExpression is
+// a recursive level union. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryRecursiveLevelUnionPlan directly (no
+// physicalRecursiveLevelUnionWrapper), so this is a bare type check.
+func IsPhysicalRecursiveLevelUnion(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryRecursiveLevelUnionPlan)
+	return ok
+}
+
+// IsPhysicalRecursiveDfsJoin reports whether the given RelationalExpression is a
+// recursive DFS join. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryRecursiveDfsJoinPlan directly (no
+// physicalRecursiveDfsJoinWrapper), so this is a bare type check.
+func IsPhysicalRecursiveDfsJoin(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryRecursiveDfsJoinPlan)
 	return ok
 }
 
@@ -964,100 +985,6 @@ func (w *physicalUnionWrapper) WithQuantifiers(_ []expressions.Quantifier) expre
 }
 
 var _ expressions.RelationalExpression = (*physicalUnionWrapper)(nil)
-
-// physicalIntersectionWrapper adapts `*plans.RecordQueryIntersectionPlan`
-// to the RelationalExpression interface. Same N-child shape as the
-// Union wrapper; cost differs (Intersection bounded by min child
-// cardinality, while Union sums).
-type physicalIntersectionWrapper struct {
-	plan        *plans.RecordQueryIntersectionPlan
-	innerQuants []expressions.Quantifier
-}
-
-// NewPhysicalIntersectionWrapper constructs the wrapper.
-func NewPhysicalIntersectionWrapper(plan *plans.RecordQueryIntersectionPlan, innerQuants []expressions.Quantifier) *physicalIntersectionWrapper {
-	copied := make([]expressions.Quantifier, len(innerQuants))
-	copy(copied, innerQuants)
-	return &physicalIntersectionWrapper{plan: plan, innerQuants: copied}
-}
-
-// GetPlan exposes the wrapped physical plan.
-func (w *physicalIntersectionWrapper) GetPlan() *plans.RecordQueryIntersectionPlan {
-	return w.plan
-}
-
-// GetRecordQueryPlan implements physicalPlanExpression.
-func (w *physicalIntersectionWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-// GetResultValue returns the first inner's flowed object value —
-// intersection emits rows compatible with all children.
-func (w *physicalIntersectionWrapper) GetResultValue() values.Value {
-	if len(w.innerQuants) == 0 {
-		return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-	}
-	return w.innerQuants[0].GetFlowedObjectValue()
-}
-
-// GetQuantifiers returns the inner Quantifiers (children).
-func (w *physicalIntersectionWrapper) GetQuantifiers() []expressions.Quantifier {
-	return w.innerQuants
-}
-
-// IsIntersection implements properties.IntersectionExpression.
-func (w *physicalIntersectionWrapper) IsIntersection() {}
-
-// CanCorrelate is false.
-func (w *physicalIntersectionWrapper) CanCorrelate() bool { return false }
-
-// ChildrenAsSet is true — INTERSECTION children are bag-equivalent.
-func (w *physicalIntersectionWrapper) ChildrenAsSet() bool { return true }
-
-// GetCorrelatedToWithoutChildren returns the empty set.
-func (w *physicalIntersectionWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-// EqualsWithoutChildren compares the wrapped plan.
-func (w *physicalIntersectionWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalIntersectionWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-// HashCodeWithoutChildren mixes class + plan's hash.
-func (w *physicalIntersectionWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physintersectionwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-// WithChildren constructs a fresh wrapper with the new quantifiers.
-func (w *physicalIntersectionWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	copied := make([]expressions.Quantifier, len(qs))
-	copy(copied, qs)
-	return &physicalIntersectionWrapper{plan: w.plan, innerQuants: copied}, nil
-}
-
-// HintCost: Intersection cardinality is bounded by the SMALLEST
-// child (the intersection can't be larger than its smallest
-// participant). CPU sums children + per-output-row merge work
-// (more expensive than Union — comparison-key-driven matching).
-// Mirrors LogicalIntersection.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-func (w *physicalIntersectionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalIntersectionWrapper)(nil)
 
 // --- Projection wrapper -----------------------------------------------
 

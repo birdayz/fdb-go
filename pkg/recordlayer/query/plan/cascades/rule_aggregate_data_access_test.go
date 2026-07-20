@@ -205,7 +205,7 @@ func TestAggregateDataAccessRule_MultiAggregateIntersection(t *testing.T) {
 		t.Fatalf("expected 1 multi-intersection result, got %d", len(results))
 	}
 	if !IsPhysicalMultiIntersection(results[0]) {
-		t.Fatalf("expected physicalMultiIntersectionWrapper, got %T", results[0])
+		t.Fatalf("expected *plans.RecordQueryMultiIntersectionOnValuesPlan, got %T", results[0])
 	}
 	plan := GetPhysicalMultiIntersectionPlan(results[0])
 	if plan == nil {
@@ -333,7 +333,7 @@ func TestAggregateDataAccessRule_MultiAggregateThreeWay(t *testing.T) {
 		t.Fatalf("expected 1 multi-intersection result, got %d", len(results))
 	}
 	if !IsPhysicalMultiIntersection(results[0]) {
-		t.Fatalf("expected physicalMultiIntersectionWrapper, got %T", results[0])
+		t.Fatalf("expected *plans.RecordQueryMultiIntersectionOnValuesPlan, got %T", results[0])
 	}
 	plan := GetPhysicalMultiIntersectionPlan(results[0])
 	if plan == nil {

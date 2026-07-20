@@ -60,13 +60,11 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		{
 			name:          "Intersection",
 			plan:          &plans.RecordQueryIntersectionPlan{},
-			wrap:          &physicalIntersectionWrapper{},
 			childrenAsSet: true,
 		},
 		{
 			name:          "MergeSortUnion",
 			plan:          &plans.RecordQueryMergeSortUnionPlan{},
-			wrap:          &physicalMergeSortUnionWrapper{},
 			childrenAsSet: true,
 		},
 
@@ -80,13 +78,11 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		{
 			name:         "RecursiveDfsJoin",
 			plan:         &plans.RecordQueryRecursiveDfsJoinPlan{},
-			wrap:         &physicalRecursiveDfsJoinWrapper{},
 			canCorrelate: true,
 		},
 		{
 			name:         "RecursiveLevelUnion",
 			plan:         &plans.RecordQueryRecursiveLevelUnionPlan{},
-			wrap:         &physicalRecursiveLevelUnionWrapper{},
 			canCorrelate: true,
 		},
 
@@ -97,7 +93,7 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}, wrap: &physicalNestedLoopJoinWrapper{}},
 		{name: "InJoin", plan: &plans.RecordQueryInJoinPlan{}, wrap: &physicalInJoinWrapper{}},
 		{name: "InUnion", plan: &plans.RecordQueryInUnionPlan{}, wrap: &physicalInUnionWrapper{}},
-		{name: "MultiIntersection", plan: &plans.RecordQueryMultiIntersectionOnValuesPlan{}, wrap: &physicalMultiIntersectionWrapper{}},
+		{name: "MultiIntersection", plan: &plans.RecordQueryMultiIntersectionOnValuesPlan{}},
 		{name: "StreamingAggregation", plan: &plans.RecordQueryStreamingAggregationPlan{}, wrap: &physicalStreamingAggWrapper{}},
 		{name: "InMemorySort", plan: &plans.RecordQueryInMemorySortPlan{}, wrap: &physicalInMemorySortWrapper{}},
 		{name: "Projection", plan: &plans.RecordQueryProjectionPlan{}, wrap: &physicalProjectionWrapper{}},
@@ -120,11 +116,17 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 			if got := tc.plan.ChildrenAsSet(); got != tc.childrenAsSet {
 				t.Errorf("plan ChildrenAsSet() = %v, want %v", got, tc.childrenAsSet)
 			}
-			if got := tc.wrap.ChildrenAsSet(); got != tc.childrenAsSet {
-				t.Errorf("wrapper ChildrenAsSet() = %v, want %v", got, tc.childrenAsSet)
-			}
 			if got := tc.plan.CanCorrelate(); got != tc.canCorrelate {
 				t.Errorf("plan CanCorrelate() = %v, want %v", got, tc.canCorrelate)
+			}
+			// The wrapper side is checked only while a wrapper still exists for
+			// this plan type; RFC-184 W2 collapses retire wrappers, leaving the
+			// plan the live production path (wrap==nil skips the pair check).
+			if tc.wrap == nil {
+				return
+			}
+			if got := tc.wrap.ChildrenAsSet(); got != tc.childrenAsSet {
+				t.Errorf("wrapper ChildrenAsSet() = %v, want %v", got, tc.childrenAsSet)
 			}
 			if got := tc.wrap.CanCorrelate(); got != tc.canCorrelate {
 				t.Errorf("wrapper CanCorrelate() = %v, want %v", got, tc.canCorrelate)

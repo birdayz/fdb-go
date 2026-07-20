@@ -117,16 +117,16 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 		// RecordQueryUnionPlan is a simple UNION ALL — no comparison keys.
 		return derivationsForSetPlan(w, nil)
 
-	case *physicalMergeSortUnionWrapper:
-		return derivationsForSetPlan(w, w.plan.GetComparisonKeys())
+	case *plans.RecordQueryMergeSortUnionPlan:
+		return derivationsForSetPlan(w, w.GetComparisonKeys())
 
 	case *physicalUnorderedUnionWrapper:
 		return derivationsForSetPlan(w, nil)
 
-	case *physicalIntersectionWrapper:
-		return derivationsForSetPlan(w, w.plan.GetComparisonKeyValues())
+	case *plans.RecordQueryIntersectionPlan:
+		return derivationsForSetPlan(w, w.GetComparisonKeyValues())
 
-	case *physicalMultiIntersectionWrapper:
+	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
 		return derivationsForMultiIntersection(w)
 
 	// --- InJoin: decorrelate inner against in-source ---
@@ -192,10 +192,10 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- Recursive plans: empty derivations ---
 
-	case *physicalRecursiveDfsJoinWrapper:
+	case *plans.RecordQueryRecursiveDfsJoinPlan:
 		return properties.EmptyDerivations()
 
-	case *physicalRecursiveLevelUnionWrapper:
+	case *plans.RecordQueryRecursiveLevelUnionPlan:
 		return properties.EmptyDerivations()
 
 	default:
@@ -403,8 +403,8 @@ func derivationsForSetPlan(expr expressions.RelationalExpression, comparisonKeyV
 
 // --- MultiIntersection ---
 
-func derivationsForMultiIntersection(w *physicalMultiIntersectionWrapper) *properties.Derivations {
-	intersectionResultValue := w.plan.GetResultValue()
+func derivationsForMultiIntersection(w *plans.RecordQueryMultiIntersectionOnValuesPlan) *properties.Derivations {
+	intersectionResultValue := w.GetResultValue()
 	var resultVals []values.Value
 	var localVals []values.Value
 
@@ -429,7 +429,7 @@ func derivationsForMultiIntersection(w *physicalMultiIntersectionWrapper) *prope
 	})
 
 	// Comparison key values.
-	compKeys := w.plan.GetComparisonKey()
+	compKeys := w.GetComparisonKey()
 	if len(compKeys) > 0 {
 		for _, ckv := range compKeys {
 			for _, rv := range resultVals {

@@ -219,9 +219,9 @@ func TestImplementRecursiveDfsJoin_Fires_PreorderStrategy(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	var dfsWrap *physicalRecursiveDfsJoinWrapper
+	var dfsWrap *plans.RecordQueryRecursiveDfsJoinPlan
 	for _, m := range ref.AllMembers() {
-		if w, ok := m.(*physicalRecursiveDfsJoinWrapper); ok {
+		if w, ok := m.(*plans.RecordQueryRecursiveDfsJoinPlan); ok {
 			dfsWrap = w
 			break
 		}
@@ -313,9 +313,9 @@ func TestImplementRecursiveLevelUnion_Fires_LevelStrategy(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	var wrap *physicalRecursiveLevelUnionWrapper
+	var wrap *plans.RecordQueryRecursiveLevelUnionPlan
 	for _, m := range ref.AllMembers() {
-		if w, ok := m.(*physicalRecursiveLevelUnionWrapper); ok {
+		if w, ok := m.(*plans.RecordQueryRecursiveLevelUnionPlan); ok {
 			wrap = w
 			break
 		}

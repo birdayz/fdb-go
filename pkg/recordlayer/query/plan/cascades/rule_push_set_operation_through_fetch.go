@@ -45,28 +45,29 @@ type PushIntersectionThroughFetchRule struct {
 
 func NewPushIntersectionThroughFetchRule() *PushIntersectionThroughFetchRule {
 	return &PushIntersectionThroughFetchRule{
-		matcher: NewExpressionMatcher[*physicalIntersectionWrapper]("phys_intersection_over_fetches"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryIntersectionPlan]("phys_intersection_over_fetches"),
 	}
 }
 
 func (r *PushIntersectionThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *PushIntersectionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
-	intW := matching.Get[*physicalIntersectionWrapper](call.Bindings, r.matcher)
+	intW := matching.Get[*plans.RecordQueryIntersectionPlan](call.Bindings, r.matcher)
+	compKeys := intW.GetComparisonKeyValues()
 	pushSetOpThroughFetch(call, setOpPush{
-		quants:     intW.innerQuants,
-		resultType: intW.plan.GetResultType(),
+		quants:     intW.GetQuantifiers(),
+		resultType: intW.GetResultType(),
 		// The merge evaluates the comparison keys against child rows, so
 		// the pushed children (partial records) must be able to answer
 		// them — Java's getRequiredValues/tryPushValues gate.
-		requiredValues: intW.plan.GetComparisonKeyValues(),
+		requiredValues: compKeys,
 		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
 			// Java's withChildrenReferences mirrors every attribute except
 			// the children — comparison keys carry over verbatim.
-			return plans.NewRecordQueryIntersectionPlan(inners, intW.plan.GetComparisonKeyValues())
+			return plans.NewRecordQueryIntersectionPlan(inners, compKeys)
 		},
-		buildWrapper: func(p plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
-			return NewPhysicalIntersectionWrapper(p.(*plans.RecordQueryIntersectionPlan), qs)
+		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
+			return plans.NewRecordQueryIntersectionPlanFromQuantifiers(qs, compKeys)
 		},
 	})
 }
@@ -112,17 +113,16 @@ type PushMergeSortUnionThroughFetchRule struct {
 
 func NewPushMergeSortUnionThroughFetchRule() *PushMergeSortUnionThroughFetchRule {
 	return &PushMergeSortUnionThroughFetchRule{
-		matcher: NewExpressionMatcher[*physicalMergeSortUnionWrapper]("phys_merge_sort_union_over_fetches"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryMergeSortUnionPlan]("phys_merge_sort_union_over_fetches"),
 	}
 }
 
 func (r *PushMergeSortUnionThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *PushMergeSortUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
-	w := matching.Get[*physicalMergeSortUnionWrapper](call.Bindings, r.matcher)
-	old := w.plan
+	old := matching.Get[*plans.RecordQueryMergeSortUnionPlan](call.Bindings, r.matcher)
 	pushSetOpThroughFetch(call, setOpPush{
-		quants: w.innerQuants,
+		quants: old.GetQuantifiers(),
 		// The ordered merge (and dedup when removeDuplicates) evaluates
 		// the comparison keys against child rows — pushable only when
 		// the partial records can answer them. The fetch above is a
@@ -135,8 +135,10 @@ func (r *PushMergeSortUnionThroughFetchRule) OnMatch(call *ImplementationRuleCal
 				inners, old.GetComparisonKeys(), old.IsReverse(), old.RemovesDuplicates(),
 			)
 		},
-		buildWrapper: func(p plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
-			return NewPhysicalMergeSortUnionWrapper(p.(*plans.RecordQueryMergeSortUnionPlan), qs)
+		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
+			return plans.NewRecordQueryMergeSortUnionPlanFromQuantifiers(
+				qs, old.GetComparisonKeys(), old.IsReverse(), old.RemovesDuplicates(),
+			)
 		},
 	})
 }

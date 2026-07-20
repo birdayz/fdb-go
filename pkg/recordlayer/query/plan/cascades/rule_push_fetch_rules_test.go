@@ -784,18 +784,18 @@ func TestPushIntersectionThroughFetch_RequiredValuesGate(t *testing.T) {
 	key := values.NewFieldValue(nil, "PK", values.NullableLong)
 
 	// One leg cannot answer the comparison key → decline.
-	declining := NewPhysicalIntersectionWrapper(
-		plans.NewRecordQueryIntersectionPlan(nil, []values.Value{key}),
+	declining := plans.NewRecordQueryIntersectionPlanFromQuantifiers(
 		[]expressions.Quantifier{makeChild("idx_a", okFn), makeChild("idx_b", noFn)},
+		[]values.Value{key},
 	)
 	if got := FireImplementationRule(NewPushIntersectionThroughFetchRule(), expressions.InitialOf(declining)); len(got) != 0 {
 		t.Fatalf("expected decline when a leg cannot answer the comparison key, got %d yields", len(got))
 	}
 
 	// Both legs answer → fires, comparison keys preserved on the rebuilt plan.
-	firing := NewPhysicalIntersectionWrapper(
-		plans.NewRecordQueryIntersectionPlan(nil, []values.Value{key}),
+	firing := plans.NewRecordQueryIntersectionPlanFromQuantifiers(
 		[]expressions.Quantifier{makeChild("idx_a", okFn), makeChild("idx_b", okFn)},
+		[]values.Value{key},
 	)
 	yielded := FireImplementationRule(NewPushIntersectionThroughFetchRule(), expressions.InitialOf(firing))
 	if len(yielded) != 1 {
@@ -844,9 +844,8 @@ func TestPushMergeSortUnionThroughFetch_Fires(t *testing.T) {
 	q2 := makeChild("idx_b")
 
 	key := values.NewFieldValue(nil, "PK", values.NullableLong)
-	msu := NewPhysicalMergeSortUnionWrapper(
-		plans.NewRecordQueryMergeSortUnionPlan(nil, []values.Value{key}, true, true),
-		[]expressions.Quantifier{q1, q2},
+	msu := plans.NewRecordQueryMergeSortUnionPlanFromQuantifiers(
+		[]expressions.Quantifier{q1, q2}, []values.Value{key}, true, true,
 	)
 
 	yielded := FireImplementationRule(NewPushMergeSortUnionThroughFetchRule(), expressions.InitialOf(msu))

@@ -251,10 +251,11 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 		}
 		comparisonKeys = bakeMergeComparisonKeys(comparisonKeys, requestedOrdering, childPlans[0].GetResultType())
 
-		unionPlan := plans.NewRecordQueryMergeSortUnionPlan(
-			childPlans, comparisonKeys, isReverse, true)
-		wrapper := NewPhysicalMergeSortUnionWrapper(unionPlan, newQuantifiers)
-		call.YieldFinalExpression(wrapper)
+		// The merge carries its leg edges directly — one live quantifier per
+		// pinned winner, no separate physical wrapper (RFC-184 W2).
+		mergePlan := plans.NewRecordQueryMergeSortUnionPlanFromQuantifiers(
+			newQuantifiers, comparisonKeys, isReverse, true)
+		call.YieldFinalExpression(mergePlan)
 	}
 }
 

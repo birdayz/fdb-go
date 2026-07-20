@@ -48,6 +48,27 @@ func NewRecordQueryMultiIntersectionOnValuesPlan(
 	}
 }
 
+// NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers builds an N-way
+// multi-intersection whose streams are LIVE memo quantifiers (the aggregate
+// data-access rule passes PhysicalQuantifiers over the freshly-memoized leg
+// plans) instead of snapshots over plans. This makes the multi-intersection its
+// own cascades expression carrying its stream edges directly — the memo holds it
+// without a physical wrapper (RFC-184 W2). comparisonKey and resultValue carry
+// over verbatim.
+func NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
+	qs []expressions.Quantifier,
+	comparisonKey []values.Value,
+	resultValue values.Value,
+) *RecordQueryMultiIntersectionOnValuesPlan {
+	cpKeys := make([]values.Value, len(comparisonKey))
+	copy(cpKeys, comparisonKey)
+	return &RecordQueryMultiIntersectionOnValuesPlan{
+		childQs:       append([]expressions.Quantifier(nil), qs...),
+		comparisonKey: cpKeys,
+		resultValue:   resultValue,
+	}
+}
+
 // GetChildren returns the input plans, dereferenced through the quantifiers
 // and in stream order — resultValue's pick-up columns are positional per
 // stream.
@@ -166,6 +187,22 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(qs []expressi
 	cp := *p
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
 	return &cp
+}
+
+// IsIntersection implements properties.IntersectionExpression — the marker
+// ComparisonsProperty.EvaluateComparisons keys on to intersect (not union) its
+// children's comparison sets. Adopted from the retired
+// physicalMultiIntersectionWrapper (RFC-184 W2) so the memo member the property
+// walks still reports it.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) IsIntersection() {}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The multi-intersection carries its streams as LIVE memo edges, so
+// the relink is a quantifier swap: WithQuantifiers rebinds the streams and
+// GetChildren re-resolves through the new references (RFC-184 W2, replacing
+// physicalMultiIntersectionWrapper.WithChildren).
+func (p *RecordQueryMultiIntersectionOnValuesPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

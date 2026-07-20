@@ -88,12 +88,12 @@ func (PlanExprBase) GetQuantifiers() []expressions.Quantifier { return nil }
 // invariant enforced, the place is construction (Java's resultValue is
 // @Nonnull), not this method.
 //
-// One asymmetry, now resolved: physicalMultiIntersectionWrapper's nil-fallback
-// returns the FIRST INNER's flowed object value, not a fresh stand-in — so a
-// blanket non-nil guard here would silently change that wrapper's answer. The
-// plan could not reproduce that fallback while it had no quantifiers; it owns
-// them now and owns the fallback with them (multi_intersection.go's
-// GetResultValue), so the wrapper holds no information the plan lacks.
+// One asymmetry, now resolved: the multi-intersection's nil-fallback returns the
+// FIRST INNER's flowed object value, not a fresh stand-in — so a blanket non-nil
+// guard here would silently change that answer. The multi-intersection owns its
+// quantifiers and owns the fallback with them (multi_intersection.go's
+// GetResultValue), which is why the retired physicalMultiIntersectionWrapper held
+// no information the plan lacks (RFC-184 W2).
 func (PlanExprBase) GetResultValue() values.Value {
 	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
 }

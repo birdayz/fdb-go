@@ -51,33 +51,23 @@ func (r *ImplementRecursiveLevelUnionRule) OnMatch(call *ExpressionRuleCall) {
 	if initialWinner == nil || recursiveWinner == nil {
 		return
 	}
-	initPh, ok := initialWinner.(physicalPlanExpression)
-	if !ok {
+	if _, ok := initialWinner.(physicalPlanExpression); !ok {
 		return
 	}
-	recPh, ok := recursiveWinner.(physicalPlanExpression)
-	if !ok {
+	if _, ok := recursiveWinner.(physicalPlanExpression); !ok {
 		return
 	}
 
-	var plan *plans.RecordQueryRecursiveLevelUnionPlan
-	if recUnion.IsDistinct() {
-		plan = plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
-			initPh.GetRecordQueryPlan(), recPh.GetRecordQueryPlan(),
-			recUnion.GetTempTableScanAlias(),
-			recUnion.GetTempTableInsertAlias(),
-		)
-	} else {
-		plan = plans.NewRecordQueryRecursiveLevelUnionPlan(
-			initPh.GetRecordQueryPlan(), recPh.GetRecordQueryPlan(),
-			recUnion.GetTempTableScanAlias(),
-			recUnion.GetTempTableInsertAlias(),
-		)
-	}
-
+	// The plan carries its two leg edges directly — one live quantifier per
+	// winner, no separate physical wrapper (RFC-184 W2).
 	initQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialWinner))
 	recQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveWinner))
-	call.Yield(newPhysicalRecursiveLevelUnionWrapper(plan, initQ, recQ))
+	call.Yield(plans.NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
+		initQ, recQ,
+		recUnion.GetTempTableScanAlias(),
+		recUnion.GetTempTableInsertAlias(),
+		recUnion.IsDistinct(),
+	))
 }
 
 var _ ExpressionRule = (*ImplementRecursiveLevelUnionRule)(nil)

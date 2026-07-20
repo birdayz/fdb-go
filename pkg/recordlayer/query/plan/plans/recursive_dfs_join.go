@@ -78,6 +78,28 @@ func NewRecordQueryRecursiveDfsJoinPlanDistinct(
 	}
 }
 
+// NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers builds a recursive DFS join
+// whose two legs are LIVE memo quantifiers (the implementation rule passes
+// ForEachQuantifiers over the freshly-memoized root/child scan expressions)
+// instead of snapshots over plans. This makes the plan its own cascades
+// expression carrying its leg edges directly — the memo holds it without a
+// physical wrapper (RFC-184 W2). The prior-row correlation, traversal strategy,
+// and distinct flag carry over verbatim.
+func NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
+	rootQ, childQ expressions.Quantifier,
+	priorCorrelation values.CorrelationIdentifier,
+	strategy DfsTraversalStrategy,
+	distinct bool,
+) *RecordQueryRecursiveDfsJoinPlan {
+	return &RecordQueryRecursiveDfsJoinPlan{
+		rootQ:             rootQ,
+		childQ:            childQ,
+		priorCorrelation:  priorCorrelation,
+		traversalStrategy: strategy,
+		distinct:          distinct,
+	}
+}
+
 func (p *RecordQueryRecursiveDfsJoinPlan) IsDistinct() bool { return p.distinct }
 
 func (p *RecordQueryRecursiveDfsJoinPlan) GetRoot() RecordQueryPlan {
@@ -174,8 +196,20 @@ func (p *RecordQueryRecursiveDfsJoinPlan) EqualsWithoutChildren(other expression
 }
 
 // CanCorrelate reports that this operator anchors a correlation between its
-// children (the seed leg binds what the recursive leg reads), mirroring physicalRecursiveDfsJoinWrapper.
+// children (the seed leg binds what the recursive leg reads).
 func (p *RecordQueryRecursiveDfsJoinPlan) CanCorrelate() bool { return true }
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The plan carries its root and recursive legs as LIVE memo edges, so
+// the relink is a quantifier swap: WithQuantifiers rebinds the legs and
+// GetChildren re-resolves through the new references (RFC-184 W2, replacing
+// physicalRecursiveDfsJoinWrapper.WithChildren).
+func (p *RecordQueryRecursiveDfsJoinPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 2 {
+		return nil, fmt.Errorf("RecordQueryRecursiveDfsJoinPlan.WithChildren: expected 2 children, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
+}
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryRecursiveDfsJoinPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

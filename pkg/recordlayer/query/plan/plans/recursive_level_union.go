@@ -57,6 +57,26 @@ func NewRecordQueryRecursiveLevelUnionPlanDistinct(
 	}
 }
 
+// NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers builds a recursive level
+// union whose two legs are LIVE memo quantifiers (the implementation rule passes
+// ForEachQuantifiers over the freshly-memoized initial/recursive winners) instead
+// of snapshots over plans. This makes the plan its own cascades expression
+// carrying its leg edges directly — the memo holds it without a physical wrapper
+// (RFC-184 W2). The temp-table aliases and distinct flag carry over verbatim.
+func NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
+	initialQ, recursiveQ expressions.Quantifier,
+	tempTableScanAlias, tempTableInsertAlias values.CorrelationIdentifier,
+	distinct bool,
+) *RecordQueryRecursiveLevelUnionPlan {
+	return &RecordQueryRecursiveLevelUnionPlan{
+		initialQ:             initialQ,
+		recursiveQ:           recursiveQ,
+		tempTableScanAlias:   tempTableScanAlias,
+		tempTableInsertAlias: tempTableInsertAlias,
+		distinct:             distinct,
+	}
+}
+
 func (p *RecordQueryRecursiveLevelUnionPlan) IsDistinct() bool { return p.distinct }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) GetInitialState() RecordQueryPlan {
@@ -153,8 +173,20 @@ func (p *RecordQueryRecursiveLevelUnionPlan) EqualsWithoutChildren(other express
 }
 
 // CanCorrelate reports that this operator anchors a correlation between its
-// children (each level binds what the next level reads), mirroring physicalRecursiveLevelUnionWrapper.
+// children (each level binds what the next level reads).
 func (p *RecordQueryRecursiveLevelUnionPlan) CanCorrelate() bool { return true }
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The plan carries its two legs as LIVE memo edges, so the relink is a
+// quantifier swap: WithQuantifiers rebinds the legs and GetChildren re-resolves
+// through the new references (RFC-184 W2, replacing
+// physicalRecursiveLevelUnionWrapper.WithChildren).
+func (p *RecordQueryRecursiveLevelUnionPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 2 {
+		return nil, fmt.Errorf("RecordQueryRecursiveLevelUnionPlan.WithChildren: expected 2 children, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
+}
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryRecursiveLevelUnionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

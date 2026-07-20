@@ -88,13 +88,13 @@ func TestImplementDistinctUnionRule_FiresWithPKAndStoredRecord(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalMergeSortUnionWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryMergeSortUnionPlan); ok {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("should yield physicalMergeSortUnionWrapper")
+		t.Fatal("should yield *plans.RecordQueryMergeSortUnionPlan")
 	}
 }
 
@@ -291,9 +291,9 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 	outerRef := expressions.InitialOf(distinct)
 
 	results := FireImplementationRule(NewImplementDistinctUnionRule(), outerRef)
-	var msu *physicalMergeSortUnionWrapper
+	var msu *plans.RecordQueryMergeSortUnionPlan
 	for _, r := range results {
-		if w, ok := r.(*physicalMergeSortUnionWrapper); ok {
+		if w, ok := r.(*plans.RecordQueryMergeSortUnionPlan); ok {
 			msu = w
 			break
 		}
@@ -301,7 +301,7 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 	if msu == nil {
 		t.Fatal("expected a merge-sort union yield (the pinned path must not over-decline this shape)")
 	}
-	for _, child := range msu.plan.GetChildren() {
+	for _, child := range msu.GetChildren() {
 		if child == staleScan {
 			t.Fatal("the union baked the delegator's STALE plan child — the leg was not spine-pinned and the merge dedup runs over an order the leg does not produce")
 		}

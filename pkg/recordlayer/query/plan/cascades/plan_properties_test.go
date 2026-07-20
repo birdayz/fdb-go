@@ -293,8 +293,7 @@ func TestComputeDistinctRecords_MergeSortUnionIsTrue(t *testing.T) {
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
 	msu := plans.NewRecordQueryMergeSortUnionPlan(
 		[]plans.RecordQueryPlan{scanA, scanB}, nil, false, true)
-	w := NewPhysicalMergeSortUnionWrapper(msu, nil)
-	if !computeDistinctRecords(w, msu) {
+	if !computeDistinctRecords(msu, msu) {
 		t.Fatal("MergeSortUnion should be distinct")
 	}
 }

@@ -770,8 +770,8 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 	if p, ok := e.(*plans.RecordQueryIndexPlan); ok {
 		return equalityAliasesFromRanges(p.GetScanComparisons())
 	}
-	_, isIntersection := e.(*physicalIntersectionWrapper)
-	_, isMultiIntersection := e.(*physicalMultiIntersectionWrapper)
+	_, isIntersection := e.(*plans.RecordQueryIntersectionPlan)
+	_, isMultiIntersection := e.(*plans.RecordQueryMultiIntersectionOnValuesPlan)
 	if isIntersection || isMultiIntersection {
 		return intersectChildAliases(e)
 	}

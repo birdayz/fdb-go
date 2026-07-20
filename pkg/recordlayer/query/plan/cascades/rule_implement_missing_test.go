@@ -163,9 +163,9 @@ func TestImplementRecursiveDfsJoinRule_FiresAfterInnerImplemented(t *testing.T) 
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementRecursiveDfsJoinRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalRecursiveDfsJoinWrapper)
+	wrap, ok := yielded[0].(*plans.RecordQueryRecursiveDfsJoinPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalRecursiveDfsJoinWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryRecursiveDfsJoinPlan", yielded[0])
 	}
 	if wrap.GetRecordQueryPlan() == nil {
 		t.Fatal("wrapper has no plan")
@@ -221,9 +221,9 @@ func TestImplementRecursiveLevelUnionRule_FiresAfterInnerImplemented(t *testing.
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementRecursiveLevelUnionRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalRecursiveLevelUnionWrapper)
+	wrap, ok := yielded[0].(*plans.RecordQueryRecursiveLevelUnionPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalRecursiveLevelUnionWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryRecursiveLevelUnionPlan", yielded[0])
 	}
 	if wrap.GetRecordQueryPlan() == nil {
 		t.Fatal("wrapper has no plan")

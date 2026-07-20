@@ -387,11 +387,9 @@ func TestCollectSargedAliases_IntersectionIsSetIntersection(t *testing.T) {
 	q1 := expressions.NewPhysicalQuantifier(ref1)
 	q2 := expressions.NewPhysicalQuantifier(ref2)
 
-	intersectionPlan := plans.NewRecordQueryIntersectionPlan(
-		[]plans.RecordQueryPlan{child1, child2},
-		nil,
+	intersection := plans.NewRecordQueryIntersectionPlanFromQuantifiers(
+		[]expressions.Quantifier{q1, q2}, nil,
 	)
-	intersection := NewPhysicalIntersectionWrapper(intersectionPlan, []expressions.Quantifier{q1, q2})
 
 	aliases := collectSargedAliases(intersection)
 
