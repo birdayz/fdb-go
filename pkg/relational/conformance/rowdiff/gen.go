@@ -169,7 +169,7 @@ type AggSpec struct {
 // ExistsSpec is a CORRELATED [NOT] EXISTS subquery appended to a single-table
 // query's WHERE, over the SAME table under alias `r`:
 //
-//	[NOT] EXISTS (SELECT 1 FROM t AS r WHERE r.<CorrCol> = t.<CorrCol> [AND <Inner>])
+//	[NOT] EXISTS (SELECT 1 FROM t AS r WHERE r.<CorrCol> <CorrOp> t.<CorrCol> [AND <Inner>])
 //
 // The correlation equality and the optional simple inner comparison go through
 // the engine's own Comparison eval in the oracle (evalLeaf / EvalAgainst), so
@@ -180,9 +180,10 @@ type AggSpec struct {
 // with no output-schema change — it composes with the paging sweep to test
 // EXISTS continuation soundness too.
 type ExistsSpec struct {
-	CorrCol string // correlation column: r.CorrCol = t.CorrCol
-	Inner   *Pred  // optional extra filter on r (Qual empty; col op literal only)
-	Negated bool   // NOT EXISTS
+	CorrCol string                    // correlation column: r.CorrCol <CorrOp> t.CorrCol
+	CorrOp  predicates.ComparisonType // correlation operator (zero value = equals)
+	Inner   *Pred                     // optional extra filter on r (Qual empty; col op literal only)
+	Negated bool                      // NOT EXISTS
 }
 
 // Query is one generated query body; the runner executes it under every
@@ -269,8 +270,21 @@ func aggOutputCols(a *AggSpec) []string {
 // evalLeaf handle it with no BETWEEN/IN/qualifier machinery.
 func genExists(rng *rand.Rand) *ExistsSpec {
 	bigints := []string{"A", "B", "C"}
+	// Correlation op: mostly equi (the common semi-join the equi-join rules
+	// target), but ~40% a non-equi correlation. A self-equi correlation always
+	// self-matches (r == outer row), so a bare equi EXISTS is trivially true for
+	// every non-NULL row; a non-equi one (r.c < t.c) does NOT self-match and
+	// forces a genuine per-outer inner scan — the planner's non-equi semi-join
+	// path, which the equi-join rules cannot short-circuit.
+	corrOps := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonEquals,
+		predicates.ComparisonEquals, // weight equi ~3/5
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
 	e := &ExistsSpec{
 		CorrCol: bigints[rng.IntN(len(bigints))],
+		CorrOp:  corrOps[rng.IntN(len(corrOps))],
 		Negated: rng.IntN(2) == 0,
 	}
 	if rng.IntN(2) == 0 {
@@ -296,8 +310,8 @@ func existsSQL(e *ExistsSpec, tbl string) string {
 	if e.Negated {
 		b.WriteString("NOT ")
 	}
-	fmt.Fprintf(&b, "EXISTS (SELECT 1 FROM %s AS r WHERE r.%s = %s.%s",
-		tbl, strings.ToLower(e.CorrCol), tbl, strings.ToLower(e.CorrCol))
+	fmt.Fprintf(&b, "EXISTS (SELECT 1 FROM %s AS r WHERE r.%s %s %s.%s",
+		tbl, strings.ToLower(e.CorrCol), opSQL(e.CorrOp), tbl, strings.ToLower(e.CorrCol))
 	if e.Inner != nil {
 		fmt.Fprintf(&b, " AND r.%s %s %s",
 			strings.ToLower(e.Inner.Col), opSQL(e.Inner.Op), renderLiteral(e.Inner.Lit))

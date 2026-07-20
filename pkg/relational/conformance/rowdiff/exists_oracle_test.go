@@ -63,6 +63,21 @@ func TestExistsOracle_HandComputed(t *testing.T) {
 		// empty, NOT EXISTS keeps every row (including the NULL-A one).
 		{"exists_impossible", &ExistsSpec{CorrCol: "A", Inner: lt("B", 0)}, []int64{}},
 		{"not_exists_impossible", &ExistsSpec{CorrCol: "A", Inner: lt("B", 0), Negated: true}, []int64{1, 2, 3, 4}},
+
+		// Non-equi correlation: r.A < t.A holds only for a row with a strictly
+		// larger A than some other row's — A values are {5,5,7,NULL}, so only
+		// A=7 (ID=3) has something below it. NULL-A never matches (r.A < NULL is
+		// UNKNOWN). This is the path a self-equi correlation cannot reach (equi
+		// self-matches trivially).
+		{"exists_corr_lt", &ExistsSpec{CorrCol: "A", CorrOp: predicates.ComparisonLessThan}, []int64{3}},
+		{"not_exists_corr_lt", &ExistsSpec{CorrCol: "A", CorrOp: predicates.ComparisonLessThan, Negated: true}, []int64{1, 2, 4}},
+		// r.A > t.A: holds for rows with something larger above them — A=5 rows
+		// (ID 1,2) have A=7 above; A=7 (ID 3) has nothing larger; NULL never.
+		{"exists_corr_gt", &ExistsSpec{CorrCol: "A", CorrOp: predicates.ComparisonGreaterThan}, []int64{1, 2}},
+		// Non-equi correlation composed with an inner filter: r.A < t.A AND
+		// r.B > 5. Only ID=3 (A=7) has a smaller-A row, and among {ID1 B=3,
+		// ID2 B=8} the B=8 passes → ID=3 holds; nothing else.
+		{"exists_corr_lt_inner", &ExistsSpec{CorrCol: "A", CorrOp: predicates.ComparisonLessThan, Inner: gt("B", 5)}, []int64{3}},
 	}
 
 	for _, tc := range cases {

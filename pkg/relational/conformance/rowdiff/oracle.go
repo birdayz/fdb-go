@@ -184,8 +184,11 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 // evalLeaf), so NULL/scalar semantics are shared — a NULL on either side of the
 // correlation is UNKNOWN, so a NULL correlation value matches no inner row.
 func existsHolds(c *Case, e *ExistsSpec, o Row) (bool, error) {
-	corr := predicates.NewLiteralComparison(predicates.ComparisonEquals, nil)
+	corr := predicates.NewLiteralComparison(e.CorrOp, nil)
 	for _, ir := range c.Rows {
+		// EvalAgainst(inner, outer) evaluates `inner <CorrOp> outer` == the
+		// rendered `r.CorrCol <CorrOp> t.CorrCol`; a NULL on either side is
+		// UNKNOWN for every op, so a NULL correlation value never matches.
 		tb, err := corr.EvalAgainst(ir[e.CorrCol], o[e.CorrCol])
 		if err != nil {
 			return false, err
