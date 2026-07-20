@@ -782,9 +782,16 @@ func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 		}
 		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(result)
 	case p.StrFn != nil:
-		// UPPER/LOWER/LENGTH over the ASCII string domain — Go's strings.ToUpper
-		// / ToLower / len match the engine's semantics there (verified by probe).
-		// A NULL column makes the result NULL, so the comparison is UNKNOWN.
+		// CONCAT is the exception: it treats a NULL operand as "" (verified:
+		// CONCAT(NULL,'x')='x'), so its result is NEVER NULL — handle it before
+		// the NULL-propagation guard the other functions need.
+		if p.StrFn.Fn == StrFnConcat {
+			sv, _ := r[p.StrFn.Col].(string) // "" when the column is NULL
+			return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(sv + p.StrFn.Suffix)
+		}
+		// UPPER/LOWER/LENGTH/SUBSTR over the ASCII string domain — Go's
+		// strings.ToUpper / ToLower / len / clamped-slice match the engine
+		// (verified by probe). A NULL column makes the result NULL → UNKNOWN.
 		sv, ok := r[p.StrFn.Col].(string)
 		if !ok {
 			return predicates.TriUnknown, nil

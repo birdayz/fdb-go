@@ -303,15 +303,18 @@ const (
 	StrFnLower                   // LOWER(s) → string
 	StrFnLength                  // LENGTH(s) → int (character count == byte count for ASCII)
 	StrFnSubstr                  // SUBSTR(s, Start, Length) → string (1-based, clamped)
+	StrFnConcat                  // CONCAT(s, 'Suffix') → string (NULL operand treated as "")
 )
 
 // StrFnSpec is a string-function predicate LHS: `<Fn>(<Col>) <Op> Lit`, or for
-// SUBSTR `SUBSTR(<Col>, Start, Length) <Op> Lit`.
+// SUBSTR `SUBSTR(<Col>, Start, Length) <Op> Lit`, or for CONCAT
+// `CONCAT(<Col>, 'Suffix') <Op> Lit`.
 type StrFnSpec struct {
 	Fn     StrFnKind
 	Col    string // the STRING column (only "S" today)
 	Start  int64  // SUBSTR: 1-based start position (>=1)
 	Length int64  // SUBSTR: length (>=0); the result is clamped to the string bounds
+	Suffix string // CONCAT: the literal appended to the column
 }
 
 // NumFnKind is a scalar numeric function whose semantics match Go's over the
@@ -1623,10 +1626,14 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 				fmt.Fprintf(b, "ABS(%s) %s %s", col, opSQL(p.Op), renderLiteral(p.Lit))
 			}
 		case p.StrFn != nil:
-			if p.StrFn.Fn == StrFnSubstr {
+			switch p.StrFn.Fn {
+			case StrFnSubstr:
 				fmt.Fprintf(b, "SUBSTR(%s, %d, %d) %s %s",
 					strings.ToLower(p.StrFn.Col), p.StrFn.Start, p.StrFn.Length, opSQL(p.Op), renderLiteral(p.Lit))
-			} else {
+			case StrFnConcat:
+				fmt.Fprintf(b, "CONCAT(%s, %s) %s %s",
+					strings.ToLower(p.StrFn.Col), renderLiteral(p.StrFn.Suffix), opSQL(p.Op), renderLiteral(p.Lit))
+			default:
 				fmt.Fprintf(b, "%s(%s) %s %s",
 					strFnSQL(p.StrFn.Fn), strings.ToLower(p.StrFn.Col), opSQL(p.Op), renderLiteral(p.Lit))
 			}
@@ -1750,7 +1757,7 @@ func genStrFnLeaf(rng *rand.Rand) *Pred {
 	}
 	op := ops[rng.IntN(len(ops))]
 	spec := &StrFnSpec{Col: "S"}
-	switch rng.IntN(4) {
+	switch rng.IntN(5) {
 	case 0:
 		spec.Fn = StrFnUpper
 		return &Pred{StrFn: spec, Op: op, Lit: strings.ToUpper(domain[rng.IntN(len(domain))])}
@@ -1760,13 +1767,20 @@ func genStrFnLeaf(rng *rand.Rand) *Pred {
 	case 2:
 		spec.Fn = StrFnLength
 		return &Pred{StrFn: spec, Op: op, Lit: int64(rng.IntN(9))}
-	default:
+	case 3:
 		spec.Fn = StrFnSubstr
 		spec.Start = int64(1 + rng.IntN(6)) // 1..6 (some beyond the string → "")
 		spec.Length = int64(rng.IntN(6))    // 0..5
 		// Literal = SUBSTR of a domain word so a match is reachable.
 		w := domain[rng.IntN(len(domain))]
 		return &Pred{StrFn: spec, Op: op, Lit: substrVal(w, spec.Start, spec.Length)}
+	default:
+		spec.Fn = StrFnConcat
+		spec.Suffix = []string{"x", "z", "q", "", "ab"}[rng.IntN(5)]
+		// Literal = word+suffix so a match is reachable; a NULL-s row yields
+		// just the suffix (CONCAT treats NULL as "").
+		w := domain[rng.IntN(len(domain))]
+		return &Pred{StrFn: spec, Op: op, Lit: w + spec.Suffix}
 	}
 }
 
