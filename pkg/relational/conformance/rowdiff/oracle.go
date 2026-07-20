@@ -797,6 +797,8 @@ func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 			result = strings.ToLower(sv)
 		case StrFnLength:
 			result = int64(len(sv))
+		case StrFnSubstr:
+			result = substrVal(sv, p.StrFn.Start, p.StrFn.Length)
 		}
 		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(result)
 	case p.Case != nil:

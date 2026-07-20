@@ -1407,6 +1407,20 @@ delete the `knownGaps` entry and assert the documented rows `[(2,2),(1,1)]`). **
 multi-leg (outer-join-merged) row resolves a correlated FieldValue's source-relative ordinal in the executor
 — the binding failure is below the rebase layer (see the reverted attempt in the NLJ-rule comment).
 
+### [ ] Executor/ordinal-binding — 3-way join shared-column ordinal not resolvable (malformed plan)
+A 3-WAY join in which the SAME column is referenced across all three legs — a filter on the first
+(`l.c = 1`), the m↔r join key (`m.c = r.c`), and a filter on the third (`r.c IS NULL`) — plans but **dies at
+execution**: `ordinal resolution: field "C" not resolvable in the runtime row (ordinal -1, row columns
+[ID A B C S F]) — malformed plan`. Removing ANY one factor (drop a leg to 2-way / drop the m.c=r.c join /
+drop either c-filter) fixes it. Fails LOUD; the query's correct result is EMPTY (m.c=r.c can never hold when
+r.c IS NULL). Surfaced by the RFC-182 rowdiff harness (seed 1001000229) once 3-way self-joins were generated
+at scale; classified as a tracked `knownGaps` DECLINE (`pkg/relational/conformance/rowdiff/run.go`). Same
+ordinal-binding FAMILY as the multi-leg gap above, distinct signature — likely the same underlying
+executor/ordinal-binding workstream. **Live pin:** `TestFDB_ThreeWaySharedColOrdinal_KnownGap` (goes RED when
+the query executes — then delete the `knownGaps` entry and assert zero rows). **To make it work:** fix how a
+3-way join binds a column's ordinal when that column appears as both a join key and per-leg filters across
+the legs — the ordinal resolves to -1 in the runtime row today.
+
 ---
 
 # NEXT

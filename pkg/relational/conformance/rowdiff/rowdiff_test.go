@@ -549,6 +549,22 @@ func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
 		t.Fatalf("multi-leg entry over-matched a ROW divergence (%q) — soundness findings are never declinable", gap.name)
 	}
 
+	// The production ledger's second live entry — the 3-way shared-column
+	// ordinal-resolution gap — must match its OWN signature and nothing else.
+	threeWayErr := errors.New(`ordinal resolution: field "C" not resolvable in the runtime row (ordinal -1, row columns [ID A B C S F]) — malformed plan`)
+	const threeWayJoin = "SELECT l.id, m.id, r.id FROM t AS l, t AS m, t AS r WHERE l.a = m.id AND m.c = r.c AND l.c = 1 AND r.c IS NULL"
+	if matchKnownGap(threeWayJoin, threeWayErr) == nil {
+		t.Fatal("production ledger must decline the documented 3-way shared-column ordinal error")
+	}
+	// A "malformed plan" WITHOUT the ordinal-(-1) resolution signature must stay
+	// a finding, and a row divergence never declines.
+	if gap := matchKnownGap(threeWayJoin, errors.New("XX000: malformed plan: some other cause")); gap != nil {
+		t.Fatalf("3-way entry over-matched a different malformed-plan cause (%q) — must stay a finding", gap.name)
+	}
+	if gap := matchKnownGap(threeWayJoin, errors.New("row count: engine 5, oracle expects 0")); gap != nil {
+		t.Fatalf("3-way entry over-matched a ROW divergence (%q) — soundness findings are never declinable", gap.name)
+	}
+
 	// The narrowness cases below run against an INJECTED ledger holding the
 	// retired entry verbatim. Testing the empty production ledger would pass
 	// vacuously and stop guarding the suppression hole the day someone adds

@@ -33,6 +33,7 @@ go_test(
         "rowdiff_test.go",
         "scalar_sub_oracle_test.go",
         "str_fn_oracle_test.go",
+        "substr_oracle_test.go",
         "three_way_oracle_test.go",
         "union_oracle_test.go",
     ],

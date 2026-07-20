@@ -335,6 +335,22 @@ var knownGaps = []knownGap{
 				strings.Contains(err.Error(), "no frontier row resolved")
 		},
 	},
+	{
+		// A 3-way join in which the same column is referenced across all three
+		// legs (a filter on one, the m↔r join key, and a filter on the third)
+		// plans but dies at execution: "field … not resolvable in the runtime
+		// row (ordinal -1 …) — malformed plan". Same ordinal-binding family as
+		// the multi-leg gap above, distinct signature. Fails LOUD (never wrong
+		// rows — the query's correct result is empty), so matching its signature
+		// cannot mask a soundness bug. A distinct executor/ordinal-binding
+		// workstream, not fixable inline.
+		name: "3-way join shared-column ordinal not resolvable (malformed plan)",
+		pin:  "TestFDB_ThreeWaySharedColOrdinal_KnownGap",
+		matches: func(sqlText string, err error) bool {
+			return strings.Contains(err.Error(), "not resolvable in the runtime row") &&
+				strings.Contains(err.Error(), "ordinal -1")
+		},
+	},
 }
 
 // matchKnownGap returns the ledger entry covering this failure, or nil.

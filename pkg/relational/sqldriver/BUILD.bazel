@@ -359,6 +359,7 @@ go_test(
         "temporal_uuid_types_probe_test.go",
         "three_valued_logic_fdb_probe_test.go",
         "three_valued_logic_probe_test.go",
+        "threeway_shared_col_ordinal_gap_fdb_test.go",
         "transaction_probe_test.go",
         "twotable_order_invariant_test.go",
         "tx_commit_rollback_probe_test.go",

@@ -302,12 +302,16 @@ const (
 	StrFnUpper  StrFnKind = iota // UPPER(s) → string
 	StrFnLower                   // LOWER(s) → string
 	StrFnLength                  // LENGTH(s) → int (character count == byte count for ASCII)
+	StrFnSubstr                  // SUBSTR(s, Start, Length) → string (1-based, clamped)
 )
 
-// StrFnSpec is a string-function predicate LHS: `<Fn>(<Col>) <Op> Lit`.
+// StrFnSpec is a string-function predicate LHS: `<Fn>(<Col>) <Op> Lit`, or for
+// SUBSTR `SUBSTR(<Col>, Start, Length) <Op> Lit`.
 type StrFnSpec struct {
-	Fn  StrFnKind
-	Col string // the STRING column (only "S" today)
+	Fn     StrFnKind
+	Col    string // the STRING column (only "S" today)
+	Start  int64  // SUBSTR: 1-based start position (>=1)
+	Length int64  // SUBSTR: length (>=0); the result is clamped to the string bounds
 }
 
 // NumFnKind is a scalar numeric function whose semantics match Go's over the
@@ -1619,8 +1623,13 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 				fmt.Fprintf(b, "ABS(%s) %s %s", col, opSQL(p.Op), renderLiteral(p.Lit))
 			}
 		case p.StrFn != nil:
-			fmt.Fprintf(b, "%s(%s) %s %s",
-				strFnSQL(p.StrFn.Fn), strings.ToLower(p.StrFn.Col), opSQL(p.Op), renderLiteral(p.Lit))
+			if p.StrFn.Fn == StrFnSubstr {
+				fmt.Fprintf(b, "SUBSTR(%s, %d, %d) %s %s",
+					strings.ToLower(p.StrFn.Col), p.StrFn.Start, p.StrFn.Length, opSQL(p.Op), renderLiteral(p.Lit))
+			} else {
+				fmt.Fprintf(b, "%s(%s) %s %s",
+					strFnSQL(p.StrFn.Fn), strings.ToLower(p.StrFn.Col), opSQL(p.Op), renderLiteral(p.Lit))
+			}
 		case p.Case != nil:
 			cs := p.Case
 			fmt.Fprintf(b, "(CASE WHEN %s %s %s THEN %s ELSE %s END) %s %s",
@@ -1741,17 +1750,46 @@ func genStrFnLeaf(rng *rand.Rand) *Pred {
 	}
 	op := ops[rng.IntN(len(ops))]
 	spec := &StrFnSpec{Col: "S"}
-	switch rng.IntN(3) {
+	switch rng.IntN(4) {
 	case 0:
 		spec.Fn = StrFnUpper
 		return &Pred{StrFn: spec, Op: op, Lit: strings.ToUpper(domain[rng.IntN(len(domain))])}
 	case 1:
 		spec.Fn = StrFnLower
 		return &Pred{StrFn: spec, Op: op, Lit: strings.ToLower(domain[rng.IntN(len(domain))])}
-	default:
+	case 2:
 		spec.Fn = StrFnLength
 		return &Pred{StrFn: spec, Op: op, Lit: int64(rng.IntN(9))}
+	default:
+		spec.Fn = StrFnSubstr
+		spec.Start = int64(1 + rng.IntN(6)) // 1..6 (some beyond the string → "")
+		spec.Length = int64(rng.IntN(6))    // 0..5
+		// Literal = SUBSTR of a domain word so a match is reachable.
+		w := domain[rng.IntN(len(domain))]
+		return &Pred{StrFn: spec, Op: op, Lit: substrVal(w, spec.Start, spec.Length)}
 	}
+}
+
+// substrVal computes SQL SUBSTR(s, start, length): 1-based start with
+// bound-clamping — an out-of-range start yields "", a length past the end is
+// truncated. Matches the engine over the ASCII domain (verified by probe).
+func substrVal(s string, start, length int64) string {
+	n := int64(len(s))
+	i := start - 1
+	if i < 0 {
+		i = 0
+	}
+	if i > n {
+		i = n
+	}
+	j := i + length
+	if j > n {
+		j = n
+	}
+	if j < i {
+		j = i
+	}
+	return s[i:j]
 }
 
 // genNumFnLeaf builds a single-table numeric-function predicate leaf. ABS
