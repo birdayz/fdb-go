@@ -24,6 +24,14 @@ import (
 type RecordQueryDistinctPlan struct {
 	PlanExprBase
 	innerQ expressions.Quantifier
+	// Streaming selects the resume-clean adjacent-dedup executor
+	// (distinctStreamCursor) instead of the fresh-per-page hash-set. It is
+	// sound ONLY when the inner is ordered by the dedup key (equal rows
+	// adjacent); the planner sets it exclusively when it guarantees that
+	// ordering. Default false preserves the hash-set path for every other
+	// RecordQueryDistinctPlan creator (physical rebuild, push-through rules),
+	// which do not establish that ordering. See TODO.md C5.
+	Streaming bool
 }
 
 // NewRecordQueryDistinctPlan constructs a distinct plan over the
@@ -64,22 +72,31 @@ func (p *RecordQueryDistinctPlan) GetQuantifiers() []expressions.Quantifier {
 	return []expressions.Quantifier{p.innerQ}
 }
 
-// EqualsWithoutChildren — distinct plans are interchangeable on
-// node-info alone (no operator-specific data); compares only the
-// concrete type.
+// EqualsWithoutChildren — distinct plans carry only the Streaming mode as
+// operator-specific data; a streaming and a hash-set distinct dedup to the same
+// rows but are NOT execution-interchangeable (streaming assumes ordered input),
+// so they must not be conflated in the memo.
 func (p *RecordQueryDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
-	_, ok := other.(*RecordQueryDistinctPlan)
-	return ok
+	o, ok := other.(*RecordQueryDistinctPlan)
+	return ok && o.Streaming == p.Streaming
 }
 
-// HashCodeWithoutChildren is a constant for the type discriminator.
+// HashCodeWithoutChildren discriminates on type and the Streaming mode.
 func (p *RecordQueryDistinctPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
-	h.Write([]byte("distinctplan"))
+	if p.Streaming {
+		h.Write([]byte("distinctplan|streaming"))
+	} else {
+		h.Write([]byte("distinctplan"))
+	}
 	return h.Sum64()
 }
 
-// Explain renders Distinct(inner).
+// Explain renders Distinct(inner). The Streaming mode is an execution-only
+// detail (resume-clean adjacent-dedup vs fresh-per-page hash-set) that produces
+// identical rows, so it is deliberately NOT surfaced here — keeping plan-shape
+// assertions stable. The fix it enables is proved by row-level cross-page tests,
+// not EXPLAIN.
 func (p *RecordQueryDistinctPlan) Explain() string {
 	innerLabel := "<nil>"
 	if inner := p.GetInner(); inner != nil {

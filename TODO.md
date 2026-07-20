@@ -1467,10 +1467,26 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > - [x] P0.7 PushSetOperationThroughFetch rebuild over pushed inners (Graefe+Torvalds ACK;
 >       single-pass tryPushValues, dynamic InUnion arm live, Case-2 partial push,
 >       ordered-union instantiation, e2e Fetch(Union(IndexScan…)) pin)
- - [ ] C5 follow-up: DISTINCT cross-page dedup — **CONFIRMED LIVE + SEVERE (2026-07-20 hunt);
-       high priority.** `executeDistinct` (executor.go ~1552) rebuilds the `seen` hash-set FRESH
-       per page, so any `SELECT DISTINCT <non-unique-col>` over a table larger than one page
-       returns WRONG ROWS — duplicates whose run straddles a page boundary re-admit. Adversarial
+ - [ ] C5 follow-up: DISTINCT cross-page dedup — **ORDERED-INPUT PATH FIXED (2026-07-20); unordered
+       path remains.** FIXED: over input already ordered by the dedup key (`SELECT DISTINCT col
+       ORDER BY col`, or a covering ordered index), a resume-clean STREAMING distinct now dedups
+       adjacent rows and carries ONLY the last emitted key through the DedupContinuation —
+       `RecordQueryDistinctPlan.Streaming`, set by ImplementDistinctFinalRule when
+       `orderingSatisfiesGroupingKeys(EstimateOrdering(inner), projected-dedup-cols)` holds; executor
+       distinctStreamCursor (distinct_stream.go). Pinned by TestFDB_SelectDistinct_CrossPageDedup
+       (N=50, scanLimit=2, incl. LIMIT/OFFSET). REMAINING: the UNORDERED case (`SELECT DISTINCT col`
+       with no ORDER BY and no covering index → primary scan) still uses the fresh-per-page hash-set
+       and re-admits. The fix is to REQUEST the dedup-key ordering so the planner inserts an
+       InMemorySort (then stream) — but that insertion MUST NOT disturb the DISTINCT +
+       ORDER-BY-on-a-NON-projected-column semantic (`SELECT DISTINCT v ORDER BY id`: dedup by v,
+       output ordered by id via a first-occurrence sort BELOW the distinct — sorting by v there would
+       destroy the required id order). So the InMemorySort must only be inserted when no conflicting
+       output ordering is required. That is the delicate remaining piece; the ordering-DETECTION step
+       (this fix) is deliberately separated from it and is safe (only ever flips to streaming when
+       the ordering already proves adjacency, else unchanged hash-set).
+       ORIGINAL DIAGNOSIS (kept for the unordered follow-up): `executeDistinct` (executor.go ~1552)
+       rebuilt the `seen` hash-set FRESH per page, so any `SELECT DISTINCT <non-unique-col>` over a
+       table larger than one page returned WRONG ROWS. Adversarial
        repro (N=500, EXECUTION_SCANNED_ROWS_LIMIT=9 forcing ~56 page breaks): `SELECT DISTINCT w
        ORDER BY w` → 100 rows (every value twice) vs correct 50; `SELECT DISTINCT g` (no ORDER BY,
        unordered input) → 500 rows (TOTAL dedup failure) vs 25; `... LIMIT 30 OFFSET 10` → wrong

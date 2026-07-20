@@ -4,6 +4,7 @@ go_library(
     name = "executor",
     srcs = [
         "continuation.go",
+        "distinct_stream.go",
         "evaluation_context.go",
         "executor.go",
         "executor_new_plans.go",
@@ -160,6 +161,7 @@ go_test(
         "recursive_cursor.go",
         "recursive_distinct_replay_test.go",
         "recursive_cursor_resume_test.go",
+        "distinct_stream.go",
     ],
     deps = [
         "//gen",

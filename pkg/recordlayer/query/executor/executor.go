@@ -1531,6 +1531,37 @@ func executeDistinct(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	// Streaming adjacent-dedup path (resume-clean): the planner sets Streaming
+	// only when the inner is ordered by the dedup key, so equal rows are
+	// adjacent and only the last emitted key need ride the continuation
+	// (gen.DedupContinuation). This is the fix for the fresh-per-page hash-set's
+	// cross-page re-admission (TODO.md C5) — a Go-internal continuation, since
+	// SELECT DISTINCT is a Go-only extension.
+	if p.Streaming {
+		var innerCont []byte
+		var lastKey string
+		var hasLast bool
+		if len(continuation) > 0 {
+			var dc gen.DedupContinuation
+			if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+				return nil, fmt.Errorf("invalid streaming-distinct continuation: %w", uerr)
+			}
+			innerCont = dc.GetInnerContinuation()
+			// A nil (absent) lastValue means no prior key — the first resumed
+			// row is never wrongly skipped (mirrors DedupCursor).
+			if lv := dc.LastValue; lv != nil {
+				lastKey = string(lv)
+				hasLast = true
+			}
+		}
+		innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerCont, props.ClearSkipAndLimit())
+		if err != nil {
+			return nil, err
+		}
+		cursor := &distinctStreamCursor{inner: innerCursor, lastKey: lastKey, hasLast: hasLast}
+		return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+	}
+
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
