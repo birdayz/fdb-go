@@ -27,14 +27,21 @@ exit status 1
 FAIL	fdb.dev/cmd/fdb-diff-oracle	120.093s
 `
 
-// bazelDeadlineRace is the same race as it surfaces through `bazelisk test
-// --test_output=errors`, which is how 124 of the 142 nightly (target, func) pairs
-// run. Bazel frames the captured test log with its own lines and exits 3, not 1.
+// bazelDeadlineRace is the same race as it surfaces through `bazelisk test`, which
+// is how 124 of the 142 nightly (target, func) pairs run. Bazel frames the captured
+// test log with its own lines and exits 3, not 1.
+//
+// The `=== RUN` / `=== NAME` framing is load-bearing, not decoration: .bazelrc:23
+// sets `test --test_arg="-test.v"` globally, so every bazel-run target emits the
+// VERBOSE shape. A non-verbose fixture here would claim to pin this path while
+// pinning output it never produces.
 const bazelDeadlineRace = `==================== Test output for //pkg/fdbgo/client:client_test:
+=== RUN   FuzzRYWCache
 fuzz: elapsed: 1m27s, execs: 2210544 (25000/sec), new interesting: 0 (total: 41)
 fuzz: elapsed: 1m30s, execs: 2284412 (0/sec), new interesting: 0 (total: 41)
 --- FAIL: FuzzRYWCache (90.02s)
     context deadline exceeded
+=== NAME
 FAIL
 ================================================================================
 FAILED: //pkg/fdbgo/client:client_test (Exit 1) (see /home/x/.cache/bazel/.../test.log)
@@ -111,6 +118,22 @@ failure while testing seed corpus entry: FuzzGetValueReply/seed#2
 --- FAIL: TestSomethingElse (0.01s)
     thing_test.go:12: broke
 --- FAIL: FuzzGetValueReply (120.08s)
+    context deadline exceeded
+`,
+			exitCode: 1,
+		},
+		// THE WORST CASE, and the one a shape-only check cannot see. A crasher was
+		// found and the deadline fired while it was being minimized. The deferred
+		// writer at $GOROOT/src/internal/fuzz/fuzz.go:149-164 persists the crasher
+		// but builds a crashError only `if err == nil`; under this race err is
+		// DeadlineExceeded, so there is no "Failing input written to", no crasherMsg,
+		// and no nested "--- FAIL" — byte-identical to a benign expiry while a real
+		// finding sits on disk. Only the "fuzz: minimizing" witness distinguishes it.
+		"crasher found, deadline fired during minimization": {
+			output: `fuzz: elapsed: 1m27s, execs: 2210544 (25000/sec), new interesting: 3 (total: 41)
+fuzz: minimizing 37-byte failing input file
+fuzz: elapsed: 1m30s, minimizing
+--- FAIL: FuzzRYWCache (90.02s)
     context deadline exceeded
 `,
 			exitCode: 1,

@@ -38,16 +38,30 @@ const (
 	exitBazelTestsFailed = 3 // `bazelisk test`: tests ran and failed (build errors are 1/2/8)
 )
 
-// hardFailureMarkers never appear in a benign budget-expiry run. Defence in depth
-// behind the structural check below — each is a failure mode that reaches the same
-// "no crasher file" shape:
+// hardFailureMarkers never appear in a benign budget-expiry run. These are NOT
+// defence in depth — each one covers a real finding that the structural check below
+// cannot distinguish from budget expiry, because Go reports it without a crasher
+// marker:
 //
-//   - a seed-corpus entry failing during warmup is reported via
-//     stop(errors.New(crasherMsg)), NOT a crashError, so testing/fuzz.go never
-//     prints "Failing input written to" ($GOROOT/src/internal/fuzz/fuzz.go:245-250).
-//   - a crasher that WAS persisted (the normal finding path).
-//   - the diff-oracle harness's own t.Errorf messages.
+//   - "fuzz: minimizing" — THE dangerous one. If a crasher is found and the
+//     -fuzztime deadline fires while it is being minimized, the deferred writer at
+//     $GOROOT/src/internal/fuzz/fuzz.go:149-164 persists the crasher but only wraps
+//     it in a crashError `if err == nil`. Under this race err is DeadlineExceeded,
+//     so no crashError is built: no "Failing input written to", no crasherMsg, and
+//     therefore no nested "--- FAIL" to trip the one-failure check. The result is
+//     byte-identical to a benign expiry while a genuine finding sits on disk (and
+//     under bazel, in a sandbox about to be destroyed). fuzz.go:265 logs this line
+//     immediately after setting c.crashMinimizing, so its presence is a reliable
+//     witness. The window is wide: -fuzzminimizetime defaults to 60s against a 90s
+//     budget.
+//   - "failure while testing seed corpus entry:" — a seed entry failing during
+//     warmup is reported via stop(errors.New(crasherMsg)), NOT a crashError, so
+//     testing/fuzz.go never prints "Failing input written to" (fuzz.go:245-250).
+//   - the remainder cover a persisted crasher (the normal finding path) and the
+//     diff-oracle harness's own t.Errorf messages.
 var hardFailureMarkers = []string{
+	"fuzz: minimizing ", // crasher found, deadline fired mid-minimization
+	", minimizing",      // the periodic stats line during minimization (fuzz.go:734)
 	"failure while testing seed corpus entry:",
 	"Failing input written to",
 	"To re-run:",

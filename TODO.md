@@ -1788,9 +1788,22 @@ crasher replays as a seed on the retry" argument holds only for the plain `go te
 `bazelisk test` the crasher lands in an ephemeral sandbox that is destroyed on exit (124 of 142 target
 pairs). Safety comes from the classifier rejecting anything that isn't the exact shape.
 
-Retries are refused past a per-job `-deadline` so a systematic race cannot double every target and blow
-`timeout-minutes` (engine-fuzz is the tight one: ~33 targets × 90s ≈ 50min of a 75min budget). Output is
-streamed rather than buffered, so a job killed mid-run still has the in-flight target's log.
+The single most dangerous shape — found by review round 2, and invisible to the structural check — is a
+**crasher found while the deadline fires during minimization**. `internal/fuzz/fuzz.go:149-164` persists
+the crasher but wraps it in a `crashError` only `if err == nil`; under this race `err` is
+`DeadlineExceeded`, so there is no `Failing input written to`, no `crasherMsg`, and hence no nested
+`--- FAIL` — byte-identical to a benign expiry while a genuine finding sits on disk (and under bazel, in a
+sandbox about to be destroyed). `-fuzzminimizetime` defaults to 60s against a 90s budget, so the window is
+wide, not exotic. The `fuzz: minimizing` witness line (`fuzz.go:265`, logged immediately after
+`c.crashMinimizing` is set) is what catches it. Revert-proven: removing the marker turns the regression
+red.
+
+The confirming retry is skipped past a per-job `-deadline` so a systematic race cannot double every target
+and blow `timeout-minutes` (engine-fuzz is the tight one: ~33 targets × 90s ≈ 50min of a 75min budget).
+Skipping it **passes** rather than fails: the classifier is authoritative, so going red there would
+re-introduce the very false red this tool removes — and would do it exactly when the race is most
+frequent. Output is streamed rather than buffered, so a job killed mid-run still has the in-flight
+target's log.
 
 Wired into all three nightly jobs (`diff-fuzz`, `client-fuzz`, `engine-fuzz`) **and** `just verify`'s fuzz
 smoke targets. Pinned by `cmd/fuzzrun/{classify,gate,runcommand}_test.go` — the verbatim captured output

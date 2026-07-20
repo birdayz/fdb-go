@@ -45,8 +45,10 @@ func (r runResult) ok() bool { return r.exitCode == 0 && r.err == nil }
 func main() {
 	label := flag.String("label", "", "human-readable name of the target, for log lines")
 	deadline := flag.Int64("deadline", 0,
-		"unix timestamp after which a retry is refused (0 = no limit); "+
-			"bounds the job's total wall clock if the race ever goes systematic")
+		"unix timestamp after which a confirming retry is not STARTED (0 = no limit); "+
+			"bounds the job's wall clock if the race ever goes systematic. Note this "+
+			"gates the retry's start, not its end: one begun just under the deadline "+
+			"still runs its full budget.")
 	flag.Parse()
 
 	argv := flag.Args()
@@ -77,10 +79,18 @@ func gate(label string, w io.Writer, retryDeadline int64, run func() runResult) 
 		return 1
 	}
 
+	// Past the job's wall-clock budget we skip the retry — but we do NOT flip the
+	// result to red. The classifier is authoritative: it has already established
+	// this run is the stdlib race, and the retry is corroboration, not the basis
+	// for that call (under bazel it is a fresh random fuzz run in a fresh sandbox,
+	// so it says little about run 1 anyway). Failing here would re-introduce the
+	// exact false red this tool removes, and would do it precisely when the race is
+	// most frequent.
 	if retryDeadline > 0 && time.Now().Unix() >= retryDeadline {
-		fmt.Fprintf(w, "::error::fuzz FAIL: %s — budget-expiry race detected, but the job's "+
-			"retry deadline has passed; not retrying\n", label)
-		return 1
+		fmt.Fprintf(w, "::warning::%s: fuzz budget expiry leaked as \"context deadline exceeded\" "+
+			"(golang/go#72104); the job's retry deadline has passed, so this is accepted on the "+
+			"classification alone without a confirming retry.\n", label)
+		return 0
 	}
 
 	// Known Go stdlib race: the budget expired cleanly but was reported as an error.
@@ -107,6 +117,11 @@ func gate(label string, w io.Writer, retryDeadline int64, run func() runResult) 
 // in-flight target's log missing — the one you need.
 func runCommand(argv []string, w io.Writer) runResult {
 	var buf bytes.Buffer
+	// One sink VALUE assigned to both streams, deliberately. os/exec compares
+	// Stdout and Stderr with interfaceEqual and, when they are the same value,
+	// wires a single pipe with a single copying goroutine. Building two separate
+	// io.MultiWriter(w, &buf) values instead would give two goroutines writing
+	// concurrently to buf — a data race. Keep this as one variable.
 	sink := io.MultiWriter(w, &buf)
 
 	cmd := exec.Command(argv[0], argv[1:]...)
