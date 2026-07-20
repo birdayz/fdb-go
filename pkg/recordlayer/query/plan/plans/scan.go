@@ -29,6 +29,18 @@ type RecordQueryScanPlan struct {
 	reverse         bool
 	primaryKeyVals  []values.Value
 	scanComparisons []*predicates.ComparisonRange
+	// resultValue is the stable per-instance QuantifiedObjectValue standing
+	// for the rows this scan emits. Minted ONCE in NewRecordQueryScanPlan and
+	// carried through every copy (WithPrimaryKey/WithScanComparisons), it gives
+	// a bare scan a single stable correlation identity when it stands as its own
+	// Cascades expression in the memo — the role physicalScanWrapper's
+	// GetResultValue used to play (RFC-184 W2). Deliberately EXCLUDED from
+	// EqualsPlanWithoutChildren/HashCodeWithoutChildren: its correlation id is
+	// unique per instance, so folding it into identity would make two
+	// structurally-identical scans compare unequal. nil for struct-literal test
+	// plans that bypass the constructor — GetResultValue falls back to
+	// PlanExprBase's fresh-QOV there.
+	resultValue values.Value
 }
 
 // NewRecordQueryScanPlan builds a scan over the given record types
@@ -42,6 +54,7 @@ func NewRecordQueryScanPlan(recordTypes []string, flowedType values.Type, revers
 		recordTypes: dedupSortedStrings(recordTypes),
 		flowedType:  flowedType,
 		reverse:     reverse,
+		resultValue: values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
 	}
 }
 
@@ -54,6 +67,7 @@ func (p *RecordQueryScanPlan) WithPrimaryKey(pk []values.Value) *RecordQueryScan
 		flowedType:     p.flowedType,
 		reverse:        p.reverse,
 		primaryKeyVals: copied,
+		resultValue:    p.resultValue,
 	}
 }
 
@@ -68,6 +82,7 @@ func (p *RecordQueryScanPlan) WithScanComparisons(comps []*predicates.Comparison
 		reverse:         p.reverse,
 		primaryKeyVals:  p.primaryKeyVals,
 		scanComparisons: copied,
+		resultValue:     p.resultValue,
 	}
 }
 
@@ -94,6 +109,20 @@ func (p *RecordQueryScanPlan) GetResultType() values.Type { return p.flowedType 
 
 // GetChildren returns the empty slice — scans are leaves.
 func (p *RecordQueryScanPlan) GetChildren() []RecordQueryPlan { return nil }
+
+// GetResultValue returns the scan's STABLE per-instance result value — the
+// single correlation identity a bare scan carries as its own memo expression
+// (RFC-184 W2), the role physicalScanWrapper.GetResultValue used to play. Unlike
+// PlanExprBase's method (a fresh QOV per call), this returns the same value the
+// constructor minted, so repeated interrogations of one plan instance agree.
+// Falls back to PlanExprBase for struct-literal test plans that bypass the
+// constructor (resultValue is nil there).
+func (p *RecordQueryScanPlan) GetResultValue() values.Value {
+	if p.resultValue == nil {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.resultValue
+}
 
 func (p *RecordQueryScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryScanPlan)

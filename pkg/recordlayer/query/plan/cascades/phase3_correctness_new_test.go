@@ -8,6 +8,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // ---------------------------------------------------------------------------
@@ -47,7 +48,8 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 
 	foundScan := false
 	for _, f := range finals {
-		if _, ok := f.(*physicalScanWrapper); ok {
+		// RFC-184 W2: a bare primary scan is its own physical expression.
+		if _, ok := f.(*plans.RecordQueryScanPlan); ok {
 			foundScan = true
 			break
 		}
@@ -323,7 +325,8 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 	foundMap := false
 	for _, f := range finals {
 		switch f.(type) {
-		case *physicalScanWrapper:
+		// RFC-184 W2: a bare primary scan is its own physical expression.
+		case *plans.RecordQueryScanPlan:
 			foundScan = true
 		case *physicalPredicatesFilterWrapper:
 			foundPredicatesFilter = true
@@ -343,7 +346,7 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 		for i, f := range finals {
 			types[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected *physicalScanWrapper in final members (Select pass-through), got types: %v", types)
+		t.Fatalf("expected *plans.RecordQueryScanPlan in final members (Select pass-through), got types: %v", types)
 	}
 }
 
@@ -378,17 +381,18 @@ func TestPhase3_PlanPropertyInvariant_ScanIsDistinct(t *testing.T) {
 	}
 
 	for _, expr := range exprs {
-		if _, ok := expr.(*physicalScanWrapper); ok {
+		// RFC-184 W2: a bare primary scan is its own physical expression.
+		if _, ok := expr.(*plans.RecordQueryScanPlan); ok {
 			props := pm.GetProperties(expr)
 			if props == nil {
-				t.Fatal("GetProperties returned nil for physicalScanWrapper")
+				t.Fatal("GetProperties returned nil for scan plan")
 			}
 			if !props.GetBool(properties.PropDistinctRecords) {
-				t.Fatal("scan wrapper must have PropDistinctRecords=true — scans return distinct records by primary key")
+				t.Fatal("scan must have PropDistinctRecords=true — scans return distinct records by primary key")
 			}
 			// Also verify PropStoredRecord is true for scans.
 			if !props.GetBool(properties.PropStoredRecord) {
-				t.Fatal("scan wrapper must have PropStoredRecord=true — scans return stored records")
+				t.Fatal("scan must have PropStoredRecord=true — scans return stored records")
 			}
 			return
 		}
@@ -398,7 +402,7 @@ func TestPhase3_PlanPropertyInvariant_ScanIsDistinct(t *testing.T) {
 	for i, e := range exprs {
 		types[i] = fmt.Sprintf("%T", e)
 	}
-	t.Fatalf("no physicalScanWrapper found in PlanPropertiesMap, got types: %v", types)
+	t.Fatalf("no *plans.RecordQueryScanPlan found in PlanPropertiesMap, got types: %v", types)
 }
 
 // ---------------------------------------------------------------------------

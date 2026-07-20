@@ -516,6 +516,17 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 	if vecPlan, ok := plan.(*plans.RecordQueryVectorIndexPlan); ok {
 		return &physicalVectorIndexScanWrapper{plan: vecPlan}
 	}
+	// A BARE primary-key scan is its own Cascades expression now (RFC-184 W2):
+	// RecordQueryScanPlan implements RelationalExpression directly and carries a
+	// stable per-instance result value, so it needs no adapter — yielding it
+	// bare gives its child edge a single memo storage location. Composite
+	// data-access shapes (TypeFilter(Scan), FlatMap) still ride the
+	// scanPlanExpression adapter, which reports no quantifiers while wrapping a
+	// plan that HAS children and compares them deeply (plans.Equals) — the
+	// identity a bare plan cannot yet provide for a multi-node subtree.
+	if bareScan, ok := plan.(*plans.RecordQueryScanPlan); ok {
+		return bareScan
+	}
 	return &scanPlanExpression{plan: plan}
 }
 

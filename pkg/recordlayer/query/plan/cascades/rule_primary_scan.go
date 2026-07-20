@@ -58,7 +58,10 @@ func (r *PrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 		}
 	}
 
-	call.Yield(&physicalScanWrapper{plan: plan})
+	// Yield the BARE scan: RecordQueryScanPlan is its own physical Cascades
+	// expression now (RFC-184 W2), so the physicalScanWrapper adapter is no
+	// longer needed for a leaf scan.
+	call.Yield(plan)
 }
 
 var _ ExpressionRule = (*PrimaryScanRule)(nil)

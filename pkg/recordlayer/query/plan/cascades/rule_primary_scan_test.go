@@ -20,13 +20,14 @@ func TestPrimaryScanRule_YieldsScanPlan(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("PrimaryScanRule yielded %d expressions, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalScanWrapper)
+	// RFC-184 W2: PrimaryScanRule yields the BARE scan plan (its own physical
+	// Cascades expression), not the physicalScanWrapper adapter.
+	plan, ok := yielded[0].(*plans.RecordQueryScanPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalScanWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryScanPlan", yielded[0])
 	}
-	plan := wrap.GetPlan()
 	if plan == nil {
-		t.Fatal("wrapper has no plan")
+		t.Fatal("nil scan plan")
 	}
 	rts := plan.GetRecordTypes()
 	if len(rts) != 1 || rts[0] != "Order" {

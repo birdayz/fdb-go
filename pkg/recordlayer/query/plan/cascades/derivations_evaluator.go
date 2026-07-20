@@ -39,6 +39,11 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- Leaf scans ---
 
+	// A bare primary scan is its own physical expression now (RFC-184 W2) —
+	// same derivations as the physicalScanWrapper that used to carry it.
+	case *plans.RecordQueryScanPlan:
+		return derivationsForScan(w)
+
 	case *physicalScanWrapper:
 		return derivationsForScan(w.plan)
 

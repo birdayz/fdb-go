@@ -54,7 +54,8 @@ func TestPlanner_PlanningPhase_UniqueOverScan(t *testing.T) {
 
 	foundScan := false
 	for _, f := range finals {
-		if _, ok := f.(*physicalScanWrapper); ok {
+		// RFC-184 W2: a bare primary scan is its own physical expression.
+		if _, ok := f.(*plans.RecordQueryScanPlan); ok {
 			foundScan = true
 			break
 		}
@@ -64,7 +65,7 @@ func TestPlanner_PlanningPhase_UniqueOverScan(t *testing.T) {
 		for i, f := range finals {
 			types[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected *physicalScanWrapper in members (Unique absorbed), got types: %v", types)
+		t.Fatalf("expected *plans.RecordQueryScanPlan in members (Unique absorbed), got types: %v", types)
 	}
 }
 

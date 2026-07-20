@@ -24,8 +24,9 @@ func TestE2E_ScanOnlyPlan(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if _, ok := plan.(*physicalScanWrapper); !ok {
-		t.Fatalf("expected physicalScanWrapper, got %T", plan)
+	// RFC-184 W2: a bare primary scan is its own physical expression.
+	if _, ok := plan.(*plans.RecordQueryScanPlan); !ok {
+		t.Fatalf("expected *plans.RecordQueryScanPlan, got %T", plan)
 	}
 }
 

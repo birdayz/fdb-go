@@ -423,11 +423,14 @@ type expressionCounts struct {
 // scanProvableMaxCard returns a primary scan's PROVABLE max cardinality and whether it is known.
 // Java's CardinalitiesProperty bounds a scan at 1 ONLY when every primary-key column is
 // equality-bound (a point lookup); a range, partial bind, or full scan is unknown.
-func scanProvableMaxCard(w *physicalScanWrapper) (float64, bool) {
-	if w.plan == nil {
+//
+// Operates on the bare *plans.RecordQueryScanPlan so it serves both the memo-descent
+// walk's bare-scan and physicalScanWrapper arms (RFC-184 W2).
+func scanProvableMaxCard(plan *plans.RecordQueryScanPlan) (float64, bool) {
+	if plan == nil {
 		return 0, false
 	}
-	comps := w.plan.GetScanComparisons()
+	comps := plan.GetScanComparisons()
 	if len(comps) == 0 {
 		return 0, false
 	}
@@ -528,9 +531,22 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		return
 	}
 	switch w := e.(type) {
-	case *physicalScanWrapper:
+	// A bare primary scan is its own physical expression now (RFC-184 W2) — count
+	// it exactly like the physicalScanWrapper that used to carry it, so the
+	// memo-descent cost walk over a LOGICAL parent still sees the scan (the
+	// physical top path already routes bare scans via concretePlanCounts).
+	case *plans.RecordQueryScanPlan:
 		counts.scanCount++
 		if card, known := scanProvableMaxCard(w); known {
+			if card > counts.maxDataAccessCardinality {
+				counts.maxDataAccessCardinality = card
+			}
+		} else {
+			counts.unboundedDataAccess = true
+		}
+	case *physicalScanWrapper:
+		counts.scanCount++
+		if card, known := scanProvableMaxCard(w.plan); known {
 			if card > counts.maxDataAccessCardinality {
 				counts.maxDataAccessCardinality = card
 			}
