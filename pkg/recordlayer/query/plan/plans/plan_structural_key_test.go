@@ -114,4 +114,16 @@ func TestMigratedPlans_StructuralKeyContract(t *testing.T) {
 	assertPlanKeyEqual(t,
 		NewRecordQueryDefaultOnEmptyPlan(scan, nv),
 		NewRecordQueryDefaultOnEmptyPlan(scan, nv))
+
+	// delete — targetRecordType.
+	assertPlanKeyEqual(t, NewRecordQueryDeletePlan(scan, "T"), NewRecordQueryDeletePlan(scan, "T"))
+	assertPlanKeyUnequal(t, NewRecordQueryDeletePlan(scan, "T"), NewRecordQueryDeletePlan(scan, "U"))
+
+	// values — the column Value list (leaf); length is load-bearing.
+	assertPlanKeyEqual(t,
+		NewRecordQueryValuesPlan([]values.Value{nv}),
+		NewRecordQueryValuesPlan([]values.Value{nv}))
+	assertPlanKeyUnequal(t,
+		NewRecordQueryValuesPlan([]values.Value{nv}),
+		NewRecordQueryValuesPlan([]values.Value{nv, nv}))
 }

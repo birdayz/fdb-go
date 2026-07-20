@@ -1,7 +1,6 @@
 package plans
 
 import (
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -27,29 +26,17 @@ func (p *RecordQueryValuesPlan) GetResultType() values.Type { return values.Unkn
 
 func (p *RecordQueryValuesPlan) GetChildren() []RecordQueryPlan { return nil }
 
+func (p *RecordQueryValuesPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Values(p.columns)
+}
+
 func (p *RecordQueryValuesPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryValuesPlan)
-	if !ok {
-		return false
-	}
-	if len(p.columns) != len(o.columns) {
-		return false
-	}
-	for i := range p.columns {
-		if !semanticValueEquals(p.columns[i], o.columns[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryValuesPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("valuesplan|"))
-	for _, v := range p.columns {
-		writeValueHash(h, v)
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("valuesplan|")
 }
 
 func (p *RecordQueryValuesPlan) Explain() string {

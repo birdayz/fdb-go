@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -67,20 +66,18 @@ func (p *RecordQueryDeletePlan) GetChildren() []RecordQueryPlan {
 }
 
 // EqualsWithoutChildren compares targetRecordType.
+func (p *RecordQueryDeletePlan) structuralKey() *structuralKey {
+	return newStructuralKey().Str(p.targetRecordType)
+}
+
 func (p *RecordQueryDeletePlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryDeletePlan)
-	if !ok {
-		return false
-	}
-	return p.targetRecordType == o.targetRecordType
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes class + targetRecordType.
 func (p *RecordQueryDeletePlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("deleteplan|"))
-	h.Write([]byte(p.targetRecordType))
-	return h.Sum64()
+	return p.structuralKey().Hash("deleteplan|")
 }
 
 // Explain renders Delete(target, inner).
