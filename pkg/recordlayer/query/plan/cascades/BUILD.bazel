@@ -370,6 +370,7 @@ go_test(
         "rule_projection_elim_test.go",
         "rule_projection_merge_test.go",
         "rule_pull_filter_above_distinct_test.go",
+        "rule_push_distinct_streaming_test.go",
         "rule_push_fetch_rules_test.go",
         "rule_push_filter_below_join_test.go",
         "rule_push_filter_through_distinct_test.go",
@@ -826,6 +827,7 @@ go_test(
         "plan_expression_flag_parity_test.go",
         "plan_reachability.go",
         "asymmetric_union_planning_test.go",
+        "rule_push_distinct_streaming_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

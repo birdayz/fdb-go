@@ -118,3 +118,70 @@ func TestFDB_SelectDistinct_CrossPageDedup(t *testing.T) {
 		t.Fatalf("DISTINCT g ORDER BY g LIMIT 4 OFFSET 3 over paginated scan = %v, want %v", win, want)
 	}
 }
+
+// TestFDB_SelectDistinct_CrossPageDedup_WithFilter pins cross-page DISTINCT
+// dedup when a WHERE predicate on a non-indexed column is present: the input is
+// ordered for the distinct by an in-memory sort (driven by ORDER BY g) sitting
+// above the filter, and the streaming distinct must still dedup cleanly across
+// scanned-rows pages. (The push-below-filter rebuild's streaming recompute is
+// pinned deterministically by TestPushDistinctBelowFilter_PreservesStreaming in
+// the cascades package.)
+func TestFDB_SelectDistinct_CrossPageDedup_WithFilter(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_distinct_xpage_filt", "distinctxpagefilt",
+		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX t_g ON t (g)")
+	ctx := context.Background()
+
+	const scanLimit = 2
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+	})
+
+	const distinctVals = 10
+	const repeats = 5
+	id := 1
+	for g := 0; g < distinctVals; g++ {
+		for r := 0; r < repeats; r++ {
+			// v = id (non-indexed, unique) so the WHERE predicate is a genuine
+			// filter on a column the g-index does not cover.
+			if _, err := conn.ExecContext(ctx,
+				fmt.Sprintf("INSERT INTO t (id, g, v) VALUES (%d, %d, %d)", id, g, id)); err != nil {
+				t.Fatalf("insert: %v", err)
+			}
+			id++
+		}
+	}
+
+	// WHERE v <> 3 removes exactly one g=0 duplicate (id=3); every distinct g
+	// still survives, so the deduped result stays 0..9. The predicate is on the
+	// non-indexed v, so it stays a Filter over the ordered g-index scan.
+	const q = "SELECT DISTINCT g FROM t WHERE v <> 3 ORDER BY g"
+	rows, err := conn.QueryContext(ctx, q)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	var got []int64
+	for rows.Next() {
+		var g int64
+		if err := rows.Scan(&g); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, g)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(got) != distinctVals {
+		t.Fatalf("SELECT DISTINCT g WHERE v<>3 over %d-row scan-limit pages = %d rows %v, want %d distinct "+
+			"(a push-below-filter rebuild that dropped Streaming re-admits straddling duplicates)",
+			scanLimit, len(got), got, distinctVals)
+	}
+	for i, g := range got {
+		if g != int64(i) {
+			t.Fatalf("distinct row %d = %d, want %d (full result %v)", i, g, i, got)
+		}
+	}
+}

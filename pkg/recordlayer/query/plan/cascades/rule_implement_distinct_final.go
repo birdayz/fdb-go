@@ -275,12 +275,36 @@ func newPhysicalDistinctWrapperFor(member expressions.RelationalExpression) expr
 		return nil
 	}
 	distPlan := plans.NewRecordQueryDistinctPlan(ph.GetRecordQueryPlan())
-	if dedupCols := distinctKeyColumns(ph.GetRecordQueryPlan()); len(dedupCols) > 0 &&
-		orderingSatisfiesGroupingKeys(properties.EstimateOrdering(member), dedupCols) {
-		distPlan.Streaming = true
-	}
+	distPlan.Streaming = distinctStreamingEligible(member, ph.GetRecordQueryPlan())
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(member))
 	return NewPhysicalDistinctWrapper(distPlan, innerQ)
+}
+
+// distinctStreamingEligible reports whether a distinct over innerPlan — whose
+// physical realization is `member` — may use the resume-clean streaming
+// executor: the member's ordering must make the whole-row dedup key adjacent
+// (equal rows contiguous), the same adjacency predicate streaming aggregation
+// uses for its grouping keys. This is the SOLE gate for
+// RecordQueryDistinctPlan.Streaming and MUST be re-evaluated at every site that
+// (re)builds a distinct over a different inner — the push-through-filter/fetch
+// rules included — so a rebuild never silently downgrades a streaming distinct
+// to the cross-page-buggy hash-set, nor promotes an unordered inner to
+// streaming. (A push preserves the inner ordering but changes WHICH inner the
+// distinct sits over, so the decision genuinely has to be recomputed, not
+// copied.)
+//
+// orderingSatisfiesGroupingKeys matches dedup columns to ordering keys by BARE
+// field name (case-insensitive) — sound for a single-record-source inner where
+// every column name is distinct. Across a JOIN two legs can share a leaf name,
+// so a coincidental name+position alignment could false-positive. That is NOT a
+// row-dropping hazard: the executor still dedups by the full packed row
+// (distinctKey), so a wrongly-streamed non-adjacent input at worst LEAKS a
+// duplicate — the same failure class as the hash-set it replaces, never a lost
+// unique row. (Streaming a join-distinct also requires the join to emit rows
+// ordered by the whole dedup key, itself rare.)
+func distinctStreamingEligible(member expressions.RelationalExpression, innerPlan plans.RecordQueryPlan) bool {
+	dedupCols := distinctKeyColumns(innerPlan)
+	return len(dedupCols) > 0 && orderingSatisfiesGroupingKeys(properties.EstimateOrdering(member), dedupCols)
 }
 
 // distinctKeyColumns returns the inner plan's output columns as Values — the

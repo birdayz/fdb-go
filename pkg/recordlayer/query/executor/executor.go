@@ -1548,7 +1548,13 @@ func executeDistinct(
 			}
 			innerCont = dc.GetInnerContinuation()
 			// A nil (absent) lastValue means no prior key — the first resumed
-			// row is never wrongly skipped (mirrors DedupCursor).
+			// row is never wrongly skipped (mirrors DedupCursor). Presence is
+			// carried as non-nil bytes; proto3 drops an EMPTY byte string on the
+			// wire, so an all-empty dedup key would decode back as "no prior
+			// key". That key only arises from a 0-slot / nil-Positional row,
+			// which the streaming path never sees — a real SELECT DISTINCT
+			// projects at least one slot and a lone NULL packs to "\x00" (a
+			// non-empty tuple), so every genuine key survives the round trip.
 			if lv := dc.LastValue; lv != nil {
 				lastKey = string(lv)
 				hasLast = true
