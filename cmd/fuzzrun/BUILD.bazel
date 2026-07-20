@@ -21,6 +21,7 @@ go_test(
     srcs = [
         "classify_test.go",
         "gate_test.go",
+        "runcommand_test.go",
     ],
     embed = [":fuzzrun_lib"],
 )

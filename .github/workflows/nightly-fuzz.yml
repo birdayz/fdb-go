@@ -106,6 +106,9 @@ jobs:
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
           FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
+          # Refuse retries past this point so a systematic race can't double every
+          # target and blow the job's timeout-minutes (45) with no log to read.
+          RETRY_DEADLINE=$(( $(date +%s) + 30*60 ))
           TARGETS=$(grep -rhoP '^func \KFuzz\w+' cmd/fdb-diff-oracle/*_test.go | sort -u)
           if [ -z "$TARGETS" ]; then
             echo "::error::no Fuzz targets discovered in cmd/fdb-diff-oracle — fuzz gate is a no-op"
@@ -119,7 +122,7 @@ jobs:
             if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
             i=$((i+1))
             echo "=== $target (2m) ==="
-            "$FUZZRUN" -label "$target" -tail 3 -- \
+            "$FUZZRUN" -label "$target" -deadline "$RETRY_DEADLINE" -- \
               timeout 150 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
                 -run='^$' -fuzz="^${target}\$" -fuzztime=2m ./cmd/fdb-diff-oracle/ || FAILED=1
             echo ""
@@ -271,6 +274,8 @@ jobs:
           mkdir -p /tmp/fuzz-cache
           bazelisk build //cmd/fuzzrun
           FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
+          # Retries refused past this point (job timeout-minutes: 60).
+          RETRY_DEADLINE=$(( $(date +%s) + 40*60 ))
           VALID=$(bazelisk query 'kind(go_test, //pkg/fdbgo/...)' 2>/dev/null)
           PAIRS=""
           for f in $(grep -rl '^func Fuzz' pkg/fdbgo/ --include='*_test.go'); do
@@ -297,7 +302,7 @@ jobs:
             i=$((i+1))
             target="${pair%|*}"; fn="${pair#*|}"
             echo "=== $target $fn (90s) ==="
-            "$FUZZRUN" -label "$target $fn" -- \
+            "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -- \
               bazelisk test "$target" \
                 --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
                 --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
@@ -361,6 +366,9 @@ jobs:
           mkdir -p /tmp/fuzz-cache
           bazelisk build //cmd/fuzzrun
           FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
+          # This job is the tight one: ~33 targets x 90s ~= 50min of a 75min budget,
+          # so an unbounded retry storm would be killed mid-run. Refuse past 60min.
+          RETRY_DEADLINE=$(( $(date +%s) + 60*60 ))
           VALID=$(bazelisk query 'kind(go_test, //pkg/relational/... + //pkg/recordlayer/... + //pkg/rabitq/...)' 2>/dev/null)
           PAIRS=""
           for f in $(grep -rl '^func Fuzz' pkg/relational pkg/recordlayer pkg/rabitq --include='*_test.go'); do
@@ -387,7 +395,7 @@ jobs:
             i=$((i+1))
             target="${pair%|*}"; fn="${pair#*|}"
             echo "=== $target $fn (90s) ==="
-            "$FUZZRUN" -label "$target $fn" -- \
+            "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -- \
               bazelisk test "$target" \
                 --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
                 --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \

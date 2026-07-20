@@ -7,9 +7,10 @@
 // nightly red on targets that had found nothing across millions of executions, which
 // is precisely the noise that trains people to ignore a red safety net.
 //
-// fuzzrun retries ONLY that signature, once, and fails on everything else. A real
-// finding is persisted to the corpus by the first run, so even if the classifier were
-// wrong the retry replays it as a seed and fails deterministically.
+// fuzzrun retries ONLY a run that exhibits the complete budget-expiry shape, once,
+// and fails on everything else. Recognition is a positive whitelist rather than a
+// denylist because "context deadline exceeded" is also what a timed-out FDB
+// testcontainer start reports; retrying that class would hide real flakes.
 //
 // Usage:
 //
@@ -17,21 +18,35 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
-// tailLines is set from -tail: on a SUCCESSFUL run only the last N lines are
-// echoed, keeping the nightly log readable. Failures always print in full.
-var tailLines int
+// runResult is the outcome of one child process.
+type runResult struct {
+	output string
+	// exitCode is the child's exit status, 0 on success and -1 when the process
+	// could not be started or was killed by a signal. Keeping it distinct from the
+	// output is what lets classify reject a `timeout`-kill (124) or an OOM (137)
+	// outright instead of guessing from text.
+	exitCode int
+	err      error
+}
+
+func (r runResult) ok() bool { return r.exitCode == 0 && r.err == nil }
 
 func main() {
 	label := flag.String("label", "", "human-readable name of the target, for log lines")
-	flag.IntVar(&tailLines, "tail", 0, "on success, echo only the last N lines (0 = all)")
+	deadline := flag.Int64("deadline", 0,
+		"unix timestamp after which a retry is refused (0 = no limit); "+
+			"bounds the job's total wall clock if the race ever goes systematic")
 	flag.Parse()
 
 	argv := flag.Args()
@@ -43,60 +58,80 @@ func main() {
 		*label = argv[0]
 	}
 
-	os.Exit(gate(*label, os.Stdout, func() (string, bool) { return exec_(argv) }))
-}
-
-// tail returns the last n lines of s, or all of s when n <= 0.
-func tail(s string, n int) string {
-	if n <= 0 || s == "" {
-		return s
-	}
-	lines := strings.Split(strings.TrimSuffix(s, "\n"), "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return strings.Join(lines, "\n") + "\n"
+	os.Exit(gate(*label, os.Stdout, *deadline, func() runResult { return runCommand(argv, os.Stdout) }))
 }
 
 // gate applies the retry policy and returns the process exit code. It takes the
 // runner as a closure so the policy is testable without spawning fuzz jobs.
-func gate(label string, w io.Writer, run func() (string, bool)) int {
-	out, ok := run()
-	if ok {
-		io.WriteString(w, tail(out, tailLines))
+func gate(label string, w io.Writer, retryDeadline int64, run func() runResult) int {
+	r := run()
+	if r.ok() {
 		return 0
 	}
-	io.WriteString(w, out)
+	if r.err != nil {
+		fmt.Fprintf(w, "fuzzrun: %v\n", r.err)
+	}
 
-	if classify(out) == verdictRealFailure {
-		fmt.Fprintf(w, "::error::fuzz FAIL: %s\n", label)
+	if classify(r) == verdictRealFailure {
+		fmt.Fprintf(w, "::error::fuzz FAIL: %s (exit %d)\n", label, r.exitCode)
+		return 1
+	}
+
+	if retryDeadline > 0 && time.Now().Unix() >= retryDeadline {
+		fmt.Fprintf(w, "::error::fuzz FAIL: %s — budget-expiry race detected, but the job's "+
+			"retry deadline has passed; not retrying\n", label)
 		return 1
 	}
 
 	// Known Go stdlib race: the budget expired cleanly but was reported as an error.
 	// Surface it loudly — a silent retry would hide a genuine change in its frequency.
-	fmt.Fprintf(w, "::warning::%s: fuzz budget expiry leaked as %q (golang/go#72104); "+
-		"no crasher was written. Retrying once.\n", label, "context deadline exceeded")
+	fmt.Fprintf(w, "::warning::%s: fuzz budget expiry leaked as \"context deadline exceeded\" "+
+		"(golang/go#72104); the run consumed its full budget, found nothing, and wrote no "+
+		"crasher. Retrying once.\n", label)
 
-	out2, ok2 := run()
-	if ok2 {
-		io.WriteString(w, tail(out2, tailLines))
+	r2 := run()
+	if r2.ok() {
 		fmt.Fprintf(w, "%s: retry clean — confirmed stdlib deadline race, not a finding.\n", label)
 		return 0
 	}
-	io.WriteString(w, out2)
-	fmt.Fprintf(w, "::error::fuzz FAIL: %s (failed again on retry)\n", label)
+	if r2.err != nil {
+		fmt.Fprintf(w, "fuzzrun: %v\n", r2.err)
+	}
+	fmt.Fprintf(w, "::error::fuzz FAIL: %s (failed again on retry, exit %d)\n", label, r2.exitCode)
 	return 1
 }
 
-// exec_ runs argv, capturing combined output, and reports whether it exited zero.
-func exec_(argv []string) (string, bool) {
+// runCommand runs argv, streaming its output to w as it arrives while also capturing
+// it for classification. Streaming matters: if the surrounding job hits its
+// timeout-minutes budget mid-run, a buffered implementation would leave exactly the
+// in-flight target's log missing — the one you need.
+func runCommand(argv []string, w io.Writer) runResult {
+	var buf bytes.Buffer
+	sink := io.MultiWriter(w, &buf)
+
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin = os.Stdin
-	b, err := cmd.CombinedOutput()
-	out := string(b)
+	cmd.Stdout = sink
+	cmd.Stderr = sink
+
+	err := cmd.Run()
+	out := buf.String()
 	if out != "" && !strings.HasSuffix(out, "\n") {
 		out += "\n"
 	}
-	return out, err == nil
+
+	switch {
+	case err == nil:
+		return runResult{output: out, exitCode: 0}
+	default:
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			// ExitCode is -1 when the process was terminated by a signal, which is
+			// exactly the "killed, not a test failure" case classify must reject.
+			return runResult{output: out, exitCode: ee.ExitCode()}
+		}
+		// Could not start at all (missing binary, bad path). Report it: otherwise
+		// the failure surfaces as an empty-bodied error annotation.
+		return runResult{output: out, exitCode: -1, err: fmt.Errorf("running %q: %w", argv[0], err)}
+	}
 }

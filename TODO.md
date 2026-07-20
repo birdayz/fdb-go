@@ -1767,13 +1767,35 @@ with the oracle; (2) `GODEBUG=fuzzdebug=1` caught it live: `stop called at .../f
 is the call that set `fuzzErr`; (3) the underlying context window measured directly at **0.025%** of
 wakeups (`parent.Err() != child.Err()`), widened under real 4-worker fuzz load.
 
-**Fix:** `cmd/fuzzrun` wraps each fuzz invocation, classifies the failure, and retries **only** this exact
-signature once. A genuine finding is never retried — it always persists its input and prints a crasher
-marker; and even a misclassification cannot swallow one, because the persisted crasher replays as a seed
-on the retry and fails deterministically. Wired into all three affected jobs (`diff-fuzz`, `client-fuzz`,
-`engine-fuzz` — every job using a duration `-fuzztime`). Retries are surfaced as `::warning::` so a change
-in frequency stays visible. Pinned by `cmd/fuzzrun/{classify,gate}_test.go`, which assert on the verbatim
-captured output of both real nightly failures.
+**Fix:** `cmd/fuzzrun` wraps each fuzz invocation, classifies the failure, and retries **only** a run that
+exhibits the complete budget-expiry shape, once.
+
+Recognition is a **positive whitelist, not a denylist** — this is the load-bearing design point. A first
+draft retried anything containing `context deadline exceeded` minus a denylist, which both reviewers
+correctly rejected as unsafe: that string is *also* what a timed-out FDB testcontainer reports, and every
+package hosting a fuzz target starts one under a `context.WithTimeout` (CLAUDE.md mandates it). That
+version would have retried real Docker flakes into green — the exact failure mode the
+"no unrelated flakes" rule exists to prevent. A run is now benign only when **all** hold:
+(1) it exited with a test-failure status (rejecting `timeout`-kill 124, OOM 137, signal, bazel build
+error); (2) it emitted `fuzz: elapsed:` progress, proving budget was actually consumed; (3) it reported
+exactly ONE failure and that failure is a `Fuzz` target; (4) that failure's ONLY detail line is
+`context deadline exceeded`. Plus a hard-failure marker list covering the paths that produce no crasher
+file — notably `failure while testing seed corpus entry:`, which Go reports via
+`stop(errors.New(crasherMsg))` rather than a `crashError`, so it prints no "Failing input written to".
+
+Note the retry is **not** load-bearing for safety, and must not be described as such: the "a persisted
+crasher replays as a seed on the retry" argument holds only for the plain `go test` path, because under
+`bazelisk test` the crasher lands in an ephemeral sandbox that is destroyed on exit (124 of 142 target
+pairs). Safety comes from the classifier rejecting anything that isn't the exact shape.
+
+Retries are refused past a per-job `-deadline` so a systematic race cannot double every target and blow
+`timeout-minutes` (engine-fuzz is the tight one: ~33 targets × 90s ≈ 50min of a 75min budget). Output is
+streamed rather than buffered, so a job killed mid-run still has the in-flight target's log.
+
+Wired into all three nightly jobs (`diff-fuzz`, `client-fuzz`, `engine-fuzz`) **and** `just verify`'s fuzz
+smoke targets. Pinned by `cmd/fuzzrun/{classify,gate,runcommand}_test.go` — the verbatim captured output
+of both real nightly failures, real bazel framing (exit 3), the exit-code plumbing, and the dangerous
+direction: nine deadline-bearing outputs with no crasher marker that must all still fail.
 
 **Note for the query-engine nightly triage:** `engine-fuzz` shares this exposure, so any planner/metadata
 nightly red whose only error line is `context deadline exceeded` with no crasher was the same false

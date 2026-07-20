@@ -400,15 +400,21 @@ verify:
     echo "=== Race detector (5 targets) ==="
     just race-all
     echo "=== Fuzz smoke (3 targets, 10s each) ==="
-    bazelisk run //pkg/recordlayer:recordlayer_test -- \
+    # Routed through //cmd/fuzzrun for the same reason the nightly is: Go's fuzz
+    # coordinator intermittently reports a clean -fuzztime expiry as
+    # "context deadline exceeded" (golang/go#72104). A shorter budget narrows that
+    # window, it does not close it.
+    bazelisk build //cmd/fuzzrun
+    FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
+    "$FUZZRUN" -label FuzzFastUnpack -- bazelisk run //pkg/recordlayer:recordlayer_test -- \
         -test.run='^$' -test.fuzz='^FuzzFastUnpack$' \
-        -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s 2>&1 | tail -1
-    bazelisk run //pkg/recordlayer:recordlayer_test -- \
+        -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
+    "$FUZZRUN" -label FuzzDeserializeBunch -- bazelisk run //pkg/recordlayer:recordlayer_test -- \
         -test.run='^$' -test.fuzz='^FuzzDeserializeBunch$' \
-        -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s 2>&1 | tail -1
-    bazelisk run //pkg/fdbgo/client:client_test -- \
+        -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
+    "$FUZZRUN" -label FuzzRYWCache -- bazelisk run //pkg/fdbgo/client:client_test -- \
         -test.run='^$' -test.fuzz='^FuzzRYWCache$' \
-        -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s 2>&1 | tail -1
+        -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
     echo "=== All verification passed ==="
 
 # Install pre-commit hook (lint + gazelle + build + test)
