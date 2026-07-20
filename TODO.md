@@ -1499,6 +1499,23 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
        statement). Pin FIRST with a large-N (>1 page) multi-value-per-key rows test at a small scan
        limit, both with and without ORDER BY, before touching the executor. Documented at
        executeDistinct.
+       DEEPER DIAGNOSIS (2026-07-20, DFS): (a) `SELECT DISTINCT` is a GO-ONLY extension — Java's
+       fdb-relational REJECTS it for most shapes (see rule_implement_distinct_final.go header), and
+       Java's RecordQueryUnorderedDistinctPlan.executePlan(:109) also builds a fresh HashSet per
+       call, so there is NO Java wire-format to match: the DISTINCT continuation is GO-INTERNAL —
+       NOT a Java-wire-compat concern. That removes the "hard line" blocker; the continuation can be
+       extended. (b) The scan limit returns a CLIENT-facing continuation (ScanLimitReached →
+       noNextOrFail(..., limitContinuation()) in the scan cursors), i.e. a NEW Execute per page, so
+       the seen-set is genuinely lost across Executes — the state MUST ride the continuation (not
+       merely persist in statement State). (c) TEMPLATE: RecordQueryStreamingAggregationPlan already
+       resumes cleanly across pages at large N (agent-verified) by carrying its running group key in
+       the continuation — the streaming DISTINCT is the same pattern (carry the last emitted key).
+       Port executeStreamingAggregation's continuation encoding. So the arc stays 3 pieces but is
+       now de-risked and Go-internal: streaming-distinct executor + carry last-key in the (Go-only)
+       distinct continuation + planner requests distinct-key ordering
+       (PushRequestedOrderingThroughDistinctRule already pushes an OUTER ORDER BY through; extend it
+       to request the distinct-key ordering even without one, falling back to a Sort). Graefe-gated
+       (executor + continuation), but no cross-engine wire risk.
 > WS-C: DONE (Graefe ACK; Torvalds conditions folded — lazy continuations, depth
 > parity, ctor charge release). C1 full RecursiveUnionCursor port (UNION ALL
 > recursion streams + resumes mid-level), C2
@@ -3387,6 +3404,31 @@ Java exactly. Adding secondary-index validation would make Go STRICTER than Java
 divergence (Go rejecting a DRY RUN that Java previews as success), forbidden by the conformance
 principle. Pinned Java-faithful by `dml_dry_run_fdb_test.go::TestFDB_DmlDryRun_MatchesJavaLightweightValidation`
 + documented at `DryRunSaveRecord` (store_api.go). No action — do NOT "fix" it into a divergence.
+
+### [ ] dml: INSERT ... SELECT arity mismatch leaks internal XX000 instead of a clean error (wrong-error, LOW-MED, found 2026-07-20 hunt)
+
+An `INSERT ... SELECT` whose projection column count differs from the target
+record's is NOT validated at plan time: `alignInsertSelectColumns`
+(logical_predicate.go) and `checkInsertSelectPromotable` both loop over
+`min(len(projections), len(target))` and silently truncate, so the mismatch
+surfaces only at row-read as an internal XX000 ("result row carries no positional
+output row aligned to column … — the plan's top operator did not emit an ordinal
+output row", resultset.go:147). Repro (dst has 2 cols): `INSERT INTO dst SELECT
+id, v, id FROM src` (too many) or `INSERT INTO dst SELECT id FROM src` (too few)
+→ XX000. The VALUES path rejects the same mistake cleanly (42601/22000,
+insert_cascades.go:82). No data corruption (nothing partial-inserts; too-few does
+NOT NULL-fill — it also errors). Wrong-ERROR only.
+FIX IS NOT A PLAN-TIME COUNT CHECK (attempted + reverted 2026-07-20): the output
+WIDTH ≠ `len(proj.Projections)`. A RECORD/struct projection expands into several
+target columns — e.g. `INSERT INTO DST SELECT "V" FROM T1, T1."ARR" AS "V", W`
+projects ONE unnested element `V` that fills DST's 2 columns (pinned by
+`TestFDB_ArrayUnnestDMLDuplicateAlias` control). Worse, that unnested element's
+`Value.Type()` is NOT a `*values.RecordType`, so a type-based "all-scalar" guard
+also false-positives. A correct check needs the source plan's DERIVED OUTPUT
+SCHEMA (post-expansion column count), not the raw projection list — a real
+semantic-analysis addition. Until then the XX000 stands (low severity). Do NOT
+re-add a `len(proj.Projections)` check — it 42601s valid unnest/record-expansion
+INSERT…SELECTs.
 
 ### [ ] dml: DELETE/UPDATE ... RETURNING silently ignored — Java supports it (divergence, found 2026-06-28)
 
