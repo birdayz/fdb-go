@@ -179,6 +179,107 @@ func TestFDB_SelectDistinct_CrossPageDedup_Unordered(t *testing.T) {
 	}
 }
 
+// TestFDB_SelectDistinct_HashUnderLimit_CrossPage pins the hash path composed
+// UNDER a LIMIT plan across page boundaries. The g sequence 0,1,0,1,0,1,2,3,4...
+// repeats 0 and 1 across scanLimit=2 pages BEFORE the 5th distinct is found, so
+// LIMIT 5 = {0,1,2,3,4} only if the hash cursor's seen-set survives the
+// continuation: a fresh-per-page set would re-emit the 0,1 duplicates and the
+// limit would stop at {0,1} with duplicate output rows. Exercises the limit
+// envelope's eager continuation serialization wrapping the resume-clean hash
+// continuation.
+func TestFDB_SelectDistinct_HashUnderLimit_CrossPage(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_distinct_hlim", "distincthlim",
+		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
+	ctx := context.Background()
+
+	const scanLimit = 2
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+	})
+
+	// g by id: 0,1,0,1,0,1 (dups straddling pages), then 2,3,4,5,6,7,8,9.
+	gSeq := []int{0, 1, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+	for id, g := range gSeq {
+		if _, err := conn.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO t (id, g) VALUES (%d, %d)", id+1, g)); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	rows, err := conn.QueryContext(ctx, "SELECT DISTINCT g FROM t LIMIT 5")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	seen := map[int64]bool{}
+	var got []int64
+	for rows.Next() {
+		var g int64
+		if err := rows.Scan(&g); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, g)
+		seen[g] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(got) != 5 || len(seen) != 5 {
+		t.Fatalf("DISTINCT g LIMIT 5 under paginated hash = %v (%d distinct), want 5 distinct rows "+
+			"(a lost seen-set re-emits the 0,1 duplicates and the limit fills with duplicates)", got, len(seen))
+	}
+	for v := int64(0); v < 5; v++ {
+		if !seen[v] {
+			t.Fatalf("DISTINCT g LIMIT 5 = %v, want the set {0,1,2,3,4}", got)
+		}
+	}
+}
+
+// TestFDB_SelectDistinct_BudgetLoudFail pins the safety property the whole
+// design leans on: a hash DISTINCT whose seen-set would exceed the statement
+// memory budget FAILS LOUDLY (ErrCodeExecutionLimitReached) rather than
+// silently dropping or re-admitting rows. A tiny MAX_STATEMENT_MEMORY_BYTES with
+// many distinct values forces the boundedSet charge to breach.
+func TestFDB_SelectDistinct_BudgetLoudFail(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_distinct_budget", "distinctbudget",
+		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
+	ctx := context.Background()
+
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		// Tiny budget: a few hundred distinct keys cannot fit.
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptMaxStatementMemoryBytes, 256).Build())
+	})
+
+	for id := 1; id <= 400; id++ {
+		if _, err := conn.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO t (id, g) VALUES (%d, %d)", id, id)); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	rows, err := conn.QueryContext(ctx, "SELECT DISTINCT g FROM t")
+	if err == nil {
+		// Some drivers surface the error on the first scan rather than at query
+		// time; drain and capture it.
+		for rows.Next() {
+		}
+		err = rows.Err()
+		rows.Close()
+	}
+	if err == nil {
+		t.Fatal("SELECT DISTINCT over a 400-key set with a 256-byte budget must FAIL LOUDLY " +
+			"(ErrCodeExecutionLimitReached), never silently drop/complete")
+	}
+	if !strings.Contains(err.Error(), "limit") && !strings.Contains(err.Error(), "memory") &&
+		!strings.Contains(err.Error(), string(api.ErrCodeExecutionLimitReached)) {
+		t.Fatalf("budget breach surfaced as %q, want an execution-limit/memory error", err.Error())
+	}
+}
+
 // TestFDB_SelectDistinct_CrossPageDedup_WithFilter pins cross-page DISTINCT
 // dedup when a WHERE predicate on a non-indexed column is present: the input is
 // ordered for the distinct by an in-memory sort (driven by ORDER BY g) sitting

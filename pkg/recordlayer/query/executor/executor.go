@@ -1586,6 +1586,7 @@ func executeDistinct(
 	// wrong rows), the signal that the cost-based sort-distinct follow-up should
 	// have been chosen.
 	seen := newBoundedSet[string](props.State)
+	var order []string
 	innerCont := continuation
 	if len(continuation) > 0 {
 		var dc gen.DistinctHashContinuation
@@ -1593,21 +1594,30 @@ func executeDistinct(
 			return nil, fmt.Errorf("invalid distinct-hash continuation: %w", uerr)
 		}
 		innerCont = dc.GetInnerContinuation()
-		// Rebuild (and re-charge) the seen-set from the prior page.
+		// Rebuild (and re-charge) the seen-set and its insertion order.
 		for _, k := range dc.GetSeenKeys() {
-			if _, aerr := seen.Add(string(k), int64(len(k))); aerr != nil {
+			ks := string(k)
+			added, aerr := seen.Add(ks, int64(len(k)))
+			if aerr != nil {
+				// No cursor is built on this path, so no close hook will run —
+				// release the partial charge here to stay live-bytes-neutral.
+				props.State.ReleaseMemory(seen.Charged())
 				return nil, aerr
+			}
+			if added {
+				order = append(order, ks)
 			}
 		}
 	}
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerCont, props.ClearSkipAndLimit())
 	if err != nil {
+		props.State.ReleaseMemory(seen.Charged())
 		return nil, err
 	}
 	// Live-bytes model: the set is charged as it grows (and on resume rebuild);
 	// release its tally at page teardown.
 	return newCloseHookCursor(
-		applySkipLimit(&distinctHashCursor{inner: innerCursor, seen: seen}, props.Skip, props.ReturnedRowLimit),
+		applySkipLimit(&distinctHashCursor{inner: innerCursor, seen: seen, order: order}, props.Skip, props.ReturnedRowLimit),
 		func() { props.State.ReleaseMemory(seen.Charged()) },
 	), nil
 }

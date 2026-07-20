@@ -104,12 +104,6 @@ func newBoundedSet[K comparable](st *recordlayer.ExecuteState) *boundedSet[K] {
 	return &boundedSet[K]{m: make(map[K]struct{}), st: st}
 }
 
-// Contains reports whether key is present.
-func (s *boundedSet[K]) Contains(key K) bool {
-	_, ok := s.m[key]
-	return ok
-}
-
 // Add inserts key, charging estBytes against the statement budget only when
 // the key is NEW. Returns (added, err): added is false for a duplicate (no
 // charge, no error). On a budget breach the key is NOT inserted and the error
@@ -135,17 +129,6 @@ func (s *boundedSet[K]) Charged() int64 {
 // Len reports the number of distinct keys.
 func (s *boundedSet[K]) Len() int {
 	return len(s.m)
-}
-
-// Keys returns the set's keys in unspecified order — for serializing the
-// DISTINCT dedup seen-set into a resume-clean continuation (TODO C5). Callers
-// that need a stable byte encoding must sort.
-func (s *boundedSet[K]) Keys() []K {
-	out := make([]K, 0, len(s.m))
-	for k := range s.m {
-		out = append(out, k)
-	}
-	return out
 }
 
 // estimateQueryResultBytes returns an approximate resident-byte estimate for a

@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
@@ -149,8 +148,18 @@ var _ recordlayer.RecordCursor[QueryResult] = (*distinctStreamCursor)(nil)
 // sort-distinct (the follow-up) should have been chosen. SELECT DISTINCT is a
 // Go-only extension, so this continuation is Go-internal (no Java wire format).
 type distinctHashCursor struct {
-	inner  recordlayer.RecordCursor[QueryResult]
-	seen   *boundedSet[string]
+	inner recordlayer.RecordCursor[QueryResult]
+	seen  *boundedSet[string]
+	// order is the distinct keys in INSERTION order (append-only). seen (a map)
+	// answers Contains in O(1); order gives each continuation an O(1),
+	// reallocation-safe SNAPSHOT: it captures len(order), and order[:n] is an
+	// immutable prefix (append never mutates earlier elements), so a
+	// continuation encodes exactly the keys emitted through its own result
+	// regardless of when ToBytes runs or how far the cursor later advances — no
+	// lazy read of the live set (the streaming path's eager packLast, done
+	// symmetrically here). Insertion order also makes the encoding deterministic
+	// without a sort.
+	order  []string
 	closed bool
 	// lastNoNext replays the terminal result on a contract-violating re-call.
 	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
@@ -195,6 +204,7 @@ func (c *distinctHashCursor) OnNext(ctx context.Context) (recordlayer.RecordCurs
 		if !added {
 			continue
 		}
+		c.order = append(c.order, key)
 		wrapped, werr := c.wrapContinuation(result.GetContinuation())
 		if werr != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, werr
@@ -205,10 +215,11 @@ func (c *distinctHashCursor) OnNext(ctx context.Context) (recordlayer.RecordCurs
 
 // wrapContinuation snapshots the inner position plus the seen-set into a
 // DistinctHashContinuation. An ended inner needs no dedup state (resume finds
-// nothing past it) so it collapses to EndContinuation. The seen-set is read
-// LAZILY at ToBytes() time: the caller serializes the continuation of the LAST
-// result it accepts, at which point the cursor has not advanced past that
-// result, so the live set reflects exactly the keys emitted through it.
+// nothing past it) so it collapses to EndContinuation. The snapshot is the
+// insertion-order prefix order[:n] captured by length: order is append-only, so
+// that prefix is immutable and the continuation encodes exactly the keys
+// emitted through THIS result — independent of when ToBytes runs or how far the
+// cursor advances afterward (no aliasing of the live set).
 func (c *distinctHashCursor) wrapContinuation(inner recordlayer.RecordCursorContinuation) (recordlayer.RecordCursorContinuation, error) {
 	if inner == nil || inner.IsEnd() {
 		return &recordlayer.EndContinuation{}, nil
@@ -217,7 +228,7 @@ func (c *distinctHashCursor) wrapContinuation(inner recordlayer.RecordCursorCont
 	if err != nil {
 		return nil, fmt.Errorf("distinct-hash continuation: %w", err)
 	}
-	return &distinctHashContinuation{inner: innerBytes, seen: c.seen}, nil
+	return &distinctHashContinuation{inner: innerBytes, order: c.order, n: len(c.order)}, nil
 }
 
 func (c *distinctHashCursor) Close() error {
@@ -230,17 +241,18 @@ func (c *distinctHashCursor) Close() error {
 
 func (c *distinctHashCursor) IsClosed() bool { return c.closed }
 
-// distinctHashContinuation lazily marshals the DistinctHashContinuation at
-// ToBytes() time (see wrapContinuation for why the lazy set read is sound). The
-// keys are sorted for a deterministic encoding.
+// distinctHashContinuation marshals the DistinctHashContinuation at ToBytes()
+// time from the captured insertion-order prefix order[:n] (immutable — see
+// wrapContinuation). Insertion order is already deterministic, so no sort is
+// needed.
 type distinctHashContinuation struct {
 	inner []byte
-	seen  *boundedSet[string]
+	order []string
+	n     int
 }
 
 func (d *distinctHashContinuation) ToBytes() ([]byte, error) {
-	keys := d.seen.Keys()
-	sort.Strings(keys)
+	keys := d.order[:d.n]
 	seenBytes := make([][]byte, len(keys))
 	for i, k := range keys {
 		seenBytes[i] = []byte(k)
