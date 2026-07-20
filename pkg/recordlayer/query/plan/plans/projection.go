@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"fmt"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -34,10 +35,26 @@ func NewRecordQueryProjectionPlanWithAliases(projections []values.Value, aliases
 	}
 }
 
+// NewRecordQueryProjectionPlanFromQuantifier builds the projection directly over
+// the LIVE inner memo edge the implement rule already memoized, rather than
+// snapshotting a bare plan. The plan is then its own cascades expression
+// carrying the child edge once — no wrapper storing a second copy (RFC-184 W2).
+func NewRecordQueryProjectionPlanFromQuantifier(projections []values.Value, aliases []string, innerQ expressions.Quantifier) *RecordQueryProjectionPlan {
+	return &RecordQueryProjectionPlan{
+		projections: projections,
+		aliases:     aliases,
+		innerQ:      innerQ,
+	}
+}
+
 func (p *RecordQueryProjectionPlan) GetProjections() []values.Value { return p.projections }
 func (p *RecordQueryProjectionPlan) GetAliases() []string           { return p.aliases }
 
 func (p *RecordQueryProjectionPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetInnerQuantifier returns the live child edge — the memo quantifier the
+// projection ranges over (RFC-184 W2).
+func (p *RecordQueryProjectionPlan) GetInnerQuantifier() expressions.Quantifier { return p.innerQ }
 
 // GetQuantifiers reports the real child quantifier, overriding
 // PlanExprBase's none.
@@ -145,6 +162,16 @@ func (p *RecordQueryProjectionPlan) WithQuantifiers(qs []expressions.Quantifier)
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren rebuilds over a fresh inner quantifier — the optional interface
+// plan extraction uses to preserve the strict-singleton invariant. Delegates to
+// WithQuantifiers.
+func (p *RecordQueryProjectionPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryProjectionPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

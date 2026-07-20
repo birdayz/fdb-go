@@ -251,21 +251,21 @@ func TestPhase3_ProjectionOverFilter(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	// Check that physicalProjectionWrapper appears.
+	// Check that the bare RecordQueryProjectionPlan appears (RFC-184 W2).
 	foundProjection := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalProjectionWrapper)
+		_, ok := expr.(*plans.RecordQueryProjectionPlan)
 		return ok
 	})
 	if !foundProjection {
 		for _, f := range rootRef.Members() {
-			if _, ok := f.(*physicalProjectionWrapper); ok {
+			if _, ok := f.(*plans.RecordQueryProjectionPlan); ok {
 				foundProjection = true
 				break
 			}
 		}
 	}
 	if !foundProjection {
-		t.Fatal("expected physicalProjectionWrapper in explored graph or final members")
+		t.Fatal("expected *plans.RecordQueryProjectionPlan in explored graph or final members")
 	}
 
 	// Check that physicalFilterWrapper appears in the inner Reference.

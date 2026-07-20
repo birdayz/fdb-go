@@ -31,16 +31,16 @@ type MergeProjectionAndFetchRule struct {
 
 func NewMergeProjectionAndFetchRule() *MergeProjectionAndFetchRule {
 	return &MergeProjectionAndFetchRule{
-		matcher: NewExpressionMatcher[*physicalProjectionWrapper]("phys_projection_merge_fetch"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryProjectionPlan]("phys_projection_merge_fetch"),
 	}
 }
 
 func (r *MergeProjectionAndFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
-	projW := matching.Get[*physicalProjectionWrapper](call.Bindings, r.matcher)
+	projW := matching.Get[*plans.RecordQueryProjectionPlan](call.Bindings, r.matcher)
 
-	innerRef := projW.innerQuant.GetRangesOver()
+	innerRef := projW.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return
 	}
@@ -58,9 +58,9 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	fetchPlan := fetchW
-	projectedValues := projW.plan.GetProjections()
+	projectedValues := projW.GetProjections()
 
-	oldInnerAlias := projW.innerQuant.GetAlias()
+	oldInnerAlias := projW.GetInnerQuantifier().GetAlias()
 	newInnerAlias := values.UniqueCorrelationIdentifier()
 
 	// Check if ALL projected values can be pushed through the fetch.
@@ -92,11 +92,11 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 		// The covering index scan is its own cascades expression (RFC-184 W2);
 		// WithCovering preserves the metadata already on the plan (struct copy).
 		coveredPlan := idxPlan.WithCovering(idxPlan.GetColumnNames())
-		coveringRef := expressions.InitialOf(coveredPlan)
-		innerQ := expressions.ForEachQuantifier(coveringRef)
-		wrapPlan := plans.NewRecordQueryProjectionPlanWithAliases(
-			projectedValues, projW.plan.GetAliases(), coveredPlan)
-		call.Yield(NewPhysicalProjectionWrapper(wrapPlan, innerQ))
+		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(coveredPlan))
+		// The projection is its own cascades expression carrying the live innerQ
+		// edge (RFC-184 W2).
+		call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifier(
+			projectedValues, projW.GetAliases(), innerQ))
 		return
 	}
 
@@ -114,13 +114,16 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// fetchInnerExpr comes from findPhysicalExpr above, which only returns
 	// physicalPlanExpression members, so !ok is unreachable; the guard is
 	// defensive (avoids a panic if that invariant ever changes).
-	childPhys, ok := fetchInnerExpr.(physicalPlanExpression)
-	if !ok {
+	if _, ok := fetchInnerExpr.(physicalPlanExpression); !ok {
 		return
 	}
-	projPlan := plans.NewRecordQueryProjectionPlanWithAliases(
-		projectedValues, projW.plan.GetAliases(), childPhys.GetRecordQueryPlan())
-	call.Yield(NewPhysicalProjectionWrapper(projPlan, expressions.ForEachQuantifier(fetchInnerRef)))
+	// The projection is its own cascades expression carrying the live
+	// fetch-inner edge (RFC-184 W2): ranging over fetchInnerRef directly makes
+	// the projection sit over the fetch's index-scan inner (the merge that
+	// strips the fetch), and DAG-aware extraction resolves that shared inner
+	// group to its winner instead of the retired snapshot.
+	call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		projectedValues, projW.GetAliases(), expressions.ForEachQuantifier(fetchInnerRef)))
 }
 
 var _ ImplementationRule = (*MergeProjectionAndFetchRule)(nil)

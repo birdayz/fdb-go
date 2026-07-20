@@ -460,11 +460,9 @@ func TestSortElimination_DeclinesWhenExtractionRelinkRefused(t *testing.T) {
 	// delegating over an in-memory sort on STATUS.
 	sorted := sortedMemberOn(t, "STATUS")
 	sortedRef := expressions.InitialOf(sorted)
-	orderedProjection := NewPhysicalProjectionWrapper(
-		plans.NewRecordQueryProjectionPlan(
-			[]values.Value{values.NewFlatFieldValue("STATUS", values.UnknownType)},
-			plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
-		),
+	orderedProjection := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{values.NewFlatFieldValue("STATUS", values.UnknownType)},
+		nil,
 		expressions.ForEachQuantifier(sortedRef),
 	)
 

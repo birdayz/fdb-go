@@ -236,12 +236,8 @@ func TestProjectionRule_WrapsWinnerNotFirst(t *testing.T) {
 		t.Fatal("ImplementProjectionRule yielded nothing")
 	}
 
-	wrap, ok := yielded[0].(*physicalProjectionWrapper)
-	if !ok {
-		t.Fatalf("yielded[0] = %T, want *physicalProjectionWrapper", yielded[0])
-	}
-	if wrap.plan == nil {
-		t.Fatal("projection wrapper has nil plan")
+	if _, ok := yielded[0].(*plans.RecordQueryProjectionPlan); !ok {
+		t.Fatalf("yielded[0] = %T, want *plans.RecordQueryProjectionPlan", yielded[0])
 	}
 	t.Logf("ProjectionRule yielded %d plans", len(yielded))
 }
@@ -400,11 +396,9 @@ func TestPinOrderedSpine_DeclinesWhenRelinkRefused(t *testing.T) {
 	// set) delegating over an in-memory sort on S.
 	sorted := sortedMemberOn(t, "S")
 	sortedRef := expressions.InitialOf(sorted)
-	orderedProjection := NewPhysicalProjectionWrapper(
-		plans.NewRecordQueryProjectionPlan(
-			[]values.Value{values.NewFlatFieldValue("S", values.UnknownType)},
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-		),
+	orderedProjection := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{values.NewFlatFieldValue("S", values.UnknownType)},
+		nil,
 		expressions.ForEachQuantifier(sortedRef),
 	)
 

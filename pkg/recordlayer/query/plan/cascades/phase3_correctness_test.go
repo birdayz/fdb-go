@@ -181,8 +181,8 @@ func TestPlanner_RecursiveUnionProducesDfsJoin(t *testing.T) {
 }
 
 // TestPlanner_ProjectionOverScanProducesPhysicalProjection verifies
-// that LogicalProjectionExpression over a Scan produces a
-// physicalProjectionWrapper.
+// that LogicalProjectionExpression over a Scan produces a bare
+// *plans.RecordQueryProjectionPlan.
 func TestPlanner_ProjectionOverScanProducesPhysicalProjection(t *testing.T) {
 	t.Parallel()
 
@@ -200,11 +200,11 @@ func TestPlanner_ProjectionOverScanProducesPhysicalProjection(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	isPhysicalProjection := func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalProjectionWrapper)
+		_, ok := expr.(*plans.RecordQueryProjectionPlan)
 		return ok
 	}
 	if !containsPhysical(ref, isPhysicalProjection) {
-		t.Fatal("expected physicalProjectionWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryProjectionPlan in explored members")
 	}
 }
 

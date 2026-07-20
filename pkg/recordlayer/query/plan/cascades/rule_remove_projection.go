@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // RemoveProjectionRule removes a LogicalProjectionExpression when the
@@ -17,16 +18,16 @@ type RemoveProjectionRule struct {
 
 func NewRemoveProjectionRule() *RemoveProjectionRule {
 	return &RemoveProjectionRule{
-		matcher: NewExpressionMatcher[*physicalProjectionWrapper]("phys_projection_remove"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryProjectionPlan]("phys_projection_remove"),
 	}
 }
 
 func (r *RemoveProjectionRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *RemoveProjectionRule) OnMatch(call *ImplementationRuleCall) {
-	projW := matching.Get[*physicalProjectionWrapper](call.Bindings, r.matcher)
+	projW := matching.Get[*plans.RecordQueryProjectionPlan](call.Bindings, r.matcher)
 
-	innerRef := projW.innerQuant.GetRangesOver()
+	innerRef := projW.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return
 	}
@@ -37,7 +38,7 @@ func (r *RemoveProjectionRule) OnMatch(call *ImplementationRuleCall) {
 	// selects a subset of columns (like SELECT status FROM orders)
 	// changes the output shape and MUST NOT be removed — it affects
 	// DISTINCT, GROUP BY, and other shape-dependent operators above.
-	if !projW.plan.IsIdentity() {
+	if !projW.IsIdentity() {
 		return
 	}
 

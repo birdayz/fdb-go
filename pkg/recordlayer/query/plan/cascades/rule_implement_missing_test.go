@@ -28,13 +28,9 @@ func TestImplementProjectionRule_FiresAfterInnerImplemented(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementProjectionRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalProjectionWrapper)
+	plan, ok := yielded[0].(*plans.RecordQueryProjectionPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalProjectionWrapper", yielded[0])
-	}
-	plan := wrap.GetPlan()
-	if plan == nil {
-		t.Fatal("wrapper has no plan")
+		t.Fatalf("yield = %T, want *plans.RecordQueryProjectionPlan", yielded[0])
 	}
 	if _, ok := plan.GetInner().(*plans.RecordQueryScanPlan); !ok {
 		t.Fatalf("projection plan inner = %T, want *RecordQueryScanPlan", plan.GetInner())
