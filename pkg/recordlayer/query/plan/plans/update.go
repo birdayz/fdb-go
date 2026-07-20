@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -71,51 +70,32 @@ func (p *RecordQueryUpdatePlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares targetRecordType + the transforms BY VALUE
-// (FieldPath + semantic NewValue identity), per Java RecordQueryAbstract-
-// DataModificationPlan.equalsWithoutChildren (transformationsTrie equality).
-// Count-only comparison made `SET a=1` ≡ `SET a=2` on the write path — a
-// memo collapse that executes the WRONG update. Transforms are canonicalised
-// sorted by FieldPath at construction (UpdateExpression), so pairwise
-// comparison is order-stable. Java's targetType/coercionTrie/
-// computationValue have no Go counterpart yet; they join identity when
-// they land.
+// structuralKey folds targetRecordType + the transforms BY VALUE (FieldPath +
+// semantic NewValue identity), per Java RecordQueryAbstractDataModificationPlan.
+// equalsWithoutChildren (transformationsTrie equality). Count-only comparison
+// made `SET a=1` ≡ `SET a=2` on the write path — a memo collapse that executes
+// the WRONG update. Transforms are canonicalised sorted by FieldPath at
+// construction (UpdateExpression), so pairwise comparison is order-stable.
+// Java's targetType/coercionTrie/computationValue have no Go counterpart yet;
+// they join identity when they land.
+func (p *RecordQueryUpdatePlan) structuralKey() *structuralKey {
+	k := newStructuralKey().Str(p.targetRecordType)
+	for _, tr := range p.transforms {
+		k.Str(tr.FieldPath).Value(tr.NewValue)
+	}
+	return k
+}
+
 func (p *RecordQueryUpdatePlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryUpdatePlan)
-	if !ok {
-		return false
-	}
-	if p.targetRecordType != o.targetRecordType {
-		return false
-	}
-	if len(p.transforms) != len(o.transforms) {
-		return false
-	}
-	for i, tr := range p.transforms {
-		if tr.FieldPath != o.transforms[i].FieldPath {
-			return false
-		}
-		if !semanticValueEquals(tr.NewValue, o.transforms[i].NewValue) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes class + targetRecordType + per-transform
 // FieldPath and NewValue (semantic hash), pairing with the by-value equality
 // above so equal⟹same-hash holds.
 func (p *RecordQueryUpdatePlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("updateplan|"))
-	h.Write([]byte(p.targetRecordType))
-	h.Write([]byte{0})
-	for _, tr := range p.transforms {
-		h.Write([]byte(tr.FieldPath))
-		h.Write([]byte{0})
-		writeValueHash(h, tr.NewValue)
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("updateplan|")
 }
 
 // Explain renders Update(target, [N transforms], inner).

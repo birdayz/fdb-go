@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -91,44 +90,24 @@ func (p *RecordQueryStreamingAggregationPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
+// structuralKey folds the grouping keys (by value) then per aggregate the
+// Function discriminator + Operand (by value), pairing equality and hashing so
+// they can never disagree on which fields matter.
+func (p *RecordQueryStreamingAggregationPlan) structuralKey() *structuralKey {
+	k := newStructuralKey().Values(p.groupingKeys)
+	for _, a := range p.aggregates {
+		k.Int(int(a.Function)).Value(a.Operand)
+	}
+	return k
+}
+
 func (p *RecordQueryStreamingAggregationPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryStreamingAggregationPlan)
-	if !ok {
-		return false
-	}
-	if len(p.groupingKeys) != len(o.groupingKeys) {
-		return false
-	}
-	for i, k := range p.groupingKeys {
-		if !semanticValueEquals(k, o.groupingKeys[i]) {
-			return false
-		}
-	}
-	if len(p.aggregates) != len(o.aggregates) {
-		return false
-	}
-	for i, a := range p.aggregates {
-		if a.Function != o.aggregates[i].Function {
-			return false
-		}
-		if !semanticValueEquals(a.Operand, o.aggregates[i].Operand) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryStreamingAggregationPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("streamagg|"))
-	for _, k := range p.groupingKeys {
-		writeValueHash(h, k)
-	}
-	for _, a := range p.aggregates {
-		h.Write([]byte{byte(a.Function)})
-		writeValueHash(h, a.Operand)
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("streamagg|")
 }
 
 func (p *RecordQueryStreamingAggregationPlan) Explain() string {
