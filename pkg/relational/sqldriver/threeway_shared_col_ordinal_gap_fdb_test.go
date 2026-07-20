@@ -19,9 +19,10 @@ package sqldriver_test
 //     filter works.
 //
 // This is the same ordinal-binding family as the multi-leg source-relative
-// ordinal gap (TestFDB_LeftJoinPkOrdinal_KnownExecutorGap) but a distinct error
-// signature; the rowdiff ledger declines it separately (knownGaps in run.go).
-// It is a distinct executor/ordinal-binding workstream, not fixable inline.
+// ordinal gap (now FIXED — TestFDB_LeftJoinPkOrdinal_InJoinSortRegression) but a
+// distinct error signature and a distinct root cause (an index match-candidate
+// placeholder leaking into a reapplied residual, not a missing leg-window
+// passthrough); the rowdiff ledger declines it separately (knownGaps in run.go).
 //
 // WHEN FIXED this test goes RED (the query starts returning rows). Then: delete
 // the knownGaps entry and assert the correct result — zero rows.

@@ -1391,21 +1391,53 @@ non-chained nested box already does this — its box-leg WHERE plans as `Predica
 the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`chained_boxleg{A,B,C}_filter`)
 — flip those `wantReject` cases to row assertions when ordinalized.
 
-### [ ] Executor/ordinal-binding — LEFT OUTER PK-join source-relative ordinal over a multi-leg row
+### [x] Executor/ordinal-binding — LEFT OUTER PK-join source-relative ordinal over a multi-leg row — FIXED
 A `LEFT OUTER JOIN` on the **primary key** (`l.id = r.id`) combined with a **WHERE filter** (either side —
-an L-side `l.b IN (…)` triggers it too, seed 980000056) AND an **ORDER BY on the left key** plans
-successfully but **dies at execution**: `correlated FieldValue "ID" (correlation "L") … multi-leg row
-cannot serve a source-relative ordinal — no frontier row resolved (planner/executor bug)`. Remove ANY one
-of the three factors (non-PK join key / no WHERE filter / no ORDER BY) and it executes. This is the SAME "multi-leg merged rows serve source-relative ordinals" defect already
-documented in `rule_implement_nested_loop_join.go` (~line 2785) for the projected-EXISTS-over-3-legs arm —
-the obvious `rebaseOuterLegValueOrdinal` fix was tried and reverted; it is a **distinct executor/ordinal-
-binding workstream**, not a memo-linkage change. It fails LOUD (never wrong rows). Surfaced independently by
-the RFC-182 rowdiff harness when LEFT OUTER JOIN generation was added (seed 960000225); classified there as
-a tracked `knownGaps` DECLINE (`pkg/relational/conformance/rowdiff/run.go`). **Live pin:**
-`TestFDB_LeftJoinPkOrdinal_KnownExecutorGap` (goes RED when the query starts executing — at which point
-delete the `knownGaps` entry and assert the documented rows `[(2,2),(1,1)]`). **To make it work:** fix how a
-multi-leg (outer-join-merged) row resolves a correlated FieldValue's source-relative ordinal in the executor
-— the binding failure is below the rebase layer (see the reverted attempt in the NLJ-rule comment).
+an L-side `l.b IN (…)` triggers it too, seed 980000056) AND an **ORDER BY on the left key** used to plan
+successfully but **die at execution**: `correlated FieldValue "ID" (correlation "L") … multi-leg row
+cannot serve a source-relative ordinal — no frontier row resolved`.
+
+**ROOT CAUSE (traced via instrumentation, RFC-182 shift):** the plan is
+`InMemorySort(InJoin(PredicatesFilter(FlatMap(join))))`. The in-memory sort resolves a source-relative
+ORDER-BY key (`l.id`, addressed to L's own leg window) over the join's MERGED multi-leg row via LEG WINDOWS —
+`executeInMemorySort` calls `legWindowRowContext` when `downstreamLegWindows(sort.GetInner())` returns
+`windowsOK=true`. But `unwrapToJoinPlan` (ordinal_join.go) — the passthrough walk that finds the join below
+the sort — did NOT list `RecordQueryInJoinPlan`, so a `… IN (…)` filter (which lowers to an InJoin between
+the sort and the join) broke the walk → `windowsOK=false` → the sort key hit a bare multi-leg row and the
+correlated fall-through guard went LOUD. The `IS NULL`/equality specifics never mattered; the trigger was
+"an IN-filter (InJoin) between an in-memory sort and a join whose ORDER-BY key is source-relative."
+
+**FIX (`ordinal_join.go`):** an InJoin re-emits the inner join's merged rows VERBATIM under a per-in-value
+binding (executeInJoin: `WithBinding` then `ExecutePlan(GetInner())` flat-mapped — no projection/transform);
+the binding changes row count/content, never the row LAYOUT, and leg windows are a purely positional property.
+So InJoin IS a row-layout-preserving passthrough — added it to `unwrapToJoinPlan`. The doc's prior
+"deliberately left out (re-executes under bindings)" was overly conservative. Regression:
+`TestFDB_LeftJoinPkOrdinal_InJoinSortRegression` (asserts `[(2,2),(1,1)]`); knownGaps entry removed;
+`TestKnownGaps_LedgerIsNarrow` now asserts the retired signature is NO LONGER declined.
+**Gate:** executor change → Graefe+Torvalds BOTH ACKed (delta re-confirm pending on the final head). The fix
+covers BOTH lowerings of `… IN (…)`: `RecordQueryInJoinPlan` AND `RecordQueryInUnionPlan` (the sibling both
+reviewers flagged — same verbatim-inner layout-preserving property; ImplementInUnionRule allows the inner to be
+a join, so the merged multi-leg row can flow up under it). Unit-pinned in `TestDownstreamLegWindows`
+(in-join / in-union / in-memory-sort-over-each).
+
+### [ ] Conformance harness — per-step idempotency-aware retry for mid-request Java-server drops (residual)
+The `POST /invoke: EOF` conformance flake's COMMON cause (reusing a keep-alive connection the pooled Java
+server closed while idle) is fixed by `newJavaHTTPClient`'s `DisableKeepAlives` (fresh connection per call,
+pinned by `TestJavaHTTPClient_DisablesKeepAlives`). RESIDUAL: a server drop DURING a request (GC pause /
+crash mid-`/invoke`) a fresh connection cannot prevent. A blanket retry is UNSAFE — `Invoke` is generic and
+some `/invoke` steps write, so a retry could double-apply. The fix is a per-step idempotency map (retry only
+read/plan steps like `RunSql SELECT`/`EXPLAIN`; never retry a write step) driven off the transport-error class.
+Low priority (mid-request drops are rare; keep-alive fix covers the observed flake).
+
+### [ ] Soundness — empty IN-list `x IN ()` may return inner rows instead of zero (surfaced in review)
+`executeInJoin` (executor_new_plans.go:1033-1034) and `executeInUnion` (:1095-1097) short-circuit an EMPTY
+in-value list by running the inner plan DIRECTLY (unbound) — which returns the inner's rows, where SQL/Java
+yield ZERO rows for `x IN ()`. Pre-existing, ORTHOGONAL to the multi-leg leg-window fix (Torvalds review point).
+**First verify reachability:** determine whether `IN ()` (or an IN over a parameter/subquery that evaluates to
+empty) is even PARSEABLE/producible — the differential generator only emits non-empty literal IN-lists, so it
+never exercises this. If reachable, the fix is to yield an EMPTY cursor (not run the inner) when the in-value
+set is empty, and pin it with a yamsql/FDB test; if `IN ()` is a hard parse error and no empty-set path exists,
+document the branch as defensively-dead. Do NOT fold into the multi-leg PR (separate logical change).
 
 ### [ ] Executor/ordinal-binding — 3-way join shared-column ordinal not resolvable (malformed plan)
 A 3-WAY join in which the SAME column is referenced across all three legs — a filter on the first

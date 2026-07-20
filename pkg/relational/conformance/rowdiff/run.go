@@ -317,24 +317,13 @@ type knownGap struct {
 // answer. The one entry below is a KNOWN executor/ordinal-binding defect
 // (booked as its own workstream in rule_implement_nested_loop_join.go ~2785),
 // pinned live and TODO-tracked; retire it the day that workstream lands.
+//
+// The former LEFT-OUTER-PK-join multi-leg entry was RETIRED once its root cause
+// was fixed: an InJoin (the lowering of `… IN (…)`) is now a row-layout-preserving
+// passthrough in unwrapToJoinPlan, so the in-memory sort's source-relative
+// ORDER-BY key resolves through the join's leg windows instead of going loud.
+// Regression: TestFDB_LeftJoinPkOrdinal_InJoinSortRegression.
 var knownGaps = []knownGap{
-	{
-		// A LEFT OUTER JOIN on the PRIMARY KEY plus an R-side WHERE filter plus
-		// an ORDER BY on the left key plans fine but dies at execution: a
-		// correlated FieldValue cannot resolve a source-relative ordinal
-		// against the outer-join multi-leg row. This is the documented
-		// "multi-leg merged rows serve source-relative ordinals" defect (the
-		// obvious rebase fix was tried and reverted; it is a distinct
-		// executor/ordinal-binding workstream). It fails LOUD — never a
-		// wrong-rows outcome — so matching its signature cannot mask a
-		// soundness bug: a row divergence carries no error at all.
-		name: "LEFT OUTER PK-join correlated source-relative ordinal over a multi-leg row",
-		pin:  "TestFDB_LeftJoinPkOrdinal_KnownExecutorGap",
-		matches: func(sqlText string, err error) bool {
-			return strings.Contains(err.Error(), "multi-leg row cannot serve a source-relative ordinal") &&
-				strings.Contains(err.Error(), "no frontier row resolved")
-		},
-	},
 	{
 		// A 3-way join in which the same column is referenced across all three
 		// legs (a filter on one, the m↔r join key, and a filter on the third)

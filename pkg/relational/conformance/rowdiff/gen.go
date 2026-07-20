@@ -264,10 +264,11 @@ type ScalarSubSpec struct {
 // M, R, chained `L.LMLeft = M.LMRight` and `M.MRMid = R.MRRight`. A 3-way join
 // exercises JOIN ORDERING — the planner picks among 3! build orders and must
 // keep every join key correct through the chosen order — which the 2-way
-// self-join cannot reach. INNER only: mixing an outer leg in would hit the
-// documented multi-leg source-relative-ordinal executor gap (see
-// TestFDB_LeftJoinPkOrdinal_KnownExecutorGap), a separate workstream. The oracle
-// stays a plain triple nested loop over the same authoritative rows.
+// self-join cannot reach. INNER only: the outer-leg 3-way shapes are simply not
+// generated here yet (the 2-way LEFT/RIGHT generator already covers outer-join
+// row soundness, incl. the InJoin+sort leg-window path fixed in
+// TestFDB_LeftJoinPkOrdinal_InJoinSortRegression). The oracle stays a plain
+// triple nested loop over the same authoritative rows.
 type ThreeWayJoinSpec struct {
 	LMLeft  string // L column of the L↔M key
 	LMRight string // M column of the L↔M key

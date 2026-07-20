@@ -532,24 +532,17 @@ func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
 		t.Fatalf("ledger declined %q, but the nested-IN gap is FIXED — a retired entry must not linger", gap.name)
 	}
 
-	// The production ledger's one live entry — the LEFT OUTER PK-join
-	// multi-leg ordinal-binding executor gap — must match its OWN signature
-	// and nothing else. A wrong-rows divergence (no error, or an error without
-	// the signature) must stay a finding.
+	// The RETIRED LEFT-OUTER-PK-join multi-leg gap must NO LONGER be declined:
+	// its root cause is fixed (InJoin is now a leg-window passthrough,
+	// TestFDB_LeftJoinPkOrdinal_InJoinSortRegression). A lingering entry would
+	// silence that regression.
 	multiLegErr := errors.New(`correlated FieldValue "ID" (correlation "L") evaluated against an unbound/unrecognized context (*RowEvalContext (multi-leg row cannot serve a source-relative ordinal)) — no frontier row resolved (planner/executor bug)`)
 	const pkLeftJoin = "SELECT l.id AS l_id, r.id AS r_id FROM t AS l LEFT JOIN t AS r ON l.id = r.id WHERE r.s IN ('delta','beta') ORDER BY l.id DESC, r.id"
-	if matchKnownGap(pkLeftJoin, multiLegErr) == nil {
-		t.Fatal("production ledger must decline the documented multi-leg ordinal-binding error")
-	}
-	// Near-misses for the multi-leg entry: each must stay a FINDING.
-	if gap := matchKnownGap(pkLeftJoin, errors.New("XX000: some other executor error")); gap != nil {
-		t.Fatalf("multi-leg entry over-matched a different error (%q) — must stay a finding", gap.name)
-	}
-	if gap := matchKnownGap(pkLeftJoin, errors.New("row count: engine 3, oracle expects 2")); gap != nil {
-		t.Fatalf("multi-leg entry over-matched a ROW divergence (%q) — soundness findings are never declinable", gap.name)
+	if gap := matchKnownGap(pkLeftJoin, multiLegErr); gap != nil {
+		t.Fatalf("ledger declined %q, but the multi-leg PK-join gap is FIXED — a retired entry must not linger", gap.name)
 	}
 
-	// The production ledger's second live entry — the 3-way shared-column
+	// The production ledger's one live entry — the 3-way shared-column
 	// ordinal-resolution gap — must match its OWN signature and nothing else.
 	threeWayErr := errors.New(`ordinal resolution: field "C" not resolvable in the runtime row (ordinal -1, row columns [ID A B C S F]) — malformed plan`)
 	const threeWayJoin = "SELECT l.id, m.id, r.id FROM t AS l, t AS m, t AS r WHERE l.a = m.id AND m.c = r.c AND l.c = 1 AND r.c IS NULL"

@@ -1453,12 +1453,16 @@ func scalarSubqueriesFromBinder(b values.CorrelationBinder) map[values.Correlati
 // from the join's result value (ordinalJoinSpans — pristine seed only; a
 // folded RV's output is a plain projection row, no windows).
 //
-// The passthrough set is deliberately EXACT, not permissive. Left out on
-// purpose: FirstOrDefault/DefaultOnEmpty (fabricate a default row),
-// InJoin (re-executes under bindings), FetchFromPartialRecord (row
-// transform), unions/intersections (multi-child), projection/map/aggregation
-// (row rewrites — projection/map are themselves dispatch sites). Missing a
-// genuine passthrough UNDER-provides windows, which fails LOUD downstream
+// The passthrough set is deliberately EXACT, not permissive. InJoin and InUnion
+// ARE passthroughs (each re-emits its single inner's rows verbatim under a
+// per-in-value binding — the binding changes row count/order/content-selection,
+// never the row LAYOUT, and leg windows are a purely positional property; see
+// the cases in unwrapToJoinPlan). Left out on purpose: FirstOrDefault/
+// DefaultOnEmpty (fabricate a default row), FetchFromPartialRecord (row
+// transform), the general multi-child unions/intersections (RecordQueryUnionPlan
+// etc.), projection/map/aggregation (row rewrites — projection/map are
+// themselves dispatch sites). Missing a genuine passthrough UNDER-provides
+// windows, which fails LOUD downstream
 // (OrdinalResolutionError/BakedNameContextError), never silently wrong.
 func downstreamLegWindows(input plans.RecordQueryPlan) ([]legSpan, bool) {
 	spans, _, ok := downstreamLegWindowsTyped(input)
@@ -1513,6 +1517,42 @@ func unwrapToJoinPlan(input plans.RecordQueryPlan) plans.RecordQueryPlan {
 		case *plans.RecordQueryFilterPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryPredicatesFilterPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryInJoinPlan:
+			// An IN-join re-executes its inner ONCE PER in-list value under a
+			// parameter binding (executeInJoin: evalCtx.WithBinding(...) then
+			// ExecutePlan(GetInner()) flat-mapped). The binding changes which
+			// rows are produced and the row COUNT — never the row LAYOUT: the
+			// cursor re-emits the inner join's merged QueryResults VERBATIM (no
+			// projection/transform). Leg windows are a purely POSITIONAL property
+			// of that layout, so the join below the IN-join is still the window
+			// authority. Without this, a source-relative ORDER-BY / filter key
+			// over a join wrapped by an `... IN (…)` filter (which lowers to an
+			// InJoin) reaches a bare multi-leg row and fails LOUD in the
+			// correlated fall-through guard, even though the leg structure is
+			// intact and resolvable. By the time rows reach an ABOVE-InJoin
+			// consumer (the in-memory sort) they are already materialized, so no
+			// in-value binding is in scope there — the sort key resolves purely
+			// through the leg windows.
+			input = p.GetInner()
+		case *plans.RecordQueryInUnionPlan:
+			// The other lowering of `... IN (…)`: like InJoin it runs its single
+			// inner ONCE PER in-value under a binding and MERGE-UNIONs (or
+			// concats) the results (executeInUnion — no projection/transform of
+			// the inner rows). Row count/order change; the row LAYOUT does not,
+			// so the join below it is still the leg-window authority.
+			//
+			// DEFENSIVE SYMMETRY, not an e2e-reachable path today: the cost model
+			// currently prefers InJoin for the join+IN+ORDER-BY shapes that
+			// trigger the multi-leg hazard, so no live query is known to route an
+			// InUnion over a join into a leg-window consumer. This arm is unit-
+			// proven in TestDownstreamLegWindows (not by a driver test) and kept
+			// because InUnion is structurally the identical layout-preserving
+			// single-inner passthrough (ImplementInUnionRule's result value is a
+			// bare QOV over the inner quantifier, whose inner may be a join): the
+			// day the cost model routes it here, this pre-closes a latent loud
+			// failure. Correct-or-loud regardless — an InUnion whose inner isn't a
+			// join still bottoms out at `default → nil` (windowsOK=false).
 			input = p.GetInner()
 		default:
 			return nil
