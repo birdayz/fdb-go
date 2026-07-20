@@ -197,17 +197,40 @@ type ExistsSpec struct {
 	Negated bool                      // NOT EXISTS
 }
 
+// ScalarSubSpec is a NON-correlated aggregate scalar subquery in a WHERE
+// comparison:
+//
+//	<OuterCol> <Op> (SELECT <Func>(<Col>) FROM t [WHERE <Filter>])
+//
+// This is a Go read-side extension — Java's grammar has no scalar subquery in
+// an expressionAtom (RelationalParser.g4) — so the oracle is the sole authority
+// on correctness, exactly the deep coverage the extension needs. The aggregate
+// makes the subquery single-valued (no cardinality trap); an optional Filter
+// lets the subquery be EMPTY, so MIN/MAX yield NULL and the outer comparison
+// `col <op> NULL` is UNKNOWN → the row drops. That NULL-when-empty path is a
+// documented past defect here (`id = (SELECT MIN(id) …)` once built `id=NULL`),
+// so it is the axis most worth pinning. Func is restricted to MIN/MAX/COUNT so
+// the oracle never hits SUM's int64-overflow sentinel.
+type ScalarSubSpec struct {
+	OuterCol string                    // outer column compared against the scalar
+	Op       predicates.ComparisonType // comparison operator
+	Func     AggFunc                   // AggMin / AggMax / AggCountStar / AggCountCol
+	Col      string                    // aggregated inner column ("" for COUNT(*))
+	Filter   *Pred                     // optional inner WHERE (Qual empty; col op literal); nil = whole table
+}
+
 // Query is one generated query body; the runner executes it under every
 // projection variant and cross-checks row identity via ID.
 type Query struct {
-	Agg      *AggSpec    // nil = not an aggregate query
-	Join     *JoinSpec   // nil = single-table query
-	Exists   *ExistsSpec // non-nil = append a correlated [NOT] EXISTS to WHERE
-	Where    *BoolNode   // nil = no WHERE
-	OrderBy  []OrderKey
-	Limit    int  // 0 = no LIMIT
-	Offset   int  // 0 = no OFFSET (only emitted alongside LIMIT + ORDER BY)
-	Distinct bool // SELECT DISTINCT (ORDER BY keys ⊆ projection enforced by generator)
+	Agg       *AggSpec       // nil = not an aggregate query
+	Join      *JoinSpec      // nil = single-table query
+	Exists    *ExistsSpec    // non-nil = append a correlated [NOT] EXISTS to WHERE
+	ScalarSub *ScalarSubSpec // non-nil = append a scalar-subquery comparison to WHERE
+	Where     *BoolNode      // nil = no WHERE
+	OrderBy   []OrderKey
+	Limit     int  // 0 = no LIMIT
+	Offset    int  // 0 = no OFFSET (only emitted alongside LIMIT + ORDER BY)
+	Distinct  bool // SELECT DISTINCT (ORDER BY keys ⊆ projection enforced by generator)
 }
 
 // Case is everything one seed produces.
@@ -327,6 +350,55 @@ func existsSQL(e *ExistsSpec, tbl string) string {
 	if e.Inner != nil {
 		fmt.Fprintf(&b, " AND r.%s %s %s",
 			strings.ToLower(e.Inner.Col), opSQL(e.Inner.Op), renderLiteral(e.Inner.Lit))
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// genScalarSub builds a non-correlated aggregate scalar subquery comparison.
+// The outer and aggregated columns are BIGINTs; ~half the time an inner filter
+// (often selective enough to leave the subquery empty) exercises the
+// MIN/MAX-returns-NULL path.
+func genScalarSub(rng *rand.Rand) *ScalarSubSpec {
+	bigints := []string{"A", "B", "C"}
+	ops := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
+	s := &ScalarSubSpec{
+		OuterCol: bigints[rng.IntN(len(bigints))],
+		Op:       ops[rng.IntN(len(ops))],
+	}
+	switch rng.IntN(4) {
+	case 0:
+		s.Func = AggCountStar
+	case 1:
+		s.Func, s.Col = AggCountCol, bigints[rng.IntN(len(bigints))]
+	case 2:
+		s.Func, s.Col = AggMin, bigints[rng.IntN(len(bigints))]
+	default:
+		s.Func, s.Col = AggMax, bigints[rng.IntN(len(bigints))]
+	}
+	if rng.IntN(2) == 0 {
+		s.Filter = &Pred{
+			Col: bigints[rng.IntN(len(bigints))],
+			Op:  ops[rng.IntN(len(ops))],
+			Lit: int64(rng.IntN(10)),
+		}
+	}
+	return s
+}
+
+// scalarSubSQL renders `<outerCol> <op> (SELECT <agg> FROM tbl [WHERE <filter>])`.
+func scalarSubSQL(s *ScalarSubSpec, tbl string) string {
+	inner := &AggSpec{Func: s.Func, Col: s.Col}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %s (SELECT %s FROM %s",
+		strings.ToLower(s.OuterCol), opSQL(s.Op), aggExprSQL(inner), tbl)
+	if s.Filter != nil {
+		fmt.Fprintf(&b, " WHERE %s %s %s",
+			strings.ToLower(s.Filter.Col), opSQL(s.Filter.Op), renderLiteral(s.Filter.Lit))
 	}
 	b.WriteString(")")
 	return b.String()
@@ -737,6 +809,13 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 		q.Exists = genExists(rng)
 	}
 
+	// Non-correlated aggregate scalar subquery comparison on ~1/5 of plain
+	// queries — a Go-only read extension (no Java equivalent) whose scalar
+	// evaluation and NULL-when-empty semantics need their own coverage.
+	if rng.IntN(5) == 0 {
+		q.ScalarSub = genScalarSub(rng)
+	}
+
 	// DISTINCT on ~1/6 of queries. ORDER BY is dropped for DISTINCT — the
 	// projection variants do not all contain every sort key, and SQL
 	// requires DISTINCT's ORDER BY ⊆ projection; the unordered multiset
@@ -923,36 +1002,36 @@ func (c *Case) SQL(q Query, projection []string) string {
 		joinEq = fmt.Sprintf("l.%s = r.%s",
 			strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
 	}
-	if joinEq != "" || q.Where != nil || q.Exists != nil {
-		b.WriteString(" WHERE ")
-		wrote := false
+	// Build the WHERE as a list of top-level AND conjuncts: the join equality
+	// (comma-join queries), the boolean predicate tree, and the appended
+	// subquery filters (EXISTS, scalar comparison). Each appended subquery is a
+	// separate top-level conjunct in the oracle, so when one follows the
+	// predicate tree the tree is parenthesized — otherwise a top-level OR in it
+	// would capture the trailing `AND <subquery>` (AND binds tighter than OR),
+	// a rendering-only divergence.
+	{
+		var conj []string
 		if joinEq != "" {
-			b.WriteString(joinEq)
-			wrote = true
+			conj = append(conj, joinEq)
 		}
 		if q.Where != nil {
-			if wrote {
-				b.WriteString(" AND ")
+			var wb strings.Builder
+			renderBool(&wb, q.Where)
+			w := wb.String()
+			if q.Exists != nil || q.ScalarSub != nil {
+				w = "(" + w + ")"
 			}
-			// Parenthesize the WHERE when a top-level `AND EXISTS` conjunct
-			// follows: without it, a top-level OR in the WHERE would capture the
-			// EXISTS (AND binds tighter than OR), whereas the oracle applies
-			// EXISTS as a separate top-level conjunct — a rendering-only
-			// divergence otherwise.
-			if q.Exists != nil {
-				b.WriteString("(")
-				renderBool(&b, q.Where)
-				b.WriteString(")")
-			} else {
-				renderBool(&b, q.Where)
-			}
-			wrote = true
+			conj = append(conj, w)
 		}
 		if q.Exists != nil {
-			if wrote {
-				b.WriteString(" AND ")
-			}
-			b.WriteString(existsSQL(q.Exists, tbl))
+			conj = append(conj, existsSQL(q.Exists, tbl))
+		}
+		if q.ScalarSub != nil {
+			conj = append(conj, scalarSubSQL(q.ScalarSub, tbl))
+		}
+		if len(conj) > 0 {
+			b.WriteString(" WHERE ")
+			b.WriteString(strings.Join(conj, " AND "))
 		}
 	}
 	if len(q.OrderBy) > 0 {

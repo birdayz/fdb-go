@@ -29,6 +29,17 @@ func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
 	if q.Join != nil {
 		return oracleJoinRows(c, q, projection)
 	}
+	// A non-correlated scalar subquery is evaluated ONCE, its value shared by
+	// every outer row (that is the whole point of "non-correlated").
+	var scalarVal any
+	if q.ScalarSub != nil {
+		v, err := scalarSubValue(c, q.ScalarSub)
+		if err != nil {
+			return nil, err
+		}
+		scalarVal = v
+	}
+
 	var out []Row
 	for _, r := range c.Rows {
 		if q.Where != nil {
@@ -48,6 +59,18 @@ func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
 			// EXISTS keeps the outer row when a match exists; NOT EXISTS keeps
 			// it when none does. has==Negated is exactly the drop condition.
 			if has == q.Exists.Negated {
+				continue
+			}
+		}
+		if q.ScalarSub != nil {
+			// outerCol <op> scalarVal, through the shared Comparison — a NULL
+			// scalar (empty MIN/MAX) makes every comparison UNKNOWN → the row
+			// drops, matching SQL's `col <op> NULL`.
+			tb, err := predicates.NewLiteralComparison(q.ScalarSub.Op, scalarVal).Eval(r[q.ScalarSub.OuterCol])
+			if err != nil {
+				return nil, err
+			}
+			if tb != predicates.TriTrue {
 				continue
 			}
 		}
@@ -176,6 +199,28 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// scalarSubValue evaluates a non-correlated aggregate scalar subquery: fold the
+// aggregate over the rows passing the optional inner filter. Reusing foldAgg
+// keeps the NULL-when-empty (MIN/MAX) and 0-when-empty (COUNT) semantics
+// identical to the grouped-aggregate oracle. Func is restricted to MIN/MAX/COUNT
+// by the generator, so foldAgg never returns its SUM-overflow sentinel here.
+func scalarSubValue(c *Case, s *ScalarSubSpec) (any, error) {
+	var inner []Row
+	for _, r := range c.Rows {
+		if s.Filter != nil {
+			tb, err := evalLeaf(s.Filter, r)
+			if err != nil {
+				return nil, err
+			}
+			if tb != predicates.TriTrue {
+				continue
+			}
+		}
+		inner = append(inner, r)
+	}
+	return foldAgg(&AggSpec{Func: s.Func, Col: s.Col}, inner), nil
 }
 
 // existsHolds evaluates a correlated EXISTS for outer row o: does ANY row
