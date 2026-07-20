@@ -1345,10 +1345,9 @@ unblocker and the substrate. When 173 lands, un-freeze and resume **in this orde
 4. **RFC-164 WS-1** — generative Go-vs-Java row differential. Heavy-infra (live Java + FDB), multi-week.
    Untouched by 173.
 5. **3 open Cascades hunt bugs** (from `hunt/cascades-bug-hunt`) — own focused Graefe cycle each.
-6. **INFRA — Nightly Fuzz** (see item directly below): dispatch-timing bug **AND two red nightly runs
-   (06-29, 06-30)**. ⚠️ The red runs are a live "red-CI-is-red" signal that arguably should NOT wait for
-   173 (a red fuzz could be a real bug, possibly in code 173 touches) — flag for the owner whether to
-   triage as a keep-the-lights-on exception to the freeze.
+6. **INFRA — Nightly Fuzz** (see item directly below): dispatch-timing bug. The **red nightly runs** are
+   RESOLVED — root-caused to a Go stdlib race that leaks `-fuzztime` expiry as a test failure, fixed by
+   `cmd/fuzzrun`; see "INFRA — Nightly Fuzz false reds" below. Only the dispatch-timing item remains open.
 7. Then the numbered-phase execution order below (lowest-numbered unchecked, gates satisfied).
 
 **RFC-164 `/goal` status:** WS-5 done (audit); WS-2 nil-child + WS-3 isCountStar + WS-4
@@ -1742,6 +1741,100 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > from a reliable cron outside GitHub) so they fire on time; (d) a dedicated nightly runner so scheduled
 > jobs don't contend with per-PR CI. Also: the last two Nightly Fuzz runs FAILED (06-29, 06-30) — a
 > separate real signal to investigate (a fuzz target has been red for two nights; no-unrelated-flakes rule).
+
+## [x] INFRA — Nightly Fuzz false reds: Go stdlib leaks `-fuzztime` expiry as a failure — FIXED
+Root-caused and fixed (`cmd/fuzzrun`). The nightly `Differential Serialization Fuzzer` reds were **not**
+a wire divergence. Signature, from run `29311279420` (2026-07-14):
+```
+fuzz: elapsed: 2m0s, execs: 5650945 (0/sec), new interesting: 0 (total: 16)
+--- FAIL: FuzzGetValueReply (120.08s)
+    context deadline exceeded
+```
+5.65M execs, **zero** mismatches, no crasher persisted (hence the empty seed-artifact upload). The
+`2026-07-11` red (`29142824495`) was **`FuzzEndpoint`** — a different target, byte-identical signature,
+which is what rules out a per-type serialization bug.
+
+**Root cause** — `$GOROOT/src/internal/fuzz/fuzz.go` (Go 1.26.5). The coordinator suppresses the
+budget-expiry error with `if err == fuzzCtx.Err()`, where `fuzzCtx = context.WithCancel(ctx)` and `ctx`
+carries the `-fuzztime` deadline. `context`'s `cancelCtx.cancel` closes the parent's done channel
+*before* walking its children, so the coordinator can wake on `<-ctx.Done()` and read `fuzzCtx.Err()`
+while the child is still uncancelled (`nil`). The comparison fails, `DeadlineExceeded` becomes `fuzzErr`,
+and a clean full-budget run is reported as a test failure. Upstream: golang/go#72104 (NeedsInvestigation).
+
+**Evidence chain:** (1) reproduced on a trivial dependency-free fuzz target, **1/80 runs** — nothing to do
+with the oracle; (2) `GODEBUG=fuzzdebug=1` caught it live: `stop called at .../fuzz.go:228. stopping: false`
+— line 228 is exactly the `case <-doneC: stop(ctx.Err())` deadline arm, and it is the *first* `stop`, so it
+is the call that set `fuzzErr`; (3) the underlying context window measured directly at **0.025%** of
+wakeups (`parent.Err() != child.Err()`), widened under real 4-worker fuzz load.
+
+**Fix:** `cmd/fuzzrun` wraps each fuzz invocation, classifies the failure, and retries **only** a run that
+exhibits the complete budget-expiry shape, once.
+
+Recognition is a **positive whitelist, not a denylist** — this is the load-bearing design point. A first
+draft retried anything containing `context deadline exceeded` minus a denylist, which both reviewers
+correctly rejected as unsafe: that string is *also* what a timed-out FDB testcontainer reports, and every
+package hosting a fuzz target starts one under a `context.WithTimeout` (CLAUDE.md mandates it). That
+version would have retried real Docker flakes into green — the exact failure mode the
+"no unrelated flakes" rule exists to prevent. A run is now benign only when **all** hold:
+(1) it exited with a test-failure status (rejecting `timeout`-kill 124, OOM 137, signal, bazel build
+error); (2) it emitted `fuzz: elapsed:` progress, proving budget was actually consumed; (3) it reported
+exactly ONE failure and that failure is a `Fuzz` target; (4) that failure's ONLY detail line is
+`context deadline exceeded`. Plus a hard-failure marker list covering the paths that produce no crasher
+file — notably `failure while testing seed corpus entry:`, which Go reports via
+`stop(errors.New(crasherMsg))` rather than a `crashError`, so it prints no "Failing input written to".
+
+Note the retry is **not** load-bearing for safety, and must not be described as such: the "a persisted
+crasher replays as a seed on the retry" argument holds only for the plain `go test` path, because under
+`bazelisk test` the crasher lands in an ephemeral sandbox that is destroyed on exit (124 of 142 target
+pairs). Safety comes from the classifier rejecting anything that isn't the exact shape.
+
+The single most dangerous shape — found by review round 2, and invisible to the structural check — is a
+**crasher found while the deadline fires during minimization**. `internal/fuzz/fuzz.go:149-164` persists
+the crasher but wraps it in a `crashError` only `if err == nil`; under this race `err` is
+`DeadlineExceeded`, so there is no `Failing input written to`, no `crasherMsg`, and hence no nested
+`--- FAIL` — byte-identical to a benign expiry while a genuine finding sits on disk (and under bazel, in a
+sandbox about to be destroyed). `-fuzzminimizetime` defaults to 60s against a 90s budget, so the window is
+wide, not exotic. The `fuzz: minimizing` witness line (`fuzz.go:265`, logged immediately after
+`c.crashMinimizing` is set) is what catches it. Revert-proven: removing the marker turns the regression
+red.
+
+The confirming retry is skipped past a per-job `-deadline` so a systematic race cannot blow
+`timeout-minutes`. The cutoff is computed **per iteration** and reserves one run for every target still
+queued (`STEP_END - (TOTAL - RAN + 1) * PER_TARGET`): a flat cutoff was not enough, because under a
+systematic race the early targets double up and the remaining mandatory first attempts still overran —
+engine-fuzz landed at ~79min against a 75min timeout, killing the job before `-summarize` could report
+the very thing it exists to report. `STEP_END` is anchored to `JOB_START` (stamped into `$GITHUB_ENV` by each job's first
+step) rather than to the fuzz step, because `timeout-minutes` runs from job start and the preamble — the
+C++ oracle build especially — can eat an unpredictable slice of it.
+
+Two properties are guarded because both fail *silently*: `STEP_END` must sit ABOVE the mandatory total
+(`TOTAL × PER_TARGET`) or the reservation term goes permanently negative and disables retries with no
+symptom; and `TOTAL` is **discovered**, so adding roughly a dozen engine fuzz targets — a couple of shifts
+of ordinary work — walks the rotation into the timeout on its own. A pre-loop check **warns** on both — and warns
+only. `PER_TARGET` is a seed estimate that self-corrects upward from the observed pace, and an estimate
+must never drive a pass/fail decision: on a cold cache the arithmetic can say "does not fit" while the run
+finishes comfortably, and a spuriously red nightly is the exact disease this item cures. The enforceable
+bound is `timeout-minutes` itself; the warnings exist so the cause is already in the log when it fires.
+The only things that set `FAILED` are a real target failure and the observed-race majority.
+Skipping it **passes** rather than fails: the classifier is authoritative, so going red there would
+re-introduce the very false red this tool removes — and would do it exactly when the race is most
+frequent. Output is streamed rather than buffered, so a job killed mid-run still has the in-flight
+target's log.
+
+Individual raced runs pass, but `-racelog` tallies them and `-summarize` fails the job if a **majority**
+of targets raced in one night: at ~1%/run that is not bad luck, it means the Go toolchain's fuzz
+coordinator changed and this tool's assumptions need re-verifying before the gate can be trusted. Without
+that, a systematic race would show up only as per-target warnings inside a green job — i.e. nowhere.
+
+Wired into all three nightly jobs (`diff-fuzz`, `client-fuzz`, `engine-fuzz`) **and** `just verify`'s fuzz
+smoke targets. Pinned by `cmd/fuzzrun/{classify,gate,runcommand,summary}_test.go` — the verbatim captured
+output of both real nightly failures, real bazel framing (exit 3, verbose per `.bazelrc:23`), the
+exit-code plumbing, the race tally, and the dangerous direction: eleven deadline-bearing outputs with no
+crasher marker that must all still fail. Both minimization markers are independently revert-proven.
+
+**Note for the query-engine nightly triage:** `engine-fuzz` shares this exposure, so any planner/metadata
+nightly red whose only error line is `context deadline exceeded` with no crasher was the same false
+positive, not a planner bug — re-check those before spending a shift on them.
 
 > ## [ ] INFRA — stress-1M thresholds violated on MASTER (baseline rot; INVESTIGATE)
 > Discovered by RFC-176 P2's stress gate (PR #453): on an idle box, **current master violates the

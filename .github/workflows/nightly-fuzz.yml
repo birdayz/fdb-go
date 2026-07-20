@@ -37,6 +37,10 @@ jobs:
         # bug). `workflow_dispatch` (manual "run it now") always proceeds.
         id: window
         run: |
+          # Anchor the fuzz-budget model to JOB start: timeout-minutes is measured
+          # from here, not from the fuzz step, and the preamble (checkout, C++ oracle
+          # build, bazel builds) can eat an unpredictable slice of it.
+          echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
           if [ "${{ github.event_name }}" != "schedule" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -62,6 +66,10 @@ jobs:
       - name: Build Go fuzz test
         if: steps.window.outputs.ok == 'true'
         run: bazelisk build //cmd/fdb-diff-oracle:fdb-diff-oracle_test
+
+      - name: Build fuzzrun (fuzz failure classifier)
+        if: steps.window.outputs.ok == 'true'
+        run: bazelisk build //cmd/fuzzrun
 
       - name: Resolve Bazel Go SDK
         if: steps.window.outputs.ok == 'true'
@@ -101,6 +109,7 @@ jobs:
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
+          FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
           TARGETS=$(grep -rhoP '^func \KFuzz\w+' cmd/fdb-diff-oracle/*_test.go | sort -u)
           if [ -z "$TARGETS" ]; then
             echo "::error::no Fuzz targets discovered in cmd/fdb-diff-oracle — fuzz gate is a no-op"
@@ -108,21 +117,70 @@ jobs:
           fi
           ROTATE=$(( 10#$(date -u +%j) % 3 ))
           echo "Discovered $(echo "$TARGETS" | wc -l) oracle fuzz targets; active rotation offset=$ROTATE (of 3)"
-          FAILED=0
+          # Select first so TOTAL is known: the retry cutoff below has to reserve a
+          # first run for every target still queued, which needs the count up front.
+          SELECTED=""
           i=0
           for target in $TARGETS; do
-            if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
+            if [ $(( i % 3 )) -eq "$ROTATE" ]; then SELECTED="$SELECTED $target"; fi
             i=$((i+1))
+          done
+          TOTAL=$(echo $SELECTED | wc -w)
+          # Budget model. PER_TARGET seeds an estimate of one attempt (the `timeout 150`
+          # cap plus process overhead); once the loop is running it is replaced by the
+          # OBSERVED average, so a slow target corrects the schedule instead of
+          # silently blowing it. STEP_END is anchored to JOB_START (see the window
+          # step) minus a margin, because timeout-minutes (45) runs from job start and
+          # the C++ oracle build ahead of this step can be slow on a cold cache.
+          PER_TARGET=170
+          STEP_END=$(( JOB_START + 40*60 ))
+          FAILED=0
+          RAN=0
+          RACELOG=$(mktemp)
+          LOOP_START=$(date +%s)
+          BUDGET=$(( STEP_END - LOOP_START ))
+          # Report on the MANDATORY floor: the reservation below protects retries, but
+          # nothing protects one run of every target, and TOTAL is DISCOVERED — adding
+          # fuzz targets silently walks the rotation into the timeout.
+          #
+          # These WARN and never set FAILED. PER_TARGET is a seed estimate, and a
+          # pass/fail decision taken from an estimate is the same mistake as the
+          # in-loop overrun check that was built and deleted here: on a cold cache the
+          # arithmetic can say "does not fit" while the run finishes comfortably, and a
+          # spuriously red nightly is the exact disease this tool cures. The
+          # enforceable bound is timeout-minutes itself; if the work genuinely does not
+          # fit, Actions kills the job and that is loud. These lines exist so the cause
+          # is already in the log when it does.
+          if [ $(( TOTAL * PER_TARGET )) -ge "$BUDGET" ]; then
+            echo "::warning::rotation may no longer fit its budget: $TOTAL targets x ~${PER_TARGET}s (estimated) = $(( TOTAL * PER_TARGET / 60 ))min vs $(( BUDGET / 60 ))min left of timeout-minutes. If this job starts hitting timeout-minutes, shrink the rotation, cut -fuzztime, or raise the timeout."
+          elif [ $(( (TOTAL + 1) * PER_TARGET )) -ge "$BUDGET" ]; then
+            echo "::warning::budget leaves no room for a confirming retry; deadline-race runs will be accepted on classification alone. This is the silent-disable case — if it persists, the rotation has outgrown timeout-minutes."
+          fi
+          for target in $SELECTED; do
+            # Incremented BEFORE the reservation on purpose: it counts THIS target as
+            # still owed. Moving it below shifts the reservation by a whole target.
+            RAN=$((RAN+1))
+            # Observed pace, used ONLY to throttle retries. It counts a retried target
+            # as one unit, so it over-estimates a single attempt — deliberately: erring
+            # high declines retries (safe), and it must never feed a pass/fail decision,
+            # which is why there is no "we will overrun" error built on it. A genuine
+            # overrun still surfaces as the job hitting timeout-minutes, loudly.
+            if [ "$RAN" -gt 1 ]; then
+              AVG=$(( ($(date +%s) - LOOP_START) / (RAN - 1) ))
+              [ "$AVG" -gt "$PER_TARGET" ] && PER_TARGET=$AVG
+            fi
+            # Allow a confirming retry only if this retry AND one run of every target
+            # still queued both still fit. Without the reservation term a systematic
+            # race doubles the early targets and the job is killed part-way through the
+            # rest — losing the -summarize diagnosis in the one case it exists for.
+            RETRY_DEADLINE=$(( STEP_END - (TOTAL - RAN + 1) * PER_TARGET ))
             echo "=== $target (2m) ==="
-            OUTPUT=$(timeout 150 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
-                -run='^$' -fuzz="^${target}\$" -fuzztime=2m ./cmd/fdb-diff-oracle/ 2>&1) || {
-              echo "FAIL: $target (exit code $?)"
-              echo "$OUTPUT"
-              FAILED=1
-            }
-            echo "$OUTPUT" | tail -3
+            "$FUZZRUN" -label "$target" -deadline "$RETRY_DEADLINE" -racelog "$RACELOG" -- \
+              timeout 150 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
+                -run='^$' -fuzz="^${target}\$" -fuzztime=2m ./cmd/fdb-diff-oracle/ || FAILED=1
             echo ""
           done
+          "$FUZZRUN" -summarize "$RACELOG" -total "$RAN" || FAILED=1
           exit $FAILED
 
       - name: Upload failing fuzz seeds
@@ -145,6 +203,10 @@ jobs:
         # rationale (must run on the allocated runner, not a pre-queue gate).
         id: window
         run: |
+          # Anchor the fuzz-budget model to JOB start: timeout-minutes is measured
+          # from here, not from the fuzz step, and the preamble (checkout, C++ oracle
+          # build, bazel builds) can eat an unpredictable slice of it.
+          echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
           if [ "${{ github.event_name }}" != "schedule" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -190,6 +252,10 @@ jobs:
         # rationale (must run on the allocated runner, not a pre-queue gate).
         id: window
         run: |
+          # Anchor the fuzz-budget model to JOB start: timeout-minutes is measured
+          # from here, not from the fuzz step, and the preamble (checkout, C++ oracle
+          # build, bazel builds) can eat an unpredictable slice of it.
+          echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
           if [ "${{ github.event_name }}" != "schedule" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -234,6 +300,10 @@ jobs:
         # rationale (must run on the allocated runner, not a pre-queue gate).
         id: window
         run: |
+          # Anchor the fuzz-budget model to JOB start: timeout-minutes is measured
+          # from here, not from the fuzz step, and the preamble (checkout, C++ oracle
+          # build, bazel builds) can eat an unpredictable slice of it.
+          echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
           if [ "${{ github.event_name }}" != "schedule" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -268,6 +338,8 @@ jobs:
         # for the non-selected targets are still replayed by the per-PR/CI gates.
         run: |
           mkdir -p /tmp/fuzz-cache
+          bazelisk build //cmd/fuzzrun
+          FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
           VALID=$(bazelisk query 'kind(go_test, //pkg/fdbgo/...)' 2>/dev/null)
           PAIRS=""
           for f in $(grep -rl '^func Fuzz' pkg/fdbgo/ --include='*_test.go'); do
@@ -287,22 +359,73 @@ jobs:
           fi
           ROTATE=$(( 10#$(date -u +%j) % 3 ))
           echo "Discovered $(echo $PAIRS | wc -w) (target,func) pairs; active rotation offset=$ROTATE (of 3)"
-          FAILED=0
+          # Select first so TOTAL is known: the retry cutoff below has to reserve a
+          # first run for every pair still queued, which needs the count up front.
+          SELECTED=""
           i=0
           for pair in $PAIRS; do
-            if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
+            if [ $(( i % 3 )) -eq "$ROTATE" ]; then SELECTED="$SELECTED $pair"; fi
             i=$((i+1))
-            target="${pair%|*}"; fn="${pair#*|}"
-            echo "=== $target $fn (90s) ==="
-            bazelisk test "$target" \
-              --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
-              --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
-              --sandbox_writable_path=/tmp/fuzz-cache \
-              --test_timeout=300 --nocache_test_results --test_output=errors || {
-                echo "::error::fuzz FAIL: $target $fn"
-                FAILED=1
-              }
           done
+          TOTAL=$(echo $SELECTED | wc -w)
+          # Budget model. PER_TARGET seeds an estimate of one attempt (the 90s budget
+          # plus bazel's per-test overhead); once the loop is running it is replaced by
+          # the OBSERVED average, so a slow target — several of these packages start an
+          # FDB testcontainer — corrects the schedule instead of silently blowing it.
+          # STEP_END is anchored to JOB_START (see the window step) because
+          # timeout-minutes (60) runs from job start, not from this step.
+          PER_TARGET=110
+          STEP_END=$(( JOB_START + 54*60 ))
+          FAILED=0
+          RAN=0
+          RACELOG=$(mktemp)
+          LOOP_START=$(date +%s)
+          BUDGET=$(( STEP_END - LOOP_START ))
+          # Report on the MANDATORY floor: the reservation below protects retries, but
+          # nothing protects one run of every pair, and TOTAL is DISCOVERED — adding
+          # fuzz targets silently walks the rotation into the timeout.
+          #
+          # These WARN and never set FAILED. PER_TARGET is a seed estimate, and a
+          # pass/fail decision taken from an estimate is the same mistake as the
+          # in-loop overrun check that was built and deleted here: on a cold cache the
+          # arithmetic can say "does not fit" while the run finishes comfortably, and a
+          # spuriously red nightly is the exact disease this tool cures. The
+          # enforceable bound is timeout-minutes itself; if the work genuinely does not
+          # fit, Actions kills the job and that is loud. These lines exist so the cause
+          # is already in the log when it does.
+          if [ $(( TOTAL * PER_TARGET )) -ge "$BUDGET" ]; then
+            echo "::warning::rotation may no longer fit its budget: $TOTAL pairs x ~${PER_TARGET}s (estimated) = $(( TOTAL * PER_TARGET / 60 ))min vs $(( BUDGET / 60 ))min left of timeout-minutes. If this job starts hitting timeout-minutes, shrink the rotation, cut -fuzztime, or raise the timeout."
+          elif [ $(( (TOTAL + 1) * PER_TARGET )) -ge "$BUDGET" ]; then
+            echo "::warning::budget leaves no room for a confirming retry; deadline-race runs will be accepted on classification alone. This is the silent-disable case — if it persists, the rotation has outgrown timeout-minutes."
+          fi
+          for pair in $SELECTED; do
+            # Incremented BEFORE the reservation on purpose: it counts THIS pair as
+            # still owed. Moving it below shifts the reservation by a whole target.
+            RAN=$((RAN+1))
+            # Observed pace, used ONLY to throttle retries. It counts a retried target
+            # as one unit, so it over-estimates a single attempt — deliberately: erring
+            # high declines retries (safe), and it must never feed a pass/fail decision,
+            # which is why there is no "we will overrun" error built on it. A genuine
+            # overrun still surfaces as the job hitting timeout-minutes, loudly.
+            if [ "$RAN" -gt 1 ]; then
+              AVG=$(( ($(date +%s) - LOOP_START) / (RAN - 1) ))
+              [ "$AVG" -gt "$PER_TARGET" ] && PER_TARGET=$AVG
+            fi
+            target="${pair%|*}"; fn="${pair#*|}"
+            # Allow a confirming retry only if this retry AND one run of every pair
+            # still queued both still fit. Without the reservation term a systematic
+            # race doubles the early pairs and the job is killed part-way through the
+            # rest — losing the -summarize diagnosis in the one case it exists for.
+            RETRY_DEADLINE=$(( STEP_END - (TOTAL - RAN + 1) * PER_TARGET ))
+            echo "=== $target $fn (90s) ==="
+            "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -racelog "$RACELOG" -- \
+              bazelisk test "$target" \
+                --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
+                --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
+                --sandbox_writable_path=/tmp/fuzz-cache \
+                --test_timeout=300 --nocache_test_results --test_output=errors || FAILED=1
+          done
+          "$FUZZRUN" -summarize "$RACELOG" -total "$RAN" || FAILED=1
           exit $FAILED
 
       - name: Upload failing fuzz logs + cache
@@ -327,6 +450,10 @@ jobs:
         # rationale (must run on the allocated runner, not a pre-queue gate).
         id: window
         run: |
+          # Anchor the fuzz-budget model to JOB start: timeout-minutes is measured
+          # from here, not from the fuzz step, and the preamble (checkout, C++ oracle
+          # build, bazel builds) can eat an unpredictable slice of it.
+          echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
           if [ "${{ github.event_name }}" != "schedule" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -358,6 +485,8 @@ jobs:
         # DISCOVERED, not hard-listed; an empty discovery fails the job (no-op guard).
         run: |
           mkdir -p /tmp/fuzz-cache
+          bazelisk build //cmd/fuzzrun
+          FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
           VALID=$(bazelisk query 'kind(go_test, //pkg/relational/... + //pkg/recordlayer/... + //pkg/rabitq/...)' 2>/dev/null)
           PAIRS=""
           for f in $(grep -rl '^func Fuzz' pkg/relational pkg/recordlayer pkg/rabitq --include='*_test.go'); do
@@ -377,22 +506,75 @@ jobs:
           fi
           ROTATE=$(( 10#$(date -u +%j) % 3 ))
           echo "Discovered $(echo $PAIRS | wc -w) (target,func) pairs; active rotation offset=$ROTATE (of 3)"
-          FAILED=0
+          # Select first so TOTAL is known: the retry cutoff below has to reserve a
+          # first run for every pair still queued, which needs the count up front.
+          SELECTED=""
           i=0
           for pair in $PAIRS; do
-            if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
+            if [ $(( i % 3 )) -eq "$ROTATE" ]; then SELECTED="$SELECTED $pair"; fi
             i=$((i+1))
-            target="${pair%|*}"; fn="${pair#*|}"
-            echo "=== $target $fn (90s) ==="
-            bazelisk test "$target" \
-              --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
-              --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
-              --sandbox_writable_path=/tmp/fuzz-cache \
-              --test_timeout=300 --nocache_test_results --test_output=errors || {
-                echo "::error::fuzz FAIL: $target $fn"
-                FAILED=1
-              }
           done
+          TOTAL=$(echo $SELECTED | wc -w)
+          # Budget model. PER_TARGET seeds an estimate of one attempt (the 90s budget
+          # plus bazel's per-test overhead); once the loop is running it is replaced by
+          # the OBSERVED average, so a slow target — several of these packages start an
+          # FDB testcontainer — corrects the schedule instead of silently blowing it.
+          # STEP_END is anchored to JOB_START (see the window step) because
+          # timeout-minutes (75) runs from job start, not from this step.
+          # This is the TIGHT job: ~33 pairs is already ~60min of mandatory work,
+          # so the guard below is the one most likely to fire as targets are added.
+          PER_TARGET=110
+          STEP_END=$(( JOB_START + 68*60 ))
+          FAILED=0
+          RAN=0
+          RACELOG=$(mktemp)
+          LOOP_START=$(date +%s)
+          BUDGET=$(( STEP_END - LOOP_START ))
+          # Report on the MANDATORY floor: the reservation below protects retries, but
+          # nothing protects one run of every pair, and TOTAL is DISCOVERED — adding
+          # fuzz targets silently walks the rotation into the timeout.
+          #
+          # These WARN and never set FAILED. PER_TARGET is a seed estimate, and a
+          # pass/fail decision taken from an estimate is the same mistake as the
+          # in-loop overrun check that was built and deleted here: on a cold cache the
+          # arithmetic can say "does not fit" while the run finishes comfortably, and a
+          # spuriously red nightly is the exact disease this tool cures. The
+          # enforceable bound is timeout-minutes itself; if the work genuinely does not
+          # fit, Actions kills the job and that is loud. These lines exist so the cause
+          # is already in the log when it does.
+          if [ $(( TOTAL * PER_TARGET )) -ge "$BUDGET" ]; then
+            echo "::warning::rotation may no longer fit its budget: $TOTAL pairs x ~${PER_TARGET}s (estimated) = $(( TOTAL * PER_TARGET / 60 ))min vs $(( BUDGET / 60 ))min left of timeout-minutes. If this job starts hitting timeout-minutes, shrink the rotation, cut -fuzztime, or raise the timeout."
+          elif [ $(( (TOTAL + 1) * PER_TARGET )) -ge "$BUDGET" ]; then
+            echo "::warning::budget leaves no room for a confirming retry; deadline-race runs will be accepted on classification alone. This is the silent-disable case — if it persists, the rotation has outgrown timeout-minutes."
+          fi
+          for pair in $SELECTED; do
+            # Incremented BEFORE the reservation on purpose: it counts THIS pair as
+            # still owed. Moving it below shifts the reservation by a whole target.
+            RAN=$((RAN+1))
+            # Observed pace, used ONLY to throttle retries. It counts a retried target
+            # as one unit, so it over-estimates a single attempt — deliberately: erring
+            # high declines retries (safe), and it must never feed a pass/fail decision,
+            # which is why there is no "we will overrun" error built on it. A genuine
+            # overrun still surfaces as the job hitting timeout-minutes, loudly.
+            if [ "$RAN" -gt 1 ]; then
+              AVG=$(( ($(date +%s) - LOOP_START) / (RAN - 1) ))
+              [ "$AVG" -gt "$PER_TARGET" ] && PER_TARGET=$AVG
+            fi
+            target="${pair%|*}"; fn="${pair#*|}"
+            # Allow a confirming retry only if this retry AND one run of every pair
+            # still queued both still fit. Without the reservation term a systematic
+            # race doubles the early pairs and the job is killed part-way through the
+            # rest — losing the -summarize diagnosis in the one case it exists for.
+            RETRY_DEADLINE=$(( STEP_END - (TOTAL - RAN + 1) * PER_TARGET ))
+            echo "=== $target $fn (90s) ==="
+            "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -racelog "$RACELOG" -- \
+              bazelisk test "$target" \
+                --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
+                --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
+                --sandbox_writable_path=/tmp/fuzz-cache \
+                --test_timeout=300 --nocache_test_results --test_output=errors || FAILED=1
+          done
+          "$FUZZRUN" -summarize "$RACELOG" -total "$RAN" || FAILED=1
           exit $FAILED
 
       - name: Upload failing fuzz logs + cache (crash corpus)
