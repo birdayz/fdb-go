@@ -90,6 +90,19 @@ func extractBestPlanWithVisited(ref *expressions.Reference, stats properties.Sta
 // and member-order invariant.
 func tieBrokenLess(less func(a, b expressions.RelationalExpression) bool) func(a, b expressions.RelationalExpression) bool {
 	return func(a, b expressions.RelationalExpression) bool {
+		// The recursive-CTE operator choice (RecursiveDfsJoin's charge-once vs
+		// RecursiveLevelUnion's double-charge) is a STRUCTURAL memory-safety
+		// precedence, not a cost margin — DFS must be preferred BEFORE cost is
+		// consulted, so the preference survives cost-model changes (a
+		// cardinality-proportional cost margin washes out once low-cardinality
+		// point-lookup recursion legs are costed correctly). This mirrors the
+		// OPTIMIZE path (planningCostModelCompareWith consults compareRecursiveCTE
+		// first). Inert for every non-recursive pair — compareRecursiveCTE
+		// returns 0 unless both sides are recursive-CTE physical plans, which
+		// co-occur in exactly one memo group.
+		if c := compareRecursiveCTE(a, b); c != 0 {
+			return c < 0
+		}
 		if less(a, b) {
 			return true
 		}

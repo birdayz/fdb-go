@@ -216,7 +216,17 @@ func (p *Planner) OrderingSourceRef(expr expressions.RelationalExpression) (*exp
 // cost comparator ties routinely and GetBest would otherwise resolve by
 // member insertion order, flipping picks across plannings.
 func (p *Planner) TieBrokenCostLess(stats properties.StatisticsProvider) func(a, b expressions.RelationalExpression) bool {
-	return lessWithHashTieBreak(properties.CostLessWith(stats))
+	base := lessWithHashTieBreak(properties.CostLessWith(stats))
+	return func(a, b expressions.RelationalExpression) bool {
+		// Structural recursive-CTE precedence before cost (see tieBrokenLess in
+		// plan_extraction.go): DFS's charge-once beats LevelUnion's double-charge
+		// as a memory-safety invariant, not a cost margin. Inert for every
+		// non-recursive pair (compareRecursiveCTE returns 0).
+		if c := compareRecursiveCTE(a, b); c != 0 {
+			return c < 0
+		}
+		return base(a, b)
+	}
 }
 
 // WithImplementationRules adds rules for PhasePlanning. These run
