@@ -103,6 +103,7 @@ go_test(
         "correlated_scalar_over_clustered_outer_fdb_test.go",
         "correlated_scalar_projection_edgecases_fdb_test.go",
         "correlated_scalar_subquery_enclosure_fdb_test.go",
+        "correlated_scalar_where_reject_fdb_test.go",
         "covering_index_test.go",
         "cross_leg_duplicate_column_box_unnest_fdb_test.go",
         "cross_table_predicate_probe_test.go",
