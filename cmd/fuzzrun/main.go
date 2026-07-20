@@ -44,12 +44,23 @@ func (r runResult) ok() bool { return r.exitCode == 0 && r.err == nil }
 
 func main() {
 	label := flag.String("label", "", "human-readable name of the target, for log lines")
+	racelog := flag.String("racelog", "",
+		"append the label to this file whenever the deadline race is detected, so the "+
+			"caller can spot a systematic race across targets")
 	deadline := flag.Int64("deadline", 0,
 		"unix timestamp after which a confirming retry is not STARTED (0 = no limit); "+
 			"bounds the job's wall clock if the race ever goes systematic. Note this "+
 			"gates the retry's start, not its end: one begun just under the deadline "+
 			"still runs its full budget.")
+	summarize := flag.String("summarize", "",
+		"instead of running a target, report on the -racelog at this path and exit "+
+			"non-zero if the race was systematic; requires -total")
+	total := flag.Int("total", 0, "with -summarize: how many targets the caller ran")
 	flag.Parse()
+
+	if *summarize != "" {
+		os.Exit(summarizeRaces(*summarize, *total, os.Stdout))
+	}
 
 	argv := flag.Args()
 	if len(argv) == 0 {
@@ -60,15 +71,37 @@ func main() {
 		*label = argv[0]
 	}
 
-	os.Exit(gate(*label, os.Stdout, *deadline, func() runResult { return runCommand(argv, os.Stdout) }))
+	code, raced := gate(*label, os.Stdout, *deadline, func() runResult { return runCommand(argv, os.Stdout) })
+	if raced {
+		noteRace(*racelog, *label)
+	}
+	os.Exit(code)
 }
 
-// gate applies the retry policy and returns the process exit code. It takes the
-// runner as a closure so the policy is testable without spawning fuzz jobs.
-func gate(label string, w io.Writer, retryDeadline int64, run func() runResult) int {
+// noteRace appends label to the file named by -racelog, if any. The nightly loop
+// counts the lines afterwards: a night where MOST targets hit the race is a signal
+// about the Go SDK, not about any one target, and it would otherwise be visible only
+// as per-target warnings in a green job that nobody reads.
+func noteRace(path, label string) {
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fuzzrun: could not record race in %s: %v\n", path, err)
+		return
+	}
+	defer f.Close()
+	fmt.Fprintln(f, label)
+}
+
+// gate applies the retry policy. It returns the process exit code and whether the
+// budget-expiry race was detected, so the caller can record it for the run-wide
+// tally. The runner is a closure so the policy is testable without spawning fuzz jobs.
+func gate(label string, w io.Writer, retryDeadline int64, run func() runResult) (code int, raced bool) {
 	r := run()
 	if r.ok() {
-		return 0
+		return 0, false
 	}
 	if r.err != nil {
 		fmt.Fprintf(w, "fuzzrun: %v\n", r.err)
@@ -76,7 +109,7 @@ func gate(label string, w io.Writer, retryDeadline int64, run func() runResult) 
 
 	if classify(r) == verdictRealFailure {
 		fmt.Fprintf(w, "::error::fuzz FAIL: %s (exit %d)\n", label, r.exitCode)
-		return 1
+		return 1, false
 	}
 
 	// Past the job's wall-clock budget we skip the retry — but we do NOT flip the
@@ -90,7 +123,7 @@ func gate(label string, w io.Writer, retryDeadline int64, run func() runResult) 
 		fmt.Fprintf(w, "::warning::%s: fuzz budget expiry leaked as \"context deadline exceeded\" "+
 			"(golang/go#72104); the job's retry deadline has passed, so this is accepted on the "+
 			"classification alone without a confirming retry.\n", label)
-		return 0
+		return 0, true
 	}
 
 	// Known Go stdlib race: the budget expired cleanly but was reported as an error.
@@ -102,13 +135,13 @@ func gate(label string, w io.Writer, retryDeadline int64, run func() runResult) 
 	r2 := run()
 	if r2.ok() {
 		fmt.Fprintf(w, "%s: retry clean — confirmed stdlib deadline race, not a finding.\n", label)
-		return 0
+		return 0, true
 	}
 	if r2.err != nil {
 		fmt.Fprintf(w, "fuzzrun: %v\n", r2.err)
 	}
 	fmt.Fprintf(w, "::error::fuzz FAIL: %s (failed again on retry, exit %d)\n", label, r2.exitCode)
-	return 1
+	return 1, false
 }
 
 // runCommand runs argv, streaming its output to w as it arrives while also capturing

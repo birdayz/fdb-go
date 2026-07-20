@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "classify.go",
         "main.go",
+        "summary.go",
     ],
     importpath = "fdb.dev/cmd/fuzzrun",
     visibility = ["//visibility:private"],
@@ -22,6 +23,7 @@ go_test(
         "classify_test.go",
         "gate_test.go",
         "runcommand_test.go",
+        "summary_test.go",
     ],
     embed = [":fuzzrun_lib"],
 )

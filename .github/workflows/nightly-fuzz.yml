@@ -118,15 +118,19 @@ jobs:
           echo "Discovered $(echo "$TARGETS" | wc -l) oracle fuzz targets; active rotation offset=$ROTATE (of 3)"
           FAILED=0
           i=0
+          RAN=0
+          RACELOG=$(mktemp)
           for target in $TARGETS; do
             if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
             i=$((i+1))
+            RAN=$((RAN+1))
             echo "=== $target (2m) ==="
-            "$FUZZRUN" -label "$target" -deadline "$RETRY_DEADLINE" -- \
+            "$FUZZRUN" -label "$target" -deadline "$RETRY_DEADLINE" -racelog "$RACELOG" -- \
               timeout 150 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
                 -run='^$' -fuzz="^${target}\$" -fuzztime=2m ./cmd/fdb-diff-oracle/ || FAILED=1
             echo ""
           done
+          "$FUZZRUN" -summarize "$RACELOG" -total "$RAN" || FAILED=1
           exit $FAILED
 
       - name: Upload failing fuzz seeds
@@ -297,18 +301,22 @@ jobs:
           echo "Discovered $(echo $PAIRS | wc -w) (target,func) pairs; active rotation offset=$ROTATE (of 3)"
           FAILED=0
           i=0
+          RAN=0
+          RACELOG=$(mktemp)
           for pair in $PAIRS; do
             if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
             i=$((i+1))
+            RAN=$((RAN+1))
             target="${pair%|*}"; fn="${pair#*|}"
             echo "=== $target $fn (90s) ==="
-            "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -- \
+            "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -racelog "$RACELOG" -- \
               bazelisk test "$target" \
                 --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
                 --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
                 --sandbox_writable_path=/tmp/fuzz-cache \
                 --test_timeout=300 --nocache_test_results --test_output=errors || FAILED=1
           done
+          "$FUZZRUN" -summarize "$RACELOG" -total "$RAN" || FAILED=1
           exit $FAILED
 
       - name: Upload failing fuzz logs + cache
@@ -390,18 +398,22 @@ jobs:
           echo "Discovered $(echo $PAIRS | wc -w) (target,func) pairs; active rotation offset=$ROTATE (of 3)"
           FAILED=0
           i=0
+          RAN=0
+          RACELOG=$(mktemp)
           for pair in $PAIRS; do
             if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
             i=$((i+1))
+            RAN=$((RAN+1))
             target="${pair%|*}"; fn="${pair#*|}"
             echo "=== $target $fn (90s) ==="
-            "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -- \
+            "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -racelog "$RACELOG" -- \
               bazelisk test "$target" \
                 --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
                 --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
                 --sandbox_writable_path=/tmp/fuzz-cache \
                 --test_timeout=300 --nocache_test_results --test_output=errors || FAILED=1
           done
+          "$FUZZRUN" -summarize "$RACELOG" -total "$RAN" || FAILED=1
           exit $FAILED
 
       - name: Upload failing fuzz logs + cache (crash corpus)

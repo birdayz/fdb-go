@@ -1805,10 +1805,16 @@ re-introduce the very false red this tool removes — and would do it exactly wh
 frequent. Output is streamed rather than buffered, so a job killed mid-run still has the in-flight
 target's log.
 
+Individual raced runs pass, but `-racelog` tallies them and `-summarize` fails the job if a **majority**
+of targets raced in one night: at ~1%/run that is not bad luck, it means the Go toolchain's fuzz
+coordinator changed and this tool's assumptions need re-verifying before the gate can be trusted. Without
+that, a systematic race would show up only as per-target warnings inside a green job — i.e. nowhere.
+
 Wired into all three nightly jobs (`diff-fuzz`, `client-fuzz`, `engine-fuzz`) **and** `just verify`'s fuzz
-smoke targets. Pinned by `cmd/fuzzrun/{classify,gate,runcommand}_test.go` — the verbatim captured output
-of both real nightly failures, real bazel framing (exit 3), the exit-code plumbing, and the dangerous
-direction: nine deadline-bearing outputs with no crasher marker that must all still fail.
+smoke targets. Pinned by `cmd/fuzzrun/{classify,gate,runcommand,summary}_test.go` — the verbatim captured
+output of both real nightly failures, real bazel framing (exit 3, verbose per `.bazelrc:23`), the
+exit-code plumbing, the race tally, and the dangerous direction: eleven deadline-bearing outputs with no
+crasher marker that must all still fail. Both minimization markers are independently revert-proven.
 
 **Note for the query-engine nightly triage:** `engine-fuzz` shares this exposure, so any planner/metadata
 nightly red whose only error line is `context deadline exceeded` with no crasher was the same false

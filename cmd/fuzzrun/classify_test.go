@@ -41,7 +41,7 @@ fuzz: elapsed: 1m27s, execs: 2210544 (25000/sec), new interesting: 0 (total: 41)
 fuzz: elapsed: 1m30s, execs: 2284412 (0/sec), new interesting: 0 (total: 41)
 --- FAIL: FuzzRYWCache (90.02s)
     context deadline exceeded
-=== NAME
+=== NAME  
 FAIL
 ================================================================================
 FAILED: //pkg/fdbgo/client:client_test (Exit 1) (see /home/x/.cache/bazel/.../test.log)
@@ -137,6 +137,30 @@ fuzz: elapsed: 1m30s, minimizing
     context deadline exceeded
 `,
 			exitCode: 1,
+		},
+		// Same finding, but the log has been truncated past the "fuzz: minimizing
+		// N-byte" line so only the periodic stats line survives. This is the ONLY
+		// case the minimizingStatsRE backstop exists for — without a fixture it
+		// reads as redundant and gets deleted by a future cleanup.
+		"minimization swallow, only the stats line survives": {
+			output: `fuzz: elapsed: 1m30s, minimizing
+--- FAIL: FuzzRYWCache (90.02s)
+    context deadline exceeded
+`,
+			exitCode: 1,
+		},
+		// ...and through bazel's verbose framing at exit 3.
+		"minimization swallow through bazel framing": {
+			output: `==================== Test output for //pkg/fdbgo/client:client_test:
+=== RUN   FuzzRYWCache
+fuzz: elapsed: 1m27s, execs: 2210544 (25000/sec), new interesting: 3 (total: 41)
+fuzz: minimizing 37-byte failing input file
+--- FAIL: FuzzRYWCache (90.02s)
+    context deadline exceeded
+=== NAME  
+FAIL
+`,
+			exitCode: 3,
 		},
 		// No fuzz progress at all: the process died before consuming any budget.
 		"fuzz failure with no progress output": {

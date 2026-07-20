@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +33,8 @@ func TestGate_PassRunsOnce(t *testing.T) {
 	t.Parallel()
 	run, calls := scriptedRunner(pass())
 	var sb strings.Builder
-	if code := gate("FuzzFoo", &sb, 0, run); code != 0 {
+	code, _ := gate("FuzzFoo", &sb, 0, run)
+	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
 	if *calls != 1 {
@@ -46,7 +48,8 @@ func TestGate_DeadlineRaceRetriesAndPasses(t *testing.T) {
 	t.Parallel()
 	run, calls := scriptedRunner(raceFailure(), pass())
 	var sb strings.Builder
-	if code := gate("FuzzGetValueReply", &sb, 0, run); code != 0 {
+	code, _ := gate("FuzzGetValueReply", &sb, 0, run)
+	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
 	if *calls != 2 {
@@ -71,7 +74,8 @@ Failing input written to testdata/fuzz/FuzzGetValueReply/deadbeef
 	}
 	run, calls := scriptedRunner(crasher)
 	var sb strings.Builder
-	if code := gate("FuzzGetValueReply", &sb, 0, run); code != 1 {
+	code, _ := gate("FuzzGetValueReply", &sb, 0, run)
+	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	if *calls != 1 {
@@ -88,7 +92,8 @@ func TestGate_DeadlineRaceThatRepeatsStillFails(t *testing.T) {
 	t.Parallel()
 	run, calls := scriptedRunner(raceFailure(), raceFailure())
 	var sb strings.Builder
-	if code := gate("FuzzGetValueReply", &sb, 0, run); code != 1 {
+	code, _ := gate("FuzzGetValueReply", &sb, 0, run)
+	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	if *calls != 2 {
@@ -108,7 +113,8 @@ func TestGate_PastDeadlineSkipsRetryButStillPasses(t *testing.T) {
 	run, calls := scriptedRunner(raceFailure())
 	var sb strings.Builder
 	past := time.Now().Add(-time.Minute).Unix()
-	if code := gate("FuzzGetValueReply", &sb, past, run); code != 0 {
+	code, _ := gate("FuzzGetValueReply", &sb, past, run)
+	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
 	if *calls != 1 {
@@ -134,7 +140,8 @@ fuzz: minimizing 37-byte failing input file
 	run, calls := scriptedRunner(crasher)
 	var sb strings.Builder
 	past := time.Now().Add(-time.Minute).Unix()
-	if code := gate("FuzzRYWCache", &sb, past, run); code != 1 {
+	code, _ := gate("FuzzRYWCache", &sb, past, run)
+	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	if *calls != 1 {
@@ -150,7 +157,8 @@ func TestGate_RetryAllowedBeforeDeadline(t *testing.T) {
 	run, calls := scriptedRunner(raceFailure(), pass())
 	var sb strings.Builder
 	future := time.Now().Add(time.Hour).Unix()
-	if code := gate("FuzzGetValueReply", &sb, future, run); code != 0 {
+	code, _ := gate("FuzzGetValueReply", &sb, future, run)
+	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
 	if *calls != 2 {
@@ -164,7 +172,8 @@ func TestGate_SpawnFailureIsReported(t *testing.T) {
 	t.Parallel()
 	run, calls := scriptedRunner(runResult{exitCode: -1, err: errFakeSpawn})
 	var sb strings.Builder
-	if code := gate("FuzzFoo", &sb, 0, run); code != 1 {
+	code, _ := gate("FuzzFoo", &sb, 0, run)
+	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	if *calls != 1 {
@@ -180,3 +189,43 @@ var errFakeSpawn = errSpawn("running \"nope\": executable file not found in $PAT
 type errSpawn string
 
 func (e errSpawn) Error() string { return string(e) }
+
+// The `raced` return drives the run-wide tally, so it must be true for exactly the
+// cases the classifier cleared as the stdlib race — and false for a real finding,
+// which would otherwise inflate the tally and mask a systematic race.
+func TestGate_RacedSignal(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		outcomes  []runResult
+		wantRaced bool
+	}{
+		"clean pass":              {[]runResult{pass()}, false},
+		"race, retry clean":       {[]runResult{raceFailure(), pass()}, true},
+		"race, retry raced again": {[]runResult{raceFailure(), raceFailure()}, false},
+		"real finding":            {[]runResult{{output: "boom\n", exitCode: 1}}, false},
+	}
+	for name, tc := range cases {
+		run, _ := scriptedRunner(tc.outcomes...)
+		var sb strings.Builder
+		_, raced := gate("FuzzFoo", &sb, 0, run)
+		if raced != tc.wantRaced {
+			t.Errorf("%s: raced = %v, want %v", name, raced, tc.wantRaced)
+		}
+	}
+}
+
+func TestNoteRace_AppendsLabels(t *testing.T) {
+	t.Parallel()
+	path := t.TempDir() + "/races"
+	noteRace(path, "FuzzA")
+	noteRace(path, "FuzzB")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading race log: %v", err)
+	}
+	if got := string(b); got != "FuzzA\nFuzzB\n" {
+		t.Errorf("race log = %q, want %q", got, "FuzzA\nFuzzB\n")
+	}
+	// An unset -racelog must be a no-op, not a crash.
+	noteRace("", "FuzzC")
+}

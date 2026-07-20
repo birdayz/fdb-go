@@ -61,7 +61,6 @@ const (
 //     diff-oracle harness's own t.Errorf messages.
 var hardFailureMarkers = []string{
 	"fuzz: minimizing ", // crasher found, deadline fired mid-minimization
-	", minimizing",      // the periodic stats line during minimization (fuzz.go:734)
 	"failure while testing seed corpus entry:",
 	"Failing input written to",
 	"To re-run:",
@@ -80,6 +79,13 @@ var (
 	// The failure header for a fuzz target, e.g. "--- FAIL: FuzzFoo (120.08s)".
 	fuzzFailRE = regexp.MustCompile(`^--- FAIL: Fuzz\w+ \([0-9.]+s\)$`)
 	anyFailRE  = regexp.MustCompile(`(?m)^\s*--- FAIL: `)
+	// The periodic stats line emitted while a crasher is being minimized
+	// ($GOROOT/src/internal/fuzz/fuzz.go:734, reachable only inside
+	// `else if c.crashMinimizing != nil`). It backs up the "fuzz: minimizing "
+	// witness above for a log truncated to just the stats lines. Anchored rather
+	// than a substring so a target that happens to log the word "minimizing"
+	// cannot trigger a false red.
+	minimizingStatsRE = regexp.MustCompile(`(?m)^fuzz: elapsed: .*, minimizing$`)
 )
 
 // classify decides whether a non-zero fuzz run is a genuine finding or the known
@@ -132,6 +138,9 @@ func classify(r runResult) verdict {
 		if strings.Contains(out, m) {
 			return verdictRealFailure
 		}
+	}
+	if minimizingStatsRE.MatchString(out) {
+		return verdictRealFailure
 	}
 	if !fuzzProgressRE.MatchString(out) {
 		return verdictRealFailure
