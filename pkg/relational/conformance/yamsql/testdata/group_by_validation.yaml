@@ -220,3 +220,14 @@ tests:
   - query: SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING col1 + 1 > 15 ORDER BY col1
     rows:
       - [20, 300]
+  # Subquery false-positive guard (Torvalds review): a HAVING subquery
+  # references t2.id, whose BARE name `id` collides with an ungrouped outer
+  # column (t1.id, the PK). t2.id binds to the SUBQUERY's scope — it must NOT
+  # be group-checked against t1. The subquery-stopping HAVING walk skips it,
+  # so the query reaches the correct "HAVING-EXISTS unsupported" 0AF00 rather
+  # than a FALSE 42803. (The non-stopping walk descended into the subquery,
+  # saw `id`, and wrongly reported the 42803 grouping error — masking 0AF00.)
+  - query: |-
+      SELECT col1, SUM(col2) FROM t1 GROUP BY col1
+      HAVING EXISTS (SELECT 1 FROM t2 WHERE t2.id = 1) ORDER BY col1
+    error_code: "0AF00"

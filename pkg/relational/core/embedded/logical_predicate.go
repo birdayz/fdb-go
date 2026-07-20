@@ -3113,17 +3113,6 @@ func validateQualifiedStarSourcesFromClassification(cls *selectClassification, f
 	return nil
 }
 
-// upgradeFirstFilterExistsSubqueries walks the single-child chain
-// from op and, at the first LogicalFilter, attaches the EXISTS
-// subquery plans. Returns true when a Filter was found.
-// eliminateRedundantCrossJoin detects and eliminates a cross-join that is
-// subsumed by a correlated EXISTS on the same table. When the cross-join's
-// right table matches the EXISTS scan table and the filter's join predicate
-// is equivalent to the EXISTS correlation, the cross-join is redundant —
-// replacing it with a simple EXISTS semi-join on the left table avoids
-// duplicate rows and matches Java's Cascades behavior.
-//
-// Returns true when the optimization fired (op modified in-place).
 // splitNonExistsPredicatesFromWalked returns only the non-EXISTS parts
 // of a walked predicate tree. EXISTS and NOT(EXISTS) nodes are dropped.
 // Returns nil if there are no non-EXISTS predicates.
@@ -3216,6 +3205,9 @@ func existsReachableUnderOr(p predicates.QueryPredicate, underOr bool) bool {
 	return false
 }
 
+// upgradeFirstFilterExistsSubqueries walks the single-child chain from op and,
+// at the first LogicalFilter, attaches the EXISTS subquery plans. Returns true
+// when a Filter was found.
 func upgradeFirstFilterExistsSubqueries(op logical.LogicalOperator, subqueries []logical.ExistsSubquery) bool {
 	for cur := op; cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
@@ -4063,23 +4055,27 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 
 	// HAVING obeys the SAME grouping rule as the SELECT list: a base column
 	// referenced OUTSIDE an aggregate must be covered by GROUP BY, else it is a
-	// 42803 grouping error. harvestColumnRefs skips aggregate-call operands
-	// (SUM(v)'s v never reaches here), so only non-aggregated refs are checked.
-	// "Covered" = the column is a GROUP BY key OR appears inside a GROUP BY
-	// EXPRESSION key, so `GROUP BY k+1 HAVING k+1 > 5` stays valid. Only genuine
-	// base columns of a KNOWN source are flagged (the tableFields guard) — an
-	// aggregate OUTPUT ALIAS or a derived/CTE source (tableFields == nil) is
-	// left to downstream resolution. Without this, `HAVING id > 2` with id
-	// neither grouped nor aggregated silently read the group key at id's
-	// colliding ordinal (wrong rows), or leaked an internal
-	// "ordinal resolution ... malformed plan" when id's base ordinal exceeded
-	// the aggregated row width. Mirrors the SELECT-list/aggCols validation above.
+	// 42803 grouping error. The OutsideSubqueries walk skips aggregate-call
+	// operands (SUM(v)'s v) AND does not descend into nested subqueries — a
+	// column syntactically inside a HAVING subquery (`… HAVING EXISTS(SELECT 1
+	// FROM u WHERE u.v = k)`) binds to THAT query block, so it must not be
+	// group-checked against the outer sources (else a subquery-local column
+	// whose bare name collides with an ungrouped outer column would wrongly
+	// 42803). "Covered" = the column is a GROUP BY key OR appears inside a
+	// GROUP BY EXPRESSION key, so `GROUP BY k+1 HAVING k+1 > 5` stays valid.
+	// Only genuine base columns of a KNOWN source are flagged (the tableFields
+	// guard) — an aggregate OUTPUT ALIAS or a derived/CTE source (tableFields
+	// == nil) is left to downstream resolution. Without this, `HAVING id > 2`
+	// with id neither grouped nor aggregated silently read the group key at
+	// id's colliding ordinal (wrong rows), or leaked an internal "ordinal
+	// resolution ... malformed plan" when id's base ordinal exceeded the
+	// aggregated row width. Mirrors the SELECT-list/aggCols validation above.
 	if sq.havingExpr != nil {
 		groupByColumns := make(map[string]bool)
 		for _, gb := range sq.groupBy {
 			if gb.expr != nil {
-				for _, c := range harvestColumnRefs(gb.expr) {
-					groupByColumns[parseColRef(strings.ToUpper(c)).bare()] = true
+				for _, c := range harvestBareColumnRefsOutsideSubqueries(gb.expr) {
+					groupByColumns[strings.ToUpper(c)] = true
 				}
 				continue
 			}
@@ -4088,8 +4084,8 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 				groupByColumns[strings.ToUpper(gb.bare)] = true
 			}
 		}
-		for _, ref := range harvestColumnRefs(sq.havingExpr) {
-			bare := parseColRef(strings.ToUpper(ref)).bare()
+		for _, ref := range harvestBareColumnRefsOutsideSubqueries(sq.havingExpr) {
+			bare := strings.ToUpper(ref)
 			if groupByColumns[bare] {
 				continue
 			}

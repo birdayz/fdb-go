@@ -1467,11 +1467,38 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > - [x] P0.7 PushSetOperationThroughFetch rebuild over pushed inners (Graefe+Torvalds ACK;
 >       single-pass tryPushValues, dynamic InUnion arm live, Case-2 partial push,
 >       ordered-union instantiation, e2e Fetch(Union(IndexScan…)) pin)
-> - [ ] C5 follow-up: DISTINCT cross-page dedup (seen-set rebuilt fresh per page —
->       duplicates straddling an internal 4s page break re-admit; Java's
->       UnorderedDistinctPlan has the identical shape, but Go's auto-paging hits it
->       inside ONE statement; fix = seen-set through the continuation or a
->       sorted-input distinct; documented at executeDistinct)
+ - [ ] C5 follow-up: DISTINCT cross-page dedup — **CONFIRMED LIVE + SEVERE (2026-07-20 hunt);
+       high priority.** `executeDistinct` (executor.go ~1552) rebuilds the `seen` hash-set FRESH
+       per page, so any `SELECT DISTINCT <non-unique-col>` over a table larger than one page
+       returns WRONG ROWS — duplicates whose run straddles a page boundary re-admit. Adversarial
+       repro (N=500, EXECUTION_SCANNED_ROWS_LIMIT=9 forcing ~56 page breaks): `SELECT DISTINCT w
+       ORDER BY w` → 100 rows (every value twice) vs correct 50; `SELECT DISTINCT g` (no ORDER BY,
+       unordered input) → 500 rows (TOTAL dedup failure) vs 25; `... LIMIT 30 OFFSET 10` → wrong
+       window. `SELECT DISTINCT <unique-col>` PASSES (no duplicates to drop). This is a COMMON
+       query pattern → the wrong-rows blast radius is large. Single-page baseline is always correct
+       → purely a resume bug.
+       The code comment's Java-parity claim is only HALF true: Java's
+       `RecordQueryUnorderedPrimaryKeyDistinctPlan` also uses a fresh HashSet per page but dedups by
+       PRIMARY KEY (unique per record), so the hazard doesn't bite it; Go routes `SELECT DISTINCT
+       col` (dedup by projected VALUE) through the same fresh-set shape, where it DOES bite. Verify
+       whether Java routes value-distinct through a sorted/group-by distinct that resumes cleanly.
+       FIX DESIGN (ordering-aware distinct arc — Graefe-gated, wire-compat-sensitive, ~multi-piece):
+         (1) EXECUTOR: a STREAMING distinct — when the input is ordered by the distinct key, emit a
+             row only when its key differs from the previous emitted key; carry ONLY that last key
+             through the continuation (bounded, resume-clean). This fixes the ordered case
+             (`DISTINCT w ORDER BY w`), which today still fails because the hash-set is used even
+             over ordered input.
+         (2) PLANNER: for value-distinct, REQUEST the input ordered by the distinct-key columns even
+             without an outer ORDER BY (extend the ordering constraint pushed by
+             PushRequestedOrderingThroughDistinctRule), so the unordered case (`DISTINCT g`) gets an
+             ordered plan and the streaming distinct applies. Fall back to a Sort when no index
+             provides the order.
+         (3) CONTINUATION: the RecordQueryDistinctPlan continuation must carry the last-key — a wire
+             format change; encode it in the proto continuation, version-guard the decode.
+       The current fresh-set-per-page is a Go-only correctness hole (Java doesn't auto-page inside one
+       statement). Pin FIRST with a large-N (>1 page) multi-value-per-key rows test at a small scan
+       limit, both with and without ORDER BY, before touching the executor. Documented at
+       executeDistinct.
 > WS-C: DONE (Graefe ACK; Torvalds conditions folded — lazy continuations, depth
 > parity, ctor charge release). C1 full RecursiveUnionCursor port (UNION ALL
 > recursion streams + resumes mid-level), C2
