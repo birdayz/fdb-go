@@ -72,7 +72,7 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 			if err := rowdiff.CheckTemplateFamily(tpl); err != nil {
 				t.Errorf("family gate: %v", err)
 			}
-			res := rowdiff.RunCase(ctx, setup, dbPath, clusterFilePath, tpl.Case, "tpl"+tpl.Name)
+			res := rowdiff.RunCase(ctx, setup, dbPath, clusterFilePath, tpl.Case, "tpl"+tpl.Name, 0)
 			reportRowdiff(t, res)
 		})
 	}
@@ -98,6 +98,43 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 			seedStart, seedStart+seedCount-1, seedCount, executed, elapsed.Round(time.Millisecond),
 			float64(seedCount)/elapsed.Seconds(), histogram)
 	})
+}
+
+// TestFDB_RowDiff_Paging is the differential sweep in PAGING mode: every
+// generated query runs under a small scanned-rows limit, so the engine
+// internally pages (a new Execute per page). It tests CONTINUATION SOUNDNESS
+// generatively — resume across a scanned-rows page boundary must return exactly
+// the rows a single-pass run does — the class BUG C (paginated DISTINCT
+// re-admission) belonged to, which the un-paged sweep above cannot reach
+// (queries fit in one page). A mismatch here is a resume-clean-continuation
+// bug. Cases have 20..120 rows, so scanLimit=4 yields 5..30 pages with real
+// mid-result straddles across DISTINCT / GROUP BY / ORDER BY / joins.
+func TestFDB_RowDiff_Paging(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	const dbPath = "/testdb_rowdiff_pg"
+	setup := openTestDB(t, dbPath)
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+
+	seedStart, seedCount := rowdiffSeedRange(t)
+	const scanLimit = 4
+	start := time.Now()
+	histogram := map[string]int{}
+	executed := 0
+	for i := uint64(0); i < seedCount; i++ {
+		res := rowdiff.RunSeedPaged(ctx, setup, dbPath, clusterFilePath, seedStart+i, scanLimit)
+		reportRowdiff(t, res)
+		for fam, n := range res.Histogram {
+			histogram[fam] += n
+		}
+		executed += res.Executed
+	}
+	t.Logf("rowdiff PAGED(scanLimit=%d): seeds %d..%d (%d), %d comparisons in %s; plan-family histogram: %v",
+		scanLimit, seedStart, seedStart+seedCount-1, seedCount, executed,
+		time.Since(start).Round(time.Millisecond), histogram)
 }
 
 func reportRowdiff(t *testing.T, res *rowdiff.SeedResult) {
