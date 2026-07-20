@@ -542,20 +542,21 @@ func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
 		t.Fatalf("ledger declined %q, but the multi-leg PK-join gap is FIXED — a retired entry must not linger", gap.name)
 	}
 
-	// The production ledger's one live entry — the 3-way shared-column
-	// ordinal-resolution gap — must match its OWN signature and nothing else.
+	// The RETIRED 3-way shared-column ordinal gap must NO LONGER be declined:
+	// its root cause is fixed (the fetch TranslateValueFunction preserves the
+	// baked ordinal, TestFDB_ThreeWaySharedColOrdinal_Regression). A lingering
+	// entry would silence that regression.
 	threeWayErr := errors.New(`ordinal resolution: field "C" not resolvable in the runtime row (ordinal -1, row columns [ID A B C S F]) — malformed plan`)
 	const threeWayJoin = "SELECT l.id, m.id, r.id FROM t AS l, t AS m, t AS r WHERE l.a = m.id AND m.c = r.c AND l.c = 1 AND r.c IS NULL"
-	if matchKnownGap(threeWayJoin, threeWayErr) == nil {
-		t.Fatal("production ledger must decline the documented 3-way shared-column ordinal error")
+	if gap := matchKnownGap(threeWayJoin, threeWayErr); gap != nil {
+		t.Fatalf("ledger declined %q, but the 3-way shared-column gap is FIXED — a retired entry must not linger", gap.name)
 	}
-	// A "malformed plan" WITHOUT the ordinal-(-1) resolution signature must stay
-	// a finding, and a row divergence never declines.
-	if gap := matchKnownGap(threeWayJoin, errors.New("XX000: malformed plan: some other cause")); gap != nil {
-		t.Fatalf("3-way entry over-matched a different malformed-plan cause (%q) — must stay a finding", gap.name)
-	}
-	if gap := matchKnownGap(threeWayJoin, errors.New("row count: engine 5, oracle expects 0")); gap != nil {
-		t.Fatalf("3-way entry over-matched a ROW divergence (%q) — soundness findings are never declinable", gap.name)
+
+	// The production ledger is now EMPTY — no live error signature may be
+	// declined. This makes the empty-ledger state explicit; the injected-ledger
+	// cases below keep the matcher's shape under test regardless.
+	if len(knownGaps) != 0 {
+		t.Fatalf("production knownGaps ledger must be empty (both gaps fixed), has %d entries", len(knownGaps))
 	}
 
 	// The narrowness cases below run against an INJECTED ledger holding the

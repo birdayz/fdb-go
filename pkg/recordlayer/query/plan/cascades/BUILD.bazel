@@ -413,6 +413,7 @@ go_test(
         "simplifier_test.go",
         "single_matched_access_test.go",
         "temp_table_test.go",
+        "translate_value_function_ordinal_test.go",
         "translation_map_test.go",
         "traversal_test.go",
         "value_equivalence_test.go",
@@ -828,6 +829,7 @@ go_test(
         "plan_reachability.go",
         "asymmetric_union_planning_test.go",
         "rule_push_distinct_streaming_test.go",
+        "translate_value_function_ordinal_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
