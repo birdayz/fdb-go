@@ -313,11 +313,29 @@ type knownGap struct {
 // knownGaps is the whole ledger. Keep it SHORT and each entry NARROW: an
 // over-broad matcher silently converts real findings into declines.
 //
-// Currently EMPTY — the one entry it ever held (nested `IN` extracting
-// `InJoin(<nil>)`) was retired when that gap was closed rather than left to
-// accumulate. An empty ledger is the goal state: every entry is a query the
-// engine cannot answer.
-var knownGaps = []knownGap{}
+// An empty ledger is the goal state: every entry is a query the engine cannot
+// answer. The one entry below is a KNOWN executor/ordinal-binding defect
+// (booked as its own workstream in rule_implement_nested_loop_join.go ~2785),
+// pinned live and TODO-tracked; retire it the day that workstream lands.
+var knownGaps = []knownGap{
+	{
+		// A LEFT OUTER JOIN on the PRIMARY KEY plus an R-side WHERE filter plus
+		// an ORDER BY on the left key plans fine but dies at execution: a
+		// correlated FieldValue cannot resolve a source-relative ordinal
+		// against the outer-join multi-leg row. This is the documented
+		// "multi-leg merged rows serve source-relative ordinals" defect (the
+		// obvious rebase fix was tried and reverted; it is a distinct
+		// executor/ordinal-binding workstream). It fails LOUD — never a
+		// wrong-rows outcome — so matching its signature cannot mask a
+		// soundness bug: a row divergence carries no error at all.
+		name: "LEFT OUTER PK-join correlated source-relative ordinal over a multi-leg row",
+		pin:  "TestFDB_LeftJoinPkOrdinal_KnownExecutorGap",
+		matches: func(sqlText string, err error) bool {
+			return strings.Contains(err.Error(), "multi-leg row cannot serve a source-relative ordinal") &&
+				strings.Contains(err.Error(), "no frontier row resolved")
+		},
+	},
+}
 
 // matchKnownGap returns the ledger entry covering this failure, or nil.
 func matchKnownGap(sqlText string, err error) *knownGap {

@@ -526,11 +526,27 @@ func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
 	const nestedIn = "SELECT * FROM t WHERE a IN (1,2) AND b = 3 AND c IN (4,5)"
 	planInvariantInJoin := errors.New("XX000: malformed query plan: plan-invariant: non-leaf plan *plans.RecordQueryInJoinPlan has no children")
 
-	// The PRODUCTION ledger is empty (its one entry was retired when the
-	// nested-IN gap was fixed), so nothing may be declined — including the
-	// failure that entry used to cover.
+	// The retired nested-IN gap must STILL not be declined by the production
+	// ledger (that gap is fixed; a lingering entry would hide its regression).
 	if gap := matchKnownGap(nestedIn, planInvariantInJoin); gap != nil {
 		t.Fatalf("ledger declined %q, but the nested-IN gap is FIXED — a retired entry must not linger", gap.name)
+	}
+
+	// The production ledger's one live entry — the LEFT OUTER PK-join
+	// multi-leg ordinal-binding executor gap — must match its OWN signature
+	// and nothing else. A wrong-rows divergence (no error, or an error without
+	// the signature) must stay a finding.
+	multiLegErr := errors.New(`correlated FieldValue "ID" (correlation "L") evaluated against an unbound/unrecognized context (*RowEvalContext (multi-leg row cannot serve a source-relative ordinal)) — no frontier row resolved (planner/executor bug)`)
+	const pkLeftJoin = "SELECT l.id AS l_id, r.id AS r_id FROM t AS l LEFT JOIN t AS r ON l.id = r.id WHERE r.s IN ('delta','beta') ORDER BY l.id DESC, r.id"
+	if matchKnownGap(pkLeftJoin, multiLegErr) == nil {
+		t.Fatal("production ledger must decline the documented multi-leg ordinal-binding error")
+	}
+	// Near-misses for the multi-leg entry: each must stay a FINDING.
+	if gap := matchKnownGap(pkLeftJoin, errors.New("XX000: some other executor error")); gap != nil {
+		t.Fatalf("multi-leg entry over-matched a different error (%q) — must stay a finding", gap.name)
+	}
+	if gap := matchKnownGap(pkLeftJoin, errors.New("row count: engine 3, oracle expects 2")); gap != nil {
+		t.Fatalf("multi-leg entry over-matched a ROW divergence (%q) — soundness findings are never declinable", gap.name)
 	}
 
 	// The narrowness cases below run against an INJECTED ledger holding the

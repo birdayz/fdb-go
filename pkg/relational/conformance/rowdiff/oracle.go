@@ -146,8 +146,25 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 	}
 	joinCmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, nil)
 
+	// applyWhere evaluates the post-join WHERE over a combined row; ok=false
+	// drops it. Shared so the matched and NULL-extended (LEFT OUTER) paths run
+	// exactly one WHERE evaluation each — the WHERE applies AFTER the join, so
+	// an R-side predicate is UNKNOWN over a NULL-extended row and drops it,
+	// which is precisely SQL's WHERE-vs-ON distinction.
+	applyWhere := func(row Row) (bool, error) {
+		if q.Where == nil {
+			return true, nil
+		}
+		wb, err := evalBool(q.Where, row)
+		if err != nil {
+			return false, err
+		}
+		return wb == predicates.TriTrue, nil
+	}
+
 	var combined []Row
 	for _, l := range c.Rows {
+		matched := false // any r satisfying the ON equality, before the WHERE
 		for _, r := range c.Rows {
 			tb, err := joinCmp.EvalAgainst(l[q.Join.LeftCol], r[q.Join.RightCol])
 			if err != nil {
@@ -156,6 +173,7 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 			if tb != predicates.TriTrue {
 				continue
 			}
+			matched = true
 			row := make(Row, 2*(len(c.Table.Cols)+1))
 			for k, v := range l {
 				row["L."+k] = v
@@ -163,16 +181,33 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 			for k, v := range r {
 				row["R."+k] = v
 			}
-			if q.Where != nil {
-				wb, err := evalBool(q.Where, row)
-				if err != nil {
-					return nil, err
-				}
-				if wb != predicates.TriTrue {
-					continue
-				}
+			ok, err := applyWhere(row)
+			if err != nil {
+				return nil, err
 			}
-			combined = append(combined, row)
+			if ok {
+				combined = append(combined, row)
+			}
+		}
+		// LEFT OUTER: an unmatched left row survives, NULL-extended on the
+		// right. `matched` tracks ON-equality matches only — a left row that
+		// matched some r but was then dropped by the WHERE is NOT re-emitted
+		// here (it matched the join; the WHERE removed it), exactly as SQL.
+		if q.Join.LeftOuter && !matched {
+			row := make(Row, 2*(len(c.Table.Cols)+1))
+			for k, v := range l {
+				row["L."+k] = v
+			}
+			for k := range l {
+				row["R."+k] = nil // right side is NULL for an unmatched left row
+			}
+			ok, err := applyWhere(row)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				combined = append(combined, row)
+			}
 		}
 	}
 

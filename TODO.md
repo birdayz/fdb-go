@@ -1391,6 +1391,22 @@ non-chained nested box already does this — its box-leg WHERE plans as `Predica
 the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`chained_boxleg{A,B,C}_filter`)
 — flip those `wantReject` cases to row assertions when ordinalized.
 
+### [ ] Executor/ordinal-binding — LEFT OUTER PK-join source-relative ordinal over a multi-leg row
+A `LEFT OUTER JOIN` on the **primary key** (`l.id = r.id`) combined with an **R-side WHERE filter** AND
+an **ORDER BY on the left key** plans successfully but **dies at execution**: `correlated FieldValue "ID"
+(correlation "L") … multi-leg row cannot serve a source-relative ordinal — no frontier row resolved
+(planner/executor bug)`. Remove ANY one of the three factors (non-PK join key / no R-filter / no ORDER BY)
+and it executes. This is the SAME "multi-leg merged rows serve source-relative ordinals" defect already
+documented in `rule_implement_nested_loop_join.go` (~line 2785) for the projected-EXISTS-over-3-legs arm —
+the obvious `rebaseOuterLegValueOrdinal` fix was tried and reverted; it is a **distinct executor/ordinal-
+binding workstream**, not a memo-linkage change. It fails LOUD (never wrong rows). Surfaced independently by
+the RFC-182 rowdiff harness when LEFT OUTER JOIN generation was added (seed 960000225); classified there as
+a tracked `knownGaps` DECLINE (`pkg/relational/conformance/rowdiff/run.go`). **Live pin:**
+`TestFDB_LeftJoinPkOrdinal_KnownExecutorGap` (goes RED when the query starts executing — at which point
+delete the `knownGaps` entry and assert the documented rows `[(2,2),(1,1)]`). **To make it work:** fix how a
+multi-leg (outer-join-merged) row resolves a correlated FieldValue's source-relative ordinal in the executor
+— the binding failure is below the rebase layer (see the reverted attempt in the NLJ-rule comment).
+
 ---
 
 # NEXT

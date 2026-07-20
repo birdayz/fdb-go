@@ -131,6 +131,15 @@ type JoinSpec struct {
 	// comma cross-join with the equality moved into the WHERE — the same
 	// logical query, a different parse path into the planner.
 	Inner bool
+	// LeftOuter makes the ON-join a LEFT OUTER JOIN: unmatched left rows are
+	// kept, NULL-extended on the right. Implies Inner (LEFT OUTER needs the ON
+	// form — a comma join has no outer semantics). This reaches the
+	// NULL-extension wrong-rows surface INNER never does, and pins the
+	// WHERE-vs-ON subtlety: an R-side filter in the WHERE drops the
+	// NULL-extended rows (r.col is NULL → predicate UNKNOWN), collapsing a
+	// LEFT JOIN back toward inner semantics — the oracle applies the WHERE
+	// post-join over the NULL-extended row, exactly as SQL does.
+	LeftOuter bool
 }
 
 // AggFunc is a supported aggregate. AVG is deliberately absent: its
@@ -626,7 +635,16 @@ func genJoinQuery(rng *rand.Rand, table TableDef) Query {
 	spec := &JoinSpec{
 		LeftCol:  leftCandidates[rng.IntN(len(leftCandidates))],
 		RightCol: rightCandidates[rng.IntN(len(rightCandidates))],
-		Inner:    rng.IntN(2) == 0,
+	}
+	// Join syntax/type: comma cross-join, INNER … ON, or LEFT OUTER … ON
+	// (each ~1/3). LEFT OUTER needs the ON form, so it sets Inner too.
+	switch rng.IntN(3) {
+	case 0:
+		spec.Inner = false // comma cross-join (equality moves to WHERE)
+	case 1:
+		spec.Inner = true // INNER … ON
+	default:
+		spec.Inner, spec.LeftOuter = true, true // LEFT OUTER … ON
 	}
 
 	// 1-2 qualified single-sided filter leaves, biased to indexed columns so
@@ -988,6 +1006,9 @@ func (c *Case) SQL(q Query, projection []string) string {
 	switch {
 	case q.Join == nil:
 		b.WriteString(tbl)
+	case q.Join.LeftOuter:
+		fmt.Fprintf(&b, "%s AS l LEFT JOIN %s AS r ON l.%s = r.%s",
+			tbl, tbl, strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
 	case q.Join.Inner:
 		fmt.Fprintf(&b, "%s AS l JOIN %s AS r ON l.%s = r.%s",
 			tbl, tbl, strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
