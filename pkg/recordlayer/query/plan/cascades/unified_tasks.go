@@ -66,7 +66,16 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 			// unoptimized groups cross with their full canonical set.
 			t.Ref.AdvancePlannerStage(targetStage)
 		} else {
-			t.Ref.SetStage(targetStage)
+			// No finals to promote — keep the exploratory members, but
+			// still reset the PER-STAGE exploration bookkeeping so those
+			// members re-explore in the new stage. A group whose logical
+			// members survived REWRITING (e.g. an unfinalized merged union
+			// leg) would otherwise carry its "explorationDone" state across
+			// the boundary, never fire its implement rules in PLANNING, and
+			// leave its parent with no physical child. Merely changing the
+			// stage without this reset was the RFC-182 asymmetric-union
+			// no-plan bug.
+			t.Ref.AdvanceStagePreservingMembers(targetStage)
 		}
 	}
 

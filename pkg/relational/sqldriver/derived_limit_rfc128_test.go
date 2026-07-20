@@ -203,6 +203,41 @@ func TestFDB_QualifiedStarLimit_RFC128(t *testing.T) {
 	wantInts(t, got, []int64{3, 4, 5}, "qualified-star a.* + LIMIT OFFSET")
 }
 
+// An invalid LIMIT/OFFSET literal (a decimalLiteral the grammar accepts but
+// that is not a valid integer: `0.0`, `0L`) must be REJECTED with a loud 42601
+// syntax error, never silently dropped. Pre-fix, parseLimitClause left the -1
+// no-limit / 0-offset sentinel on ParseInt failure, so `SELECT id FROM t LIMIT
+// 0.0` returned ALL 10 rows (correct: 0) and `... OFFSET 1.0` skipped nothing.
+// Revert-proven: without the parseLimitClause reject, LIMIT 0.0 yields 10 rows.
+func TestFDB_InvalidLimitLiteralRejected_RFC128(t *testing.T) {
+	t.Parallel()
+	db, ctx := rfc128DB(t, "invalidlimit")
+
+	// Bad literals → 42601, at plan time (QueryContext returns the error).
+	for _, q := range []string{
+		"SELECT id FROM t LIMIT 0.0",
+		"SELECT id FROM t LIMIT 0L",
+		"SELECT id FROM t ORDER BY id LIMIT 1 OFFSET 1.0",
+		"SELECT id FROM t ORDER BY id LIMIT 1 OFFSET 1L",
+	} {
+		rows, err := db.QueryContext(ctx, q)
+		if err == nil {
+			_ = rows.Close()
+			t.Fatalf("%s: expected a 42601 syntax error, got a successful query", q)
+		}
+		if !strings.Contains(err.Error(), string(api.ErrCodeSyntaxError)) {
+			t.Fatalf("%s: error = %v, want 42601 (invalid LIMIT/OFFSET literal)", q, err)
+		}
+	}
+
+	// Positive controls: a VALID integer zero limits to nothing (it is NOT the
+	// unparseable sentinel), and ordinary integer LIMIT/OFFSET still work.
+	wantInts(t, getInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 0"), nil,
+		"LIMIT 0 returns zero rows (valid integer, not the sentinel)")
+	wantInts(t, getInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 3"),
+		[]int64{4, 5}, "valid integer LIMIT/OFFSET still works")
+}
+
 // ---------------------------------------------------------------------------
 // §4.5 — SELECT DISTINCT … LIMIT (LIMIT applies AFTER distinct).
 // ---------------------------------------------------------------------------

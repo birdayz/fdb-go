@@ -960,7 +960,11 @@ func (w *physicalDistinctWrapper) WithChildren(qs []expressions.Quantifier) (exp
 		return nil, fmt.Errorf("physicalDistinctWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
 	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
-		return &physicalDistinctWrapper{plan: plans.NewRecordQueryDistinctPlan(innerPlan), innerQuant: qs[0]}, nil
+		// WithInner (copy-on-write), NOT the constructor: the rebuild must
+		// carry the Streaming flag — a constructor rebuild resets it to false
+		// and silently downgrades a resume-clean streaming distinct to the
+		// buggy hash-set path (TODO.md C5).
+		return &physicalDistinctWrapper{plan: w.plan.WithInner(innerPlan), innerQuant: qs[0]}, nil
 	}
 	return &physicalDistinctWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }

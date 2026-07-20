@@ -112,7 +112,7 @@ func run(seeds, seedStart uint64, templates bool) int {
 				continue
 			}
 			report("template "+tpl.Name,
-				rowdiff.RunCase(ctx, setup, dbPath, clusterFile, tpl.Case, "tpl"+tpl.Name))
+				rowdiff.RunCase(ctx, setup, dbPath, clusterFile, tpl.Case, "tpl"+tpl.Name, 0))
 		}
 	}
 

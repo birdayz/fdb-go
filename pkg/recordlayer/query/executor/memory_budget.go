@@ -104,12 +104,6 @@ func newBoundedSet[K comparable](st *recordlayer.ExecuteState) *boundedSet[K] {
 	return &boundedSet[K]{m: make(map[K]struct{}), st: st}
 }
 
-// Contains reports whether key is present.
-func (s *boundedSet[K]) Contains(key K) bool {
-	_, ok := s.m[key]
-	return ok
-}
-
 // Add inserts key, charging estBytes against the statement budget only when
 // the key is NEW. Returns (added, err): added is false for a duplicate (no
 // charge, no error). On a budget breach the key is NOT inserted and the error

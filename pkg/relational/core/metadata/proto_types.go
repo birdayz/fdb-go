@@ -51,14 +51,6 @@ func isFieldNullable(fd protoreflect.FieldDescriptor) bool {
 	return fd.Cardinality() != protoreflect.Required
 }
 
-// protoScalarToDataType defaults to nullable=true for callers that
-// don't pass an explicit label; used by unwrapWrappedArray which
-// extracts an element type from a repeated field (elements are
-// conceptually optional).
-func protoScalarToDataType(fd protoreflect.FieldDescriptor) (api.DataType, error) {
-	return protoScalarToDataTypeWithNullabilityVisited(fd, true, map[string]bool{})
-}
-
 // protoScalarToDataTypeWithNullability handles the element type only;
 // cardinality (repeated → array) is applied by the caller.
 func protoScalarToDataTypeWithNullability(fd protoreflect.FieldDescriptor, nullable bool) (api.DataType, error) {
@@ -99,16 +91,22 @@ func protoScalarToDataTypeWithNullabilityVisited(fd protoreflect.FieldDescriptor
 		if isUUIDDescriptor(md) {
 			return api.NewUUIDType(nullable), nil
 		}
-		if inner, ok := unwrapWrappedArray(md); ok {
-			return inner, nil
-		}
 		fullName := string(md.FullName())
 		if visited[fullName] {
 			// Recursive type — surface as UnresolvedType (matches Java's
 			// fromProtoType fixed-point handling). The SQL layer doesn't
 			// flatten recursive structs today; this avoids the stack-
 			// overflow and lets the column type round-trip by name.
+			//
+			// Checked BEFORE unwrapWrappedArray: a self-referential
+			// nullable-array wrapper (`message M { repeated M values = 1; }`)
+			// is BOTH a wrapper shape AND a cycle. Unwrapping first would
+			// recurse forever because the old unwrap restarted the walk with
+			// a fresh visited set; the guard here is what breaks the cycle.
 			return api.NewUnresolvedType(fullName, nullable), nil
+		}
+		if inner, ok := unwrapWrappedArray(md, visited); ok {
+			return inner, nil
 		}
 		return messageTypeFromDescriptorVisited(md, nullable, visited)
 	}
@@ -171,7 +169,7 @@ const wrappedArrayFieldName = "values"
 //
 // Mirrors Java's NullableArrayTypeUtils.describesWrappedArray plus the
 // element-type extraction done inline by fromProtoType.
-func unwrapWrappedArray(md protoreflect.MessageDescriptor) (api.DataType, bool) {
+func unwrapWrappedArray(md protoreflect.MessageDescriptor, visited map[string]bool) (api.DataType, bool) {
 	fields := md.Fields()
 	if fields.Len() != 1 {
 		return nil, false
@@ -185,10 +183,19 @@ func unwrapWrappedArray(md protoreflect.MessageDescriptor) (api.DataType, bool) 
 	if fd.Cardinality() != protoreflect.Repeated || fd.IsMap() || string(fd.Name()) != wrappedArrayFieldName {
 		return nil, false
 	}
-	// The repeated field drives the element type. Build the scalar
-	// type only (not the array), then wrap it in ArrayType so we
-	// don't accidentally double-wrap a Repeated → ArrayType.
-	elem, err := protoScalarToDataType(fd)
+	// Mark THIS wrapper message in-progress and thread `visited` into the
+	// element walk. Without it, an element type that cycles back to the
+	// wrapper — directly (`message M { repeated M values = 1; }`) or mutually
+	// via another wrapper — restarts the walk with an empty set and recurses
+	// forever. The caller's pre-unwrap guard then catches the re-entry.
+	// The repeated field drives the element type; build the scalar type only
+	// (not the array), then wrap it in ArrayType so we don't accidentally
+	// double-wrap a Repeated → ArrayType. Elements are conceptually optional
+	// (nullable=true).
+	fullName := string(md.FullName())
+	visited[fullName] = true
+	defer delete(visited, fullName)
+	elem, err := protoScalarToDataTypeWithNullabilityVisited(fd, true, visited)
 	if err != nil {
 		return nil, false
 	}

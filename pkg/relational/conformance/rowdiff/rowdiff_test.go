@@ -455,7 +455,7 @@ func TestOracle_Aggregates(t *testing.T) {
 	}
 
 	// GROUPED: a NULL key is its OWN group, and an all-NULL group's SUM is NULL.
-	rows, err := OracleRows(c, Query{Agg: &AggSpec{Func: AggSum, Col: "A", GroupBy: "B"}}, nil)
+	rows, err := OracleRows(c, Query{Agg: &AggSpec{Func: AggSum, Col: "A", GroupBy: []string{"B"}}}, nil)
 	if err != nil {
 		t.Fatalf("oracle: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestOracle_Aggregates(t *testing.T) {
 		t.Errorf("group B=NULL: SUM(A) = %v, want NULL (its only row has A NULL)", byKey[nil])
 	}
 	// A grouped aggregate over an empty input returns NO rows.
-	rows, err = OracleRows(c, Query{Agg: &AggSpec{Func: AggCountStar, GroupBy: "B"}, Where: never}, nil)
+	rows, err = OracleRows(c, Query{Agg: &AggSpec{Func: AggCountStar, GroupBy: []string{"B"}}, Where: never}, nil)
 	if err != nil {
 		t.Fatalf("oracle: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestOracle_Aggregates(t *testing.T) {
 
 	// HAVING filters on the aggregate; a NULL aggregate never passes.
 	rows, err = OracleRows(c, Query{Agg: &AggSpec{
-		Func: AggSum, Col: "A", GroupBy: "B", HavingOn: true,
+		Func: AggSum, Col: "A", GroupBy: []string{"B"}, HavingOn: true,
 		Having: &Pred{Op: predicates.ComparisonGreaterThan, Lit: int64(6)},
 	}}, nil)
 	if err != nil {
@@ -526,11 +526,36 @@ func TestKnownGaps_LedgerIsNarrow(t *testing.T) {
 	const nestedIn = "SELECT * FROM t WHERE a IN (1,2) AND b = 3 AND c IN (4,5)"
 	planInvariantInJoin := errors.New("XX000: malformed query plan: plan-invariant: non-leaf plan *plans.RecordQueryInJoinPlan has no children")
 
-	// The PRODUCTION ledger is empty (its one entry was retired when the
-	// nested-IN gap was fixed), so nothing may be declined — including the
-	// failure that entry used to cover.
+	// The retired nested-IN gap must STILL not be declined by the production
+	// ledger (that gap is fixed; a lingering entry would hide its regression).
 	if gap := matchKnownGap(nestedIn, planInvariantInJoin); gap != nil {
 		t.Fatalf("ledger declined %q, but the nested-IN gap is FIXED — a retired entry must not linger", gap.name)
+	}
+
+	// The RETIRED LEFT-OUTER-PK-join multi-leg gap must NO LONGER be declined:
+	// its root cause is fixed (InJoin is now a leg-window passthrough,
+	// TestFDB_LeftJoinPkOrdinal_InJoinSortRegression). A lingering entry would
+	// silence that regression.
+	multiLegErr := errors.New(`correlated FieldValue "ID" (correlation "L") evaluated against an unbound/unrecognized context (*RowEvalContext (multi-leg row cannot serve a source-relative ordinal)) — no frontier row resolved (planner/executor bug)`)
+	const pkLeftJoin = "SELECT l.id AS l_id, r.id AS r_id FROM t AS l LEFT JOIN t AS r ON l.id = r.id WHERE r.s IN ('delta','beta') ORDER BY l.id DESC, r.id"
+	if gap := matchKnownGap(pkLeftJoin, multiLegErr); gap != nil {
+		t.Fatalf("ledger declined %q, but the multi-leg PK-join gap is FIXED — a retired entry must not linger", gap.name)
+	}
+
+	// The production ledger's one live entry — the 3-way shared-column
+	// ordinal-resolution gap — must match its OWN signature and nothing else.
+	threeWayErr := errors.New(`ordinal resolution: field "C" not resolvable in the runtime row (ordinal -1, row columns [ID A B C S F]) — malformed plan`)
+	const threeWayJoin = "SELECT l.id, m.id, r.id FROM t AS l, t AS m, t AS r WHERE l.a = m.id AND m.c = r.c AND l.c = 1 AND r.c IS NULL"
+	if matchKnownGap(threeWayJoin, threeWayErr) == nil {
+		t.Fatal("production ledger must decline the documented 3-way shared-column ordinal error")
+	}
+	// A "malformed plan" WITHOUT the ordinal-(-1) resolution signature must stay
+	// a finding, and a row divergence never declines.
+	if gap := matchKnownGap(threeWayJoin, errors.New("XX000: malformed plan: some other cause")); gap != nil {
+		t.Fatalf("3-way entry over-matched a different malformed-plan cause (%q) — must stay a finding", gap.name)
+	}
+	if gap := matchKnownGap(threeWayJoin, errors.New("row count: engine 5, oracle expects 0")); gap != nil {
+		t.Fatalf("3-way entry over-matched a ROW divergence (%q) — soundness findings are never declinable", gap.name)
 	}
 
 	// The narrowness cases below run against an INJECTED ledger holding the
@@ -672,13 +697,13 @@ func TestOracle_SumOverflowSurvivesHaving(t *testing.T) {
 	}{
 		{
 			name: "grouped_sum_overflow_no_having",
-			agg:  &AggSpec{Func: AggSum, Col: "A", GroupBy: "A"},
+			agg:  &AggSpec{Func: AggSum, Col: "A", GroupBy: []string{"A"}},
 		},
 		{
 			// The regression: HAVING must not swallow the overflow signal.
 			name: "grouped_sum_overflow_with_having",
 			agg: &AggSpec{
-				Func: AggSum, Col: "A", GroupBy: "A", HavingOn: true,
+				Func: AggSum, Col: "A", GroupBy: []string{"A"}, HavingOn: true,
 				Having: &Pred{Col: "A", Op: predicates.ComparisonGreaterThan, Lit: int64(2)},
 			},
 		},
@@ -716,7 +741,7 @@ func TestOracle_HavingStillFiltersWithoutOverflow(t *testing.T) {
 		},
 	}
 	rows, err := OracleRows(c, Query{Agg: &AggSpec{
-		Func: AggSum, Col: "A", GroupBy: "A", HavingOn: true,
+		Func: AggSum, Col: "A", GroupBy: []string{"A"}, HavingOn: true,
 		Having: &Pred{Col: "A", Op: predicates.ComparisonGreaterThan, Lit: int64(5)},
 	}}, nil)
 	if err != nil {

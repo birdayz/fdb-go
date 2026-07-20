@@ -524,7 +524,10 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// real RecordQueryLimitPlan operator at its built position (no
 	// post-execution hoist), stacking it below DISTINCT would dedup AFTER the
 	// cap and return the wrong rows. It must wrap everything.
-	op = v.visitLimit(op, simpleTable)
+	op, limitErr := v.visitLimit(op, simpleTable)
+	if limitErr != nil {
+		return nil, limitErr
+	}
 
 	if v.md == nil {
 		return op, nil
@@ -563,7 +566,13 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		// in-tree operator is the only carrier; without this `SELECT a.* … LIMIT
 		// 5` returned all rows). Only the rebuild path needs it — the non-rebuild
 		// path keeps the visitLimit wrapper.
-		sq.limit, sq.offset = parseLimitClause(simpleTable)
+		// visitLimit above already validated the clause (a bad literal would
+		// have returned early), so this re-read cannot error — but propagate
+		// it rather than discard, keeping the reject total.
+		var limitErr error
+		if sq.limit, sq.offset, limitErr = parseLimitClause(simpleTable); limitErr != nil {
+			return nil, limitErr
+		}
 		op = buildLogicalPlanForSelect(sq)
 		if op == nil {
 			return op, nil
@@ -1100,14 +1109,6 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		if existsUnderDisjunction(pred) {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 				"EXISTS within an OR (disjunction) is not supported")
-		}
-		if len(sq.joins) > 0 && len(existsPlanner.subqueries) == 1 {
-			esq := existsPlanner.subqueries[0]
-			if esq.JoinPredicate != nil {
-				if eliminated := eliminateRedundantCrossJoin(op, sq, pred, esq); eliminated {
-					return op, nil
-				}
-			}
 		}
 		combined, qErr := combineQualifyPred(v.md, v.schemaName, sq, v.cteScopes, pred)
 		if qErr != nil {
@@ -1840,42 +1841,58 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 	return nil
 }
 
-// parseLimitClause reads a LIMIT/OFFSET clause from a SimpleTableContext and
-// returns (limit, offset). limit == -1 means "no LIMIT clause present" (a pure
-// OFFSET still returns limit -1 with offset > 0). Shared by visitLimit (the
-// live ANTLR-direct path) and extractFromSimpleTable (the selectQuery path used
+// resolveLimitAtom resolves one LIMIT/OFFSET atom to an integer. A
+// decimalLiteral that is not a valid integer (`0.0`, `0L`) is a hard 42601
+// syntax error: the grammar accepts any decimalLiteral here, but a
+// non-integer one is invalid and must be REJECTED, never silently dropped
+// (the old code left the no-limit / zero-offset sentinel, so `LIMIT 0.0`
+// returned ALL rows instead of none). A preparedStatementParameter (`LIMIT
+// ?`) is not resolvable at plan time; it returns ok=false with no error so the
+// caller keeps its sentinel (parameter binding is a separate concern).
+func resolveLimitAtom(atom antlrgen.ILimitClauseAtomContext) (val int64, ok bool, err error) {
+	if atom == nil {
+		return 0, false, nil
+	}
+	if atom.PreparedStatementParameter() != nil {
+		return 0, false, nil
+	}
+	text := atom.GetText()
+	v, perr := strconv.ParseInt(text, 10, 64)
+	if perr != nil {
+		return 0, false, api.NewErrorf(api.ErrCodeSyntaxError,
+			"LIMIT/OFFSET value must be an integer literal, got %q", text)
+	}
+	return v, true, nil
+}
+
+// parseLimitClause reads the LIMIT/OFFSET values from simpleTable's clause.
+// Returns (-1, 0, nil) when absent (limit == -1 means "no LIMIT clause"; a pure
+// OFFSET still returns limit -1 with offset > 0), or a 42601 error when a
+// LIMIT/OFFSET literal is present but not a valid integer. Shared by visitLimit
+// (the live ANTLR-direct path) and extractFromSimpleTable (the selectQuery path
 // for union branches / derived tables) so a LIMIT in either position is parsed
 // identically and never silently dropped (RFC-128).
-func parseLimitClause(simpleTable *antlrgen.SimpleTableContext) (limit, offset int64) {
+//
+// Grammar: `LIMIT limit=limitClauseAtom (OFFSET offset=limitClauseAtom)?` —
+// both atoms are LABELED; there is no positional `LIMIT a, b` form, so the
+// two labeled accessors cover every atom.
+func parseLimitClause(simpleTable *antlrgen.SimpleTableContext) (limit, offset int64, err error) {
 	limit = -1
 	limitClauseCtx := simpleTable.LimitClause()
 	if limitClauseCtx == nil {
-		return limit, offset
+		return limit, offset, nil
 	}
-	if offsetCtx := limitClauseCtx.GetOffset(); offsetCtx != nil {
-		if val, err := strconv.ParseInt(offsetCtx.GetText(), 10, 64); err == nil {
-			offset = val
-		}
+	if v, ok, e := resolveLimitAtom(limitClauseCtx.GetLimit()); e != nil {
+		return limit, offset, e
+	} else if ok {
+		limit = v
 	}
-	if limitCtx := limitClauseCtx.GetLimit(); limitCtx != nil {
-		if val, err := strconv.ParseInt(limitCtx.GetText(), 10, 64); err == nil {
-			limit = val
-		}
+	if v, ok, e := resolveLimitAtom(limitClauseCtx.GetOffset()); e != nil {
+		return limit, offset, e
+	} else if ok {
+		offset = v
 	}
-	atoms := limitClauseCtx.AllLimitClauseAtom()
-	if limit < 0 && offset == 0 && len(atoms) == 2 {
-		if val, err := strconv.ParseInt(atoms[0].GetText(), 10, 64); err == nil {
-			offset = val
-		}
-		if val, err := strconv.ParseInt(atoms[1].GetText(), 10, 64); err == nil {
-			limit = val
-		}
-	} else if limit < 0 && offset == 0 && len(atoms) == 1 {
-		if val, err := strconv.ParseInt(atoms[0].GetText(), 10, 64); err == nil {
-			limit = val
-		}
-	}
-	return limit, offset
+	return limit, offset, nil
 }
 
 // limitClauseKeepsSingleRow reports whether simpleTable's LIMIT/OFFSET clause
@@ -1900,7 +1917,8 @@ func limitClauseKeepsSingleRow(simpleTable *antlrgen.SimpleTableContext) bool {
 			return false
 		}
 	}
-	limit, offset := parseLimitClause(simpleTable)
+	// Every atom parsed cleanly above, so parseLimitClause cannot error here.
+	limit, offset, _ := parseLimitClause(simpleTable)
 	return limit >= 1 && offset == 0
 }
 
@@ -1908,12 +1926,15 @@ func limitClauseKeepsSingleRow(simpleTable *antlrgen.SimpleTableContext) bool {
 // extension: LIMIT/OFFSET are supported (most-requested feature).
 // Builds a LogicalLimit node; the Cascades translator turns it into a
 // RecordQueryLimitPlan operator applied at its pipeline position (RFC-128).
-func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext) logical.LogicalOperator {
-	limit, offset := parseLimitClause(simpleTable)
-	if limit >= 0 || offset > 0 {
-		return logical.NewLimit(op, limit, offset)
+func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext) (logical.LogicalOperator, error) {
+	limit, offset, err := parseLimitClause(simpleTable)
+	if err != nil {
+		return nil, err
 	}
-	return op
+	if limit >= 0 || offset > 0 {
+		return logical.NewLimit(op, limit, offset), nil
+	}
+	return op, nil
 }
 
 // visitFinalProjection builds the non-aggregate projection by reading

@@ -96,10 +96,9 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 			rolled := RollUpPlanPartitions([]*PlanPartition{partition})
 			for _, rp := range rolled {
 				for _, expr := range rp.GetExpressions() {
-					ph := expr.(physicalPlanExpression)
-					distPlan := plans.NewRecordQueryDistinctPlan(ph.GetRecordQueryPlan())
-					innerQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
-					call.YieldFinalExpression(NewPhysicalDistinctWrapper(distPlan, innerQ))
+					if w := newPhysicalDistinctWrapperFor(expr); w != nil {
+						call.YieldFinalExpression(w)
+					}
 				}
 			}
 		}
@@ -117,16 +116,13 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 		}
 
 		for _, m := range innerRef.AllMembers() {
-			ph, ok := m.(physicalPlanExpression)
-			if !ok {
+			if _, ok := m.(physicalPlanExpression); !ok {
 				continue
 			}
 			if allDistinct {
 				call.YieldFinalExpression(m)
-			} else {
-				distPlan := plans.NewRecordQueryDistinctPlan(ph.GetRecordQueryPlan())
-				innerQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
-				call.YieldFinalExpression(NewPhysicalDistinctWrapper(distPlan, innerQ))
+			} else if w := newPhysicalDistinctWrapperFor(m); w != nil {
+				call.YieldFinalExpression(w)
 			}
 		}
 	}
@@ -254,6 +250,84 @@ func uniqueKeysCovered(uniqueKeyCols []string, projectedCols map[string]struct{}
 		}
 	}
 	return true
+}
+
+// newPhysicalDistinctWrapperFor builds the physical distinct wrapper for a
+// physical inner member, selecting the resume-clean STREAMING executor
+// (distinctStreamCursor) when the member's ordering already makes the whole-row
+// dedup key adjacent — equal rows contiguous — and the fresh-per-page hash-set
+// otherwise. Streaming is sound ONLY when the ordering covers ALL output
+// columns (the full DISTINCT dedup key), so a non-adjacent duplicate is never
+// dropped and an adjacent one never wrongly kept; anything less conservatively
+// keeps the hash-set (correct within a page). This is the ordering-aware fix
+// for the cross-page re-admission of TODO.md C5 — the same adjacency predicate
+// streaming aggregation uses for its grouping keys. Returns nil for a
+// non-physical member.
+//
+// A follow-up will REQUEST the dedup-key ordering (inserting an InMemorySort
+// when no index provides it) so the unordered `SELECT DISTINCT col` — the
+// common shape — also streams; that step must not disturb the DISTINCT +
+// ORDER-BY-on-a-non-projected-column dedup-by-projected-only semantics, so it
+// is deliberately separated from this ordering-detection step.
+func newPhysicalDistinctWrapperFor(member expressions.RelationalExpression) expressions.RelationalExpression {
+	ph, ok := member.(physicalPlanExpression)
+	if !ok {
+		return nil
+	}
+	distPlan := plans.NewRecordQueryDistinctPlan(ph.GetRecordQueryPlan())
+	distPlan.Streaming = distinctStreamingEligible(member, ph.GetRecordQueryPlan())
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(member))
+	return NewPhysicalDistinctWrapper(distPlan, innerQ)
+}
+
+// distinctStreamingEligible reports whether a distinct over innerPlan — whose
+// physical realization is `member` — may use the resume-clean streaming
+// executor: the member's ordering must make the whole-row dedup key adjacent
+// (equal rows contiguous), the same adjacency predicate streaming aggregation
+// uses for its grouping keys. This is the SOLE gate for
+// RecordQueryDistinctPlan.Streaming and MUST be re-evaluated at every site that
+// (re)builds a distinct over a different inner — the push-through-filter/fetch
+// rules included — so a rebuild never silently downgrades a streaming distinct
+// to the cross-page-buggy hash-set, nor promotes an unordered inner to
+// streaming. (A push preserves the inner ordering but changes WHICH inner the
+// distinct sits over, so the decision genuinely has to be recomputed, not
+// copied.)
+//
+// orderingSatisfiesGroupingKeys matches dedup columns to ordering keys by BARE
+// field name (case-insensitive) — sound for a single-record-source inner where
+// every column name is distinct. Across a JOIN two legs can share a leaf name,
+// so a coincidental name+position alignment could false-positive. That is NOT a
+// row-dropping hazard: the executor still dedups by the full packed row
+// (distinctKey), so a wrongly-streamed non-adjacent input at worst LEAKS a
+// duplicate — the same failure class as the hash-set it replaces, never a lost
+// unique row. (Streaming a join-distinct also requires the join to emit rows
+// ordered by the whole dedup key, itself rare.)
+func distinctStreamingEligible(member expressions.RelationalExpression, innerPlan plans.RecordQueryPlan) bool {
+	dedupCols := distinctKeyColumns(innerPlan)
+	return len(dedupCols) > 0 && orderingSatisfiesGroupingKeys(properties.EstimateOrdering(member), dedupCols)
+}
+
+// distinctKeyColumns returns the inner plan's output columns as Values — the
+// whole-row DISTINCT dedup key (distinctKey packs exactly these positional
+// slots). A projection carries its output columns as projected Values directly
+// (its GetResultType is always UnknownType); a BARE-column projection yields
+// FieldValues in the same representation the inner ordering's keys use, so
+// orderingSatisfiesGroupingKeys can prove adjacency. A COMPUTED projection
+// (g/2, f(g)) yields non-FieldValue projected values that won't match — the
+// distinct is then conservatively left on the hash-set. A non-projection inner
+// (e.g. SELECT DISTINCT *) exposes its columns via a RecordType schema.
+func distinctKeyColumns(inner plans.RecordQueryPlan) []values.Value {
+	if proj, ok := inner.(*plans.RecordQueryProjectionPlan); ok {
+		return proj.GetProjections()
+	}
+	if rt, ok := inner.GetResultType().(*values.RecordType); ok && len(rt.Fields) > 0 {
+		cols := make([]values.Value, len(rt.Fields))
+		for i, f := range rt.Fields {
+			cols[i] = values.NewFieldValueWithResolvedOrdinal(f.Name, i, f.FieldType)
+		}
+		return cols
+	}
+	return nil
 }
 
 var _ ImplementationRule = (*ImplementDistinctFinalRule)(nil)

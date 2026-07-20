@@ -2676,21 +2676,6 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				"EXISTS within an OR (disjunction) is not supported")
 		}
 
-		// Semi-join optimization: when the filter sits on a cross-join
-		// and a correlated EXISTS references the same table as the
-		// join's right side with the same equi-join column pair, the
-		// cross-join is redundant — the EXISTS subsumes it. Drop the
-		// cross-join, strip the join predicate from the WHERE, and keep
-		// only the EXISTS. This matches Java's Cascades behavior.
-		if len(sq.joins) > 0 && len(existsPlanner.subqueries) == 1 {
-			esq := existsPlanner.subqueries[0]
-			if esq.JoinPredicate != nil {
-				if eliminated := eliminateRedundantCrossJoin(op, sq, pred, esq); eliminated {
-					return op, nil
-				}
-			}
-		}
-
 		_ = upgradeFirstFilter(op, pred)
 		if len(existsPlanner.subqueries) > 0 {
 			upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
@@ -3128,139 +3113,6 @@ func validateQualifiedStarSourcesFromClassification(cls *selectClassification, f
 	return nil
 }
 
-// upgradeFirstFilterExistsSubqueries walks the single-child chain
-// from op and, at the first LogicalFilter, attaches the EXISTS
-// subquery plans. Returns true when a Filter was found.
-// eliminateRedundantCrossJoin detects and eliminates a cross-join that is
-// subsumed by a correlated EXISTS on the same table. When the cross-join's
-// right table matches the EXISTS scan table and the filter's join predicate
-// is equivalent to the EXISTS correlation, the cross-join is redundant —
-// replacing it with a simple EXISTS semi-join on the left table avoids
-// duplicate rows and matches Java's Cascades behavior.
-//
-// Returns true when the optimization fired (op modified in-place).
-func eliminateRedundantCrossJoin(
-	op logical.LogicalOperator,
-	sq *selectQuery,
-	pred predicates.QueryPredicate,
-	esq logical.ExistsSubquery,
-) bool {
-	if len(sq.joins) != 1 {
-		return false
-	}
-	joinTableName := sq.joins[0].tableName
-
-	// Check if the EXISTS scan references the same table.
-	existsTable := ""
-	for cur := esq.Plan; cur != nil; {
-		if s, ok := cur.(*logical.LogicalScan); ok {
-			existsTable = s.Table
-			break
-		}
-		ch := cur.Children()
-		if len(ch) != 1 {
-			break
-		}
-		cur = ch[0]
-	}
-	if existsTable == "" || !strings.EqualFold(joinTableName, existsTable) {
-		return false
-	}
-
-	// Check if the filter predicate contains a comparison between left
-	// and right table columns that matches the EXISTS join predicate.
-	filterComps := extractComparisonFieldPairs(pred)
-	existsComps := extractComparisonFieldPairs(esq.JoinPredicate)
-	if len(filterComps) == 0 || len(existsComps) == 0 {
-		return false
-	}
-	subsumes := false
-	for _, fc := range filterComps {
-		for _, ec := range existsComps {
-			fL := bareCol(fc[0])
-			fR := bareCol(fc[1])
-			eL := bareCol(ec[0])
-			eR := bareCol(ec[1])
-			if (fL == eL && fR == eR) || (fL == eR && fR == eL) {
-				subsumes = true
-			}
-		}
-	}
-	if !subsumes {
-		return false
-	}
-
-	// Strip the join predicate from the filter predicate — keep only
-	// the EXISTS predicate.
-	existsPred := stripNonExistsPredicates(pred)
-	if existsPred == nil {
-		return false
-	}
-
-	// Replace the LogicalJoin with just the left child (the main table
-	// scan). Walk the operator chain to find the LogicalFilter and the
-	// LogicalJoin beneath it.
-	for cur := op; cur != nil; {
-		f, ok := cur.(*logical.LogicalFilter)
-		if !ok {
-			ch := cur.Children()
-			if len(ch) != 1 {
-				return false
-			}
-			cur = ch[0]
-			continue
-		}
-		join, joinOK := f.Input.(*logical.LogicalJoin)
-		if !joinOK {
-			return false
-		}
-		// Replace the join with just its left child.
-		f.Input = join.Left
-		f.Predicate = existsPred
-		f.ExistsSubqueries = []logical.ExistsSubquery{esq}
-		return true
-	}
-	return false
-}
-
-// extractComparisonFieldPairs extracts [left, right] field name pairs
-// from comparison predicates in a predicate tree.
-func extractComparisonFieldPairs(p predicates.QueryPredicate) [][2]string {
-	if p == nil {
-		return nil
-	}
-	var pairs [][2]string
-	predicates.WalkPredicate(p, func(qp predicates.QueryPredicate) bool {
-		cp, ok := qp.(*predicates.ComparisonPredicate)
-		if !ok {
-			return true
-		}
-		lFV, lOK := cp.Operand.(*values.FieldValue)
-		if !lOK {
-			return true
-		}
-		if cp.Comparison.Operand == nil {
-			return true
-		}
-		rFV, rOK := cp.Comparison.Operand.(*values.FieldValue)
-		if !rOK {
-			return true
-		}
-		pairs = append(pairs, [2]string{
-			strings.ToUpper(lFV.Field),
-			strings.ToUpper(rFV.Field),
-		})
-		return true
-	})
-	return pairs
-}
-
-// bareCol extracts the unqualified column name from a potentially
-// qualified field reference (e.g. "E.ID" → "ID").
-func bareCol(field string) string {
-	return parseColRef(field).bare()
-}
-
 // splitNonExistsPredicatesFromWalked returns only the non-EXISTS parts
 // of a walked predicate tree. EXISTS and NOT(EXISTS) nodes are dropped.
 // Returns nil if there are no non-EXISTS predicates.
@@ -3353,6 +3205,9 @@ func existsReachableUnderOr(p predicates.QueryPredicate, underOr bool) bool {
 	return false
 }
 
+// upgradeFirstFilterExistsSubqueries walks the single-child chain from op and,
+// at the first LogicalFilter, attaches the EXISTS subquery plans. Returns true
+// when a Filter was found.
 func upgradeFirstFilterExistsSubqueries(op logical.LogicalOperator, subqueries []logical.ExistsSubquery) bool {
 	for cur := op; cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
@@ -4195,6 +4050,49 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 	for _, gb := range sq.groupBy {
 		if gb.expr != nil {
 			groupByExprSet[strings.ToUpper(gb.display)] = true
+		}
+	}
+
+	// HAVING obeys the SAME grouping rule as the SELECT list: a base column
+	// referenced OUTSIDE an aggregate must be covered by GROUP BY, else it is a
+	// 42803 grouping error. The OutsideSubqueries walk skips aggregate-call
+	// operands (SUM(v)'s v) AND does not descend into nested subqueries — a
+	// column syntactically inside a HAVING subquery (`… HAVING EXISTS(SELECT 1
+	// FROM u WHERE u.v = k)`) binds to THAT query block, so it must not be
+	// group-checked against the outer sources (else a subquery-local column
+	// whose bare name collides with an ungrouped outer column would wrongly
+	// 42803). "Covered" = the column is a GROUP BY key OR appears inside a
+	// GROUP BY EXPRESSION key, so `GROUP BY k+1 HAVING k+1 > 5` stays valid.
+	// Only genuine base columns of a KNOWN source are flagged (the tableFields
+	// guard) — an aggregate OUTPUT ALIAS or a derived/CTE source (tableFields
+	// == nil) is left to downstream resolution. Without this, `HAVING id > 2`
+	// with id neither grouped nor aggregated silently read the group key at
+	// id's colliding ordinal (wrong rows), or leaked an internal "ordinal
+	// resolution ... malformed plan" when id's base ordinal exceeded the
+	// aggregated row width. Mirrors the SELECT-list/aggCols validation above.
+	if sq.havingExpr != nil {
+		groupByColumns := make(map[string]bool)
+		for _, gb := range sq.groupBy {
+			if gb.expr != nil {
+				for _, c := range harvestBareColumnRefsOutsideSubqueries(gb.expr) {
+					groupByColumns[strings.ToUpper(c)] = true
+				}
+				continue
+			}
+			groupByColumns[parseColRef(strings.ToUpper(gb.display)).bare()] = true
+			if gb.qualified {
+				groupByColumns[strings.ToUpper(gb.bare)] = true
+			}
+		}
+		for _, ref := range harvestBareColumnRefsOutsideSubqueries(sq.havingExpr) {
+			bare := strings.ToUpper(ref)
+			if groupByColumns[bare] {
+				continue
+			}
+			if tableFields != nil && tableFields[bare] {
+				return api.NewErrorf(api.ErrCodeGroupingError,
+					"column %q must appear in the GROUP BY clause or be used in an aggregate function", ref)
+			}
 		}
 	}
 

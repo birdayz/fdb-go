@@ -90,6 +90,15 @@ func FuzzPlanner_Idempotence(f *testing.F) {
 func FuzzPlanner_PlanFullPipeline(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3, 4, 5})
 	f.Add(make([]byte, 8))
+	// Regression seed: decodes to
+	//   Union(TypeFilter(TypeFilter(Scan)), TypeFilter(Filter(Scan)))
+	// — asymmetric union legs. The right leg's group, merged with the left
+	// leg's inner via constant-true filter elimination, crossed
+	// REWRITING→PLANNING through the no-finals stage path and never reset
+	// its exploration state, so it never implemented and the union produced
+	// no winner while Plan() reported success. Fixed by
+	// AdvanceStagePreservingMembers (see asymmetric_union_planning_test.go).
+	f.Add([]byte{35, 4, 4, 1})
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if len(b) < 4 {
 			return
@@ -231,7 +240,7 @@ func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpre
 	case 7:
 		// Intersection over two random children with a single
 		// FieldValue comparison key — exercises IntersectionMerge,
-		// IntersectionSingletonElim, PushFilterThroughIntersection.
+		// IntersectionSingletonElim.
 		left := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		right := buildFuzzExpression(b, (start+2)%len(b), depth+1)
 		ql := expressions.ForEachQuantifier(expressions.InitialOf(left))

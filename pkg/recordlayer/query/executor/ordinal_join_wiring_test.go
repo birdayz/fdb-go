@@ -605,12 +605,22 @@ func TestDownstreamLegWindows(t *testing.T) {
 			"type filter":       plans.NewRecordQueryTypeFilterPlan(nil, nlj),
 			"filter":            plans.NewRecordQueryFilterPlan(nil, nlj),
 			"predicates filter": plans.NewRecordQueryPredicatesFilterPlan(nlj, nil),
+			// Both lowerings of `... IN (…)` re-emit the inner join's merged rows
+			// verbatim under a per-in-value binding (row count/order change, row
+			// LAYOUT does not), so the join below is still the leg-window
+			// authority — a source-relative sort key over the merged row resolves
+			// through the windows instead of going loud.
+			"in-join":  plans.NewRecordQueryInJoinPlan(nlj, "iv", false, false),
+			"in-union": plans.NewRecordQueryInUnionPlan(nlj, []string{"iv"}, nil, false),
 		}
 		for name, w := range wrappers {
 			assertSpans(t, name, w)
 		}
-		// Nested passthroughs unwrap transitively.
+		// Nested passthroughs unwrap transitively — incl. the real failing shape:
+		// an in-memory sort ABOVE an in-join/in-union over the join.
 		assertSpans(t, "limit(distinct(in-memory sort))", plans.NewRecordQueryLimitPlan(plans.NewRecordQueryDistinctPlan(plans.NewRecordQueryInMemorySortPlan(nlj, nil)), 5, 0))
+		assertSpans(t, "in-memory sort(in-join)", plans.NewRecordQueryInMemorySortPlan(plans.NewRecordQueryInJoinPlan(nlj, "iv", false, false), nil))
+		assertSpans(t, "in-memory sort(in-union)", plans.NewRecordQueryInMemorySortPlan(plans.NewRecordQueryInUnionPlan(nlj, []string{"iv"}, nil, false), nil))
 	})
 	t.Run("non-join input declines", func(t *testing.T) {
 		t.Parallel()

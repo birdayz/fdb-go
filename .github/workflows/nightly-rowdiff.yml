@@ -2,9 +2,15 @@ name: Nightly RowDiff
 
 # RFC-182's generative row-soundness differential harness runs 25 seeds in the
 # PR suite — enough to keep the plan-family templates honest, nowhere near
-# enough to find anything. RFC-183's exit criteria ask for >=50k seeds, which
-# at ~3.7 seeds/s is a ~3.75h sweep that cannot live in `just test`. This job
-# is where that scale actually happens.
+# enough to find anything. RFC-183's exit criteria ask for >=50k seeds; this
+# job is where that scale actually happens.
+#
+# Seed budget (~18k, down from 50k): the generator now emits 3-way self-joins,
+# whose Cascades build-order search costs ~15x a single-table query, dropping
+# throughput from ~3.7 to ~1.5 seeds/s. To keep the un-paged sweep near ~3.3h
+# (leaving room for the paging step inside the 5h job), it covers ~18k seeds/
+# night. The day-of-year seed rotation still accumulates >50k across a few
+# nights, and the 3-way class alone adds thousands of samples every night.
 #
 # It does NOT gate PRs (far too heavy); a red run here is a release blocker,
 # surfaced like the nightly-fuzz and nightly-stress failures.
@@ -21,9 +27,9 @@ on:
   workflow_dispatch:
     inputs:
       seeds:
-        description: 'Seed count (default 50000)'
+        description: 'Seed count (default 18000; 3-way joins ~15x/query slow the sweep)'
         required: false
-        default: '50000'
+        default: '18000'
       seed_start:
         description: 'First seed (default: rotated by day-of-year)'
         required: false
@@ -76,7 +82,7 @@ jobs:
       - name: Resolve seed range
         if: steps.window.outputs.ok == 'true'
         id: seeds
-        # ROTATE the start seed. Re-walking seeds 1..50000 every night
+        # ROTATE the start seed. Re-walking the same window every night
         # re-proves what last night already proved; the generator's space is
         # effectively unbounded, so fresh ranges are free coverage. Day-of-year
         # gives a deterministic, non-overlapping window per night that a
@@ -84,7 +90,7 @@ jobs:
         # can replay with ROWDIFF_SEED_START.
         run: |
           SEEDS="${{ github.event.inputs.seeds }}"
-          SEEDS="${SEEDS:-50000}"
+          SEEDS="${SEEDS:-18000}"
           START="${{ github.event.inputs.seed_start }}"
           if [ -z "$START" ]; then
             DOY=$(date -u +%-j)
@@ -112,6 +118,32 @@ jobs:
             --test_env=ROWDIFF_SEED_START=${{ steps.seeds.outputs.start }} \
             2>&1 | tee rowdiff-output.txt
 
+      - name: Run rowdiff PAGING sweep
+        if: steps.window.outputs.ok == 'true'
+        id: paging
+        # Paging mode (a small scanned-rows limit forces INTERNAL paging) tests
+        # CONTINUATION soundness generatively — resume across a page boundary
+        # must return the rows a single-pass run does — the class BUG C
+        # (paginated DISTINCT re-admission) belonged to, which the un-paged sweep
+        # above cannot reach (its 20..120-row cases fit in one page). Fewer seeds
+        # than the un-paged sweep (paging is ~2.5x slower per seed) over a fresh,
+        # disjoint range (+5e8) so it is free coverage, not a re-walk; the ~58min
+        # this adds fits under the 5h job timeout after the ~3.75h un-paged sweep.
+        # pipefail as above: else `| tee` masks a red sweep.
+        run: |
+          set -o pipefail
+          PSTART=$(( ${{ steps.seeds.outputs.start }} + 500000000 ))
+          echo "Paging-sweeping seeds $PSTART..$(( PSTART + 5000 - 1 )) (5000 seeds, scanLimit=4)"
+          bazelisk test //pkg/relational/sqldriver:sqldriver_test \
+            --test_output=streamed \
+            --test_arg="--test.run=TestFDB_RowDiff_Paging" \
+            --test_arg="--test.v" \
+            --test_timeout=5400 \
+            --nocache_test_results \
+            --test_env=ROWDIFF_SEEDS=5000 \
+            --test_env=ROWDIFF_SEED_START=$PSTART \
+            2>&1 | tee rowdiff-paging-output.txt
+
       - name: Report sweep summary
         # Runs on success OR failure, but not when the sweep step was skipped
         # (Docker preflight aborted, or outside the window) — else this greps a
@@ -131,6 +163,16 @@ jobs:
             grep -m 60 -E 'MISMATCH|INFRA|DECLINE|rowdiff: seeds|plan-error' \
               rowdiff-output.txt || echo "(clean — no mismatches, infra failures or declines)"
             echo '```'
+            echo ""
+            echo "### Paging sweep (continuation soundness)"
+            echo '```'
+            if [ -f rowdiff-paging-output.txt ]; then
+              grep -m 60 -E 'MISMATCH|INFRA|rowdiff PAGED|plan-error' \
+                rowdiff-paging-output.txt || echo "(clean — no mismatches; 54F01 scan-limit DECLINEs are expected resource limits, not divergences)"
+            else
+              echo "(paging sweep did not run)"
+            fi
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload sweep output
@@ -138,6 +180,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: rowdiff-output
-          path: rowdiff-output.txt
+          path: |
+            rowdiff-output.txt
+            rowdiff-paging-output.txt
           retention-days: 30
           if-no-files-found: ignore

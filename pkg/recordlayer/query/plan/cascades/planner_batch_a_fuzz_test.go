@@ -44,6 +44,15 @@ func FuzzPlanner_WithBatchA_NoPanic(f *testing.F) {
 	f.Add([]byte{0, 7, 0, 0, 0, 0, 0, 0}) // Filter over Intersection
 	f.Add([]byte{5, 7, 0, 0, 0, 0, 0, 0}) // Union over Intersection
 	f.Add([]byte{7, 5, 0, 0, 0, 0, 0, 0}) // Intersection over Union
+	// Regression: Union(TypeFilter(TypeFilter(Scan)), TypeFilter(Filter(Scan)))
+	// — ASYMMETRIC union legs. The right leg's group, merged with the left
+	// leg's inner via constant-true filter elimination, crossed
+	// REWRITING→PLANNING with no finals and never reset its exploration state,
+	// so it never implemented and the union produced no winner while Plan()
+	// reported success — the exact "root has no BestMember" nightly crash on
+	// THIS target (seed 9bd9b3661b501312, 2026-07-19). Fixed by
+	// Reference.AdvanceStagePreservingMembers.
+	f.Add([]byte{35, 4, 4, 1})
 
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if len(b) < 4 {

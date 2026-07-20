@@ -1531,44 +1531,93 @@ func executeDistinct(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
-	if err != nil {
-		return nil, err
+	// Streaming adjacent-dedup path (resume-clean): the planner sets Streaming
+	// only when the inner is ordered by the dedup key, so equal rows are
+	// adjacent and only the last emitted key need ride the continuation
+	// (gen.DedupContinuation). This is the fix for the fresh-per-page hash-set's
+	// cross-page re-admission (TODO.md C5) — a Go-internal continuation, since
+	// SELECT DISTINCT is a Go-only extension.
+	if p.Streaming {
+		var innerCont []byte
+		var lastKey string
+		var hasLast bool
+		if len(continuation) > 0 {
+			var dc gen.DedupContinuation
+			if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+				return nil, fmt.Errorf("invalid streaming-distinct continuation: %w", uerr)
+			}
+			innerCont = dc.GetInnerContinuation()
+			// A nil (absent) lastValue means no prior key — the first resumed
+			// row is never wrongly skipped (mirrors DedupCursor). Presence is
+			// carried as non-nil bytes; proto3 drops an EMPTY byte string on the
+			// wire, so an all-empty dedup key would decode back as "no prior
+			// key". That key only arises from a 0-slot / nil-Positional row,
+			// which the streaming path never sees — a real SELECT DISTINCT
+			// projects at least one slot and a lone NULL packs to "\x00" (a
+			// non-empty tuple), so every genuine key survives the round trip.
+			if lv := dc.LastValue; lv != nil {
+				lastKey = string(lv)
+				hasLast = true
+			}
+		}
+		innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerCont, props.ClearSkipAndLimit())
+		if err != nil {
+			return nil, err
+		}
+		cursor := &distinctStreamCursor{inner: innerCursor, lastKey: lastKey, hasLast: hasLast}
+		return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 	}
 
-	// RFC-130: the distinct seen-set is a cardinality-growing buffer (one
-	// key string per distinct row, held for the whole scan). Charge each NEW
-	// key's bytes against the statement memory budget via boundedSet.
+	// Hash path (UNORDERED input): dedup by the packed dedup key via a
+	// memory-budget-charged set that RIDES THE CONTINUATION (TODO.md C5).
+	// Carrying the seen-set makes the hash distinct
+	// resume-clean: a duplicate whose run straddles a scanned-rows page boundary
+	// is not re-admitted (the fresh-per-page set used to lose its state across
+	// the internal-paging Execute boundary and return WRONG ROWS). This fixes
+	// both the unordered case and DISTINCT + ORDER-BY-on-a-non-output-column,
+	// neither of which the ordering-detection streaming path (above) reaches.
 	//
-	// The set is rebuilt FRESH per page (nothing of it rides the
-	// continuation), so duplicates whose occurrences straddle an internal
-	// page break are re-admitted. Java's RecordQueryUnorderedDistinctPlan
-	// has the IDENTICAL fresh-HashSet shape — cross-page dedup is a known
-	// weakness of the operator in both engines, not a divergence — but
-	// Go's automatic internal paging surfaces it inside one statement,
-	// where Java only hits it on client-driven resumes. A fix means
-	// carrying the seen-set (or a sorted-input requirement) through the
-	// continuation — an ordering-aware arc, tracked in TODO.md.
+	// SELECT DISTINCT is a Go-only extension — Java's SQL layer never dedups it,
+	// and Java's value-distinct HashSet is likewise un-carried across
+	// continuations — so this continuation is Go-internal
+	// (gen.DistinctHashContinuation) with no Java wire format to match. The set
+	// is bounded by the statement memory budget; a high-cardinality DISTINCT
+	// that would blow the continuation fails LOUDLY on the budget (never silent
+	// wrong rows), the signal that the cost-based sort-distinct follow-up should
+	// have been chosen.
 	seen := newBoundedSet[string](props.State)
-	filtered := &filterResultCursor{
-		inner: innerCursor,
-		pred: func(qr QueryResult) (bool, error) {
-			key, err := distinctKey(qr)
-			if err != nil {
-				return false, err
+	var order []string
+	innerCont := continuation
+	if len(continuation) > 0 {
+		var dc gen.DistinctHashContinuation
+		if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+			return nil, fmt.Errorf("invalid distinct-hash continuation: %w", uerr)
+		}
+		innerCont = dc.GetInnerContinuation()
+		// Rebuild (and re-charge) the seen-set and its insertion order.
+		for _, k := range dc.GetSeenKeys() {
+			ks := string(k)
+			added, aerr := seen.Add(ks, int64(len(k)))
+			if aerr != nil {
+				// No cursor is built on this path, so no close hook will run —
+				// release the partial charge here to stay live-bytes-neutral.
+				props.State.ReleaseMemory(seen.Charged())
+				return nil, aerr
 			}
-			added, err := seen.Add(key, int64(len(key)))
-			if err != nil {
-				return false, err
+			if added {
+				order = append(order, ks)
 			}
-			return added, nil
-		},
+		}
 	}
-	// Live-bytes model: the seen-set is rebuilt (and re-charged) per page;
-	// release its tally at page teardown. The hook reads Charged() at close
-	// time because the set grows while the page streams.
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerCont, props.ClearSkipAndLimit())
+	if err != nil {
+		props.State.ReleaseMemory(seen.Charged())
+		return nil, err
+	}
+	// Live-bytes model: the set is charged as it grows (and on resume rebuild);
+	// release its tally at page teardown.
 	return newCloseHookCursor(
-		applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit),
+		applySkipLimit(&distinctHashCursor{inner: innerCursor, seen: seen, order: order}, props.Skip, props.ReturnedRowLimit),
 		func() { props.State.ReleaseMemory(seen.Charged()) },
 	), nil
 }

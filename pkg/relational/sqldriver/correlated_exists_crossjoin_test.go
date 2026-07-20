@@ -54,10 +54,16 @@ func TestFDB_CorrelatedExistsCrossJoin(t *testing.T) {
 		names = append(names, name)
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	// Semi-join optimization: the cross-join is subsumed by the
-	// correlated EXISTS (same table, same column pair). Go collapses
-	// to a simple EXISTS semi-join, matching Java's 2-row result.
-	g.Expect(names).To(gomega.Equal([]string{"Alice", "Bob"}))
+	// The comma-join FANS OUT: Bob (id 2) matches two projects (p20, p30),
+	// so `e.fname` yields Bob twice; Alice matches one project; Charlie has
+	// no matching project and is dropped by the join. The correlated EXISTS
+	// is a FILTER, not a collapse — it never dedups the fan-out. This
+	// previously asserted the 2-row ["Alice","Bob"] produced by the unsound
+	// Go-only eliminateRedundantCrossJoin rewrite (since removed): that rule
+	// replaced the fan-out join with an EXISTS semi-join, dropping Bob's
+	// duplicate. The "matching Java's 2-row result" claim was unsubstantiated
+	// — standard SQL (and Java) fans a comma-join out.
+	g.Expect(names).To(gomega.Equal([]string{"Alice", "Bob", "Bob"}))
 }
 
 // TestFDB_NestedCorrelatedExists exercises nested EXISTS: the outer

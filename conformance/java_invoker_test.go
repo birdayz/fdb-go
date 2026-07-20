@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"testing"
 	"time"
 
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
@@ -277,6 +278,47 @@ func (p *JavaServerPool) Shutdown() {
 	}
 }
 
+// newJavaHTTPClient builds the HTTP client used to talk to the pooled Java
+// conformance server. It disables keep-alives so every /invoke opens a FRESH
+// connection instead of reusing pooled ones.
+//
+// The persistent Java server is shared across the whole suite; under full-suite
+// parallel load it can close an IDLE keep-alive connection (idle timeout / conn
+// limit / GC pause) while this client still holds it in its pool, so the next
+// request reuses a dead socket and fails with a bare `POST … : EOF` — a spurious
+// red that passes on isolated re-run. A fresh connection per request cannot hit
+// that stale-socket race. This is NOT a retry, so a non-idempotent /invoke step
+// can never double-apply; the cost is one localhost handshake per call.
+//
+// Residual (see TODO): a server drop DURING a request is a distinct, rarer
+// failure a fresh connection cannot prevent — that needs a per-step
+// idempotency-aware retry, deliberately out of scope here.
+func newJavaHTTPClient() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DisableKeepAlives = true
+	return &http.Client{
+		Timeout:   2 * time.Minute,
+		Transport: tr,
+	}
+}
+
+// TestJavaHTTPClient_DisablesKeepAlives pins the flake fix: the client that
+// talks to the pooled Java server must NOT reuse keep-alive connections, or a
+// stale server-closed socket surfaces as a spurious `POST … : EOF` under
+// full-suite load. Pure config assertion — no server needed.
+func TestJavaHTTPClient_DisablesKeepAlives(t *testing.T) {
+	t.Parallel()
+	c := newJavaHTTPClient()
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("java HTTP client Transport = %T, want *http.Transport carrying the keep-alive setting", c.Transport)
+	}
+	if !tr.DisableKeepAlives {
+		t.Fatal("java HTTP client must set DisableKeepAlives=true — reusing a pooled connection the " +
+			"server has since closed causes the intermittent `POST /invoke: EOF` conformance flake")
+	}
+}
+
 // startJavaServer launches the Java HTTP server and waits for it to be ready
 func startJavaServer() (*JavaInvoker, error) {
 	// Find the Bazel-built conformance server binary via runfiles
@@ -412,12 +454,10 @@ func startJavaServer() (*JavaInvoker, error) {
 	baseURL := fmt.Sprintf("http://127.0.0.1:%s", port)
 
 	invoker := &JavaInvoker{
-		baseURL:   baseURL,
-		serverCmd: cmd,
-		stdinW:    stdinW,
-		httpClient: &http.Client{
-			Timeout: 2 * time.Minute,
-		},
+		baseURL:    baseURL,
+		serverCmd:  cmd,
+		stdinW:     stdinW,
+		httpClient: newJavaHTTPClient(),
 	}
 	// Register immediately so even a server that never becomes ready is tracked
 	// and gets killed+reaped (by Close below or the suite-end sweep).

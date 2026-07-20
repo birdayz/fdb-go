@@ -71,6 +71,12 @@ func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	newDistinctPlan := plans.NewRecordQueryDistinctPlan(filterInnerPlan)
+	// Recompute the streaming mode against the NEW inner (the filter's inner):
+	// a filter preserves ordering, so a distinct that streamed above the filter
+	// is still streaming-eligible below it — but the constructor resets the flag,
+	// which would drop a resume-clean streaming distinct to the cross-page-buggy
+	// hash-set as a competing memo alternative (TODO C5).
+	newDistinctPlan.Streaming = distinctStreamingEligible(filterInnerExpr, filterInnerPlan)
 	newDistinctQ := expressions.ForEachQuantifier(
 		call.MemoizeFinalExpressionsFromOther(filterInnerRef, []expressions.RelationalExpression{filterInnerExpr}),
 	)

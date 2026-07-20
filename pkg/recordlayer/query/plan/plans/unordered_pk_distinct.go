@@ -20,6 +20,17 @@ import (
 //
 // This is a STRUCTURE-ONLY port — no execution logic. The hash-set
 // dedup belongs in the execution layer.
+//
+// WHEN WIRING THE EXECUTOR: a "hash set of PKs already seen" over unordered
+// input is the exact cross-page re-admission hazard fixed for value-DISTINCT
+// (TODO C5). Go auto-pages internally (a scan hitting the scanned-rows limit
+// returns a client-facing continuation and a NEW Execute runs the next page),
+// so a fresh-per-Execute seen-set re-admits a PK whose duplicate straddles a
+// page boundary → wrong rows. The executor MUST either carry the seen-set
+// through the continuation (mirror distinctHashCursor / gen.DistinctHashContinuation
+// in executor/distinct_stream.go) or require PK-ordered input and stream. Do
+// NOT build a fresh-per-page HashSet like Java's — Java only pages on explicit
+// client resume; Go's internal paging makes that shape wrong.
 type RecordQueryUnorderedPrimaryKeyDistinctPlan struct {
 	PlanExprBase
 	innerQ expressions.Quantifier

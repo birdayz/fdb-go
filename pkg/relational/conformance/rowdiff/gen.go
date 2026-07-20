@@ -16,9 +16,11 @@ package rowdiff
 import (
 	"fmt"
 	"math/rand/v2"
+	"strconv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // ColType is the P1 column-type universe. DOUBLE is deliberately absent
@@ -78,6 +80,31 @@ type Pred struct {
 	// "<QUAL>.<COL>", so these select the side each operand reads.
 	Qual    string
 	RhsQual string
+	// HasArith makes the leaf's LHS an arithmetic expression `Col <ArithOp>
+	// ArithCol2` (both read from the leaf's own Qual side) instead of a bare
+	// column: `(a - b) <Op> Lit`. Only subtraction is generated — over the
+	// value domain ({-1, 2^62, 0..9}) |a-b| < 2^63, so it never overflows and
+	// there is no 22003 error path. A NULL in either operand propagates to a
+	// NULL LHS, so the comparison is UNKNOWN.
+	HasArith  bool
+	ArithOp   values.ArithmeticOp
+	ArithCol2 string
+	// Case, when non-nil, makes the leaf's LHS a searched CASE expression
+	// `(CASE WHEN … THEN … ELSE … END) <Op> Lit` instead of a bare column.
+	// Single-table only (unqualified columns).
+	Case *CaseSpec
+	// StrFn, when non-nil, makes the leaf's LHS a string-function call
+	// `<Fn>(<StrCol>) <Op> Lit` (UPPER/LOWER vs a string Lit, LENGTH vs an int
+	// Lit). Single-table only. A NULL column makes the result NULL → UNKNOWN.
+	StrFn *StrFnSpec
+	// NumFn, when non-nil, makes the leaf's LHS a numeric-function call
+	// `ABS(col) <Op> Lit` or `MOD(col, k) <Op> Lit`. Single-table only. A NULL
+	// column makes the result NULL → UNKNOWN.
+	NumFn *NumFnSpec
+	// Cast, when non-nil, makes the leaf's LHS a `CAST(col AS STRING) <Op> Lit`
+	// over a BIGINT or BOOLEAN column. Single-table only. A NULL column makes
+	// the result NULL → UNKNOWN.
+	Cast *CastSpec
 	// Negated renders `NOT (…)` around the leaf (and `NOT IN` for IN).
 	Negated bool
 }
@@ -130,6 +157,21 @@ type JoinSpec struct {
 	// comma cross-join with the equality moved into the WHERE — the same
 	// logical query, a different parse path into the planner.
 	Inner bool
+	// LeftOuter makes the ON-join a LEFT OUTER JOIN: unmatched left rows are
+	// kept, NULL-extended on the right. Implies Inner (LEFT OUTER needs the ON
+	// form — a comma join has no outer semantics). This reaches the
+	// NULL-extension wrong-rows surface INNER never does, and pins the
+	// WHERE-vs-ON subtlety: an R-side filter in the WHERE drops the
+	// NULL-extended rows (r.col is NULL → predicate UNKNOWN), collapsing a
+	// LEFT JOIN back toward inner semantics — the oracle applies the WHERE
+	// post-join over the NULL-extended row, exactly as SQL does.
+	LeftOuter bool
+	// RightOuter makes the ON-join a RIGHT OUTER JOIN: the mirror of LeftOuter,
+	// preserving every RIGHT row and NULL-extending unmatched LEFT. Implies
+	// Inner and is mutually exclusive with LeftOuter. `A RIGHT JOIN B` is
+	// semantically `B LEFT JOIN A`, so this exercises the engine's RIGHT→LEFT
+	// normalization — a rewrite bug there is a wrong-rows divergence.
+	RightOuter bool
 }
 
 // AggFunc is a supported aggregate. AVG is deliberately absent: its
@@ -160,22 +202,210 @@ const (
 // called an engine bug.
 type AggSpec struct {
 	Func     AggFunc
-	Col      string // aggregated column ("" for COUNT(*))
-	GroupBy  string // "" = scalar aggregate over the whole input
-	Having   *Pred  // optional filter on the aggregate result
+	Col      string   // aggregated column ("" for COUNT(*))
+	GroupBy  []string // empty = scalar aggregate over the whole input; 1+ = grouped
+	Having   *Pred    // optional filter on the aggregate result
 	HavingOn bool
+}
+
+// groupKeyCol names the i-th GROUP BY key's output column. Key 0 stays "G" so
+// single-key grouping is byte-identical to the pre-multi-key schema; extra keys
+// are "G1", "G2", … Both aggSQL (the aliases) and the oracle emit these names.
+func groupKeyCol(i int) string {
+	if i == 0 {
+		return "G"
+	}
+	return "G" + strconv.Itoa(i)
+}
+
+// ExistsSpec is a CORRELATED [NOT] EXISTS subquery appended to a single-table
+// query's WHERE, over the SAME table under alias `r`:
+//
+//	[NOT] EXISTS (SELECT 1 FROM t AS r WHERE r.<CorrCol> <CorrOp> t.<CorrCol> [AND <Inner>])
+//
+// The correlation equality and the optional simple inner comparison go through
+// the engine's own Comparison eval in the oracle (evalLeaf / EvalAgainst), so
+// scalar/NULL semantics are shared by construction — a `r.c = t.c` with a NULL
+// on either side is UNKNOWN, so a NULL correlation value matches no inner row.
+// What is under test is the PLANNER's correlated-EXISTS handling (semi-join,
+// decorrelation, correlation binding), and — since EXISTS is a WHERE filter
+// with no output-schema change — it composes with the paging sweep to test
+// EXISTS continuation soundness too.
+type ExistsSpec struct {
+	CorrCol string                    // correlation column: r.CorrCol <CorrOp> t.CorrCol
+	CorrOp  predicates.ComparisonType // correlation operator (zero value = equals)
+	Inner   *Pred                     // optional extra filter on r (Qual empty; col op literal only)
+	Negated bool                      // NOT EXISTS
+}
+
+// ScalarSubSpec is a NON-correlated aggregate scalar subquery in a WHERE
+// comparison:
+//
+//	<OuterCol> <Op> (SELECT <Func>(<Col>) FROM t [WHERE <Filter>])
+//
+// This is a Go read-side extension — Java's grammar has no scalar subquery in
+// an expressionAtom (RelationalParser.g4) — so the oracle is the sole authority
+// on correctness, exactly the deep coverage the extension needs. The aggregate
+// makes the subquery single-valued (no cardinality trap); an optional Filter
+// lets the subquery be EMPTY, so MIN/MAX yield NULL and the outer comparison
+// `col <op> NULL` is UNKNOWN → the row drops. That NULL-when-empty path is a
+// documented past defect here (`id = (SELECT MIN(id) …)` once built `id=NULL`),
+// so it is the axis most worth pinning. Func is restricted to MIN/MAX/COUNT so
+// the oracle never hits SUM's int64-overflow sentinel.
+type ScalarSubSpec struct {
+	OuterCol string                    // outer column compared against the scalar
+	Op       predicates.ComparisonType // comparison operator
+	Func     AggFunc                   // AggMin / AggMax / AggCountStar / AggCountCol
+	Col      string                    // aggregated inner column ("" for COUNT(*))
+	Filter   *Pred                     // optional inner WHERE (Qual empty; col op literal); nil = whole table
+}
+
+// ThreeWayJoinSpec is a 3-way self-join over the case's table under aliases L,
+// M, R, chained `L.LMLeft = M.LMRight` and `M.MRMid = R.MRRight`. A 3-way join
+// exercises JOIN ORDERING — the planner picks among 3! build orders and must
+// keep every join key correct through the chosen order — which the 2-way
+// self-join cannot reach. INNER only: the outer-leg 3-way shapes are simply not
+// generated here yet (the 2-way LEFT/RIGHT generator already covers outer-join
+// row soundness, incl. the InJoin+sort leg-window path fixed in
+// TestFDB_LeftJoinPkOrdinal_InJoinSortRegression). The oracle stays a plain
+// triple nested loop over the same authoritative rows.
+type ThreeWayJoinSpec struct {
+	LMLeft  string // L column of the L↔M key
+	LMRight string // M column of the L↔M key
+	MRMid   string // M column of the M↔R key
+	MRRight string // R column of the M↔R key
+	// Comma expresses the joins as a 3-way comma cross-join with both
+	// equalities in the WHERE; otherwise chained `JOIN … ON`. Same logical
+	// query, a different parse path into the planner.
+	Comma bool
+}
+
+// CaseSpec is a searched CASE used as a predicate LHS:
+//
+//	(CASE WHEN <When> THEN <then-arm> ELSE <else-arm> END) <Op> <Lit>
+//
+// A single WHEN (the common shape). Branch selection is SQL's: the WHEN arm is
+// taken only when its condition is TRUE — a FALSE or UNKNOWN (NULL-operand)
+// condition falls through to ELSE. Each arm is a BIGINT column or literal; a
+// selected NULL column makes the CASE result NULL, so the outer comparison is
+// UNKNOWN. The condition and the outer comparison both go through the shared
+// Comparison eval, so only the trivial branch-pick is restated in the oracle.
+type CaseSpec struct {
+	When    *Pred  // WHEN condition (col op literal; Qual empty)
+	ThenCol string // THEN reads this column; "" ⇒ ThenLit
+	ThenLit int64
+	ElseCol string // ELSE reads this column; "" ⇒ ElseLit
+	ElseLit int64
+}
+
+// StrFnKind is a scalar string function whose semantics are unambiguous over
+// the generator's ASCII string domain (so the oracle's Go implementation and
+// the engine agree by construction — verified by probe).
+type StrFnKind int
+
+const (
+	StrFnUpper  StrFnKind = iota // UPPER(s) → string
+	StrFnLower                   // LOWER(s) → string
+	StrFnLength                  // LENGTH(s) → int (character count == byte count for ASCII)
+	StrFnSubstr                  // SUBSTR(s, Start, Length) → string (1-based, clamped)
+	StrFnConcat                  // CONCAT(s, 'Suffix') → string (NULL operand treated as "")
+	StrFnTrim                    // TRIM(s) → string (strips leading/trailing spaces)
+)
+
+// StrFnSpec is a string-function predicate LHS: `<Fn>(<Col>) <Op> Lit`, or for
+// SUBSTR `SUBSTR(<Col>, Start, Length) <Op> Lit`, or for CONCAT
+// `CONCAT(<Col>, 'Suffix') <Op> Lit`.
+type StrFnSpec struct {
+	Fn     StrFnKind
+	Col    string // the STRING column (only "S" today)
+	Start  int64  // SUBSTR: 1-based start position (>=1)
+	Length int64  // SUBSTR: length (>=0); the result is clamped to the string bounds
+	Suffix string // CONCAT: the literal appended to the column
+}
+
+// NumFnKind is a scalar numeric function whose semantics match Go's over the
+// generator's BIGINT domain (verified by probe): ABS never overflows (no
+// MinInt64 in {-1, 2^62, 0..9}), and MOD follows the dividend's sign exactly as
+// Go's % does. MOD's divisor is always a nonzero literal, so there is no
+// division-by-zero path.
+type NumFnKind int
+
+const (
+	NumFnAbs      NumFnKind = iota // ABS(col)
+	NumFnMod                       // MOD(col, Mod)
+	NumFnCoalesce                  // COALESCE(col, Default) — col's value, or Default when NULL
+)
+
+// NumFnSpec is a numeric-function predicate LHS: `ABS(col) <Op> Lit`,
+// `MOD(col, Mod) <Op> Lit`, or `COALESCE(col, Default) <Op> Lit`.
+type NumFnSpec struct {
+	Fn      NumFnKind
+	Col     string // BIGINT column
+	Mod     int64  // nonzero divisor for MOD (unused otherwise)
+	Default int64  // COALESCE fallback when the column is NULL (never NULL itself)
+}
+
+// CastSpec is a `CAST(Col AS STRING) <Op> Lit` predicate LHS over a BIGINT or
+// BOOLEAN column. Only the STRING target is generated: int→string is Go's
+// strconv.FormatInt and bool→string is "true"/"false" (both verified to match
+// the engine over the domain). CAST(string AS BIGINT) is excluded — it raises a
+// plan-order-dependent parse error on non-numeric input, which the full-scan
+// oracle cannot model (the arithmetic-overflow constraint).
+type CastSpec struct {
+	Col     string // BIGINT or BOOLEAN column
+	FromInt bool   // true = BIGINT source (FormatInt); false = BOOLEAN source ("true"/"false")
+}
+
+// UnionSpec is a set operation between two single-table branches over the same
+// table with the same projection:
+//
+//	SELECT <proj> FROM t WHERE <Left> UNION [ALL] SELECT <proj> FROM t WHERE <Right>
+//
+// UNION dedups the combined output (SQL set semantics); UNION ALL keeps every
+// row. Overlapping branch predicates make a row appear in both branches, so the
+// dedup does real work — a bug there (over- or under-deduping, or the wrong
+// dedup key) is a wrong-rows divergence.
+type UnionSpec struct {
+	Left  *BoolNode // WHERE of the left branch (nil = no filter)
+	Right *BoolNode // WHERE of the right branch
+	All   bool      // UNION ALL (no dedup) vs UNION (dedup)
+}
+
+// DerivedSpec is a subquery in FROM (a derived table):
+//
+//	SELECT <proj> FROM (SELECT * FROM t WHERE <Inner>) d [WHERE <Outer>]
+//
+// The inner is SELECT * so the derived table is a pass-through equal to the
+// flattened `WHERE Inner AND Outer` — which is exactly what it tests: whether
+// the planner FLATTENS the derived table and pushes the outer predicate through
+// the subquery scope. A flattening or scope-resolution bug is a wrong-rows
+// divergence. Outer references the derived columns unqualified (d is the only
+// source).
+type DerivedSpec struct {
+	Inner *BoolNode // WHERE inside the subquery
+	Outer *BoolNode // WHERE over the derived table (nil = none)
+	// Cte renders the subquery as a single-reference common table expression
+	// (`WITH d AS (…) SELECT … FROM d …`) instead of an inline derived table.
+	// A single-reference CTE is semantically identical (same flattening, same
+	// oracle) but exercises the WITH scope-resolution path.
+	Cte bool
 }
 
 // Query is one generated query body; the runner executes it under every
 // projection variant and cross-checks row identity via ID.
 type Query struct {
-	Agg      *AggSpec  // nil = not an aggregate query
-	Join     *JoinSpec // nil = single-table query
-	Where    *BoolNode // nil = no WHERE
-	OrderBy  []OrderKey
-	Limit    int  // 0 = no LIMIT
-	Offset   int  // 0 = no OFFSET (only emitted alongside LIMIT + ORDER BY)
-	Distinct bool // SELECT DISTINCT (ORDER BY keys ⊆ projection enforced by generator)
+	Agg       *AggSpec          // nil = not an aggregate query
+	Join      *JoinSpec         // nil = single-table query
+	ThreeWay  *ThreeWayJoinSpec // non-nil = 3-way self-join
+	Union     *UnionSpec        // non-nil = UNION [ALL] of two single-table branches
+	Derived   *DerivedSpec      // non-nil = subquery in FROM (derived table)
+	Exists    *ExistsSpec       // non-nil = append a correlated [NOT] EXISTS to WHERE
+	ScalarSub *ScalarSubSpec    // non-nil = append a scalar-subquery comparison to WHERE
+	Where     *BoolNode         // nil = no WHERE
+	OrderBy   []OrderKey
+	Limit     int  // 0 = no LIMIT
+	Offset    int  // 0 = no OFFSET (only emitted alongside LIMIT + ORDER BY)
+	Distinct  bool // SELECT DISTINCT (ORDER BY keys ⊆ projection enforced by generator)
 }
 
 // Case is everything one seed produces.
@@ -220,6 +450,22 @@ func (c *Case) joinProjections() [][]string {
 	}
 }
 
+// threeWayProjections are the projection variants for a 3-way join query.
+func (c *Case) threeWayProjections() [][]string {
+	var wide []string
+	for _, side := range []string{"L", "M", "R"} {
+		wide = append(wide, side+".ID")
+		for _, col := range c.Table.Cols {
+			wide = append(wide, side+"."+col.Name)
+		}
+	}
+	return [][]string{
+		wide,
+		{"L.ID", "M.ID", "R.ID"},
+		{"R.ID", "M.ID", "L.ID", "M.B"},
+	}
+}
+
 // ProjectionsFor returns the projection variants appropriate to the query
 // (join queries never use `SELECT *` — see JoinSpec; an aggregate's output
 // list is fixed by its own shape).
@@ -229,17 +475,259 @@ func (c *Case) ProjectionsFor(q Query) [][]string {
 		return [][]string{nil}
 	case q.Join != nil:
 		return c.joinProjections()
+	case q.ThreeWay != nil:
+		return c.threeWayProjections()
 	}
+	// Union and plain single-table queries share the single-table projections
+	// (both UNION branches project the same columns).
 	return c.Projections()
 }
 
 // aggOutputCols is the aggregate query's output column list, in order:
 // the grouping key (when present) followed by the aggregate, both aliased.
 func aggOutputCols(a *AggSpec) []string {
-	if a.GroupBy != "" {
-		return []string{"G", "AGG"}
+	cols := make([]string, 0, len(a.GroupBy)+1)
+	for i := range a.GroupBy {
+		cols = append(cols, groupKeyCol(i))
 	}
-	return []string{"AGG"}
+	return append(cols, "AGG")
+}
+
+// genExists builds a correlated [NOT] EXISTS: correlation on a BIGINT column
+// plus, half the time, a simple `col op literal` filter on the inner row. The
+// inner Pred keeps Qual empty (it reads a plain-keyed inner row in the oracle)
+// and is a bare column-vs-literal so both the SQL render (existsSQL) and
+// evalLeaf handle it with no BETWEEN/IN/qualifier machinery.
+func genExists(rng *rand.Rand) *ExistsSpec {
+	bigints := []string{"A", "B", "C"}
+	// Correlation op: mostly equi (the common semi-join the equi-join rules
+	// target), but ~40% a non-equi correlation. A self-equi correlation always
+	// self-matches (r == outer row), so a bare equi EXISTS is trivially true for
+	// every non-NULL row; a non-equi one (r.c < t.c) does NOT self-match and
+	// forces a genuine per-outer inner scan — the planner's non-equi semi-join
+	// path, which the equi-join rules cannot short-circuit.
+	corrOps := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonEquals,
+		predicates.ComparisonEquals, // weight equi ~3/5
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
+	e := &ExistsSpec{
+		CorrCol: bigints[rng.IntN(len(bigints))],
+		CorrOp:  corrOps[rng.IntN(len(corrOps))],
+		Negated: rng.IntN(2) == 0,
+	}
+	if rng.IntN(2) == 0 {
+		ops := []predicates.ComparisonType{
+			predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+			predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+			predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+		}
+		e.Inner = &Pred{
+			Col: bigints[rng.IntN(len(bigints))],
+			Op:  ops[rng.IntN(len(ops))],
+			Lit: int64(rng.IntN(10)),
+		}
+	}
+	return e
+}
+
+// existsSQL renders the correlated [NOT] EXISTS clause. tbl is the outer table
+// name (also the inner table); the inner aliases it `r` and correlates against
+// the unqualified outer `tbl.<col>`.
+func existsSQL(e *ExistsSpec, tbl string) string {
+	var b strings.Builder
+	if e.Negated {
+		b.WriteString("NOT ")
+	}
+	fmt.Fprintf(&b, "EXISTS (SELECT 1 FROM %s AS r WHERE r.%s %s %s.%s",
+		tbl, strings.ToLower(e.CorrCol), opSQL(e.CorrOp), tbl, strings.ToLower(e.CorrCol))
+	if e.Inner != nil {
+		fmt.Fprintf(&b, " AND r.%s %s %s",
+			strings.ToLower(e.Inner.Col), opSQL(e.Inner.Op), renderLiteral(e.Inner.Lit))
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// genThreeWayJoin builds a 3-way self-join chain `L JOIN M ON L.k=M.k JOIN R ON
+// M.k=R.k` (or the comma form), plus a small conjunction of qualified
+// single-sided predicates. Each key's probed side prefers an indexed column so
+// the planner has correlated-index access across whichever build order it picks.
+func genThreeWayJoin(rng *rand.Rand, table TableDef) Query {
+	indexed := map[string]bool{}
+	for _, idx := range table.Indexes {
+		for _, cc := range idx.Cols {
+			indexed[cc] = true
+		}
+	}
+	allBig := []string{"ID"}
+	// The PROBED side of each key (LMRight/MRRight) is heavily weighted toward
+	// the unique pk. A domain-0..9 key on BOTH sides makes each self-join leg
+	// fan out ~n/10, so a 3-way chain over 120 rows yields ~17k result rows and
+	// an O(n^3) oracle — tripling sweep wall-clock. Probing the pk keeps most
+	// chains bounded (each step matches ≤1 row) while still exercising join
+	// ORDERING and correlated index access, which is the point.
+	probed := []string{"ID", "ID", "ID"} // ID weighted 3x
+	for _, col := range table.Cols {
+		if col.Type == ColBigint {
+			allBig = append(allBig, col.Name)
+			if indexed[col.Name] {
+				probed = append(probed, col.Name)
+			}
+		}
+	}
+	spec := &ThreeWayJoinSpec{
+		LMLeft:  allBig[rng.IntN(len(allBig))],
+		LMRight: probed[rng.IntN(len(probed))],
+		MRMid:   allBig[rng.IntN(len(allBig))],
+		MRRight: probed[rng.IntN(len(probed))],
+		Comma:   rng.IntN(2) == 0,
+	}
+
+	// 1-2 qualified single-sided filters (Qual L/M/R). AND-only (no top-level
+	// OR), so the comma form's `joinEq AND <where>` needs no parenthesization.
+	var leaves []*Pred
+	n := 1 + rng.IntN(2)
+	sides := []string{"L", "M", "R"}
+	for i := 0; i < n; i++ {
+		col := table.Cols[rng.IntN(len(table.Cols))]
+		p := genPred(rng, col, indexed[col.Name])
+		p.Qual = sides[rng.IntN(len(sides))]
+		leaves = append(leaves, p)
+	}
+	kids := make([]*BoolNode, len(leaves))
+	for i, l := range leaves {
+		kids[i] = &BoolNode{Leaf: l}
+	}
+	var where *BoolNode
+	if len(kids) == 1 {
+		where = kids[0]
+	} else {
+		where = &BoolNode{And: true, Kids: kids}
+	}
+
+	q := Query{ThreeWay: spec, Where: where}
+	// A total ORDER BY over all three ids keeps the ordered comparison exact.
+	if rng.IntN(2) == 0 {
+		q.OrderBy = []OrderKey{
+			{Col: "ID", Qual: "L", Desc: rng.IntN(2) == 0},
+			{Col: "ID", Qual: "M"},
+			{Col: "ID", Qual: "R"},
+		}
+	}
+	return q
+}
+
+// genBranchWhere builds a small 1-2 leaf AND-conjunction for a UNION branch.
+// Kept simple so the two branches overlap often, exercising the dedup.
+func genBranchWhere(rng *rand.Rand, table TableDef, indexed map[string]bool) *BoolNode {
+	n := 1 + rng.IntN(2)
+	kids := make([]*BoolNode, n)
+	for i := 0; i < n; i++ {
+		col := table.Cols[rng.IntN(len(table.Cols))]
+		kids[i] = &BoolNode{Leaf: genPred(rng, col, indexed[col.Name])}
+	}
+	if n == 1 {
+		return kids[0]
+	}
+	return &BoolNode{And: true, Kids: kids}
+}
+
+// genUnionQuery builds `SELECT … WHERE <l> UNION ALL SELECT … WHERE <r>` over
+// the same table (same projection on both branches). Only UNION ALL: the engine
+// rejects plain UNION (dedup) with 0AF00 "only UNION ALL is supported" — a
+// capability it lacks, not a soundness case, so generating it would just probe
+// an unsupported-query error (the boundary is pinned by
+// TestFDB_UnionDedup_Unsupported instead). The oracle's dedup path stays
+// exercised by the isolation test and is ready if UNION-dedup ever lands.
+func genUnionQuery(rng *rand.Rand, table TableDef) Query {
+	indexed := map[string]bool{}
+	for _, idx := range table.Indexes {
+		for _, cc := range idx.Cols {
+			indexed[cc] = true
+		}
+	}
+	return Query{Union: &UnionSpec{
+		Left:  genBranchWhere(rng, table, indexed),
+		Right: genBranchWhere(rng, table, indexed),
+		All:   true,
+	}}
+}
+
+// genDerivedQuery builds `SELECT <proj> FROM (SELECT * FROM t WHERE <inner>) d
+// [WHERE <outer>]`, optionally DISTINCT or ORDER BY on the outer.
+func genDerivedQuery(rng *rand.Rand, table TableDef) Query {
+	indexed := map[string]bool{}
+	for _, idx := range table.Indexes {
+		for _, cc := range idx.Cols {
+			indexed[cc] = true
+		}
+	}
+	q := Query{Derived: &DerivedSpec{
+		Inner: genBranchWhere(rng, table, indexed),
+		Cte:   rng.IntN(2) == 0, // half as a WITH-CTE, half as an inline derived table
+	}}
+	if rng.IntN(3) != 0 {
+		q.Derived.Outer = genBranchWhere(rng, table, indexed)
+	}
+	// DISTINCT (unordered multiset) OR an ID ORDER BY — not both, mirroring the
+	// plain path (DISTINCT results are compared unordered).
+	if rng.IntN(6) == 0 {
+		q.Distinct = true
+	} else if rng.IntN(2) == 0 {
+		q.OrderBy = []OrderKey{{Col: "ID"}}
+	}
+	return q
+}
+
+// genScalarSub builds a non-correlated aggregate scalar subquery comparison.
+// The outer and aggregated columns are BIGINTs; ~half the time an inner filter
+// (often selective enough to leave the subquery empty) exercises the
+// MIN/MAX-returns-NULL path.
+func genScalarSub(rng *rand.Rand) *ScalarSubSpec {
+	bigints := []string{"A", "B", "C"}
+	ops := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
+	s := &ScalarSubSpec{
+		OuterCol: bigints[rng.IntN(len(bigints))],
+		Op:       ops[rng.IntN(len(ops))],
+	}
+	switch rng.IntN(4) {
+	case 0:
+		s.Func = AggCountStar
+	case 1:
+		s.Func, s.Col = AggCountCol, bigints[rng.IntN(len(bigints))]
+	case 2:
+		s.Func, s.Col = AggMin, bigints[rng.IntN(len(bigints))]
+	default:
+		s.Func, s.Col = AggMax, bigints[rng.IntN(len(bigints))]
+	}
+	if rng.IntN(2) == 0 {
+		s.Filter = &Pred{
+			Col: bigints[rng.IntN(len(bigints))],
+			Op:  ops[rng.IntN(len(ops))],
+			Lit: int64(rng.IntN(10)),
+		}
+	}
+	return s
+}
+
+// scalarSubSQL renders `<outerCol> <op> (SELECT <agg> FROM tbl [WHERE <filter>])`.
+func scalarSubSQL(s *ScalarSubSpec, tbl string) string {
+	inner := &AggSpec{Func: s.Func, Col: s.Col}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %s (SELECT %s FROM %s",
+		strings.ToLower(s.OuterCol), opSQL(s.Op), aggExprSQL(inner), tbl)
+	if s.Filter != nil {
+		fmt.Fprintf(&b, " WHERE %s %s %s",
+			strings.ToLower(s.Filter.Col), opSQL(s.Filter.Op), renderLiteral(s.Filter.Lit))
+	}
+	b.WriteString(")")
+	return b.String()
 }
 
 // genAggQuery builds `SELECT [g,] <agg> FROM t [WHERE …] [GROUP BY g]
@@ -280,7 +768,20 @@ func genAggQuery(rng *rand.Rand, table TableDef) Query {
 		if len(keys) == 0 {
 			keys = bigints
 		}
-		spec.GroupBy = keys[rng.IntN(len(keys))]
+		// One grouping key, or two distinct keys ~1/3 of the time — the
+		// multi-column grouping path (composite-key equality and a NULL in
+		// either key column forming its own group).
+		first := keys[rng.IntN(len(keys))]
+		spec.GroupBy = []string{first}
+		if len(keys) > 1 && rng.IntN(3) == 0 {
+			others := make([]string, 0, len(keys)-1)
+			for _, k := range keys {
+				if k != first {
+					others = append(others, k)
+				}
+			}
+			spec.GroupBy = append(spec.GroupBy, others[rng.IntN(len(others))])
+		}
 	}
 
 	q := Query{Agg: spec}
@@ -315,7 +816,7 @@ func genAggQuery(rng *rand.Rand, table TableDef) Query {
 		}
 	}
 	// HAVING on the aggregate result, only for grouped queries.
-	if spec.GroupBy != "" && rng.IntN(3) == 0 {
+	if len(spec.GroupBy) > 0 && rng.IntN(3) == 0 {
 		spec.HavingOn = true
 		spec.Having = &Pred{
 			Op:  []predicates.ComparisonType{predicates.ComparisonGreaterThan, predicates.ComparisonLessThanOrEq}[rng.IntN(2)],
@@ -337,6 +838,14 @@ func Generate(seed uint64) *Case {
 		// ~1/4 self-joins: the join planner is a large surface and the
 		// oracle stays a plain nested loop over the same authoritative rows.
 		switch {
+		case rng.IntN(10) == 0:
+			// 3-way self-join — exercises join ORDERING (3! build orders).
+			// Rarer than 2-way: the planner explores far more build orders for a
+			// 3-way chain, so each such query costs ~15x a single-table one; a
+			// higher rate would blow the nightly deep-sweep timeout for little
+			// extra coverage (thousands of 3-way samples still accrue per night).
+			queries = append(queries, genThreeWayJoin(rng, table))
+			continue
 		case rng.IntN(4) == 0:
 			queries = append(queries, genJoinQuery(rng, table))
 			continue
@@ -344,6 +853,14 @@ func Generate(seed uint64) *Case {
 			// Aggregates: the surface where a dropped residual produced
 			// silently wrong SUMs (the AGG-RESIDUAL class).
 			queries = append(queries, genAggQuery(rng, table))
+			continue
+		case rng.IntN(6) == 0:
+			// UNION [ALL] of two single-table branches — set-op dedup.
+			queries = append(queries, genUnionQuery(rng, table))
+			continue
+		case rng.IntN(6) == 0:
+			// Derived table (subquery in FROM) — planner flattening / pushdown.
+			queries = append(queries, genDerivedQuery(rng, table))
 			continue
 		}
 		queries = append(queries, genQuery(rng, table))
@@ -386,7 +903,10 @@ func genTable(rng *rand.Rand) TableDef {
 func genRows(rng *rand.Rand, table TableDef) []Row {
 	n := 20 + rng.IntN(101)
 	rows := make([]Row, 0, n)
-	stringDomain := []string{"", "alpha", "beta", "gamma", "delta", "epsilon"}
+	// Whitespace-padded entries make TRIM meaningful and exercise every string
+	// function over leading/trailing spaces (which round-trip and compare
+	// byte-lexicographically, verified by probe).
+	stringDomain := []string{"", "alpha", "beta", "gamma", "delta", "epsilon", " a", "b ", " c "}
 	for i := 0; i < n; i++ {
 		r := Row{"ID": int64(i + 1)}
 		for _, col := range table.Cols {
@@ -451,7 +971,18 @@ func genJoinQuery(rng *rand.Rand, table TableDef) Query {
 	spec := &JoinSpec{
 		LeftCol:  leftCandidates[rng.IntN(len(leftCandidates))],
 		RightCol: rightCandidates[rng.IntN(len(rightCandidates))],
-		Inner:    rng.IntN(2) == 0,
+	}
+	// Join syntax/type: comma cross-join, INNER … ON, LEFT OUTER … ON, or
+	// RIGHT OUTER … ON. The OUTER forms need the ON form, so they set Inner too.
+	switch rng.IntN(4) {
+	case 0:
+		spec.Inner = false // comma cross-join (equality moves to WHERE)
+	case 1:
+		spec.Inner = true // INNER … ON
+	case 2:
+		spec.Inner, spec.LeftOuter = true, true // LEFT OUTER … ON
+	default:
+		spec.Inner, spec.RightOuter = true, true // RIGHT OUTER … ON
 	}
 
 	// 1-2 qualified single-sided filter leaves, biased to indexed columns so
@@ -570,6 +1101,29 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 		}
 	}
 
+	// Searched-CASE leaf (~1/8): `(CASE WHEN … THEN … ELSE … END) op lit` — a
+	// conditional-expression residual the planner must evaluate per row, with
+	// SQL's WHEN-TRUE-only branch selection and NULL-arm propagation.
+	if rng.IntN(8) == 0 {
+		leaves = append(leaves, genCaseLeaf(rng))
+	}
+
+	// String-function leaf (~1/8): `UPPER/LOWER/LENGTH(s) op lit` — a scalar
+	// function residual with NULL propagation over the STRING column.
+	if rng.IntN(8) == 0 {
+		leaves = append(leaves, genStrFnLeaf(rng))
+	}
+
+	// Numeric-function leaf (~1/8): `ABS(col) op lit` / `MOD(col, k) op lit`.
+	if rng.IntN(8) == 0 {
+		leaves = append(leaves, genNumFnLeaf(rng))
+	}
+
+	// CAST leaf (~1/8): `CAST(col AS STRING) op 'lit'` over BIGINT / BOOLEAN.
+	if rng.IntN(8) == 0 {
+		leaves = append(leaves, genCastLeaf(rng))
+	}
+
 	// NOT on a leaf (~1/8 each): `NOT (a = 1)` / `a NOT IN (…)`.
 	for _, lf := range leaves {
 		if rng.IntN(8) == 0 {
@@ -626,6 +1180,20 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 	}
 
 	q := Query{Where: where, OrderBy: orderBy}
+
+	// Correlated [NOT] EXISTS on ~1/4 of plain queries: a rich wrong-rows
+	// surface (semi-join, decorrelation, correlation binding) the generator
+	// otherwise never reaches.
+	if rng.IntN(4) == 0 {
+		q.Exists = genExists(rng)
+	}
+
+	// Non-correlated aggregate scalar subquery comparison on ~1/5 of plain
+	// queries — a Go-only read extension (no Java equivalent) whose scalar
+	// evaluation and NULL-when-empty semantics need their own coverage.
+	if rng.IntN(5) == 0 {
+		q.ScalarSub = genScalarSub(rng)
+	}
 
 	// DISTINCT on ~1/6 of queries. ORDER BY is dropped for DISTINCT — the
 	// projection variants do not all contain every sort key, and SQL
@@ -686,6 +1254,33 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 	case col.Type == ColString && rng.IntN(6) == 0:
 		pat := []string{"%a%", "al%", "%ta", "_eta", "%e%a%", "alpha", "%"}[rng.IntN(7)]
 		return &Pred{Col: col.Name, Op: predicates.ComparisonLike, Lit: pat}
+	case col.Type == ColBigint && rng.IntN(9) == 0:
+		// Arithmetic LHS: (col - col2) <cmp> lit. SUBTRACTION ONLY, and not
+		// merely because it can't overflow over the value domain — +/* are
+		// fundamentally out of scope for this differential. Overflow inside a
+		// predicate is evaluated per row, so whether it raises 22003 depends on
+		// the PLAN's evaluation order (a filter-first plan never computes the
+		// arithmetic for rows it excludes — verified plan-stable in
+		// TestFDB_ArithOverflowInPredicate_PlanStable). The oracle is a
+		// full-scan that evaluates the arithmetic for EVERY row, so on
+		// `g=20 AND (a+b)>0` it would overflow while a filter-first engine plan
+		// returns rows — a false divergence. The oracle deliberately does not
+		// model the planner, so it cannot replicate that order; subtraction (no
+		// overflow, order-independent) is the only arithmetic it can check.
+		bigints := []string{"A", "B", "C"}
+		cmp := []predicates.ComparisonType{
+			predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+			predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+			predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+		}
+		return &Pred{
+			Col:       col.Name,
+			HasArith:  true,
+			ArithOp:   values.OpSub,
+			ArithCol2: bigints[rng.IntN(len(bigints))],
+			Op:        cmp[rng.IntN(len(cmp))],
+			Lit:       int64(rng.IntN(12)) - 2, // -2..9: differences straddle the literal
+		}
 	}
 
 	var ops []predicates.ComparisonType
@@ -772,6 +1367,12 @@ func (c *Case) SQL(q Query, projection []string) string {
 	if q.Agg != nil {
 		return c.aggSQL(q)
 	}
+	if q.Union != nil {
+		return c.unionSQL(q, projection)
+	}
+	if q.Derived != nil {
+		return c.derivedSQL(q, projection)
+	}
 	var b strings.Builder
 	b.WriteString("SELECT ")
 	if q.Distinct {
@@ -779,7 +1380,7 @@ func (c *Case) SQL(q Query, projection []string) string {
 	}
 	if projection == nil {
 		b.WriteString("*")
-	} else if q.Join != nil {
+	} else if q.Join != nil || q.ThreeWay != nil {
 		// Qualified columns, each with a unique alias (l_id, r_a, …) so no
 		// two output columns share a name.
 		outs := make([]string, len(projection))
@@ -797,8 +1398,23 @@ func (c *Case) SQL(q Query, projection []string) string {
 	b.WriteString(" FROM ")
 	tbl := strings.ToLower(c.Table.Name)
 	switch {
+	case q.ThreeWay != nil:
+		s := q.ThreeWay
+		if s.Comma {
+			fmt.Fprintf(&b, "%s AS l, %s AS m, %s AS r", tbl, tbl, tbl)
+		} else {
+			fmt.Fprintf(&b, "%s AS l JOIN %s AS m ON l.%s = m.%s JOIN %s AS r ON m.%s = r.%s",
+				tbl, tbl, strings.ToLower(s.LMLeft), strings.ToLower(s.LMRight),
+				tbl, strings.ToLower(s.MRMid), strings.ToLower(s.MRRight))
+		}
 	case q.Join == nil:
 		b.WriteString(tbl)
+	case q.Join.LeftOuter:
+		fmt.Fprintf(&b, "%s AS l LEFT JOIN %s AS r ON l.%s = r.%s",
+			tbl, tbl, strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
+	case q.Join.RightOuter:
+		fmt.Fprintf(&b, "%s AS l RIGHT JOIN %s AS r ON l.%s = r.%s",
+			tbl, tbl, strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
 	case q.Join.Inner:
 		fmt.Fprintf(&b, "%s AS l JOIN %s AS r ON l.%s = r.%s",
 			tbl, tbl, strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
@@ -813,16 +1429,42 @@ func (c *Case) SQL(q Query, projection []string) string {
 		joinEq = fmt.Sprintf("l.%s = r.%s",
 			strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
 	}
-	if joinEq != "" || q.Where != nil {
-		b.WriteString(" WHERE ")
+	if q.ThreeWay != nil && q.ThreeWay.Comma {
+		s := q.ThreeWay
+		joinEq = fmt.Sprintf("l.%s = m.%s AND m.%s = r.%s",
+			strings.ToLower(s.LMLeft), strings.ToLower(s.LMRight),
+			strings.ToLower(s.MRMid), strings.ToLower(s.MRRight))
+	}
+	// Build the WHERE as a list of top-level AND conjuncts: the join equality
+	// (comma-join queries), the boolean predicate tree, and the appended
+	// subquery filters (EXISTS, scalar comparison). Each appended subquery is a
+	// separate top-level conjunct in the oracle, so when one follows the
+	// predicate tree the tree is parenthesized — otherwise a top-level OR in it
+	// would capture the trailing `AND <subquery>` (AND binds tighter than OR),
+	// a rendering-only divergence.
+	{
+		var conj []string
 		if joinEq != "" {
-			b.WriteString(joinEq)
-			if q.Where != nil {
-				b.WriteString(" AND ")
-			}
+			conj = append(conj, joinEq)
 		}
 		if q.Where != nil {
-			renderBool(&b, q.Where)
+			var wb strings.Builder
+			renderBool(&wb, q.Where)
+			w := wb.String()
+			if q.Exists != nil || q.ScalarSub != nil {
+				w = "(" + w + ")"
+			}
+			conj = append(conj, w)
+		}
+		if q.Exists != nil {
+			conj = append(conj, existsSQL(q.Exists, tbl))
+		}
+		if q.ScalarSub != nil {
+			conj = append(conj, scalarSubSQL(q.ScalarSub, tbl))
+		}
+		if len(conj) > 0 {
+			b.WriteString(" WHERE ")
+			b.WriteString(strings.Join(conj, " AND "))
 		}
 	}
 	if len(q.OrderBy) > 0 {
@@ -875,20 +1517,104 @@ func aggExprSQL(a *AggSpec) string {
 // aggSQL renders an aggregate query. Both output columns are aliased so the
 // harness's name-keyed rows have stable, unique keys regardless of how the
 // engine spells a computed column.
+// unionSQL renders `SELECT <proj> FROM t WHERE <l> UNION [ALL] SELECT <proj>
+// FROM t WHERE <r>`. Both branches carry the SAME projection so their output
+// columns align.
+func (c *Case) unionSQL(q Query, projection []string) string {
+	u := q.Union
+	tbl := strings.ToLower(c.Table.Name)
+	branch := func(where *BoolNode) string {
+		var b strings.Builder
+		b.WriteString("SELECT ")
+		if projection == nil {
+			b.WriteString("*")
+		} else {
+			lower := make([]string, len(projection))
+			for i, p := range projection {
+				lower[i] = strings.ToLower(p)
+			}
+			b.WriteString(strings.Join(lower, ", "))
+		}
+		fmt.Fprintf(&b, " FROM %s", tbl)
+		if where != nil {
+			b.WriteString(" WHERE ")
+			renderBool(&b, where)
+		}
+		return b.String()
+	}
+	op := "UNION"
+	if u.All {
+		op = "UNION ALL"
+	}
+	return branch(u.Left) + " " + op + " " + branch(u.Right)
+}
+
+// derivedSQL renders `SELECT <proj> FROM (SELECT * FROM t WHERE <inner>) d
+// [WHERE <outer>] [ORDER BY id]`. The outer references derived columns
+// unqualified (d is the only source).
+func (c *Case) derivedSQL(q Query, projection []string) string {
+	d := q.Derived
+	tbl := strings.ToLower(c.Table.Name)
+	// The subquery body: `SELECT * FROM t [WHERE inner]`.
+	var sub strings.Builder
+	fmt.Fprintf(&sub, "SELECT * FROM %s", tbl)
+	if d.Inner != nil {
+		sub.WriteString(" WHERE ")
+		renderBool(&sub, d.Inner)
+	}
+
+	var b strings.Builder
+	if d.Cte {
+		fmt.Fprintf(&b, "WITH d AS (%s) ", sub.String())
+	}
+	b.WriteString("SELECT ")
+	if q.Distinct {
+		b.WriteString("DISTINCT ")
+	}
+	if projection == nil {
+		b.WriteString("*")
+	} else {
+		lower := make([]string, len(projection))
+		for i, p := range projection {
+			lower[i] = strings.ToLower(p)
+		}
+		b.WriteString(strings.Join(lower, ", "))
+	}
+	if d.Cte {
+		b.WriteString(" FROM d")
+	} else {
+		fmt.Fprintf(&b, " FROM (%s) d", sub.String())
+	}
+	if d.Outer != nil {
+		b.WriteString(" WHERE ")
+		renderBool(&b, d.Outer)
+	}
+	if len(q.OrderBy) > 0 {
+		b.WriteString(" ORDER BY id")
+	}
+	return b.String()
+}
+
 func (c *Case) aggSQL(q Query) string {
 	a := q.Agg
 	var b strings.Builder
 	b.WriteString("SELECT ")
-	if a.GroupBy != "" {
-		fmt.Fprintf(&b, "%s AS g, ", strings.ToLower(a.GroupBy))
+	for i, key := range a.GroupBy {
+		// Alias each key to its output column (g, g1, g2, …) so the harness's
+		// name-keyed rows line up with aggOutputCols / the oracle.
+		fmt.Fprintf(&b, "%s AS %s, ", strings.ToLower(key), strings.ToLower(groupKeyCol(i)))
 	}
 	fmt.Fprintf(&b, "%s AS agg FROM %s", aggExprSQL(a), strings.ToLower(c.Table.Name))
 	if q.Where != nil {
 		b.WriteString(" WHERE ")
 		renderBool(&b, q.Where)
 	}
-	if a.GroupBy != "" {
-		fmt.Fprintf(&b, " GROUP BY %s", strings.ToLower(a.GroupBy))
+	if len(a.GroupBy) > 0 {
+		lowered := make([]string, len(a.GroupBy))
+		for i, key := range a.GroupBy {
+			lowered[i] = strings.ToLower(key)
+		}
+		fmt.Fprintf(&b, " GROUP BY %s", strings.Join(lowered, ", "))
 		if a.HavingOn && a.Having != nil {
 			fmt.Fprintf(&b, " HAVING %s %s %s", aggExprSQL(a), opSQL(a.Having.Op), renderLiteral(a.Having.Lit))
 		}
@@ -919,6 +1645,43 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 			b.WriteString("NOT (")
 		}
 		switch {
+		case p.Cast != nil:
+			fmt.Fprintf(b, "CAST(%s AS STRING) %s %s",
+				strings.ToLower(p.Cast.Col), opSQL(p.Op), renderLiteral(p.Lit))
+		case p.NumFn != nil:
+			col := strings.ToLower(p.NumFn.Col)
+			switch p.NumFn.Fn {
+			case NumFnMod:
+				fmt.Fprintf(b, "MOD(%s, %d) %s %s", col, p.NumFn.Mod, opSQL(p.Op), renderLiteral(p.Lit))
+			case NumFnCoalesce:
+				fmt.Fprintf(b, "COALESCE(%s, %d) %s %s", col, p.NumFn.Default, opSQL(p.Op), renderLiteral(p.Lit))
+			default:
+				fmt.Fprintf(b, "ABS(%s) %s %s", col, opSQL(p.Op), renderLiteral(p.Lit))
+			}
+		case p.StrFn != nil:
+			switch p.StrFn.Fn {
+			case StrFnSubstr:
+				fmt.Fprintf(b, "SUBSTR(%s, %d, %d) %s %s",
+					strings.ToLower(p.StrFn.Col), p.StrFn.Start, p.StrFn.Length, opSQL(p.Op), renderLiteral(p.Lit))
+			case StrFnConcat:
+				fmt.Fprintf(b, "CONCAT(%s, %s) %s %s",
+					strings.ToLower(p.StrFn.Col), renderLiteral(p.StrFn.Suffix), opSQL(p.Op), renderLiteral(p.Lit))
+			default:
+				fmt.Fprintf(b, "%s(%s) %s %s",
+					strFnSQL(p.StrFn.Fn), strings.ToLower(p.StrFn.Col), opSQL(p.Op), renderLiteral(p.Lit))
+			}
+		case p.Case != nil:
+			cs := p.Case
+			fmt.Fprintf(b, "(CASE WHEN %s %s %s THEN %s ELSE %s END) %s %s",
+				strings.ToLower(cs.When.Col), opSQL(cs.When.Op), renderLiteral(cs.When.Lit),
+				caseArmSQL(cs.ThenCol, cs.ThenLit), caseArmSQL(cs.ElseCol, cs.ElseLit),
+				opSQL(p.Op), renderLiteral(p.Lit))
+		case p.HasArith:
+			col2 := strings.ToLower(p.ArithCol2)
+			if p.Qual != "" {
+				col2 = strings.ToLower(p.Qual) + "." + col2
+			}
+			fmt.Fprintf(b, "(%s %s %s) %s %s", col, arithSQL(p.ArithOp), col2, opSQL(p.Op), renderLiteral(p.Lit))
 		case p.IsBetween:
 			fmt.Fprintf(b, "%s BETWEEN %s AND %s", col, renderLiteral(p.Lit), renderLiteral(p.BetweenHi))
 		case p.Op == predicates.ComparisonIsNull:
@@ -981,6 +1744,182 @@ func opSQL(op predicates.ComparisonType) string {
 		return ">="
 	}
 	panic(fmt.Sprintf("rowdiff: unrenderable comparison op %d", op))
+}
+
+// genCaseLeaf builds a single-table searched-CASE predicate leaf
+// `(CASE WHEN col op lit THEN <arm> ELSE <arm> END) op lit`, each arm a BIGINT
+// column or literal.
+func genCaseLeaf(rng *rand.Rand) *Pred {
+	bigints := []string{"A", "B", "C"}
+	ops := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
+	arm := func() (col string, lit int64) {
+		if rng.IntN(2) == 0 {
+			return bigints[rng.IntN(len(bigints))], 0
+		}
+		return "", int64(rng.IntN(10))
+	}
+	cs := &CaseSpec{
+		When: &Pred{Col: bigints[rng.IntN(len(bigints))], Op: ops[rng.IntN(len(ops))], Lit: int64(rng.IntN(10))},
+	}
+	cs.ThenCol, cs.ThenLit = arm()
+	cs.ElseCol, cs.ElseLit = arm()
+	return &Pred{Case: cs, Op: ops[rng.IntN(len(ops))], Lit: int64(rng.IntN(10))}
+}
+
+// caseArmSQL renders a CASE arm: the column when set, else the literal.
+func caseArmSQL(col string, lit int64) string {
+	if col != "" {
+		return strings.ToLower(col)
+	}
+	return renderLiteral(lit)
+}
+
+// genCastLeaf builds `CAST(col AS STRING) op 'lit'` over a BIGINT or BOOLEAN
+// column; the literal is drawn from the value domain's string image so a match
+// is reachable.
+func genCastLeaf(rng *rand.Rand) *Pred {
+	ops := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
+	op := ops[rng.IntN(len(ops))]
+	if rng.IntN(2) == 0 {
+		col := []string{"A", "B", "C"}[rng.IntN(3)]
+		return &Pred{Cast: &CastSpec{Col: col, FromInt: true}, Op: op, Lit: strconv.FormatInt(int64(rng.IntN(10)), 10)}
+	}
+	return &Pred{Cast: &CastSpec{Col: "F", FromInt: false}, Op: op, Lit: []string{"true", "false"}[rng.IntN(2)]}
+}
+
+// genStrFnLeaf builds a single-table string-function predicate leaf. UPPER/LOWER
+// compare against a case-folded literal from the string domain so a match is
+// reachable; LENGTH compares against a small integer.
+func genStrFnLeaf(rng *rand.Rand) *Pred {
+	// Includes the whitespace-padded strings from the data domain so TRIM
+	// literals (and case/substr images) reach real matches.
+	domain := []string{"", "alpha", "beta", "gamma", "delta", "epsilon", "zeta", " a", "b ", " c "}
+	ops := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
+	op := ops[rng.IntN(len(ops))]
+	spec := &StrFnSpec{Col: "S"}
+	switch rng.IntN(6) {
+	case 5:
+		spec.Fn = StrFnTrim
+		// Literal = a trimmed domain word so a padded row can match.
+		return &Pred{StrFn: spec, Op: op, Lit: strings.Trim(domain[rng.IntN(len(domain))], " ")}
+	case 0:
+		spec.Fn = StrFnUpper
+		return &Pred{StrFn: spec, Op: op, Lit: strings.ToUpper(domain[rng.IntN(len(domain))])}
+	case 1:
+		spec.Fn = StrFnLower
+		return &Pred{StrFn: spec, Op: op, Lit: strings.ToLower(domain[rng.IntN(len(domain))])}
+	case 2:
+		spec.Fn = StrFnLength
+		return &Pred{StrFn: spec, Op: op, Lit: int64(rng.IntN(9))}
+	case 3:
+		spec.Fn = StrFnSubstr
+		spec.Start = int64(1 + rng.IntN(6)) // 1..6 (some beyond the string → "")
+		spec.Length = int64(rng.IntN(6))    // 0..5
+		// Literal = SUBSTR of a domain word so a match is reachable.
+		w := domain[rng.IntN(len(domain))]
+		return &Pred{StrFn: spec, Op: op, Lit: substrVal(w, spec.Start, spec.Length)}
+	default:
+		spec.Fn = StrFnConcat
+		spec.Suffix = []string{"x", "z", "q", "", "ab"}[rng.IntN(5)]
+		// Literal = word+suffix so a match is reachable; a NULL-s row yields
+		// just the suffix (CONCAT treats NULL as "").
+		w := domain[rng.IntN(len(domain))]
+		return &Pred{StrFn: spec, Op: op, Lit: w + spec.Suffix}
+	}
+}
+
+// substrVal computes SQL SUBSTR(s, start, length): 1-based start with
+// bound-clamping — an out-of-range start yields "", a length past the end is
+// truncated. Matches the engine over the ASCII domain (verified by probe).
+func substrVal(s string, start, length int64) string {
+	n := int64(len(s))
+	i := start - 1
+	if i < 0 {
+		i = 0
+	}
+	if i > n {
+		i = n
+	}
+	j := i + length
+	if j > n {
+		j = n
+	}
+	if j < i {
+		j = i
+	}
+	return s[i:j]
+}
+
+// genNumFnLeaf builds a single-table numeric-function predicate leaf. ABS
+// compares against a small int; MOD uses a nonzero literal divisor (2..8) and
+// compares against a literal spanning the signed remainder range.
+func genNumFnLeaf(rng *rand.Rand) *Pred {
+	bigints := []string{"A", "B", "C"}
+	ops := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
+	spec := &NumFnSpec{Col: bigints[rng.IntN(len(bigints))]}
+	switch rng.IntN(3) {
+	case 0:
+		spec.Fn = NumFnAbs
+		return &Pred{NumFn: spec, Op: ops[rng.IntN(len(ops))], Lit: int64(rng.IntN(10))}
+	case 1:
+		spec.Fn = NumFnMod
+		spec.Mod = int64(2 + rng.IntN(7)) // 2..8, nonzero → no divzero
+		// The Go/SQL remainder ranges -(Mod-1)..(Mod-1); span it so matches occur.
+		lit := int64(rng.IntN(int(2*spec.Mod-1))) - (spec.Mod - 1)
+		return &Pred{NumFn: spec, Op: ops[rng.IntN(len(ops))], Lit: lit}
+	default:
+		spec.Fn = NumFnCoalesce
+		// Prefer a nullable column so the NULL→Default path is exercised.
+		spec.Col = []string{"A", "C"}[rng.IntN(2)]
+		spec.Default = int64(rng.IntN(10))
+		return &Pred{NumFn: spec, Op: ops[rng.IntN(len(ops))], Lit: int64(rng.IntN(10))}
+	}
+}
+
+// strFnSQL renders a string function's SQL name.
+func strFnSQL(fn StrFnKind) string {
+	switch fn {
+	case StrFnUpper:
+		return "UPPER"
+	case StrFnLower:
+		return "LOWER"
+	case StrFnLength:
+		return "LENGTH"
+	case StrFnTrim:
+		return "TRIM"
+	}
+	panic(fmt.Sprintf("rowdiff: unrenderable string fn %d", fn))
+}
+
+// arithSQL renders an arithmetic operator. Only OpSub is generated today; the
+// others are handled so a future extension (with overflow handling) is a
+// one-line generator change, not a renderer change.
+func arithSQL(op values.ArithmeticOp) string {
+	switch op {
+	case values.OpAdd:
+		return "+"
+	case values.OpSub:
+		return "-"
+	case values.OpMul:
+		return "*"
+	}
+	panic(fmt.Sprintf("rowdiff: unrenderable arith op %d", op))
 }
 
 func renderLiteral(v any) string {

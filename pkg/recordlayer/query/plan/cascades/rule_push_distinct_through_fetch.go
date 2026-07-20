@@ -68,6 +68,13 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 
 	// Build: Distinct(fetchInner)
 	newDistinctPlan := plans.NewRecordQueryDistinctPlan(fetchInnerPlan)
+	// Recompute the streaming mode against the NEW inner (the fetch's inner): a
+	// fetch preserves ordering, so the distinct below it is still
+	// streaming-eligible when that inner is ordered by the dedup key — the
+	// constructor otherwise resets the flag and drops a resume-clean streaming
+	// distinct to the cross-page-buggy hash-set as a competing alternative
+	// (TODO C5).
+	newDistinctPlan.Streaming = distinctStreamingEligible(fetchInnerExpr, fetchInnerPlan)
 	newDistinctQ := expressions.ForEachQuantifier(
 		call.MemoizeFinalExpressionsFromOther(fetchInnerRef, []expressions.RelationalExpression{fetchInnerExpr}),
 	)

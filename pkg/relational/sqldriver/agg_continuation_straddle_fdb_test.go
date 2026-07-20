@@ -36,7 +36,13 @@ func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 			"CREATE TABLE td (id BIGINT, g DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX td_g ON td (g) "+
 			"CREATE TABLE tb (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
-			"CREATE INDEX tb_g ON tb (g)")
+			"CREATE INDEX tb_g ON tb (g) "+
+			// Composite index (g, v) COVERS the group key and the aggregate
+			// operand, so the streaming aggregate sits directly on the ordered
+			// index scan (no in-memory sort) and a mid-scan break lands in the
+			// AGGREGATE continuation — the SUM/MIN/MAX partial-state path.
+			"CREATE TABLE ta (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX ta_gv ON ta (g, v)")
 	ctx := context.Background()
 
 	const scanLimit = 3
@@ -134,6 +140,53 @@ func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 		const want = "100=3 200=2"
 		if got != want {
 			t.Fatalf("streaming aggregate with the scan break BETWEEN groups = %q, want %q", got, want)
+		}
+	})
+
+	// ---- SUM/MIN/MAX/COUNT partial state straddling a page boundary ----
+	// The COUNT-only cases above drive only the `count` field of the partial
+	// aggregate state through the continuation. A group straddling the break
+	// must ALSO carry sums/sumsI/allInt (SUM) and mins/maxs (MIN/MAX): the g=200
+	// group has 4 rows, the scan stops after 3, so its partial SUM/MIN/MAX must
+	// resume from the serialized state and merge into one row — not split.
+	t.Run("sum_min_max_partial_state", func(t *testing.T) {
+		const q = "SELECT g, SUM(v), MIN(v), MAX(v), COUNT(*) FROM ta GROUP BY g"
+		requireStreamingAgg := func(query string) {
+			t.Helper()
+			plan := planExplainVia(t, ctx, db, query)
+			if !strings.Contains(plan, "StreamingAgg") || strings.Contains(plan, "Sort") {
+				t.Fatalf("query must plan as a streaming aggregate with no in-memory sort "+
+					"(so the break lands in the aggregate cursor); got:\n%s", plan)
+			}
+		}
+		for _, r := range [][3]int64{{1, 200, 10}, {2, 200, 20}, {3, 200, 30}, {4, 200, 40}, {5, 300, 50}} {
+			exec(fmt.Sprintf("INSERT INTO ta (id, g, v) VALUES (%d, %d, %d)", r[0], r[1], r[2]))
+		}
+		requireStreamingAgg(q)
+		rows, qerr := conn.QueryContext(ctx, q)
+		if qerr != nil {
+			t.Fatalf("query: %v", qerr)
+		}
+		defer rows.Close()
+		type agg struct{ sum, mn, mx, cnt int64 }
+		got := map[int64]agg{}
+		for rows.Next() {
+			var g, s, mn, mx, c int64
+			if serr := rows.Scan(&g, &s, &mn, &mx, &c); serr != nil {
+				t.Fatalf("scan: %v", serr)
+			}
+			got[g] = agg{s, mn, mx, c}
+		}
+		if rerr := rows.Err(); rerr != nil {
+			t.Fatalf("rows.Err: %v", rerr)
+		}
+		want := map[int64]agg{
+			200: {sum: 100, mn: 10, mx: 40, cnt: 4},
+			300: {sum: 50, mn: 50, mx: 50, cnt: 1},
+		}
+		if len(got) != 2 || got[200] != want[200] || got[300] != want[300] {
+			t.Fatalf("SUM/MIN/MAX/COUNT across a mid-group continuation = %+v, want %+v "+
+				"(a lost partial SUM/MIN/MAX splits or mis-aggregates the straddling g=200 group)", got, want)
 		}
 	})
 

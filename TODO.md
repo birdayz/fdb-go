@@ -1390,6 +1390,129 @@ non-chained nested box already does this — its box-leg WHERE plans as `Predica
 the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`chained_boxleg{A,B,C}_filter`)
 — flip those `wantReject` cases to row assertions when ordinalized.
 
+### [x] Executor/ordinal-binding — LEFT OUTER PK-join source-relative ordinal over a multi-leg row — FIXED
+A `LEFT OUTER JOIN` on the **primary key** (`l.id = r.id`) combined with a **WHERE filter** (either side —
+an L-side `l.b IN (…)` triggers it too, seed 980000056) AND an **ORDER BY on the left key** used to plan
+successfully but **die at execution**: `correlated FieldValue "ID" (correlation "L") … multi-leg row
+cannot serve a source-relative ordinal — no frontier row resolved`.
+
+**ROOT CAUSE (traced via instrumentation, RFC-182 shift):** the plan is
+`InMemorySort(InJoin(PredicatesFilter(FlatMap(join))))`. The in-memory sort resolves a source-relative
+ORDER-BY key (`l.id`, addressed to L's own leg window) over the join's MERGED multi-leg row via LEG WINDOWS —
+`executeInMemorySort` calls `legWindowRowContext` when `downstreamLegWindows(sort.GetInner())` returns
+`windowsOK=true`. But `unwrapToJoinPlan` (ordinal_join.go) — the passthrough walk that finds the join below
+the sort — did NOT list `RecordQueryInJoinPlan`, so a `… IN (…)` filter (which lowers to an InJoin between
+the sort and the join) broke the walk → `windowsOK=false` → the sort key hit a bare multi-leg row and the
+correlated fall-through guard went LOUD. The `IS NULL`/equality specifics never mattered; the trigger was
+"an IN-filter (InJoin) between an in-memory sort and a join whose ORDER-BY key is source-relative."
+
+**FIX (`ordinal_join.go`):** an InJoin re-emits the inner join's merged rows VERBATIM under a per-in-value
+binding (executeInJoin: `WithBinding` then `ExecutePlan(GetInner())` flat-mapped — no projection/transform);
+the binding changes row count/content, never the row LAYOUT, and leg windows are a purely positional property.
+So InJoin IS a row-layout-preserving passthrough — added it to `unwrapToJoinPlan`. The doc's prior
+"deliberately left out (re-executes under bindings)" was overly conservative. Regression:
+`TestFDB_LeftJoinPkOrdinal_InJoinSortRegression` (asserts `[(2,2),(1,1)]`); knownGaps entry removed;
+`TestKnownGaps_LedgerIsNarrow` now asserts the retired signature is NO LONGER declined.
+**Gate:** executor change → Graefe+Torvalds BOTH ACKed (delta re-confirm pending on the final head). The fix
+covers BOTH lowerings of `… IN (…)`: `RecordQueryInJoinPlan` AND `RecordQueryInUnionPlan` (the sibling both
+reviewers flagged — same verbatim-inner layout-preserving property; ImplementInUnionRule allows the inner to be
+a join, so the merged multi-leg row can flow up under it). Unit-pinned in `TestDownstreamLegWindows`
+(in-join / in-union / in-memory-sort-over-each).
+
+### [ ] Conformance harness — per-step idempotency-aware retry for mid-request Java-server drops (residual)
+The `POST /invoke: EOF` conformance flake's COMMON cause (reusing a keep-alive connection the pooled Java
+server closed while idle) is fixed by `newJavaHTTPClient`'s `DisableKeepAlives` (fresh connection per call,
+pinned by `TestJavaHTTPClient_DisablesKeepAlives`). RESIDUAL: a server drop DURING a request (GC pause /
+crash mid-`/invoke`) a fresh connection cannot prevent. A blanket retry is UNSAFE — `Invoke` is generic and
+some `/invoke` steps write, so a retry could double-apply. The fix is a per-step idempotency map (retry only
+read/plan steps like `RunSql SELECT`/`EXPLAIN`; never retry a write step) driven off the transport-error class.
+Low priority (mid-request drops are rare; keep-alive fix covers the observed flake).
+
+### [ ] Soundness — empty IN-list `x IN ()` may return inner rows instead of zero (surfaced in review)
+`executeInJoin` (executor_new_plans.go:1033-1034) and `executeInUnion` (:1095-1097) short-circuit an EMPTY
+in-value list by running the inner plan DIRECTLY (unbound) — which returns the inner's rows, where SQL/Java
+yield ZERO rows for `x IN ()`. Pre-existing, ORTHOGONAL to the multi-leg leg-window fix (Torvalds review point).
+**First verify reachability:** determine whether `IN ()` (or an IN over a parameter/subquery that evaluates to
+empty) is even PARSEABLE/producible — the differential generator only emits non-empty literal IN-lists, so it
+never exercises this. If reachable, the fix is to yield an EMPTY cursor (not run the inner) when the in-value
+set is empty, and pin it with a yamsql/FDB test; if `IN ()` is a hard parse error and no empty-set path exists,
+document the branch as defensively-dead. Do NOT fold into the multi-leg PR (separate logical change).
+
+### [ ] Executor/ordinal-binding — 3-way join shared-column ordinal not resolvable (malformed plan)
+A 3-WAY join in which the SAME column is referenced across all three legs — a filter on the first
+(`l.c = 1`), the m↔r join key (`m.c = r.c`), and a filter on the third (`r.c IS NULL`) — plans but **dies at
+execution**: `ordinal resolution: field "C" not resolvable in the runtime row (ordinal -1, row columns
+[ID A B C S F]) — malformed plan`. Removing ANY one factor (drop a leg to 2-way / drop the m.c=r.c join /
+drop either c-filter) fixes it. Fails LOUD; the query's correct result is EMPTY (m.c=r.c can never hold when
+r.c IS NULL). Surfaced by the RFC-182 rowdiff harness (seed 1001000229) once 3-way self-joins were generated
+at scale; classified as a tracked `knownGaps` DECLINE (`pkg/relational/conformance/rowdiff/run.go`). Same
+ordinal-binding FAMILY as the multi-leg gap above, distinct signature — likely the same underlying
+executor/ordinal-binding workstream. **Live pin:** `TestFDB_ThreeWaySharedColOrdinal_KnownGap` (goes RED when
+the query executes — then delete the `knownGaps` entry and assert zero rows). **To make it work:** fix how a
+3-way join binds a column's ordinal when that column appears as both a join key and per-leg filters across
+the legs — the ordinal resolves to -1 in the runtime row today.
+
+**ROOT CAUSE — DEFINITIVELY TRACED (RFC-182 shift, live instrumentation of the pin query).** Supersedes the
+earlier merged-layout/FlatMap-frontier hypotheses. Full evidence chain:
+
+1. **Plan (EXPLAIN):** left-deep FlatMap —
+   `FlatMap(outer=FlatMap(outer=Fetch(IndexScan IDX_C [=])[l.c=1], inner=Scan(T)[l.a=m.id]), inner=Fetch(PredicatesFilter(IndexScan IDX_C [=]), [1 pred]))`.
+2. **The failing predicate is NOT `r.c IS NULL`.** Instrumenting the residual PredicatesFilter shows the dying
+   predicate is the JOIN EQUALITY `m.c = r.c` (ComparisonEquals) reapplied as a residual above the IDX_C scan:
+   `LHS = FieldValue{field=C, corr=$m(merged outer), baked=TRUE}` ✓, `RHS = FieldValue{field=C, corr=q$NNNN(candidate base quantifier), baked=FALSE}` ✗.
+   So the unbaked node is the INNER/indexed side (`r.c`) of the reapplied join equality — over a QUANTIFIER
+   alias, `Resolved==nil` → `resolveOrdinal()` false → ordinal -1.
+3. **Birth site (instrumented `NewFieldValue`):** the lazy `r.c` is minted by
+   `ValueIndexScanMatchCandidate.ColumnValue` (`match_candidate_index.go:127`, via `index_expansion.go:66`) —
+   the index's per-column PLACEHOLDER value `NewFieldValue(base, "C")`, intentionally UNBAKED because a
+   match-candidate value is compared by name and NEVER evaluated (see `NewFlatFieldValue` doc).
+4. **Why it reaches the executor:** `expr.go` BORN-BAKES every SQL column ref (`NewCorrelatedFieldValueWithResolvedOrdinal`,
+   expr.go:278/296) and `WithChildren` PRESERVES `Resolved` (replace.go:429), so the query's own `r.c` is always
+   baked — the ONLY way an unbaked node reaches runtime is a fresh lazy `NewFieldValue`. Here the candidate
+   PLACEHOLDER leaks into the executable residual: `r.c` is referenced by BOTH `m.c = r.c` (sargable equality)
+   AND `r.c IS NULL` (sargable-for-match, `match_max_match_map.go:72`) on the SINGLE indexed column c; they
+   cannot co-sarg one index column, so the equality is reapplied as a residual — and that reapplication takes
+   the indexed side from the candidate placeholder (lazy) instead of the query's baked `r.c`. The 2-way analog
+   / single-c-reference cases never trigger the two-comparisons-on-one-indexed-column contention, so they stay
+   baked (matches the pin's "remove ANY factor → works").
+5. **Generalized (NOT IS-NULL-specific):** the differential sweep independently hit the SAME defect on a
+   DIFFERENT shape — seed 3002111, indexes `[IDX_A IDX_AB IDX_B]`, query
+   `… JOIN m ON l.b=m.b JOIN r ON m.b=r.b WHERE m.b=8 AND l.b=7` — where indexed column `b` is bound by FOUR
+   sargable comparisons across the legs (two join keys + two equality filters, no IS NULL). Confirms the trigger
+   is generally "≥2 sargable-for-match comparisons on ONE indexed column shared across join legs", of which the
+   IDX_C + `IS NULL` pin is one instance.
+
+**FIX DIRECTIONS (both are FROZEN RFC-173 index-match compensation machinery — Graefe+Torvalds gate + full
+determinism sweep across every index-match shape REQUIRED; do NOT ship unGated):**
+  (a) Bake `ColumnValue` against the record-type ordinal so a leaked placeholder still evaluates — BUT this
+      changes the candidate Value consumed by ALL of predicate-matching / sort-matching / covering-index /
+      max-match-map, and `semantic_hash.go` makes baked≠lazy by contract → wide blast radius, risks matching
+      (this is the class of change the reverted `rebaseOuterLegValueOrdinal` fix belongs to).
+  (b) At the residual reapplication, carry the QUERY's baked reference (Java's
+      `PredicateCompensationFunction.ofPredicate(queryPredicate)`) instead of the candidate placeholder — OR
+      suppress the REDUNDANT residual entirely (the equality already IS the `[=]` sarg; reapplying it as a
+      residual is redundant and only fires under the shared-column contention). (b) is narrower than (a) but
+      still core match/compensation code.
+
+### [investigated, not shipped] rowdiff — 4-way joins: measured-infeasible for the always-on differential
+Implemented and isolation-validated a 4-way self-join generator + a HASH-JOIN oracle (indexes on the probed
+columns → O(n+matches), not the O(n⁴) a nested loop would cost), then MEASURED it against real FDB and
+**reverted the generation** — two evidence-based reasons, not speculation:
+1. **Prohibitive planning cost.** Each 4-way query costs ~10s in the Cascades build-order search (measured:
+   60 4-way-inclusive seeds ran at 0.3 seeds/s vs ~1.5 for 3-way). A NON-selective join key (e.g. `m.a = p.a`
+   over the 0..9 domain) is pathological — one such query pinned a core at 145% for **11+ minutes**. Forcing
+   every probed side to the unique pk bounds the blowup (the previously-stalling range then completes clean),
+   but even bounded, ~10s/query makes a 50k nightly take tens of hours at any meaningful rate. Note the
+   pathological-planning case may itself be a planner-performance defect (unbounded 4-way build-order search),
+   distinct from the ordinal-binding soundness gaps.
+2. **Yield is the already-tracked ordinal family.** A generated 4-way join hit the SAME
+   "not resolvable in the runtime row / ordinal -1" defect (seed 1006000182, a `JOIN … ON m.id = p.id`
+   shared-key chain) and was correctly DECLINED by the existing knownGaps signature-matcher — i.e. 4-way
+   re-exercises the 3-way/multi-leg ordinal-binding gaps, surfacing no NEW soundness class.
+**To include it later:** either the Cascades 4-way planning cost drops, or run it as a dedicated low-rate
+sweep separate from the main nightly. The hash-join oracle pattern (buildKeyIndex / joinKey) is the reusable
+piece if revived.
+
 ---
 
 # NEXT
@@ -1466,11 +1589,116 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > - [x] P0.7 PushSetOperationThroughFetch rebuild over pushed inners (Graefe+Torvalds ACK;
 >       single-pass tryPushValues, dynamic InUnion arm live, Case-2 partial push,
 >       ordered-union instantiation, e2e Fetch(Union(IndexScan…)) pin)
-> - [ ] C5 follow-up: DISTINCT cross-page dedup (seen-set rebuilt fresh per page —
->       duplicates straddling an internal 4s page break re-admit; Java's
->       UnorderedDistinctPlan has the identical shape, but Go's auto-paging hits it
->       inside ONE statement; fix = seen-set through the continuation or a
->       sorted-input distinct; documented at executeDistinct)
+ - [ ] C5 follow-up: DISTINCT cross-page dedup — **CORRECTNESS FIXED end-to-end (2026-07-20); only a
+       cost/perf optimization remains.** Both paths now resume-clean: ORDERED input streams (carries
+       the last key), UNORDERED input (incl. DISTINCT + ORDER-BY-non-output-column) uses the hash
+       cursor that carries its whole seen-set through gen.DistinctHashContinuation (Approach B,
+       Graefe-ACK'd; distinctHashCursor in distinct_stream.go). Pinned by
+       TestFDB_SelectDistinct_CrossPageDedup_Unordered (g=id%10 scattered, scanLimit=2). REMAINING
+       (perf, NOT correctness): enumerate a cost-based sort-distinct alternative so a high-NDV DISTINCT
+       (where the seen-set would blow the memory budget → today a LOUD budget error, never wrong rows)
+       routes to a sort instead — Graefe's phase-2. Until then high-cardinality unordered DISTINCT over
+       a huge table errors on the budget rather than completing; that is a performance limit, not a
+       wrong-rows bug. FIXED: over input already ordered by the dedup key (`SELECT DISTINCT col
+       ORDER BY col`, or a covering ordered index), a resume-clean STREAMING distinct now dedups
+       adjacent rows and carries ONLY the last emitted key through the DedupContinuation —
+       `RecordQueryDistinctPlan.Streaming`, set by ImplementDistinctFinalRule when
+       `orderingSatisfiesGroupingKeys(EstimateOrdering(inner), projected-dedup-cols)` holds; executor
+       distinctStreamCursor (distinct_stream.go). Pinned by TestFDB_SelectDistinct_CrossPageDedup
+       (N=50, scanLimit=2, incl. LIMIT/OFFSET). REMAINING (needs a DESIGN pass, not a mechanical
+       extension — do NOT just insert an InMemorySort): the UNORDERED case (`SELECT DISTINCT col`
+       with no ORDER BY and no covering index → primary scan) still uses the fresh-per-page hash-set
+       and re-admits across pages. Two candidate fixes, each with a real drawback — the choice is a
+       genuine trade-off that should get a Graefe design ACK before implementation:
+         (A) REQUEST the dedup-key ordering → planner inserts an InMemorySort, then stream. CORRECT
+             and bounded-continuation, BUT the InMemorySort BUFFERS EVERY input row (memory-bounded +
+             spills) to emit few distinct rows — a severe memory regression for the COMMON
+             low-cardinality / high-row shape (`SELECT DISTINCT status FROM huge`: 2 distinct values,
+             10M rows → buffer 10M to emit 2, where today's hash-set holds 2 keys). The streaming-agg
+             analogy does NOT transfer: GROUP BY must see every row to aggregate anyway, so its
+             InMemorySort adds no extra buffering; DISTINCT's hash-set specifically AVOIDS materializing
+             the input, so an always-sort forfeits that. Also must not disturb the DISTINCT +
+             ORDER-BY-on-a-NON-projected-column semantic (`SELECT DISTINCT v ORDER BY id`: dedup by v,
+             output ordered by id via a first-occurrence sort — sorting by v destroys the id order), so
+             gate on `GetRequestedOrderings()` being empty / a subset of the dedup cols.
+         (B) Keep the hash-set but carry the seen-set THROUGH the continuation (bounded by the
+             statement memory budget the set is already charged against; boundedSet.m is enumerable).
+             Fixes BOTH the unordered case-2 AND the ORDER-BY-non-output-column case-3 (it does not
+             rely on ordering at all — just makes the existing hash-set resume-clean). Memory-parity
+             with today and a SMALL continuation for the common LOW-cardinality shape (executor-only,
+             no planner/plan-shape churn). Cost: the seen-set grows monotonically, so every page
+             re-sends the full set-so-far → O(pages × distinct-keys) CUMULATIVE work/transfer, heavy
+             for high cardinality (where today is merely wrong). Needs a Go-internal continuation proto
+             (proto/relational/, since DISTINCT is Go-only — no Java wire to match).
+       No clean mechanical winner: (A) trades a correctness bug for a MEMORY regression on
+       low-cardinality/high-row; (B) trades it for CUMULATIVE-TRANSFER on high cardinality. This is a
+       genuine DESIGN decision (likely (B), or a cardinality-aware A/B choice) that needs a Graefe
+       design ACK BEFORE implementation, per the query-engine RFC-first gate — do NOT unilaterally
+       ship either. The ordering-DETECTION step already shipped (case-1) is deliberately separated from
+       this and is safe on its own (only ever streams when the ordering already proves adjacency, else
+       unchanged hash-set).
+       ORIGINAL DIAGNOSIS (kept for the unordered follow-up): `executeDistinct` (executor.go ~1552)
+       rebuilt the `seen` hash-set FRESH per page, so any `SELECT DISTINCT <non-unique-col>` over a
+       table larger than one page returned WRONG ROWS. Adversarial
+       repro (N=500, EXECUTION_SCANNED_ROWS_LIMIT=9 forcing ~56 page breaks): `SELECT DISTINCT w
+       ORDER BY w` → 100 rows (every value twice) vs correct 50; `SELECT DISTINCT g` (no ORDER BY,
+       unordered input) → 500 rows (TOTAL dedup failure) vs 25; `... LIMIT 30 OFFSET 10` → wrong
+       window. `SELECT DISTINCT <unique-col>` PASSES (no duplicates to drop). This is a COMMON
+       query pattern → the wrong-rows blast radius is large. Single-page baseline is always correct
+       → purely a resume bug.
+       The code comment's Java-parity claim is only HALF true: Java's
+       `RecordQueryUnorderedPrimaryKeyDistinctPlan` also uses a fresh HashSet per page but dedups by
+       PRIMARY KEY (unique per record), so the hazard doesn't bite it; Go routes `SELECT DISTINCT
+       col` (dedup by projected VALUE) through the same fresh-set shape, where it DOES bite.
+       DEFINITIVELY RESOLVED (2026-07-20, read the Java source): Java's fdb-relational SQL layer
+       does NOT dedup SELECT DISTINCT AT ALL. `QueryVisitor.visitSimpleTable` never reads the
+       DISTINCT token; there is NO `.DISTINCT()` consumer anywhere in relational-core; all 3
+       Java yamsql SELECT-DISTINCT tests use already-distinct data (prove parsing, not dedup).
+       So there is no Java value-distinct path to match — Go's is a pure read-side EXTENSION and
+       the continuation is Go-internal. IMPLEMENTATION NOW TRACTABLE (all pieces confirmed to
+       exist): (a) InMemorySort physical operator exists (RecordQueryInMemorySortPlan +
+       MemorySortContinuation, resume-clean); (b) streaming dedup cursor + DedupContinuation
+       (innerContinuation+lastValue) exist in pkg/recordlayer/dedup_cursor.go (no prod callers —
+       ready to wire); (c) the streaming-agg rule's InMemorySort+pinOrderedSpine pattern is the
+       exact template; (d) per-column sort keys built via
+       values.NewFieldValueWithResolvedOrdinal(col, i, typ) over the inner's RecordType (see
+       rule_aggregate_data_access.go:418). CAVEAT: inserting InMemorySort under every non-elided
+       distinct churns EXPLAIN for all SELECT-DISTINCT plan-shape tests — expect broad manifest
+       churn; the elision path (PK/unique-key coverage) MUST be preserved.
+       FIX DESIGN (ordering-aware distinct arc — Graefe-gated, wire-compat-sensitive, ~multi-piece):
+         (1) EXECUTOR: a STREAMING distinct — when the input is ordered by the distinct key, emit a
+             row only when its key differs from the previous emitted key; carry ONLY that last key
+             through the continuation (bounded, resume-clean). This fixes the ordered case
+             (`DISTINCT w ORDER BY w`), which today still fails because the hash-set is used even
+             over ordered input.
+         (2) PLANNER: for value-distinct, REQUEST the input ordered by the distinct-key columns even
+             without an outer ORDER BY (extend the ordering constraint pushed by
+             PushRequestedOrderingThroughDistinctRule), so the unordered case (`DISTINCT g`) gets an
+             ordered plan and the streaming distinct applies. Fall back to a Sort when no index
+             provides the order.
+         (3) CONTINUATION: the RecordQueryDistinctPlan continuation must carry the last-key — a wire
+             format change; encode it in the proto continuation, version-guard the decode.
+       The current fresh-set-per-page is a Go-only correctness hole (Java doesn't auto-page inside one
+       statement). Pin FIRST with a large-N (>1 page) multi-value-per-key rows test at a small scan
+       limit, both with and without ORDER BY, before touching the executor. Documented at
+       executeDistinct.
+       DEEPER DIAGNOSIS (2026-07-20, DFS): (a) `SELECT DISTINCT` is a GO-ONLY extension — Java's
+       fdb-relational REJECTS it for most shapes (see rule_implement_distinct_final.go header), and
+       Java's RecordQueryUnorderedDistinctPlan.executePlan(:109) also builds a fresh HashSet per
+       call, so there is NO Java wire-format to match: the DISTINCT continuation is GO-INTERNAL —
+       NOT a Java-wire-compat concern. That removes the "hard line" blocker; the continuation can be
+       extended. (b) The scan limit returns a CLIENT-facing continuation (ScanLimitReached →
+       noNextOrFail(..., limitContinuation()) in the scan cursors), i.e. a NEW Execute per page, so
+       the seen-set is genuinely lost across Executes — the state MUST ride the continuation (not
+       merely persist in statement State). (c) TEMPLATE: RecordQueryStreamingAggregationPlan already
+       resumes cleanly across pages at large N (agent-verified) by carrying its running group key in
+       the continuation — the streaming DISTINCT is the same pattern (carry the last emitted key).
+       Port executeStreamingAggregation's continuation encoding. So the arc stays 3 pieces but is
+       now de-risked and Go-internal: streaming-distinct executor + carry last-key in the (Go-only)
+       distinct continuation + planner requests distinct-key ordering
+       (PushRequestedOrderingThroughDistinctRule already pushes an OUTER ORDER BY through; extend it
+       to request the distinct-key ordering even without one, falling back to a Sort). Graefe-gated
+       (executor + continuation), but no cross-engine wire risk.
 > WS-C: DONE (Graefe ACK; Torvalds conditions folded — lazy continuations, depth
 > parity, ctor charge release). C1 full RecursiveUnionCursor port (UNION ALL
 > recursion streams + resumes mid-level), C2
@@ -1741,6 +1969,39 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 > from a reliable cron outside GitHub) so they fire on time; (d) a dedicated nightly runner so scheduled
 > jobs don't contend with per-PR CI. Also: the last two Nightly Fuzz runs FAILED (06-29, 06-30) — a
 > separate real signal to investigate (a fuzz target has been red for two nights; no-unrelated-flakes rule).
+>
+> **ROOT-CAUSED 2026-07-20 — the Nightly Fuzz is CHRONICALLY RED on master across MULTIPLE INDEPENDENT
+> jobs/targets, not one bug. A full triage of the recent red runs (via `gh run view --log`):**
+>
+> **engine-fuzz job** (SQL Engine + Record Layer Fuzz) — five distinct causes, four now handled on branch
+> `fix-intersection-filter-cycle` (all both-gated where they touch the planner), NONE yet merged:
+> - **CLASS 1** — Go-only filter/set-op commutation rules' cyclic-memo `GetCorrelatedTo` stack overflow.
+>   Hits `FuzzPlanner_Idempotence`, `FuzzPlanner_InitialMemberPreserved`, `FuzzPlanner_MemoConsistency`,
+>   `FuzzPlanner_Determinism` (07-19). FIXED by **RFC-185** (removes the four rules).
+> - **CLASS 2** — no-BestMember stage-transition (merged/unfinalized group crosses REWRITING→PLANNING with
+>   no finals, never re-explores). Hits `FuzzPlanner_WithBatchA_NoPanic` (07-19, seed 9bd9b3661b501312) and
+>   `FuzzPlanner_PlanFullPipeline`. FIXED by **fuzz bug 2** (`Reference.AdvanceStagePreservingMembers`).
+> - **CLASS 4** — `FuzzMessageTypeFromDescriptor` (07-16) stack overflow on a self-referential
+>   nullable-array wrapper descriptor (`message M { repeated M values = 1; }`). FIXED (commit be1d377b7 —
+>   guard-before-unwrap + thread visited).
+> - **CLASS 3** — `FuzzGetCorrelatedToOfValue` (07-18). NO production bug (exhaustive proof: the walker is
+>   correct); that red was an older revision or a fuzz-infra hiccup. The target was a FAKE safety net
+>   (subset-only oracle) — strengthened to an equality oracle (commit 7e0803887).
+> - `FuzzPipeline_NoPanic` (07-15) — planner; clean on branch at 120s (CLASS 1/2).
+> All planner targets pass on the branch at/above the nightly's 90s per-target budget.
+>
+> **STILL OPEN — NOT on this branch, separate subsystems (a merge does NOT green these):**
+> - **Binding Tester Stress** (07-14, 07-11, 07-08): `0/50 pass, 50 fail`, every seed exiting 1 in ~5s with
+>   FDB ALIVE. 50/50 identical fast failures ⇒ almost certainly a HARNESS/ENV/build problem on the runner,
+>   not 50 logic bugs. Needs its own look (run `just binding-stress` locally to confirm infra vs real).
+> - **Differential Serialization Fuzzer** (07-14, 07-11): `FAIL: FuzzGetValueReply` — a real Go-vs-C++ WIRE
+>   serialization divergence in `cmd/fdb-diff-oracle` (fdbgo GetValue reply). Its crash seed was not
+>   uploaded. Needs the C++ oracle to reproduce; own fdbgo cycle.
+>
+> **ACTION: (1) merge the branch → clears the CLASS 1/2/3/4 + FuzzPipeline engine-fuzz reds; (2) then
+> triage binding-stress (likely infra) and the diff-oracle FuzzGetValueReply wire divergence separately.**
+> The window-skip "success" runs (short 5s/4m runs when the runner woke outside 00:00-07:00 UTC) mask how
+> consistently the substantive runs fail.
 
 ## [x] INFRA — Nightly Fuzz false reds: Go stdlib leaks `-fuzztime` expiry as a failure — FIXED
 Root-caused and fixed (`cmd/fuzzrun`). The nightly `Differential Serialization Fuzzer` reds were **not**
@@ -3006,22 +3267,22 @@ Positive-WHERE is the cleanest sub-case to land first; NOT-EXISTS + projected fo
 Four-gate each.
 </details>
 
-### [ ] query-engine (PRE-EXISTING, surfaced fixing the EXISTS-aggregate fold): `parseLimitClause` silently ignores an unparseable LIMIT/OFFSET literal → the clause is dropped
-`parseLimitClause` (plan_visitor.go:1404) does `strconv.ParseInt(atom.GetText())` and leaves the -1 no-limit
-sentinel on failure, so a syntactically-accepted but non-integer LIMIT literal (`LIMIT 0.0`, `LIMIT 0L`) is
-SILENTLY DROPPED: `SELECT p.id FROM p LIMIT 0.0` returns ALL rows (correct is 0 rows). Grammar:
-`limitClauseAtom : decimalLiteral | preparedStatementParameter` — so a DecimalLiteral atom whose text fails
-ParseInt is an INVALID literal and should be REJECTED (loud syntax error), while a preparedStatementParameter
-(`LIMIT ?`) stays a parameter. Fix: parseLimitClause returns an error when a DecimalLiteral atom fails
-ParseInt; thread it through the 3 callers (plan_visitor.go:475/:1441, select_parser.go:1392). Applies to
-BOTH the limit and the offset atom — `LIMIT 1 OFFSET 1.0` / `OFFSET 1L` are the same silent-drop on the
-offset side (offset stays 0, so `... OFFSET 1.0` skips nothing when it should skip a row). This makes
-`LIMIT 0.0` / `OFFSET 1.0` correct-or-loud everywhere. Flip-sentinels (both in
-`exists_over_aggregate_fdb_test.go`): `limit_unparsed_residual_not_always_true` and
-`offset_declines_not_always_true` (the `OFFSET 1.0`/`1L` cases) — the EXISTS fold already DECLINES both via
-limitClauseKeepsSingleRow (every atom must ParseInt cleanly), so its declined fallback [1] flips when this
-reject lands. NOTE (Graefe): the `OFFSET 2` case in `offset_declines_not_always_true` parses fine, so the
-parse-reject does NOT touch it — its [1]→[] flip belongs to the SEPARATE residual below, not this item.
+### [x] query-engine (PRE-EXISTING, surfaced fixing the EXISTS-aggregate fold): `parseLimitClause` silently ignores an unparseable LIMIT/OFFSET literal → the clause is dropped — FIXED
+FIXED. `parseLimitClause` did `strconv.ParseInt(atom.GetText())` and left the -1 no-limit / 0-offset
+sentinel on failure, so a syntactically-accepted but non-integer LIMIT literal (`LIMIT 0.0`, `LIMIT 0L`) was
+SILENTLY DROPPED: `SELECT p.id FROM p LIMIT 0.0` returned ALL rows (correct is 0). Fix: a new `resolveLimitAtom`
+helper rejects a `decimalLiteral` atom that fails ParseInt with a loud 42601 syntax error, while a
+`preparedStatementParameter` (`LIMIT ?`) still returns unresolved (parameter binding unchanged — separate
+concern). `parseLimitClause` now returns `(limit, offset, err)`, threaded through all callers (visitLimit +
+its call site, the qualified-star rebuild re-read, extractFromSimpleTable; limitClauseKeepsSingleRow ignores
+the error since it pre-checks every atom). Applies to BOTH the limit and offset atom, so `LIMIT 1 OFFSET 1.0`
+/ `OFFSET 1L` reject too. Also dropped the dead positional-`LIMIT a,b` fallback (the grammar is
+`LIMIT limit=... (OFFSET offset=...)?` — both atoms are labeled, no positional form). Pinned:
+`TestFDB_InvalidLimitLiteralRejected_RFC128` (standalone: bad literals → 42601, plus `LIMIT 0`→0 rows and
+`LIMIT 2 OFFSET 3` positive controls) + the rewritten flip-sentinels in `exists_over_aggregate_fdb_test.go`
+(`limit_invalid_literal_rejected`, `offset_invalid_literal_rejected`; `offset_declines_not_always_true`'s
+`OFFSET 2` case stays [1] — it parses fine, its flip belongs to the SEPARATE execution residual below). Full
+suite green.
 
 ### [ ] query-engine (PRE-EXISTING residual, booked; strictly wrong but honestly pinned): the DECLINED correlated `EXISTS`-over-non-grouped-aggregate path ignores LIMIT/OFFSET and uses plain row-existence
 When the always-true fold correctly DECLINES (a row-eliminating/unverifiable LIMIT/OFFSET, e.g. `LIMIT 1
@@ -3421,6 +3682,31 @@ divergence (Go rejecting a DRY RUN that Java previews as success), forbidden by 
 principle. Pinned Java-faithful by `dml_dry_run_fdb_test.go::TestFDB_DmlDryRun_MatchesJavaLightweightValidation`
 + documented at `DryRunSaveRecord` (store_api.go). No action — do NOT "fix" it into a divergence.
 
+### [ ] dml: INSERT ... SELECT arity mismatch leaks internal XX000 instead of a clean error (wrong-error, LOW-MED, found 2026-07-20 hunt)
+
+An `INSERT ... SELECT` whose projection column count differs from the target
+record's is NOT validated at plan time: `alignInsertSelectColumns`
+(logical_predicate.go) and `checkInsertSelectPromotable` both loop over
+`min(len(projections), len(target))` and silently truncate, so the mismatch
+surfaces only at row-read as an internal XX000 ("result row carries no positional
+output row aligned to column … — the plan's top operator did not emit an ordinal
+output row", resultset.go:147). Repro (dst has 2 cols): `INSERT INTO dst SELECT
+id, v, id FROM src` (too many) or `INSERT INTO dst SELECT id FROM src` (too few)
+→ XX000. The VALUES path rejects the same mistake cleanly (42601/22000,
+insert_cascades.go:82). No data corruption (nothing partial-inserts; too-few does
+NOT NULL-fill — it also errors). Wrong-ERROR only.
+FIX IS NOT A PLAN-TIME COUNT CHECK (attempted + reverted 2026-07-20): the output
+WIDTH ≠ `len(proj.Projections)`. A RECORD/struct projection expands into several
+target columns — e.g. `INSERT INTO DST SELECT "V" FROM T1, T1."ARR" AS "V", W`
+projects ONE unnested element `V` that fills DST's 2 columns (pinned by
+`TestFDB_ArrayUnnestDMLDuplicateAlias` control). Worse, that unnested element's
+`Value.Type()` is NOT a `*values.RecordType`, so a type-based "all-scalar" guard
+also false-positives. A correct check needs the source plan's DERIVED OUTPUT
+SCHEMA (post-expansion column count), not the raw projection list — a real
+semantic-analysis addition. Until then the XX000 stands (low severity). Do NOT
+re-add a `len(proj.Projections)` check — it 42601s valid unnest/record-expansion
+INSERT…SELECTs.
+
 ### [ ] dml: DELETE/UPDATE ... RETURNING silently ignored — Java supports it (divergence, found 2026-06-28)
 
 The shared grammar carries `(RETURNING selectElements)?` on `deleteStatement` and
@@ -3572,7 +3858,16 @@ projection site makes `SELECT v WHERE v=…` / covering `SELECT v` silently wron
 current clean XX000). Stub to implement first: `key_expression_validate.go:isTupleField` (currently
 `return false`).
 
-### [ ] query-engine: nested derived tables drop ALIAS-introduced column names beyond one level (likely Go divergence, found 2026-06-28)
+### [x] query-engine: nested derived tables drop ALIAS-introduced column names beyond one level — STALE, already resolved
+
+RESOLVED (stale entry — the sentinel now pins the WORKING behavior). The failing
+case `SELECT x FROM (SELECT x FROM (SELECT a AS x FROM t) i) s` now resolves `x`
+through any nesting depth and returns [10 20 30]:
+`nested_derived_table_probe_test.go`'s `two_level_inner_alias` asserts success
+(no 42703) and passes green. Identifier resolution keeps the OUTPUT column name
+verbatim (no source-name reverse-map), so an inner alias is not buried under the
+source column beyond one level. The original diagnosis below is retained as the
+record of the investigation; the reach gap it describes no longer exists.
 
 Derived tables (subquery in FROM) are supported and cross-engine-tested (plandiff
 corpus has `FROM (SELECT … ) AS t` entries). But an alias introduced in an INNER
@@ -5590,3 +5885,237 @@ is already on the RFC-183 branch.
 
 Do NOT "fix" this by re-retiring the adapter without the property work — that
 is the change that caused the 49 shape flips.
+
+### [x] FUZZ: GetCorrelatedTo stack-overflows on a cyclic reference graph (PRE-EXISTING) — FIXED by RFC-185
+
+RESOLVED: the cyclic memo was constructed only by the Go-only filter/set-op
+commutation rule family (Push/PullCommonFilter through/above Intersection and
+Union). RFC-185 removed all four rules (both review gates ACK: RFC-review +
+implementation-review). With no rule constructing a cyclic memo, GetCorrelatedTo
+has no cyclic input; the four previously-crashing fuzz targets are clean at
+670k-925k execs, zero corpus drift. GetCorrelatedTo's missing cycle-guard is
+deliberately NOT added — a guard masks a cyclic memo (principle #9), and the
+crash was the honest surfacing of a rule bug now removed at the source. If a
+future rule reintroduces a cyclic memo, that is the bug to fix, not the guard to
+add. The diagnosis below is retained as the record of how it was found.
+
+
+`FuzzPlanner_MemoConsistency` and `FuzzPlanner_Determinism` crash with
+`fatal error: stack overflow`, unbounded recursion at
+`expressions/reference.go:752` — `GetCorrelatedTo` recursing through
+`childRef.GetCorrelatedTo()` with NO visited-set / cycle guard.
+
+REPRODUCER (4 bytes): `[]byte("\x7fyy1")` = [127, 121, 121, 49].
+
+    go test ./pkg/recordlayer/query/plan/cascades/ \
+      -run='^$' -fuzz='^FuzzPlanner_MemoConsistency$' -fuzztime=20s
+
+PRE-EXISTING, not an RFC-183 regression — PROVEN: the identical seed
+stack-overflows on pre-RFC-183 master (15dc17a82), and RFC-183 left
+GetCorrelatedTo's body byte-unchanged (verified by `git diff 15dc17a82..HEAD`
+on that function). Found by running the planner fuzz targets after the RFC-183
+merge (fuzz is non-negotiable for planner changes — this is fuzz doing its
+job).
+
+ROOT CAUSE — the cycle is created during RULE APPLICATION, not by the harness:
+`buildFuzzExpression` builds a strictly ACYCLIC tree (depth <= 3, fresh
+`InitialOf` children), so a 1e9-byte recursion is impossible from the input
+alone. Some rewrite rule in `exploreRewriting` produces a Reference that
+transitively ranges over itself, and GetCorrelatedTo (no cycle guard) then
+recurses forever.
+
+THE OFFENDING RULE — IDENTIFIED. Instrumenting `Reference.Insert` to detect a
+just-inserted member that transitively reaches its own reference points at:
+
+  **`PullCommonFilterAboveIntersectionRule.OnMatch`
+  (rule_pull_common_filter_above_intersection.go:59)**
+
+That rule turns `Intersection(Filter([P],A), Filter([P],B))` into
+`Filter([P], Intersection(A,B))` — the REVERSE of
+PushFilterThroughIntersection. It builds `newX = Intersection(A,B)` from the
+filters' inner quantifiers, calls `newXQ := ForEachQuantifier(
+call.MemoizeExpression(newX))`, and yields `Filter([P], newXQ)`.
+
+MECHANISM: `MemoizeExpression` INTERNS — it may return an EXISTING reference.
+When `newX` interns to a reference that transitively reaches the reference
+currently being explored (the one holding the original intersection), the
+yielded Filter's quantifier points back into it and closes a cycle. This rule
+and its inverse (PushFilterThroughIntersection) interning against each other in
+the same memo group is the shape. GetCorrelatedTo then recurses forever on the
+resulting cyclic Reference.
+
+CONFIRMED — the crash needs the INVERSE PAIR. A subprocess experiment
+(zz_inv, reverted) plans the seed three ways: all rules → CRASH; exclude
+`PushFilterThroughIntersectionRule` → SURVIVES; exclude
+`PullCommonFilterAboveIntersectionRule` → SURVIVES. So the two INVERSE rewrites
+interning against each other in one memo group are what close the cycle —
+neither alone does it.
+
+DEEPER ROOT CAUSE — BOTH RULES ARE GO-ONLY. Java (4.12.11.0) has NO rule that
+pushes a filter through, or pulls a filter above, an Intersection. Its
+filter/intersection rules are ImplementFilterRule, ImplementIntersectionRule,
+and filter PUSHDOWNS (PushDistinctBelowFilter, PushTypeFilterBelowFilter,
+PushReferencedFieldsThroughFilter, PushFilterThroughFetch) — none through an
+Intersection. Java filters intersections via the match-then-implement
+data-access mechanism (AbstractDataAccessRule), NOT logical commutation. And
+neither Go rule claims Java parity ("Ports Java's X"), unlike the ported rules
+around them.
+
+This is the query-engine skill's "Go-only rules are suspect" verbatim — the
+same shape as the retired Go-only IndexIntersectionRule. The
+Push/PullCommonFilter-Intersection PAIR is a Go invention, and its interning
+interaction produces a cyclic memo Java's rule set cannot.
+
+THE FIX (gated — query-engine change, Graefe + Torvalds), in Java-alignment
+order of preference:
+  1. REMOVE the Go-only rule pair (Push + PullCommonFilter through/above
+     Intersection); verify no corpus query loses a needed plan (they
+     shouldn't — Java plans these via data-access) and zero explain-diff drift
+     except intended.
+  2. If some optimization genuinely depends on them, keep them but guard the
+     cycle-forming yield in PullCommonFilter (reject when MemoizeExpression
+     returns a reference reachable from the current one).
+  A bare visited-guard in GetCorrelatedTo is WRONG either way — it leaves the
+  cyclic memo in place and masks the symptom (principle #9).
+
+The crash seed is NOT committed (it would red CI for a bug whose correct fix is
+gated); it is recorded above as an inline 4-byte reproducer instead.
+
+### [ ] The fix is REMOVAL, not a guard — proven; and it is a Go-only FAMILY
+
+Continued the DFS on the cyclic-reference crash by trying both candidate fixes
+on the 4-byte seed. Decisive:
+
+GUARD IS WRONG. Extending MemoizeExpression's existing direct-self-loop guard
+(`ref.Canonical() == c.Reference.Canonical()` → return fresh InitialOf) to
+TRANSITIVE reachability stops the stack overflow but converts it into
+NON-CONVERGENCE: "exploration did not converge — possible non-terminating rule
+interaction". Interning is what makes the inverse-rule fixpoint terminate;
+declining it to break the cycle makes Push/PullCommonFilter ping-pong forever,
+each pass adding a fresh member. Crash and non-termination are two faces of the
+same problem — you cannot keep these rules AND have both a finite, acyclic
+memo.
+
+REMOVAL IS RIGHT. With the Push/PullCommonFilter-Intersection pair removed from
+the rule registry, the same seed CONVERGES cleanly and instantly. Java reaches
+the same plans via match-then-implement data access; the rules add nothing Java
+lacks.
+
+IT IS A FAMILY, not a pair. The same Go-only inverse shape exists for UNION:
+`PushFilterThroughUnionRule` + `PullCommonFilterAboveUnionRule`. Java has no
+filter-through/above-Union rule either. The Union pair is almost certainly the
+same latent cyclic-memo / non-termination hazard and should be removed in the
+same change (verify with a fuzz seed that reaches it).
+
+THE FIX (RFC + Graefe ACK — this is an architectural decision, removing rule
+families, not a local patch):
+  - Remove PushFilterThroughIntersection + PullCommonFilterAboveIntersection
+    and PushFilterThroughUnion + PullCommonFilterAboveUnion (4 rules, 4 tests,
+    4 registry lines).
+  - VERIFY zero explain-diff drift across the 2407-query corpus (Java plans
+    these via data-access, so drift is expected to be zero; any drift is a
+    query that leaned on the Go-only rule and must be re-examined).
+  - Re-run the planner fuzz targets to confirm the crash class is gone.
+  A guard in MemoizeExpression or GetCorrelatedTo is NOT the fix (guard →
+  non-termination, proven above; GetCorrelatedTo guard → masks the cyclic memo).
+
+All experiments were bounded and reverted; no code change is on this branch —
+only this diagnosis.
+
+### [ ] FUZZ sweep result: two distinct PRE-EXISTING planner crash classes
+
+Swept the cascades planner/memo/extraction fuzz targets after the RFC-183
+merge. Two distinct crash classes, BOTH pre-existing (neither is an RFC-183
+regression), plus a clean set:
+
+CLASS 1 — cyclic-memo stack overflow (GetCorrelatedTo, reference.go:752).
+Confirmed on FuzzPlanner_MemoConsistency, _Determinism, _Idempotence,
+_InitialMemberPreserved — all the full-exploration targets that run
+DefaultExpressionRules on a seed reaching the Go-only Push/PullCommonFilter-
+Intersection pair. Single root cause (the Go-only rule family, above); fixing
+it clears this whole class.
+
+CLASS 2 — "Plan succeeded but root Reference has no BestMember stamp"
+(FuzzPlanner_PlanFullPipeline, planner_fuzz_test.go:115). DISTINCT from class 1
+(instant assertion, not a stack overflow). Reproducing 34-byte seed
+`311028b5ee5f305a`. PRE-EXISTING — proven: the identical seed fails on
+pre-RFC-183 master (15dc17a82).
+  SETTLED — it is a REAL planner bug, not an over-strict test. A deterministic
+  search (not fuzzing) reproduces it at `b=[35 4 4 1]` = op 5 → UNION of two
+  TypeFilter(Scan) children, i.e. `Union(TypeFilter(Scan), TypeFilter(Scan))`.
+  The value `p.Plan` returns for it is a `*expressions.LogicalUnionExpression`
+  — a LOGICAL, UNIMPLEMENTED expression — with nil error and no root winner.
+
+  So `ExtractBestPlanFromSelector` fell back to a LOGICAL member because the
+  root union has no PHYSICAL final (ImplementUnorderedUnion never produced one
+  for this shape), and returned it instead of erroring. `Plan` therefore hands
+  a caller a logical expression as if it were a physical plan — a downstream
+  consumer expecting `plans.RecordQueryPlan` gets a logical node. NOT a
+  canonicalization gap (HasWinner canonicalizes, reference.go:313,329); the
+  root's winner is genuinely nil because nothing physical was ever chosen.
+
+  REFUTED sub-question (b). The first note said "extraction must ERROR when the
+  root has no physical plan." That was TESTED and is WRONG: adding an
+  isPhysicalPlan check + error in extractBestPlanFromSelectorVisited (after the
+  GetBest fallback) causes ZERO corpus drift but breaks four cascades unit
+  tests — TestPlanner_GenerateDataAccess_NoMatchesIsNoOp,
+  _PlanningPhase_AlwaysRuns, _GenerateDataAccess_BottomUp, _Plan_FullPipeline —
+  which deliberately plan with LIMITED rule sets and RELY on Plan tolerantly
+  returning a non-physical result (a bare FullUnorderedScan / LogicalFilter /
+  LogicalDistinct that the isolation test never gave an implementation rule
+  for). So Plan's tolerance of a non-physical root is INTENTIONAL, not the bug.
+  Erroring universally would break rule-isolation testing.
+
+  So the real question is only (a): WHY does the seed's union fail to implement?
+  NARROWED to a precise TRIGGER and three REFUTED hypotheses:
+
+  TRIGGER = ASYMMETRIC LEGS. buildFuzzExpression([35,4,4,1]) is NOT the
+  symmetric union I first assumed; it is
+  `Union(TypeFilter(TypeFilter(Scan)), TypeFilter(Filter(Scan)))` — one leg
+  nests a TypeFilter, the other a Filter. Direct-construction isolation:
+    - Union(Scan, Scan)                        -> implements
+    - Union(TF(Scan), TF(Scan))                -> implements
+    - Union(TF(TF(Scan)), TF(TF(Scan)))        -> implements (symmetric nested)
+    - Union(TF(Filter(Scan)), TF(Filter(Scan)))-> implements (symmetric filter)
+    - Union(TF(TF(Scan)), TF(Filter(Scan)))    -> does NOT implement  <-- seed
+  Each leg implements STANDALONE; only the asymmetric UNION fails.
+
+  REFUTED:
+    (b) extraction-error — breaks four isolation tests (above).
+    rule-selection — the seed fails under FULL DefaultExpressionRules too, not
+      just the sparse selectRules(b) subset.
+    planExprs[0]-ordering — ImplementUnorderedUnion collects childPlans from
+      planExprs[0] only; changing it to scan the whole partition for a physical
+      expr does NOT fix the seed, so it is not "physical present but not first."
+      One asymmetric leg has NO physical expression in the partition at all.
+
+  RESOLVED (commit "cascades: reset per-stage exploration on the no-finals
+  stage boundary"). Root cause found via a full memo dump on the asymmetric
+  shape: constant-true filter elimination makes `Filter([TriTrue],Scan) ≡ Scan`,
+  so the right leg's group MERGES with the left leg's inner TypeFilter group.
+  That merged group reaches the REWRITING→PLANNING boundary with ZERO final
+  members (Go tolerates unfinalized groups via ExploreGroupTask's
+  `len(FinalMembers())>0` guard; Java finalizes universally so never hits this).
+  With no finals it cannot take AdvancePlannerStage (which would empty it), so
+  it fell to the plain stage-set path that changed the stage but did NOT reset
+  the per-stage exploration bookkeeping. The group kept its REWRITING
+  `explorationDone` state → NeedsExploration=false → ExploreGroupTask returned
+  early → ImplementTypeFilter never fired → no physical member → the union saw
+  an empty leg partition and bailed → root had no winner while Plan() reported
+  success. Fix: `Reference.AdvanceStagePreservingMembers` resets exploration
+  state (explState, rounds, winner, planProperties, constraints epoch) while
+  keeping members, so surviving logical members re-explore and implement in
+  PLANNING. The dead no-reset SetStage method was removed. Pinned by
+  asymmetric_union_planning_test.go + the `[]byte{35,4,4,1}` seed in
+  FuzzPlanner_PlanFullPipeline; five planner fuzz targets clean at 45s each;
+  full suite green. Third refuted hypothesis (planExprs[0]-ordering) was right
+  that "one leg has NO physical expression" — the reason was the exploration
+  reset, not the partition machinery.
+
+CLEAN (no crash in the sweep): FuzzPlanner_E2E_NoPanic,
+FuzzExtractBestPlan_SingletonInvariant, FuzzMemo_MemoizeInvariant,
+FuzzPlanner_ProjectionPipeline_NoPanic — extraction, memo-invariant, and
+projection paths are robust to these inputs.
+
+Crash seeds NOT committed (they would red CI for gated bugs); recorded as
+hashes/reproducers. All experiments reverted; tree clean.

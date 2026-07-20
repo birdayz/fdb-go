@@ -44,8 +44,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewFilterDedupPredicatesRule(),
 		NewPushFilterThroughDistinctRule(),
 		NewPushFilterThroughTypeFilterRule(),
-		NewPushFilterThroughUnionRule(),
-		NewPushFilterThroughIntersectionRule(),
 		NewPushFilterThroughGroupByRule(),
 		NewPushFilterBelowJoinRule(),
 		NewDistinctMergeRule(),
@@ -60,9 +58,15 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewTypeFilterRedundantOverScanRule(),
 		NewPushTypeFilterBelowFilterRule(),
 		NewUnionMergeRule(),
-		NewPullCommonFilterAboveUnionRule(),
 		NewIntersectionMergeRule(),
-		NewPullCommonFilterAboveIntersectionRule(),
+		// PushFilterThroughUnion/Intersection + PullCommonFilterAbove
+		// Union/Intersection REMOVED (RFC-185, Go-only). The inverse pairs
+		// interned into a cyclic memo (GetCorrelatedTo stack overflow); they
+		// never yielded on the corpus and Java reaches these plans via
+		// match-then-implement data access, not logical commutation. Do NOT
+		// re-add: a filter/set-op commutation rule needs a cycle-safe memo
+		// design first (guarding the transitive intern-to-ancestor makes the
+		// inverse-pair fixpoint non-terminate — proven, see RFC-185).
 		NewNoOpFilterRule(),
 		NewProjectionMergeRule(),
 		NewProjectionElimRule(),
