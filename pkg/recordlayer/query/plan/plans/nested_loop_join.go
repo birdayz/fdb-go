@@ -1,9 +1,7 @@
 package plans
 
 import (
-	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -151,50 +149,36 @@ func (p *RecordQueryNestedLoopJoinPlan) GetPredicates() []predicates.QueryPredic
 	return p.predicates
 }
 
+// structuralKey lists the fields that distinguish this join in the memo: the
+// join type, the outer/inner table aliases, the join predicate list, and the
+// result Value. Children (the two legs) are excluded. The outer/inner aliases
+// are SQL-level strings (not correlation identifiers) — they qualify merged-row
+// keys, so two joins differing only in an alias resolve columns differently.
+// The same key drives both EqualsPlanWithoutChildren and
+// HashCodeWithoutChildren, so the two can never disagree on which fields matter.
+func (p *RecordQueryNestedLoopJoinPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Int(int(p.joinType)).
+		Str(p.outerAlias).
+		Str(p.innerAlias).
+		Preds(p.predicates).
+		Value(p.resultValue)
+}
+
 func (p *RecordQueryNestedLoopJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryNestedLoopJoinPlan)
-	if !ok {
-		return false
-	}
-	if p.joinType != o.joinType {
-		return false
-	}
-	if p.outerAlias != o.outerAlias || p.innerAlias != o.innerAlias {
-		return false
-	}
-	if len(p.predicates) != len(o.predicates) {
-		return false
-	}
-	for i := range p.predicates {
-		if !predicates.PredicateEquals(p.predicates[i], o.predicates[i]) {
-			return false
-		}
-	}
-	// resultValue joins identity — the Java counterpart (RecordQueryFlatMapPlan)
-	// compares via semanticEqualsForResults; two joins differing only in the
-	// combined-row shape they emit are not interchangeable.
-	return semanticValueEquals(p.resultValue, o.resultValue)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren folds the structural discriminators. Predicates
 // fold predicates.SemanticHashCode (alias-invariant, coarser than the
-// structural PredicateEquals above — equal⟹same-hash holds), NOT Explain()
-// display text, which is for humans and carries no identity contract.
+// structural PredicateEquals — equal⟹same-hash holds), NOT Explain()
+// display text, which is for humans and carries no identity contract. The
+// resultValue joins identity — the Java counterpart (RecordQueryFlatMapPlan)
+// compares via semanticEqualsForResults; two joins differing only in the
+// combined-row shape they emit are not interchangeable.
 func (p *RecordQueryNestedLoopJoinPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("nljoin|"))
-	h.Write([]byte{byte(p.joinType)})
-	h.Write([]byte(p.outerAlias))
-	h.Write([]byte{0})
-	h.Write([]byte(p.innerAlias))
-	h.Write([]byte{0})
-	var buf [8]byte
-	for _, pred := range p.predicates {
-		binary.BigEndian.PutUint64(buf[:], predicates.SemanticHashCode(pred))
-		h.Write(buf[:])
-	}
-	writeValueHash(h, p.resultValue)
-	return h.Sum64()
+	return p.structuralKey().Hash("nljoin|")
 }
 
 func (p *RecordQueryNestedLoopJoinPlan) Explain() string {

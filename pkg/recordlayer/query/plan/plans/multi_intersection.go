@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -93,35 +92,24 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) GetResultType() values.Type {
 	return values.UnknownType
 }
 
-// EqualsWithoutChildren matches MultiIntersectionOnValuesPlan with the same
-// comparison key and resultValue by semantic Value identity (RFC-176 P2 —
-// see semanticValueEquals).
+// structuralKey lists the fields that distinguish this multi-intersection in
+// the memo: the comparison key values and the resultValue, both by semantic
+// Value identity (RFC-176 P2 — see semanticValueEquals). Children are excluded.
+// The same key drives both EqualsPlanWithoutChildren and
+// HashCodeWithoutChildren.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Values(p.comparisonKey).Value(p.resultValue)
+}
+
 func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMultiIntersectionOnValuesPlan)
-	if !ok {
-		return false
-	}
-	if len(p.comparisonKey) != len(o.comparisonKey) {
-		return false
-	}
-	for i, k := range p.comparisonKey {
-		if !semanticValueEquals(k, o.comparisonKey[i]) {
-			return false
-		}
-	}
-	return semanticValueEquals(p.resultValue, o.resultValue)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren folds the type discriminator, comparison key
 // values, and result value (semantic Value hashes — see writeValueHash).
 func (p *RecordQueryMultiIntersectionOnValuesPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("multiintersectiononvaluesplan|"))
-	for _, k := range p.comparisonKey {
-		writeValueHash(h, k)
-	}
-	writeValueHash(h, p.resultValue)
-	return h.Sum64()
+	return p.structuralKey().Hash("multiintersectiononvaluesplan|")
 }
 
 // Explain renders MultiIntersection(child1, child2, ...; keys=[...]).

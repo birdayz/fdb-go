@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -129,25 +128,24 @@ func (p *RecordQueryRecursiveDfsJoinPlan) WithQuantifiers(qs []expressions.Quant
 	return &cp
 }
 
+// structuralKey lists the fields that distinguish this recursive DFS join in
+// the memo: the prior-row correlation alias, the traversal strategy, and the
+// distinct flag. Children (the root and recursive legs) are excluded. The same
+// key drives both EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryRecursiveDfsJoinPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Alias(p.priorCorrelation).
+		Int(int(p.traversalStrategy)).
+		Bool(p.distinct)
+}
+
 func (p *RecordQueryRecursiveDfsJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryRecursiveDfsJoinPlan)
-	if !ok {
-		return false
-	}
-	return p.priorCorrelation == o.priorCorrelation && p.traversalStrategy == o.traversalStrategy && p.distinct == o.distinct
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryRecursiveDfsJoinPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("recursivedfs|"))
-	h.Write([]byte(p.priorCorrelation.Name()))
-	h.Write([]byte{byte(p.traversalStrategy)})
-	if p.distinct {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("recursivedfs|")
 }
 
 func (p *RecordQueryRecursiveDfsJoinPlan) Explain() string {

@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -108,28 +107,24 @@ func (p *RecordQueryRecursiveLevelUnionPlan) WithQuantifiers(qs []expressions.Qu
 	return &cp
 }
 
+// structuralKey lists the fields that distinguish this recursive level union in
+// the memo: the scan/insert temp-table correlation aliases and the distinct
+// flag. Children (the initial and recursive legs) are excluded. The same key
+// drives both EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryRecursiveLevelUnionPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Alias(p.tempTableScanAlias).
+		Alias(p.tempTableInsertAlias).
+		Bool(p.distinct)
+}
+
 func (p *RecordQueryRecursiveLevelUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryRecursiveLevelUnionPlan)
-	if !ok {
-		return false
-	}
-	return p.tempTableScanAlias == o.tempTableScanAlias &&
-		p.tempTableInsertAlias == o.tempTableInsertAlias &&
-		p.distinct == o.distinct
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("recursivelevel|"))
-	h.Write([]byte(p.tempTableScanAlias.Name()))
-	h.Write([]byte("|"))
-	h.Write([]byte(p.tempTableInsertAlias.Name()))
-	if p.distinct {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("recursivelevel|")
 }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) Explain() string {

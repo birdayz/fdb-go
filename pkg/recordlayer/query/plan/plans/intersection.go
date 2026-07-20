@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -68,38 +67,28 @@ func (p *RecordQueryIntersectionPlan) GetResultType() values.Type {
 // GetChildren returns the inner plans.
 func (p *RecordQueryIntersectionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
 
-// EqualsWithoutChildren matches IntersectionPlan + comparison-key list by
-// semantic Value identity, per Java RecordQueryIntersectionPlan.
-// equalsWithoutChildren (comparisonKeyFunction.equals). Java also compares
-// `reverse`; Go's intersection has no reverse field because the implement
-// rules only emit forward intersections — when reverse intersections land,
-// the field joins identity here and in the hash.
+// structuralKey lists the fields that distinguish this intersection in the
+// memo: the comparison-key Value list (semantic Value identity, per Java
+// RecordQueryIntersectionPlan.equalsWithoutChildren — comparisonKeyFunction.
+// equals). Children are excluded. Java also compares `reverse`; Go's
+// intersection has no reverse field because the implement rules only emit
+// forward intersections — when reverse intersections land, the field joins the
+// key here. The same key drives both EqualsPlanWithoutChildren and
+// HashCodeWithoutChildren.
+func (p *RecordQueryIntersectionPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Values(p.comparisonKeyValues)
+}
+
 func (p *RecordQueryIntersectionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryIntersectionPlan)
-	if !ok {
-		return false
-	}
-	if len(p.comparisonKeyValues) != len(o.comparisonKeyValues) {
-		return false
-	}
-	for i, k := range p.comparisonKeyValues {
-		if !semanticValueEquals(k, o.comparisonKeyValues[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren folds the type discriminator + the comparison-key
 // Values (semantic hashes — see writeValueHash), pairing with the semantic
 // key equality above so equal⟹same-hash holds.
 func (p *RecordQueryIntersectionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("intersectionplan"))
-	for _, k := range p.comparisonKeyValues {
-		writeValueHash(h, k)
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("intersectionplan")
 }
 
 // Explain renders Intersection(inner1, inner2, ...).

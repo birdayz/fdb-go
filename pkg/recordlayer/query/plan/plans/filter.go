@@ -1,9 +1,7 @@
 package plans
 
 import (
-	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -69,22 +67,19 @@ func (p *RecordQueryFilterPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares the predicate list pairwise via
+// structuralKey lists the fields that distinguish this filter in the memo: the
+// predicate list. Children are excluded. The same key drives both
+// EqualsPlanWithoutChildren and HashCodeWithoutChildren, so the two can never
+// disagree on which fields matter.
+func (p *RecordQueryFilterPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Preds(p.predicates)
+}
+
+// EqualsPlanWithoutChildren compares the predicate list pairwise via
 // PredicateEquals.
 func (p *RecordQueryFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFilterPlan)
-	if !ok {
-		return false
-	}
-	if len(p.predicates) != len(o.predicates) {
-		return false
-	}
-	for i := range p.predicates {
-		if !predicates.PredicateEquals(p.predicates[i], o.predicates[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + per-predicate
@@ -93,14 +88,7 @@ func (p *RecordQueryFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan)
 // display text: renderings are for humans, carry no identity contract, and
 // drift independently of equality.
 func (p *RecordQueryFilterPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("filterplan|"))
-	var buf [8]byte
-	for _, pr := range p.predicates {
-		binary.BigEndian.PutUint64(buf[:], predicates.SemanticHashCode(pr))
-		h.Write(buf[:])
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("filterplan|")
 }
 
 // Explain renders Filter([P1, P2], inner).

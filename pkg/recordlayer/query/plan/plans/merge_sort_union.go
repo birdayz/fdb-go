@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -65,43 +64,27 @@ func (p *RecordQueryMergeSortUnionPlan) GetResultType() values.Type {
 
 func (p *RecordQueryMergeSortUnionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
 
-// EqualsWithoutChildren compares reverse + removeDuplicates flags and the
-// comparison keys (semantic Value identity — see semanticValueEquals). The
-// keys join equality per RFC-176 §1: before P2, equality checked only the key
-// COUNT while the hash folded the full keys — different-key plans compared
-// equal yet hashed apart, a live plan-level equal⟹same-hash violation.
+// structuralKey lists the fields that distinguish this merge-sort union in the
+// memo: the reverse + removeDuplicates flags and the comparison keys (semantic
+// Value identity — see semanticValueEquals). Children are excluded. The keys
+// join the key per RFC-176 §1: before P2, equality checked only the key COUNT
+// while the hash folded the full keys — different-key plans compared equal yet
+// hashed apart, a live plan-level equal⟹same-hash violation. The same key
+// drives both EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryMergeSortUnionPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Bool(p.reverse).
+		Bool(p.removeDuplicates).
+		Values(p.comparisonKeys)
+}
+
 func (p *RecordQueryMergeSortUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMergeSortUnionPlan)
-	if !ok {
-		return false
-	}
-	if p.reverse != o.reverse || p.removeDuplicates != o.removeDuplicates {
-		return false
-	}
-	if len(p.comparisonKeys) != len(o.comparisonKeys) {
-		return false
-	}
-	for i, k := range p.comparisonKeys {
-		if !semanticValueEquals(k, o.comparisonKeys[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryMergeSortUnionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("mergesortunionplan|"))
-	if p.reverse {
-		h.Write([]byte{1})
-	}
-	if p.removeDuplicates {
-		h.Write([]byte{2})
-	}
-	for _, k := range p.comparisonKeys {
-		writeValueHash(h, k)
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("mergesortunionplan|")
 }
 
 func (p *RecordQueryMergeSortUnionPlan) Explain() string {

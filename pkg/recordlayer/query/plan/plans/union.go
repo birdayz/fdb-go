@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -53,18 +52,23 @@ func (p *RecordQueryUnionPlan) GetResultType() values.Type {
 // GetChildren returns the inner plans.
 func (p *RecordQueryUnionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
 
+// structuralKey carries no fields — union has no operator-specific node-info
+// beyond its children, so identity is the type discriminator alone. The same
+// key drives both EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryUnionPlan) structuralKey() *structuralKey {
+	return newStructuralKey()
+}
+
 // EqualsWithoutChildren is a constant-discriminated equality —
 // union has no operator-specific node-info beyond its children.
 func (p *RecordQueryUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
-	_, ok := other.(*RecordQueryUnionPlan)
-	return ok
+	o, ok := other.(*RecordQueryUnionPlan)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren is a constant for the type discriminator.
 func (p *RecordQueryUnionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("unionplan"))
-	return h.Sum64()
+	return p.structuralKey().Hash("unionplan")
 }
 
 // Explain renders Union(inner1, inner2, ...).

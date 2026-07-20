@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -98,39 +97,30 @@ func (p *RecordQueryFlatMapPlan) InheritOuterRecordProperties() bool {
 	return p.inheritOuterRecordProperties
 }
 
-// EqualsWithoutChildren compares aliases, the resultValue (semantic Value
-// identity — Java RecordQueryFlatMapPlan.equalsWithoutChildren is
-// semanticEqualsForResults), and inheritOuterRecordProperties. Java folds
-// inheritOuterRecordProperties into computeHashCodeWithoutChildren but omits
-// it from equals — Go compares it in BOTH so the equal⟹same-hash memo
-// invariant holds (two plans differing only in that flag null-extend
-// differently; they are not interchangeable).
+// structuralKey lists the fields that distinguish this FlatMap in the memo: the
+// outer/inner correlation aliases, the inheritOuterRecordProperties flag, and
+// the resultValue. Children (the two legs) are excluded. Java folds
+// inheritOuterRecordProperties into computeHashCodeWithoutChildren but omits it
+// from equals — Go compares it in BOTH so the equal⟹same-hash memo invariant
+// holds (two plans differing only in that flag null-extend differently; they
+// are not interchangeable). The resultValue uses semantic Value identity — Java
+// RecordQueryFlatMapPlan.equalsWithoutChildren is semanticEqualsForResults. The
+// same key drives both EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryFlatMapPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Alias(p.outerAlias).
+		Alias(p.innerAlias).
+		Bool(p.inheritOuterRecordProperties).
+		Value(p.resultValue)
+}
+
 func (p *RecordQueryFlatMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)
-	if !ok {
-		return false
-	}
-	if p.outerAlias != o.outerAlias || p.innerAlias != o.innerAlias {
-		return false
-	}
-	if p.inheritOuterRecordProperties != o.inheritOuterRecordProperties {
-		return false
-	}
-	return semanticValueEquals(p.resultValue, o.resultValue)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("flatmap|"))
-	h.Write([]byte(p.outerAlias.Name()))
-	h.Write([]byte{0})
-	h.Write([]byte(p.innerAlias.Name()))
-	h.Write([]byte{0})
-	if p.inheritOuterRecordProperties {
-		h.Write([]byte{1})
-	}
-	writeValueHash(h, p.resultValue)
-	return h.Sum64()
+	return p.structuralKey().Hash("flatmap|")
 }
 
 // Explain renders both legs UNGUARDED, exactly as the raw-pointer form did: a

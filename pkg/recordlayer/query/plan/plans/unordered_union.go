@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -45,15 +44,21 @@ func (p *RecordQueryUnorderedUnionPlan) GetResultType() values.Type {
 
 func (p *RecordQueryUnorderedUnionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
 
+// structuralKey carries no fields — the unordered union has no
+// operator-specific node-info beyond its children, so identity is the type
+// discriminator alone. The same key drives both EqualsPlanWithoutChildren and
+// HashCodeWithoutChildren.
+func (p *RecordQueryUnorderedUnionPlan) structuralKey() *structuralKey {
+	return newStructuralKey()
+}
+
 func (p *RecordQueryUnorderedUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
-	_, ok := other.(*RecordQueryUnorderedUnionPlan)
-	return ok
+	o, ok := other.(*RecordQueryUnorderedUnionPlan)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryUnorderedUnionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("unorderedunionplan"))
-	return h.Sum64()
+	return p.structuralKey().Hash("unorderedunionplan")
 }
 
 func (p *RecordQueryUnorderedUnionPlan) Explain() string {
