@@ -89,6 +89,10 @@ type Pred struct {
 	HasArith  bool
 	ArithOp   values.ArithmeticOp
 	ArithCol2 string
+	// Case, when non-nil, makes the leaf's LHS a searched CASE expression
+	// `(CASE WHEN … THEN … ELSE … END) <Op> Lit` instead of a bare column.
+	// Single-table only (unqualified columns).
+	Case *CaseSpec
 	// Negated renders `NOT (…)` around the leaf (and `NOT IN` for IN).
 	Negated bool
 }
@@ -261,6 +265,24 @@ type ThreeWayJoinSpec struct {
 	// equalities in the WHERE; otherwise chained `JOIN … ON`. Same logical
 	// query, a different parse path into the planner.
 	Comma bool
+}
+
+// CaseSpec is a searched CASE used as a predicate LHS:
+//
+//	(CASE WHEN <When> THEN <then-arm> ELSE <else-arm> END) <Op> <Lit>
+//
+// A single WHEN (the common shape). Branch selection is SQL's: the WHEN arm is
+// taken only when its condition is TRUE — a FALSE or UNKNOWN (NULL-operand)
+// condition falls through to ELSE. Each arm is a BIGINT column or literal; a
+// selected NULL column makes the CASE result NULL, so the outer comparison is
+// UNKNOWN. The condition and the outer comparison both go through the shared
+// Comparison eval, so only the trivial branch-pick is restated in the oracle.
+type CaseSpec struct {
+	When    *Pred  // WHEN condition (col op literal; Qual empty)
+	ThenCol string // THEN reads this column; "" ⇒ ThenLit
+	ThenLit int64
+	ElseCol string // ELSE reads this column; "" ⇒ ElseLit
+	ElseLit int64
 }
 
 // Query is one generated query body; the runner executes it under every
@@ -896,6 +918,13 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 		}
 	}
 
+	// Searched-CASE leaf (~1/8): `(CASE WHEN … THEN … ELSE … END) op lit` — a
+	// conditional-expression residual the planner must evaluate per row, with
+	// SQL's WHEN-TRUE-only branch selection and NULL-arm propagation.
+	if rng.IntN(8) == 0 {
+		leaves = append(leaves, genCaseLeaf(rng))
+	}
+
 	// NOT on a leaf (~1/8 each): `NOT (a = 1)` / `a NOT IN (…)`.
 	for _, lf := range leaves {
 		if rng.IntN(8) == 0 {
@@ -1333,6 +1362,12 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 			b.WriteString("NOT (")
 		}
 		switch {
+		case p.Case != nil:
+			cs := p.Case
+			fmt.Fprintf(b, "(CASE WHEN %s %s %s THEN %s ELSE %s END) %s %s",
+				strings.ToLower(cs.When.Col), opSQL(cs.When.Op), renderLiteral(cs.When.Lit),
+				caseArmSQL(cs.ThenCol, cs.ThenLit), caseArmSQL(cs.ElseCol, cs.ElseLit),
+				opSQL(p.Op), renderLiteral(p.Lit))
 		case p.HasArith:
 			col2 := strings.ToLower(p.ArithCol2)
 			if p.Qual != "" {
@@ -1401,6 +1436,38 @@ func opSQL(op predicates.ComparisonType) string {
 		return ">="
 	}
 	panic(fmt.Sprintf("rowdiff: unrenderable comparison op %d", op))
+}
+
+// genCaseLeaf builds a single-table searched-CASE predicate leaf
+// `(CASE WHEN col op lit THEN <arm> ELSE <arm> END) op lit`, each arm a BIGINT
+// column or literal.
+func genCaseLeaf(rng *rand.Rand) *Pred {
+	bigints := []string{"A", "B", "C"}
+	ops := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
+	arm := func() (col string, lit int64) {
+		if rng.IntN(2) == 0 {
+			return bigints[rng.IntN(len(bigints))], 0
+		}
+		return "", int64(rng.IntN(10))
+	}
+	cs := &CaseSpec{
+		When: &Pred{Col: bigints[rng.IntN(len(bigints))], Op: ops[rng.IntN(len(ops))], Lit: int64(rng.IntN(10))},
+	}
+	cs.ThenCol, cs.ThenLit = arm()
+	cs.ElseCol, cs.ElseLit = arm()
+	return &Pred{Case: cs, Op: ops[rng.IntN(len(ops))], Lit: int64(rng.IntN(10))}
+}
+
+// caseArmSQL renders a CASE arm: the column when set, else the literal.
+func caseArmSQL(col string, lit int64) string {
+	if col != "" {
+		return strings.ToLower(col)
+	}
+	return renderLiteral(lit)
 }
 
 // arithSQL renders an arithmetic operator. Only OpSub is generated today; the

@@ -24,6 +24,7 @@ go_test(
     srcs = [
         "agg_multicol_oracle_test.go",
         "arith_oracle_test.go",
+        "case_oracle_test.go",
         "exists_oracle_test.go",
         "left_join_oracle_test.go",
         "right_join_oracle_test.go",

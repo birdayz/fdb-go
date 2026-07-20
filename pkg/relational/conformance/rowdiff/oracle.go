@@ -361,6 +361,15 @@ func scalarSubValue(c *Case, s *ScalarSubSpec) (any, error) {
 	return foldAgg(&AggSpec{Func: s.Func, Col: s.Col}, inner), nil
 }
 
+// caseArmVal resolves a CASE arm: the row's column value when a column is
+// named, else the literal.
+func caseArmVal(col string, lit int64, r Row) any {
+	if col != "" {
+		return r[col]
+	}
+	return lit
+}
+
 // existsHolds evaluates a correlated EXISTS for outer row o: does ANY row
 // satisfy `r.CorrCol = o.CorrCol [AND Inner]`? The correlation equality and the
 // inner comparison go through the engine's own Comparison (EvalAgainst /
@@ -656,6 +665,23 @@ func evalBoolInner(n *BoolNode, r Row) (predicates.TriBool, error) {
 
 func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 	switch {
+	case p.Case != nil:
+		// SQL searched CASE: the WHEN arm is taken only when its condition is
+		// TRUE; a FALSE or UNKNOWN (NULL-operand) condition falls through to
+		// ELSE. The WHEN condition and the outer comparison both go through the
+		// shared Comparison eval; only the branch pick is restated here.
+		cs := p.Case
+		cond, err := evalLeaf(cs.When, r)
+		if err != nil {
+			return predicates.TriUnknown, err
+		}
+		var result any
+		if cond == predicates.TriTrue {
+			result = caseArmVal(cs.ThenCol, cs.ThenLit, r)
+		} else {
+			result = caseArmVal(cs.ElseCol, cs.ElseLit, r)
+		}
+		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(result)
 	case p.HasArith:
 		// `(Col <ArithOp> ArithCol2) <Op> Lit`. The arithmetic goes through the
 		// engine's own ArithmeticValue (baked constants), so the value and its
