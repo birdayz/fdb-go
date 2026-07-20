@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -763,6 +764,21 @@ func evalBoolInner(n *BoolNode, r Row) (predicates.TriBool, error) {
 
 func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 	switch {
+	case p.Cast != nil:
+		// CAST(col AS STRING): int→string is Go's FormatInt, bool→string is
+		// "true"/"false" — both match the engine over the domain (verified by
+		// probe). CAST(NULL AS STRING) is NULL → the comparison is UNKNOWN.
+		v := r[p.Cast.Col]
+		if v == nil {
+			return predicates.TriUnknown, nil
+		}
+		var s string
+		if p.Cast.FromInt {
+			s = strconv.FormatInt(v.(int64), 10)
+		} else {
+			s = strconv.FormatBool(v.(bool))
+		}
+		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(s)
 	case p.NumFn != nil:
 		// COALESCE absorbs NULL: a NULL column yields Default (never NULL,
 		// verified: COALESCE(NULL,5)=5) — handle it before the NULL guard the

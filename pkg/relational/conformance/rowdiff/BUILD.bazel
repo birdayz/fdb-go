@@ -25,6 +25,7 @@ go_test(
         "agg_multicol_oracle_test.go",
         "arith_oracle_test.go",
         "case_oracle_test.go",
+        "cast_oracle_test.go",
         "coalesce_oracle_test.go",
         "concat_oracle_test.go",
         "derived_oracle_test.go",

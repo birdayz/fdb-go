@@ -101,6 +101,10 @@ type Pred struct {
 	// `ABS(col) <Op> Lit` or `MOD(col, k) <Op> Lit`. Single-table only. A NULL
 	// column makes the result NULL → UNKNOWN.
 	NumFn *NumFnSpec
+	// Cast, when non-nil, makes the leaf's LHS a `CAST(col AS STRING) <Op> Lit`
+	// over a BIGINT or BOOLEAN column. Single-table only. A NULL column makes
+	// the result NULL → UNKNOWN.
+	Cast *CastSpec
 	// Negated renders `NOT (…)` around the leaf (and `NOT IN` for IN).
 	Negated bool
 }
@@ -337,6 +341,17 @@ type NumFnSpec struct {
 	Col     string // BIGINT column
 	Mod     int64  // nonzero divisor for MOD (unused otherwise)
 	Default int64  // COALESCE fallback when the column is NULL (never NULL itself)
+}
+
+// CastSpec is a `CAST(Col AS STRING) <Op> Lit` predicate LHS over a BIGINT or
+// BOOLEAN column. Only the STRING target is generated: int→string is Go's
+// strconv.FormatInt and bool→string is "true"/"false" (both verified to match
+// the engine over the domain). CAST(string AS BIGINT) is excluded — it raises a
+// plan-order-dependent parse error on non-numeric input, which the full-scan
+// oracle cannot model (the arithmetic-overflow constraint).
+type CastSpec struct {
+	Col     string // BIGINT or BOOLEAN column
+	FromInt bool   // true = BIGINT source (FormatInt); false = BOOLEAN source ("true"/"false")
 }
 
 // UnionSpec is a set operation between two single-table branches over the same
@@ -1099,6 +1114,11 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 		leaves = append(leaves, genNumFnLeaf(rng))
 	}
 
+	// CAST leaf (~1/8): `CAST(col AS STRING) op 'lit'` over BIGINT / BOOLEAN.
+	if rng.IntN(8) == 0 {
+		leaves = append(leaves, genCastLeaf(rng))
+	}
+
 	// NOT on a leaf (~1/8 each): `NOT (a = 1)` / `a NOT IN (…)`.
 	for _, lf := range leaves {
 		if rng.IntN(8) == 0 {
@@ -1620,6 +1640,9 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 			b.WriteString("NOT (")
 		}
 		switch {
+		case p.Cast != nil:
+			fmt.Fprintf(b, "CAST(%s AS STRING) %s %s",
+				strings.ToLower(p.Cast.Col), opSQL(p.Op), renderLiteral(p.Lit))
 		case p.NumFn != nil:
 			col := strings.ToLower(p.NumFn.Col)
 			switch p.NumFn.Fn {
@@ -1748,6 +1771,23 @@ func caseArmSQL(col string, lit int64) string {
 		return strings.ToLower(col)
 	}
 	return renderLiteral(lit)
+}
+
+// genCastLeaf builds `CAST(col AS STRING) op 'lit'` over a BIGINT or BOOLEAN
+// column; the literal is drawn from the value domain's string image so a match
+// is reachable.
+func genCastLeaf(rng *rand.Rand) *Pred {
+	ops := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
+	op := ops[rng.IntN(len(ops))]
+	if rng.IntN(2) == 0 {
+		col := []string{"A", "B", "C"}[rng.IntN(3)]
+		return &Pred{Cast: &CastSpec{Col: col, FromInt: true}, Op: op, Lit: strconv.FormatInt(int64(rng.IntN(10)), 10)}
+	}
+	return &Pred{Cast: &CastSpec{Col: "F", FromInt: false}, Op: op, Lit: []string{"true", "false"}[rng.IntN(2)]}
 }
 
 // genStrFnLeaf builds a single-table string-function predicate leaf. UPPER/LOWER
