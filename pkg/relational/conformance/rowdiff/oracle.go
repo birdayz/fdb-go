@@ -246,28 +246,46 @@ func oracleAggRows(c *Case, q Query) ([]Row, error) {
 	}
 
 	// Scalar aggregate: one group over everything, emitted even when empty.
-	if a.GroupBy == "" {
+	if len(a.GroupBy) == 0 {
 		return []Row{{"AGG": foldAgg(a, kept)}}, nil
 	}
 
-	// Grouped: partition on the key, NULL forming its own group. Insertion
-	// order is kept for determinism; the comparator is multiset-based.
+	// Grouped: partition on the COMPOSITE key (all GROUP BY columns), a NULL in
+	// ANY key column forming a distinct group. Insertion order is kept for
+	// determinism; the comparator is multiset-based.
 	type group struct {
-		key  any
+		keys []any // one value per a.GroupBy column, in order
 		rows []Row
 	}
 	var groups []*group
 	index := map[string]*group{}
 	for _, r := range kept {
-		k := r[a.GroupBy]
-		gk := fmt.Sprintf("%v(%T)", k, k) // typed key: 1 and "1" are distinct groups
-		g, ok := index[gk]
+		keys := make([]any, len(a.GroupBy))
+		var gk strings.Builder
+		for i, col := range a.GroupBy {
+			k := r[col]
+			keys[i] = k
+			// Typed and \x1f-delimited per component: the type tag keeps 1 and
+			// "1" distinct, the delimiter keeps ("a","")≠("","a") composites
+			// distinct — no cross-component aliasing.
+			fmt.Fprintf(&gk, "%v(%T)\x1f", k, k)
+		}
+		g, ok := index[gk.String()]
 		if !ok {
-			g = &group{key: k}
-			index[gk] = g
+			g = &group{keys: keys}
+			index[gk.String()] = g
 			groups = append(groups, g)
 		}
 		g.rows = append(g.rows, r)
+	}
+
+	// emit builds a result row: one column per grouping key plus AGG.
+	emit := func(g *group, agg any) Row {
+		row := Row{"AGG": agg}
+		for i, k := range g.keys {
+			row[groupKeyCol(i)] = k
+		}
+		return row
 	}
 
 	out := make([]Row, 0, len(groups))
@@ -286,7 +304,7 @@ func oracleAggRows(c *Case, q Query) ([]Row, error) {
 		// carry the generator's 2^62 boundary sentinel in `a`, so their group
 		// sums to 2^64.
 		if _, overflows := agg.(aggOverflow); overflows {
-			out = append(out, Row{"G": g.key, "AGG": agg})
+			out = append(out, emit(g, agg))
 			continue
 		}
 		if a.HavingOn && a.Having != nil {
@@ -298,7 +316,7 @@ func oracleAggRows(c *Case, q Query) ([]Row, error) {
 				continue
 			}
 		}
-		out = append(out, Row{"G": g.key, "AGG": agg})
+		out = append(out, emit(g, agg))
 	}
 	return out, nil
 }

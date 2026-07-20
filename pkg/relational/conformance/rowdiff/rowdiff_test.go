@@ -455,7 +455,7 @@ func TestOracle_Aggregates(t *testing.T) {
 	}
 
 	// GROUPED: a NULL key is its OWN group, and an all-NULL group's SUM is NULL.
-	rows, err := OracleRows(c, Query{Agg: &AggSpec{Func: AggSum, Col: "A", GroupBy: "B"}}, nil)
+	rows, err := OracleRows(c, Query{Agg: &AggSpec{Func: AggSum, Col: "A", GroupBy: []string{"B"}}}, nil)
 	if err != nil {
 		t.Fatalf("oracle: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestOracle_Aggregates(t *testing.T) {
 		t.Errorf("group B=NULL: SUM(A) = %v, want NULL (its only row has A NULL)", byKey[nil])
 	}
 	// A grouped aggregate over an empty input returns NO rows.
-	rows, err = OracleRows(c, Query{Agg: &AggSpec{Func: AggCountStar, GroupBy: "B"}, Where: never}, nil)
+	rows, err = OracleRows(c, Query{Agg: &AggSpec{Func: AggCountStar, GroupBy: []string{"B"}}, Where: never}, nil)
 	if err != nil {
 		t.Fatalf("oracle: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestOracle_Aggregates(t *testing.T) {
 
 	// HAVING filters on the aggregate; a NULL aggregate never passes.
 	rows, err = OracleRows(c, Query{Agg: &AggSpec{
-		Func: AggSum, Col: "A", GroupBy: "B", HavingOn: true,
+		Func: AggSum, Col: "A", GroupBy: []string{"B"}, HavingOn: true,
 		Having: &Pred{Op: predicates.ComparisonGreaterThan, Lit: int64(6)},
 	}}, nil)
 	if err != nil {
@@ -672,13 +672,13 @@ func TestOracle_SumOverflowSurvivesHaving(t *testing.T) {
 	}{
 		{
 			name: "grouped_sum_overflow_no_having",
-			agg:  &AggSpec{Func: AggSum, Col: "A", GroupBy: "A"},
+			agg:  &AggSpec{Func: AggSum, Col: "A", GroupBy: []string{"A"}},
 		},
 		{
 			// The regression: HAVING must not swallow the overflow signal.
 			name: "grouped_sum_overflow_with_having",
 			agg: &AggSpec{
-				Func: AggSum, Col: "A", GroupBy: "A", HavingOn: true,
+				Func: AggSum, Col: "A", GroupBy: []string{"A"}, HavingOn: true,
 				Having: &Pred{Col: "A", Op: predicates.ComparisonGreaterThan, Lit: int64(2)},
 			},
 		},
@@ -716,7 +716,7 @@ func TestOracle_HavingStillFiltersWithoutOverflow(t *testing.T) {
 		},
 	}
 	rows, err := OracleRows(c, Query{Agg: &AggSpec{
-		Func: AggSum, Col: "A", GroupBy: "A", HavingOn: true,
+		Func: AggSum, Col: "A", GroupBy: []string{"A"}, HavingOn: true,
 		Having: &Pred{Col: "A", Op: predicates.ComparisonGreaterThan, Lit: int64(5)},
 	}}, nil)
 	if err != nil {

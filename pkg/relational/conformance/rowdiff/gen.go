@@ -16,6 +16,7 @@ package rowdiff
 import (
 	"fmt"
 	"math/rand/v2"
+	"strconv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -160,10 +161,20 @@ const (
 // called an engine bug.
 type AggSpec struct {
 	Func     AggFunc
-	Col      string // aggregated column ("" for COUNT(*))
-	GroupBy  string // "" = scalar aggregate over the whole input
-	Having   *Pred  // optional filter on the aggregate result
+	Col      string   // aggregated column ("" for COUNT(*))
+	GroupBy  []string // empty = scalar aggregate over the whole input; 1+ = grouped
+	Having   *Pred    // optional filter on the aggregate result
 	HavingOn bool
+}
+
+// groupKeyCol names the i-th GROUP BY key's output column. Key 0 stays "G" so
+// single-key grouping is byte-identical to the pre-multi-key schema; extra keys
+// are "G1", "G2", … Both aggSQL (the aliases) and the oracle emit these names.
+func groupKeyCol(i int) string {
+	if i == 0 {
+		return "G"
+	}
+	return "G" + strconv.Itoa(i)
 }
 
 // ExistsSpec is a CORRELATED [NOT] EXISTS subquery appended to a single-table
@@ -257,10 +268,11 @@ func (c *Case) ProjectionsFor(q Query) [][]string {
 // aggOutputCols is the aggregate query's output column list, in order:
 // the grouping key (when present) followed by the aggregate, both aliased.
 func aggOutputCols(a *AggSpec) []string {
-	if a.GroupBy != "" {
-		return []string{"G", "AGG"}
+	cols := make([]string, 0, len(a.GroupBy)+1)
+	for i := range a.GroupBy {
+		cols = append(cols, groupKeyCol(i))
 	}
-	return []string{"AGG"}
+	return append(cols, "AGG")
 }
 
 // genExists builds a correlated [NOT] EXISTS: correlation on a BIGINT column
@@ -358,7 +370,20 @@ func genAggQuery(rng *rand.Rand, table TableDef) Query {
 		if len(keys) == 0 {
 			keys = bigints
 		}
-		spec.GroupBy = keys[rng.IntN(len(keys))]
+		// One grouping key, or two distinct keys ~1/3 of the time — the
+		// multi-column grouping path (composite-key equality and a NULL in
+		// either key column forming its own group).
+		first := keys[rng.IntN(len(keys))]
+		spec.GroupBy = []string{first}
+		if len(keys) > 1 && rng.IntN(3) == 0 {
+			others := make([]string, 0, len(keys)-1)
+			for _, k := range keys {
+				if k != first {
+					others = append(others, k)
+				}
+			}
+			spec.GroupBy = append(spec.GroupBy, others[rng.IntN(len(others))])
+		}
 	}
 
 	q := Query{Agg: spec}
@@ -393,7 +418,7 @@ func genAggQuery(rng *rand.Rand, table TableDef) Query {
 		}
 	}
 	// HAVING on the aggregate result, only for grouped queries.
-	if spec.GroupBy != "" && rng.IntN(3) == 0 {
+	if len(spec.GroupBy) > 0 && rng.IntN(3) == 0 {
 		spec.HavingOn = true
 		spec.Having = &Pred{
 			Op:  []predicates.ComparisonType{predicates.ComparisonGreaterThan, predicates.ComparisonLessThanOrEq}[rng.IntN(2)],
@@ -984,16 +1009,22 @@ func (c *Case) aggSQL(q Query) string {
 	a := q.Agg
 	var b strings.Builder
 	b.WriteString("SELECT ")
-	if a.GroupBy != "" {
-		fmt.Fprintf(&b, "%s AS g, ", strings.ToLower(a.GroupBy))
+	for i, key := range a.GroupBy {
+		// Alias each key to its output column (g, g1, g2, …) so the harness's
+		// name-keyed rows line up with aggOutputCols / the oracle.
+		fmt.Fprintf(&b, "%s AS %s, ", strings.ToLower(key), strings.ToLower(groupKeyCol(i)))
 	}
 	fmt.Fprintf(&b, "%s AS agg FROM %s", aggExprSQL(a), strings.ToLower(c.Table.Name))
 	if q.Where != nil {
 		b.WriteString(" WHERE ")
 		renderBool(&b, q.Where)
 	}
-	if a.GroupBy != "" {
-		fmt.Fprintf(&b, " GROUP BY %s", strings.ToLower(a.GroupBy))
+	if len(a.GroupBy) > 0 {
+		lowered := make([]string, len(a.GroupBy))
+		for i, key := range a.GroupBy {
+			lowered[i] = strings.ToLower(key)
+		}
+		fmt.Fprintf(&b, " GROUP BY %s", strings.Join(lowered, ", "))
 		if a.HavingOn && a.Having != nil {
 			fmt.Fprintf(&b, " HAVING %s %s %s", aggExprSQL(a), opSQL(a.Having.Op), renderLiteral(a.Having.Lit))
 		}

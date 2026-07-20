@@ -21,6 +21,7 @@ go_library(
 go_test(
     name = "rowdiff_test",
     srcs = [
+        "agg_multicol_oracle_test.go",
         "exists_oracle_test.go",
         "rowdiff_test.go",
     ],
