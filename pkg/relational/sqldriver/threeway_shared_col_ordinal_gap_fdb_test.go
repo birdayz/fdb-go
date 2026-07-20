@@ -1,40 +1,38 @@
 package sqldriver_test
 
-// LIVE PIN for a KNOWN 3-way-join ordinal-resolution defect, surfaced by the
+// REGRESSION for a FIXED 3-way-join ordinal-resolution defect, surfaced by the
 // RFC-182 rowdiff harness (seed 1001000229) once 3-way self-joins were
 // generated at scale.
 //
 // A 3-WAY join in which the SAME column (here c) is referenced across all three
 // legs — an equality filter on the first (`l.c = 1`), the join key between the
 // second and third (`m.c = r.c`), and a filter on the third (`r.c IS NULL`) —
-// plans but then FAILS AT EXECUTION with:
+// USED TO fail at execution with "field \"C\" not resolvable in the runtime row
+// (ordinal -1 …) — malformed plan".
 //
-//	ordinal resolution: field "C" not resolvable in the runtime row
-//	(ordinal -1, row columns [ID A B C S F]) — malformed plan
+// Root cause: the join key `m.c = r.c`, when its `r.c` side is pushed below the
+// index Fetch (PushFilterThroughFetchRule), was translated to the index-scan
+// domain by ValueIndexScanMatchCandidate.buildTranslateValueFunction, which
+// DROPPED the reference's baked ordinal (a bare NewFieldValue → LAZY). When that
+// pushed predicate is evaluated as a residual (the equality lost the index bound
+// to a competing `r.c IS NULL`), the executor has no name→ordinal fallback and
+// fails loud. Fix: the translate function preserves the incoming baked ordinal
+// (the fetch's inner presents a logical-slot-shaped partial record, so the
+// full-record ordinal reads the same slot; correct-or-loud otherwise).
 //
-// It is fail-LOUD (never wrong rows), and the query's correct result is EMPTY
-// (m.c = r.c can never hold when r.c IS NULL). Removing ANY one factor fixes it:
-//   - the 2-way analog `l.c = r.c AND r.c IS NULL` works;
-//   - dropping the `m.c = r.c` join, the `l.c = 1` filter, or the `r.c IS NULL`
-//     filter works.
+// Same ordinal-binding family as the multi-leg gap (also FIXED —
+// TestFDB_LeftJoinPkOrdinal_InJoinSortRegression) but a distinct root cause.
 //
-// This is the same ordinal-binding family as the multi-leg source-relative
-// ordinal gap (now FIXED — TestFDB_LeftJoinPkOrdinal_InJoinSortRegression) but a
-// distinct error signature and a distinct root cause (an index match-candidate
-// placeholder leaking into a reapplied residual, not a missing leg-window
-// passthrough); the rowdiff ledger declines it separately (knownGaps in run.go).
-//
-// WHEN FIXED this test goes RED (the query starts returning rows). Then: delete
-// the knownGaps entry and assert the correct result — zero rows.
+// This pins the fixed behavior: the query executes and returns ZERO rows
+// (m.c = r.c is UNKNOWN, never TRUE, whenever r.c IS NULL).
 import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 )
 
-func TestFDB_ThreeWaySharedColOrdinal_KnownGap(t *testing.T) {
+func TestFDB_ThreeWaySharedColOrdinal_Regression(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -59,24 +57,22 @@ func TestFDB_ThreeWaySharedColOrdinal_KnownGap(t *testing.T) {
 		"WHERE l.a = m.id AND m.c = r.c AND l.c = 1 AND r.c IS NULL"
 
 	rows, err := db.QueryContext(ctx, q)
-	if err == nil {
-		var drainErr error
-		func() {
-			defer rows.Close()
-			for rows.Next() {
-			}
-			drainErr = rows.Err()
-		}()
-		err = drainErr
+	if err != nil {
+		t.Fatalf("3-way shared-column query failed (the ordinal-binding regression is "+
+			"back): %v\nQuery: %s", err, q)
 	}
-	if err == nil {
-		t.Fatalf("3-way shared-column query now EXECUTES — the ordinal-binding "+
-			"workstream has landed. Remove the knownGaps entry in rowdiff/run.go and "+
-			"assert ZERO rows. Query: %s", q)
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		n++
 	}
-	if !strings.Contains(err.Error(), "not resolvable in the runtime row") ||
-		!strings.Contains(err.Error(), "ordinal -1") {
-		t.Fatalf("expected the known ordinal-resolution malformed-plan error, got a "+
-			"DIFFERENT failure (investigate — may be a new bug): %v", err)
+	if err := rows.Err(); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	// Correct result is EMPTY: `m.c = r.c` is UNKNOWN (never TRUE) whenever
+	// `r.c IS NULL`, so the two conjuncts are jointly unsatisfiable.
+	if n != 0 {
+		t.Fatalf("3-way shared-column query returned %d rows, want 0 (m.c=r.c is "+
+			"unsatisfiable under r.c IS NULL). Query: %s", n, q)
 	}
 }
