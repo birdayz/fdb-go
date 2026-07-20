@@ -643,6 +643,19 @@ func (s *scanPlanExpression) HintOrdering() properties.Ordering {
 	return plans.PKScanOrdering(pkScanFromDataAccessPlan(s.plan))
 }
 
+// HintCost delegates the wrapped data-access plan's REAL cost (via
+// concretePlanCost) instead of letting the adapter fall through to the
+// pessimistic default arm, which costs a fully-equality-bound (point-lookup)
+// scan at the full-table-scan cardinality (LeafScanCardinality = 1e6). That
+// latent mis-cost made an `id IN (...)` inner leg plan as a full scan +
+// residual filter when the correct plan is a point lookup per IN value. The
+// recursive-CTE operator choice this cost also feeds is held STRUCTURALLY
+// (compareRecursiveCTE, now consulted at extraction too), so correcting the
+// point-lookup cost cannot regress DFS→LevelUnion.
+func (s *scanPlanExpression) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return concretePlanCost(s.plan, stats, nil)
+}
+
 // HintRichOrdering — the FIXED-equality-prefix PK ordering; see
 // pkScanRichOrdering.
 func (s *scanPlanExpression) HintRichOrdering() *properties.RichOrdering {

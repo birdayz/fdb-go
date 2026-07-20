@@ -668,11 +668,26 @@ func recursiveCTEKind(e expressions.RelationalExpression) (isDFS, isLevel bool) 
 	if !ok {
 		return false, false
 	}
-	switch ph.GetRecordQueryPlan().(type) {
-	case *plans.RecordQueryRecursiveDfsJoinPlan:
-		return true, false
-	case *plans.RecordQueryRecursiveLevelUnionPlan:
-		return false, true
+	// The two recursive-CTE alternatives materialize as Project(RecursiveDfsJoin)
+	// vs Project(RecursiveLevelUnion) — the recursive operator is NESTED under a
+	// transparent projection (and possibly a chain of single-child pass-throughs),
+	// not the root plan. Descend through single-child nodes to the TOP recursive
+	// operator so the DFS-over-LevelUnion structural precedence actually fires;
+	// checking only the root plan (a Project) always returned (false,false), which
+	// left the decision to the cardinality-proportional cost margin — the margin
+	// that collapses once point-lookup recursion legs are costed correctly.
+	for p := ph.GetRecordQueryPlan(); p != nil; {
+		switch p.(type) {
+		case *plans.RecordQueryRecursiveDfsJoinPlan:
+			return true, false
+		case *plans.RecordQueryRecursiveLevelUnionPlan:
+			return false, true
+		}
+		ch := p.GetChildren()
+		if len(ch) != 1 {
+			return false, false
+		}
+		p = ch[0]
 	}
 	return false, false
 }
