@@ -1810,11 +1810,12 @@ C++ oracle build especially — can eat an unpredictable slice of it.
 Two properties are guarded because both fail *silently*: `STEP_END` must sit ABOVE the mandatory total
 (`TOTAL × PER_TARGET`) or the reservation term goes permanently negative and disables retries with no
 symptom; and `TOTAL` is **discovered**, so adding roughly a dozen engine fuzz targets — a couple of shifts
-of ordinary work — walks the rotation into the timeout on its own. A pre-loop check emits `::warning::`
-when no retry can fit and `::error::` when one run of every target no longer fits at all. `PER_TARGET`
-additionally self-corrects upward from the observed pace, but that estimate is used **only** to throttle
-retries, never to fail the job: an over-estimate that declines a retry is safe, whereas one that fails a
-job would reintroduce exactly the false red this whole item removes.
+of ordinary work — walks the rotation into the timeout on its own. A pre-loop check **warns** on both — and warns
+only. `PER_TARGET` is a seed estimate that self-corrects upward from the observed pace, and an estimate
+must never drive a pass/fail decision: on a cold cache the arithmetic can say "does not fit" while the run
+finishes comfortably, and a spuriously red nightly is the exact disease this item cures. The enforceable
+bound is `timeout-minutes` itself; the warnings exist so the cause is already in the log when it fires.
+The only things that set `FAILED` are a real target failure and the observed-race majority.
 Skipping it **passes** rather than fails: the classifier is authoritative, so going red there would
 re-introduce the very false red this tool removes — and would do it exactly when the race is most
 frequent. Output is streamed rather than buffered, so a job killed mid-run still has the in-flight

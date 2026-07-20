@@ -139,12 +139,20 @@ jobs:
           RACELOG=$(mktemp)
           LOOP_START=$(date +%s)
           BUDGET=$(( STEP_END - LOOP_START ))
-          # Guard the MANDATORY floor: the reservation below protects retries, but
-          # nothing protects one run of every target. TOTAL is discovered, so adding
-          # fuzz targets silently walks this into the timeout — fail loud instead.
+          # Report on the MANDATORY floor: the reservation below protects retries, but
+          # nothing protects one run of every target, and TOTAL is DISCOVERED — adding
+          # fuzz targets silently walks the rotation into the timeout.
+          #
+          # These WARN and never set FAILED. PER_TARGET is a seed estimate, and a
+          # pass/fail decision taken from an estimate is the same mistake as the
+          # in-loop overrun check that was built and deleted here: on a cold cache the
+          # arithmetic can say "does not fit" while the run finishes comfortably, and a
+          # spuriously red nightly is the exact disease this tool cures. The
+          # enforceable bound is timeout-minutes itself; if the work genuinely does not
+          # fit, Actions kills the job and that is loud. These lines exist so the cause
+          # is already in the log when it does.
           if [ $(( TOTAL * PER_TARGET )) -ge "$BUDGET" ]; then
-            echo "::error::rotation no longer fits its budget: $TOTAL targets x ~${PER_TARGET}s = $(( TOTAL * PER_TARGET / 60 ))min vs $(( BUDGET / 60 ))min left of timeout-minutes. Shrink the rotation, cut -fuzztime, or raise timeout-minutes; otherwise the job is killed before it reports."
-            FAILED=1
+            echo "::warning::rotation may no longer fit its budget: $TOTAL targets x ~${PER_TARGET}s (estimated) = $(( TOTAL * PER_TARGET / 60 ))min vs $(( BUDGET / 60 ))min left of timeout-minutes. If this job starts hitting timeout-minutes, shrink the rotation, cut -fuzztime, or raise the timeout."
           elif [ $(( (TOTAL + 1) * PER_TARGET )) -ge "$BUDGET" ]; then
             echo "::warning::budget leaves no room for a confirming retry; deadline-race runs will be accepted on classification alone. This is the silent-disable case — if it persists, the rotation has outgrown timeout-minutes."
           fi
@@ -373,12 +381,20 @@ jobs:
           RACELOG=$(mktemp)
           LOOP_START=$(date +%s)
           BUDGET=$(( STEP_END - LOOP_START ))
-          # Guard the MANDATORY floor: the reservation below protects retries, but
-          # nothing protects one run of every pair. TOTAL is discovered, so adding
-          # fuzz targets silently walks this into the timeout — fail loud instead.
+          # Report on the MANDATORY floor: the reservation below protects retries, but
+          # nothing protects one run of every pair, and TOTAL is DISCOVERED — adding
+          # fuzz targets silently walks the rotation into the timeout.
+          #
+          # These WARN and never set FAILED. PER_TARGET is a seed estimate, and a
+          # pass/fail decision taken from an estimate is the same mistake as the
+          # in-loop overrun check that was built and deleted here: on a cold cache the
+          # arithmetic can say "does not fit" while the run finishes comfortably, and a
+          # spuriously red nightly is the exact disease this tool cures. The
+          # enforceable bound is timeout-minutes itself; if the work genuinely does not
+          # fit, Actions kills the job and that is loud. These lines exist so the cause
+          # is already in the log when it does.
           if [ $(( TOTAL * PER_TARGET )) -ge "$BUDGET" ]; then
-            echo "::error::rotation no longer fits its budget: $TOTAL pairs x ~${PER_TARGET}s = $(( TOTAL * PER_TARGET / 60 ))min vs $(( BUDGET / 60 ))min left of timeout-minutes. Shrink the rotation, cut -fuzztime, or raise timeout-minutes; otherwise the job is killed before it reports."
-            FAILED=1
+            echo "::warning::rotation may no longer fit its budget: $TOTAL pairs x ~${PER_TARGET}s (estimated) = $(( TOTAL * PER_TARGET / 60 ))min vs $(( BUDGET / 60 ))min left of timeout-minutes. If this job starts hitting timeout-minutes, shrink the rotation, cut -fuzztime, or raise the timeout."
           elif [ $(( (TOTAL + 1) * PER_TARGET )) -ge "$BUDGET" ]; then
             echo "::warning::budget leaves no room for a confirming retry; deadline-race runs will be accepted on classification alone. This is the silent-disable case — if it persists, the rotation has outgrown timeout-minutes."
           fi
@@ -514,12 +530,20 @@ jobs:
           RACELOG=$(mktemp)
           LOOP_START=$(date +%s)
           BUDGET=$(( STEP_END - LOOP_START ))
-          # Guard the MANDATORY floor: the reservation below protects retries, but
-          # nothing protects one run of every pair. TOTAL is discovered, so adding
-          # fuzz targets silently walks this into the timeout — fail loud instead.
+          # Report on the MANDATORY floor: the reservation below protects retries, but
+          # nothing protects one run of every pair, and TOTAL is DISCOVERED — adding
+          # fuzz targets silently walks the rotation into the timeout.
+          #
+          # These WARN and never set FAILED. PER_TARGET is a seed estimate, and a
+          # pass/fail decision taken from an estimate is the same mistake as the
+          # in-loop overrun check that was built and deleted here: on a cold cache the
+          # arithmetic can say "does not fit" while the run finishes comfortably, and a
+          # spuriously red nightly is the exact disease this tool cures. The
+          # enforceable bound is timeout-minutes itself; if the work genuinely does not
+          # fit, Actions kills the job and that is loud. These lines exist so the cause
+          # is already in the log when it does.
           if [ $(( TOTAL * PER_TARGET )) -ge "$BUDGET" ]; then
-            echo "::error::rotation no longer fits its budget: $TOTAL pairs x ~${PER_TARGET}s = $(( TOTAL * PER_TARGET / 60 ))min vs $(( BUDGET / 60 ))min left of timeout-minutes. Shrink the rotation, cut -fuzztime, or raise timeout-minutes; otherwise the job is killed before it reports."
-            FAILED=1
+            echo "::warning::rotation may no longer fit its budget: $TOTAL pairs x ~${PER_TARGET}s (estimated) = $(( TOTAL * PER_TARGET / 60 ))min vs $(( BUDGET / 60 ))min left of timeout-minutes. If this job starts hitting timeout-minutes, shrink the rotation, cut -fuzztime, or raise the timeout."
           elif [ $(( (TOTAL + 1) * PER_TARGET )) -ge "$BUDGET" ]; then
             echo "::warning::budget leaves no room for a confirming retry; deadline-race runs will be accepted on classification alone. This is the silent-disable case — if it persists, the rotation has outgrown timeout-minutes."
           fi

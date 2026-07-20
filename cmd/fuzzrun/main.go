@@ -141,14 +141,14 @@ func gate(label string, w io.Writer, retryDeadline int64, run func() runResult) 
 		fmt.Fprintf(w, "fuzzrun: %v\n", r2.err)
 	}
 	fmt.Fprintf(w, "::error::fuzz FAIL: %s (failed again on retry, exit %d)\n", label, r2.exitCode)
-	// Still a race sighting, so still counted: `raced` means "this target exhibited
-	// the race", which is what -racelog documents and what the summary needs. Two
-	// consecutive races is p² only while the runs are independent; under the
-	// systematic regression the summary exists to catch, p approaches 1 and this
-	// becomes the DOMINANT case. Excluding it would drop the one line explaining a
-	// wall of per-target failures, exactly when that explanation matters most.
-	// The job still goes red — the exit code is unchanged.
-	return 1, classify(r2) == verdictDeadlineRace
+	// Still a race sighting. Every path below the classify check above is one where
+	// RUN 1 exhibited the race, so all of them report raced=true — which is exactly
+	// what -racelog documents and what the tally needs. Judging this on the RETRY's
+	// verdict instead would drop a genuine first-run sighting whenever the retry
+	// failed differently (found a crasher, timed out), undercounting precisely when
+	// a systematic race is turning retries into second failures. The job still goes
+	// red here; the exit code is unchanged.
+	return 1, true
 }
 
 // runCommand runs argv, streaming its output to w as it arrives while also capturing

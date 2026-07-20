@@ -206,7 +206,20 @@ func TestGate_RacedSignal(t *testing.T) {
 		// DOMINANT case, so excluding it would drop the one summary line that explains
 		// a wall of per-target failures.
 		"race, retry raced again": {[]runResult{raceFailure(), raceFailure()}, true},
-		"real finding":            {[]runResult{{output: "boom\n", exitCode: 1}}, false},
+		// Run 1 raced; the retry then failed some OTHER way. The first-run sighting is
+		// still real and must still be counted — judging this on the retry's verdict
+		// would undercount exactly when a systematic race turns retries into second
+		// failures of a different shape.
+		"race, retry found a crasher": {[]runResult{raceFailure(), {
+			output: `fuzz: elapsed: 3s, execs: 900 (300/sec), new interesting: 1 (total: 4)
+--- FAIL: FuzzFoo (3.00s)
+    context deadline exceeded
+Failing input written to testdata/fuzz/FuzzFoo/abc123
+`,
+			exitCode: 1,
+		}}, true},
+		"race, retry timed out": {[]runResult{raceFailure(), {output: "", exitCode: 124}}, true},
+		"real finding":          {[]runResult{{output: "boom\n", exitCode: 1}}, false},
 	}
 	for name, tc := range cases {
 		run, _ := scriptedRunner(tc.outcomes...)
