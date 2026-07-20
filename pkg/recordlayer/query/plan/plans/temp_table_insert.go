@@ -1,8 +1,6 @@
 package plans
 
 import (
-	"hash/fnv"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -60,24 +58,20 @@ func (p *RecordQueryTempTableInsertPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
+// structuralKey lists the fields that distinguish this insert in the memo: the
+// temp-table alias and the owning flag. Children are excluded; the same key
+// drives both EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryTempTableInsertPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Alias(p.tempTableAlias).Bool(p.owning)
+}
+
 func (p *RecordQueryTempTableInsertPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTempTableInsertPlan)
-	if !ok {
-		return false
-	}
-	return p.tempTableAlias == o.tempTableAlias && p.owning == o.owning
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryTempTableInsertPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("temptableinsert|"))
-	h.Write([]byte(p.tempTableAlias.Name()))
-	if p.owning {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("temptableinsert|")
 }
 
 func (p *RecordQueryTempTableInsertPlan) Explain() string {

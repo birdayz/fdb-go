@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -84,26 +83,21 @@ func (p *RecordQueryFirstOrDefaultPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares the default value by semantic Value identity
-// (RFC-176 P2 — see semanticValueEquals).
-func (p *RecordQueryFirstOrDefaultPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
-	o, ok := other.(*RecordQueryFirstOrDefaultPlan)
-	if !ok {
-		return false
-	}
-	return p.strict == o.strict && semanticValueEquals(p.defaultValue, o.defaultValue)
+// structuralKey lists the fields that distinguish this plan in the memo: the
+// strict flag and the default value (compared by semantic Value identity,
+// RFC-176 P2 — see semanticValueEquals). Children are excluded; the same key
+// drives both EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryFirstOrDefaultPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Bool(p.strict).Value(p.defaultValue)
 }
 
-// HashCodeWithoutChildren mixes the class discriminator + default value's
-// semantic hash (see writeValueHash).
+func (p *RecordQueryFirstOrDefaultPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
+	o, ok := other.(*RecordQueryFirstOrDefaultPlan)
+	return ok && p.structuralKey().Equal(o.structuralKey())
+}
+
 func (p *RecordQueryFirstOrDefaultPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("firstordefaultplan|"))
-	if p.strict {
-		h.Write([]byte("strict|"))
-	}
-	writeValueHash(h, p.defaultValue)
-	return h.Sum64()
+	return p.structuralKey().Hash("firstordefaultplan|")
 }
 
 // Explain renders FirstOrDefault(inner) (StrictFirstOrDefault when strict).

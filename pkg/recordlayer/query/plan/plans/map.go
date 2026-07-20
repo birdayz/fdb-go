@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -63,24 +62,23 @@ func (p *RecordQueryMapPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares the result value by semantic Value identity
-// (RFC-176 P2 — see semanticValueEquals), Java's
-// RecordQueryMapPlan.equalsWithoutChildren → semanticEqualsForResults.
-func (p *RecordQueryMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
-	o, ok := other.(*RecordQueryMapPlan)
-	if !ok {
-		return false
-	}
-	return semanticValueEquals(p.resultValue, o.resultValue)
+// structuralKey lists the fields that distinguish this map in the memo: the
+// result value, compared by semantic Value identity (RFC-176 P2 — see
+// semanticValueEquals), Java's RecordQueryMapPlan.equalsWithoutChildren →
+// semanticEqualsForResults. Children are excluded. The same key drives both
+// EqualsPlanWithoutChildren and HashCodeWithoutChildren, so the two can never
+// disagree on which fields matter.
+func (p *RecordQueryMapPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Value(p.resultValue)
 }
 
-// HashCodeWithoutChildren mixes the class discriminator + result value's
-// semantic hash (see writeValueHash).
+func (p *RecordQueryMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
+	o, ok := other.(*RecordQueryMapPlan)
+	return ok && p.structuralKey().Equal(o.structuralKey())
+}
+
 func (p *RecordQueryMapPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("mapplan|"))
-	writeValueHash(h, p.resultValue)
-	return h.Sum64()
+	return p.structuralKey().Hash("mapplan|")
 }
 
 // Explain renders Map(inner, result).

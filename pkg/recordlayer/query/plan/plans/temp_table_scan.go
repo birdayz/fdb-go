@@ -1,8 +1,6 @@
 package plans
 
 import (
-	"hash/fnv"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -27,19 +25,20 @@ func (p *RecordQueryTempTableScanPlan) GetResultType() values.Type { return valu
 
 func (p *RecordQueryTempTableScanPlan) GetChildren() []RecordQueryPlan { return nil }
 
+// structuralKey lists the field that distinguishes this scan in the memo: the
+// temp-table alias. The same key drives both EqualsPlanWithoutChildren and
+// HashCodeWithoutChildren.
+func (p *RecordQueryTempTableScanPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Alias(p.tempTableAlias)
+}
+
 func (p *RecordQueryTempTableScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTempTableScanPlan)
-	if !ok {
-		return false
-	}
-	return p.tempTableAlias == o.tempTableAlias
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryTempTableScanPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("temptablescan|"))
-	h.Write([]byte(p.tempTableAlias.Name()))
-	return h.Sum64()
+	return p.structuralKey().Hash("temptablescan|")
 }
 
 func (p *RecordQueryTempTableScanPlan) Explain() string {

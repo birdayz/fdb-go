@@ -1,7 +1,6 @@
 package plans
 
 import (
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -71,15 +70,17 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares the projection lists by semantic Value
-// identity (RFC-176 P2 — see semanticValueEquals): Java's model
-// (RecordQueryMapPlan.equalsWithoutChildren → semanticEqualsForResults), where
-// every semantic discriminator a projected Value carries — in particular a
-// plan-time-resolved ordinal accessor (values.NewFieldValueWithResolvedOrdinal,
-// the recursive-CTE duplicate-alias wrap; Java: distinct ofOrdinalNumber
-// ordinals are distinct FieldPaths) — joins identity structurally. Two reads
-// of duplicate-named slots differ ONLY by ordinal, so unifying them would let
-// extraction pick a plan reading the WRONG slot.
+// structuralKey lists the fields that distinguish this projection in the memo:
+// the projection list, compared by semantic Value identity (RFC-176 P2 — see
+// semanticValueEquals): Java's model (RecordQueryMapPlan.equalsWithoutChildren
+// → semanticEqualsForResults), where every semantic discriminator a projected
+// Value carries — in particular a plan-time-resolved ordinal accessor
+// (values.NewFieldValueWithResolvedOrdinal, the recursive-CTE duplicate-alias
+// wrap; Java: distinct ofOrdinalNumber ordinals are distinct FieldPaths) —
+// joins identity structurally. Two reads of duplicate-named slots differ ONLY
+// by ordinal, so unifying them would let extraction pick a plan reading the
+// WRONG slot. Children are excluded; the same key drives both
+// EqualsPlanWithoutChildren and HashCodeWithoutChildren.
 //
 // NOTE(explain format, RFC-176 P3): identity was previously keyed on the
 // ExplainValue renderings, which therefore had to be injective over every
@@ -92,29 +93,17 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 // TestProjectionPlan_Identity_OrdinalVsLiteralHashField) now pin exactly
 // that, plus the matching injective discriminator in writeSemanticHash's
 // FieldValue arm.
+func (p *RecordQueryProjectionPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Values(p.projections)
+}
+
 func (p *RecordQueryProjectionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryProjectionPlan)
-	if !ok {
-		return false
-	}
-	if len(p.projections) != len(o.projections) {
-		return false
-	}
-	for i := range p.projections {
-		if !semanticValueEquals(p.projections[i], o.projections[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryProjectionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("projplan|"))
-	for _, v := range p.projections {
-		writeValueHash(h, v)
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("projplan|")
 }
 
 func (p *RecordQueryProjectionPlan) Explain() string {

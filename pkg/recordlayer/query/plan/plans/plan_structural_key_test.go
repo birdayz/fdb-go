@@ -126,4 +126,29 @@ func TestMigratedPlans_StructuralKeyContract(t *testing.T) {
 	assertPlanKeyUnequal(t,
 		NewRecordQueryValuesPlan([]values.Value{nv}),
 		NewRecordQueryValuesPlan([]values.Value{nv, nv}))
+
+	// map — resultValue.
+	assertPlanKeyEqual(t, NewRecordQueryMapPlan(scan, nv), NewRecordQueryMapPlan(scan, nv))
+
+	// projection — the projection Value list; length load-bearing.
+	assertPlanKeyEqual(t,
+		NewRecordQueryProjectionPlan([]values.Value{nv}, scan),
+		NewRecordQueryProjectionPlan([]values.Value{nv}, scan))
+	assertPlanKeyUnequal(t,
+		NewRecordQueryProjectionPlan([]values.Value{nv}, scan),
+		NewRecordQueryProjectionPlan([]values.Value{nv, nv}, scan))
+
+	// first_or_default — the strict flag is load-bearing (strict vs non-strict
+	// constructor variants).
+	assertPlanKeyEqual(t,
+		NewRecordQueryFirstOrDefaultPlan(scan, nv),
+		NewRecordQueryFirstOrDefaultPlan(scan, nv))
+	assertPlanKeyUnequal(t,
+		NewRecordQueryFirstOrDefaultPlan(scan, nv),
+		NewRecordQueryFirstOrDefaultPlanStrict(scan, nv))
+
+	// unordered_pk_distinct — no identifying fields; two instances always match.
+	assertPlanKeyEqual(t,
+		NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan),
+		NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan))
 }

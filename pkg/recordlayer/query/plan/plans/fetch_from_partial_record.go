@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -129,22 +128,21 @@ func (p *RecordQueryFetchFromPartialRecordPlan) GetChildren() []RecordQueryPlan 
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares fetch mode (inner is the caller's
-// responsibility via children).
-func (p *RecordQueryFetchFromPartialRecordPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
-	o, ok := other.(*RecordQueryFetchFromPartialRecordPlan)
-	if !ok {
-		return false
-	}
-	return p.fetchIndexRecords == o.fetchIndexRecords
+// structuralKey lists the field that distinguishes this fetch in the memo: the
+// fetch mode. The inner is the caller's responsibility via children, so it is
+// excluded. The same key drives both EqualsPlanWithoutChildren and
+// HashCodeWithoutChildren.
+func (p *RecordQueryFetchFromPartialRecordPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Int(int(p.fetchIndexRecords))
 }
 
-// HashCodeWithoutChildren mixes type discriminator + fetch mode.
+func (p *RecordQueryFetchFromPartialRecordPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
+	o, ok := other.(*RecordQueryFetchFromPartialRecordPlan)
+	return ok && p.structuralKey().Equal(o.structuralKey())
+}
+
 func (p *RecordQueryFetchFromPartialRecordPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("fetchfrompartialrecordplan|"))
-	h.Write([]byte{byte(p.fetchIndexRecords)})
-	return h.Sum64()
+	return p.structuralKey().Hash("fetchfrompartialrecordplan|")
 }
 
 // Explain renders Fetch(inner).
