@@ -832,6 +832,10 @@ func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 			result = int64(len(sv))
 		case StrFnSubstr:
 			result = substrVal(sv, p.StrFn.Start, p.StrFn.Length)
+		case StrFnTrim:
+			// SQL TRIM strips leading/trailing SPACES — Go's Trim over " "
+			// (the domain has no other whitespace); verified TRIM(' ab ')='ab'.
+			result = strings.Trim(sv, " ")
 		}
 		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(result)
 	case p.Case != nil:

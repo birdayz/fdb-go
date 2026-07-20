@@ -308,6 +308,7 @@ const (
 	StrFnLength                  // LENGTH(s) → int (character count == byte count for ASCII)
 	StrFnSubstr                  // SUBSTR(s, Start, Length) → string (1-based, clamped)
 	StrFnConcat                  // CONCAT(s, 'Suffix') → string (NULL operand treated as "")
+	StrFnTrim                    // TRIM(s) → string (strips leading/trailing spaces)
 )
 
 // StrFnSpec is a string-function predicate LHS: `<Fn>(<Col>) <Op> Lit`, or for
@@ -901,7 +902,10 @@ func genTable(rng *rand.Rand) TableDef {
 func genRows(rng *rand.Rand, table TableDef) []Row {
 	n := 20 + rng.IntN(101)
 	rows := make([]Row, 0, n)
-	stringDomain := []string{"", "alpha", "beta", "gamma", "delta", "epsilon"}
+	// Whitespace-padded entries make TRIM meaningful and exercise every string
+	// function over leading/trailing spaces (which round-trip and compare
+	// byte-lexicographically, verified by probe).
+	stringDomain := []string{"", "alpha", "beta", "gamma", "delta", "epsilon", " a", "b ", " c "}
 	for i := 0; i < n; i++ {
 		r := Row{"ID": int64(i + 1)}
 		for _, col := range table.Cols {
@@ -1794,7 +1798,9 @@ func genCastLeaf(rng *rand.Rand) *Pred {
 // compare against a case-folded literal from the string domain so a match is
 // reachable; LENGTH compares against a small integer.
 func genStrFnLeaf(rng *rand.Rand) *Pred {
-	domain := []string{"", "alpha", "beta", "gamma", "delta", "epsilon", "zeta"}
+	// Includes the whitespace-padded strings from the data domain so TRIM
+	// literals (and case/substr images) reach real matches.
+	domain := []string{"", "alpha", "beta", "gamma", "delta", "epsilon", "zeta", " a", "b ", " c "}
 	ops := []predicates.ComparisonType{
 		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
 		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
@@ -1802,7 +1808,11 @@ func genStrFnLeaf(rng *rand.Rand) *Pred {
 	}
 	op := ops[rng.IntN(len(ops))]
 	spec := &StrFnSpec{Col: "S"}
-	switch rng.IntN(5) {
+	switch rng.IntN(6) {
+	case 5:
+		spec.Fn = StrFnTrim
+		// Literal = a trimmed domain word so a padded row can match.
+		return &Pred{StrFn: spec, Op: op, Lit: strings.Trim(domain[rng.IntN(len(domain))], " ")}
 	case 0:
 		spec.Fn = StrFnUpper
 		return &Pred{StrFn: spec, Op: op, Lit: strings.ToUpper(domain[rng.IntN(len(domain))])}
@@ -1890,6 +1900,8 @@ func strFnSQL(fn StrFnKind) string {
 		return "LOWER"
 	case StrFnLength:
 		return "LENGTH"
+	case StrFnTrim:
+		return "TRIM"
 	}
 	panic(fmt.Sprintf("rowdiff: unrenderable string fn %d", fn))
 }

@@ -38,6 +38,7 @@ go_test(
         "str_fn_oracle_test.go",
         "substr_oracle_test.go",
         "three_way_oracle_test.go",
+        "trim_oracle_test.go",
         "union_oracle_test.go",
     ],
     embed = [":rowdiff"],
