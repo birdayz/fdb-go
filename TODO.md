@@ -1421,6 +1421,21 @@ the query executes — then delete the `knownGaps` entry and assert zero rows). 
 3-way join binds a column's ordinal when that column appears as both a join key and per-leg filters across
 the legs — the ordinal resolves to -1 in the runtime row today.
 
+**Root-cause traced (RFC-182 shift, values.go read path):** `FieldValue.evaluateOrdinal` fails at
+`resolveOrdinal()` returning FALSE — i.e. `f.Resolved == nil`, an UNBAKED node reaching the executor (there is
+no runtime name→ordinal fallback by design; every ordinal must bind at plan time). The leg-baking pass
+`rebaseOuterLegValue` (rule_implement_nested_loop_join.go) bakes a leg-matched `FieldValue{Field, Child:QOV(leg)}`
+to `NewCorrelatedFieldValueWithResolvedOrdinal(...)` ONLY when the merged `legLayout[qualField]` (e.g. "R.C")
+is present; on a MISS it falls through to `values.NewFieldValue(...)` — an unbaked lazy node — which is exactly
+the -1 at runtime. So the gap is a merged-row positional layout that does not carry an entry for the shared
+column's qualified reference on every leg (that arm is also noted "dead-in-effect today — the box substrate
+rebases upstream", so for the PLAIN comma/ON 3-way the miss is likely in the plain-join merged-layout
+construction, not this EXISTS-path arm). This is RFC-173 ordinal-resolution-migration architecture (TODO top:
+that migration is the FROZEN sole priority) and the SAME multi-leg workstream as the entry above, whose obvious
+`rebaseOuterLegValueOrdinal` fix was tried and reverted — a gated, determinism-sensitive executor change, not a
+one-liner. Fix direction: ensure the merged-outer-row positional layout carries every leg column's qualified
+ordinal so the shared-column reference is BORN BAKED, without regressing the shapes the reverted fix broke.
+
 ### [investigated, not shipped] rowdiff — 4-way joins: measured-infeasible for the always-on differential
 Implemented and isolation-validated a 4-way self-join generator + a HASH-JOIN oracle (indexes on the probed
 columns → O(n+matches), not the O(n⁴) a nested loop would cost), then MEASURED it against real FDB and
