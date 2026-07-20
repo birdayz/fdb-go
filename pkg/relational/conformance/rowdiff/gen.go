@@ -334,6 +334,11 @@ type UnionSpec struct {
 type DerivedSpec struct {
 	Inner *BoolNode // WHERE inside the subquery
 	Outer *BoolNode // WHERE over the derived table (nil = none)
+	// Cte renders the subquery as a single-reference common table expression
+	// (`WITH d AS (…) SELECT … FROM d …`) instead of an inline derived table.
+	// A single-reference CTE is semantically identical (same flattening, same
+	// oracle) but exercises the WITH scope-resolution path.
+	Cte bool
 }
 
 // Query is one generated query body; the runner executes it under every
@@ -609,7 +614,10 @@ func genDerivedQuery(rng *rand.Rand, table TableDef) Query {
 			indexed[cc] = true
 		}
 	}
-	q := Query{Derived: &DerivedSpec{Inner: genBranchWhere(rng, table, indexed)}}
+	q := Query{Derived: &DerivedSpec{
+		Inner: genBranchWhere(rng, table, indexed),
+		Cte:   rng.IntN(2) == 0, // half as a WITH-CTE, half as an inline derived table
+	}}
 	if rng.IntN(3) != 0 {
 		q.Derived.Outer = genBranchWhere(rng, table, indexed)
 	}
@@ -1484,7 +1492,18 @@ func (c *Case) unionSQL(q Query, projection []string) string {
 func (c *Case) derivedSQL(q Query, projection []string) string {
 	d := q.Derived
 	tbl := strings.ToLower(c.Table.Name)
+	// The subquery body: `SELECT * FROM t [WHERE inner]`.
+	var sub strings.Builder
+	fmt.Fprintf(&sub, "SELECT * FROM %s", tbl)
+	if d.Inner != nil {
+		sub.WriteString(" WHERE ")
+		renderBool(&sub, d.Inner)
+	}
+
 	var b strings.Builder
+	if d.Cte {
+		fmt.Fprintf(&b, "WITH d AS (%s) ", sub.String())
+	}
 	b.WriteString("SELECT ")
 	if q.Distinct {
 		b.WriteString("DISTINCT ")
@@ -1498,12 +1517,11 @@ func (c *Case) derivedSQL(q Query, projection []string) string {
 		}
 		b.WriteString(strings.Join(lower, ", "))
 	}
-	fmt.Fprintf(&b, " FROM (SELECT * FROM %s", tbl)
-	if d.Inner != nil {
-		b.WriteString(" WHERE ")
-		renderBool(&b, d.Inner)
+	if d.Cte {
+		b.WriteString(" FROM d")
+	} else {
+		fmt.Fprintf(&b, " FROM (%s) d", sub.String())
 	}
-	b.WriteString(") d")
 	if d.Outer != nil {
 		b.WriteString(" WHERE ")
 		renderBool(&b, d.Outer)
