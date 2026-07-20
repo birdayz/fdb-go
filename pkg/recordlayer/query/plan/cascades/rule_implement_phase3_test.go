@@ -31,13 +31,10 @@ func TestImplementTempTableScan_PlannerProducesPhysicalScan(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	wrap, ok := plan.(*physicalTempTableScanWrapper)
+	// RFC-184 W2: the temp-table scan is its own bare plan expression.
+	rqp, ok := plan.(*plans.RecordQueryTempTableScanPlan)
 	if !ok {
-		t.Fatalf("plan = %T, want *physicalTempTableScanWrapper", plan)
-	}
-	rqp, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTempTableScanPlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryTempTableScanPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("plan = %T, want *plans.RecordQueryTempTableScanPlan", plan)
 	}
 	if rqp.GetTempTableAlias() != alias {
 		t.Fatalf("alias = %v, want %v", rqp.GetTempTableAlias(), alias)
@@ -100,13 +97,10 @@ func TestImplementTempTableInsert_Fires(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	wrap, ok := plan.(*physicalTempTableInsertWrapper)
+	// RFC-184 W2: the temp-table insert is its own bare plan expression.
+	rqp, ok := plan.(*plans.RecordQueryTempTableInsertPlan)
 	if !ok {
-		t.Fatalf("plan = %T, want *physicalTempTableInsertWrapper", plan)
-	}
-	rqp, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTempTableInsertPlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryTempTableInsertPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("plan = %T, want *plans.RecordQueryTempTableInsertPlan", plan)
 	}
 	if rqp.GetTempTableAlias() != alias {
 		t.Fatalf("alias = %v, want %v", rqp.GetTempTableAlias(), alias)
@@ -154,11 +148,10 @@ func TestImplementTempTableInsert_OwningFlag(t *testing.T) {
 				t.Fatal("Plan returned nil")
 			}
 
-			wrap, ok := plan.(*physicalTempTableInsertWrapper)
+			rqp, ok := plan.(*plans.RecordQueryTempTableInsertPlan)
 			if !ok {
-				t.Fatalf("plan = %T, want *physicalTempTableInsertWrapper", plan)
+				t.Fatalf("plan = %T, want *plans.RecordQueryTempTableInsertPlan", plan)
 			}
-			rqp := wrap.GetRecordQueryPlan().(*plans.RecordQueryTempTableInsertPlan)
 			if rqp.IsOwning() != owning {
 				t.Fatalf("IsOwning() = %v, want %v", rqp.IsOwning(), owning)
 			}

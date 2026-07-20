@@ -94,7 +94,6 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		// added to either side is caught too, not just a dropped one ---
 		{name: "Scan", plan: &plans.RecordQueryScanPlan{}, wrap: &physicalScanWrapper{}},
 		{name: "IndexScan", plan: &plans.RecordQueryIndexPlan{}, wrap: &physicalIndexScanWrapper{}},
-		{name: "VectorIndexScan", plan: &plans.RecordQueryVectorIndexPlan{}, wrap: &physicalVectorIndexScanWrapper{}},
 		{name: "PredicatesFilter", plan: &plans.RecordQueryPredicatesFilterPlan{}, wrap: &physicalPredicatesFilterWrapper{}},
 		{name: "TypeFilter", plan: &plans.RecordQueryTypeFilterPlan{}, wrap: &physicalTypeFilterWrapper{}},
 		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}, wrap: &physicalNestedLoopJoinWrapper{}},
@@ -105,16 +104,14 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		{name: "InMemorySort", plan: &plans.RecordQueryInMemorySortPlan{}, wrap: &physicalInMemorySortWrapper{}},
 		{name: "Distinct", plan: &plans.RecordQueryDistinctPlan{}, wrap: &physicalDistinctWrapper{}},
 		{name: "Projection", plan: &plans.RecordQueryProjectionPlan{}, wrap: &physicalProjectionWrapper{}},
-		// Limit / FetchFromPartialRecord / Map have no physical wrapper since RFC-184
-		// W2 — the memo holds the *plans.RecordQuery… plan directly, so their
-		// false/false flags are exercised on the live production path (no parity pair
-		// to check).
-		{name: "DefaultOnEmpty", plan: &plans.RecordQueryDefaultOnEmptyPlan{}, wrap: &physicalDefaultOnEmptyWrapper{}},
 		{name: "FirstOrDefault", plan: &plans.RecordQueryFirstOrDefaultPlan{}, wrap: &physicalFirstOrDefaultWrapper{}},
-		{name: "Explode", plan: &plans.RecordQueryExplodePlan{}, wrap: &physicalExplodeWrapper{}},
-		{name: "TableFunction", plan: &plans.RecordQueryTableFunctionPlan{}, wrap: &physicalTableFunctionWrapper{}},
-		{name: "TempTableScan", plan: &plans.RecordQueryTempTableScanPlan{}, wrap: &physicalTempTableScanWrapper{}},
-		{name: "TempTableInsert", plan: &plans.RecordQueryTempTableInsertPlan{}, wrap: &physicalTempTableInsertWrapper{}},
+		// Limit / FetchFromPartialRecord / Map / DefaultOnEmpty / Explode /
+		// TableFunction / TempTableScan / TempTableInsert / VectorIndexScan have no
+		// physical wrapper since RFC-184 W2 — the memo holds the *plans.RecordQuery…
+		// plan directly, so their false/false flags are exercised on the live
+		// production path (no parity pair to check). FirstOrDefault and
+		// StreamingAggregation KEEP their wrappers (collapse deferred — not
+		// identity-neutral in the correlated / deferred-winner paths).
 		{name: "AggregateIndex", plan: &plans.RecordQueryAggregateIndexPlan{}, wrap: &physicalAggregateIndexWrapper{}},
 		{name: "Insert", plan: &plans.RecordQueryInsertPlan{}, wrap: &physicalInsertWrapper{}},
 		{name: "Delete", plan: &plans.RecordQueryDeletePlan{}, wrap: &physicalDeleteWrapper{}},

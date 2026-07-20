@@ -139,7 +139,7 @@ func TestPlanner_GroupByProducesAggregation(t *testing.T) {
 		for _, m := range ref.Members() {
 			types = append(types, fmt.Sprintf("%T", m))
 		}
-		t.Fatalf("expected physicalStreamingAggWrapper, found member types: %v", types)
+		t.Fatalf("expected *plans.RecordQueryStreamingAggregationPlan, found member types: %v", types)
 	}
 }
 

@@ -11,10 +11,21 @@ import (
 type RecordQueryTempTableScanPlan struct {
 	PlanExprBase
 	tempTableAlias values.CorrelationIdentifier
+	// resultValue is the stable per-instance QuantifiedObjectValue standing for
+	// the rows this temp-table scan emits — minted once at construction, returned
+	// by GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique
+	// per instance). A bare leaf that stands as its own Cascades expression must
+	// present a consistent row identity across repeated interrogations, the role
+	// physicalTempTableScanWrapper's fresh-per-call GetResultValue could not
+	// (RFC-184 W2). nil for struct-literal test plans that bypass the constructor.
+	resultValue values.Value
 }
 
 func NewRecordQueryTempTableScanPlan(alias values.CorrelationIdentifier) *RecordQueryTempTableScanPlan {
-	return &RecordQueryTempTableScanPlan{tempTableAlias: alias}
+	return &RecordQueryTempTableScanPlan{
+		tempTableAlias: alias,
+		resultValue:    values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	}
 }
 
 func (p *RecordQueryTempTableScanPlan) GetTempTableAlias() values.CorrelationIdentifier {
@@ -22,6 +33,17 @@ func (p *RecordQueryTempTableScanPlan) GetTempTableAlias() values.CorrelationIde
 }
 
 func (p *RecordQueryTempTableScanPlan) GetResultType() values.Type { return values.UnknownType }
+
+// GetResultValue returns the temp-table scan's STABLE per-instance result value —
+// the single correlation identity a bare temp-table scan carries as its own memo
+// expression (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
+// struct-literal test plans that bypass the constructor (resultValue is nil).
+func (p *RecordQueryTempTableScanPlan) GetResultValue() values.Value {
+	if p.resultValue == nil {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.resultValue
+}
 
 func (p *RecordQueryTempTableScanPlan) GetChildren() []RecordQueryPlan { return nil }
 

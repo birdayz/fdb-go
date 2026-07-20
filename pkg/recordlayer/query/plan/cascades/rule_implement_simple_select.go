@@ -88,6 +88,12 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 		currentPlan := innerPlans[0]
 
 		if innerQuantifier.Kind() == expressions.QuantifierExistential {
+			// FirstOrDefault stays wrapped (RFC-184 W2): its collapse is NOT
+			// identity-neutral — in the correlated EXISTS/scalar-subquery path the
+			// FOD wraps a SARG-pushed snapshot (currentPlan) that deliberately
+			// diverges from the live memo edge, so a FromQuantifier build re-resolves
+			// to the non-SARG base and shifts the plan (flatmap_exists corpus). It
+			// needs the deferred-winner rework as its own change.
 			fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(currentPlan, values.NewNullValue(values.UnknownType))
 			fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan, currentQuant)
 			if len(queryPredicates) == 0 && isSimpleResult {
@@ -98,13 +104,14 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 			currentQuant = expressions.NewPhysicalQuantifier(fodRef)
 			currentPlan = fodPlan
 		} else if innerQuantifier.Kind() == expressions.QuantifierForEach && innerQuantifier.IsNullOnEmpty() {
-			doePlan := plans.NewRecordQueryDefaultOnEmptyPlan(currentPlan, values.NewNullValue(values.UnknownType))
-			doeWrapper := NewPhysicalDefaultOnEmptyWrapper(doePlan, currentQuant)
+			// The DefaultOnEmpty is its own cascades expression carrying the live
+			// currentQuant edge (RFC-184 W2) — no physicalDefaultOnEmptyWrapper.
+			doePlan := plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(currentQuant, values.NewNullValue(values.UnknownType))
 			if len(queryPredicates) == 0 && isSimpleResult {
-				call.YieldFinalExpression(doeWrapper)
+				call.YieldFinalExpression(doePlan)
 				continue
 			}
-			doeRef := call.MemoizeFinalExpression(doeWrapper)
+			doeRef := call.MemoizeFinalExpression(doePlan)
 			currentQuant = expressions.NewPhysicalQuantifier(doeRef)
 			currentPlan = doePlan
 		}

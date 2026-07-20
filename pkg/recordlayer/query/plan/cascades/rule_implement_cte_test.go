@@ -22,13 +22,10 @@ func TestImplementTempTableScan_Fires(t *testing.T) {
 		t.Fatalf("ImplementTempTableScanRule yielded %d, want 1", len(yielded))
 	}
 
-	wrap, ok := yielded[0].(*physicalTempTableScanWrapper)
+	// RFC-184 W2: the temp-table scan is its own bare plan expression.
+	plan, ok := yielded[0].(*plans.RecordQueryTempTableScanPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalTempTableScanWrapper", yielded[0])
-	}
-	plan, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTempTableScanPlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryTempTableScanPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("yield = %T, want *plans.RecordQueryTempTableScanPlan", yielded[0])
 	}
 	if plan.GetTempTableAlias() != alias {
 		t.Fatalf("plan alias = %v, want %v", plan.GetTempTableAlias(), alias)
@@ -52,7 +49,7 @@ func TestImplementTempTableScan_ViaPlanner(t *testing.T) {
 
 	foundPhysical := false
 	for _, m := range ref.AllMembers() {
-		if _, ok := m.(*physicalTempTableScanWrapper); ok {
+		if _, ok := m.(*plans.RecordQueryTempTableScanPlan); ok {
 			foundPhysical = true
 			break
 		}
@@ -81,13 +78,10 @@ func TestImplementTempTableScan_PlanOutput(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	wrap, ok := plan.(*physicalTempTableScanWrapper)
+	// RFC-184 W2: the temp-table scan is its own bare plan expression.
+	rqp, ok := plan.(*plans.RecordQueryTempTableScanPlan)
 	if !ok {
-		t.Fatalf("plan = %T, want *physicalTempTableScanWrapper", plan)
-	}
-	rqp, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTempTableScanPlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryTempTableScanPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("plan = %T, want *plans.RecordQueryTempTableScanPlan", plan)
 	}
 	if rqp.GetTempTableAlias() != alias {
 		t.Fatalf("alias = %v, want %v", rqp.GetTempTableAlias(), alias)
@@ -119,13 +113,10 @@ func TestImplementTempTableInsert_FiresAfterScanImplemented(t *testing.T) {
 		t.Fatalf("ImplementTempTableInsertRule yielded %d, want 1", len(yielded))
 	}
 
-	wrap, ok := yielded[0].(*physicalTempTableInsertWrapper)
+	// RFC-184 W2: the temp-table insert is its own bare plan expression.
+	plan, ok := yielded[0].(*plans.RecordQueryTempTableInsertPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalTempTableInsertWrapper", yielded[0])
-	}
-	plan, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTempTableInsertPlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryTempTableInsertPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("yield = %T, want *plans.RecordQueryTempTableInsertPlan", yielded[0])
 	}
 	if plan.GetTempTableAlias() != alias {
 		t.Fatalf("alias = %v, want %v", plan.GetTempTableAlias(), alias)
@@ -185,13 +176,10 @@ func TestImplementTempTableInsert_ViaPlanner(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	wrap, ok := plan.(*physicalTempTableInsertWrapper)
+	// RFC-184 W2: the temp-table insert is its own bare plan expression.
+	rqp, ok := plan.(*plans.RecordQueryTempTableInsertPlan)
 	if !ok {
-		t.Fatalf("plan = %T, want *physicalTempTableInsertWrapper", plan)
-	}
-	rqp, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTempTableInsertPlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryTempTableInsertPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("plan = %T, want *plans.RecordQueryTempTableInsertPlan", plan)
 	}
 	if rqp.GetTempTableAlias() != alias {
 		t.Fatalf("alias = %v, want %v", rqp.GetTempTableAlias(), alias)

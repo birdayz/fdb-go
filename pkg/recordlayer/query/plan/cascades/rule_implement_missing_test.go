@@ -85,12 +85,13 @@ func TestImplementTempTableScanRule_Fires(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementTempTableScanRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalTempTableScanWrapper)
+	// RFC-184 W2: the temp-table scan is its own bare plan expression.
+	wrap, ok := yielded[0].(*plans.RecordQueryTempTableScanPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalTempTableScanWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryTempTableScanPlan", yielded[0])
 	}
 	if wrap.GetRecordQueryPlan() == nil {
-		t.Fatal("wrapper has no plan")
+		t.Fatal("plan is nil")
 	}
 }
 
@@ -111,12 +112,13 @@ func TestImplementTempTableInsertRule_FiresAfterInnerImplemented(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementTempTableInsertRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalTempTableInsertWrapper)
+	// RFC-184 W2: the temp-table insert is its own bare plan expression.
+	wrap, ok := yielded[0].(*plans.RecordQueryTempTableInsertPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalTempTableInsertWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryTempTableInsertPlan", yielded[0])
 	}
 	if wrap.GetRecordQueryPlan() == nil {
-		t.Fatal("wrapper has no plan")
+		t.Fatal("plan is nil")
 	}
 }
 

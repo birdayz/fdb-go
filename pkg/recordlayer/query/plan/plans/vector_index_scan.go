@@ -72,6 +72,15 @@ type RecordQueryVectorIndexPlan struct {
 	// partition-only cases by SinkLimitIntoVectorScanRule folding a Limit(k)
 	// directly above the scan into this mode (byte-for-byte the legacy path).
 	orderedStream bool
+	// resultValue is the stable per-instance QuantifiedObjectValue standing for
+	// the rows this vector scan emits — minted once at construction, carried
+	// through the With* struct copies, returned by GetResultValue, EXCLUDED from
+	// Equals/Hash (its correlation id is unique per instance). A bare leaf that
+	// stands as its own Cascades expression must present a consistent row identity
+	// across repeated interrogations, the role physicalVectorIndexScanWrapper's
+	// fresh-per-call GetResultValue could not (RFC-184 W2). nil for struct-literal
+	// test plans that bypass the constructor.
+	resultValue values.Value
 }
 
 // NewRecordQueryVectorIndexPlan constructs a BY_DISTANCE vector index scan.
@@ -106,7 +115,20 @@ func NewRecordQueryVectorIndexPlan(
 		isReturningVectors: isReturningVectors,
 		recordTypes:        dedupSortedStrings(recordTypes),
 		flowedType:         flowedType,
+		resultValue:        values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
 	}
+}
+
+// GetResultValue returns the vector scan's STABLE per-instance result value —
+// the single correlation identity a bare vector scan carries as its own memo
+// expression (RFC-184 W2), propagated through the With* struct copies. Falls back
+// to PlanExprBase (a fresh QOV per call) for struct-literal test plans that
+// bypass the constructor (resultValue is nil).
+func (p *RecordQueryVectorIndexPlan) GetResultValue() values.Value {
+	if p.resultValue == nil {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.resultValue
 }
 
 // GetRankType returns the distance-rank comparison operator (LessThan or

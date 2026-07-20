@@ -571,6 +571,9 @@ func buildCorrelatedFlatMapPlan(
 		// the FlatMap re-executes the inner per outer row, the check runs fresh per
 		// outer row. The FirstOrDefault already supplies the empty→NULL row, so this
 		// fully handles the strict scalar case without any leftOuter mechanism.
+		// FirstOrDefault stays wrapped (RFC-184 W2): its FromQuantifier collapse is
+		// not identity-neutral in the correlated path (SARG-pushed snapshot diverges
+		// from the live memo edge — flatmap_exists corpus). Deferred to its own rework.
 		fodPlan := plans.NewRecordQueryFirstOrDefaultPlanStrict(
 			innerWrapped, values.NewNullValue(values.UnknownType),
 		)
@@ -578,12 +581,14 @@ func buildCorrelatedFlatMapPlan(
 		innerQ = expressions.NamedForEachQuantifier(innerCorr,
 			call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, innerQ)))
 	} else if nullOnEmpty {
-		doePlan := plans.NewRecordQueryDefaultOnEmptyPlan(
-			innerWrapped, values.NewNullValue(values.UnknownType),
+		// The DefaultOnEmpty is its own cascades expression carrying the live innerQ
+		// edge (RFC-184 W2) — no physicalDefaultOnEmptyWrapper.
+		doePlan := plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(
+			innerQ, values.NewNullValue(values.UnknownType),
 		)
 		innerWrapped = doePlan
 		innerQ = expressions.NamedForEachQuantifier(innerCorr,
-			call.MemoizeFinalExpression(NewPhysicalDefaultOnEmptyWrapper(doePlan, innerQ)))
+			call.MemoizeFinalExpression(doePlan))
 		if len(joinPreds) > 0 {
 			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
 				innerWrapped, joinPreds, innerCorr,
@@ -883,6 +888,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		innerQ = expressions.NewPhysicalQuantifier(
 			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
 	}
+	// FirstOrDefault stays wrapped (RFC-184 W2): collapse not identity-neutral here.
 	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
 	innerQ = expressions.NewPhysicalQuantifier(
 		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, innerQ)))
@@ -2320,6 +2326,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
 			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
 	}
+	// FirstOrDefault stays wrapped (RFC-184 W2): collapse not identity-neutral here.
 	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
 	innerQ = expressions.NamedPhysicalQuantifier(existCorr,
 		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, innerQ)))
@@ -2727,6 +2734,7 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
 			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
 	}
+	// FirstOrDefault stays wrapped (RFC-184 W2): collapse not identity-neutral here.
 	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
 	innerQ = expressions.NamedPhysicalQuantifier(existCorr,
 		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, innerQ)))
@@ -3054,6 +3062,7 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 		rightQ = expressions.NamedPhysicalQuantifier(innerCorrelation,
 			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, rightQ)))
 	}
+	// FirstOrDefault stays wrapped (RFC-184 W2): collapse not identity-neutral here.
 	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
 	rightQ = expressions.NamedPhysicalQuantifier(innerCorrelation,
 		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, rightQ)))

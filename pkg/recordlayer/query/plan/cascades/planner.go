@@ -854,11 +854,9 @@ func compensationInnerScanSafe(f *expressions.LogicalFilterExpression) bool {
 		}
 		for _, m := range cref.AllMembers() {
 			switch v := m.(type) {
-			case *physicalVectorIndexScanWrapper:
-				if v.plan == nil {
-					return false
-				}
-				if !v.plan.IsOrderedStream() && !residualSelectsWholePartitions(f, v.plan) {
+			// The vector scan is its own Cascades expression now (RFC-184 W2).
+			case *plans.RecordQueryVectorIndexPlan:
+				if !v.IsOrderedStream() && !residualSelectsWholePartitions(f, v) {
 					return false
 				}
 			case *physicalAggregateIndexWrapper:

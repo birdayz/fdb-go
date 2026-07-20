@@ -398,7 +398,7 @@ func TestVectorPlan_NoResidualFoldsToSelfLimiting(t *testing.T) {
 // the scan's up-front search work lived only in Cardinality, which the Limit
 // caps — dropping the winner to the criterion-#17 hash tie-break, where any
 // hash change re-rolled this plan's shape. The vector scan now carries that
-// work in CPU (physicalVectorIndexScanWrapper.HintCost), so the fold chain —
+// work in CPU (RecordQueryVectorIndexPlan.HintCost), so the fold chain —
 // less up-front work (k=10 vs horizon=200) — wins on COST, deterministically.
 func TestVectorPlan_TighterOuterLimitDoesNotFold(t *testing.T) {
 	t.Parallel()

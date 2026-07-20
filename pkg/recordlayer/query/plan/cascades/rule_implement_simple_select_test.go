@@ -224,7 +224,7 @@ func TestImplementSimpleSelectRule_NullOnEmptyQuantifier(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalDefaultOnEmptyWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDefaultOnEmptyPlan); ok {
 			found = true
 			break
 		}

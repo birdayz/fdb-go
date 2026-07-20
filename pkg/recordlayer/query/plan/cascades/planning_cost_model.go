@@ -557,7 +557,8 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		counts.coveringIndexCount++
 		// Aggregate access groups rows — no provable ≤1 bound (Java: unknown).
 		counts.unboundedDataAccess = true
-	case *physicalVectorIndexScanWrapper:
+	// The vector scan is its own Cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryVectorIndexPlan:
 		counts.indexScanCount++
 		// Top-K vector scan — no provable ≤1 bound (Java: unknown).
 		counts.unboundedDataAccess = true

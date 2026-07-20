@@ -14,10 +14,21 @@ import (
 type RecordQueryTableFunctionPlan struct {
 	PlanExprBase
 	streamValue values.Value
+	// resultValue is the stable per-instance QuantifiedObjectValue standing for
+	// the rows this table function emits — minted once at construction, returned
+	// by GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique
+	// per instance). A bare leaf that stands as its own Cascades expression must
+	// present a consistent row identity across repeated interrogations, the role
+	// physicalTableFunctionWrapper's fresh-per-call GetResultValue could not
+	// (RFC-184 W2). nil for struct-literal test plans that bypass the constructor.
+	resultValue values.Value
 }
 
 func NewRecordQueryTableFunctionPlan(streamValue values.Value) *RecordQueryTableFunctionPlan {
-	return &RecordQueryTableFunctionPlan{streamValue: streamValue}
+	return &RecordQueryTableFunctionPlan{
+		streamValue: streamValue,
+		resultValue: values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	}
 }
 
 func (p *RecordQueryTableFunctionPlan) GetStreamValue() values.Value { return p.streamValue }
@@ -70,6 +81,17 @@ func (p *RecordQueryTableFunctionPlan) EqualsWithoutChildren(other expressions.R
 // replace while children are raw pointers (RFC-183 P5 step 1).
 func (p *RecordQueryTableFunctionPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return p
+}
+
+// GetResultValue returns the table function's STABLE per-instance result value —
+// the single correlation identity a bare table function carries as its own memo
+// expression (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
+// struct-literal test plans that bypass the constructor (resultValue is nil).
+func (p *RecordQueryTableFunctionPlan) GetResultValue() values.Value {
+	if p.resultValue == nil {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.resultValue
 }
 
 // GetCorrelatedToWithoutChildren reports the correlations of this plan's

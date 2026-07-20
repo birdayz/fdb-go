@@ -75,7 +75,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalTempTableInsertWrapper:
+	// A temp-table insert is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryTempTableInsertPlan:
 		return derivationsFromSingleChildExpr(w)
 
 	// A LIMIT is its own physical expression now (RFC-184 W2) — same
@@ -140,7 +141,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	case *physicalFirstOrDefaultWrapper:
 		return derivationsForFirstOrDefault(w)
 
-	case *physicalDefaultOnEmptyWrapper:
+	// DefaultOnEmpty is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryDefaultOnEmptyPlan:
 		return derivationsForDefaultOnEmpty(w)
 
 	// --- StreamingAggregation ---
@@ -150,17 +152,20 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- Explode ---
 
-	case *physicalExplodeWrapper:
+	// An explode is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryExplodePlan:
 		return derivationsForExplode(w)
 
 	// --- TableFunction ---
 
-	case *physicalTableFunctionWrapper:
+	// A table function is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryTableFunctionPlan:
 		return derivationsForTableFunction(w)
 
 	// --- TempTableScan ---
 
-	case *physicalTempTableScanWrapper:
+	// A temp-table scan is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryTempTableScanPlan:
 		return derivationsForTempTableScan(w)
 
 	// --- Values ---
@@ -610,15 +615,15 @@ func derivationsForFirstOrDefault(w *physicalFirstOrDefaultWrapper) *properties.
 
 // --- DefaultOnEmpty ---
 
-func derivationsForDefaultOnEmpty(w *physicalDefaultOnEmptyWrapper) *properties.Derivations {
+func derivationsForDefaultOnEmpty(w *plans.RecordQueryDefaultOnEmptyPlan) *properties.Derivations {
 	childDerivs := properties.DerivationsFromSingleChild(w)
 	childResults := childDerivs.ResultValues
 
 	var localVals []values.Value
 	localVals = append(localVals, childDerivs.LocalValues...)
 
-	alias := w.innerQuant.GetAlias()
-	onEmptyValue := w.plan.GetDefaultValue()
+	alias := w.GetInnerQuantifier().GetAlias()
+	onEmptyValue := w.GetDefaultValue()
 	if onEmptyValue != nil {
 		for _, childResult := range childResults {
 			translated := properties.TranslateCorrelation(onEmptyValue, alias, childResult)
@@ -647,8 +652,8 @@ func derivationsForStreamingAgg(w *physicalStreamingAggWrapper) *properties.Deri
 
 // --- Explode ---
 
-func derivationsForExplode(w *physicalExplodeWrapper) *properties.Derivations {
-	collectionValue := w.plan.GetCollectionValue()
+func derivationsForExplode(w *plans.RecordQueryExplodePlan) *properties.Derivations {
+	collectionValue := w.GetCollectionValue()
 	if collectionValue == nil {
 		return properties.EmptyDerivations()
 	}
@@ -674,8 +679,8 @@ func derivationsForExplode(w *physicalExplodeWrapper) *properties.Derivations {
 
 // --- TableFunction ---
 
-func derivationsForTableFunction(w *physicalTableFunctionWrapper) *properties.Derivations {
-	streamingValue := w.plan.GetStreamValue()
+func derivationsForTableFunction(w *plans.RecordQueryTableFunctionPlan) *properties.Derivations {
+	streamingValue := w.GetStreamValue()
 	if streamingValue == nil {
 		return properties.EmptyDerivations()
 	}
@@ -693,7 +698,7 @@ func derivationsForTableFunction(w *physicalTableFunctionWrapper) *properties.De
 
 // --- TempTableScan ---
 
-func derivationsForTempTableScan(w *physicalTempTableScanWrapper) *properties.Derivations {
+func derivationsForTempTableScan(w *plans.RecordQueryTempTableScanPlan) *properties.Derivations {
 	resultValue := w.GetResultValue()
 	return &properties.Derivations{
 		ResultValues: []values.Value{resultValue},

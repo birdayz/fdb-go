@@ -27,13 +27,10 @@ func TestImplementTableFunction_Fires(t *testing.T) {
 		t.Fatalf("ImplementTableFunctionRule yielded %d, want 1", len(yielded))
 	}
 
-	wrap, ok := yielded[0].(*physicalTableFunctionWrapper)
+	// RFC-184 W2: ImplementTableFunctionRule yields the bare *plans.RecordQueryTableFunctionPlan.
+	plan, ok := yielded[0].(*plans.RecordQueryTableFunctionPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalTableFunctionWrapper", yielded[0])
-	}
-	plan, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTableFunctionPlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryTableFunctionPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("yield = %T, want *plans.RecordQueryTableFunctionPlan", yielded[0])
 	}
 	if plan.GetStreamValue() != stream {
 		t.Fatal("plan stream value mismatch")
@@ -57,7 +54,7 @@ func TestImplementTableFunction_ViaPlanner(t *testing.T) {
 
 	found := false
 	for _, m := range ref.AllMembers() {
-		if _, ok := m.(*physicalTableFunctionWrapper); ok {
+		if _, ok := m.(*plans.RecordQueryTableFunctionPlan); ok {
 			found = true
 			break
 		}
@@ -86,13 +83,9 @@ func TestImplementTableFunction_PlanOutput(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	wrap, ok := plan.(*physicalTableFunctionWrapper)
+	rqp, ok := plan.(*plans.RecordQueryTableFunctionPlan)
 	if !ok {
-		t.Fatalf("plan = %T, want *physicalTableFunctionWrapper", plan)
-	}
-	rqp, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTableFunctionPlan)
-	if !ok {
-		t.Fatalf("inner plan = %T, want *RecordQueryTableFunctionPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("plan = %T, want *plans.RecordQueryTableFunctionPlan", plan)
 	}
 	explain := rqp.Explain()
 	if explain == "" {
@@ -112,8 +105,7 @@ func TestImplementTableFunction_NilStreamValue(t *testing.T) {
 		t.Fatalf("ImplementTableFunctionRule yielded %d for nil stream, want 1", len(yielded))
 	}
 
-	wrap := yielded[0].(*physicalTableFunctionWrapper)
-	plan := wrap.GetRecordQueryPlan().(*plans.RecordQueryTableFunctionPlan)
+	plan := yielded[0].(*plans.RecordQueryTableFunctionPlan)
 	if plan.GetStreamValue() != nil {
 		t.Fatal("expected nil stream value")
 	}

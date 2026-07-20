@@ -1,6 +1,8 @@
 package plans
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -24,6 +26,24 @@ func NewRecordQueryTempTableInsertPlan(
 ) *RecordQueryTempTableInsertPlan {
 	return &RecordQueryTempTableInsertPlan{
 		innerQ:         QuantifierOverPlan(inner),
+		tempTableAlias: alias,
+		owning:         owning,
+	}
+}
+
+// NewRecordQueryTempTableInsertPlanFromQuantifier builds an insert whose child is
+// a LIVE memo quantifier (the implementation rule passes a ForEachQuantifier over
+// the freshly-memoized winner) instead of a snapshot over a single plan. This
+// makes the plan its own cascades expression carrying its child edge directly:
+// the memo holds it without a physical wrapper, and GetInner / GetQuantifiers all
+// resolve through the one live edge (RFC-184 W2).
+func NewRecordQueryTempTableInsertPlanFromQuantifier(
+	innerQ expressions.Quantifier,
+	alias values.CorrelationIdentifier,
+	owning bool,
+) *RecordQueryTempTableInsertPlan {
+	return &RecordQueryTempTableInsertPlan{
+		innerQ:         innerQ,
 		tempTableAlias: alias,
 		owning:         owning,
 	}
@@ -102,6 +122,19 @@ func (p *RecordQueryTempTableInsertPlan) WithQuantifiers(qs []expressions.Quanti
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). Because the insert carries its child as a single LIVE memo edge,
+// the relink is exactly a quantifier swap: WithQuantifiers preserves the temp-table
+// alias and owning flag, and GetInner re-resolves through the new singleton
+// reference. This replaces physicalTempTableInsertWrapper.WithChildren (RFC-184 W2),
+// whose separate snapshot plan field forced a constructor rebuild.
+func (p *RecordQueryTempTableInsertPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryTempTableInsertPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

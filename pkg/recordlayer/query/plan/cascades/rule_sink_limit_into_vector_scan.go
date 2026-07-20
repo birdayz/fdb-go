@@ -77,14 +77,16 @@ func (r *SinkLimitIntoVectorScanRule) OnMatch(call *ImplementationRuleCall) {
 	// inner ref's members are filters, not vector scans, and this loop finds
 	// nothing — so the rule correctly declines to fire.
 	for _, m := range innerRef.AllMembers() {
-		vecW, ok := m.(*physicalVectorIndexScanWrapper)
-		if !ok || vecW.plan == nil || !vecW.plan.IsOrderedStream() {
+		// The vector scan is its own Cascades expression now (RFC-184 W2) — match
+		// the bare plan, no physicalVectorIndexScanWrapper adapter.
+		vecW, ok := m.(*plans.RecordQueryVectorIndexPlan)
+		if !ok || !vecW.IsOrderedStream() {
 			continue
 		}
 		// A non-literal / non-positive scan-k cannot be folded for ANY member
 		// (the scan is the same across the ref's equivalent members), so DECLINE
 		// the whole rule — keep the explicit Limit over the ordered scan.
-		adjK, okAdj := vectorScanAdjustedLimit(vecW.plan)
+		adjK, okAdj := vectorScanAdjustedLimit(vecW)
 		if !okAdj {
 			return
 		}
@@ -99,8 +101,8 @@ func (r *SinkLimitIntoVectorScanRule) OnMatch(call *ImplementationRuleCall) {
 		}
 		// Yield the self-limiting scan in place of the Limit. The scan's existing
 		// k/rankType binding already encodes the QUALIFY rank, so flipping the
-		// mode restores the exact legacy search(k).
-		call.Yield(&physicalVectorIndexScanWrapper{plan: vecW.plan.WithSelfLimiting()})
+		// mode restores the exact legacy search(k). Bare plan, no wrapper (RFC-184 W2).
+		call.Yield(vecW.WithSelfLimiting())
 		return
 	}
 }

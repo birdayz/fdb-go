@@ -521,7 +521,10 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering, unique: unique, columnNames: columnNames, pkColumnNames: pkColumnNames}
 	}
 	if vecPlan, ok := plan.(*plans.RecordQueryVectorIndexPlan); ok {
-		return &physicalVectorIndexScanWrapper{plan: vecPlan}
+		// The vector scan is its own Cascades expression now (RFC-184 W2) — a bare
+		// leaf plan carrying a stable per-instance result value, no
+		// physicalVectorIndexScanWrapper adapter needed.
+		return vecPlan
 	}
 	// A BARE primary-key scan is its own Cascades expression now (RFC-184 W2):
 	// RecordQueryScanPlan implements RelationalExpression directly and carries a

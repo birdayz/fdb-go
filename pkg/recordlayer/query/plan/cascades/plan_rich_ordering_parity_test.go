@@ -241,9 +241,10 @@ func TestRichOrderingParity_VectorIndexScan(t *testing.T) {
 				predicates.ComparisonDistanceRankLessThanOrEq,
 				nil, nil, []string{"DOCS"}, values.UnknownType,
 			)
-			w := &physicalVectorIndexScanWrapper{plan: vec}
-
-			assertRichOrderingsEqual(t, w.HintRichOrdering(), vec.HintRichOrdering())
+			// RFC-184 W2: the vector scan is its own bare plan expression (no
+			// physicalVectorIndexScanWrapper); the memo member IS the plan, so its
+			// HintRichOrdering is the plan's directly.
+			assertRichOrderingsEqual(t, vec.HintRichOrdering(), properties.EmptyOrdering())
 			if len(vec.HintRichOrdering().GetKeys()) != 0 {
 				t.Fatal("a K-NN probe must advertise no ordering keys")
 			}

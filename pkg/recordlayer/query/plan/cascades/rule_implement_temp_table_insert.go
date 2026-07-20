@@ -34,19 +34,20 @@ func (r *ImplementTempTableInsertRule) OnMatch(call *ExpressionRuleCall) {
 	if winner == nil {
 		return
 	}
-	ph, ok := winner.(physicalPlanExpression)
-	if !ok {
+	if _, ok := winner.(physicalPlanExpression); !ok {
 		return
 	}
 
-	plan := plans.NewRecordQueryTempTableInsertPlan(
-		ph.GetRecordQueryPlan(),
+	// Build the insert over the SAME live memo edge it reports as its child — no
+	// separate snapshot inner. The plan IS the cascades expression the memo holds
+	// (RFC-184 W2), no physicalTempTableInsertWrapper adapter needed.
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
+	plan := plans.NewRecordQueryTempTableInsertPlanFromQuantifier(
+		innerQ,
 		insert.GetTempTableAlias(),
 		insert.IsOwning(),
 	)
-
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-	call.Yield(newPhysicalTempTableInsertWrapper(plan, innerQ))
+	call.Yield(plan)
 }
 
 var _ ExpressionRule = (*ImplementTempTableInsertRule)(nil)
