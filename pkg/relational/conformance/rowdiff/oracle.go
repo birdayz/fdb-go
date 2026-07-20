@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // OracleRows evaluates a query naively over the case's authoritative rows:
@@ -553,6 +554,30 @@ func evalBoolInner(n *BoolNode, r Row) (predicates.TriBool, error) {
 
 func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 	switch {
+	case p.HasArith:
+		// `(Col <ArithOp> ArithCol2) <Op> Lit`. The arithmetic goes through the
+		// engine's own ArithmeticValue (baked constants), so the value and its
+		// NULL/overflow semantics are shared, not restated. A NULL in either
+		// operand makes the LHS NULL → the comparison is UNKNOWN.
+		lv := r[predKey(p.Qual, p.Col)]
+		rv := r[predKey(p.Qual, p.ArithCol2)]
+		li, lok := lv.(int64)
+		ri, rok := rv.(int64)
+		if !lok || !rok {
+			return predicates.TriUnknown, nil
+		}
+		av := &values.ArithmeticValue{
+			Op:    p.ArithOp,
+			Left:  &values.ConstantValue{Value: li, Typ: values.TypeInt},
+			Right: &values.ConstantValue{Value: ri, Typ: values.TypeInt},
+		}
+		res, err := av.Evaluate(nil)
+		if err != nil {
+			// Overflow: not reachable for OpSub over the value domain, but if a
+			// future op adds it, surface it (the engine raises 22003).
+			return predicates.TriUnknown, err
+		}
+		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(res)
 	case p.RhsCol != "":
 		// Column-vs-column: the engine's own two-sided evaluation.
 		return predicates.NewLiteralComparison(p.Op, nil).EvalAgainst(r[predKey(p.Qual, p.Col)], r[predKey(p.RhsQual, p.RhsCol)])

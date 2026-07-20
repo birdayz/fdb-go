@@ -4,9 +4,10 @@ package sqldriver_test
 // RFC-182 rowdiff harness when LEFT OUTER JOIN generation was added (rowdiff
 // seed 960000225).
 //
-// A LEFT OUTER JOIN on the PRIMARY KEY (`l.id = r.id`), combined with an R-side
-// WHERE filter AND an ORDER BY on the left key, plans successfully but then
-// FAILS AT EXECUTION with:
+// A LEFT OUTER JOIN on the PRIMARY KEY (`l.id = r.id`), combined with a WHERE
+// filter (EITHER side — an L-side `l.b IN (…)` triggers it too, seed 980000056)
+// AND an ORDER BY on the left key, plans successfully but then FAILS AT
+// EXECUTION with:
 //
 //	correlated FieldValue "ID" (correlation "L") evaluated against an
 //	unbound/unrecognized context (…multi-leg row cannot serve a
@@ -21,7 +22,7 @@ package sqldriver_test
 //
 // Removing ANY one of the three factors makes the query execute:
 //   - a non-PK join key (l.b = r.b) works;
-//   - dropping the R-side WHERE works;
+//   - dropping the WHERE filter works;
 //   - dropping the ORDER BY works.
 //
 // WHEN THE WORKSTREAM LANDS this test goes RED (the query starts returning

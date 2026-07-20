@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // ColType is the P1 column-type universe. DOUBLE is deliberately absent
@@ -79,6 +80,15 @@ type Pred struct {
 	// "<QUAL>.<COL>", so these select the side each operand reads.
 	Qual    string
 	RhsQual string
+	// HasArith makes the leaf's LHS an arithmetic expression `Col <ArithOp>
+	// ArithCol2` (both read from the leaf's own Qual side) instead of a bare
+	// column: `(a - b) <Op> Lit`. Only subtraction is generated — over the
+	// value domain ({-1, 2^62, 0..9}) |a-b| < 2^63, so it never overflows and
+	// there is no 22003 error path. A NULL in either operand propagates to a
+	// NULL LHS, so the comparison is UNKNOWN.
+	HasArith  bool
+	ArithOp   values.ArithmeticOp
+	ArithCol2 string
 	// Negated renders `NOT (…)` around the leaf (and `NOT IN` for IN).
 	Negated bool
 }
@@ -893,6 +903,23 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 	case col.Type == ColString && rng.IntN(6) == 0:
 		pat := []string{"%a%", "al%", "%ta", "_eta", "%e%a%", "alpha", "%"}[rng.IntN(7)]
 		return &Pred{Col: col.Name, Op: predicates.ComparisonLike, Lit: pat}
+	case col.Type == ColBigint && rng.IntN(9) == 0:
+		// Arithmetic LHS: (col - col2) <cmp> lit. Subtraction only (no overflow
+		// over the value domain), so no 22003 path; a NULL operand → UNKNOWN.
+		bigints := []string{"A", "B", "C"}
+		cmp := []predicates.ComparisonType{
+			predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+			predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+			predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+		}
+		return &Pred{
+			Col:       col.Name,
+			HasArith:  true,
+			ArithOp:   values.OpSub,
+			ArithCol2: bigints[rng.IntN(len(bigints))],
+			Op:        cmp[rng.IntN(len(cmp))],
+			Lit:       int64(rng.IntN(12)) - 2, // -2..9: differences straddle the literal
+		}
 	}
 
 	var ops []predicates.ComparisonType
@@ -1155,6 +1182,12 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 			b.WriteString("NOT (")
 		}
 		switch {
+		case p.HasArith:
+			col2 := strings.ToLower(p.ArithCol2)
+			if p.Qual != "" {
+				col2 = strings.ToLower(p.Qual) + "." + col2
+			}
+			fmt.Fprintf(b, "(%s %s %s) %s %s", col, arithSQL(p.ArithOp), col2, opSQL(p.Op), renderLiteral(p.Lit))
 		case p.IsBetween:
 			fmt.Fprintf(b, "%s BETWEEN %s AND %s", col, renderLiteral(p.Lit), renderLiteral(p.BetweenHi))
 		case p.Op == predicates.ComparisonIsNull:
@@ -1217,6 +1250,21 @@ func opSQL(op predicates.ComparisonType) string {
 		return ">="
 	}
 	panic(fmt.Sprintf("rowdiff: unrenderable comparison op %d", op))
+}
+
+// arithSQL renders an arithmetic operator. Only OpSub is generated today; the
+// others are handled so a future extension (with overflow handling) is a
+// one-line generator change, not a renderer change.
+func arithSQL(op values.ArithmeticOp) string {
+	switch op {
+	case values.OpAdd:
+		return "+"
+	case values.OpSub:
+		return "-"
+	case values.OpMul:
+		return "*"
+	}
+	panic(fmt.Sprintf("rowdiff: unrenderable arith op %d", op))
 }
 
 func renderLiteral(v any) string {

@@ -1392,11 +1392,11 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 — flip those `wantReject` cases to row assertions when ordinalized.
 
 ### [ ] Executor/ordinal-binding — LEFT OUTER PK-join source-relative ordinal over a multi-leg row
-A `LEFT OUTER JOIN` on the **primary key** (`l.id = r.id`) combined with an **R-side WHERE filter** AND
-an **ORDER BY on the left key** plans successfully but **dies at execution**: `correlated FieldValue "ID"
-(correlation "L") … multi-leg row cannot serve a source-relative ordinal — no frontier row resolved
-(planner/executor bug)`. Remove ANY one of the three factors (non-PK join key / no R-filter / no ORDER BY)
-and it executes. This is the SAME "multi-leg merged rows serve source-relative ordinals" defect already
+A `LEFT OUTER JOIN` on the **primary key** (`l.id = r.id`) combined with a **WHERE filter** (either side —
+an L-side `l.b IN (…)` triggers it too, seed 980000056) AND an **ORDER BY on the left key** plans
+successfully but **dies at execution**: `correlated FieldValue "ID" (correlation "L") … multi-leg row
+cannot serve a source-relative ordinal — no frontier row resolved (planner/executor bug)`. Remove ANY one
+of the three factors (non-PK join key / no WHERE filter / no ORDER BY) and it executes. This is the SAME "multi-leg merged rows serve source-relative ordinals" defect already
 documented in `rule_implement_nested_loop_join.go` (~line 2785) for the projected-EXISTS-over-3-legs arm —
 the obvious `rebaseOuterLegValueOrdinal` fix was tried and reverted; it is a **distinct executor/ordinal-
 binding workstream**, not a memo-linkage change. It fails LOUD (never wrong rows). Surfaced independently by
