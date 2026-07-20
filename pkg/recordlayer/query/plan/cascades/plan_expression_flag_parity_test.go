@@ -107,7 +107,9 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		{name: "Distinct", plan: &plans.RecordQueryDistinctPlan{}, wrap: &physicalDistinctWrapper{}},
 		{name: "Map", plan: &plans.RecordQueryMapPlan{}, wrap: &physicalMapWrapper{}},
 		{name: "Projection", plan: &plans.RecordQueryProjectionPlan{}, wrap: &physicalProjectionWrapper{}},
-		{name: "Limit", plan: &plans.RecordQueryLimitPlan{}, wrap: &physicalLimitWrapper{}},
+		// Limit has no physical wrapper since RFC-184 W2 — the memo holds
+		// *plans.RecordQueryLimitPlan directly, so its false/false flags are
+		// exercised on the live production path (no parity pair to check).
 		{name: "DefaultOnEmpty", plan: &plans.RecordQueryDefaultOnEmptyPlan{}, wrap: &physicalDefaultOnEmptyWrapper{}},
 		{name: "FirstOrDefault", plan: &plans.RecordQueryFirstOrDefaultPlan{}, wrap: &physicalFirstOrDefaultWrapper{}},
 		{name: "Explode", plan: &plans.RecordQueryExplodePlan{}, wrap: &physicalExplodeWrapper{}},

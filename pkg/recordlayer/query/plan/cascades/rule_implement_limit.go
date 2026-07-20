@@ -24,6 +24,14 @@ func NewImplementLimitRule() *ImplementLimitRule {
 	}
 }
 
+// IsPhysicalLimit reports whether the given RelationalExpression is a physical
+// LIMIT. Since RFC-184 W2 the memo holds *plans.RecordQueryLimitPlan directly
+// (no physicalLimitWrapper), so this is a bare type check on the plan.
+func IsPhysicalLimit(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryLimitPlan)
+	return ok
+}
+
 func (r *ImplementLimitRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
@@ -49,18 +57,23 @@ func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 		seen[winner] = true
-		ph, ok := winner.(physicalPlanExpression)
-		if !ok {
+		if _, ok := winner.(physicalPlanExpression); !ok {
 			continue
 		}
+		// Build the LIMIT over the SAME live memo edge it reports as its child —
+		// no separate snapshot inner. The plan IS the cascades expression the memo
+		// holds (RFC-184 W2): GetQuantifiers / OrderingSourceRef / GetInner all
+		// resolve through this one quantifier, so there is no nil-inner shell to
+		// leave stale (the class the physicalLimitWrapper's WithChildren pinned).
+		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
 		var limitPlan *plans.RecordQueryLimitPlan
 		if lv := lim.GetLimitValue(); lv != nil {
-			limitPlan = plans.NewRecordQueryLimitPlanWithValue(ph.GetRecordQueryPlan(), lv, lim.GetOffset())
+			// Runtime cap: static limit is the no-cap sentinel (-1), only lv consulted.
+			limitPlan = plans.NewRecordQueryLimitPlanFromQuantifier(innerQ, -1, lim.GetOffset(), lv)
 		} else {
-			limitPlan = plans.NewRecordQueryLimitPlan(ph.GetRecordQueryPlan(), lim.GetLimit(), lim.GetOffset())
+			limitPlan = plans.NewRecordQueryLimitPlanFromQuantifier(innerQ, lim.GetLimit(), lim.GetOffset(), nil)
 		}
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-		call.Yield(newPhysicalLimitWrapper(limitPlan, innerQ))
+		call.Yield(limitPlan)
 	}
 }
 

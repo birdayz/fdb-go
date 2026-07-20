@@ -91,7 +91,7 @@ func TestPlanner_NLJFromSelectWithTwoQuantifiers(t *testing.T) {
 }
 
 // TestPlanner_LimitProducesPhysicalPlan verifies that
-// LogicalLimitExpression(10, 0, Scan) yields a physicalLimitWrapper
+// LogicalLimitExpression(10, 0, Scan) yields a *plans.RecordQueryLimitPlan
 // after exploration.
 func TestPlanner_LimitProducesPhysicalPlan(t *testing.T) {
 	t.Parallel()
@@ -107,7 +107,7 @@ func TestPlanner_LimitProducesPhysicalPlan(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalLimit) {
-		t.Fatal("expected physicalLimitWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryLimitPlan in explored members")
 	}
 }
 

@@ -82,8 +82,8 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 // ---------------------------------------------------------------------------
 // 2. LimitOverScan: LogicalLimit(10) over Scan with full pipeline.
 //    ImplementLimitRule fires during REWRITING to produce a
-//    physicalLimitWrapper. After PLANNING + extraction, the top-level
-//    plan must be a physicalLimitWrapper.
+//    *plans.RecordQueryLimitPlan (RFC-184 W2: no wrapper). After PLANNING +
+//    extraction, the top-level plan must be a *plans.RecordQueryLimitPlan.
 //
 //    Additionally verify the PLANNING phase's UniqueRule absorption:
 //    Limit(Unique(Scan)) is tested indirectly — ImplementLimitRule
@@ -106,11 +106,11 @@ func TestPhase3_LimitOverScan(t *testing.T) {
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
 	// ImplementLimitRule fires during PLANNING and yields a
-	// physicalLimitWrapper into Members.
+	// *plans.RecordQueryLimitPlan into Members (RFC-184 W2: no wrapper).
 	foundLimit := containsPhysical(rootRef, IsPhysicalLimit)
 	if !foundLimit {
 		for _, f := range rootRef.Members() {
-			if _, ok := f.(*physicalLimitWrapper); ok {
+			if _, ok := f.(*plans.RecordQueryLimitPlan); ok {
 				foundLimit = true
 				break
 			}
@@ -124,7 +124,7 @@ func TestPhase3_LimitOverScan(t *testing.T) {
 		for _, m := range rootRef.Members() {
 			types = append(types, fmt.Sprintf("(member)%T", m))
 		}
-		t.Fatalf("expected physicalLimitWrapper, got: %v", types)
+		t.Fatalf("expected *plans.RecordQueryLimitPlan, got: %v", types)
 	}
 
 	// Verify that PLANNING phase computed PlanProperties on the root.

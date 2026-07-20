@@ -76,7 +76,9 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	case *physicalTempTableInsertWrapper:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalLimitWrapper:
+	// A LIMIT is its own physical expression now (RFC-184 W2) — same
+	// single-child passthrough derivations the physicalLimitWrapper carried.
+	case *plans.RecordQueryLimitPlan:
 		return derivationsFromSingleChildExpr(w)
 
 	case *physicalInMemorySortWrapper:

@@ -38,6 +38,19 @@ func NewRecordQueryLimitPlanWithValue(inner RecordQueryPlan, limitValue values.V
 	return &RecordQueryLimitPlan{innerQ: QuantifierOverPlan(inner), limit: -1, offset: offset, limitValue: limitValue}
 }
 
+// NewRecordQueryLimitPlanFromQuantifier builds a LIMIT whose child is a LIVE
+// memo quantifier (the implementation rule passes
+// ForEachQuantifier(MemoizeExpression(winner))) instead of a snapshot over a
+// single plan. This makes the plan its own cascades expression carrying its
+// child edge directly: the memo holds it without a physical wrapper, and
+// GetQuantifiers / OrderingSourceRef / GetInner all resolve through the one live
+// edge. limitValue is the optional runtime cap (nil for a static literal LIMIT);
+// when non-nil the caller passes limit=-1, the no-cap sentinel, exactly as
+// NewRecordQueryLimitPlanWithValue does.
+func NewRecordQueryLimitPlanFromQuantifier(innerQ expressions.Quantifier, limit, offset int64, limitValue values.Value) *RecordQueryLimitPlan {
+	return &RecordQueryLimitPlan{innerQ: innerQ, limit: limit, offset: offset, limitValue: limitValue}
+}
+
 // GetLimitValue returns the optional runtime row-cap Value (nil for a static
 // literal LIMIT).
 func (p *RecordQueryLimitPlan) GetLimitValue() values.Value { return p.limitValue }
@@ -137,6 +150,21 @@ func (p *RecordQueryLimitPlan) WithQuantifiers(qs []expressions.Quantifier) expr
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface, also consulted by pinOrderedSpine to bake the ordering-delegation
+// spine). Because the LIMIT carries its child as a single LIVE memo edge, the
+// relink is exactly a quantifier swap: WithQuantifiers preserves the static and
+// runtime cap (limit / offset / limitValue), and GetInner re-resolves the plan
+// through the new singleton reference. This replaces
+// physicalLimitWrapper.WithChildren, whose separate snapshot `plan` field forced
+// a WithInner rebuild to keep the cap — a single child edge needs none.
+func (p *RecordQueryLimitPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryLimitPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.
