@@ -257,6 +257,7 @@ go_test(
         "null_join_agg_probe_test.go",
         "null_ordering_probe_test.go",
         "null_safe_join_probe_test.go",
+        "nullif_unsupported_fdb_test.go",
         "nulls_counterflow_repro_test.go",
         "nulls_order_probe_test.go",
         "nullsupply_barrier_fdb_test.go",

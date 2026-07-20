@@ -325,16 +325,18 @@ type StrFnSpec struct {
 type NumFnKind int
 
 const (
-	NumFnAbs NumFnKind = iota // ABS(col)
-	NumFnMod                  // MOD(col, Mod)
+	NumFnAbs      NumFnKind = iota // ABS(col)
+	NumFnMod                       // MOD(col, Mod)
+	NumFnCoalesce                  // COALESCE(col, Default) — col's value, or Default when NULL
 )
 
-// NumFnSpec is a numeric-function predicate LHS: `ABS(col) <Op> Lit` or
-// `MOD(col, Mod) <Op> Lit`.
+// NumFnSpec is a numeric-function predicate LHS: `ABS(col) <Op> Lit`,
+// `MOD(col, Mod) <Op> Lit`, or `COALESCE(col, Default) <Op> Lit`.
 type NumFnSpec struct {
-	Fn  NumFnKind
-	Col string // BIGINT column
-	Mod int64  // nonzero divisor for MOD (unused for ABS)
+	Fn      NumFnKind
+	Col     string // BIGINT column
+	Mod     int64  // nonzero divisor for MOD (unused otherwise)
+	Default int64  // COALESCE fallback when the column is NULL (never NULL itself)
 }
 
 // UnionSpec is a set operation between two single-table branches over the same
@@ -1620,9 +1622,12 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 		switch {
 		case p.NumFn != nil:
 			col := strings.ToLower(p.NumFn.Col)
-			if p.NumFn.Fn == NumFnMod {
+			switch p.NumFn.Fn {
+			case NumFnMod:
 				fmt.Fprintf(b, "MOD(%s, %d) %s %s", col, p.NumFn.Mod, opSQL(p.Op), renderLiteral(p.Lit))
-			} else {
+			case NumFnCoalesce:
+				fmt.Fprintf(b, "COALESCE(%s, %d) %s %s", col, p.NumFn.Default, opSQL(p.Op), renderLiteral(p.Lit))
+			default:
 				fmt.Fprintf(b, "ABS(%s) %s %s", col, opSQL(p.Op), renderLiteral(p.Lit))
 			}
 		case p.StrFn != nil:
@@ -1817,15 +1822,23 @@ func genNumFnLeaf(rng *rand.Rand) *Pred {
 		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
 	}
 	spec := &NumFnSpec{Col: bigints[rng.IntN(len(bigints))]}
-	if rng.IntN(2) == 0 {
+	switch rng.IntN(3) {
+	case 0:
 		spec.Fn = NumFnAbs
 		return &Pred{NumFn: spec, Op: ops[rng.IntN(len(ops))], Lit: int64(rng.IntN(10))}
+	case 1:
+		spec.Fn = NumFnMod
+		spec.Mod = int64(2 + rng.IntN(7)) // 2..8, nonzero → no divzero
+		// The Go/SQL remainder ranges -(Mod-1)..(Mod-1); span it so matches occur.
+		lit := int64(rng.IntN(int(2*spec.Mod-1))) - (spec.Mod - 1)
+		return &Pred{NumFn: spec, Op: ops[rng.IntN(len(ops))], Lit: lit}
+	default:
+		spec.Fn = NumFnCoalesce
+		// Prefer a nullable column so the NULL→Default path is exercised.
+		spec.Col = []string{"A", "C"}[rng.IntN(2)]
+		spec.Default = int64(rng.IntN(10))
+		return &Pred{NumFn: spec, Op: ops[rng.IntN(len(ops))], Lit: int64(rng.IntN(10))}
 	}
-	spec.Fn = NumFnMod
-	spec.Mod = int64(2 + rng.IntN(7)) // 2..8, nonzero → no divzero
-	// The Go/SQL remainder ranges -(Mod-1)..(Mod-1); span it so matches occur.
-	lit := int64(rng.IntN(int(2*spec.Mod-1))) - (spec.Mod - 1)
-	return &Pred{NumFn: spec, Op: ops[rng.IntN(len(ops))], Lit: lit}
 }
 
 // strFnSQL renders a string function's SQL name.

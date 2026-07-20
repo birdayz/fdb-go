@@ -764,6 +764,16 @@ func evalBoolInner(n *BoolNode, r Row) (predicates.TriBool, error) {
 func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 	switch {
 	case p.NumFn != nil:
+		// COALESCE absorbs NULL: a NULL column yields Default (never NULL,
+		// verified: COALESCE(NULL,5)=5) — handle it before the NULL guard the
+		// arithmetic functions need.
+		if p.NumFn.Fn == NumFnCoalesce {
+			result := p.NumFn.Default
+			if v, ok := r[p.NumFn.Col].(int64); ok {
+				result = v
+			}
+			return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(result)
+		}
 		// ABS / MOD over BIGINT — Go's abs and % match the engine over the
 		// value domain (no MinInt64 → no ABS overflow; % follows the dividend's
 		// sign like SQL MOD; the MOD divisor is a nonzero literal → no divzero).
