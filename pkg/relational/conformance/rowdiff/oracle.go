@@ -404,6 +404,43 @@ func oracleThreeWayJoin(c *Case, q Query, projection []string) ([]Row, error) {
 			if lm != predicates.TriTrue {
 				continue
 			}
+			// mkRow builds the L++M++R row; a nil r NULL-extends the R leg
+			// (LEFT OUTER third leg). emit applies the WHERE and collects.
+			mkRow := func(r Row) Row {
+				row := make(Row, 3*(len(c.Table.Cols)+1))
+				for k, v := range l {
+					row["L."+k] = v
+				}
+				for k, v := range m {
+					row["M."+k] = v
+				}
+				if r == nil {
+					// NULL-extend every R column (LEFT JOIN no-match).
+					row["R.ID"] = nil
+					for _, col := range c.Table.Cols {
+						row["R."+col.Name] = nil
+					}
+				} else {
+					for k, v := range r {
+						row["R."+k] = v
+					}
+				}
+				return row
+			}
+			emit := func(row Row) error {
+				if q.Where != nil {
+					wb, werr := evalBool(q.Where, row)
+					if werr != nil {
+						return werr
+					}
+					if wb != predicates.TriTrue {
+						return nil
+					}
+				}
+				combined = append(combined, row)
+				return nil
+			}
+			matched := false
 			for _, r := range c.Rows {
 				mr, err := eq.EvalAgainst(m[s.MRMid], r[s.MRRight])
 				if err != nil {
@@ -412,26 +449,19 @@ func oracleThreeWayJoin(c *Case, q Query, projection []string) ([]Row, error) {
 				if mr != predicates.TriTrue {
 					continue
 				}
-				row := make(Row, 3*(len(c.Table.Cols)+1))
-				for k, v := range l {
-					row["L."+k] = v
+				matched = true
+				if err := emit(mkRow(r)); err != nil {
+					return nil, err
 				}
-				for k, v := range m {
-					row["M."+k] = v
+			}
+			// LEFT OUTER third leg: an (l,m) pair with no matching r yields one
+			// R-NULL row (SQL applies WHERE AFTER the join, so an R-side filter
+			// then evaluates UNKNOWN and drops it — handled by evalBool's
+			// three-valued logic, not special-cased here).
+			if s.ROuter && !matched {
+				if err := emit(mkRow(nil)); err != nil {
+					return nil, err
 				}
-				for k, v := range r {
-					row["R."+k] = v
-				}
-				if q.Where != nil {
-					wb, werr := evalBool(q.Where, row)
-					if werr != nil {
-						return nil, werr
-					}
-					if wb != predicates.TriTrue {
-						continue
-					}
-				}
-				combined = append(combined, row)
 			}
 		}
 	}

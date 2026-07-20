@@ -278,6 +278,14 @@ type ThreeWayJoinSpec struct {
 	// equalities in the WHERE; otherwise chained `JOIN … ON`. Same logical
 	// query, a different parse path into the planner.
 	Comma bool
+	// ROuter makes the THIRD leg a LEFT OUTER join
+	// (`l JOIN m ON … LEFT JOIN r ON …`): a (l,m) pair with no matching r is
+	// NULL-extended rather than dropped. Only meaningful for the JOIN…ON form
+	// (a comma cross-join cannot express OUTER), so the generator sets it only
+	// when !Comma. This exercises the composition of the two ordinal-binding
+	// fixes — outer-join multi-leg rows AND 3-way shared-column ordinals — the
+	// space where a residual of either would surface.
+	ROuter bool
 }
 
 // CaseSpec is a searched CASE used as a predicate LHS:
@@ -584,6 +592,9 @@ func genThreeWayJoin(rng *rand.Rand, table TableDef) Query {
 		MRRight: probed[rng.IntN(len(probed))],
 		Comma:   rng.IntN(2) == 0,
 	}
+	// The third leg is LEFT OUTER ~1/3 of the JOIN…ON forms (a comma cross-join
+	// cannot express OUTER).
+	spec.ROuter = !spec.Comma && rng.IntN(3) == 0
 
 	// 1-2 qualified single-sided filters (Qual L/M/R). AND-only (no top-level
 	// OR), so the comma form's `joinEq AND <where>` needs no parenthesization.
@@ -1403,9 +1414,13 @@ func (c *Case) SQL(q Query, projection []string) string {
 		if s.Comma {
 			fmt.Fprintf(&b, "%s AS l, %s AS m, %s AS r", tbl, tbl, tbl)
 		} else {
-			fmt.Fprintf(&b, "%s AS l JOIN %s AS m ON l.%s = m.%s JOIN %s AS r ON m.%s = r.%s",
+			rJoin := "JOIN"
+			if s.ROuter {
+				rJoin = "LEFT JOIN"
+			}
+			fmt.Fprintf(&b, "%s AS l JOIN %s AS m ON l.%s = m.%s %s %s AS r ON m.%s = r.%s",
 				tbl, tbl, strings.ToLower(s.LMLeft), strings.ToLower(s.LMRight),
-				tbl, strings.ToLower(s.MRMid), strings.ToLower(s.MRRight))
+				rJoin, tbl, strings.ToLower(s.MRMid), strings.ToLower(s.MRRight))
 		}
 	case q.Join == nil:
 		b.WriteString(tbl)
