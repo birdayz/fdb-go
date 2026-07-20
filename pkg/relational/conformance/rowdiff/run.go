@@ -175,15 +175,24 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 				for _, fam := range classifyPlan(plan) {
 					res.Histogram[fam]++
 				}
-				// Cost/ordering axis (RFC-182): the same typed plan that feeds
-				// the family histogram is checked against invariants a correct
-				// plan can never violate. A violation is a finding — the row
-				// diff is blind to a plan that returns the right rows the wrong
-				// way, which is exactly where the ordinal-binding bugs lived.
+				// Cost/ordering axis (RFC-182 / RFC-184 W1): the same typed plan
+				// that feeds the family histogram is checked against invariants a
+				// correct plan can never violate. A violation is a finding — the
+				// row diff is blind to a plan that returns the right rows the
+				// wrong way, which is exactly where the ordinal-binding bugs
+				// lived. checkPlanCost is the spurious-sort (COST) invariant;
+				// checkPlanOrdering is the redundant-sort (ORDERING) invariant —
+				// a sort over an input a scan already orders.
 				for _, v := range checkPlanCost(plan, q) {
 					res.Mismatches = append(res.Mismatches, &Mismatch{
 						Seed: c.Seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
 						Detail: "cost/ordering: " + v,
+					})
+				}
+				for _, v := range checkPlanOrdering(plan, q) {
+					res.Mismatches = append(res.Mismatches, &Mismatch{
+						Seed: c.Seed, DDL: ddl, InsertSQL: insertSQL, SQL: sqlText,
+						Detail: "ordering: " + v,
 					})
 				}
 			} else {
