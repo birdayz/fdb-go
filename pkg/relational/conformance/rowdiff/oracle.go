@@ -665,6 +665,24 @@ func evalBoolInner(n *BoolNode, r Row) (predicates.TriBool, error) {
 
 func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 	switch {
+	case p.StrFn != nil:
+		// UPPER/LOWER/LENGTH over the ASCII string domain — Go's strings.ToUpper
+		// / ToLower / len match the engine's semantics there (verified by probe).
+		// A NULL column makes the result NULL, so the comparison is UNKNOWN.
+		sv, ok := r[p.StrFn.Col].(string)
+		if !ok {
+			return predicates.TriUnknown, nil
+		}
+		var result any
+		switch p.StrFn.Fn {
+		case StrFnUpper:
+			result = strings.ToUpper(sv)
+		case StrFnLower:
+			result = strings.ToLower(sv)
+		case StrFnLength:
+			result = int64(len(sv))
+		}
+		return predicates.NewLiteralComparison(p.Op, p.Lit).Eval(result)
 	case p.Case != nil:
 		// SQL searched CASE: the WHEN arm is taken only when its condition is
 		// TRUE; a FALSE or UNKNOWN (NULL-operand) condition falls through to

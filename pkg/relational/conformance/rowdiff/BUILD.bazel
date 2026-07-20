@@ -30,6 +30,7 @@ go_test(
         "right_join_oracle_test.go",
         "rowdiff_test.go",
         "scalar_sub_oracle_test.go",
+        "str_fn_oracle_test.go",
         "three_way_oracle_test.go",
     ],
     embed = [":rowdiff"],

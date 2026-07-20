@@ -93,6 +93,10 @@ type Pred struct {
 	// `(CASE WHEN … THEN … ELSE … END) <Op> Lit` instead of a bare column.
 	// Single-table only (unqualified columns).
 	Case *CaseSpec
+	// StrFn, when non-nil, makes the leaf's LHS a string-function call
+	// `<Fn>(<StrCol>) <Op> Lit` (UPPER/LOWER vs a string Lit, LENGTH vs an int
+	// Lit). Single-table only. A NULL column makes the result NULL → UNKNOWN.
+	StrFn *StrFnSpec
 	// Negated renders `NOT (…)` around the leaf (and `NOT IN` for IN).
 	Negated bool
 }
@@ -283,6 +287,23 @@ type CaseSpec struct {
 	ThenLit int64
 	ElseCol string // ELSE reads this column; "" ⇒ ElseLit
 	ElseLit int64
+}
+
+// StrFnKind is a scalar string function whose semantics are unambiguous over
+// the generator's ASCII string domain (so the oracle's Go implementation and
+// the engine agree by construction — verified by probe).
+type StrFnKind int
+
+const (
+	StrFnUpper  StrFnKind = iota // UPPER(s) → string
+	StrFnLower                   // LOWER(s) → string
+	StrFnLength                  // LENGTH(s) → int (character count == byte count for ASCII)
+)
+
+// StrFnSpec is a string-function predicate LHS: `<Fn>(<Col>) <Op> Lit`.
+type StrFnSpec struct {
+	Fn  StrFnKind
+	Col string // the STRING column (only "S" today)
 }
 
 // Query is one generated query body; the runner executes it under every
@@ -925,6 +946,12 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 		leaves = append(leaves, genCaseLeaf(rng))
 	}
 
+	// String-function leaf (~1/8): `UPPER/LOWER/LENGTH(s) op lit` — a scalar
+	// function residual with NULL propagation over the STRING column.
+	if rng.IntN(8) == 0 {
+		leaves = append(leaves, genStrFnLeaf(rng))
+	}
+
 	// NOT on a leaf (~1/8 each): `NOT (a = 1)` / `a NOT IN (…)`.
 	for _, lf := range leaves {
 		if rng.IntN(8) == 0 {
@@ -1362,6 +1389,9 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 			b.WriteString("NOT (")
 		}
 		switch {
+		case p.StrFn != nil:
+			fmt.Fprintf(b, "%s(%s) %s %s",
+				strFnSQL(p.StrFn.Fn), strings.ToLower(p.StrFn.Col), opSQL(p.Op), renderLiteral(p.Lit))
 		case p.Case != nil:
 			cs := p.Case
 			fmt.Fprintf(b, "(CASE WHEN %s %s %s THEN %s ELSE %s END) %s %s",
@@ -1468,6 +1498,44 @@ func caseArmSQL(col string, lit int64) string {
 		return strings.ToLower(col)
 	}
 	return renderLiteral(lit)
+}
+
+// genStrFnLeaf builds a single-table string-function predicate leaf. UPPER/LOWER
+// compare against a case-folded literal from the string domain so a match is
+// reachable; LENGTH compares against a small integer.
+func genStrFnLeaf(rng *rand.Rand) *Pred {
+	domain := []string{"", "alpha", "beta", "gamma", "delta", "epsilon", "zeta"}
+	ops := []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+		predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+	}
+	op := ops[rng.IntN(len(ops))]
+	spec := &StrFnSpec{Col: "S"}
+	switch rng.IntN(3) {
+	case 0:
+		spec.Fn = StrFnUpper
+		return &Pred{StrFn: spec, Op: op, Lit: strings.ToUpper(domain[rng.IntN(len(domain))])}
+	case 1:
+		spec.Fn = StrFnLower
+		return &Pred{StrFn: spec, Op: op, Lit: strings.ToLower(domain[rng.IntN(len(domain))])}
+	default:
+		spec.Fn = StrFnLength
+		return &Pred{StrFn: spec, Op: op, Lit: int64(rng.IntN(9))}
+	}
+}
+
+// strFnSQL renders a string function's SQL name.
+func strFnSQL(fn StrFnKind) string {
+	switch fn {
+	case StrFnUpper:
+		return "UPPER"
+	case StrFnLower:
+		return "LOWER"
+	case StrFnLength:
+		return "LENGTH"
+	}
+	panic(fmt.Sprintf("rowdiff: unrenderable string fn %d", fn))
 }
 
 // arithSQL renders an arithmetic operator. Only OpSub is generated today; the
