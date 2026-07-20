@@ -89,6 +89,17 @@ type Pred struct {
 	HasArith  bool
 	ArithOp   values.ArithmeticOp
 	ArithCol2 string
+	// Bitwise makes the leaf's LHS a bitwise expression `(Col <op> BitCol2)`
+	// (op ∈ &,|,^; BitOp names the engine function BITAND/BITOR/BITXOR) instead
+	// of a bare column: `(a & b) <Op> Lit`. Bitwise ops never overflow (unlike
+	// +/*), so the value is order-independent and oracle-safe. A NULL in either
+	// operand yields a NULL LHS → the comparison is UNKNOWN. The oracle folds it
+	// through the engine's own ScalarFunctionValue, so the bitwise/NULL
+	// semantics are shared — the leaf tests the PLANNER's handling of a bitwise
+	// predicate expression (pushdown, index residual), not the eval.
+	Bitwise bool
+	BitOp   string // "BITAND" | "BITOR" | "BITXOR"
+	BitCol2 string
 	// Case, when non-nil, makes the leaf's LHS a searched CASE expression
 	// `(CASE WHEN … THEN … ELSE … END) <Op> Lit` instead of a bare column.
 	// Single-table only (unqualified columns).
@@ -1292,6 +1303,25 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 			Op:        cmp[rng.IntN(len(cmp))],
 			Lit:       int64(rng.IntN(12)) - 2, // -2..9: differences straddle the literal
 		}
+	case col.Type == ColBigint && rng.IntN(8) == 0:
+		// Bitwise LHS: (col <op> col2) <cmp> lit. AND/OR/XOR over two bigints —
+		// no overflow (order-independent, oracle-safe unlike +/*). Exercises the
+		// planner's handling of a bitwise predicate expression.
+		bigints := []string{"A", "B", "C"}
+		bitOps := []string{"BITAND", "BITOR", "BITXOR"}
+		cmp := []predicates.ComparisonType{
+			predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+			predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+			predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+		}
+		return &Pred{
+			Col:     col.Name,
+			Bitwise: true,
+			BitOp:   bitOps[rng.IntN(len(bitOps))],
+			BitCol2: bigints[rng.IntN(len(bigints))],
+			Op:      cmp[rng.IntN(len(cmp))],
+			Lit:     int64(rng.IntN(16)), // 0..15: straddles typical AND/OR/XOR results
+		}
 	}
 
 	var ops []predicates.ComparisonType
@@ -1697,6 +1727,12 @@ func renderBool(b *strings.Builder, n *BoolNode) {
 				col2 = strings.ToLower(p.Qual) + "." + col2
 			}
 			fmt.Fprintf(b, "(%s %s %s) %s %s", col, arithSQL(p.ArithOp), col2, opSQL(p.Op), renderLiteral(p.Lit))
+		case p.Bitwise:
+			col2 := strings.ToLower(p.BitCol2)
+			if p.Qual != "" {
+				col2 = strings.ToLower(p.Qual) + "." + col2
+			}
+			fmt.Fprintf(b, "(%s %s %s) %s %s", col, bitSQL(p.BitOp), col2, opSQL(p.Op), renderLiteral(p.Lit))
 		case p.IsBetween:
 			fmt.Fprintf(b, "%s BETWEEN %s AND %s", col, renderLiteral(p.Lit), renderLiteral(p.BetweenHi))
 		case p.Op == predicates.ComparisonIsNull:
@@ -1935,6 +1971,20 @@ func arithSQL(op values.ArithmeticOp) string {
 		return "*"
 	}
 	panic(fmt.Sprintf("rowdiff: unrenderable arith op %d", op))
+}
+
+// bitSQL renders a bitwise op name (BITAND/BITOR/BITXOR) as its SQL infix
+// operator (&/|/^ — the RelationalParser bitOperator forms).
+func bitSQL(op string) string {
+	switch op {
+	case "BITAND":
+		return "&"
+	case "BITOR":
+		return "|"
+	case "BITXOR":
+		return "^"
+	}
+	panic(fmt.Sprintf("rowdiff: unrenderable bit op %q", op))
 }
 
 func renderLiteral(v any) string {
