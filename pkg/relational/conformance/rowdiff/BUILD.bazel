@@ -25,6 +25,7 @@ go_test(
     srcs = [
         "agg_multicol_oracle_test.go",
         "arith_oracle_test.go",
+        "bitwise_oracle_test.go",
         "case_oracle_test.go",
         "cast_oracle_test.go",
         "coalesce_oracle_test.go",
@@ -36,6 +37,7 @@ go_test(
         "exists_oracle_test.go",
         "left_join_oracle_test.go",
         "num_fn_oracle_test.go",
+        "outer_three_way_oracle_test.go",
         "right_join_oracle_test.go",
         "rowdiff_test.go",
         "scalar_sub_oracle_test.go",
