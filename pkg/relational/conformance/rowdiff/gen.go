@@ -166,12 +166,32 @@ type AggSpec struct {
 	HavingOn bool
 }
 
+// ExistsSpec is a CORRELATED [NOT] EXISTS subquery appended to a single-table
+// query's WHERE, over the SAME table under alias `r`:
+//
+//	[NOT] EXISTS (SELECT 1 FROM t AS r WHERE r.<CorrCol> = t.<CorrCol> [AND <Inner>])
+//
+// The correlation equality and the optional simple inner comparison go through
+// the engine's own Comparison eval in the oracle (evalLeaf / EvalAgainst), so
+// scalar/NULL semantics are shared by construction — a `r.c = t.c` with a NULL
+// on either side is UNKNOWN, so a NULL correlation value matches no inner row.
+// What is under test is the PLANNER's correlated-EXISTS handling (semi-join,
+// decorrelation, correlation binding), and — since EXISTS is a WHERE filter
+// with no output-schema change — it composes with the paging sweep to test
+// EXISTS continuation soundness too.
+type ExistsSpec struct {
+	CorrCol string // correlation column: r.CorrCol = t.CorrCol
+	Inner   *Pred  // optional extra filter on r (Qual empty; col op literal only)
+	Negated bool   // NOT EXISTS
+}
+
 // Query is one generated query body; the runner executes it under every
 // projection variant and cross-checks row identity via ID.
 type Query struct {
-	Agg      *AggSpec  // nil = not an aggregate query
-	Join     *JoinSpec // nil = single-table query
-	Where    *BoolNode // nil = no WHERE
+	Agg      *AggSpec    // nil = not an aggregate query
+	Join     *JoinSpec   // nil = single-table query
+	Exists   *ExistsSpec // non-nil = append a correlated [NOT] EXISTS to WHERE
+	Where    *BoolNode   // nil = no WHERE
 	OrderBy  []OrderKey
 	Limit    int  // 0 = no LIMIT
 	Offset   int  // 0 = no OFFSET (only emitted alongside LIMIT + ORDER BY)
@@ -240,6 +260,50 @@ func aggOutputCols(a *AggSpec) []string {
 		return []string{"G", "AGG"}
 	}
 	return []string{"AGG"}
+}
+
+// genExists builds a correlated [NOT] EXISTS: correlation on a BIGINT column
+// plus, half the time, a simple `col op literal` filter on the inner row. The
+// inner Pred keeps Qual empty (it reads a plain-keyed inner row in the oracle)
+// and is a bare column-vs-literal so both the SQL render (existsSQL) and
+// evalLeaf handle it with no BETWEEN/IN/qualifier machinery.
+func genExists(rng *rand.Rand) *ExistsSpec {
+	bigints := []string{"A", "B", "C"}
+	e := &ExistsSpec{
+		CorrCol: bigints[rng.IntN(len(bigints))],
+		Negated: rng.IntN(2) == 0,
+	}
+	if rng.IntN(2) == 0 {
+		ops := []predicates.ComparisonType{
+			predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+			predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
+			predicates.ComparisonLessThanOrEq, predicates.ComparisonGreaterThanEq,
+		}
+		e.Inner = &Pred{
+			Col: bigints[rng.IntN(len(bigints))],
+			Op:  ops[rng.IntN(len(ops))],
+			Lit: int64(rng.IntN(10)),
+		}
+	}
+	return e
+}
+
+// existsSQL renders the correlated [NOT] EXISTS clause. tbl is the outer table
+// name (also the inner table); the inner aliases it `r` and correlates against
+// the unqualified outer `tbl.<col>`.
+func existsSQL(e *ExistsSpec, tbl string) string {
+	var b strings.Builder
+	if e.Negated {
+		b.WriteString("NOT ")
+	}
+	fmt.Fprintf(&b, "EXISTS (SELECT 1 FROM %s AS r WHERE r.%s = %s.%s",
+		tbl, strings.ToLower(e.CorrCol), tbl, strings.ToLower(e.CorrCol))
+	if e.Inner != nil {
+		fmt.Fprintf(&b, " AND r.%s %s %s",
+			strings.ToLower(e.Inner.Col), opSQL(e.Inner.Op), renderLiteral(e.Inner.Lit))
+	}
+	b.WriteString(")")
+	return b.String()
 }
 
 // genAggQuery builds `SELECT [g,] <agg> FROM t [WHERE …] [GROUP BY g]
@@ -627,6 +691,13 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 
 	q := Query{Where: where, OrderBy: orderBy}
 
+	// Correlated [NOT] EXISTS on ~1/4 of plain queries: a rich wrong-rows
+	// surface (semi-join, decorrelation, correlation binding) the generator
+	// otherwise never reaches.
+	if rng.IntN(4) == 0 {
+		q.Exists = genExists(rng)
+	}
+
 	// DISTINCT on ~1/6 of queries. ORDER BY is dropped for DISTINCT — the
 	// projection variants do not all contain every sort key, and SQL
 	// requires DISTINCT's ORDER BY ⊆ projection; the unordered multiset
@@ -813,16 +884,36 @@ func (c *Case) SQL(q Query, projection []string) string {
 		joinEq = fmt.Sprintf("l.%s = r.%s",
 			strings.ToLower(q.Join.LeftCol), strings.ToLower(q.Join.RightCol))
 	}
-	if joinEq != "" || q.Where != nil {
+	if joinEq != "" || q.Where != nil || q.Exists != nil {
 		b.WriteString(" WHERE ")
+		wrote := false
 		if joinEq != "" {
 			b.WriteString(joinEq)
-			if q.Where != nil {
-				b.WriteString(" AND ")
-			}
+			wrote = true
 		}
 		if q.Where != nil {
-			renderBool(&b, q.Where)
+			if wrote {
+				b.WriteString(" AND ")
+			}
+			// Parenthesize the WHERE when a top-level `AND EXISTS` conjunct
+			// follows: without it, a top-level OR in the WHERE would capture the
+			// EXISTS (AND binds tighter than OR), whereas the oracle applies
+			// EXISTS as a separate top-level conjunct — a rendering-only
+			// divergence otherwise.
+			if q.Exists != nil {
+				b.WriteString("(")
+				renderBool(&b, q.Where)
+				b.WriteString(")")
+			} else {
+				renderBool(&b, q.Where)
+			}
+			wrote = true
+		}
+		if q.Exists != nil {
+			if wrote {
+				b.WriteString(" AND ")
+			}
+			b.WriteString(existsSQL(q.Exists, tbl))
 		}
 	}
 	if len(q.OrderBy) > 0 {

@@ -40,6 +40,17 @@ func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
 				continue
 			}
 		}
+		if q.Exists != nil {
+			has, err := existsHolds(c, q.Exists, r)
+			if err != nil {
+				return nil, err
+			}
+			// EXISTS keeps the outer row when a match exists; NOT EXISTS keeps
+			// it when none does. has==Negated is exactly the drop condition.
+			if has == q.Exists.Negated {
+				continue
+			}
+		}
 		out = append(out, r)
 	}
 
@@ -165,6 +176,35 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// existsHolds evaluates a correlated EXISTS for outer row o: does ANY row
+// satisfy `r.CorrCol = o.CorrCol [AND Inner]`? The correlation equality and the
+// inner comparison go through the engine's own Comparison (EvalAgainst /
+// evalLeaf), so NULL/scalar semantics are shared — a NULL on either side of the
+// correlation is UNKNOWN, so a NULL correlation value matches no inner row.
+func existsHolds(c *Case, e *ExistsSpec, o Row) (bool, error) {
+	corr := predicates.NewLiteralComparison(predicates.ComparisonEquals, nil)
+	for _, ir := range c.Rows {
+		tb, err := corr.EvalAgainst(ir[e.CorrCol], o[e.CorrCol])
+		if err != nil {
+			return false, err
+		}
+		if tb != predicates.TriTrue {
+			continue
+		}
+		if e.Inner != nil {
+			itb, err := evalLeaf(e.Inner, ir)
+			if err != nil {
+				return false, err
+			}
+			if itb != predicates.TriTrue {
+				continue
+			}
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // oracleAggRows evaluates an aggregate query: filter (through the engine's
