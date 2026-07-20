@@ -306,12 +306,28 @@ type StrFnSpec struct {
 	Col string // the STRING column (only "S" today)
 }
 
+// UnionSpec is a set operation between two single-table branches over the same
+// table with the same projection:
+//
+//	SELECT <proj> FROM t WHERE <Left> UNION [ALL] SELECT <proj> FROM t WHERE <Right>
+//
+// UNION dedups the combined output (SQL set semantics); UNION ALL keeps every
+// row. Overlapping branch predicates make a row appear in both branches, so the
+// dedup does real work — a bug there (over- or under-deduping, or the wrong
+// dedup key) is a wrong-rows divergence.
+type UnionSpec struct {
+	Left  *BoolNode // WHERE of the left branch (nil = no filter)
+	Right *BoolNode // WHERE of the right branch
+	All   bool      // UNION ALL (no dedup) vs UNION (dedup)
+}
+
 // Query is one generated query body; the runner executes it under every
 // projection variant and cross-checks row identity via ID.
 type Query struct {
 	Agg       *AggSpec          // nil = not an aggregate query
 	Join      *JoinSpec         // nil = single-table query
 	ThreeWay  *ThreeWayJoinSpec // non-nil = 3-way self-join
+	Union     *UnionSpec        // non-nil = UNION [ALL] of two single-table branches
 	Exists    *ExistsSpec       // non-nil = append a correlated [NOT] EXISTS to WHERE
 	ScalarSub *ScalarSubSpec    // non-nil = append a scalar-subquery comparison to WHERE
 	Where     *BoolNode         // nil = no WHERE
@@ -391,6 +407,8 @@ func (c *Case) ProjectionsFor(q Query) [][]string {
 	case q.ThreeWay != nil:
 		return c.threeWayProjections()
 	}
+	// Union and plain single-table queries share the single-table projections
+	// (both UNION branches project the same columns).
 	return c.Projections()
 }
 
@@ -528,6 +546,42 @@ func genThreeWayJoin(rng *rand.Rand, table TableDef) Query {
 		}
 	}
 	return q
+}
+
+// genBranchWhere builds a small 1-2 leaf AND-conjunction for a UNION branch.
+// Kept simple so the two branches overlap often, exercising the dedup.
+func genBranchWhere(rng *rand.Rand, table TableDef, indexed map[string]bool) *BoolNode {
+	n := 1 + rng.IntN(2)
+	kids := make([]*BoolNode, n)
+	for i := 0; i < n; i++ {
+		col := table.Cols[rng.IntN(len(table.Cols))]
+		kids[i] = &BoolNode{Leaf: genPred(rng, col, indexed[col.Name])}
+	}
+	if n == 1 {
+		return kids[0]
+	}
+	return &BoolNode{And: true, Kids: kids}
+}
+
+// genUnionQuery builds `SELECT … WHERE <l> UNION ALL SELECT … WHERE <r>` over
+// the same table (same projection on both branches). Only UNION ALL: the engine
+// rejects plain UNION (dedup) with 0AF00 "only UNION ALL is supported" — a
+// capability it lacks, not a soundness case, so generating it would just probe
+// an unsupported-query error (the boundary is pinned by
+// TestFDB_UnionDedup_Unsupported instead). The oracle's dedup path stays
+// exercised by the isolation test and is ready if UNION-dedup ever lands.
+func genUnionQuery(rng *rand.Rand, table TableDef) Query {
+	indexed := map[string]bool{}
+	for _, idx := range table.Indexes {
+		for _, cc := range idx.Cols {
+			indexed[cc] = true
+		}
+	}
+	return Query{Union: &UnionSpec{
+		Left:  genBranchWhere(rng, table, indexed),
+		Right: genBranchWhere(rng, table, indexed),
+		All:   true,
+	}}
 }
 
 // genScalarSub builds a non-correlated aggregate scalar subquery comparison.
@@ -702,6 +756,10 @@ func Generate(seed uint64) *Case {
 			// Aggregates: the surface where a dropped residual produced
 			// silently wrong SUMs (the AGG-RESIDUAL class).
 			queries = append(queries, genAggQuery(rng, table))
+			continue
+		case rng.IntN(6) == 0:
+			// UNION [ALL] of two single-table branches — set-op dedup.
+			queries = append(queries, genUnionQuery(rng, table))
 			continue
 		}
 		queries = append(queries, genQuery(rng, table))
@@ -1195,6 +1253,9 @@ func (c *Case) SQL(q Query, projection []string) string {
 	if q.Agg != nil {
 		return c.aggSQL(q)
 	}
+	if q.Union != nil {
+		return c.unionSQL(q, projection)
+	}
 	var b strings.Builder
 	b.WriteString("SELECT ")
 	if q.Distinct {
@@ -1339,6 +1400,38 @@ func aggExprSQL(a *AggSpec) string {
 // aggSQL renders an aggregate query. Both output columns are aliased so the
 // harness's name-keyed rows have stable, unique keys regardless of how the
 // engine spells a computed column.
+// unionSQL renders `SELECT <proj> FROM t WHERE <l> UNION [ALL] SELECT <proj>
+// FROM t WHERE <r>`. Both branches carry the SAME projection so their output
+// columns align.
+func (c *Case) unionSQL(q Query, projection []string) string {
+	u := q.Union
+	tbl := strings.ToLower(c.Table.Name)
+	branch := func(where *BoolNode) string {
+		var b strings.Builder
+		b.WriteString("SELECT ")
+		if projection == nil {
+			b.WriteString("*")
+		} else {
+			lower := make([]string, len(projection))
+			for i, p := range projection {
+				lower[i] = strings.ToLower(p)
+			}
+			b.WriteString(strings.Join(lower, ", "))
+		}
+		fmt.Fprintf(&b, " FROM %s", tbl)
+		if where != nil {
+			b.WriteString(" WHERE ")
+			renderBool(&b, where)
+		}
+		return b.String()
+	}
+	op := "UNION"
+	if u.All {
+		op = "UNION ALL"
+	}
+	return branch(u.Left) + " " + op + " " + branch(u.Right)
+}
+
 func (c *Case) aggSQL(q Query) string {
 	a := q.Agg
 	var b strings.Builder

@@ -33,6 +33,9 @@ func OracleRows(c *Case, q Query, projection []string) ([]Row, error) {
 	if q.ThreeWay != nil {
 		return oracleThreeWayJoin(c, q, projection)
 	}
+	if q.Union != nil {
+		return oracleUnionRows(c, q, projection)
+	}
 	// A non-correlated scalar subquery is evaluated ONCE, its value shared by
 	// every outer row (that is the whole point of "non-correlated").
 	var scalarVal any
@@ -230,6 +233,63 @@ func oracleJoinRows(c *Case, q Query, projection []string) ([]Row, error) {
 	}
 
 	return sortAndProjectJoin(combined, q, projection), nil
+}
+
+// oracleUnionRows evaluates a UNION [ALL] of two single-table branches: filter
+// and project each branch over the same columns, concatenate, then dedup unless
+// ALL. The dedup uses the same typed distinctKey as SELECT DISTINCT, so UNION's
+// set semantics and DISTINCT's agree by construction.
+func oracleUnionRows(c *Case, q Query, projection []string) ([]Row, error) {
+	u := q.Union
+	cols := projection
+	if cols == nil {
+		cols = append([]string{"ID"}, colNames(c.Table)...)
+	}
+	filterProject := func(where *BoolNode) ([]Row, error) {
+		var out []Row
+		for _, r := range c.Rows {
+			if where != nil {
+				tb, err := evalBool(where, r)
+				if err != nil {
+					return nil, err
+				}
+				if tb != predicates.TriTrue {
+					continue
+				}
+			}
+			p := make(Row, len(cols))
+			for _, col := range cols {
+				p[col] = r[col]
+			}
+			out = append(out, p)
+		}
+		return out, nil
+	}
+	left, err := filterProject(u.Left)
+	if err != nil {
+		return nil, err
+	}
+	right, err := filterProject(u.Right)
+	if err != nil {
+		return nil, err
+	}
+	combined := make([]Row, 0, len(left)+len(right))
+	combined = append(combined, left...)
+	combined = append(combined, right...)
+	if u.All {
+		return combined, nil
+	}
+	seen := make(map[string]struct{}, len(combined))
+	dedup := combined[:0]
+	for _, r := range combined {
+		key := distinctKey(r, cols)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		dedup = append(dedup, r)
+	}
+	return dedup, nil
 }
 
 // mkPairRow builds a combined 2-way join row keyed "L.<col>" / "R.<col>". A nil
