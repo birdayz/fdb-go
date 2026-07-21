@@ -6022,6 +6022,23 @@ cascades change. Design C' infra (Winner-aware planFromQuantifier + type resolve
 + structural-check-via-quantifiers) is the RIGHT foundation; it needs the
 per-plan winner hook on top.
 
+SHARPENING (localizes the design): the sort's HintCost takes child costs as
+PARAMS (does not walk GetInner) and HintOrdering computes from the sort KEYS
+(not the inner). So the sort's cost/ordering are self-contained — the ONLY
+planning-time GetInner/GetChildren callers are GetResultType (→ type resolver)
+and verifyNoShell (→ structural GetQuantifiers). Therefore the PANIC is FULLY
+fixable with those two changes alone; the GLOBAL ref.Winner() change in
+planFromQuantifier is NOT needed for the panic and is what introduced the bias.
+The 63-query shift is PURELY the extraction inner-selection: extraction
+(extractBestPlanFromSelectorVisited) prefers innerRef.Winner() — an ordered
+variant — while the wrapper's WithChildren OVERRODE it with
+findBestPhysicalPlan (cheapest-valid, any ordering, RFC-076). The whole design
+thus reduces to ONE localized change: a physical-sort case in the extraction
+switch (rebuildWithFreshChildren / rebuildExpressionFromSelectorVisited) that
+resolves the sort's inner via findBestPhysicalPlan, restoring the wrapper's
+override. Everything else (the two structural/type fixes) is mechanical and
+differ-neutral. That is the concrete Graefe-review unit.
+
 ### [x] FUZZ: GetCorrelatedTo stack-overflows on a cyclic reference graph (PRE-EXISTING) — FIXED by RFC-185
 
 RESOLVED: the cyclic memo was constructed only by the Go-only filter/set-op
