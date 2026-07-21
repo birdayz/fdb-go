@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -68,34 +67,29 @@ func (p *RecordQueryTextIndexPlan) GetResultType() values.Type { return values.U
 // GetChildren returns nil — text index scans are leaves.
 func (p *RecordQueryTextIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 
+// structuralKey folds the text-scan identity: reverse flag, index name, and the
+// TextScan descriptor decomposed into its four string fields (the comparable
+// struct's `==` compared all four; folding each keeps that exact equality).
+// Drives both Equals and Hash.
+func (p *RecordQueryTextIndexPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Bool(p.reverse).
+		Str(p.indexName).
+		Str(p.textScan.IndexName).
+		Str(p.textScan.GroupingComparisons).
+		Str(p.textScan.TextComparison).
+		Str(p.textScan.SuffixComparisons)
+}
+
 // EqualsWithoutChildren compares index name, text scan, and reverse.
 func (p *RecordQueryTextIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTextIndexPlan)
-	if !ok {
-		return false
-	}
-	return p.reverse == o.reverse &&
-		p.indexName == o.indexName &&
-		p.textScan == o.textScan
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes index name + text scan + reverse.
 func (p *RecordQueryTextIndexPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("textindexplan|"))
-	h.Write([]byte(p.indexName))
-	h.Write([]byte{0})
-	h.Write([]byte(p.textScan.TextComparison))
-	h.Write([]byte{0})
-	h.Write([]byte(p.textScan.GroupingComparisons))
-	h.Write([]byte{0})
-	h.Write([]byte(p.textScan.SuffixComparisons))
-	if p.reverse {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("textindexplan|")
 }
 
 // Explain renders TextIndexScan(indexName, textComparison).

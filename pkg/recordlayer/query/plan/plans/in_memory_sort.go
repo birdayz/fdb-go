@@ -7,7 +7,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -92,20 +91,16 @@ func (p *RecordQueryInMemorySortPlan) GetChildren() []RecordQueryPlan {
 // plan — pointer identity would spuriously split them into distinct memo members
 // (the incomplete-F21 case). Field is DISPLAY-ONLY but folded so an explain-name
 // difference still separates identities; Desc / NullsFirst are the direction.
+// structuralKey folds the InMemorySort identity: the ordered sort-key list via
+// sortKeyEqual (display Field + Desc / NullsFirst + semantic ValueExpr). Drives
+// both Equals and Hash.
+func (p *RecordQueryInMemorySortPlan) structuralKey() *structuralKey {
+	return newStructuralKey().SortKeys(p.sortKeys)
+}
+
 func (p *RecordQueryInMemorySortPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInMemorySortPlan)
-	if !ok {
-		return false
-	}
-	if len(p.sortKeys) != len(o.sortKeys) {
-		return false
-	}
-	for i := range p.sortKeys {
-		if !sortKeyEqual(p.sortKeys[i], o.sortKeys[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // sortKeyEqual reports semantic equality of two sort keys: display Field,
@@ -120,26 +115,7 @@ func sortKeyEqual(a, b SortKey) bool {
 }
 
 func (p *RecordQueryInMemorySortPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("inmemsort|"))
-	for _, k := range p.sortKeys {
-		h.Write([]byte(k.Field))
-		h.Write([]byte{0})
-		if k.Desc {
-			h.Write([]byte{1})
-		} else {
-			h.Write([]byte{0})
-		}
-		if k.NullsFirst {
-			h.Write([]byte{1})
-		} else {
-			h.Write([]byte{0})
-		}
-		// Fold the semantic ValueExpr so equal⟹same-hash holds with
-		// sortKeyEqual (which compares the ValueExpr semantically).
-		writeValueHash(h, k.ValueExpr)
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("inmemsort|")
 }
 
 func (p *RecordQueryInMemorySortPlan) Explain() string {

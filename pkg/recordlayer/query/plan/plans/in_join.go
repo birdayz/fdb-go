@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"reflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -90,44 +89,35 @@ func (p *RecordQueryInJoinPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
+// structuralKey folds the InJoin identity. bindingName is DELIBERATELY excluded:
+// it is an internal correlation alias minted by UniqueCorrelationIdentifier (a
+// process-global counter), so two structurally-identical InJoins differing only
+// in the arbitrary alias are the SAME plan. Including it made every replanned
+// IN-query non-equal and differently-hashed → plan-cache churn + nondeterministic
+// Explain (RFC-164 WS-4). sourceKind is likewise not folded (never was). inValues
+// IS included via inValuesEqual (Equatable): the static IN-list is the join's
+// comparand — an InJoin over (1,2,3) binds different values than one over (4,5,6)
+// and is a DIFFERENT plan; collapsing them is the F21 comparand-blind defect.
+// Java's InValuesJoinPlan.equalsWithoutChildren compares Objects.equals(values).
+// The %#v hash pins Go type + value so inValuesEqual-equal lists fold identically.
+// Drives both Equals and Hash.
+func (p *RecordQueryInJoinPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Bool(p.sorted).
+		Bool(p.reverse).
+		Equatable(p.inValues, func(other any) bool {
+			o, ok := other.([]any)
+			return ok && inValuesEqual(p.inValues, o)
+		}, []byte(fmt.Sprintf("inv:%d:%#v", len(p.inValues), p.inValues)))
+}
+
 func (p *RecordQueryInJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInJoinPlan)
-	if !ok {
-		return false
-	}
-	// bindingName is DELIBERATELY excluded: it is an internal correlation alias
-	// minted by UniqueCorrelationIdentifier (a process-global counter), so two
-	// structurally-identical InJoins that differ only in the arbitrary alias are
-	// the SAME plan. Including it made every replanned IN-query non-equal and
-	// differently-hashed → plan-cache churn + nondeterministic Explain (RFC-164
-	// WS-4). Identity is alias-invariant; the real alias is retained on the field
-	// for execution (GetBindingName), which is unaffected.
-	//
-	// inValues IS included: the static IN-list is the join's comparand — an
-	// InJoin over (1,2,3) binds different values than one over (4,5,6) and is a
-	// DIFFERENT plan. Excluding it let the memo collapse the two (an InJoin is a
-	// non-leaf node deduped by HashCodeWithoutChildren + EqualsWithoutChildren),
-	// mirroring the F21 comparand-blind index-scan defect. Java's
-	// InValuesJoinPlan.equalsWithoutChildren compares Objects.equals(values, ...).
-	return p.sorted == o.sorted && p.reverse == o.reverse && inValuesEqual(p.inValues, o.inValues)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryInJoinPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("injoinplan|"))
-	// bindingName excluded — see EqualsWithoutChildren (alias-invariant identity).
-	if p.sorted {
-		h.Write([]byte{1})
-	}
-	if p.reverse {
-		h.Write([]byte{2})
-	}
-	// inValues folded — hash analog of EqualsWithoutChildren (see there). %#v
-	// pins Go type + value, so inValuesEqual-equal lists (identical types +
-	// values) fold identically; the leading length keeps distinct-length lists
-	// apart cheaply.
-	fmt.Fprintf(h, "|inv:%d:%#v", len(p.inValues), p.inValues)
-	return h.Sum64()
+	return p.structuralKey().Hash("injoinplan|")
 }
 
 // inValuesEqual compares two static IN-list comparands element-wise. The lists

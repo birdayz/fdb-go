@@ -14,6 +14,7 @@ package plans
 
 import (
 	"encoding/binary"
+	"hash"
 	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -35,6 +36,11 @@ const (
 	partPreds
 	partType
 	partScanComps
+	partValuePtr
+	partIntPtr
+	partSortKeys
+	partEquatable
+	partSub
 )
 
 // part is one identifying field. Constructed only via the typed builder
@@ -51,6 +57,12 @@ type part struct {
 	preds     []predicates.QueryPredicate
 	typ       values.Type
 	scanComps []*predicates.ComparisonRange
+	iptr      *int
+	sks       []SortKey
+	obj       any
+	eq        func(other any) bool
+	eqHash    []byte
+	sub       *structuralKey
 }
 
 // structuralKey is an ordered list of a plan's identifying fields.
@@ -137,6 +149,60 @@ func (k *structuralKey) ScanComps(sc []*predicates.ComparisonRange) *structuralK
 	return k
 }
 
+// ValuePtr folds a Value by POINTER/interface identity (Go ==), NOT semantic
+// equality — the exact primitive the hand-rolled Explode / TableFunction equals
+// used (p.collectionValue == o.collectionValue). Distinct from Value (semantic):
+// two structurally-equal but distinct Value instances are DIFFERENT here, so a
+// migrating plan keeps them in separate memo members. Hash folds the Value's
+// stable .Name() (nil → empty), matching those plans' hand-rolled hashes.
+func (k *structuralKey) ValuePtr(v values.Value) *structuralKey {
+	k.parts = append(k.parts, part{kind: partValuePtr, v: v})
+	return k
+}
+
+// IntPtr folds an optional int (*int) by eqIntPtr — nil and non-nil are
+// distinct, two non-nil compare by value. The exact primitive the hand-rolled
+// vector-scan equals used for efSearch. Hash folds a nil sentinel or the int.
+func (k *structuralKey) IntPtr(p *int) *structuralKey {
+	k.parts = append(k.parts, part{kind: partIntPtr, iptr: p})
+	return k
+}
+
+// SortKeys folds an ORDERED []SortKey via sortKeyEqual (display Field +
+// Desc / NullsFirst direction + the semantic ValueExpr) — the InMemorySort
+// identity. Hash folds each key's identifying fields (the same set sortKeyEqual
+// compares), preserving equal⟹same-hash.
+func (k *structuralKey) SortKeys(sks []SortKey) *structuralKey {
+	k.parts = append(k.parts, part{kind: partSortKeys, sks: sks})
+	return k
+}
+
+// Equatable is the escape hatch for a plan field whose identity primitive is the
+// field type's OWN comparison — a custom .Equals() (PlanSelector, KeysSource) or
+// a bespoke slice compare (InJoin inValues via inValuesEqual, InUnion inSources
+// via reflect.DeepEqual) — that the typed kinds above don't model. eq captures
+// THIS side's value and compares it against the other side's raw value (obj);
+// hashBytes is this side's stable hash contribution, which the CALLER guarantees
+// is identical for equal values (obj.String(), a dimension encoding, %#v — the
+// exact bytes the hand-rolled hash folded). That caller guarantee is what keeps
+// equal⟹same-hash — the one invariant the builder cannot enforce for an opaque
+// value it compares only through a closure.
+func (k *structuralKey) Equatable(obj any, eq func(other any) bool, hashBytes []byte) *structuralKey {
+	k.parts = append(k.parts, part{kind: partEquatable, obj: obj, eq: eq, eqHash: hashBytes})
+	return k
+}
+
+// Sub nests another plan's structuralKey — used where a plan's identity embeds a
+// whole sub-plan compared structurally (RecordQueryAggregateIndexPlan wraps a
+// RecordQueryIndexPlan via its EqualsPlanWithoutChildren, which IS
+// indexPlan.structuralKey().Equal). Equal recurses into the sub-key; Hash folds
+// the sub-key's parts (strengthening the hand-rolled hash, which folded only the
+// index name — safe: equal⟹same-hash, fewer collisions).
+func (k *structuralKey) Sub(sub *structuralKey) *structuralKey {
+	k.parts = append(k.parts, part{kind: partSub, sub: sub})
+	return k
+}
+
 // Equal reports element-wise structural equality, dispatching per kind through
 // the same semantic comparators the hand-rolled methods used.
 func (k *structuralKey) Equal(o *structuralKey) bool {
@@ -200,6 +266,24 @@ func partEqual(a, b part) bool {
 		return typeEquals(a.typ, b.typ)
 	case partScanComps:
 		return scanComparisonRangesEqual(a.scanComps, b.scanComps)
+	case partValuePtr:
+		return a.v == b.v
+	case partIntPtr:
+		return eqIntPtr(a.iptr, b.iptr)
+	case partSortKeys:
+		if len(a.sks) != len(b.sks) {
+			return false
+		}
+		for i := range a.sks {
+			if !sortKeyEqual(a.sks[i], b.sks[i]) {
+				return false
+			}
+		}
+		return true
+	case partEquatable:
+		return a.eq(b.obj)
+	case partSub:
+		return a.sub.Equal(b.sub)
 	}
 	return false
 }
@@ -209,53 +293,106 @@ func partEqual(a, b part) bool {
 func (k *structuralKey) Hash(discriminator string) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(discriminator))
+	k.writeParts(h)
+	return h.Sum64()
+}
+
+// writeParts folds every part into w. Extracted from Hash so partSub can fold a
+// nested key's parts into the SAME digest — a nested key contributes its parts,
+// NOT its discriminator (equal sub-keys have equal parts, so equal⟹same-hash
+// still holds).
+func (k *structuralKey) writeParts(w hash.Hash64) {
 	var buf [8]byte
 	for _, p := range k.parts {
-		h.Write([]byte{byte(p.kind)})
+		w.Write([]byte{byte(p.kind)})
 		switch p.kind {
 		case partBool:
 			if p.b {
-				h.Write([]byte{1})
+				w.Write([]byte{1})
 			} else {
-				h.Write([]byte{0})
+				w.Write([]byte{0})
 			}
 		case partInt:
 			binary.BigEndian.PutUint64(buf[:], uint64(p.i))
-			h.Write(buf[:])
+			w.Write(buf[:])
 		case partStr:
 			binary.BigEndian.PutUint64(buf[:], uint64(len(p.s)))
-			h.Write(buf[:])
-			h.Write([]byte(p.s))
+			w.Write(buf[:])
+			w.Write([]byte(p.s))
 		case partStrs:
 			binary.BigEndian.PutUint64(buf[:], uint64(len(p.ss)))
-			h.Write(buf[:])
+			w.Write(buf[:])
 			for _, s := range p.ss {
 				binary.BigEndian.PutUint64(buf[:], uint64(len(s)))
-				h.Write(buf[:])
-				h.Write([]byte(s))
+				w.Write(buf[:])
+				w.Write([]byte(s))
 			}
 		case partValue, partStructVal:
-			writeValueHash(h, p.v)
+			writeValueHash(w, p.v)
 		case partValues:
 			binary.BigEndian.PutUint64(buf[:], uint64(len(p.vs)))
-			h.Write(buf[:])
+			w.Write(buf[:])
 			for _, v := range p.vs {
-				writeValueHash(h, v)
+				writeValueHash(w, v)
 			}
 		case partPreds:
 			binary.BigEndian.PutUint64(buf[:], uint64(len(p.preds)))
-			h.Write(buf[:])
+			w.Write(buf[:])
 			for _, pr := range p.preds {
 				binary.BigEndian.PutUint64(buf[:], predicates.SemanticHashCode(pr))
-				h.Write(buf[:])
+				w.Write(buf[:])
 			}
 		case partType:
 			// Equals-only — no payload (the kind byte above is the whole
 			// contribution). Mirrors the hand-rolled scan/index hashes, which
 			// fold recordTypes + scanComparisons + flags but never flowedType.
 		case partScanComps:
-			writeScanComparisonRangesHash(h, p.scanComps)
+			writeScanComparisonRangesHash(w, p.scanComps)
+		case partValuePtr:
+			// Pointer-identity equal ⟹ same interface value ⟹ same Name();
+			// length-tagged so distinct names cannot collide across a boundary.
+			var name string
+			if p.v != nil {
+				name = p.v.Name()
+			}
+			binary.BigEndian.PutUint64(buf[:], uint64(len(name)))
+			w.Write(buf[:])
+			w.Write([]byte(name))
+		case partIntPtr:
+			if p.iptr == nil {
+				w.Write([]byte{0})
+			} else {
+				w.Write([]byte{1})
+				binary.BigEndian.PutUint64(buf[:], uint64(*p.iptr))
+				w.Write(buf[:])
+			}
+		case partSortKeys:
+			binary.BigEndian.PutUint64(buf[:], uint64(len(p.sks)))
+			w.Write(buf[:])
+			for _, sk := range p.sks {
+				binary.BigEndian.PutUint64(buf[:], uint64(len(sk.Field)))
+				w.Write(buf[:])
+				w.Write([]byte(sk.Field))
+				if sk.Desc {
+					w.Write([]byte{1})
+				} else {
+					w.Write([]byte{0})
+				}
+				if sk.NullsFirst {
+					w.Write([]byte{1})
+				} else {
+					w.Write([]byte{0})
+				}
+				writeValueHash(w, sk.ValueExpr)
+			}
+		case partEquatable:
+			binary.BigEndian.PutUint64(buf[:], uint64(len(p.eqHash)))
+			w.Write(buf[:])
+			w.Write(p.eqHash)
+		case partSub:
+			binary.BigEndian.PutUint64(buf[:], uint64(len(p.sub.parts)))
+			w.Write(buf[:])
+			p.sub.writeParts(w)
 		}
 	}
-	return h.Sum64()
 }

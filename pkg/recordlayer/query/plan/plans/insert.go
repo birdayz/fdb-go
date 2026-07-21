@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -109,24 +108,22 @@ func (p *RecordQueryInsertPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
+// structuralKey folds the INSERT identity: the destination record-type name and
+// the target Type (equals-only — the hash omits it, matching the hand-rolled
+// hash which folded only targetRecordType). Drives both Equals and Hash.
+func (p *RecordQueryInsertPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Str(p.targetRecordType).Type(p.targetType)
+}
+
 // EqualsWithoutChildren compares targetRecordType + targetType.
 func (p *RecordQueryInsertPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInsertPlan)
-	if !ok {
-		return false
-	}
-	if p.targetRecordType != o.targetRecordType {
-		return false
-	}
-	return typeEquals(p.targetType, o.targetType)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes class + targetRecordType.
 func (p *RecordQueryInsertPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("insertplan|"))
-	h.Write([]byte(p.targetRecordType))
-	return h.Sum64()
+	return p.structuralKey().Hash("insertplan|")
 }
 
 // Explain renders Insert(target, inner).

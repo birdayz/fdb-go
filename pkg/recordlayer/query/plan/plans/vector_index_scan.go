@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -210,56 +209,40 @@ func (p *RecordQueryVectorIndexPlan) GetResultType() values.Type { return p.flow
 // GetChildren returns nil — vector scans are leaves.
 func (p *RecordQueryVectorIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 
+// structuralKey folds the vector-scan identity, mirroring the hand-rolled
+// equals field set EXACTLY: index name, distance-rank operator, ordered-stream
+// flag, flowed type (equals-only), ef_search (IntPtr), IsReturningVectors,
+// record-type set, prefix comparison ranges (shape AND comparand — the F21
+// defect, different prefix bounds define different key ranges), and the query
+// vector / k by STRUCTURAL equality (ValuesStructurallyEqual). The stable
+// per-instance resultValue and partition columns are excluded (RFC-184 W2).
+// Drives both Equals and Hash — the hash now folds the full field set (the
+// hand-rolled hash folded only index/rank/ordered/prefix), strengthening it
+// while preserving equal⟹same-hash.
+func (p *RecordQueryVectorIndexPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Str(p.indexName).
+		Int(int(p.rankType)).
+		Bool(p.orderedStream).
+		Type(p.flowedType).
+		IntPtr(p.efSearch).
+		Bool(p.IsReturningVectors()).
+		Strs(p.recordTypes).
+		ScanComps(p.prefixComparisons).
+		StructVal(p.queryVector).
+		StructVal(p.k)
+}
+
 // EqualsWithoutChildren compares index name, prefix comparison shape, and
 // the query-vector / k / ef_search node-info.
 func (p *RecordQueryVectorIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryVectorIndexPlan)
-	if !ok || p.indexName != o.indexName {
-		return false
-	}
-	if p.rankType != o.rankType {
-		return false
-	}
-	if p.orderedStream != o.orderedStream {
-		return false
-	}
-	if !typeEquals(p.flowedType, o.flowedType) {
-		return false
-	}
-	if !eqIntPtr(p.efSearch, o.efSearch) || p.IsReturningVectors() != o.IsReturningVectors() {
-		return false
-	}
-	if len(p.recordTypes) != len(o.recordTypes) {
-		return false
-	}
-	for i := range p.recordTypes {
-		if p.recordTypes[i] != o.recordTypes[i] {
-			return false
-		}
-	}
-	// Prefix comparisons by shape AND comparand (the F21 defect, same as
-	// RecordQueryIndexPlan): different prefix bounds define different key ranges.
-	if !scanComparisonRangesEqual(p.prefixComparisons, o.prefixComparisons) {
-		return false
-	}
-	return values.ValuesStructurallyEqual(p.queryVector, o.queryVector) &&
-		values.ValuesStructurallyEqual(p.k, o.k)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes index name + prefix comparison shape.
 func (p *RecordQueryVectorIndexPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("vectorindexplan|"))
-	h.Write([]byte(p.indexName))
-	h.Write([]byte{0})
-	h.Write([]byte{byte(p.rankType)})
-	if p.orderedStream {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	writeScanComparisonRangesHash(h, p.prefixComparisons)
-	return h.Sum64()
+	return p.structuralKey().Hash("vectorindexplan|")
 }
 
 // Explain renders a one-line label. The "VectorIndexScan" token is the

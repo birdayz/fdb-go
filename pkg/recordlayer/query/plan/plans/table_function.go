@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -42,21 +41,20 @@ func (p *RecordQueryTableFunctionPlan) GetResultType() values.Type {
 
 func (p *RecordQueryTableFunctionPlan) GetChildren() []RecordQueryPlan { return nil }
 
+// structuralKey folds the table-function identity: the stream Value by POINTER
+// identity (ValuePtr — the hand-rolled equals used ==, NOT semantic equality).
+// Drives both Equals and Hash.
+func (p *RecordQueryTableFunctionPlan) structuralKey() *structuralKey {
+	return newStructuralKey().ValuePtr(p.streamValue)
+}
+
 func (p *RecordQueryTableFunctionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTableFunctionPlan)
-	if !ok {
-		return false
-	}
-	return p.streamValue == o.streamValue
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryTableFunctionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("tablefnplan|"))
-	if p.streamValue != nil {
-		h.Write([]byte(p.streamValue.Name()))
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("tablefnplan|")
 }
 
 func (p *RecordQueryTableFunctionPlan) Explain() string {

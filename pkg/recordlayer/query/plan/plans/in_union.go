@@ -3,7 +3,6 @@ package plans
 import (
 	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 	"reflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -94,70 +93,43 @@ func (p *RecordQueryInUnionPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
+// structuralKey folds the InUnion identity. reverse is direct. bindingNames
+// contribute only their COUNT (Int): they are internal correlation aliases
+// minted by UniqueCorrelationIdentifier (a process-global counter) — comparing
+// the arbitrary names made every replanned IN-union non-equal → plan-cache churn
+// + nondeterministic Explain (RFC-164 WS-4). comparisonKeys and inSources join
+// identity per Java RecordQueryInUnionPlan.equalsWithoutChildren (both set before
+// the plan is memoized, so sibling alternatives differing in merge keys or
+// IN-literals must NOT collapse): comparisonKeys via semantic Value equality
+// (Values), inSources via reflect.DeepEqual (Equatable). Drives both Equals/Hash.
+//
+// The inSources hash folds only DIMENSIONS (len + per-dim len), never the literal
+// payloads: hashing arbitrary `any` comparands bit-exactly would break
+// equal⟹same-hash the other way (DeepEqual treats +0.0 == -0.0 for floats, whose
+// bits differ). Same-shape different-literal collisions are resolved by the eq.
+func (p *RecordQueryInUnionPlan) structuralKey() *structuralKey {
+	var dims []byte
+	dims = binary.BigEndian.AppendUint64(dims, uint64(len(p.inSources)))
+	for _, d := range p.inSources {
+		dims = binary.BigEndian.AppendUint64(dims, uint64(len(d)))
+	}
+	return newStructuralKey().
+		Bool(p.reverse).
+		Int(len(p.bindingNames)).
+		Values(p.comparisonKeys).
+		Equatable(p.inSources, func(other any) bool {
+			o, ok := other.([][]any)
+			return ok && reflect.DeepEqual(p.inSources, o)
+		}, dims)
+}
+
 func (p *RecordQueryInUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInUnionPlan)
-	if !ok {
-		return false
-	}
-	if p.reverse != o.reverse {
-		return false
-	}
-	// bindingNames are internal correlation aliases minted by UniqueCorrelation-
-	// Identifier (a process-global counter); only their COUNT (the number of IN
-	// columns) is structural. Comparing the arbitrary names made every replanned
-	// IN-union plan non-equal → plan-cache churn + nondeterministic Explain (RFC-164
-	// WS-4, same class as RecordQueryInJoinPlan). Alias-invariant identity; the real
-	// names are retained on the field for execution (GetBindingNames).
-	if len(p.bindingNames) != len(o.bindingNames) {
-		return false
-	}
-	// comparisonKeys and inSources join identity per Java
-	// RecordQueryInUnionPlan.equalsWithoutChildren (inSources.equals &&
-	// comparisonKeyFunction.equals). Both are set before the plan is
-	// memoized (rule_implement_in_union yields the wrapper after
-	// SetInSources), so sibling alternatives differing only in merge keys
-	// or IN-literals must NOT collapse into one memo group — the survivor
-	// would not produce the ordering (or the rows) the winner claimed.
-	if len(p.comparisonKeys) != len(o.comparisonKeys) {
-		return false
-	}
-	for i, k := range p.comparisonKeys {
-		if !semanticValueEquals(k, o.comparisonKeys[i]) {
-			return false
-		}
-	}
-	// inSources are literal comparand lists; DeepEqual is the Go analog of
-	// Java's List.equals element-wise Object.equals.
-	return reflect.DeepEqual(p.inSources, o.inSources)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryInUnionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("inunionplan|"))
-	// bindingNames excluded — only their COUNT is structural (see EqualsWithoutChildren).
-	// Full-width (not byte()) so a high-arity IN can't collide mod 256.
-	var cnt [8]byte
-	binary.LittleEndian.PutUint64(cnt[:], uint64(len(p.bindingNames)))
-	h.Write(cnt[:])
-	if p.reverse {
-		h.Write([]byte{1})
-	}
-	for _, k := range p.comparisonKeys {
-		writeValueHash(h, k)
-	}
-	// inSources fold only their DIMENSIONS, not the literal payloads: the
-	// hash may be coarser than equality (equal⟹same-hash still holds), and
-	// hashing arbitrary `any` comparands bit-exactly would break it the
-	// other way (DeepEqual treats +0.0 == -0.0 for floats via ==, their
-	// bits differ). Bucket collisions between same-shape different-literal
-	// IN-unions are resolved by EqualsWithoutChildren.
-	binary.LittleEndian.PutUint64(cnt[:], uint64(len(p.inSources)))
-	h.Write(cnt[:])
-	for _, dim := range p.inSources {
-		binary.LittleEndian.PutUint64(cnt[:], uint64(len(dim)))
-		h.Write(cnt[:])
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("inunionplan|")
 }
 
 func (p *RecordQueryInUnionPlan) Explain() string {

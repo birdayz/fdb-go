@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -133,22 +132,27 @@ func (p *RecordQueryLoadByKeysPlan) GetResultType() values.Type { return values.
 // GetChildren returns nil — this is a leaf plan.
 func (p *RecordQueryLoadByKeysPlan) GetChildren() []RecordQueryPlan { return nil }
 
+// structuralKey folds the load-by-keys identity: the KeysSource via its own
+// .Equals() (Equatable), hashed by its stable .String() representation — the
+// exact primitives the hand-rolled equals/hash used. Drives both Equals and Hash.
+func (p *RecordQueryLoadByKeysPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Equatable(p.keysSource, func(other any) bool {
+			o, ok := other.(KeysSource)
+			return ok && p.keysSource.Equals(o)
+		}, []byte(p.keysSource.String()))
+}
+
 // EqualsWithoutChildren compares the key sources.
 func (p *RecordQueryLoadByKeysPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryLoadByKeysPlan)
-	if !ok {
-		return false
-	}
-	return p.keysSource.Equals(o.keysSource)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes the type discriminator + key source
 // string representation.
 func (p *RecordQueryLoadByKeysPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("loadbykeysplan|"))
-	h.Write([]byte(p.keysSource.String()))
-	return h.Sum64()
+	return p.structuralKey().Hash("loadbykeysplan|")
 }
 
 // Explain renders LoadByKeys(source).

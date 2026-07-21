@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -74,24 +73,20 @@ func (p *RecordQueryExplodePlan) GetResultType() values.Type {
 
 func (p *RecordQueryExplodePlan) GetChildren() []RecordQueryPlan { return nil }
 
+// structuralKey folds the Explode identity: the collection Value by POINTER
+// identity (ValuePtr — the hand-rolled equals used ==, NOT semantic equality)
+// and the withOrdinality flag. Drives both Equals and Hash.
+func (p *RecordQueryExplodePlan) structuralKey() *structuralKey {
+	return newStructuralKey().ValuePtr(p.collectionValue).Bool(p.withOrdinality)
+}
+
 func (p *RecordQueryExplodePlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryExplodePlan)
-	if !ok {
-		return false
-	}
-	return p.collectionValue == o.collectionValue && p.withOrdinality == o.withOrdinality
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryExplodePlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("explodeplan|"))
-	if p.collectionValue != nil {
-		h.Write([]byte(p.collectionValue.Name()))
-	}
-	if p.withOrdinality {
-		h.Write([]byte("|ord"))
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("explodeplan|")
 }
 
 func (p *RecordQueryExplodePlan) Explain() string {
