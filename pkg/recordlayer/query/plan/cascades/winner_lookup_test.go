@@ -112,10 +112,9 @@ func sortedMemberWithNulls(t *testing.T, fields []string, nullsFirst []bool) exp
 		}
 		keys[i] = plans.SortKey{Field: f, ValueExpr: values.NewFlatFieldValue(f, values.UnknownType), NullsFirst: nf}
 	}
-	scanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
-	return newPhysicalInMemorySortWrapper(
-		plans.NewRecordQueryInMemorySortPlan(inner, keys),
-		expressions.ForEachQuantifier(scanRef))
+	// Since RFC-184 W2 the bare in-memory sort IS its own physical member (no
+	// physicalInMemorySortWrapper) — its HintOrdering carries the sort keys.
+	return plans.NewRecordQueryInMemorySortPlan(inner, keys)
 }
 
 // TestBestSatisfyingMember_CounterflowNullsGate pins the RFC-180 D2 core:

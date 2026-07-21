@@ -139,9 +139,7 @@ func TestBestSatisfyingMember_WideOrderingsExact(t *testing.T) {
 		return plans.NewRecordQueryInMemorySortPlan(inner, keys)
 	}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
-	scanRef := expressions.InitialOf(scan)
-	provider := newPhysicalInMemorySortWrapper(mk("I"), expressions.ForEachQuantifier(scanRef))
+	provider := mk("I")
 	ref := expressions.InitialOf(provider)
 
 	req := func(ninth string) *properties.RequestedOrdering {

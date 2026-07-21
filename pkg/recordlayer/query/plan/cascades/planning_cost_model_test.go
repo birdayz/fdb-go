@@ -714,10 +714,11 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 	// Now wrap plan B in an in-memory sort — criterion 12 must not fire.
 	// With inMemorySortCount>0 on plan B, criterion 12 is suppressed.
 	// Plans will then be compared by later criteria or hash.
-	sortPlan := plans.NewRecordQueryInMemorySortPlan(nil, nil)
 	indexBRef := expressions.InitialOf(indexB)
 	indexBQ := expressions.NewPhysicalQuantifier(indexBRef)
-	withSort := newPhysicalInMemorySortWrapper(sortPlan, indexBQ)
+	// Since RFC-184 W2 the bare in-memory sort IS its own physical member (no
+	// physicalInMemorySortWrapper), ranging over indexB via a live memo edge.
+	withSort := plans.NewRecordQueryInMemorySortPlanFromQuantifier(indexBQ, nil)
 
 	opsWithSort := findExpressionsByType(withSort, nil, ctx)
 	if opsWithSort.inMemorySortCount != 1 {

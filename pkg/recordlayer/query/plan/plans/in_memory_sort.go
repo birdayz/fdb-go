@@ -50,9 +50,40 @@ func NewRecordQueryInMemorySortPlan(inner RecordQueryPlan, sortKeys []SortKey) *
 	return &RecordQueryInMemorySortPlan{innerQ: QuantifierOverPlan(inner), sortKeys: keys}
 }
 
+// NewRecordQueryInMemorySortPlanFromQuantifier builds an in-memory sort whose
+// child is a supplied memo quantifier instead of a snapshot over a single plan.
+// This makes the plan its own cascades expression carrying its child edge
+// directly — the memo holds it without a physicalInMemorySortWrapper (RFC-184 W2).
+//
+// The sort RE-SORTS its input, so it does not care what order the child provides:
+// unlike the ordering-DELEGATOR wrappers (which pin an ordered spine), it only
+// needs the cheapest VALID child member for ANY ordering. When the emitter hands
+// it the LIVE shared-group edge (ForEachQuantifier(innerRef)), GetInner resolves
+// through planFromQuantifier → innerRef.Winner() — the group's OPTIMIZE-chosen
+// cheapest member (unified_tasks.OptimizeGroupTask stamps the overall cost winner,
+// ordering-agnostic). Cost (concretePlanCounts walks GetChildren → GetInner) and
+// extraction (rebuild recurses the same edge) therefore resolve the SAME member,
+// closing the cost-over-first / extract-over-best gap the wrapper carried
+// (plan_expression.go's planFromQuantifier note). The sort keys are copied so the
+// provided ordering (HintOrdering) stays stable across relinks.
+func NewRecordQueryInMemorySortPlanFromQuantifier(innerQ expressions.Quantifier, sortKeys []SortKey) *RecordQueryInMemorySortPlan {
+	keys := make([]SortKey, len(sortKeys))
+	copy(keys, sortKeys)
+	return &RecordQueryInMemorySortPlan{innerQ: innerQ, sortKeys: keys}
+}
+
 func (p *RecordQueryInMemorySortPlan) GetInner() RecordQueryPlan {
 	return planFromQuantifier(p.innerQ)
 }
+
+// GetInnerQuantifier returns the live child quantifier — the single memo edge the
+// sort ranges over. Since RFC-184 W2 the memo holds the bare plan (no
+// physicalInMemorySortWrapper whose innerQuant field was read), this exposes the
+// same edge for derivations and extraction.
+func (p *RecordQueryInMemorySortPlan) GetInnerQuantifier() expressions.Quantifier {
+	return p.innerQ
+}
+
 func (p *RecordQueryInMemorySortPlan) GetSortKeys() []SortKey { return p.sortKeys }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -154,6 +185,22 @@ func (p *RecordQueryInMemorySortPlan) WithQuantifiers(qs []expressions.Quantifie
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The sort carries its child as a single memo edge, so the relink is
+// a quantifier swap: WithQuantifiers copies the receiver (preserving the sort
+// keys) and re-resolves GetInner through the new singleton reference. This
+// replaces physicalInMemorySortWrapper.WithChildren (RFC-184 W2), whose separate
+// snapshot plan field forced a findBestPhysicalPlan constructor rebuild. Because
+// extraction hands qs[0] the child group's already-resolved winner (a singleton
+// holding the cheapest member), a pure quantifier swap resolves the exact plan
+// the cost model costed — no separate best-member re-pick is needed.
+func (p *RecordQueryInMemorySortPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryInMemorySortPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

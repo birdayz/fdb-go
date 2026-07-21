@@ -113,7 +113,9 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		// keep the false/false default, so the plan side stays pinned here with no
 		// wrapper pair.
 		{name: "StreamingAggregation", plan: &plans.RecordQueryStreamingAggregationPlan{}},
-		{name: "InMemorySort", plan: &plans.RecordQueryInMemorySortPlan{}, wrap: &physicalInMemorySortWrapper{}},
+		// InMemorySort lost its wrapper (RFC-184 W2) but keeps the false/false
+		// default, so the plan side stays pinned here with no wrapper pair.
+		{name: "InMemorySort", plan: &plans.RecordQueryInMemorySortPlan{}},
 		// FirstOrDefault and Distinct lost their wrappers (RFC-184 W2) but keep the
 		// false/false default, so the plan side stays pinned here with no wrapper
 		// pair.
@@ -121,11 +123,11 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		{name: "Distinct", plan: &plans.RecordQueryDistinctPlan{}},
 		// IndexScan / Limit / FetchFromPartialRecord / Map / DefaultOnEmpty / Explode /
 		// TableFunction / TempTableScan / TempTableInsert / VectorIndexScan / Values /
-		// AggregateIndex / TypeFilter / Insert / Delete / Update have no physical
-		// wrapper since RFC-184 W2 — the memo holds the *plans.RecordQuery… plan
-		// directly, so their false/false flags are exercised on the live production
-		// path (no parity pair to check). Only InMemorySort KEEPS its wrapper
-		// (collapse deferred — the last ordering-critical producer wrapper).
+		// AggregateIndex / TypeFilter / Insert / Delete / Update / InMemorySort have no
+		// physical wrapper since RFC-184 W2 — the memo holds the *plans.RecordQuery…
+		// plan directly, so their false/false flags are exercised on the live
+		// production path (no parity pair to check). InMemorySort was the LAST
+		// wrapper; W2 is complete.
 	}
 
 	for _, tc := range cases {

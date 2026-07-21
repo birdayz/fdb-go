@@ -246,7 +246,7 @@ func (c *e2ePKPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 // logical sort expression).
 func containsSort(expr expressions.RelationalExpression) bool {
 	switch expr.(type) {
-	case *physicalInMemorySortWrapper:
+	case *plans.RecordQueryInMemorySortPlan:
 		return true
 	case *expressions.LogicalSortExpression:
 		return true

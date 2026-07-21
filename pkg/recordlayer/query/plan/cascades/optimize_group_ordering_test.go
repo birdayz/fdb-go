@@ -126,13 +126,15 @@ func TestOptimizeInputs_SkipsPrunedExpression(t *testing.T) {
 	childRef.InsertFinal(sortedMemberOn(t, "X"))
 	childFinals := len(childRef.FinalMembers())
 
-	// The parent expression must genuinely range over childRef.
-	parentInner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	parent := newPhysicalInMemorySortWrapper(
-		plans.NewRecordQueryInMemorySortPlan(parentInner, []plans.SortKey{
+	// The parent expression must genuinely range over childRef. Since RFC-184 W2
+	// the bare in-memory sort carries its child as a LIVE memo edge (no
+	// physicalInMemorySortWrapper), so the FromQuantifier ctor ranges it over
+	// childRef directly.
+	parent := plans.NewRecordQueryInMemorySortPlanFromQuantifier(
+		expressions.ForEachQuantifier(childRef),
+		[]plans.SortKey{
 			{Field: "Y", ValueExpr: values.NewFlatFieldValue("Y", values.UnknownType), NullsFirst: true},
-		}),
-		expressions.ForEachQuantifier(childRef))
+		})
 	// The parent enters its group as a FINAL member (as physical yields do)
 	// and is then pruned away in favor of another final — the exact state an
 	// in-flight OptimizeInputsTask observes when its expression lost.

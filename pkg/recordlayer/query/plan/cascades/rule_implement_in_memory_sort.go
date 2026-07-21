@@ -58,8 +58,10 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	requestedOrdering := sortExpressionToRequestedOrdering(s)
 	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
 
-	innerPlan := findPhysicalPlan(innerRef)
-	if innerPlan == nil {
+	// Guard: only yield the sort if the inner group has a physical plan to sort.
+	// The plan is not baked here — the collapsed sort ranges over innerRef LIVE
+	// (below), so its cost and extraction both resolve innerRef's cheapest member.
+	if findPhysicalPlan(innerRef) == nil {
 		return
 	}
 
@@ -84,17 +86,19 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 		planKeys[i] = plans.SortKey{Field: field, Desc: sk.Reverse, NullsFirst: nf, ValueExpr: sk.Value}
 	}
 
-	// The baked innerPlan is only a PLACEHOLDER: range the sort's quantifier over
-	// the actual inner group (innerRef), not a fresh InitialOf(firstMember). At
-	// extraction the sort's WithChildren rebuilds it over innerRef's cost WINNER
-	// (chosen by OptimizeGroup), so the enforcer sorts the cheapest join order
-	// rather than whichever member happened to be yielded first. Pinning the first
-	// member (a customers-driven re-scan) was the RFC-069 regression: the good
-	// orders-driven plan won its group but the sort baked the loser.
-	sortPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, planKeys)
-
+	// Main arm: the sort ranges over the actual inner group (innerRef) via a LIVE
+	// edge, not a baked placeholder. GetInner resolves through planFromQuantifier
+	// → innerRef.Winner() — the group's OPTIMIZE-chosen cheapest member — so the
+	// cost model (which walks GetChildren) and extraction (which relinks the same
+	// edge) sort the SAME member. The wrapper used to bake findPhysicalPlan (the
+	// FIRST member, a full-scan placeholder) for COST while extraction rebuilt over
+	// findBestPhysicalPlan (the cheapest member): it costed a plan it never emitted.
+	// The live edge closes that gap (cost==extraction fix, RFC-184 W2).
+	// Ranging over innerRef (not InitialOf(firstMember)) also keeps the good
+	// orders-driven join order the group won rather than pinning a re-scan loser
+	// (RFC-069).
 	innerQ := expressions.ForEachQuantifier(innerRef)
-	call.YieldFinalExpression(newPhysicalInMemorySortWrapper(sortPlan, innerQ))
+	call.YieldFinalExpression(plans.NewRecordQueryInMemorySortPlanFromQuantifier(innerQ, planKeys))
 
 	// Also yield InMemorySort alternatives for InJoin/InUnion members
 	// and restricted Fetch plans (index scans with bound predicates).
@@ -123,9 +127,13 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 		if !wrap {
 			continue
 		}
-		altPlan := plans.NewRecordQueryInMemorySortPlan(ph.GetRecordQueryPlan(), planKeys)
-		altQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
-		call.YieldFinalExpression(newPhysicalInMemorySortWrapper(altPlan, altQ))
+		// Alt arm: FREEZE the concrete member. This selective member (an InJoin,
+		// InUnion, or SARG'd Fetch) is a specific alternative whose small output we
+		// want to sort — not the group's overall winner — so the sort snapshots its
+		// exact plan. NewRecordQueryInMemorySortPlan builds a bare sort over a
+		// frozen (QuantifierOverPlan) edge holding ph's plan; cost and extraction
+		// both resolve that one member (RFC-184 W2, no physicalInMemorySortWrapper).
+		call.YieldFinalExpression(plans.NewRecordQueryInMemorySortPlan(ph.GetRecordQueryPlan(), planKeys))
 	}
 }
 

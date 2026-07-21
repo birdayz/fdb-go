@@ -292,9 +292,24 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(opsA.typeFilterCount, opsB.typeFilterCount)
 	}
 
+	// Structural tiebreaks abstain when either side carries an in-memory sort. A
+	// redundant InMemorySort is an extra TOP node: it inflates every descendant's
+	// structural depth by +1 (so a depth comparison between a sorted and a
+	// sort-elided plan measures depths from DIFFERENT roots, always favouring the
+	// taller sorted plan), AND it lets a sorted plan over a clean inner win a
+	// node-count tiebreak (map/filter count) against a differently-shaped
+	// sort-elided sibling (e.g. one whose residual filter got pushdown-split into
+	// two nodes). Either way the sorted plan wins a structural rung before the
+	// sort-vs-elision decision — which belongs to criterion #12 (fewer in-memory
+	// sorts). So every structural tiebreak below abstains when either side has a
+	// sort, matching the unmatched-field gate. The type-filter-COUNT and fetch-COUNT
+	// rungs stay ungated (a sort adds neither a type filter nor a fetch, so those
+	// counts are sort-invariant across an elided/sorted pair); the map/filter count
+	// is gated because pushdown makes the elided sibling's filter count diverge.
 	typeFilterDepthA := costExprDepth(a, matchTypeFilter)
 	typeFilterDepthB := costExprDepth(b, matchTypeFilter)
-	if typeFilterDepthA >= 0 && typeFilterDepthB >= 0 && typeFilterDepthA != typeFilterDepthB {
+	if typeFilterDepthA >= 0 && typeFilterDepthB >= 0 && typeFilterDepthA != typeFilterDepthB &&
+		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
 		return intCompare(typeFilterDepthB, typeFilterDepthA)
 	}
 
@@ -305,9 +320,12 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		if fetchA != fetchB {
 			return intCompare(fetchA, fetchB)
 		}
+		// Depth rung — abstains when either side carries a sort (see the
+		// type-filter-depth gate above); the fetch-COUNT rungs stay ungated.
 		fetchDepthA := costExprDepth(a, matchFetch)
 		fetchDepthB := costExprDepth(b, matchFetch)
-		if fetchDepthA >= 0 && fetchDepthB >= 0 && fetchDepthA != fetchDepthB {
+		if fetchDepthA >= 0 && fetchDepthB >= 0 && fetchDepthA != fetchDepthB &&
+			opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
 			return intCompare(fetchDepthA, fetchDepthB)
 		}
 		if opsA.fetchCount != opsB.fetchCount {
@@ -315,9 +333,12 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		}
 	}
 
+	// Depth rung — abstains when either side carries a sort (see the
+	// type-filter-depth gate above).
 	distinctDepthA := costExprDepth(a, matchDistinct)
 	distinctDepthB := costExprDepth(b, matchDistinct)
-	if distinctDepthA >= 0 && distinctDepthB >= 0 && distinctDepthA != distinctDepthB {
+	if distinctDepthA >= 0 && distinctDepthB >= 0 && distinctDepthA != distinctDepthB &&
+		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
 		return intCompare(distinctDepthB, distinctDepthA)
 	}
 
@@ -330,9 +351,16 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(opsB.inJoinCount, opsA.inJoinCount)
 	}
 
+	// Structural node-count tiebreak — abstains when either side carries a sort
+	// (see the type-filter-depth gate above). A redundant sort keeps its own
+	// map/filter count unchanged, but the sort-elided sibling it is compared
+	// against can carry a pushdown-SPLIT residual (one filter node → two), so
+	// this rung would otherwise prefer the sorted plan on "fewer filters" before
+	// criterion #12 can drop the sort.
 	mapFilterA := opsA.mapCount + opsA.predicatesFilterCount
 	mapFilterB := opsB.mapCount + opsB.predicatesFilterCount
-	if mapFilterA != mapFilterB {
+	if mapFilterA != mapFilterB &&
+		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
 		return intCompare(mapFilterA, mapFilterB)
 	}
 
@@ -602,7 +630,10 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	// A fetch is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		counts.fetchCount++
-	case *physicalInMemorySortWrapper:
+	// The InMemorySort is its own physical expression now (RFC-184 W2) — the
+	// memo-descent cost walk over a LOGICAL parent counts the sort here (the
+	// physical top path already routes bare sorts via concretePlanCounts).
+	case *plans.RecordQueryInMemorySortPlan:
 		counts.inMemorySortCount++
 	}
 	for _, q := range e.GetQuantifiers() {

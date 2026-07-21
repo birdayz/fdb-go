@@ -389,14 +389,15 @@ func TestNewPhysicalDistinctFor_FreezesStreamingInner(t *testing.T) {
 		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
 	})
 	indexPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
-	indexRef := expressions.InitialOf(indexPlan)
 	sortKeys := []plans.SortKey{{
 		Field:      "G",
 		NullsFirst: true,
 		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
 	}}
+	// Since RFC-184 W2 the bare in-memory sort IS its own physical member (no
+	// physicalInMemorySortWrapper), so it doubles as the ordered member here.
 	sortPlan := plans.NewRecordQueryInMemorySortPlan(indexPlan, sortKeys)
-	orderedMember := newPhysicalInMemorySortWrapper(sortPlan, expressions.ForEachQuantifier(indexRef))
+	orderedMember := sortPlan
 
 	if !distinctStreamingEligible(orderedMember, sortPlan) {
 		t.Fatal("precondition: the ordered member must be streaming-eligible")

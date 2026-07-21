@@ -118,14 +118,13 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	// and the cost model picks the cheaper one.
 	rawExpr := findPhysicalExpr(innerRef)
 	if rawExpr != nil {
+		// The InMemorySort is now its own cascades expression (RFC-184 W2, no
+		// physicalInMemorySortWrapper): a self-contained PRODUCER that provides the
+		// grouping-key order intrinsically. Build the bare sort over the first
+		// physical member's plan (a frozen QuantifierOverPlan snapshot) and carry it
+		// as the LIVE shared-group edge under the aggregation.
 		sortedPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, sortKeys)
-		rawQ := expressions.ForEachQuantifier(call.MemoizeExpression(rawExpr))
-		sortExpr := newPhysicalInMemorySortWrapper(sortedPlan, rawQ)
-		// The inner IS the InMemorySort we build — a self-contained PRODUCER that
-		// provides the grouping-key order intrinsically (not a delegator floating
-		// to a winner), so carry the LIVE shared-group edge over it (RFC-184 W2,
-		// no physicalStreamingAggWrapper).
-		sortQ := expressions.ForEachQuantifier(call.MemoizeExpression(sortExpr))
+		sortQ := expressions.ForEachQuantifier(call.MemoizeExpression(sortedPlan))
 		call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(sortQ, groupingKeys, gb.GetAggregates()))
 	}
 

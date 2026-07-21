@@ -24,17 +24,16 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
 	})
 	scanPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
-	scanWrapper := scanPlan
-	scanRef := expressions.InitialOf(scanWrapper)
 
 	sortKeys := []plans.SortKey{{
 		Field:      "G",
 		NullsFirst: true,
 		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
 	}}
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryInMemorySortPlan
+	// (no physicalInMemorySortWrapper); it is its own physical member directly.
 	sortPlan := plans.NewRecordQueryInMemorySortPlan(scanPlan, sortKeys)
-	sortWrapper := newPhysicalInMemorySortWrapper(sortPlan, expressions.ForEachQuantifier(scanRef))
-	sortRef := expressions.InitialOf(sortWrapper)
+	sortRef := expressions.InitialOf(sortPlan)
 
 	pred := predicates.NewComparisonPredicate(
 		values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
@@ -84,17 +83,16 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
 	})
 	scanPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
-	scanWrapper := scanPlan
-	scanRef := expressions.InitialOf(scanWrapper)
 
 	sortKeys := []plans.SortKey{{
 		Field:      "G",
 		NullsFirst: true,
 		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
 	}}
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryInMemorySortPlan
+	// (no physicalInMemorySortWrapper); it is its own physical member directly.
 	sortPlan := plans.NewRecordQueryInMemorySortPlan(scanPlan, sortKeys)
-	sortWrapper := newPhysicalInMemorySortWrapper(sortPlan, expressions.ForEachQuantifier(scanRef))
-	sortRef := expressions.InitialOf(sortWrapper)
+	sortRef := expressions.InitialOf(sortPlan)
 
 	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
 		return v, true

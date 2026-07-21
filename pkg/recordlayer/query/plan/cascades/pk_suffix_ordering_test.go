@@ -326,7 +326,7 @@ func TestSortElim_EqPrefixIndexScanSatisfiesOrderByPK(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if _, isSort := plan.(*physicalInMemorySortWrapper); isSort {
+	if _, isSort := plan.(*plans.RecordQueryInMemorySortPlan); isSort {
 		ph, _ := plan.(physicalPlanExpression)
 		t.Fatalf("ORDER BY pk over eq-prefixed index scan must elide the sort; got %s",
 			ph.GetRecordQueryPlan().Explain())

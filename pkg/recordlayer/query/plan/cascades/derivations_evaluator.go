@@ -80,7 +80,9 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	case *plans.RecordQueryLimitPlan:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalInMemorySortWrapper:
+	// The InMemorySort is its own cascades expression now (RFC-184 W2) — same
+	// single-child passthrough derivations the physicalInMemorySortWrapper carried.
+	case *plans.RecordQueryInMemorySortPlan:
 		return derivationsFromSingleChildExpr(w)
 
 	// --- PredicatesFilter: child results + predicate values ---
