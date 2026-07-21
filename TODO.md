@@ -5919,14 +5919,18 @@ is the change that caused the 49 shape flips.
 - **W3 — centralize the 41 plan types' equality/hash: ✅ DONE (41/41).** All plans
   flow EqualsPlanWithoutChildren/HashCodeWithoutChildren through one structuralKey()
   builder (commits 721f71635 + 84e48fb30); every hand-copy eliminated, differ=0.
-- **W2 — plans store children only as quantifiers, the wrapper layer dies: IN PROGRESS.**
-  26 wrapper types eliminated (24 collapsed + 2 dead structs) + the DAG-aware
-  extraction root fix. Remaining, all GATED: 10 wrappers (deferred-winner design C'
-  + NLJ/FlatMap Graefe ruling — see below) AND the 32 ReasonNoQuantifier edges (all
-  TypeFilter, via the scanPlanExpression composite adapter — retiring it drifts 49
-  shape flips because the bare plan lacks the adapter's scan-comparison correlations
-  + ordering + cost; needs property-by-property work, a cost/ordering→plan-selection
-  change = query-engine-gated; see the RFC-183-residual entry above).
+- **W2 — plans store children only as quantifiers, the wrapper layer dies:
+  MECHANICAL COLLAPSE DONE; 7 wrappers need the Graefe-gated deferred-winner
+  rework.** 29 wrapper types eliminated (27 collapsed + 2 dead structs) + the
+  DAG-aware extraction root fix. The ref.Winner() set-op family all collapsed at
+  differ=0: unordered_union (5022c0d7f), in_join + in_union (a6bb74b07). The
+  remaining 7 (distinct, streaming_agg, first_or_default, predicates_filter,
+  flatmap, nlj, in_memory_sort) are NOT mechanically collapsible — all blocked on
+  the same root cause: bare ref.Winner() is the wrong inner resolution (see the
+  detailed entry below + scratchpad/w2-graefe-gated-remainder.md for the end-review
+  asks). ALSO remaining: the 32 ReasonNoQuantifier edges (all TypeFilter, via the
+  scanPlanExpression composite adapter — retiring it drifts 49 shape flips; needs
+  property-by-property work, query-engine-gated; see the RFC-183-residual entry).
 
 ### [ ] RFC-184 W2 — physical-wrapper collapse: 26 eliminated, deferred-winner tail remains
 
@@ -5956,16 +5960,38 @@ DEFERRED-WINNER TAIL — the winner CRITERION is PLAN-SPECIFIC (breakthrough):
     - planTypeFromQuantifier for GetResultType (type is member-invariant);
     - verifyNoShell + reachability tally count via GetQuantifiers not GetChildren.
   ✅ COLLAPSED on the infra (differ=0, memoinvariant+reachability+yamsql green):
-    unordered_union (5022c0d7f). in_union, in_join in flight (same set-op shape).
-  STILL WRAPPED — need a PLAN-SPECIFIC winner hook, NOT ref.Winner():
-    - in_memory_sort: re-sorts, so wants cheapest-valid-ANY-ordering
-      (findBestPhysicalPlan), not the per-ordering winner. BRACKETED: ref.Winner()
-      → 63 shape flips; no-Winner → 64 plan errors. Needs a physical-sort
-      extraction hook (findBestPhysicalPlan). Graefe.
-    - first_or_default / predicates_filter / distinct / streaming_agg: snapshot-
-      decouple family (the plan snapshot deliberately DIVERGES from the live memo
-      edge — SARG-pushed / isLeafReplaceable-gated). Whether ref.Winner() is the
-      right inner is the per-plan empirical question — test each on the infra.
+    unordered_union (5022c0d7f), in_union + in_join (a6bb74b07) — the whole
+    ref.Winner() set-op family.
+  STILL WRAPPED — the per-plan empirical question is now ANSWERED: all four unary
+  candidates REVERTED (each empirically tested on the infra, differ>0, tree left
+  byte-identical). They are the genuine snapshot-decoupled tail; bare ref.Winner()
+  floats their inner to the group's GLOBAL cost-winner, losing the frozen
+  streaming-enabling / SARG-pinned member. Measured shifts:
+    - distinct → differing=6 (distinct_join.yaml#1..3 + friends). The distinct-final
+      rule yields distinct-over-EACH-inner-member (rule_implement_distinct_final.go
+      :69,118), each snapshot-frozen so the cost model can pick
+      distinct-over-(ordered inner) with STREAMING dedup. Collapse merges the
+      InitialOf(m) singleton into the shared inner group → ref.Winner() floats all
+      to distinct-over-(global winner), losing the streaming alternative.
+    - streaming_agg → differing=3 (same shape: agg needs the grouping-key ordering
+      to stream; float drops it).
+    - in_memory_sort → re-sorts, wants cheapest-valid-ANY-ordering
+      (findBestPhysicalPlan), not the per-ordering winner. BRACKETED earlier:
+      ref.Winner() → 63 flips; no-Winner → 64 errors.
+    - first_or_default → differing=3, predicates_filter → differing=16: NLJ-
+      entangled SARG-push (constructed as inner legs inside the Graefe-gated NLJ
+      rule); their float is SARG-push, not pure-ordering — collapse WITH nlj/flatmap.
+  UNIFIED FIX (Java-aligned, for Graefe): sort/distinct/streaming_agg all want the
+  ordering-SATISFYING inner, which Java resolves by REQUESTING an ordering from the
+  inner group (per-ordering winner), NOT by snapshot-freezing a member. Port that
+  to the EXTRACTION path: resolve the collapsed operator's inner via
+  getWinnerForOrdering(innerRef, <operator's requested ordering>, less)
+  (winner_lookup.go:27, ALREADY EXISTS — computes best-satisfying-member live from
+  members, so it works at extraction where all members are present) instead of bare
+  ref.Winner(). sort→PRESERVE (=findBestPhysicalPlan); agg→grouping-key ordering;
+  distinct→dedup-key ordering. One framework-native change replaces N per-plan hooks;
+  the snapshot-freeze is the Go divergence it retires. Query-engine-gated → Graefe.
+  Full asks: scratchpad/w2-graefe-gated-remainder.md.
   The 2 dead structs (scan/filter) are removed (commit 2f1189b94).
 
 NESTED_LOOP_JOIN + FLAT_MAP (joint) — GRAEFE DECISION, NOT deferred-winner:
