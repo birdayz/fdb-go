@@ -82,6 +82,18 @@ func isTxConflict(err error) bool {
 // against rfc082KnownRed.
 func entryConforms(javaResult, goResult plandiff.RunResult) (bool, string) {
 	if javaResult.Err != nil {
+		// An error that is NOT a *plandiff.JavaError never came from Java's
+		// SQL engine — the transport paths (HTTP POST failure, non-200,
+		// body/JSON decode) return plain wrapped errors (httpclient.go). A
+		// slow/unreachable conformance server under CI load is an INFRA
+		// failure, not engine behaviour: report it as such — still red
+		// (a sick server must not silently pass) but never classified as a
+		// cross-engine divergence, so nobody chases a phantom engine
+		// regression off a timeout.
+		var infraProbe *plandiff.JavaError
+		if !errors.As(javaResult.Err, &infraProbe) {
+			return false, "conformance-server call failed (INFRA, not engine behaviour): " + javaResult.Err.Error()
+		}
 		if goResult.Err == nil {
 			// Java errored, Go succeeded. With the conformance server's plan
 			// cache disabled (sql_plan_steps.java) the Java result is
@@ -93,7 +105,11 @@ func entryConforms(javaResult, goResult plandiff.RunResult) (bool, string) {
 			// reproducible Go read-side extension, NOT planner noise, so it
 			// must be declared via an rfc082Divergences annotation
 			// (DivergenceJavaErrorsGoCorrect), not silently swallowed here.
-			return false, "Java errored but Go succeeded"
+			// The Java error rides along so a red names the exception —
+			// UnableToPlan vs ComplexityException vs anything else decides
+			// the response, and the classification must be checkable from
+			// the CI log alone.
+			return false, "Java errored but Go succeeded: " + javaResult.Err.Error()
 		}
 		var je *plandiff.JavaError
 		if !errors.As(javaResult.Err, &je) {
