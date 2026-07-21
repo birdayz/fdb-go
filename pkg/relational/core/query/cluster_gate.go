@@ -654,7 +654,7 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 		// gate. The correlations passed are the seed's own (sourceAlias /
 		// unnestSourceCorrelation); the built values are discarded — the gate is
 		// side-effect-free construction.
-		if u.Alias != "" && u.AtAlias != "" && strings.EqualFold(u.Alias, u.AtAlias) {
+		if unnestAliasReject(u) != nil {
 			return nil, false
 		}
 		elementType, _, disp := t.classifyChainedUnnestArray(j.Left, u)

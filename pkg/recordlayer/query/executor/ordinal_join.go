@@ -1070,6 +1070,8 @@ func (b *ordinalJoinBuild) widenLegTypesFromPlan(plan plans.RecordQueryPlan) err
 		return nil
 	}
 	var divergence error
+	// The walk continues widening LegTypes after a capture; harmless — the
+	// caller (newFlatMapCursor) discards the whole build on error.
 	walkBakedRefs(plan, func(v values.Value) values.Value {
 		fv, isFV := v.(*values.FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
@@ -1093,8 +1095,8 @@ func (b *ordinalJoinBuild) widenLegTypesFromPlan(plan plans.RecordQueryPlan) err
 // PredicatesFilter/Filter predicates and scan/index comparison operands —
 // applying collect to every value found there. It is the ONE baked-reference
 // plan walk (a single derivation path), shared by
-// widenLegTypesFromPlan (the build-side type widening, width-divergence panic
-// in its collector) and probeOuterBakedType (the
+// widenLegTypesFromPlan (the build-side type widening, width-divergence error
+// captured in its collector) and probeOuterBakedType (the
 // disabled-build probe).
 //
 // RecordQueryNestedLoopJoinPlan also implements GetPredicates but is
@@ -1161,7 +1163,7 @@ func walkBakedRefs(plan plans.RecordQueryPlan, collect func(values.Value) values
 // name-keyed binding (BakedNameContextError), so the cursor must bind
 // the outer positionally, adapted to the probed type's layout. The probe
 // recovers the outer's typed RecordType
-// from those references through the shared walker; the width-divergence panic
+// from those references through the shared walker; the width-divergence error
 // asserts the same one-seed invariant widenLegTypesFromPlan pins.
 func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.CorrelationIdentifier) (*values.RecordType, error) {
 	var found *values.RecordType

@@ -52,9 +52,22 @@ The discipline is no longer a one-time audit; it is **enforced on every build**:
   (`evaluateOrdinalJoinRow`, `newOrdinalJoinBuild`, `widenLegTypesFromPlan`,
   `probeOuterBakedType`) and the un-lowered DistanceRank row-eval arm
   (`predicates/comparisons.go`) return errors per the assert-locality rule above.
-  `NewRecordType`'s duplicate-field-name panic was probed NOT SQL-reachable: every production
-  call site sources names from proto descriptors (unique by construction; DDL rejects
-  duplicate columns with 42701) — it stays a §4 constructor assert.
+  `NewRecordType`'s duplicate-field-name panic stays a §4 constructor assert. The full
+  reachability story, each step verified live: the first probe's "every call site is
+  descriptor-sourced" claim was WRONG (Torvalds review catch) — `unnest_seed.go` builds a
+  seed leg RecordType from USER SQL aliases. But the review's counterexample
+  (`... AT "_0"` with no AS, claimed to collide with the seed's reserved `_0` element slot)
+  is ALSO wrong: `lateralUnnestCandidate` is the only `LogicalUnnest` producer and
+  `unnestAliases` defaults the element alias to the array FIELD NAME, so the seed's
+  `Alias == ""` fallback is producer-dead and the query is benign (FDB pin:
+  `array_unnest_ordinality_fdb_test.go` "AT alias spelling the reserved element name is
+  benign"). Defense anyway: the shared `unnestAliasReject` guard
+  (`pkg/relational/core/query/unnest_alias_guard.go`, wired into all four unnest
+  translate/admission sites, deduping the four inline AS==AT checks) rejects the
+  reserved-name collision as a producer invariant, so a future producer that skips the
+  default hits a typed DuplicateAlias, never the constructor assert. The remaining
+  `NewRecordType` call sites are descriptor-sourced (unique by construction; DDL rejects
+  duplicate columns with 42701).
 
 ## §2 — The panic→error boundary allowlist (the `norecover` allowlist)
 

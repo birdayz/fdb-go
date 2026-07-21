@@ -1783,9 +1783,8 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// consistent with the unnest-alias-vs-outer-alias rejection above. Java's
 	// visitAtomTableItem binds AS and AT to two distinct quantifier columns; a
 	// duplicate alias is a binding error upstream. RFC-142.
-	if u.Alias != "" && u.AtAlias != "" && strings.EqualFold(u.Alias, u.AtAlias) {
-		t.setTranslateErr(api.NewError(api.ErrCodeDuplicateAlias,
-			"lateral unnest AS and AT aliases must be distinct; use different names for the element and the ordinal"))
+	if rejectErr := unnestAliasReject(u); rejectErr != nil {
+		t.setTranslateErr(rejectErr)
 		return nil
 	}
 
