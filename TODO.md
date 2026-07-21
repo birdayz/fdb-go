@@ -13,21 +13,20 @@ quality, B-), codex `gpt-5.6-sol` ultra (adversarial correctness, F/NAK; prose a
 PR for prio 1). Grind ONE AT A TIME, in order, each done RIGHT (root cause + regression tests +
 milestone review lap), each its own PR.
 
-- [ ] **1. Panics on user-reachable paths** (Torvalds + codex, independently; ~80–91 `panic(`
-  sites in engine scope). Flagged: `executor/executor_new_plans.go:296` panics on failed
-  comparison-key eval (also :320 keyless row, :322-324 appendContValue),
-  `executor/ordinal_join.go:245,796,998,1077,1174`, `executor/positional_merge.go:101` (wraps a
-  real error INTO a panic), `executor/executor.go:2187` (eval error → panic), exported plan
-  constructor panics on bad input (`plan/plans/intersection.go:35-44`, + the multi-intersection
-  copy `executor_new_plans.go:284-324`), exported `ExecutePlan` (executor.go:86) has no
-  panic→error boundary. Context: the SQL surface IS protected by the RFC-134 boundary recovers
-  (`cascades_generator.go`/`connection.go` — see `docs/panic-audit.md` §2); direct Record Layer
-  API clients are NOT. Root fix = execute the §3 deferred eval refactor (error channel:
-  `Value.Evaluate` → `(any, error)` ~60 impls, `QueryPredicate.Eval` → `(TriBool, error)` ~12
-  impls — Java parity: RecordCoreException is a recoverable error channel, not a crash) + convert
-  the executor panic arms to returned errors + validate exported constructors. Update
-  `docs/panic-audit.md` and the `norecover` allowlist as boundaries change. No-panic rule is
-  policy — make it practice.
+- [x] **1. Panics on user-reachable paths** — DONE (PR #509, Graefe ACK + Torvalds ACK + codex
+  clean ×2 on `7c4da6c72`). The §3 eval refactor had ALREADY landed with RFC-173 (the audit doc
+  was stale); the milestone delivered the rest: `ComparisonKeyFunc` error channel (Java parity:
+  `KeyedMergeCursorState.comparisonKeyFunction` → RecordCoreException through the future chain)
+  converting the twin intersection closure panic sites; four `ordinal_join.go` malformed-plan
+  tripwires → typed errors under the new assert-locality rule (docs/panic-audit.md — asserts
+  only for same-derivation invariants; cross-component malformed-plan detection returns errors);
+  DistanceRank row-eval panic → error through `Eval`'s channel; `positional_merge.go:101` and
+  `ordinal_join.go:245` verified genuinely local → stay asserts; `plans/intersection.go`
+  constructor needs no validation (Java parity — runtime errors, now delivered via the error
+  channel); `NewRecordType` dup-name probed (both review claims wrong in turn — see audit doc)
+  and defended by construction via the shared `unnestAliasReject` guard (dedupes 4 inline AS==AT
+  guards). Audit doc refreshed truthfully; regression pins on every converted site. Remaining
+  panic surface = §4 asserts + RFC-173 seed tripwires (retire with item 4).
 - [ ] **2. Cost model soundness.** Graefe: `getWinnerForOrdering` (`winner_lookup.go:46-50`)
   silently falls back to the global cheapest — callers can mistake it for satisfaction proof.
   Codex: REWRITING cost depends on memo population history, not the candidate tree

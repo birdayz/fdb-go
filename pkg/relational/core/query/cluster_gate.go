@@ -655,6 +655,9 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 		// unnestSourceCorrelation); the built values are discarded — the gate is
 		// side-effect-free construction.
 		if unnestAliasReject(u) != nil {
+			// Decline the shape; the raw body surfaces the loud
+			// duplicate-alias rejection at translation (unnestAliasReject
+			// in translateUnnestJoin / translateChainedUnnestJoin).
 			return nil, false
 		}
 		elementType, _, disp := t.classifyChainedUnnestArray(j.Left, u)
