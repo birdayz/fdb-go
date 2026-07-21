@@ -5911,7 +5911,24 @@ is already on the RFC-183 branch.
 Do NOT "fix" this by re-retiring the adapter without the property work — that
 is the change that caused the 49 shape flips.
 
-### [ ] RFC-184 W2 — physical-wrapper collapse: 24 collapsed, deferred-winner tail remains
+### RFC-184 three-goal status (the stop-hook completion condition)
+
+- **W1 — teach the differential harness cost + ordering: ✅ DONE.** rowdiff/cost.go
+  + rowdiff/ordering.go, commits fcc197d75 (#505 cost/ordering axis) + 1be3d81c3
+  (W1-finish ordering+statistics), both in HEAD ancestry.
+- **W3 — centralize the 41 plan types' equality/hash: ✅ DONE (41/41).** All plans
+  flow EqualsPlanWithoutChildren/HashCodeWithoutChildren through one structuralKey()
+  builder (commits 721f71635 + 84e48fb30); every hand-copy eliminated, differ=0.
+- **W2 — plans store children only as quantifiers, the wrapper layer dies: IN PROGRESS.**
+  26 wrapper types eliminated (24 collapsed + 2 dead structs) + the DAG-aware
+  extraction root fix. Remaining, all GATED: 10 wrappers (deferred-winner design C'
+  + NLJ/FlatMap Graefe ruling — see below) AND the 32 ReasonNoQuantifier edges (all
+  TypeFilter, via the scanPlanExpression composite adapter — retiring it drifts 49
+  shape flips because the bare plan lacks the adapter's scan-comparison correlations
+  + ordering + cost; needs property-by-property work, a cost/ordering→plan-selection
+  change = query-engine-gated; see the RFC-183-residual entry above).
+
+### [ ] RFC-184 W2 — physical-wrapper collapse: 26 eliminated, deferred-winner tail remains
 
 On branch `centralize-plan-equality-hash` (held for one super-thorough end
 review per owner's one-big-PR ruling). Each `physical<Name>Wrapper` adapter
