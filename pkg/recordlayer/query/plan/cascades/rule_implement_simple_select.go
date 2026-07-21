@@ -88,19 +88,23 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 		currentPlan := innerPlans[0]
 
 		if innerQuantifier.Kind() == expressions.QuantifierExistential {
-			// FirstOrDefault stays wrapped (RFC-184 W2): its collapse is NOT
-			// identity-neutral — in the correlated EXISTS/scalar-subquery path the
-			// FOD wraps a SARG-pushed snapshot (currentPlan) that deliberately
-			// diverges from the live memo edge, so a FromQuantifier build re-resolves
-			// to the non-SARG base and shifts the plan (flatmap_exists corpus). It
-			// needs the deferred-winner rework as its own change.
-			fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(currentPlan, values.NewNullValue(values.UnknownType))
-			fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan, currentQuant)
+			// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the
+			// concrete SARG-pushed member currentPlan (constraint-preserving
+			// disentangle, RFC-184 W2). The correlated EXISTS/scalar-subquery FOD
+			// wraps a SARG-pushed snapshot that deliberately diverges from the shared
+			// group's winner; freezing currentPlan into a PRIVATE single-member
+			// reference makes planFromQuantifier resolve the SARG member — never the
+			// non-SARG base the shared multi-member group currentRef would float to.
+			// The frozen edge keeps innerQuantifier's alias so GetResultValue is
+			// unchanged.
+			fodInnerQ := expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(),
+				call.MemoizeFinalExpression(currentPlan))
+			fodPlan := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(fodInnerQ, values.NewNullValue(values.UnknownType))
 			if len(queryPredicates) == 0 && isSimpleResult {
-				call.YieldFinalExpression(fodWrapper)
+				call.YieldFinalExpression(fodPlan)
 				continue
 			}
-			fodRef := call.MemoizeFinalExpression(fodWrapper)
+			fodRef := call.MemoizeFinalExpression(fodPlan)
 			currentQuant = expressions.NewPhysicalQuantifier(fodRef)
 			currentPlan = fodPlan
 		} else if innerQuantifier.Kind() == expressions.QuantifierForEach && innerQuantifier.IsNullOnEmpty() {

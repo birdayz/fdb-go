@@ -189,13 +189,15 @@ func TestImplementSimpleSelectRule_ExistentialQuantifier(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalFirstOrDefaultWrapper); ok {
+		// The FirstOrDefault is its own cascades expression now (RFC-184 W2) — no
+		// physicalFirstOrDefaultWrapper.
+		if _, ok := r.(*plans.RecordQueryFirstOrDefaultPlan); ok {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("Existential quantifier should produce FirstOrDefault wrapper")
+		t.Fatal("Existential quantifier should produce FirstOrDefault plan")
 	}
 }
 

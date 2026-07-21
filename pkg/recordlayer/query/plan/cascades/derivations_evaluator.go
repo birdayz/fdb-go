@@ -139,7 +139,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- FirstOrDefault / DefaultOnEmpty ---
 
-	case *physicalFirstOrDefaultWrapper:
+	// The FirstOrDefault is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryFirstOrDefaultPlan:
 		return derivationsForFirstOrDefault(w)
 
 	// DefaultOnEmpty is its own physical expression now (RFC-184 W2).
@@ -593,15 +594,15 @@ func derivationsForInUnion(w *plans.RecordQueryInUnionPlan) *properties.Derivati
 
 // --- FirstOrDefault ---
 
-func derivationsForFirstOrDefault(w *physicalFirstOrDefaultWrapper) *properties.Derivations {
+func derivationsForFirstOrDefault(w *plans.RecordQueryFirstOrDefaultPlan) *properties.Derivations {
 	childDerivs := properties.DerivationsFromSingleChild(w)
 	childResults := childDerivs.ResultValues
 
 	var localVals []values.Value
 	localVals = append(localVals, childDerivs.LocalValues...)
 
-	alias := w.innerQuant.GetAlias()
-	onEmptyValue := w.plan.GetDefaultValue()
+	alias := w.GetInnerQuantifier().GetAlias()
+	onEmptyValue := w.GetDefaultValue()
 	if onEmptyValue != nil {
 		for _, childResult := range childResults {
 			translated := properties.TranslateCorrelation(onEmptyValue, alias, childResult)

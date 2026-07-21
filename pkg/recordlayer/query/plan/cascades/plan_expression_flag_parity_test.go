@@ -105,16 +105,18 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		{name: "MultiIntersection", plan: &plans.RecordQueryMultiIntersectionOnValuesPlan{}},
 		{name: "StreamingAggregation", plan: &plans.RecordQueryStreamingAggregationPlan{}, wrap: &physicalStreamingAggWrapper{}},
 		{name: "InMemorySort", plan: &plans.RecordQueryInMemorySortPlan{}, wrap: &physicalInMemorySortWrapper{}},
-		{name: "FirstOrDefault", plan: &plans.RecordQueryFirstOrDefaultPlan{}, wrap: &physicalFirstOrDefaultWrapper{}},
+		// FirstOrDefault lost its wrapper (RFC-184 W2) but keeps the false/false
+		// default, so the plan side stays pinned here with no wrapper pair.
+		{name: "FirstOrDefault", plan: &plans.RecordQueryFirstOrDefaultPlan{}},
 		{name: "Distinct", plan: &plans.RecordQueryDistinctPlan{}, wrap: &physicalDistinctWrapper{}},
 		// IndexScan / Limit / FetchFromPartialRecord / Map / DefaultOnEmpty / Explode /
 		// TableFunction / TempTableScan / TempTableInsert / VectorIndexScan / Values /
 		// AggregateIndex / TypeFilter / Insert / Delete / Update have no physical
 		// wrapper since RFC-184 W2 — the memo holds the *plans.RecordQuery… plan
 		// directly, so their false/false flags are exercised on the live production
-		// path (no parity pair to check). FirstOrDefault, StreamingAggregation and
-		// Distinct KEEP their wrappers (collapse deferred — not identity-neutral in
-		// the correlated / deferred-winner paths).
+		// path (no parity pair to check). StreamingAggregation and Distinct KEEP
+		// their wrappers (collapse deferred — not identity-neutral in the
+		// deferred-winner paths).
 	}
 
 	for _, tc := range cases {
