@@ -6000,6 +6000,28 @@ memo/reference construct that is "singleton for planning-time queries but defers
 winner to extraction." Both touch the load-bearing singleton invariant → Graefe
 gate applies. Full analysis + candidate designs A/B/C in the shift handover.
 
+DESIGN C' ATTEMPTED EMPIRICALLY (in_memory_sort, then reverted — precise blocker
+found): (1) planFromQuantifier consults ref.Winner() before the singleton panic;
+(2) a new planTypeFromQuantifier (first-member, no panic) for GetResultType —
+type is member-invariant for pass-through plans; (3) verifyNoShell (and every
+planning-time STRUCTURAL "has children" check) uses GetQuantifiers, not
+GetChildren (identity). RESULT: the singleton panic is GONE — TestSortElim_*
+passes, the sort collapses. BUT the differ shifts 66 queries / 63 shape flips
+(plan_regressions=0). ROOT CAUSE — the winner CRITERION is PLAN-SPECIFIC:
+ref.Winner() is the group's winner for ITS requested ordering, but the sort
+re-sorts so it wants the cheapest VALID member for NO ordering
+(findBestPhysicalPlan, RFC-076) — the wrapper's WithChildren used exactly that.
+ref.Winner() != findBestPhysicalPlan, so the collapsed sort bakes a dominated
+ordered inner. So a UNIFORM planFromQuantifier→ref.Winner() is too coarse; the
+deferred-winner rework needs PER-PLAN winner selection at extraction (sort:
+cheapest-valid-any-ordering; set-op: per-leg; etc.), and that criterion lives in
+the cascades pkg (findBestPhysicalPlan), which the plans-pkg WithChildren cannot
+reach. The clean shape is a sort-specific extraction hook (like the LogicalSort
+rebuildOrderedSpine that already exists) for the PHYSICAL sort — a Graefe-ACK'd
+cascades change. Design C' infra (Winner-aware planFromQuantifier + type resolver
++ structural-check-via-quantifiers) is the RIGHT foundation; it needs the
+per-plan winner hook on top.
+
 ### [x] FUZZ: GetCorrelatedTo stack-overflows on a cyclic reference graph (PRE-EXISTING) — FIXED by RFC-185
 
 RESOLVED: the cyclic memo was constructed only by the Go-only filter/set-op
