@@ -5962,6 +5962,13 @@ NESTED_LOOP_JOIN + FLAT_MAP (joint) — GRAEFE DECISION, NOT deferred-winner:
   differing=1 documented, or (b) require byte-identity first. The FromQuantifiers
   constructors + WithChildren are trivial to re-add; the 9-emitter repoint is
   mechanical once ruled. Recommend (a).
+  INDEPENDENT CROSS-CONFIRMATION: a second session reproduced the full joint
+  collapse from scratch and reached the identical result — same single shifted
+  query (cte_error_codes.yaml#5), same before/after shapes, same root cause,
+  unit + yamsql green. It additionally verified DETERMINISM on both sides
+  (base-vs-base2 and cur-vs-cur2 each differing=0), so the flip is a stable,
+  reproducible, benign improvement — NOT planning noise. Two independent
+  derivations of the same conclusion strengthen recommendation (a).
 
 WHY THE NAIVE FIX FAILS (proven, in_memory_sort): memoizing
 getWinnerForOrdering(innerRef, PRESERVE) as a singleton child at YIELD would
