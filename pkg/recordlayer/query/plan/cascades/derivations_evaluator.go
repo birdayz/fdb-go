@@ -115,7 +115,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	case *plans.RecordQueryMergeSortUnionPlan:
 		return derivationsForSetPlan(w, w.GetComparisonKeys())
 
-	case *physicalUnorderedUnionWrapper:
+	// The unordered union is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryUnorderedUnionPlan:
 		return derivationsForSetPlan(w, nil)
 
 	case *plans.RecordQueryIntersectionPlan:

@@ -77,7 +77,22 @@ func verifyNoShell(expr expressions.RelationalExpression) error {
 	}
 	// Structurally incomplete = a non-leaf carrying no children, per the
 	// plan-invariant authority (isGenuineLeafPlan).
-	if len(plan.GetChildren()) == 0 && !isGenuineLeafPlan(plan) {
+	//
+	// "Has children" is answered by the plan's QUANTIFIERS, not GetChildren:
+	// GetChildren dereferences each quantifier to its plan (IDENTITY resolution),
+	// which for a deferred-winner plan (a set operation) reaches a multi-member
+	// leg group whose winner is not stamped until after this yield — so resolving
+	// it here would trip the singleton guard. A collapsed plan carries its
+	// children AS quantifiers, so counting them detects the shell without any
+	// resolution. Fall back to GetChildren only for a plan that is not its own
+	// cascades expression (no quantifiers to consult).
+	var hasChildren bool
+	if rel, ok := plan.(expressions.RelationalExpression); ok {
+		hasChildren = len(rel.GetQuantifiers()) != 0
+	} else {
+		hasChildren = len(plan.GetChildren()) != 0
+	}
+	if !hasChildren && !isGenuineLeafPlan(plan) {
 		return fmt.Errorf(
 			"yield-invariant: %T yielded a nil-inner shell (plan %T has no children) — "+
 				"rules must construct a plan with its child already attached, the way Java "+

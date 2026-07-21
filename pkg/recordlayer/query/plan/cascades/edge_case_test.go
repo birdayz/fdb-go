@@ -253,22 +253,18 @@ func TestEdge_ImplementUnorderedUnionRule_ThreeChildren(t *testing.T) {
 		t.Fatal("ImplementUnorderedUnionRule should yield expressions for 3 children")
 	}
 
-	foundWrapper := false
+	foundPlan := false
 	for _, r := range results {
-		if w, ok := r.(*physicalUnorderedUnionWrapper); ok {
-			foundWrapper = true
-			uup, ok := w.GetRecordQueryPlan().(*plans.RecordQueryUnorderedUnionPlan)
-			if !ok {
-				t.Fatalf("expected *RecordQueryUnorderedUnionPlan, got %T", w.GetRecordQueryPlan())
-			}
+		if uup, ok := r.(*plans.RecordQueryUnorderedUnionPlan); ok {
+			foundPlan = true
 			inners := uup.GetInners()
 			if len(inners) != 3 {
 				t.Fatalf("expected 3 inner plans, got %d", len(inners))
 			}
 		}
 	}
-	if !foundWrapper {
-		t.Fatal("expected physicalUnorderedUnionWrapper in results")
+	if !foundPlan {
+		t.Fatal("expected *RecordQueryUnorderedUnionPlan in results")
 	}
 }
 

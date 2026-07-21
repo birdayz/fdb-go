@@ -54,9 +54,11 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 			childrenAsSet: true,
 		},
 		{
+			// UnorderedUnion lost its wrapper (RFC-184 W2) but keeps the
+			// non-default ChildrenAsSet=true, so the plan side stays pinned with
+			// no wrapper pair (wrap nil → wrapper checks skip).
 			name:          "UnorderedUnion",
 			plan:          &plans.RecordQueryUnorderedUnionPlan{},
-			wrap:          &physicalUnorderedUnionWrapper{},
 			childrenAsSet: true,
 		},
 		{

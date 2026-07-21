@@ -190,11 +190,11 @@ func TestPhase3_DistinctOverUnion(t *testing.T) {
 	// The union should yield physical wrappers.
 	foundUnion := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
 		_, uOK := expr.(*plans.RecordQueryUnionPlan)
-		_, uuOK := expr.(*physicalUnorderedUnionWrapper)
+		_, uuOK := expr.(*plans.RecordQueryUnorderedUnionPlan)
 		return uOK || uuOK
 	})
 	if !foundUnion {
-		t.Fatal("expected *plans.RecordQueryUnionPlan or physicalUnorderedUnionWrapper in explored graph")
+		t.Fatal("expected *plans.RecordQueryUnionPlan or *plans.RecordQueryUnorderedUnionPlan in explored graph")
 	}
 
 	// Distinct should yield either a physicalDistinctWrapper (wrapping
@@ -207,7 +207,7 @@ func TestPhase3_DistinctOverUnion(t *testing.T) {
 		if _, ok := expr.(*plans.RecordQueryUnionPlan); ok {
 			return true
 		}
-		if _, ok := expr.(*physicalUnorderedUnionWrapper); ok {
+		if _, ok := expr.(*plans.RecordQueryUnorderedUnionPlan); ok {
 			return true
 		}
 		return false

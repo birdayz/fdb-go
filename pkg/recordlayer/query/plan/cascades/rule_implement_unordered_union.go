@@ -121,9 +121,11 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 			}
 		}
 
-		unionPlan := plans.NewRecordQueryUnorderedUnionPlan(childPlans)
-		wrapper := NewPhysicalUnorderedUnionWrapper(unionPlan, newQuantifiers)
-		call.YieldFinalExpression(wrapper)
+		// The unordered union is its own cascades expression carrying the live
+		// newQuantifiers leg edges (RFC-184 W2); each leg's per-ordering winner
+		// resolves at extraction via ref.Winner(). childPlans is unused now.
+		unionPlan := plans.NewRecordQueryUnorderedUnionPlanFromQuantifiers(newQuantifiers)
+		call.YieldFinalExpression(unionPlan)
 	}
 }
 

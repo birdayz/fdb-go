@@ -135,12 +135,12 @@ func TestAllImplRules_UnorderedUnionThreeLegs(t *testing.T) {
 	finals := rootRef.AllMembers()
 	foundUnorderedUnion := false
 	for _, f := range finals {
-		if _, ok := f.(*physicalUnorderedUnionWrapper); ok {
+		if _, ok := f.(*plans.RecordQueryUnorderedUnionPlan); ok {
 			foundUnorderedUnion = true
 			break
 		}
 	}
 	if !foundUnorderedUnion {
-		t.Fatal("3-leg union should produce physicalUnorderedUnionWrapper")
+		t.Fatal("3-leg union should produce *RecordQueryUnorderedUnionPlan")
 	}
 }

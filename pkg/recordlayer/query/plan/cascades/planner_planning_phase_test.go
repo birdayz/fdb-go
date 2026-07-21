@@ -99,20 +99,17 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 			expressions.ForEachQuantifier(refB),
 		}))
 
-		var formed *physicalUnorderedUnionWrapper
+		var formed *plans.RecordQueryUnorderedUnionPlan
 		for _, y := range FireImplementationRule(NewImplementUnorderedUnionRule(), outerRef) {
-			if w, ok := y.(*physicalUnorderedUnionWrapper); ok {
+			if w, ok := y.(*plans.RecordQueryUnorderedUnionPlan); ok {
 				formed = w
 				break
 			}
 		}
 		if formed == nil {
-			t.Fatal("ImplementUnorderedUnionRule did not yield a *physicalUnorderedUnionWrapper")
+			t.Fatal("ImplementUnorderedUnionRule did not yield a *RecordQueryUnorderedUnionPlan")
 		}
-		uup, ok := formed.GetRecordQueryPlan().(*plans.RecordQueryUnorderedUnionPlan)
-		if !ok {
-			t.Fatalf("formed plan: expected *RecordQueryUnorderedUnionPlan, got %T", formed.GetRecordQueryPlan())
-		}
+		uup := formed
 		if got := len(uup.GetChildren()); got != 2 {
 			t.Fatalf("formed unordered union children: got %d, want 2", got)
 		}
@@ -139,7 +136,7 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 	var unionPlan plans.RecordQueryPlan
 	for _, f := range finals {
 		switch w := f.(type) {
-		case *physicalUnorderedUnionWrapper:
+		case *plans.RecordQueryUnorderedUnionPlan:
 			unionPlan = w.GetRecordQueryPlan()
 		case *plans.RecordQueryUnionPlan:
 			unionPlan = w.GetRecordQueryPlan()

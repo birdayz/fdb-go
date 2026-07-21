@@ -281,7 +281,7 @@ func TestPlanner_UnionOverTwoScansProducesPhysicalUnion(t *testing.T) {
 		case *plans.RecordQueryUnionPlan:
 			unionPlan = w.GetRecordQueryPlan()
 			return true
-		case *physicalUnorderedUnionWrapper:
+		case *plans.RecordQueryUnorderedUnionPlan:
 			unionPlan = w.GetRecordQueryPlan()
 			return true
 		}

@@ -189,7 +189,43 @@ func planFromQuantifier(q expressions.Quantifier) RecordQueryPlan {
 	if ref == nil {
 		return nil
 	}
+	// A stamped OPTIMIZE winner IS the answer for a group pruned to its
+	// cost-cheapest member for its requested ordering: the deferred-winner case
+	// where a plan (a set operation) ranges over a SHARED multi-member leg group
+	// whose per-ordering winner is chosen at optimization, not at yield. For a
+	// singleton group the winner is that one member, so consulting it here is
+	// behavior-preserving; for a multi-member group it returns the cost winner
+	// instead of tripping the getOnlyElement singleton guard below. This is what
+	// lets a deferred-winner set-op carry each leg as ONE live quantifier over
+	// the real group rather than a separate snapshot — the RFC-184 W2 goal.
+	// (The physical sort is NOT covered by this: it re-sorts, so it needs the
+	// cheapest-valid member for ANY ordering — findBestPhysicalPlan — not the
+	// per-ordering winner; its wrapper stays until that plan-specific hook lands.)
+	if w := ref.Winner(); w != nil {
+		if p := planOfMember(w); p != nil {
+			return p
+		}
+	}
 	if p := onlyPlanFromFinalMembers(ref.FinalMembers()); p != nil {
+		return p
+	}
+	return firstPlanFromMembers(ref.Members())
+}
+
+// planTypeFromQuantifier resolves a child quantifier to ANY member's plan for
+// TYPE queries (GetResultType) — distinct from planFromQuantifier's IDENTITY
+// resolution. A pass-through / column-aligned plan (set operation) flows its
+// inner's row SHAPE, and every alternative in a group shares that shape, so the
+// first member answers. Identity needs the single winner; type does not. This
+// lets a deferred-winner plan report its result type DURING planning — before
+// OPTIMIZE stamps the winner on its still-multi-member leg group — without
+// tripping the singleton invariant that identity resolution enforces.
+func planTypeFromQuantifier(q expressions.Quantifier) RecordQueryPlan {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return nil
+	}
+	if p := firstPlanFromMembers(ref.FinalMembers()); p != nil {
 		return p
 	}
 	return firstPlanFromMembers(ref.Members())
