@@ -23,6 +23,12 @@ go_library(
 
 go_test(
     name = "rowdiff_test",
+    # W1 added the ordering + statistics sweep axes alongside the existing cost
+    # sweep — three 250-seed PurePlannerSweeps in one target. That legitimately
+    # tripled the work (added coverage, not a per-query regression), pushing it
+    # past bazel's default medium (300s) budget on a slower CI runner. Right-size
+    # to the repo's heavy-test convention rather than cut seeds.
+    timeout = "long",
     srcs = [
         "agg_multicol_oracle_test.go",
         "arith_oracle_test.go",

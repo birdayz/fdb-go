@@ -5956,6 +5956,24 @@ is the change that caused the 49 shape flips.
         changed nothing), but with the FlatMap resultValue-walk precedent now in
         place the fix is mechanical. Not a regression; a parity gap to close.
 
+### [ ] Test infra — FDBCLIExec can hang 30 min on a stuck Docker exec (CI flake)
+
+Surfaced by PR #508's end-gate CI: the `Cross-client wire differential` job
+timed out at the 1800s Go test limit, stuck in FDB container init. Goroutine
+dump: `FDBCLIExec → configureWithRetry → InitializeDatabase`, blocked on a
+`chan receive` inside testcontainers' `Multiplexed()` output reader
+(`exec/processor.go:124`) for 29 minutes — a Docker `fdbcli` exec whose output
+stream never drained. `configureWithRetry` (foundationdb.go:444) only checks
+`ctx.Err()` BETWEEN attempts, so it cannot interrupt a read already hung inside
+`FDBCLIExec` (foundationdb.go:532); the passed `ctx` does not unblock the
+Multiplexed stream read. One stuck exec ⇒ the full 30-min test timeout instead
+of a fast retry. Re-running the job cleared it (transient Docker hang), but the
+fragility is real and pre-existing. Fix: give `FDBCLIExec` a hard per-exec
+deadline that actually abandons the Multiplexed read (run the exec+drain in a
+goroutine, `select` on `ctx.Done()` + a short timer, and fail the attempt so
+`configureWithRetry`'s backoff loop takes over). Out of scope for the planner
+work; unrelated to any wire/query change.
+
 ### [ ] RFC-184 W2 — physical-wrapper collapse: 26 eliminated, deferred-winner tail remains
 
 On branch `centralize-plan-equality-hash` (held for one super-thorough end
