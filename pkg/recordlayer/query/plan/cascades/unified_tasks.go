@@ -596,21 +596,30 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 	t.Ref.PruneToSet(keep)
 	t.Ref.SetWinner(bestFinal)
 
-	// RFC-186 coherence instrument: the winner just stamped and the
-	// designation cost properties derive through must be the SAME
-	// expression — both come from the same comparator (the planner's
-	// designation scope), so a mismatch means the designation cache went
-	// stale or the comparators drifted, and REWRITING costing is again
-	// history-dependent. Checked AFTER the prune: PruneToSet bumped the
-	// finals generation, so this designation is freshly computed against
-	// the post-prune set — for a REWRITING group pruned to {bestFinal},
-	// the designation must be exactly bestFinal.
-	if t.Phase == PhaseRewriting && p.verifyRewritingCoherence && p.dscope != nil {
-		if designated := p.dscope.designated(t.Ref, nil); designated != bestFinal {
-			p.rewritingCoherenceViolations = append(p.rewritingCoherenceViolations,
-				fmt.Sprintf("group winner %T is not the designated final %T (comparator/designation divergence)",
-					bestFinal, designated))
-		}
+	if t.Phase == PhaseRewriting {
+		p.checkRewritingCoherence(t.Ref, bestFinal)
+	}
+}
+
+// checkRewritingCoherence is the RFC-186 coherence instrument: the winner a
+// REWRITING OptimizeGroup just stamped and the designation cost properties
+// derive through must be the SAME expression — both come from the same
+// comparator (the planner's designation scope), so a mismatch means the
+// designation cache went stale or the comparators drifted, and REWRITING
+// costing is again history-dependent. Called AFTER the prune: PruneToSet
+// bumped the finals generation, so a healthy cache recomputes against the
+// post-prune set and matches by construction — what this canaries is
+// precisely the staleness/drift bug classes (a cache entry surviving a
+// mutation, a comparator bypassing the scope). Extracted so the detection
+// wiring is testable in isolation.
+func (p *Planner) checkRewritingCoherence(ref *expressions.Reference, bestFinal expressions.RelationalExpression) {
+	if !p.verifyRewritingCoherence || p.dscope == nil || ref == nil {
+		return
+	}
+	if designated := p.dscope.designated(ref, nil); designated != bestFinal {
+		p.rewritingCoherenceViolations = append(p.rewritingCoherenceViolations,
+			fmt.Sprintf("group winner %T is not the designated final %T (comparator/designation divergence)",
+				bestFinal, designated))
 	}
 }
 

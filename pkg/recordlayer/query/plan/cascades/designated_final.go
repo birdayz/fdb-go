@@ -2,7 +2,6 @@ package cascades
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 // RFC-186 §2A: the VIRTUAL PRUNE. REWRITING cost-property derivation must be
@@ -40,6 +39,15 @@ type designationEntry struct {
 // identical semantics, merely uncached.
 type designationScope struct {
 	cache map[*expressions.Reference]designationEntry
+	// backEdgeHits counts cycle-guard firings within this scope. A
+	// designation whose computation CONSUMED a back-edge ranking — its own
+	// or transitively through any child designation — is valid only under
+	// that visiting set and must not be cached: a cached
+	// tainted answer would make a recursive-CTE group's designation depend
+	// on which parent reached it first (query-order history dependence,
+	// the disease this file exists to kill). Single-threaded per scope, so
+	// snapshot-before/compare-after brackets a computation exactly.
+	backEdgeHits int
 }
 
 func newDesignationScope() *designationScope {
@@ -76,19 +84,21 @@ func (s *designationScope) designated(ref *expressions.Reference, visiting map[*
 	}
 	var best expressions.RelationalExpression
 	if visiting[ref] {
-		// Back-edge: rank by node-content hash only, no recursion.
+		// Back-edge: rank by node-content hash only, no recursion. Not
+		// cached (context-dependent), and the hit taints every computation
+		// currently in flight above (see backEdgeHits).
+		s.backEdgeHits++
 		for _, c := range candidates {
 			if best == nil || c.HashCodeWithoutChildren() < best.HashCodeWithoutChildren() {
 				best = c
 			}
 		}
-		// Do NOT cache a cycle-conservative answer — it is context-dependent
-		// (valid only under this visiting set).
 		return best
 	}
 	if visiting == nil {
 		visiting = map[*expressions.Reference]bool{}
 	}
+	hitsBefore := s.backEdgeHits
 	visiting[ref] = true
 	for _, c := range candidates {
 		if best == nil || s.compare(c, best, visiting) < 0 {
@@ -96,15 +106,17 @@ func (s *designationScope) designated(ref *expressions.Reference, visiting map[*
 		}
 	}
 	delete(visiting, ref)
-	if fromFinals {
-		// Exploratory-derived designations are transient (the group has not
-		// finalized); caching them is sound (generation-keyed — the
-		// finalization insert bumps the generation) but pointless only if
-		// growth is imminent. Cache both: correctness comes from the key.
-		s.cache[ref] = designationEntry{expr: best, gen: gen}
-	} else {
+	if fromFinals && s.backEdgeHits == hitsBefore {
 		s.cache[ref] = designationEntry{expr: best, gen: gen}
 	}
+	// !fromFinals is deliberately NOT cached: the generation counter bumps
+	// on FINAL-set mutations only — exploratory Insert does not bump it, so
+	// a cached members-derived designation would survive later exploratory
+	// growth at the same generation and re-import insertion-order
+	// dependence in exactly the un-finalized-child window the fallback
+	// serves. Recomputed per request until the group finalizes (the
+	// finalization insert bumps the generation and the cached tier takes
+	// over).
 	return best
 }
 
@@ -191,7 +203,7 @@ func (s *designationScope) residualConjuncts(e expressions.RelationalExpression,
 	count := 0
 	if wp, ok := e.(expressions.RelationalExpressionWithPredicates); ok {
 		for _, p := range wp.GetPredicates() {
-			count += int(cnfSizeOfPredicate(p))
+			count += int(cnfSize(p))
 		}
 	}
 	for _, q := range e.GetQuantifiers() {
@@ -240,7 +252,3 @@ func (s *designationScope) deepHash(e expressions.RelationalExpression, visiting
 	}
 	return h
 }
-
-// cnfSizeOfPredicate is cnfSize with the package's overflow-guarded
-// estimator (rule_normalize_predicates.go).
-func cnfSizeOfPredicate(p predicates.QueryPredicate) int64 { return cnfSize(p) }

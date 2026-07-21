@@ -4607,9 +4607,11 @@ HintCost dispatch): back-to-back master worktree vs branch, same box, sequential
 runs. All subtests PASS both sides; everything within single-run noise: full scans
 master 3.15/3.40/3.66/3.13s vs branch 3.08/3.27/3.47/3.02s (branch equal-or-faster),
 order_by_pk_full 3.40 vs 3.54s (+4%), point lookups/index-eq at the 10-30ms floor
-both sides; index_amount_range 0.15 vs 0.23s and group_by_customer_having 0.13 vs
-0.20s — small-absolute sub-second deltas in single-run-noise territory, no
-order-of-magnitude shift anywhere. No §2 plan-shape regression under load.**
+both sides; index_amount_range 0.15 vs 0.23s (+53%) and group_by_customer_having 0.13 vs
+0.20s (+54%) — small-absolute sub-second deltas from SINGLE runs each side, so
+noise vs signal is NOT demonstrated for those two rows; no order-of-magnitude
+shift anywhere and no plan-shape change in the suites. FOLLOW-UP: re-measure
+those two subtests (3× each side) before reading them as a §2 effect.**
 
 **2026-07-17 (RFC-180 D2+I3 — winner map deletion, requested-ordering retention,
 root-operator rule index, exact integer comparators): branch (HEAD 0aea06b48),

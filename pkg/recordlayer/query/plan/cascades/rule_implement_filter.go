@@ -12,7 +12,7 @@ import (
 // Quantifier's Reference contains at least one physical-plan member.
 //
 //	Filter([P], inner-with-physical-member)
-//	  â  PredicatesFilterPlan([P], inner-physical, innerAlias)
+//	  →  PredicatesFilterPlan([P], inner-physical, innerAlias)
 //
 // Matches Java's ImplementFilterRule which creates
 // RecordQueryPredicatesFilterPlan with a physical quantifier morphed
@@ -60,7 +60,7 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	// retires the compensationSafeForYield index-only branch (B4). Note:
 	// validateNoIndexOnlyResidual is RETAINED as the catch-all backstop for Go-only
 	// physical-filter builders (ImplementSimpleSelectRule, NLJ, ImplementIndexScanRule)
-	// that this gate does not cover â do not remove it until every such builder is gated.
+	// that this gate does not cover — do not remove it until every such builder is gated.
 	for _, pred := range f.GetPredicates() {
 		if predicateContainsUncompensatableValues(pred) {
 			return
@@ -98,7 +98,7 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 		}
 		innerAlias := f.GetInner().GetAlias()
 		// The filter carries the LIVE inner edge over the winner's shared group
-		// (RFC-184 W2) â exactly the edge the wrapper's innerQuant presented. A
+		// (RFC-184 W2) — exactly the edge the wrapper's innerQuant presented. A
 		// plain filter's inner has no correlated SARG snapshot to preserve (unlike
 		// the FoD/NLJ paths), so it ranges over the live group: this keeps
 		// push_filter_through_fetch's re-explored pushed member reachable from a

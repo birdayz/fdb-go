@@ -9,7 +9,7 @@ import (
 
 // ImplementLimitRule converts a LogicalLimitExpression into a physical
 // RecordQueryLimitPlan. LIMIT/OFFSET is a pure pass-through that caps
-// the row count â it applies to whatever physical plan the inner
+// the row count — it applies to whatever physical plan the inner
 // produces.
 //
 // Go-only extension: Java doesn't support LIMIT in SQL; it uses
@@ -66,7 +66,7 @@ func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 		if _, ok := winner.(physicalPlanExpression); !ok {
 			continue
 		}
-		// Build the LIMIT over the SAME live memo edge it reports as its child â
+		// Build the LIMIT over the SAME live memo edge it reports as its child —
 		// no separate snapshot inner. The plan IS the cascades expression the memo
 		// holds (RFC-184 W2): GetQuantifiers / OrderingSourceRef / GetInner all
 		// resolve through this one quantifier, so there is no nil-inner shell to

@@ -218,19 +218,6 @@ func findBestValidPhysicalExpr(ref *expressions.Reference, less func(a, b expres
 	return best
 }
 
-// getWinnerPlan returns the RecordQueryPlan from the winner for the
-// given ordering, or nil if no physical plan exists.
-func getWinnerPlan(ref *expressions.Reference, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) plans.RecordQueryPlan {
-	winner, _ := getWinnerForOrdering(ref, ordering, less)
-	if winner == nil {
-		return nil
-	}
-	if ph, ok := winner.(physicalPlanExpression); ok {
-		return ph.GetRecordQueryPlan()
-	}
-	return nil
-}
-
 // orderingDelegator is implemented by physical wrappers that PRESERVE
 // their input's order rather than producing one — their HintOrdering
 // delegates to the inner child group. Ordering satisfaction and

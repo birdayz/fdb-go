@@ -229,6 +229,8 @@ func quantifierAttributesEqual(a, b Quantifier) bool {
 		a.IsStrictSingle() == b.IsStrictSingle()
 }
 
+// matchChildrenPositional pairs aQs[i] with bQs[i]: edge attributes first,
+// then a single composed alias extension, then child recursion.
 func matchChildrenPositional(aQs, bQs []Quantifier, aliases *AliasMap) bool {
 	for i := range aQs {
 		if !quantifierAttributesEqual(aQs[i], bQs[i]) {
