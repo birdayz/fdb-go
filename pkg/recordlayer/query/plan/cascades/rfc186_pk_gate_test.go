@@ -98,3 +98,48 @@ func TestConcreteJoinCost_CompositePKPrefixNotPointProbe(t *testing.T) {
 		t.Fatalf("unprovable coverage must not price as point probe at the join leaf, got cardinality=1")
 	}
 }
+
+// TestConcreteJoinCost_DispatchesToHintCost pins RFC-186 §2D: an operator
+// without an explicit arm in the join-ordering cost walk is priced by ITS
+// OWN HintCost (the single source of truth), never first-child-transparent.
+// Pre-§2D a limit under a join exposed its child's full cardinality (no
+// cap) and a union exposed only its first branch (no sum, no merge CPU) —
+// silently flipping join-order selection.
+func TestConcreteJoinCost_DispatchesToHintCost(t *testing.T) {
+	t.Parallel()
+	stats := properties.DefaultStatistics{}
+
+	t.Run("limit caps cardinality", func(t *testing.T) {
+		t.Parallel()
+		inner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+		limit := plans.NewRecordQueryLimitPlan(inner, 7, 0)
+		got := concretePlanCost(limit, stats, nil)
+		want := limit.HintCost([]properties.Cost{concretePlanCost(inner, stats, nil)}, stats)
+		if got != want {
+			t.Fatalf("walk cost %+v != HintCost %+v (dispatch must delegate)", got, want)
+		}
+		// The cap (7, times the physical-wrapper discount) vs the full scan
+		// (LeafScanCardinality): orders of magnitude apart — the walk must
+		// see the CAPPED side.
+		if got.Cardinality > 10 {
+			t.Fatalf("LIMIT 7 over a full scan must cap cardinality (~7), got %v", got.Cardinality)
+		}
+	})
+
+	t.Run("union sums children", func(t *testing.T) {
+		t.Parallel()
+		a := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+		b := plans.NewRecordQueryScanPlan([]string{"U"}, values.UnknownType, false)
+		union := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{a, b})
+		got := concretePlanCost(union, stats, nil)
+		ca := concretePlanCost(a, stats, nil)
+		cb := concretePlanCost(b, stats, nil)
+		// Union must reflect BOTH branches (modulo the wrapper discount) —
+		// strictly above either single branch; first-child transparency
+		// would return exactly ca.
+		if got.Cardinality <= ca.Cardinality || got.Cardinality <= cb.Cardinality {
+			t.Fatalf("union cardinality %v must exceed each branch (%v, %v) — first-child transparency detected",
+				got.Cardinality, ca.Cardinality, cb.Cardinality)
+		}
+	})
+}

@@ -232,15 +232,18 @@ func (p *RecordQueryProjectionPlan) HintCost(child []properties.Cost, _ properti
 	}
 }
 
-// HintCost: DefaultOnEmpty passes its child through unchanged.
+// HintCost: DefaultOnEmpty passes its child through unchanged — literally.
+// It is a per-row null-extension shim, not an alternative implementation
+// competing in the memo, so it must NOT carry the physical-wrapper
+// discount: through the join-ordering walk's HintCost dispatch (RFC-186
+// §2D) that discount made the correlated re-scan FlatMap shape ~10%
+// cheaper than the materialized NLJ and flipped the RFC-152 preserved-only
+// LEFT JOIN back to the per-outer-row re-scan the RFC exists to prevent.
 func (p *RecordQueryDefaultOnEmptyPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
-	return properties.Cost{
-		Cardinality: child[0].Cardinality * properties.PhysicalWrapperCostMultiplier,
-		CPU:         child[0].CPU * properties.PhysicalWrapperCostMultiplier,
-	}
+	return child[0]
 }
 
 // HintCost: a temp-table insert emits what it consumed.

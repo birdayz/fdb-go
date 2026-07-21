@@ -6,7 +6,9 @@ import (
 	"hash"
 	"hash/fnv"
 	"io"
+	"os"
 	"strings"
+	"sync"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -210,11 +212,21 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 	// (the RFC-069 multiway regression: an index-probe order lost to a full-scan order on
 	// fetch count despite being far cheaper). It self-gates to join-wrapper pairs; non-join
 	// comparisons fall straight through (RFC-069).
-	if cmp := compareJoinOrdering(a, b, stats, ctx); cmp != 0 {
+	// Recursive-CTE DECOMPOSITION choice (DFS join vs level union) runs
+	// BEFORE join-order costing: the two candidates are different
+	// algorithms over different subtrees, not two orders of one join —
+	// outside compareJoinOrdering's jurisdiction. Pre-RFC-186 §2D the
+	// concrete walk priced both recursive roots transparently (equal) and
+	// abstained here by accident; the HintCost dispatch made it
+	// discriminate across the decompositions' non-comparable children and
+	// steal the choice from this comparison (the RecursiveCTE plan-shape
+	// pin caught the flip). Jurisdiction, not ordering luck, now encodes
+	// the precedence.
+	if cmp := compareRecursiveCTE(a, b); cmp != 0 {
 		return cmp
 	}
 
-	if cmp := compareRecursiveCTE(a, b); cmp != 0 {
+	if cmp := compareJoinOrdering(a, b, stats, ctx); cmp != 0 {
 		return cmp
 	}
 
@@ -1158,7 +1170,29 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		}
 		return properties.IntersectionCost(child)
 	default:
-		// Transparent / unknown: roll up the first child's cardinality + summed CPU.
+		// RFC-186 §2D: an operator without an explicit arm dispatches to its
+		// own HintCost — the per-plan formulas in plan/plans/cost.go are the
+		// single source of truth — so a limit caps its child's cardinality,
+		// an aggregation collapses to its group estimate, a union sums its
+		// children and pays merge CPU, and every NEW plan type is priced
+		// automatically the day it gains a HintCost. The explicit arms above
+		// remain only where the join-ordering recursion deliberately
+		// diverges from HintCost: the RFC-069 selectivity-only scan/index
+		// leaves and the join/filter operators the walk recurses through
+		// with its own child costs. Before this dispatch, whole operator
+		// classes (limits, aggregations, unions, IN operators, recursive
+		// plans) fell to first-child transparency — a join under a union
+		// exposed only the first branch's cardinality and paid no merge
+		// cost, flipping join-order selection.
+		if hc, ok := p.(interface {
+			HintCost([]properties.Cost, properties.StatisticsProvider) properties.Cost
+		}); ok {
+			return hc.HintCost(child, stats)
+		}
+		// No HintCost either: first-child-transparent, but LOUDLY (once per
+		// concrete type) — silent transparency is how the class went
+		// unpriced. Every new plan type must take a position.
+		warnUnpricedPlanType(p)
 		sumCPU := 0.0
 		for _, c := range child {
 			sumCPU += c.CPU
@@ -1168,6 +1202,21 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		}
 		return properties.Cost{Cardinality: properties.LeafScanCardinality, CPU: properties.LeafScanCardinality * properties.ScanCPU}
 	}
+}
+
+// warnedUnpricedPlanTypes tracks which plan types have already produced the
+// §2D transparency warning, so a hot planning loop emits each diagnosis
+// exactly once per process.
+var warnedUnpricedPlanTypes sync.Map
+
+func warnUnpricedPlanType(p plans.RecordQueryPlan) {
+	name := fmt.Sprintf("%T", p)
+	if _, loaded := warnedUnpricedPlanTypes.LoadOrStore(name, struct{}{}); loaded {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"cascades: join-ordering cost walk found plan type %s with neither an explicit arm nor a HintCost — priced first-child-transparent (add a HintCost; RFC-186 §2D)\n",
+		name)
 }
 
 // scanLikeCost is the metadata-independent leaf cost for the concrete join-ordering

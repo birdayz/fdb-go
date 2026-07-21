@@ -4602,6 +4602,15 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-07-22 (RFC-186 §2A-§2D — designated-final derivation, PK point-probe gate,
+HintCost dispatch): back-to-back master worktree vs branch, same box, sequential
+runs. All subtests PASS both sides; everything within single-run noise: full scans
+master 3.15/3.40/3.66/3.13s vs branch 3.08/3.27/3.47/3.02s (branch equal-or-faster),
+order_by_pk_full 3.40 vs 3.54s (+4%), point lookups/index-eq at the 10-30ms floor
+both sides; index_amount_range 0.15 vs 0.23s and group_by_customer_having 0.13 vs
+0.20s — small-absolute sub-second deltas in single-run-noise territory, no
+order-of-magnitude shift anywhere. No §2 plan-shape regression under load.**
+
 **2026-07-17 (RFC-180 D2+I3 — winner map deletion, requested-ordering retention,
 root-operator rule index, exact integer comparators): branch (HEAD 0aea06b48),
 all subtests PASS — every metric BEATS the recorded bands: full_scan_count 3.16s,
