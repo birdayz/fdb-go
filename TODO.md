@@ -5940,7 +5940,9 @@ is the change that caused the 49 shape flips.
   yamsql-DML + FDB row-counts. NOTE the 32 ReasonNoQuantifier edges (all TypeFilter,
   via the scanPlanExpression composite adapter) are a SEPARATE RFC-183 residual, not
   a W2 wrapper — see the RFC-183-residual entry.
-  TWO Graefe-named follow-ups from the sort finale (non-blocking, for the end review):
+  THREE non-blocking follow-ups (NOT merge gates — Graefe + Torvalds ACK'd HEAD
+  0e854e837 on PR #508 with these outstanding; (i)/(ii) are Graefe-named from the
+  sort finale, (iii) is Graefe end-review finding #2):
     (i) root-cause why the unsplit-elided plan (Project(PredicatesFilter(Fetch(
         IndexScan)))) is ABSENT at the Project group for rowdiff seeds 132/214 — a
         W2 disentangled-capture search-completeness asymmetry, not a cost-model bug.
