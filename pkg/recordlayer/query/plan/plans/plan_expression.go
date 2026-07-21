@@ -198,9 +198,13 @@ func planFromQuantifier(q expressions.Quantifier) RecordQueryPlan {
 	// instead of tripping the getOnlyElement singleton guard below. This is what
 	// lets a deferred-winner set-op carry each leg as ONE live quantifier over
 	// the real group rather than a separate snapshot — the RFC-184 W2 goal.
-	// (The physical sort is NOT covered by this: it re-sorts, so it needs the
-	// cheapest-valid member for ANY ordering — findBestPhysicalPlan — not the
-	// per-ordering winner; its wrapper stays until that plan-specific hook lands.)
+	// The physical sort resolves through this same path: it re-sorts its input, so
+	// it needs the cheapest-valid member for ANY ordering — not a per-ordering
+	// winner — and ref.Winner() is exactly that, the OPTIMIZE-chosen
+	// overall-cheapest member (ordering-specific selection lives elsewhere, in
+	// getWinnerForOrdering). Before the wrapper collapse the sort resolved this
+	// itself via findBestPhysicalPlan; the collapsed plan routes through Winner()
+	// here and reaches the same member.
 	if w := ref.Winner(); w != nil {
 		if p := planOfMember(w); p != nil {
 			return p

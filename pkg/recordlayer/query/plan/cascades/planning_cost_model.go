@@ -666,8 +666,22 @@ func countResidualPredicatesRec(e expressions.RelationalExpression, count *int) 
 	if e == nil {
 		return
 	}
-	if pf, ok := e.(*plans.RecordQueryPredicatesFilterPlan); ok {
-		for _, p := range pf.GetPredicates() {
+	// Mirror concreteResidualPredicates: PredicatesFilter, legacy Filter, and a
+	// materialized NLJ's join predicate are all residual conjuncts (#3). This
+	// fallback only runs when the compared expression is not itself a physical
+	// plan (the physical path takes concreteResidualPredicates), so the counters
+	// must agree on what a residual is.
+	switch n := e.(type) {
+	case *plans.RecordQueryPredicatesFilterPlan:
+		for _, p := range n.GetPredicates() {
+			*count += int(cnfSize(p))
+		}
+	case *plans.RecordQueryFilterPlan:
+		for _, p := range n.GetPredicates() {
+			*count += int(cnfSize(p))
+		}
+	case *plans.RecordQueryNestedLoopJoinPlan:
+		for _, p := range n.GetPredicates() {
 			*count += int(cnfSize(p))
 		}
 	}

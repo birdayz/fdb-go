@@ -241,17 +241,6 @@ func IsPhysicalFetchFromPartialRecord(expr expressions.RelationalExpression) boo
 	return ok
 }
 
-// GetPhysicalFetchFromPartialRecordPlan returns the plan if expr is a physical
-// fetch, nil otherwise. Since RFC-184 W2 the memo holds the bare plan, so this
-// is a bare type assertion.
-func GetPhysicalFetchFromPartialRecordPlan(expr expressions.RelationalExpression) *plans.RecordQueryFetchFromPartialRecordPlan {
-	p, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan)
-	if !ok {
-		return nil
-	}
-	return p
-}
-
 // IsPhysicalInJoin reports whether the given expression is an InJoin. Since
 // RFC-184 W2 the memo holds *plans.RecordQueryInJoinPlan directly (no
 // physicalInJoinWrapper), so this is a bare type check.
@@ -292,18 +281,6 @@ func ExplainPhysicalPlan(expr expressions.RelationalExpression) string {
 	return p.Explain()
 }
 
-// extractChildPlanFromQuantifier gets the RecordQueryPlan from a
-// quantifier's Reference. Used by WithChildren implementations to
-// rebuild the plan with the freshly-extracted child plan during plan
-// extraction. Returns nil if the quantifier has no physical plan.
-func extractChildPlanFromQuantifier(q expressions.Quantifier) plans.RecordQueryPlan {
-	ref := q.GetRangesOver()
-	if ref == nil {
-		return nil
-	}
-	return findPhysicalPlan(ref)
-}
-
 // findPhysicalPlan returns a physical member's underlying RecordQueryPlan, or
 // nil if no physical plan has been yielded into ref yet.
 //
@@ -326,26 +303,6 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 		}
 	}
 	return nil
-}
-
-// findBestPhysicalPlan returns the cheapest physical member's plan — the cost
-// winner — for a push-through WithChildren whose inner must relink to the
-// winner rather than to whichever physical member was yielded first.
-// ref.AllMembers() interleaves exploratory and final members in yield order, so
-// "first physical" can be a dominated alternative; when ordering constraints add
-// ordered variants the first-yielded member flips and the enforcer relinks onto
-// the wrong (worse) join order (RFC-076 TestFDB_JoinSelPred_Repro). Falls back
-// to findPhysicalPlan when no member ranks.
-func findBestPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
-	if ref == nil {
-		return nil
-	}
-	if best := findBestValidPhysicalExpr(ref, nil); best != nil {
-		if ph, ok := best.(physicalPlanExpression); ok {
-			return ph.GetRecordQueryPlan()
-		}
-	}
-	return findPhysicalPlan(ref)
 }
 
 // findPhysicalExpr returns a physical-plan expression from ref, FINAL members
@@ -381,13 +338,12 @@ func findBestPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 // rule-set parity, tracked in DIVERGENCES.md.
 //
 // DO NOT make this cost-ranked. Picking the "cheapest" member here looks like
-// an obvious improvement — findBestPhysicalPlan does exactly that, and it is
-// wired to one site against this function's twenty — but it is wrong, and
-// measurably so: ranking with PlanningCostModelLess ignores the REQUESTED
-// ORDERING, so a rule asking for a child gets whichever member is cheapest
-// rather than one that satisfies the ordering its parent needs. Tried, and it
-// turned `SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC` into an ASCENDING
-// result (pinned by yamsql order_by_elimination#36) and moved 79 plan shapes.
+// an obvious improvement, but it is wrong, and measurably so: ranking with
+// PlanningCostModelLess ignores the REQUESTED ORDERING, so a rule asking for a
+// child gets whichever member is cheapest rather than one that satisfies the
+// ordering its parent needs. Tried, and it turned `SELECT a, b FROM ab WHERE
+// a = 1 ORDER BY a DESC` into an ASCENDING result (pinned by yamsql
+// order_by_elimination#36) and moved 79 plan shapes.
 //
 // Cost is the memo's job, not a rule's. A rule wants A VALID CHILD; which
 // alternative wins is decided by OptimizeGroup under the ordering constraints,
@@ -438,65 +394,9 @@ func bakedInnerPlan(expr expressions.RelationalExpression) plans.RecordQueryPlan
 	return p
 }
 
-// isLeafReplaceable reports whether a plan is safe to substitute as the
-// inner of a projection without altering the output schema or predicate
-// semantics. Only leaf-adjacent plans (scans, filters over scans, index
-// scans, streaming agg, distinct, etc.) qualify. Compound join plans
-// (NLJ, FlatMap, InJoin) encode predicate semantics in their structure
-// and must NOT be swapped — extraction already picks the right join plan
-// via quantifier traversal.
-//
-// ORDER-PRESERVING set operations over ONE record type (intersection / union
-// of index scans merged on the primary key) are leaf-adjacent in exactly this
-// sense: they flow that record type's schema unchanged and carry no join
-// structure, so they belong in the list. They were absent only because no
-// shape put one under a relinking wrapper until compensated pk-intersections
-// started carrying residual filters — a filter over such an intersection then
-// kept its eagerly-snapshotted nil-inner plan and extracted
-// `PredicatesFilter(<nil>)` (XX000 plan-invariant), and before the
-// compensation landed the very same queries silently DROPPED the residual
-// (wrong rows).
-//
-// Three families stay OUT, each for its own reason:
-//   - InJoin / InUnion bind a correlation per IN value — join-like structure.
-//   - The UNORDERED set ops (UnorderedUnion, UnorderedPrimaryKeyDistinct):
-//     findPhysicalPlan picks the first physical member without consulting
-//     ordering, so admitting them would let an unordered member satisfy a
-//     relink whose consumer needs grouped/ordered input (streaming
-//     aggregation). Gate the relink on ordering compatibility before adding
-//     them.
-//   - MultiIntersectionOnValues intersects on VALUES and computes its own
-//     output shape rather than flowing a record type through, so it fails
-//     this gate's schema-preservation test; and nothing needs it — no
-//     observed shape puts one under a relinking wrapper. (Membership here is
-//     independent of definesOutputSchema in cascades_generator.go: that gate
-//     governs a column-derivation DESCENT, this one governs plan
-//     SUBSTITUTION. StreamingAggregation and AggregateIndex sit in both and
-//     belong in both. Do not reason from one list to the other.)
-func isLeafReplaceable(p plans.RecordQueryPlan) bool {
-	switch p.(type) {
-	case *plans.RecordQueryScanPlan,
-		*plans.RecordQueryIndexPlan,
-		*plans.RecordQueryFilterPlan,
-		*plans.RecordQueryTypeFilterPlan,
-		*plans.RecordQueryFetchFromPartialRecordPlan,
-		*plans.RecordQueryInMemorySortPlan,
-		*plans.RecordQueryStreamingAggregationPlan,
-		*plans.RecordQueryDistinctPlan,
-		*plans.RecordQueryLimitPlan,
-		*plans.RecordQueryPredicatesFilterPlan,
-		*plans.RecordQueryAggregateIndexPlan,
-		*plans.RecordQueryIntersectionPlan,
-		*plans.RecordQueryUnionPlan,
-		*plans.RecordQueryMergeSortUnionPlan:
-		return true
-	}
-	return false
-}
-
-// writeHash64 writes a uint64 to the FNV hasher in big-endian
-// byte order. Shared by all four wrapper types' HashCodeWithoutChildren
-// implementations.
+// writeHash64 writes a uint64 to the FNV hasher in big-endian byte order.
+// Used by the data-access rule to fold a plan's HashCodeWithoutChildren into
+// its structural hash.
 func writeHash64(h hashWriter, v uint64) {
 	var b [8]byte
 	binary.BigEndian.PutUint64(b[:], v)

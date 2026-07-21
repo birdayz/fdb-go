@@ -5947,6 +5947,12 @@ is the change that caused the 49 shape flips.
     (ii) evaluate the terminal form: hoist criterion #12 (fewer in-memory sorts)
         ABOVE all structural rungs, or gate each structural rung on EQUAL sort counts
         (not ==0-both), retiring the 4 per-rung gates. Same rowdiff-sweep validation.
+    (iii) RecordQueryMapPlan/RecordQueryProjectionPlan inherit the empty
+        PlanExprBase GetCorrelatedToWithoutChildren default while Java's
+        RecordQueryMapPlan.getCorrelatedToWithoutChildren folds the result value.
+        PRE-EXISTING (the retired physicalMapWrapper was equally empty — this PR
+        changed nothing), but with the FlatMap resultValue-walk precedent now in
+        place the fix is mechanical. Not a regression; a parity gap to close.
 
 ### [ ] RFC-184 W2 — physical-wrapper collapse: 26 eliminated, deferred-winner tail remains
 
