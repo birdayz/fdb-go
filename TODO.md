@@ -6039,6 +6039,22 @@ resolves the sort's inner via findBestPhysicalPlan, restoring the wrapper's
 override. Everything else (the two structural/type fixes) is mechanical and
 differ-neutral. That is the concrete Graefe-review unit.
 
+BRACKETED EMPIRICALLY (two attempts, both reverted) — the findBestPhysicalPlan
+extraction hook is MANDATORY, not optional:
+  - WITH global planFromQuantifier→ref.Winner(): resolves the inner but to the
+    WRONG winner (the group's ordering-winner, an ordered/dominated variant) →
+    differing=66, shape_flips=63, plan_regressions=0 (correct rows, worse shape).
+  - WITHOUT it (just the two mechanical fixes + collapse): TestSortElim_* still
+    passes (panic gone — the sort's HintCost/HintOrdering don't walk GetInner),
+    BUT extraction cannot resolve the multi-member inner at all →
+    differing=109, plan_regressions=64, and 64 NEW plan errors (258→322).
+  So the two uniform options bracket the answer: extraction MUST resolve the
+  multi-member inner (some winner is needed — no-Winner gives plan errors) AND
+  it must be findBestPhysicalPlan specifically (ref.Winner() gives wrong plans).
+  The per-plan (sort-specific) extraction hook is the ONLY thing that works;
+  the two structural/type fixes are its necessary companions. That is the
+  precise, empirically-bounded Graefe-review unit for the physical sort.
+
 ### [x] FUZZ: GetCorrelatedTo stack-overflows on a cyclic reference graph (PRE-EXISTING) — FIXED by RFC-185
 
 RESOLVED: the cyclic memo was constructed only by the Go-only filter/set-op
