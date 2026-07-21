@@ -58,7 +58,7 @@ func TestComputeDistinctRecords_FilterInheritsFromChild(t *testing.T) {
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(scan, []predicates.QueryPredicate{pred})
 	innerQ := expressions.ForEachQuantifier(innerRef)
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, innerQ)
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{innerQ}).(*plans.RecordQueryPredicatesFilterPlan)
 
 	got := computeDistinctRecords(filterWrapper, filterPlan)
 	if !got {

@@ -310,12 +310,12 @@ func TestFilterRule_UsesWinnerPerOrdering(t *testing.T) {
 		t.Fatalf("ImplementFilterRule yielded %d without constraints, want 1", len(yielded))
 	}
 
-	wrap, ok := yielded[0].(*physicalPredicatesFilterWrapper)
+	wrap, ok := yielded[0].(*plans.RecordQueryPredicatesFilterPlan)
 	if !ok {
-		t.Fatalf("yielded[0] = %T, want *physicalPredicatesFilterWrapper", yielded[0])
+		t.Fatalf("yielded[0] = %T, want *plans.RecordQueryPredicatesFilterPlan", yielded[0])
 	}
-	if wrap.plan == nil {
-		t.Fatal("FilterPlan is nil")
+	if wrap.GetInner() == nil {
+		t.Fatal("filter plan inner is nil")
 	}
 }
 
@@ -340,13 +340,11 @@ func TestPinOrderedSpine(t *testing.T) {
 	srcRef.InsertFinal(ordered)
 	srcRef.SetWinner(cheap)
 
-	wrapper := &physicalPredicatesFilterWrapper{
-		plan: plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		),
-		innerQuant: expressions.ForEachQuantifier(srcRef),
-	}
+	basePlan := plans.NewRecordQueryPredicatesFilterPlan(
+		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+	)
+	wrapper := basePlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(srcRef)})
 
 	reqS := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},
@@ -372,10 +370,7 @@ func TestPinOrderedSpine(t *testing.T) {
 
 	// Unpinnable (no satisfying member) declines with nil.
 	loneRef := expressions.InitialOf(cheap)
-	loneWrapper := &physicalPredicatesFilterWrapper{
-		plan:       wrapper.plan,
-		innerQuant: expressions.ForEachQuantifier(loneRef),
-	}
+	loneWrapper := basePlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(loneRef)})
 	if got := pinOrderedSpine(loneWrapper, reqS, nil); got != nil {
 		t.Fatalf("delegator over an orderless group must decline, got %T", got)
 	}
@@ -404,13 +399,10 @@ func TestPinOrderedSpine_DeclinesWhenRelinkRefused(t *testing.T) {
 
 	srcRef := expressions.InitialOf(orderedProjection)
 
-	wrapper := &physicalPredicatesFilterWrapper{
-		plan: plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		),
-		innerQuant: expressions.ForEachQuantifier(srcRef),
-	}
+	wrapper := plans.NewRecordQueryPredicatesFilterPlan(
+		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(srcRef)})
 
 	reqS := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},

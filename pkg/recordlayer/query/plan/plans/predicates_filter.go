@@ -45,9 +45,55 @@ func NewRecordQueryPredicatesFilterPlanWithAlias(inner RecordQueryPlan, preds []
 	}
 }
 
+// NewRecordQueryPredicatesFilterPlanFromQuantifier builds a predicates filter
+// whose child is a supplied memo quantifier instead of a snapshot over a single
+// plan. This makes the plan its own cascades expression carrying its child edge
+// directly — the memo holds it without a physicalPredicatesFilterWrapper
+// (RFC-184 W2).
+//
+// The emitter freezes a DISENTANGLED FINAL reference holding the filter's
+// concrete inner member (constraint-preserving disentangle), so
+// planFromQuantifier resolves that concrete member — never the shared-group
+// winner. The predicate list is preserved.
+func NewRecordQueryPredicatesFilterPlanFromQuantifier(innerQ expressions.Quantifier, preds []predicates.QueryPredicate) *RecordQueryPredicatesFilterPlan {
+	return &RecordQueryPredicatesFilterPlan{
+		innerQ:     innerQ,
+		predicates: append([]predicates.QueryPredicate(nil), preds...),
+	}
+}
+
+// NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier is the
+// binding-alias form of NewRecordQueryPredicatesFilterPlanFromQuantifier. It
+// preserves BOTH the predicate list AND the innerAlias the current row is bound
+// under during predicate evaluation.
+func NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(innerQ expressions.Quantifier, preds []predicates.QueryPredicate, alias values.CorrelationIdentifier) *RecordQueryPredicatesFilterPlan {
+	return &RecordQueryPredicatesFilterPlan{
+		innerQ:     innerQ,
+		predicates: append([]predicates.QueryPredicate(nil), preds...),
+		innerAlias: alias,
+	}
+}
+
 // GetInner returns the wrapped inner plan, dereferenced through the quantifier.
 func (p *RecordQueryPredicatesFilterPlan) GetInner() RecordQueryPlan {
 	return planFromQuantifier(p.innerQ)
+}
+
+// GetInnerQuantifier returns the live child quantifier — the single memo edge the
+// filter ranges over. derivationsForPredicatesFilter reads its alias to translate
+// the predicates' correlations; since RFC-184 W2 the memo holds the bare plan (no
+// physicalPredicatesFilterWrapper whose innerQuant field it used to read), this
+// exposes the same edge.
+func (p *RecordQueryPredicatesFilterPlan) GetInnerQuantifier() expressions.Quantifier {
+	return p.innerQ
+}
+
+// GetResultValue returns the flowed object value of the child quantifier — a
+// filter passes its input's rows through unchanged, so its row identity IS the
+// inner's. This is the identity physicalPredicatesFilterWrapper.GetResultValue
+// supplied (RFC-184 W2).
+func (p *RecordQueryPredicatesFilterPlan) GetResultValue() values.Value {
+	return p.innerQ.GetFlowedObjectValue()
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -154,6 +200,22 @@ func (p *RecordQueryPredicatesFilterPlan) WithQuantifiers(qs []expressions.Quant
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The filter carries its child as a single frozen memo edge, so the
+// relink is a quantifier swap: WithQuantifiers preserves the predicate list and
+// binding alias, and GetInner re-resolves through the new singleton reference.
+// This replaces physicalPredicatesFilterWrapper.WithChildren (RFC-184 W2), whose
+// separate snapshot plan field forced a constructor rebuild gated on
+// isLeafReplaceable. Because the emitter already froze the concrete inner into a
+// private single-member reference, extraction recurses through it faithfully — it
+// never consults a shared exploratory group, so a correlated inner is preserved.
+func (p *RecordQueryPredicatesFilterPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryPredicatesFilterPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetCorrelatedToWithoutChildren walks this plan's own predicates, mirroring

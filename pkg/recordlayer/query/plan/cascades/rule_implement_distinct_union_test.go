@@ -269,13 +269,10 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 	srcRef.SetPlanProperties(pmSrc)
 
 	staleScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pkVals)
-	filterWrap := &physicalPredicatesFilterWrapper{
-		plan: plans.NewRecordQueryPredicatesFilterPlan(
-			staleScan,
-			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		),
-		innerQuant: expressions.ForEachQuantifier(srcRef),
-	}
+	filterWrap := plans.NewRecordQueryPredicatesFilterPlan(
+		staleScan,
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(srcRef)}).(*plans.RecordQueryPredicatesFilterPlan)
 	refB := expressions.InitialOf(filterWrap)
 	pmB := NewPlanPropertiesMap()
 	pmB.Add(filterWrap)

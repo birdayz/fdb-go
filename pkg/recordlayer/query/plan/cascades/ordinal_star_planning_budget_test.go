@@ -100,7 +100,14 @@ func TestOrdinalStarPlanningBudget(t *testing.T) {
 	// sub-products. 11740→9189 with the sentinel gate (PLANNING pure
 	// LOGICAL finals are fail-to-plan sentinels, no longer rule-explored
 	// per round); determinism and the wall-clock ceiling still hold.
-	const wantTasks = 9189
+	// 9189→9481 (+3.2%) with the RFC-184 W2 predicates_filter wrapper collapse:
+	// plain-filter emitters keep the LIVE shared-group inner edge (as the wrapper's
+	// innerQuant did) so a pushed filter stays reachable from a parent that captures
+	// the leg; the star topology's extra star-spoke re-exploration of the bare
+	// interned filter members is the residual delta. The corpus stays plan-identical
+	// (the chain baselines are unchanged from pre-collapse) except the redundant-sort
+	// elisions the wrapper's relink limitation previously suppressed.
+	const wantTasks = 9481
 	tol := wantTasks / 50 // ±2%
 
 	best := time.Hour

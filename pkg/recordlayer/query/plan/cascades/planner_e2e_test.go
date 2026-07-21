@@ -52,8 +52,8 @@ func TestE2E_FilterOverScan(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if _, ok := plan.(*physicalPredicatesFilterWrapper); !ok {
-		t.Fatalf("expected physicalPredicatesFilterWrapper, got %T", plan)
+	if _, ok := plan.(*plans.RecordQueryPredicatesFilterPlan); !ok {
+		t.Fatalf("expected *plans.RecordQueryPredicatesFilterPlan, got %T", plan)
 	}
 }
 
@@ -211,9 +211,9 @@ func TestE2E_SortEliminationThroughFilter(t *testing.T) {
 			describePlan(best))
 	}
 
-	fw, ok := best.(*physicalPredicatesFilterWrapper)
+	fw, ok := best.(*plans.RecordQueryPredicatesFilterPlan)
 	if !ok {
-		t.Fatalf("expected physicalPredicatesFilterWrapper at root, got %T (%s)", best, describePlan(best))
+		t.Fatalf("expected *plans.RecordQueryPredicatesFilterPlan at root, got %T (%s)", best, describePlan(best))
 	}
 	innerRef := fw.GetQuantifiers()[0].GetRangesOver()
 	innerPlan := findPhysicalPlan(innerRef)

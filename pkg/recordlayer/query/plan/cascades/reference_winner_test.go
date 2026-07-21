@@ -206,13 +206,10 @@ func TestSortElimination_PinsOrderedSpineThroughWrapper(t *testing.T) {
 	innerRef.SetWinner(cheap) // generic extraction would relink to THIS
 
 	// The order-preserving filter wrapper over that group.
-	filterWrap := &physicalPredicatesFilterWrapper{
-		plan: plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
-			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		),
-		innerQuant: expressions.ForEachQuantifier(innerRef),
-	}
+	filterWrap := plans.NewRecordQueryPredicatesFilterPlan(
+		plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(innerRef)})
 	filterRef := expressions.InitialOf(filterWrap)
 
 	sort := expressions.NewLogicalSortExpression(
@@ -282,13 +279,10 @@ func TestSortElimination_DeclinesWhenSpineUnpinnable(t *testing.T) {
 	innerRef.InsertFinal(cheap)
 	innerRef.SetWinner(cheap)
 
-	filterWrap := &physicalPredicatesFilterWrapper{
-		plan: plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
-			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		),
-		innerQuant: expressions.ForEachQuantifier(innerRef),
-	}
+	filterWrap := plans.NewRecordQueryPredicatesFilterPlan(
+		plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(innerRef)})
 	filterRef := expressions.InitialOf(filterWrap)
 
 	sort := expressions.NewLogicalSortExpression(
@@ -425,13 +419,10 @@ func TestFinalOfChildrenVisibleToSemanticEquality(t *testing.T) {
 	childB := sortedMemberOn(t, "B")
 
 	mk := func(child expressions.RelationalExpression) expressions.RelationalExpression {
-		return &physicalPredicatesFilterWrapper{
-			plan: plans.NewRecordQueryPredicatesFilterPlan(
-				plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-				[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-			),
-			innerQuant: expressions.ForEachQuantifier(expressions.FinalOf(child)),
-		}
+		return plans.NewRecordQueryPredicatesFilterPlan(
+			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(expressions.FinalOf(child))})
 	}
 	w1, w2 := mk(childA), mk(childB)
 
@@ -466,8 +457,12 @@ func TestSortElimination_DeclinesWhenExtractionRelinkRefused(t *testing.T) {
 		expressions.ForEachQuantifier(sortedRef),
 	)
 
-	// The filter's source group: cheap unordered scan (winner) + the
-	// non-leaf-replaceable ordered projection.
+	// The distinct wrapper's source group: cheap unordered scan (winner) + the
+	// non-leaf-replaceable ordered projection. A predicates filter no longer
+	// exhibits this (RFC-184 W2 made its WithChildren an unconditional
+	// quantifier swap that always reaches the executable plan); the distinct
+	// wrapper still gates on isLeafReplaceable, so it is the operator that
+	// keeps its stale concrete plan when the pinned inner is a projection.
 	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
 	innerRef := expressions.InitialOf(scanExpr)
 	FireExpressionRule(NewPrimaryScanRule(), innerRef)
@@ -480,20 +475,19 @@ func TestSortElimination_DeclinesWhenExtractionRelinkRefused(t *testing.T) {
 	innerRef.InsertFinal(orderedProjection)
 	innerRef.SetWinner(cheap)
 
-	filterWrap := &physicalPredicatesFilterWrapper{
-		plan: plans.NewRecordQueryPredicatesFilterPlan(
+	distinctWrap := NewPhysicalDistinctWrapper(
+		plans.NewRecordQueryDistinctPlan(
 			plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
-			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		),
-		innerQuant: expressions.ForEachQuantifier(innerRef),
-	}
-	filterRef := expressions.InitialOf(filterWrap)
+		expressions.ForEachQuantifier(innerRef),
+	)
+	distinctRef := expressions.InitialOf(distinctWrap)
 
 	sort := expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
 			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
 		},
-		expressions.ForEachQuantifier(filterRef),
+		expressions.ForEachQuantifier(distinctRef),
 	)
 	sortRef := expressions.InitialOf(sort)
 
@@ -506,6 +500,6 @@ func TestSortElimination_DeclinesWhenExtractionRelinkRefused(t *testing.T) {
 		t.Fatal("plan is nil")
 	}
 	if _, isSort := plan.(*expressions.LogicalSortExpression); !isSort {
-		t.Fatalf("the elision must DECLINE when the spine relink cannot reach the executable plan (projection child is not leaf-replaceable for the filter's WithChildren); got %T with the sort already gone", plan)
+		t.Fatalf("the elision must DECLINE when the spine relink cannot reach the executable plan (projection child is not leaf-replaceable for the distinct wrapper's WithChildren); got %T with the sort already gone", plan)
 	}
 }

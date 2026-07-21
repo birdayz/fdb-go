@@ -314,7 +314,7 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 
 	// With no predicates and a simple QOV result, the rule should
 	// yield the inner scan's physical wrapper directly — no
-	// physicalPredicatesFilterWrapper or physicalMapWrapper.
+	// *plans.RecordQueryPredicatesFilterPlan or *plans.RecordQueryMapPlan.
 	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
 		t.Fatal("root Reference has no members after PLANNING phase")
@@ -328,7 +328,7 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 		// RFC-184 W2: a bare primary scan is its own physical expression.
 		case *plans.RecordQueryScanPlan:
 			foundScan = true
-		case *physicalPredicatesFilterWrapper:
+		case *plans.RecordQueryPredicatesFilterPlan:
 			foundPredicatesFilter = true
 		// RFC-184 W2: a map/projection is its own physical expression.
 		case *plans.RecordQueryMapPlan:
@@ -337,7 +337,7 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 	}
 
 	if foundPredicatesFilter {
-		t.Fatal("unexpected physicalPredicatesFilterWrapper — Select has no predicates, should pass through")
+		t.Fatal("unexpected *plans.RecordQueryPredicatesFilterPlan — Select has no predicates, should pass through")
 	}
 	if foundMap {
 		t.Fatal("unexpected *plans.RecordQueryMapPlan — Select has simple QOV result, should pass through")

@@ -41,7 +41,7 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(sortPlan, []predicates.QueryPredicate{pred})
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, expressions.ForEachQuantifier(sortRef))
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(sortRef)})
 	filterRef := expressions.InitialOf(filterWrapper)
 
 	distinctPlan := plans.NewRecordQueryDistinctPlan(filterPlan)
@@ -53,11 +53,11 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("expected 1 yielded (Filter(Distinct(inner))), got %d", len(yielded))
 	}
-	fw, ok := yielded[0].(*physicalPredicatesFilterWrapper)
+	fw, ok := yielded[0].(*plans.RecordQueryPredicatesFilterPlan)
 	if !ok {
-		t.Fatalf("expected physicalPredicatesFilterWrapper, got %T", yielded[0])
+		t.Fatalf("expected *plans.RecordQueryPredicatesFilterPlan, got %T", yielded[0])
 	}
-	inner := fw.plan.GetInner()
+	inner := fw.GetInner()
 	dp, ok := inner.(*plans.RecordQueryDistinctPlan)
 	if !ok {
 		t.Fatalf("filter's inner = %T, want *RecordQueryDistinctPlan", inner)

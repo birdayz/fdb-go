@@ -116,8 +116,8 @@ func TestImplementSimpleSelectRule_WithPredicates(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("should yield a filter wrapper")
 	}
-	if _, ok := results[0].(*physicalPredicatesFilterWrapper); !ok {
-		t.Fatalf("expected physicalPredicatesFilterWrapper, got %T", results[0])
+	if _, ok := results[0].(*plans.RecordQueryPredicatesFilterPlan); !ok {
+		t.Fatalf("expected *plans.RecordQueryPredicatesFilterPlan, got %T", results[0])
 	}
 }
 

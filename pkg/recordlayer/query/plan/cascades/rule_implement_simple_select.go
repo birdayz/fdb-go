@@ -121,13 +121,19 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 		}
 
 		if len(queryPredicates) > 0 {
-			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(currentPlan, queryPredicates, innerQuantifier.GetAlias())
-			filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, currentQuant)
-			filterRef := call.MemoizeFinalExpression(filterWrapper)
+			// The filter carries the LIVE currentQuant edge over the shared inner
+			// group (RFC-184 W2) — exactly the edge the wrapper's innerQuant
+			// presented. A plain filter's inner has no correlated SARG snapshot to
+			// preserve (unlike FoD/NLJ), so ranging over the live group keeps
+			// push_filter_through_fetch's re-explored pushed member reachable from a
+			// parent that captures this leg; a frozen snapshot strands the pre-push
+			// filter once the merged group canonicalizes to the pushed one.
+			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(currentQuant, queryPredicates, innerQuantifier.GetAlias())
+			filterRef := call.MemoizeFinalExpression(filterPlan)
 			currentQuant = expressions.NewPhysicalQuantifier(filterRef)
 			currentPlan = filterPlan
 			if isSimpleResult {
-				call.YieldFinalExpression(filterWrapper)
+				call.YieldFinalExpression(filterPlan)
 				continue
 			}
 		}

@@ -291,13 +291,10 @@ func TestImplementStreamingAgg_PinsOrderedSpine(t *testing.T) {
 	srcRef.InsertFinal(ordered)
 	srcRef.SetWinner(cheap)
 
-	filterWrapper := &physicalPredicatesFilterWrapper{
-		plan: plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		),
-		innerQuant: expressions.ForEachQuantifier(srcRef),
-	}
+	filterWrapper := plans.NewRecordQueryPredicatesFilterPlan(
+		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(srcRef)})
 	innerRef := expressions.InitialOf(filterWrapper)
 
 	gb := expressions.NewGroupByExpression(
@@ -316,7 +313,7 @@ func TestImplementStreamingAgg_PinsOrderedSpine(t *testing.T) {
 	// Find the ORDERED alternative: the agg wrapper whose child resolves to
 	// a predicates-filter wrapper (the delegator), not the in-memory sort.
 	var orderedAgg *physicalStreamingAggWrapper
-	var pinnedFilter *physicalPredicatesFilterWrapper
+	var pinnedFilter *plans.RecordQueryPredicatesFilterPlan
 	for _, y := range yielded {
 		aggW, ok := y.(*physicalStreamingAggWrapper)
 		if !ok {
@@ -327,7 +324,7 @@ func TestImplementStreamingAgg_PinsOrderedSpine(t *testing.T) {
 			continue
 		}
 		for _, m := range qs[0].GetRangesOver().AllMembers() {
-			if fw, isFilter := m.(*physicalPredicatesFilterWrapper); isFilter {
+			if fw, isFilter := m.(*plans.RecordQueryPredicatesFilterPlan); isFilter {
 				orderedAgg = aggW
 				pinnedFilter = fw
 			}

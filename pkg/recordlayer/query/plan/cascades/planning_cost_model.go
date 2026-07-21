@@ -580,7 +580,8 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	// A type filter is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryTypeFilterPlan:
 		counts.typeFilterCount += len(w.GetRecordTypes())
-	case *physicalPredicatesFilterWrapper:
+	// The PredicatesFilter is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryPredicatesFilterPlan:
 		counts.predicatesFilterCount++
 	// A map/projection is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryMapPlan:
@@ -632,8 +633,8 @@ func countResidualPredicatesRec(e expressions.RelationalExpression, count *int) 
 	if e == nil {
 		return
 	}
-	if pf, ok := e.(*physicalPredicatesFilterWrapper); ok {
-		for _, p := range pf.plan.GetPredicates() {
+	if pf, ok := e.(*plans.RecordQueryPredicatesFilterPlan); ok {
+		for _, p := range pf.GetPredicates() {
 			*count += int(cnfSize(p))
 		}
 	}

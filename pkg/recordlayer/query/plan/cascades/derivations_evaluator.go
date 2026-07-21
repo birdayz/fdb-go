@@ -84,7 +84,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- PredicatesFilter: child results + predicate values ---
 
-	case *physicalPredicatesFilterWrapper:
+	// The PredicatesFilter is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryPredicatesFilterPlan:
 		return derivationsForPredicatesFilter(w)
 
 	// --- Map: translate result value through child results ---
@@ -255,15 +256,15 @@ func derivationsFromSingleChildExpr(expr expressions.RelationalExpression) *prop
 
 // --- PredicatesFilter ---
 
-func derivationsForPredicatesFilter(w *physicalPredicatesFilterWrapper) *properties.Derivations {
-	childDerivs := properties.DerivationsFromQuantifier(w.innerQuant)
+func derivationsForPredicatesFilter(w *plans.RecordQueryPredicatesFilterPlan) *properties.Derivations {
+	childDerivs := properties.DerivationsFromQuantifier(w.GetInnerQuantifier())
 	childResults := childDerivs.ResultValues
 
 	var localVals []values.Value
 	localVals = append(localVals, childDerivs.LocalValues...)
 
-	alias := w.innerQuant.GetAlias()
-	for _, pred := range w.plan.GetPredicates() {
+	alias := w.GetInnerQuantifier().GetAlias()
+	for _, pred := range w.GetPredicates() {
 		predValues := collectValuesFromPredicate(pred)
 		for _, childResult := range childResults {
 			for _, pv := range predValues {

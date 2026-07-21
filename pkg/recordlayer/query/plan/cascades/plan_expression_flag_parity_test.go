@@ -95,7 +95,9 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		// Scan lost its wrapper (RFC-184 W2) but keeps the false/false default,
 		// so the plan side stays pinned here with no wrapper pair.
 		{name: "Scan", plan: &plans.RecordQueryScanPlan{}},
-		{name: "PredicatesFilter", plan: &plans.RecordQueryPredicatesFilterPlan{}, wrap: &physicalPredicatesFilterWrapper{}},
+		// PredicatesFilter lost its wrapper (RFC-184 W2) but keeps the false/false
+		// default, so the plan side stays pinned here with no wrapper pair.
+		{name: "PredicatesFilter", plan: &plans.RecordQueryPredicatesFilterPlan{}},
 		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}, wrap: &physicalNestedLoopJoinWrapper{}},
 		// InJoin and InUnion lost their wrappers (RFC-184 W2) but keep the
 		// false/false default, so the plan side stays pinned here with no wrapper

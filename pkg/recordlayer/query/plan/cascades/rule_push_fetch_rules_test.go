@@ -68,9 +68,9 @@ func TestMergeFetchIntoCoveringIndex_DoesNotFireOnNonIndex(t *testing.T) {
 
 	// Fetch over a filter (not an index scan) — should not fire.
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, nil)
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, expressions.ForEachQuantifier(
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(
 		&expressions.Reference{},
-	))
+	)})
 	filterRef := expressions.InitialOf(filterWrapper)
 
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
@@ -153,7 +153,7 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
 	filterQ := expressions.ForEachQuantifier(fetchRef)
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{filterQ})
 
 	ref := expressions.InitialOf(filterWrapper)
 
@@ -196,7 +196,7 @@ func TestPushFilterThroughFetch_NoPushable(t *testing.T) {
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
 	filterQ := expressions.NamedForEachQuantifier(filterInnerAlias, fetchRef)
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{filterQ})
 
 	ref := expressions.InitialOf(filterWrapper)
 
@@ -320,7 +320,7 @@ func TestPushFilterThroughFetch_PartialPush(t *testing.T) {
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pushablePred, residualPred})
 	filterQ := expressions.NamedForEachQuantifier(filterInnerAlias, fetchRef)
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{filterQ})
 
 	ref := expressions.InitialOf(filterWrapper)
 
@@ -335,7 +335,7 @@ func TestPushFilterThroughFetch_PartialPush(t *testing.T) {
 		t.Fatalf("expected residual filter wrapper on top, got fetch wrapper directly")
 	}
 	if !IsPhysicalPredicatesFilter(yielded[0]) {
-		t.Fatalf("expected physicalPredicatesFilterWrapper, got %T", yielded[0])
+		t.Fatalf("expected *plans.RecordQueryPredicatesFilterPlan, got %T", yielded[0])
 	}
 }
 
@@ -561,7 +561,7 @@ func TestFieldValueChild_PushFilterDecision(t *testing.T) {
 
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pushablePred, residualPred})
 	filterQ := expressions.NamedForEachQuantifier(filterAlias, fetchRef)
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{filterQ})
 
 	ref := expressions.InitialOf(filterWrapper)
 

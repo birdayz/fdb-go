@@ -202,7 +202,7 @@ func TestPlanner_PlanningPhase_SelectWithPredicateOverScan(t *testing.T) {
 
 	planWithImplRules(t, rootRef, implRules)
 
-	// ImplementSimpleSelectRule should yield a physicalPredicatesFilterWrapper
+	// ImplementSimpleSelectRule should yield a *plans.RecordQueryPredicatesFilterPlan
 	// into the root Reference's members.
 	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
@@ -211,7 +211,7 @@ func TestPlanner_PlanningPhase_SelectWithPredicateOverScan(t *testing.T) {
 
 	foundFilter := false
 	for _, f := range finals {
-		if _, ok := f.(*physicalPredicatesFilterWrapper); ok {
+		if _, ok := f.(*plans.RecordQueryPredicatesFilterPlan); ok {
 			foundFilter = true
 			break
 		}
@@ -221,7 +221,7 @@ func TestPlanner_PlanningPhase_SelectWithPredicateOverScan(t *testing.T) {
 		for i, f := range finals {
 			types[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected *physicalPredicatesFilterWrapper in members, got types: %v", types)
+		t.Fatalf("expected *plans.RecordQueryPredicatesFilterPlan in members, got types: %v", types)
 	}
 }
 

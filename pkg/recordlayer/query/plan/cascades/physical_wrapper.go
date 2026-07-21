@@ -183,10 +183,12 @@ func GetPhysicalMultiIntersectionPlan(expr expressions.RelationalExpression) *pl
 	return p
 }
 
-// IsPhysicalFilter reports whether the given RelationalExpression is
-// a physical predicates filter wrapper.
+// IsPhysicalFilter reports whether the given RelationalExpression is a physical
+// predicates filter. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryPredicatesFilterPlan directly (no
+// physicalPredicatesFilterWrapper), so this is a bare type check.
 func IsPhysicalFilter(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalPredicatesFilterWrapper)
+	_, ok := expr.(*plans.RecordQueryPredicatesFilterPlan)
 	return ok
 }
 
@@ -214,10 +216,12 @@ func IsPhysicalUpdate(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
-// IsPhysicalPredicatesFilter reports whether the given expression is
-// a physicalPredicatesFilterWrapper.
+// IsPhysicalPredicatesFilter reports whether the given expression is a physical
+// predicates filter. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryPredicatesFilterPlan directly (no
+// physicalPredicatesFilterWrapper), so this is a bare type check.
 func IsPhysicalPredicatesFilter(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalPredicatesFilterWrapper)
+	_, ok := expr.(*plans.RecordQueryPredicatesFilterPlan)
 	return ok
 }
 

@@ -557,12 +557,14 @@ func buildCorrelatedFlatMapPlan(
 	var innerWrapped plans.RecordQueryPlan = innerPlan
 	if innerStrictSingle {
 		if len(joinPreds) > 0 {
-			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-				innerWrapped, joinPreds, innerCorr,
+			fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+				call.MemoizeFinalExpression(innerWrapped))
+			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+				fpInnerQ, joinPreds, innerCorr,
 			)
 			innerWrapped = filterPlan
 			innerQ = expressions.NamedForEachQuantifier(innerCorr,
-				call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(filterPlan, innerQ)))
+				call.MemoizeFinalExpression(filterPlan))
 		}
 		// Correlated scalar subquery, no user LIMIT: enforce SQL at-most-one-row.
 		// A strict FirstOrDefault collapses the inner to one row per outer (NULL
@@ -605,30 +607,36 @@ func buildCorrelatedFlatMapPlan(
 		innerQ = expressions.NamedForEachQuantifier(innerCorr,
 			call.MemoizeFinalExpression(doePlan))
 		if len(joinPreds) > 0 {
-			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-				innerWrapped, joinPreds, innerCorr,
+			fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+				call.MemoizeFinalExpression(innerWrapped))
+			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+				fpInnerQ, joinPreds, innerCorr,
 			)
 			innerWrapped = filterPlan
 			innerQ = expressions.NamedForEachQuantifier(innerCorr,
-				call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(filterPlan, innerQ)))
+				call.MemoizeFinalExpression(filterPlan))
 		}
 	} else if len(joinPreds) > 0 {
-		filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-			innerWrapped, joinPreds, innerCorr,
+		fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(innerWrapped))
+		filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+			fpInnerQ, joinPreds, innerCorr,
 		)
 		innerWrapped = filterPlan
 		innerQ = expressions.NamedForEachQuantifier(innerCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(filterPlan, innerQ)))
+			call.MemoizeFinalExpression(filterPlan))
 	}
 
 	var outerWrapped plans.RecordQueryPlan = outerPlan
 	if len(outerPreds) > 0 {
-		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-			outerPlan, outerPreds, outerCorr,
+		ofInnerQ := expressions.NamedForEachQuantifier(outerQ.GetAlias(),
+			call.MemoizeFinalExpression(outerPlan))
+		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+			ofInnerQ, outerPreds, outerCorr,
 		)
 		outerWrapped = outerFilter
 		outerQ = expressions.NamedForEachQuantifier(outerCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(outerFilter, outerQ)))
+			call.MemoizeFinalExpression(outerFilter))
 	}
 
 	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
@@ -898,10 +906,12 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 
 	var belowFOD plans.RecordQueryPlan = innerPlan
 	if len(joinPreds) > 0 {
-		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(innerPlan, joinPreds, innerCorr)
+		bfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(innerPlan))
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(bfInnerQ, joinPreds, innerCorr)
 		belowFOD = belowFODFilter
 		innerQ = expressions.NewPhysicalQuantifier(
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
+			call.MemoizeFinalExpression(belowFODFilter))
 	}
 	// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the concrete
 	// correlated inner belowFOD (constraint-preserving disentangle,
@@ -925,10 +935,12 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(innerCorr), cmp)
-		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, innerCorr)
+		rfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(fodPlan))
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(rfInnerQ, []predicates.QueryPredicate{residual}, innerCorr)
 		flatMapInner = residualFilter
 		innerQ = expressions.NewPhysicalQuantifier(
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, innerQ)))
+			call.MemoizeFinalExpression(residualFilter))
 	}
 
 	// outerOnlyPreds deliberately keep the buried-leg references the
@@ -944,10 +956,12 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 
 	var flatMapOuter plans.RecordQueryPlan = outerPlan
 	if len(outerOnlyPreds) > 0 {
-		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerOnlyPreds, outerCorr)
+		ofInnerQ := expressions.NamedPhysicalQuantifier(outerQ.GetAlias(),
+			call.MemoizeFinalExpression(outerPlan))
+		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(ofInnerQ, outerOnlyPreds, outerCorr)
 		flatMapOuter = outerFilter
 		outerQ = expressions.NewPhysicalQuantifier(
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(outerFilter, outerQ)))
+			call.MemoizeFinalExpression(outerFilter))
 	}
 
 	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
@@ -2343,10 +2357,12 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 
 	var belowFOD plans.RecordQueryPlan = existPlan
 	if len(existPreds) > 0 {
-		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(existPlan, existPreds, existCorr)
+		bfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(existPlan))
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(bfInnerQ, existPreds, existCorr)
 		belowFOD = belowFODFilter
 		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
+			call.MemoizeFinalExpression(belowFODFilter))
 	}
 	// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the concrete
 	// correlated inner belowFOD (constraint-preserving disentangle,
@@ -2369,10 +2385,12 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(existCorr), cmp)
-		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, existCorr)
+		rfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(fodPlan))
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(rfInnerQ, []predicates.QueryPredicate{residual}, existCorr)
 		flatMapInner = residualFilter
 		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, innerQ)))
+			call.MemoizeFinalExpression(residualFilter))
 	}
 
 	// The FlatMap's result value.
@@ -2760,10 +2778,12 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 
 	var belowFOD plans.RecordQueryPlan = existPlan
 	if len(existPreds) > 0 {
-		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(existPlan, existPreds, existCorr)
+		bfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(existPlan))
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(bfInnerQ, existPreds, existCorr)
 		belowFOD = belowFODFilter
 		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
+			call.MemoizeFinalExpression(belowFODFilter))
 	}
 	// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the concrete
 	// correlated inner belowFOD (constraint-preserving disentangle,
@@ -2786,10 +2806,12 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(existCorr), cmp)
-		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, existCorr)
+		rfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(fodPlan))
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(rfInnerQ, []predicates.QueryPredicate{residual}, existCorr)
 		flatMapInner = residualFilter
 		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, innerQ)))
+			call.MemoizeFinalExpression(residualFilter))
 	}
 
 	// The FlatMap result value: for a PROJECTED-EXISTS fold (the RV references
@@ -3097,10 +3119,12 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 
 	var belowFOD plans.RecordQueryPlan = correlatedInner
 	if len(innerResiduals) > 0 {
-		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(correlatedInner, innerResiduals, innerCorrelation)
+		bfInnerQ := expressions.NamedPhysicalQuantifier(rightQ.GetAlias(),
+			call.MemoizeFinalExpression(correlatedInner))
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(bfInnerQ, innerResiduals, innerCorrelation)
 		belowFOD = belowFODFilter
 		rightQ = expressions.NamedPhysicalQuantifier(innerCorrelation,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, rightQ)))
+			call.MemoizeFinalExpression(belowFODFilter))
 	}
 	// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the concrete
 	// correlated inner belowFOD (constraint-preserving disentangle,
@@ -3123,20 +3147,24 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(innerCorrelation), cmp)
-		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, innerCorrelation)
+		rfInnerQ := expressions.NamedPhysicalQuantifier(rightQ.GetAlias(),
+			call.MemoizeFinalExpression(fodPlan))
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(rfInnerQ, []predicates.QueryPredicate{residual}, innerCorrelation)
 		flatMapInner = residualFilter
 		rightQ = expressions.NamedPhysicalQuantifier(innerCorrelation,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, rightQ)))
+			call.MemoizeFinalExpression(residualFilter))
 	}
 
 	leftQ := expressions.NamedForEachQuantifier(outerCorrelation, call.MemoizeExpression(outerExpr))
 
 	var flatMapOuter plans.RecordQueryPlan = outerPlan
 	if len(outerResiduals) > 0 {
-		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerResiduals, outerCorrelation)
+		ofInnerQ := expressions.NamedForEachQuantifier(leftQ.GetAlias(),
+			call.MemoizeFinalExpression(outerPlan))
+		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(ofInnerQ, outerResiduals, outerCorrelation)
 		flatMapOuter = outerFilter
 		leftQ = expressions.NamedForEachQuantifier(outerCorrelation,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(outerFilter, leftQ)))
+			call.MemoizeFinalExpression(outerFilter))
 	}
 
 	flatMapPlan := plans.NewRecordQueryFlatMapPlan(

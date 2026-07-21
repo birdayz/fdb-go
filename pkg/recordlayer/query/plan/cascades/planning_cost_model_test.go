@@ -46,15 +46,11 @@ func TestPlanningCostModel_FewerResidualPredicatesWins(t *testing.T) {
 	)
 
 	// one-predicate filter
-	onePred := NewPhysicalPredicatesFilterWrapper(
-		plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred1}),
-		innerQ,
-	)
+	onePred := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred1}).
+		WithQuantifiers([]expressions.Quantifier{innerQ})
 	// two-predicate filter — same scan underneath
-	twoPred := NewPhysicalPredicatesFilterWrapper(
-		plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred1, pred2}),
-		innerQ,
-	)
+	twoPred := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred1, pred2}).
+		WithQuantifiers([]expressions.Quantifier{innerQ})
 
 	if !PlanningCostModelLess(onePred, twoPred) {
 		t.Error("PlanningCostModelLess(1-pred, 2-pred) = false, want true")
@@ -136,14 +132,10 @@ func TestPlanningCostModel_CNFSizeForOrPredicates(t *testing.T) {
 	orPred := predicates.NewOr(pred("a"), pred("b"))
 	andPred := predicates.NewAnd(pred("a"), pred("b"))
 
-	orFilter := NewPhysicalPredicatesFilterWrapper(
-		plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{orPred}),
-		innerQ,
-	)
-	andFilter := NewPhysicalPredicatesFilterWrapper(
-		plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{andPred}),
-		innerQ,
-	)
+	orFilter := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{orPred}).
+		WithQuantifiers([]expressions.Quantifier{innerQ})
+	andFilter := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{andPred}).
+		WithQuantifiers([]expressions.Quantifier{innerQ})
 
 	if !PlanningCostModelLess(orFilter, andFilter) {
 		t.Error("OR(A,B) [cnfSize=1] should be preferred over AND(A,B) [cnfSize=2]")
@@ -157,14 +149,10 @@ func TestPlanningCostModel_CNFSizeForOrPredicates(t *testing.T) {
 	)
 	tripleAnd := predicates.NewAnd(pred("a"), pred("b"), pred("c"))
 
-	complexFilter := NewPhysicalPredicatesFilterWrapper(
-		plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{complexOr}),
-		innerQ,
-	)
-	simpleFilter := NewPhysicalPredicatesFilterWrapper(
-		plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{tripleAnd}),
-		innerQ,
-	)
+	complexFilter := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{complexOr}).
+		WithQuantifiers([]expressions.Quantifier{innerQ})
+	simpleFilter := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{tripleAnd}).
+		WithQuantifiers([]expressions.Quantifier{innerQ})
 
 	if !PlanningCostModelLess(simpleFilter, complexFilter) {
 		t.Error("AND(A,B,C) [cnfSize=3] should be preferred over OR(AND(A,B),AND(C,D)) [cnfSize=4]")
@@ -823,7 +811,7 @@ func TestPlanningCostModelLess_Criterion14_MapPredicatesFilterCount(t *testing.T
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(scan, []predicates.QueryPredicate{pred})
-	oneFilter := NewPhysicalPredicatesFilterWrapper(filterPlan, innerQ)
+	oneFilter := filterPlan.WithQuantifiers([]expressions.Quantifier{innerQ})
 
 	// Plan B: same filter, plus a map on top → predicatesFilterCount=1, mapCount=1 → sum=2.
 	filterRef := expressions.InitialOf(oneFilter)
