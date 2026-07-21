@@ -114,7 +114,8 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 		wrap := false
 		if IsPhysicalInJoin(m) {
 			wrap = true
-		} else if _, ok := m.(*physicalInUnionWrapper); ok {
+		} else if _, ok := m.(*plans.RecordQueryInUnionPlan); ok {
+			// The InUnion is its own cascades expression now (RFC-184 W2).
 			wrap = true
 		} else if isRestrictedFetch(ph) {
 			wrap = true

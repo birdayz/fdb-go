@@ -97,8 +97,11 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		{name: "Scan", plan: &plans.RecordQueryScanPlan{}},
 		{name: "PredicatesFilter", plan: &plans.RecordQueryPredicatesFilterPlan{}, wrap: &physicalPredicatesFilterWrapper{}},
 		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}, wrap: &physicalNestedLoopJoinWrapper{}},
-		{name: "InJoin", plan: &plans.RecordQueryInJoinPlan{}, wrap: &physicalInJoinWrapper{}},
-		{name: "InUnion", plan: &plans.RecordQueryInUnionPlan{}, wrap: &physicalInUnionWrapper{}},
+		// InJoin and InUnion lost their wrappers (RFC-184 W2) but keep the
+		// false/false default, so the plan side stays pinned here with no wrapper
+		// pair.
+		{name: "InJoin", plan: &plans.RecordQueryInJoinPlan{}},
+		{name: "InUnion", plan: &plans.RecordQueryInUnionPlan{}},
 		{name: "MultiIntersection", plan: &plans.RecordQueryMultiIntersectionOnValuesPlan{}},
 		{name: "StreamingAggregation", plan: &plans.RecordQueryStreamingAggregationPlan{}, wrap: &physicalStreamingAggWrapper{}},
 		{name: "InMemorySort", plan: &plans.RecordQueryInMemorySortPlan{}, wrap: &physicalInMemorySortWrapper{}},

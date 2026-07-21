@@ -40,13 +40,13 @@ func TestImplementInUnionRule_FiresWithExplodeAndInner(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalInUnionWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryInUnionPlan); ok {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("should yield physicalInUnionWrapper")
+		t.Fatal("should yield *RecordQueryInUnionPlan")
 	}
 }
 

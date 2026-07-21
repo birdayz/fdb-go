@@ -300,9 +300,10 @@ func TestComputeDistinctRecords_MergeSortUnionIsTrue(t *testing.T) {
 func TestComputeDistinctRecords_InUnionIsTrue(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	// The InUnion is its own physical expression now (RFC-184 W2) — it IS the
+	// physicalPlanExpression computeDistinctRecords inspects.
 	iup := plans.NewRecordQueryInUnionPlan(scan, []string{"b"}, nil, false)
-	w := NewPhysicalInUnionWrapper(iup, expressions.ForEachQuantifier(nil))
-	if !computeDistinctRecords(w, iup) {
+	if !computeDistinctRecords(iup, iup) {
 		t.Fatal("InUnion should be distinct")
 	}
 }

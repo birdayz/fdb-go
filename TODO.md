@@ -5948,16 +5948,25 @@ Made it STACK-SCOPED (add on descent, `delete` on ascent, mirroring
 extractTieBreakHash) so a SHARED sub-DAG (two UNION legs scanning t1) re-extracts
 instead of dropping its 2nd child to nil. This unblocked union + projection.
 
-REMAINING 10 live wrappers — the DEFERRED-WINNER TAIL (needs a Graefe-ACK'd
-design; do NOT force):
-  in_memory_sort, unordered_union, in_union, in_join, first_or_default,
-  predicates_filter, distinct, streaming_agg — each has a plan whose DIRECT
-  child is a MULTI-MEMBER alternatives group, and `onlyPlanFromFinalMembers`
-  (plans/plan_expression.go:215) PANICS at planning-time walk ("a plan's child
-  reference must be a singleton"). This invariant is DELIBERATE — the wrapper was
-  the sanctioned way to hold a multi-member group (wrapper quantifier ranges the
-  group; plan holds a snapshot singleton for planning-time type/child queries).
-  The 2 dead structs (scan/filter) are now removed (commit 2f1189b94).
+DEFERRED-WINNER TAIL — the winner CRITERION is PLAN-SPECIFIC (breakthrough):
+  Each of these plans ranges a child over a MULTI-MEMBER alternatives group.
+  The DESIGN-C' INFRA (landed 5022c0d7f) makes this collapsible for plans whose
+  correct child winner is the group's per-ordering winner (ref.Winner()):
+    - planFromQuantifier consults ref.Winner() before the singleton panic;
+    - planTypeFromQuantifier for GetResultType (type is member-invariant);
+    - verifyNoShell + reachability tally count via GetQuantifiers not GetChildren.
+  ✅ COLLAPSED on the infra (differ=0, memoinvariant+reachability+yamsql green):
+    unordered_union (5022c0d7f). in_union, in_join in flight (same set-op shape).
+  STILL WRAPPED — need a PLAN-SPECIFIC winner hook, NOT ref.Winner():
+    - in_memory_sort: re-sorts, so wants cheapest-valid-ANY-ordering
+      (findBestPhysicalPlan), not the per-ordering winner. BRACKETED: ref.Winner()
+      → 63 shape flips; no-Winner → 64 plan errors. Needs a physical-sort
+      extraction hook (findBestPhysicalPlan). Graefe.
+    - first_or_default / predicates_filter / distinct / streaming_agg: snapshot-
+      decouple family (the plan snapshot deliberately DIVERGES from the live memo
+      edge — SARG-pushed / isLeafReplaceable-gated). Whether ref.Winner() is the
+      right inner is the per-plan empirical question — test each on the infra.
+  The 2 dead structs (scan/filter) are removed (commit 2f1189b94).
 
 NESTED_LOOP_JOIN + FLAT_MAP (joint) — GRAEFE DECISION, NOT deferred-winner:
   These two ARE Class B (singleton children; correlation flows through children,

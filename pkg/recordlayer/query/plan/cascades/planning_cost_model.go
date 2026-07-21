@@ -585,9 +585,11 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	// A map/projection is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryMapPlan:
 		counts.mapCount++
-	case *physicalInJoinWrapper:
+	// The InJoin is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryInJoinPlan:
 		counts.inJoinCount++
-	case *physicalInUnionWrapper:
+	// The InUnion is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryInUnionPlan:
 		counts.inUnionCount++
 	case *physicalFlatMapWrapper:
 		counts.flatMapCount++
@@ -716,14 +718,12 @@ func compareInPlan(a, b expressions.RelationalExpression, _, _ expressionCounts)
 func compareInOperator(expr expressions.RelationalExpression) (int, bool) {
 	var bindingNames []string
 	switch w := expr.(type) {
-	case *physicalInJoinWrapper:
-		if w.plan != nil {
-			bindingNames = []string{w.plan.GetBindingName()}
-		}
-	case *physicalInUnionWrapper:
-		if w.plan != nil {
-			bindingNames = w.plan.GetBindingNames()
-		}
+	// The InJoin is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryInJoinPlan:
+		bindingNames = []string{w.GetBindingName()}
+	// The InUnion is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryInUnionPlan:
+		bindingNames = w.GetBindingNames()
 	default:
 		return 0, false
 	}

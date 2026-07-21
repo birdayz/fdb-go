@@ -670,12 +670,13 @@ func TestPushInUnionThroughFetch_Fires(t *testing.T) {
 	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	q := expressions.ForEachQuantifier(expressions.InitialOf(fetchWrapper))
 
-	inUnionPlan := plans.NewRecordQueryInUnionPlanWithMaxSize(
-		nil, []string{"__in_b"}, nil, false, 7,
+	// The InUnion is its own cascades expression over the live fetch edge now
+	// (RFC-184 W2) — no wrapper snapshot.
+	inUnionPlan := plans.NewRecordQueryInUnionPlanFromQuantifier(
+		q, []string{"__in_b"}, nil, false, 7,
 	)
-	w := NewPhysicalInUnionWrapper(inUnionPlan, q)
 
-	yielded := FireImplementationRule(NewPushInUnionThroughFetchRule(), expressions.InitialOf(w))
+	yielded := FireImplementationRule(NewPushInUnionThroughFetchRule(), expressions.InitialOf(inUnionPlan))
 	if len(yielded) != 1 {
 		t.Fatalf("expected the dynamic single-leg push to fire once, got %d yields", len(yielded))
 	}

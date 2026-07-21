@@ -112,13 +112,13 @@ func TestImplementInJoinRule_FiresWithExplodeAndInner(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalInJoinWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryInJoinPlan); ok {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("should yield physicalInJoinWrapper")
+		t.Fatal("should yield *RecordQueryInJoinPlan")
 	}
 }
 
@@ -335,12 +335,12 @@ func TestImplementInJoinRule_WithIndexScanInner(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalInJoinWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryInJoinPlan); ok {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("should yield physicalInJoinWrapper with index scan inner")
+		t.Fatal("should yield *RecordQueryInJoinPlan with index scan inner")
 	}
 }

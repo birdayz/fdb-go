@@ -286,23 +286,24 @@ func TestCompareInPlan_FlipFlop_SargedVsUnsarged(t *testing.T) {
 		"idx_sarged", []*predicates.ComparisonRange{eqRange},
 		[]string{"T"}, values.UnknownType, false,
 	)
-	inJoinPlanA := plans.NewRecordQueryInJoinPlan(innerPlanA, bindingAlias.Name(), false, false)
 	innerIndexA := innerPlanA.WithIndexMetadata([]string{"a"}, nil, false)
 	innerRefA := expressions.InitialOf(innerIndexA)
-	wrapA := NewPhysicalInJoinWrapper(inJoinPlanA, expressions.NewPhysicalQuantifier(innerRefA))
+	// The InJoin is its own cascades expression over the live inner edge now
+	// (RFC-184 W2) — no wrapper snapshot.
+	inJoinPlanA := plans.NewRecordQueryInJoinPlanFromQuantifier(
+		expressions.NewPhysicalQuantifier(innerRefA), bindingAlias.Name(), false, false)
 
 	// Build an InJoin plan with an unsarged binding: the inner scan
 	// has no comparison matching the binding name.
 	innerPlanB := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	inJoinPlanB := plans.NewRecordQueryInJoinPlan(innerPlanB, "other_bind", false, false)
-	innerScanB := innerPlanB
-	innerRefB := expressions.InitialOf(innerScanB)
-	wrapB := NewPhysicalInJoinWrapper(inJoinPlanB, expressions.NewPhysicalQuantifier(innerRefB))
+	innerRefB := expressions.InitialOf(innerPlanB)
+	inJoinPlanB := plans.NewRecordQueryInJoinPlanFromQuantifier(
+		expressions.NewPhysicalQuantifier(innerRefB), "other_bind", false, false)
 
-	opsA := findExpressionsByType(wrapA, nil, nil)
-	opsB := findExpressionsByType(wrapB, nil, nil)
+	opsA := findExpressionsByType(inJoinPlanA, nil, nil)
+	opsB := findExpressionsByType(inJoinPlanB, nil, nil)
 
-	cmp := compareInPlan(wrapA, wrapB, opsA, opsB)
+	cmp := compareInPlan(inJoinPlanA, inJoinPlanB, opsA, opsB)
 	if cmp != 0 {
 		t.Errorf("compareInPlan(sarged, unsarged) = %d, want 0 (flipFlop stops at first applicable, returns present(0))", cmp)
 	}
@@ -536,8 +537,7 @@ func TestPlanningCostModelLess_Criterion9_TypeFilterDepth(t *testing.T) {
 	// residual predicates.
 	typeFilterRef := expressions.InitialOf(shallowPlan)
 	typeFilterQ := expressions.NewPhysicalQuantifier(typeFilterRef)
-	inJoinPlan := plans.NewRecordQueryInJoinPlan(scan, "bind", false, false)
-	deepPlan := NewPhysicalInJoinWrapper(inJoinPlan, typeFilterQ)
+	deepPlan := plans.NewRecordQueryInJoinPlanFromQuantifier(typeFilterQ, "bind", false, false)
 
 	// Verify depths directly.
 	shallowDepth := expressionDepth(shallowPlan, isTypeFilterExpression)
@@ -648,8 +648,7 @@ func TestPlanningCostModelLess_Criterion11_DistinctDepth(t *testing.T) {
 	// or residual predicates that would trigger earlier criteria.
 	distinctRef := expressions.InitialOf(shallowDistinct)
 	distinctQ := expressions.NewPhysicalQuantifier(distinctRef)
-	inJoinPlan := plans.NewRecordQueryInJoinPlan(scan, "bind", false, false)
-	deepDistinct := NewPhysicalInJoinWrapper(inJoinPlan, distinctQ)
+	deepDistinct := plans.NewRecordQueryInJoinPlanFromQuantifier(distinctQ, "bind", false, false)
 
 	// Verify depths directly.
 	shallowDepth := expressionDepth(shallowDistinct, isDistinctExpression)
@@ -770,22 +769,19 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 func TestPlanningCostModelLess_Criterion13_InJoinCount(t *testing.T) {
 	t.Parallel()
 
-	// Build nested in-join wrappers to verify count accumulation. The
-	// cost-model walks the wrapper's CONCRETE plan tree (RFC-069 phantom-child
-	// fix), so the nesting must live in the concrete plans: inJoinPlan2 wraps
-	// inJoinPlan1 (two InJoins in the concrete tree), and the wrapper-quantifier
-	// nesting mirrors it for the comparator path.
+	// Build nested in-joins to verify count accumulation. The InJoin is its own
+	// cascades expression that walks its quantifier child now (RFC-184 W2), so the
+	// nesting lives in the live memo edges: outerInJoin ranges over the index, and
+	// twoInJoins ranges over outerInJoin (two InJoins in the child tree).
 	indexPlan := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T"}, values.UnknownType, false)
 	indexRef := expressions.InitialOf(indexPlan.WithCovering(nil).WithIndexMetadata([]string{"a"}, nil, false))
 	indexQ := expressions.NewPhysicalQuantifier(indexRef)
 
-	inJoinPlan1 := plans.NewRecordQueryInJoinPlan(indexPlan, "bind1", false, false)
-	outerInJoin := NewPhysicalInJoinWrapper(inJoinPlan1, indexQ)
+	outerInJoin := plans.NewRecordQueryInJoinPlanFromQuantifier(indexQ, "bind1", false, false)
 
 	outerRef := expressions.InitialOf(outerInJoin)
 	outerQ := expressions.NewPhysicalQuantifier(outerRef)
-	inJoinPlan2 := plans.NewRecordQueryInJoinPlan(inJoinPlan1, "bind2", false, false)
-	twoInJoins := NewPhysicalInJoinWrapper(inJoinPlan2, outerQ)
+	twoInJoins := plans.NewRecordQueryInJoinPlanFromQuantifier(outerQ, "bind2", false, false)
 
 	opsOne := findExpressionsByType(outerInJoin, nil, nil)
 	opsTwo := findExpressionsByType(twoInJoins, nil, nil)

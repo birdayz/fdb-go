@@ -54,8 +54,7 @@ func TestInJoinRule_OrderingAware_MatchesExplodeAlias(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if w, ok := r.(*physicalInJoinWrapper); ok {
-			plan := w.GetRecordQueryPlan().(*plans.RecordQueryInJoinPlan)
+		if plan, ok := r.(*plans.RecordQueryInJoinPlan); ok {
 			if plan.IsSorted() {
 				t.Log("InJoin plan is sorted — ordering-aware matching worked")
 				return

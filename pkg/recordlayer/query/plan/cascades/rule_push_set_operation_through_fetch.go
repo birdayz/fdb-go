@@ -157,17 +157,17 @@ type PushInUnionThroughFetchRule struct {
 
 func NewPushInUnionThroughFetchRule() *PushInUnionThroughFetchRule {
 	return &PushInUnionThroughFetchRule{
-		matcher: NewExpressionMatcher[*physicalInUnionWrapper]("phys_in_union_over_fetches"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryInUnionPlan]("phys_in_union_over_fetches"),
 	}
 }
 
 func (r *PushInUnionThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *PushInUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
-	w := matching.Get[*physicalInUnionWrapper](call.Bindings, r.matcher)
-	old := w.plan
+	// The InUnion is its own cascades expression now (RFC-184 W2).
+	old := matching.Get[*plans.RecordQueryInUnionPlan](call.Bindings, r.matcher)
 	pushSetOpThroughFetch(call, setOpPush{
-		quants: []expressions.Quantifier{w.innerQuant},
+		quants: []expressions.Quantifier{old.GetInnerQuantifier()},
 		// InUnion is DYNAMIC (Java RecordQueryInUnionPlan.isDynamic():
 		// one leg executed many times side-by-side over the IN bindings)
 		// — it fires with its single leg when that leg is fetch-backed,
@@ -186,11 +186,18 @@ func (r *PushInUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 			np.SetInSources(old.GetInSources())
 			return np
 		},
-		buildWrapper: func(p plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
+		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
 			if len(qs) != 1 {
 				return nil
 			}
-			return NewPhysicalInUnionWrapper(p.(*plans.RecordQueryInUnionPlan), qs[0])
+			// Collapsed: the InUnion is its own cascades expression over the live
+			// pushed-down inner edge (RFC-184 W2); the snapshot plan is unused.
+			np := plans.NewRecordQueryInUnionPlanFromQuantifier(
+				qs[0], old.GetBindingNames(), old.GetComparisonKeys(),
+				old.IsReverse(), old.GetMaxSize(),
+			)
+			np.SetInSources(old.GetInSources())
+			return np
 		},
 	})
 }

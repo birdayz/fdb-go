@@ -127,12 +127,14 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- InJoin: decorrelate inner against in-source ---
 
-	case *physicalInJoinWrapper:
+	// The InJoin is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryInJoinPlan:
 		return derivationsForInJoin(w)
 
 	// --- InUnion: decorrelate inner against multiple bindings ---
 
-	case *physicalInUnionWrapper:
+	// The InUnion is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryInUnionPlan:
 		return derivationsForInUnion(w)
 
 	// --- FirstOrDefault / DefaultOnEmpty ---
@@ -464,13 +466,13 @@ func crossProductHelper(lists [][]values.Value, combo []values.Value, depth int,
 
 // --- InJoin ---
 
-func derivationsForInJoin(w *physicalInJoinWrapper) *properties.Derivations {
-	innerDerivs := properties.DerivationsFromQuantifier(w.innerQuant)
+func derivationsForInJoin(w *plans.RecordQueryInJoinPlan) *properties.Derivations {
+	innerDerivs := properties.DerivationsFromQuantifier(w.GetInnerQuantifier())
 
 	// The outer alias is the IN-source binding name. Java uses
 	// inJoinPlan.getInAlias() which returns a CorrelationIdentifier.
 	// Go's InJoinPlan uses a string binding name. Convert it.
-	outerAlias := values.NamedCorrelationIdentifier(w.plan.GetBindingName())
+	outerAlias := values.NamedCorrelationIdentifier(w.GetBindingName())
 
 	// Decorrelate inner values against the in-source.
 	localVals := decorrelateValues(innerDerivs.LocalValues, outerAlias)
@@ -509,12 +511,12 @@ func decorrelateValues(vals []values.Value, outerAlias values.CorrelationIdentif
 
 // --- InUnion ---
 
-func derivationsForInUnion(w *physicalInUnionWrapper) *properties.Derivations {
-	innerDerivs := properties.DerivationsFromQuantifier(w.innerQuant)
+func derivationsForInUnion(w *plans.RecordQueryInUnionPlan) *properties.Derivations {
+	innerDerivs := properties.DerivationsFromQuantifier(w.GetInnerQuantifier())
 
 	// Collect all outer aliases (binding names).
 	outerAliases := make(map[values.CorrelationIdentifier]struct{})
-	for _, bn := range w.plan.GetBindingNames() {
+	for _, bn := range w.GetBindingNames() {
 		outerAliases[values.NamedCorrelationIdentifier(bn)] = struct{}{}
 	}
 
@@ -575,7 +577,7 @@ func derivationsForInUnion(w *physicalInUnionWrapper) *properties.Derivations {
 	}
 
 	// Translate comparison key values.
-	compKeys := w.plan.GetComparisonKeys()
+	compKeys := w.GetComparisonKeys()
 	for _, ckv := range compKeys {
 		for _, rv := range resultVals {
 			translated := properties.TranslateCorrelation(ckv, values.CurrentAlias, rv)

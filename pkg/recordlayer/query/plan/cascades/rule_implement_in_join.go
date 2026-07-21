@@ -141,22 +141,27 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 				requestedOrdering)
 
 			for _, orderedSources := range allOrderings {
-				for _, innerPlan := range innerPlans {
+				// Each innerPlans pass re-memoizes the SAME innerExprs group and
+				// builds structurally-identical InJoins that dedup in the memo; the
+				// specific member no longer seeds a plan snapshot (RFC-184 W2), so
+				// only the iteration count is consulted here.
+				for range innerPlans {
 					currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
-					currentPlan := plans.RecordQueryPlan(innerPlan)
 
 					for i := len(orderedSources) - 1; i >= 0; i-- {
 						source := orderedSources[i]
-						inJoinPlan := plans.NewRecordQueryInJoinPlan(
-							currentPlan, source.bindingName, source.sorted, source.reverse)
+						// The InJoin is its own cascades expression carrying the live
+						// currentRef inner edge (RFC-184 W2); its per-ordering winner
+						// resolves at extraction via ref.Winner(). No plan snapshot —
+						// the deferred-winner case.
+						inJoinPlan := plans.NewRecordQueryInJoinPlanFromQuantifier(
+							expressions.NewPhysicalQuantifier(currentRef),
+							source.bindingName, source.sorted, source.reverse)
 						if inValues := extractInValues(source.quantifier); inValues != nil {
 							inJoinPlan.SetInValues(inValues)
 						}
 						inJoinPlan.SetSourceKind(classifyInSourceKind(source.quantifier))
-						wrapper := NewPhysicalInJoinWrapper(inJoinPlan,
-							expressions.NewPhysicalQuantifier(currentRef))
-						currentRef = call.MemoizeFinalExpression(wrapper)
-						currentPlan = inJoinPlan
+						currentRef = call.MemoizeFinalExpression(inJoinPlan)
 					}
 
 					for _, m := range currentRef.AllMembers() {

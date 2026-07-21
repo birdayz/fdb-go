@@ -47,7 +47,44 @@ func NewRecordQueryInJoinPlan(
 	}
 }
 
+// NewRecordQueryInJoinPlanFromQuantifier builds the InJoin over the LIVE inner
+// quantifier the implement rule memoized, rather than over a plan snapshot. The
+// inner is a SHARED group whose per-ordering winner resolves at extraction via
+// ref.Winner() (planFromQuantifier) — the deferred-winner case. The plan carries
+// the inner edge once, with no wrapper snapshot (RFC-184 W2). Callers still
+// replay SetInValues / SetSourceKind afterward (the constructor drops them).
+func NewRecordQueryInJoinPlanFromQuantifier(
+	innerQ expressions.Quantifier,
+	bindingName string,
+	sorted bool,
+	reverse bool,
+) *RecordQueryInJoinPlan {
+	return &RecordQueryInJoinPlan{
+		innerQ:      innerQ,
+		bindingName: bindingName,
+		sorted:      sorted,
+		reverse:     reverse,
+	}
+}
+
 func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetInnerQuantifier returns the live child quantifier — the single memo edge the
+// InJoin ranges over. derivationsForInJoin reads its alias to decorrelate the
+// inner against the IN-source; since RFC-184 W2 the memo holds the bare plan (no
+// physicalInJoinWrapper whose innerQuant field it used to read), this exposes the
+// same edge.
+func (p *RecordQueryInJoinPlan) GetInnerQuantifier() expressions.Quantifier {
+	return p.innerQ
+}
+
+// GetResultValue flows the live child quantifier's object value — the InJoin
+// emits its inner's rows once per IN-source value, so its row identity IS the
+// inner's. This is the identity physicalInJoinWrapper.GetResultValue supplied
+// (RFC-184 W2).
+func (p *RecordQueryInJoinPlan) GetResultValue() values.Value {
+	return p.innerQ.GetFlowedObjectValue()
+}
 
 // GetQuantifiers reports the real child quantifier, overriding
 // PlanExprBase's none.
@@ -75,10 +112,13 @@ func (p *RecordQueryInJoinPlan) GetSourceKind() InSourceKind  { return p.sourceK
 func (p *RecordQueryInJoinPlan) SetSourceKind(k InSourceKind) { p.sourceKind = k }
 
 func (p *RecordQueryInJoinPlan) GetResultType() values.Type {
-	if inner := p.GetInner(); inner != nil {
-		return inner.GetResultType()
+	if p.innerQ.GetRangesOver() == nil {
+		return values.UnknownType
 	}
-	return values.UnknownType
+	// TYPE resolution, not identity: the inner is a deferred-winner group still
+	// multi-member during planning; every alternative shares the row shape, so
+	// any member answers without tripping the singleton guard (RFC-184 W2).
+	return planTypeFromQuantifier(p.innerQ).GetResultType()
 }
 
 func (p *RecordQueryInJoinPlan) GetChildren() []RecordQueryPlan {
@@ -172,6 +212,21 @@ func (p *RecordQueryInJoinPlan) WithQuantifiers(qs []expressions.Quantifier) exp
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). Because the InJoin carries its child as a single LIVE memo edge,
+// the relink is exactly a quantifier swap: WithQuantifiers preserves every other
+// field (inValues, sourceKind, sorted, reverse, bindingName) and GetInner
+// re-resolves through the new singleton reference. This replaces
+// physicalInJoinWrapper.WithChildren (RFC-184 W2), whose separate snapshot plan
+// field forced a WithInner rebuild gated on isLeafReplaceable — a single live
+// child edge relinks to ref.Winner() unconditionally.
+func (p *RecordQueryInJoinPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryInJoinPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

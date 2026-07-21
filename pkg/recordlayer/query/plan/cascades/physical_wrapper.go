@@ -250,10 +250,11 @@ func GetPhysicalFetchFromPartialRecordPlan(expr expressions.RelationalExpression
 	return p
 }
 
-// IsPhysicalInJoin reports whether the given expression is
-// a physicalInJoinWrapper.
+// IsPhysicalInJoin reports whether the given expression is an InJoin. Since
+// RFC-184 W2 the memo holds *plans.RecordQueryInJoinPlan directly (no
+// physicalInJoinWrapper), so this is a bare type check.
 func IsPhysicalInJoin(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalInJoinWrapper)
+	_, ok := expr.(*plans.RecordQueryInJoinPlan)
 	return ok
 }
 
