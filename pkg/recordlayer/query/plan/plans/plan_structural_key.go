@@ -22,6 +22,8 @@ import (
 
 type partKind uint8
 
+// New kinds are APPENDED — the kind byte is folded into the hash, so reordering
+// would change every migrated plan's hash value.
 const (
 	partBool partKind = iota
 	partInt
@@ -31,20 +33,24 @@ const (
 	partStructVal
 	partValues
 	partPreds
+	partType
+	partScanComps
 )
 
 // part is one identifying field. Constructed only via the typed builder
 // methods, so the (kind → payload) mapping is exhaustive by construction — no
 // reflection, no untyped fallthrough that could silently mis-hash a new field.
 type part struct {
-	kind  partKind
-	b     bool
-	i     int64
-	s     string
-	ss    []string
-	v     values.Value
-	vs    []values.Value
-	preds []predicates.QueryPredicate
+	kind      partKind
+	b         bool
+	i         int64
+	s         string
+	ss        []string
+	v         values.Value
+	vs        []values.Value
+	preds     []predicates.QueryPredicate
+	typ       values.Type
+	scanComps []*predicates.ComparisonRange
 }
 
 // structuralKey is an ordered list of a plan's identifying fields.
@@ -112,6 +118,25 @@ func (k *structuralKey) Preds(ps []predicates.QueryPredicate) *structuralKey {
 	return k
 }
 
+// Type folds a flowed values.Type by typeEquals — the exact primitive the
+// hand-rolled scan/index-scan equals used. It is EQUALS-ONLY: the hash omits it
+// (contributing only the kind byte), matching those plans' hand-rolled hashes,
+// which never folded flowedType. A type mismatch still separates identities via
+// Equal; two plans differing only in flowed type collide in the hash (a valid
+// under-hash — equal⟹same-hash still holds).
+func (k *structuralKey) Type(t values.Type) *structuralKey {
+	k.parts = append(k.parts, part{kind: partType, typ: t})
+	return k
+}
+
+// ScanComps folds a scan/index-scan ComparisonRange list — the SARG bounds —
+// via the same scanComparisonRangesEqual / writeScanComparisonRangesHash
+// primitives the hand-rolled methods used.
+func (k *structuralKey) ScanComps(sc []*predicates.ComparisonRange) *structuralKey {
+	k.parts = append(k.parts, part{kind: partScanComps, scanComps: sc})
+	return k
+}
+
 // Equal reports element-wise structural equality, dispatching per kind through
 // the same semantic comparators the hand-rolled methods used.
 func (k *structuralKey) Equal(o *structuralKey) bool {
@@ -171,6 +196,10 @@ func partEqual(a, b part) bool {
 			}
 		}
 		return true
+	case partType:
+		return typeEquals(a.typ, b.typ)
+	case partScanComps:
+		return scanComparisonRangesEqual(a.scanComps, b.scanComps)
 	}
 	return false
 }
@@ -220,6 +249,12 @@ func (k *structuralKey) Hash(discriminator string) uint64 {
 				binary.BigEndian.PutUint64(buf[:], predicates.SemanticHashCode(pr))
 				h.Write(buf[:])
 			}
+		case partType:
+			// Equals-only — no payload (the kind byte above is the whole
+			// contribution). Mirrors the hand-rolled scan/index hashes, which
+			// fold recordTypes + scanComparisons + flags but never flowedType.
+		case partScanComps:
+			writeScanComparisonRangesHash(h, p.scanComps)
 		}
 	}
 	return h.Sum64()

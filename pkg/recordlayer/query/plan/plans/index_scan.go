@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -218,54 +217,31 @@ func (p *RecordQueryIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 // materialize the wrong-comparand scan. Mirrors Java's
 // RecordQueryIndexPlan.equalsWithoutChildren, which compares
 // Objects.equals(scanParameters, that.scanParameters) — full comparand equality.
-func (p *RecordQueryIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
-	o, ok := other.(*RecordQueryIndexPlan)
-	if !ok {
-		return false
-	}
-	if p.indexName != o.indexName || p.reverse != o.reverse || p.strictlySorted != o.strictlySorted || p.covering != o.covering {
-		return false
-	}
-	if !typeEquals(p.flowedType, o.flowedType) {
-		return false
-	}
-	if len(p.recordTypes) != len(o.recordTypes) {
-		return false
-	}
-	for i := range p.recordTypes {
-		if p.recordTypes[i] != o.recordTypes[i] {
-			return false
-		}
-	}
-	return scanComparisonRangesEqual(p.scanComparisons, o.scanComparisons)
+// structuralKey folds the index scan's identity: index name, SARG comparison
+// ranges (shape AND comparands — two different-comparand scans must stay in
+// distinct References, else the memo materializes the wrong-comparand scan,
+// mirroring Java's full scanParameters equality), the reverse / strictlySorted /
+// covering flags, the record-type set, and the flowed type (equals-only). The
+// stable per-instance resultValue is excluded (RFC-184 W2). The same key drives
+// EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryIndexPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Str(p.indexName).
+		ScanComps(p.scanComparisons).
+		Bool(p.reverse).
+		Bool(p.strictlySorted).
+		Bool(p.covering).
+		Strs(p.recordTypes).
+		Type(p.flowedType)
 }
 
-// HashCodeWithoutChildren mixes index name + scan comparisons (shape AND
-// comparands) + reverse flag. Folding the comparands (not just the range
-// shape) is the hash analog of EqualsWithoutChildren: two different-comparand
-// scans hash apart, so the memo leaf dedup keeps them in distinct References.
+func (p *RecordQueryIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
+	o, ok := other.(*RecordQueryIndexPlan)
+	return ok && p.structuralKey().Equal(o.structuralKey())
+}
+
 func (p *RecordQueryIndexPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("indexplan|"))
-	h.Write([]byte(p.indexName))
-	h.Write([]byte{0})
-	writeScanComparisonRangesHash(h, p.scanComparisons)
-	if p.reverse {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	if p.strictlySorted {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	if p.covering {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("indexplan|")
 }
 
 // Explain renders a one-line label.

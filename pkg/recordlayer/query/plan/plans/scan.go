@@ -1,7 +1,6 @@
 package plans
 
 import (
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -124,46 +123,28 @@ func (p *RecordQueryScanPlan) GetResultValue() values.Value {
 	return p.resultValue
 }
 
+// structuralKey folds the scan's identity: the record-type set (ordered), the
+// SARG comparison ranges (the PK bounds — a comparand-blind compare would
+// collapse Scan(pk=5) and Scan(pk=7) into one Reference, the F21 defect), the
+// reverse flag, and the flowed type (equals-only, matching the hand-rolled hash
+// which never folded it). The stable per-instance resultValue is deliberately
+// excluded (RFC-184 W2 — an object identity, not part of plan identity). The
+// same key drives EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryScanPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Strs(p.recordTypes).
+		ScanComps(p.scanComparisons).
+		Bool(p.reverse).
+		Type(p.flowedType)
+}
+
 func (p *RecordQueryScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryScanPlan)
-	if !ok {
-		return false
-	}
-	if p.reverse != o.reverse {
-		return false
-	}
-	if !typeEquals(p.flowedType, o.flowedType) {
-		return false
-	}
-	if len(p.recordTypes) != len(o.recordTypes) {
-		return false
-	}
-	for i := range p.recordTypes {
-		if p.recordTypes[i] != o.recordTypes[i] {
-			return false
-		}
-	}
-	// Compare scan comparisons by shape AND comparand — the PK bounds that
-	// define the key range. A primary scan is a memo leaf too, so a
-	// comparand-blind compare would collapse Scan(pk = 5) and Scan(pk = 7) into
-	// one Reference (the F21 defect, same as RecordQueryIndexPlan).
-	return scanComparisonRangesEqual(p.scanComparisons, o.scanComparisons)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryScanPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("scanplan|"))
-	for _, name := range p.recordTypes {
-		h.Write([]byte(name))
-		h.Write([]byte{0})
-	}
-	writeScanComparisonRangesHash(h, p.scanComparisons)
-	if p.reverse {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("scanplan|")
 }
 
 // Explain renders a one-line label.
