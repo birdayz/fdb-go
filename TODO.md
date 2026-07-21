@@ -5981,17 +5981,30 @@ DEFERRED-WINNER TAIL — the winner CRITERION is PLAN-SPECIFIC (breakthrough):
     - first_or_default → differing=3, predicates_filter → differing=16: NLJ-
       entangled SARG-push (constructed as inner legs inside the Graefe-gated NLJ
       rule); their float is SARG-push, not pure-ordering — collapse WITH nlj/flatmap.
-  UNIFIED FIX (Java-aligned, for Graefe): sort/distinct/streaming_agg all want the
-  ordering-SATISFYING inner, which Java resolves by REQUESTING an ordering from the
-  inner group (per-ordering winner), NOT by snapshot-freezing a member. Port that
-  to the EXTRACTION path: resolve the collapsed operator's inner via
-  getWinnerForOrdering(innerRef, <operator's requested ordering>, less)
-  (winner_lookup.go:27, ALREADY EXISTS — computes best-satisfying-member live from
-  members, so it works at extraction where all members are present) instead of bare
-  ref.Winner(). sort→PRESERVE (=findBestPhysicalPlan); agg→grouping-key ordering;
-  distinct→dedup-key ordering. One framework-native change replaces N per-plan hooks;
-  the snapshot-freeze is the Go divergence it retires. Query-engine-gated → Graefe.
-  Full asks: scratchpad/w2-graefe-gated-remainder.md.
+  RESOLVED DIRECTION — mechanical collapse of the tail is EXHAUSTED; it is
+  load-bearing architectural work. Two proposals tested + two empirical proofs
+  (full ruling: scratchpad/w2-graefe-gated-remainder.md):
+    - getWinnerForOrdering-at-extraction: Graefe NAK (cost-inversion; re-entangle).
+    - relink-to-memo-winner (Graefe ACK'd as Java-faithful for SELECT): tested on
+      distinct (cost-tied SELECT churn, differ=6 plan_regressions=0) AND on
+      first_or_default — where it CORRUPTS DML ROWS. `DELETE ... WHERE EXISTS
+      (correlated)` deleted ALL rows: the correlation lives in the SARG-pushed scan
+      the fod snapshot froze; relinking to the non-SARG memo winner drops it.
+  TWO GATE FINDINGS THAT BLOCK THE RE-BASELINE:
+    - The explain-differ IS DML-BLIND — it dumps only SELECT stanzas (skips 252 DML
+      stanzas). plan_regressions=0 does NOT cover DML. Only yamsql (real FDB) is a
+      sound gate for the tail. The fod collapse read differ-clean while corrupting
+      the DML DELETE/UPDATE-EXISTS path.
+    - The tail wrappers' snapshots are LOAD-BEARING: correlation on DML paths
+      (fod/predicates_filter), ordering preconditions (Streaming distinct/agg —
+      relinking to a different-ordering winner is WRONG ROWS), join-order winners
+      (rest). The single collapsed edge can't reproduce them; collapsing corrupts a
+      differ-invisible path.
+  So the tail is the correlation/ordering-PRESERVATION rework (the bare plan must
+  REPORT the correlation/ordering its snapshot carried, or its inner group must be
+  optimized under that correlation/ordering), a Graefe-designed owner-gated effort
+  (its own RFC) — NOT RFC-184-W2 mechanical scope. Every further mechanical collapse
+  attempt risks silent DML corruption; STOPPED pending the architectural design.
   The 2 dead structs (scan/filter) are removed (commit 2f1189b94).
 
 NESTED_LOOP_JOIN + FLAT_MAP (joint) — GRAEFE DECISION, NOT deferred-winner:
