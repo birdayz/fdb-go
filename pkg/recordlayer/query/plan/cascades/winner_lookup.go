@@ -24,9 +24,20 @@ import (
 // none is stamped yet). less is the cost comparator; pass a stats-aware
 // comparator (call.CostModel()) so join sub-product winners are chosen by
 // real cardinality rather than the default-stats tie (RFC-041).
-func getWinnerForOrdering(ref *expressions.Reference, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+// The satisfied return is RFC-186 §2C's contract-tightening: it reports
+// whether the member SATISFIES the requested ordering (trivially true for
+// nil/preserve), so no caller can mistake the load-bearing fallback for
+// satisfaction. The fallback yield itself STAYS — under a sort the child
+// group's only requested ordering is the sort's (no preserve), so
+// returning nothing would empty the group and forfeit plannability; the
+// unordered fallback is what the in-memory-sort enforcer wraps. Callers
+// never stamp ordering off this return: the physical wrappers are
+// orderingDelegators whose claim is re-derived through OrderingSourceRef,
+// and pinOrderedSpine declines unsatisfied spines — `satisfied` makes that
+// delegation explicit at the call site instead of implicit downstream.
+func getWinnerForOrdering(ref *expressions.Reference, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) (expressions.RelationalExpression, bool) {
 	if ref == nil {
-		return nil
+		return nil, false
 	}
 	if less == nil {
 		less = PlanningCostModelLess
@@ -34,20 +45,22 @@ func getWinnerForOrdering(ref *expressions.Reference, ordering *properties.Reque
 
 	if ordering == nil || ordering.IsPreserve() {
 		if w := ref.Winner(); w != nil {
-			return w
+			return w, true
 		}
-		return findBestValidPhysicalExpr(ref, less)
+		return findBestValidPhysicalExpr(ref, less), true
 	}
 
 	if best := bestSatisfyingMember(ref, ordering, less); best != nil {
-		return best
+		return best, true
 	}
 
-	// No plan satisfies the ordering — return globally cheapest.
+	// No member satisfies the ordering — yield the globally cheapest as the
+	// UNORDERED fallback (see the contract note above: the enforcer path
+	// depends on this yield; satisfied=false is the caller's signal).
 	if w := ref.Winner(); w != nil {
-		return w
+		return w, false
 	}
-	return findBestValidPhysicalExpr(ref, less)
+	return findBestValidPhysicalExpr(ref, less), false
 }
 
 // bestSatisfyingMember returns the cheapest physical member of ref whose
@@ -208,7 +221,7 @@ func findBestValidPhysicalExpr(ref *expressions.Reference, less func(a, b expres
 // getWinnerPlan returns the RecordQueryPlan from the winner for the
 // given ordering, or nil if no physical plan exists.
 func getWinnerPlan(ref *expressions.Reference, ordering *properties.RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) plans.RecordQueryPlan {
-	winner := getWinnerForOrdering(ref, ordering, less)
+	winner, _ := getWinnerForOrdering(ref, ordering, less)
 	if winner == nil {
 		return nil
 	}

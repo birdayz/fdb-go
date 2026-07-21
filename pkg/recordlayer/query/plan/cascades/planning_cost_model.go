@@ -1088,8 +1088,16 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 	}
 	switch pl := p.(type) {
 	case *plans.RecordQueryScanPlan:
-		// Primary-key scan: a full-equality bind on the PK is provably unique → 1 row.
-		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, true)
+		// Primary-key scan: 1 row ONLY on a PROVABLE full-PK equality bind
+		// (RFC-186 §2B). nil-ctx/unprovable policy at THIS site — STRICTER
+		// than scanPlanProvableMaxCard's: never a point probe. The old
+		// unconditional `true` let `numBound == len(comps)` pass for a
+		// correlated composite-PK PREFIX bind (only tenant_id of
+		// (tenant_id, order_id) present as a comparison): a potentially
+		// million-row prefix scan priced as a repeatable 1-row inner probe —
+		// catastrophic join orders.
+		fullBind, provable := pkFullyEqualityBound(pl, ctx)
+		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, provable && fullBind)
 	case *plans.RecordQueryIndexPlan:
 		// Secondary index: a full-equality bind is a single row only if the index is
 		// UNIQUE. Resolve uniqueness from PlanContext when available;
@@ -1463,29 +1471,45 @@ func indexMetadata(pl *plans.RecordQueryIndexPlan, ctx PlanContext) ([]string, b
 // columns to cover the FULL primary key (a partial equality prefix of a composite PK is
 // still a range, hence unbounded).
 func scanPlanProvableMaxCard(pl *plans.RecordQueryScanPlan, ctx PlanContext) (float64, bool) {
+	fullBind, _ := pkFullyEqualityBound(pl, ctx)
+	if !fullBind {
+		return 0, false
+	}
+	// nil-ctx policy at THIS site: unprovable full-PK coverage still ALLOWS
+	// the 1-row bound (the bound is advisory; legacy behavior). The
+	// join-ordering leaf cost applies the STRICTER policy — see the
+	// RecordQueryScanPlan arm of the concrete join-cost switch.
+	return 1, true
+}
+
+// pkFullyEqualityBound is RFC-186 §2B's ONE shared full-PK-equality
+// predicate — two subtly different inline gates in one file is how the
+// composite-PK point-probe bug was born. fullBind reports that every
+// present comparison is an equality with none absent AND, when coverage is
+// provable, that the bound columns cover the FULL primary key (a partial
+// equality prefix of a composite PK is still a range). provable reports
+// whether ctx resolved the PK column count. Each call site states its own
+// nil-ctx/unprovable policy explicitly.
+func pkFullyEqualityBound(pl *plans.RecordQueryScanPlan, ctx PlanContext) (fullBind, provable bool) {
 	comps := pl.GetScanComparisons()
 	if len(comps) == 0 {
-		return 0, false
+		return false, false
 	}
 	numBound := 0
-	allEquality := true
 	for _, cr := range comps {
-		if !cr.IsEmpty() {
-			numBound++
-			if !cr.IsEquality() {
-				allEquality = false
-			}
+		if cr.IsEmpty() || !cr.IsEquality() {
+			return false, false
 		}
+		numBound++
 	}
-	if numBound == 0 || !allEquality || numBound != len(comps) {
-		return 0, false
+	if ctx == nil || len(pl.GetRecordTypes()) == 0 {
+		return true, false
 	}
-	if ctx != nil && len(pl.GetRecordTypes()) > 0 {
-		if pkLen := len(ctx.GetPrimaryKeyColumns(pl.GetRecordTypes()[0])); pkLen > 0 && numBound < pkLen {
-			return 0, false
-		}
+	pkLen := len(ctx.GetPrimaryKeyColumns(pl.GetRecordTypes()[0]))
+	if pkLen == 0 {
+		return true, false
 	}
-	return 1, true
+	return numBound >= pkLen, true
 }
 
 // indexPlanProvableMaxCard returns an index scan's PROVABLE max cardinality (1) and

@@ -694,7 +694,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		return
 	}
 
-	outerExpr := getWinnerForOrdering(outerRef, properties.PreserveOrdering(), call.CostModel())
+	outerExpr, _ := getWinnerForOrdering(outerRef, properties.PreserveOrdering(), call.CostModel())
 	if outerExpr == nil {
 		return
 	}
@@ -704,7 +704,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	}
 	outerPlan := outerPh.GetRecordQueryPlan()
 
-	innerExpr := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
+	innerExpr, _ := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
 	if innerExpr == nil {
 		return
 	}
@@ -2023,9 +2023,9 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		return
 	}
 
-	leftExpr := getWinnerForOrdering(leftRef, properties.PreserveOrdering(), call.CostModel())
-	rightExpr := getWinnerForOrdering(rightRef, properties.PreserveOrdering(), call.CostModel())
-	existExpr := getWinnerForOrdering(existRef, properties.PreserveOrdering(), call.CostModel())
+	leftExpr, _ := getWinnerForOrdering(leftRef, properties.PreserveOrdering(), call.CostModel())
+	rightExpr, _ := getWinnerForOrdering(rightRef, properties.PreserveOrdering(), call.CostModel())
+	existExpr, _ := getWinnerForOrdering(existRef, properties.PreserveOrdering(), call.CostModel())
 	if leftExpr == nil || rightExpr == nil || existExpr == nil {
 		return
 	}
@@ -2569,7 +2569,7 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		if quants[i].IsNullOnEmpty() {
 			return
 		}
-		expr := getWinnerForOrdering(ref, properties.PreserveOrdering(), call.CostModel())
+		expr, _ := getWinnerForOrdering(ref, properties.PreserveOrdering(), call.CostModel())
 		if expr == nil {
 			return
 		}
@@ -2613,7 +2613,7 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		}
 	}
 
-	existExpr := getWinnerForOrdering(existRef, properties.PreserveOrdering(), call.CostModel())
+	existExpr, _ := getWinnerForOrdering(existRef, properties.PreserveOrdering(), call.CostModel())
 	if existExpr == nil {
 		return
 	}

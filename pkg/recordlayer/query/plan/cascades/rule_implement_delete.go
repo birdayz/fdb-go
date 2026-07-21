@@ -38,7 +38,7 @@ func (r *ImplementDeleteRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	winner := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
+	winner, _ := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
 	if winner == nil {
 		return
 	}

@@ -42,10 +42,10 @@ func TestGetWinnerForOrdering_DeterministicCheapestAmongSatisfyingMembers(t *tes
 	}
 
 	for run := 0; run < 20; run++ {
-		if got := getWinnerForOrdering(ref, reqOrd, rankOf(w1)); got != w1 {
+		if got, _ := getWinnerForOrdering(ref, reqOrd, rankOf(w1)); got != w1 {
 			t.Fatalf("run %d: cheapest=w1 but got %p (w1=%p w2=%p)", run, got, w1, w2)
 		}
-		if got := getWinnerForOrdering(ref, reqOrd, rankOf(w2)); got != w2 {
+		if got, _ := getWinnerForOrdering(ref, reqOrd, rankOf(w2)); got != w2 {
 			t.Fatalf("run %d: cheapest=w2 but got %p", run, got)
 		}
 	}
@@ -53,12 +53,12 @@ func TestGetWinnerForOrdering_DeterministicCheapestAmongSatisfyingMembers(t *tes
 	// A comparator that ties everything: the plan-hash tie-break must make
 	// the selection deterministic across repeated lookups.
 	tie := func(a, b expressions.RelationalExpression) bool { return false }
-	first := getWinnerForOrdering(ref, reqOrd, tie)
+	first, _ := getWinnerForOrdering(ref, reqOrd, tie)
 	if first == nil {
 		t.Fatal("tied lookup returned nil")
 	}
 	for run := 0; run < 20; run++ {
-		if got := getWinnerForOrdering(ref, reqOrd, tie); got != first {
+		if got, _ := getWinnerForOrdering(ref, reqOrd, tie); got != first {
 			t.Fatalf("run %d: tied selection flipped from %p to %p", run, first, got)
 		}
 	}

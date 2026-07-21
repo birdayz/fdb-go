@@ -9,7 +9,7 @@ import (
 
 // ImplementLimitRule converts a LogicalLimitExpression into a physical
 // RecordQueryLimitPlan. LIMIT/OFFSET is a pure pass-through that caps
-// the row count — it applies to whatever physical plan the inner
+// the row count â it applies to whatever physical plan the inner
 // produces.
 //
 // Go-only extension: Java doesn't support LIMIT in SQL; it uses
@@ -49,7 +49,13 @@ func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 
 	seen := make(map[expressions.RelationalExpression]bool)
 	for _, ordering := range orderings {
-		winner := getWinnerForOrdering(innerRef, ordering, call.CostModel())
+		// satisfied deliberately DISCARDED (RFC-186 §2C): this wrapper is an
+		// orderingDelegator — its ordering claim is re-derived through
+		// OrderingSourceRef at lookup time and pinOrderedSpine declines
+		// unsatisfied spines, so an unordered fallback yield here can never
+		// be CLAIMED as ordered; it is the member the in-memory-sort
+		// enforcer wraps (declining instead would empty the group — no plan).
+		winner, _ := getWinnerForOrdering(innerRef, ordering, call.CostModel())
 		if winner == nil {
 			continue
 		}
@@ -60,7 +66,7 @@ func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 		if _, ok := winner.(physicalPlanExpression); !ok {
 			continue
 		}
-		// Build the LIMIT over the SAME live memo edge it reports as its child —
+		// Build the LIMIT over the SAME live memo edge it reports as its child â
 		// no separate snapshot inner. The plan IS the cascades expression the memo
 		// holds (RFC-184 W2): GetQuantifiers / OrderingSourceRef / GetInner all
 		// resolve through this one quantifier, so there is no nil-inner shell to
