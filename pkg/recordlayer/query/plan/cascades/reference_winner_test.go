@@ -437,14 +437,19 @@ func TestFinalOfChildrenVisibleToSemanticEquality(t *testing.T) {
 	}
 }
 
-// TestSortElimination_DeclinesWhenExtractionRelinkRefused pins RFC-181
-// P0.4 — the extraction twin of the rule-time executable-plan
-// verification: when the spine wrapper's WithChildren KEEPS its original
-// concrete plan (the pinned ordered inner is not leaf-replaceable, e.g. a
-// projection), the rebuilt wrapper would execute the OLD unordered child
-// under an already-elided sort. rebuildOrderedSpine must verify the
-// concrete embed and DECLINE the elision — the sort stays.
-func TestSortElimination_DeclinesWhenExtractionRelinkRefused(t *testing.T) {
+// TestSortElimination_FiresThroughCollapsedDistinct pins the extraction
+// twin of the rule-time executable-plan verification, from the OTHER side:
+// the elision only fires when rebuildOrderedSpine's WithChildren relink
+// REACHES the executable plan. Before RFC-184 W2 the distinct kept a physical
+// wrapper whose WithChildren gated on isLeafReplaceable and so DECLINED to
+// relink onto a non-leaf-replaceable (projection) pinned inner — keeping a
+// redundant sort Java's RemoveSortRule elides. The collapsed bare distinct
+// plan's WithChildren is an unconditional quantifier swap that re-resolves
+// through GetInner, so the pin reaches the ordered projection and the sort is
+// correctly dropped — a parity gain, matching the predicates-filter collapse.
+// The pin still BAKES the ordered projection as the distinct's concrete inner,
+// so dropping the sort is order-correct.
+func TestSortElimination_FiresThroughCollapsedDistinct(t *testing.T) {
 	t.Parallel()
 
 	// Ordered member that is NOT leaf-replaceable: a projection wrapper
@@ -457,12 +462,10 @@ func TestSortElimination_DeclinesWhenExtractionRelinkRefused(t *testing.T) {
 		expressions.ForEachQuantifier(sortedRef),
 	)
 
-	// The distinct wrapper's source group: cheap unordered scan (winner) + the
-	// non-leaf-replaceable ordered projection. A predicates filter no longer
-	// exhibits this (RFC-184 W2 made its WithChildren an unconditional
-	// quantifier swap that always reaches the executable plan); the distinct
-	// wrapper still gates on isLeafReplaceable, so it is the operator that
-	// keeps its stale concrete plan when the pinned inner is a projection.
+	// The distinct's source group: cheap unordered scan (winner) + the
+	// non-leaf-replaceable ordered projection. Generic extraction would relink
+	// the distinct's inner to the WINNER (unordered) and need the sort; the
+	// ordered-spine pin relinks it to the projection instead.
 	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
 	innerRef := expressions.InitialOf(scanExpr)
 	FireExpressionRule(NewPrimaryScanRule(), innerRef)
@@ -475,12 +478,11 @@ func TestSortElimination_DeclinesWhenExtractionRelinkRefused(t *testing.T) {
 	innerRef.InsertFinal(orderedProjection)
 	innerRef.SetWinner(cheap)
 
-	distinctWrap := NewPhysicalDistinctWrapper(
-		plans.NewRecordQueryDistinctPlan(
-			plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
-		),
-		expressions.ForEachQuantifier(innerRef),
-	)
+	// The distinct is its own cascades expression now (RFC-184 W2, no
+	// physicalDistinctWrapper) ranging over the source group.
+	distinctWrap := plans.NewRecordQueryDistinctPlan(
+		plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
+	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(innerRef)})
 	distinctRef := expressions.InitialOf(distinctWrap)
 
 	sort := expressions.NewLogicalSortExpression(
@@ -499,7 +501,14 @@ func TestSortElimination_DeclinesWhenExtractionRelinkRefused(t *testing.T) {
 	if plan == nil {
 		t.Fatal("plan is nil")
 	}
-	if _, isSort := plan.(*expressions.LogicalSortExpression); !isSort {
-		t.Fatalf("the elision must DECLINE when the spine relink cannot reach the executable plan (projection child is not leaf-replaceable for the distinct wrapper's WithChildren); got %T with the sort already gone", plan)
+	if _, isSort := plan.(*expressions.LogicalSortExpression); isSort {
+		t.Fatalf("the sort must be ELIDED: the collapsed distinct's WithChildren relink reaches the executable plan and bakes the ordered projection, so dropping the sort is order-correct; got %T with the sort still present", plan)
+	}
+	dp, ok := plan.(*plans.RecordQueryDistinctPlan)
+	if !ok {
+		t.Fatalf("expected the elided root to be *plans.RecordQueryDistinctPlan, got %T (%s)", plan, describePlan(plan))
+	}
+	if _, ok := dp.GetInner().(*plans.RecordQueryProjectionPlan); !ok {
+		t.Fatalf("the pin must relink the distinct's inner to the ORDERED projection (proving the relink reached the executable plan, not the unordered winner); got inner %T", dp.GetInner())
 	}
 }

@@ -58,7 +58,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- Single-child passthrough ---
 
-	case *physicalDistinctWrapper:
+	// The Distinct is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryDistinctPlan:
 		return derivationsFromSingleChildExpr(w)
 
 	// A DELETE is its own physical expression now (RFC-184 W2).

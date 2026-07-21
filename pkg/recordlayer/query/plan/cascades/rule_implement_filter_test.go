@@ -140,7 +140,9 @@ func TestImplementFilterRule_FiresOnFilterOverDistinct(t *testing.T) {
 	scanPlan := findPhysicalPlan(scanRef)
 	distPlan := plans.NewRecordQueryDistinctPlan(scanPlan)
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(findPhysicalExpr(scanRef)))
-	distinctRef.Insert(NewPhysicalDistinctWrapper(distPlan, innerQ))
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan (no
+	// physicalDistinctWrapper).
+	distinctRef.Insert(distPlan.WithQuantifiers([]expressions.Quantifier{innerQ}))
 
 	yielded := FireExpressionRule(NewImplementFilterRule(), topRef)
 	if len(yielded) != 1 {

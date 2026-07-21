@@ -858,7 +858,9 @@ func isTypeFilterExpression(e expressions.RelationalExpression) bool {
 }
 
 func isDistinctExpression(e expressions.RelationalExpression) bool {
-	_, ok := e.(*physicalDistinctWrapper)
+	// Since RFC-184 W2 the memo holds *plans.RecordQueryDistinctPlan directly
+	// (no physicalDistinctWrapper), so this is a bare type check.
+	_, ok := e.(*plans.RecordQueryDistinctPlan)
 	return ok
 }
 

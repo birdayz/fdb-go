@@ -628,8 +628,9 @@ func TestPlanningCostModelLess_Criterion11_DistinctDepth(t *testing.T) {
 
 	distPlan := plans.NewRecordQueryDistinctPlan(scan)
 
-	// shallowDistinct: distinct IS the root (depth=0).
-	shallowDistinct := NewPhysicalDistinctWrapper(distPlan, innerQ)
+	// shallowDistinct: distinct IS the root (depth=0). Since RFC-184 W2 the memo
+	// holds the bare *plans.RecordQueryDistinctPlan (no physicalDistinctWrapper).
+	shallowDistinct := distPlan.WithQuantifiers([]expressions.Quantifier{innerQ})
 
 	// deepDistinct: inJoin → distinct(depth=1) → scan.
 	// Using an inJoin as the outer layer so it doesn't add typeFilterCount

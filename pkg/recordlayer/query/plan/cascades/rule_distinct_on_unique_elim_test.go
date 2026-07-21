@@ -87,7 +87,7 @@ func TestDistinctFinal_PKProjected_Eliminates(t *testing.T) {
 		t.Fatal("ImplementDistinctFinalRule should fire and eliminate DISTINCT when PK is projected")
 	}
 	for _, r := range results {
-		if _, ok := r.(*physicalDistinctWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDistinctPlan); ok {
 			t.Fatal("expected elimination (no DistinctWrapper), but got DistinctWrapper")
 		}
 	}
@@ -107,7 +107,7 @@ func TestDistinctFinal_NonPKProjected_Wraps(t *testing.T) {
 	}
 	foundDistinct := false
 	for _, r := range results {
-		if _, ok := r.(*physicalDistinctWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDistinctPlan); ok {
 			foundDistinct = true
 		}
 	}
@@ -128,7 +128,7 @@ func TestDistinctFinal_FullScan_Eliminates(t *testing.T) {
 		t.Fatal("ImplementDistinctFinalRule should fire on full scan with PK")
 	}
 	for _, r := range results {
-		if _, ok := r.(*physicalDistinctWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDistinctPlan); ok {
 			t.Fatal("expected elimination (no DistinctWrapper), but got DistinctWrapper")
 		}
 	}
@@ -145,7 +145,7 @@ func TestDistinctFinal_NoPlanContext_Wraps(t *testing.T) {
 	}
 	foundDistinct := false
 	for _, r := range results {
-		if _, ok := r.(*physicalDistinctWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDistinctPlan); ok {
 			foundDistinct = true
 		}
 	}
@@ -169,7 +169,7 @@ func TestDistinctFinal_CompositePK_Eliminates(t *testing.T) {
 		t.Fatal("ImplementDistinctFinalRule should eliminate when all composite PK cols projected")
 	}
 	for _, r := range results {
-		if _, ok := r.(*physicalDistinctWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDistinctPlan); ok {
 			t.Fatal("expected elimination (no DistinctWrapper), but got DistinctWrapper")
 		}
 	}
@@ -190,7 +190,7 @@ func TestDistinctFinal_CompositePKPartial_Wraps(t *testing.T) {
 	}
 	foundDistinct := false
 	for _, r := range results {
-		if _, ok := r.(*physicalDistinctWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDistinctPlan); ok {
 			foundDistinct = true
 		}
 	}
@@ -220,7 +220,7 @@ func TestDistinctFinal_ComputedPKExpr_Wraps(t *testing.T) {
 	}
 	foundDistinct := false
 	for _, r := range results {
-		if _, ok := r.(*physicalDistinctWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDistinctPlan); ok {
 			foundDistinct = true
 		}
 	}
@@ -273,7 +273,7 @@ func TestDistinctFinal_CaseInsensitive(t *testing.T) {
 		t.Fatal("ImplementDistinctFinalRule should fire with case-insensitive PK match")
 	}
 	for _, r := range results {
-		if _, ok := r.(*physicalDistinctWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDistinctPlan); ok {
 			t.Fatal("expected elimination (no DistinctWrapper), but got DistinctWrapper")
 		}
 	}
@@ -311,7 +311,7 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 		t.Fatal("ImplementDistinctFinalRule should fire through filter")
 	}
 	for _, r := range results {
-		if _, ok := r.(*physicalDistinctWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDistinctPlan); ok {
 			t.Fatal("expected elimination (no DistinctWrapper), but got DistinctWrapper")
 		}
 	}
@@ -356,11 +356,92 @@ func TestDistinctFinal_WrapsAllMembers(t *testing.T) {
 
 	wrapCount := 0
 	for _, r := range results {
-		if _, ok := r.(*physicalDistinctWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDistinctPlan); ok {
 			wrapCount++
 		}
 	}
 	if wrapCount < 2 {
 		t.Fatalf("expected at least 2 DistinctWrappers (one per FinalMember), got %d", wrapCount)
+	}
+}
+
+// TestNewPhysicalDistinctFor_FreezesStreamingInner pins the constraint-preserving
+// disentangle at the heart of the RFC-184 W2 distinct-wrapper collapse: the
+// bare distinct plan carries ONE child edge, and WHICH edge is conditional on
+// the streaming mode.
+//
+// A STREAMING distinct is sound only over the exact ordering its flag was
+// computed for; if its inner floated to a cost-tied but differently-ordered
+// sibling it would run the adjacent-dedup executor over unordered input and
+// LEAK a duplicate. So a Streaming=true distinct must FREEZE its inner in a
+// detached single-member FINAL reference — never a live exploratory edge that
+// a later winner selection could swap. A PLAIN (hash) distinct dedups over any
+// order, so it carries the LIVE exploratory edge (a frozen snapshot would
+// instead strand a pre-push member once a push rule re-explores the leg).
+func TestNewPhysicalDistinctFor_FreezesStreamingInner(t *testing.T) {
+	t.Parallel()
+
+	call := &ImplementationRuleCall{}
+
+	// ORDERED member: an in-memory sort on G over an index whose result type
+	// carries G, so the whole-row dedup key {G} is adjacent → Streaming=true.
+	gRec := values.NewRecordType("", false, []values.Field{
+		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
+	})
+	indexPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
+	indexRef := expressions.InitialOf(indexPlan)
+	sortKeys := []plans.SortKey{{
+		Field:      "G",
+		NullsFirst: true,
+		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
+	}}
+	sortPlan := plans.NewRecordQueryInMemorySortPlan(indexPlan, sortKeys)
+	orderedMember := newPhysicalInMemorySortWrapper(sortPlan, expressions.ForEachQuantifier(indexRef))
+
+	if !distinctStreamingEligible(orderedMember, sortPlan) {
+		t.Fatal("precondition: the ordered member must be streaming-eligible")
+	}
+	got := newPhysicalDistinctFor(call, orderedMember)
+	dp, ok := got.(*plans.RecordQueryDistinctPlan)
+	if !ok {
+		t.Fatalf("newPhysicalDistinctFor = %T, want *plans.RecordQueryDistinctPlan", got)
+	}
+	if !dp.Streaming {
+		t.Fatal("streaming-eligible member must yield Streaming=true")
+	}
+	innerRef := dp.GetInnerQuantifier().GetRangesOver()
+	// FROZEN: the inner is a detached single-member FINAL reference over the
+	// exact ordered plan — nothing can grow or swap it to an unordered sibling.
+	if len(innerRef.FinalMembers()) != 1 {
+		t.Fatalf("a streaming distinct must FREEZE its inner in a single-member final reference, got %d final members", len(innerRef.FinalMembers()))
+	}
+	if dp.GetInner() != sortPlan {
+		t.Fatalf("the frozen inner must resolve to the exact ordered plan; got %T", dp.GetInner())
+	}
+
+	// PLAIN member: a bare primary scan (no adjacent dedup key) → Streaming=false.
+	plainMember := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	if distinctStreamingEligible(plainMember, plainMember) {
+		t.Fatal("precondition: the plain member must NOT be streaming-eligible")
+	}
+	gotPlain := newPhysicalDistinctFor(call, plainMember)
+	dpPlain, ok := gotPlain.(*plans.RecordQueryDistinctPlan)
+	if !ok {
+		t.Fatalf("newPhysicalDistinctFor = %T, want *plans.RecordQueryDistinctPlan", gotPlain)
+	}
+	if dpPlain.Streaming {
+		t.Fatal("non-streaming-eligible member must yield Streaming=false")
+	}
+	plainInnerRef := dpPlain.GetInnerQuantifier().GetRangesOver()
+	// LIVE: the plain inner is the exploratory edge (no final members), so a
+	// later push-rule canonicalization of the leg stays reachable.
+	if len(plainInnerRef.FinalMembers()) != 0 {
+		t.Fatalf("a plain distinct must carry the LIVE exploratory edge (no frozen final members), got %d", len(plainInnerRef.FinalMembers()))
+	}
+	if len(plainInnerRef.Members()) == 0 {
+		t.Fatal("the plain distinct's live edge must hold the member as an exploratory member")
+	}
+	if dpPlain.GetInner() != plainMember {
+		t.Fatalf("the plain inner must resolve to the member's plan; got %T", dpPlain.GetInner())
 	}
 }

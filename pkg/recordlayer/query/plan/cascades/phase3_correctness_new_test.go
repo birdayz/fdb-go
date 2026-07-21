@@ -57,14 +57,14 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 
 	// If ImplementUniqueRule absorbs the Unique (because the distinct
 	// child is itself distinct), we expect a bare scan plan. If the
-	// implementation instead yields a physicalDistinctWrapper, that's
+	// implementation instead yields a *plans.RecordQueryDistinctPlan, that's
 	// also acceptable — the key invariant is that no Unique wrapper
 	// appears (since scans are distinct).
 	if !foundScan {
-		// Check for a physicalDistinctWrapper as acceptable fallback.
+		// Check for a *plans.RecordQueryDistinctPlan as acceptable fallback.
 		foundDistinct := false
 		for _, f := range finals {
-			if _, ok := f.(*physicalDistinctWrapper); ok {
+			if _, ok := f.(*plans.RecordQueryDistinctPlan); ok {
 				foundDistinct = true
 				break
 			}
@@ -74,7 +74,7 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 			for i, f := range finals {
 				types[i] = fmt.Sprintf("%T", f)
 			}
-			t.Fatalf("expected *plans.RecordQueryScanPlan or *physicalDistinctWrapper in members (Unique absorbed), got types: %v", types)
+			t.Fatalf("expected *plans.RecordQueryScanPlan or *plans.RecordQueryDistinctPlan in members (Unique absorbed), got types: %v", types)
 		}
 	}
 }
@@ -197,11 +197,11 @@ func TestPhase3_DistinctOverUnion(t *testing.T) {
 		t.Fatal("expected *plans.RecordQueryUnionPlan or *plans.RecordQueryUnorderedUnionPlan in explored graph")
 	}
 
-	// Distinct should yield either a physicalDistinctWrapper (wrapping
+	// Distinct should yield either a *plans.RecordQueryDistinctPlan (wrapping
 	// a non-distinct inner) or the inner plan directly (if the union
 	// provides distinct semantics — RecordQueryUnionPlan deduplicates).
 	foundDistinctResult := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
-		if _, ok := expr.(*physicalDistinctWrapper); ok {
+		if _, ok := expr.(*plans.RecordQueryDistinctPlan); ok {
 			return true
 		}
 		if _, ok := expr.(*plans.RecordQueryUnionPlan); ok {

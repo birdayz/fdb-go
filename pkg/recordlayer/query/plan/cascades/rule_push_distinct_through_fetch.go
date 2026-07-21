@@ -26,16 +26,18 @@ type PushDistinctThroughFetchRule struct {
 
 func NewPushDistinctThroughFetchRule() *PushDistinctThroughFetchRule {
 	return &PushDistinctThroughFetchRule{
-		matcher: NewExpressionMatcher[*physicalDistinctWrapper]("phys_distinct_over_fetch"),
+		// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan
+		// (no physicalDistinctWrapper).
+		matcher: NewExpressionMatcher[*plans.RecordQueryDistinctPlan]("phys_distinct_over_fetch"),
 	}
 }
 
 func (r *PushDistinctThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
-	distinctW := matching.Get[*physicalDistinctWrapper](call.Bindings, r.matcher)
+	distinctW := matching.Get[*plans.RecordQueryDistinctPlan](call.Bindings, r.matcher)
 
-	innerRef := distinctW.innerQuant.GetRangesOver()
+	innerRef := distinctW.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return
 	}
@@ -66,22 +68,27 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Build: Distinct(fetchInner)
-	newDistinctPlan := plans.NewRecordQueryDistinctPlan(fetchInnerPlan)
-	// Recompute the streaming mode against the NEW inner (the fetch's inner): a
-	// fetch preserves ordering, so the distinct below it is still
-	// streaming-eligible when that inner is ordered by the dedup key — the
-	// constructor otherwise resets the flag and drops a resume-clean streaming
-	// distinct to the cross-page-buggy hash-set as a competing alternative
-	// (TODO C5).
-	newDistinctPlan.Streaming = distinctStreamingEligible(fetchInnerExpr, fetchInnerPlan)
-	newDistinctQ := expressions.ForEachQuantifier(
+	// Build: Distinct(fetchInner) as its own cascades expression (RFC-184 W2, no
+	// physicalDistinctWrapper). Recompute the streaming mode against the NEW inner
+	// (the fetch's inner): a fetch preserves ordering, so the distinct below it is
+	// still streaming-eligible when that inner is ordered by the dedup key — a
+	// constructor reset would otherwise drop a resume-clean streaming distinct to
+	// the cross-page-buggy hash-set as a competing alternative (TODO C5).
+	streaming := distinctStreamingEligible(fetchInnerExpr, fetchInnerPlan)
+	// The distinct's edge ranges over the BAKED concrete inner frozen in a
+	// detached single-member final reference — the memo-canonical structure
+	// push_filter_through_fetch case-2 uses, NOT the live fetchInnerExpr memo edge
+	// (whose children may still be holes). The alias is carried from the
+	// disentangled member ref so the flowed value stays stable.
+	baseQ := expressions.ForEachQuantifier(
 		call.MemoizeFinalExpressionsFromOther(fetchInnerRef, []expressions.RelationalExpression{fetchInnerExpr}),
 	)
-	newDistinctWrapper := NewPhysicalDistinctWrapper(newDistinctPlan, newDistinctQ)
+	newDistinctInnerQ := expressions.NamedForEachQuantifier(baseQ.GetAlias(),
+		call.MemoizeFinalExpression(fetchInnerPlan))
+	newDistinctPlan := plans.NewRecordQueryDistinctPlanFromQuantifier(newDistinctInnerQ, streaming)
 
 	// Memoize the distinct.
-	distinctRef := call.MemoizeFinalExpression(newDistinctWrapper)
+	distinctRef := call.MemoizeFinalExpression(newDistinctPlan)
 
 	// Build: Fetch(Distinct(fetchInner)) as its own cascades expression carrying
 	// the live distinctRef edge (RFC-184 W2).

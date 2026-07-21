@@ -27,16 +27,18 @@ type PushDistinctBelowFilterRule struct {
 
 func NewPushDistinctBelowFilterRule() *PushDistinctBelowFilterRule {
 	return &PushDistinctBelowFilterRule{
-		matcher: NewExpressionMatcher[*physicalDistinctWrapper]("phys_distinct"),
+		// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan
+		// (no physicalDistinctWrapper).
+		matcher: NewExpressionMatcher[*plans.RecordQueryDistinctPlan]("phys_distinct"),
 	}
 }
 
 func (r *PushDistinctBelowFilterRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
-	distinctW := matching.Get[*physicalDistinctWrapper](call.Bindings, r.matcher)
+	distinctW := matching.Get[*plans.RecordQueryDistinctPlan](call.Bindings, r.matcher)
 
-	innerRef := distinctW.innerQuant.GetRangesOver()
+	innerRef := distinctW.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return
 	}
@@ -71,20 +73,27 @@ func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	newDistinctPlan := plans.NewRecordQueryDistinctPlan(filterInnerPlan)
-	// Recompute the streaming mode against the NEW inner (the filter's inner):
-	// a filter preserves ordering, so a distinct that streamed above the filter
-	// is still streaming-eligible below it — but the constructor resets the flag,
-	// which would drop a resume-clean streaming distinct to the cross-page-buggy
-	// hash-set as a competing memo alternative (TODO C5).
-	newDistinctPlan.Streaming = distinctStreamingEligible(filterInnerExpr, filterInnerPlan)
-	newDistinctQ := expressions.ForEachQuantifier(
+	// Build: Distinct(filterInner) as its own cascades expression (RFC-184 W2, no
+	// physicalDistinctWrapper). Recompute the streaming mode against the NEW inner
+	// (the filter's inner): a filter preserves ordering, so a distinct that
+	// streamed above the filter is still streaming-eligible below it — but a
+	// constructor reset would drop a resume-clean streaming distinct to the
+	// cross-page-buggy hash-set as a competing memo alternative (TODO C5).
+	streaming := distinctStreamingEligible(filterInnerExpr, filterInnerPlan)
+	// The distinct's edge ranges over the BAKED concrete inner frozen in a
+	// detached single-member final reference — the memo-canonical structure
+	// push_filter_through_fetch case-2 uses, NOT the live filterInnerExpr memo
+	// edge (whose children may still be holes). The alias is carried from the
+	// disentangled member ref so the flowed value stays stable.
+	baseQ := expressions.ForEachQuantifier(
 		call.MemoizeFinalExpressionsFromOther(filterInnerRef, []expressions.RelationalExpression{filterInnerExpr}),
 	)
-	newDistinctWrapper := NewPhysicalDistinctWrapper(newDistinctPlan, newDistinctQ)
+	newDistinctInnerQ := expressions.NamedForEachQuantifier(baseQ.GetAlias(),
+		call.MemoizeFinalExpression(filterInnerPlan))
+	newDistinctPlan := plans.NewRecordQueryDistinctPlanFromQuantifier(newDistinctInnerQ, streaming)
 
-	// Memoize the new distinct wrapper.
-	distinctRef := call.MemoizeFinalExpression(newDistinctWrapper)
+	// Memoize the new distinct.
+	distinctRef := call.MemoizeFinalExpression(newDistinctPlan)
 
 	// Create new quantifier over the distinct plan.
 	newQOverDistinct := expressions.ForEachQuantifier(distinctRef)

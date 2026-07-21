@@ -45,7 +45,9 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 	filterRef := expressions.InitialOf(filterWrapper)
 
 	distinctPlan := plans.NewRecordQueryDistinctPlan(filterPlan)
-	distinctWrapper := NewPhysicalDistinctWrapper(distinctPlan, expressions.ForEachQuantifier(filterRef))
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan (no
+	// physicalDistinctWrapper); the push rule matches it directly.
+	distinctWrapper := distinctPlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(filterRef)})
 	ref := expressions.InitialOf(distinctWrapper)
 
 	rule := NewPushDistinctBelowFilterRule()
@@ -104,7 +106,9 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	distinctPlan := plans.NewRecordQueryDistinctPlan(fetchPlan)
-	distinctWrapper := NewPhysicalDistinctWrapper(distinctPlan, expressions.ForEachQuantifier(fetchRef))
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan (no
+	// physicalDistinctWrapper); the push rule matches it directly.
+	distinctWrapper := distinctPlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(fetchRef)})
 	ref := expressions.InitialOf(distinctWrapper)
 
 	rule := NewPushDistinctThroughFetchRule()

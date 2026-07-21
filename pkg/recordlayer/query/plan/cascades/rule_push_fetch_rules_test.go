@@ -110,7 +110,9 @@ func TestPushDistinctThroughFetch_Fires(t *testing.T) {
 
 	distinctPlan := plans.NewRecordQueryDistinctPlan(nil)
 	distinctQ := expressions.ForEachQuantifier(fetchRef)
-	distinctWrapper := NewPhysicalDistinctWrapper(distinctPlan, distinctQ)
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan (no
+	// physicalDistinctWrapper); the push rule matches it directly.
+	distinctWrapper := distinctPlan.WithQuantifiers([]expressions.Quantifier{distinctQ})
 
 	ref := expressions.InitialOf(distinctWrapper)
 

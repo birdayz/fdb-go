@@ -2,8 +2,6 @@ package cascades
 
 import (
 	"encoding/binary"
-	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -559,121 +557,6 @@ func pkScanRichOrdering(plan *plans.RecordQueryScanPlan) *properties.RichOrderin
 	}
 	return properties.NewRichOrdering(bm, keys, false)
 }
-
-// physicalDistinctWrapper adapts a `*plans.RecordQueryDistinctPlan` to
-// the RelationalExpression interface.
-//
-// RFC-184 W2 deferred the collapse of this wrapper (unlike the leaf/unary
-// wrappers it landed): making the distinct its own cascades expression
-// deterministically shifted 6 SELECT-DISTINCT plans in the yamsql corpus
-// (join-order flips, cost-neutral: plan_regressions=0). The distinct-final rule
-// builds the physical distinct with a quantifier over an exploratory member ref
-// AND a separate concrete plan snapshot — two facts the wrapper keeps apart but a
-// single collapsed child edge cannot — so the collapse is not identity-neutral
-// here (the same deferred-winner family as FirstOrDefault / StreamingAggregation).
-type physicalDistinctWrapper struct {
-	plan       *plans.RecordQueryDistinctPlan
-	innerQuant expressions.Quantifier
-}
-
-// NewPhysicalDistinctWrapper constructs the wrapper.
-func NewPhysicalDistinctWrapper(plan *plans.RecordQueryDistinctPlan, innerQuant expressions.Quantifier) *physicalDistinctWrapper {
-	return &physicalDistinctWrapper{plan: plan, innerQuant: innerQuant}
-}
-
-// GetPlan exposes the wrapped physical plan.
-func (w *physicalDistinctWrapper) GetPlan() *plans.RecordQueryDistinctPlan { return w.plan }
-
-// GetRecordQueryPlan implements physicalPlanExpression.
-func (w *physicalDistinctWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-// GetResultValue returns the inner Quantifier's flowed object value.
-func (w *physicalDistinctWrapper) GetResultValue() values.Value {
-	return w.innerQuant.GetFlowedObjectValue()
-}
-
-// GetQuantifiers returns the inner Quantifier as the only child.
-func (w *physicalDistinctWrapper) GetQuantifiers() []expressions.Quantifier {
-	return []expressions.Quantifier{w.innerQuant}
-}
-
-// CanCorrelate is false.
-func (w *physicalDistinctWrapper) CanCorrelate() bool { return false }
-
-// ChildrenAsSet is false.
-func (w *physicalDistinctWrapper) ChildrenAsSet() bool { return false }
-
-// GetCorrelatedToWithoutChildren returns the empty set.
-func (w *physicalDistinctWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-// EqualsWithoutChildren compares the wrapped plan.
-func (w *physicalDistinctWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalDistinctWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-// HashCodeWithoutChildren mixes class + plan's hash.
-func (w *physicalDistinctWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physdistwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-// WithChildren constructs a fresh wrapper using qs[0] as the new
-// inner Quantifier.
-func (w *physicalDistinctWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 1 {
-		return nil, fmt.Errorf("physicalDistinctWrapper.WithChildren: expected 1 child, got %d", len(qs))
-	}
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
-		// WithInner (copy-on-write), NOT the constructor: the rebuild must
-		// carry the Streaming flag — a constructor rebuild resets it to false
-		// and silently downgrades a resume-clean streaming distinct to the
-		// buggy hash-set path (TODO.md C5).
-		return &physicalDistinctWrapper{plan: w.plan.WithInner(innerPlan), innerQuant: qs[0]}, nil
-	}
-	return &physicalDistinctWrapper{plan: w.plan, innerQuant: qs[0]}, nil
-}
-
-// HintCost mirrors LogicalDistinct with the physical-wrapper discount.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalDistinctWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-// OrderingSourceRef: this wrapper PRESERVES its input's order (see
-// orderingDelegator in winner_lookup.go).
-func (w *physicalDistinctWrapper) OrderingSourceRef() *expressions.Reference {
-	return w.innerQuant.GetRangesOver()
-}
-
-func (w *physicalDistinctWrapper) HintOrdering() properties.Ordering {
-	ref := w.innerQuant.GetRangesOver()
-	if ref == nil {
-		return properties.Ordering{}
-	}
-	for _, m := range ref.AllMembers() {
-		o := properties.EstimateOrdering(m)
-		if o.IsKnown {
-			return o
-		}
-	}
-	return properties.Ordering{}
-}
-
-func (w *physicalDistinctWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalDistinctWrapper)(nil)
 
 // IsPhysicalAggregateIndex reports whether the expression is an aggregate index
 // scan. Since RFC-184 W2 the memo holds *plans.RecordQueryAggregateIndexPlan

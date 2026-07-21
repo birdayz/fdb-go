@@ -84,7 +84,7 @@ func TestComputeDistinctRecords_DistinctPlanIsTrue(t *testing.T) {
 	scanW := scan
 	innerRef := expressions.InitialOf(scanW)
 	innerQ := expressions.ForEachQuantifier(innerRef)
-	dw := NewPhysicalDistinctWrapper(dp, innerQ)
+	dw := dp.WithQuantifiers([]expressions.Quantifier{innerQ}).(*plans.RecordQueryDistinctPlan)
 	got := computeDistinctRecords(dw, dp)
 	if !got {
 		t.Fatal("distinct plan should produce distinct records")
