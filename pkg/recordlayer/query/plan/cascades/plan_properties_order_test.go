@@ -79,7 +79,7 @@ func TestToPartitionsFromMap_DeterministicOrder(t *testing.T) {
 	// Build a PlanPropertiesMap with wrappers that fall into
 	// different partitions:
 	//   - RecordQueryScanPlan  → distinct=true,  stored=true
-	//   - physicalStreamingAggWrapper → distinct=false, stored=false
+	//   - RecordQueryStreamingAggregationPlan → distinct=false, stored=false
 	// Interleave them so insertion order matters.
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
@@ -90,8 +90,8 @@ func TestToPartitionsFromMap_DeterministicOrder(t *testing.T) {
 	wA := scanA
 	wB := scanB
 	wC := scanC
-	wD := &physicalStreamingAggWrapper{plan: aggD}
-	wE := &physicalStreamingAggWrapper{plan: aggE}
+	wD := aggD
+	wE := aggE
 
 	pm := NewPlanPropertiesMap()
 	// Interleave scan and agg wrappers.

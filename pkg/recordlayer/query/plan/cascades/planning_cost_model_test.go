@@ -853,10 +853,9 @@ func TestPlanningCostModel_AggregateIndexBeatsStreamingAgg(t *testing.T) {
 
 	innerScan := plans.NewRecordQueryScanPlan([]string{"T"}, nil, false)
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerScan))
-	streamingAgg := newPhysicalStreamingAggWrapper(
-		plans.NewRecordQueryStreamingAggregationPlan(innerScan, nil, nil),
-		innerQ,
-	)
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryStreamingAggregationPlan
+	// (no physicalStreamingAggWrapper).
+	streamingAgg := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, nil, nil)
 
 	if !PlanningCostModelLess(aggIdx, streamingAgg) {
 		t.Fatal("aggregate index should be cheaper than streaming agg over full scan")

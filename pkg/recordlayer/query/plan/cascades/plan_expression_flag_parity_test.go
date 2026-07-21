@@ -105,7 +105,10 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		{name: "InJoin", plan: &plans.RecordQueryInJoinPlan{}},
 		{name: "InUnion", plan: &plans.RecordQueryInUnionPlan{}},
 		{name: "MultiIntersection", plan: &plans.RecordQueryMultiIntersectionOnValuesPlan{}},
-		{name: "StreamingAggregation", plan: &plans.RecordQueryStreamingAggregationPlan{}, wrap: &physicalStreamingAggWrapper{}},
+		// StreamingAggregation and Distinct lost their wrappers (RFC-184 W2) but
+		// keep the false/false default, so the plan side stays pinned here with no
+		// wrapper pair.
+		{name: "StreamingAggregation", plan: &plans.RecordQueryStreamingAggregationPlan{}},
 		{name: "InMemorySort", plan: &plans.RecordQueryInMemorySortPlan{}, wrap: &physicalInMemorySortWrapper{}},
 		// FirstOrDefault and Distinct lost their wrappers (RFC-184 W2) but keep the
 		// false/false default, so the plan side stays pinned here with no wrapper
@@ -117,8 +120,8 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		// AggregateIndex / TypeFilter / Insert / Delete / Update have no physical
 		// wrapper since RFC-184 W2 — the memo holds the *plans.RecordQuery… plan
 		// directly, so their false/false flags are exercised on the live production
-		// path (no parity pair to check). StreamingAggregation KEEPS its wrapper
-		// (collapse deferred — not identity-neutral in the deferred-winner path).
+		// path (no parity pair to check). Only InMemorySort KEEPS its wrapper
+		// (collapse deferred — the last ordering-critical producer wrapper).
 	}
 
 	for _, tc := range cases {

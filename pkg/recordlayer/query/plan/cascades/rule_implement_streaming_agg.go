@@ -56,9 +56,10 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 				// The covering index scan is its own cascades expression (RFC-184 W2);
 				// WithCovering preserves the metadata already on the plan (struct copy).
 				coveringPlan := idxPlan.WithCovering(nil)
+				// Count-only, no grouping keys → no ordering precondition, so carry
+				// the LIVE shared-group edge (RFC-184 W2, no physicalStreamingAggWrapper).
 				coveringQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringPlan))
-				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(coveringPlan, groupingKeys, gb.GetAggregates())
-				call.Yield(newPhysicalStreamingAggWrapper(aggPlan, coveringQ))
+				call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(coveringQ, groupingKeys, gb.GetAggregates()))
 			}
 		}
 		// Yield an aggregate over EVERY physical alternative of the
@@ -71,13 +72,14 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		// silently drops the cheaper (or the only CORRECT-for-Explain)
 		// alternative.
 		for _, m := range innerRef.AllMembers() {
-			pe, ok := m.(physicalPlanExpression)
-			if !ok {
+			if _, ok := m.(physicalPlanExpression); !ok {
 				continue
 			}
-			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(pe.GetRecordQueryPlan(), groupingKeys, gb.GetAggregates())
+			// Count-only, no grouping keys → no ordering precondition, so carry the
+			// LIVE shared-group edge over the member (RFC-184 W2, no
+			// physicalStreamingAggWrapper). GetInner resolves the member's plan.
 			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(m))
-			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+			call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates()))
 		}
 		return
 	}
@@ -119,9 +121,12 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		sortedPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, sortKeys)
 		rawQ := expressions.ForEachQuantifier(call.MemoizeExpression(rawExpr))
 		sortExpr := newPhysicalInMemorySortWrapper(sortedPlan, rawQ)
-		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(sortedPlan, groupingKeys, gb.GetAggregates())
+		// The inner IS the InMemorySort we build — a self-contained PRODUCER that
+		// provides the grouping-key order intrinsically (not a delegator floating
+		// to a winner), so carry the LIVE shared-group edge over it (RFC-184 W2,
+		// no physicalStreamingAggWrapper).
 		sortQ := expressions.ForEachQuantifier(call.MemoizeExpression(sortExpr))
-		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, sortQ))
+		call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(sortQ, groupingKeys, gb.GetAggregates()))
 	}
 
 	// If an ordered physical expression exists (e.g. index scan whose
@@ -158,10 +163,14 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			}
 			groupReq := properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false)
 			pinned := pinOrderedSpine(orderedExpr, groupReq, call.CostModel())
-			if pinnedPE, isPE := pinned.(physicalPlanExpression); pinned != nil && isPE {
-				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(pinnedPE.GetRecordQueryPlan(), groupingKeys, gb.GetAggregates())
+			if _, isPE := pinned.(physicalPlanExpression); pinned != nil && isPE {
+				// The ordered inner is a DELEGATING spine (Fetch/Filter over an
+				// index): pinOrderedSpine baked it to FinalOf singletons so it
+				// cannot float to an unordered sibling and split groups. Carry that
+				// FROZEN edge — the correct freeze for a delegating ordered inner
+				// (RFC-184 W2, no physicalStreamingAggWrapper).
 				orderedQ := expressions.ForEachQuantifier(expressions.FinalOf(pinned))
-				call.Yield(newPhysicalStreamingAggWrapper(aggPlan, orderedQ))
+				call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(orderedQ, groupingKeys, gb.GetAggregates()))
 			}
 		}
 	}

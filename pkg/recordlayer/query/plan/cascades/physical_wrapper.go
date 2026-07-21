@@ -565,3 +565,12 @@ func IsPhysicalAggregateIndex(expr expressions.RelationalExpression) bool {
 	_, ok := expr.(*plans.RecordQueryAggregateIndexPlan)
 	return ok
 }
+
+// IsPhysicalStreamingAgg reports whether the given RelationalExpression is a
+// physical streaming aggregation. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryStreamingAggregationPlan directly (no
+// physicalStreamingAggWrapper), so this is a bare type check.
+func IsPhysicalStreamingAgg(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryStreamingAggregationPlan)
+	return ok
+}

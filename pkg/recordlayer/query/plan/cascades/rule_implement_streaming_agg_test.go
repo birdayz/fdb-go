@@ -110,8 +110,9 @@ func TestImplementStreamingAgg_IndexOrderedInput(t *testing.T) {
 		t.Fatal("ImplementStreamingAggregationRule didn't fire with index-ordered input")
 	}
 
-	wrapper := results[0].(*physicalStreamingAggWrapper)
-	explain := wrapper.GetPlan().Explain()
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryStreamingAggregationPlan.
+	agg := results[0].(*plans.RecordQueryStreamingAggregationPlan)
+	explain := agg.Explain()
 	if explain == "" {
 		t.Fatal("empty explain string")
 	}
@@ -240,13 +241,14 @@ func TestStreamingAgg_OrderedChildPinned(t *testing.T) {
 
 	// Find the ordered streaming-agg alternative: its plan child is the
 	// index scan (not the in-memory sort).
-	var orderedAgg *physicalStreamingAggWrapper
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryStreamingAggregationPlan.
+	var orderedAgg *plans.RecordQueryStreamingAggregationPlan
 	for _, m := range topRef.AllMembers() {
-		w, ok := m.(*physicalStreamingAggWrapper)
+		w, ok := m.(*plans.RecordQueryStreamingAggregationPlan)
 		if !ok {
 			continue
 		}
-		if _, isIdx := w.plan.GetInner().(*plans.RecordQueryIndexPlan); isIdx {
+		if _, isIdx := w.GetInner().(*plans.RecordQueryIndexPlan); isIdx {
 			orderedAgg = w
 			break
 		}
@@ -255,12 +257,12 @@ func TestStreamingAgg_OrderedChildPinned(t *testing.T) {
 		t.Fatal("the planner stopped yielding the ordered streaming-agg alternative for this shape — the invariant sentinel would evaporate; fix the yield, don't skip")
 	}
 
-	childRef := orderedAgg.innerQuant.GetRangesOver()
+	childRef := orderedAgg.GetInnerQuantifier().GetRangesOver()
 	members := childRef.AllMembers()
 	if len(members) != 1 {
 		t.Fatalf("the ordered agg's child must be a PINNED singleton; got %d members — the shared inner group leaks the unordered winner into the extraction relink", len(members))
 	}
-	if got := findPhysicalPlan(childRef); got != orderedAgg.plan.GetInner() {
+	if got := findPhysicalPlan(childRef); got != orderedAgg.GetInner() {
 		t.Fatalf("findPhysicalPlan over the pinned child = %T, want the ordered index plan — extraction would relink the agg onto an unordered child", got)
 	}
 }
@@ -312,10 +314,11 @@ func TestImplementStreamingAgg_PinsOrderedSpine(t *testing.T) {
 	}
 	// Find the ORDERED alternative: the agg wrapper whose child resolves to
 	// a predicates-filter wrapper (the delegator), not the in-memory sort.
-	var orderedAgg *physicalStreamingAggWrapper
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryStreamingAggregationPlan.
+	var orderedAgg *plans.RecordQueryStreamingAggregationPlan
 	var pinnedFilter *plans.RecordQueryPredicatesFilterPlan
 	for _, y := range yielded {
-		aggW, ok := y.(*physicalStreamingAggWrapper)
+		aggW, ok := y.(*plans.RecordQueryStreamingAggregationPlan)
 		if !ok {
 			continue
 		}

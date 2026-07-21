@@ -70,8 +70,8 @@ func TestComputeDistinctRecords_StreamingAggIsFalse(t *testing.T) {
 	t.Parallel()
 	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
 	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, keys, nil)
-	wrapper := &physicalStreamingAggWrapper{plan: aggPlan}
-	got := computeDistinctRecords(wrapper, aggPlan)
+	// Since RFC-184 W2 the memo holds the bare plan (no physicalStreamingAggWrapper).
+	got := computeDistinctRecords(aggPlan, aggPlan)
 	if got {
 		t.Fatal("streaming aggregation should NOT produce distinct records")
 	}

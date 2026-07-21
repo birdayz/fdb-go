@@ -179,9 +179,10 @@ func TestToPlanPartitions_GroupsByDistinctAndStored(t *testing.T) {
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	wA := scanA
 
-	// Streaming agg has distinct=false, stored=false.
+	// Streaming agg has distinct=false, stored=false. Since RFC-184 W2 the memo
+	// holds the bare *plans.RecordQueryStreamingAggregationPlan (no wrapper).
 	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
-	wB := &physicalStreamingAggWrapper{plan: aggPlan}
+	wB := aggPlan
 
 	ref := expressions.InitialOf(wA)
 	ref.Insert(wB)

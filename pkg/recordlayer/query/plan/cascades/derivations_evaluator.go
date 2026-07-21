@@ -151,7 +151,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- StreamingAggregation ---
 
-	case *physicalStreamingAggWrapper:
+	// The StreamingAggregation is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryStreamingAggregationPlan:
 		return derivationsForStreamingAgg(w)
 
 	// --- Explode ---
@@ -644,7 +645,7 @@ func derivationsForDefaultOnEmpty(w *plans.RecordQueryDefaultOnEmptyPlan) *prope
 
 // --- StreamingAggregation ---
 
-func derivationsForStreamingAgg(w *physicalStreamingAggWrapper) *properties.Derivations {
+func derivationsForStreamingAgg(w *plans.RecordQueryStreamingAggregationPlan) *properties.Derivations {
 	childDerivs := properties.DerivationsFromSingleChild(w)
 
 	// The streaming aggregation plan doesn't carry the Java-style

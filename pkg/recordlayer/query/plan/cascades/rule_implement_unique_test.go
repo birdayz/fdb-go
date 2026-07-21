@@ -79,9 +79,10 @@ func TestImplementUniqueRule_AbsorbsWhenInnerIsDistinct(t *testing.T) {
 
 func TestImplementUniqueRule_NoYieldWhenInnerNotDistinct(t *testing.T) {
 	t.Parallel()
-	// Streaming agg wrapper has distinct=false.
+	// Streaming agg has distinct=false. Since RFC-184 W2 the memo holds the bare
+	// *plans.RecordQueryStreamingAggregationPlan (no physicalStreamingAggWrapper).
 	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
-	aggWrapper := &physicalStreamingAggWrapper{plan: aggPlan}
+	aggWrapper := aggPlan
 
 	innerRef := expressions.InitialOf(aggWrapper)
 	pm := NewPlanPropertiesMap()

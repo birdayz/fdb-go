@@ -38,8 +38,57 @@ func NewRecordQueryStreamingAggregationPlan(
 	}
 }
 
+// NewRecordQueryStreamingAggregationPlanFromQuantifier builds a streaming
+// aggregation whose child is a supplied memo quantifier instead of a snapshot
+// over a single plan. This makes the plan its own cascades expression carrying
+// its child edge directly — the memo holds it without a physicalStreamingAggWrapper
+// (RFC-184 W2).
+//
+// Streaming aggregation is a PRODUCER, not an ordering-delegator: it reshapes
+// rows (one output row per grouping-key change) and provides its OWN output
+// ordering. But it has a CORRECTNESS PRECONDITION — the inner must be ordered by
+// the grouping keys — so the emitter chooses the child edge per arm: a plain
+// count-only aggregation (no grouping keys) or a self-contained ordered producer
+// (an InMemorySort it builds, a covering index scan) carries the LIVE
+// shared-group edge, while a DELEGATING ordered inner (an existing Fetch/Filter
+// spine) is frozen deep by pinOrderedSpine + FinalOf so it cannot float to an
+// unordered sibling and split groups. The grouping keys and aggregate specs are
+// preserved so OutputRecordType / GetResultValue stay stable.
+func NewRecordQueryStreamingAggregationPlanFromQuantifier(
+	innerQ expressions.Quantifier,
+	groupingKeys []values.Value,
+	aggregates []expressions.AggregateSpec,
+) *RecordQueryStreamingAggregationPlan {
+	return &RecordQueryStreamingAggregationPlan{
+		innerQ:       innerQ,
+		groupingKeys: groupingKeys,
+		aggregates:   aggregates,
+	}
+}
+
 func (p *RecordQueryStreamingAggregationPlan) GetInner() RecordQueryPlan {
 	return planFromQuantifier(p.innerQ)
+}
+
+// GetInnerQuantifier returns the live child quantifier — the single memo edge the
+// aggregation ranges over. Since RFC-184 W2 the memo holds the bare plan (no
+// physicalStreamingAggWrapper whose innerQuant field was read), this exposes the
+// same edge for derivations and extraction.
+func (p *RecordQueryStreamingAggregationPlan) GetInnerQuantifier() expressions.Quantifier {
+	return p.innerQ
+}
+
+// GetResultValue flows a TYPED QOV whose RecordType is the aggregate's output
+// schema ([groupKeys, aggregates], the plan's single naming authority), so the
+// resolver BAKES downstream references to ordinals at plan time (Java's
+// getFieldNameToOrdinalMap). A downstream ref then reads the aggregateCursor's
+// PositionalRow by Get(ordinal) — order, not spelling — robust to redundant
+// spellings of the same column. A streaming aggregation is a PRODUCER: it does
+// NOT flow its inner's rows through, so this must NOT delegate to the child's
+// flowed value (unlike the filter/distinct passthroughs). This is the identity
+// physicalStreamingAggWrapper.GetResultValue supplied (RFC-184 W2).
+func (p *RecordQueryStreamingAggregationPlan) GetResultValue() values.Value {
+	return values.NewQuantifiedObjectValueOfType(values.UniqueCorrelationIdentifier(), p.OutputRecordType())
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -142,6 +191,23 @@ func (p *RecordQueryStreamingAggregationPlan) WithQuantifiers(qs []expressions.Q
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The aggregation carries its child as a single memo edge, so the
+// relink is a quantifier swap: WithQuantifiers copies the receiver (preserving
+// the grouping keys and aggregate specs) and re-resolves GetInner through the
+// new singleton reference. This replaces physicalStreamingAggWrapper.WithChildren
+// (RFC-184 W2), whose separate snapshot plan field forced a constructor rebuild
+// gated on isLeafReplaceable. Streaming aggregation is a PRODUCER, not on the
+// ordering-delegation spine, so the emitter has already frozen (or kept live)
+// the ordering-correct inner per arm — extraction recurses through that edge
+// faithfully.
+func (p *RecordQueryStreamingAggregationPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

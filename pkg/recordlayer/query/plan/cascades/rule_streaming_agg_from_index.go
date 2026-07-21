@@ -101,11 +101,12 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		// The covering index scan is its own cascades expression now (RFC-184 W2) —
 		// covering lives on the plan (WithCovering), index metadata is threaded on.
 		idxPlan = idxPlan.WithCovering(colNames).WithIndexMetadata(colNames, candidatePKColumns(cand), cand.IsUnique())
-		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
-			idxPlan, groupingKeys, gb.GetAggregates(),
-		)
+		// The inner is this covering index scan — a self-contained PRODUCER whose
+		// grouping-key order is intrinsic to the index (not a delegator floating to
+		// a winner), so carry the LIVE shared-group edge over it (RFC-184 W2, no
+		// physicalStreamingAggWrapper).
 		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxPlan))
-		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+		call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates()))
 	}
 }
 
