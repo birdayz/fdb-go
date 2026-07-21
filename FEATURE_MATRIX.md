@@ -11,13 +11,13 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**335 scenarios · 2669 query/assertion cases** across 18 feature areas.
+**336 scenarios · 2674 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
 | Aggregates & GROUP BY | 49 | 321 |
 | Joins | 62 | 271 |
-| Subqueries (EXISTS / IN / scalar) | 43 | 290 |
+| Subqueries (EXISTS / IN / scalar) | 44 | 295 |
 | CTEs | 12 | 105 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 210 |
@@ -170,6 +170,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `derived_table_renamed` | 2 | Derived table with column renaming via AS in the inner SELECT |
 | `dml_not_exists` | 5 | DML with correlated NOT EXISTS + WHERE predicates |
 | `dml_subquery` | 9 | UPDATE and DELETE with subqueries in WHERE. |
+| `dml_subquery_residual` | 5 | Probes the DML correlated-EXISTS scan-loop rewrite when the correlation |
 | `exists` | 8 | EXISTS / NOT EXISTS subquery predicates. |
 | `exists_multi_table_inner` | 2 | EXISTS with multi-table inner query |
 | `exists_subquery_java` | 8 | EXISTS and NOT EXISTS subquery patterns. |

@@ -1,0 +1,40 @@
+# dml_subquery_residual.yaml
+#
+# Probes the DML correlated-EXISTS scan-loop rewrite when the correlation
+# CANNOT be SARG-pushed and must survive as a RESIDUAL filter on a full scan.
+# dml_subquery.yaml only correlates on keep_set's PRIMARY KEY (keep_set.k =
+# t.id), which SARG-pushes to a key scan — so the residual-filter form of the
+# correlation was never exercised. Here the correlation is on `tag`, a NON-key,
+# non-indexed column, so the EXISTS inner is Scan(keep_set) + residual filter
+# `tag = t.id`. If the DML-EXISTS rewrite drops that residual correlation (the
+# hazard the physical wrappers' snapshot currently masks by always presenting a
+# SARG form), EXISTS degrades to uncorrelated (keep_set is non-empty ⇒ TRUE for
+# every row) and the DELETE removes ALL rows instead of the two matches.
+name: dml_subquery_residual
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE keep_set (k BIGINT NOT NULL, tag BIGINT, PRIMARY KEY (k))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)
+  # tag holds the t.id to keep; k is an unrelated surrogate PK so the
+  # correlation cannot ride the primary-key scan.
+  - INSERT INTO keep_set VALUES (100, 2), (200, 4)
+tests:
+  # DELETE only the rows whose id appears as a keep_set.tag (ids 2 and 4).
+  - query: DELETE FROM t WHERE EXISTS (SELECT 1 FROM keep_set WHERE keep_set.tag = t.id)
+  - query: SELECT id FROM t ORDER BY id
+    rows:
+      - [1]
+      - [3]
+      - [5]
+
+  # UPDATE the same residual-correlated set, proving the UPDATE scan-loop path too.
+  - query: INSERT INTO t VALUES (2, 20), (4, 40)
+  - query: UPDATE t SET v = 99 WHERE EXISTS (SELECT 1 FROM keep_set WHERE keep_set.tag = t.id)
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 99]
+      - [3, 30]
+      - [4, 99]
+      - [5, 50]
