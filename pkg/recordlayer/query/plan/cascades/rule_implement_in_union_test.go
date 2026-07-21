@@ -13,7 +13,7 @@ import (
 func TestImplementInUnionRule_FiresWithExplodeAndInner(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -40,20 +40,20 @@ func TestImplementInUnionRule_FiresWithExplodeAndInner(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalInUnionWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryInUnionPlan); ok {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("should yield physicalInUnionWrapper")
+		t.Fatal("should yield *RecordQueryInUnionPlan")
 	}
 }
 
 func TestImplementInUnionRule_SkipsSingleQuantifier(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -76,7 +76,7 @@ func TestImplementInUnionRule_SkipsSingleQuantifier(t *testing.T) {
 func TestImplementInUnionRule_SkipsWithPredicates(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)

@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -58,6 +57,26 @@ func NewRecordQueryRecursiveLevelUnionPlanDistinct(
 	}
 }
 
+// NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers builds a recursive level
+// union whose two legs are LIVE memo quantifiers (the implementation rule passes
+// ForEachQuantifiers over the freshly-memoized initial/recursive winners) instead
+// of snapshots over plans. This makes the plan its own cascades expression
+// carrying its leg edges directly — the memo holds it without a physical wrapper
+// (RFC-184 W2). The temp-table aliases and distinct flag carry over verbatim.
+func NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
+	initialQ, recursiveQ expressions.Quantifier,
+	tempTableScanAlias, tempTableInsertAlias values.CorrelationIdentifier,
+	distinct bool,
+) *RecordQueryRecursiveLevelUnionPlan {
+	return &RecordQueryRecursiveLevelUnionPlan{
+		initialQ:             initialQ,
+		recursiveQ:           recursiveQ,
+		tempTableScanAlias:   tempTableScanAlias,
+		tempTableInsertAlias: tempTableInsertAlias,
+		distinct:             distinct,
+	}
+}
+
 func (p *RecordQueryRecursiveLevelUnionPlan) IsDistinct() bool { return p.distinct }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) GetInitialState() RecordQueryPlan {
@@ -108,28 +127,24 @@ func (p *RecordQueryRecursiveLevelUnionPlan) WithQuantifiers(qs []expressions.Qu
 	return &cp
 }
 
+// structuralKey lists the fields that distinguish this recursive level union in
+// the memo: the scan/insert temp-table correlation aliases and the distinct
+// flag. Children (the initial and recursive legs) are excluded. The same key
+// drives both EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryRecursiveLevelUnionPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Alias(p.tempTableScanAlias).
+		Alias(p.tempTableInsertAlias).
+		Bool(p.distinct)
+}
+
 func (p *RecordQueryRecursiveLevelUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryRecursiveLevelUnionPlan)
-	if !ok {
-		return false
-	}
-	return p.tempTableScanAlias == o.tempTableScanAlias &&
-		p.tempTableInsertAlias == o.tempTableInsertAlias &&
-		p.distinct == o.distinct
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("recursivelevel|"))
-	h.Write([]byte(p.tempTableScanAlias.Name()))
-	h.Write([]byte("|"))
-	h.Write([]byte(p.tempTableInsertAlias.Name()))
-	if p.distinct {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("recursivelevel|")
 }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) Explain() string {
@@ -158,8 +173,20 @@ func (p *RecordQueryRecursiveLevelUnionPlan) EqualsWithoutChildren(other express
 }
 
 // CanCorrelate reports that this operator anchors a correlation between its
-// children (each level binds what the next level reads), mirroring physicalRecursiveLevelUnionWrapper.
+// children (each level binds what the next level reads).
 func (p *RecordQueryRecursiveLevelUnionPlan) CanCorrelate() bool { return true }
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The plan carries its two legs as LIVE memo edges, so the relink is a
+// quantifier swap: WithQuantifiers rebinds the legs and GetChildren re-resolves
+// through the new references (RFC-184 W2, replacing
+// physicalRecursiveLevelUnionWrapper.WithChildren).
+func (p *RecordQueryRecursiveLevelUnionPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 2 {
+		return nil, fmt.Errorf("RecordQueryRecursiveLevelUnionPlan.WithChildren: expected 2 children, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
+}
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryRecursiveLevelUnionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

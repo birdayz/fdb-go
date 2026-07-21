@@ -66,7 +66,7 @@ func TestAllImplRules_SelectNoPredicatesPassThrough(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -87,7 +87,7 @@ func TestAllImplRules_SelectNoPredicatesPassThrough(t *testing.T) {
 	finals := rootRef.AllMembers()
 	foundScan := false
 	for _, f := range finals {
-		if _, ok := f.(*physicalScanWrapper); ok {
+		if _, ok := f.(*plans.RecordQueryScanPlan); ok {
 			foundScan = true
 			break
 		}
@@ -101,21 +101,21 @@ func TestAllImplRules_UnorderedUnionThreeLegs(t *testing.T) {
 	t.Parallel()
 
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	swA := &physicalScanWrapper{plan: scanA}
+	swA := scanA
 	refA := expressions.InitialOf(swA)
 	pmA := NewPlanPropertiesMap()
 	pmA.Add(swA)
 	refA.SetPlanProperties(pmA)
 
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	swB := &physicalScanWrapper{plan: scanB}
+	swB := scanB
 	refB := expressions.InitialOf(swB)
 	pmB := NewPlanPropertiesMap()
 	pmB.Add(swB)
 	refB.SetPlanProperties(pmB)
 
 	scanC := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
-	swC := &physicalScanWrapper{plan: scanC}
+	swC := scanC
 	refC := expressions.InitialOf(swC)
 	pmC := NewPlanPropertiesMap()
 	pmC.Add(swC)
@@ -135,12 +135,12 @@ func TestAllImplRules_UnorderedUnionThreeLegs(t *testing.T) {
 	finals := rootRef.AllMembers()
 	foundUnorderedUnion := false
 	for _, f := range finals {
-		if _, ok := f.(*physicalUnorderedUnionWrapper); ok {
+		if _, ok := f.(*plans.RecordQueryUnorderedUnionPlan); ok {
 			foundUnorderedUnion = true
 			break
 		}
 	}
 	if !foundUnorderedUnion {
-		t.Fatal("3-leg union should produce physicalUnorderedUnionWrapper")
+		t.Fatal("3-leg union should produce *RecordQueryUnorderedUnionPlan")
 	}
 }

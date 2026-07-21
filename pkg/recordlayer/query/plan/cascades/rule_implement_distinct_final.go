@@ -96,7 +96,7 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 			rolled := RollUpPlanPartitions([]*PlanPartition{partition})
 			for _, rp := range rolled {
 				for _, expr := range rp.GetExpressions() {
-					if w := newPhysicalDistinctWrapperFor(expr); w != nil {
+					if w := newPhysicalDistinctFor(call, expr); w != nil {
 						call.YieldFinalExpression(w)
 					}
 				}
@@ -121,7 +121,7 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 			}
 			if allDistinct {
 				call.YieldFinalExpression(m)
-			} else if w := newPhysicalDistinctWrapperFor(m); w != nil {
+			} else if w := newPhysicalDistinctFor(call, m); w != nil {
 				call.YieldFinalExpression(w)
 			}
 		}
@@ -252,32 +252,58 @@ func uniqueKeysCovered(uniqueKeyCols []string, projectedCols map[string]struct{}
 	return true
 }
 
-// newPhysicalDistinctWrapperFor builds the physical distinct wrapper for a
-// physical inner member, selecting the resume-clean STREAMING executor
-// (distinctStreamCursor) when the member's ordering already makes the whole-row
-// dedup key adjacent — equal rows contiguous — and the fresh-per-page hash-set
-// otherwise. Streaming is sound ONLY when the ordering covers ALL output
-// columns (the full DISTINCT dedup key), so a non-adjacent duplicate is never
-// dropped and an adjacent one never wrongly kept; anything less conservatively
-// keeps the hash-set (correct within a page). This is the ordering-aware fix
-// for the cross-page re-admission of TODO.md C5 — the same adjacency predicate
-// streaming aggregation uses for its grouping keys. Returns nil for a
-// non-physical member.
+// newPhysicalDistinctFor builds the physical distinct for a physical inner
+// member, selecting the resume-clean STREAMING executor (distinctStreamCursor)
+// when the member's ordering already makes the whole-row dedup key adjacent —
+// equal rows contiguous — and the fresh-per-page hash-set otherwise. Streaming
+// is sound ONLY when the ordering covers ALL output columns (the full DISTINCT
+// dedup key), so a non-adjacent duplicate is never dropped and an adjacent one
+// never wrongly kept; anything less conservatively keeps the hash-set (correct
+// within a page). This is the ordering-aware fix for the cross-page re-admission
+// of TODO.md C5 — the same adjacency predicate streaming aggregation uses for
+// its grouping keys. Returns nil for a non-physical member.
+//
+// The distinct is its own cascades expression carrying ONE child edge (RFC-184
+// W2, no physicalDistinctWrapper) — but WHICH edge is CONDITIONAL on the
+// streaming mode, a constraint-preserving disentangle:
+//
+//   - STREAMING → FREEZE the concrete inner plan in a DETACHED single-member
+//     final reference (MemoizeFinalExpression). The streaming executor is sound
+//     only over the exact ordering this flag was computed for; a live edge that
+//     floated to a cost-tied but differently-ordered sibling would run the
+//     streaming dedup over unordered input and LEAK a duplicate. The frozen edge
+//     makes planFromQuantifier resolve that exact member, never a group winner.
+//   - PLAIN (hash) → carry the LIVE edge the wrapper's innerQuant presented
+//     (ForEachQuantifier over InitialOf(member)). A hash distinct dedups over
+//     ANY inner, so freezing buys nothing and instead strands a pre-push
+//     snapshot once a push rule (push_distinct_below_filter / _through_fetch)
+//     re-explores the leg — the parent would then cost an unreachable edge.
+//     The live exploratory edge resolves the member's plan (== the concrete
+//     inner) exactly as the wrapper did, byte-identically.
 //
 // A follow-up will REQUEST the dedup-key ordering (inserting an InMemorySort
 // when no index provides it) so the unordered `SELECT DISTINCT col` — the
 // common shape — also streams; that step must not disturb the DISTINCT +
 // ORDER-BY-on-a-non-projected-column dedup-by-projected-only semantics, so it
 // is deliberately separated from this ordering-detection step.
-func newPhysicalDistinctWrapperFor(member expressions.RelationalExpression) expressions.RelationalExpression {
+func newPhysicalDistinctFor(call *ImplementationRuleCall, member expressions.RelationalExpression) expressions.RelationalExpression {
 	ph, ok := member.(physicalPlanExpression)
 	if !ok {
 		return nil
 	}
-	distPlan := plans.NewRecordQueryDistinctPlan(ph.GetRecordQueryPlan())
-	distPlan.Streaming = distinctStreamingEligible(member, ph.GetRecordQueryPlan())
+	concreteInner := ph.GetRecordQueryPlan()
+	streaming := distinctStreamingEligible(member, concreteInner)
+	if streaming {
+		// Freeze the ordering-critical inner: a detached single-member final
+		// reference over the concrete plan whose ordering this flag was measured
+		// against, so it can never float to a differently-ordered sibling.
+		innerQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(concreteInner))
+		return plans.NewRecordQueryDistinctPlanFromQuantifier(innerQ, true)
+	}
+	// Plain hash distinct: carry the live exploratory edge (what the wrapper's
+	// innerQuant presented) so a later push-rule canonicalization stays reachable.
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(member))
-	return NewPhysicalDistinctWrapper(distPlan, innerQ)
+	return plans.NewRecordQueryDistinctPlanFromQuantifier(innerQ, false)
 }
 
 // distinctStreamingEligible reports whether a distinct over innerPlan — whose

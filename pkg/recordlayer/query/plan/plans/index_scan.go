@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -61,6 +60,15 @@ type RecordQueryIndexPlan struct {
 	// unique reports whether the index is declared UNIQUE — an all-equality
 	// scan over a unique index's full key yields at most one row.
 	unique bool
+	// resultValue is the stable per-instance QuantifiedObjectValue standing for
+	// the rows this leaf emits — minted once at construction, returned by
+	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
+	// instance). A bare leaf that stands as its own Cascades expression must
+	// present a consistent row identity across repeated interrogations, the role
+	// physicalIndexScanWrapper's fresh-per-call GetResultValue could not (RFC-184
+	// W2). Carried through every With* struct-copy. nil for struct-literal test
+	// plans that bypass the constructor — GetResultValue falls back to PlanExprBase.
+	resultValue values.Value
 }
 
 // NewRecordQueryIndexPlan constructs an index scan plan.
@@ -82,7 +90,19 @@ func NewRecordQueryIndexPlan(
 		recordTypes:     dedupSortedStrings(recordTypes),
 		flowedType:      flowedType,
 		reverse:         reverse,
+		resultValue:     values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
 	}
+}
+
+// GetResultValue returns the index scan's STABLE per-instance result value — the
+// single correlation identity a bare index scan carries as its own memo
+// expression (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
+// struct-literal test plans that bypass the constructor (resultValue is nil).
+func (p *RecordQueryIndexPlan) GetResultValue() values.Value {
+	if p.resultValue == nil {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.resultValue
 }
 
 // GetIndexName returns the index name.
@@ -112,6 +132,7 @@ func (p *RecordQueryIndexPlan) WithScanComparisons(comps []*predicates.Compariso
 		columnNames:     p.columnNames,
 		pkColumnNames:   p.pkColumnNames,
 		unique:          p.unique,
+		resultValue:     p.resultValue,
 	}
 }
 
@@ -196,54 +217,31 @@ func (p *RecordQueryIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 // materialize the wrong-comparand scan. Mirrors Java's
 // RecordQueryIndexPlan.equalsWithoutChildren, which compares
 // Objects.equals(scanParameters, that.scanParameters) — full comparand equality.
-func (p *RecordQueryIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
-	o, ok := other.(*RecordQueryIndexPlan)
-	if !ok {
-		return false
-	}
-	if p.indexName != o.indexName || p.reverse != o.reverse || p.strictlySorted != o.strictlySorted || p.covering != o.covering {
-		return false
-	}
-	if !typeEquals(p.flowedType, o.flowedType) {
-		return false
-	}
-	if len(p.recordTypes) != len(o.recordTypes) {
-		return false
-	}
-	for i := range p.recordTypes {
-		if p.recordTypes[i] != o.recordTypes[i] {
-			return false
-		}
-	}
-	return scanComparisonRangesEqual(p.scanComparisons, o.scanComparisons)
+// structuralKey folds the index scan's identity: index name, SARG comparison
+// ranges (shape AND comparands — two different-comparand scans must stay in
+// distinct References, else the memo materializes the wrong-comparand scan,
+// mirroring Java's full scanParameters equality), the reverse / strictlySorted /
+// covering flags, the record-type set, and the flowed type (equals-only). The
+// stable per-instance resultValue is excluded (RFC-184 W2). The same key drives
+// EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryIndexPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Str(p.indexName).
+		ScanComps(p.scanComparisons).
+		Bool(p.reverse).
+		Bool(p.strictlySorted).
+		Bool(p.covering).
+		Strs(p.recordTypes).
+		Type(p.flowedType)
 }
 
-// HashCodeWithoutChildren mixes index name + scan comparisons (shape AND
-// comparands) + reverse flag. Folding the comparands (not just the range
-// shape) is the hash analog of EqualsWithoutChildren: two different-comparand
-// scans hash apart, so the memo leaf dedup keeps them in distinct References.
+func (p *RecordQueryIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
+	o, ok := other.(*RecordQueryIndexPlan)
+	return ok && p.structuralKey().Equal(o.structuralKey())
+}
+
 func (p *RecordQueryIndexPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("indexplan|"))
-	h.Write([]byte(p.indexName))
-	h.Write([]byte{0})
-	writeScanComparisonRangesHash(h, p.scanComparisons)
-	if p.reverse {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	if p.strictlySorted {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	if p.covering {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("indexplan|")
 }
 
 // Explain renders a one-line label.

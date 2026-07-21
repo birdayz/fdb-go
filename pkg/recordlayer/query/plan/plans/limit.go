@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -37,6 +36,19 @@ func NewRecordQueryLimitPlan(inner RecordQueryPlan, limit, offset int64) *Record
 // is the no-cap sentinel (-1); only limitValue is consulted.
 func NewRecordQueryLimitPlanWithValue(inner RecordQueryPlan, limitValue values.Value, offset int64) *RecordQueryLimitPlan {
 	return &RecordQueryLimitPlan{innerQ: QuantifierOverPlan(inner), limit: -1, offset: offset, limitValue: limitValue}
+}
+
+// NewRecordQueryLimitPlanFromQuantifier builds a LIMIT whose child is a LIVE
+// memo quantifier (the implementation rule passes
+// ForEachQuantifier(MemoizeExpression(winner))) instead of a snapshot over a
+// single plan. This makes the plan its own cascades expression carrying its
+// child edge directly: the memo holds it without a physical wrapper, and
+// GetQuantifiers / OrderingSourceRef / GetInner all resolve through the one live
+// edge. limitValue is the optional runtime cap (nil for a static literal LIMIT);
+// when non-nil the caller passes limit=-1, the no-cap sentinel, exactly as
+// NewRecordQueryLimitPlanWithValue does.
+func NewRecordQueryLimitPlanFromQuantifier(innerQ expressions.Quantifier, limit, offset int64, limitValue values.Value) *RecordQueryLimitPlan {
+	return &RecordQueryLimitPlan{innerQ: innerQ, limit: limit, offset: offset, limitValue: limitValue}
 }
 
 // GetLimitValue returns the optional runtime row-cap Value (nil for a static
@@ -82,38 +94,28 @@ func (p *RecordQueryLimitPlan) GetInner() RecordQueryPlan { return planFromQuant
 func (p *RecordQueryLimitPlan) GetLimit() int64  { return p.limit }
 func (p *RecordQueryLimitPlan) GetOffset() int64 { return p.offset }
 
+// structuralKey lists the fields that distinguish this LIMIT in the memo: the
+// static cap, the offset, and the optional runtime cap Value. Children are
+// excluded (structural identity is without-children). The same key drives both
+// EqualsPlanWithoutChildren and HashCodeWithoutChildren, so the two can never
+// disagree on which fields matter. This is a behaviour-preserving refactor: the
+// runtime cap keeps its original ValuesStructurallyEqual primitive (StructVal)
+// and its SemanticHashCode hash, exactly as the hand-rolled pair had them.
+func (p *RecordQueryLimitPlan) structuralKey() *structuralKey {
+	k := newStructuralKey().Int64(p.limit).Int64(p.offset)
+	if p.limitValue != nil {
+		k.StructVal(p.limitValue)
+	}
+	return k
+}
+
 func (p *RecordQueryLimitPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryLimitPlan)
-	if !ok {
-		return false
-	}
-	if (p.limitValue == nil) != (o.limitValue == nil) {
-		return false
-	}
-	if p.limitValue != nil && !values.ValuesStructurallyEqual(p.limitValue, o.limitValue) {
-		return false
-	}
-	return p.limit == o.limit && p.offset == o.offset
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryLimitPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("limit|"))
-	b := [16]byte{}
-	for i := 0; i < 8; i++ {
-		b[i] = byte(p.limit >> (i * 8))
-		b[8+i] = byte(p.offset >> (i * 8))
-	}
-	h.Write(b[:])
-	if p.limitValue != nil {
-		var v [8]byte
-		hv := values.SemanticHashCode(p.limitValue)
-		for i := 0; i < 8; i++ {
-			v[i] = byte(hv >> (i * 8))
-		}
-		h.Write(v[:])
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("limit|")
 }
 
 func (p *RecordQueryLimitPlan) Explain() string {
@@ -148,6 +150,21 @@ func (p *RecordQueryLimitPlan) WithQuantifiers(qs []expressions.Quantifier) expr
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface, also consulted by pinOrderedSpine to bake the ordering-delegation
+// spine). Because the LIMIT carries its child as a single LIVE memo edge, the
+// relink is exactly a quantifier swap: WithQuantifiers preserves the static and
+// runtime cap (limit / offset / limitValue), and GetInner re-resolves the plan
+// through the new singleton reference. This replaces
+// physicalLimitWrapper.WithChildren, whose separate snapshot `plan` field forced
+// a WithInner rebuild to keep the cap — a single child edge needs none.
+func (p *RecordQueryLimitPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryLimitPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

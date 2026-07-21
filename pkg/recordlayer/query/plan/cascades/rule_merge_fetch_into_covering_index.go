@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // MergeFetchIntoCoveringIndexRule eliminates a
@@ -32,16 +33,16 @@ type MergeFetchIntoCoveringIndexRule struct {
 
 func NewMergeFetchIntoCoveringIndexRule() *MergeFetchIntoCoveringIndexRule {
 	return &MergeFetchIntoCoveringIndexRule{
-		matcher: NewExpressionMatcher[*physicalFetchFromPartialRecordWrapper]("phys_fetch_over_index"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryFetchFromPartialRecordPlan]("phys_fetch_over_index"),
 	}
 }
 
 func (r *MergeFetchIntoCoveringIndexRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *MergeFetchIntoCoveringIndexRule) OnMatch(call *ImplementationRuleCall) {
-	fetchW := matching.Get[*physicalFetchFromPartialRecordWrapper](call.Bindings, r.matcher)
+	fetchW := matching.Get[*plans.RecordQueryFetchFromPartialRecordPlan](call.Bindings, r.matcher)
 
-	innerRef := fetchW.innerQuant.GetRangesOver()
+	innerRef := fetchW.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return
 	}
@@ -52,20 +53,22 @@ func (r *MergeFetchIntoCoveringIndexRule) OnMatch(call *ImplementationRuleCall) 
 	// index provides all needed columns. In Go, we check the index
 	// scan wrapper's `covering` flag (set by the data access pipeline
 	// when the index is known to cover all referenced fields).
-	var indexW *physicalIndexScanWrapper
+	// The index scan is its own cascades expression now (RFC-184 W2) — carrying its
+	// covering flag on the plan, no physicalIndexScanWrapper.
+	var indexPlan *plans.RecordQueryIndexPlan
 	for _, m := range innerRef.AllMembers() {
-		if iw, ok := m.(*physicalIndexScanWrapper); ok {
-			if iw.covering {
-				indexW = iw
+		if ip, ok := m.(*plans.RecordQueryIndexPlan); ok {
+			if ip.IsCovering() {
+				indexPlan = ip
 				break
 			}
 		}
 	}
-	if indexW == nil {
+	if indexPlan == nil {
 		return
 	}
 
-	call.Yield(indexW)
+	call.Yield(indexPlan)
 }
 
 var _ ImplementationRule = (*MergeFetchIntoCoveringIndexRule)(nil)

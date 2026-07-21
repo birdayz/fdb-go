@@ -21,8 +21,8 @@ func rangeBound(t *testing.T) *predicates.ComparisonRange {
 }
 
 // TestBoundSelectivity is the SINGLE numeric pin for the equality-vs-range scan
-// bound cost, shared by all three scan-cost sites (physicalScanWrapper,
-// physicalIndexScanWrapper, scanLikeCost) via boundSelectivity. It catches a
+// bound cost, shared by the scan-cost sites (the bare RecordQueryScanPlan /
+// RecordQueryIndexPlan expressions, scanLikeCost) via boundSelectivity. It catches a
 // per-site revert to the wrong constant that the constant-ordering and plan tests
 // might not: each equality bound MUST contribute EqualityBoundSelectivity and each
 // range bound RangeSelectivity.

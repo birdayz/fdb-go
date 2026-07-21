@@ -158,16 +158,18 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 			referenceIsCorrelatedTo(rightRef, quants[0].GetAlias()) {
 			return
 		}
-		joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
-			leftPlan, rightPlan,
+		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
+		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+		// The materialized NLJ is its own cascades expression carrying its two leg
+		// edges directly (RFC-184 W2, no physicalNestedLoopJoinWrapper) — both legs
+		// are the live shared-group edges over the memoized leg exprs.
+		call.Yield(plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+			leftQ, rightQ,
 			sel.GetPredicates(),
 			joinType,
 			leftAlias, rightAlias,
 			sel.GetResultValue(),
-		)
-		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
-		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
-		call.Yield(newPhysicalNestedLoopJoinWrapper(joinPlan, leftQ, rightQ))
+		))
 		return
 	}
 
@@ -232,16 +234,18 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		if sharesExcludedSibling {
 			return
 		}
-		joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
-			leftPlan, rightPlan,
+		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
+		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+		// The materialized NLJ is its own cascades expression carrying its two leg
+		// edges directly (RFC-184 W2, no physicalNestedLoopJoinWrapper) — both legs
+		// are the live shared-group edges over the memoized leg exprs.
+		call.Yield(plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+			leftQ, rightQ,
 			sel.GetPredicates(),
 			joinType,
 			leftAlias, rightAlias,
 			sel.GetResultValue(),
-		)
-		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
-		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
-		call.Yield(newPhysicalNestedLoopJoinWrapper(joinPlan, leftQ, rightQ))
+		))
 	}
 
 	// Correlated FlatMap: for PartitionBinarySelectRule / RewriteOuterJoinRule output
@@ -373,7 +377,7 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	innerNullOnEmpty bool,
 	innerStrictSingle bool,
 ) {
-	flatMapPlan, outerQ, innerQ, ok := buildCorrelatedFlatMapPlan(
+	flatMapPlan, _, _, ok := buildCorrelatedFlatMapPlan(
 		call,
 		flattenAndPredicates(sel.GetPredicates()), sel.GetResultValue(),
 		outerPlan, innerPlan, outerCorr, innerCorr, outerExpr, innerExpr,
@@ -382,7 +386,9 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	if !ok {
 		return
 	}
-	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, outerQ, innerQ))
+	// The FlatMap plan already carries its outer/inner memo quantifiers (RFC-184
+	// W2, no physicalFlatMapWrapper) — yield it directly.
+	call.Yield(flatMapPlan)
 }
 
 // buildCorrelatedFlatMapPlan constructs the correlated-FlatMap join plan —
@@ -557,12 +563,14 @@ func buildCorrelatedFlatMapPlan(
 	var innerWrapped plans.RecordQueryPlan = innerPlan
 	if innerStrictSingle {
 		if len(joinPreds) > 0 {
-			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-				innerWrapped, joinPreds, innerCorr,
+			fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+				call.MemoizeFinalExpression(innerWrapped))
+			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+				fpInnerQ, joinPreds, innerCorr,
 			)
 			innerWrapped = filterPlan
 			innerQ = expressions.NamedForEachQuantifier(innerCorr,
-				call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(filterPlan, innerQ)))
+				call.MemoizeFinalExpression(filterPlan))
 		}
 		// Correlated scalar subquery, no user LIMIT: enforce SQL at-most-one-row.
 		// A strict FirstOrDefault collapses the inner to one row per outer (NULL
@@ -571,48 +579,80 @@ func buildCorrelatedFlatMapPlan(
 		// the FlatMap re-executes the inner per outer row, the check runs fresh per
 		// outer row. The FirstOrDefault already supplies the empty→NULL row, so this
 		// fully handles the strict scalar case without any leftOuter mechanism.
-		fodPlan := plans.NewRecordQueryFirstOrDefaultPlanStrict(
-			innerWrapped, values.NewNullValue(values.UnknownType),
+		// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the
+		// concrete correlated inner (constraint-preserving disentangle,
+		// RFC-184 W2). The frozen edge keeps innerCorr — so GetResultValue and
+		// derivations are unchanged — but ranges over a PRIVATE single-member
+		// reference over innerWrapped, NOT the shared exploratory group. That is
+		// the whole point on the correlated (DML DELETE/UPDATE-WHERE-EXISTS) path:
+		// planFromQuantifier resolves the SARG/correlated member, never the bare
+		// group winner the prior generic collapse floated to (which dropped the
+		// filter and deleted all rows). Extraction recurses through the frozen
+		// snapshot chain and reconstructs the correlated inner faithfully.
+		//
+		// The live-edge chain below the fod (base edge + belowFOD filter edge) is
+		// still built, so every memo side effect is unchanged from the wrapper
+		// path; the fod merely ignores its final edge for RESOLUTION (freezing
+		// innerWrapped instead) while still consuming its alias, which equals
+		// innerCorr.
+		fodInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(innerWrapped))
+		fodPlan := plans.NewRecordQueryFirstOrDefaultPlanStrictFromQuantifier(
+			fodInnerQ, values.NewNullValue(values.UnknownType),
 		)
 		innerWrapped = fodPlan
 		innerQ = expressions.NamedForEachQuantifier(innerCorr,
-			call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, innerQ)))
+			call.MemoizeFinalExpression(fodPlan))
 	} else if nullOnEmpty {
-		doePlan := plans.NewRecordQueryDefaultOnEmptyPlan(
-			innerWrapped, values.NewNullValue(values.UnknownType),
+		// The DefaultOnEmpty is its own cascades expression carrying the live innerQ
+		// edge (RFC-184 W2) — no physicalDefaultOnEmptyWrapper.
+		doePlan := plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(
+			innerQ, values.NewNullValue(values.UnknownType),
 		)
 		innerWrapped = doePlan
 		innerQ = expressions.NamedForEachQuantifier(innerCorr,
-			call.MemoizeFinalExpression(NewPhysicalDefaultOnEmptyWrapper(doePlan, innerQ)))
+			call.MemoizeFinalExpression(doePlan))
 		if len(joinPreds) > 0 {
-			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-				innerWrapped, joinPreds, innerCorr,
+			fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+				call.MemoizeFinalExpression(innerWrapped))
+			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+				fpInnerQ, joinPreds, innerCorr,
 			)
 			innerWrapped = filterPlan
 			innerQ = expressions.NamedForEachQuantifier(innerCorr,
-				call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(filterPlan, innerQ)))
+				call.MemoizeFinalExpression(filterPlan))
 		}
 	} else if len(joinPreds) > 0 {
-		filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-			innerWrapped, joinPreds, innerCorr,
+		fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(innerWrapped))
+		filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+			fpInnerQ, joinPreds, innerCorr,
 		)
 		innerWrapped = filterPlan
 		innerQ = expressions.NamedForEachQuantifier(innerCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(filterPlan, innerQ)))
+			call.MemoizeFinalExpression(filterPlan))
 	}
 
-	var outerWrapped plans.RecordQueryPlan = outerPlan
 	if len(outerPreds) > 0 {
-		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-			outerPlan, outerPreds, outerCorr,
+		ofInnerQ := expressions.NamedForEachQuantifier(outerQ.GetAlias(),
+			call.MemoizeFinalExpression(outerPlan))
+		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+			ofInnerQ, outerPreds, outerCorr,
 		)
-		outerWrapped = outerFilter
 		outerQ = expressions.NamedForEachQuantifier(outerCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(outerFilter, outerQ)))
+			call.MemoizeFinalExpression(outerFilter))
 	}
 
-	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-		outerWrapped, innerWrapped,
+	// The correlated FlatMap is its own cascades expression carrying its two leg
+	// edges directly (RFC-184 W2, no physicalFlatMapWrapper). It ranges over the
+	// SAME memo quantifiers the compensating lockstep chains above built — outerQ
+	// over the (optionally filtered) outer, innerQ over the DefaultOnEmpty/
+	// FirstOrDefault/filter inner — so the plan and its quantifiers can no longer
+	// diverge. The correlated inner leg is a frozen final singleton (the fod/filter
+	// disentangle), so extraction resolves it faithfully and the correlation the
+	// FlatMap binds is preserved.
+	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
+		outerQ, innerQ,
 		outerCorr, innerCorr,
 		resultValue, false,
 	)
@@ -878,16 +918,25 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 
 	var belowFOD plans.RecordQueryPlan = innerPlan
 	if len(joinPreds) > 0 {
-		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(innerPlan, joinPreds, innerCorr)
+		bfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(innerPlan))
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(bfInnerQ, joinPreds, innerCorr)
 		belowFOD = belowFODFilter
 		innerQ = expressions.NewPhysicalQuantifier(
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
+			call.MemoizeFinalExpression(belowFODFilter))
 	}
-	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+	// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the concrete
+	// correlated inner belowFOD (constraint-preserving disentangle,
+	// RFC-184 W2). The frozen edge reuses innerQ's (fresh) alias so GetResultValue
+	// is unchanged, but ranges over a PRIVATE single-member reference over belowFOD,
+	// NOT the shared exploratory group — so planFromQuantifier resolves the
+	// SARG/correlated member, never the bare group winner.
+	fodInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+		call.MemoizeFinalExpression(belowFOD))
+	fodPlan := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(fodInnerQ, values.NewNullValue(values.UnknownType))
 	innerQ = expressions.NewPhysicalQuantifier(
-		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, innerQ)))
+		call.MemoizeFinalExpression(fodPlan))
 
-	var flatMapInner plans.RecordQueryPlan = fodPlan
 	if hasExistsFilter {
 		// EXISTS ⇒ QOV(inner) IS NOT NULL drops empty-subquery (NULL) rows;
 		// NOT-EXISTS ⇒ QOV(inner) IS NULL drops non-empty rows. Either way the
@@ -897,10 +946,11 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(innerCorr), cmp)
-		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, innerCorr)
-		flatMapInner = residualFilter
+		rfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(fodPlan))
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(rfInnerQ, []predicates.QueryPredicate{residual}, innerCorr)
 		innerQ = expressions.NewPhysicalQuantifier(
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, innerQ)))
+			call.MemoizeFinalExpression(residualFilter))
 	}
 
 	// outerOnlyPreds deliberately keep the buried-leg references the
@@ -914,40 +964,40 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	outerQ := expressions.NamedPhysicalQuantifier(
 		quants[0].GetAlias(), call.MemoizeExpression(outerExpr))
 
-	var flatMapOuter plans.RecordQueryPlan = outerPlan
 	if len(outerOnlyPreds) > 0 {
-		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerOnlyPreds, outerCorr)
-		flatMapOuter = outerFilter
+		ofInnerQ := expressions.NamedPhysicalQuantifier(outerQ.GetAlias(),
+			call.MemoizeFinalExpression(outerPlan))
+		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(ofInnerQ, outerOnlyPreds, outerCorr)
 		outerQ = expressions.NewPhysicalQuantifier(
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(outerFilter, outerQ)))
+			call.MemoizeFinalExpression(outerFilter))
 	}
 
-	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-		flatMapOuter, flatMapInner,
+	// The pure-map existential FlatMap is its own cascades expression carrying
+	// its outer/inner memo edges directly (RFC-184 W2, no physicalFlatMapWrapper).
+	// The compensating operators (below-FOD filter, FirstOrDefault, residual
+	// existential filter, outer-only filter) already advanced innerQ/outerQ in
+	// lockstep with what executes, so the plan and its quantifiers no longer
+	// diverge. The correlated inner is a frozen final singleton, so extraction
+	// resolves it faithfully and the EXISTS correlation is preserved.
+	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
+		outerQ, innerQ,
 		outerCorr, innerCorr,
 		resultValue, false,
 	)
 
-	// The quantifiers now range over the SAME compensated expressions the plan
-	// holds — that is what the lockstep chains above buy.
-	//
-	// They did not before. This rule built three compensating filters locally
-	// (the below-FOD join-pred filter, the above-FOD existential residual, and
-	// the outer-only filter) and memoized NONE of them, while the quantifiers
-	// ranged over the raw outer and inner. So the plan pointer held what
-	// EXECUTES and the quantifier held what the memo COSTS, and they were
-	// different expressions — 472 semantically-divergent edges across the
-	// corpus, FlatMap alone accounting for 392.
-	//
-	// Two consequences. The memo costed an expression that is not the one that
-	// runs, under-pricing these joins by the selectivity of the filters it
-	// could not see. And it made the wrapper layer undeletable: collapsing to
-	// the quantifier would silently drop a DefaultOnEmpty (wrong outer-join
-	// NULLs) and the residuals (wrong rows) — why RFC-183 P5's terminal step
-	// refused twice.
+	// The quantifiers range over the SAME compensated expressions the plan holds
+	// — that is what the lockstep chains above buy, and it is what makes this
+	// collapse safe. The rule builds three compensating operators (the below-FOD
+	// join-pred filter, the above-FOD existential residual, and the outer-only
+	// filter) and memoizes each, advancing outerQ/innerQ in lockstep, so the plan
+	// pointer and the quantifiers can no longer name different expressions (the
+	// 472 semantically-divergent edges that once forced the wrapper). Collapsing
+	// the FlatMap onto its quantifiers therefore keeps the DefaultOnEmpty (outer-
+	// join NULLs) and the residuals (correct rows) — the drop RFC-183 P5's
+	// terminal step feared cannot happen once the edges coincide.
 	//
 	// rule_implement_simple_select.go:97-117 always had this shape.
-	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, outerQ, innerQ))
+	call.Yield(flatMapPlan)
 }
 
 // remapExistentialResultValue rebases an existential SelectExpression's result
@@ -2153,13 +2203,12 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// materialized NLJ; a null-on-empty or sibling-correlated leg takes the
 	// correlated FlatMap (oriented above), whose DefaultOnEmpty wrap and
 	// per-outer-row re-execution carry the semantics the NLJ cannot.
-	// step1Expr is what the step-2 wrapper's outer quantifier ranges over.
-	var innerJoinPlan plans.RecordQueryPlan
+	// step1Expr is what the step-2 FlatMap's outer quantifier ranges over.
 	step1Expr := leftExpr
 	if correlatedStep1 {
 		leftCorrID := values.NamedCorrelationIdentifier(leftAlias)
 		rightCorrID := values.NamedCorrelationIdentifier(rightAlias)
-		fmPlan, leftQ, rightQ, ok := buildCorrelatedFlatMapPlan(
+		fmPlan, _, _, ok := buildCorrelatedFlatMapPlan(
 			call,
 			joinPreds, sel.GetResultValue(),
 			leftPlan, rightPlan, leftCorrID, rightCorrID, leftExpr, rightExpr,
@@ -2168,31 +2217,31 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		if !ok {
 			return
 		}
-		innerJoinPlan = fmPlan
-		step1Expr = newPhysicalFlatMapWrapper(fmPlan, leftQ, rightQ)
+		// The FlatMap plan already carries its two leg memo quantifiers (RFC-184 W2,
+		// no physicalFlatMapWrapper) — it IS the step-1 expression the step-2 outer
+		// quantifier ranges over.
+		step1Expr = fmPlan
 	} else {
-		nljPlan := plans.NewRecordQueryNestedLoopJoinPlan(
-			leftPlan, rightPlan,
+		// step1Expr was `leftExpr` — the LEFT LEG ALONE — while the plan held the
+		// whole join, so the step-2 FlatMap's outer child was not reachable from
+		// its quantifier's group (RFC-183 §14). The materialized NLJ is its own
+		// cascades expression carrying BOTH legs' memoized quantifiers directly
+		// (RFC-184 W2, no physicalNestedLoopJoinWrapper), so the join IS reachable
+		// and the plan and its quantifiers can no longer diverge; the
+		// correlatedStep1 branch above does the same with its FlatMap. Both legs
+		// keep their own interned groups, so this only ADDS reachability — no group
+		// is narrowed.
+		nljPlan := plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+			expressions.NamedForEachQuantifier(
+				values.NamedCorrelationIdentifier(leftAlias), call.MemoizeExpression(leftExpr)),
+			expressions.NamedForEachQuantifier(
+				values.NamedCorrelationIdentifier(rightAlias), call.MemoizeExpression(rightExpr)),
 			joinPreds,
 			joinType,
 			leftAlias, rightAlias,
 			step1RV,
 		)
-		innerJoinPlan = nljPlan
-		// step1Expr was `leftExpr` — the LEFT LEG ALONE — while the plan holds the
-		// whole join, so the step-2 FlatMap's outer child was not reachable from
-		// its quantifier's group (RFC-183 §14). Range it over a physical NLJ
-		// wrapper built on BOTH legs' memoized quantifiers instead; the
-		// correlatedStep1 branch above already does exactly this with its FlatMap
-		// wrapper. Both legs keep their own interned groups, so this only ADDS
-		// reachability — no group is narrowed.
-		step1Expr = newPhysicalNestedLoopJoinWrapper(
-			nljPlan,
-			expressions.NamedForEachQuantifier(
-				values.NamedCorrelationIdentifier(leftAlias), call.MemoizeExpression(leftExpr)),
-			expressions.NamedForEachQuantifier(
-				values.NamedCorrelationIdentifier(rightAlias), call.MemoizeExpression(rightExpr)),
-		)
+		step1Expr = nljPlan
 	}
 
 	// The inner-join's merged row is bound under a FRESH outer correlation in
@@ -2315,26 +2364,38 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 
 	var belowFOD plans.RecordQueryPlan = existPlan
 	if len(existPreds) > 0 {
-		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(existPlan, existPreds, existCorr)
+		bfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(existPlan))
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(bfInnerQ, existPreds, existCorr)
 		belowFOD = belowFODFilter
 		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
+			call.MemoizeFinalExpression(belowFODFilter))
 	}
-	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+	// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the concrete
+	// correlated inner belowFOD (constraint-preserving disentangle,
+	// RFC-184 W2): the frozen edge keeps existCorr but ranges over a PRIVATE
+	// single-member reference over belowFOD, NOT the shared exploratory group — so
+	// planFromQuantifier resolves the SARG/correlated member, never the bare group
+	// winner the prior generic collapse floated to (which dropped correlated DML rows).
+	// innerQ.GetAlias() (== existCorr) keeps the live-edge chain below the fod
+	// consumed, so every memo side effect is unchanged from the wrapper path.
+	fodInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+		call.MemoizeFinalExpression(belowFOD))
+	fodPlan := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(fodInnerQ, values.NewNullValue(values.UnknownType))
 	innerQ = expressions.NamedPhysicalQuantifier(existCorr,
-		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, innerQ)))
+		call.MemoizeFinalExpression(fodPlan))
 
-	var flatMapInner plans.RecordQueryPlan = fodPlan
 	if hasExistsFilter {
 		cmp := predicates.Comparison{Type: predicates.ComparisonIsNotNull}
 		if negated {
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(existCorr), cmp)
-		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, existCorr)
-		flatMapInner = residualFilter
+		rfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(fodPlan))
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(rfInnerQ, []predicates.QueryPredicate{residual}, existCorr)
 		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, innerQ)))
+			call.MemoizeFinalExpression(residualFilter))
 	}
 
 	// The FlatMap's result value.
@@ -2393,29 +2454,25 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		flatMapResult = projected
 	}
 
-	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-		innerJoinPlan, flatMapInner,
-		mergedOuterCorr, existCorr,
-		flatMapResult, false,
-	)
-
 	// ALIAS CONTRACT — PRESERVE the FlatMap plan's REAL outer/inner aliases
 	// (mergedOuterCorr/existCorr), never fresh ones: same EXISTS correlation-leak
 	// class as buildExistsFlatMap — a fresh outer alias fails to subtract the FOD
 	// inner's correlation to mergedOuterCorr, leaking it upward.
 	//
-	// The outer quantifier ranges over step1Expr. In the correlatedStep1 branch
-	// that IS a wrapper over innerJoinPlan, so the edge already resolves. In the
-	// materialized-NLJ branch it was `leftExpr` — ONE LEG of a two-leg join — so
-	// the plan held the whole NestedLoopJoin while the group could only produce
-	// its left input. Wrapping the NLJ over both legs' memoized quantifiers makes
-	// the join reachable without narrowing either leg's group.
+	// The outer quantifier ranges over step1Expr (the step-1 inner join, its own
+	// cascades expression since RFC-184 W2). In the correlatedStep1 branch that IS
+	// the FlatMap; in the materialized-NLJ branch it is the NLJ built over both
+	// legs' memoized quantifiers — so the join is reachable and resolves. The
+	// FlatMap is its own cascades expression carrying its outer edge (over
+	// step1Expr) and its inner edge (innerQ) directly (no physicalFlatMapWrapper).
 	leftMemoRef := call.MemoizeExpression(step1Expr)
-	call.Yield(newPhysicalFlatMapWrapper(
-		flatMapPlan,
+	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
 		innerQ,
-	))
+		mergedOuterCorr, existCorr,
+		flatMapResult, false,
+	)
+	call.Yield(flatMapPlan)
 }
 
 // existInnerIsScanSafe reports whether an N-way EXISTS inner plan is a single
@@ -2722,26 +2779,38 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 
 	var belowFOD plans.RecordQueryPlan = existPlan
 	if len(existPreds) > 0 {
-		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(existPlan, existPreds, existCorr)
+		bfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(existPlan))
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(bfInnerQ, existPreds, existCorr)
 		belowFOD = belowFODFilter
 		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, innerQ)))
+			call.MemoizeFinalExpression(belowFODFilter))
 	}
-	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+	// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the concrete
+	// correlated inner belowFOD (constraint-preserving disentangle,
+	// RFC-184 W2): the frozen edge keeps existCorr but ranges over a PRIVATE
+	// single-member reference over belowFOD, NOT the shared exploratory group — so
+	// planFromQuantifier resolves the SARG/correlated member, never the bare group
+	// winner the prior generic collapse floated to (which dropped correlated DML rows).
+	// innerQ.GetAlias() (== existCorr) keeps the live-edge chain below the fod
+	// consumed, so every memo side effect is unchanged from the wrapper path.
+	fodInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+		call.MemoizeFinalExpression(belowFOD))
+	fodPlan := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(fodInnerQ, values.NewNullValue(values.UnknownType))
 	innerQ = expressions.NamedPhysicalQuantifier(existCorr,
-		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, innerQ)))
+		call.MemoizeFinalExpression(fodPlan))
 
-	var flatMapInner plans.RecordQueryPlan = fodPlan
 	if hasExistsFilter {
 		cmp := predicates.Comparison{Type: predicates.ComparisonIsNotNull}
 		if negated {
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(existCorr), cmp)
-		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, existCorr)
-		flatMapInner = residualFilter
+		rfInnerQ := expressions.NamedPhysicalQuantifier(innerQ.GetAlias(),
+			call.MemoizeFinalExpression(fodPlan))
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(rfInnerQ, []predicates.QueryPredicate{residual}, existCorr)
 		innerQ = expressions.NamedPhysicalQuantifier(existCorr,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, innerQ)))
+			call.MemoizeFinalExpression(residualFilter))
 	}
 
 	// The FlatMap result value: for a PROJECTED-EXISTS fold (the RV references
@@ -2757,12 +2826,6 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		}
 		flatMapResult = projected
 	}
-
-	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-		step1Plan, flatMapInner,
-		mergedOuterCorr, existCorr,
-		flatMapResult, false,
-	)
 
 	// Counts firings so TestNWayProjectedExists can assert the arm actually ran
 	// before checking reachability — see that test for why the global is safe
@@ -2839,11 +2902,16 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 	// legs make; it is the right one only because the alternative was costing
 	// a three-way join as a single table scan.
 	leftMemoRef := call.MemoizeFinalExpression(&scanPlanExpression{plan: step1Plan})
-	call.Yield(newPhysicalFlatMapWrapper(
-		flatMapPlan,
+	// The FlatMap is its own cascades expression carrying its outer edge (over the
+	// opaque N-way chain leaf) and its inner edge (innerQ) directly (RFC-184 W2,
+	// no physicalFlatMapWrapper).
+	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
 		innerQ,
-	))
+		mergedOuterCorr, existCorr,
+		flatMapResult, false,
+	)
+	call.Yield(flatMapPlan)
 }
 
 // tryExistsFlatMap implements an EXISTS subquery as a correlated FlatMap.
@@ -3049,44 +3117,58 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 
 	var belowFOD plans.RecordQueryPlan = correlatedInner
 	if len(innerResiduals) > 0 {
-		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(correlatedInner, innerResiduals, innerCorrelation)
+		bfInnerQ := expressions.NamedPhysicalQuantifier(rightQ.GetAlias(),
+			call.MemoizeFinalExpression(correlatedInner))
+		belowFODFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(bfInnerQ, innerResiduals, innerCorrelation)
 		belowFOD = belowFODFilter
 		rightQ = expressions.NamedPhysicalQuantifier(innerCorrelation,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(belowFODFilter, rightQ)))
+			call.MemoizeFinalExpression(belowFODFilter))
 	}
-	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+	// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the concrete
+	// correlated inner belowFOD (constraint-preserving disentangle,
+	// RFC-184 W2): the frozen edge keeps innerCorrelation but ranges over a PRIVATE
+	// single-member reference over belowFOD, NOT the shared exploratory group — so
+	// planFromQuantifier resolves the SARG/correlated member, never the bare group
+	// winner the prior generic collapse floated to (which dropped correlated DML rows).
+	// rightQ.GetAlias() (== innerCorrelation) keeps the live-edge chain below the
+	// fod consumed, so every memo side effect is unchanged from the wrapper path.
+	fodInnerQ := expressions.NamedPhysicalQuantifier(rightQ.GetAlias(),
+		call.MemoizeFinalExpression(belowFOD))
+	fodPlan := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(fodInnerQ, values.NewNullValue(values.UnknownType))
 	rightQ = expressions.NamedPhysicalQuantifier(innerCorrelation,
-		call.MemoizeFinalExpression(NewPhysicalFirstOrDefaultWrapper(fodPlan, rightQ)))
+		call.MemoizeFinalExpression(fodPlan))
 
-	var flatMapInner plans.RecordQueryPlan = fodPlan
 	if hasExistsFilter {
 		cmp := predicates.Comparison{Type: predicates.ComparisonIsNotNull}
 		if negated {
 			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
 		}
 		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(innerCorrelation), cmp)
-		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, innerCorrelation)
-		flatMapInner = residualFilter
+		rfInnerQ := expressions.NamedPhysicalQuantifier(rightQ.GetAlias(),
+			call.MemoizeFinalExpression(fodPlan))
+		residualFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(rfInnerQ, []predicates.QueryPredicate{residual}, innerCorrelation)
 		rightQ = expressions.NamedPhysicalQuantifier(innerCorrelation,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(residualFilter, rightQ)))
+			call.MemoizeFinalExpression(residualFilter))
 	}
 
 	leftQ := expressions.NamedForEachQuantifier(outerCorrelation, call.MemoizeExpression(outerExpr))
 
-	var flatMapOuter plans.RecordQueryPlan = outerPlan
 	if len(outerResiduals) > 0 {
-		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerResiduals, outerCorrelation)
-		flatMapOuter = outerFilter
+		ofInnerQ := expressions.NamedForEachQuantifier(leftQ.GetAlias(),
+			call.MemoizeFinalExpression(outerPlan))
+		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(ofInnerQ, outerResiduals, outerCorrelation)
 		leftQ = expressions.NamedForEachQuantifier(outerCorrelation,
-			call.MemoizeFinalExpression(NewPhysicalPredicatesFilterWrapper(outerFilter, leftQ)))
+			call.MemoizeFinalExpression(outerFilter))
 	}
 
-	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-		flatMapOuter, flatMapInner,
+	// The EXISTS FlatMap is its own cascades expression carrying its outer (leftQ)
+	// and inner (rightQ) memo edges directly (RFC-184 W2, no physicalFlatMapWrapper).
+	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
+		leftQ, rightQ,
 		outerCorrelation, innerCorrelation,
 		resultValue, false,
 	)
-	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
+	call.Yield(flatMapPlan)
 }
 
 // scalarSubqueryAliasesOfPredicate collects the correlation aliases a

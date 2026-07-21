@@ -108,8 +108,8 @@ func dump(args []string) {
 	if err := os.WriteFile(*out, []byte(baseline), 0o644); err != nil {
 		log.Fatalf("write %s: %v", *out, err)
 	}
-	log.Printf("wrote %s — %d files, %d queries planned, %d plan errors (%d without a corpus error pin), %d non-query stanzas skipped",
-		*out, st.Files, st.Queries, st.PlanErrors, st.UnexpectedErrors, st.NonQuery)
+	log.Printf("wrote %s — %d files, %d queries + %d DML planned, %d plan errors (%d without a corpus error pin), %d non-query stanzas skipped",
+		*out, st.Files, st.Queries, st.DML, st.PlanErrors, st.UnexpectedErrors, st.NonQuery)
 }
 
 func diff(args []string) {

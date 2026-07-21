@@ -40,10 +40,10 @@ func TestImplementUniqueRule_SkipsNonMatching(t *testing.T) {
 
 func TestImplementUniqueRule_AbsorbsWhenInnerIsDistinct(t *testing.T) {
 	t.Parallel()
-	// Build: Unique(innerRef) where innerRef holds a physicalScanWrapper
+	// Build: Unique(innerRef) where innerRef holds a bare scan plan
 	// with distinct=true (scan is always distinct).
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanWrapper := &physicalScanWrapper{plan: scan}
+	scanWrapper := scan
 
 	// Create inner reference with physical wrapper as final member.
 	innerRef := expressions.InitialOf(scanWrapper)
@@ -79,9 +79,10 @@ func TestImplementUniqueRule_AbsorbsWhenInnerIsDistinct(t *testing.T) {
 
 func TestImplementUniqueRule_NoYieldWhenInnerNotDistinct(t *testing.T) {
 	t.Parallel()
-	// Streaming agg wrapper has distinct=false.
+	// Streaming agg has distinct=false. Since RFC-184 W2 the memo holds the bare
+	// *plans.RecordQueryStreamingAggregationPlan (no physicalStreamingAggWrapper).
 	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
-	aggWrapper := &physicalStreamingAggWrapper{plan: aggPlan}
+	aggWrapper := aggPlan
 
 	innerRef := expressions.InitialOf(aggWrapper)
 	pm := NewPlanPropertiesMap()

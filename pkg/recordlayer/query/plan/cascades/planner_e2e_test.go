@@ -24,8 +24,9 @@ func TestE2E_ScanOnlyPlan(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if _, ok := plan.(*physicalScanWrapper); !ok {
-		t.Fatalf("expected physicalScanWrapper, got %T", plan)
+	// RFC-184 W2: a bare primary scan is its own physical expression.
+	if _, ok := plan.(*plans.RecordQueryScanPlan); !ok {
+		t.Fatalf("expected *plans.RecordQueryScanPlan, got %T", plan)
 	}
 }
 
@@ -51,8 +52,8 @@ func TestE2E_FilterOverScan(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if _, ok := plan.(*physicalPredicatesFilterWrapper); !ok {
-		t.Fatalf("expected physicalPredicatesFilterWrapper, got %T", plan)
+	if _, ok := plan.(*plans.RecordQueryPredicatesFilterPlan); !ok {
+		t.Fatalf("expected *plans.RecordQueryPredicatesFilterPlan, got %T", plan)
 	}
 }
 
@@ -153,7 +154,7 @@ func TestE2E_UnionOfTwoScans(t *testing.T) {
 // Input tree:   Sort(ID ASC) -> Filter(ID > 5) -> FullUnorderedScan(TABLE)
 //
 // Rule chain:
-//  1. PrimaryScanRule: yields physicalScanWrapper with PK ordering (ID).
+//  1. PrimaryScanRule: yields a bare RecordQueryScanPlan with PK ordering (ID).
 //  2. PushRequestedOrderingThroughFilterRule: pushes ordering constraint through Filter.
 //  3. ImplementSortRule: eliminates Sort because the scan provides ID ordering.
 //
@@ -210,9 +211,9 @@ func TestE2E_SortEliminationThroughFilter(t *testing.T) {
 			describePlan(best))
 	}
 
-	fw, ok := best.(*physicalPredicatesFilterWrapper)
+	fw, ok := best.(*plans.RecordQueryPredicatesFilterPlan)
 	if !ok {
-		t.Fatalf("expected physicalPredicatesFilterWrapper at root, got %T (%s)", best, describePlan(best))
+		t.Fatalf("expected *plans.RecordQueryPredicatesFilterPlan at root, got %T (%s)", best, describePlan(best))
 	}
 	innerRef := fw.GetQuantifiers()[0].GetRangesOver()
 	innerPlan := findPhysicalPlan(innerRef)
@@ -245,7 +246,7 @@ func (c *e2ePKPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 // logical sort expression).
 func containsSort(expr expressions.RelationalExpression) bool {
 	switch expr.(type) {
-	case *physicalInMemorySortWrapper:
+	case *plans.RecordQueryInMemorySortPlan:
 		return true
 	case *expressions.LogicalSortExpression:
 		return true
@@ -329,8 +330,8 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 	}
 	var yieldedNLJs []*plans.RecordQueryNestedLoopJoinPlan
 	for _, y := range FireExpressionRule(NewImplementNestedLoopJoinRule(), fireRef) {
-		if nlj, ok := y.(*physicalNestedLoopJoinWrapper); ok {
-			yieldedNLJs = append(yieldedNLJs, nlj.GetPlan())
+		if nlj, ok := y.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+			yieldedNLJs = append(yieldedNLJs, nlj)
 		}
 	}
 	formedAB, formedBA := directionsOf(yieldedNLJs)
@@ -354,8 +355,8 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 
 	var nljPlans []*plans.RecordQueryNestedLoopJoinPlan
 	for _, m := range selRef.AllMembers() {
-		if nlj, ok := m.(*physicalNestedLoopJoinWrapper); ok {
-			nljPlans = append(nljPlans, nlj.GetPlan())
+		if nlj, ok := m.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+			nljPlans = append(nljPlans, nlj)
 		}
 	}
 	if len(nljPlans) == 0 {
@@ -406,11 +407,11 @@ func TestE2E_JoinCommutativitySkippedForLeftJoin(t *testing.T) {
 	// For LEFT JOIN, only one direction should be explored. All NLJ
 	// plans should have A as outer.
 	for _, m := range selRef.AllMembers() {
-		nlj, ok := m.(*physicalNestedLoopJoinWrapper)
+		nlj, ok := m.(*plans.RecordQueryNestedLoopJoinPlan)
 		if !ok {
 			continue
 		}
-		outerExplain := nlj.GetPlan().GetOuter().Explain()
+		outerExplain := nlj.GetOuter().Explain()
 		if outerExplain == "Scan(B)" {
 			t.Fatal("LEFT JOIN should not explore B-as-outer direction")
 		}

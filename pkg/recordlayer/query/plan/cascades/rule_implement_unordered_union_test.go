@@ -81,11 +81,11 @@ func TestImplementUnorderedUnionRule_SkipsLogicalUniqueExpression(t *testing.T) 
 
 func TestImplementUnorderedUnionRule_CreatesUnorderedUnionPlan(t *testing.T) {
 	t.Parallel()
-	// Build two inner references, each holding a physicalScanWrapper.
+	// Build two inner references, each holding a bare scan plan.
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	wA := &physicalScanWrapper{plan: scanA}
-	wB := &physicalScanWrapper{plan: scanB}
+	wA := scanA
+	wB := scanB
 
 	refA := expressions.InitialOf(wA)
 	pmA := NewPlanPropertiesMap()
@@ -109,24 +109,19 @@ func TestImplementUnorderedUnionRule_CreatesUnorderedUnionPlan(t *testing.T) {
 		t.Fatal("ImplementUnorderedUnionRule should yield at least one expression")
 	}
 
-	// The yielded expression should be a physicalUnorderedUnionWrapper.
-	foundWrapper := false
+	// The yielded expression should be the bare *RecordQueryUnorderedUnionPlan.
+	foundPlan := false
 	for _, r := range results {
-		if w, ok := r.(*physicalUnorderedUnionWrapper); ok {
-			foundWrapper = true
-			plan := w.GetRecordQueryPlan()
-			uup, ok := plan.(*plans.RecordQueryUnorderedUnionPlan)
-			if !ok {
-				t.Fatalf("expected underlying plan to be *RecordQueryUnorderedUnionPlan, got %T", plan)
-			}
+		if uup, ok := r.(*plans.RecordQueryUnorderedUnionPlan); ok {
+			foundPlan = true
 			inners := uup.GetInners()
 			if len(inners) < 2 {
 				t.Fatalf("unordered union should have >= 2 inner plans, got %d", len(inners))
 			}
 		}
 	}
-	if !foundWrapper {
-		t.Fatal("expected at least one physicalUnorderedUnionWrapper in results")
+	if !foundPlan {
+		t.Fatal("expected at least one *RecordQueryUnorderedUnionPlan in results")
 	}
 }
 

@@ -120,6 +120,49 @@ var unexpectedPlanFailures = []string{
 	"information_schema.yaml#3",
 }
 
+// TestCorpusPlansDML is the sentinel for this harness's whole reason to exist:
+// the dump must actually PLAN the DELETE/UPDATE stanzas, not skip them. A
+// regression that reverted DML routing back to NonQuery would drop the count to
+// zero and re-open the RFC-184 W2 blind spot — and every OTHER test here would
+// stay green, because they assert on whatever entries exist. This one asserts
+// the entries EXIST.
+func TestCorpusPlansDML(t *testing.T) {
+	t.Parallel()
+
+	entries, st := collectCorpus(t)
+
+	if st.DML == 0 {
+		t.Fatal("no DELETE/UPDATE stanzas planned — the DML harness is not wired into the dump")
+	}
+	// Reconciliation: every entry is a SELECT-class or a DML-class plan; nothing
+	// else produces an entry. If this drifts, the header's truncation check
+	// (Queries+DML == entries) would start rejecting a valid dump.
+	if st.Queries+st.DML != len(entries) {
+		t.Fatalf("entry count %d != queries=%d + dml=%d", len(entries), st.Queries, st.DML)
+	}
+
+	// The DML plans must reach the two DML physical roots — a DELETE that only
+	// ever rendered a scan (dropped delete wrapper) would be a silent data-loss
+	// bug this shape pin catches.
+	var sawDelete, sawUpdate bool
+	for _, e := range entries {
+		for _, s := range e.Shape {
+			switch strings.TrimSpace(s) {
+			case "RecordQueryDeletePlan":
+				sawDelete = true
+			case "RecordQueryUpdatePlan":
+				sawUpdate = true
+			}
+		}
+	}
+	if !sawDelete {
+		t.Error("no RecordQueryDeletePlan in the corpus dump — DELETE planning is broken or unrouted")
+	}
+	if !sawUpdate {
+		t.Error("no RecordQueryUpdatePlan in the corpus dump — UPDATE planning is broken or unrouted")
+	}
+}
+
 // TestNoUnexpectedPlanFailures is the always-on sentinel the baseline files
 // themselves cannot be (they are before/after artifacts, not committed).
 // A row-level test cannot see this either: a query that stops planning fails
@@ -296,7 +339,7 @@ func TestDiffCleanOnIdenticalInput(t *testing.T) {
 // header builds a well-formed baseline header declaring `queries` entries, so
 // the body-level rejection tests below exercise the body and not the header.
 func header(queries int) string {
-	return fmt.Sprintf("# explain-baseline/v1\n# files=1 queries=%d non_query=0 plan_errors=0 unexpected_errors=0\n#\n", queries)
+	return fmt.Sprintf("# explain-baseline/v2\n# files=1 queries=%d dml=0 non_query=0 plan_errors=0 unexpected_errors=0\n#\n", queries)
 }
 
 // TestParseRejectsGarbage: a malformed baseline must fail loudly. Silently
@@ -331,19 +374,19 @@ func TestParseEnforcesHeader(t *testing.T) {
 		want string // substring the message must carry
 	}{
 		"stale format version": {
-			text: "# explain-baseline/v0\n# files=1 queries=1 non_query=0 plan_errors=0 unexpected_errors=0\n#\n" + body,
+			text: "# explain-baseline/v0\n# files=1 queries=1 dml=0 non_query=0 plan_errors=0 unexpected_errors=0\n#\n" + body,
 			want: "regenerate",
 		},
 		"no version header": {
-			text: "# files=1 queries=1 non_query=0 plan_errors=0 unexpected_errors=0\n#\n" + body,
+			text: "# files=1 queries=1 dml=0 non_query=0 plan_errors=0 unexpected_errors=0\n#\n" + body,
 			want: "format-version header",
 		},
 		"no stats header": {
-			text: "# explain-baseline/v1\n#\n" + body,
+			text: "# explain-baseline/v2\n#\n" + body,
 			want: "stats header",
 		},
 		"malformed stats header": {
-			text: "# explain-baseline/v1\n# files=1 queries=oops non_query=0 plan_errors=0 unexpected_errors=0\n#\n" + body,
+			text: "# explain-baseline/v2\n# files=1 queries=oops dml=0 non_query=0 plan_errors=0 unexpected_errors=0\n#\n" + body,
 			want: "stats header",
 		},
 		// The truncation signal: the dump wrote its header, then died. The
@@ -377,7 +420,7 @@ func TestParseAcceptsCurrentHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse rejected a well-formed baseline: %v", err)
 	}
-	if b.Version != "explain-baseline/v1" {
+	if b.Version != "explain-baseline/v2" {
 		t.Errorf("Version = %q", b.Version)
 	}
 	if b.Stats.Files != 1 || b.Stats.Queries != 1 {
@@ -390,7 +433,7 @@ func TestParseAcceptsCurrentHeader(t *testing.T) {
 
 // synthBaseline builds an n-entry in-memory baseline at the given path.
 func synthBaseline(path string, n int) *explaindiff.Baseline {
-	b := &explaindiff.Baseline{Version: "explain-baseline/v1", Path: path}
+	b := &explaindiff.Baseline{Version: "explain-baseline/v2", Path: path}
 	for i := 0; i < n; i++ {
 		b.Entries = append(b.Entries, explaindiff.Entry{
 			File: "a.yaml", Index: i, SQL: fmt.Sprintf("s%d", i),

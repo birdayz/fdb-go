@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -45,6 +44,21 @@ func NewRecordQueryIntersectionPlan(inners []RecordQueryPlan, comparisonKeyValue
 	}
 }
 
+// NewRecordQueryIntersectionPlanFromQuantifiers builds an N-way intersection
+// whose legs are LIVE memo quantifiers (the implementation / data-access rules
+// pass ForEachQuantifiers over the freshly-memoized leg winners) instead of
+// snapshots over plans. This makes the intersection its own cascades expression
+// carrying its leg edges directly — the memo holds it without a physical wrapper
+// (RFC-184 W2). comparisonKeyValues carries over verbatim.
+func NewRecordQueryIntersectionPlanFromQuantifiers(qs []expressions.Quantifier, comparisonKeyValues []values.Value) *RecordQueryIntersectionPlan {
+	cpKeys := make([]values.Value, len(comparisonKeyValues))
+	copy(cpKeys, comparisonKeyValues)
+	return &RecordQueryIntersectionPlan{
+		childQs:             append([]expressions.Quantifier(nil), qs...),
+		comparisonKeyValues: cpKeys,
+	}
+}
+
 // GetInners returns the intersection's inner plans, dereferenced through the
 // quantifiers and in leg order.
 func (p *RecordQueryIntersectionPlan) GetInners() []RecordQueryPlan {
@@ -68,38 +82,28 @@ func (p *RecordQueryIntersectionPlan) GetResultType() values.Type {
 // GetChildren returns the inner plans.
 func (p *RecordQueryIntersectionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
 
-// EqualsWithoutChildren matches IntersectionPlan + comparison-key list by
-// semantic Value identity, per Java RecordQueryIntersectionPlan.
-// equalsWithoutChildren (comparisonKeyFunction.equals). Java also compares
-// `reverse`; Go's intersection has no reverse field because the implement
-// rules only emit forward intersections — when reverse intersections land,
-// the field joins identity here and in the hash.
+// structuralKey lists the fields that distinguish this intersection in the
+// memo: the comparison-key Value list (semantic Value identity, per Java
+// RecordQueryIntersectionPlan.equalsWithoutChildren — comparisonKeyFunction.
+// equals). Children are excluded. Java also compares `reverse`; Go's
+// intersection has no reverse field because the implement rules only emit
+// forward intersections — when reverse intersections land, the field joins the
+// key here. The same key drives both EqualsPlanWithoutChildren and
+// HashCodeWithoutChildren.
+func (p *RecordQueryIntersectionPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Values(p.comparisonKeyValues)
+}
+
 func (p *RecordQueryIntersectionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryIntersectionPlan)
-	if !ok {
-		return false
-	}
-	if len(p.comparisonKeyValues) != len(o.comparisonKeyValues) {
-		return false
-	}
-	for i, k := range p.comparisonKeyValues {
-		if !semanticValueEquals(k, o.comparisonKeyValues[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren folds the type discriminator + the comparison-key
 // Values (semantic hashes — see writeValueHash), pairing with the semantic
 // key equality above so equal⟹same-hash holds.
 func (p *RecordQueryIntersectionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("intersectionplan"))
-	for _, k := range p.comparisonKeyValues {
-		writeValueHash(h, k)
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("intersectionplan")
 }
 
 // Explain renders Intersection(inner1, inner2, ...).
@@ -149,9 +153,33 @@ func (p *RecordQueryIntersectionPlan) WithQuantifiers(qs []expressions.Quantifie
 	return &cp
 }
 
-// ChildrenAsSet reports that the legs of this set operation are commutative,
-// mirroring physicalIntersectionWrapper.
+// ChildrenAsSet reports that the legs of this set operation are commutative.
 func (p *RecordQueryIntersectionPlan) ChildrenAsSet() bool { return true }
+
+// IsIntersection implements properties.IntersectionExpression — the marker
+// ComparisonsProperty.EvaluateComparisons keys on to intersect (not union) its
+// children's comparison sets. Adopted from the retired physicalIntersectionWrapper
+// (RFC-184 W2) so the memo member the property walks still reports it.
+func (p *RecordQueryIntersectionPlan) IsIntersection() {}
+
+// GetResultValue returns the first leg's flowed object value — intersection
+// emits rows compatible with all legs. Adopted from the retired
+// physicalIntersectionWrapper (RFC-184 W2); an empty intersection falls back to
+// PlanExprBase's fresh stand-in.
+func (p *RecordQueryIntersectionPlan) GetResultValue() values.Value {
+	if len(p.childQs) == 0 {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.childQs[0].GetFlowedObjectValue()
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The intersection carries its legs as LIVE memo edges, so the relink
+// is a quantifier swap: WithQuantifiers rebinds the legs and GetInners re-resolves
+// through the new references (RFC-184 W2, replacing physicalIntersectionWrapper.WithChildren).
+func (p *RecordQueryIntersectionPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	return p.WithQuantifiers(qs), nil
+}
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryIntersectionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

@@ -36,15 +36,15 @@ type SinkLimitIntoVectorScanRule struct {
 
 func NewSinkLimitIntoVectorScanRule() *SinkLimitIntoVectorScanRule {
 	return &SinkLimitIntoVectorScanRule{
-		matcher: NewExpressionMatcher[*physicalLimitWrapper]("phys_limit_over_vector"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryLimitPlan]("phys_limit_over_vector"),
 	}
 }
 
 func (r *SinkLimitIntoVectorScanRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *SinkLimitIntoVectorScanRule) OnMatch(call *ImplementationRuleCall) {
-	limitW := matching.Get[*physicalLimitWrapper](call.Bindings, r.matcher)
-	if limitW == nil || limitW.plan == nil {
+	limitW := matching.Get[*plans.RecordQueryLimitPlan](call.Bindings, r.matcher)
+	if limitW == nil {
 		return
 	}
 	// A runtime cap (parameterized RFC-156 rank limit `... <= ?`) cannot be
@@ -52,17 +52,22 @@ func (r *SinkLimitIntoVectorScanRule) OnMatch(call *ImplementationRuleCall) {
 	// self-limiting top-k(K) mode. It MUST stay an explicit Limit(?) over the
 	// ordered stream, which the executor evaluates at run time. (The -1 sentinel
 	// also trips the GetLimit() <= 0 guard below, but be explicit.)
-	if limitW.plan.GetLimitValue() != nil {
+	if limitW.GetLimitValue() != nil {
 		return
 	}
 	// An OFFSET cannot be folded into the scan (the scan has no skip), and a
 	// non-positive cap is not a real top-k. Leave those as the explicit Limit
 	// over the ordered scan.
-	if limitW.plan.GetOffset() != 0 || limitW.plan.GetLimit() <= 0 {
+	if limitW.GetOffset() != 0 || limitW.GetLimit() <= 0 {
 		return
 	}
 
-	innerRef := limitW.innerQuant.GetRangesOver()
+	// The LIMIT carries its child as its one live memo edge (RFC-184 W2).
+	qs := limitW.GetQuantifiers()
+	if len(qs) == 0 {
+		return
+	}
+	innerRef := qs[0].GetRangesOver()
 	if innerRef == nil {
 		return
 	}
@@ -72,14 +77,16 @@ func (r *SinkLimitIntoVectorScanRule) OnMatch(call *ImplementationRuleCall) {
 	// inner ref's members are filters, not vector scans, and this loop finds
 	// nothing — so the rule correctly declines to fire.
 	for _, m := range innerRef.AllMembers() {
-		vecW, ok := m.(*physicalVectorIndexScanWrapper)
-		if !ok || vecW.plan == nil || !vecW.plan.IsOrderedStream() {
+		// The vector scan is its own Cascades expression now (RFC-184 W2) — match
+		// the bare plan, no physicalVectorIndexScanWrapper adapter.
+		vecW, ok := m.(*plans.RecordQueryVectorIndexPlan)
+		if !ok || !vecW.IsOrderedStream() {
 			continue
 		}
 		// A non-literal / non-positive scan-k cannot be folded for ANY member
 		// (the scan is the same across the ref's equivalent members), so DECLINE
 		// the whole rule — keep the explicit Limit over the ordered scan.
-		adjK, okAdj := vectorScanAdjustedLimit(vecW.plan)
+		adjK, okAdj := vectorScanAdjustedLimit(vecW)
 		if !okAdj {
 			return
 		}
@@ -89,13 +96,13 @@ func (r *SinkLimitIntoVectorScanRule) OnMatch(call *ImplementationRuleCall) {
 		// `QUALIFY ROW_NUMBER()<=10 LIMIT 3`) must keep the explicit Limit over
 		// the ordered scan so the smaller cap is honored, never silently widened
 		// to the scan's k.
-		if limitW.plan.GetLimit() != adjK {
+		if limitW.GetLimit() != adjK {
 			continue
 		}
 		// Yield the self-limiting scan in place of the Limit. The scan's existing
 		// k/rankType binding already encodes the QUALIFY rank, so flipping the
-		// mode restores the exact legacy search(k).
-		call.Yield(&physicalVectorIndexScanWrapper{plan: vecW.plan.WithSelfLimiting()})
+		// mode restores the exact legacy search(k). Bare plan, no wrapper (RFC-184 W2).
+		call.Yield(vecW.WithSelfLimiting())
 		return
 	}
 }

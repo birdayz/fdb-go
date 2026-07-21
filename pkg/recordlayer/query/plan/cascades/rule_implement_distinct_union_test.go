@@ -37,7 +37,7 @@ func TestImplementDistinctUnionRule_SkipsNonDistinct(t *testing.T) {
 func TestImplementDistinctUnionRule_RequiresUnionChild(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -53,18 +53,17 @@ func TestImplementDistinctUnionRule_RequiresUnionChild(t *testing.T) {
 	}
 }
 
-func makeScanWithPK(recordType string, pkCols ...string) (*physicalScanWrapper, *expressions.Reference) {
+func makeScanWithPK(recordType string, pkCols ...string) (*plans.RecordQueryScanPlan, *expressions.Reference) {
 	pkVals := make([]values.Value, len(pkCols))
 	for i, col := range pkCols {
 		pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
 	}
 	scan := plans.NewRecordQueryScanPlan([]string{recordType}, values.UnknownType, false).WithPrimaryKey(pkVals)
-	sw := &physicalScanWrapper{plan: scan}
-	ref := expressions.InitialOf(sw)
+	ref := expressions.InitialOf(scan)
 	pm := NewPlanPropertiesMap()
-	pm.Add(sw)
+	pm.Add(scan)
 	ref.SetPlanProperties(pm)
-	return sw, ref
+	return scan, ref
 }
 
 func TestImplementDistinctUnionRule_FiresWithPKAndStoredRecord(t *testing.T) {
@@ -88,27 +87,27 @@ func TestImplementDistinctUnionRule_FiresWithPKAndStoredRecord(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalMergeSortUnionWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryMergeSortUnionPlan); ok {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("should yield physicalMergeSortUnionWrapper")
+		t.Fatal("should yield *plans.RecordQueryMergeSortUnionPlan")
 	}
 }
 
 func TestImplementDistinctUnionRule_NoFireWithoutPK(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	refA := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	refA.SetPlanProperties(pm)
 
 	scan2 := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw2 := &physicalScanWrapper{plan: scan2}
+	sw2 := scan2
 	refB := expressions.InitialOf(sw2)
 	pm2 := NewPlanPropertiesMap()
 	pm2.Add(sw2)
@@ -263,20 +262,17 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 	// scan object — the estimate/executable divergence.
 	pkVals := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
 	orderedScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pkVals)
-	orderedSW := &physicalScanWrapper{plan: orderedScan}
+	orderedSW := orderedScan
 	srcRef := expressions.InitialOf(orderedSW)
 	pmSrc := NewPlanPropertiesMap()
 	pmSrc.Add(orderedSW)
 	srcRef.SetPlanProperties(pmSrc)
 
 	staleScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pkVals)
-	filterWrap := &physicalPredicatesFilterWrapper{
-		plan: plans.NewRecordQueryPredicatesFilterPlan(
-			staleScan,
-			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		),
-		innerQuant: expressions.ForEachQuantifier(srcRef),
-	}
+	filterWrap := plans.NewRecordQueryPredicatesFilterPlan(
+		staleScan,
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(srcRef)}).(*plans.RecordQueryPredicatesFilterPlan)
 	refB := expressions.InitialOf(filterWrap)
 	pmB := NewPlanPropertiesMap()
 	pmB.Add(filterWrap)
@@ -291,9 +287,9 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 	outerRef := expressions.InitialOf(distinct)
 
 	results := FireImplementationRule(NewImplementDistinctUnionRule(), outerRef)
-	var msu *physicalMergeSortUnionWrapper
+	var msu *plans.RecordQueryMergeSortUnionPlan
 	for _, r := range results {
-		if w, ok := r.(*physicalMergeSortUnionWrapper); ok {
+		if w, ok := r.(*plans.RecordQueryMergeSortUnionPlan); ok {
 			msu = w
 			break
 		}
@@ -301,7 +297,7 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 	if msu == nil {
 		t.Fatal("expected a merge-sort union yield (the pinned path must not over-decline this shape)")
 	}
-	for _, child := range msu.plan.GetChildren() {
+	for _, child := range msu.GetChildren() {
 		if child == staleScan {
 			t.Fatal("the union baked the delegator's STALE plan child — the leg was not spine-pinned and the merge dedup runs over an order the leg does not produce")
 		}

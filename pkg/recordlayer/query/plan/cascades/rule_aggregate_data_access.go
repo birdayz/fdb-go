@@ -103,7 +103,8 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			idxPlan, recordTypeName, values.UnknownType, aggCand.aggFunction.String(),
 		).WithGroupColumns(aggCand.groupCols, aggCand.aggColumn)
 
-		call.Yield(&physicalAggregateIndexWrapper{plan: aggPlan})
+		// The aggregate-index plan is its own cascades expression now (RFC-184 W2).
+		call.Yield(aggPlan)
 		singleMatched = true
 	}
 	if singleMatched {
@@ -449,11 +450,7 @@ func tryMultiAggregateIntersection(
 	}
 	resultValue := values.NewRecordConstructorValue(fields...)
 
-	multiPlan := plans.NewRecordQueryMultiIntersectionOnValuesPlan(
-		childPlans, comparisonKey, resultValue,
-	)
-
-	// Memoize each leg and hand the wrapper real quantifiers. Passing nil left
+	// Memoize each leg and hand the plan real quantifiers. Passing nil left
 	// a two-leg intersection with NO edges in the memo at all: both children
 	// executed while the optimizer could see neither, so nothing costed the
 	// legs and nothing could rewrite through them (6 unreachable edges,
@@ -469,8 +466,10 @@ func tryMultiAggregateIntersection(
 			call.MemoizeFinalExpression(&scanPlanExpression{plan: cp}))
 	}
 
-	wrapper := NewPhysicalMultiIntersectionWrapper(multiPlan, childQuants)
-	call.Yield(wrapper)
+	// The multi-intersection carries its stream edges directly (RFC-184 W2).
+	call.Yield(plans.NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
+		childQuants, comparisonKey, resultValue,
+	))
 }
 
 var _ ExpressionRule = (*AggregateDataAccessRule)(nil)

@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -18,17 +17,33 @@ type RecordQueryExplodePlan struct {
 	// (element, 1-based ordinal) per element instead of the bare element.
 	// Mirrors Java's `RecordQueryExplodePlan.withOrdinality`.
 	withOrdinality bool
+	// resultValue is the stable per-instance QuantifiedObjectValue standing for
+	// the rows this explode emits — minted once at construction, returned by
+	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
+	// instance). A bare leaf that stands as its own Cascades expression must
+	// present a consistent row identity across repeated interrogations, the role
+	// physicalExplodeWrapper's fresh-per-call GetResultValue could not (RFC-184
+	// W2). nil for struct-literal test plans that bypass the constructor —
+	// GetResultValue falls back to PlanExprBase's fresh QOV there.
+	resultValue values.Value
 }
 
 // NewRecordQueryExplodePlan builds a bare (non-ordinal) Explode plan.
 func NewRecordQueryExplodePlan(collectionValue values.Value) *RecordQueryExplodePlan {
-	return &RecordQueryExplodePlan{collectionValue: collectionValue}
+	return &RecordQueryExplodePlan{
+		collectionValue: collectionValue,
+		resultValue:     values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	}
 }
 
 // NewRecordQueryExplodePlanWithOrdinality builds an Explode plan that
 // also emits a 1-based ordinal alongside each element.
 func NewRecordQueryExplodePlanWithOrdinality(collectionValue values.Value, withOrdinality bool) *RecordQueryExplodePlan {
-	return &RecordQueryExplodePlan{collectionValue: collectionValue, withOrdinality: withOrdinality}
+	return &RecordQueryExplodePlan{
+		collectionValue: collectionValue,
+		withOrdinality:  withOrdinality,
+		resultValue:     values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	}
 }
 
 func (p *RecordQueryExplodePlan) GetCollectionValue() values.Value { return p.collectionValue }
@@ -58,24 +73,20 @@ func (p *RecordQueryExplodePlan) GetResultType() values.Type {
 
 func (p *RecordQueryExplodePlan) GetChildren() []RecordQueryPlan { return nil }
 
+// structuralKey folds the Explode identity: the collection Value by POINTER
+// identity (ValuePtr — the hand-rolled equals used ==, NOT semantic equality)
+// and the withOrdinality flag. Drives both Equals and Hash.
+func (p *RecordQueryExplodePlan) structuralKey() *structuralKey {
+	return newStructuralKey().ValuePtr(p.collectionValue).Bool(p.withOrdinality)
+}
+
 func (p *RecordQueryExplodePlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryExplodePlan)
-	if !ok {
-		return false
-	}
-	return p.collectionValue == o.collectionValue && p.withOrdinality == o.withOrdinality
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryExplodePlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("explodeplan|"))
-	if p.collectionValue != nil {
-		h.Write([]byte(p.collectionValue.Name()))
-	}
-	if p.withOrdinality {
-		h.Write([]byte("|ord"))
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("explodeplan|")
 }
 
 func (p *RecordQueryExplodePlan) Explain() string {
@@ -104,6 +115,17 @@ func (p *RecordQueryExplodePlan) EqualsWithoutChildren(other expressions.Relatio
 // replace while children are raw pointers (RFC-183 P5 step 1).
 func (p *RecordQueryExplodePlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return p
+}
+
+// GetResultValue returns the explode's STABLE per-instance result value — the
+// single correlation identity a bare explode carries as its own memo expression
+// (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
+// struct-literal test plans that bypass the constructor (resultValue is nil).
+func (p *RecordQueryExplodePlan) GetResultValue() values.Value {
+	if p.resultValue == nil {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.resultValue
 }
 
 // GetCorrelatedToWithoutChildren reports the correlations of this plan's

@@ -72,17 +72,18 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 				if bakedKeys == nil {
 					continue
 				}
-				intersectionPlan := plans.NewRecordQueryIntersectionPlan(
-					[]plans.RecordQueryPlan{planI, planJ}, bakedKeys)
 
 				exprI := wrapAccessScan(ai, planI)
 				exprJ := wrapAccessScan(aj, planJ)
 				qI := expressions.ForEachQuantifier(expressions.InitialOf(exprI))
 				qJ := expressions.ForEachQuantifier(expressions.InitialOf(exprJ))
 
+				// The intersection carries its leg edges directly (RFC-184 W2).
+				intersectionPlan := plans.NewRecordQueryIntersectionPlanFromQuantifiers(
+					[]expressions.Quantifier{qI, qJ}, bakedKeys)
+
 				expr, viable := compensateIntersection(
-					[]*SingleMatchedAccess{ai, aj},
-					NewPhysicalIntersectionWrapper(intersectionPlan, []expressions.Quantifier{qI, qJ}))
+					[]*SingleMatchedAccess{ai, aj}, intersectionPlan)
 				if !viable {
 					continue
 				}
@@ -124,8 +125,6 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 						if bakedKeys == nil {
 							continue
 						}
-						intersectionPlan := plans.NewRecordQueryIntersectionPlan(
-							[]plans.RecordQueryPlan{planI, planJ, planK}, bakedKeys)
 
 						exprI := wrapAccessScan(ai, planI)
 						exprJ := wrapAccessScan(aj, planJ)
@@ -134,10 +133,12 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 						qJ := expressions.ForEachQuantifier(expressions.InitialOf(exprJ))
 						qK := expressions.ForEachQuantifier(expressions.InitialOf(exprK))
 
+						// The intersection carries its leg edges directly (RFC-184 W2).
+						intersectionPlan := plans.NewRecordQueryIntersectionPlanFromQuantifiers(
+							[]expressions.Quantifier{qI, qJ, qK}, bakedKeys)
+
 						expr, viable := compensateIntersection(
-							[]*SingleMatchedAccess{ai, aj, ak},
-							NewPhysicalIntersectionWrapper(intersectionPlan,
-								[]expressions.Quantifier{qI, qJ, qK}))
+							[]*SingleMatchedAccess{ai, aj, ak}, intersectionPlan)
 						if !viable {
 							continue
 						}

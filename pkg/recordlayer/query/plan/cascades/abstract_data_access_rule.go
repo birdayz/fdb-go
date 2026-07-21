@@ -501,20 +501,47 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 			// Covering is decided downstream by MergeProjectionAndFetchRule (see
 			// the doc above) — do not consult isCovering/coveringColumns here.
 			_ = coveringColumns
-			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, unique: unique, columnNames: columnNames, pkColumnNames: pkColumnNames}
-			idxRef := expressions.InitialOf(idxWrapper)
+			// The index scan is its own cascades expression now (RFC-184 W2) — a bare
+			// leaf carrying its index metadata (columns/pk/unique) on the plan.
+			idxLeaf := innerIdx.WithIndexMetadata(columnNames, pkColumnNames, unique)
+			idxRef := expressions.InitialOf(idxLeaf)
 			fetchQ := expressions.ForEachQuantifier(idxRef)
-			return NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+			// The fetch is its own cascades expression carrying the live idxRef
+			// edge (RFC-184 W2).
+			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+				fetchQ,
+				fetchPlan.GetTranslateValueFunction(),
+				fetchPlan.GetResultType(),
+				fetchPlan.GetFetchIndexRecords(),
+			)
 		}
 	}
 	if idxPlan, ok := plan.(*plans.RecordQueryIndexPlan); ok {
 		if isCovering {
 			idxPlan = idxPlan.WithCovering(coveringColumns)
 		}
-		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering, unique: unique, columnNames: columnNames, pkColumnNames: pkColumnNames}
+		// The index scan is its own cascades expression now (RFC-184 W2) — the
+		// covering flag lives on the plan (WithCovering above); index metadata
+		// (columns/pk/unique) is threaded onto the plan so its HintRichOrdering and
+		// the cost model read the same facts the wrapper used to carry separately.
+		return idxPlan.WithIndexMetadata(columnNames, pkColumnNames, unique)
 	}
 	if vecPlan, ok := plan.(*plans.RecordQueryVectorIndexPlan); ok {
-		return &physicalVectorIndexScanWrapper{plan: vecPlan}
+		// The vector scan is its own Cascades expression now (RFC-184 W2) — a bare
+		// leaf plan carrying a stable per-instance result value, no
+		// physicalVectorIndexScanWrapper adapter needed.
+		return vecPlan
+	}
+	// A BARE primary-key scan is its own Cascades expression now (RFC-184 W2):
+	// RecordQueryScanPlan implements RelationalExpression directly and carries a
+	// stable per-instance result value, so it needs no adapter — yielding it
+	// bare gives its child edge a single memo storage location. Composite
+	// data-access shapes (TypeFilter(Scan), FlatMap) still ride the
+	// scanPlanExpression adapter, which reports no quantifiers while wrapping a
+	// plan that HAS children and compares them deeply (plans.Equals) — the
+	// identity a bare plan cannot yet provide for a multi-node subtree.
+	if bareScan, ok := plan.(*plans.RecordQueryScanPlan); ok {
+		return bareScan
 	}
 	return &scanPlanExpression{plan: plan}
 }
@@ -575,10 +602,10 @@ func (s *scanPlanExpression) HashCodeWithoutChildren() uint64 {
 // QOV(outer).fk`) is a CORRELATED probe — returning nil here (the prior behaviour) let
 // join-leg detection / winner-stamping treat it as self-contained and materialize/stamp
 // it without tracking the outer alias (a pre-existing gap in the RFC-150 data-access
-// correlation wiring, which reached physicalScanWrapper/physicalIndexScanWrapper but not
+// correlation wiring, which reached the bare scan/index expressions but not
 // this plan-backed leaf). dataAccessExprCorrelations reports the full set (SARG
 // comparands + residual preds + map values, params excluded), the same source the
-// physical scan wrappers use.
+// bare scan/index expressions use for their correlations.
 func (s *scanPlanExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return dataAccessExprCorrelations(s.plan)
 }
@@ -597,7 +624,7 @@ func (s *scanPlanExpression) GetCorrelatedToWithoutChildren() map[values.Correla
 // prices a key range that is not the one being scanned, and EXPLAIN cannot
 // show it because it never prints the comparison operand.
 //
-// physicalScanWrapper, the sibling adapter with the same no-quantifier shape,
+// The bare RecordQueryScanPlan expression, with the same no-quantifier shape,
 // already uses plans.Equals for precisely this reason; this was the outlier.
 //
 // Equality-only, deliberately: HashCodeWithoutChildren stays node-local.
@@ -635,12 +662,24 @@ func pkScanFromDataAccessPlan(plan plans.RecordQueryPlan) *plans.RecordQueryScan
 }
 
 // HintOrdering: a data-access PK scan produces rows in PK order, exactly
-// like physicalScanWrapper. Without this the SARGed primary scan the
-// data-access path memoizes (as this plan-backed leaf, not as
-// physicalScanWrapper) reads as unordered and ImplementSortRule cannot
-// elide a sort it satisfies.
+// like the bare RecordQueryScanPlan expression. Without this the SARGed
+// primary scan the data-access path memoizes (as this plan-backed leaf)
+// reads as unordered and ImplementSortRule cannot elide a sort it satisfies.
 func (s *scanPlanExpression) HintOrdering() properties.Ordering {
 	return plans.PKScanOrdering(pkScanFromDataAccessPlan(s.plan))
+}
+
+// HintCost delegates the wrapped data-access plan's REAL cost (via
+// concretePlanCost) instead of letting the adapter fall through to the
+// pessimistic default arm, which costs a fully-equality-bound (point-lookup)
+// scan at the full-table-scan cardinality (LeafScanCardinality = 1e6). That
+// latent mis-cost made an `id IN (...)` inner leg plan as a full scan +
+// residual filter when the correct plan is a point lookup per IN value. The
+// recursive-CTE operator choice this cost also feeds is held STRUCTURALLY
+// (compareRecursiveCTE, now consulted at extraction too), so correcting the
+// point-lookup cost cannot regress DFS→LevelUnion.
+func (s *scanPlanExpression) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	return concretePlanCost(s.plan, stats, nil)
 }
 
 // HintRichOrdering — the FIXED-equality-prefix PK ordering; see

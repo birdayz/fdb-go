@@ -36,11 +36,10 @@ func TestImplementIntersectionRule_FiresAfterAllChildrenImplemented(t *testing.T
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementIntersectionRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalIntersectionWrapper)
+	plan, ok := yielded[0].(*plans.RecordQueryIntersectionPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalIntersectionWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryIntersectionPlan", yielded[0])
 	}
-	plan := wrap.GetPlan()
 	if got := len(plan.GetInners()); got != 2 {
 		t.Fatalf("intersection inners = %d, want 2", got)
 	}
@@ -122,8 +121,8 @@ func TestPlannerWithBatchA_ImplementsIntersectionOverScan(t *testing.T) {
 	}
 
 	// Planning should produce a physical IntersectionPlan.
-	if _, ok := plan.(*physicalIntersectionWrapper); !ok {
-		t.Fatalf("plan = %T, want *physicalIntersectionWrapper", plan)
+	if _, ok := plan.(*plans.RecordQueryIntersectionPlan); !ok {
+		t.Fatalf("plan = %T, want *plans.RecordQueryIntersectionPlan", plan)
 	}
 }
 
@@ -148,8 +147,8 @@ func TestImplementIntersectionRule_ThreeChildren(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementIntersectionRule yielded %d, want 1", len(yielded))
 	}
-	wrap := yielded[0].(*physicalIntersectionWrapper)
-	if got := len(wrap.GetPlan().GetInners()); got != 3 {
+	plan := yielded[0].(*plans.RecordQueryIntersectionPlan)
+	if got := len(plan.GetInners()); got != 3 {
 		t.Fatalf("intersection inners = %d, want 3", got)
 	}
 }

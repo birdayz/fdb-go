@@ -28,24 +28,24 @@ type PushFilterThroughFetchRule struct {
 
 func NewPushFilterThroughFetchRule() *PushFilterThroughFetchRule {
 	return &PushFilterThroughFetchRule{
-		matcher: NewExpressionMatcher[*physicalPredicatesFilterWrapper]("phys_filter_over_fetch"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryPredicatesFilterPlan]("phys_filter_over_fetch"),
 	}
 }
 
 func (r *PushFilterThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
-	filterW := matching.Get[*physicalPredicatesFilterWrapper](call.Bindings, r.matcher)
+	filterW := matching.Get[*plans.RecordQueryPredicatesFilterPlan](call.Bindings, r.matcher)
 
-	innerRef := filterW.innerQuant.GetRangesOver()
+	innerRef := filterW.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return
 	}
 
-	// Find the fetch wrapper in the filter's inner.
-	var fetchW *physicalFetchFromPartialRecordWrapper
+	// Find the fetch in the filter's inner.
+	var fetchW *plans.RecordQueryFetchFromPartialRecordPlan
 	for _, m := range innerRef.AllMembers() {
-		if fw, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
+		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			fetchW = fw
 			break
 		}
@@ -54,10 +54,10 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	fetchPlan := fetchW.plan
-	queryPredicates := filterW.plan.GetPredicates()
+	fetchPlan := fetchW
+	queryPredicates := filterW.GetPredicates()
 
-	oldInnerAlias := filterW.innerQuant.GetAlias()
+	oldInnerAlias := filterW.GetInnerQuantifier().GetAlias()
 	newInnerAlias := values.UniqueCorrelationIdentifier()
 
 	var pushed []predicates.QueryPredicate
@@ -78,7 +78,7 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	// Get the fetch's inner (covering index scan).
-	fetchInnerRef := fetchW.innerQuant.GetRangesOver()
+	fetchInnerRef := fetchW.GetInnerQuantifier().GetRangesOver()
 	if fetchInnerRef == nil {
 		return
 	}
@@ -93,40 +93,50 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Build: Filter(pushed, fetchInner)
-	pushedFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(fetchInnerPlan, pushed)
+	// Build: Filter(pushed, fetchInner) as its own cascades expression carrying a
+	// DISENTANGLED FINAL edge over the BAKED concrete fetchInnerPlan — the exact
+	// snapshot structure the wrapper interned (RFC-184 W2). Freezing the baked plan
+	// (not the live fetchInnerExpr memo edge, whose children may still be holes)
+	// keeps this pushed member's structure byte-stable, so a parent that captures
+	// it stays reachable as the memo re-explores. innerQ's alias is reused so
+	// GetResultValue matches the wrapper.
 	innerQ := expressions.ForEachQuantifier(
 		call.MemoizeFinalExpressionsFromOther(fetchInnerRef, []expressions.RelationalExpression{fetchInnerExpr}),
 	)
-	pushedFilterWrapper := NewPhysicalPredicatesFilterWrapper(pushedFilterPlan, innerQ)
+	pushedInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+		call.MemoizeFinalExpression(fetchInnerPlan))
+	pushedFilterPlan := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(pushedInnerQ, pushed)
 
 	// Memoize the pushed filter.
-	pushedFilterRef := call.MemoizeFinalExpression(pushedFilterWrapper)
+	pushedFilterRef := call.MemoizeFinalExpression(pushedFilterPlan)
 
-	// Build: Fetch(Filter(pushed, fetchInner))
-	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		pushedFilterPlan,
+	// Build: Fetch(Filter(pushed, fetchInner)) as its own cascades expression
+	// carrying the live pushedFilterRef edge (RFC-184 W2).
+	newFetchQ := expressions.ForEachQuantifier(pushedFilterRef)
+	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+		newFetchQ,
 		fetchPlan.GetTranslateValueFunction(),
 		fetchPlan.GetResultType(),
 		fetchPlan.GetFetchIndexRecords(),
 	)
-	newFetchQ := expressions.ForEachQuantifier(pushedFilterRef)
-	newFetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(newFetchPlan, newFetchQ)
 
 	if len(residual) == 0 {
 		// Case 2: all pushed.
-		call.Yield(newFetchWrapper)
+		call.Yield(newFetchPlan)
 	} else {
 		// Case 3: some residual.
-		fetchRef := call.MemoizeFinalExpression(newFetchWrapper)
+		fetchRef := call.MemoizeFinalExpression(newFetchPlan)
 		newQOverFetch := expressions.ForEachQuantifier(fetchRef)
 
 		// Rebase residual predicates to use the new fetch quantifier alias.
 		rebasedResidual := rebasePredicates(residual, oldInnerAlias, newQOverFetch.GetAlias())
 
-		residualFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(newFetchPlan, rebasedResidual)
-		residualFilterWrapper := NewPhysicalPredicatesFilterWrapper(residualFilterPlan, newQOverFetch)
-		call.Yield(residualFilterWrapper)
+		// The residual filter carries the live newQOverFetch edge — a
+		// DISENTANGLED single-member reference over the concrete newFetchPlan
+		// (MemoizeFinalExpression), so planFromQuantifier resolves it directly
+		// (RFC-184 W2).
+		residualFilterPlan := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(newQOverFetch, rebasedResidual)
+		call.Yield(residualFilterPlan)
 	}
 }
 

@@ -19,9 +19,8 @@ import (
 // members they pattern-match; cost extraction picks the physical
 // (the logical has no Execute path).
 //
-// The rule yields a `*plans.RecordQueryScanPlan` wrapped in a
-// `physicalScanWrapper` (the plan/expression hierarchies are separate
-// in Go — see physical_wrapper.go).
+// The rule yields a bare `*plans.RecordQueryScanPlan`, which is its own
+// physical Cascades expression (RFC-184 W2).
 //
 // Java equivalent: `PrimaryScanRule`. This rule is the unindexed
 // fallback; sargable primary-key access goes through
@@ -58,7 +57,9 @@ func (r *PrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 		}
 	}
 
-	call.Yield(&physicalScanWrapper{plan: plan})
+	// Yield the BARE scan: RecordQueryScanPlan is its own physical Cascades
+	// expression now (RFC-184 W2), so no adapter is needed for a leaf scan.
+	call.Yield(plan)
 }
 
 var _ ExpressionRule = (*PrimaryScanRule)(nil)

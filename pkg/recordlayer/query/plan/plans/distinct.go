@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -46,9 +45,43 @@ func NewRecordQueryDistinctPlan(inner RecordQueryPlan) *RecordQueryDistinctPlan 
 	return &RecordQueryDistinctPlan{innerQ: QuantifierOverPlan(inner)}
 }
 
+// NewRecordQueryDistinctPlanFromQuantifier builds a distinct whose child is a
+// supplied memo quantifier instead of a snapshot over a single plan. This makes
+// the plan its own cascades expression carrying its child edge directly — the
+// memo holds it without a physicalDistinctWrapper (RFC-184 W2).
+//
+// The streaming flag is passed EXPLICITLY because it is the ordering-critical
+// axis: it is sound only when the inner is ordered by the dedup key (equal rows
+// adjacent), so it MUST be computed against the exact inner this quantifier
+// resolves to. Unlike a plain (hash) distinct — which dedups over any inner and
+// therefore carries the LIVE shared-group edge, following push-rule
+// canonicalization — a STREAMING distinct freezes its ordering-critical inner
+// in a DETACHED single-member final reference so planFromQuantifier resolves
+// that exact member and the streaming executor never runs over an unordered
+// float. See newPhysicalDistinctFor.
+func NewRecordQueryDistinctPlanFromQuantifier(innerQ expressions.Quantifier, streaming bool) *RecordQueryDistinctPlan {
+	return &RecordQueryDistinctPlan{innerQ: innerQ, Streaming: streaming}
+}
+
 // GetInner returns the inner plan, dereferenced through the quantifier.
 func (p *RecordQueryDistinctPlan) GetInner() RecordQueryPlan {
 	return planFromQuantifier(p.innerQ)
+}
+
+// GetInnerQuantifier returns the live child quantifier — the single memo edge
+// the distinct ranges over. The push rules read it to reach the distinct's inner
+// group; since RFC-184 W2 the memo holds the bare plan (no physicalDistinctWrapper
+// whose innerQuant field they used to read), this exposes the same edge.
+func (p *RecordQueryDistinctPlan) GetInnerQuantifier() expressions.Quantifier {
+	return p.innerQ
+}
+
+// GetResultValue returns the flowed object value of the child quantifier — a
+// distinct drops duplicate rows but reshapes nothing, so its row identity IS the
+// inner's. This is the identity physicalDistinctWrapper.GetResultValue supplied
+// (RFC-184 W2).
+func (p *RecordQueryDistinctPlan) GetResultValue() values.Value {
+	return p.innerQ.GetFlowedObjectValue()
 }
 
 // GetResultType returns the inner's result type.
@@ -82,20 +115,18 @@ func (p *RecordQueryDistinctPlan) GetQuantifiers() []expressions.Quantifier {
 // operator-specific data; a streaming and a hash-set distinct dedup to the same
 // rows but are NOT execution-interchangeable (streaming assumes ordered input),
 // so they must not be conflated in the memo.
+func (p *RecordQueryDistinctPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Bool(p.Streaming)
+}
+
 func (p *RecordQueryDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryDistinctPlan)
-	return ok && o.Streaming == p.Streaming
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren discriminates on type and the Streaming mode.
 func (p *RecordQueryDistinctPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	if p.Streaming {
-		h.Write([]byte("distinctplan|streaming"))
-	} else {
-		h.Write([]byte("distinctplan"))
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("distinctplan|")
 }
 
 // Explain renders Distinct(inner). The Streaming mode is an execution-only
@@ -133,6 +164,26 @@ var (
 	_ RecordQueryPlan                  = (*RecordQueryDistinctPlan)(nil)
 	_ expressions.RelationalExpression = (*RecordQueryDistinctPlan)(nil)
 )
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The distinct carries its child as a single memo edge, so the
+// relink is a quantifier swap: WithQuantifiers copies the receiver (preserving
+// the Streaming mode — the flag a constructor rebuild would reset and thereby
+// downgrade a resume-clean streaming distinct to the cross-page-buggy hash-set,
+// TODO C5) and re-resolves GetInner through the new singleton reference. This
+// replaces physicalDistinctWrapper.WithChildren (RFC-184 W2), whose separate
+// snapshot plan field forced a WithInner rebuild gated on isLeafReplaceable — a
+// gate that DECLINED to relink onto a non-leaf-replaceable (e.g. projection)
+// pinned inner and so kept a redundant enforcer sort Java's RemoveSortRule
+// elides. The unconditional swap re-resolves through GetInner, reaches the
+// executable plan, and lets that elision fire — a parity gain, the same as the
+// predicates-filter collapse.
+func (p *RecordQueryDistinctPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryDistinctPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
+}
 
 // WithInner returns a copy with the inner replaced and every other field
 // preserved — the extraction-relink rebuild path (see findPhysicalPlan's

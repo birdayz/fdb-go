@@ -1,7 +1,6 @@
 package plans
 
 import (
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -15,41 +14,52 @@ import (
 type RecordQueryValuesPlan struct {
 	PlanExprBase
 	columns []values.Value
+	// resultValue is the stable per-instance QuantifiedObjectValue standing for
+	// the single row this plan emits — minted once at construction, returned by
+	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
+	// instance). A bare leaf that stands as its own Cascades expression must
+	// present a consistent row identity across repeated interrogations, the role
+	// physicalValuesWrapper's fresh-per-call GetResultValue could not (RFC-184 W2).
+	// nil for struct-literal test plans that bypass the constructor —
+	// GetResultValue falls back to PlanExprBase's fresh QOV there.
+	resultValue values.Value
 }
 
 func NewRecordQueryValuesPlan(columns []values.Value) *RecordQueryValuesPlan {
-	return &RecordQueryValuesPlan{columns: columns}
+	return &RecordQueryValuesPlan{
+		columns:     columns,
+		resultValue: values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	}
 }
 
 func (p *RecordQueryValuesPlan) GetColumns() []values.Value { return p.columns }
+
+// GetResultValue returns the values plan's STABLE per-instance result value —
+// the single correlation identity a bare values plan carries as its own memo
+// expression (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
+// struct-literal test plans that bypass the constructor (resultValue is nil).
+func (p *RecordQueryValuesPlan) GetResultValue() values.Value {
+	if p.resultValue == nil {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.resultValue
+}
 
 func (p *RecordQueryValuesPlan) GetResultType() values.Type { return values.UnknownType }
 
 func (p *RecordQueryValuesPlan) GetChildren() []RecordQueryPlan { return nil }
 
+func (p *RecordQueryValuesPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Values(p.columns)
+}
+
 func (p *RecordQueryValuesPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryValuesPlan)
-	if !ok {
-		return false
-	}
-	if len(p.columns) != len(o.columns) {
-		return false
-	}
-	for i := range p.columns {
-		if !semanticValueEquals(p.columns[i], o.columns[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryValuesPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("valuesplan|"))
-	for _, v := range p.columns {
-		writeValueHash(h, v)
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("valuesplan|")
 }
 
 func (p *RecordQueryValuesPlan) Explain() string {

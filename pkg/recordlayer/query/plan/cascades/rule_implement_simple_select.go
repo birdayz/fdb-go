@@ -88,35 +88,52 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 		currentPlan := innerPlans[0]
 
 		if innerQuantifier.Kind() == expressions.QuantifierExistential {
-			fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(currentPlan, values.NewNullValue(values.UnknownType))
-			fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan, currentQuant)
+			// FirstOrDefault collapses onto a DISENTANGLED FINAL edge holding the
+			// concrete SARG-pushed member currentPlan (constraint-preserving
+			// disentangle, RFC-184 W2). The correlated EXISTS/scalar-subquery FOD
+			// wraps a SARG-pushed snapshot that deliberately diverges from the shared
+			// group's winner; freezing currentPlan into a PRIVATE single-member
+			// reference makes planFromQuantifier resolve the SARG member — never the
+			// non-SARG base the shared multi-member group currentRef would float to.
+			// The frozen edge keeps innerQuantifier's alias so GetResultValue is
+			// unchanged.
+			fodInnerQ := expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(),
+				call.MemoizeFinalExpression(currentPlan))
+			fodPlan := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(fodInnerQ, values.NewNullValue(values.UnknownType))
 			if len(queryPredicates) == 0 && isSimpleResult {
-				call.YieldFinalExpression(fodWrapper)
+				call.YieldFinalExpression(fodPlan)
 				continue
 			}
-			fodRef := call.MemoizeFinalExpression(fodWrapper)
+			fodRef := call.MemoizeFinalExpression(fodPlan)
 			currentQuant = expressions.NewPhysicalQuantifier(fodRef)
 			currentPlan = fodPlan
 		} else if innerQuantifier.Kind() == expressions.QuantifierForEach && innerQuantifier.IsNullOnEmpty() {
-			doePlan := plans.NewRecordQueryDefaultOnEmptyPlan(currentPlan, values.NewNullValue(values.UnknownType))
-			doeWrapper := NewPhysicalDefaultOnEmptyWrapper(doePlan, currentQuant)
+			// The DefaultOnEmpty is its own cascades expression carrying the live
+			// currentQuant edge (RFC-184 W2) — no physicalDefaultOnEmptyWrapper.
+			doePlan := plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(currentQuant, values.NewNullValue(values.UnknownType))
 			if len(queryPredicates) == 0 && isSimpleResult {
-				call.YieldFinalExpression(doeWrapper)
+				call.YieldFinalExpression(doePlan)
 				continue
 			}
-			doeRef := call.MemoizeFinalExpression(doeWrapper)
+			doeRef := call.MemoizeFinalExpression(doePlan)
 			currentQuant = expressions.NewPhysicalQuantifier(doeRef)
 			currentPlan = doePlan
 		}
 
 		if len(queryPredicates) > 0 {
-			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(currentPlan, queryPredicates, innerQuantifier.GetAlias())
-			filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, currentQuant)
-			filterRef := call.MemoizeFinalExpression(filterWrapper)
+			// The filter carries the LIVE currentQuant edge over the shared inner
+			// group (RFC-184 W2) — exactly the edge the wrapper's innerQuant
+			// presented. A plain filter's inner has no correlated SARG snapshot to
+			// preserve (unlike FoD/NLJ), so ranging over the live group keeps
+			// push_filter_through_fetch's re-explored pushed member reachable from a
+			// parent that captures this leg; a frozen snapshot strands the pre-push
+			// filter once the merged group canonicalizes to the pushed one.
+			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(currentQuant, queryPredicates, innerQuantifier.GetAlias())
+			filterRef := call.MemoizeFinalExpression(filterPlan)
 			currentQuant = expressions.NewPhysicalQuantifier(filterRef)
 			currentPlan = filterPlan
 			if isSimpleResult {
-				call.YieldFinalExpression(filterWrapper)
+				call.YieldFinalExpression(filterPlan)
 				continue
 			}
 		}
@@ -128,9 +145,10 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 					innerQuantifier.GetAlias(): currentQuant.GetAlias(),
 				})
 			}
-			mapPlan := plans.NewRecordQueryMapPlan(currentPlan, mapResultValue)
-			mapWrapper := NewPhysicalMapWrapper(mapPlan, currentQuant)
-			call.YieldFinalExpression(mapWrapper)
+			// The projection (Map) is its own cascades expression carrying the
+			// live currentQuant edge (RFC-184 W2).
+			mapPlan := plans.NewRecordQueryMapPlanFromQuantifier(currentQuant, mapResultValue)
+			call.YieldFinalExpression(mapPlan)
 		}
 	}
 }

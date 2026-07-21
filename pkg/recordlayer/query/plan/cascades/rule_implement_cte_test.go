@@ -22,13 +22,10 @@ func TestImplementTempTableScan_Fires(t *testing.T) {
 		t.Fatalf("ImplementTempTableScanRule yielded %d, want 1", len(yielded))
 	}
 
-	wrap, ok := yielded[0].(*physicalTempTableScanWrapper)
+	// RFC-184 W2: the temp-table scan is its own bare plan expression.
+	plan, ok := yielded[0].(*plans.RecordQueryTempTableScanPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalTempTableScanWrapper", yielded[0])
-	}
-	plan, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTempTableScanPlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryTempTableScanPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("yield = %T, want *plans.RecordQueryTempTableScanPlan", yielded[0])
 	}
 	if plan.GetTempTableAlias() != alias {
 		t.Fatalf("plan alias = %v, want %v", plan.GetTempTableAlias(), alias)
@@ -52,7 +49,7 @@ func TestImplementTempTableScan_ViaPlanner(t *testing.T) {
 
 	foundPhysical := false
 	for _, m := range ref.AllMembers() {
-		if _, ok := m.(*physicalTempTableScanWrapper); ok {
+		if _, ok := m.(*plans.RecordQueryTempTableScanPlan); ok {
 			foundPhysical = true
 			break
 		}
@@ -81,13 +78,10 @@ func TestImplementTempTableScan_PlanOutput(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	wrap, ok := plan.(*physicalTempTableScanWrapper)
+	// RFC-184 W2: the temp-table scan is its own bare plan expression.
+	rqp, ok := plan.(*plans.RecordQueryTempTableScanPlan)
 	if !ok {
-		t.Fatalf("plan = %T, want *physicalTempTableScanWrapper", plan)
-	}
-	rqp, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTempTableScanPlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryTempTableScanPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("plan = %T, want *plans.RecordQueryTempTableScanPlan", plan)
 	}
 	if rqp.GetTempTableAlias() != alias {
 		t.Fatalf("alias = %v, want %v", rqp.GetTempTableAlias(), alias)
@@ -119,13 +113,10 @@ func TestImplementTempTableInsert_FiresAfterScanImplemented(t *testing.T) {
 		t.Fatalf("ImplementTempTableInsertRule yielded %d, want 1", len(yielded))
 	}
 
-	wrap, ok := yielded[0].(*physicalTempTableInsertWrapper)
+	// RFC-184 W2: the temp-table insert is its own bare plan expression.
+	plan, ok := yielded[0].(*plans.RecordQueryTempTableInsertPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalTempTableInsertWrapper", yielded[0])
-	}
-	plan, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTempTableInsertPlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryTempTableInsertPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("yield = %T, want *plans.RecordQueryTempTableInsertPlan", yielded[0])
 	}
 	if plan.GetTempTableAlias() != alias {
 		t.Fatalf("alias = %v, want %v", plan.GetTempTableAlias(), alias)
@@ -185,13 +176,10 @@ func TestImplementTempTableInsert_ViaPlanner(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	wrap, ok := plan.(*physicalTempTableInsertWrapper)
+	// RFC-184 W2: the temp-table insert is its own bare plan expression.
+	rqp, ok := plan.(*plans.RecordQueryTempTableInsertPlan)
 	if !ok {
-		t.Fatalf("plan = %T, want *physicalTempTableInsertWrapper", plan)
-	}
-	rqp, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryTempTableInsertPlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryTempTableInsertPlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("plan = %T, want *plans.RecordQueryTempTableInsertPlan", plan)
 	}
 	if rqp.GetTempTableAlias() != alias {
 		t.Fatalf("alias = %v, want %v", rqp.GetTempTableAlias(), alias)
@@ -248,10 +236,10 @@ func TestImplementRecursiveDfsJoin_TraversalAny_YieldsPreorder(t *testing.T) {
 	}
 
 	if !IsPhysicalRecursiveDfsJoin(yielded[0]) {
-		t.Fatalf("yield = %T, want *physicalRecursiveDfsJoinWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryRecursiveDfsJoinPlan", yielded[0])
 	}
 
-	wrap := yielded[0].(*physicalRecursiveDfsJoinWrapper)
+	wrap := yielded[0].(*plans.RecordQueryRecursiveDfsJoinPlan)
 	plan, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryRecursiveDfsJoinPlan)
 	if !ok {
 		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryRecursiveDfsJoinPlan", wrap.GetRecordQueryPlan())
@@ -309,7 +297,7 @@ func TestImplementRecursiveDfsJoin_TraversalPostorder(t *testing.T) {
 		t.Fatalf("ImplementRecursiveDfsJoinRule yielded %d, want 1", len(yielded))
 	}
 
-	wrap := yielded[0].(*physicalRecursiveDfsJoinWrapper)
+	wrap := yielded[0].(*plans.RecordQueryRecursiveDfsJoinPlan)
 	plan := wrap.GetRecordQueryPlan().(*plans.RecordQueryRecursiveDfsJoinPlan)
 	if plan.GetTraversalStrategy() != plans.DfsPostorder {
 		t.Fatalf("strategy = %v, want DfsPostorder", plan.GetTraversalStrategy())
@@ -497,15 +485,15 @@ func TestImplementRecursiveDfsJoin_PlanOutput(t *testing.T) {
 
 	// Find the physical RecursiveDfsJoin among the members and verify
 	// it carries a plan with an Explain string.
-	var dfsWrap *physicalRecursiveDfsJoinWrapper
+	var dfsWrap *plans.RecordQueryRecursiveDfsJoinPlan
 	for _, m := range topRef.AllMembers() {
-		if w, ok := m.(*physicalRecursiveDfsJoinWrapper); ok {
+		if w, ok := m.(*plans.RecordQueryRecursiveDfsJoinPlan); ok {
 			dfsWrap = w
 			break
 		}
 	}
 	if dfsWrap == nil {
-		t.Fatal("no physicalRecursiveDfsJoinWrapper found in topRef members")
+		t.Fatal("no plans.RecordQueryRecursiveDfsJoinPlan found in topRef members")
 	}
 
 	rqp := dfsWrap.GetRecordQueryPlan()
@@ -574,10 +562,10 @@ func TestImplementRecursiveLevelUnion_TraversalLevel_Fires(t *testing.T) {
 	}
 
 	if !IsPhysicalRecursiveLevelUnion(yielded[0]) {
-		t.Fatalf("yield = %T, want *physicalRecursiveLevelUnionWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryRecursiveLevelUnionPlan", yielded[0])
 	}
 
-	wrap := yielded[0].(*physicalRecursiveLevelUnionWrapper)
+	wrap := yielded[0].(*plans.RecordQueryRecursiveLevelUnionPlan)
 	plan, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryRecursiveLevelUnionPlan)
 	if !ok {
 		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryRecursiveLevelUnionPlan", wrap.GetRecordQueryPlan())
@@ -598,7 +586,7 @@ func TestImplementRecursiveLevelUnion_TraversalAny_Fires(t *testing.T) {
 		t.Fatalf("ImplementRecursiveLevelUnionRule yielded %d for TraversalAny, want 1", len(yielded))
 	}
 	if !IsPhysicalRecursiveLevelUnion(yielded[0]) {
-		t.Fatalf("yield = %T, want *physicalRecursiveLevelUnionWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryRecursiveLevelUnionPlan", yielded[0])
 	}
 }
 
@@ -675,15 +663,15 @@ func TestImplementRecursiveLevelUnion_PlanOutput(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	var wrap *physicalRecursiveLevelUnionWrapper
+	var wrap *plans.RecordQueryRecursiveLevelUnionPlan
 	for _, m := range topRef.AllMembers() {
-		if w, ok := m.(*physicalRecursiveLevelUnionWrapper); ok {
+		if w, ok := m.(*plans.RecordQueryRecursiveLevelUnionPlan); ok {
 			wrap = w
 			break
 		}
 	}
 	if wrap == nil {
-		t.Fatal("no physicalRecursiveLevelUnionWrapper found")
+		t.Fatal("no plans.RecordQueryRecursiveLevelUnionPlan found")
 	}
 
 	rqp := wrap.GetRecordQueryPlan()

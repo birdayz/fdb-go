@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -64,10 +63,47 @@ func NewRecordQueryFetchFromPartialRecordPlan(
 	}
 }
 
+// NewRecordQueryFetchFromPartialRecordPlanFromQuantifier builds a fetch whose
+// child is a LIVE memo quantifier (a push/data-access rule passes a
+// ForEachQuantifier over the freshly-memoized covering-scan singleton) instead
+// of a snapshot over a single plan. This makes the fetch its own cascades
+// expression carrying its child edge directly: the memo holds it without a
+// physical wrapper, and GetInner / GetQuantifiers / OrderingSourceRef all
+// resolve through the one live edge (RFC-184 W2). Mirrors the field defaulting
+// of NewRecordQueryFetchFromPartialRecordPlan.
+func NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+	innerQ expressions.Quantifier,
+	translateValueFunction TranslateValueFunction,
+	resultType values.Type,
+	fetchIndexRecords FetchIndexRecords,
+) *RecordQueryFetchFromPartialRecordPlan {
+	if resultType == nil {
+		resultType = values.UnknownType
+	}
+	if translateValueFunction == nil {
+		translateValueFunction = UnableToTranslate
+	}
+	return &RecordQueryFetchFromPartialRecordPlan{
+		innerQ:                 innerQ,
+		translateValueFunction: translateValueFunction,
+		resultType:             resultType,
+		fetchIndexRecords:      fetchIndexRecords,
+	}
+}
+
 // GetInner returns the inner plan (typically a covering index scan),
 // dereferenced through the quantifier.
 func (p *RecordQueryFetchFromPartialRecordPlan) GetInner() RecordQueryPlan {
 	return planFromQuantifier(p.innerQ)
+}
+
+// GetInnerQuantifier returns the live child quantifier — the single memo edge
+// the fetch ranges over. Push/data-access rules that match a physical fetch in
+// the memo need its inner GROUP (GetRangesOver) and alias to re-plan around it;
+// since RFC-184 W2 the memo holds the bare plan (no physicalFetchFromPartialRecordWrapper
+// whose innerQuant field they used to read), this exposes the same edge.
+func (p *RecordQueryFetchFromPartialRecordPlan) GetInnerQuantifier() expressions.Quantifier {
+	return p.innerQ
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -129,22 +165,21 @@ func (p *RecordQueryFetchFromPartialRecordPlan) GetChildren() []RecordQueryPlan 
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares fetch mode (inner is the caller's
-// responsibility via children).
-func (p *RecordQueryFetchFromPartialRecordPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
-	o, ok := other.(*RecordQueryFetchFromPartialRecordPlan)
-	if !ok {
-		return false
-	}
-	return p.fetchIndexRecords == o.fetchIndexRecords
+// structuralKey lists the field that distinguishes this fetch in the memo: the
+// fetch mode. The inner is the caller's responsibility via children, so it is
+// excluded. The same key drives both EqualsPlanWithoutChildren and
+// HashCodeWithoutChildren.
+func (p *RecordQueryFetchFromPartialRecordPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Int(int(p.fetchIndexRecords))
 }
 
-// HashCodeWithoutChildren mixes type discriminator + fetch mode.
+func (p *RecordQueryFetchFromPartialRecordPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
+	o, ok := other.(*RecordQueryFetchFromPartialRecordPlan)
+	return ok && p.structuralKey().Equal(o.structuralKey())
+}
+
 func (p *RecordQueryFetchFromPartialRecordPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("fetchfrompartialrecordplan|"))
-	h.Write([]byte{byte(p.fetchIndexRecords)})
-	return h.Sum64()
+	return p.structuralKey().Hash("fetchfrompartialrecordplan|")
 }
 
 // Explain renders Fetch(inner).
@@ -186,6 +221,20 @@ func (p *RecordQueryFetchFromPartialRecordPlan) WithQuantifiers(qs []expressions
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). Because the fetch carries its child as a single LIVE memo edge, the
+// relink is exactly a quantifier swap: WithQuantifiers preserves the translate
+// function, result type and fetch mode, and GetInner re-resolves through the new
+// singleton reference. This replaces physicalFetchFromPartialRecordWrapper.WithChildren
+// (RFC-184 W2), whose separate snapshot plan field forced a constructor rebuild —
+// a single live child edge needs none.
+func (p *RecordQueryFetchFromPartialRecordPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryFetchFromPartialRecordPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -143,26 +142,27 @@ func (p *RecordQuerySelectorPlan) GetChildren() []RecordQueryPlan {
 	return plansFromQuantifiers(p.childQs)
 }
 
+// structuralKey folds the selector identity: reverse flag and the PlanSelector
+// via its own .Equals() (Equatable), hashed by its stable .String() label — the
+// exact primitives the hand-rolled equals/hash used. Drives both Equals and Hash.
+func (p *RecordQuerySelectorPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Bool(p.reverse).
+		Equatable(p.planSelector, func(other any) bool {
+			o, ok := other.(PlanSelector)
+			return ok && p.planSelector.Equals(o)
+		}, []byte(p.planSelector.String()))
+}
+
 // EqualsWithoutChildren compares reverse flag and plan selector.
 func (p *RecordQuerySelectorPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQuerySelectorPlan)
-	if !ok {
-		return false
-	}
-	return p.reverse == o.reverse && p.planSelector.Equals(o.planSelector)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes reverse flag and plan selector label.
 func (p *RecordQuerySelectorPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("selectorplan|"))
-	if p.reverse {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	h.Write([]byte(p.planSelector.String()))
-	return h.Sum64()
+	return p.structuralKey().Hash("selectorplan|")
 }
 
 // Explain renders Selector(child1, child2, ..., selector).

@@ -111,13 +111,9 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
-		wrapper := &physicalIndexScanWrapper{
-			plan:          idxPlan,
-			columnNames:   colNames,
-			pkColumnNames: candidatePKColumns(cand),
-			unique:        cand.IsUnique(),
-		}
-		call.Yield(wrapper)
+		// The index scan is its own cascades expression now (RFC-184 W2) — a bare
+		// leaf carrying its index metadata (columns/pk/unique) on the plan.
+		call.Yield(idxPlan.WithIndexMetadata(colNames, candidatePKColumns(cand), cand.IsUnique()))
 	}
 }
 

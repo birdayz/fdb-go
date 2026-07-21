@@ -61,6 +61,7 @@ go_test(
         "flatmap_outer_baked_binder_test.go",
         "frontier_ordinal_authority_test.go",
         "identity_passthrough_outer_kind_test.go",
+        "in_memory_sort_over_ordered_scan_rowsread_test.go",
         "intersection_compkey_test.go",
         "limit_envelope_test.go",
         "limit_extension_test.go",
@@ -162,6 +163,7 @@ go_test(
         "recursive_distinct_replay_test.go",
         "recursive_cursor_resume_test.go",
         "distinct_stream.go",
+        "in_memory_sort_over_ordered_scan_rowsread_test.go",
     ],
     deps = [
         "//gen",

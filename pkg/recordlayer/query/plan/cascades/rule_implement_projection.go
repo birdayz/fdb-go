@@ -43,15 +43,15 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 	// scan participates in sort elimination and cost comparison.
 	projectedValues := proj.GetProjectedValues()
 	for _, m := range innerRef.AllMembers() {
-		fetchW, ok := m.(*physicalFetchFromPartialRecordWrapper)
+		fetchW, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan)
 		if !ok {
 			continue
 		}
-		srcAlias := fetchW.innerQuant.GetAlias()
+		srcAlias := fetchW.GetInnerQuantifier().GetAlias()
 		tgtAlias := values.UniqueCorrelationIdentifier()
 		allPushable := true
 		for _, v := range projectedValues {
-			if _, ok := fetchW.plan.PushValue(v, srcAlias, tgtAlias); !ok {
+			if _, ok := fetchW.PushValue(v, srcAlias, tgtAlias); !ok {
 				allPushable = false
 				break
 			}
@@ -59,24 +59,19 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		if !allPushable {
 			continue
 		}
-		fetchInnerRef := fetchW.innerQuant.GetRangesOver()
+		fetchInnerRef := fetchW.GetInnerQuantifier().GetRangesOver()
 		if fetchInnerRef == nil {
 			continue
 		}
-		if idxW := findIndexScanWrapper(fetchInnerRef); idxW != nil {
-			coveredPlan := idxW.plan.WithCovering(idxW.columnNames)
-			coveringIdxW := &physicalIndexScanWrapper{
-				plan:          coveredPlan,
-				columnNames:   idxW.columnNames,
-				pkColumnNames: idxW.pkColumnNames,
-				unique:        idxW.unique,
-				covering:      true,
-			}
-			coveringRef := call.MemoizeExpression(coveringIdxW)
-			cq := expressions.ForEachQuantifier(coveringRef)
-			wrapPlan := plans.NewRecordQueryProjectionPlanWithAliases(
-				projectedValues, proj.GetAliases(), coveredPlan)
-			call.Yield(NewPhysicalProjectionWrapper(wrapPlan, cq))
+		if idxPlan := findIndexScanPlan(fetchInnerRef); idxPlan != nil {
+			// The covering index scan is its own cascades expression (RFC-184 W2);
+			// WithCovering preserves the metadata already on the plan (struct copy).
+			coveredPlan := idxPlan.WithCovering(idxPlan.GetColumnNames())
+			cq := expressions.ForEachQuantifier(call.MemoizeExpression(coveredPlan))
+			// The projection is its own cascades expression carrying the live cq
+			// edge (RFC-184 W2).
+			call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifier(
+				projectedValues, proj.GetAliases(), cq))
 		}
 	}
 
@@ -96,13 +91,14 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 		seen[winner] = true
-		ph, ok := winner.(physicalPlanExpression)
-		if !ok {
+		if _, ok := winner.(physicalPlanExpression); !ok {
 			continue
 		}
-		projPlan := plans.NewRecordQueryProjectionPlanWithAliases(proj.GetProjectedValues(), proj.GetAliases(), ph.GetRecordQueryPlan())
 		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-		call.Yield(NewPhysicalProjectionWrapper(projPlan, innerQ))
+		// The projection is its own cascades expression carrying the live innerQ
+		// edge (RFC-184 W2).
+		call.Yield(plans.NewRecordQueryProjectionPlanFromQuantifier(
+			proj.GetProjectedValues(), proj.GetAliases(), innerQ))
 	}
 }
 

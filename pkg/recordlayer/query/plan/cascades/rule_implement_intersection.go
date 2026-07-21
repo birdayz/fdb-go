@@ -49,7 +49,6 @@ func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 	if len(children) == 0 {
 		return
 	}
-	innerPlans := make([]plans.RecordQueryPlan, 0, len(children))
 	winners := make([]expressions.RelationalExpression, 0, len(children))
 	for _, q := range children {
 		innerRef := q.GetRangesOver()
@@ -60,24 +59,20 @@ func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 		if winner == nil {
 			return // any child not physical → skip the whole rule fire
 		}
-		ph, ok := winner.(physicalPlanExpression)
-		if !ok {
+		if _, ok := winner.(physicalPlanExpression); !ok {
 			return
 		}
-		innerPlans = append(innerPlans, ph.GetRecordQueryPlan())
 		winners = append(winners, winner)
 	}
 
-	intersectionPlan := plans.NewRecordQueryIntersectionPlan(innerPlans, intr.GetComparisonKeyValues())
-
-	// Reuse the existing physical wrapper expressions from each child
-	// Reference rather than re-wrapping from scratch.
+	// The intersection plan carries its leg edges directly — one live quantifier
+	// per winner, no separate physical wrapper (RFC-184 W2).
 	childQs := make([]expressions.Quantifier, 0, len(winners))
 	for _, winner := range winners {
 		childQs = append(childQs, expressions.ForEachQuantifier(call.MemoizeExpression(winner)))
 	}
 
-	call.Yield(NewPhysicalIntersectionWrapper(intersectionPlan, childQs))
+	call.Yield(plans.NewRecordQueryIntersectionPlanFromQuantifiers(childQs, intr.GetComparisonKeyValues()))
 }
 
 var _ ExpressionRule = (*ImplementIntersectionRule)(nil)

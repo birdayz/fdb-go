@@ -52,8 +52,12 @@ tests:
       - [2]
 
   # Range predicate on single-col PK → range pushdown (ScanRecordsInRange
-  # with RangeExclusive low endpoint).
+  # with RangeExclusive low endpoint). ORDER BY id is satisfied by the
+  # primary-key scan order, so the sort MUST be eliminated — never materialized
+  # into an InMemorySort over the already-ordered scan (RFC-184 W2 depth-rung gate).
   - query: SELECT id FROM t WHERE id > 2 ORDER BY id
+    plan_contains: "TypeFilter([T], Scan(T, [<>]))"
+    plan_not_contains: InMemorySort
     rows:
       - [3]
       - [4]

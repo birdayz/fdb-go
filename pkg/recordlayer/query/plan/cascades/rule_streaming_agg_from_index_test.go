@@ -40,7 +40,7 @@ func TestStreamingAggFromIndex_Fires(t *testing.T) {
 	}
 
 	if !IsPhysicalStreamingAgg(results[0]) {
-		t.Fatalf("expected physicalStreamingAggWrapper, got %T", results[0])
+		t.Fatalf("expected *plans.RecordQueryStreamingAggregationPlan, got %T", results[0])
 	}
 }
 
@@ -151,7 +151,7 @@ func TestStreamingAggFromIndex_MultiColumn(t *testing.T) {
 		t.Fatal("StreamingAggFromIndexRule didn't fire for multi-column index")
 	}
 	if !IsPhysicalStreamingAgg(results[0]) {
-		t.Fatalf("expected physicalStreamingAggWrapper, got %T", results[0])
+		t.Fatalf("expected *plans.RecordQueryStreamingAggregationPlan, got %T", results[0])
 	}
 }
 

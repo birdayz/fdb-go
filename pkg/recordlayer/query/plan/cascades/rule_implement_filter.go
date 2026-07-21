@@ -87,14 +87,20 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 		seen[winner] = true
-		ph, ok := winner.(physicalPlanExpression)
-		if !ok {
+		if _, ok := winner.(physicalPlanExpression); !ok {
 			continue
 		}
 		innerAlias := f.GetInner().GetAlias()
-		filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(ph.GetRecordQueryPlan(), f.GetPredicates(), innerAlias)
+		// The filter carries the LIVE inner edge over the winner's shared group
+		// (RFC-184 W2) — exactly the edge the wrapper's innerQuant presented. A
+		// plain filter's inner has no correlated SARG snapshot to preserve (unlike
+		// the FoD/NLJ paths), so it ranges over the live group: this keeps
+		// push_filter_through_fetch's re-explored pushed member reachable from a
+		// parent that captures this leg. A frozen snapshot strands the pre-push
+		// filter once the merged group canonicalizes to the pushed one.
 		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-		call.Yield(NewPhysicalPredicatesFilterWrapper(filterPlan, innerQ))
+		filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(innerQ, f.GetPredicates(), innerAlias)
+		call.Yield(filterPlan)
 	}
 }
 

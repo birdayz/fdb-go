@@ -27,13 +27,10 @@ func TestImplementExplode_Fires(t *testing.T) {
 		t.Fatalf("ImplementExplodeRule yielded %d, want 1", len(yielded))
 	}
 
-	wrap, ok := yielded[0].(*physicalExplodeWrapper)
+	// RFC-184 W2: ImplementExplodeRule yields the bare *plans.RecordQueryExplodePlan.
+	plan, ok := yielded[0].(*plans.RecordQueryExplodePlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalExplodeWrapper", yielded[0])
-	}
-	plan, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryExplodePlan)
-	if !ok {
-		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryExplodePlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("yield = %T, want *plans.RecordQueryExplodePlan", yielded[0])
 	}
 	if plan.GetCollectionValue() != collVal {
 		t.Fatal("plan collection value mismatch")
@@ -57,7 +54,7 @@ func TestImplementExplode_ViaPlanner(t *testing.T) {
 
 	found := false
 	for _, m := range ref.AllMembers() {
-		if _, ok := m.(*physicalExplodeWrapper); ok {
+		if _, ok := m.(*plans.RecordQueryExplodePlan); ok {
 			found = true
 			break
 		}
@@ -86,13 +83,9 @@ func TestImplementExplode_PlanOutput(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	wrap, ok := plan.(*physicalExplodeWrapper)
+	rqp, ok := plan.(*plans.RecordQueryExplodePlan)
 	if !ok {
-		t.Fatalf("plan = %T, want *physicalExplodeWrapper", plan)
-	}
-	rqp, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryExplodePlan)
-	if !ok {
-		t.Fatalf("inner plan = %T, want *RecordQueryExplodePlan", wrap.GetRecordQueryPlan())
+		t.Fatalf("plan = %T, want *plans.RecordQueryExplodePlan", plan)
 	}
 	explain := rqp.Explain()
 	if explain == "" {
@@ -112,8 +105,7 @@ func TestImplementExplode_NilCollectionValue(t *testing.T) {
 		t.Fatalf("ImplementExplodeRule yielded %d for nil collection, want 1", len(yielded))
 	}
 
-	wrap := yielded[0].(*physicalExplodeWrapper)
-	plan := wrap.GetRecordQueryPlan().(*plans.RecordQueryExplodePlan)
+	plan := yielded[0].(*plans.RecordQueryExplodePlan)
 	if plan.GetCollectionValue() != nil {
 		t.Fatal("expected nil collection value")
 	}

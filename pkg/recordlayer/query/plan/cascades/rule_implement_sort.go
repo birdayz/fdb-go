@@ -189,17 +189,17 @@ func sortExpressionToRequestedOrdering(s *expressions.LogicalSortExpression) *pr
 // equality-bound unsorted keys). Mirrors Java's RemoveSortRule.strictlyOrderedIfUnique.
 // Looks through Fetch wrappers to find the underlying index scan.
 func strictlyOrderedIfUnique(expr expressions.RelationalExpression, numKeys int) bool {
-	if w, ok := expr.(*physicalIndexScanWrapper); ok {
-		return w.unique && numKeys >= len(w.columnNames)
+	if p, ok := expr.(*plans.RecordQueryIndexPlan); ok {
+		return p.IsUnique() && numKeys >= len(p.GetColumnNames())
 	}
-	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
-		ref := fw.innerQuant.GetRangesOver()
+	if fw, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+		ref := fw.GetInnerQuantifier().GetRangesOver()
 		if ref == nil {
 			return false
 		}
 		for _, m := range ref.AllMembers() {
-			if w, ok := m.(*physicalIndexScanWrapper); ok {
-				return w.unique && numKeys >= len(w.columnNames)
+			if p, ok := m.(*plans.RecordQueryIndexPlan); ok {
+				return p.IsUnique() && numKeys >= len(p.GetColumnNames())
 			}
 		}
 	}
@@ -211,38 +211,29 @@ func strictlyOrderedIfUnique(expr expressions.RelationalExpression, numKeys int)
 // a cloned plan. For Fetch wrappers, creates a new Fetch wrapping a
 // strictlySorted index plan. For other plan types, returns unchanged.
 func makeStrictlySorted(expr expressions.RelationalExpression) expressions.RelationalExpression {
-	if w, ok := expr.(*physicalIndexScanWrapper); ok {
-		return &physicalIndexScanWrapper{
-			plan:          w.plan.WithStrictlySorted(),
-			columnNames:   w.columnNames,
-			pkColumnNames: w.pkColumnNames,
-			unique:        w.unique,
-			covering:      w.covering,
-		}
+	if p, ok := expr.(*plans.RecordQueryIndexPlan); ok {
+		// WithStrictlySorted is a struct copy — it preserves the index metadata
+		// (columns/pk/unique/covering) the plan already carries (RFC-184 W2).
+		return p.WithStrictlySorted()
 	}
-	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
-		inner := fw.GetPlan().GetInner()
+	if fw, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+		inner := fw.GetInner()
 		if idxPlan, ok := inner.(*plans.RecordQueryIndexPlan); ok {
-			origW := findIndexScanWrapper(fw.innerQuant.GetRangesOver())
-			if origW == nil {
-				return expr
-			}
+			// The index scan is its own cascades expression (RFC-184 W2), carrying its
+			// metadata on the plan; WithStrictlySorted preserves it (struct copy). The
+			// strictly-sorted path is only reached for a unique index (see
+			// strictlyOrderedIfUnique), so the plan's unique flag is already true.
 			newIdxPlan := idxPlan.WithStrictlySorted()
-			newIdxWrapper := &physicalIndexScanWrapper{
-				plan:          newIdxPlan,
-				columnNames:   origW.columnNames,
-				pkColumnNames: origW.pkColumnNames,
-				unique:        true,
-			}
-			newIdxRef := expressions.InitialOf(newIdxWrapper)
+			newIdxRef := expressions.InitialOf(newIdxPlan)
 			newFetchQ := expressions.ForEachQuantifier(newIdxRef)
-			newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
-				newIdxPlan,
-				fw.GetPlan().GetTranslateValueFunction(),
-				fw.GetPlan().GetResultType(),
-				fw.GetPlan().GetFetchIndexRecords(),
+			// The fetch is its own cascades expression carrying the live newIdxRef
+			// edge (RFC-184 W2).
+			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+				newFetchQ,
+				fw.GetTranslateValueFunction(),
+				fw.GetResultType(),
+				fw.GetFetchIndexRecords(),
 			)
-			return NewPhysicalFetchFromPartialRecordWrapper(newFetchPlan, newFetchQ)
 		}
 	}
 	return expr

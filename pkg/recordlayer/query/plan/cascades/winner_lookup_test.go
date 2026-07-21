@@ -112,10 +112,9 @@ func sortedMemberWithNulls(t *testing.T, fields []string, nullsFirst []bool) exp
 		}
 		keys[i] = plans.SortKey{Field: f, ValueExpr: values.NewFlatFieldValue(f, values.UnknownType), NullsFirst: nf}
 	}
-	scanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, nil))
-	return newPhysicalInMemorySortWrapper(
-		plans.NewRecordQueryInMemorySortPlan(inner, keys),
-		expressions.ForEachQuantifier(scanRef))
+	// Since RFC-184 W2 the bare in-memory sort IS its own physical member (no
+	// physicalInMemorySortWrapper) — its HintOrdering carries the sort keys.
+	return plans.NewRecordQueryInMemorySortPlan(inner, keys)
 }
 
 // TestBestSatisfyingMember_CounterflowNullsGate pins the RFC-180 D2 core:
@@ -236,12 +235,8 @@ func TestProjectionRule_WrapsWinnerNotFirst(t *testing.T) {
 		t.Fatal("ImplementProjectionRule yielded nothing")
 	}
 
-	wrap, ok := yielded[0].(*physicalProjectionWrapper)
-	if !ok {
-		t.Fatalf("yielded[0] = %T, want *physicalProjectionWrapper", yielded[0])
-	}
-	if wrap.plan == nil {
-		t.Fatal("projection wrapper has nil plan")
+	if _, ok := yielded[0].(*plans.RecordQueryProjectionPlan); !ok {
+		t.Fatalf("yielded[0] = %T, want *plans.RecordQueryProjectionPlan", yielded[0])
 	}
 	t.Logf("ProjectionRule yielded %d plans", len(yielded))
 }
@@ -314,12 +309,12 @@ func TestFilterRule_UsesWinnerPerOrdering(t *testing.T) {
 		t.Fatalf("ImplementFilterRule yielded %d without constraints, want 1", len(yielded))
 	}
 
-	wrap, ok := yielded[0].(*physicalPredicatesFilterWrapper)
+	wrap, ok := yielded[0].(*plans.RecordQueryPredicatesFilterPlan)
 	if !ok {
-		t.Fatalf("yielded[0] = %T, want *physicalPredicatesFilterWrapper", yielded[0])
+		t.Fatalf("yielded[0] = %T, want *plans.RecordQueryPredicatesFilterPlan", yielded[0])
 	}
-	if wrap.plan == nil {
-		t.Fatal("FilterPlan is nil")
+	if wrap.GetInner() == nil {
+		t.Fatal("filter plan inner is nil")
 	}
 }
 
@@ -344,13 +339,11 @@ func TestPinOrderedSpine(t *testing.T) {
 	srcRef.InsertFinal(ordered)
 	srcRef.SetWinner(cheap)
 
-	wrapper := &physicalPredicatesFilterWrapper{
-		plan: plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		),
-		innerQuant: expressions.ForEachQuantifier(srcRef),
-	}
+	basePlan := plans.NewRecordQueryPredicatesFilterPlan(
+		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+	)
+	wrapper := basePlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(srcRef)})
 
 	reqS := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},
@@ -376,10 +369,7 @@ func TestPinOrderedSpine(t *testing.T) {
 
 	// Unpinnable (no satisfying member) declines with nil.
 	loneRef := expressions.InitialOf(cheap)
-	loneWrapper := &physicalPredicatesFilterWrapper{
-		plan:       wrapper.plan,
-		innerQuant: expressions.ForEachQuantifier(loneRef),
-	}
+	loneWrapper := basePlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(loneRef)})
 	if got := pinOrderedSpine(loneWrapper, reqS, nil); got != nil {
 		t.Fatalf("delegator over an orderless group must decline, got %T", got)
 	}
@@ -400,23 +390,18 @@ func TestPinOrderedSpine_DeclinesWhenRelinkRefused(t *testing.T) {
 	// set) delegating over an in-memory sort on S.
 	sorted := sortedMemberOn(t, "S")
 	sortedRef := expressions.InitialOf(sorted)
-	orderedProjection := NewPhysicalProjectionWrapper(
-		plans.NewRecordQueryProjectionPlan(
-			[]values.Value{values.NewFlatFieldValue("S", values.UnknownType)},
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-		),
+	orderedProjection := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{values.NewFlatFieldValue("S", values.UnknownType)},
+		nil,
 		expressions.ForEachQuantifier(sortedRef),
 	)
 
 	srcRef := expressions.InitialOf(orderedProjection)
 
-	wrapper := &physicalPredicatesFilterWrapper{
-		plan: plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		),
-		innerQuant: expressions.ForEachQuantifier(srcRef),
-	}
+	wrapper := plans.NewRecordQueryPredicatesFilterPlan(
+		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(srcRef)})
 
 	reqS := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},

@@ -1,9 +1,7 @@
 package plans
 
 import (
-	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -101,6 +99,34 @@ func NewRecordQueryNestedLoopJoinPlan(
 	}
 }
 
+// NewRecordQueryNestedLoopJoinPlanFromQuantifiers builds a nested-loop join whose
+// two legs are supplied memo quantifiers instead of snapshots over concrete
+// plans. This makes the plan its own cascades expression carrying its child
+// edges directly — the memo holds it without a physicalNestedLoopJoinWrapper
+// (RFC-184 W2). The materialized NLJ is uncorrelated (CanCorrelate=false), so
+// both legs carry the LIVE shared-group edge the emitter memoized; the join
+// predicates, join type, table aliases and result value are preserved so
+// EqualsPlanWithoutChildren / GetCorrelatedToWithoutChildren stay identical.
+func NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+	outerQ, innerQ expressions.Quantifier,
+	joinPredicates []predicates.QueryPredicate,
+	joinType JoinType,
+	outerAlias, innerAlias string,
+	resultValue values.Value,
+) *RecordQueryNestedLoopJoinPlan {
+	preds := make([]predicates.QueryPredicate, len(joinPredicates))
+	copy(preds, joinPredicates)
+	return &RecordQueryNestedLoopJoinPlan{
+		outerQ:      outerQ,
+		innerQ:      innerQ,
+		predicates:  preds,
+		joinType:    joinType,
+		outerAlias:  outerAlias,
+		innerAlias:  innerAlias,
+		resultValue: resultValue,
+	}
+}
+
 func (p *RecordQueryNestedLoopJoinPlan) GetResultType() values.Type { return values.UnknownType }
 
 // GetChildren returns the outer leg then the inner leg, dereferenced through
@@ -151,50 +177,36 @@ func (p *RecordQueryNestedLoopJoinPlan) GetPredicates() []predicates.QueryPredic
 	return p.predicates
 }
 
+// structuralKey lists the fields that distinguish this join in the memo: the
+// join type, the outer/inner table aliases, the join predicate list, and the
+// result Value. Children (the two legs) are excluded. The outer/inner aliases
+// are SQL-level strings (not correlation identifiers) — they qualify merged-row
+// keys, so two joins differing only in an alias resolve columns differently.
+// The same key drives both EqualsPlanWithoutChildren and
+// HashCodeWithoutChildren, so the two can never disagree on which fields matter.
+func (p *RecordQueryNestedLoopJoinPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Int(int(p.joinType)).
+		Str(p.outerAlias).
+		Str(p.innerAlias).
+		Preds(p.predicates).
+		Value(p.resultValue)
+}
+
 func (p *RecordQueryNestedLoopJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryNestedLoopJoinPlan)
-	if !ok {
-		return false
-	}
-	if p.joinType != o.joinType {
-		return false
-	}
-	if p.outerAlias != o.outerAlias || p.innerAlias != o.innerAlias {
-		return false
-	}
-	if len(p.predicates) != len(o.predicates) {
-		return false
-	}
-	for i := range p.predicates {
-		if !predicates.PredicateEquals(p.predicates[i], o.predicates[i]) {
-			return false
-		}
-	}
-	// resultValue joins identity — the Java counterpart (RecordQueryFlatMapPlan)
-	// compares via semanticEqualsForResults; two joins differing only in the
-	// combined-row shape they emit are not interchangeable.
-	return semanticValueEquals(p.resultValue, o.resultValue)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren folds the structural discriminators. Predicates
 // fold predicates.SemanticHashCode (alias-invariant, coarser than the
-// structural PredicateEquals above — equal⟹same-hash holds), NOT Explain()
-// display text, which is for humans and carries no identity contract.
+// structural PredicateEquals — equal⟹same-hash holds), NOT Explain()
+// display text, which is for humans and carries no identity contract. The
+// resultValue joins identity — the Java counterpart (RecordQueryFlatMapPlan)
+// compares via semanticEqualsForResults; two joins differing only in the
+// combined-row shape they emit are not interchangeable.
 func (p *RecordQueryNestedLoopJoinPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("nljoin|"))
-	h.Write([]byte{byte(p.joinType)})
-	h.Write([]byte(p.outerAlias))
-	h.Write([]byte{0})
-	h.Write([]byte(p.innerAlias))
-	h.Write([]byte{0})
-	var buf [8]byte
-	for _, pred := range p.predicates {
-		binary.BigEndian.PutUint64(buf[:], predicates.SemanticHashCode(pred))
-		h.Write(buf[:])
-	}
-	writeValueHash(h, p.resultValue)
-	return h.Sum64()
+	return p.structuralKey().Hash("nljoin|")
 }
 
 func (p *RecordQueryNestedLoopJoinPlan) Explain() string {
@@ -239,6 +251,21 @@ func (p *RecordQueryNestedLoopJoinPlan) GetCorrelatedToWithoutChildren() map[val
 		}
 	}
 	return out
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The join carries its two legs as memo quantifiers, so the relink
+// is a positional quantifier swap: WithQuantifiers copies the receiver
+// (preserving the predicates, join type, table aliases and result value) and
+// re-resolves GetOuter/GetInner through the new references. This replaces
+// physicalNestedLoopJoinWrapper.WithChildren (RFC-184 W2), whose separate
+// snapshot plan field held the yield-time children verbatim; the swap
+// re-resolves to the memo winner instead.
+func (p *RecordQueryNestedLoopJoinPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 2 {
+		return nil, fmt.Errorf("RecordQueryNestedLoopJoinPlan.WithChildren: expected 2 children, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

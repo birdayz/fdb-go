@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -29,6 +28,17 @@ func NewRecordQueryUnorderedUnionPlan(inners []RecordQueryPlan) *RecordQueryUnor
 	return &RecordQueryUnorderedUnionPlan{childQs: QuantifiersOverPlans(inners)}
 }
 
+// NewRecordQueryUnorderedUnionPlanFromQuantifiers builds the union over the LIVE
+// leg quantifiers the implement rule memoized. Each leg is a SHARED multi-member
+// group whose per-ordering winner is resolved at extraction via ref.Winner()
+// (planFromQuantifier) — the deferred-winner set-op case. The plan carries each
+// leg edge once, with no wrapper snapshot (RFC-184 W2).
+func NewRecordQueryUnorderedUnionPlanFromQuantifiers(childQs []expressions.Quantifier) *RecordQueryUnorderedUnionPlan {
+	cp := make([]expressions.Quantifier, len(childQs))
+	copy(cp, childQs)
+	return &RecordQueryUnorderedUnionPlan{childQs: cp}
+}
+
 // GetInners returns the legs, dereferenced through the quantifiers. Order is
 // preserved even though the union imposes none on its OUTPUT: it is the
 // concatenation order the executor consumes the legs in.
@@ -40,20 +50,29 @@ func (p *RecordQueryUnorderedUnionPlan) GetResultType() values.Type {
 	if len(p.childQs) == 0 {
 		return values.UnknownType
 	}
-	return planFromQuantifier(p.childQs[0]).GetResultType()
+	// TYPE resolution, not identity: the legs are deferred-winner groups still
+	// multi-member during planning; every alternative shares the row shape, so
+	// any member answers without tripping the singleton guard (RFC-184 W2).
+	return planTypeFromQuantifier(p.childQs[0]).GetResultType()
 }
 
 func (p *RecordQueryUnorderedUnionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
 
+// structuralKey carries no fields — the unordered union has no
+// operator-specific node-info beyond its children, so identity is the type
+// discriminator alone. The same key drives both EqualsPlanWithoutChildren and
+// HashCodeWithoutChildren.
+func (p *RecordQueryUnorderedUnionPlan) structuralKey() *structuralKey {
+	return newStructuralKey()
+}
+
 func (p *RecordQueryUnorderedUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
-	_, ok := other.(*RecordQueryUnorderedUnionPlan)
-	return ok
+	o, ok := other.(*RecordQueryUnorderedUnionPlan)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryUnorderedUnionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("unorderedunionplan"))
-	return h.Sum64()
+	return p.structuralKey().Hash("unorderedunionplan")
 }
 
 func (p *RecordQueryUnorderedUnionPlan) Explain() string {
@@ -103,8 +122,27 @@ func (p *RecordQueryUnorderedUnionPlan) WithQuantifiers(qs []expressions.Quantif
 }
 
 // ChildrenAsSet reports that the legs of this set operation are commutative,
-// mirroring physicalUnorderedUnionWrapper.
+// the concatenation imposes no order, so any leg order is equivalent.
 func (p *RecordQueryUnorderedUnionPlan) ChildrenAsSet() bool { return true }
+
+// GetResultValue flows the first leg's object value (union legs are
+// column-aligned, so any leg's shape stands in); falls back to a fresh
+// quantified object value when there are no legs.
+func (p *RecordQueryUnorderedUnionPlan) GetResultValue() values.Value {
+	if len(p.childQs) == 0 {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.childQs[0].GetFlowedObjectValue()
+}
+
+// WithChildren rebuilds over fresh leg quantifiers — the interface plan
+// extraction uses. Delegates to WithQuantifiers; the leg count must match.
+func (p *RecordQueryUnorderedUnionPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != len(p.childQs) {
+		return nil, fmt.Errorf("RecordQueryUnorderedUnionPlan.WithChildren: expected %d legs, got %d", len(p.childQs), len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
+}
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryUnorderedUnionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

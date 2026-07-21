@@ -5911,6 +5911,240 @@ is already on the RFC-183 branch.
 Do NOT "fix" this by re-retiring the adapter without the property work — that
 is the change that caused the 49 shape flips.
 
+### RFC-184 three-goal status (the stop-hook completion condition)
+
+- **W1 — teach the differential harness cost + ordering: ✅ DONE.** rowdiff/cost.go
+  + rowdiff/ordering.go, commits fcc197d75 (#505 cost/ordering axis) + 1be3d81c3
+  (W1-finish ordering+statistics), both in HEAD ancestry.
+- **W3 — centralize the 41 plan types' equality/hash: ✅ DONE (41/41).** All plans
+  flow EqualsPlanWithoutChildren/HashCodeWithoutChildren through one structuralKey()
+  builder (commits 721f71635 + 84e48fb30); every hand-copy eliminated, differ=0.
+- **W2 — plans store children only as quantifiers, the wrapper layer dies: ✅ DONE.**
+  ZERO physical*Wrapper structs remain (`grep 'type physical.*Wrapper struct'
+  pkg/recordlayer/query/plan/cascades/ = 0`). The ref.Winner() set-op family
+  collapsed at differ=0 (unordered_union 5022c0d7f, in_join+in_union a6bb74b07),
+  then all 7 tail wrappers fell via CONSTRAINT-PRESERVING DISENTANGLE (freeze only
+  the constraint-critical inner — correlation/ordering — in a detached FINAL ref;
+  live edge for plain inners so a push-canonicalization can't strand a pre-push
+  snapshot): first_or_default (74a07784e), predicates_filter (4e2e46dcc, +5
+  Graefe-ACK'd sort-elisions), distinct (1b6fb461d), streaming_aggregation
+  (cf0b18355), nested_loop_join+flat_map JOINTLY (ca3008b6b), in_memory_sort
+  (b775b8572). The sort required a genuine cost-model fix (Graefe-ACK'd): the
+  wrapper cost-over-first masked a latent bug where a redundant InMemorySort wins
+  STRUCTURAL tie-breakers (depth +1, or a pushdown-split map/filter count) before
+  criterion #12 — fixed by gating 4 structural rungs to abstain when a sort is
+  present. Enabling infra: the DML-aware explain-differ (51ee03bf5 — the SELECT-only
+  differ was unsound; it let a fod DML corruption read clean) + the residual-
+  correlation DML regression test (e2b2a7395). Every behavior change is Graefe-ACK'd;
+  gated on memoinvariant unreachable=0 + rowdiff Ordering/Stats/Cost sweeps +
+  yamsql-DML + FDB row-counts. NOTE the 32 ReasonNoQuantifier edges (all TypeFilter,
+  via the scanPlanExpression composite adapter) are a SEPARATE RFC-183 residual, not
+  a W2 wrapper — see the RFC-183-residual entry.
+  THREE non-blocking follow-ups (NOT merge gates — Graefe + Torvalds ACK'd HEAD
+  0e854e837 on PR #508 with these outstanding; (i)/(ii) are Graefe-named from the
+  sort finale, (iii) is Graefe end-review finding #2):
+    (i) root-cause why the unsplit-elided plan (Project(PredicatesFilter(Fetch(
+        IndexScan)))) is ABSENT at the Project group for rowdiff seeds 132/214 — a
+        W2 disentangled-capture search-completeness asymmetry, not a cost-model bug.
+    (ii) evaluate the terminal form: hoist criterion #12 (fewer in-memory sorts)
+        ABOVE all structural rungs, or gate each structural rung on EQUAL sort counts
+        (not ==0-both), retiring the 4 per-rung gates. Same rowdiff-sweep validation.
+    (iii) RecordQueryMapPlan/RecordQueryProjectionPlan inherit the empty
+        PlanExprBase GetCorrelatedToWithoutChildren default while Java's
+        RecordQueryMapPlan.getCorrelatedToWithoutChildren folds the result value.
+        PRE-EXISTING (the retired physicalMapWrapper was equally empty — this PR
+        changed nothing), but with the FlatMap resultValue-walk precedent now in
+        place the fix is mechanical. Not a regression; a parity gap to close.
+
+### [ ] Test infra — FDBCLIExec can hang 30 min on a stuck Docker exec (CI flake)
+
+Surfaced by PR #508's end-gate CI: the `Cross-client wire differential` job
+timed out at the 1800s Go test limit, stuck in FDB container init. Goroutine
+dump: `FDBCLIExec → configureWithRetry → InitializeDatabase`, blocked on a
+`chan receive` inside testcontainers' `Multiplexed()` output reader
+(`exec/processor.go:124`) for 29 minutes — a Docker `fdbcli` exec whose output
+stream never drained. `configureWithRetry` (foundationdb.go:444) only checks
+`ctx.Err()` BETWEEN attempts, so it cannot interrupt a read already hung inside
+`FDBCLIExec` (foundationdb.go:532); the passed `ctx` does not unblock the
+Multiplexed stream read. One stuck exec ⇒ the full 30-min test timeout instead
+of a fast retry. Re-running the job cleared it (transient Docker hang), but the
+fragility is real and pre-existing. Fix: give `FDBCLIExec` a hard per-exec
+deadline that actually abandons the Multiplexed read (run the exec+drain in a
+goroutine, `select` on `ctx.Done()` + a short timer, and fail the attempt so
+`configureWithRetry`'s backoff loop takes over). Out of scope for the planner
+work; unrelated to any wire/query change.
+
+### [ ] RFC-184 W2 — physical-wrapper collapse: 26 eliminated, deferred-winner tail remains
+
+On branch `centralize-plan-equality-hash` (held for one super-thorough end
+review per owner's one-big-PR ruling). Each `physical<Name>Wrapper` adapter
+stored a plan's child edge a SECOND time (wrapper quantifier + plan snapshot);
+collapsing makes the plan its own cascades expression carrying the LIVE memo
+edge once, so the ordinal-binding "child stored twice" state is unrepresentable.
+
+COLLAPSED (24, each `explain-differ differing=0`, full-hook green): scan, limit,
+fetch, map, default_on_empty, explode, table_function, temp_table_scan,
+temp_table_insert, vector_index_scan, index_scan, aggregate_index, values,
+typefilter, insert, delete, update, intersection, merge_sort_union,
+multi_intersection, recursive_level_union, recursive_dfs_join, union, projection.
+
+ENABLER — DAG-aware plan extraction (plan_extraction.go): the `visited` map was
+doing double duty — cycle guard (necessary) AND permanent de-dup (harmful).
+Made it STACK-SCOPED (add on descent, `delete` on ascent, mirroring
+extractTieBreakHash) so a SHARED sub-DAG (two UNION legs scanning t1) re-extracts
+instead of dropping its 2nd child to nil. This unblocked union + projection.
+
+DEFERRED-WINNER TAIL — the winner CRITERION is PLAN-SPECIFIC (breakthrough):
+  Each of these plans ranges a child over a MULTI-MEMBER alternatives group.
+  The DESIGN-C' INFRA (landed 5022c0d7f) makes this collapsible for plans whose
+  correct child winner is the group's per-ordering winner (ref.Winner()):
+    - planFromQuantifier consults ref.Winner() before the singleton panic;
+    - planTypeFromQuantifier for GetResultType (type is member-invariant);
+    - verifyNoShell + reachability tally count via GetQuantifiers not GetChildren.
+  ✅ COLLAPSED on the infra (differ=0, memoinvariant+reachability+yamsql green):
+    unordered_union (5022c0d7f), in_union + in_join (a6bb74b07) — the whole
+    ref.Winner() set-op family.
+  STILL WRAPPED — the per-plan empirical question is now ANSWERED: all four unary
+  candidates REVERTED (each empirically tested on the infra, differ>0, tree left
+  byte-identical). They are the genuine snapshot-decoupled tail; bare ref.Winner()
+  floats their inner to the group's GLOBAL cost-winner, losing the frozen
+  streaming-enabling / SARG-pinned member. Measured shifts:
+    - distinct → differing=6 (distinct_join.yaml#1..3 + friends). The distinct-final
+      rule yields distinct-over-EACH-inner-member (rule_implement_distinct_final.go
+      :69,118), each snapshot-frozen so the cost model can pick
+      distinct-over-(ordered inner) with STREAMING dedup. Collapse merges the
+      InitialOf(m) singleton into the shared inner group → ref.Winner() floats all
+      to distinct-over-(global winner), losing the streaming alternative.
+    - streaming_agg → differing=3 (same shape: agg needs the grouping-key ordering
+      to stream; float drops it).
+    - in_memory_sort → re-sorts, wants cheapest-valid-ANY-ordering
+      (findBestPhysicalPlan), not the per-ordering winner. BRACKETED earlier:
+      ref.Winner() → 63 flips; no-Winner → 64 errors.
+    - first_or_default → differing=3, predicates_filter → differing=16: NLJ-
+      entangled SARG-push (constructed as inner legs inside the Graefe-gated NLJ
+      rule); their float is SARG-push, not pure-ordering — collapse WITH nlj/flatmap.
+  RESOLVED DIRECTION — mechanical collapse of the tail is EXHAUSTED; it is
+  load-bearing architectural work. Two proposals tested + two empirical proofs
+  (full ruling: scratchpad/w2-graefe-gated-remainder.md):
+    - getWinnerForOrdering-at-extraction: Graefe NAK (cost-inversion; re-entangle).
+    - relink-to-memo-winner (Graefe ACK'd as Java-faithful for SELECT): tested on
+      distinct (cost-tied SELECT churn, differ=6 plan_regressions=0) AND on
+      first_or_default — where it CORRUPTS DML ROWS. `DELETE ... WHERE EXISTS
+      (correlated)` deleted ALL rows: the correlation lives in the SARG-pushed scan
+      the fod snapshot froze; relinking to the non-SARG memo winner drops it.
+  TWO GATE FINDINGS THAT BLOCK THE RE-BASELINE:
+    - The explain-differ IS DML-BLIND — it dumps only SELECT stanzas (skips 252 DML
+      stanzas). plan_regressions=0 does NOT cover DML. Only yamsql (real FDB) is a
+      sound gate for the tail. The fod collapse read differ-clean while corrupting
+      the DML DELETE/UPDATE-EXISTS path.
+    - The tail wrappers' snapshots are LOAD-BEARING: correlation on DML paths
+      (fod/predicates_filter), ordering preconditions (Streaming distinct/agg —
+      relinking to a different-ordering winner is WRONG ROWS), join-order winners
+      (rest). The single collapsed edge can't reproduce them; collapsing corrupts a
+      differ-invisible path.
+  So the tail is the correlation/ordering-PRESERVATION rework (the bare plan must
+  REPORT the correlation/ordering its snapshot carried, or its inner group must be
+  optimized under that correlation/ordering), a Graefe-designed owner-gated effort
+  (its own RFC) — NOT RFC-184-W2 mechanical scope. Every further mechanical collapse
+  attempt risks silent DML corruption; STOPPED pending the architectural design.
+  The 2 dead structs (scan/filter) are removed (commit 2f1189b94).
+
+NESTED_LOOP_JOIN + FLAT_MAP (joint) — GRAEFE DECISION, NOT deferred-winner:
+  These two ARE Class B (singleton children; correlation flows through children,
+  both wrappers' GetCorrelatedToWithoutChildren empty = plan default). The joint
+  collapse was implemented + gated: build green, cascades+plans unit 2/2 (no
+  PlanHash-nil — collapsing both together fixes the NLJ→FlatMap snapshot bridge),
+  yamsql FDB conformance PASS (correct rows). BUT the corpus differ caught ONE
+  shifted query, cte_error_codes.yaml#5 (a shared-CTE self-join):
+    BEFORE: InJoin(PredicatesFilter(Scan(T1),[1 preds]), binding)   (residual filter)
+    AFTER:  InJoin(Scan(T1,[=]), binding)                            (SARGed — better)
+  plan_regressions=0; the AFTER is the canonical SARGed plan the cost model wants.
+  Root cause: the NLJ wrapper's WithChildren keeps a plan SNAPSHOT (the residual-
+  filter member); the collapsed NLJ honors the DAG-aware-extraction cost WINNER
+  (the SARGed scan). So the wrapper is CURRENTLY MASKING a suboptimal plan on this
+  query, and the collapse would fix it. This is not a regression — it's the
+  collapse revealing the plan the cost model selected. But it breaks the
+  differing=0 W2 soundness contract, so per STOP-on-shift it was reverted and
+  flagged. Graefe must rule: (a) accept the improvement → land NLJ+FlatMap with
+  differing=1 documented, or (b) require byte-identity first. The FromQuantifiers
+  constructors + WithChildren are trivial to re-add; the 9-emitter repoint is
+  mechanical once ruled. Recommend (a).
+  INDEPENDENT CROSS-CONFIRMATION: a second session reproduced the full joint
+  collapse from scratch and reached the identical result — same single shifted
+  query (cte_error_codes.yaml#5), same before/after shapes, same root cause,
+  unit + yamsql green. It additionally verified DETERMINISM on both sides
+  (base-vs-base2 and cur-vs-cur2 each differing=0), so the flip is a stable,
+  reproducible, benign improvement — NOT planning noise. Two independent
+  derivations of the same conclusion strengthen recommendation (a).
+
+WHY THE NAIVE FIX FAILS (proven, in_memory_sort): memoizing
+getWinnerForOrdering(innerRef, PRESERVE) as a singleton child at YIELD would
+satisfy the invariant — but RFC-069/076 DEFER the sort's inner winner to
+EXTRACTION precisely because it is not stamped at sort-yield; getWinnerForOrdering
+then falls back to findBestValidPhysicalExpr (yield-time cheapest = the
+"yielded-first loser" RFC-069 warns against) → likely a cost-tied RFC-069/076
+regression the differ may MASK. The real fix is architectural: either relax the
+singleton invariant to resolve to the cost WINNER for deferred-winner plans (needs
+the winner reachable from the plans package — ref.Winner() timing), or a
+memo/reference construct that is "singleton for planning-time queries but defers
+winner to extraction." Both touch the load-bearing singleton invariant → Graefe
+gate applies. Full analysis + candidate designs A/B/C in the shift handover.
+
+DESIGN C' ATTEMPTED EMPIRICALLY (in_memory_sort, then reverted — precise blocker
+found): (1) planFromQuantifier consults ref.Winner() before the singleton panic;
+(2) a new planTypeFromQuantifier (first-member, no panic) for GetResultType —
+type is member-invariant for pass-through plans; (3) verifyNoShell (and every
+planning-time STRUCTURAL "has children" check) uses GetQuantifiers, not
+GetChildren (identity). RESULT: the singleton panic is GONE — TestSortElim_*
+passes, the sort collapses. BUT the differ shifts 66 queries / 63 shape flips
+(plan_regressions=0). ROOT CAUSE — the winner CRITERION is PLAN-SPECIFIC:
+ref.Winner() is the group's winner for ITS requested ordering, but the sort
+re-sorts so it wants the cheapest VALID member for NO ordering
+(findBestPhysicalPlan, RFC-076) — the wrapper's WithChildren used exactly that.
+ref.Winner() != findBestPhysicalPlan, so the collapsed sort bakes a dominated
+ordered inner. So a UNIFORM planFromQuantifier→ref.Winner() is too coarse; the
+deferred-winner rework needs PER-PLAN winner selection at extraction (sort:
+cheapest-valid-any-ordering; set-op: per-leg; etc.), and that criterion lives in
+the cascades pkg (findBestPhysicalPlan), which the plans-pkg WithChildren cannot
+reach. The clean shape is a sort-specific extraction hook (like the LogicalSort
+rebuildOrderedSpine that already exists) for the PHYSICAL sort — a Graefe-ACK'd
+cascades change. Design C' infra (Winner-aware planFromQuantifier + type resolver
++ structural-check-via-quantifiers) is the RIGHT foundation; it needs the
+per-plan winner hook on top.
+
+SHARPENING (localizes the design): the sort's HintCost takes child costs as
+PARAMS (does not walk GetInner) and HintOrdering computes from the sort KEYS
+(not the inner). So the sort's cost/ordering are self-contained — the ONLY
+planning-time GetInner/GetChildren callers are GetResultType (→ type resolver)
+and verifyNoShell (→ structural GetQuantifiers). Therefore the PANIC is FULLY
+fixable with those two changes alone; the GLOBAL ref.Winner() change in
+planFromQuantifier is NOT needed for the panic and is what introduced the bias.
+The 63-query shift is PURELY the extraction inner-selection: extraction
+(extractBestPlanFromSelectorVisited) prefers innerRef.Winner() — an ordered
+variant — while the wrapper's WithChildren OVERRODE it with
+findBestPhysicalPlan (cheapest-valid, any ordering, RFC-076). The whole design
+thus reduces to ONE localized change: a physical-sort case in the extraction
+switch (rebuildWithFreshChildren / rebuildExpressionFromSelectorVisited) that
+resolves the sort's inner via findBestPhysicalPlan, restoring the wrapper's
+override. Everything else (the two structural/type fixes) is mechanical and
+differ-neutral. That is the concrete Graefe-review unit.
+
+BRACKETED EMPIRICALLY (two attempts, both reverted) — the findBestPhysicalPlan
+extraction hook is MANDATORY, not optional:
+  - WITH global planFromQuantifier→ref.Winner(): resolves the inner but to the
+    WRONG winner (the group's ordering-winner, an ordered/dominated variant) →
+    differing=66, shape_flips=63, plan_regressions=0 (correct rows, worse shape).
+  - WITHOUT it (just the two mechanical fixes + collapse): TestSortElim_* still
+    passes (panic gone — the sort's HintCost/HintOrdering don't walk GetInner),
+    BUT extraction cannot resolve the multi-member inner at all →
+    differing=109, plan_regressions=64, and 64 NEW plan errors (258→322).
+  So the two uniform options bracket the answer: extraction MUST resolve the
+  multi-member inner (some winner is needed — no-Winner gives plan errors) AND
+  it must be findBestPhysicalPlan specifically (ref.Winner() gives wrong plans).
+  The per-plan (sort-specific) extraction hook is the ONLY thing that works;
+  the two structural/type fixes are its necessary companions. That is the
+  precise, empirically-bounded Graefe-review unit for the physical sort.
+
 ### [x] FUZZ: GetCorrelatedTo stack-overflows on a cyclic reference graph (PRE-EXISTING) — FIXED by RFC-185
 
 RESOLVED: the cyclic memo was constructed only by the Go-only filter/set-op

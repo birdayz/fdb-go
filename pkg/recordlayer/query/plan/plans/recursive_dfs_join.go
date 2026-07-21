@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -79,6 +78,28 @@ func NewRecordQueryRecursiveDfsJoinPlanDistinct(
 	}
 }
 
+// NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers builds a recursive DFS join
+// whose two legs are LIVE memo quantifiers (the implementation rule passes
+// ForEachQuantifiers over the freshly-memoized root/child scan expressions)
+// instead of snapshots over plans. This makes the plan its own cascades
+// expression carrying its leg edges directly — the memo holds it without a
+// physical wrapper (RFC-184 W2). The prior-row correlation, traversal strategy,
+// and distinct flag carry over verbatim.
+func NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
+	rootQ, childQ expressions.Quantifier,
+	priorCorrelation values.CorrelationIdentifier,
+	strategy DfsTraversalStrategy,
+	distinct bool,
+) *RecordQueryRecursiveDfsJoinPlan {
+	return &RecordQueryRecursiveDfsJoinPlan{
+		rootQ:             rootQ,
+		childQ:            childQ,
+		priorCorrelation:  priorCorrelation,
+		traversalStrategy: strategy,
+		distinct:          distinct,
+	}
+}
+
 func (p *RecordQueryRecursiveDfsJoinPlan) IsDistinct() bool { return p.distinct }
 
 func (p *RecordQueryRecursiveDfsJoinPlan) GetRoot() RecordQueryPlan {
@@ -129,25 +150,24 @@ func (p *RecordQueryRecursiveDfsJoinPlan) WithQuantifiers(qs []expressions.Quant
 	return &cp
 }
 
+// structuralKey lists the fields that distinguish this recursive DFS join in
+// the memo: the prior-row correlation alias, the traversal strategy, and the
+// distinct flag. Children (the root and recursive legs) are excluded. The same
+// key drives both EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryRecursiveDfsJoinPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Alias(p.priorCorrelation).
+		Int(int(p.traversalStrategy)).
+		Bool(p.distinct)
+}
+
 func (p *RecordQueryRecursiveDfsJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryRecursiveDfsJoinPlan)
-	if !ok {
-		return false
-	}
-	return p.priorCorrelation == o.priorCorrelation && p.traversalStrategy == o.traversalStrategy && p.distinct == o.distinct
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryRecursiveDfsJoinPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("recursivedfs|"))
-	h.Write([]byte(p.priorCorrelation.Name()))
-	h.Write([]byte{byte(p.traversalStrategy)})
-	if p.distinct {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("recursivedfs|")
 }
 
 func (p *RecordQueryRecursiveDfsJoinPlan) Explain() string {
@@ -176,8 +196,20 @@ func (p *RecordQueryRecursiveDfsJoinPlan) EqualsWithoutChildren(other expression
 }
 
 // CanCorrelate reports that this operator anchors a correlation between its
-// children (the seed leg binds what the recursive leg reads), mirroring physicalRecursiveDfsJoinWrapper.
+// children (the seed leg binds what the recursive leg reads).
 func (p *RecordQueryRecursiveDfsJoinPlan) CanCorrelate() bool { return true }
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The plan carries its root and recursive legs as LIVE memo edges, so
+// the relink is a quantifier swap: WithQuantifiers rebinds the legs and
+// GetChildren re-resolves through the new references (RFC-184 W2, replacing
+// physicalRecursiveDfsJoinWrapper.WithChildren).
+func (p *RecordQueryRecursiveDfsJoinPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 2 {
+		return nil, fmt.Errorf("RecordQueryRecursiveDfsJoinPlan.WithChildren: expected 2 children, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
+}
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryRecursiveDfsJoinPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

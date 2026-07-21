@@ -52,17 +52,14 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	groupingKeys := gb.GetGroupingKeys()
 	if len(groupingKeys) == 0 {
 		if isCountOnlyAggregation(gb.GetAggregates()) {
-			if idxWrapper := findIndexScanWrapper(innerRef); idxWrapper != nil && !idxWrapper.covering {
-				coveringWrapper := &physicalIndexScanWrapper{
-					plan:          idxWrapper.plan.WithCovering(nil),
-					columnNames:   idxWrapper.columnNames,
-					pkColumnNames: idxWrapper.pkColumnNames,
-					unique:        idxWrapper.unique,
-					covering:      true,
-				}
-				coveringQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringWrapper))
-				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(coveringWrapper.plan, groupingKeys, gb.GetAggregates())
-				call.Yield(newPhysicalStreamingAggWrapper(aggPlan, coveringQ))
+			if idxPlan := findIndexScanPlan(innerRef); idxPlan != nil && !idxPlan.IsCovering() {
+				// The covering index scan is its own cascades expression (RFC-184 W2);
+				// WithCovering preserves the metadata already on the plan (struct copy).
+				coveringPlan := idxPlan.WithCovering(nil)
+				// Count-only, no grouping keys → no ordering precondition, so carry
+				// the LIVE shared-group edge (RFC-184 W2, no physicalStreamingAggWrapper).
+				coveringQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringPlan))
+				call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(coveringQ, groupingKeys, gb.GetAggregates()))
 			}
 		}
 		// Yield an aggregate over EVERY physical alternative of the
@@ -75,13 +72,14 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		// silently drops the cheaper (or the only CORRECT-for-Explain)
 		// alternative.
 		for _, m := range innerRef.AllMembers() {
-			pe, ok := m.(physicalPlanExpression)
-			if !ok {
+			if _, ok := m.(physicalPlanExpression); !ok {
 				continue
 			}
-			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(pe.GetRecordQueryPlan(), groupingKeys, gb.GetAggregates())
+			// Count-only, no grouping keys → no ordering precondition, so carry the
+			// LIVE shared-group edge over the member (RFC-184 W2, no
+			// physicalStreamingAggWrapper). GetInner resolves the member's plan.
 			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(m))
-			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+			call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates()))
 		}
 		return
 	}
@@ -120,12 +118,14 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	// and the cost model picks the cheaper one.
 	rawExpr := findPhysicalExpr(innerRef)
 	if rawExpr != nil {
+		// The InMemorySort is now its own cascades expression (RFC-184 W2, no
+		// physicalInMemorySortWrapper): a self-contained PRODUCER that provides the
+		// grouping-key order intrinsically. Build the bare sort over the first
+		// physical member's plan (a frozen QuantifierOverPlan snapshot) and carry it
+		// as the LIVE shared-group edge under the aggregation.
 		sortedPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, sortKeys)
-		rawQ := expressions.ForEachQuantifier(call.MemoizeExpression(rawExpr))
-		sortExpr := newPhysicalInMemorySortWrapper(sortedPlan, rawQ)
-		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(sortedPlan, groupingKeys, gb.GetAggregates())
-		sortQ := expressions.ForEachQuantifier(call.MemoizeExpression(sortExpr))
-		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, sortQ))
+		sortQ := expressions.ForEachQuantifier(call.MemoizeExpression(sortedPlan))
+		call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(sortQ, groupingKeys, gb.GetAggregates()))
 	}
 
 	// If an ordered physical expression exists (e.g. index scan whose
@@ -136,7 +136,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	// consumed by the index) are kept — they read fewer rows.
 	orderedExpr := findOrderedPhysicalExpr(innerRef, groupingKeys)
 	if orderedExpr != nil {
-		if fw, isFetch := orderedExpr.(*physicalFetchFromPartialRecordWrapper); isFetch && isFullRangeFetch(fw) {
+		if fw, isFetch := orderedExpr.(*plans.RecordQueryFetchFromPartialRecordPlan); isFetch && isFullRangeFetch(fw) {
 			// Skip — InMemorySort(FullScan) is cheaper than Fetch(IndexScan(full-range)).
 		} else if _, ok := orderedExpr.(physicalPlanExpression); ok {
 			// PIN the whole ordering SPINE, not just the top expression: the
@@ -162,10 +162,14 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			}
 			groupReq := properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false)
 			pinned := pinOrderedSpine(orderedExpr, groupReq, call.CostModel())
-			if pinnedPE, isPE := pinned.(physicalPlanExpression); pinned != nil && isPE {
-				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(pinnedPE.GetRecordQueryPlan(), groupingKeys, gb.GetAggregates())
+			if _, isPE := pinned.(physicalPlanExpression); pinned != nil && isPE {
+				// The ordered inner is a DELEGATING spine (Fetch/Filter over an
+				// index): pinOrderedSpine baked it to FinalOf singletons so it
+				// cannot float to an unordered sibling and split groups. Carry that
+				// FROZEN edge — the correct freeze for a delegating ordered inner
+				// (RFC-184 W2, no physicalStreamingAggWrapper).
 				orderedQ := expressions.ForEachQuantifier(expressions.FinalOf(pinned))
-				call.Yield(newPhysicalStreamingAggWrapper(aggPlan, orderedQ))
+				call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(orderedQ, groupingKeys, gb.GetAggregates()))
 			}
 		}
 	}
@@ -216,16 +220,16 @@ func orderingSatisfiesGroupingKeys(o properties.Ordering, groupingKeys []values.
 // no bound comparison ranges — i.e., it scans the entire index. A full-range
 // Fetch reads every row via random PK lookups, which is always worse than
 // a sequential full scan + in-memory sort.
-func isFullRangeFetch(fw *physicalFetchFromPartialRecordWrapper) bool {
-	innerRef := fw.innerQuant.GetRangesOver()
+func isFullRangeFetch(fw *plans.RecordQueryFetchFromPartialRecordPlan) bool {
+	innerRef := fw.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return true
 	}
-	idxWrapper := findIndexScanWrapper(innerRef)
-	if idxWrapper == nil || idxWrapper.plan == nil {
+	idxPlan := findIndexScanPlan(innerRef)
+	if idxPlan == nil {
 		return true
 	}
-	for _, cr := range idxWrapper.plan.GetScanComparisons() {
+	for _, cr := range idxPlan.GetScanComparisons() {
 		if !cr.IsEmpty() {
 			return false
 		}
@@ -233,21 +237,23 @@ func isFullRangeFetch(fw *physicalFetchFromPartialRecordWrapper) bool {
 	return true
 }
 
-// findIndexScanWrapper scans the Reference for a physicalIndexScanWrapper,
-// traversing through Fetch wrappers. The Fetch operator is a transparent
-// enforcer — rules that need index properties look through it.
-func findIndexScanWrapper(ref *expressions.Reference) *physicalIndexScanWrapper {
+// findIndexScanPlan scans the Reference for a bare *plans.RecordQueryIndexPlan,
+// traversing through Fetch operators. The Fetch operator is a transparent
+// enforcer — rules that need index properties look through it. Since RFC-184 W2
+// the index scan is its own cascades expression (no physicalIndexScanWrapper),
+// carrying its metadata (columns/pk/unique/covering) on the plan itself.
+func findIndexScanPlan(ref *expressions.Reference) *plans.RecordQueryIndexPlan {
 	if ref == nil {
 		return nil
 	}
 	for _, m := range ref.AllMembers() {
-		if w, ok := m.(*physicalIndexScanWrapper); ok {
-			return w
+		if p, ok := m.(*plans.RecordQueryIndexPlan); ok {
+			return p
 		}
-		if fw, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
-			if innerRef := fw.innerQuant.GetRangesOver(); innerRef != nil {
-				if w := findIndexScanWrapper(innerRef); w != nil {
-					return w
+		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+			if innerRef := fw.GetInnerQuantifier().GetRangesOver(); innerRef != nil {
+				if p := findIndexScanPlan(innerRef); p != nil {
+					return p
 				}
 			}
 		}

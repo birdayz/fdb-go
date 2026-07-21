@@ -24,28 +24,29 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
 	})
 	scanPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
-	scanWrapper := &physicalIndexScanWrapper{plan: scanPlan}
-	scanRef := expressions.InitialOf(scanWrapper)
 
 	sortKeys := []plans.SortKey{{
 		Field:      "G",
 		NullsFirst: true,
 		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
 	}}
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryInMemorySortPlan
+	// (no physicalInMemorySortWrapper); it is its own physical member directly.
 	sortPlan := plans.NewRecordQueryInMemorySortPlan(scanPlan, sortKeys)
-	sortWrapper := newPhysicalInMemorySortWrapper(sortPlan, expressions.ForEachQuantifier(scanRef))
-	sortRef := expressions.InitialOf(sortWrapper)
+	sortRef := expressions.InitialOf(sortPlan)
 
 	pred := predicates.NewComparisonPredicate(
 		values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(sortPlan, []predicates.QueryPredicate{pred})
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, expressions.ForEachQuantifier(sortRef))
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(sortRef)})
 	filterRef := expressions.InitialOf(filterWrapper)
 
 	distinctPlan := plans.NewRecordQueryDistinctPlan(filterPlan)
-	distinctWrapper := NewPhysicalDistinctWrapper(distinctPlan, expressions.ForEachQuantifier(filterRef))
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan (no
+	// physicalDistinctWrapper); the push rule matches it directly.
+	distinctWrapper := distinctPlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(filterRef)})
 	ref := expressions.InitialOf(distinctWrapper)
 
 	rule := NewPushDistinctBelowFilterRule()
@@ -53,11 +54,11 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("expected 1 yielded (Filter(Distinct(inner))), got %d", len(yielded))
 	}
-	fw, ok := yielded[0].(*physicalPredicatesFilterWrapper)
+	fw, ok := yielded[0].(*plans.RecordQueryPredicatesFilterPlan)
 	if !ok {
-		t.Fatalf("expected physicalPredicatesFilterWrapper, got %T", yielded[0])
+		t.Fatalf("expected *plans.RecordQueryPredicatesFilterPlan, got %T", yielded[0])
 	}
-	inner := fw.plan.GetInner()
+	inner := fw.GetInner()
 	dp, ok := inner.(*plans.RecordQueryDistinctPlan)
 	if !ok {
 		t.Fatalf("filter's inner = %T, want *RecordQueryDistinctPlan", inner)
@@ -82,17 +83,16 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
 	})
 	scanPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
-	scanWrapper := &physicalIndexScanWrapper{plan: scanPlan}
-	scanRef := expressions.InitialOf(scanWrapper)
 
 	sortKeys := []plans.SortKey{{
 		Field:      "G",
 		NullsFirst: true,
 		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
 	}}
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryInMemorySortPlan
+	// (no physicalInMemorySortWrapper); it is its own physical member directly.
 	sortPlan := plans.NewRecordQueryInMemorySortPlan(scanPlan, sortKeys)
-	sortWrapper := newPhysicalInMemorySortWrapper(sortPlan, expressions.ForEachQuantifier(scanRef))
-	sortRef := expressions.InitialOf(sortWrapper)
+	sortRef := expressions.InitialOf(sortPlan)
 
 	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
 		return v, true
@@ -100,11 +100,13 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		sortPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, expressions.ForEachQuantifier(sortRef))
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(sortRef)})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	distinctPlan := plans.NewRecordQueryDistinctPlan(fetchPlan)
-	distinctWrapper := NewPhysicalDistinctWrapper(distinctPlan, expressions.ForEachQuantifier(fetchRef))
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan (no
+	// physicalDistinctWrapper); the push rule matches it directly.
+	distinctWrapper := distinctPlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(fetchRef)})
 	ref := expressions.InitialOf(distinctWrapper)
 
 	rule := NewPushDistinctThroughFetchRule()
@@ -112,11 +114,11 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("expected 1 yielded (Fetch(Distinct(inner))), got %d", len(yielded))
 	}
-	fw, ok := yielded[0].(*physicalFetchFromPartialRecordWrapper)
+	fw, ok := yielded[0].(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
-		t.Fatalf("expected physicalFetchFromPartialRecordWrapper, got %T", yielded[0])
+		t.Fatalf("expected *plans.RecordQueryFetchFromPartialRecordPlan, got %T", yielded[0])
 	}
-	inner := fw.plan.GetInner()
+	inner := fw.GetInner()
 	dp, ok := inner.(*plans.RecordQueryDistinctPlan)
 	if !ok {
 		t.Fatalf("fetch's inner = %T, want *RecordQueryDistinctPlan", inner)

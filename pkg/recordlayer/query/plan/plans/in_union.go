@@ -3,7 +3,6 @@ package plans
 import (
 	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 	"reflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -53,7 +52,50 @@ func NewRecordQueryInUnionPlanWithMaxSize(
 	return p
 }
 
+// NewRecordQueryInUnionPlanFromQuantifier builds the InUnion over the LIVE inner
+// quantifier the implement rule memoized, rather than over a plan snapshot. The
+// inner may be a SHARED multi-member group (the unordered path) whose per-ordering
+// winner resolves at extraction via ref.Winner() (planFromQuantifier) — the
+// deferred-winner case. The plan carries the inner edge once, with no wrapper
+// snapshot (RFC-184 W2). Callers still replay SetInSources afterward.
+func NewRecordQueryInUnionPlanFromQuantifier(
+	innerQ expressions.Quantifier,
+	bindingNames []string,
+	comparisonKeys []values.Value,
+	reverse bool,
+	maxSize int,
+) *RecordQueryInUnionPlan {
+	bn := make([]string, len(bindingNames))
+	copy(bn, bindingNames)
+	ck := make([]values.Value, len(comparisonKeys))
+	copy(ck, comparisonKeys)
+	return &RecordQueryInUnionPlan{
+		innerQ:         innerQ,
+		bindingNames:   bn,
+		comparisonKeys: ck,
+		reverse:        reverse,
+		maxSize:        maxSize,
+	}
+}
+
 func (p *RecordQueryInUnionPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetInnerQuantifier returns the live child quantifier — the single memo edge the
+// InUnion ranges over. derivationsForInUnion reads its alias to decorrelate the
+// inner against the IN-source bindings; since RFC-184 W2 the memo holds the bare
+// plan (no physicalInUnionWrapper whose innerQuant field it used to read), this
+// exposes the same edge.
+func (p *RecordQueryInUnionPlan) GetInnerQuantifier() expressions.Quantifier {
+	return p.innerQ
+}
+
+// GetResultValue flows the live child quantifier's object value — the InUnion
+// emits its inner's rows once per IN-source binding, so its row identity IS the
+// inner's. This is the identity physicalInUnionWrapper.GetResultValue supplied
+// (RFC-184 W2).
+func (p *RecordQueryInUnionPlan) GetResultValue() values.Value {
+	return p.innerQ.GetFlowedObjectValue()
+}
 
 // GetQuantifiers reports the real child quantifier, overriding
 // PlanExprBase's none.
@@ -80,10 +122,13 @@ func (p *RecordQueryInUnionPlan) GetInSources() [][]any             { return p.i
 func (p *RecordQueryInUnionPlan) SetInSources(sources [][]any)      { p.inSources = sources }
 
 func (p *RecordQueryInUnionPlan) GetResultType() values.Type {
-	if inner := p.GetInner(); inner != nil {
-		return inner.GetResultType()
+	if p.innerQ.GetRangesOver() == nil {
+		return values.UnknownType
 	}
-	return values.UnknownType
+	// TYPE resolution, not identity: the inner is a deferred-winner group still
+	// multi-member during planning; every alternative shares the row shape, so
+	// any member answers without tripping the singleton guard (RFC-184 W2).
+	return planTypeFromQuantifier(p.innerQ).GetResultType()
 }
 
 func (p *RecordQueryInUnionPlan) GetChildren() []RecordQueryPlan {
@@ -94,70 +139,43 @@ func (p *RecordQueryInUnionPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
+// structuralKey folds the InUnion identity. reverse is direct. bindingNames
+// contribute only their COUNT (Int): they are internal correlation aliases
+// minted by UniqueCorrelationIdentifier (a process-global counter) — comparing
+// the arbitrary names made every replanned IN-union non-equal → plan-cache churn
+// + nondeterministic Explain (RFC-164 WS-4). comparisonKeys and inSources join
+// identity per Java RecordQueryInUnionPlan.equalsWithoutChildren (both set before
+// the plan is memoized, so sibling alternatives differing in merge keys or
+// IN-literals must NOT collapse): comparisonKeys via semantic Value equality
+// (Values), inSources via reflect.DeepEqual (Equatable). Drives both Equals/Hash.
+//
+// The inSources hash folds only DIMENSIONS (len + per-dim len), never the literal
+// payloads: hashing arbitrary `any` comparands bit-exactly would break
+// equal⟹same-hash the other way (DeepEqual treats +0.0 == -0.0 for floats, whose
+// bits differ). Same-shape different-literal collisions are resolved by the eq.
+func (p *RecordQueryInUnionPlan) structuralKey() *structuralKey {
+	var dims []byte
+	dims = binary.BigEndian.AppendUint64(dims, uint64(len(p.inSources)))
+	for _, d := range p.inSources {
+		dims = binary.BigEndian.AppendUint64(dims, uint64(len(d)))
+	}
+	return newStructuralKey().
+		Bool(p.reverse).
+		Int(len(p.bindingNames)).
+		Values(p.comparisonKeys).
+		Equatable(p.inSources, func(other any) bool {
+			o, ok := other.([][]any)
+			return ok && reflect.DeepEqual(p.inSources, o)
+		}, dims)
+}
+
 func (p *RecordQueryInUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInUnionPlan)
-	if !ok {
-		return false
-	}
-	if p.reverse != o.reverse {
-		return false
-	}
-	// bindingNames are internal correlation aliases minted by UniqueCorrelation-
-	// Identifier (a process-global counter); only their COUNT (the number of IN
-	// columns) is structural. Comparing the arbitrary names made every replanned
-	// IN-union plan non-equal → plan-cache churn + nondeterministic Explain (RFC-164
-	// WS-4, same class as RecordQueryInJoinPlan). Alias-invariant identity; the real
-	// names are retained on the field for execution (GetBindingNames).
-	if len(p.bindingNames) != len(o.bindingNames) {
-		return false
-	}
-	// comparisonKeys and inSources join identity per Java
-	// RecordQueryInUnionPlan.equalsWithoutChildren (inSources.equals &&
-	// comparisonKeyFunction.equals). Both are set before the plan is
-	// memoized (rule_implement_in_union yields the wrapper after
-	// SetInSources), so sibling alternatives differing only in merge keys
-	// or IN-literals must NOT collapse into one memo group — the survivor
-	// would not produce the ordering (or the rows) the winner claimed.
-	if len(p.comparisonKeys) != len(o.comparisonKeys) {
-		return false
-	}
-	for i, k := range p.comparisonKeys {
-		if !semanticValueEquals(k, o.comparisonKeys[i]) {
-			return false
-		}
-	}
-	// inSources are literal comparand lists; DeepEqual is the Go analog of
-	// Java's List.equals element-wise Object.equals.
-	return reflect.DeepEqual(p.inSources, o.inSources)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryInUnionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("inunionplan|"))
-	// bindingNames excluded — only their COUNT is structural (see EqualsWithoutChildren).
-	// Full-width (not byte()) so a high-arity IN can't collide mod 256.
-	var cnt [8]byte
-	binary.LittleEndian.PutUint64(cnt[:], uint64(len(p.bindingNames)))
-	h.Write(cnt[:])
-	if p.reverse {
-		h.Write([]byte{1})
-	}
-	for _, k := range p.comparisonKeys {
-		writeValueHash(h, k)
-	}
-	// inSources fold only their DIMENSIONS, not the literal payloads: the
-	// hash may be coarser than equality (equal⟹same-hash still holds), and
-	// hashing arbitrary `any` comparands bit-exactly would break it the
-	// other way (DeepEqual treats +0.0 == -0.0 for floats via ==, their
-	// bits differ). Bucket collisions between same-shape different-literal
-	// IN-unions are resolved by EqualsWithoutChildren.
-	binary.LittleEndian.PutUint64(cnt[:], uint64(len(p.inSources)))
-	h.Write(cnt[:])
-	for _, dim := range p.inSources {
-		binary.LittleEndian.PutUint64(cnt[:], uint64(len(dim)))
-		h.Write(cnt[:])
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("inunionplan|")
 }
 
 func (p *RecordQueryInUnionPlan) Explain() string {
@@ -194,6 +212,21 @@ func (p *RecordQueryInUnionPlan) WithQuantifiers(qs []expressions.Quantifier) ex
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). Because the InUnion carries its child as a single LIVE memo edge,
+// the relink is exactly a quantifier swap: WithQuantifiers preserves every other
+// field (bindingNames, comparisonKeys, reverse, maxSize, inSources) and GetInner
+// re-resolves through the new singleton reference. This replaces
+// physicalInUnionWrapper.WithChildren (RFC-184 W2), whose separate snapshot plan
+// field forced a WithInner rebuild gated on isLeafReplaceable — a single live
+// child edge relinks to ref.Winner() unconditionally.
+func (p *RecordQueryInUnionPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryInUnionPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

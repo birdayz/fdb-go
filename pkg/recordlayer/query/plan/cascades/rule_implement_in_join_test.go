@@ -29,7 +29,7 @@ func TestImplementInJoinRule_MatchesSelectExpression(t *testing.T) {
 func TestImplementInJoinRule_SkipsWithPredicates(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -62,7 +62,7 @@ func TestImplementInJoinRule_SkipsWithPredicates(t *testing.T) {
 func TestImplementInJoinRule_SkipsSingleQuantifier(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -85,7 +85,7 @@ func TestImplementInJoinRule_SkipsSingleQuantifier(t *testing.T) {
 func TestImplementInJoinRule_FiresWithExplodeAndInner(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -112,20 +112,20 @@ func TestImplementInJoinRule_FiresWithExplodeAndInner(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalInJoinWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryInJoinPlan); ok {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("should yield physicalInJoinWrapper")
+		t.Fatal("should yield *RecordQueryInJoinPlan")
 	}
 }
 
 func TestImplementInJoinRule_SkipsWhenResultNotQOV(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -193,7 +193,7 @@ func TestIsSupportedExplodeValue(t *testing.T) {
 func TestImplementInJoinRule_MultipleExplodes(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -308,11 +308,7 @@ func TestImplementInJoinRule_WithIndexScanInner(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", []*predicates.ComparisonRange{eqRange},
 		[]string{"T"}, values.UnknownType, false)
-	iw := &physicalIndexScanWrapper{
-		plan:        indexPlan,
-		columnNames: []string{"a"},
-		unique:      false,
-	}
+	iw := indexPlan.WithIndexMetadata([]string{"a"}, nil, false)
 	innerRef := expressions.InitialOf(iw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(iw)
@@ -339,12 +335,12 @@ func TestImplementInJoinRule_WithIndexScanInner(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalInJoinWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryInJoinPlan); ok {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("should yield physicalInJoinWrapper with index scan inner")
+		t.Fatal("should yield *RecordQueryInJoinPlan with index scan inner")
 	}
 }

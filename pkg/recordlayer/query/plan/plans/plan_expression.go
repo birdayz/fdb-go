@@ -88,12 +88,12 @@ func (PlanExprBase) GetQuantifiers() []expressions.Quantifier { return nil }
 // invariant enforced, the place is construction (Java's resultValue is
 // @Nonnull), not this method.
 //
-// One asymmetry, now resolved: physicalMultiIntersectionWrapper's nil-fallback
-// returns the FIRST INNER's flowed object value, not a fresh stand-in — so a
-// blanket non-nil guard here would silently change that wrapper's answer. The
-// plan could not reproduce that fallback while it had no quantifiers; it owns
-// them now and owns the fallback with them (multi_intersection.go's
-// GetResultValue), so the wrapper holds no information the plan lacks.
+// One asymmetry, now resolved: the multi-intersection's nil-fallback returns the
+// FIRST INNER's flowed object value, not a fresh stand-in — so a blanket non-nil
+// guard here would silently change that answer. The multi-intersection owns its
+// quantifiers and owns the fallback with them (multi_intersection.go's
+// GetResultValue), which is why the retired physicalMultiIntersectionWrapper held
+// no information the plan lacks (RFC-184 W2).
 func (PlanExprBase) GetResultValue() values.Value {
 	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
 }
@@ -189,7 +189,47 @@ func planFromQuantifier(q expressions.Quantifier) RecordQueryPlan {
 	if ref == nil {
 		return nil
 	}
+	// A stamped OPTIMIZE winner IS the answer for a group pruned to its
+	// cost-cheapest member for its requested ordering: the deferred-winner case
+	// where a plan (a set operation) ranges over a SHARED multi-member leg group
+	// whose per-ordering winner is chosen at optimization, not at yield. For a
+	// singleton group the winner is that one member, so consulting it here is
+	// behavior-preserving; for a multi-member group it returns the cost winner
+	// instead of tripping the getOnlyElement singleton guard below. This is what
+	// lets a deferred-winner set-op carry each leg as ONE live quantifier over
+	// the real group rather than a separate snapshot — the RFC-184 W2 goal.
+	// The physical sort resolves through this same path: it re-sorts its input, so
+	// it needs the cheapest-valid member for ANY ordering — not a per-ordering
+	// winner — and ref.Winner() is exactly that, the OPTIMIZE-chosen
+	// overall-cheapest member (ordering-specific selection lives elsewhere, in
+	// getWinnerForOrdering). Before the wrapper collapse the sort resolved this
+	// itself via findBestPhysicalPlan; the collapsed plan routes through Winner()
+	// here and reaches the same member.
+	if w := ref.Winner(); w != nil {
+		if p := planOfMember(w); p != nil {
+			return p
+		}
+	}
 	if p := onlyPlanFromFinalMembers(ref.FinalMembers()); p != nil {
+		return p
+	}
+	return firstPlanFromMembers(ref.Members())
+}
+
+// planTypeFromQuantifier resolves a child quantifier to ANY member's plan for
+// TYPE queries (GetResultType) — distinct from planFromQuantifier's IDENTITY
+// resolution. A pass-through / column-aligned plan (set operation) flows its
+// inner's row SHAPE, and every alternative in a group shares that shape, so the
+// first member answers. Identity needs the single winner; type does not. This
+// lets a deferred-winner plan report its result type DURING planning — before
+// OPTIMIZE stamps the winner on its still-multi-member leg group — without
+// tripping the singleton invariant that identity resolution enforces.
+func planTypeFromQuantifier(q expressions.Quantifier) RecordQueryPlan {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return nil
+	}
+	if p := firstPlanFromMembers(ref.FinalMembers()); p != nil {
 		return p
 	}
 	return firstPlanFromMembers(ref.Members())

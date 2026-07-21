@@ -28,13 +28,9 @@ func TestImplementProjectionRule_FiresAfterInnerImplemented(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementProjectionRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalProjectionWrapper)
+	plan, ok := yielded[0].(*plans.RecordQueryProjectionPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalProjectionWrapper", yielded[0])
-	}
-	plan := wrap.GetPlan()
-	if plan == nil {
-		t.Fatal("wrapper has no plan")
+		t.Fatalf("yield = %T, want *plans.RecordQueryProjectionPlan", yielded[0])
 	}
 	if _, ok := plan.GetInner().(*plans.RecordQueryScanPlan); !ok {
 		t.Fatalf("projection plan inner = %T, want *RecordQueryScanPlan", plan.GetInner())
@@ -66,13 +62,12 @@ func TestImplementValuesRule_Fires(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementValuesRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalValuesWrapper)
+	plan, ok := yielded[0].(*plans.RecordQueryValuesPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalValuesWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryValuesPlan", yielded[0])
 	}
-	plan := wrap.GetPlan()
 	if plan == nil {
-		t.Fatal("wrapper has no plan")
+		t.Fatal("nil values plan")
 	}
 }
 
@@ -85,12 +80,13 @@ func TestImplementTempTableScanRule_Fires(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementTempTableScanRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalTempTableScanWrapper)
+	// RFC-184 W2: the temp-table scan is its own bare plan expression.
+	wrap, ok := yielded[0].(*plans.RecordQueryTempTableScanPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalTempTableScanWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryTempTableScanPlan", yielded[0])
 	}
 	if wrap.GetRecordQueryPlan() == nil {
-		t.Fatal("wrapper has no plan")
+		t.Fatal("plan is nil")
 	}
 }
 
@@ -111,12 +107,13 @@ func TestImplementTempTableInsertRule_FiresAfterInnerImplemented(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementTempTableInsertRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalTempTableInsertWrapper)
+	// RFC-184 W2: the temp-table insert is its own bare plan expression.
+	wrap, ok := yielded[0].(*plans.RecordQueryTempTableInsertPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalTempTableInsertWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryTempTableInsertPlan", yielded[0])
 	}
 	if wrap.GetRecordQueryPlan() == nil {
-		t.Fatal("wrapper has no plan")
+		t.Fatal("plan is nil")
 	}
 }
 
@@ -162,9 +159,9 @@ func TestImplementRecursiveDfsJoinRule_FiresAfterInnerImplemented(t *testing.T) 
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementRecursiveDfsJoinRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalRecursiveDfsJoinWrapper)
+	wrap, ok := yielded[0].(*plans.RecordQueryRecursiveDfsJoinPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalRecursiveDfsJoinWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryRecursiveDfsJoinPlan", yielded[0])
 	}
 	if wrap.GetRecordQueryPlan() == nil {
 		t.Fatal("wrapper has no plan")
@@ -220,9 +217,9 @@ func TestImplementRecursiveLevelUnionRule_FiresAfterInnerImplemented(t *testing.
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementRecursiveLevelUnionRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalRecursiveLevelUnionWrapper)
+	wrap, ok := yielded[0].(*plans.RecordQueryRecursiveLevelUnionPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalRecursiveLevelUnionWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *plans.RecordQueryRecursiveLevelUnionPlan", yielded[0])
 	}
 	if wrap.GetRecordQueryPlan() == nil {
 		t.Fatal("wrapper has no plan")

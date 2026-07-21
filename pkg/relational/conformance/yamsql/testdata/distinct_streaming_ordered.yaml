@@ -1,0 +1,42 @@
+# distinct_streaming_ordered.yaml — SELECT DISTINCT over an index-ordered
+# column, exercising the STREAMING distinct executor.
+#
+# Regression for the RFC-184 W2 distinct-wrapper collapse. A distinct whose
+# inner is ordered by the whole dedup key uses the resume-clean adjacent-dedup
+# streaming executor (Streaming=true). The collapse gives the distinct ONE child
+# edge; for a STREAMING distinct that edge FREEZES the exact ordered inner in a
+# detached single-member final reference, so the streaming dedup can never run
+# over an unordered float and leak a duplicate across the adjacent-dup runs. (A
+# PLAIN hash distinct keeps the live edge instead — hash dedups over any order.)
+# The Streaming mode is an execution-only detail not surfaced by EXPLAIN, so the
+# freeze itself is pinned by a cascades unit test; this scenario is the e2e proof
+# that the collapsed streaming distinct deduplicates correctly.
+name: distinct_streaming_ordered
+schema_template: |
+  CREATE TABLE events (
+    id BIGINT NOT NULL,
+    category STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX events_by_category ON events (category)
+setup:
+  - INSERT INTO events VALUES
+      (1, 'alpha'), (2, 'alpha'), (3, 'beta'), (4, 'beta'),
+      (5, 'beta'), (6, 'gamma'), (7, 'alpha'), (8, 'gamma'),
+      (9, 'delta'), (10, 'alpha'), (11, 'delta'), (12, 'beta')
+tests:
+  # The index events_by_category provides category order, so the dedup key is
+  # adjacent: the distinct streams over the ordered index scan and the ORDER BY
+  # is elided. Every category appears in multiple adjacent-dup runs; a leaked
+  # duplicate would show up as a repeated row.
+  - query: SELECT DISTINCT category FROM events ORDER BY category
+    # The distinct sits directly over the ordered index scan (the dedup key is
+    # adjacent → streaming-eligible); the index supplies the order, so the
+    # ORDER BY is elided rather than realized as an InMemorySort.
+    plan_contains: Distinct(Project([CATEGORY#1], IndexScan(EVENTS_BY_CATEGORY
+    plan_not_contains: InMemorySort
+    rows:
+      - ['alpha']
+      - ['beta']
+      - ['delta']
+      - ['gamma']

@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // TestOrderedIndexScan_SortMatchesIndex verifies that Sort(STATUS)
@@ -39,8 +40,8 @@ func TestOrderedIndexScan_SortMatchesIndex(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield (ordered index scan), got %d", len(results))
 	}
-	if _, ok := results[0].(*physicalIndexScanWrapper); !ok {
-		t.Fatalf("expected physicalIndexScanWrapper, got %T", results[0])
+	if _, ok := results[0].(*plans.RecordQueryIndexPlan); !ok {
+		t.Fatalf("expected *plans.RecordQueryIndexPlan, got %T", results[0])
 	}
 }
 
@@ -150,11 +151,11 @@ func TestOrderedIndexScan_DescSortProducesReverseIndexScan(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield (DESC sort → reverse index scan), got %d", len(results))
 	}
-	w, ok := results[0].(*physicalIndexScanWrapper)
+	w, ok := results[0].(*plans.RecordQueryIndexPlan)
 	if !ok {
-		t.Fatalf("expected physicalIndexScanWrapper, got %T", results[0])
+		t.Fatalf("expected *plans.RecordQueryIndexPlan, got %T", results[0])
 	}
-	if !w.plan.IsReverse() {
+	if !w.IsReverse() {
 		t.Fatal("expected reverse index scan for DESC sort")
 	}
 }

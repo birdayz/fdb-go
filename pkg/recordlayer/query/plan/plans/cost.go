@@ -438,7 +438,37 @@ func recursiveCost(child []properties.Cost) properties.Cost {
 	}
 }
 
-// HintCost: depth-first recursive traversal from each root row.
+// levelUnionBufferTouches counts the temp-table round-trips the level-at-a-time
+// recursive union pays PER materialized frontier row that the DFS join does not
+// — the cost signature of the two operators' different residency, grounded in
+// the executor:
+//
+//   - The union executor (executor/recursive_union_cursor.go) drives the
+//     recursion through two ping-ponging temp tables. Each frontier row is
+//     WRITTEN into the insert table (tempTableInsertCursor.OnNext → TempTable.Add)
+//     and later READ back as the next level's driver (a TempTableScanPlan over the
+//     table the buffers just flipped into) — two buffer touches per row. On top of
+//     that the temp table's byte charge is MONOTONIC: Clear does NOT refund
+//     (executor/evaluation_context.go, TempTable.charged), so a drained frontier's
+//     residency is re-charged ("echoed") into the reused buffer rather than
+//     released — the materialized set stays resident until statement teardown
+//     (ReleaseCharges).
+//   - The DFS cursor (executor/recursive_cursor.go) buffers NO level: it charges
+//     one stack slot per open depth on push (chargeNode) and RELEASES it on pop
+//     (releaseNodes), streaming a single root→leaf path. Peak residency is the
+//     path depth, not the whole output.
+//
+// So the level union does a write + read-back (2 touches) on every one of the
+// ~output-cardinality rows it materializes; the DFS join does neither. This makes
+// the level union strictly costlier for equal children, so the planner prefers
+// DFS on COST — a preference that survives wrapper-identity changes (RFC-184 W2),
+// unlike the structural compareRecursiveCTE tie-break. Not an epsilon nudge: the
+// term is a genuine per-row buffer cost at the union merge rate.
+const levelUnionBufferTouches = 2
+
+// HintCost: depth-first recursive traversal from each root row. The DFS cursor
+// streams one root→leaf path with a charge-once-per-depth stack (see
+// levelUnionBufferTouches), so it carries no level-buffer term.
 func (p *RecordQueryRecursiveDfsJoinPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) < 2 {
 		return properties.Cost{}
@@ -446,12 +476,23 @@ func (p *RecordQueryRecursiveDfsJoinPlan) HintCost(child []properties.Cost, _ pr
 	return recursiveCost(child)
 }
 
-// HintCost: level-at-a-time recursive union from the initial level.
+// HintCost: level-at-a-time recursive union from the initial level. It costs the
+// same base recursion as the DFS join PLUS a level-buffer echo: every
+// materialized frontier row is written to and read back from a temp table, and
+// the drained buffer's charge is echoed (not refunded) into the next level (see
+// levelUnionBufferTouches). The added CPU term makes the union strictly costlier
+// than the DFS join for identical children, so the planner prefers DFS on cost.
 func (p *RecordQueryRecursiveLevelUnionPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) < 2 {
 		return properties.Cost{}
 	}
-	return recursiveCost(child)
+	cost := recursiveCost(child)
+	// The materialized set is the operator's output cardinality; each row pays
+	// levelUnionBufferTouches buffer operations at the union merge rate (UnionCPU).
+	// Charged on CPU ONLY — the union emits the SAME rows as the DFS join, so its
+	// OUTPUT cardinality (which rolls up into parents) must not change.
+	cost.CPU += cost.Cardinality * properties.UnionCPU * levelUnionBufferTouches
+	return cost
 }
 
 // defaultVectorHorizon is the bounded re-ranked horizon an ordered-stream scan

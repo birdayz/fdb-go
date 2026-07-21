@@ -8,12 +8,13 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // ---------------------------------------------------------------------------
 // 1. UniqueOverDistinctOverScan: both Unique and Distinct are absorbed
 //    because the underlying scan is already distinct by primary key.
-//    The final result should be a physicalScanWrapper (promoted).
+//    The final result should be a bare *plans.RecordQueryScanPlan (promoted).
 // ---------------------------------------------------------------------------
 
 func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
@@ -37,8 +38,8 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 	// ImplementUniqueRule absorbs the Unique operator when its input
 	// is distinct. The scan is always distinct, and Distinct over a
 	// distinct source should also be treated as distinct. The net
-	// effect: the root's final members should contain a
-	// physicalScanWrapper — the Unique and Distinct wrappers are both
+	// effect: the root's final members should contain a bare
+	// *plans.RecordQueryScanPlan — the Unique and Distinct wrappers are both
 	// absorbed because the inner chain is inherently distinct.
 	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
@@ -47,22 +48,23 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 
 	foundScan := false
 	for _, f := range finals {
-		if _, ok := f.(*physicalScanWrapper); ok {
+		// RFC-184 W2: a bare primary scan is its own physical expression.
+		if _, ok := f.(*plans.RecordQueryScanPlan); ok {
 			foundScan = true
 			break
 		}
 	}
 
 	// If ImplementUniqueRule absorbs the Unique (because the distinct
-	// child is itself distinct), we expect a scan wrapper. If the
-	// implementation instead yields a physicalDistinctWrapper, that's
+	// child is itself distinct), we expect a bare scan plan. If the
+	// implementation instead yields a *plans.RecordQueryDistinctPlan, that's
 	// also acceptable — the key invariant is that no Unique wrapper
 	// appears (since scans are distinct).
 	if !foundScan {
-		// Check for a physicalDistinctWrapper as acceptable fallback.
+		// Check for a *plans.RecordQueryDistinctPlan as acceptable fallback.
 		foundDistinct := false
 		for _, f := range finals {
-			if _, ok := f.(*physicalDistinctWrapper); ok {
+			if _, ok := f.(*plans.RecordQueryDistinctPlan); ok {
 				foundDistinct = true
 				break
 			}
@@ -72,7 +74,7 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 			for i, f := range finals {
 				types[i] = fmt.Sprintf("%T", f)
 			}
-			t.Fatalf("expected *physicalScanWrapper or *physicalDistinctWrapper in members (Unique absorbed), got types: %v", types)
+			t.Fatalf("expected *plans.RecordQueryScanPlan or *plans.RecordQueryDistinctPlan in members (Unique absorbed), got types: %v", types)
 		}
 	}
 }
@@ -80,8 +82,8 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 // ---------------------------------------------------------------------------
 // 2. LimitOverScan: LogicalLimit(10) over Scan with full pipeline.
 //    ImplementLimitRule fires during REWRITING to produce a
-//    physicalLimitWrapper. After PLANNING + extraction, the top-level
-//    plan must be a physicalLimitWrapper.
+//    *plans.RecordQueryLimitPlan (RFC-184 W2: no wrapper). After PLANNING +
+//    extraction, the top-level plan must be a *plans.RecordQueryLimitPlan.
 //
 //    Additionally verify the PLANNING phase's UniqueRule absorption:
 //    Limit(Unique(Scan)) is tested indirectly — ImplementLimitRule
@@ -104,11 +106,11 @@ func TestPhase3_LimitOverScan(t *testing.T) {
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
 	// ImplementLimitRule fires during PLANNING and yields a
-	// physicalLimitWrapper into Members.
+	// *plans.RecordQueryLimitPlan into Members (RFC-184 W2: no wrapper).
 	foundLimit := containsPhysical(rootRef, IsPhysicalLimit)
 	if !foundLimit {
 		for _, f := range rootRef.Members() {
-			if _, ok := f.(*physicalLimitWrapper); ok {
+			if _, ok := f.(*plans.RecordQueryLimitPlan); ok {
 				foundLimit = true
 				break
 			}
@@ -122,7 +124,7 @@ func TestPhase3_LimitOverScan(t *testing.T) {
 		for _, m := range rootRef.Members() {
 			types = append(types, fmt.Sprintf("(member)%T", m))
 		}
-		t.Fatalf("expected physicalLimitWrapper, got: %v", types)
+		t.Fatalf("expected *plans.RecordQueryLimitPlan, got: %v", types)
 	}
 
 	// Verify that PLANNING phase computed PlanProperties on the root.
@@ -187,25 +189,25 @@ func TestPhase3_DistinctOverUnion(t *testing.T) {
 
 	// The union should yield physical wrappers.
 	foundUnion := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
-		_, uOK := expr.(*physicalUnionWrapper)
-		_, uuOK := expr.(*physicalUnorderedUnionWrapper)
+		_, uOK := expr.(*plans.RecordQueryUnionPlan)
+		_, uuOK := expr.(*plans.RecordQueryUnorderedUnionPlan)
 		return uOK || uuOK
 	})
 	if !foundUnion {
-		t.Fatal("expected physicalUnionWrapper or physicalUnorderedUnionWrapper in explored graph")
+		t.Fatal("expected *plans.RecordQueryUnionPlan or *plans.RecordQueryUnorderedUnionPlan in explored graph")
 	}
 
-	// Distinct should yield either a physicalDistinctWrapper (wrapping
+	// Distinct should yield either a *plans.RecordQueryDistinctPlan (wrapping
 	// a non-distinct inner) or the inner plan directly (if the union
 	// provides distinct semantics — RecordQueryUnionPlan deduplicates).
 	foundDistinctResult := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
-		if _, ok := expr.(*physicalDistinctWrapper); ok {
+		if _, ok := expr.(*plans.RecordQueryDistinctPlan); ok {
 			return true
 		}
-		if _, ok := expr.(*physicalUnionWrapper); ok {
+		if _, ok := expr.(*plans.RecordQueryUnionPlan); ok {
 			return true
 		}
-		if _, ok := expr.(*physicalUnorderedUnionWrapper); ok {
+		if _, ok := expr.(*plans.RecordQueryUnorderedUnionPlan); ok {
 			return true
 		}
 		return false
@@ -249,27 +251,27 @@ func TestPhase3_ProjectionOverFilter(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	// Check that physicalProjectionWrapper appears.
+	// Check that the bare RecordQueryProjectionPlan appears (RFC-184 W2).
 	foundProjection := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalProjectionWrapper)
+		_, ok := expr.(*plans.RecordQueryProjectionPlan)
 		return ok
 	})
 	if !foundProjection {
 		for _, f := range rootRef.Members() {
-			if _, ok := f.(*physicalProjectionWrapper); ok {
+			if _, ok := f.(*plans.RecordQueryProjectionPlan); ok {
 				foundProjection = true
 				break
 			}
 		}
 	}
 	if !foundProjection {
-		t.Fatal("expected physicalProjectionWrapper in explored graph or final members")
+		t.Fatal("expected *plans.RecordQueryProjectionPlan in explored graph or final members")
 	}
 
-	// Check that physicalFilterWrapper appears in the inner Reference.
+	// Check that a physical filter appears in the inner Reference.
 	foundFilter := containsPhysical(rootRef, IsPhysicalFilter)
 	if !foundFilter {
-		t.Fatal("expected physicalFilterWrapper in the explored graph")
+		t.Fatal("expected a physical filter in the explored graph")
 	}
 }
 
@@ -312,7 +314,7 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 
 	// With no predicates and a simple QOV result, the rule should
 	// yield the inner scan's physical wrapper directly — no
-	// physicalPredicatesFilterWrapper or physicalMapWrapper.
+	// *plans.RecordQueryPredicatesFilterPlan or *plans.RecordQueryMapPlan.
 	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
 		t.Fatal("root Reference has no members after PLANNING phase")
@@ -323,27 +325,29 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 	foundMap := false
 	for _, f := range finals {
 		switch f.(type) {
-		case *physicalScanWrapper:
+		// RFC-184 W2: a bare primary scan is its own physical expression.
+		case *plans.RecordQueryScanPlan:
 			foundScan = true
-		case *physicalPredicatesFilterWrapper:
+		case *plans.RecordQueryPredicatesFilterPlan:
 			foundPredicatesFilter = true
-		case *physicalMapWrapper:
+		// RFC-184 W2: a map/projection is its own physical expression.
+		case *plans.RecordQueryMapPlan:
 			foundMap = true
 		}
 	}
 
 	if foundPredicatesFilter {
-		t.Fatal("unexpected physicalPredicatesFilterWrapper — Select has no predicates, should pass through")
+		t.Fatal("unexpected *plans.RecordQueryPredicatesFilterPlan — Select has no predicates, should pass through")
 	}
 	if foundMap {
-		t.Fatal("unexpected physicalMapWrapper — Select has simple QOV result, should pass through")
+		t.Fatal("unexpected *plans.RecordQueryMapPlan — Select has simple QOV result, should pass through")
 	}
 	if !foundScan {
 		types := make([]string, len(finals))
 		for i, f := range finals {
 			types[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected *physicalScanWrapper in final members (Select pass-through), got types: %v", types)
+		t.Fatalf("expected *plans.RecordQueryScanPlan in final members (Select pass-through), got types: %v", types)
 	}
 }
 
@@ -378,17 +382,18 @@ func TestPhase3_PlanPropertyInvariant_ScanIsDistinct(t *testing.T) {
 	}
 
 	for _, expr := range exprs {
-		if _, ok := expr.(*physicalScanWrapper); ok {
+		// RFC-184 W2: a bare primary scan is its own physical expression.
+		if _, ok := expr.(*plans.RecordQueryScanPlan); ok {
 			props := pm.GetProperties(expr)
 			if props == nil {
-				t.Fatal("GetProperties returned nil for physicalScanWrapper")
+				t.Fatal("GetProperties returned nil for scan plan")
 			}
 			if !props.GetBool(properties.PropDistinctRecords) {
-				t.Fatal("scan wrapper must have PropDistinctRecords=true — scans return distinct records by primary key")
+				t.Fatal("scan must have PropDistinctRecords=true — scans return distinct records by primary key")
 			}
 			// Also verify PropStoredRecord is true for scans.
 			if !props.GetBool(properties.PropStoredRecord) {
-				t.Fatal("scan wrapper must have PropStoredRecord=true — scans return stored records")
+				t.Fatal("scan must have PropStoredRecord=true — scans return stored records")
 			}
 			return
 		}
@@ -398,7 +403,7 @@ func TestPhase3_PlanPropertyInvariant_ScanIsDistinct(t *testing.T) {
 	for i, e := range exprs {
 		types[i] = fmt.Sprintf("%T", e)
 	}
-	t.Fatalf("no physicalScanWrapper found in PlanPropertiesMap, got types: %v", types)
+	t.Fatalf("no *plans.RecordQueryScanPlan found in PlanPropertiesMap, got types: %v", types)
 }
 
 // ---------------------------------------------------------------------------
@@ -434,7 +439,7 @@ func TestPhase3_PlanPropertyInvariant_FilterInheritsDistinct(t *testing.T) {
 	}
 
 	// The filterRef's PlanPropertiesMap should contain a
-	// physicalFilterWrapper whose PropDistinctRecords inherits from
+	// physical filter whose PropDistinctRecords inherits from
 	// the child scan (which is distinct).
 	filterPM := GetRefPlanPropertiesMap(filterRef)
 	if filterPM == nil {

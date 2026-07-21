@@ -62,7 +62,7 @@ func exploreAndVerify(t *testing.T, ref *expressions.Reference, rules []Expressi
 
 // TestPlanner_NLJFromSelectWithTwoQuantifiers verifies that a Select
 // with two quantifiers (simulating a JOIN over two scans) produces a
-// physicalNestedLoopJoinWrapper after running through the planner with
+// *plans.RecordQueryNestedLoopJoinPlan after running through the planner with
 // all rules.
 func TestPlanner_NLJFromSelectWithTwoQuantifiers(t *testing.T) {
 	t.Parallel()
@@ -86,12 +86,12 @@ func TestPlanner_NLJFromSelectWithTwoQuantifiers(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalNestedLoopJoin) && !containsPhysical(ref, IsPhysicalFlatMap) {
-		t.Fatal("expected physicalNestedLoopJoinWrapper or physicalFlatMapWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryNestedLoopJoinPlan or *plans.RecordQueryFlatMapPlan in explored members")
 	}
 }
 
 // TestPlanner_LimitProducesPhysicalPlan verifies that
-// LogicalLimitExpression(10, 0, Scan) yields a physicalLimitWrapper
+// LogicalLimitExpression(10, 0, Scan) yields a *plans.RecordQueryLimitPlan
 // after exploration.
 func TestPlanner_LimitProducesPhysicalPlan(t *testing.T) {
 	t.Parallel()
@@ -107,7 +107,7 @@ func TestPlanner_LimitProducesPhysicalPlan(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalLimit) {
-		t.Fatal("expected physicalLimitWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryLimitPlan in explored members")
 	}
 }
 
@@ -139,14 +139,14 @@ func TestPlanner_GroupByProducesAggregation(t *testing.T) {
 		for _, m := range ref.Members() {
 			types = append(types, fmt.Sprintf("%T", m))
 		}
-		t.Fatalf("expected physicalStreamingAggWrapper, found member types: %v", types)
+		t.Fatalf("expected *plans.RecordQueryStreamingAggregationPlan, found member types: %v", types)
 	}
 }
 
 // TestPlanner_RecursiveUnionProducesDfsJoin verifies that a
 // RecursiveUnionExpression with PREORDER strategy wrapping a
 // TempTableScanExpression and a scan as the recursive step produces a
-// physicalRecursiveDfsJoinWrapper.
+// plans.RecordQueryRecursiveDfsJoinPlan.
 func TestPlanner_RecursiveUnionProducesDfsJoin(t *testing.T) {
 	t.Parallel()
 
@@ -176,13 +176,13 @@ func TestPlanner_RecursiveUnionProducesDfsJoin(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalRecursiveDfsJoin) {
-		t.Fatal("expected physicalRecursiveDfsJoinWrapper in explored members")
+		t.Fatal("expected plans.RecordQueryRecursiveDfsJoinPlan in explored members")
 	}
 }
 
 // TestPlanner_ProjectionOverScanProducesPhysicalProjection verifies
-// that LogicalProjectionExpression over a Scan produces a
-// physicalProjectionWrapper.
+// that LogicalProjectionExpression over a Scan produces a bare
+// *plans.RecordQueryProjectionPlan.
 func TestPlanner_ProjectionOverScanProducesPhysicalProjection(t *testing.T) {
 	t.Parallel()
 
@@ -200,16 +200,16 @@ func TestPlanner_ProjectionOverScanProducesPhysicalProjection(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	isPhysicalProjection := func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalProjectionWrapper)
+		_, ok := expr.(*plans.RecordQueryProjectionPlan)
 		return ok
 	}
 	if !containsPhysical(ref, isPhysicalProjection) {
-		t.Fatal("expected physicalProjectionWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryProjectionPlan in explored members")
 	}
 }
 
 // TestPlanner_InsertOverScanProducesPhysicalInsert verifies that
-// InsertExpression over a Scan produces a physicalInsertWrapper.
+// InsertExpression over a Scan produces a bare *plans.RecordQueryInsertPlan (RFC-184 W2).
 func TestPlanner_InsertOverScanProducesPhysicalInsert(t *testing.T) {
 	t.Parallel()
 
@@ -224,12 +224,12 @@ func TestPlanner_InsertOverScanProducesPhysicalInsert(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalInsert) {
-		t.Fatal("expected physicalInsertWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryInsertPlan in explored members")
 	}
 }
 
 // TestPlanner_DeleteOverScanProducesPhysicalDelete verifies that
-// DeleteExpression over a Scan produces a physicalDeleteWrapper.
+// DeleteExpression over a Scan produces a bare *plans.RecordQueryDeletePlan (RFC-184 W2).
 func TestPlanner_DeleteOverScanProducesPhysicalDelete(t *testing.T) {
 	t.Parallel()
 
@@ -244,7 +244,7 @@ func TestPlanner_DeleteOverScanProducesPhysicalDelete(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalDelete) {
-		t.Fatal("expected physicalDeleteWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryDeletePlan in explored members")
 	}
 }
 
@@ -253,7 +253,7 @@ func TestPlanner_DeleteOverScanProducesPhysicalDelete(t *testing.T) {
 // implementation. Physical yields land ONLY in FinalMembers and
 // OptimizeGroup prunes finals to the winner (Java's prune-to-1), so a
 // SPECIFIC union wrapper type is no longer guaranteed to be visible
-// after Plan() — the ordered physicalUnionWrapper competes with the
+// after Plan() — the ordered RecordQueryUnionPlan competes with the
 // sibling unordered implementation and either may win. The wrapper's
 // FORMATION is pinned by the direct-fire tests in
 // rule_implement_union_test.go; this test pins that the full planner
@@ -278,10 +278,10 @@ func TestPlanner_UnionOverTwoScansProducesPhysicalUnion(t *testing.T) {
 	var unionPlan plans.RecordQueryPlan
 	isPhysicalUnion := func(expr expressions.RelationalExpression) bool {
 		switch w := expr.(type) {
-		case *physicalUnionWrapper:
+		case *plans.RecordQueryUnionPlan:
 			unionPlan = w.GetRecordQueryPlan()
 			return true
-		case *physicalUnorderedUnionWrapper:
+		case *plans.RecordQueryUnorderedUnionPlan:
 			unionPlan = w.GetRecordQueryPlan()
 			return true
 		}
@@ -303,7 +303,7 @@ func TestPlanner_UnionOverTwoScansProducesPhysicalUnion(t *testing.T) {
 
 // TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection
 // verifies that a LogicalIntersectionExpression over two scans
-// produces a physicalIntersectionWrapper.
+// produces a physical RecordQueryIntersectionPlan.
 func TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection(t *testing.T) {
 	t.Parallel()
 
@@ -325,7 +325,7 @@ func TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection(t *testing
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalIntersection) {
-		t.Fatal("expected physicalIntersectionWrapper in explored members")
+		t.Fatal("expected physical RecordQueryIntersectionPlan in explored members")
 	}
 }
 
@@ -365,7 +365,7 @@ func TestPlanner_SortOverScanStaysLogical(t *testing.T) {
 
 // TestPlanner_FilterOverScanProducesPhysicalFilter verifies that a
 // LogicalFilterExpression with a predicate over a scan produces a
-// physicalFilterWrapper.
+// physical filter.
 func TestPlanner_FilterOverScanProducesPhysicalFilter(t *testing.T) {
 	t.Parallel()
 
@@ -383,13 +383,13 @@ func TestPlanner_FilterOverScanProducesPhysicalFilter(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalFilter) {
-		t.Fatal("expected physicalFilterWrapper in explored members")
+		t.Fatal("expected a physical filter in explored members")
 	}
 }
 
 // TestPlanner_TypeFilterOverScanProducesPhysicalTypeFilter verifies
-// that a LogicalTypeFilterExpression over a scan produces a
-// physicalTypeFilterWrapper.
+// that a LogicalTypeFilterExpression over a scan produces a bare
+// *plans.RecordQueryTypeFilterPlan (RFC-184 W2).
 func TestPlanner_TypeFilterOverScanProducesPhysicalTypeFilter(t *testing.T) {
 	t.Parallel()
 
@@ -404,11 +404,11 @@ func TestPlanner_TypeFilterOverScanProducesPhysicalTypeFilter(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	isPhysicalTypeFilter := func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalTypeFilterWrapper)
+		_, ok := expr.(*plans.RecordQueryTypeFilterPlan)
 		return ok
 	}
 	if !containsPhysical(ref, isPhysicalTypeFilter) {
-		t.Fatal("expected physicalTypeFilterWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryTypeFilterPlan in explored members")
 	}
 }
 
@@ -476,7 +476,7 @@ func explainPlan(expr expressions.RelationalExpression) string {
 }
 
 // TestPlanner_UpdateOverScanProducesPhysicalUpdate verifies that an
-// UpdateExpression over a scan produces a physicalUpdateWrapper.
+// UpdateExpression over a scan produces a bare *plans.RecordQueryUpdatePlan (RFC-184 W2).
 func TestPlanner_UpdateOverScanProducesPhysicalUpdate(t *testing.T) {
 	t.Parallel()
 
@@ -493,13 +493,13 @@ func TestPlanner_UpdateOverScanProducesPhysicalUpdate(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalUpdate) {
-		t.Fatal("expected physicalUpdateWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryUpdatePlan in explored members")
 	}
 }
 
 // TestPlanner_RecursiveLevelUnionProducesPhysicalLevelUnion verifies
 // that a RecursiveUnionExpression with TraversalLevel strategy
-// produces a physicalRecursiveLevelUnionWrapper.
+// produces a plans.RecordQueryRecursiveLevelUnionPlan.
 func TestPlanner_RecursiveLevelUnionProducesPhysicalLevelUnion(t *testing.T) {
 	t.Parallel()
 
@@ -527,12 +527,13 @@ func TestPlanner_RecursiveLevelUnionProducesPhysicalLevelUnion(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalRecursiveLevelUnion) {
-		t.Fatal("expected physicalRecursiveLevelUnionWrapper in explored members")
+		t.Fatal("expected plans.RecordQueryRecursiveLevelUnionPlan in explored members")
 	}
 }
 
 // TestPlanner_ValuesProducesPhysicalValues verifies that a
-// LogicalValuesExpression produces a physicalValuesWrapper.
+// LogicalValuesExpression produces a bare *plans.RecordQueryValuesPlan
+// (RFC-184 W2 collapsed the physicalValuesWrapper).
 func TestPlanner_ValuesProducesPhysicalValues(t *testing.T) {
 	t.Parallel()
 
@@ -546,10 +547,10 @@ func TestPlanner_ValuesProducesPhysicalValues(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	isPhysicalValues := func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalValuesWrapper)
+		_, ok := expr.(*plans.RecordQueryValuesPlan)
 		return ok
 	}
 	if !containsPhysical(ref, isPhysicalValues) {
-		t.Fatal("expected physicalValuesWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryValuesPlan in explored members")
 	}
 }

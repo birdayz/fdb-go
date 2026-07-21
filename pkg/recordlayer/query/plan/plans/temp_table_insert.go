@@ -1,7 +1,7 @@
 package plans
 
 import (
-	"hash/fnv"
+	"fmt"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -26,6 +26,24 @@ func NewRecordQueryTempTableInsertPlan(
 ) *RecordQueryTempTableInsertPlan {
 	return &RecordQueryTempTableInsertPlan{
 		innerQ:         QuantifierOverPlan(inner),
+		tempTableAlias: alias,
+		owning:         owning,
+	}
+}
+
+// NewRecordQueryTempTableInsertPlanFromQuantifier builds an insert whose child is
+// a LIVE memo quantifier (the implementation rule passes a ForEachQuantifier over
+// the freshly-memoized winner) instead of a snapshot over a single plan. This
+// makes the plan its own cascades expression carrying its child edge directly:
+// the memo holds it without a physical wrapper, and GetInner / GetQuantifiers all
+// resolve through the one live edge (RFC-184 W2).
+func NewRecordQueryTempTableInsertPlanFromQuantifier(
+	innerQ expressions.Quantifier,
+	alias values.CorrelationIdentifier,
+	owning bool,
+) *RecordQueryTempTableInsertPlan {
+	return &RecordQueryTempTableInsertPlan{
+		innerQ:         innerQ,
 		tempTableAlias: alias,
 		owning:         owning,
 	}
@@ -60,24 +78,20 @@ func (p *RecordQueryTempTableInsertPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
+// structuralKey lists the fields that distinguish this insert in the memo: the
+// temp-table alias and the owning flag. Children are excluded; the same key
+// drives both EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryTempTableInsertPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Alias(p.tempTableAlias).Bool(p.owning)
+}
+
 func (p *RecordQueryTempTableInsertPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTempTableInsertPlan)
-	if !ok {
-		return false
-	}
-	return p.tempTableAlias == o.tempTableAlias && p.owning == o.owning
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryTempTableInsertPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("temptableinsert|"))
-	h.Write([]byte(p.tempTableAlias.Name()))
-	if p.owning {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("temptableinsert|")
 }
 
 func (p *RecordQueryTempTableInsertPlan) Explain() string {
@@ -108,6 +122,19 @@ func (p *RecordQueryTempTableInsertPlan) WithQuantifiers(qs []expressions.Quanti
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). Because the insert carries its child as a single LIVE memo edge,
+// the relink is exactly a quantifier swap: WithQuantifiers preserves the temp-table
+// alias and owning flag, and GetInner re-resolves through the new singleton
+// reference. This replaces physicalTempTableInsertWrapper.WithChildren (RFC-184 W2),
+// whose separate snapshot plan field forced a constructor rebuild.
+func (p *RecordQueryTempTableInsertPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryTempTableInsertPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

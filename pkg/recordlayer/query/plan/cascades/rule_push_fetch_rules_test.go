@@ -15,14 +15,14 @@ func TestMergeFetchIntoCoveringIndex_FiresOnFetchOverIndex(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_name", nil, []string{"MyRecord"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan, covering: true}
+	indexWrapper := indexPlan.WithCovering(nil)
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 
 	ref := expressions.InitialOf(fetchWrapper)
 
@@ -32,8 +32,8 @@ func TestMergeFetchIntoCoveringIndex_FiresOnFetchOverIndex(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("expected 1 yielded, got %d", len(yielded))
 	}
-	if _, ok := yielded[0].(*physicalIndexScanWrapper); !ok {
-		t.Fatalf("expected physicalIndexScanWrapper, got %T", yielded[0])
+	if _, ok := yielded[0].(*plans.RecordQueryIndexPlan); !ok {
+		t.Fatalf("expected *plans.RecordQueryIndexPlan, got %T", yielded[0])
 	}
 }
 
@@ -44,14 +44,14 @@ func TestMergeFetchIntoCoveringIndex_DoesNotFireOnNonCoveringIndex(t *testing.T)
 		"idx_name", nil, []string{"MyRecord"}, values.UnknownType, false,
 	)
 	// NOT marked as covering — MergeFetch should NOT fire.
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan, covering: false}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 
 	ref := expressions.InitialOf(fetchWrapper)
 
@@ -67,17 +67,17 @@ func TestMergeFetchIntoCoveringIndex_DoesNotFireOnNonIndex(t *testing.T) {
 	t.Parallel()
 
 	// Fetch over a filter (not an index scan) — should not fire.
-	filterPlan := plans.NewRecordQueryFilterPlan(nil, nil)
-	filterWrapper := NewPhysicalFilterWrapper(filterPlan, expressions.ForEachQuantifier(
+	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, nil)
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(
 		&expressions.Reference{},
-	))
+	)})
 	filterRef := expressions.InitialOf(filterWrapper)
 
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		nil, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(filterRef)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 
 	ref := expressions.InitialOf(fetchWrapper)
 
@@ -95,7 +95,7 @@ func TestPushDistinctThroughFetch_Fires(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
@@ -105,12 +105,14 @@ func TestPushDistinctThroughFetch_Fires(t *testing.T) {
 		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	distinctPlan := plans.NewRecordQueryDistinctPlan(nil)
 	distinctQ := expressions.ForEachQuantifier(fetchRef)
-	distinctWrapper := NewPhysicalDistinctWrapper(distinctPlan, distinctQ)
+	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan (no
+	// physicalDistinctWrapper); the push rule matches it directly.
+	distinctWrapper := distinctPlan.WithQuantifiers([]expressions.Quantifier{distinctQ})
 
 	ref := expressions.InitialOf(distinctWrapper)
 
@@ -122,7 +124,7 @@ func TestPushDistinctThroughFetch_Fires(t *testing.T) {
 	}
 	// Result should be Fetch(Distinct(index))
 	if !IsPhysicalFetchFromPartialRecord(yielded[0]) {
-		t.Fatalf("expected physicalFetchFromPartialRecordWrapper, got %T", yielded[0])
+		t.Fatalf("expected *plans.RecordQueryFetchFromPartialRecordPlan, got %T", yielded[0])
 	}
 }
 
@@ -132,7 +134,7 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	translateFn := func(v values.Value, _, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
@@ -143,7 +145,7 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	// Filter with one pushable predicate.
@@ -153,7 +155,7 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
 	filterQ := expressions.ForEachQuantifier(fetchRef)
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{filterQ})
 
 	ref := expressions.InitialOf(filterWrapper)
 
@@ -165,7 +167,7 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 	}
 	// Result should be Fetch(Filter(index))
 	if !IsPhysicalFetchFromPartialRecord(yielded[0]) {
-		t.Fatalf("expected physicalFetchFromPartialRecordWrapper, got %T", yielded[0])
+		t.Fatalf("expected *plans.RecordQueryFetchFromPartialRecordPlan, got %T", yielded[0])
 	}
 }
 
@@ -177,7 +179,7 @@ func TestPushFilterThroughFetch_NoPushable(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	// TranslateValueFunction that NEVER succeeds.
@@ -185,7 +187,7 @@ func TestPushFilterThroughFetch_NoPushable(t *testing.T) {
 		indexPlan, plans.UnableToTranslate, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	// Predicate correlated to the filter's alias — requires
@@ -196,7 +198,7 @@ func TestPushFilterThroughFetch_NoPushable(t *testing.T) {
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
 	filterQ := expressions.NamedForEachQuantifier(filterInnerAlias, fetchRef)
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{filterQ})
 
 	ref := expressions.InitialOf(filterWrapper)
 
@@ -282,7 +284,7 @@ func TestPushFilterThroughFetch_PartialPush(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	// The filter's inner quantifier alias — predicates inside the
@@ -305,7 +307,7 @@ func TestPushFilterThroughFetch_PartialPush(t *testing.T) {
 		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	// Both predicates are correlated to the filter's inner alias
@@ -320,7 +322,7 @@ func TestPushFilterThroughFetch_PartialPush(t *testing.T) {
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pushablePred, residualPred})
 	filterQ := expressions.NamedForEachQuantifier(filterInnerAlias, fetchRef)
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{filterQ})
 
 	ref := expressions.InitialOf(filterWrapper)
 
@@ -335,7 +337,7 @@ func TestPushFilterThroughFetch_PartialPush(t *testing.T) {
 		t.Fatalf("expected residual filter wrapper on top, got fetch wrapper directly")
 	}
 	if !IsPhysicalPredicatesFilter(yielded[0]) {
-		t.Fatalf("expected physicalPredicatesFilterWrapper, got %T", yielded[0])
+		t.Fatalf("expected *plans.RecordQueryPredicatesFilterPlan, got %T", yielded[0])
 	}
 }
 
@@ -345,7 +347,7 @@ func TestPushMapThroughFetch_Fires(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
@@ -355,13 +357,13 @@ func TestPushMapThroughFetch_Fires(t *testing.T) {
 		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	resultVal := &values.FieldValue{Field: "x", Typ: values.TypeInt}
 	mapPlan := plans.NewRecordQueryMapPlan(nil, resultVal)
 	mapQ := expressions.ForEachQuantifier(fetchRef)
-	mapWrapper := NewPhysicalMapWrapper(mapPlan, mapQ)
+	mapWrapper := mapPlan.WithQuantifiers([]expressions.Quantifier{mapQ})
 
 	ref := expressions.InitialOf(mapWrapper)
 
@@ -375,7 +377,7 @@ func TestPushMapThroughFetch_Fires(t *testing.T) {
 	if IsPhysicalMap(yielded[0]) {
 		return // good
 	}
-	t.Fatalf("expected physicalMapWrapper, got %T", yielded[0])
+	t.Fatalf("expected *plans.RecordQueryMapPlan, got %T", yielded[0])
 }
 
 func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
@@ -386,7 +388,7 @@ func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	// UnableToTranslate — map can't be pushed.
@@ -394,14 +396,14 @@ func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
 		indexPlan, plans.UnableToTranslate, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	// Use a correlated FieldValue so translation is actually attempted.
 	resultVal := values.NewFieldValue(values.NewQuantifiedObjectValue(mapAlias), "x", values.TypeInt)
 	mapPlan := plans.NewRecordQueryMapPlan(nil, resultVal)
 	mapQ := expressions.NamedForEachQuantifier(mapAlias, fetchRef)
-	mapWrapper := NewPhysicalMapWrapper(mapPlan, mapQ)
+	mapWrapper := mapPlan.WithQuantifiers([]expressions.Quantifier{mapQ})
 
 	ref := expressions.InitialOf(mapWrapper)
 
@@ -425,14 +427,14 @@ func TestPushUnionThroughFetch_AllChildrenHaveFetches(t *testing.T) {
 		indexPlan := plans.NewRecordQueryIndexPlan(
 			indexName, nil, []string{"T"}, values.UnknownType, false,
 		)
-		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		indexWrapper := indexPlan
 		indexRef := expressions.InitialOf(indexWrapper)
 
 		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 		)
 		fetchQ := expressions.ForEachQuantifier(indexRef)
-		fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 		fetchRef := expressions.InitialOf(fetchWrapper)
 		return expressions.ForEachQuantifier(fetchRef)
 	}
@@ -440,10 +442,10 @@ func TestPushUnionThroughFetch_AllChildrenHaveFetches(t *testing.T) {
 	q1 := makeChild("idx_a")
 	q2 := makeChild("idx_b")
 
-	unionPlan := plans.NewRecordQueryUnionPlan(nil)
-	unionWrapper := NewPhysicalUnionWrapper(unionPlan, []expressions.Quantifier{q1, q2})
+	// The union is its own cascades expression (RFC-184 W2).
+	unionExpr := plans.NewRecordQueryUnionPlanFromQuantifiers([]expressions.Quantifier{q1, q2})
 
-	ref := expressions.InitialOf(unionWrapper)
+	ref := expressions.InitialOf(unionExpr)
 
 	rule := NewPushUnionThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -453,7 +455,7 @@ func TestPushUnionThroughFetch_AllChildrenHaveFetches(t *testing.T) {
 	}
 	// Result should be Fetch(Union(idx_a, idx_b))
 	if !IsPhysicalFetchFromPartialRecord(yielded[0]) {
-		t.Fatalf("expected physicalFetchFromPartialRecordWrapper, got %T", yielded[0])
+		t.Fatalf("expected *plans.RecordQueryFetchFromPartialRecordPlan, got %T", yielded[0])
 	}
 }
 
@@ -468,26 +470,26 @@ func TestPushUnionThroughFetch_DoesNotFire_OnlyOneChildHasFetch(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 	q1 := expressions.ForEachQuantifier(fetchRef)
 
 	// Second child: plain scan (no fetch).
 	scanPlan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanWrapper := &physicalScanWrapper{plan: scanPlan}
+	scanWrapper := scanPlan
 	scanRef := expressions.InitialOf(scanWrapper)
 	q2 := expressions.ForEachQuantifier(scanRef)
 
-	unionPlan := plans.NewRecordQueryUnionPlan(nil)
-	unionWrapper := NewPhysicalUnionWrapper(unionPlan, []expressions.Quantifier{q1, q2})
+	// The union is its own cascades expression (RFC-184 W2).
+	unionExpr := plans.NewRecordQueryUnionPlanFromQuantifiers([]expressions.Quantifier{q1, q2})
 
-	ref := expressions.InitialOf(unionWrapper)
+	ref := expressions.InitialOf(unionExpr)
 
 	rule := NewPushUnionThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -526,7 +528,7 @@ func TestFieldValueChild_PushFilterDecision(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	indexRef := expressions.InitialOf(indexWrapper)
 
 	// TranslateValueFunction that succeeds for FieldValues with field "x"
@@ -546,7 +548,7 @@ func TestFieldValueChild_PushFilterDecision(t *testing.T) {
 		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	// Predicates using FieldValue WITH child — correlated to filterAlias.
@@ -561,7 +563,7 @@ func TestFieldValueChild_PushFilterDecision(t *testing.T) {
 
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pushablePred, residualPred})
 	filterQ := expressions.NamedForEachQuantifier(filterAlias, fetchRef)
-	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{filterQ})
 
 	ref := expressions.InitialOf(filterWrapper)
 
@@ -598,31 +600,33 @@ func TestPushUnionThroughFetch_RebuildsPlanOverPushedInners(t *testing.T) {
 			indexName, nil, []string{"T"}, values.UnknownType, false,
 		)
 		indexPlans = append(indexPlans, indexPlan)
-		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		indexWrapper := indexPlan
 		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 		)
 		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(indexWrapper))
-		fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 		return expressions.ForEachQuantifier(expressions.InitialOf(fetchWrapper))
 	}
 	q1 := makeChild("idx_a")
 	q2 := makeChild("idx_b")
 
-	stale := plans.NewRecordQueryUnionPlan(nil)
-	unionWrapper := NewPhysicalUnionWrapper(stale, []expressions.Quantifier{q1, q2})
+	// The union is its own cascades expression (RFC-184 W2) — there is no
+	// separate plan-snapshot to go stale; the pushed union is built fresh from
+	// the live pushed-down leg quantifiers.
+	unionExpr := plans.NewRecordQueryUnionPlanFromQuantifiers([]expressions.Quantifier{q1, q2})
 
-	yielded := FireImplementationRule(NewPushUnionThroughFetchRule(), expressions.InitialOf(unionWrapper))
+	yielded := FireImplementationRule(NewPushUnionThroughFetchRule(), expressions.InitialOf(unionExpr))
 	if len(yielded) != 1 {
 		t.Fatalf("expected 1 yielded, got %d", len(yielded))
 	}
-	fw, ok := yielded[0].(*physicalFetchFromPartialRecordWrapper)
+	fw, ok := yielded[0].(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
 		t.Fatalf("expected fetch wrapper, got %T", yielded[0])
 	}
-	up, ok := fw.plan.GetInner().(*plans.RecordQueryUnionPlan)
+	up, ok := fw.GetInner().(*plans.RecordQueryUnionPlan)
 	if !ok {
-		t.Fatalf("fetch inner PLAN: got %T, want *RecordQueryUnionPlan (the rebuilt set-op, not a nil shell)", fw.plan.GetInner())
+		t.Fatalf("fetch inner PLAN: got %T, want *RecordQueryUnionPlan (the rebuilt set-op, not a nil shell)", fw.GetInner())
 	}
 	inners := up.GetInners()
 	if len(inners) != 2 {
@@ -633,15 +637,17 @@ func TestPushUnionThroughFetch_RebuildsPlanOverPushedInners(t *testing.T) {
 			t.Fatalf("union child %d: got %T (%v), want the pushed INDEX plan — a Fetch child here is the double-fetch bug", i, inner, inner.Explain())
 		}
 	}
-	// The union wrapper below the fetch must carry the rebuilt plan too,
-	// not the stale snapshot.
-	setOpExpr := findPhysicalExpr(fw.innerQuant.GetRangesOver())
-	uw, ok := setOpExpr.(*physicalUnionWrapper)
+	// The union below the fetch must itself be the rebuilt bare plan carrying
+	// the pushed index legs — the double-fetch bug would leave Fetch children.
+	setOpExpr := findPhysicalExpr(fw.GetInnerQuantifier().GetRangesOver())
+	uw, ok := setOpExpr.(*plans.RecordQueryUnionPlan)
 	if !ok {
-		t.Fatalf("fetch child expr: got %T, want *physicalUnionWrapper", setOpExpr)
+		t.Fatalf("fetch child expr: got %T, want *plans.RecordQueryUnionPlan", setOpExpr)
 	}
-	if uw.plan == stale {
-		t.Fatal("union wrapper still carries the STALE plan snapshot (children = fetches)")
+	for i, inner := range uw.GetInners() {
+		if inner != plans.RecordQueryPlan(indexPlans[i]) {
+			t.Fatalf("pushed union child %d: got %T, want the pushed INDEX plan (a Fetch child is the double-fetch bug)", i, inner)
+		}
 	}
 }
 
@@ -658,30 +664,31 @@ func TestPushInUnionThroughFetch_Fires(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := indexPlan
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(indexWrapper))
-	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	q := expressions.ForEachQuantifier(expressions.InitialOf(fetchWrapper))
 
-	inUnionPlan := plans.NewRecordQueryInUnionPlanWithMaxSize(
-		nil, []string{"__in_b"}, nil, false, 7,
+	// The InUnion is its own cascades expression over the live fetch edge now
+	// (RFC-184 W2) — no wrapper snapshot.
+	inUnionPlan := plans.NewRecordQueryInUnionPlanFromQuantifier(
+		q, []string{"__in_b"}, nil, false, 7,
 	)
-	w := NewPhysicalInUnionWrapper(inUnionPlan, q)
 
-	yielded := FireImplementationRule(NewPushInUnionThroughFetchRule(), expressions.InitialOf(w))
+	yielded := FireImplementationRule(NewPushInUnionThroughFetchRule(), expressions.InitialOf(inUnionPlan))
 	if len(yielded) != 1 {
 		t.Fatalf("expected the dynamic single-leg push to fire once, got %d yields", len(yielded))
 	}
-	fw, ok := yielded[0].(*physicalFetchFromPartialRecordWrapper)
+	fw, ok := yielded[0].(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
 		t.Fatalf("expected fetch wrapper, got %T", yielded[0])
 	}
-	ip, ok := fw.plan.GetInner().(*plans.RecordQueryInUnionPlan)
+	ip, ok := fw.GetInner().(*plans.RecordQueryInUnionPlan)
 	if !ok {
-		t.Fatalf("fetch inner: got %T, want *RecordQueryInUnionPlan", fw.plan.GetInner())
+		t.Fatalf("fetch inner: got %T, want *RecordQueryInUnionPlan", fw.GetInner())
 	}
 	if ip.GetInner() != plans.RecordQueryPlan(indexPlan) {
 		t.Fatalf("in-union child: got %T, want the pushed index plan", ip.GetInner())
@@ -711,34 +718,33 @@ func TestPushUnionThroughFetch_PartialPush(t *testing.T) {
 			indexName, nil, []string{"T"}, values.UnknownType, false,
 		)
 		indexPlans = append(indexPlans, indexPlan)
-		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		indexWrapper := indexPlan
 		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 		)
 		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(indexWrapper))
-		fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 		return expressions.ForEachQuantifier(expressions.InitialOf(fetchWrapper))
 	}
 	q1 := makeChild("idx_a")
 	q2 := makeChild("idx_b")
 
 	scanPlan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanWrapper := &physicalScanWrapper{plan: scanPlan}
+	scanWrapper := scanPlan
 	q3 := expressions.ForEachQuantifier(expressions.InitialOf(scanWrapper))
 
-	unionWrapper := NewPhysicalUnionWrapper(
-		plans.NewRecordQueryUnionPlan(nil), []expressions.Quantifier{q1, q2, q3},
-	)
+	// The union is its own cascades expression (RFC-184 W2).
+	unionExpr := plans.NewRecordQueryUnionPlanFromQuantifiers([]expressions.Quantifier{q1, q2, q3})
 
-	yielded := FireImplementationRule(NewPushUnionThroughFetchRule(), expressions.InitialOf(unionWrapper))
+	yielded := FireImplementationRule(NewPushUnionThroughFetchRule(), expressions.InitialOf(unionExpr))
 	if len(yielded) != 1 {
 		t.Fatalf("expected Case-2 partial push to yield once, got %d", len(yielded))
 	}
-	outer, ok := yielded[0].(*physicalUnionWrapper)
+	outer, ok := yielded[0].(*plans.RecordQueryUnionPlan)
 	if !ok {
-		t.Fatalf("expected outer union wrapper, got %T", yielded[0])
+		t.Fatalf("expected outer union plan, got %T", yielded[0])
 	}
-	outers := outer.plan.GetInners()
+	outers := outer.GetInners()
 	if len(outers) != 2 {
 		t.Fatalf("outer union arity: got %d, want 2 (merged fetch + residual scan)", len(outers))
 	}
@@ -772,42 +778,42 @@ func TestPushIntersectionThroughFetch_RequiredValuesGate(t *testing.T) {
 		indexPlan := plans.NewRecordQueryIndexPlan(
 			indexName, nil, []string{"T"}, values.UnknownType, false,
 		)
-		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		indexWrapper := indexPlan
 		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			indexPlan, fn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 		)
 		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(indexWrapper))
-		fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 		return expressions.ForEachQuantifier(expressions.InitialOf(fetchWrapper))
 	}
 
 	key := values.NewFieldValue(nil, "PK", values.NullableLong)
 
 	// One leg cannot answer the comparison key → decline.
-	declining := NewPhysicalIntersectionWrapper(
-		plans.NewRecordQueryIntersectionPlan(nil, []values.Value{key}),
+	declining := plans.NewRecordQueryIntersectionPlanFromQuantifiers(
 		[]expressions.Quantifier{makeChild("idx_a", okFn), makeChild("idx_b", noFn)},
+		[]values.Value{key},
 	)
 	if got := FireImplementationRule(NewPushIntersectionThroughFetchRule(), expressions.InitialOf(declining)); len(got) != 0 {
 		t.Fatalf("expected decline when a leg cannot answer the comparison key, got %d yields", len(got))
 	}
 
 	// Both legs answer → fires, comparison keys preserved on the rebuilt plan.
-	firing := NewPhysicalIntersectionWrapper(
-		plans.NewRecordQueryIntersectionPlan(nil, []values.Value{key}),
+	firing := plans.NewRecordQueryIntersectionPlanFromQuantifiers(
 		[]expressions.Quantifier{makeChild("idx_a", okFn), makeChild("idx_b", okFn)},
+		[]values.Value{key},
 	)
 	yielded := FireImplementationRule(NewPushIntersectionThroughFetchRule(), expressions.InitialOf(firing))
 	if len(yielded) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(yielded))
 	}
-	fw, ok := yielded[0].(*physicalFetchFromPartialRecordWrapper)
+	fw, ok := yielded[0].(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
 		t.Fatalf("expected fetch wrapper, got %T", yielded[0])
 	}
-	ipn, ok := fw.plan.GetInner().(*plans.RecordQueryIntersectionPlan)
+	ipn, ok := fw.GetInner().(*plans.RecordQueryIntersectionPlan)
 	if !ok {
-		t.Fatalf("fetch inner: got %T, want *RecordQueryIntersectionPlan", fw.plan.GetInner())
+		t.Fatalf("fetch inner: got %T, want *RecordQueryIntersectionPlan", fw.GetInner())
 	}
 	if got := ipn.GetComparisonKeyValues(); len(got) != 1 {
 		t.Fatalf("comparison keys not preserved: %v", got)
@@ -832,34 +838,33 @@ func TestPushMergeSortUnionThroughFetch_Fires(t *testing.T) {
 			indexName, nil, []string{"T"}, values.UnknownType, false,
 		)
 		indexPlans = append(indexPlans, indexPlan)
-		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+		indexWrapper := indexPlan
 		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			indexPlan, okFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 		)
 		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(indexWrapper))
-		fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 		return expressions.ForEachQuantifier(expressions.InitialOf(fetchWrapper))
 	}
 	q1 := makeChild("idx_a")
 	q2 := makeChild("idx_b")
 
 	key := values.NewFieldValue(nil, "PK", values.NullableLong)
-	msu := NewPhysicalMergeSortUnionWrapper(
-		plans.NewRecordQueryMergeSortUnionPlan(nil, []values.Value{key}, true, true),
-		[]expressions.Quantifier{q1, q2},
+	msu := plans.NewRecordQueryMergeSortUnionPlanFromQuantifiers(
+		[]expressions.Quantifier{q1, q2}, []values.Value{key}, true, true,
 	)
 
 	yielded := FireImplementationRule(NewPushMergeSortUnionThroughFetchRule(), expressions.InitialOf(msu))
 	if len(yielded) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(yielded))
 	}
-	fw, ok := yielded[0].(*physicalFetchFromPartialRecordWrapper)
+	fw, ok := yielded[0].(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
 		t.Fatalf("expected fetch wrapper, got %T", yielded[0])
 	}
-	mp, ok := fw.plan.GetInner().(*plans.RecordQueryMergeSortUnionPlan)
+	mp, ok := fw.GetInner().(*plans.RecordQueryMergeSortUnionPlan)
 	if !ok {
-		t.Fatalf("fetch inner: got %T, want *RecordQueryMergeSortUnionPlan", fw.plan.GetInner())
+		t.Fatalf("fetch inner: got %T, want *RecordQueryMergeSortUnionPlan", fw.GetInner())
 	}
 	if got := mp.GetInners(); len(got) != 2 || got[0] != plans.RecordQueryPlan(indexPlans[0]) {
 		t.Fatalf("rebuilt children: %v", got)

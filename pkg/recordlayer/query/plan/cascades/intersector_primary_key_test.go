@@ -8,6 +8,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // ---------------------------------------------------------------------------
@@ -84,13 +85,12 @@ func TestIntersector_TwoAccesses_DifferentCandidates(t *testing.T) {
 		t.Fatalf("expected 1 intersection expression, got %d", len(exprs))
 	}
 
-	// The expression should be a physicalIntersectionWrapper with a
-	// 2-leg RecordQueryIntersectionPlan.
-	wrapper, ok := exprs[0].(*physicalIntersectionWrapper)
+	// The expression should be a bare 2-leg RecordQueryIntersectionPlan
+	// (RFC-184 W2 — no physical wrapper).
+	plan, ok := exprs[0].(*plans.RecordQueryIntersectionPlan)
 	if !ok {
-		t.Fatalf("expected *physicalIntersectionWrapper, got %T", exprs[0])
+		t.Fatalf("expected *plans.RecordQueryIntersectionPlan, got %T", exprs[0])
 	}
-	plan := wrapper.GetPlan()
 	if len(plan.GetChildren()) != 2 {
 		t.Fatalf("expected 2 children in intersection plan, got %d", len(plan.GetChildren()))
 	}
@@ -169,11 +169,11 @@ func TestIntersector_ThreeWay(t *testing.T) {
 	// Count 2-leg and 3-leg plans.
 	twoWay, threeWay := 0, 0
 	for _, e := range exprs {
-		wrapper, ok := e.(*physicalIntersectionWrapper)
+		plan, ok := e.(*plans.RecordQueryIntersectionPlan)
 		if !ok {
-			t.Fatalf("expected *physicalIntersectionWrapper, got %T", e)
+			t.Fatalf("expected *plans.RecordQueryIntersectionPlan, got %T", e)
 		}
-		switch n := len(wrapper.GetPlan().GetChildren()); n {
+		switch n := len(plan.GetChildren()); n {
 		case 2:
 			twoWay++
 		case 3:
@@ -527,7 +527,7 @@ func TestPushCrossCandidateIntersection_StillFires(t *testing.T) {
 
 	found := false
 	for _, m := range ref.FinalMembers() {
-		if _, ok := m.(*physicalIntersectionWrapper); ok {
+		if _, ok := m.(*plans.RecordQueryIntersectionPlan); ok {
 			found = true
 			break
 		}
@@ -558,11 +558,11 @@ func TestIntersector_BakesComparisonKeys(t *testing.T) {
 		t.Fatal("expected viable intersection")
 	}
 	for _, e := range result.GetExpressions() {
-		iw, ok := e.(*physicalIntersectionWrapper)
+		iw, ok := e.(*plans.RecordQueryIntersectionPlan)
 		if !ok {
-			t.Fatalf("expected intersection wrapper, got %T", e)
+			t.Fatalf("expected intersection plan, got %T", e)
 		}
-		for _, k := range iw.plan.GetComparisonKeyValues() {
+		for _, k := range iw.GetComparisonKeyValues() {
 			fv, isFV := k.(*values.FieldValue)
 			if !isFV || fv.Resolved == nil {
 				t.Fatalf("comparison key %v is UNBAKED — the positional merge row cannot resolve it", k)
@@ -612,11 +612,11 @@ func TestIntersector_BakesCompositePKKeys(t *testing.T) {
 		t.Fatal("expected viable composite-pk intersection")
 	}
 	for _, e := range result.GetExpressions() {
-		iw, ok := e.(*physicalIntersectionWrapper)
+		iw, ok := e.(*plans.RecordQueryIntersectionPlan)
 		if !ok {
-			t.Fatalf("expected intersection wrapper, got %T", e)
+			t.Fatalf("expected intersection plan, got %T", e)
 		}
-		keys := iw.plan.GetComparisonKeyValues()
+		keys := iw.GetComparisonKeyValues()
 		if len(keys) != 2 {
 			t.Fatalf("composite pk must carry 2 comparison keys, got %d", len(keys))
 		}
@@ -689,11 +689,11 @@ func TestIntersector_ThreeWay_DuplicateCandidateNameSkipped(t *testing.T) {
 		t.Fatal("expected the distinct-name pairs to remain viable")
 	}
 	for _, e := range result.GetExpressions() {
-		wrapper, ok := e.(*physicalIntersectionWrapper)
+		plan, ok := e.(*plans.RecordQueryIntersectionPlan)
 		if !ok {
-			t.Fatalf("expected *physicalIntersectionWrapper, got %T", e)
+			t.Fatalf("expected *plans.RecordQueryIntersectionPlan, got %T", e)
 		}
-		if n := len(wrapper.GetPlan().GetChildren()); n != 2 {
+		if n := len(plan.GetChildren()); n != 2 {
 			t.Fatalf("a triple containing a duplicate index name must not form; got a %d-way intersection", n)
 		}
 	}

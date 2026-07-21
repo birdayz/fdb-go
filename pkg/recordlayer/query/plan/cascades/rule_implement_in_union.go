@@ -315,8 +315,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				if pinned == nil {
 					continue
 				}
-				pp, isPhys := pinned.(physicalPlanExpression)
-				if !isPhys {
+				if _, isPhys := pinned.(physicalPlanExpression); !isPhys {
 					continue
 				}
 
@@ -324,25 +323,27 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				if call.Context != nil {
 					maxSize = call.Context.GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
 				}
-				inUnionPlan := plans.NewRecordQueryInUnionPlanWithMaxSize(
-					pp.GetRecordQueryPlan(), bindingNames, comparisonKeys, isReverse, maxSize)
-				inUnionPlan.SetInSources(inSources)
-				call.YieldFinalExpression(NewPhysicalInUnionWrapper(
-					inUnionPlan,
+				// The InUnion is its own cascades expression over the live pinned
+				// inner edge (RFC-184 W2); no plan snapshot.
+				inUnionPlan := plans.NewRecordQueryInUnionPlanFromQuantifier(
 					expressions.NewPhysicalQuantifier(expressions.FinalOf(pinned)),
-				))
+					bindingNames, comparisonKeys, isReverse, maxSize)
+				inUnionPlan.SetInSources(inSources)
+				call.YieldFinalExpression(inUnionPlan)
 			}
 		}
 
 		if richOrdering == nil || len(richOrdering.GetKeys()) == 0 {
 			newRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
-			inUnionPlan := plans.NewRecordQueryInUnionPlan(
-				innerPlans[0], bindingNames, nil, false)
-			inUnionPlan.SetInSources(inSources)
-			call.YieldFinalExpression(NewPhysicalInUnionWrapper(
-				inUnionPlan,
+			// The InUnion is its own cascades expression carrying the live newRef
+			// inner edge (RFC-184 W2); its per-ordering winner resolves at
+			// extraction via ref.Winner(). No plan snapshot — the deferred-winner
+			// case.
+			inUnionPlan := plans.NewRecordQueryInUnionPlanFromQuantifier(
 				expressions.NewPhysicalQuantifier(newRef),
-			))
+				bindingNames, nil, false, 0)
+			inUnionPlan.SetInSources(inSources)
+			call.YieldFinalExpression(inUnionPlan)
 		}
 	}
 }

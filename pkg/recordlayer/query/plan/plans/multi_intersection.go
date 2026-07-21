@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -44,6 +43,27 @@ func NewRecordQueryMultiIntersectionOnValuesPlan(
 	copy(cpKeys, comparisonKey)
 	return &RecordQueryMultiIntersectionOnValuesPlan{
 		childQs:       QuantifiersOverPlans(children),
+		comparisonKey: cpKeys,
+		resultValue:   resultValue,
+	}
+}
+
+// NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers builds an N-way
+// multi-intersection whose streams are LIVE memo quantifiers (the aggregate
+// data-access rule passes PhysicalQuantifiers over the freshly-memoized leg
+// plans) instead of snapshots over plans. This makes the multi-intersection its
+// own cascades expression carrying its stream edges directly — the memo holds it
+// without a physical wrapper (RFC-184 W2). comparisonKey and resultValue carry
+// over verbatim.
+func NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
+	qs []expressions.Quantifier,
+	comparisonKey []values.Value,
+	resultValue values.Value,
+) *RecordQueryMultiIntersectionOnValuesPlan {
+	cpKeys := make([]values.Value, len(comparisonKey))
+	copy(cpKeys, comparisonKey)
+	return &RecordQueryMultiIntersectionOnValuesPlan{
+		childQs:       append([]expressions.Quantifier(nil), qs...),
 		comparisonKey: cpKeys,
 		resultValue:   resultValue,
 	}
@@ -93,35 +113,24 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) GetResultType() values.Type {
 	return values.UnknownType
 }
 
-// EqualsWithoutChildren matches MultiIntersectionOnValuesPlan with the same
-// comparison key and resultValue by semantic Value identity (RFC-176 P2 —
-// see semanticValueEquals).
+// structuralKey lists the fields that distinguish this multi-intersection in
+// the memo: the comparison key values and the resultValue, both by semantic
+// Value identity (RFC-176 P2 — see semanticValueEquals). Children are excluded.
+// The same key drives both EqualsPlanWithoutChildren and
+// HashCodeWithoutChildren.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Values(p.comparisonKey).Value(p.resultValue)
+}
+
 func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMultiIntersectionOnValuesPlan)
-	if !ok {
-		return false
-	}
-	if len(p.comparisonKey) != len(o.comparisonKey) {
-		return false
-	}
-	for i, k := range p.comparisonKey {
-		if !semanticValueEquals(k, o.comparisonKey[i]) {
-			return false
-		}
-	}
-	return semanticValueEquals(p.resultValue, o.resultValue)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren folds the type discriminator, comparison key
 // values, and result value (semantic Value hashes — see writeValueHash).
 func (p *RecordQueryMultiIntersectionOnValuesPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("multiintersectiononvaluesplan|"))
-	for _, k := range p.comparisonKey {
-		writeValueHash(h, k)
-	}
-	writeValueHash(h, p.resultValue)
-	return h.Sum64()
+	return p.structuralKey().Hash("multiintersectiononvaluesplan|")
 }
 
 // Explain renders MultiIntersection(child1, child2, ...; keys=[...]).
@@ -178,6 +187,22 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(qs []expressi
 	cp := *p
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
 	return &cp
+}
+
+// IsIntersection implements properties.IntersectionExpression — the marker
+// ComparisonsProperty.EvaluateComparisons keys on to intersect (not union) its
+// children's comparison sets. Adopted from the retired
+// physicalMultiIntersectionWrapper (RFC-184 W2) so the memo member the property
+// walks still reports it.
+func (p *RecordQueryMultiIntersectionOnValuesPlan) IsIntersection() {}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The multi-intersection carries its streams as LIVE memo edges, so
+// the relink is a quantifier swap: WithQuantifiers rebinds the streams and
+// GetChildren re-resolves through the new references (RFC-184 W2, replacing
+// physicalMultiIntersectionWrapper.WithChildren).
+func (p *RecordQueryMultiIntersectionOnValuesPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

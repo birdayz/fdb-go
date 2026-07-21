@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -83,20 +82,23 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetChildren() []RecordQuery
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren — PK-distinct plans have no node-specific data
-// beyond the concrete type. Mirrors Java where equalsWithoutChildren
-// only checks `getClass() == otherExpression.getClass()`.
-func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
-	_, ok := other.(*RecordQueryUnorderedPrimaryKeyDistinctPlan)
-	return ok
+// structuralKey has no parts — PK-distinct plans have no node-specific data
+// beyond the concrete type. Mirrors Java where equalsWithoutChildren only
+// checks `getClass() == otherExpression.getClass()`. The same key drives both
+// EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) structuralKey() *structuralKey {
+	return newStructuralKey()
 }
 
-// HashCodeWithoutChildren is a constant for the type discriminator.
-// Mirrors Java's BASE_HASH("Record-Query-Unordered-Primary-Key-Distinct-Plan").
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
+	o, ok := other.(*RecordQueryUnorderedPrimaryKeyDistinctPlan)
+	return ok && p.structuralKey().Equal(o.structuralKey())
+}
+
+// HashCodeWithoutChildren mirrors Java's
+// BASE_HASH("Record-Query-Unordered-Primary-Key-Distinct-Plan").
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("unorderedprimarykeyDistinctplan"))
-	return h.Sum64()
+	return p.structuralKey().Hash("unorderedprimarykeyDistinctplan")
 }
 
 // Explain renders UnorderedPrimaryKeyDistinct(inner).

@@ -22,8 +22,10 @@ func (r *ImplementTempTableScanRule) Matcher() matching.BindingMatcher { return 
 
 func (r *ImplementTempTableScanRule) OnMatch(call *ExpressionRuleCall) {
 	scan := matching.Get[*expressions.TempTableScanExpression](call.Bindings, r.matcher)
+	// The temp-table scan is its own Cascades expression now (RFC-184 W2) — a bare
+	// leaf plan, no physicalTempTableScanWrapper adapter needed.
 	plan := plans.NewRecordQueryTempTableScanPlan(scan.GetTempTableAlias())
-	call.Yield(newPhysicalTempTableScanWrapper(plan))
+	call.Yield(plan)
 }
 
 var _ ExpressionRule = (*ImplementTempTableScanRule)(nil)

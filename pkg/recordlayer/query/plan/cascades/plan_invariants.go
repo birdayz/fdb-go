@@ -89,7 +89,4 @@ func isGenuineLeafPlan(plan plans.RecordQueryPlan) bool {
 // (caught by the per-child check), but a relink that empties the whole leg slice
 // yields zero children — and that is a TRUE positive, the n-ary analog of the
 // IN-LIMIT unary inner-drop. The planner never emits a legitimate 0-leg set op
-// (a 1-leg op is simplified to its leg), so flagging it cannot false-positive;
-// and several set-op wrappers (e.g. physicalMergeSortUnionWrapper.WithChildren)
-// ride entirely on a build-time plan snapshot, so the empty-children check is the
-// ONLY net for a zero-length leg slice there.
+// (a 1-leg op is simplified to its leg), so flagging it cannot false-positive.

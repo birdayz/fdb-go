@@ -9,11 +9,11 @@ import (
 )
 
 // TestFindPhysicalExpr_ReturnsWrapperFromReference pins the happy path:
-// a Reference containing a physicalScanWrapper yields that wrapper.
+// a Reference containing a bare scan plan yields that expression.
 func TestFindPhysicalExpr_ReturnsWrapperFromReference(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 	ref := expressions.InitialOf(wrapper)
 	got := findPhysicalExpr(ref)
 	if got == nil {
@@ -48,7 +48,7 @@ func TestFindPhysicalExpr_LogicalOnlyReference(t *testing.T) {
 func TestFindPhysicalExpr_MixedMembers(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 	logical := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	// Build ref with logical first, then insert physical.
 	ref := expressions.InitialOf(logical)
@@ -63,11 +63,11 @@ func TestFindPhysicalExpr_MixedMembers(t *testing.T) {
 }
 
 // TestFindPhysicalPlan_ReturnsUnderlyingPlan pins findPhysicalPlan:
-// a Reference containing a physicalScanWrapper yields the scan plan.
+// a Reference containing a bare scan plan yields the scan plan.
 func TestFindPhysicalPlan_ReturnsUnderlyingPlan(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 	ref := expressions.InitialOf(wrapper)
 	got := findPhysicalPlan(ref)
 	if got == nil {

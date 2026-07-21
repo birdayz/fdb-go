@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -103,54 +102,25 @@ func (p *RecordQueryScoreForRankPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares the ranks list.
+// structuralKey folds the ranks list: per rank BindingName, FunctionName,
+// IndexName, and the ordered Comparisons strings.
+func (p *RecordQueryScoreForRankPlan) structuralKey() *structuralKey {
+	k := newStructuralKey()
+	for _, r := range p.ranks {
+		k.Str(r.BindingName).Str(r.FunctionName).Str(r.IndexName).Strs(r.Comparisons)
+	}
+	return k
+}
+
+// EqualsPlanWithoutChildren compares the ranks list.
 func (p *RecordQueryScoreForRankPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryScoreForRankPlan)
-	if !ok {
-		return false
-	}
-	if len(p.ranks) != len(o.ranks) {
-		return false
-	}
-	for i := range p.ranks {
-		if p.ranks[i].BindingName != o.ranks[i].BindingName {
-			return false
-		}
-		if p.ranks[i].FunctionName != o.ranks[i].FunctionName {
-			return false
-		}
-		if p.ranks[i].IndexName != o.ranks[i].IndexName {
-			return false
-		}
-		if len(p.ranks[i].Comparisons) != len(o.ranks[i].Comparisons) {
-			return false
-		}
-		for j := range p.ranks[i].Comparisons {
-			if p.ranks[i].Comparisons[j] != o.ranks[i].Comparisons[j] {
-				return false
-			}
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + ranks.
 func (p *RecordQueryScoreForRankPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("scoreforrank|"))
-	for _, r := range p.ranks {
-		h.Write([]byte(r.BindingName))
-		h.Write([]byte{0})
-		h.Write([]byte(r.FunctionName))
-		h.Write([]byte{0})
-		h.Write([]byte(r.IndexName))
-		h.Write([]byte{0})
-		for _, c := range r.Comparisons {
-			h.Write([]byte(c))
-			h.Write([]byte{0})
-		}
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("scoreforrank|")
 }
 
 // Explain renders ScoreForRank([rank1, rank2], inner).

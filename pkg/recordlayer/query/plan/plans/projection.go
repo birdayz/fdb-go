@@ -1,7 +1,7 @@
 package plans
 
 import (
-	"hash/fnv"
+	"fmt"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -35,10 +35,26 @@ func NewRecordQueryProjectionPlanWithAliases(projections []values.Value, aliases
 	}
 }
 
+// NewRecordQueryProjectionPlanFromQuantifier builds the projection directly over
+// the LIVE inner memo edge the implement rule already memoized, rather than
+// snapshotting a bare plan. The plan is then its own cascades expression
+// carrying the child edge once — no wrapper storing a second copy (RFC-184 W2).
+func NewRecordQueryProjectionPlanFromQuantifier(projections []values.Value, aliases []string, innerQ expressions.Quantifier) *RecordQueryProjectionPlan {
+	return &RecordQueryProjectionPlan{
+		projections: projections,
+		aliases:     aliases,
+		innerQ:      innerQ,
+	}
+}
+
 func (p *RecordQueryProjectionPlan) GetProjections() []values.Value { return p.projections }
 func (p *RecordQueryProjectionPlan) GetAliases() []string           { return p.aliases }
 
 func (p *RecordQueryProjectionPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+// GetInnerQuantifier returns the live child edge — the memo quantifier the
+// projection ranges over (RFC-184 W2).
+func (p *RecordQueryProjectionPlan) GetInnerQuantifier() expressions.Quantifier { return p.innerQ }
 
 // GetQuantifiers reports the real child quantifier, overriding
 // PlanExprBase's none.
@@ -71,15 +87,17 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// EqualsWithoutChildren compares the projection lists by semantic Value
-// identity (RFC-176 P2 — see semanticValueEquals): Java's model
-// (RecordQueryMapPlan.equalsWithoutChildren → semanticEqualsForResults), where
-// every semantic discriminator a projected Value carries — in particular a
-// plan-time-resolved ordinal accessor (values.NewFieldValueWithResolvedOrdinal,
-// the recursive-CTE duplicate-alias wrap; Java: distinct ofOrdinalNumber
-// ordinals are distinct FieldPaths) — joins identity structurally. Two reads
-// of duplicate-named slots differ ONLY by ordinal, so unifying them would let
-// extraction pick a plan reading the WRONG slot.
+// structuralKey lists the fields that distinguish this projection in the memo:
+// the projection list, compared by semantic Value identity (RFC-176 P2 — see
+// semanticValueEquals): Java's model (RecordQueryMapPlan.equalsWithoutChildren
+// → semanticEqualsForResults), where every semantic discriminator a projected
+// Value carries — in particular a plan-time-resolved ordinal accessor
+// (values.NewFieldValueWithResolvedOrdinal, the recursive-CTE duplicate-alias
+// wrap; Java: distinct ofOrdinalNumber ordinals are distinct FieldPaths) —
+// joins identity structurally. Two reads of duplicate-named slots differ ONLY
+// by ordinal, so unifying them would let extraction pick a plan reading the
+// WRONG slot. Children are excluded; the same key drives both
+// EqualsPlanWithoutChildren and HashCodeWithoutChildren.
 //
 // NOTE(explain format, RFC-176 P3): identity was previously keyed on the
 // ExplainValue renderings, which therefore had to be injective over every
@@ -92,29 +110,17 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 // TestProjectionPlan_Identity_OrdinalVsLiteralHashField) now pin exactly
 // that, plus the matching injective discriminator in writeSemanticHash's
 // FieldValue arm.
+func (p *RecordQueryProjectionPlan) structuralKey() *structuralKey {
+	return newStructuralKey().Values(p.projections)
+}
+
 func (p *RecordQueryProjectionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryProjectionPlan)
-	if !ok {
-		return false
-	}
-	if len(p.projections) != len(o.projections) {
-		return false
-	}
-	for i := range p.projections {
-		if !semanticValueEquals(p.projections[i], o.projections[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryProjectionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("projplan|"))
-	for _, v := range p.projections {
-		writeValueHash(h, v)
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("projplan|")
 }
 
 func (p *RecordQueryProjectionPlan) Explain() string {
@@ -156,6 +162,16 @@ func (p *RecordQueryProjectionPlan) WithQuantifiers(qs []expressions.Quantifier)
 	cp := *p
 	cp.innerQ = qs[0]
 	return &cp
+}
+
+// WithChildren rebuilds over a fresh inner quantifier — the optional interface
+// plan extraction uses to preserve the strict-singleton invariant. Delegates to
+// WithQuantifiers.
+func (p *RecordQueryProjectionPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("RecordQueryProjectionPlan.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

@@ -19,8 +19,8 @@ func TestEdge_RollUpPartitions_PreservesExpressionIdentity(t *testing.T) {
 
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	wA := &physicalScanWrapper{plan: scanA}
-	wB := &physicalScanWrapper{plan: scanB}
+	wA := scanA
+	wB := scanB
 
 	p1 := NewPlanPartition(
 		properties.PropertyMap{properties.PropDistinctRecords: true, properties.PropStoredRecord: true},
@@ -71,7 +71,7 @@ func TestEdge_ToPlanPartitions_NoPlanProperties(t *testing.T) {
 	// Create a Reference with only exploratory members (via InitialOf).
 	// No final members, no plan properties set.
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 	ref := expressions.InitialOf(wrapper)
 
 	// Plan properties not set -> fallback path.
@@ -96,10 +96,10 @@ func TestEdge_ComputeRefPlanProperties_MultiplePlans(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanW := &physicalScanWrapper{plan: scan}
+	scanW := scan
 
 	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
-	idxW := &physicalIndexScanWrapper{plan: idx, unique: true}
+	idxW := idx.WithIndexMetadata(nil, nil, true)
 
 	ref := expressions.InitialOf(scanW)
 	ref.Insert(idxW)
@@ -188,8 +188,9 @@ func TestEdge_ImplementUniqueRule_ChainedUnique(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	// After planning, the root should have a physicalScanWrapper in its
-	// members — both Unique layers absorbed because scan is distinct.
+	// After planning, the root should have the bare scan plan in its members
+	// — both Unique layers absorbed because scan is distinct (RFC-184 W2: a
+	// bare primary scan is its own physical expression).
 	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
 		t.Fatal("root Reference has no members — chained Unique not processed")
@@ -197,7 +198,7 @@ func TestEdge_ImplementUniqueRule_ChainedUnique(t *testing.T) {
 
 	foundScan := false
 	for _, f := range finals {
-		if _, ok := f.(*physicalScanWrapper); ok {
+		if _, ok := f.(*plans.RecordQueryScanPlan); ok {
 			foundScan = true
 			break
 		}
@@ -207,7 +208,7 @@ func TestEdge_ImplementUniqueRule_ChainedUnique(t *testing.T) {
 		for i, f := range finals {
 			typs[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected physicalScanWrapper in members (both Uniques absorbed), got: %v", typs)
+		t.Fatalf("expected *plans.RecordQueryScanPlan in members (both Uniques absorbed), got: %v", typs)
 	}
 }
 
@@ -221,9 +222,9 @@ func TestEdge_ImplementUnorderedUnionRule_ThreeChildren(t *testing.T) {
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
 	scanC := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
-	wA := &physicalScanWrapper{plan: scanA}
-	wB := &physicalScanWrapper{plan: scanB}
-	wC := &physicalScanWrapper{plan: scanC}
+	wA := scanA
+	wB := scanB
+	wC := scanC
 
 	refA := expressions.InitialOf(wA)
 	pmA := NewPlanPropertiesMap()
@@ -252,22 +253,18 @@ func TestEdge_ImplementUnorderedUnionRule_ThreeChildren(t *testing.T) {
 		t.Fatal("ImplementUnorderedUnionRule should yield expressions for 3 children")
 	}
 
-	foundWrapper := false
+	foundPlan := false
 	for _, r := range results {
-		if w, ok := r.(*physicalUnorderedUnionWrapper); ok {
-			foundWrapper = true
-			uup, ok := w.GetRecordQueryPlan().(*plans.RecordQueryUnorderedUnionPlan)
-			if !ok {
-				t.Fatalf("expected *RecordQueryUnorderedUnionPlan, got %T", w.GetRecordQueryPlan())
-			}
+		if uup, ok := r.(*plans.RecordQueryUnorderedUnionPlan); ok {
+			foundPlan = true
 			inners := uup.GetInners()
 			if len(inners) != 3 {
 				t.Fatalf("expected 3 inner plans, got %d", len(inners))
 			}
 		}
 	}
-	if !foundWrapper {
-		t.Fatal("expected physicalUnorderedUnionWrapper in results")
+	if !foundPlan {
+		t.Fatal("expected *RecordQueryUnorderedUnionPlan in results")
 	}
 }
 
@@ -405,7 +402,7 @@ func TestEdge_PlanExtraction_PrefersFinalOverExploratory(t *testing.T) {
 
 	// Simulate PLANNING phase: insert a physical wrapper as a final member.
 	physScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: physScan}
+	wrapper := physScan
 	ref.Insert(wrapper)
 
 	// GetBest with a comparator that always prefers physical plans.

@@ -46,79 +46,88 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 	}{
 		// --- the four ChildrenAsSet overrides ---
 		{
+			// Union lost its wrapper (RFC-184 W2) but keeps the non-default
+			// ChildrenAsSet=true override, so the plan side stays pinned here
+			// with no wrapper pair (wrap nil → wrapper checks skip).
 			name:          "Union",
 			plan:          &plans.RecordQueryUnionPlan{},
-			wrap:          &physicalUnionWrapper{},
 			childrenAsSet: true,
 		},
 		{
+			// UnorderedUnion lost its wrapper (RFC-184 W2) but keeps the
+			// non-default ChildrenAsSet=true, so the plan side stays pinned with
+			// no wrapper pair (wrap nil → wrapper checks skip).
 			name:          "UnorderedUnion",
 			plan:          &plans.RecordQueryUnorderedUnionPlan{},
-			wrap:          &physicalUnorderedUnionWrapper{},
 			childrenAsSet: true,
 		},
 		{
 			name:          "Intersection",
 			plan:          &plans.RecordQueryIntersectionPlan{},
-			wrap:          &physicalIntersectionWrapper{},
 			childrenAsSet: true,
 		},
 		{
 			name:          "MergeSortUnion",
 			plan:          &plans.RecordQueryMergeSortUnionPlan{},
-			wrap:          &physicalMergeSortUnionWrapper{},
 			childrenAsSet: true,
 		},
 
 		// --- the three CanCorrelate overrides ---
 		{
+			// FlatMap lost its wrapper (RFC-184 W2) but keeps the non-default
+			// CanCorrelate=true override, so the plan side stays pinned here with no
+			// wrapper pair (wrap nil → wrapper checks skip).
 			name:         "FlatMap",
 			plan:         &plans.RecordQueryFlatMapPlan{},
-			wrap:         &physicalFlatMapWrapper{},
 			canCorrelate: true,
 		},
 		{
 			name:         "RecursiveDfsJoin",
 			plan:         &plans.RecordQueryRecursiveDfsJoinPlan{},
-			wrap:         &physicalRecursiveDfsJoinWrapper{},
 			canCorrelate: true,
 		},
 		{
 			name:         "RecursiveLevelUnion",
 			plan:         &plans.RecordQueryRecursiveLevelUnionPlan{},
-			wrap:         &physicalRecursiveLevelUnionWrapper{},
 			canCorrelate: true,
 		},
 
 		// --- a sample of the false/false majority, so a spurious override
 		// added to either side is caught too, not just a dropped one ---
-		{name: "Scan", plan: &plans.RecordQueryScanPlan{}, wrap: &physicalScanWrapper{}},
-		{name: "IndexScan", plan: &plans.RecordQueryIndexPlan{}, wrap: &physicalIndexScanWrapper{}},
-		{name: "VectorIndexScan", plan: &plans.RecordQueryVectorIndexPlan{}, wrap: &physicalVectorIndexScanWrapper{}},
-		{name: "PredicatesFilter", plan: &plans.RecordQueryPredicatesFilterPlan{}, wrap: &physicalPredicatesFilterWrapper{}},
-		{name: "TypeFilter", plan: &plans.RecordQueryTypeFilterPlan{}, wrap: &physicalTypeFilterWrapper{}},
-		{name: "FetchFromPartialRecord", plan: &plans.RecordQueryFetchFromPartialRecordPlan{}, wrap: &physicalFetchFromPartialRecordWrapper{}},
-		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}, wrap: &physicalNestedLoopJoinWrapper{}},
-		{name: "InJoin", plan: &plans.RecordQueryInJoinPlan{}, wrap: &physicalInJoinWrapper{}},
-		{name: "InUnion", plan: &plans.RecordQueryInUnionPlan{}, wrap: &physicalInUnionWrapper{}},
-		{name: "MultiIntersection", plan: &plans.RecordQueryMultiIntersectionOnValuesPlan{}, wrap: &physicalMultiIntersectionWrapper{}},
-		{name: "StreamingAggregation", plan: &plans.RecordQueryStreamingAggregationPlan{}, wrap: &physicalStreamingAggWrapper{}},
-		{name: "InMemorySort", plan: &plans.RecordQueryInMemorySortPlan{}, wrap: &physicalInMemorySortWrapper{}},
-		{name: "Distinct", plan: &plans.RecordQueryDistinctPlan{}, wrap: &physicalDistinctWrapper{}},
-		{name: "Map", plan: &plans.RecordQueryMapPlan{}, wrap: &physicalMapWrapper{}},
-		{name: "Projection", plan: &plans.RecordQueryProjectionPlan{}, wrap: &physicalProjectionWrapper{}},
-		{name: "Limit", plan: &plans.RecordQueryLimitPlan{}, wrap: &physicalLimitWrapper{}},
-		{name: "DefaultOnEmpty", plan: &plans.RecordQueryDefaultOnEmptyPlan{}, wrap: &physicalDefaultOnEmptyWrapper{}},
-		{name: "FirstOrDefault", plan: &plans.RecordQueryFirstOrDefaultPlan{}, wrap: &physicalFirstOrDefaultWrapper{}},
-		{name: "Explode", plan: &plans.RecordQueryExplodePlan{}, wrap: &physicalExplodeWrapper{}},
-		{name: "TableFunction", plan: &plans.RecordQueryTableFunctionPlan{}, wrap: &physicalTableFunctionWrapper{}},
-		{name: "TempTableScan", plan: &plans.RecordQueryTempTableScanPlan{}, wrap: &physicalTempTableScanWrapper{}},
-		{name: "TempTableInsert", plan: &plans.RecordQueryTempTableInsertPlan{}, wrap: &physicalTempTableInsertWrapper{}},
-		{name: "AggregateIndex", plan: &plans.RecordQueryAggregateIndexPlan{}, wrap: &physicalAggregateIndexWrapper{}},
-		{name: "Insert", plan: &plans.RecordQueryInsertPlan{}, wrap: &physicalInsertWrapper{}},
-		{name: "Delete", plan: &plans.RecordQueryDeletePlan{}, wrap: &physicalDeleteWrapper{}},
-		{name: "Update", plan: &plans.RecordQueryUpdatePlan{}, wrap: &physicalUpdateWrapper{}},
-		{name: "Values", plan: &plans.RecordQueryValuesPlan{}, wrap: &physicalValuesWrapper{}},
+		// Scan lost its wrapper (RFC-184 W2) but keeps the false/false default,
+		// so the plan side stays pinned here with no wrapper pair.
+		{name: "Scan", plan: &plans.RecordQueryScanPlan{}},
+		// PredicatesFilter lost its wrapper (RFC-184 W2) but keeps the false/false
+		// default, so the plan side stays pinned here with no wrapper pair.
+		{name: "PredicatesFilter", plan: &plans.RecordQueryPredicatesFilterPlan{}},
+		// NestedLoopJoin lost its wrapper (RFC-184 W2) but keeps the false/false
+		// default, so the plan side stays pinned here with no wrapper pair.
+		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}},
+		// InJoin and InUnion lost their wrappers (RFC-184 W2) but keep the
+		// false/false default, so the plan side stays pinned here with no wrapper
+		// pair.
+		{name: "InJoin", plan: &plans.RecordQueryInJoinPlan{}},
+		{name: "InUnion", plan: &plans.RecordQueryInUnionPlan{}},
+		{name: "MultiIntersection", plan: &plans.RecordQueryMultiIntersectionOnValuesPlan{}},
+		// StreamingAggregation and Distinct lost their wrappers (RFC-184 W2) but
+		// keep the false/false default, so the plan side stays pinned here with no
+		// wrapper pair.
+		{name: "StreamingAggregation", plan: &plans.RecordQueryStreamingAggregationPlan{}},
+		// InMemorySort lost its wrapper (RFC-184 W2) but keeps the false/false
+		// default, so the plan side stays pinned here with no wrapper pair.
+		{name: "InMemorySort", plan: &plans.RecordQueryInMemorySortPlan{}},
+		// FirstOrDefault and Distinct lost their wrappers (RFC-184 W2) but keep the
+		// false/false default, so the plan side stays pinned here with no wrapper
+		// pair.
+		{name: "FirstOrDefault", plan: &plans.RecordQueryFirstOrDefaultPlan{}},
+		{name: "Distinct", plan: &plans.RecordQueryDistinctPlan{}},
+		// IndexScan / Limit / FetchFromPartialRecord / Map / DefaultOnEmpty / Explode /
+		// TableFunction / TempTableScan / TempTableInsert / VectorIndexScan / Values /
+		// AggregateIndex / TypeFilter / Insert / Delete / Update / InMemorySort have no
+		// physical wrapper since RFC-184 W2 — the memo holds the *plans.RecordQuery…
+		// plan directly, so their false/false flags are exercised on the live
+		// production path (no parity pair to check). InMemorySort was the LAST
+		// wrapper; W2 is complete.
 	}
 
 	for _, tc := range cases {
@@ -128,11 +137,17 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 			if got := tc.plan.ChildrenAsSet(); got != tc.childrenAsSet {
 				t.Errorf("plan ChildrenAsSet() = %v, want %v", got, tc.childrenAsSet)
 			}
-			if got := tc.wrap.ChildrenAsSet(); got != tc.childrenAsSet {
-				t.Errorf("wrapper ChildrenAsSet() = %v, want %v", got, tc.childrenAsSet)
-			}
 			if got := tc.plan.CanCorrelate(); got != tc.canCorrelate {
 				t.Errorf("plan CanCorrelate() = %v, want %v", got, tc.canCorrelate)
+			}
+			// The wrapper side is checked only while a wrapper still exists for
+			// this plan type; RFC-184 W2 collapses retire wrappers, leaving the
+			// plan the live production path (wrap==nil skips the pair check).
+			if tc.wrap == nil {
+				return
+			}
+			if got := tc.wrap.ChildrenAsSet(); got != tc.childrenAsSet {
+				t.Errorf("wrapper ChildrenAsSet() = %v, want %v", got, tc.childrenAsSet)
 			}
 			if got := tc.wrap.CanCorrelate(); got != tc.canCorrelate {
 				t.Errorf("wrapper CanCorrelate() = %v, want %v", got, tc.canCorrelate)

@@ -28,7 +28,7 @@ func TestPlanPropertiesMap_InsertionOrder(t *testing.T) {
 				values.UnknownType,
 				false,
 			)
-			wrappers[i] = &physicalScanWrapper{plan: scan}
+			wrappers[i] = scan
 			pm.Add(wrappers[i])
 		}
 
@@ -52,7 +52,7 @@ func TestPlanPropertiesMap_DuplicateAdd(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	w := &physicalScanWrapper{plan: scan}
+	w := scan
 
 	pm := NewPlanPropertiesMap()
 	pm.Add(w)
@@ -78,8 +78,8 @@ func TestToPartitionsFromMap_DeterministicOrder(t *testing.T) {
 
 	// Build a PlanPropertiesMap with wrappers that fall into
 	// different partitions:
-	//   - physicalScanWrapper  → distinct=true,  stored=true
-	//   - physicalStreamingAggWrapper → distinct=false, stored=false
+	//   - RecordQueryScanPlan  → distinct=true,  stored=true
+	//   - RecordQueryStreamingAggregationPlan → distinct=false, stored=false
 	// Interleave them so insertion order matters.
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
@@ -87,11 +87,11 @@ func TestToPartitionsFromMap_DeterministicOrder(t *testing.T) {
 	aggD := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
 	aggE := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
 
-	wA := &physicalScanWrapper{plan: scanA}
-	wB := &physicalScanWrapper{plan: scanB}
-	wC := &physicalScanWrapper{plan: scanC}
-	wD := &physicalStreamingAggWrapper{plan: aggD}
-	wE := &physicalStreamingAggWrapper{plan: aggE}
+	wA := scanA
+	wB := scanB
+	wC := scanC
+	wD := aggD
+	wE := aggE
 
 	pm := NewPlanPropertiesMap()
 	// Interleave scan and agg wrappers.

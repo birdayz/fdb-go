@@ -2,8 +2,6 @@ package cascades
 
 import (
 	"encoding/binary"
-	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -147,87 +145,125 @@ type physicalPlanExpression interface {
 	GetRecordQueryPlan() plans.RecordQueryPlan
 }
 
-// IsPhysicalIndexScan reports whether the given RelationalExpression is
-// a physicalIndexScanWrapper. Exported so external test packages can
-// identify index scan plans without depending on the unexported type.
+// IsPhysicalIndexScan reports whether the given RelationalExpression is an index
+// scan. Since RFC-184 W2 the memo holds *plans.RecordQueryIndexPlan directly (no
+// physicalIndexScanWrapper), so this is a bare type check.
 func IsPhysicalIndexScan(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalIndexScanWrapper)
+	_, ok := expr.(*plans.RecordQueryIndexPlan)
 	return ok
 }
 
-// IsPhysicalIntersection reports whether the given RelationalExpression
-// is a physicalIntersectionWrapper.
+// IsPhysicalIntersection reports whether the given RelationalExpression is an
+// intersection. Since RFC-184 W2 the memo holds *plans.RecordQueryIntersectionPlan
+// directly (no physicalIntersectionWrapper), so this is a bare type check.
 func IsPhysicalIntersection(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalIntersectionWrapper)
+	_, ok := expr.(*plans.RecordQueryIntersectionPlan)
 	return ok
 }
 
-// IsPhysicalMultiIntersection reports whether the given
-// RelationalExpression is a physicalMultiIntersectionWrapper.
+// IsPhysicalMultiIntersection reports whether the given RelationalExpression is a
+// multi-intersection. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryMultiIntersectionOnValuesPlan directly (no
+// physicalMultiIntersectionWrapper), so this is a bare type check.
 func IsPhysicalMultiIntersection(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalMultiIntersectionWrapper)
+	_, ok := expr.(*plans.RecordQueryMultiIntersectionOnValuesPlan)
 	return ok
 }
 
-// GetPhysicalMultiIntersectionPlan returns the underlying
-// RecordQueryMultiIntersectionOnValuesPlan if expr is a
-// physicalMultiIntersectionWrapper, nil otherwise.
+// GetPhysicalMultiIntersectionPlan returns the plan if expr is a
+// multi-intersection, nil otherwise. Since RFC-184 W2 the memo holds the bare
+// plan, so this is a bare type assertion.
 func GetPhysicalMultiIntersectionPlan(expr expressions.RelationalExpression) *plans.RecordQueryMultiIntersectionOnValuesPlan {
-	w, ok := expr.(*physicalMultiIntersectionWrapper)
+	p, ok := expr.(*plans.RecordQueryMultiIntersectionOnValuesPlan)
 	if !ok {
 		return nil
 	}
-	return w.plan
+	return p
 }
 
-// IsPhysicalFilter reports whether the given RelationalExpression is
-// a physical filter wrapper (either legacy or predicates-based).
+// IsPhysicalFilter reports whether the given RelationalExpression is a physical
+// predicates filter. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryPredicatesFilterPlan directly (no
+// physicalPredicatesFilterWrapper), so this is a bare type check.
 func IsPhysicalFilter(expr expressions.RelationalExpression) bool {
-	switch expr.(type) {
-	case *physicalFilterWrapper, *physicalPredicatesFilterWrapper:
-		return true
-	}
-	return false
+	_, ok := expr.(*plans.RecordQueryPredicatesFilterPlan)
+	return ok
 }
 
-// IsPhysicalInsert reports whether the given RelationalExpression is
-// a physicalInsertWrapper.
+// IsPhysicalInsert reports whether the given RelationalExpression is an INSERT
+// plan. Since RFC-184 W2 the memo holds *plans.RecordQueryInsertPlan directly
+// (no physicalInsertWrapper), so this is a bare type check.
 func IsPhysicalInsert(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalInsertWrapper)
+	_, ok := expr.(*plans.RecordQueryInsertPlan)
 	return ok
 }
 
-// IsPhysicalDelete reports whether the given RelationalExpression is
-// a physicalDeleteWrapper.
+// IsPhysicalDelete reports whether the given RelationalExpression is a DELETE
+// plan. Since RFC-184 W2 the memo holds *plans.RecordQueryDeletePlan directly
+// (no physicalDeleteWrapper), so this is a bare type check.
 func IsPhysicalDelete(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalDeleteWrapper)
+	_, ok := expr.(*plans.RecordQueryDeletePlan)
 	return ok
 }
 
-// IsPhysicalUpdate reports whether the given RelationalExpression is
-// a physicalUpdateWrapper.
+// IsPhysicalUpdate reports whether the given RelationalExpression is an UPDATE
+// plan. Since RFC-184 W2 the memo holds *plans.RecordQueryUpdatePlan directly
+// (no physicalUpdateWrapper), so this is a bare type check.
 func IsPhysicalUpdate(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalUpdateWrapper)
+	_, ok := expr.(*plans.RecordQueryUpdatePlan)
 	return ok
 }
 
-// IsPhysicalPredicatesFilter reports whether the given expression is
-// a physicalPredicatesFilterWrapper.
+// IsPhysicalPredicatesFilter reports whether the given expression is a physical
+// predicates filter. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryPredicatesFilterPlan directly (no
+// physicalPredicatesFilterWrapper), so this is a bare type check.
 func IsPhysicalPredicatesFilter(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalPredicatesFilterWrapper)
+	_, ok := expr.(*plans.RecordQueryPredicatesFilterPlan)
 	return ok
 }
 
-// IsPhysicalMap reports whether the given expression is a physicalMapWrapper.
+// IsPhysicalMap reports whether the given expression is a physical map. Since
+// RFC-184 W2 the memo holds *plans.RecordQueryMapPlan directly (no
+// physicalMapWrapper), so this is a bare type check on the plan.
 func IsPhysicalMap(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalMapWrapper)
+	_, ok := expr.(*plans.RecordQueryMapPlan)
 	return ok
 }
 
-// IsPhysicalInJoin reports whether the given expression is
-// a physicalInJoinWrapper.
+// IsPhysicalFetchFromPartialRecord reports whether the given
+// RelationalExpression is a physical fetch. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryFetchFromPartialRecordPlan directly (no
+// physicalFetchFromPartialRecordWrapper), so this is a bare type check on the
+// plan.
+func IsPhysicalFetchFromPartialRecord(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryFetchFromPartialRecordPlan)
+	return ok
+}
+
+// IsPhysicalInJoin reports whether the given expression is an InJoin. Since
+// RFC-184 W2 the memo holds *plans.RecordQueryInJoinPlan directly (no
+// physicalInJoinWrapper), so this is a bare type check.
 func IsPhysicalInJoin(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalInJoinWrapper)
+	_, ok := expr.(*plans.RecordQueryInJoinPlan)
+	return ok
+}
+
+// IsPhysicalRecursiveLevelUnion reports whether the given RelationalExpression is
+// a recursive level union. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryRecursiveLevelUnionPlan directly (no
+// physicalRecursiveLevelUnionWrapper), so this is a bare type check.
+func IsPhysicalRecursiveLevelUnion(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryRecursiveLevelUnionPlan)
+	return ok
+}
+
+// IsPhysicalRecursiveDfsJoin reports whether the given RelationalExpression is a
+// recursive DFS join. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryRecursiveDfsJoinPlan directly (no
+// physicalRecursiveDfsJoinWrapper), so this is a bare type check.
+func IsPhysicalRecursiveDfsJoin(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryRecursiveDfsJoinPlan)
 	return ok
 }
 
@@ -243,18 +279,6 @@ func ExplainPhysicalPlan(expr expressions.RelationalExpression) string {
 		return ""
 	}
 	return p.Explain()
-}
-
-// extractChildPlanFromQuantifier gets the RecordQueryPlan from a
-// quantifier's Reference. Used by WithChildren implementations to
-// rebuild the plan with the freshly-extracted child plan during plan
-// extraction. Returns nil if the quantifier has no physical plan.
-func extractChildPlanFromQuantifier(q expressions.Quantifier) plans.RecordQueryPlan {
-	ref := q.GetRangesOver()
-	if ref == nil {
-		return nil
-	}
-	return findPhysicalPlan(ref)
 }
 
 // findPhysicalPlan returns a physical member's underlying RecordQueryPlan, or
@@ -279,26 +303,6 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 		}
 	}
 	return nil
-}
-
-// findBestPhysicalPlan returns the cheapest physical member's plan — the cost
-// winner — for a push-through WithChildren whose inner must relink to the
-// winner rather than to whichever physical member was yielded first.
-// ref.AllMembers() interleaves exploratory and final members in yield order, so
-// "first physical" can be a dominated alternative; when ordering constraints add
-// ordered variants the first-yielded member flips and the enforcer relinks onto
-// the wrong (worse) join order (RFC-076 TestFDB_JoinSelPred_Repro). Falls back
-// to findPhysicalPlan when no member ranks.
-func findBestPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
-	if ref == nil {
-		return nil
-	}
-	if best := findBestValidPhysicalExpr(ref, nil); best != nil {
-		if ph, ok := best.(physicalPlanExpression); ok {
-			return ph.GetRecordQueryPlan()
-		}
-	}
-	return findPhysicalPlan(ref)
 }
 
 // findPhysicalExpr returns a physical-plan expression from ref, FINAL members
@@ -334,13 +338,12 @@ func findBestPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 // rule-set parity, tracked in DIVERGENCES.md.
 //
 // DO NOT make this cost-ranked. Picking the "cheapest" member here looks like
-// an obvious improvement — findBestPhysicalPlan does exactly that, and it is
-// wired to one site against this function's twenty — but it is wrong, and
-// measurably so: ranking with PlanningCostModelLess ignores the REQUESTED
-// ORDERING, so a rule asking for a child gets whichever member is cheapest
-// rather than one that satisfies the ordering its parent needs. Tried, and it
-// turned `SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC` into an ASCENDING
-// result (pinned by yamsql order_by_elimination#36) and moved 79 plan shapes.
+// an obvious improvement, but it is wrong, and measurably so: ranking with
+// PlanningCostModelLess ignores the REQUESTED ORDERING, so a rule asking for a
+// child gets whichever member is cheapest rather than one that satisfies the
+// ordering its parent needs. Tried, and it turned `SELECT a, b FROM ab WHERE
+// a = 1 ORDER BY a DESC` into an ASCENDING result (pinned by yamsql
+// order_by_elimination#36) and moved 79 plan shapes.
 //
 // Cost is the memo's job, not a rule's. A rule wants A VALID CHILD; which
 // alternative wins is decided by OptimizeGroup under the ordering constraints,
@@ -391,65 +394,9 @@ func bakedInnerPlan(expr expressions.RelationalExpression) plans.RecordQueryPlan
 	return p
 }
 
-// isLeafReplaceable reports whether a plan is safe to substitute as the
-// inner of a projection without altering the output schema or predicate
-// semantics. Only leaf-adjacent plans (scans, filters over scans, index
-// scans, streaming agg, distinct, etc.) qualify. Compound join plans
-// (NLJ, FlatMap, InJoin) encode predicate semantics in their structure
-// and must NOT be swapped — extraction already picks the right join plan
-// via quantifier traversal.
-//
-// ORDER-PRESERVING set operations over ONE record type (intersection / union
-// of index scans merged on the primary key) are leaf-adjacent in exactly this
-// sense: they flow that record type's schema unchanged and carry no join
-// structure, so they belong in the list. They were absent only because no
-// shape put one under a relinking wrapper until compensated pk-intersections
-// started carrying residual filters — a filter over such an intersection then
-// kept its eagerly-snapshotted nil-inner plan and extracted
-// `PredicatesFilter(<nil>)` (XX000 plan-invariant), and before the
-// compensation landed the very same queries silently DROPPED the residual
-// (wrong rows).
-//
-// Three families stay OUT, each for its own reason:
-//   - InJoin / InUnion bind a correlation per IN value — join-like structure.
-//   - The UNORDERED set ops (UnorderedUnion, UnorderedPrimaryKeyDistinct):
-//     findPhysicalPlan picks the first physical member without consulting
-//     ordering, so admitting them would let an unordered member satisfy a
-//     relink whose consumer needs grouped/ordered input (streaming
-//     aggregation). Gate the relink on ordering compatibility before adding
-//     them.
-//   - MultiIntersectionOnValues intersects on VALUES and computes its own
-//     output shape rather than flowing a record type through, so it fails
-//     this gate's schema-preservation test; and nothing needs it — no
-//     observed shape puts one under a relinking wrapper. (Membership here is
-//     independent of definesOutputSchema in cascades_generator.go: that gate
-//     governs a column-derivation DESCENT, this one governs plan
-//     SUBSTITUTION. StreamingAggregation and AggregateIndex sit in both and
-//     belong in both. Do not reason from one list to the other.)
-func isLeafReplaceable(p plans.RecordQueryPlan) bool {
-	switch p.(type) {
-	case *plans.RecordQueryScanPlan,
-		*plans.RecordQueryIndexPlan,
-		*plans.RecordQueryFilterPlan,
-		*plans.RecordQueryTypeFilterPlan,
-		*plans.RecordQueryFetchFromPartialRecordPlan,
-		*plans.RecordQueryInMemorySortPlan,
-		*plans.RecordQueryStreamingAggregationPlan,
-		*plans.RecordQueryDistinctPlan,
-		*plans.RecordQueryLimitPlan,
-		*plans.RecordQueryPredicatesFilterPlan,
-		*plans.RecordQueryAggregateIndexPlan,
-		*plans.RecordQueryIntersectionPlan,
-		*plans.RecordQueryUnionPlan,
-		*plans.RecordQueryMergeSortUnionPlan:
-		return true
-	}
-	return false
-}
-
-// writeHash64 writes a uint64 to the FNV hasher in big-endian
-// byte order. Shared by all four wrapper types' HashCodeWithoutChildren
-// implementations.
+// writeHash64 writes a uint64 to the FNV hasher in big-endian byte order.
+// Used by the data-access rule to fold a plan's HashCodeWithoutChildren into
+// its structural hash.
 func writeHash64(h hashWriter, v uint64) {
 	var b [8]byte
 	binary.BigEndian.PutUint64(b[:], v)
@@ -469,108 +416,6 @@ type hashWriter interface {
 // with structurally-different alternatives.
 const physicalWrapperCostMultiplier = properties.PhysicalWrapperCostMultiplier
 
-// physicalScanWrapper adapts a `*plans.RecordQueryScanPlan` to the
-// `expressions.RelationalExpression` interface so implementation rules
-// can yield it into the Reference dedup machinery.
-//
-// The wrapper family exists because Go keeps the plan and expression
-// hierarchies separate (RFC-022 design choice), where Java's physical
-// plans (RecordQueryPlan) implement RelationalExpression directly —
-// the physical_*_wrapper.go files in this package are the bridge, one
-// per physical operator family. This one is leaf-like (no Quantifiers,
-// no children): the underlying RecordQueryScanPlan is a leaf physical
-// plan. Non-leaf wrappers (filter, union, joins, …) expose their inner
-// plans as Quantifiers over inner References — see e.g.
-// physicalFilterWrapper below and physical_flat_map_wrapper.go.
-type physicalScanWrapper struct {
-	plan *plans.RecordQueryScanPlan
-}
-
-// GetPlan exposes the wrapped physical plan.
-func (w *physicalScanWrapper) GetPlan() *plans.RecordQueryScanPlan { return w.plan }
-
-// GetRecordQueryPlan implements physicalPlanExpression.
-func (w *physicalScanWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-// GetResultValue returns a fresh QuantifiedObjectValue whose Type is
-// the plan's flowed Type. Mirrors FullUnorderedScanExpression's
-// shape so callers can interrogate type without unwrapping.
-func (w *physicalScanWrapper) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-}
-
-// GetQuantifiers returns the empty list — the wrapped plan is a leaf.
-func (w *physicalScanWrapper) GetQuantifiers() []expressions.Quantifier { return nil }
-
-// CanCorrelate is false — leaf can't anchor correlation.
-func (w *physicalScanWrapper) CanCorrelate() bool { return false }
-
-// ChildrenAsSet is false — leaf has no children.
-func (w *physicalScanWrapper) ChildrenAsSet() bool { return false }
-
-// GetCorrelatedToWithoutChildren reports the OUTER correlations the scan's
-// comparison comparands reference — for a correlated PK/index probe
-// (`pk = QOV(outer).fk`), the outer alias. See scanComparisonCorrelations
-// (RFC-150 Phase-2b D.2).
-func (w *physicalScanWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	if w.plan == nil {
-		return map[values.CorrelationIdentifier]struct{}{}
-	}
-	return scanComparisonCorrelations(w.plan.GetScanComparisons())
-}
-
-// EqualsWithoutChildren compares wrapped plans via plans.Equals on
-// the same wrapper concrete type.
-func (w *physicalScanWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalScanWrapper)
-	if !ok {
-		return false
-	}
-	return plans.Equals(w.plan, o.plan)
-}
-
-// HashCodeWithoutChildren mixes the class discriminator with the
-// wrapped plan's hash.
-func (w *physicalScanWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physcanwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-// WithChildren satisfies WithChildren — scan is a leaf,
-// so qs must be empty. Returns the wrapper itself unchanged on
-// empty input.
-func (w *physicalScanWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 0 {
-		return nil, fmt.Errorf("physicalScanWrapper.WithChildren: expected 0 children, got %d", len(qs))
-	}
-	return w, nil
-}
-
-// HintCost matches the LogicalScan equivalent (see properties/cost.go's
-// FullUnorderedScanExpression arm) and applies the physical-wrapper
-// discount so cost-driven extraction prefers the physical scan over
-// the logical one.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalScanWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-// HintOrdering: a scan produces rows in PK order when the scan
-// carries PK values (from WithPrimaryKey). Otherwise unknown.
-// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
-func (w *physicalScanWrapper) HintOrdering() properties.Ordering {
-	return w.plan.HintOrdering()
-}
-
-// HintRichOrdering — see pkScanRichOrdering.
-func (w *physicalScanWrapper) HintRichOrdering() *properties.RichOrdering {
-	return pkScanRichOrdering(w.plan)
-}
-
 // pkScanOrdering derives the directional PK ordering of a primary scan:
 // PK columns in order, all ascending (descending under reverse).
 // pkScanRichOrdering returns a primary scan's PK ordering with bindings:
@@ -583,9 +428,10 @@ func (w *physicalScanWrapper) HintRichOrdering() *properties.RichOrdering {
 // is what lets `WHERE a = 1 ORDER BY a DESC` elide the sort over a
 // FORWARD eq-bound scan (every row has the same a, so direction on a is
 // a no-op) — without the FIXED modeling the prefix reads as directional
-// ASC and a DESC request wrongly keeps the sort. Shared by
-// physicalScanWrapper and the plan-backed leaf scanPlanExpression (the
-// data-access path memoizes a SARGed PK scan as the latter).
+// ASC and a DESC request wrongly keeps the sort. Used by the plan-backed
+// leaf scanPlanExpression (the data-access path memoizes a SARGed PK scan
+// as the latter); the bare RecordQueryScanPlan computes its own via
+// HintRichOrdering.
 func pkScanRichOrdering(plan *plans.RecordQueryScanPlan) *properties.RichOrdering {
 	if plan == nil {
 		return properties.EmptyOrdering()
@@ -612,1153 +458,37 @@ func pkScanRichOrdering(plan *plans.RecordQueryScanPlan) *properties.RichOrderin
 	return properties.NewRichOrdering(bm, keys, false)
 }
 
-func (w *physicalScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalScanWrapper)(nil)
-
-// physicalIndexScanWrapper adapts a `*plans.RecordQueryIndexPlan` to
-// the RelationalExpression interface. Same leaf shape as
-// physicalScanWrapper — index scans have no children in the Memo.
-type physicalIndexScanWrapper struct {
-	plan        *plans.RecordQueryIndexPlan
-	columnNames []string // index column names for ordering property
-	// pkColumnNames is the record type's primary-key column list, used to
-	// extend the ordering property past the index key: a value index's
-	// entries are (index key, primary key), so the scan's output order
-	// covers the trimmed PK suffix too. Mirrors Java's
-	// ValueIndexExpansionVisitor.fullKey(index, primaryKey) — the ordering
-	// in ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons is
-	// derived over the FULL key (index root + trimPrimaryKey'd PK), which is
-	// what lets an equality-prefixed scan (status = ?) satisfy ORDER BY pk.
-	// Empty for fan-out (createsDuplicates) indexes, where positions past
-	// the fan-out are not sort-ordered (Java breaks the sorted-suffix loop
-	// at a duplicating key part).
-	pkColumnNames []string
-	unique        bool
-	covering      bool // true when the index provides all needed columns (MergeFetch can eliminate the fetch)
-}
-
-func (w *physicalIndexScanWrapper) GetPlan() *plans.RecordQueryIndexPlan      { return w.plan }
-func (w *physicalIndexScanWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-func (w *physicalIndexScanWrapper) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-}
-
-func (w *physicalIndexScanWrapper) GetQuantifiers() []expressions.Quantifier { return nil }
-func (w *physicalIndexScanWrapper) CanCorrelate() bool                       { return false }
-func (w *physicalIndexScanWrapper) ChildrenAsSet() bool                      { return false }
-
-// GetCorrelatedToWithoutChildren reports the OUTER correlations the index scan's
-// comparison comparands reference — the correlated index probe's outer alias.
-// See scanComparisonCorrelations (RFC-150 Phase-2b D.2).
-func (w *physicalIndexScanWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	if w.plan == nil {
-		return map[values.CorrelationIdentifier]struct{}{}
-	}
-	return scanComparisonCorrelations(w.plan.GetScanComparisons())
-}
-
-func (w *physicalIndexScanWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalIndexScanWrapper)
-	if !ok {
-		return false
-	}
-	return plans.Equals(w.plan, o.plan)
-}
-
-func (w *physicalIndexScanWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physindexscanwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-func (w *physicalIndexScanWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 0 {
-		return nil, fmt.Errorf("physicalIndexScanWrapper.WithChildren: expected 0 children, got %d", len(qs))
-	}
-	return w, nil
-}
-
-// HintOrdering: an index scan produces rows in index-key order for
-// the non-equality-bound suffix columns, extended by the trimmed
-// primary-key suffix (index entries are (index key, primary key), so
-// the PK columns continue the sort order). E.g. index(a, b, c) with
-// a = 1 over PK (id) produces output sorted by (b, c, id). Mirrors the
-// full-key ordering of Java's
-// ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons.
-// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
-func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
-	return w.plan.HintOrdering()
-}
-
-// HintRichOrdering returns the full ordering with bindings: equality-bound
-// prefix columns become FixedBinding entries (with comparison reference),
-// non-equality suffix columns become SortedBinding entries. The trimmed
-// primary-key suffix continues the sorted keys — this is what lets an
-// equality-prefixed scan (status = ?) satisfy ORDER BY pk, exactly as
-// Java's ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons
-// derives the ordering over getFullKeyExpression() (index key + trimmed
-// PK) with Binding.fixed for the equality prefix and Binding.sorted for
-// the rest. This enables ordering-aware InJoin source matching and
-// RemoveSort-style elision in ImplementSortRule.
-func (w *physicalIndexScanWrapper) HintRichOrdering() *properties.RichOrdering {
-	if w.plan == nil || len(w.columnNames) == 0 {
-		return properties.EmptyOrdering()
-	}
-	comps := w.plan.GetScanComparisons()
-	bm := make(map[values.Value][]properties.OrderingBinding)
-	keys := make([]values.Value, 0, len(w.columnNames)+len(w.pkColumnNames))
-
-	rev := w.plan.IsReverse()
-	dir := properties.ProvidedSortOrderAscending
-	if rev {
-		dir = properties.ProvidedSortOrderDescending
-	}
-	for i, col := range w.columnNames {
-		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
-		keys = append(keys, key)
-		if i < len(comps) && comps[i].IsEquality() {
-			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
-		} else {
-			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
-		}
-	}
-	for _, col := range plans.TrimmedPKSuffix(w.columnNames, w.pkColumnNames) {
-		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
-		keys = append(keys, key)
-		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
-	}
-	return properties.NewRichOrdering(bm, keys, w.unique)
-}
-
-// trimmedPKSuffix returns the primary-key columns not already present in
-// the index key columns, in PK order. Ports Java's Index.trimPrimaryKey
-// semantics as used by ValueIndexExpansionVisitor.fullKey: PK components
-// that appear in the index key are trimmed, the remainder is appended
-// after the index key.
-// HintCost: index scans are cheaper than full table scans because
-// they read a subset of records. Apply a selectivity multiplier on
-// top of the physical-wrapper discount. Unique indexes with all
-// columns equality-bound return cardinality=1 (point lookup).
-//
-// Fetch I/O cost (FetchCPU per row) is NOT included here — it
-// belongs on the Fetch enforcer wrapper, which is eliminated for
-// covering scans.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalIndexScanWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-func indexBaseCardinality(plan *plans.RecordQueryIndexPlan, stats properties.StatisticsProvider) float64 {
-	if plan != nil {
-		if types := plan.GetRecordTypes(); len(types) > 0 {
-			total := 0.0
-			for _, t := range types {
-				total += stats.RecordTypeCardinality(t)
-			}
-			return total
-		}
-	}
-	return stats.RecordTypeCardinality("")
-}
-
-func (w *physicalIndexScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalIndexScanWrapper)(nil)
-
-// physicalFilterWrapper adapts a `*plans.RecordQueryFilterPlan` to
-// the RelationalExpression interface. The wrapped plan has a single
-// inner — exposed as a single Quantifier ranging over a fresh
-// Reference holding a wrapped version of the inner physical plan.
-//
-// The wrapped-inner indirection is intentional: it keeps the Memo's
-// Reference invariant intact (every Quantifier's Reference holds at
-// least one RelationalExpression-typed member). Once a proper
-// physical-plan-aware Memo lands, this wrapping goes away — plans
-// will be Memo members directly, no adapter needed.
-type physicalFilterWrapper struct {
-	plan       *plans.RecordQueryFilterPlan
-	innerQuant expressions.Quantifier
-}
-
-// NewPhysicalFilterWrapper constructs the wrapper. innerQuant must
-// range over a Reference holding the wrapped inner physical plan.
-func NewPhysicalFilterWrapper(plan *plans.RecordQueryFilterPlan, innerQuant expressions.Quantifier) *physicalFilterWrapper {
-	return &physicalFilterWrapper{plan: plan, innerQuant: innerQuant}
-}
-
-// GetPlan exposes the wrapped physical plan.
-func (w *physicalFilterWrapper) GetPlan() *plans.RecordQueryFilterPlan { return w.plan }
-
-// GetRecordQueryPlan implements physicalPlanExpression.
-func (w *physicalFilterWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-// GetResultValue returns the inner Quantifier's flowed object value
-// — filter doesn't reshape rows.
-func (w *physicalFilterWrapper) GetResultValue() values.Value {
-	return w.innerQuant.GetFlowedObjectValue()
-}
-
-// GetQuantifiers returns the inner Quantifier as the only child.
-func (w *physicalFilterWrapper) GetQuantifiers() []expressions.Quantifier {
-	return []expressions.Quantifier{w.innerQuant}
-}
-
-// CanCorrelate is false — filter doesn't anchor correlation.
-func (w *physicalFilterWrapper) CanCorrelate() bool { return false }
-
-// ChildrenAsSet is false — filter has one child.
-func (w *physicalFilterWrapper) ChildrenAsSet() bool { return false }
-
-// GetCorrelatedToWithoutChildren returns the empty set — the wrapper
-// does not surface predicate-side correlation. Callers that need
-// correlation visibility through wrapped physical plans recover it
-// from the plan itself (cf. compensationProbeCorrelations, which reads
-// bound-prefix scan correlations out of the comparison ranges).
-func (w *physicalFilterWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-// EqualsWithoutChildren compares the wrapped plan's predicate list.
-// Children equality is the caller's job (typically via SemanticEquals).
-func (w *physicalFilterWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalFilterWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-// HashCodeWithoutChildren mixes class + plan's hash.
-func (w *physicalFilterWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physfilterwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-// WithChildren constructs a fresh wrapper using qs[0] as the new
-// inner Quantifier. Returns an error if qs doesn't have exactly
-// one entry.
-func (w *physicalFilterWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 1 {
-		return nil, fmt.Errorf("physicalFilterWrapper.WithChildren: expected 1 child, got %d", len(qs))
-	}
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
-		newPlan := plans.NewRecordQueryFilterPlan(w.plan.GetPredicates(), innerPlan)
-		return &physicalFilterWrapper{plan: newPlan, innerQuant: qs[0]}, nil
-	}
-	return &physicalFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil
-}
-
-// HintCost mirrors the LogicalFilter cost formula and applies the
-// physical-wrapper discount so cost-driven extraction prefers the
-// physical filter over the logical one.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalFilterWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-// OrderingSourceRef: this wrapper PRESERVES its input's order (see
-// orderingDelegator in winner_lookup.go).
-func (w *physicalFilterWrapper) OrderingSourceRef() *expressions.Reference {
-	return w.innerQuant.GetRangesOver()
-}
-
-func (w *physicalFilterWrapper) HintOrdering() properties.Ordering {
-	ref := w.innerQuant.GetRangesOver()
-	if ref == nil {
-		return properties.Ordering{}
-	}
-	for _, m := range ref.AllMembers() {
-		o := properties.EstimateOrdering(m)
-		if o.IsKnown {
-			return o
-		}
-	}
-	return properties.Ordering{}
-}
-
-func (w *physicalFilterWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalFilterWrapper)(nil)
-
-// physicalDistinctWrapper adapts a `*plans.RecordQueryDistinctPlan` to
-// the RelationalExpression interface.
-type physicalDistinctWrapper struct {
-	plan       *plans.RecordQueryDistinctPlan
-	innerQuant expressions.Quantifier
-}
-
-// NewPhysicalDistinctWrapper constructs the wrapper.
-func NewPhysicalDistinctWrapper(plan *plans.RecordQueryDistinctPlan, innerQuant expressions.Quantifier) *physicalDistinctWrapper {
-	return &physicalDistinctWrapper{plan: plan, innerQuant: innerQuant}
-}
-
-// GetPlan exposes the wrapped physical plan.
-func (w *physicalDistinctWrapper) GetPlan() *plans.RecordQueryDistinctPlan { return w.plan }
-
-// GetRecordQueryPlan implements physicalPlanExpression.
-func (w *physicalDistinctWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-// GetResultValue returns the inner Quantifier's flowed object value.
-func (w *physicalDistinctWrapper) GetResultValue() values.Value {
-	return w.innerQuant.GetFlowedObjectValue()
-}
-
-// GetQuantifiers returns the inner Quantifier as the only child.
-func (w *physicalDistinctWrapper) GetQuantifiers() []expressions.Quantifier {
-	return []expressions.Quantifier{w.innerQuant}
-}
-
-// CanCorrelate is false.
-func (w *physicalDistinctWrapper) CanCorrelate() bool { return false }
-
-// ChildrenAsSet is false.
-func (w *physicalDistinctWrapper) ChildrenAsSet() bool { return false }
-
-// GetCorrelatedToWithoutChildren returns the empty set.
-func (w *physicalDistinctWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-// EqualsWithoutChildren compares the wrapped plan.
-func (w *physicalDistinctWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalDistinctWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-// HashCodeWithoutChildren mixes class + plan's hash.
-func (w *physicalDistinctWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physdistwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-// WithChildren constructs a fresh wrapper using qs[0] as the new
-// inner Quantifier.
-func (w *physicalDistinctWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 1 {
-		return nil, fmt.Errorf("physicalDistinctWrapper.WithChildren: expected 1 child, got %d", len(qs))
-	}
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
-		// WithInner (copy-on-write), NOT the constructor: the rebuild must
-		// carry the Streaming flag — a constructor rebuild resets it to false
-		// and silently downgrades a resume-clean streaming distinct to the
-		// buggy hash-set path (TODO.md C5).
-		return &physicalDistinctWrapper{plan: w.plan.WithInner(innerPlan), innerQuant: qs[0]}, nil
-	}
-	return &physicalDistinctWrapper{plan: w.plan, innerQuant: qs[0]}, nil
-}
-
-// HintCost mirrors LogicalDistinct with the physical-wrapper discount.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalDistinctWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-// OrderingSourceRef: this wrapper PRESERVES its input's order (see
-// orderingDelegator in winner_lookup.go).
-func (w *physicalDistinctWrapper) OrderingSourceRef() *expressions.Reference {
-	return w.innerQuant.GetRangesOver()
-}
-
-func (w *physicalDistinctWrapper) HintOrdering() properties.Ordering {
-	ref := w.innerQuant.GetRangesOver()
-	if ref == nil {
-		return properties.Ordering{}
-	}
-	for _, m := range ref.AllMembers() {
-		o := properties.EstimateOrdering(m)
-		if o.IsKnown {
-			return o
-		}
-	}
-	return properties.Ordering{}
-}
-
-func (w *physicalDistinctWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalDistinctWrapper)(nil)
-
-// physicalTypeFilterWrapper adapts a `*plans.RecordQueryTypeFilterPlan`
-// to the RelationalExpression interface.
-type physicalTypeFilterWrapper struct {
-	plan       *plans.RecordQueryTypeFilterPlan
-	innerQuant expressions.Quantifier
-}
-
-// NewPhysicalTypeFilterWrapper constructs the wrapper.
-func NewPhysicalTypeFilterWrapper(plan *plans.RecordQueryTypeFilterPlan, innerQuant expressions.Quantifier) *physicalTypeFilterWrapper {
-	return &physicalTypeFilterWrapper{plan: plan, innerQuant: innerQuant}
-}
-
-// GetPlan exposes the wrapped physical plan.
-func (w *physicalTypeFilterWrapper) GetPlan() *plans.RecordQueryTypeFilterPlan { return w.plan }
-
-// GetRecordQueryPlan implements physicalPlanExpression.
-func (w *physicalTypeFilterWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-// GetResultValue returns the inner Quantifier's flowed object value.
-func (w *physicalTypeFilterWrapper) GetResultValue() values.Value {
-	return w.innerQuant.GetFlowedObjectValue()
-}
-
-// GetQuantifiers returns the inner Quantifier as the only child.
-func (w *physicalTypeFilterWrapper) GetQuantifiers() []expressions.Quantifier {
-	return []expressions.Quantifier{w.innerQuant}
-}
-
-// CanCorrelate is false.
-func (w *physicalTypeFilterWrapper) CanCorrelate() bool { return false }
-
-// ChildrenAsSet is false.
-func (w *physicalTypeFilterWrapper) ChildrenAsSet() bool { return false }
-
-// GetCorrelatedToWithoutChildren returns the empty set.
-func (w *physicalTypeFilterWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-// EqualsWithoutChildren compares the wrapped plan.
-func (w *physicalTypeFilterWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalTypeFilterWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-// HashCodeWithoutChildren mixes class + plan's hash.
-func (w *physicalTypeFilterWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("phystypefiltwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-// WithChildren constructs a fresh wrapper.
-func (w *physicalTypeFilterWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 1 {
-		return nil, fmt.Errorf("physicalTypeFilterWrapper.WithChildren: expected 1 child, got %d", len(qs))
-	}
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
-		return &physicalTypeFilterWrapper{plan: plans.NewRecordQueryTypeFilterPlan(w.plan.GetRecordTypes(), innerPlan), innerQuant: qs[0]}, nil
-	}
-	return &physicalTypeFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil
-}
-
-// HintCost mirrors LogicalTypeFilter with the physical-wrapper
-// discount.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-// OrderingSourceRef: this wrapper PRESERVES its input's order (see
-// orderingDelegator in winner_lookup.go).
-func (w *physicalTypeFilterWrapper) OrderingSourceRef() *expressions.Reference {
-	return w.innerQuant.GetRangesOver()
-}
-
-func (w *physicalTypeFilterWrapper) HintOrdering() properties.Ordering {
-	ref := w.innerQuant.GetRangesOver()
-	if ref == nil {
-		return properties.Ordering{}
-	}
-	for _, m := range ref.AllMembers() {
-		o := properties.EstimateOrdering(m)
-		if o.IsKnown {
-			return o
-		}
-	}
-	return properties.Ordering{}
-}
-
-func (w *physicalTypeFilterWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalTypeFilterWrapper)(nil)
-
-// physicalInsertWrapper adapts a `*plans.RecordQueryInsertPlan` to
-// the RelationalExpression interface — same shape as the other
-// single-inner physical wrappers.
-type physicalInsertWrapper struct {
-	plan       *plans.RecordQueryInsertPlan
-	innerQuant expressions.Quantifier
-}
-
-// NewPhysicalInsertWrapper constructs the wrapper.
-func NewPhysicalInsertWrapper(plan *plans.RecordQueryInsertPlan, innerQuant expressions.Quantifier) *physicalInsertWrapper {
-	return &physicalInsertWrapper{plan: plan, innerQuant: innerQuant}
-}
-
-// GetPlan exposes the wrapped physical plan.
-func (w *physicalInsertWrapper) GetPlan() *plans.RecordQueryInsertPlan { return w.plan }
-
-// GetRecordQueryPlan implements physicalPlanExpression.
-func (w *physicalInsertWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-// GetResultValue returns the inner Quantifier's flowed object value.
-func (w *physicalInsertWrapper) GetResultValue() values.Value {
-	return w.innerQuant.GetFlowedObjectValue()
-}
-
-// GetQuantifiers returns the inner Quantifier as the only child.
-func (w *physicalInsertWrapper) GetQuantifiers() []expressions.Quantifier {
-	return []expressions.Quantifier{w.innerQuant}
-}
-
-// CanCorrelate is false.
-func (w *physicalInsertWrapper) CanCorrelate() bool { return false }
-
-// ChildrenAsSet is false.
-func (w *physicalInsertWrapper) ChildrenAsSet() bool { return false }
-
-// GetCorrelatedToWithoutChildren returns the empty set.
-func (w *physicalInsertWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-// EqualsWithoutChildren compares wrapped plans.
-func (w *physicalInsertWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalInsertWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-// HashCodeWithoutChildren mixes class + plan's hash.
-func (w *physicalInsertWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physinsertwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-// WithChildren constructs a fresh wrapper.
-func (w *physicalInsertWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 1 {
-		return nil, fmt.Errorf("physicalInsertWrapper.WithChildren: expected 1 child, got %d", len(qs))
-	}
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
-		return &physicalInsertWrapper{plan: plans.NewRecordQueryInsertPlan(innerPlan, w.plan.GetTargetRecordType(), w.plan.GetTargetType()), innerQuant: qs[0]}, nil
-	}
-	return &physicalInsertWrapper{plan: w.plan, innerQuant: qs[0]}, nil
-}
-
-// HintCost: INSERT cost is dominated by the per-row write cost
-// (Java's CascadesCostModel weights writes heavily). Mirrors the
-// LogicalDML write cost — sumCPU + cardinality * WriteCPU.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalInsertWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-func (w *physicalInsertWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalInsertWrapper)(nil)
-
-// physicalDeleteWrapper adapts `*plans.RecordQueryDeletePlan` to
-// the RelationalExpression interface.
-type physicalDeleteWrapper struct {
-	plan       *plans.RecordQueryDeletePlan
-	innerQuant expressions.Quantifier
-}
-
-// NewPhysicalDeleteWrapper constructs the wrapper.
-func NewPhysicalDeleteWrapper(plan *plans.RecordQueryDeletePlan, innerQuant expressions.Quantifier) *physicalDeleteWrapper {
-	return &physicalDeleteWrapper{plan: plan, innerQuant: innerQuant}
-}
-
-// GetPlan exposes the wrapped physical plan.
-func (w *physicalDeleteWrapper) GetPlan() *plans.RecordQueryDeletePlan { return w.plan }
-
-// GetRecordQueryPlan implements physicalPlanExpression.
-func (w *physicalDeleteWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-// GetResultValue returns the inner Quantifier's flowed object value.
-func (w *physicalDeleteWrapper) GetResultValue() values.Value {
-	return w.innerQuant.GetFlowedObjectValue()
-}
-
-// GetQuantifiers returns the inner Quantifier as the only child.
-func (w *physicalDeleteWrapper) GetQuantifiers() []expressions.Quantifier {
-	return []expressions.Quantifier{w.innerQuant}
-}
-
-// CanCorrelate is false.
-func (w *physicalDeleteWrapper) CanCorrelate() bool { return false }
-
-// ChildrenAsSet is false.
-func (w *physicalDeleteWrapper) ChildrenAsSet() bool { return false }
-
-// GetCorrelatedToWithoutChildren returns the empty set.
-func (w *physicalDeleteWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-// EqualsWithoutChildren compares wrapped plans.
-func (w *physicalDeleteWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalDeleteWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-// HashCodeWithoutChildren mixes class + plan's hash.
-func (w *physicalDeleteWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physdeletewrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-// WithChildren constructs a fresh wrapper.
-func (w *physicalDeleteWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 1 {
-		return nil, fmt.Errorf("physicalDeleteWrapper.WithChildren: expected 1 child, got %d", len(qs))
-	}
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
-		return &physicalDeleteWrapper{plan: plans.NewRecordQueryDeletePlan(innerPlan, w.plan.GetTargetRecordType()), innerQuant: qs[0]}, nil
-	}
-	return &physicalDeleteWrapper{plan: w.plan, innerQuant: qs[0]}, nil
-}
-
-// HintCost: DELETE write-heavy cost like INSERT.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalDeleteWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-func (w *physicalDeleteWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalDeleteWrapper)(nil)
-
-// physicalUpdateWrapper adapts `*plans.RecordQueryUpdatePlan` to
-// the RelationalExpression interface.
-type physicalUpdateWrapper struct {
-	plan       *plans.RecordQueryUpdatePlan
-	innerQuant expressions.Quantifier
-}
-
-// NewPhysicalUpdateWrapper constructs the wrapper.
-func NewPhysicalUpdateWrapper(plan *plans.RecordQueryUpdatePlan, innerQuant expressions.Quantifier) *physicalUpdateWrapper {
-	return &physicalUpdateWrapper{plan: plan, innerQuant: innerQuant}
-}
-
-// GetPlan exposes the wrapped physical plan.
-func (w *physicalUpdateWrapper) GetPlan() *plans.RecordQueryUpdatePlan { return w.plan }
-
-// GetRecordQueryPlan implements physicalPlanExpression.
-func (w *physicalUpdateWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-// GetResultValue returns the inner Quantifier's flowed object value.
-func (w *physicalUpdateWrapper) GetResultValue() values.Value {
-	return w.innerQuant.GetFlowedObjectValue()
-}
-
-// GetQuantifiers returns the inner Quantifier as the only child.
-func (w *physicalUpdateWrapper) GetQuantifiers() []expressions.Quantifier {
-	return []expressions.Quantifier{w.innerQuant}
-}
-
-// CanCorrelate is false.
-func (w *physicalUpdateWrapper) CanCorrelate() bool { return false }
-
-// ChildrenAsSet is false.
-func (w *physicalUpdateWrapper) ChildrenAsSet() bool { return false }
-
-// GetCorrelatedToWithoutChildren returns the empty set.
-func (w *physicalUpdateWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-// EqualsWithoutChildren compares wrapped plans.
-func (w *physicalUpdateWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalUpdateWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-// HashCodeWithoutChildren mixes class + plan's hash.
-func (w *physicalUpdateWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physupdatewrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-// WithChildren constructs a fresh wrapper.
-func (w *physicalUpdateWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 1 {
-		return nil, fmt.Errorf("physicalUpdateWrapper.WithChildren: expected 1 child, got %d", len(qs))
-	}
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
-		return &physicalUpdateWrapper{plan: plans.NewRecordQueryUpdatePlan(innerPlan, w.plan.GetTargetRecordType(), w.plan.GetTransforms()), innerQuant: qs[0]}, nil
-	}
-	return &physicalUpdateWrapper{plan: w.plan, innerQuant: qs[0]}, nil
-}
-
-// HintCost: UPDATE write-heavy cost like INSERT/DELETE.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalUpdateWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-func (w *physicalUpdateWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalUpdateWrapper)(nil)
-
-// physicalUnionWrapper adapts `*plans.RecordQueryUnionPlan` to the
-// RelationalExpression interface. Unlike the single-inner wrappers,
-// Union exposes N inner Quantifiers (one per child plan).
-type physicalUnionWrapper struct {
-	plan        *plans.RecordQueryUnionPlan
-	innerQuants []expressions.Quantifier
-}
-
-// NewPhysicalUnionWrapper constructs the wrapper.
-func NewPhysicalUnionWrapper(plan *plans.RecordQueryUnionPlan, innerQuants []expressions.Quantifier) *physicalUnionWrapper {
-	copied := make([]expressions.Quantifier, len(innerQuants))
-	copy(copied, innerQuants)
-	return &physicalUnionWrapper{plan: plan, innerQuants: copied}
-}
-
-// GetPlan exposes the wrapped physical plan.
-func (w *physicalUnionWrapper) GetPlan() *plans.RecordQueryUnionPlan { return w.plan }
-
-// GetRecordQueryPlan implements physicalPlanExpression.
-func (w *physicalUnionWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-// GetResultValue returns the first inner's flowed object value.
-// Java's RecordQueryUnionPlan emits rows compatible with all
-// children; Go picks the first child's row shape (union legs are
-// column-aligned by construction, so any child's shape stands in).
-func (w *physicalUnionWrapper) GetResultValue() values.Value {
-	if len(w.innerQuants) == 0 {
-		return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-	}
-	return w.innerQuants[0].GetFlowedObjectValue()
-}
-
-// GetQuantifiers returns the inner Quantifiers (children).
-func (w *physicalUnionWrapper) GetQuantifiers() []expressions.Quantifier { return w.innerQuants }
-
-// CanCorrelate is false.
-func (w *physicalUnionWrapper) CanCorrelate() bool { return false }
-
-// ChildrenAsSet is true — UNION children are bag-equivalent.
-func (w *physicalUnionWrapper) ChildrenAsSet() bool { return true }
-
-// GetCorrelatedToWithoutChildren returns the empty set.
-func (w *physicalUnionWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-// EqualsWithoutChildren compares the wrapped plan.
-func (w *physicalUnionWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalUnionWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-// HashCodeWithoutChildren mixes class + plan's hash.
-func (w *physicalUnionWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physunionwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-// WithChildren constructs a fresh wrapper with the new quantifiers.
-func (w *physicalUnionWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	copied := make([]expressions.Quantifier, len(qs))
-	copy(copied, qs)
-	return &physicalUnionWrapper{plan: w.plan, innerQuants: copied}, nil
-}
-
-// HintCost: UNION cardinality is sum of children, CPU is cumulative
-// + per-output-row merge work. Mirrors LogicalUnion.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalUnionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-func (w *physicalUnionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalUnionWrapper)(nil)
-
-// physicalIntersectionWrapper adapts `*plans.RecordQueryIntersectionPlan`
-// to the RelationalExpression interface. Same N-child shape as the
-// Union wrapper; cost differs (Intersection bounded by min child
-// cardinality, while Union sums).
-type physicalIntersectionWrapper struct {
-	plan        *plans.RecordQueryIntersectionPlan
-	innerQuants []expressions.Quantifier
-}
-
-// NewPhysicalIntersectionWrapper constructs the wrapper.
-func NewPhysicalIntersectionWrapper(plan *plans.RecordQueryIntersectionPlan, innerQuants []expressions.Quantifier) *physicalIntersectionWrapper {
-	copied := make([]expressions.Quantifier, len(innerQuants))
-	copy(copied, innerQuants)
-	return &physicalIntersectionWrapper{plan: plan, innerQuants: copied}
-}
-
-// GetPlan exposes the wrapped physical plan.
-func (w *physicalIntersectionWrapper) GetPlan() *plans.RecordQueryIntersectionPlan {
-	return w.plan
-}
-
-// GetRecordQueryPlan implements physicalPlanExpression.
-func (w *physicalIntersectionWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-// GetResultValue returns the first inner's flowed object value —
-// intersection emits rows compatible with all children.
-func (w *physicalIntersectionWrapper) GetResultValue() values.Value {
-	if len(w.innerQuants) == 0 {
-		return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-	}
-	return w.innerQuants[0].GetFlowedObjectValue()
-}
-
-// GetQuantifiers returns the inner Quantifiers (children).
-func (w *physicalIntersectionWrapper) GetQuantifiers() []expressions.Quantifier {
-	return w.innerQuants
-}
-
-// IsIntersection implements properties.IntersectionExpression.
-func (w *physicalIntersectionWrapper) IsIntersection() {}
-
-// CanCorrelate is false.
-func (w *physicalIntersectionWrapper) CanCorrelate() bool { return false }
-
-// ChildrenAsSet is true — INTERSECTION children are bag-equivalent.
-func (w *physicalIntersectionWrapper) ChildrenAsSet() bool { return true }
-
-// GetCorrelatedToWithoutChildren returns the empty set.
-func (w *physicalIntersectionWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-// EqualsWithoutChildren compares the wrapped plan.
-func (w *physicalIntersectionWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalIntersectionWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-// HashCodeWithoutChildren mixes class + plan's hash.
-func (w *physicalIntersectionWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physintersectionwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-// WithChildren constructs a fresh wrapper with the new quantifiers.
-func (w *physicalIntersectionWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	copied := make([]expressions.Quantifier, len(qs))
-	copy(copied, qs)
-	return &physicalIntersectionWrapper{plan: w.plan, innerQuants: copied}, nil
-}
-
-// HintCost: Intersection cardinality is bounded by the SMALLEST
-// child (the intersection can't be larger than its smallest
-// participant). CPU sums children + per-output-row merge work
-// (more expensive than Union — comparison-key-driven matching).
-// Mirrors LogicalIntersection.
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-func (w *physicalIntersectionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalIntersectionWrapper)(nil)
-
-// --- Projection wrapper -----------------------------------------------
-
-type physicalProjectionWrapper struct {
-	plan       *plans.RecordQueryProjectionPlan
-	innerQuant expressions.Quantifier
-}
-
-func NewPhysicalProjectionWrapper(plan *plans.RecordQueryProjectionPlan, innerQuant expressions.Quantifier) *physicalProjectionWrapper {
-	return &physicalProjectionWrapper{plan: plan, innerQuant: innerQuant}
-}
-
-func (w *physicalProjectionWrapper) GetPlan() *plans.RecordQueryProjectionPlan { return w.plan }
-
-func (w *physicalProjectionWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-func (w *physicalProjectionWrapper) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-}
-
-func (w *physicalProjectionWrapper) GetQuantifiers() []expressions.Quantifier {
-	return []expressions.Quantifier{w.innerQuant}
-}
-
-func (w *physicalProjectionWrapper) CanCorrelate() bool { return false }
-
-func (w *physicalProjectionWrapper) ChildrenAsSet() bool { return false }
-
-func (w *physicalProjectionWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-func (w *physicalProjectionWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalProjectionWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-func (w *physicalProjectionWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physprojwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-func (w *physicalProjectionWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 1 {
-		return nil, fmt.Errorf("physicalProjectionWrapper.WithChildren: expected 1 child, got %d", len(qs))
-	}
-	// Always relink to the extracted inner, including compound joins — do NOT
-	// gate on isLeafReplaceable here. A projection is a transparent unary cap
-	// (like the in-memory sort, RFC-069). Historically
-	// MergeProjectionAndFetchRule / ImplementProjectionFinalRule built it over
-	// an InJoin whose plan carried a nil inner, and without relinking `SELECT
-	// id ... WHERE a IN (...)` extracted `Project([id], InJoin(<nil>))`
-	// (RFC-070). That nil-inner state no longer exists (RFC-183 — rules bake
-	// the concrete child), so this is now a plain structural rebuild rather
-	// than a repair; the relink still matters because qs[0] resolves to the
-	// extracted winner, which need not be the plan snapshot taken at build
-	// time. Wrappers that
-	// embed predicate/filter/DML semantics in their own plan (aggregation,
-	// delete/update) keep the leaf gate: their child quantifier need not carry
-	// the filtered inner, so relinking to it would drop the filter.
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil {
-		newPlan := plans.NewRecordQueryProjectionPlanWithAliases(w.plan.GetProjections(), w.plan.GetAliases(), innerPlan)
-		return &physicalProjectionWrapper{plan: newPlan, innerQuant: qs[0]}, nil
-	}
-	return &physicalProjectionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
-}
-
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalProjectionWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-// OrderingSourceRef: this wrapper PRESERVES its input's order (see
-// orderingDelegator in winner_lookup.go).
-func (w *physicalProjectionWrapper) OrderingSourceRef() *expressions.Reference {
-	return w.innerQuant.GetRangesOver()
-}
-
-func (w *physicalProjectionWrapper) HintOrdering() properties.Ordering {
-	ref := w.innerQuant.GetRangesOver()
-	if ref == nil {
-		return properties.Ordering{}
-	}
-	for _, m := range ref.AllMembers() {
-		o := properties.EstimateOrdering(m)
-		if o.IsKnown {
-			return o
-		}
-	}
-	return properties.Ordering{}
-}
-
-func (w *physicalProjectionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalProjectionWrapper)(nil)
-
-// --- Values wrapper ---------------------------------------------------
-
-type physicalValuesWrapper struct {
-	plan *plans.RecordQueryValuesPlan
-}
-
-func NewPhysicalValuesWrapper(plan *plans.RecordQueryValuesPlan) *physicalValuesWrapper {
-	return &physicalValuesWrapper{plan: plan}
-}
-
-func (w *physicalValuesWrapper) GetPlan() *plans.RecordQueryValuesPlan { return w.plan }
-
-func (w *physicalValuesWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-func (w *physicalValuesWrapper) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-}
-
-func (w *physicalValuesWrapper) GetQuantifiers() []expressions.Quantifier { return nil }
-
-func (w *physicalValuesWrapper) CanCorrelate() bool { return false }
-
-func (w *physicalValuesWrapper) ChildrenAsSet() bool { return false }
-
-func (w *physicalValuesWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-func (w *physicalValuesWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalValuesWrapper)
-	if !ok {
-		return false
-	}
-	return plans.Equals(w.plan, o.plan)
-}
-
-func (w *physicalValuesWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physvalueswrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-func (w *physicalValuesWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 0 {
-		return nil, fmt.Errorf("physicalValuesWrapper.WithChildren: expected 0 children, got %d", len(qs))
-	}
-	return w, nil
-}
-
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalValuesWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-func (w *physicalValuesWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-var _ expressions.RelationalExpression = (*physicalValuesWrapper)(nil)
-
-// physicalAggregateIndexWrapper wraps a RecordQueryAggregateIndexPlan
-// as a leaf physical expression. Mirrors the aggregate index scan path
-// in Java's Cascades planner.
-type physicalAggregateIndexWrapper struct {
-	plan *plans.RecordQueryAggregateIndexPlan
-}
-
-func (w *physicalAggregateIndexWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
-
-func (w *physicalAggregateIndexWrapper) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-}
-
-func (w *physicalAggregateIndexWrapper) GetQuantifiers() []expressions.Quantifier { return nil }
-func (w *physicalAggregateIndexWrapper) CanCorrelate() bool                       { return false }
-func (w *physicalAggregateIndexWrapper) ChildrenAsSet() bool                      { return false }
-
-func (w *physicalAggregateIndexWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
-}
-
-func (w *physicalAggregateIndexWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
-	o, ok := other.(*physicalAggregateIndexWrapper)
-	if !ok {
-		return false
-	}
-	return w.plan.EqualsPlanWithoutChildren(o.plan)
-}
-
-func (w *physicalAggregateIndexWrapper) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("physaggidxwrap|"))
-	if w.plan != nil {
-		writeHash64(h, w.plan.HashCodeWithoutChildren())
-	}
-	return h.Sum64()
-}
-
-func (w *physicalAggregateIndexWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	if len(qs) != 0 {
-		return nil, fmt.Errorf("physicalAggregateIndexWrapper.WithChildren: expected 0 children, got %d", len(qs))
-	}
-	return w, nil
-}
-
-// HintCost delegates to the plan, which owns its cost (RFC-183 P5).
-func (w *physicalAggregateIndexWrapper) HintCost(child []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	return w.plan.HintCost(child, stats)
-}
-
-func (w *physicalAggregateIndexWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return w
-}
-
-// HintOrdering delegates to the plan, which owns its ordering (RFC-183 P5).
-func (w *physicalAggregateIndexWrapper) HintOrdering() properties.Ordering {
-	return w.plan.HintOrdering()
-}
-
-// IsPhysicalAggregateIndex reports whether the expression is an aggregate
-// index scan wrapper.
+// IsPhysicalAggregateIndex reports whether the expression is an aggregate index
+// scan. Since RFC-184 W2 the memo holds *plans.RecordQueryAggregateIndexPlan
+// directly (no physicalAggregateIndexWrapper), so this is a bare type check.
 func IsPhysicalAggregateIndex(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalAggregateIndexWrapper)
+	_, ok := expr.(*plans.RecordQueryAggregateIndexPlan)
 	return ok
 }
 
-var _ physicalPlanExpression = (*physicalAggregateIndexWrapper)(nil)
+// IsPhysicalStreamingAgg reports whether the given RelationalExpression is a
+// physical streaming aggregation. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryStreamingAggregationPlan directly (no
+// physicalStreamingAggWrapper), so this is a bare type check.
+func IsPhysicalStreamingAgg(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryStreamingAggregationPlan)
+	return ok
+}
+
+// IsPhysicalFlatMap reports whether the given RelationalExpression is a physical
+// correlated FlatMap. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryFlatMapPlan directly (no physicalFlatMapWrapper), so this is
+// a bare type check.
+func IsPhysicalFlatMap(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryFlatMapPlan)
+	return ok
+}
+
+// IsPhysicalNestedLoopJoin reports whether the given RelationalExpression is a
+// physical nested-loop join. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryNestedLoopJoinPlan directly (no
+// physicalNestedLoopJoinWrapper), so this is a bare type check.
+func IsPhysicalNestedLoopJoin(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryNestedLoopJoinPlan)
+	return ok
+}

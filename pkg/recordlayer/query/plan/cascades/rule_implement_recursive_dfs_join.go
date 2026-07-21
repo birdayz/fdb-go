@@ -81,19 +81,6 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	rootPlan := stripTempTableInsertTop(initPh.GetRecordQueryPlan())
 	childPlan := stripTempTableInsertTop(recPh.GetRecordQueryPlan())
 
-	var plan *plans.RecordQueryRecursiveDfsJoinPlan
-	if recUnion.IsDistinct() {
-		plan = plans.NewRecordQueryRecursiveDfsJoinPlanDistinct(
-			rootPlan, childPlan,
-			priorCorrelation, strategy,
-		)
-	} else {
-		plan = plans.NewRecordQueryRecursiveDfsJoinPlan(
-			rootPlan, childPlan,
-			priorCorrelation, strategy,
-		)
-	}
-
 	// Memoize the STRIPPED plans, not the winners they came from.
 	//
 	// stripTempTableInsertTop removes a TempTableInsert from each leg for the
@@ -141,7 +128,11 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// data.
 	rootQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: rootPlan}))
 	childQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: childPlan}))
-	call.Yield(newPhysicalRecursiveDfsJoinWrapper(plan, rootQ, childQ))
+	// The plan carries its two leg edges directly — no separate physical
+	// wrapper (RFC-184 W2).
+	call.Yield(plans.NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
+		rootQ, childQ, priorCorrelation, strategy, recUnion.IsDistinct(),
+	))
 }
 
 // stripTempTableInsertTop unwraps a TempTableInsert at the top of a leg plan

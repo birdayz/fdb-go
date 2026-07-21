@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -46,6 +45,28 @@ func NewRecordQueryMergeSortUnionPlan(
 	}
 }
 
+// NewRecordQueryMergeSortUnionPlanFromQuantifiers builds an ordered merge-sort
+// union whose legs are LIVE memo quantifiers (the distinct-union rule passes
+// PhysicalQuantifiers over the freshly-pinned leg winners) instead of snapshots
+// over plans. This makes the merge its own cascades expression carrying its leg
+// edges directly — the memo holds it without a physical wrapper (RFC-184 W2). The
+// comparison keys, reverse, and dedup flags carry over verbatim.
+func NewRecordQueryMergeSortUnionPlanFromQuantifiers(
+	qs []expressions.Quantifier,
+	comparisonKeys []values.Value,
+	reverse bool,
+	removeDuplicates bool,
+) *RecordQueryMergeSortUnionPlan {
+	copiedKeys := make([]values.Value, len(comparisonKeys))
+	copy(copiedKeys, comparisonKeys)
+	return &RecordQueryMergeSortUnionPlan{
+		childQs:          append([]expressions.Quantifier(nil), qs...),
+		comparisonKeys:   copiedKeys,
+		reverse:          reverse,
+		removeDuplicates: removeDuplicates,
+	}
+}
+
 // GetInners returns the legs, dereferenced through the quantifiers and in
 // merge order — which the merge itself depends on.
 func (p *RecordQueryMergeSortUnionPlan) GetInners() []RecordQueryPlan {
@@ -65,43 +86,27 @@ func (p *RecordQueryMergeSortUnionPlan) GetResultType() values.Type {
 
 func (p *RecordQueryMergeSortUnionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
 
-// EqualsWithoutChildren compares reverse + removeDuplicates flags and the
-// comparison keys (semantic Value identity — see semanticValueEquals). The
-// keys join equality per RFC-176 §1: before P2, equality checked only the key
-// COUNT while the hash folded the full keys — different-key plans compared
-// equal yet hashed apart, a live plan-level equal⟹same-hash violation.
+// structuralKey lists the fields that distinguish this merge-sort union in the
+// memo: the reverse + removeDuplicates flags and the comparison keys (semantic
+// Value identity — see semanticValueEquals). Children are excluded. The keys
+// join the key per RFC-176 §1: before P2, equality checked only the key COUNT
+// while the hash folded the full keys — different-key plans compared equal yet
+// hashed apart, a live plan-level equal⟹same-hash violation. The same key
+// drives both EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryMergeSortUnionPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Bool(p.reverse).
+		Bool(p.removeDuplicates).
+		Values(p.comparisonKeys)
+}
+
 func (p *RecordQueryMergeSortUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMergeSortUnionPlan)
-	if !ok {
-		return false
-	}
-	if p.reverse != o.reverse || p.removeDuplicates != o.removeDuplicates {
-		return false
-	}
-	if len(p.comparisonKeys) != len(o.comparisonKeys) {
-		return false
-	}
-	for i, k := range p.comparisonKeys {
-		if !semanticValueEquals(k, o.comparisonKeys[i]) {
-			return false
-		}
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryMergeSortUnionPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("mergesortunionplan|"))
-	if p.reverse {
-		h.Write([]byte{1})
-	}
-	if p.removeDuplicates {
-		h.Write([]byte{2})
-	}
-	for _, k := range p.comparisonKeys {
-		writeValueHash(h, k)
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("mergesortunionplan|")
 }
 
 func (p *RecordQueryMergeSortUnionPlan) Explain() string {
@@ -159,9 +164,27 @@ func (p *RecordQueryMergeSortUnionPlan) WithQuantifiers(qs []expressions.Quantif
 	return &cp
 }
 
-// ChildrenAsSet reports that the legs of this set operation are commutative,
-// mirroring physicalMergeSortUnionWrapper.
+// ChildrenAsSet reports that the legs of this set operation are commutative.
 func (p *RecordQueryMergeSortUnionPlan) ChildrenAsSet() bool { return true }
+
+// GetResultValue returns the first leg's flowed object value — the merge emits
+// rows compatible with all legs. Adopted from the retired
+// physicalMergeSortUnionWrapper (RFC-184 W2); an empty union falls back to
+// PlanExprBase's fresh stand-in.
+func (p *RecordQueryMergeSortUnionPlan) GetResultValue() values.Value {
+	if len(p.childQs) == 0 {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.childQs[0].GetFlowedObjectValue()
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The merge carries its legs as LIVE memo edges, so the relink is a
+// quantifier swap: WithQuantifiers rebinds the legs and GetInners re-resolves
+// through the new references (RFC-184 W2, replacing physicalMergeSortUnionWrapper.WithChildren).
+func (p *RecordQueryMergeSortUnionPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	return p.WithQuantifiers(qs), nil
+}
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryMergeSortUnionPlan) GetRecordQueryPlan() RecordQueryPlan { return p }

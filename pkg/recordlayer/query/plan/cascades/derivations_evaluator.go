@@ -39,11 +39,13 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- Leaf scans ---
 
-	case *physicalScanWrapper:
-		return derivationsForScan(w.plan)
+	// A bare primary scan is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryScanPlan:
+		return derivationsForScan(w)
 
-	case *physicalIndexScanWrapper:
-		return derivationsForIndexScan(w.plan)
+	// An index scan is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryIndexPlan:
+		return derivationsForIndexScan(w)
 
 	case *scanPlanExpression:
 		if sp, ok := w.plan.(*plans.RecordQueryScanPlan); ok {
@@ -56,127 +58,149 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- Single-child passthrough ---
 
-	case *physicalFilterWrapper:
+	// The Distinct is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryDistinctPlan:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalDistinctWrapper:
+	// A DELETE is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryDeletePlan:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalDeleteWrapper:
+	// A fetch is its own physical expression now (RFC-184 W2) — same
+	// single-child passthrough derivations the physicalFetchFromPartialRecordWrapper carried.
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalFetchFromPartialRecordWrapper:
+	// A temp-table insert is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryTempTableInsertPlan:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalTempTableInsertWrapper:
+	// A LIMIT is its own physical expression now (RFC-184 W2) — same
+	// single-child passthrough derivations the physicalLimitWrapper carried.
+	case *plans.RecordQueryLimitPlan:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalLimitWrapper:
-		return derivationsFromSingleChildExpr(w)
-
-	case *physicalInMemorySortWrapper:
+	// The InMemorySort is its own cascades expression now (RFC-184 W2) — same
+	// single-child passthrough derivations the physicalInMemorySortWrapper carried.
+	case *plans.RecordQueryInMemorySortPlan:
 		return derivationsFromSingleChildExpr(w)
 
 	// --- PredicatesFilter: child results + predicate values ---
 
-	case *physicalPredicatesFilterWrapper:
+	// The PredicatesFilter is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryPredicatesFilterPlan:
 		return derivationsForPredicatesFilter(w)
 
 	// --- Map: translate result value through child results ---
 
-	case *physicalMapWrapper:
+	// A map/projection is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryMapPlan:
 		return derivationsForMap(w)
 
 	// --- Projection: translate through child results ---
 
-	case *physicalProjectionWrapper:
+	// The projection is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryProjectionPlan:
 		return derivationsFromSingleChildExpr(w)
 
 	// --- TypeFilter: restrict QueriedValue record types ---
 
-	case *physicalTypeFilterWrapper:
+	// A type filter is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryTypeFilterPlan:
 		return derivationsForTypeFilter(w)
 
 	// --- Set operations (union, intersection) ---
 
-	case *physicalUnionWrapper:
+	// The union is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryUnionPlan:
 		// RecordQueryUnionPlan is a simple UNION ALL — no comparison keys.
 		return derivationsForSetPlan(w, nil)
 
-	case *physicalMergeSortUnionWrapper:
-		return derivationsForSetPlan(w, w.plan.GetComparisonKeys())
+	case *plans.RecordQueryMergeSortUnionPlan:
+		return derivationsForSetPlan(w, w.GetComparisonKeys())
 
-	case *physicalUnorderedUnionWrapper:
+	// The unordered union is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryUnorderedUnionPlan:
 		return derivationsForSetPlan(w, nil)
 
-	case *physicalIntersectionWrapper:
-		return derivationsForSetPlan(w, w.plan.GetComparisonKeyValues())
+	case *plans.RecordQueryIntersectionPlan:
+		return derivationsForSetPlan(w, w.GetComparisonKeyValues())
 
-	case *physicalMultiIntersectionWrapper:
+	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
 		return derivationsForMultiIntersection(w)
 
 	// --- InJoin: decorrelate inner against in-source ---
 
-	case *physicalInJoinWrapper:
+	// The InJoin is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryInJoinPlan:
 		return derivationsForInJoin(w)
 
 	// --- InUnion: decorrelate inner against multiple bindings ---
 
-	case *physicalInUnionWrapper:
+	// The InUnion is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryInUnionPlan:
 		return derivationsForInUnion(w)
 
 	// --- FirstOrDefault / DefaultOnEmpty ---
 
-	case *physicalFirstOrDefaultWrapper:
+	// The FirstOrDefault is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryFirstOrDefaultPlan:
 		return derivationsForFirstOrDefault(w)
 
-	case *physicalDefaultOnEmptyWrapper:
+	// DefaultOnEmpty is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryDefaultOnEmptyPlan:
 		return derivationsForDefaultOnEmpty(w)
 
 	// --- StreamingAggregation ---
 
-	case *physicalStreamingAggWrapper:
+	// The StreamingAggregation is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryStreamingAggregationPlan:
 		return derivationsForStreamingAgg(w)
 
 	// --- Explode ---
 
-	case *physicalExplodeWrapper:
+	// An explode is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryExplodePlan:
 		return derivationsForExplode(w)
 
 	// --- TableFunction ---
 
-	case *physicalTableFunctionWrapper:
+	// A table function is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryTableFunctionPlan:
 		return derivationsForTableFunction(w)
 
 	// --- TempTableScan ---
 
-	case *physicalTempTableScanWrapper:
+	// A temp-table scan is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryTempTableScanPlan:
 		return derivationsForTempTableScan(w)
 
 	// --- Values ---
 
-	case *physicalValuesWrapper:
+	// A values plan is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryValuesPlan:
 		return derivationsForValues(w)
 
-	// --- DML: Insert / Update ---
+	// --- DML: Insert / Update (their own physical expressions now, RFC-184 W2) ---
 
-	case *physicalInsertWrapper:
+	case *plans.RecordQueryInsertPlan:
 		return derivationsFromSingleChildExpr(w)
 
-	case *physicalUpdateWrapper:
+	case *plans.RecordQueryUpdatePlan:
 		return derivationsFromSingleChildExpr(w)
 
 	// --- NestedLoopJoin ---
 
-	case *physicalNestedLoopJoinWrapper:
+	// The NestedLoopJoin is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryNestedLoopJoinPlan:
 		return derivationsForNestedLoopJoin(w)
 
 	// --- Recursive plans: empty derivations ---
 
-	case *physicalRecursiveDfsJoinWrapper:
+	case *plans.RecordQueryRecursiveDfsJoinPlan:
 		return properties.EmptyDerivations()
 
-	case *physicalRecursiveLevelUnionWrapper:
+	case *plans.RecordQueryRecursiveLevelUnionPlan:
 		return properties.EmptyDerivations()
 
 	default:
@@ -237,15 +261,15 @@ func derivationsFromSingleChildExpr(expr expressions.RelationalExpression) *prop
 
 // --- PredicatesFilter ---
 
-func derivationsForPredicatesFilter(w *physicalPredicatesFilterWrapper) *properties.Derivations {
-	childDerivs := properties.DerivationsFromQuantifier(w.innerQuant)
+func derivationsForPredicatesFilter(w *plans.RecordQueryPredicatesFilterPlan) *properties.Derivations {
+	childDerivs := properties.DerivationsFromQuantifier(w.GetInnerQuantifier())
 	childResults := childDerivs.ResultValues
 
 	var localVals []values.Value
 	localVals = append(localVals, childDerivs.LocalValues...)
 
-	alias := w.innerQuant.GetAlias()
-	for _, pred := range w.plan.GetPredicates() {
+	alias := w.GetInnerQuantifier().GetAlias()
+	for _, pred := range w.GetPredicates() {
 		predValues := collectValuesFromPredicate(pred)
 		for _, childResult := range childResults {
 			for _, pv := range predValues {
@@ -292,16 +316,17 @@ func collectValuesFromPredicateRecursive(pred predicates.QueryPredicate, out *[]
 
 // --- Map ---
 
-func derivationsForMap(w *physicalMapWrapper) *properties.Derivations {
-	childDerivs := properties.DerivationsFromQuantifier(w.innerQuant)
+func derivationsForMap(w *plans.RecordQueryMapPlan) *properties.Derivations {
+	innerQuant := w.GetInnerQuantifier()
+	childDerivs := properties.DerivationsFromQuantifier(innerQuant)
 	childResults := childDerivs.ResultValues
-	resultValue := w.plan.GetResultValue()
+	resultValue := w.GetResultValue()
 
 	var resultVals []values.Value
 	var localVals []values.Value
 	localVals = append(localVals, childDerivs.LocalValues...)
 
-	alias := w.innerQuant.GetAlias()
+	alias := innerQuant.GetAlias()
 	for _, childResult := range childResults {
 		translated := properties.TranslateCorrelation(resultValue, alias, childResult)
 		resultVals = append(resultVals, translated)
@@ -315,12 +340,12 @@ func derivationsForMap(w *physicalMapWrapper) *properties.Derivations {
 
 // --- TypeFilter ---
 
-func derivationsForTypeFilter(w *physicalTypeFilterWrapper) *properties.Derivations {
+func derivationsForTypeFilter(w *plans.RecordQueryTypeFilterPlan) *properties.Derivations {
 	childDerivs := properties.DerivationsFromSingleChild(w)
 	childResults := childDerivs.ResultValues
 
 	filteredTypes := make(map[string]struct{})
-	for _, rt := range w.plan.GetRecordTypes() {
+	for _, rt := range w.GetRecordTypes() {
 		filteredTypes[rt] = struct{}{}
 	}
 
@@ -340,7 +365,7 @@ func derivationsForTypeFilter(w *physicalTypeFilterWrapper) *properties.Derivati
 					intersected = append(intersected, rt)
 				}
 			}
-			return values.NewQueriedValue(intersected, w.plan.GetResultType())
+			return values.NewQueriedValue(intersected, w.GetResultType())
 		})
 		resultVals = append(resultVals, replaced)
 	}
@@ -383,8 +408,8 @@ func derivationsForSetPlan(expr expressions.RelationalExpression, comparisonKeyV
 
 // --- MultiIntersection ---
 
-func derivationsForMultiIntersection(w *physicalMultiIntersectionWrapper) *properties.Derivations {
-	intersectionResultValue := w.plan.GetResultValue()
+func derivationsForMultiIntersection(w *plans.RecordQueryMultiIntersectionOnValuesPlan) *properties.Derivations {
+	intersectionResultValue := w.GetResultValue()
 	var resultVals []values.Value
 	var localVals []values.Value
 
@@ -409,7 +434,7 @@ func derivationsForMultiIntersection(w *physicalMultiIntersectionWrapper) *prope
 	})
 
 	// Comparison key values.
-	compKeys := w.plan.GetComparisonKey()
+	compKeys := w.GetComparisonKey()
 	if len(compKeys) > 0 {
 		for _, ckv := range compKeys {
 			for _, rv := range resultVals {
@@ -448,13 +473,13 @@ func crossProductHelper(lists [][]values.Value, combo []values.Value, depth int,
 
 // --- InJoin ---
 
-func derivationsForInJoin(w *physicalInJoinWrapper) *properties.Derivations {
-	innerDerivs := properties.DerivationsFromQuantifier(w.innerQuant)
+func derivationsForInJoin(w *plans.RecordQueryInJoinPlan) *properties.Derivations {
+	innerDerivs := properties.DerivationsFromQuantifier(w.GetInnerQuantifier())
 
 	// The outer alias is the IN-source binding name. Java uses
 	// inJoinPlan.getInAlias() which returns a CorrelationIdentifier.
 	// Go's InJoinPlan uses a string binding name. Convert it.
-	outerAlias := values.NamedCorrelationIdentifier(w.plan.GetBindingName())
+	outerAlias := values.NamedCorrelationIdentifier(w.GetBindingName())
 
 	// Decorrelate inner values against the in-source.
 	localVals := decorrelateValues(innerDerivs.LocalValues, outerAlias)
@@ -493,12 +518,12 @@ func decorrelateValues(vals []values.Value, outerAlias values.CorrelationIdentif
 
 // --- InUnion ---
 
-func derivationsForInUnion(w *physicalInUnionWrapper) *properties.Derivations {
-	innerDerivs := properties.DerivationsFromQuantifier(w.innerQuant)
+func derivationsForInUnion(w *plans.RecordQueryInUnionPlan) *properties.Derivations {
+	innerDerivs := properties.DerivationsFromQuantifier(w.GetInnerQuantifier())
 
 	// Collect all outer aliases (binding names).
 	outerAliases := make(map[values.CorrelationIdentifier]struct{})
-	for _, bn := range w.plan.GetBindingNames() {
+	for _, bn := range w.GetBindingNames() {
 		outerAliases[values.NamedCorrelationIdentifier(bn)] = struct{}{}
 	}
 
@@ -559,7 +584,7 @@ func derivationsForInUnion(w *physicalInUnionWrapper) *properties.Derivations {
 	}
 
 	// Translate comparison key values.
-	compKeys := w.plan.GetComparisonKeys()
+	compKeys := w.GetComparisonKeys()
 	for _, ckv := range compKeys {
 		for _, rv := range resultVals {
 			translated := properties.TranslateCorrelation(ckv, values.CurrentAlias, rv)
@@ -575,15 +600,15 @@ func derivationsForInUnion(w *physicalInUnionWrapper) *properties.Derivations {
 
 // --- FirstOrDefault ---
 
-func derivationsForFirstOrDefault(w *physicalFirstOrDefaultWrapper) *properties.Derivations {
+func derivationsForFirstOrDefault(w *plans.RecordQueryFirstOrDefaultPlan) *properties.Derivations {
 	childDerivs := properties.DerivationsFromSingleChild(w)
 	childResults := childDerivs.ResultValues
 
 	var localVals []values.Value
 	localVals = append(localVals, childDerivs.LocalValues...)
 
-	alias := w.innerQuant.GetAlias()
-	onEmptyValue := w.plan.GetDefaultValue()
+	alias := w.GetInnerQuantifier().GetAlias()
+	onEmptyValue := w.GetDefaultValue()
 	if onEmptyValue != nil {
 		for _, childResult := range childResults {
 			translated := properties.TranslateCorrelation(onEmptyValue, alias, childResult)
@@ -599,15 +624,15 @@ func derivationsForFirstOrDefault(w *physicalFirstOrDefaultWrapper) *properties.
 
 // --- DefaultOnEmpty ---
 
-func derivationsForDefaultOnEmpty(w *physicalDefaultOnEmptyWrapper) *properties.Derivations {
+func derivationsForDefaultOnEmpty(w *plans.RecordQueryDefaultOnEmptyPlan) *properties.Derivations {
 	childDerivs := properties.DerivationsFromSingleChild(w)
 	childResults := childDerivs.ResultValues
 
 	var localVals []values.Value
 	localVals = append(localVals, childDerivs.LocalValues...)
 
-	alias := w.innerQuant.GetAlias()
-	onEmptyValue := w.plan.GetDefaultValue()
+	alias := w.GetInnerQuantifier().GetAlias()
+	onEmptyValue := w.GetDefaultValue()
 	if onEmptyValue != nil {
 		for _, childResult := range childResults {
 			translated := properties.TranslateCorrelation(onEmptyValue, alias, childResult)
@@ -623,7 +648,7 @@ func derivationsForDefaultOnEmpty(w *physicalDefaultOnEmptyWrapper) *properties.
 
 // --- StreamingAggregation ---
 
-func derivationsForStreamingAgg(w *physicalStreamingAggWrapper) *properties.Derivations {
+func derivationsForStreamingAgg(w *plans.RecordQueryStreamingAggregationPlan) *properties.Derivations {
 	childDerivs := properties.DerivationsFromSingleChild(w)
 
 	// The streaming aggregation plan doesn't carry the Java-style
@@ -636,8 +661,8 @@ func derivationsForStreamingAgg(w *physicalStreamingAggWrapper) *properties.Deri
 
 // --- Explode ---
 
-func derivationsForExplode(w *physicalExplodeWrapper) *properties.Derivations {
-	collectionValue := w.plan.GetCollectionValue()
+func derivationsForExplode(w *plans.RecordQueryExplodePlan) *properties.Derivations {
+	collectionValue := w.GetCollectionValue()
 	if collectionValue == nil {
 		return properties.EmptyDerivations()
 	}
@@ -663,8 +688,8 @@ func derivationsForExplode(w *physicalExplodeWrapper) *properties.Derivations {
 
 // --- TableFunction ---
 
-func derivationsForTableFunction(w *physicalTableFunctionWrapper) *properties.Derivations {
-	streamingValue := w.plan.GetStreamValue()
+func derivationsForTableFunction(w *plans.RecordQueryTableFunctionPlan) *properties.Derivations {
+	streamingValue := w.GetStreamValue()
 	if streamingValue == nil {
 		return properties.EmptyDerivations()
 	}
@@ -682,7 +707,7 @@ func derivationsForTableFunction(w *physicalTableFunctionWrapper) *properties.De
 
 // --- TempTableScan ---
 
-func derivationsForTempTableScan(w *physicalTempTableScanWrapper) *properties.Derivations {
+func derivationsForTempTableScan(w *plans.RecordQueryTempTableScanPlan) *properties.Derivations {
 	resultValue := w.GetResultValue()
 	return &properties.Derivations{
 		ResultValues: []values.Value{resultValue},
@@ -691,7 +716,7 @@ func derivationsForTempTableScan(w *physicalTempTableScanWrapper) *properties.De
 
 // --- Values ---
 
-func derivationsForValues(w *physicalValuesWrapper) *properties.Derivations {
+func derivationsForValues(w *plans.RecordQueryValuesPlan) *properties.Derivations {
 	resultValue := w.GetResultValue()
 	vals := []values.Value{resultValue}
 	return &properties.Derivations{
@@ -702,7 +727,7 @@ func derivationsForValues(w *physicalValuesWrapper) *properties.Derivations {
 
 // --- NestedLoopJoin ---
 
-func derivationsForNestedLoopJoin(w *physicalNestedLoopJoinWrapper) *properties.Derivations {
+func derivationsForNestedLoopJoin(w *plans.RecordQueryNestedLoopJoinPlan) *properties.Derivations {
 	// NestedLoopJoin has outer + inner quantifiers. Collect
 	// derivations from both and union them.
 	var resultVals []values.Value

@@ -1,7 +1,6 @@
 package plans
 
 import (
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -29,6 +28,18 @@ type RecordQueryScanPlan struct {
 	reverse         bool
 	primaryKeyVals  []values.Value
 	scanComparisons []*predicates.ComparisonRange
+	// resultValue is the stable per-instance QuantifiedObjectValue standing
+	// for the rows this scan emits. Minted ONCE in NewRecordQueryScanPlan and
+	// carried through every copy (WithPrimaryKey/WithScanComparisons), it gives
+	// a bare scan a single stable correlation identity when it stands as its own
+	// Cascades expression in the memo — the role a physical scan wrapper's
+	// GetResultValue used to play (RFC-184 W2). Deliberately EXCLUDED from
+	// EqualsPlanWithoutChildren/HashCodeWithoutChildren: its correlation id is
+	// unique per instance, so folding it into identity would make two
+	// structurally-identical scans compare unequal. nil for struct-literal test
+	// plans that bypass the constructor — GetResultValue falls back to
+	// PlanExprBase's fresh-QOV there.
+	resultValue values.Value
 }
 
 // NewRecordQueryScanPlan builds a scan over the given record types
@@ -42,6 +53,7 @@ func NewRecordQueryScanPlan(recordTypes []string, flowedType values.Type, revers
 		recordTypes: dedupSortedStrings(recordTypes),
 		flowedType:  flowedType,
 		reverse:     reverse,
+		resultValue: values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
 	}
 }
 
@@ -54,6 +66,7 @@ func (p *RecordQueryScanPlan) WithPrimaryKey(pk []values.Value) *RecordQueryScan
 		flowedType:     p.flowedType,
 		reverse:        p.reverse,
 		primaryKeyVals: copied,
+		resultValue:    p.resultValue,
 	}
 }
 
@@ -68,6 +81,7 @@ func (p *RecordQueryScanPlan) WithScanComparisons(comps []*predicates.Comparison
 		reverse:         p.reverse,
 		primaryKeyVals:  p.primaryKeyVals,
 		scanComparisons: copied,
+		resultValue:     p.resultValue,
 	}
 }
 
@@ -95,46 +109,42 @@ func (p *RecordQueryScanPlan) GetResultType() values.Type { return p.flowedType 
 // GetChildren returns the empty slice — scans are leaves.
 func (p *RecordQueryScanPlan) GetChildren() []RecordQueryPlan { return nil }
 
+// GetResultValue returns the scan's STABLE per-instance result value — the
+// single correlation identity a bare scan carries as its own memo expression
+// (RFC-184 W2), the role a physical scan wrapper's GetResultValue used to play. Unlike
+// PlanExprBase's method (a fresh QOV per call), this returns the same value the
+// constructor minted, so repeated interrogations of one plan instance agree.
+// Falls back to PlanExprBase for struct-literal test plans that bypass the
+// constructor (resultValue is nil there).
+func (p *RecordQueryScanPlan) GetResultValue() values.Value {
+	if p.resultValue == nil {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.resultValue
+}
+
+// structuralKey folds the scan's identity: the record-type set (ordered), the
+// SARG comparison ranges (the PK bounds — a comparand-blind compare would
+// collapse Scan(pk=5) and Scan(pk=7) into one Reference, the F21 defect), the
+// reverse flag, and the flowed type (equals-only, matching the hand-rolled hash
+// which never folded it). The stable per-instance resultValue is deliberately
+// excluded (RFC-184 W2 — an object identity, not part of plan identity). The
+// same key drives EqualsPlanWithoutChildren and HashCodeWithoutChildren.
+func (p *RecordQueryScanPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Strs(p.recordTypes).
+		ScanComps(p.scanComparisons).
+		Bool(p.reverse).
+		Type(p.flowedType)
+}
+
 func (p *RecordQueryScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryScanPlan)
-	if !ok {
-		return false
-	}
-	if p.reverse != o.reverse {
-		return false
-	}
-	if !typeEquals(p.flowedType, o.flowedType) {
-		return false
-	}
-	if len(p.recordTypes) != len(o.recordTypes) {
-		return false
-	}
-	for i := range p.recordTypes {
-		if p.recordTypes[i] != o.recordTypes[i] {
-			return false
-		}
-	}
-	// Compare scan comparisons by shape AND comparand — the PK bounds that
-	// define the key range. A primary scan is a memo leaf too, so a
-	// comparand-blind compare would collapse Scan(pk = 5) and Scan(pk = 7) into
-	// one Reference (the F21 defect, same as RecordQueryIndexPlan).
-	return scanComparisonRangesEqual(p.scanComparisons, o.scanComparisons)
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 func (p *RecordQueryScanPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("scanplan|"))
-	for _, name := range p.recordTypes {
-		h.Write([]byte(name))
-		h.Write([]byte{0})
-	}
-	writeScanComparisonRangesHash(h, p.scanComparisons)
-	if p.reverse {
-		h.Write([]byte{1})
-	} else {
-		h.Write([]byte{0})
-	}
-	return h.Sum64()
+	return p.structuralKey().Hash("scanplan|")
 }
 
 // Explain renders a one-line label.
@@ -224,7 +234,7 @@ func (p *RecordQueryScanPlan) WithQuantifiers(_ []expressions.Quantifier) expres
 }
 
 // GetCorrelatedToWithoutChildren reports the correlations reached through this
-// scan's comparison operands, mirroring physicalScanWrapper.
+// scan's comparison operands.
 func (p *RecordQueryScanPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return scanComparisonCorrelations(p.GetScanComparisons())
 }

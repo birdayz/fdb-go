@@ -2,7 +2,6 @@ package plans
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -28,6 +27,15 @@ type RecordQueryAggregateIndexPlan struct {
 	aggregateFunction string
 	groupCols         []string
 	aggColumn         string
+	// resultValue is the stable per-instance QuantifiedObjectValue standing for
+	// the rows this leaf emits — minted once at construction, returned by
+	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
+	// instance). A bare leaf that stands as its own Cascades expression must
+	// present a consistent row identity across repeated interrogations, the role
+	// physicalAggregateIndexWrapper's fresh-per-call GetResultValue could not
+	// (RFC-184 W2). nil for struct-literal test plans that bypass the constructor —
+	// GetResultValue falls back to PlanExprBase's fresh QOV there.
+	resultValue values.Value
 }
 
 // NewRecordQueryAggregateIndexPlan constructs an aggregate index plan.
@@ -45,7 +53,20 @@ func NewRecordQueryAggregateIndexPlan(
 		recordTypeName:    recordTypeName,
 		resultType:        resultType,
 		aggregateFunction: aggregateFunction,
+		resultValue:       values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
 	}
+}
+
+// GetResultValue returns the aggregate-index plan's STABLE per-instance result
+// value — the single correlation identity a bare aggregate-index plan carries as
+// its own memo expression (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV
+// per call) for struct-literal test plans that bypass the constructor
+// (resultValue is nil).
+func (p *RecordQueryAggregateIndexPlan) GetResultValue() values.Value {
+	if p.resultValue == nil {
+		return p.PlanExprBase.GetResultValue()
+	}
+	return p.resultValue
 }
 
 // WithGroupColumns sets the grouping and aggregate column names for
@@ -114,37 +135,31 @@ func (p *RecordQueryAggregateIndexPlan) GetResultType() values.Type { return p.r
 // RecordQueryPlanWithNoChildren).
 func (p *RecordQueryAggregateIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 
+// structuralKey folds the aggregate-index identity: the base record-type name,
+// the aggregate-function name, and the embedded RecordQueryIndexPlan compared
+// STRUCTURALLY via Sub (its own structuralKey — exactly what
+// indexPlan.EqualsPlanWithoutChildren does). The stable per-instance resultValue
+// is excluded (RFC-184 W2). Drives both Equals and Hash — the hash now folds the
+// full nested index key (the hand-rolled hash folded only the index NAME),
+// strengthening it while preserving equal⟹same-hash.
+func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
+	return newStructuralKey().
+		Str(p.recordTypeName).
+		Str(p.aggregateFunction).
+		Sub(p.indexPlan.structuralKey())
+}
+
 // EqualsWithoutChildren compares index plan, record type name, and
 // result type.
 func (p *RecordQueryAggregateIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryAggregateIndexPlan)
-	if !ok {
-		return false
-	}
-	if p.recordTypeName != o.recordTypeName {
-		return false
-	}
-	if p.aggregateFunction != o.aggregateFunction {
-		return false
-	}
-	// Compare the embedded index plan structurally.
-	if !p.indexPlan.EqualsPlanWithoutChildren(o.indexPlan) {
-		return false
-	}
-	return true
+	return ok && p.structuralKey().Equal(o.structuralKey())
 }
 
 // HashCodeWithoutChildren mixes index plan hash, record type, and
 // aggregate function.
 func (p *RecordQueryAggregateIndexPlan) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("aggregateindexplan|"))
-	h.Write([]byte(p.indexPlan.GetIndexName()))
-	h.Write([]byte{0})
-	h.Write([]byte(p.recordTypeName))
-	h.Write([]byte{0})
-	h.Write([]byte(p.aggregateFunction))
-	return h.Sum64()
+	return p.structuralKey().Hash("aggregateindexplan|")
 }
 
 // Explain renders AggregateIndex(function, indexName, [groupCols], recordType).

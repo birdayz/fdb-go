@@ -115,6 +115,31 @@ func CheckPlanReachability(expr expressions.RelationalExpression) []Reachability
 // cannot observe the thing it guards is worse than none, because it reads as
 // coverage.
 func collectReachability(expr expressions.RelationalExpression, plan plans.RecordQueryPlan, out *[]ReachabilityViolation) int {
+	// A collapsed plan is its OWN cascades expression: it models every child as a
+	// quantifier, so no ReasonNoQuantifier edge is possible, and each child is
+	// resolved FROM its quantifier's group — trivially a member of it, hence
+	// trivially reachable. Walk the quantifier groups directly rather than
+	// GetChildren, whose identity resolution dereferences each leg to a single
+	// plan and would trip the deferred-winner singleton guard on a multi-member
+	// leg group before OPTIMIZE stamps its winner (RFC-184 W2). The compared
+	// count matches the GetChildren path (one per non-empty child group).
+	if rel, ok := plan.(expressions.RelationalExpression); ok && rel == expr {
+		compared := 0
+		for i, q := range expr.GetQuantifiers() {
+			ref := q.GetRangesOver()
+			if ref == nil || len(ref.AllMembers()) == 0 {
+				*out = append(*out, ReachabilityViolation{
+					ParentType: planTypeName(plan), ChildIndex: i, NumChildren: len(expr.GetQuantifiers()),
+					Reason:        ReasonEmptyGroup,
+					ParentExplain: safeExplain(plan),
+				})
+				continue
+			}
+			compared++
+		}
+		return compared
+	}
+
 	children := plan.GetChildren()
 	quants := expr.GetQuantifiers()
 	compared := 0
@@ -309,7 +334,14 @@ func (c *ReachabilityCollector) record(expr expressions.RelationalExpression) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.edges += len(plan.GetChildren())
+	// Edge count without identity resolution: a collapsed plan's children ARE
+	// its quantifiers (same count), and GetChildren would trip the
+	// deferred-winner singleton guard on a multi-member leg (RFC-184 W2).
+	if rel, ok := plan.(expressions.RelationalExpression); ok && rel == expr {
+		c.edges += len(expr.GetQuantifiers())
+	} else {
+		c.edges += len(plan.GetChildren())
+	}
 	c.compared += comparedEdges
 	c.violations = append(c.violations, v...)
 }

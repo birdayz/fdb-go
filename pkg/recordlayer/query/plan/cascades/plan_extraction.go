@@ -71,7 +71,15 @@ func extractBestPlanWithVisited(ref *expressions.Reference, stats properties.Sta
 	if visited[ref] {
 		return nil, nil
 	}
+	// Stack-scoped, not permanent: mark the ref while its subtree is on the
+	// recursion stack (so a back-edge — recursive-CTE cycle — still short-
+	// circuits above), then unmark on the way up. A permanent mark also
+	// de-dups a SHARED sub-DAG, returning nil the second time the same ref is
+	// reached as a legitimately-separate child (e.g. two UNION legs both
+	// scanning t1) — which drops that child. Extraction produces a TREE from a
+	// memoized DAG; each reference must re-extract. Mirrors extractTieBreakHash.
 	visited[ref] = true
+	defer delete(visited, ref)
 	best := ref.GetBest(tieBrokenLess(properties.CostLessWith(stats)))
 	if best == nil {
 		return nil, nil
@@ -90,6 +98,19 @@ func extractBestPlanWithVisited(ref *expressions.Reference, stats properties.Sta
 // and member-order invariant.
 func tieBrokenLess(less func(a, b expressions.RelationalExpression) bool) func(a, b expressions.RelationalExpression) bool {
 	return func(a, b expressions.RelationalExpression) bool {
+		// The recursive-CTE operator choice (RecursiveDfsJoin's charge-once vs
+		// RecursiveLevelUnion's double-charge) is a STRUCTURAL memory-safety
+		// precedence, not a cost margin — DFS must be preferred BEFORE cost is
+		// consulted, so the preference survives cost-model changes (a
+		// cardinality-proportional cost margin washes out once low-cardinality
+		// point-lookup recursion legs are costed correctly). This mirrors the
+		// OPTIMIZE path (planningCostModelCompareWith consults compareRecursiveCTE
+		// first). Inert for every non-recursive pair — compareRecursiveCTE
+		// returns 0 unless both sides are recursive-CTE physical plans, which
+		// co-occur in exactly one memo group.
+		if c := compareRecursiveCTE(a, b); c != 0 {
+			return c < 0
+		}
 		if less(a, b) {
 			return true
 		}
@@ -206,7 +227,12 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 	if visited[ref] {
 		return nil, nil
 	}
+	// Stack-scoped, not permanent — see extractBestPlanWithVisited: the mark
+	// guards a recursion-stack back-edge (recursive-CTE cycle), but must be
+	// lifted on the way up so a SHARED sub-DAG reached as two separate children
+	// re-extracts instead of dropping to nil.
 	visited[ref] = true
+	defer delete(visited, ref)
 
 	// OPTIMIZE-winner path: if the Reference has a physical winner
 	// stamped, use it directly. Non-physical winners fall through to

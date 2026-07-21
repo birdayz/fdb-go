@@ -62,8 +62,11 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 	case *plans.RecordQueryScanPlan:
 		return true
 	case *plans.RecordQueryIndexPlan:
-		if iw, ok := w.(*physicalIndexScanWrapper); ok {
-			return iw.unique
+		// The index scan is its own physical expression now (RFC-184 W2) — its
+		// UNIQUE flag lives on the plan. A unique index scan produces distinct
+		// records (each index entry maps to one record).
+		if ip, ok := plan.(*plans.RecordQueryIndexPlan); ok {
+			return ip.IsUnique()
 		}
 		return false
 	case *plans.RecordQueryProjectionPlan:
@@ -135,16 +138,16 @@ func distinctRecordsForRef(ref *expressions.Reference) bool {
 // the output and distinctness is not preserved — matching Java's
 // DistinctRecordsProperty.evaluateAtExpression for RecordQueryMapPlan.
 func computeDistinctRecordsForMap(w physicalPlanExpression) bool {
-	mw, ok := w.(*physicalMapWrapper)
+	mw, ok := w.(*plans.RecordQueryMapPlan)
 	if !ok {
 		return false
 	}
-	rv := mw.plan.GetResultValue()
+	rv := mw.GetResultValue()
 	qov, ok := rv.(*values.QuantifiedObjectValue)
 	if !ok {
 		return false
 	}
-	if qov.Correlation == mw.innerQuant.GetAlias() {
+	if qov.Correlation == mw.GetInnerQuantifier().GetAlias() {
 		return distinctRecordsFromChildRef(w)
 	}
 	return false
@@ -378,7 +381,9 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 		return properties.UnknownMaxCardinality()
 
 	case *plans.RecordQueryIndexPlan:
-		if iw, ok := w.(*physicalIndexScanWrapper); ok && iw.unique {
+		// The index scan is its own physical expression now (RFC-184 W2) — its
+		// UNIQUE flag and column list live on the plan.
+		if p.IsUnique() {
 			comps := p.GetScanComparisons()
 			allEquality := true
 			for _, cr := range comps {
@@ -387,7 +392,7 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 					break
 				}
 			}
-			if allEquality && len(comps) == len(iw.columnNames) {
+			if allEquality && len(comps) == len(p.GetColumnNames()) {
 				return properties.AtMostOne()
 			}
 		}

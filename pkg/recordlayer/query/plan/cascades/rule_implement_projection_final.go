@@ -33,19 +33,15 @@ func (r *ImplementProjectionFinalRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	for _, m := range innerRef.AllMembers() {
-		ph, ok := m.(physicalPlanExpression)
-		if !ok {
+		if _, ok := m.(physicalPlanExpression); !ok {
 			continue
 		}
-		projPlan := plans.NewRecordQueryProjectionPlanWithAliases(
-			proj.GetProjectedValues(), proj.GetAliases(), ph.GetRecordQueryPlan())
 		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
-		call.YieldFinalExpression(newPhysicalProjectionFinalWrapper(projPlan, innerQ))
+		// The projection is its own cascades expression carrying the live innerQ
+		// edge (RFC-184 W2).
+		call.YieldFinalExpression(plans.NewRecordQueryProjectionPlanFromQuantifier(
+			proj.GetProjectedValues(), proj.GetAliases(), innerQ))
 	}
-}
-
-func newPhysicalProjectionFinalWrapper(plan *plans.RecordQueryProjectionPlan, innerQuant expressions.Quantifier) *physicalProjectionWrapper {
-	return NewPhysicalProjectionWrapper(plan, innerQuant)
 }
 
 var _ ImplementationRule = (*ImplementProjectionFinalRule)(nil)

@@ -27,11 +27,7 @@ func TestInJoinRule_OrderingAware_MatchesExplodeAlias(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", []*predicates.ComparisonRange{result.Range},
 		[]string{"T"}, values.UnknownType, false)
-	iw := &physicalIndexScanWrapper{
-		plan:        indexPlan,
-		columnNames: []string{"a"},
-		unique:      false,
-	}
+	iw := indexPlan.WithIndexMetadata([]string{"a"}, nil, false)
 
 	innerRef := expressions.InitialOf(iw)
 	pm := NewPlanPropertiesMap()
@@ -58,8 +54,7 @@ func TestInJoinRule_OrderingAware_MatchesExplodeAlias(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if w, ok := r.(*physicalInJoinWrapper); ok {
-			plan := w.GetRecordQueryPlan().(*plans.RecordQueryInJoinPlan)
+		if plan, ok := r.(*plans.RecordQueryInJoinPlan); ok {
 			if plan.IsSorted() {
 				t.Log("InJoin plan is sorted — ordering-aware matching worked")
 				return
@@ -100,11 +95,7 @@ func TestInJoinRule_OrderingAware_RichOrderingFromIndexScan(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_ab", []*predicates.ComparisonRange{eqRange, predicates.EmptyComparisonRange()},
 		[]string{"T"}, values.UnknownType, false)
-	iw := &physicalIndexScanWrapper{
-		plan:        indexPlan,
-		columnNames: []string{"a", "b"},
-		unique:      false,
-	}
+	iw := indexPlan.WithIndexMetadata([]string{"a", "b"}, nil, false)
 
 	richOrd := iw.HintRichOrdering()
 	if richOrd == nil {

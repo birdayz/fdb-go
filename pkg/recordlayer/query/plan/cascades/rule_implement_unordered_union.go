@@ -107,22 +107,25 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 				for i := 1; i < len(childPlans); i++ {
 					branchCols := physicalPlanColumnNames(childPlans[i])
 					if len(branchCols) == len(firstCols) && !colNamesEqual(branchCols, firstCols) {
-						mapPlan := plans.NewRecordQueryMapPlan(
-							childPlans[i],
+						// The rename projection (Map) is its own cascades expression
+						// carrying the live newQuantifiers[i] edge (RFC-184 W2).
+						mapPlan := plans.NewRecordQueryMapPlanFromQuantifier(
+							newQuantifiers[i],
 							columnRenameValue(branchCols, firstCols),
 						)
 						childPlans[i] = mapPlan
 						newQuantifiers[i] = expressions.NewPhysicalQuantifier(
-							call.MemoizeFinalExpression(
-								NewPhysicalMapWrapper(mapPlan, newQuantifiers[i])))
+							call.MemoizeFinalExpression(mapPlan))
 					}
 				}
 			}
 		}
 
-		unionPlan := plans.NewRecordQueryUnorderedUnionPlan(childPlans)
-		wrapper := NewPhysicalUnorderedUnionWrapper(unionPlan, newQuantifiers)
-		call.YieldFinalExpression(wrapper)
+		// The unordered union is its own cascades expression carrying the live
+		// newQuantifiers leg edges (RFC-184 W2); each leg's per-ordering winner
+		// resolves at extraction via ref.Winner(). childPlans is unused now.
+		unionPlan := plans.NewRecordQueryUnorderedUnionPlanFromQuantifiers(newQuantifiers)
+		call.YieldFinalExpression(unionPlan)
 	}
 }
 

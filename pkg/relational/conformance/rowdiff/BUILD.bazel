@@ -6,6 +6,7 @@ go_library(
         "cost.go",
         "gen.go",
         "oracle.go",
+        "ordering.go",
         "run.go",
         "templates.go",
     ],
@@ -22,6 +23,12 @@ go_library(
 
 go_test(
     name = "rowdiff_test",
+    # W1 added the ordering + statistics sweep axes alongside the existing cost
+    # sweep — three 250-seed PurePlannerSweeps in one target. That legitimately
+    # tripled the work (added coverage, not a per-query regression), pushing it
+    # past bazel's default medium (300s) budget on a slower CI runner. Right-size
+    # to the repo's heavy-test convention rather than cut seeds.
+    timeout = "long",
     srcs = [
         "agg_multicol_oracle_test.go",
         "arith_oracle_test.go",
@@ -37,10 +44,12 @@ go_test(
         "exists_oracle_test.go",
         "left_join_oracle_test.go",
         "num_fn_oracle_test.go",
+        "ordering_test.go",
         "outer_three_way_oracle_test.go",
         "right_join_oracle_test.go",
         "rowdiff_test.go",
         "scalar_sub_oracle_test.go",
+        "stats_test.go",
         "str_fn_oracle_test.go",
         "substr_oracle_test.go",
         "three_way_oracle_test.go",
@@ -50,6 +59,7 @@ go_test(
     embed = [":rowdiff"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
         "//pkg/relational/core/embedded",

@@ -50,7 +50,7 @@ func TestImplementSimpleSelectRule_SkipsMultiQuantifier(t *testing.T) {
 	)
 
 	scan := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	scanA.Insert(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -66,7 +66,7 @@ func TestImplementSimpleSelectRule_SkipsMultiQuantifier(t *testing.T) {
 func TestImplementSimpleSelectRule_NoPredicatesSimpleResult(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -93,7 +93,7 @@ func TestImplementSimpleSelectRule_NoPredicatesSimpleResult(t *testing.T) {
 func TestImplementSimpleSelectRule_WithPredicates(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -116,15 +116,15 @@ func TestImplementSimpleSelectRule_WithPredicates(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("should yield a filter wrapper")
 	}
-	if _, ok := results[0].(*physicalPredicatesFilterWrapper); !ok {
-		t.Fatalf("expected physicalPredicatesFilterWrapper, got %T", results[0])
+	if _, ok := results[0].(*plans.RecordQueryPredicatesFilterPlan); !ok {
+		t.Fatalf("expected *plans.RecordQueryPredicatesFilterPlan, got %T", results[0])
 	}
 }
 
 func TestImplementSimpleSelectRule_WithProjection(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -144,8 +144,8 @@ func TestImplementSimpleSelectRule_WithProjection(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("should yield a map wrapper for non-trivial result")
 	}
-	if _, ok := results[0].(*physicalMapWrapper); !ok {
-		t.Fatalf("expected physicalMapWrapper for projection, got %T", results[0])
+	if _, ok := results[0].(*plans.RecordQueryMapPlan); !ok {
+		t.Fatalf("expected *plans.RecordQueryMapPlan for projection, got %T", results[0])
 	}
 }
 
@@ -167,7 +167,7 @@ func TestImplementSimpleSelectRule_NilInnerRef(t *testing.T) {
 func TestImplementSimpleSelectRule_ExistentialQuantifier(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -189,20 +189,22 @@ func TestImplementSimpleSelectRule_ExistentialQuantifier(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalFirstOrDefaultWrapper); ok {
+		// The FirstOrDefault is its own cascades expression now (RFC-184 W2) — no
+		// physicalFirstOrDefaultWrapper.
+		if _, ok := r.(*plans.RecordQueryFirstOrDefaultPlan); ok {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("Existential quantifier should produce FirstOrDefault wrapper")
+		t.Fatal("Existential quantifier should produce FirstOrDefault plan")
 	}
 }
 
 func TestImplementSimpleSelectRule_NullOnEmptyQuantifier(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -224,7 +226,7 @@ func TestImplementSimpleSelectRule_NullOnEmptyQuantifier(t *testing.T) {
 
 	found := false
 	for _, r := range results {
-		if _, ok := r.(*physicalDefaultOnEmptyWrapper); ok {
+		if _, ok := r.(*plans.RecordQueryDefaultOnEmptyPlan); ok {
 			found = true
 			break
 		}
@@ -237,7 +239,7 @@ func TestImplementSimpleSelectRule_NullOnEmptyQuantifier(t *testing.T) {
 func TestImplementSimpleSelectRule_TautologyPredicatesFiltered(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -257,7 +259,7 @@ func TestImplementSimpleSelectRule_TautologyPredicatesFiltered(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("should yield when tautology is the only predicate")
 	}
-	if _, ok := results[0].(*physicalScanWrapper); !ok {
+	if _, ok := results[0].(*plans.RecordQueryScanPlan); !ok {
 		t.Fatalf("tautology-only predicate should pass through to scan, got %T", results[0])
 	}
 }

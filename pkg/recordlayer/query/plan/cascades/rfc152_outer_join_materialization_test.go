@@ -183,16 +183,19 @@ func rfc152Plans() (preservedNLJ, preservedFlatMap, probeNLJ, probeFlatMap plans
 // wrapJoin wraps a join plan in its physical wrapper with quantifiers ranging over
 // physical scan wrappers (the cost model reads the concrete embedded plan, so the
 // quantifiers only need to be physical — no nil-inner Fetch templates here).
-func wrapNLJ(p plans.RecordQueryPlan) *physicalNestedLoopJoinWrapper {
-	oq := expressions.ForEachQuantifier(expressions.InitialOf(&physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)}))
-	iq := expressions.ForEachQuantifier(expressions.InitialOf(&physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)}))
-	return newPhysicalNestedLoopJoinWrapper(p.(*plans.RecordQueryNestedLoopJoinPlan), oq, iq)
+// Since RFC-184 W2 the join is its own cascades expression carrying its real
+// (SARG'd) leg children directly, and the cost model reads GetRecordQueryPlan()
+// — so the bare plan IS the cost-model-ready expression. The retired wrappers
+// added dummy scan quantifiers only to satisfy the RelationalExpression
+// interface; the bare plan already exposes its concrete children, so it is
+// returned unchanged (a re-quantification over fresh plain scans would drop the
+// probe SARG and mis-rank the probe FlatMap).
+func wrapNLJ(p plans.RecordQueryPlan) *plans.RecordQueryNestedLoopJoinPlan {
+	return p.(*plans.RecordQueryNestedLoopJoinPlan)
 }
 
-func wrapFlatMap(p plans.RecordQueryPlan) *physicalFlatMapWrapper {
-	oq := expressions.ForEachQuantifier(expressions.InitialOf(&physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)}))
-	iq := expressions.ForEachQuantifier(expressions.InitialOf(&physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)}))
-	return newPhysicalFlatMapWrapper(p, oq, iq)
+func wrapFlatMap(p plans.RecordQueryPlan) *plans.RecordQueryFlatMapPlan {
+	return p.(*plans.RecordQueryFlatMapPlan)
 }
 
 // TestRFC152_CostModelPrefersMaterializedNLJ_PreservedOnly asserts the cost model

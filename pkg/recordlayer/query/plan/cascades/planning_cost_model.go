@@ -292,9 +292,24 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(opsA.typeFilterCount, opsB.typeFilterCount)
 	}
 
+	// Structural tiebreaks abstain when either side carries an in-memory sort. A
+	// redundant InMemorySort is an extra TOP node: it inflates every descendant's
+	// structural depth by +1 (so a depth comparison between a sorted and a
+	// sort-elided plan measures depths from DIFFERENT roots, always favouring the
+	// taller sorted plan), AND it lets a sorted plan over a clean inner win a
+	// node-count tiebreak (map/filter count) against a differently-shaped
+	// sort-elided sibling (e.g. one whose residual filter got pushdown-split into
+	// two nodes). Either way the sorted plan wins a structural rung before the
+	// sort-vs-elision decision — which belongs to criterion #12 (fewer in-memory
+	// sorts). So every structural tiebreak below abstains when either side has a
+	// sort, matching the unmatched-field gate. The type-filter-COUNT and fetch-COUNT
+	// rungs stay ungated (a sort adds neither a type filter nor a fetch, so those
+	// counts are sort-invariant across an elided/sorted pair); the map/filter count
+	// is gated because pushdown makes the elided sibling's filter count diverge.
 	typeFilterDepthA := costExprDepth(a, matchTypeFilter)
 	typeFilterDepthB := costExprDepth(b, matchTypeFilter)
-	if typeFilterDepthA >= 0 && typeFilterDepthB >= 0 && typeFilterDepthA != typeFilterDepthB {
+	if typeFilterDepthA >= 0 && typeFilterDepthB >= 0 && typeFilterDepthA != typeFilterDepthB &&
+		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
 		return intCompare(typeFilterDepthB, typeFilterDepthA)
 	}
 
@@ -305,9 +320,12 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		if fetchA != fetchB {
 			return intCompare(fetchA, fetchB)
 		}
+		// Depth rung — abstains when either side carries a sort (see the
+		// type-filter-depth gate above); the fetch-COUNT rungs stay ungated.
 		fetchDepthA := costExprDepth(a, matchFetch)
 		fetchDepthB := costExprDepth(b, matchFetch)
-		if fetchDepthA >= 0 && fetchDepthB >= 0 && fetchDepthA != fetchDepthB {
+		if fetchDepthA >= 0 && fetchDepthB >= 0 && fetchDepthA != fetchDepthB &&
+			opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
 			return intCompare(fetchDepthA, fetchDepthB)
 		}
 		if opsA.fetchCount != opsB.fetchCount {
@@ -315,9 +333,12 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		}
 	}
 
+	// Depth rung — abstains when either side carries a sort (see the
+	// type-filter-depth gate above).
 	distinctDepthA := costExprDepth(a, matchDistinct)
 	distinctDepthB := costExprDepth(b, matchDistinct)
-	if distinctDepthA >= 0 && distinctDepthB >= 0 && distinctDepthA != distinctDepthB {
+	if distinctDepthA >= 0 && distinctDepthB >= 0 && distinctDepthA != distinctDepthB &&
+		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
 		return intCompare(distinctDepthB, distinctDepthA)
 	}
 
@@ -330,9 +351,16 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(opsB.inJoinCount, opsA.inJoinCount)
 	}
 
+	// Structural node-count tiebreak — abstains when either side carries a sort
+	// (see the type-filter-depth gate above). A redundant sort keeps its own
+	// map/filter count unchanged, but the sort-elided sibling it is compared
+	// against can carry a pushdown-SPLIT residual (one filter node → two), so
+	// this rung would otherwise prefer the sorted plan on "fewer filters" before
+	// criterion #12 can drop the sort.
 	mapFilterA := opsA.mapCount + opsA.predicatesFilterCount
 	mapFilterB := opsB.mapCount + opsB.predicatesFilterCount
-	if mapFilterA != mapFilterB {
+	if mapFilterA != mapFilterB &&
+		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
 		return intCompare(mapFilterA, mapFilterB)
 	}
 
@@ -423,11 +451,14 @@ type expressionCounts struct {
 // scanProvableMaxCard returns a primary scan's PROVABLE max cardinality and whether it is known.
 // Java's CardinalitiesProperty bounds a scan at 1 ONLY when every primary-key column is
 // equality-bound (a point lookup); a range, partial bind, or full scan is unknown.
-func scanProvableMaxCard(w *physicalScanWrapper) (float64, bool) {
-	if w.plan == nil {
+//
+// Operates on the bare *plans.RecordQueryScanPlan, the physical scan expression
+// the memo-descent cost walk sees (RFC-184 W2).
+func scanProvableMaxCard(plan *plans.RecordQueryScanPlan) (float64, bool) {
+	if plan == nil {
 		return 0, false
 	}
-	comps := w.plan.GetScanComparisons()
+	comps := plan.GetScanComparisons()
 	if len(comps) == 0 {
 		return 0, false
 	}
@@ -449,13 +480,13 @@ func scanProvableMaxCard(w *physicalScanWrapper) (float64, bool) {
 
 // indexProvableMaxCard returns an index scan's PROVABLE max cardinality and whether it is known:
 // 1 ONLY when the index is UNIQUE and every index column is equality-bound; otherwise unknown.
-func indexProvableMaxCard(w *physicalIndexScanWrapper) (float64, bool) {
-	if w.plan == nil || !w.unique {
+func indexProvableMaxCard(p *plans.RecordQueryIndexPlan) (float64, bool) {
+	if p == nil || !p.IsUnique() {
 		return 0, false
 	}
 	numBound := 0
 	allEquality := true
-	for _, cr := range w.plan.GetScanComparisons() {
+	for _, cr := range p.GetScanComparisons() {
 		if !cr.IsEmpty() {
 			numBound++
 			if !cr.IsEquality() {
@@ -463,7 +494,7 @@ func indexProvableMaxCard(w *physicalIndexScanWrapper) (float64, bool) {
 			}
 		}
 	}
-	if numBound > 0 && allEquality && numBound == len(w.columnNames) {
+	if numBound > 0 && allEquality && numBound == len(p.GetColumnNames()) {
 		return 1, true
 	}
 	return 0, false
@@ -528,7 +559,10 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		return
 	}
 	switch w := e.(type) {
-	case *physicalScanWrapper:
+	// A bare primary scan is its own physical expression now (RFC-184 W2) — the
+	// memo-descent cost walk over a LOGICAL parent counts the scan here (the
+	// physical top path already routes bare scans via concretePlanCounts).
+	case *plans.RecordQueryScanPlan:
 		counts.scanCount++
 		if card, known := scanProvableMaxCard(w); known {
 			if card > counts.maxDataAccessCardinality {
@@ -537,16 +571,21 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		} else {
 			counts.unboundedDataAccess = true
 		}
-	case *physicalAggregateIndexWrapper:
+	// The aggregate-index plan is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryAggregateIndexPlan:
 		counts.coveringIndexCount++
 		// Aggregate access groups rows — no provable ≤1 bound (Java: unknown).
 		counts.unboundedDataAccess = true
-	case *physicalVectorIndexScanWrapper:
+	// The vector scan is its own Cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryVectorIndexPlan:
 		counts.indexScanCount++
 		// Top-K vector scan — no provable ≤1 bound (Java: unknown).
 		counts.unboundedDataAccess = true
-	case *physicalIndexScanWrapper:
-		if w.covering {
+	// An index scan is its own physical expression now (RFC-184 W2) — counted
+	// exactly like the physicalIndexScanWrapper that used to carry it, reading its
+	// covering flag and column metadata from the plan.
+	case *plans.RecordQueryIndexPlan:
+		if w.IsCovering() {
 			counts.coveringIndexCount++
 		} else {
 			counts.indexScanCount++
@@ -558,36 +597,43 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		} else {
 			counts.unboundedDataAccess = true
 		}
-		totalCols := len(w.columnNames)
+		totalCols := len(w.GetColumnNames())
 		boundCols := 0
-		if w.plan != nil {
-			for _, cr := range w.plan.GetScanComparisons() {
-				if !cr.IsEmpty() {
-					boundCols++
-				}
+		for _, cr := range w.GetScanComparisons() {
+			if !cr.IsEmpty() {
+				boundCols++
 			}
 		}
 		counts.unmatchedFieldCount += totalCols - boundCols
-	case *physicalTypeFilterWrapper:
-		counts.typeFilterCount += len(w.plan.GetRecordTypes())
-	case *physicalFilterWrapper:
-		_ = w // regular filter, not counted as predicates filter
-	case *physicalPredicatesFilterWrapper:
+	// A type filter is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryTypeFilterPlan:
+		counts.typeFilterCount += len(w.GetRecordTypes())
+	// The PredicatesFilter is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryPredicatesFilterPlan:
 		counts.predicatesFilterCount++
-	case *physicalMapWrapper:
+	// A map/projection is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryMapPlan:
 		counts.mapCount++
-	case *physicalInJoinWrapper:
+	// The InJoin is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryInJoinPlan:
 		counts.inJoinCount++
-	case *physicalInUnionWrapper:
+	// The InUnion is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryInUnionPlan:
 		counts.inUnionCount++
-	case *physicalFlatMapWrapper:
+	// The FlatMap is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryFlatMapPlan:
 		counts.flatMapCount++
-	case *physicalNestedLoopJoinWrapper:
+	// The NestedLoopJoin is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryNestedLoopJoinPlan:
 		counts.nestedLoopJoinCount++
-		counts.nljPredicateCount += len(w.plan.GetPredicates())
-	case *physicalFetchFromPartialRecordWrapper:
+		counts.nljPredicateCount += len(w.GetPredicates())
+	// A fetch is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		counts.fetchCount++
-	case *physicalInMemorySortWrapper:
+	// The InMemorySort is its own physical expression now (RFC-184 W2) — the
+	// memo-descent cost walk over a LOGICAL parent counts the sort here (the
+	// physical top path already routes bare sorts via concretePlanCounts).
+	case *plans.RecordQueryInMemorySortPlan:
 		counts.inMemorySortCount++
 	}
 	for _, q := range e.GetQuantifiers() {
@@ -620,12 +666,22 @@ func countResidualPredicatesRec(e expressions.RelationalExpression, count *int) 
 	if e == nil {
 		return
 	}
-	if pf, ok := e.(*physicalPredicatesFilterWrapper); ok {
-		for _, p := range pf.plan.GetPredicates() {
+	// Mirror concreteResidualPredicates: PredicatesFilter, legacy Filter, and a
+	// materialized NLJ's join predicate are all residual conjuncts (#3). This
+	// fallback only runs when the compared expression is not itself a physical
+	// plan (the physical path takes concreteResidualPredicates), so the counters
+	// must agree on what a residual is.
+	switch n := e.(type) {
+	case *plans.RecordQueryPredicatesFilterPlan:
+		for _, p := range n.GetPredicates() {
 			*count += int(cnfSize(p))
 		}
-	} else if ff, ok := e.(*physicalFilterWrapper); ok {
-		for _, p := range ff.plan.GetPredicates() {
+	case *plans.RecordQueryFilterPlan:
+		for _, p := range n.GetPredicates() {
+			*count += int(cnfSize(p))
+		}
+	case *plans.RecordQueryNestedLoopJoinPlan:
+		for _, p := range n.GetPredicates() {
 			*count += int(cnfSize(p))
 		}
 	}
@@ -641,10 +697,8 @@ func countResidualPredicatesRec(e expressions.RelationalExpression, count *int) 
 }
 
 func compareRecursiveCTE(a, b expressions.RelationalExpression) int {
-	_, aDFS := a.(*physicalRecursiveDfsJoinWrapper)
-	_, bDFS := b.(*physicalRecursiveDfsJoinWrapper)
-	_, aLevel := a.(*physicalRecursiveLevelUnionWrapper)
-	_, bLevel := b.(*physicalRecursiveLevelUnionWrapper)
+	aDFS, aLevel := recursiveCTEKind(a)
+	bDFS, bLevel := recursiveCTEKind(b)
 
 	if aDFS && bLevel {
 		return -1
@@ -653,6 +707,45 @@ func compareRecursiveCTE(a, b expressions.RelationalExpression) int {
 		return 1
 	}
 	return 0
+}
+
+// recursiveCTEKind classifies an expression by its CONCRETE recursive-CTE plan
+// type (via GetRecordQueryPlan), NOT the Cascades wrapper Go type. The physical
+// wrappers are an implementation detail slated for deletion (RFC-184 W2); keying
+// off the embedded plan keeps this DFS-over-LevelUnion tie-breaker alive once the
+// wrappers are gone (a wrapper type-assert would return 0 → the decision would
+// drop to a hash tie-break and RFC-130 would regress to the double-charging level
+// union). Belt-and-suspenders: the cost term
+// (plans.RecordQueryRecursiveLevelUnionPlan.HintCost) already makes the DFS join
+// strictly cheaper, so the scalar-cost fallback also prefers DFS — but a
+// structural preference that survives identity changes is cheap insurance.
+func recursiveCTEKind(e expressions.RelationalExpression) (isDFS, isLevel bool) {
+	ph, ok := e.(physicalPlanExpression)
+	if !ok {
+		return false, false
+	}
+	// The two recursive-CTE alternatives materialize as Project(RecursiveDfsJoin)
+	// vs Project(RecursiveLevelUnion) — the recursive operator is NESTED under a
+	// transparent projection (and possibly a chain of single-child pass-throughs),
+	// not the root plan. Descend through single-child nodes to the TOP recursive
+	// operator so the DFS-over-LevelUnion structural precedence actually fires;
+	// checking only the root plan (a Project) always returned (false,false), which
+	// left the decision to the cardinality-proportional cost margin — the margin
+	// that collapses once point-lookup recursion legs are costed correctly.
+	for p := ph.GetRecordQueryPlan(); p != nil; {
+		switch p.(type) {
+		case *plans.RecordQueryRecursiveDfsJoinPlan:
+			return true, false
+		case *plans.RecordQueryRecursiveLevelUnionPlan:
+			return false, true
+		}
+		ch := p.GetChildren()
+		if len(ch) != 1 {
+			return false, false
+		}
+		p = ch[0]
+	}
+	return false, false
 }
 
 // compareInPlan implements Java's flipFlop(compareInOperator(a,b), compareInOperator(b,a)).
@@ -673,14 +766,12 @@ func compareInPlan(a, b expressions.RelationalExpression, _, _ expressionCounts)
 func compareInOperator(expr expressions.RelationalExpression) (int, bool) {
 	var bindingNames []string
 	switch w := expr.(type) {
-	case *physicalInJoinWrapper:
-		if w.plan != nil {
-			bindingNames = []string{w.plan.GetBindingName()}
-		}
-	case *physicalInUnionWrapper:
-		if w.plan != nil {
-			bindingNames = w.plan.GetBindingNames()
-		}
+	// The InJoin is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryInJoinPlan:
+		bindingNames = []string{w.GetBindingName()}
+	// The InUnion is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryInUnionPlan:
+		bindingNames = w.GetBindingNames()
 	default:
 		return 0, false
 	}
@@ -708,11 +799,11 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 	if e == nil {
 		return nil
 	}
-	if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan != nil {
-		return equalityAliasesFromRanges(w.plan.GetScanComparisons())
+	if p, ok := e.(*plans.RecordQueryIndexPlan); ok {
+		return equalityAliasesFromRanges(p.GetScanComparisons())
 	}
-	_, isIntersection := e.(*physicalIntersectionWrapper)
-	_, isMultiIntersection := e.(*physicalMultiIntersectionWrapper)
+	_, isIntersection := e.(*plans.RecordQueryIntersectionPlan)
+	_, isMultiIntersection := e.(*plans.RecordQueryMultiIntersectionOnValuesPlan)
 	if isIntersection || isMultiIntersection {
 		return intersectChildAliases(e)
 	}
@@ -809,21 +900,24 @@ func expressionDepthRec(e expressions.RelationalExpression, match func(expressio
 }
 
 func isTypeFilterExpression(e expressions.RelationalExpression) bool {
-	_, ok := e.(*physicalTypeFilterWrapper)
+	_, ok := e.(*plans.RecordQueryTypeFilterPlan)
 	return ok
 }
 
 func isDistinctExpression(e expressions.RelationalExpression) bool {
-	_, ok := e.(*physicalDistinctWrapper)
+	// Since RFC-184 W2 the memo holds *plans.RecordQueryDistinctPlan directly
+	// (no physicalDistinctWrapper), so this is a bare type check.
+	_, ok := e.(*plans.RecordQueryDistinctPlan)
 	return ok
 }
 
 func isFetchExpression(e expressions.RelationalExpression) bool {
-	_, ok := e.(*physicalFetchFromPartialRecordWrapper)
+	_, ok := e.(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if ok {
 		return true
 	}
-	_, ok = e.(*physicalIndexScanWrapper)
+	// A bare index scan is its own physical expression now (RFC-184 W2).
+	_, ok = e.(*plans.RecordQueryIndexPlan)
 	return ok
 }
 

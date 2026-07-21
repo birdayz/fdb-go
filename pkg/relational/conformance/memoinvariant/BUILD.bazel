@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "memoinvariant",
+    srcs = ["doc.go"],
+    importpath = "fdb.dev/pkg/relational/conformance/memoinvariant",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "memoinvariant_test",
+    srcs = [
+        "memoinvariant_test.go",
+        "mutation_test.go",
+        "seeds_default_test.go",
+        "seeds_race_test.go",
+    ],
+    embed = [":memoinvariant"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/plans",
+        "//pkg/relational/conformance/rowdiff",
+        "//pkg/relational/core/embedded",
+    ],
+)

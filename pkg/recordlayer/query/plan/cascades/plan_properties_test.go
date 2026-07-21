@@ -17,7 +17,7 @@ import (
 func TestComputeDistinctRecords_ScanIsTrue(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 	got := computeDistinctRecords(wrapper, scan)
 	if !got {
 		t.Fatal("scan should produce distinct records")
@@ -27,8 +27,8 @@ func TestComputeDistinctRecords_ScanIsTrue(t *testing.T) {
 func TestComputeDistinctRecords_UniqueIndexIsTrue(t *testing.T) {
 	t.Parallel()
 	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
-	wrapper := &physicalIndexScanWrapper{plan: idx, unique: true}
-	got := computeDistinctRecords(wrapper, idx)
+	wrapper := idx.WithIndexMetadata(nil, nil, true)
+	got := computeDistinctRecords(wrapper, wrapper)
 	if !got {
 		t.Fatal("unique index scan should produce distinct records")
 	}
@@ -37,8 +37,8 @@ func TestComputeDistinctRecords_UniqueIndexIsTrue(t *testing.T) {
 func TestComputeDistinctRecords_NonUniqueIndexIsFalse(t *testing.T) {
 	t.Parallel()
 	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
-	wrapper := &physicalIndexScanWrapper{plan: idx, unique: false}
-	got := computeDistinctRecords(wrapper, idx)
+	wrapper := idx.WithIndexMetadata(nil, nil, false)
+	got := computeDistinctRecords(wrapper, wrapper)
 	if got {
 		t.Fatal("non-unique index scan should NOT produce distinct records")
 	}
@@ -46,20 +46,19 @@ func TestComputeDistinctRecords_NonUniqueIndexIsFalse(t *testing.T) {
 
 func TestComputeDistinctRecords_FilterInheritsFromChild(t *testing.T) {
 	t.Parallel()
-	// Build: physicalFilterWrapper over physicalScanWrapper (distinct=true).
+	// Build: predicates-filter over a bare scan expression (distinct=true).
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanWrapper := &physicalScanWrapper{plan: scan}
 
-	// Put the scan wrapper in a Reference and compute its properties.
-	innerRef := expressions.InitialOf(scanWrapper)
+	// Put the scan in a Reference and compute its properties.
+	innerRef := expressions.InitialOf(scan)
 	pm := NewPlanPropertiesMap()
-	pm.Add(scanWrapper)
+	pm.Add(scan)
 	innerRef.SetPlanProperties(pm)
 
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filterPlan := plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
+	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(scan, []predicates.QueryPredicate{pred})
 	innerQ := expressions.ForEachQuantifier(innerRef)
-	filterWrapper := NewPhysicalFilterWrapper(filterPlan, innerQ)
+	filterWrapper := filterPlan.WithQuantifiers([]expressions.Quantifier{innerQ}).(*plans.RecordQueryPredicatesFilterPlan)
 
 	got := computeDistinctRecords(filterWrapper, filterPlan)
 	if !got {
@@ -71,8 +70,8 @@ func TestComputeDistinctRecords_StreamingAggIsFalse(t *testing.T) {
 	t.Parallel()
 	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
 	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, keys, nil)
-	wrapper := &physicalStreamingAggWrapper{plan: aggPlan}
-	got := computeDistinctRecords(wrapper, aggPlan)
+	// Since RFC-184 W2 the memo holds the bare plan (no physicalStreamingAggWrapper).
+	got := computeDistinctRecords(aggPlan, aggPlan)
 	if got {
 		t.Fatal("streaming aggregation should NOT produce distinct records")
 	}
@@ -82,10 +81,10 @@ func TestComputeDistinctRecords_DistinctPlanIsTrue(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	dp := plans.NewRecordQueryDistinctPlan(scan)
-	scanW := &physicalScanWrapper{plan: scan}
+	scanW := scan
 	innerRef := expressions.InitialOf(scanW)
 	innerQ := expressions.ForEachQuantifier(innerRef)
-	dw := NewPhysicalDistinctWrapper(dp, innerQ)
+	dw := dp.WithQuantifiers([]expressions.Quantifier{innerQ}).(*plans.RecordQueryDistinctPlan)
 	got := computeDistinctRecords(dw, dp)
 	if !got {
 		t.Fatal("distinct plan should produce distinct records")
@@ -99,10 +98,10 @@ func TestComputeDistinctRecords_UnionPlanIsFalse(t *testing.T) {
 	// and duplicates leak through.
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	up := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scan})
-	scanW := &physicalScanWrapper{plan: scan}
+	scanW := scan
 	innerRef := expressions.InitialOf(scanW)
 	qs := []expressions.Quantifier{expressions.ForEachQuantifier(innerRef)}
-	uw := NewPhysicalUnionWrapper(up, qs)
+	uw := plans.NewRecordQueryUnionPlanFromQuantifiers(qs)
 	got := computeDistinctRecords(uw, up)
 	if got {
 		t.Fatal("no-dedup UNION ALL plan must NOT report distinct records")
@@ -181,7 +180,7 @@ func TestComputeStoredRecord_UnionAllChildrenStored(t *testing.T) {
 func TestPlanPropertiesMap_AddAndRetrieve(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 
 	pm := NewPlanPropertiesMap()
 	pm.Add(wrapper)
@@ -203,8 +202,8 @@ func TestPlanPropertiesMap_Expressions(t *testing.T) {
 	t.Parallel()
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	wA := &physicalScanWrapper{plan: scanA}
-	wB := &physicalScanWrapper{plan: scanB}
+	wA := scanA
+	wB := scanB
 
 	pm := NewPlanPropertiesMap()
 	pm.Add(wA)
@@ -220,7 +219,7 @@ func TestPlanPropertiesMap_GetProperties_Missing(t *testing.T) {
 	t.Parallel()
 	pm := NewPlanPropertiesMap()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 	props := pm.GetProperties(wrapper)
 	if props != nil {
 		t.Fatalf("GetProperties for non-added wrapper = %v, want nil", props)
@@ -234,7 +233,7 @@ func TestPlanPropertiesMap_GetProperties_Missing(t *testing.T) {
 func TestComputeRefPlanProperties_StoresMapOnReference(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 	ref := expressions.InitialOf(wrapper)
 
 	computeRefPlanProperties(ref)
@@ -293,8 +292,7 @@ func TestComputeDistinctRecords_MergeSortUnionIsTrue(t *testing.T) {
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
 	msu := plans.NewRecordQueryMergeSortUnionPlan(
 		[]plans.RecordQueryPlan{scanA, scanB}, nil, false, true)
-	w := NewPhysicalMergeSortUnionWrapper(msu, nil)
-	if !computeDistinctRecords(w, msu) {
+	if !computeDistinctRecords(msu, msu) {
 		t.Fatal("MergeSortUnion should be distinct")
 	}
 }
@@ -302,9 +300,10 @@ func TestComputeDistinctRecords_MergeSortUnionIsTrue(t *testing.T) {
 func TestComputeDistinctRecords_InUnionIsTrue(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	// The InUnion is its own physical expression now (RFC-184 W2) — it IS the
+	// physicalPlanExpression computeDistinctRecords inspects.
 	iup := plans.NewRecordQueryInUnionPlan(scan, []string{"b"}, nil, false)
-	w := NewPhysicalInUnionWrapper(iup, expressions.ForEachQuantifier(nil))
-	if !computeDistinctRecords(w, iup) {
+	if !computeDistinctRecords(iup, iup) {
 		t.Fatal("InUnion should be distinct")
 	}
 }
@@ -313,7 +312,7 @@ func TestComputeDistinctRecords_FirstOrDefaultIsTrue(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	fod := plans.NewRecordQueryFirstOrDefaultPlan(scan, nil)
-	w := &physicalScanWrapper{plan: scan}
+	w := scan
 	if !computeDistinctRecords(w, fod) {
 		t.Fatal("FirstOrDefault should be distinct")
 	}

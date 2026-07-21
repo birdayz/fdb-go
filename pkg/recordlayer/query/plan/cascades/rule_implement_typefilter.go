@@ -46,13 +46,14 @@ func (r *ImplementTypeFilterRule) OnMatch(call *ExpressionRuleCall) {
 	if winner == nil {
 		return
 	}
-	ph, ok := winner.(physicalPlanExpression)
-	if !ok {
+	if _, ok := winner.(physicalPlanExpression); !ok {
 		return
 	}
-	tfPlan := plans.NewRecordQueryTypeFilterPlan(tf.GetRecordTypes(), ph.GetRecordQueryPlan())
+	// The type filter is its own cascades expression now (RFC-184 W2) — it carries
+	// the live child edge directly, no physicalTypeFilterWrapper.
 	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-	call.Yield(NewPhysicalTypeFilterWrapper(tfPlan, innerQ))
+	tfPlan := plans.NewRecordQueryTypeFilterPlanFromQuantifier(tf.GetRecordTypes(), innerQ)
+	call.Yield(tfPlan)
 }
 
 var _ ExpressionRule = (*ImplementTypeFilterRule)(nil)
