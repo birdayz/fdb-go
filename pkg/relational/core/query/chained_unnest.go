@@ -215,16 +215,11 @@ func filterInputHasChainedUnnest(input logical.LogicalOperator) bool {
 // nil with a set translate error on a loud classification failure; nil with no
 // error to decline to the caller's fallback.
 func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, u *logical.LogicalUnnest, prevEnclosure bool) expressions.RelationalExpression {
-	if u.Alias != "" && u.AtAlias != "" && strings.EqualFold(u.Alias, u.AtAlias) {
-		// Mirror translateUnnestJoin's AS==AT overwrite guard: a name-model builder
-		// would append the element and the ordinal under the SAME bare+qualified name, and
-		// the map-keyed RecordConstructorValue.Evaluate silently OVERWRITES the element
-		// with the ordinal — `... AS Y AT Y` makes `SELECT Y` return the ordinal, not
-		// the unnested value. The chained path returns before the non-chained guard, so
-		// it must repeat the check. Java binds AS and AT to two distinct quantifier
-		// columns (visitAtomTableItem); a duplicate is a binding error upstream. RFC-142.
-		t.setTranslateErr(api.NewError(api.ErrCodeDuplicateAlias,
-			"lateral unnest AS and AT aliases must be distinct; use different names for the element and the ordinal"))
+	// Mirror translateUnnestJoin's alias-collision guard (AS==AT overwrite +
+	// AT-only reserved `_0`, see unnestAliasReject). The chained path returns
+	// before the non-chained guard, so it must repeat the check. RFC-142.
+	if rejectErr := unnestAliasReject(u); rejectErr != nil {
+		t.setTranslateErr(rejectErr)
 		return nil
 	}
 	elementType, _, disp := t.classifyChainedUnnestArray(j.Left, u)

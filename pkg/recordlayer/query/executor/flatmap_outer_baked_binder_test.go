@@ -247,8 +247,9 @@ func TestLoudAdaptationFailure(t *testing.T) {
 // TestProbeOuterBakedType pins the probe itself: positive on a baked
 // FrontierPinned reference over the outer alias (PredicatesFilter surface),
 // negative for other aliases, for lazy references, and for a nil plan; and
-// the width-divergence panic on conflicting baked types (the same one-seed
-// invariant widenLegTypesFromPlan asserts).
+// the width-divergence ERROR on conflicting baked types (the same one-seed
+// invariant widenLegTypesFromPlan asserts). A divergence is a malformed plan
+// (planner bug) and must fail the query — an error, never a process panic.
 func TestProbeOuterBakedType(t *testing.T) {
 	t.Parallel()
 	legA, _, qovA, qovB, _ := ojWiringLegs(t)
@@ -264,15 +265,18 @@ func TestProbeOuterBakedType(t *testing.T) {
 
 	t.Run("positive over the outer alias", func(t *testing.T) {
 		t.Parallel()
-		rt := probeOuterBakedType(inner, qovA.Correlation)
+		rt, perr := probeOuterBakedType(inner, qovA.Correlation)
+		if perr != nil {
+			t.Fatalf("probe error: %v", perr)
+		}
 		if rt == nil || len(rt.Fields) != len(legA.Fields) {
 			t.Fatalf("probe = %v, want leg A's %d-field type", rt, len(legA.Fields))
 		}
 	})
 	t.Run("negative for another alias", func(t *testing.T) {
 		t.Parallel()
-		if rt := probeOuterBakedType(inner, qovB.Correlation); rt != nil {
-			t.Fatalf("probe over B = %v, want nil (the baked reference is over A)", rt)
+		if rt, perr := probeOuterBakedType(inner, qovB.Correlation); perr != nil || rt != nil {
+			t.Fatalf("probe over B = %v (err %v), want nil (the baked reference is over A)", rt, perr)
 		}
 	})
 	t.Run("negative for lazy references", func(t *testing.T) {
@@ -284,17 +288,17 @@ func TestProbeOuterBakedType(t *testing.T) {
 				&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
 			)},
 		)
-		if rt := probeOuterBakedType(lazyInner, qovA.Correlation); rt != nil {
-			t.Fatalf("probe over lazy references = %v, want nil (FrontierPinned only)", rt)
+		if rt, perr := probeOuterBakedType(lazyInner, qovA.Correlation); perr != nil || rt != nil {
+			t.Fatalf("probe over lazy references = %v (err %v), want nil (FrontierPinned only)", rt, perr)
 		}
 	})
 	t.Run("negative for a nil plan", func(t *testing.T) {
 		t.Parallel()
-		if rt := probeOuterBakedType(nil, qovA.Correlation); rt != nil {
-			t.Fatalf("probe over nil plan = %v, want nil", rt)
+		if rt, perr := probeOuterBakedType(nil, qovA.Correlation); perr != nil || rt != nil {
+			t.Fatalf("probe over nil plan = %v (err %v), want nil", rt, perr)
 		}
 	})
-	t.Run("width divergence panics", func(t *testing.T) {
+	t.Run("width divergence errors", func(t *testing.T) {
 		t.Parallel()
 		wideA := values.NewQuantifiedObjectValueOfType(qovA.Correlation, values.NewRecordType("", false, []values.Field{
 			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
@@ -312,12 +316,13 @@ func TestProbeOuterBakedType(t *testing.T) {
 				ojEqPred(bakedWide, &values.ConstantValue{Value: int64(2), Typ: values.NotNullLong}),
 			},
 		)
-		defer func() {
-			if r := recover(); r == nil {
-				t.Fatal("divergent baked widths over one alias must panic (planner bug — one seed-constructed QOV)")
-			}
-		}()
-		probeOuterBakedType(divergent, qovA.Correlation)
+		_, perr := probeOuterBakedType(divergent, qovA.Correlation)
+		if perr == nil {
+			t.Fatal("divergent baked widths over one alias must return an error (planner bug — one seed-constructed QOV; fail the query, not the process)")
+		}
+		if !strings.Contains(perr.Error(), "DIVERGENT baked types") {
+			t.Fatalf("error = %v, want the width-divergence diagnosis", perr)
+		}
 	})
 }
 

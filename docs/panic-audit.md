@@ -1,12 +1,24 @@
 # Panic / recover audit & boundary gate
 
-Last refreshed: 2026-06-20 (RFC-134). Original classification: 2026-06-07.
+Last refreshed: 2026-07-21 (LATEST PRIOS item 1, the executor panic sweep). Prior refresh:
+2026-06-20 (RFC-134). Original classification: 2026-06-07.
 
 **Policy.** Reachable-from-user/external-input → return an error; a genuine fundamental
 invariant → assert (panic, fail-stop). `recover()` is legitimate **only** at a deliberate
 panic→error boundary (translating a panic into a returned error / failed future / failed
 connection), never as a silent swallow. `SECURITY.md` scopes crash/DoS: untrusted input must
 produce errors, never process crashes.
+
+**The assert-locality rule (2026-07-21).** An assert (panic) may guard only an invariant
+established *within the same function/derivation* — a local impossibility (e.g.
+`ordinal_join.go` `ordinalJoinSpans`' sum-of-widths pin, `positional_merge.go`'s
+idx-in-own-range bake). Any check that detects a malformed **plan** — an inconsistency
+produced by a *different component* (the planner) and merely observed at execution — returns
+an error instead: a planner bug must fail the QUERY, never the process. This is Java parity
+(`RecordCoreException` propagates through the cursor future chain as a recoverable error) and
+it matters because exported executor entry points (`ExecutePlan`) deliberately have **no**
+recover boundary — direct Record Layer API clients would crash on what SQL clients survive
+only via the `cascades_generator.go` boundary recover.
 
 ## The gate (RFC-134) — this is what keeps the discipline honest
 
@@ -24,16 +36,38 @@ The discipline is no longer a one-time audit; it is **enforced on every build**:
 
 ## Headline (current)
 
-- **155** `panic(` and **22** `recover(` text occurrences in non-test code (grep). The grep
-  count over-states *callable* recovers — several are in comments/strings. The analyzer's **AST**
-  count of builtin `recover()` calls is **§2's allowlist** (17 across 12 files, of which 15 are in
-  the default pure-Go build; 2 are behind `cgo && libfdbc` / the binding-tester binary).
+- **173** `panic(` and **34** `recover(` text occurrences in non-test code (grep, 2026-07-21).
+  The grep count over-states *callable* recovers — several are in comments/strings. The
+  analyzer's **AST** count of builtin `recover()` calls is **§2's allowlist**.
 - The vast majority of panics are legitimate invariant asserts or `Must*` APIs (§4).
-- The user-reachable-panic conversion worklist (§3) — adding an error channel to
-  `Value.Evaluate` / `QueryPredicate.Eval` — remains **deferred**: a large signature-change
-  refactor, tracked here, not part of the gate. The gate proves the *existing* boundaries hold
-  (the four fuzz nets find no live panic, §5); the refactor would let more of the eval path
-  return errors *directly* rather than via the boundary recover.
+- The §3 eval refactor is **DONE** (landed with the RFC-173 campaign): `Value.Evaluate`
+  returns `(any, error)` and `QueryPredicate.Eval` returns `(TriBool, error)`. Eval failures
+  flow as errors; the boundary recovers in §2 remain as backstops, no longer the primary
+  channel.
+- **2026-07-21 executor sweep (LATEST PRIOS item 1):** `ComparisonKeyFunc` carries an error
+  return (`func(T) (tuple.Tuple, error)`) — the intersection/multi-intersection comparison-key
+  closures return errors instead of panicking (Java parity:
+  `KeyedMergeCursorState.comparisonKeyFunction` failures are `RecordCoreException`s through
+  the future chain). The `ordinal_join.go` cross-component malformed-plan tripwires
+  (`evaluateOrdinalJoinRow`, `newOrdinalJoinBuild`, `widenLegTypesFromPlan`,
+  `probeOuterBakedType`) and the un-lowered DistanceRank row-eval arm
+  (`predicates/comparisons.go`) return errors per the assert-locality rule above.
+  `NewRecordType`'s duplicate-field-name panic stays a §4 constructor assert. The full
+  reachability story, each step verified live: the first probe's "every call site is
+  descriptor-sourced" claim was WRONG (Torvalds review catch) — `unnest_seed.go` builds a
+  seed leg RecordType from USER SQL aliases. But the review's counterexample
+  (`... AT "_0"` with no AS, claimed to collide with the seed's reserved `_0` element slot)
+  is ALSO wrong: `lateralUnnestCandidate` is the only `LogicalUnnest` producer and
+  `unnestAliases` defaults the element alias to the array FIELD NAME, so the seed's
+  `Alias == ""` fallback is producer-dead and the query is benign (FDB pin:
+  `array_unnest_ordinality_fdb_test.go` "AT alias spelling the reserved element name is
+  benign"). Defense anyway: the shared `unnestAliasReject` guard
+  (`pkg/relational/core/query/unnest_alias_guard.go`, wired into all four unnest
+  translate/admission sites, deduping the four inline AS==AT checks) rejects the
+  reserved-name collision as a producer invariant, so a future producer that skips the
+  default hits a typed DuplicateAlias, never the constructor assert. The remaining
+  `NewRecordType` call sites are descriptor-sourced (unique by construction; DDL rejects
+  duplicate columns with 42701).
 
 ## §2 — The panic→error boundary allowlist (the `norecover` allowlist)
 
@@ -58,16 +92,15 @@ allowlist (file → permitted AST count). Keep the two in sync.
 
 None silently swallow: each maps to a returned error / failed future / logged-and-failed conn.
 
-## §3 — Convert-to-error worklist (DEFERRED — the big eval refactor)
+## §3 — Convert-to-error worklist (DONE)
 
-Root cause: `Value.Evaluate(ctx) any` (`values.go`) and `QueryPredicate.Eval(ctx) TriBool` have no
-error channel, so arithmetic overflow/div0, CAST failures, and type mismatches `panic` and are
-caught by the executor's boundary recover (`cascades_generator.go`) instead of returned. Typed
-errors and the SQL-code mapping already exist (`ArithmeticOverflowError`, `InvalidCastError`, …,
-`translateExecError`); the work is delivering them through returns. Signature blast radius:
-`Value.Evaluate` → `(any, error)` is ~60 impls / ~80 call sites; `QueryPredicate.Eval` →
-`(TriBool, error)` is ~12 impls. This is a multi-change refactor tracked as its own item — the
-gate (the boundary recover + the fuzz net) keeps these safe in the meantime.
+The big eval refactor LANDED (with the RFC-173 campaign): `Value.Evaluate` returns
+`(any, error)` and `QueryPredicate.Eval` returns `(TriBool, error)`. Arithmetic overflow/div0,
+CAST failures, and type mismatches return typed errors (`ArithmeticOverflowError`,
+`InvalidCastError`, …) mapped by `translateExecError`; the §2 boundary recovers remain as
+backstops only. The 2026-07-21 executor sweep (see Headline) extended the error channel to the
+last no-error-channel closure contract (`ComparisonKeyFunc`) and converted the executor's
+cross-component malformed-plan tripwires per the assert-locality rule.
 
 ## §4 — Keep-as-assert (representative; the large majority)
 

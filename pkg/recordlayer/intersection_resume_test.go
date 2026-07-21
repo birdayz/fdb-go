@@ -39,7 +39,7 @@ func (c *sliceResumeCursor) OnNext(_ context.Context) (RecordCursorResult[int64]
 func (c *sliceResumeCursor) Close() error   { c.closed = true; return nil }
 func (c *sliceResumeCursor) IsClosed() bool { return c.closed }
 
-func intResumeKey(v int64) tuple.Tuple { return tuple.Tuple{v} }
+func intResumeKey(v int64) (tuple.Tuple, error) { return tuple.Tuple{v}, nil }
 
 // pageIntersection drives an intersection one row per page — the exact loop
 // executeIntersection runs (decode the parent continuation, rebuild each child

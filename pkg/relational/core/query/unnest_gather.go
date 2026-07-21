@@ -550,7 +550,9 @@ func (t *cascadesTranslator) rotateEnclosedUnnest(j *logical.LogicalJoin) (rebui
 	if collide(u.Alias) || collide(u.AtAlias) {
 		return nil, nil, nil, "", 0, false
 	}
-	if u.Alias != "" && u.AtAlias != "" && strings.EqualFold(u.Alias, u.AtAlias) {
+	if unnestAliasReject(u) != nil {
+		// Decline the shape; the raw body surfaces the loud duplicate-alias
+		// rejection at translation (unnestAliasReject in translateUnnestJoin).
 		return nil, nil, nil, "", 0, false
 	}
 

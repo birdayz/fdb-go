@@ -790,6 +790,38 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
 
+	t.Run("AT alias spelling the reserved element name is benign", func(t *testing.T) {
+		// Refutes a plausible collision claim: that `AT "_0"` with no AS
+		// collides with the seed's reserved default element name `_0` and
+		// fires NewRecordType's duplicate-field-name assert. It cannot:
+		// lateralUnnestCandidate is
+		// the ONLY LogicalUnnest producer and unnestAliases DEFAULTS the
+		// element alias to the array field name (`ARR1` here), so the seed's
+		// `Alias == ""` fallback that names the slot `_0` is producer-dead
+		// and the two seed columns are {ARR1, _0} — no duplicate. This pin
+		// holds the whole chain: the query plans, the ordinal binds under
+		// the user's `_0` name, and the element stays addressable under the
+		// defaulted array name. (unnestAliasReject still guards the
+		// reserved-name collision as a producer invariant — unit-pinned in
+		// unnest_alias_guard_test.go — so a future producer that passes
+		// AT-only WITHOUT the default hits a typed DuplicateAlias, never the
+		// constructor assert.)
+		assertRows(t, `SELECT "ID", "_0" FROM T1, T1."ARR1" AT "_0"`, []string{
+			"ID=1|_0=1", "ID=2|_0=1", "ID=2|_0=2", "ID=2|_0=3",
+		})
+		assertRows(t, `SELECT "ID", "ARR1", "_0" FROM T1, T1."ARR1" AT "_0" WHERE "ID" = 1`, []string{
+			"ARR1=101|ID=1|_0=1",
+		})
+		// Neighbouring shapes: AT "_1" (ordinal under `_1`) and an explicit
+		// AS freeing `_0` for the AT alias.
+		assertRows(t, `SELECT "ID", "_1" FROM T1, T1."ARR1" AT "_1"`, []string{
+			"ID=1|_1=1", "ID=2|_1=1", "ID=2|_1=2", "ID=2|_1=3",
+		})
+		assertRows(t, `SELECT "V", "_0" FROM T1, T1."ARR1" AS "V" AT "_0" WHERE "ID" = 1`, []string{
+			"V=101|_0=1",
+		})
+	})
+
 	t.Run("AT only filter on ordinal equality", func(t *testing.T) {
 		// P2a: AT-only (no AS), WHERE on the ordinal. The AT alias must drive the
 		// inner correlation so the predicate pushes into the inner Explode filter.

@@ -6,6 +6,59 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
+## LATEST PRIOS 2026-07-21 — owner directive (takes precedence over everything below until done)
+
+Source: 2026-07-21 full-engine triple review — Graefe (Cascades alignment, B+), Torvalds (code
+quality, B-), codex `gpt-5.6-sol` ultra (adversarial correctness, F/NAK; prose archived at the
+PR for prio 1). Grind ONE AT A TIME, in order, each done RIGHT (root cause + regression tests +
+milestone review lap), each its own PR.
+
+- [x] **1. Panics on user-reachable paths** — DONE (PR #509, Graefe ACK + Torvalds ACK + codex
+  clean ×2 on `7c4da6c72`). The §3 eval refactor had ALREADY landed with RFC-173 (the audit doc
+  was stale); the milestone delivered the rest: `ComparisonKeyFunc` error channel (Java parity:
+  `KeyedMergeCursorState.comparisonKeyFunction` → RecordCoreException through the future chain)
+  converting the twin intersection closure panic sites; four `ordinal_join.go` malformed-plan
+  tripwires → typed errors under the new assert-locality rule (docs/panic-audit.md — asserts
+  only for same-derivation invariants; cross-component malformed-plan detection returns errors);
+  DistanceRank row-eval panic → error through `Eval`'s channel; `positional_merge.go:101` and
+  `ordinal_join.go:245` verified genuinely local → stay asserts; `plans/intersection.go`
+  constructor needs no validation (Java parity — runtime errors, now delivered via the error
+  channel); `NewRecordType` dup-name probed (both review claims wrong in turn — see audit doc)
+  and defended by construction via the shared `unnestAliasReject` guard (dedupes 4 inline AS==AT
+  guards). Audit doc refreshed truthfully; regression pins on every converted site. Remaining
+  panic surface = §4 asserts + RFC-173 seed tripwires (retire with item 4).
+- [ ] **2. Cost model soundness.** Graefe: `getWinnerForOrdering` (`winner_lookup.go:46-50`)
+  silently falls back to the global cheapest — callers can mistake it for satisfaction proof.
+  Codex: REWRITING cost depends on memo population history, not the candidate tree
+  (`properties/expression_count_property.go:15-32`, `planning_cost_model.go:147-173` traverse
+  exploratory members / AllMembers — a direct violation of "properties derived from the
+  expression tree"; Java's `ExpressionCountProperty` requires exactly one final expression per
+  child); the Go-only concrete join-cost walk treats any all-equality prefix scan as a one-row
+  point probe without checking PK length (`planning_cost_model.go:1227-1256`; the correct check
+  exists at :1521-1550) — catastrophic join orders on composite PKs; the recursive switch omits
+  limits/aggregations/unions/IN/recursive plans (`planning_cost_model.go:1122-1224`).
+- [ ] **3. Debt ledger understates reality.** Torvalds: two ADMITTED wrong-rows bugs shipping —
+  `plans/recursive_level_union.go:177` `CanCorrelate()→true` (DIVERGENCES.md:412 "UNSAFE, fix
+  first") and DIVERGENCES.md:452 "memo costs an expression that is not the one that executes —
+  CURRENT BUG". Codex: DIVERGENCES.md:662 claims byte-identical continuations while
+  `executor/continuation.go:20-25` documents a Go-private aggregate payload under Java's proto
+  message NAMES (cross-engine resume = silently wrong aggregates, not a loud error), and
+  TODO.md's plan-cache "fixed" entry covers only the FNV collision — the `GetText()` key is
+  non-injective (`SELECT AB FROM T` vs `SELECT A B FROM T` both key `SELECTABFROMT`,
+  `cascades_generator.go:254-277`) and unscoped by schema identity/version (Java:
+  `QueryCacheKey.java:103-142`; own RFC-024 requires it). Fix the two admitted bugs, fix the
+  cache key (port AstNormalizer approach), divorce or port the continuation payloads, make the
+  ledger truthful.
+- [ ] **4. Name-string/ordinal seam** (= RFC-173 endgame, the existing freeze item). Not a
+  relapse — the booked last mile: 2 DEEP ordinalizations (enclosed-chain merge
+  `buried_2chain_straddle`; `SELECT *` multi-source lateral unnest) + 1 loud-reject (FULL-box +
+  subquery), then the deletion pass (`QueryResult.Datum`, name arms, `AnchoredJoin`,
+  `buildUnnestResultValue`, dual-window oracle). Meanwhile `rule_implement_nested_loop_join.go`
+  is 3,344 LOC vs Java's 331 and still growing — the seam's carrying cost compounds until this
+  lands. Graefe ACK required (guarded enclosure invariants).
+
+---
+
 # ⛔ ALL WORK FROZEN — sole priority is RFC-173 (ordinal/group column-resolution migration)
 
 **Owner directive (2026-07-01): pause ALL other project work until RFC-173 lands.** Do NOT pick up

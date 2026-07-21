@@ -448,14 +448,16 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 	// transformComparisonMaybe → VectorIndexScanMatchCandidate), never
 	// evaluated row-by-row. Reaching here means the planner failed to match the
 	// vector index — fail loud rather than silently returning UNKNOWN (which
-	// would drop every row and make a broken K-NN query pass green). This stays
-	// a panic (programmer-invariant): an executable plan always has the K-NN
+	// would drop every row and make a broken K-NN query pass green). Loud is
+	// an ERROR through Eval's error channel (fails the query and surfaces the
+	// diagnosis), not a process panic: an executable plan always has the K-NN
 	// lowered (logical_qualify.go rejects un-lowerable K-NN at build time), so
-	// reaching here is a planner bug, never user data — see RFC-087.
+	// reaching here is a planner bug — which must kill the query, not the
+	// process — see RFC-087.
 	switch c.Type {
 	case ComparisonDistanceRankEquals, ComparisonDistanceRankLessThan, ComparisonDistanceRankLessThanOrEq:
-		panic(fmt.Sprintf("DistanceRank comparison %v reached row evaluation: "+
-			"vector K-NN predicate was not lowered to a vector index scan during planning", c.Type))
+		return TriUnknown, fmt.Errorf("DistanceRank comparison %v reached row evaluation: "+
+			"vector K-NN predicate was not lowered to a vector index scan during planning (planner bug; malformed plan)", c.Type)
 	}
 	if left == nil || right == nil {
 		return TriUnknown, nil
