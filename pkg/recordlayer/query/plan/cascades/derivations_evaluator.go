@@ -189,7 +189,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- NestedLoopJoin ---
 
-	case *physicalNestedLoopJoinWrapper:
+	// The NestedLoopJoin is its own cascades expression now (RFC-184 W2).
+	case *plans.RecordQueryNestedLoopJoinPlan:
 		return derivationsForNestedLoopJoin(w)
 
 	// --- Recursive plans: empty derivations ---
@@ -724,7 +725,7 @@ func derivationsForValues(w *plans.RecordQueryValuesPlan) *properties.Derivation
 
 // --- NestedLoopJoin ---
 
-func derivationsForNestedLoopJoin(w *physicalNestedLoopJoinWrapper) *properties.Derivations {
+func derivationsForNestedLoopJoin(w *plans.RecordQueryNestedLoopJoinPlan) *properties.Derivations {
 	// NestedLoopJoin has outer + inner quantifiers. Collect
 	// derivations from both and union them.
 	var resultVals []values.Value

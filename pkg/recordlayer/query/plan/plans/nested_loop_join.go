@@ -99,6 +99,34 @@ func NewRecordQueryNestedLoopJoinPlan(
 	}
 }
 
+// NewRecordQueryNestedLoopJoinPlanFromQuantifiers builds a nested-loop join whose
+// two legs are supplied memo quantifiers instead of snapshots over concrete
+// plans. This makes the plan its own cascades expression carrying its child
+// edges directly — the memo holds it without a physicalNestedLoopJoinWrapper
+// (RFC-184 W2). The materialized NLJ is uncorrelated (CanCorrelate=false), so
+// both legs carry the LIVE shared-group edge the emitter memoized; the join
+// predicates, join type, table aliases and result value are preserved so
+// EqualsPlanWithoutChildren / GetCorrelatedToWithoutChildren stay identical.
+func NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+	outerQ, innerQ expressions.Quantifier,
+	joinPredicates []predicates.QueryPredicate,
+	joinType JoinType,
+	outerAlias, innerAlias string,
+	resultValue values.Value,
+) *RecordQueryNestedLoopJoinPlan {
+	preds := make([]predicates.QueryPredicate, len(joinPredicates))
+	copy(preds, joinPredicates)
+	return &RecordQueryNestedLoopJoinPlan{
+		outerQ:      outerQ,
+		innerQ:      innerQ,
+		predicates:  preds,
+		joinType:    joinType,
+		outerAlias:  outerAlias,
+		innerAlias:  innerAlias,
+		resultValue: resultValue,
+	}
+}
+
 func (p *RecordQueryNestedLoopJoinPlan) GetResultType() values.Type { return values.UnknownType }
 
 // GetChildren returns the outer leg then the inner leg, dereferenced through
@@ -223,6 +251,21 @@ func (p *RecordQueryNestedLoopJoinPlan) GetCorrelatedToWithoutChildren() map[val
 		}
 	}
 	return out
+}
+
+// WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
+// interface). The join carries its two legs as memo quantifiers, so the relink
+// is a positional quantifier swap: WithQuantifiers copies the receiver
+// (preserving the predicates, join type, table aliases and result value) and
+// re-resolves GetOuter/GetInner through the new references. This replaces
+// physicalNestedLoopJoinWrapper.WithChildren (RFC-184 W2), whose separate
+// snapshot plan field held the yield-time children verbatim; the swap
+// re-resolves to the memo winner instead.
+func (p *RecordQueryNestedLoopJoinPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 2 {
+		return nil, fmt.Errorf("RecordQueryNestedLoopJoinPlan.WithChildren: expected 2 children, got %d", len(qs))
+	}
+	return p.WithQuantifiers(qs), nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

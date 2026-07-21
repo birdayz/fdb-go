@@ -574,3 +574,21 @@ func IsPhysicalStreamingAgg(expr expressions.RelationalExpression) bool {
 	_, ok := expr.(*plans.RecordQueryStreamingAggregationPlan)
 	return ok
 }
+
+// IsPhysicalFlatMap reports whether the given RelationalExpression is a physical
+// correlated FlatMap. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryFlatMapPlan directly (no physicalFlatMapWrapper), so this is
+// a bare type check.
+func IsPhysicalFlatMap(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryFlatMapPlan)
+	return ok
+}
+
+// IsPhysicalNestedLoopJoin reports whether the given RelationalExpression is a
+// physical nested-loop join. Since RFC-184 W2 the memo holds
+// *plans.RecordQueryNestedLoopJoinPlan directly (no
+// physicalNestedLoopJoinWrapper), so this is a bare type check.
+func IsPhysicalNestedLoopJoin(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*plans.RecordQueryNestedLoopJoinPlan)
+	return ok
+}

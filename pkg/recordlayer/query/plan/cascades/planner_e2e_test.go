@@ -330,8 +330,8 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 	}
 	var yieldedNLJs []*plans.RecordQueryNestedLoopJoinPlan
 	for _, y := range FireExpressionRule(NewImplementNestedLoopJoinRule(), fireRef) {
-		if nlj, ok := y.(*physicalNestedLoopJoinWrapper); ok {
-			yieldedNLJs = append(yieldedNLJs, nlj.GetPlan())
+		if nlj, ok := y.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+			yieldedNLJs = append(yieldedNLJs, nlj)
 		}
 	}
 	formedAB, formedBA := directionsOf(yieldedNLJs)
@@ -355,8 +355,8 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 
 	var nljPlans []*plans.RecordQueryNestedLoopJoinPlan
 	for _, m := range selRef.AllMembers() {
-		if nlj, ok := m.(*physicalNestedLoopJoinWrapper); ok {
-			nljPlans = append(nljPlans, nlj.GetPlan())
+		if nlj, ok := m.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+			nljPlans = append(nljPlans, nlj)
 		}
 	}
 	if len(nljPlans) == 0 {
@@ -407,11 +407,11 @@ func TestE2E_JoinCommutativitySkippedForLeftJoin(t *testing.T) {
 	// For LEFT JOIN, only one direction should be explored. All NLJ
 	// plans should have A as outer.
 	for _, m := range selRef.AllMembers() {
-		nlj, ok := m.(*physicalNestedLoopJoinWrapper)
+		nlj, ok := m.(*plans.RecordQueryNestedLoopJoinPlan)
 		if !ok {
 			continue
 		}
-		outerExplain := nlj.GetPlan().GetOuter().Explain()
+		outerExplain := nlj.GetOuter().Explain()
 		if outerExplain == "Scan(B)" {
 			t.Fatal("LEFT JOIN should not explore B-as-outer direction")
 		}

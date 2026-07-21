@@ -74,9 +74,11 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 
 		// --- the three CanCorrelate overrides ---
 		{
+			// FlatMap lost its wrapper (RFC-184 W2) but keeps the non-default
+			// CanCorrelate=true override, so the plan side stays pinned here with no
+			// wrapper pair (wrap nil → wrapper checks skip).
 			name:         "FlatMap",
 			plan:         &plans.RecordQueryFlatMapPlan{},
-			wrap:         &physicalFlatMapWrapper{},
 			canCorrelate: true,
 		},
 		{
@@ -98,7 +100,9 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		// PredicatesFilter lost its wrapper (RFC-184 W2) but keeps the false/false
 		// default, so the plan side stays pinned here with no wrapper pair.
 		{name: "PredicatesFilter", plan: &plans.RecordQueryPredicatesFilterPlan{}},
-		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}, wrap: &physicalNestedLoopJoinWrapper{}},
+		// NestedLoopJoin lost its wrapper (RFC-184 W2) but keeps the false/false
+		// default, so the plan side stays pinned here with no wrapper pair.
+		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}},
 		// InJoin and InUnion lost their wrappers (RFC-184 W2) but keep the
 		// false/false default, so the plan side stays pinned here with no wrapper
 		// pair.

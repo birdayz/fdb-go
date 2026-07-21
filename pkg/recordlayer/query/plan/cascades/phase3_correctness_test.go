@@ -62,7 +62,7 @@ func exploreAndVerify(t *testing.T, ref *expressions.Reference, rules []Expressi
 
 // TestPlanner_NLJFromSelectWithTwoQuantifiers verifies that a Select
 // with two quantifiers (simulating a JOIN over two scans) produces a
-// physicalNestedLoopJoinWrapper after running through the planner with
+// *plans.RecordQueryNestedLoopJoinPlan after running through the planner with
 // all rules.
 func TestPlanner_NLJFromSelectWithTwoQuantifiers(t *testing.T) {
 	t.Parallel()
@@ -86,7 +86,7 @@ func TestPlanner_NLJFromSelectWithTwoQuantifiers(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalNestedLoopJoin) && !containsPhysical(ref, IsPhysicalFlatMap) {
-		t.Fatal("expected physicalNestedLoopJoinWrapper or physicalFlatMapWrapper in explored members")
+		t.Fatal("expected *plans.RecordQueryNestedLoopJoinPlan or *plans.RecordQueryFlatMapPlan in explored members")
 	}
 }
 

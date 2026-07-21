@@ -592,11 +592,13 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	// The InUnion is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryInUnionPlan:
 		counts.inUnionCount++
-	case *physicalFlatMapWrapper:
+	// The FlatMap is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryFlatMapPlan:
 		counts.flatMapCount++
-	case *physicalNestedLoopJoinWrapper:
+	// The NestedLoopJoin is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryNestedLoopJoinPlan:
 		counts.nestedLoopJoinCount++
-		counts.nljPredicateCount += len(w.plan.GetPredicates())
+		counts.nljPredicateCount += len(w.GetPredicates())
 	// A fetch is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		counts.fetchCount++
