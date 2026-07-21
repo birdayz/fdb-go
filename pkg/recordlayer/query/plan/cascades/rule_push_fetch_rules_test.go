@@ -67,8 +67,8 @@ func TestMergeFetchIntoCoveringIndex_DoesNotFireOnNonIndex(t *testing.T) {
 	t.Parallel()
 
 	// Fetch over a filter (not an index scan) — should not fire.
-	filterPlan := plans.NewRecordQueryFilterPlan(nil, nil)
-	filterWrapper := NewPhysicalFilterWrapper(filterPlan, expressions.ForEachQuantifier(
+	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, nil)
+	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, expressions.ForEachQuantifier(
 		&expressions.Reference{},
 	))
 	filterRef := expressions.InitialOf(filterWrapper)
@@ -480,7 +480,7 @@ func TestPushUnionThroughFetch_DoesNotFire_OnlyOneChildHasFetch(t *testing.T) {
 
 	// Second child: plain scan (no fetch).
 	scanPlan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanWrapper := &physicalScanWrapper{plan: scanPlan}
+	scanWrapper := scanPlan
 	scanRef := expressions.InitialOf(scanWrapper)
 	q2 := expressions.ForEachQuantifier(scanRef)
 
@@ -727,7 +727,7 @@ func TestPushUnionThroughFetch_PartialPush(t *testing.T) {
 	q2 := makeChild("idx_b")
 
 	scanPlan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanWrapper := &physicalScanWrapper{plan: scanPlan}
+	scanWrapper := scanPlan
 	q3 := expressions.ForEachQuantifier(expressions.InitialOf(scanWrapper))
 
 	// The union is its own cascades expression (RFC-184 W2).

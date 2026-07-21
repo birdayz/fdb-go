@@ -5911,6 +5911,52 @@ is already on the RFC-183 branch.
 Do NOT "fix" this by re-retiring the adapter without the property work — that
 is the change that caused the 49 shape flips.
 
+### [ ] RFC-184 W2 — physical-wrapper collapse: 24 collapsed, deferred-winner tail remains
+
+On branch `centralize-plan-equality-hash` (held for one super-thorough end
+review per owner's one-big-PR ruling). Each `physical<Name>Wrapper` adapter
+stored a plan's child edge a SECOND time (wrapper quantifier + plan snapshot);
+collapsing makes the plan its own cascades expression carrying the LIVE memo
+edge once, so the ordinal-binding "child stored twice" state is unrepresentable.
+
+COLLAPSED (24, each `explain-differ differing=0`, full-hook green): scan, limit,
+fetch, map, default_on_empty, explode, table_function, temp_table_scan,
+temp_table_insert, vector_index_scan, index_scan, aggregate_index, values,
+typefilter, insert, delete, update, intersection, merge_sort_union,
+multi_intersection, recursive_level_union, recursive_dfs_join, union, projection.
+
+ENABLER — DAG-aware plan extraction (plan_extraction.go): the `visited` map was
+doing double duty — cycle guard (necessary) AND permanent de-dup (harmful).
+Made it STACK-SCOPED (add on descent, `delete` on ascent, mirroring
+extractTieBreakHash) so a SHARED sub-DAG (two UNION legs scanning t1) re-extracts
+instead of dropping its 2nd child to nil. This unblocked union + projection.
+
+REMAINING 10 live wrappers — the DEFERRED-WINNER TAIL (needs a Graefe-ACK'd
+design; do NOT force):
+  in_memory_sort, unordered_union, in_union, in_join, first_or_default,
+  predicates_filter, distinct, streaming_agg — each has a plan whose DIRECT
+  child is a MULTI-MEMBER alternatives group, and `onlyPlanFromFinalMembers`
+  (plans/plan_expression.go:215) PANICS at planning-time walk ("a plan's child
+  reference must be a singleton"). This invariant is DELIBERATE — the wrapper was
+  the sanctioned way to hold a multi-member group (wrapper quantifier ranges the
+  group; plan holds a snapshot singleton for planning-time type/child queries).
+  Plus nested_loop_join + flat_map (joint — NLJ emitter-3 bridges to FlatMap via
+  a snapshot decouple) and 2 dead structs (scan/filter — 0 prod emitters, only
+  dead type-switch arms + ~20 test fixtures; safe cosmetic cleanup).
+
+WHY THE NAIVE FIX FAILS (proven, in_memory_sort): memoizing
+getWinnerForOrdering(innerRef, PRESERVE) as a singleton child at YIELD would
+satisfy the invariant — but RFC-069/076 DEFER the sort's inner winner to
+EXTRACTION precisely because it is not stamped at sort-yield; getWinnerForOrdering
+then falls back to findBestValidPhysicalExpr (yield-time cheapest = the
+"yielded-first loser" RFC-069 warns against) → likely a cost-tied RFC-069/076
+regression the differ may MASK. The real fix is architectural: either relax the
+singleton invariant to resolve to the cost WINNER for deferred-winner plans (needs
+the winner reachable from the plans package — ref.Winner() timing), or a
+memo/reference construct that is "singleton for planning-time queries but defers
+winner to extraction." Both touch the load-bearing singleton invariant → Graefe
+gate applies. Full analysis + candidate designs A/B/C in the shift handover.
+
 ### [x] FUZZ: GetCorrelatedTo stack-overflows on a cyclic reference graph (PRE-EXISTING) — FIXED by RFC-185
 
 RESOLVED: the cyclic memo was constructed only by the Go-only filter/set-op

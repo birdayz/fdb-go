@@ -184,14 +184,14 @@ func rfc152Plans() (preservedNLJ, preservedFlatMap, probeNLJ, probeFlatMap plans
 // physical scan wrappers (the cost model reads the concrete embedded plan, so the
 // quantifiers only need to be physical — no nil-inner Fetch templates here).
 func wrapNLJ(p plans.RecordQueryPlan) *physicalNestedLoopJoinWrapper {
-	oq := expressions.ForEachQuantifier(expressions.InitialOf(&physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)}))
-	iq := expressions.ForEachQuantifier(expressions.InitialOf(&physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)}))
+	oq := expressions.ForEachQuantifier(expressions.InitialOf(plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)))
+	iq := expressions.ForEachQuantifier(expressions.InitialOf(plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)))
 	return newPhysicalNestedLoopJoinWrapper(p.(*plans.RecordQueryNestedLoopJoinPlan), oq, iq)
 }
 
 func wrapFlatMap(p plans.RecordQueryPlan) *physicalFlatMapWrapper {
-	oq := expressions.ForEachQuantifier(expressions.InitialOf(&physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)}))
-	iq := expressions.ForEachQuantifier(expressions.InitialOf(&physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)}))
+	oq := expressions.ForEachQuantifier(expressions.InitialOf(plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)))
+	iq := expressions.ForEachQuantifier(expressions.InitialOf(plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)))
 	return newPhysicalFlatMapWrapper(p, oq, iq)
 }
 

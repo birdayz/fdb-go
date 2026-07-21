@@ -154,7 +154,7 @@ func TestE2E_UnionOfTwoScans(t *testing.T) {
 // Input tree:   Sort(ID ASC) -> Filter(ID > 5) -> FullUnorderedScan(TABLE)
 //
 // Rule chain:
-//  1. PrimaryScanRule: yields physicalScanWrapper with PK ordering (ID).
+//  1. PrimaryScanRule: yields a bare RecordQueryScanPlan with PK ordering (ID).
 //  2. PushRequestedOrderingThroughFilterRule: pushes ordering constraint through Filter.
 //  3. ImplementSortRule: eliminates Sort because the scan provides ID ordering.
 //

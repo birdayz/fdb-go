@@ -81,11 +81,11 @@ func TestImplementUnorderedUnionRule_SkipsLogicalUniqueExpression(t *testing.T) 
 
 func TestImplementUnorderedUnionRule_CreatesUnorderedUnionPlan(t *testing.T) {
 	t.Parallel()
-	// Build two inner references, each holding a physicalScanWrapper.
+	// Build two inner references, each holding a bare scan plan.
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	wA := &physicalScanWrapper{plan: scanA}
-	wB := &physicalScanWrapper{plan: scanB}
+	wA := scanA
+	wB := scanB
 
 	refA := expressions.InitialOf(wA)
 	pmA := NewPlanPropertiesMap()

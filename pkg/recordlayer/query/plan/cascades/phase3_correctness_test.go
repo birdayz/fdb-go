@@ -365,7 +365,7 @@ func TestPlanner_SortOverScanStaysLogical(t *testing.T) {
 
 // TestPlanner_FilterOverScanProducesPhysicalFilter verifies that a
 // LogicalFilterExpression with a predicate over a scan produces a
-// physicalFilterWrapper.
+// physical filter.
 func TestPlanner_FilterOverScanProducesPhysicalFilter(t *testing.T) {
 	t.Parallel()
 
@@ -383,7 +383,7 @@ func TestPlanner_FilterOverScanProducesPhysicalFilter(t *testing.T) {
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalFilter) {
-		t.Fatal("expected physicalFilterWrapper in explored members")
+		t.Fatal("expected a physical filter in explored members")
 	}
 }
 

@@ -37,7 +37,7 @@ func TestImplementDistinctUnionRule_SkipsNonDistinct(t *testing.T) {
 func TestImplementDistinctUnionRule_RequiresUnionChild(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -53,18 +53,17 @@ func TestImplementDistinctUnionRule_RequiresUnionChild(t *testing.T) {
 	}
 }
 
-func makeScanWithPK(recordType string, pkCols ...string) (*physicalScanWrapper, *expressions.Reference) {
+func makeScanWithPK(recordType string, pkCols ...string) (*plans.RecordQueryScanPlan, *expressions.Reference) {
 	pkVals := make([]values.Value, len(pkCols))
 	for i, col := range pkCols {
 		pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
 	}
 	scan := plans.NewRecordQueryScanPlan([]string{recordType}, values.UnknownType, false).WithPrimaryKey(pkVals)
-	sw := &physicalScanWrapper{plan: scan}
-	ref := expressions.InitialOf(sw)
+	ref := expressions.InitialOf(scan)
 	pm := NewPlanPropertiesMap()
-	pm.Add(sw)
+	pm.Add(scan)
 	ref.SetPlanProperties(pm)
-	return sw, ref
+	return scan, ref
 }
 
 func TestImplementDistinctUnionRule_FiresWithPKAndStoredRecord(t *testing.T) {
@@ -101,14 +100,14 @@ func TestImplementDistinctUnionRule_FiresWithPKAndStoredRecord(t *testing.T) {
 func TestImplementDistinctUnionRule_NoFireWithoutPK(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	refA := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	refA.SetPlanProperties(pm)
 
 	scan2 := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw2 := &physicalScanWrapper{plan: scan2}
+	sw2 := scan2
 	refB := expressions.InitialOf(sw2)
 	pm2 := NewPlanPropertiesMap()
 	pm2.Add(sw2)
@@ -263,7 +262,7 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 	// scan object — the estimate/executable divergence.
 	pkVals := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
 	orderedScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pkVals)
-	orderedSW := &physicalScanWrapper{plan: orderedScan}
+	orderedSW := orderedScan
 	srcRef := expressions.InitialOf(orderedSW)
 	pmSrc := NewPlanPropertiesMap()
 	pmSrc.Add(orderedSW)

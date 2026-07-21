@@ -30,10 +30,8 @@ func (c *pkPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 // makeFakePlanWrapper creates a trivial physical plan that can be
 // inserted as a FinalMember of a Reference. Used to simulate what
 // the planner's bottom-up implementation phase would produce.
-func makeFakePlanWrapper(recType string) *physicalScanWrapper {
-	return &physicalScanWrapper{
-		plan: plans.NewRecordQueryScanPlan([]string{recType}, values.UnknownType, false),
-	}
+func makeFakePlanWrapper(recType string) *plans.RecordQueryScanPlan {
+	return plans.NewRecordQueryScanPlan([]string{recType}, values.UnknownType, false)
 }
 
 // buildDistinctOverProjection creates:
@@ -331,8 +329,8 @@ func TestDistinctFinal_WrapsAllMembers(t *testing.T) {
 	scanRef.Insert(makeFakePlanWrapper("ITEMS"))
 	fwd := plans.NewRecordQueryScanPlan([]string{"ITEMS"}, values.UnknownType, false)
 	rev := plans.NewRecordQueryScanPlan([]string{"ITEMS"}, values.UnknownType, true)
-	scanRef.Insert(&physicalScanWrapper{plan: fwd})
-	scanRef.Insert(&physicalScanWrapper{plan: rev})
+	scanRef.Insert(fwd)
+	scanRef.Insert(rev)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	// Project a non-PK column so elimination does NOT fire.

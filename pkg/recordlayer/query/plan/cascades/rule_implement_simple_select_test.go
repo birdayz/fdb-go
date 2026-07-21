@@ -50,7 +50,7 @@ func TestImplementSimpleSelectRule_SkipsMultiQuantifier(t *testing.T) {
 	)
 
 	scan := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	scanA.Insert(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -66,7 +66,7 @@ func TestImplementSimpleSelectRule_SkipsMultiQuantifier(t *testing.T) {
 func TestImplementSimpleSelectRule_NoPredicatesSimpleResult(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -93,7 +93,7 @@ func TestImplementSimpleSelectRule_NoPredicatesSimpleResult(t *testing.T) {
 func TestImplementSimpleSelectRule_WithPredicates(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -124,7 +124,7 @@ func TestImplementSimpleSelectRule_WithPredicates(t *testing.T) {
 func TestImplementSimpleSelectRule_WithProjection(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -167,7 +167,7 @@ func TestImplementSimpleSelectRule_NilInnerRef(t *testing.T) {
 func TestImplementSimpleSelectRule_ExistentialQuantifier(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -202,7 +202,7 @@ func TestImplementSimpleSelectRule_ExistentialQuantifier(t *testing.T) {
 func TestImplementSimpleSelectRule_NullOnEmptyQuantifier(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -237,7 +237,7 @@ func TestImplementSimpleSelectRule_NullOnEmptyQuantifier(t *testing.T) {
 func TestImplementSimpleSelectRule_TautologyPredicatesFiltered(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -257,7 +257,7 @@ func TestImplementSimpleSelectRule_TautologyPredicatesFiltered(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("should yield when tautology is the only predicate")
 	}
-	if _, ok := results[0].(*physicalScanWrapper); !ok {
+	if _, ok := results[0].(*plans.RecordQueryScanPlan); !ok {
 		t.Fatalf("tautology-only predicate should pass through to scan, got %T", results[0])
 	}
 }

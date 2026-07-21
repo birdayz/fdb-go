@@ -143,7 +143,7 @@ func TestScanRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 	scan := plans.NewRecordQueryScanPlan([]string{"AB"}, values.UnknownType, false).
 		WithPrimaryKey([]values.Value{pkA, pkB}).
 		WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))})
-	w := &physicalScanWrapper{plan: scan}
+	w := scan
 
 	ord := computeWrapperRichOrdering(w)
 	if ord == nil {
@@ -245,12 +245,13 @@ func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 
 // TestScanPlanExpressionRichOrdering_EqualityPrefixIsFixed: the
 // data-access path memoizes a SARGed primary scan as the plan-backed
-// leaf scanPlanExpression (NOT physicalScanWrapper) — the ordering hints
-// must be present there too, including through the TypeFilter wrapper the
-// primary candidate adds when available and queried record types differ.
-// This was the actual carrier of the order_by_elimination
-// `WHERE a = 1 ORDER BY a DESC` bug: physicalScanWrapper had an ordering
-// hint, the scanPlanExpression the planner actually held did not.
+// leaf scanPlanExpression (NOT the bare RecordQueryScanPlan expression) —
+// the ordering hints must be present there too, including through the
+// TypeFilter wrapper the primary candidate adds when available and queried
+// record types differ. This was the actual carrier of the
+// order_by_elimination `WHERE a = 1 ORDER BY a DESC` bug: the bare
+// RecordQueryScanPlan expression had an ordering hint, the scanPlanExpression
+// the planner actually held did not.
 func TestScanPlanExpressionRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 	t.Parallel()
 

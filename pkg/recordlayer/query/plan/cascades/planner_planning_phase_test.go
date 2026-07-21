@@ -84,8 +84,8 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 	// to the sibling ordered-union implementation and vanish from
 	// AllMembers(). Fire the rule directly to pin that it FORMS.
 	{
-		wA := &physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)}
-		wB := &physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)}
+		wA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
+		wB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
 		refA := expressions.InitialOf(wA)
 		pmA := NewPlanPropertiesMap()
 		pmA.Add(wA)
@@ -241,19 +241,19 @@ func TestPlanner_PlanningPhase_FinalizeExpressions_LeafExpression(t *testing.T) 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
 	// After PLANNING, PrimaryScanRule (via BatchAExpressionRules fired during
-	// PLANNING) inserts a physicalScanWrapper into Members. Verify it is present.
+	// PLANNING) inserts a bare RecordQueryScanPlan into Members. Verify it is present.
 	all := rootRef.AllMembers()
 	if len(all) == 0 {
 		t.Fatal("root Reference has no members for leaf expression")
 	}
 
-	// At least the original scan or a physical scan wrapper should be present.
+	// At least the original scan or a physical scan plan should be present.
 	foundScan := false
 	for _, f := range all {
 		switch f.(type) {
 		case *expressions.FullUnorderedScanExpression:
 			foundScan = true
-		case *physicalScanWrapper:
+		case *plans.RecordQueryScanPlan:
 			foundScan = true
 		}
 	}
@@ -301,7 +301,7 @@ func TestPlanner_PlanningPhase_PropertiesComputedOnReference(t *testing.T) {
 
 	// Verify distinct=true for the scan wrapper.
 	for _, expr := range exprs {
-		if _, ok := expr.(*physicalScanWrapper); ok {
+		if _, ok := expr.(*plans.RecordQueryScanPlan); ok {
 			props := pm.GetProperties(expr)
 			if !props.GetBool(properties.PropDistinctRecords) {
 				t.Fatal("scan wrapper should have distinct=true")

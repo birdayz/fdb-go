@@ -16,7 +16,7 @@ import (
 func TestPlanPartition_GetPlans(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 
 	pp := NewPlanPartition(
 		properties.PropertyMap{properties.PropDistinctRecords: true},
@@ -37,7 +37,7 @@ func TestPlanPartition_GetPlans(t *testing.T) {
 func TestPlanPartition_GetExpressions(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 
 	pp := NewPlanPartition(
 		properties.PropertyMap{},
@@ -93,7 +93,7 @@ func TestPlanPartition_IsStoredRecord(t *testing.T) {
 func TestPlanPartition_HasPrimaryKey(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	pp := NewPlanPartition(
 		properties.PropertyMap{},
 		map[expressions.RelationalExpression]properties.PropertyMap{
@@ -123,7 +123,7 @@ func TestPlanPartition_HasPrimaryKey(t *testing.T) {
 func TestPlanPartition_GetOrdering(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	want := properties.Ordering{IsKnown: true}
 	pp := NewPlanPartition(
 		properties.PropertyMap{},
@@ -150,7 +150,7 @@ func TestPlanPartition_GetOrdering(t *testing.T) {
 func TestToPlanPartitions_WithPrecomputedPropertiesMap(t *testing.T) {
 	t.Parallel()
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	wA := &physicalScanWrapper{plan: scanA}
+	wA := scanA
 
 	// Pre-compute properties and set on reference.
 	ref := expressions.InitialOf(wA)
@@ -177,7 +177,7 @@ func TestToPlanPartitions_GroupsByDistinctAndStored(t *testing.T) {
 	t.Parallel()
 	// Two wrappers with different properties should land in different partitions.
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	wA := &physicalScanWrapper{plan: scanA}
+	wA := scanA
 
 	// Streaming agg has distinct=false, stored=false.
 	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
@@ -199,7 +199,7 @@ func TestToPlanPartitions_GroupsByDistinctAndStored(t *testing.T) {
 func TestToPlanPartitions_FallbackWhenNoPropertiesMap(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 	ref := expressions.InitialOf(wrapper)
 	// Don't set plan properties — triggers fallback.
 
@@ -232,8 +232,8 @@ func TestRollUpPlanPartitions_MergeAll(t *testing.T) {
 	t.Parallel()
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	wA := &physicalScanWrapper{plan: scanA}
-	wB := &physicalScanWrapper{plan: scanB}
+	wA := scanA
+	wB := scanB
 
 	p1 := NewPlanPartition(
 		properties.PropertyMap{properties.PropDistinctRecords: true, properties.PropStoredRecord: true},
@@ -259,9 +259,9 @@ func TestRollUpPlanPartitions_RetainSingleProperty(t *testing.T) {
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
 	scanC := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
-	wA := &physicalScanWrapper{plan: scanA}
-	wB := &physicalScanWrapper{plan: scanB}
-	wC := &physicalScanWrapper{plan: scanC}
+	wA := scanA
+	wB := scanB
+	wC := scanC
 
 	p1 := NewPlanPartition(
 		properties.PropertyMap{properties.PropDistinctRecords: true, properties.PropStoredRecord: true},

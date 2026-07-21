@@ -13,7 +13,7 @@ import (
 func TestImplementInUnionRule_FiresWithExplodeAndInner(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -53,7 +53,7 @@ func TestImplementInUnionRule_FiresWithExplodeAndInner(t *testing.T) {
 func TestImplementInUnionRule_SkipsSingleQuantifier(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -76,7 +76,7 @@ func TestImplementInUnionRule_SkipsSingleQuantifier(t *testing.T) {
 func TestImplementInUnionRule_SkipsWithPredicates(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)

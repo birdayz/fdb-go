@@ -422,7 +422,7 @@ func TestStrictlyOrderedIfUnique_NonIndexExpression(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	w := &physicalScanWrapper{plan: scan}
+	w := scan
 
 	if strictlyOrderedIfUnique(w, 100) {
 		t.Fatal("non-index expression should never be strictly ordered")
@@ -478,7 +478,7 @@ func TestMakeStrictlySorted_NonIndexScan(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	w := &physicalScanWrapper{plan: scan}
+	w := scan
 
 	result := makeStrictlySorted(w)
 	if result != w {

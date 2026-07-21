@@ -39,13 +39,9 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 
 	// --- Leaf scans ---
 
-	// A bare primary scan is its own physical expression now (RFC-184 W2) —
-	// same derivations as the physicalScanWrapper that used to carry it.
+	// A bare primary scan is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryScanPlan:
 		return derivationsForScan(w)
-
-	case *physicalScanWrapper:
-		return derivationsForScan(w.plan)
 
 	// An index scan is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryIndexPlan:
@@ -61,9 +57,6 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 		return properties.EmptyDerivations()
 
 	// --- Single-child passthrough ---
-
-	case *physicalFilterWrapper:
-		return derivationsFromSingleChildExpr(w)
 
 	case *physicalDistinctWrapper:
 		return derivationsFromSingleChildExpr(w)

@@ -14,7 +14,7 @@ import (
 // ---------------------------------------------------------------------------
 // 1. UniqueOverDistinctOverScan: both Unique and Distinct are absorbed
 //    because the underlying scan is already distinct by primary key.
-//    The final result should be a physicalScanWrapper (promoted).
+//    The final result should be a bare *plans.RecordQueryScanPlan (promoted).
 // ---------------------------------------------------------------------------
 
 func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
@@ -38,8 +38,8 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 	// ImplementUniqueRule absorbs the Unique operator when its input
 	// is distinct. The scan is always distinct, and Distinct over a
 	// distinct source should also be treated as distinct. The net
-	// effect: the root's final members should contain a
-	// physicalScanWrapper — the Unique and Distinct wrappers are both
+	// effect: the root's final members should contain a bare
+	// *plans.RecordQueryScanPlan — the Unique and Distinct wrappers are both
 	// absorbed because the inner chain is inherently distinct.
 	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
@@ -56,7 +56,7 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 	}
 
 	// If ImplementUniqueRule absorbs the Unique (because the distinct
-	// child is itself distinct), we expect a scan wrapper. If the
+	// child is itself distinct), we expect a bare scan plan. If the
 	// implementation instead yields a physicalDistinctWrapper, that's
 	// also acceptable — the key invariant is that no Unique wrapper
 	// appears (since scans are distinct).
@@ -74,7 +74,7 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 			for i, f := range finals {
 				types[i] = fmt.Sprintf("%T", f)
 			}
-			t.Fatalf("expected *physicalScanWrapper or *physicalDistinctWrapper in members (Unique absorbed), got types: %v", types)
+			t.Fatalf("expected *plans.RecordQueryScanPlan or *physicalDistinctWrapper in members (Unique absorbed), got types: %v", types)
 		}
 	}
 }
@@ -268,10 +268,10 @@ func TestPhase3_ProjectionOverFilter(t *testing.T) {
 		t.Fatal("expected *plans.RecordQueryProjectionPlan in explored graph or final members")
 	}
 
-	// Check that physicalFilterWrapper appears in the inner Reference.
+	// Check that a physical filter appears in the inner Reference.
 	foundFilter := containsPhysical(rootRef, IsPhysicalFilter)
 	if !foundFilter {
-		t.Fatal("expected physicalFilterWrapper in the explored graph")
+		t.Fatal("expected a physical filter in the explored graph")
 	}
 }
 
@@ -439,7 +439,7 @@ func TestPhase3_PlanPropertyInvariant_FilterInheritsDistinct(t *testing.T) {
 	}
 
 	// The filterRef's PlanPropertiesMap should contain a
-	// physicalFilterWrapper whose PropDistinctRecords inherits from
+	// physical filter whose PropDistinctRecords inherits from
 	// the child scan (which is distinct).
 	filterPM := GetRefPlanPropertiesMap(filterRef)
 	if filterPM == nil {

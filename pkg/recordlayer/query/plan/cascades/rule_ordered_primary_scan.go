@@ -95,7 +95,7 @@ func (r *OrderedPrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 	plan = plan.WithPrimaryKey(pkVals)
 
 	// Yield the BARE scan: RecordQueryScanPlan is its own physical Cascades
-	// expression now (RFC-184 W2), no physicalScanWrapper adapter needed.
+	// expression now (RFC-184 W2), no adapter needed.
 	call.Yield(plan)
 }
 

@@ -90,7 +90,9 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 
 		// --- a sample of the false/false majority, so a spurious override
 		// added to either side is caught too, not just a dropped one ---
-		{name: "Scan", plan: &plans.RecordQueryScanPlan{}, wrap: &physicalScanWrapper{}},
+		// Scan lost its wrapper (RFC-184 W2) but keeps the false/false default,
+		// so the plan side stays pinned here with no wrapper pair.
+		{name: "Scan", plan: &plans.RecordQueryScanPlan{}},
 		{name: "PredicatesFilter", plan: &plans.RecordQueryPredicatesFilterPlan{}, wrap: &physicalPredicatesFilterWrapper{}},
 		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}, wrap: &physicalNestedLoopJoinWrapper{}},
 		{name: "InJoin", plan: &plans.RecordQueryInJoinPlan{}, wrap: &physicalInJoinWrapper{}},

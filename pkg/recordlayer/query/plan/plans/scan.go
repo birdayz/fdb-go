@@ -33,7 +33,7 @@ type RecordQueryScanPlan struct {
 	// for the rows this scan emits. Minted ONCE in NewRecordQueryScanPlan and
 	// carried through every copy (WithPrimaryKey/WithScanComparisons), it gives
 	// a bare scan a single stable correlation identity when it stands as its own
-	// Cascades expression in the memo — the role physicalScanWrapper's
+	// Cascades expression in the memo — the role a physical scan wrapper's
 	// GetResultValue used to play (RFC-184 W2). Deliberately EXCLUDED from
 	// EqualsPlanWithoutChildren/HashCodeWithoutChildren: its correlation id is
 	// unique per instance, so folding it into identity would make two
@@ -112,7 +112,7 @@ func (p *RecordQueryScanPlan) GetChildren() []RecordQueryPlan { return nil }
 
 // GetResultValue returns the scan's STABLE per-instance result value — the
 // single correlation identity a bare scan carries as its own memo expression
-// (RFC-184 W2), the role physicalScanWrapper.GetResultValue used to play. Unlike
+// (RFC-184 W2), the role a physical scan wrapper's GetResultValue used to play. Unlike
 // PlanExprBase's method (a fresh QOV per call), this returns the same value the
 // constructor minted, so repeated interrogations of one plan instance agree.
 // Falls back to PlanExprBase for struct-literal test plans that bypass the
@@ -253,7 +253,7 @@ func (p *RecordQueryScanPlan) WithQuantifiers(_ []expressions.Quantifier) expres
 }
 
 // GetCorrelatedToWithoutChildren reports the correlations reached through this
-// scan's comparison operands, mirroring physicalScanWrapper.
+// scan's comparison operands.
 func (p *RecordQueryScanPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return scanComparisonCorrelations(p.GetScanComparisons())
 }

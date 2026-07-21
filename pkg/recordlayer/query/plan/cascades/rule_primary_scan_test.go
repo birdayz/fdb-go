@@ -21,7 +21,7 @@ func TestPrimaryScanRule_YieldsScanPlan(t *testing.T) {
 		t.Fatalf("PrimaryScanRule yielded %d expressions, want 1", len(yielded))
 	}
 	// RFC-184 W2: PrimaryScanRule yields the BARE scan plan (its own physical
-	// Cascades expression), not the physicalScanWrapper adapter.
+	// Cascades expression), not a wrapper adapter.
 	plan, ok := yielded[0].(*plans.RecordQueryScanPlan)
 	if !ok {
 		t.Fatalf("yield = %T, want *plans.RecordQueryScanPlan", yielded[0])

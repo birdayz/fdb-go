@@ -197,7 +197,7 @@ func TestRichOrderingParity_PrimaryScan(t *testing.T) {
 				[]string{"T"}, values.UnknownType, tc.reverse,
 			).WithScanComparisons(tc.ranges).WithPrimaryKey(pk)
 
-			w := &physicalScanWrapper{plan: scan}
+			w := scan
 			assertRichOrderingsEqual(t, w.HintRichOrdering(), scan.HintRichOrdering())
 		})
 	}
@@ -208,7 +208,7 @@ func TestRichOrderingParity_PrimaryScanWithoutPK(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	w := &physicalScanWrapper{plan: scan}
+	w := scan
 
 	assertRichOrderingsEqual(t, w.HintRichOrdering(), scan.HintRichOrdering())
 	if len(scan.HintRichOrdering().GetKeys()) != 0 {
@@ -338,7 +338,7 @@ func TestRichOrderingParity_FetchOverUnorderedSource(t *testing.T) {
 	)
 	w := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 		expressions.NewPhysicalQuantifier(
-			expressions.FinalOfAtStage(&physicalScanWrapper{plan: scan}, expressions.StageCanonical)),
+			expressions.FinalOfAtStage(scan, expressions.StageCanonical)),
 		fetch.GetTranslateValueFunction(), fetch.GetResultType(), fetch.GetFetchIndexRecords(),
 	)
 

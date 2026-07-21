@@ -29,7 +29,7 @@ func TestImplementInJoinRule_MatchesSelectExpression(t *testing.T) {
 func TestImplementInJoinRule_SkipsWithPredicates(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -62,7 +62,7 @@ func TestImplementInJoinRule_SkipsWithPredicates(t *testing.T) {
 func TestImplementInJoinRule_SkipsSingleQuantifier(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -85,7 +85,7 @@ func TestImplementInJoinRule_SkipsSingleQuantifier(t *testing.T) {
 func TestImplementInJoinRule_FiresWithExplodeAndInner(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -125,7 +125,7 @@ func TestImplementInJoinRule_FiresWithExplodeAndInner(t *testing.T) {
 func TestImplementInJoinRule_SkipsWhenResultNotQOV(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
@@ -193,7 +193,7 @@ func TestIsSupportedExplodeValue(t *testing.T) {
 func TestImplementInJoinRule_MultipleExplodes(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	sw := &physicalScanWrapper{plan: scan}
+	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)

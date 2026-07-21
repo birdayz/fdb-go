@@ -15,7 +15,7 @@ func TestPlanningCostModel_PhysicalBeatsLogical(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	physical := &physicalScanWrapper{plan: scan}
+	physical := scan
 	logical := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 
 	if !PlanningCostModelLess(physical, logical) {
@@ -33,7 +33,7 @@ func TestPlanningCostModel_FewerResidualPredicatesWins(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
+	scanRef := expressions.InitialOf(scan)
 	innerQ := expressions.ForEachQuantifier(scanRef)
 
 	pred1 := predicates.NewComparisonPredicate(
@@ -73,8 +73,8 @@ func TestPlanningCostModel_HashTieBreakIsDeterministic(t *testing.T) {
 
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	wrapA := &physicalScanWrapper{plan: scanA}
-	wrapB := &physicalScanWrapper{plan: scanB}
+	wrapA := scanA
+	wrapB := scanB
 
 	ab := PlanningCostModelLess(wrapA, wrapB)
 	ba := PlanningCostModelLess(wrapB, wrapA)
@@ -97,8 +97,8 @@ func TestDeepHashCode_DistinguishesDifferentChildren(t *testing.T) {
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
 
-	refA := expressions.InitialOf(&physicalScanWrapper{plan: scanA})
-	refB := expressions.InitialOf(&physicalScanWrapper{plan: scanB})
+	refA := expressions.InitialOf(scanA)
+	refB := expressions.InitialOf(scanB)
 
 	filterA := plans.NewRecordQueryTypeFilterPlanFromQuantifier([]string{"T"}, expressions.ForEachQuantifier(refA))
 	filterB := plans.NewRecordQueryTypeFilterPlanFromQuantifier([]string{"T"}, expressions.ForEachQuantifier(refB))
@@ -120,7 +120,7 @@ func TestPlanningCostModel_CNFSizeForOrPredicates(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
+	scanRef := expressions.InitialOf(scan)
 	innerQ := expressions.ForEachQuantifier(scanRef)
 
 	pred := func(field string) predicates.QueryPredicate {
@@ -175,7 +175,7 @@ func TestPlanningCostModel_TypeFilterCountsRecordTypes(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T1", "T2", "T3"}, values.UnknownType, false)
-	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
+	scanRef := expressions.InitialOf(scan)
 	innerQ := expressions.ForEachQuantifier(scanRef)
 
 	// Type filter admitting 1 type should have typeFilterCount=1.
@@ -295,7 +295,7 @@ func TestCompareInPlan_FlipFlop_SargedVsUnsarged(t *testing.T) {
 	// has no comparison matching the binding name.
 	innerPlanB := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	inJoinPlanB := plans.NewRecordQueryInJoinPlan(innerPlanB, "other_bind", false, false)
-	innerScanB := &physicalScanWrapper{plan: innerPlanB}
+	innerScanB := innerPlanB
 	innerRefB := expressions.InitialOf(innerScanB)
 	wrapB := NewPhysicalInJoinWrapper(inJoinPlanB, expressions.NewPhysicalQuantifier(innerRefB))
 
@@ -415,8 +415,8 @@ func TestCollectSargedAliases_IntersectionIsSetIntersection(t *testing.T) {
 func TestIntersectChildAliases_EmptyChildren(t *testing.T) {
 	t.Parallel()
 
-	// Use a wrapper with no quantifiers — physicalScanWrapper has nil quantifiers.
-	scan := &physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)}
+	// Use a bare scan — a leaf expression with no quantifiers.
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	result := intersectChildAliases(scan)
 	if result != nil {
 		t.Errorf("intersectChildAliases(no quantifiers) = %v, want nil", result)
@@ -425,9 +425,7 @@ func TestIntersectChildAliases_EmptyChildren(t *testing.T) {
 
 func TestPlanningCostModel_CoveringEqualityIndexPreferredOverPrimaryScan(t *testing.T) {
 	t.Parallel()
-	primary := &physicalScanWrapper{
-		plan: plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-	}
+	primary := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	comp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: 42, Typ: values.TypeInt}}
 	cr := predicates.EmptyComparisonRange()
 	mr := cr.Merge(&comp)
@@ -457,9 +455,7 @@ func TestPlanningCostModel_CoveringEqualityIndexPreferredOverPrimaryScan(t *test
 
 func TestPlanningCostModel_NonCoveringFullIndexLosesToPrimaryScan(t *testing.T) {
 	t.Parallel()
-	primary := &physicalScanWrapper{
-		plan: plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-	}
+	primary := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	index := plans.NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, values.UnknownType, false).
 		WithIndexMetadata([]string{"A"}, nil, false)
 
@@ -470,9 +466,7 @@ func TestPlanningCostModel_NonCoveringFullIndexLosesToPrimaryScan(t *testing.T) 
 
 func TestPlanningCostModel_EqualityIndexBeatsFullScan(t *testing.T) {
 	t.Parallel()
-	primary := &physicalScanWrapper{
-		plan: plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-	}
+	primary := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	comp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: 42, Typ: values.TypeInt}}
 	cr := predicates.EmptyComparisonRange()
 	mr := cr.Merge(&comp)
@@ -505,7 +499,7 @@ func TestPlanningCostModelLess_Criterion8_TypeFilterCount(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
+	scanRef := expressions.InitialOf(scan)
 	innerQ := expressions.ForEachQuantifier(scanRef)
 
 	// Plan A: type filter over 1 type — typeFilterCount=1.
@@ -531,7 +525,7 @@ func TestPlanningCostModelLess_Criterion9_TypeFilterDepth(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
+	scanRef := expressions.InitialOf(scan)
 	innerQ := expressions.ForEachQuantifier(scanRef)
 
 	// shallowPlan: typeFilter IS the root (depth=0).
@@ -641,7 +635,7 @@ func TestPlanningCostModelLess_Criterion11_DistinctDepth(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
+	scanRef := expressions.InitialOf(scan)
 	innerQ := expressions.NewPhysicalQuantifier(scanRef)
 
 	distPlan := plans.NewRecordQueryDistinctPlan(scan)
@@ -821,7 +815,7 @@ func TestPlanningCostModelLess_Criterion14_MapPredicatesFilterCount(t *testing.T
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
+	scanRef := expressions.InitialOf(scan)
 	innerQ := expressions.ForEachQuantifier(scanRef)
 
 	// Plan A: one predicates filter on top of the scan → predicatesFilterCount=1, mapCount=0.
@@ -872,10 +866,10 @@ func TestPlanningCostModel_AggregateIndexBeatsStreamingAgg(t *testing.T) {
 		"T", nil, "COUNT",
 	).WithGroupColumns([]string{"STATUS"}, "")
 
-	innerScan := &physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"T"}, nil, false)}
+	innerScan := plans.NewRecordQueryScanPlan([]string{"T"}, nil, false)
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerScan))
 	streamingAgg := newPhysicalStreamingAggWrapper(
-		plans.NewRecordQueryStreamingAggregationPlan(innerScan.plan, nil, nil),
+		plans.NewRecordQueryStreamingAggregationPlan(innerScan, nil, nil),
 		innerQ,
 	)
 

@@ -19,8 +19,8 @@ func TestEdge_RollUpPartitions_PreservesExpressionIdentity(t *testing.T) {
 
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	wA := &physicalScanWrapper{plan: scanA}
-	wB := &physicalScanWrapper{plan: scanB}
+	wA := scanA
+	wB := scanB
 
 	p1 := NewPlanPartition(
 		properties.PropertyMap{properties.PropDistinctRecords: true, properties.PropStoredRecord: true},
@@ -71,7 +71,7 @@ func TestEdge_ToPlanPartitions_NoPlanProperties(t *testing.T) {
 	// Create a Reference with only exploratory members (via InitialOf).
 	// No final members, no plan properties set.
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: scan}
+	wrapper := scan
 	ref := expressions.InitialOf(wrapper)
 
 	// Plan properties not set -> fallback path.
@@ -96,7 +96,7 @@ func TestEdge_ComputeRefPlanProperties_MultiplePlans(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanW := &physicalScanWrapper{plan: scan}
+	scanW := scan
 
 	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
 	idxW := idx.WithIndexMetadata(nil, nil, true)
@@ -222,9 +222,9 @@ func TestEdge_ImplementUnorderedUnionRule_ThreeChildren(t *testing.T) {
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
 	scanC := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
-	wA := &physicalScanWrapper{plan: scanA}
-	wB := &physicalScanWrapper{plan: scanB}
-	wC := &physicalScanWrapper{plan: scanC}
+	wA := scanA
+	wB := scanB
+	wC := scanC
 
 	refA := expressions.InitialOf(wA)
 	pmA := NewPlanPropertiesMap()
@@ -406,7 +406,7 @@ func TestEdge_PlanExtraction_PrefersFinalOverExploratory(t *testing.T) {
 
 	// Simulate PLANNING phase: insert a physical wrapper as a final member.
 	physScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrapper := &physicalScanWrapper{plan: physScan}
+	wrapper := physScan
 	ref.Insert(wrapper)
 
 	// GetBest with a comparator that always prefers physical plans.
