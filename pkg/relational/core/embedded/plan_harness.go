@@ -7,11 +7,13 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/query"
+	"fdb.dev/pkg/relational/core/query/logical"
 )
 
 // PlanQueryForTest runs the full Cascades pipeline on a SQL query against
@@ -59,6 +61,38 @@ func PlanPhysicalForTestWithReachability(
 ) (plans.RecordQueryPlan, error) {
 	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, reach)
 	return plan, err
+}
+
+// PlanPhysicalDMLForTest is PlanPhysicalForTest for a DELETE or UPDATE
+// statement: it routes the DML through the SAME logical-build → translate →
+// Cascades-plan → extract → ValidatePlanInvariants pipeline the production DML
+// generator (cascadesGenerator.planDML) runs, but metadata-only — no live
+// store, planner-default statistics when stats is nil — exactly as
+// PlanPhysicalForTest does for SELECT.
+//
+// It exists so the explain-differ corpus dump can pin DML plan SHAPES. A
+// planner change that reads differ-clean on every SELECT while corrupting the
+// DELETE-WHERE-EXISTS path (RFC-184 W2) is invisible to a SELECT-only dump;
+// planning DELETE/UPDATE too catches that class at the plan level.
+//
+// Only DELETE and UPDATE are handled. INSERT carries no interesting winning
+// plan: INSERT … VALUES is literal rows (no scanned tree), and INSERT … SELECT
+// is planned as its SELECT body, already covered by PlanPhysicalForTest. The
+// sql passed here MUST be a single DELETE or UPDATE statement; anything else is
+// a caller error (ErrCodeUnsupportedQuery).
+func PlanPhysicalDMLForTest(sql, schemaDDL string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
+	return planPhysicalDMLForTest(sql, schemaDDL, stats, nil)
+}
+
+// PlanPhysicalDMLForTestWithReachability is PlanPhysicalDMLForTest with
+// RFC-183's yield-time plan-reachability accounting routed into the caller's
+// collector. nil = collect nothing (identical to PlanPhysicalDMLForTest).
+func PlanPhysicalDMLForTestWithReachability(
+	sql, schemaDDL string,
+	stats properties.StatisticsProvider,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, error) {
+	return planPhysicalDMLForTest(sql, schemaDDL, stats, reach)
 }
 
 // planPhysicalForTest is PlanPhysicalForTest plus the optional RFC-183 P5
@@ -149,12 +183,37 @@ func planPhysicalForTest(
 		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
+	// SELECT plans with the SELECT planning rule set (Batch-A). The DML harness
+	// (planPhysicalDMLForTest) appends DMLImplementationRules; everything from
+	// the planner build onward is identical, so it lives in the shared tail.
+	return planReferenceToPhysical(ref, md, stats, cascades.BatchAExpressionRules(), verifyOneFinal, reach)
+}
+
+// planReferenceToPhysical is the shared planning tail of the no-FDB harness
+// entry points: it runs the Cascades planner over an already-translated
+// reference and extracts + validates the winning physical plan. The SELECT
+// path (planPhysicalForTest) and the DML path (planPhysicalDMLForTest) differ
+// only in how they build and translate `ref`, and in planningRules — the DML
+// path appends cascades.DMLImplementationRules() so the DELETE/UPDATE physical
+// wrappers can be implemented. Everything from planner construction onward is
+// identical, so it is written once here.
+//
+// verifyOneFinal and reach carry RFC-183's per-Planner accounting (see
+// planPhysicalForTest); both are inert (false / nil) for the corpus dump.
+func planReferenceToPhysical(
+	ref *expressions.Reference,
+	md *recordlayer.RecordMetaData,
+	stats properties.StatisticsProvider,
+	planningRules []cascades.ExpressionRule,
+	verifyOneFinal bool,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, []string, error) {
 	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
+		WithPlanningExpressionRules(planningRules).
 		WithStatistics(stats).
 		WithMaxTasks(100_000)
 
@@ -197,6 +256,92 @@ func planPhysicalForTest(
 		return nil, nil, fmt.Errorf("plan invariant violated: %w", err)
 	}
 	return physPlan, oneFinalViolations, nil
+}
+
+// planPhysicalDMLForTest is the no-FDB DML twin of planPhysicalForTest. It
+// mirrors the plan-shape-determining core of cascadesGenerator.planDML: the
+// WithCatalog logical build, qualified-name resolution, the DML EXISTS
+// correctness guards (CheckProjectedExistsFolded / CheckBuriedExistentialPredicate
+// — the guards that gate the DELETE-WHERE-EXISTS case this harness targets),
+// and the DML planning rule set (Batch-A + DMLImplementationRules). The
+// production-only steps that need a live connection (statistics fetch, plan
+// logging, dry-run/OPTIONS handling) are dropped, exactly as the SELECT harness
+// drops the production SELECT generator's connection-bound steps.
+func planPhysicalDMLForTest(
+	sql, schemaDDL string,
+	stats properties.StatisticsProvider,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, error) {
+	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
+	if err != nil {
+		return nil, fmt.Errorf("schema DDL: %w", err)
+	}
+	md := tmpl.Underlying()
+
+	root, err := parser.Parse(sql)
+	if err != nil {
+		return nil, fmt.Errorf("parse SQL: %w", err)
+	}
+	stmts := root.Statements()
+	if stmts == nil || len(stmts.AllStatement()) == 0 {
+		return nil, fmt.Errorf("no statements in SQL")
+	}
+	dml := stmts.AllStatement()[0].DmlStatement()
+	if dml == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "not a DML statement")
+	}
+
+	// Route DELETE→delete-build, UPDATE→update-build against the schema catalog,
+	// exactly as planDML does. INSERT is out of scope (see PlanPhysicalDMLForTest).
+	var logicalOp logical.LogicalOperator
+	switch {
+	case dml.DeleteStatement() != nil:
+		logicalOp, err = buildLogicalPlanForDeleteWithCatalog(dml.DeleteStatement(), md, defaultEmbeddedSchema)
+	case dml.UpdateStatement() != nil:
+		logicalOp, err = buildLogicalPlanForUpdateWithCatalog(dml.UpdateStatement(), md, defaultEmbeddedSchema)
+	default:
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML harness handles only DELETE and UPDATE")
+	}
+	if err != nil {
+		// A carried SQLSTATE from a WHERE-EXISTS subquery build (RFC-142) — surface
+		// it as the production DML path does.
+		return nil, err
+	}
+	if logicalOp == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML logical plan failed")
+	}
+
+	if err := resolveQualifiedTableNames(logicalOp, defaultEmbeddedSchema); err != nil {
+		return nil, err
+	}
+	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
+	}
+
+	// TranslateToCascadesWithSubqueries is the DML translator (planDML uses it,
+	// not the SELECT path's WithError). We drop the subquery plans: the corpus
+	// dump only pins the OUTER plan's shape, and executing an unbound-subquery
+	// plan is out of the picture (no store).
+	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
+	if ref == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
+	}
+
+	// RFC-141 §8/R4: the DML EXISTS correctness guards. These reject a buried or
+	// folded WHERE-existential BEFORE planning, in production and here alike — so
+	// an error-pinned corpus stanza renders the same <PLAN-ERROR> marker instead
+	// of a bogus plan. They are the guards directly relevant to the
+	// DELETE-WHERE-EXISTS class this harness exists to protect.
+	if existsErr := query.CheckProjectedExistsFolded(ref); existsErr != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, existsErr.Error())
+	}
+	if buriedErr := query.CheckBuriedExistentialPredicate(ref); buriedErr != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
+	}
+
+	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
+	physPlan, _, err := planReferenceToPhysical(ref, md, stats, planningRules, false, reach)
+	return physPlan, err
 }
 
 // PlanQueryWithMetadata is like PlanQueryForTest but accepts pre-built

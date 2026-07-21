@@ -67,6 +67,32 @@ func TestNormalizeAliasesIsStableAndInjective(t *testing.T) {
 	}
 }
 
+// TestIsDMLClassification pins the statement-class routing the collect loop
+// depends on: DELETE/UPDATE go to the DML harness, SELECT/WITH/VALUES stay on
+// the Query path, and INSERT (plus everything else) is a non-plannable
+// sequencing step. A misclassification here silently drops a plannable DML
+// stanza back into NonQuery — the exact DML-blindness this change closes.
+func TestIsDMLClassification(t *testing.T) {
+	t.Parallel()
+	cases := map[string]bool{
+		"DELETE FROM t WHERE id > 5":           true,
+		"UPDATE t SET x = 1":                   true,
+		"delete from t":                        true, // case-insensitive
+		"  \n\tDELETE FROM t":                  true, // leading whitespace tolerated
+		"SELECT * FROM t":                      false,
+		"WITH x AS (SELECT 1) SELECT * FROM x": false,
+		"VALUES (1)":                           false,
+		"INSERT INTO t VALUES (1)":             false,
+		"INSERT INTO t SELECT * FROM u":        false,
+		"":                                     false,
+	}
+	for sql, want := range cases {
+		if got := isDML(sql); got != want {
+			t.Errorf("isDML(%q) = %v, want %v", sql, got, want)
+		}
+	}
+}
+
 // TestNormalizeErrIsSingleLineAndBounded pins the marker-line invariants the
 // baseline format depends on: no newline (which would break Parse and split
 // one query across two hunks), no raw pointer address (which would make a

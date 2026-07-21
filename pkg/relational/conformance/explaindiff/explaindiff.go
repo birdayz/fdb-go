@@ -59,7 +59,7 @@ import (
 // formatVersion is stamped into every baseline header. Bump it when the
 // rendering changes so a stale baseline is diagnosed rather than silently
 // mis-diffed against a new one.
-const formatVersion = "explain-baseline/v1"
+const formatVersion = "explain-baseline/v2"
 
 // maxShapeDepth caps the shape-tree walk. A physical plan is a tree, so the
 // cap can only be hit by a cycle introduced by a planner bug — which is
@@ -112,12 +112,21 @@ func (e Entry) Panicked() bool { return strings.HasPrefix(e.Plan, "<PLAN-PANIC:"
 func (e Entry) UnexpectedlyFailed() bool { return e.Failed() && e.ErrorPin == "" }
 
 // Collect walks dir/*.yaml, loads every scenario through the yamsql loader,
-// and plans every query test in it.
+// and plans every query AND DELETE/UPDATE test in it.
 //
-// Only tests routed through the Query path (SELECT / WITH / VALUES, per
-// yamsql.IsQuery) are planned: `exec:` DML stanzas are sequencing steps, and
-// the planner harness takes a SELECT statement. Their count is reported in
-// Stats so the corpus total still reconciles.
+// Two plannable classes are pinned:
+//
+//   - SELECT / WITH / VALUES (yamsql.IsQuery) → the SELECT harness
+//     (embedded.PlanPhysicalForTest). Counted in Stats.Queries.
+//   - DELETE / UPDATE (isDML) → the DML harness
+//     (embedded.PlanPhysicalDMLForTest). Counted in Stats.DML. This closes the
+//     DML-blind gap: a planner change that reads clean on every SELECT while
+//     corrupting the DELETE-WHERE-EXISTS path (RFC-184 W2) is invisible to a
+//     SELECT-only dump.
+//
+// Everything else (`exec:` INSERT and other sequencing steps) has no
+// interesting winning plan and is counted in Stats.NonQuery so the corpus total
+// still reconciles (Queries + DML + NonQuery == tests).
 //
 // Scenarios whose schema_template does not compile yield one
 // `<PLAN-ERROR: …>` entry per query in the file rather than vanishing — a
@@ -156,12 +165,23 @@ func collect(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats,
 			return nil, Stats{}, fmt.Errorf("load %s: %w", base, loadErr)
 		}
 		for i, t := range s.Tests {
-			if !yamsql.IsQuery(t.Query) {
+			// Pick the harness by statement class. SELECT/WITH/VALUES plan
+			// through the SELECT harness; DELETE/UPDATE through the DML harness;
+			// INSERT and other sequencing steps have no interesting plan and are
+			// counted (not planned) so the corpus total reconciles.
+			var plan planFn
+			switch {
+			case yamsql.IsQuery(t.Query):
+				st.Queries++
+				plan = planSelect
+			case isDML(t.Query):
+				st.DML++
+				plan = planDML
+			default:
 				st.NonQuery++
 				continue
 			}
-			st.Queries++
-			e := planOne(base, i, t.Query, t.EffectiveErrorCode(), s.SchemaTemplate, reach)
+			e := planOne(base, i, t.Query, t.EffectiveErrorCode(), s.SchemaTemplate, reach, plan)
 			if e.Failed() {
 				st.PlanErrors++
 			}
@@ -180,35 +200,87 @@ func collect(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats,
 type Stats struct {
 	// Files is the number of *.yaml scenarios walked.
 	Files int
-	// Queries is the number of planned query tests (the entry count).
+	// Queries is the number of planned SELECT/WITH/VALUES tests.
 	Queries int
-	// NonQuery is the number of `exec:` DML stanzas skipped.
+	// DML is the number of planned DELETE/UPDATE tests. Together with Queries
+	// it accounts for every entry: Queries + DML == len(entries).
+	DML int
+	// NonQuery is the number of non-plannable stanzas skipped (INSERT and
+	// other `exec:` sequencing steps).
 	NonQuery int
 	// PlanErrors is how many entries are failure markers.
 	PlanErrors int
 	// UnexpectedErrors is how many of those failures have no corpus error
-	// pin — queries that are supposed to plan and don't.
+	// pin — statements that are supposed to plan and don't.
 	UnexpectedErrors int
 }
 
-// planOne plans a single query against the scenario's schema template,
-// converting any error OR panic into a stable marker entry.
-func planOne(file string, idx int, sql, errorPin, schemaTemplate string, reach *cascades.ReachabilityCollector) Entry {
+// planFn produces the winning physical plan for one statement against a schema
+// template. It is the ONLY thing that differs between the SELECT path and the
+// DML path — everything downstream (Explain, shapeOf, marker rendering) is
+// shared through planOne.
+type planFn func(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error)
+
+// planSelect routes a SELECT/WITH/VALUES statement through the SELECT harness.
+func planSelect(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
+	// Statistics are nil: planner defaults (see the package doc — the baseline
+	// is a regression key, not a live-cardinality prediction).
+	return embedded.PlanPhysicalForTestWithReachability(sql, schemaTemplate, nil, reach)
+}
+
+// planDML routes a DELETE/UPDATE statement through the DML harness — the same
+// no-FDB Cascades pipeline, entered via the DML logical builders and the DML
+// planning rule set (see embedded.PlanPhysicalDMLForTest).
+func planDML(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
+	return embedded.PlanPhysicalDMLForTestWithReachability(sql, schemaTemplate, nil, reach)
+}
+
+// isDML reports whether stmt is a DELETE or UPDATE — the two DML shapes with a
+// scanned/filtered tree worth pinning. It mirrors yamsql.IsQuery's leading-
+// keyword tokenization (strip leading whitespace/paren, take the first word).
+// INSERT is deliberately excluded: INSERT … VALUES is literal rows and
+// INSERT … SELECT is planned as its SELECT body by the Query path already.
+func isDML(stmt string) bool {
+	switch leadingKeyword(stmt) {
+	case "DELETE", "UPDATE":
+		return true
+	}
+	return false
+}
+
+// leadingKeyword returns the upper-cased first token of a statement, skipping
+// leading whitespace and open parens — the same tokenization yamsql.IsQuery
+// applies so the two classifiers agree on where a statement's keyword starts.
+func leadingKeyword(stmt string) string {
+	s := strings.TrimLeft(stmt, " \t\r\n(")
+	for i, r := range s {
+		if r == ' ' || r == '\t' || r == '\r' || r == '\n' || r == '(' {
+			s = s[:i]
+			break
+		}
+	}
+	return strings.ToUpper(s)
+}
+
+// planOne plans a single statement against the scenario's schema template
+// using the supplied harness, converting any error OR panic into a stable
+// marker entry.
+func planOne(file string, idx int, sql, errorPin, schemaTemplate string, reach *cascades.ReachabilityCollector, plan planFn) Entry {
 	e := Entry{File: file, Index: idx, ErrorPin: errorPin, SQL: collapse(sql)}
-	plan, err := planGuarded(sql, schemaTemplate, reach)
+	physPlan, err := planGuarded(sql, schemaTemplate, reach, plan)
 	var pe *panicErr
 	switch {
 	case errors.As(err, &pe):
 		e.Plan = "<PLAN-PANIC: " + normalizeErr(pe.value) + ">"
 	case err != nil:
 		e.Plan = "<PLAN-ERROR: " + normalizeErr(err.Error()) + ">"
-	case plan == nil:
+	case physPlan == nil:
 		// Defensive: a nil plan with a nil error would otherwise render as
 		// an empty line and diff as "no change".
 		e.Plan = "<PLAN-ERROR: planner returned a nil plan with no error>"
 	default:
-		e.Plan = normalizeAliases(collapse(plan.Explain()))
-		e.Shape = shapeOf(plan)
+		e.Plan = normalizeAliases(collapse(physPlan.Explain()))
+		e.Shape = shapeOf(physPlan)
 	}
 	return e
 }
@@ -248,23 +320,21 @@ type panicErr struct{ value string }
 
 func (p *panicErr) Error() string { return "PANIC " + p.value }
 
-// planGuarded runs the full Cascades pipeline and converts a panic into an
-// error. A panic must not abort the corpus walk: the whole point is that
-// every query gets a line, including the ones that blow up.
-func planGuarded(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plan plans.RecordQueryPlan, err error) {
+// planGuarded runs the supplied harness and converts a panic into an error. A
+// panic must not abort the corpus walk: the whole point is that every
+// statement gets a line, including the ones that blow up.
+//
+// reach is threaded through the harness rather than switched on globally: the
+// tally belongs to whoever asked for it. A corpus walk under t.Parallel
+// alongside sibling walks is exactly the shape that made the old package-level
+// tally report 3x its true value.
+func planGuarded(sql, schemaTemplate string, reach *cascades.ReachabilityCollector, plan planFn) (physPlan plans.RecordQueryPlan, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			plan, err = nil, &panicErr{value: fmt.Sprint(r)}
+			physPlan, err = nil, &panicErr{value: fmt.Sprint(r)}
 		}
 	}()
-	// Statistics are nil: planner defaults. See the package doc — the
-	// baseline is a regression key, not a live-cardinality prediction.
-	//
-	// reach is threaded rather than switched on globally: the tally belongs to
-	// whoever asked for it. A corpus walk under t.Parallel alongside sibling
-	// walks is exactly the shape that made the old package-level tally report
-	// 3x its true value.
-	return embedded.PlanPhysicalForTestWithReachability(sql, schemaTemplate, nil, reach)
+	return plan(sql, schemaTemplate, reach)
 }
 
 // shapeOf renders the plan's structural skeleton: the Go type of each node,
@@ -336,8 +406,8 @@ func collapse(s string) string { return strings.Join(strings.Fields(s), " ") }
 // The format is line-oriented and entry-keyed so both `diff -u` and Parse
 // work on it:
 //
-//	# explain-baseline/v1
-//	# files=334 queries=2407 non_query=252 plan_errors=255 unexpected_errors=4
+//	# explain-baseline/v2
+//	# files=334 queries=2407 dml=276 non_query=45 plan_errors=255 unexpected_errors=4
 //	#
 //	=== aggregate_expr.yaml#3
 //	sql:   SELECT COUNT(*) FROM T
@@ -354,10 +424,11 @@ func Render(entries []Entry, st Stats) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n", formatVersion)
 	fmt.Fprintf(&b, statsTemplate+"\n",
-		st.Files, st.Queries, st.NonQuery, st.PlanErrors, st.UnexpectedErrors)
+		st.Files, st.Queries, st.DML, st.NonQuery, st.PlanErrors, st.UnexpectedErrors)
 	b.WriteString("#\n")
 	b.WriteString("# Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through\n")
-	b.WriteString("# embedded.PlanPhysicalForTest (full Cascades, no FDB, default statistics).\n")
+	b.WriteString("# embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest\n")
+	b.WriteString("# (DELETE/UPDATE) — full Cascades, no FDB, default statistics.\n")
 	b.WriteString("# Regenerate: go run ./cmd/explain-differ dump -out <file>\n")
 	b.WriteString("#\n")
 	for _, e := range entries {
@@ -396,7 +467,7 @@ type Baseline struct {
 // the version tag go unchecked.
 const (
 	statsPrefix   = "# files="
-	statsTemplate = "# files=%d queries=%d non_query=%d plan_errors=%d unexpected_errors=%d"
+	statsTemplate = "# files=%d queries=%d dml=%d non_query=%d plan_errors=%d unexpected_errors=%d"
 )
 
 // Parse reads back a rendered baseline. Round-tripping through Parse is what
@@ -408,9 +479,10 @@ const (
 //     a rendering change makes every entry differ for reasons that have
 //     nothing to do with the planner;
 //   - the stats line must be present and well-formed;
-//   - the stats line's `queries=` must equal the number of entries that
-//     follow. A dump interrupted mid-write keeps its header count and loses
-//     the tail, which is precisely the truncation this check catches.
+//   - the stats line's `queries=` + `dml=` must equal the number of entries
+//     that follow (both classes produce one entry each). A dump interrupted
+//     mid-write keeps its header count and loses the tail, which is precisely
+//     the truncation this check catches.
 func Parse(text string) (*Baseline, error) {
 	var (
 		b   Baseline
@@ -441,7 +513,7 @@ func Parse(text string) (*Baseline, error) {
 			sawStats = true
 			var st Stats
 			if _, err := fmt.Sscanf(line, statsTemplate,
-				&st.Files, &st.Queries, &st.NonQuery, &st.PlanErrors, &st.UnexpectedErrors); err != nil {
+				&st.Files, &st.Queries, &st.DML, &st.NonQuery, &st.PlanErrors, &st.UnexpectedErrors); err != nil {
 				return nil, fmt.Errorf("line %d: malformed stats header %q: %w", lineNo, line, err)
 			}
 			b.Stats = st
@@ -478,10 +550,10 @@ func Parse(text string) (*Baseline, error) {
 		return nil, fmt.Errorf("baseline has no `# %s` format-version header — not an explain baseline (regenerate with `go run ./cmd/explain-differ dump`)", formatVersion)
 	case !sawStats:
 		return nil, errors.New("baseline has no `# files=… queries=…` stats header — the dump did not finish writing it")
-	case b.Stats.Queries != len(b.Entries):
+	case b.Stats.Queries+b.Stats.DML != len(b.Entries):
 		return nil, fmt.Errorf(
-			"baseline is TRUNCATED: header declares queries=%d but the file holds %d entries — the dump was interrupted; regenerate it",
-			b.Stats.Queries, len(b.Entries))
+			"baseline is TRUNCATED: header declares queries=%d + dml=%d = %d but the file holds %d entries — the dump was interrupted; regenerate it",
+			b.Stats.Queries, b.Stats.DML, b.Stats.Queries+b.Stats.DML, len(b.Entries))
 	}
 	return &b, nil
 }
