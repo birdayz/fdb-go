@@ -118,7 +118,7 @@ var _ = Describe("Intersection with compareKeys", func() {
 
 			c1 := FromList([]int64{1, 2, 3, 4, 5})
 			c2 := FromList([]int64{2, 4, 6})
-			compKey := func(v int64) tuple.Tuple { return tuple.Tuple{v} }
+			compKey := func(v int64) (tuple.Tuple, error) { return tuple.Tuple{v}, nil }
 			inter := Intersection([]RecordCursor[int64]{c1, c2}, compKey, false)
 
 			var results []int64
@@ -139,7 +139,7 @@ var _ = Describe("Intersection with compareKeys", func() {
 
 			c1 := FromList([]int64{1, 3, 5})
 			c2 := FromList([]int64{2, 4, 6})
-			compKey := func(v int64) tuple.Tuple { return tuple.Tuple{v} }
+			compKey := func(v int64) (tuple.Tuple, error) { return tuple.Tuple{v}, nil }
 			inter := Intersection([]RecordCursor[int64]{c1, c2}, compKey, false)
 
 			var results []int64
@@ -160,7 +160,7 @@ var _ = Describe("Intersection with compareKeys", func() {
 
 			c1 := FromList([]int64{1, 2, 3})
 			c2 := FromList([]int64{1, 2, 3})
-			compKey := func(v int64) tuple.Tuple { return tuple.Tuple{v} }
+			compKey := func(v int64) (tuple.Tuple, error) { return tuple.Tuple{v}, nil }
 			inter := Intersection([]RecordCursor[int64]{c1, c2}, compKey, false)
 
 			var results []int64
@@ -183,7 +183,7 @@ var _ = Describe("Intersection with compareKeys", func() {
 
 			c1 := FromList([]string{"apple", "banana", "cherry", "date"})
 			c2 := FromList([]string{"banana", "date", "fig"})
-			compKey := func(v string) tuple.Tuple { return tuple.Tuple{v} }
+			compKey := func(v string) (tuple.Tuple, error) { return tuple.Tuple{v}, nil }
 			inter := Intersection([]RecordCursor[string]{c1, c2}, compKey, false)
 
 			var results []string
@@ -206,7 +206,7 @@ var _ = Describe("Intersection with compareKeys", func() {
 
 			c1 := FromList([]int64{5, 4, 3, 2, 1})
 			c2 := FromList([]int64{6, 4, 2})
-			compKey := func(v int64) tuple.Tuple { return tuple.Tuple{v} }
+			compKey := func(v int64) (tuple.Tuple, error) { return tuple.Tuple{v}, nil }
 			inter := Intersection([]RecordCursor[int64]{c1, c2}, compKey, true)
 
 			var results []int64
@@ -230,7 +230,7 @@ var _ = Describe("Intersection with compareKeys", func() {
 			c1 := FromList([]int64{1, 2, 3, 4, 5, 6})
 			c2 := FromList([]int64{2, 3, 5, 6})
 			c3 := FromList([]int64{3, 5, 7})
-			compKey := func(v int64) tuple.Tuple { return tuple.Tuple{v} }
+			compKey := func(v int64) (tuple.Tuple, error) { return tuple.Tuple{v}, nil }
 			inter := Intersection([]RecordCursor[int64]{c1, c2, c3}, compKey, false)
 
 			var results []int64

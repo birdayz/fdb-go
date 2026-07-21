@@ -286,9 +286,9 @@ var _ = Describe("Cursor context cancellation", func() {
 			keyIdx := 0
 			cursor := Intersection[int](
 				[]RecordCursor[int]{cursor1, cursor2},
-				func(v int) tuple.Tuple {
+				func(v int) (tuple.Tuple, error) {
 					keyIdx++
-					return tuple.Tuple{keyIdx}
+					return tuple.Tuple{keyIdx}, nil
 				},
 				false,
 			)

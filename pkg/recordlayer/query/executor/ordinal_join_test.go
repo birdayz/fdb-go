@@ -618,11 +618,19 @@ func TestEvaluateOrdinalJoinRow(t *testing.T) {
 		}
 	})
 
-	t.Run("merged type not derived from RC panics", func(t *testing.T) {
+	t.Run("merged type not derived from RC errors", func(t *testing.T) {
 		t.Parallel()
-		mustPanicLoud(t, func() {
-			_, _ = evaluateOrdinalJoinRow(rc, legA, stubBinder{corrA: rowA, corrB: rowB})
-		})
+		// A field-count mismatch between the RC and the merged type means
+		// the plan is malformed (a planner bug — the merged type must derive
+		// from this RC via ordinalJoinSpans): fail the QUERY with a loud
+		// error, never the process.
+		_, err := evaluateOrdinalJoinRow(rc, legA, stubBinder{corrA: rowA, corrB: rowB})
+		if err == nil {
+			t.Fatal("want a loud malformed-plan error, got nil — a malformed ordinal seed silently passed")
+		}
+		if !strings.Contains(err.Error(), "malformed plan") {
+			t.Fatalf("error = %v, want the malformed-plan diagnosis", err)
+		}
 	})
 }
 

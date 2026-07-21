@@ -2,6 +2,7 @@ package predicates
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"regexp"
 	"strings"
@@ -1482,4 +1483,31 @@ func triStr(t TriBool) string {
 		return "TRUE"
 	}
 	return "FALSE"
+}
+
+// TestComparison_Eval_DistanceRankReachesRowEval_Errors pins the fail-loud
+// contract for an un-lowered vector K-NN predicate: a DistanceRank comparison
+// reaching row evaluation is a planner bug (the planner must lower it to a
+// vector index scan, RFC-087) and must FAIL THE QUERY with a diagnosis — an
+// error through Eval's error channel — never silently return UNKNOWN (which
+// would drop every row and pass green) and never panic the process.
+func TestComparison_Eval_DistanceRankReachesRowEval_Errors(t *testing.T) {
+	t.Parallel()
+	for _, ct := range []ComparisonType{
+		ComparisonDistanceRankEquals,
+		ComparisonDistanceRankLessThan,
+		ComparisonDistanceRankLessThanOrEq,
+	} {
+		t.Run(fmt.Sprintf("comparison_type_%d", ct), func(t *testing.T) {
+			t.Parallel()
+			cmp := Comparison{Type: ct, Operand: values.LiteralValue(int64(5))}
+			_, err := cmp.Eval(int64(1))
+			if err == nil {
+				t.Fatal("un-lowered DistanceRank at row eval must error, got nil")
+			}
+			if !strings.Contains(err.Error(), "reached row evaluation") {
+				t.Fatalf("error = %v, want the un-lowered K-NN diagnosis", err)
+			}
+		})
+	}
 }

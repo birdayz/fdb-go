@@ -144,7 +144,9 @@ func newFlatMapCursor(
 	// the inner plan (SARGs, residual filters), so LegTypes must be widened
 	// from the inner plan's predicate surfaces — a folded result value can
 	// drop a leg those references still need (see widenLegTypesFromPlan).
-	build.widenLegTypesFromPlan(innerPlan)
+	if err := build.widenLegTypesFromPlan(innerPlan); err != nil {
+		return nil, err
+	}
 	// Producer context (RFC-142): a WITH-ORDINALITY unnest's inner IS an
 	// ordinality Explode, flowing a row keyed by the internal `_0`/`_1`
 	// positions. Mark the inner leg so it binds STRICTLY POSITIONALLY (see
@@ -168,7 +170,11 @@ func newFlatMapCursor(
 	var outerMergedType *values.RecordType
 	var outerIdentityPassthrough bool
 	if !build.enabled() {
-		outerBakedType = probeOuterBakedType(innerPlan, outerAlias)
+		var probeErr error
+		outerBakedType, probeErr = probeOuterBakedType(innerPlan, outerAlias)
+		if probeErr != nil {
+			return nil, probeErr
+		}
 		// Recognise a gated ordinal join OUTER (downstreamLegWindows
 		// accepts a genuine FrontierPinned full-coverage seed only). Two
 		// consumers of that recognition:

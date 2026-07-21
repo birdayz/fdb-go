@@ -12,8 +12,12 @@ import (
 
 // ComparisonKeyFunc extracts a comparison key from a cursor element.
 // The returned tuple is used for merge ordering via FDB's order-preserving
-// tuple encoding. Matches Java's KeyedMergeCursorState.comparisonKeyFunction.
-type ComparisonKeyFunc[T any] func(T) tuple.Tuple
+// tuple encoding. Matches Java's KeyedMergeCursorState.comparisonKeyFunction:
+// there a key-extraction failure propagates as a RecordCoreException through
+// the cursor's future chain — an error to the caller, never a crash — so the
+// Go closure carries an error return, which advance() surfaces as the child
+// cursor's error.
+type ComparisonKeyFunc[T any] func(T) (tuple.Tuple, error)
 
 // compareKeys compares two comparison keys using FDB's order-preserving tuple
 // encoding. Returns negative if a < b, positive if a > b, 0 if equal.
@@ -66,7 +70,11 @@ func (s *mergeChildState[T]) advance(ctx context.Context) error {
 	s.result = result
 	s.hasResult = result.HasNext()
 	if s.hasResult {
-		s.comparisonKey = s.compKeyFunc(result.GetValue())
+		key, keyErr := s.compKeyFunc(result.GetValue())
+		if keyErr != nil {
+			return keyErr
+		}
+		s.comparisonKey = key
 	} else {
 		s.comparisonKey = nil
 		s.continuation = result.GetContinuation()

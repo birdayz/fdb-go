@@ -40,11 +40,11 @@ func TestBug2_IntersectionCursorMixedKeyTypesPanic(t *testing.T) {
 	cursor2 := FromList([]int{4, 5, 6})
 
 	// These comparison functions return different types for the same position
-	compKeyFunc := func(v int) tuple.Tuple {
+	compKeyFunc := func(v int) (tuple.Tuple, error) {
 		if v <= 3 {
-			return tuple.Tuple{int64(v)} // int64
+			return tuple.Tuple{int64(v)}, nil // int64
 		}
-		return tuple.Tuple{"value"} // string — type mismatch!
+		return tuple.Tuple{"value"}, nil // string — type mismatch!
 	}
 
 	inter := Intersection(

@@ -282,18 +282,19 @@ func executeMultiIntersection(
 }
 
 func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
-	return func(qr QueryResult) tuple.Tuple {
+	return func(qr QueryResult) (tuple.Tuple, error) {
 		if len(keyVals) > 0 {
 			t := make(tuple.Tuple, len(keyVals))
 			for i, kv := range keyVals {
-				// Comparison/merge keys are field extractions; the runtime
-				// typed-error family is unreachable and ComparisonKeyFunc
-				// has no error channel, so a stray error is a planner
-				// invariant violation (panic, matching prior no-recover).
-				// Resolves against the ordinal row via compKeyEvalArg.
+				// Comparison/merge keys are field extractions; an eval
+				// failure means the plan and the row disagree (a planner
+				// bug), which must fail the QUERY, not the process — Java
+				// surfaces it as a RecordCoreException through the cursor
+				// future chain. Resolves against the ordinal row via
+				// compKeyEvalArg.
 				v, err := kv.Evaluate(compKeyEvalArg(qr))
 				if err != nil {
-					panic(err)
+					return nil, fmt.Errorf("multi-intersection comparison key: %w", err)
 				}
 				// widenInt32 (RFC-092) + uuidToTupleElement: a UUID group/PK
 				// comparison key arrives as a neutral [16]byte the tuple packer
@@ -302,28 +303,26 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 				// GROUP BY key (RFC-162). Mirrors packedDedupKey's UUID arm.
 				t[i] = uuidToTupleElement(widenInt32(v))
 			}
-			return t
+			return t, nil
 		}
 		if qr.PrimaryKey != nil {
-			return qr.PrimaryKey
+			return qr.PrimaryKey, nil
 		}
 		// No comparison keys and no PK: match rows by their FULL positional
 		// content, encoded LOSSLESSLY via the continuation codec — the
 		// retired fmt %v rendering collapsed distinct composite rows and
-		// collapsed every nil-layout row into one. Encode failure is a
-		// planner invariant violation (this closure's documented no-error-
-		// channel contract, as with Evaluate above).
+		// collapsed every nil-layout row into one.
 		if qr.Positional == nil {
 			// A row with no keys, no PK and no positional content cannot be
 			// matched against anything; a constant key would intersect ALL
-			// such rows. Planner invariant violation (documented contract).
-			panic(fmt.Errorf("intersection row carries no comparison keys, primary key, or positional content — malformed plan"))
+			// such rows.
+			return nil, fmt.Errorf("intersection row carries no comparison keys, primary key, or positional content — malformed plan")
 		}
 		b, err := appendContValue(nil, qr.Positional.Slots)
 		if err != nil {
-			panic(err)
+			return nil, fmt.Errorf("multi-intersection positional comparison key: %w", err)
 		}
-		return tuple.Tuple{b}
+		return tuple.Tuple{b}, nil
 	}
 }
 

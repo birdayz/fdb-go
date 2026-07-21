@@ -164,7 +164,7 @@ var _ = Describe("CursorCombinatorEdgeCases", func() {
 		c2 := Empty[int]()
 		cursor := Intersection[int](
 			[]RecordCursor[int]{c1, c2},
-			func(v int) tuple.Tuple { return tuple.Tuple{v} },
+			func(v int) (tuple.Tuple, error) { return tuple.Tuple{v}, nil },
 			false,
 		)
 

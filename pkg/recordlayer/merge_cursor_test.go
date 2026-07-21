@@ -2,14 +2,16 @@ package recordlayer
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // intCompKey extracts an int as the comparison key.
-func intCompKey(v int) tuple.Tuple {
-	return tuple.Tuple{v}
+func intCompKey(v int) (tuple.Tuple, error) {
+	return tuple.Tuple{v}, nil
 }
 
 func TestIntersectionCursorBasic(t *testing.T) {
@@ -259,5 +261,52 @@ func TestIntersectionCursor_NonMaxDiscardAdvancesContinuation(t *testing.T) {
 	// 9) — the 4-byte big-endian ListCursor encoding.
 	if !slots[0].Started || string(slots[0].Continuation) != string([]byte{0, 0, 0, 2}) {
 		t.Fatalf("child A slot = %+v, want position-2 after its discards (Java consume() on non-max)", slots[0])
+	}
+}
+
+// TestIntersection_CompKeyError_FailsQueryNotProcess pins the ComparisonKeyFunc
+// error channel end-to-end: a key-extraction failure surfaces as the merge
+// cursor's OnNext error (Java: RecordCoreException through the future chain),
+// never a panic. Before the channel existed the executor closures panicked and
+// a direct Record Layer API caller crashed on a malformed plan.
+func TestIntersection_CompKeyError_FailsQueryNotProcess(t *testing.T) {
+	t.Parallel()
+	cursor1 := FromList([]int{1, 2, 3})
+	cursor2 := FromList([]int{2, 3, 4})
+	keyErr := fmt.Errorf("comparison key extraction failed: malformed plan")
+	failOnThree := func(v int) (tuple.Tuple, error) {
+		if v == 3 {
+			return nil, keyErr
+		}
+		return tuple.Tuple{v}, nil
+	}
+	inter := Intersection(
+		[]RecordCursor[int]{cursor1, cursor2},
+		failOnThree,
+		false,
+	)
+	defer inter.Close()
+
+	ctx := context.Background()
+	// The exact OnNext call that hits 3 depends on the merge loop's advance
+	// timing (children advance past an emitted match within the same call) —
+	// the pin is that the key error SURFACES AS AN ERROR from OnNext, at
+	// whatever step, rather than panicking or being swallowed.
+	var err error
+	for i := 0; i < 10; i++ {
+		var res RecordCursorResult[int]
+		res, err = inter.OnNext(ctx)
+		if err != nil {
+			break
+		}
+		if !res.HasNext() {
+			break
+		}
+	}
+	if err == nil {
+		t.Fatal("expected the comparison-key error to surface from OnNext, got exhaustion with nil error")
+	}
+	if !strings.Contains(err.Error(), "comparison key extraction failed") {
+		t.Fatalf("OnNext error = %v, want the comparison-key failure", err)
 	}
 }

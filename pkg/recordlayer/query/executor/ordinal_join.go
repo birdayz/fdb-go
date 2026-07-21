@@ -793,7 +793,10 @@ func typeFieldNames(rt *values.RecordType) []string {
 // ad-hoc per-row types).
 func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *values.RecordType, bindings values.CorrelationBinder) (*PositionalRow, error) {
 	if len(rc.Fields) != len(mergedType.Fields) {
-		panic(fmt.Sprintf("ordinal join row: RC has %d fields but merged type has %d — the merged type must derive from this RC (ordinalJoinSpans)", len(rc.Fields), len(mergedType.Fields)))
+		// The merged type is derived from this RC by ordinalJoinSpans — a
+		// mismatch means the plan is malformed (a planner bug), which must
+		// fail the query, not the process.
+		return nil, fmt.Errorf("ordinal join row: RC has %d fields but merged type has %d — the merged type must derive from this RC (ordinalJoinSpans); malformed plan", len(rc.Fields), len(mergedType.Fields))
 	}
 	row := NewPositionalRow(mergedType)
 	// A FOLDED result value (the B1 existential wrap) can carry an uncorrelated
@@ -995,7 +998,7 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 				if prev, seen := legTypes[qov.Correlation]; !seen {
 					legTypes[qov.Correlation] = rt
 				} else if len(prev.Fields) != len(rt.Fields) {
-					panic(fmt.Sprintf("leg %s carries DIVERGENT types (%d vs %d fields) across the RV's bare-QOV and baked-reference sources — all references must copy the one planner-constructed typed QOV (planner bug)", qov.Correlation, len(prev.Fields), len(rt.Fields)))
+					return nil, fmt.Errorf("leg %s carries DIVERGENT types (%d vs %d fields) across the RV's bare-QOV and baked-reference sources — all references must copy the one planner-constructed typed QOV (planner bug; malformed plan)", qov.Correlation, len(prev.Fields), len(rt.Fields))
 				}
 			} else {
 				// A bare QOV over a NON-record type: the lateral-unnest
@@ -1058,12 +1061,15 @@ func (b *ordinalJoinBuild) enabled() bool { return b != nil && b.Enabled }
 // Multiple sources (RV, join preds, pushed SARGs) can each carry a leg's
 // type; this is CONFLICT-IMPOSSIBLE, not precedence — every baked reference
 // is a copy of the ONE seed-constructed typed QOV, and every transformation
-// preserves marker and type. The width-divergence panic below asserts that
-// load-bearing invariant.
-func (b *ordinalJoinBuild) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
+// preserves marker and type. The width-divergence error below asserts that
+// load-bearing invariant: a violation is a malformed plan (planner bug) and
+// fails the query, not the process. The walk callback has no error channel,
+// so the divergence is captured and returned after the walk.
+func (b *ordinalJoinBuild) widenLegTypesFromPlan(plan plans.RecordQueryPlan) error {
 	if !b.enabled() || plan == nil {
-		return
+		return nil
 	}
+	var divergence error
 	walkBakedRefs(plan, func(v values.Value) values.Value {
 		fv, isFV := v.(*values.FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
@@ -1073,13 +1079,14 @@ func (b *ordinalJoinBuild) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
 			if rt, isRT := qov.Type().(*values.RecordType); isRT {
 				if prev, seen := b.LegTypes[qov.Correlation]; !seen {
 					b.LegTypes[qov.Correlation] = rt
-				} else if len(prev.Fields) != len(rt.Fields) {
-					panic(fmt.Sprintf("leg %s carries DIVERGENT baked types (%d vs %d fields) across the RV/predicate/SARG sources — all baked references must copy the one seed-constructed typed QOV (planner bug)", qov.Correlation, len(prev.Fields), len(rt.Fields)))
+				} else if len(prev.Fields) != len(rt.Fields) && divergence == nil {
+					divergence = fmt.Errorf("leg %s carries DIVERGENT baked types (%d vs %d fields) across the RV/predicate/SARG sources — all baked references must copy the one seed-constructed typed QOV (planner bug; malformed plan)", qov.Correlation, len(prev.Fields), len(rt.Fields))
 				}
 			}
 		}
 		return v
 	})
+	return divergence
 }
 
 // walkBakedRefs walks a physical plan tree's predicate surfaces —
@@ -1156,8 +1163,12 @@ func walkBakedRefs(plan plans.RecordQueryPlan, collect func(values.Value) values
 // recovers the outer's typed RecordType
 // from those references through the shared walker; the width-divergence panic
 // asserts the same one-seed invariant widenLegTypesFromPlan pins.
-func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.CorrelationIdentifier) *values.RecordType {
+func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.CorrelationIdentifier) (*values.RecordType, error) {
 	var found *values.RecordType
+	// The walk callback has no error channel; a width divergence — a
+	// malformed plan (planner bug) that must fail the query, not the
+	// process — is captured and returned after the walk.
+	var divergence error
 	walkBakedRefs(plan, func(v values.Value) values.Value {
 		fv, isFV := v.(*values.FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
@@ -1170,13 +1181,13 @@ func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.Correlati
 		if rt, isRT := qov.Type().(*values.RecordType); isRT {
 			if found == nil {
 				found = rt
-			} else if len(found.Fields) != len(rt.Fields) {
-				panic(fmt.Sprintf("outer %s carries DIVERGENT baked types (%d vs %d fields) across the inner plan's references — all baked references must copy the one seed-constructed typed QOV (planner bug)", outerAlias, len(found.Fields), len(rt.Fields)))
+			} else if len(found.Fields) != len(rt.Fields) && divergence == nil {
+				divergence = fmt.Errorf("outer %s carries DIVERGENT baked types (%d vs %d fields) across the inner plan's references — all baked references must copy the one seed-constructed typed QOV (planner bug; malformed plan)", outerAlias, len(found.Fields), len(rt.Fields))
 			}
 		}
 		return v
 	})
-	return found
+	return found, divergence
 }
 
 // legType resolves the adapter's leg type for a leg alias: from the spans when

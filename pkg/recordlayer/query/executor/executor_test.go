@@ -2637,7 +2637,10 @@ func TestIntersectionCompKeyFunc_NoKeyVals_WithPK(t *testing.T) {
 	pk := tuple.Tuple{int64(7)}
 	qr := dmapPK(pk, map[string]any{"X": 1})
 	fn := intersectionCompKeyFunc(nil)
-	got := fn(qr)
+	got, err := fn(qr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(got) != 1 || got[0] != int64(7) {
 		t.Fatalf("expected PK tuple {7}, got %v", got)
 	}
@@ -2647,7 +2650,10 @@ func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 	t.Parallel()
 	qr := dmap(map[string]any{"X": 1})
 	fn := intersectionCompKeyFunc(nil)
-	got := fn(qr)
+	got, err := fn(qr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(got) != 1 {
 		t.Fatalf("expected single-element tuple, got %v", got)
 	}
@@ -2657,7 +2663,10 @@ func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 	if _, ok := got[0].([]byte); !ok {
 		t.Fatalf("expected lossless []byte element, got %T", got[0])
 	}
-	other := fn(dmap(map[string]any{"X": 2}))
+	other, err := fn(dmap(map[string]any{"X": 2}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if string(got[0].([]byte)) == string(other[0].([]byte)) {
 		t.Fatal("distinct rows must produce distinct fallback comparison keys")
 	}
@@ -2671,7 +2680,10 @@ func TestIntersectionCompKeyFunc_WithKeyVals(t *testing.T) {
 		values.NewFieldValueWithResolvedOrdinal("AGE", 0, values.TypeInt),
 	}
 	fn := intersectionCompKeyFunc(keyVals)
-	got := fn(qr)
+	got, err := fn(qr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(got) != 2 || got[0] != "alice" || got[1] != int64(30) {
 		t.Fatalf("expected {alice, 30}, got %v", got)
 	}

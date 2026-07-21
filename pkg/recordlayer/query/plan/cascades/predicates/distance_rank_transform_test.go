@@ -112,11 +112,12 @@ func TestTransformRowNumberDistanceRank_MetricAndOpMapping(t *testing.T) {
 	}
 }
 
-// TestDistanceRankComparison_EvalPanics pins that a DistanceRank comparison
-// must be lowered to a vector scan during planning. If
-// it ever reaches row-by-row evaluation, fail loud rather than silently
-// returning UNKNOWN (which would drop every row and pass green).
-func TestDistanceRankComparison_EvalPanics(t *testing.T) {
+// TestDistanceRankComparison_EvalErrors pins that a DistanceRank comparison
+// must be lowered to a vector scan during planning. If it ever reaches
+// row-by-row evaluation, fail loud rather than silently returning UNKNOWN
+// (which would drop every row and pass green) — loud is an ERROR through
+// Eval's error channel (a planner bug fails the query, not the process).
+func TestDistanceRankComparison_EvalErrors(t *testing.T) {
 	t.Parallel()
 	cmp, ok := NewDistanceRankComparison(
 		ComparisonDistanceRankLessThanOrEq,
@@ -126,12 +127,10 @@ func TestDistanceRankComparison_EvalPanics(t *testing.T) {
 		t.Fatal("NewDistanceRankComparison rejected a valid LessThanOrEq type")
 	}
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic when a DistanceRank comparison is evaluated row-by-row")
-		}
-	}()
-	cmp.EvalAgainst(int64(1), int64(3))
+	_, err := cmp.EvalAgainst(int64(1), int64(3))
+	if err == nil {
+		t.Error("expected an error when a DistanceRank comparison is evaluated row-by-row")
+	}
 }
 
 // TestTransformRowNumberDistanceRank_EqualsRejected pins Java conformance:
