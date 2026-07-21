@@ -5940,9 +5940,28 @@ design; do NOT force):
   reference must be a singleton"). This invariant is DELIBERATE — the wrapper was
   the sanctioned way to hold a multi-member group (wrapper quantifier ranges the
   group; plan holds a snapshot singleton for planning-time type/child queries).
-  Plus nested_loop_join + flat_map (joint — NLJ emitter-3 bridges to FlatMap via
-  a snapshot decouple) and 2 dead structs (scan/filter — 0 prod emitters, only
-  dead type-switch arms + ~20 test fixtures; safe cosmetic cleanup).
+  The 2 dead structs (scan/filter) are now removed (commit 2f1189b94).
+
+NESTED_LOOP_JOIN + FLAT_MAP (joint) — GRAEFE DECISION, NOT deferred-winner:
+  These two ARE Class B (singleton children; correlation flows through children,
+  both wrappers' GetCorrelatedToWithoutChildren empty = plan default). The joint
+  collapse was implemented + gated: build green, cascades+plans unit 2/2 (no
+  PlanHash-nil — collapsing both together fixes the NLJ→FlatMap snapshot bridge),
+  yamsql FDB conformance PASS (correct rows). BUT the corpus differ caught ONE
+  shifted query, cte_error_codes.yaml#5 (a shared-CTE self-join):
+    BEFORE: InJoin(PredicatesFilter(Scan(T1),[1 preds]), binding)   (residual filter)
+    AFTER:  InJoin(Scan(T1,[=]), binding)                            (SARGed — better)
+  plan_regressions=0; the AFTER is the canonical SARGed plan the cost model wants.
+  Root cause: the NLJ wrapper's WithChildren keeps a plan SNAPSHOT (the residual-
+  filter member); the collapsed NLJ honors the DAG-aware-extraction cost WINNER
+  (the SARGed scan). So the wrapper is CURRENTLY MASKING a suboptimal plan on this
+  query, and the collapse would fix it. This is not a regression — it's the
+  collapse revealing the plan the cost model selected. But it breaks the
+  differing=0 W2 soundness contract, so per STOP-on-shift it was reverted and
+  flagged. Graefe must rule: (a) accept the improvement → land NLJ+FlatMap with
+  differing=1 documented, or (b) require byte-identity first. The FromQuantifiers
+  constructors + WithChildren are trivial to re-add; the 9-emitter repoint is
+  mechanical once ruled. Recommend (a).
 
 WHY THE NAIVE FIX FAILS (proven, in_memory_sort): memoizing
 getWinnerForOrdering(innerRef, PRESERVE) as a singleton child at YIELD would
