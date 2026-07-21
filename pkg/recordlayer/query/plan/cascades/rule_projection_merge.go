@@ -125,11 +125,30 @@ func (r *ProjectionMergeRule) OnMatch(call *ExpressionRuleCall) {
 			return
 		}
 	}
-	// The OUTER's aliases name the merged output — the flat projection
-	// replaces the outer, so its output schema must be identical.
+	// The OUTER's EFFECTIVE output names name the merged output — the flat
+	// projection replaces the outer, so its output schema must be identical.
+	// The raw alias list is NOT enough: an outer output named by its VALUE's
+	// own field name (a lazy `SELECT "AK"` read — alias empty) loses that
+	// name when composition substitutes the inner's value (the field name
+	// rides the replaced value). Pin every slot's effective name —
+	// OutputColumnName(outerVal, outerAlias), the same authority the
+	// runtime applies — as the merged alias, so `WITH c AS (SELECT k AS ak
+	// ...) SELECT ak FROM c` keeps AK after the CTE-consumer projection
+	// merges into the body (dup inner names like [K, K] must never leak as
+	// the output schema; the RFC-186 winner-flip triage caught exactly that
+	// as a vanished column).
+	outerAliases := outer.GetAliases()
+	mergedAliases := make([]string, len(outerVals))
+	for i, v := range outerVals {
+		alias := ""
+		if outerAliases != nil {
+			alias = outerAliases[i]
+		}
+		mergedAliases[i] = values.OutputColumnName(v, alias)
+	}
 	flat := expressions.NewLogicalProjectionExpressionWithAliases(
 		composed,
-		outer.GetAliases(),
+		mergedAliases,
 		innerProj.GetInner(),
 	)
 	call.Yield(flat)

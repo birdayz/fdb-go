@@ -701,3 +701,27 @@ STRING arms). Java types parameters by inference and gates them too;
 Go's parameter-inference arc would close this — until then a
 LONG-bound parameter through the exported path evaluates leniently
 where Java rejects at plan time.
+
+## REWRITING prune: virtual (designation) vs Java's physical prune (RFC-186)
+
+Java's REWRITING prunes every child reference to ONE final expression before parents
+compare, and every cost property derives through that single final
+(`ExpressionCountProperty.forReference`: `Verify(size()==1)` + `getOnlyElement`). Java can
+afford the physical prune because its PLANNING re-derives discarded canonical forms via its
+rule set. Go CANNOT: the universal boundary prune was tried and reverted (the RFC-153
+buried-leg and cross-join-EXISTS shapes lost their only implementable form — see
+`unified_tasks.go` ExploreGroupTask's stage-boundary comment), and the OptimizeInputs child
+pruning is timing-dependent (finals promoted in a group's last exploration round get no
+pass), so groups legitimately cross the stage boundary with their full canonical final set.
+
+Go's equivalent is the DESIGNATED final (`designated_final.go`): every REWRITING cost
+property derives through one deterministically-chosen final per child reference — chosen
+with the same comparator OptimizeGroup uses, memoized keyed on a global finals generation
+(any final-set mutation invalidates), cycle-guarded. Costing sees Java's post-prune world;
+the memo keeps every alternative PLANNING needs. The coherence instrument
+(`SetVerifyRewritingCoherence`, permanently on in the embedded plan harness) asserts the
+stamped winner IS the designation wherever a REWRITING winner exists.
+
+END-STATE: when PLANNING re-derivation parity lands, the physical prune becomes affordable,
+the designation degenerates to the single final, and Java's `Verify(==1)` becomes
+enforceable — at which point this divergence closes.

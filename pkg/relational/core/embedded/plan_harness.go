@@ -223,6 +223,15 @@ func planReferenceToPhysical(
 	if verifyOneFinal {
 		planner.SetVerifyOneFinal(true)
 	}
+	// RFC-186: the REWRITING coherence check is enabled PERMANENTLY —
+	// cost-property derivation traverses each child reference's DESIGNATED
+	// final (the virtual prune; Java's getOnlyElement semantics without
+	// the physical prune Go cannot yet afford), and the winner
+	// OptimizeGroup stamps must BE that designation. A divergence is a
+	// designation-staleness or comparator-drift bug and reds the harness
+	// here, loudly, rather than surviving as silent history-dependent
+	// costing.
+	planner.SetVerifyRewritingCoherence(true)
 	// nil is the production path: the planner then pays one nil compare per
 	// yield and accumulates nothing.
 	planner.SetReachabilityCollector(reach)
@@ -231,6 +240,11 @@ func planReferenceToPhysical(
 	var oneFinalViolations []string
 	if verifyOneFinal {
 		oneFinalViolations = planner.OneFinalViolations()
+	}
+	if rv := planner.RewritingCoherenceViolations(); len(rv) > 0 {
+		return nil, nil, fmt.Errorf(
+			"RFC-186 REWRITING coherence violated (stamped winner != designated final — designation staleness or comparator drift):\n  %s",
+			strings.Join(rv, "\n  "))
 	}
 	if planErr != nil {
 		return nil, nil, fmt.Errorf("planning failed: %w", planErr)

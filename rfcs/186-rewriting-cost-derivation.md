@@ -206,3 +206,49 @@ follow-up list).
   plannability evidence; Graefe verified that evidence and ruled the re-specified C correct.
 - Delta re-confirmations: Graefe ACK ("proceed to implementation") + Torvalds ACK (3
   editorial nits, folded). RFC is implementation-ready pending #509 merge.
+
+## 7. Implementation addendum — §2A as landed (Graefe-ruled)
+
+The instrument-first probe REFUTED §2A's original mechanism before any conversion landed.
+The one-final invariant checker found multi-final child groups at REWRITING compare time
+across the corpus; the task-level trace (TestPlanHarness_LeftJoin) showed child groups'
+REWRITING OptimizeGroup never runs — only the root's phase-init compare executes — and the
+stage boundary deliberately crosses un-pruned groups (the universal prune was previously
+tried and reverted: PLANNING cannot re-derive the RFC-153 buried-leg / cross-join-EXISTS
+shapes). Java's Verify(==1) is the CONJUNCTION of physical prune + PLANNING re-derivation
+parity; Go has neither safely available. §2A's ==1-by-pruning premise was therefore false
+on this architecture.
+
+Graefe ruling (full text in the review log): ACK the re-specified mechanism — DESIGNATED-
+FINAL DERIVATION, "a virtual prune": every REWRITING cost property derives through one
+deterministically-chosen final per child reference, chosen with the SAME comparator
+OptimizeGroup uses, with four binding conditions, all implemented:
+1. Generation-keyed memoization (expressions.FinalsGeneration, bumped at every final-set
+   mutation site; conservative global over-approximation of the subtree generation vector).
+2. Cycle guard (visiting set; hash-ranked conservative answer on a back-edge, uncached).
+3. OptimizeGroup's own compare derives through designations (the planner-owned scope backs
+   costModelForPhase(REWRITING)) and coherence is asserted wherever a REWRITING winner is
+   stamped: winner == designation (SetVerifyRewritingCoherence, permanently on in the
+   embedded plan harness).
+4. Stamping unchanged; children stay unstamped through REWRITING.
+
+Consequences landed with the mechanism:
+- Tier 3 (normalized residual conjuncts) is LIVE on logical trees for the first time — the
+  physical-only descent counted nothing on the all-logical REWRITING memo.
+- Tier 4's AllMembers walker (the defect site) is DELETED; the designated walker replaces it.
+- Tier 5's tie-break hashes the designated tree (the old firstPhysicalChild descent hashed
+  only the root during REWRITING, making ties arrival-order-resolved).
+- A re-push-OptimizeGroup-on-final-growth hook was tried and REVERTED (documented at the
+  yield site): re-pruning stamped groups late loses alternatives PLANNING needs — the same
+  failure mode as the reverted universal prune.
+- Flip triage round 1: exactly one behavioral flip across the embedded suite —
+  DistinctOverUnionAll: the old inflated tier-4 accidentally picked the two-legged union
+  form; the designated comparator deterministically picks the single-branch collapse
+  (identical UNION ALL branches under the enclosing DISTINCT), whose pk-scan is provably
+  distinct → dedup validly elided → filter-pushed scan. Classified EXPECTED-BETTER (correct
+  rows, fewer operators); the bug-hunt pin updated to reject the actual bug class (multi-leg
+  union without dedup) while accepting the collapse.
+- DIVERGENCES.md records "virtual vs physical prune" with the end-state (designation
+  degenerates to Verify(==1) when PLANNING re-derivation parity lands).
+
+Parts B, C, D proceed unchanged per §2.

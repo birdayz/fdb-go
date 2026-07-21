@@ -1,6 +1,10 @@
 package expressions
 
-import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+import (
+	"sync/atomic"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+)
 
 // PlannerStage tracks which planner phase has processed a Reference.
 type PlannerStage int
@@ -512,8 +516,22 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	}
 	r.finalMembers = append(r.finalMembers, e)
 	r.correlatedToCache = nil
+	finalsGeneration.Add(1)
 	return true
 }
+
+// finalsGeneration is a process-global generation counter bumped on every
+// final-member insertion. The REWRITING designated-final cache (RFC-186:
+// the virtual prune) keys on it: a designation computed against ANY final
+// set is invalidated by ANY later growth — a conservative over-approximation
+// of the reachable-subtree generation vector (invalidates more often, never
+// less), so a stale designation is unrepresentable. Single-threaded planners
+// only bump it during their own inserts; the atomic keeps concurrent
+// planners in tests safe.
+var finalsGeneration atomic.Uint64
+
+// FinalsGeneration returns the process-global final-member generation.
+func FinalsGeneration() uint64 { return finalsGeneration.Load() }
 
 // ConstraintsMap returns the Reference's tick/watermark constraint map
 // (lazily allocated). Canonical-forwarding like every other accessor.
@@ -535,6 +553,7 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 	r.plannerStage = newStage
 	r.members = append(r.members[:0], r.finalMembers...)
 	r.finalMembers = r.finalMembers[:0]
+	finalsGeneration.Add(1)
 	r.planProperties = nil
 	r.explState = explorationNever
 	r.explRounds = 0
@@ -636,6 +655,7 @@ func (r *Reference) ContainsExactly(expr RelationalExpression) bool {
 func (r *Reference) PruneWith(expr RelationalExpression) {
 	r = r.Canonical()
 	r.finalMembers = append(r.finalMembers[:0], expr)
+	finalsGeneration.Add(1)
 }
 
 // PruneToSet keeps exactly the final members present in `keep` (by
@@ -650,12 +670,14 @@ func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 		}
 	}
 	r.finalMembers = kept
+	finalsGeneration.Add(1)
 }
 
 // ClearFinalMembers removes all final members.
 func (r *Reference) ClearFinalMembers() {
 	r = r.Canonical()
 	r.finalMembers = r.finalMembers[:0]
+	finalsGeneration.Add(1)
 }
 
 // GetPlanProperties returns the planner-phase property map stored on this Reference.

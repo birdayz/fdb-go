@@ -87,6 +87,19 @@ type Planner struct {
 	// and Java surfaces them the same way.
 	capErr error
 
+	// dscope is the planner-owned RFC-186 designation scope (virtual
+	// prune): one cache per Plan() call, shared by the REWRITING cost
+	// model and the coherence instrument. Lazily created, reset per Plan.
+	dscope *designationScope
+
+	// verifyRewritingCoherence turns on RFC-186's REWRITING coherence
+	// check at the OptimizeGroup winner-stamp site (stamped winner ==
+	// designated final — both from the same comparator);
+	// rewritingCoherenceViolations holds what it found. The embedded plan
+	// harness enables it permanently.
+	verifyRewritingCoherence     bool
+	rewritingCoherenceViolations []string
+
 	// verifyOneFinal turns on RFC-183 P5's precondition check after the
 	// task stack drains; oneFinalViolations holds what it found. Off by
 	// default — it walks the whole reference graph.
@@ -311,6 +324,8 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	p.exprRuleIdx = nil
 	p.implRuleIdx = nil
 	p.capErr = nil
+	p.dscope = newDesignationScope()
+	p.rewritingCoherenceViolations = nil
 
 	// One task-stack drives both REWRITING and PLANNING phases.
 	// InitiatePlannerPhase(REWRITING) pushes ExploreGroup + OptimizeGroup
@@ -463,10 +478,19 @@ func (p *Planner) ruleIndexesForPhase(phase PlannerPhase) (*ruleIndex[Expression
 }
 
 // costModelForPhase returns the cost model comparator for the given phase.
+// REWRITING uses the planner-owned designation scope (RFC-186 virtual
+// prune) so OptimizeGroup winners and property designations come from the
+// SAME comparator — the coherence the instrument asserts.
 func (p *Planner) costModelForPhase(phase PlannerPhase) func(a, b expressions.RelationalExpression) bool {
 	switch phase {
 	case PhaseRewriting:
-		return RewritingCostModelLess
+		if p.dscope == nil {
+			p.dscope = newDesignationScope()
+		}
+		scope := p.dscope
+		return func(a, b expressions.RelationalExpression) bool {
+			return scope.compare(a, b, nil) < 0
+		}
 	case PhasePlanning:
 		return p.costModel
 	default:

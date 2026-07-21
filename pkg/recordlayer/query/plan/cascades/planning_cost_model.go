@@ -95,81 +95,19 @@ func NewPlanningCostModelLessWithContext(stats properties.StatisticsProvider, ct
 // materialized-NLJ alternative — a regression, not a fix (pinned by
 // TestFDB_ArrayUnnestOrdinality, which asserts the materialized NLJ box, and by
 // TestRewritingCostModel_KeepsUnrewrittenOuterJoin).
+// RFC-186: every tier derives through DESIGNATED child finals (the virtual
+// prune, designated_final.go) — a function of a deterministically-chosen
+// candidate tree, never of memo-population history. The pre-RFC-186 tiers
+// summed over ALL memo members (exploratory included), so two equivalent
+// candidates scored differently by how many rewrites their child groups
+// happened to accumulate — and tier 3's physical-only descent counted
+// nothing at all on the all-logical REWRITING memo. This package-level
+// function mints a fresh designation scope per call (identical semantics to
+// the planner-owned scope, merely uncached); the planner's REWRITING cost
+// model uses its own scope so OptimizeGroup winners and designations come
+// from the SAME comparator (coherence, RFC-186 instrument).
 func RewritingCostModelLess(a, b expressions.RelationalExpression) bool {
-	return rewritingCostModelCompare(a, b) < 0
-}
-
-func rewritingCostModelCompare(a, b expressions.RelationalExpression) int {
-	selectsA := properties.EvaluateExpressionCount(a, isSelectExpression)
-	selectsB := properties.EvaluateExpressionCount(b, isSelectExpression)
-	if selectsA != selectsB {
-		return intCompare(selectsA, selectsB)
-	}
-
-	tfA := properties.EvaluateExpressionCount(a, isTableFunctionExpression)
-	tfB := properties.EvaluateExpressionCount(b, isTableFunctionExpression)
-	if tfA != tfB {
-		return intCompare(tfA, tfB)
-	}
-
-	conjA := countResidualPredicates(a)
-	conjB := countResidualPredicates(b)
-	if conjA != conjB {
-		return intCompare(conjA, conjB)
-	}
-
-	infoA := predicateCountByLevel(a)
-	infoB := predicateCountByLevel(b)
-	if cmp := comparePredicateCountByLevel(infoB, infoA); cmp != 0 {
-		return cmp
-	}
-
-	hashA := deepHashCode(a)
-	hashB := deepHashCode(b)
-	if hashA != hashB {
-		if hashA < hashB {
-			return -1
-		}
-		return 1
-	}
-	return 0
-}
-
-// predicateCountByLevel computes predicate counts at each tree depth.
-// Level 0 = leaves, increasing towards root. Matches Java's
-// PredicateCountByLevelProperty.
-func predicateCountByLevel(e expressions.RelationalExpression) map[int]int {
-	result := map[int]int{}
-	predicateCountByLevelRec(e, result)
-	return result
-}
-
-func predicateCountByLevelRec(e expressions.RelationalExpression, counts map[int]int) int {
-	if e == nil {
-		return -1
-	}
-	maxChildLevel := -1
-	// AllMembers (not firstPhysicalChild) — this runs in the REWRITING phase
-	// where all members are logical and firstPhysicalChild would return nil.
-	for _, q := range e.GetQuantifiers() {
-		ref := q.GetRangesOver()
-		if ref == nil {
-			continue
-		}
-		for _, m := range ref.AllMembers() {
-			childLevel := predicateCountByLevelRec(m, counts)
-			if childLevel > maxChildLevel {
-				maxChildLevel = childLevel
-			}
-		}
-	}
-	currentLevel := maxChildLevel + 1
-	predCount := 0
-	if wp, ok := e.(expressions.RelationalExpressionWithPredicates); ok {
-		predCount = len(wp.GetPredicates())
-	}
-	counts[currentLevel] += predCount
-	return currentLevel
+	return newDesignationScope().compare(a, b, nil) < 0
 }
 
 func comparePredicateCountByLevel(a, b map[int]int) int {

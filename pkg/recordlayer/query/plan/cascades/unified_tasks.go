@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 )
@@ -121,9 +123,15 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		// EVERY final through exploreExpressionAndOptimizeInputs):
 		//   - REWRITING (WS-P stage (c)): finals are the canonical
 		//     LOGICAL forms FinalizeExpressionsRule promoted;
-		//     OptimizeInputs → OptimizeGroup prunes each group to its
-		//     REWRITING winner so the stage boundary crosses
-		//     pruned (Java Verify's property).
+		//     OptimizeInputs → OptimizeGroup prunes groups whose finals
+		//     existed when this routing pass ran. This is TIMING-DEPENDENT
+		//     coverage, not Java's universal property: finals promoted in a
+		//     group's last exploration round get no OptimizeInputs pass, so
+		//     the stage boundary crosses those groups UN-pruned with their
+		//     full canonical set (see the stage-boundary comment above —
+		//     the universal prune was tried and reverted). Cost derivation
+		//     is insulated from the multi-final state by the RFC-186
+		//     DESIGNATED final (designated_final.go, the virtual prune).
 		//   - PLANNING: physical finals only — the correlated-leg
 		//     muzzle (a logical parent must not drive standalone child
 		//     pruning with the correlation unbound; see the member-loop
@@ -168,9 +176,10 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		// REWRITING (WS-P stage (c)): a member that is ALSO a final —
 		// FinalizeExpressionsRule promotes the SAME expression object,
 		// so canonical forms live in both sets — routes through
-		// OptimizeInputs exactly like Java's getFinalExpressions split:
-		// OptimizeGroup then prunes each group to its REWRITING winner
-		// and the stage boundary crosses pruned (Java Verify's shape).
+		// OptimizeInputs exactly like Java's getFinalExpressions split.
+		// The resulting child prunes are TIMING-DEPENDENT (last-round
+		// promotions get no pass; see the finals-routing comment above);
+		// cost derivation is insulated by the RFC-186 designated final.
 		if (t.Phase == PhaseRewriting && isFinalMember(t.Ref, expr)) ||
 			(t.Phase == PhasePlanning && isPhysical(expr)) {
 			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
@@ -424,6 +433,17 @@ func (t *TransformImplTask) Run(p *Planner) {
 				p.capErr = err
 				return
 			}
+			// InsertFinal only — deliberately NO re-prune of a stamped group
+			// on late final growth. A re-push-OptimizeGroup-on-growth hook
+			// was tried here and REVERTED: re-pruning leaves ONE final where
+			// the stage boundary previously carried both the old winner and
+			// the late newcomer, and PLANNING cannot re-derive the pruned
+			// alternative (the same failure mode as the reverted universal
+			// boundary prune — the DistinctOverUnionAll dedup collapsed to a
+			// bare scan). Costing soundness does not need the prune: the
+			// RFC-186 designation re-computes on growth (the insert bumps
+			// the finals generation), so the virtual prune stays fresh while
+			// the member set keeps every alternative PLANNING needs.
 			t.Ref.InsertFinal(y)
 			if !isAlreadyExploratoryMember(t.Ref, y) {
 				// OptimizeInputs only for PHYSICAL yields — third of the three gated
@@ -575,6 +595,23 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 	}
 	t.Ref.PruneToSet(keep)
 	t.Ref.SetWinner(bestFinal)
+
+	// RFC-186 coherence instrument: the winner just stamped and the
+	// designation cost properties derive through must be the SAME
+	// expression — both come from the same comparator (the planner's
+	// designation scope), so a mismatch means the designation cache went
+	// stale or the comparators drifted, and REWRITING costing is again
+	// history-dependent. Checked AFTER the prune: PruneToSet bumped the
+	// finals generation, so this designation is freshly computed against
+	// the post-prune set — for a REWRITING group pruned to {bestFinal},
+	// the designation must be exactly bestFinal.
+	if t.Phase == PhaseRewriting && p.verifyRewritingCoherence && p.dscope != nil {
+		if designated := p.dscope.designated(t.Ref, nil); designated != bestFinal {
+			p.rewritingCoherenceViolations = append(p.rewritingCoherenceViolations,
+				fmt.Sprintf("group winner %T is not the designated final %T (comparator/designation divergence)",
+					bestFinal, designated))
+		}
+	}
 }
 
 // OptimizeInputsTask pushes OptimizeGroup for each child quantifier.

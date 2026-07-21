@@ -213,7 +213,28 @@ func composeChildAliasPairs(aliases *AliasMap, aQs, bQs []Quantifier) (*AliasMap
 }
 
 // matchChildrenPositional pairs children index-by-index and recurses.
+// quantifierAttributesEqual reports whether two paired quantifiers agree on
+// the semantics they carry THEMSELVES: kind, null-on-empty, strict-single.
+// Java compares these in the quantifier's own equality (ForEach's
+// `isNullOnEmpty == other.isNullOnEmpty`, Quantifier.java) — an edge
+// attribute, not child content, so child recursion cannot see it. Without
+// this check two selects differing only in a quantifier's nullOnEmpty — a
+// LEFT-join box vs a plain INNER join — compare semantically EQUAL, and the
+// memo interns/merges them as one, leaving whichever expression object
+// arrived first as the authority for BOTH semantics (the LEFT-became-INNER
+// wrong-rows class surfaced by RFC-186's deterministic winner choice).
+func quantifierAttributesEqual(a, b Quantifier) bool {
+	return a.Kind() == b.Kind() &&
+		a.IsNullOnEmpty() == b.IsNullOnEmpty() &&
+		a.IsStrictSingle() == b.IsStrictSingle()
+}
+
 func matchChildrenPositional(aQs, bQs []Quantifier, aliases *AliasMap) bool {
+	for i := range aQs {
+		if !quantifierAttributesEqual(aQs[i], bQs[i]) {
+			return false
+		}
+	}
 	composed, ok := composeChildAliasPairs(aliases, aQs, bQs)
 	if !ok {
 		return false
@@ -239,6 +260,13 @@ func matchChildrenPermuted(aQs, bQs []Quantifier, aliases *AliasMap) bool {
 		// Try this perm: aQs[i] pairs with bQs[perm[i]].
 		for i := 0; i < n; i++ {
 			permutedB[i] = bQs[perm[i]]
+		}
+		// Edge attributes (kind / null-on-empty / strict-single) must agree
+		// pairwise under this permutation — see quantifierAttributesEqual.
+		for i := 0; i < n; i++ {
+			if !quantifierAttributesEqual(aQs[i], permutedB[i]) {
+				return false
+			}
 		}
 		// A conflict (duplicate/inconsistent alias binding) means this
 		// permutation doesn't align the trees — skip it. composeChildAliasPairs

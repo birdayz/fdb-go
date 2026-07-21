@@ -233,13 +233,23 @@ func TestBugHunt_DistinctOverUnionAllKeepsDedup(t *testing.T) {
 		t.Fatalf("plan: %v", err)
 	}
 	t.Logf("plan: %s", plan)
-	// The dedup may be carried by EITHER the explicit Distinct operator OR a
+	// The dedup may be carried by (a) the explicit Distinct operator, (b) a
 	// merge-sort union planned WITH the distinct flag (MergeSortUnion(...,
-	// DISTINCT) — the leg-pinned distinct-union rule fires for this shape
-	// now that satisfaction resolves structurally, and its comparison-key
-	// dedup on the pk is full-row dedup via pk uniqueness). What must never
-	// happen is NO dedup at all.
-	if !strings.Contains(plan, "Distinct") && !strings.Contains(plan, "DISTINCT)") {
-		t.Errorf("SELECT DISTINCT over UNION ALL dropped the dedup operator: %s", plan)
+	// DISTINCT) — comparison-key dedup on the pk is full-row dedup via pk
+	// uniqueness), or (c) NO union at all: the two UNION ALL branches are
+	// IDENTICAL, so under the enclosing DISTINCT the rewriting phase may
+	// collapse to a single branch whose pk-scan is provably distinct and
+	// elide the dedup entirely (the RFC-186 designated comparator picks this
+	// deterministically; the old member-summing tier-4 picked the two-legged
+	// form by accident of inflated counts). What must never happen is the
+	// historical bug: a MULTI-LEG union — which produces duplicates — with
+	// no dedup anywhere above it.
+	hasDedup := strings.Contains(plan, "Distinct") || strings.Contains(plan, "DISTINCT)")
+	hasUnion := strings.Contains(plan, "Union")
+	if hasUnion && !hasDedup {
+		t.Errorf("SELECT DISTINCT over a multi-leg union dropped the dedup operator (wrong rows — duplicates survive): %s", plan)
+	}
+	if !hasUnion && strings.Contains(plan, "<nil>") {
+		t.Errorf("collapsed plan carries a nil child: %s", plan)
 	}
 }
