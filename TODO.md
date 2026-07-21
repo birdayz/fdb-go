@@ -5919,18 +5919,34 @@ is the change that caused the 49 shape flips.
 - **W3 — centralize the 41 plan types' equality/hash: ✅ DONE (41/41).** All plans
   flow EqualsPlanWithoutChildren/HashCodeWithoutChildren through one structuralKey()
   builder (commits 721f71635 + 84e48fb30); every hand-copy eliminated, differ=0.
-- **W2 — plans store children only as quantifiers, the wrapper layer dies:
-  MECHANICAL COLLAPSE DONE; 7 wrappers need the Graefe-gated deferred-winner
-  rework.** 29 wrapper types eliminated (27 collapsed + 2 dead structs) + the
-  DAG-aware extraction root fix. The ref.Winner() set-op family all collapsed at
-  differ=0: unordered_union (5022c0d7f), in_join + in_union (a6bb74b07). The
-  remaining 7 (distinct, streaming_agg, first_or_default, predicates_filter,
-  flatmap, nlj, in_memory_sort) are NOT mechanically collapsible — all blocked on
-  the same root cause: bare ref.Winner() is the wrong inner resolution (see the
-  detailed entry below + scratchpad/w2-graefe-gated-remainder.md for the end-review
-  asks). ALSO remaining: the 32 ReasonNoQuantifier edges (all TypeFilter, via the
-  scanPlanExpression composite adapter — retiring it drifts 49 shape flips; needs
-  property-by-property work, query-engine-gated; see the RFC-183-residual entry).
+- **W2 — plans store children only as quantifiers, the wrapper layer dies: ✅ DONE.**
+  ZERO physical*Wrapper structs remain (`grep 'type physical.*Wrapper struct'
+  pkg/recordlayer/query/plan/cascades/ = 0`). The ref.Winner() set-op family
+  collapsed at differ=0 (unordered_union 5022c0d7f, in_join+in_union a6bb74b07),
+  then all 7 tail wrappers fell via CONSTRAINT-PRESERVING DISENTANGLE (freeze only
+  the constraint-critical inner — correlation/ordering — in a detached FINAL ref;
+  live edge for plain inners so a push-canonicalization can't strand a pre-push
+  snapshot): first_or_default (74a07784e), predicates_filter (4e2e46dcc, +5
+  Graefe-ACK'd sort-elisions), distinct (1b6fb461d), streaming_aggregation
+  (cf0b18355), nested_loop_join+flat_map JOINTLY (ca3008b6b), in_memory_sort
+  (b775b8572). The sort required a genuine cost-model fix (Graefe-ACK'd): the
+  wrapper cost-over-first masked a latent bug where a redundant InMemorySort wins
+  STRUCTURAL tie-breakers (depth +1, or a pushdown-split map/filter count) before
+  criterion #12 — fixed by gating 4 structural rungs to abstain when a sort is
+  present. Enabling infra: the DML-aware explain-differ (51ee03bf5 — the SELECT-only
+  differ was unsound; it let a fod DML corruption read clean) + the residual-
+  correlation DML regression test (e2b2a7395). Every behavior change is Graefe-ACK'd;
+  gated on memoinvariant unreachable=0 + rowdiff Ordering/Stats/Cost sweeps +
+  yamsql-DML + FDB row-counts. NOTE the 32 ReasonNoQuantifier edges (all TypeFilter,
+  via the scanPlanExpression composite adapter) are a SEPARATE RFC-183 residual, not
+  a W2 wrapper — see the RFC-183-residual entry.
+  TWO Graefe-named follow-ups from the sort finale (non-blocking, for the end review):
+    (i) root-cause why the unsplit-elided plan (Project(PredicatesFilter(Fetch(
+        IndexScan)))) is ABSENT at the Project group for rowdiff seeds 132/214 — a
+        W2 disentangled-capture search-completeness asymmetry, not a cost-model bug.
+    (ii) evaluate the terminal form: hoist criterion #12 (fewer in-memory sorts)
+        ABOVE all structural rungs, or gate each structural rung on EQUAL sort counts
+        (not ==0-both), retiring the 4 per-rung gates. Same rowdiff-sweep validation.
 
 ### [ ] RFC-184 W2 — physical-wrapper collapse: 26 eliminated, deferred-winner tail remains
 
