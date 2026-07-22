@@ -245,7 +245,7 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return cmp
 	}
 
-	if cmp := comparePrimaryScanVsIndexScan(opsA, opsB); cmp != 0 {
+	if cmp := comparePrimaryScanVsIndexScan(a, b, opsA, opsB, stats); cmp != 0 {
 		return cmp
 	}
 
@@ -882,23 +882,126 @@ func isFetchExpression(e expressions.RelationalExpression) bool {
 	return ok
 }
 
-// comparePrimaryScanVsIndexScan mirrors Java's comparePrimaryScanToIndexScan.
-// Only fires when one plan is a singular primary scan and the other is a
-// singular index scan WITH a fetch (non-covering or covering+fetch).
-// A covering index without fetch is strictly better and doesn't enter this path.
-func comparePrimaryScanVsIndexScan(opsA, opsB expressionCounts) int {
+// comparePrimaryScanVsIndexScan ports Java's comparePrimaryScanToIndexScan
+// (invoked via flipFlop). Only fires when one plan is a singular primary scan
+// and the other is a singular index scan WITH a fetch (non-covering or
+// covering+fetch); a covering index without fetch is strictly better and
+// doesn't enter this path. When it fires it runs the type-filter SARG sub-case
+// (prefer the index when it SARGs strictly more, needing no type filter) and
+// otherwise applies the PREFER_SCAN default — see primaryVsIndexVerdict.
+func comparePrimaryScanVsIndexScan(a, b expressions.RelationalExpression, opsA, opsB expressionCounts, stats properties.StatisticsProvider) int {
 	aIsPrimaryScan := opsA.scanCount == 1 && opsA.indexScanCount == 0 && opsA.coveringIndexCount == 0 && opsA.inMemorySortCount == 0
 	bIsPrimaryScan := opsB.scanCount == 1 && opsB.indexScanCount == 0 && opsB.coveringIndexCount == 0 && opsB.inMemorySortCount == 0
 	aIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsA)
 	bIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsB)
 
 	if aIsPrimaryScan && bIsIndexScanWithFetch {
-		return -1
+		return primaryVsIndexVerdict(a, b, opsA, opsB, stats)
 	}
 	if bIsPrimaryScan && aIsIndexScanWithFetch {
-		return 1
+		// Roles swapped: b is the primary scan, a the index. The verdict is
+		// computed in the (primary, index) orientation, then negated — Java's
+		// flipFlop(compare(primary,index), compare(index,primary)) negation.
+		return -primaryVsIndexVerdict(b, a, opsB, opsA, stats)
 	}
 	return 0
+}
+
+// primaryVsIndexVerdict ports the body of Java's comparePrimaryScanToIndexScan
+// in its native (primaryScan=first, indexScan=second) orientation. Returns +1
+// when the INDEX scan is preferred (the primary loses), -1 when the primary
+// scan is preferred. The caller negates when the roles are swapped (flipFlop).
+//
+// The SARG sub-case: if the primary side carries a type filter and the index
+// side none, and the two scans SARG the same comparisons EXCEPT the index has
+// extra comparisons the primary lacks (e.g. a record-type-key comparison the
+// index gets for free but the primary must pay for with a high-discard type
+// filter), prefer the index. Otherwise fall back to the IndexScanPreference
+// default — which in Go is always PREFER_SCAN (the config knob is unmodeled;
+// see RFC-188 §2), i.e. prefer the primary scan.
+func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpression, opsPrimary, opsIndex expressionCounts, stats properties.StatisticsProvider) int {
+	if opsPrimary.typeFilterCount > 0 && opsIndex.typeFilterCount == 0 {
+		primaryComparisons := scanSargComparisonSet(primaryScan, stats)
+		indexComparisons := scanSargComparisonSet(indexScan, stats)
+		// primary − index empty AND index − primary non-empty ⇒ the index
+		// SARGs everything the primary does plus more, without a type filter.
+		if setDifferenceEmpty(primaryComparisons, indexComparisons) &&
+			!setDifferenceEmpty(indexComparisons, primaryComparisons) {
+			return 1 // prefer the index scan
+		}
+	}
+	// PREFER_SCAN default (Go models no IndexScanPreference config).
+	return -1
+}
+
+// scanSargComparisonSet collects the BARE SARG comparisons (comparison type +
+// comparand only; the column/field is implicit in ScanComparisons position and
+// is deliberately EXCLUDED) from every scan/index plan in e's physical subtree.
+// This mirrors Java's ComparisonsProperty, whose value is a
+// Set<Comparisons.Comparison> keyed by the bare comparison, so equal comparisons
+// at different positions collapse to one element. Keying by column would make
+// the set difference non-empty where Java's is empty and fire the sub-case on
+// the wrong queries.
+func scanSargComparisonSet(e expressions.RelationalExpression, stats properties.StatisticsProvider) map[string]struct{} {
+	set := map[string]struct{}{}
+	collectScanSargComparisons(e, stats, set, map[*expressions.Reference]bool{})
+	return set
+}
+
+func collectScanSargComparisons(e expressions.RelationalExpression, stats properties.StatisticsProvider, set map[string]struct{}, visited map[*expressions.Reference]bool) {
+	if e == nil {
+		return
+	}
+	var ranges []*predicates.ComparisonRange
+	switch w := e.(type) {
+	case *plans.RecordQueryScanPlan:
+		ranges = w.GetScanComparisons()
+	case *plans.RecordQueryIndexPlan:
+		ranges = w.GetScanComparisons()
+	}
+	for _, r := range ranges {
+		switch {
+		case r.IsEquality():
+			if eq := r.GetEqualityComparison(); eq != nil {
+				set[comparisonSetKey(eq)] = struct{}{}
+			}
+		case r.IsInequality():
+			for _, ineq := range r.GetInequalityComparisons() {
+				set[comparisonSetKey(ineq)] = struct{}{}
+			}
+		}
+	}
+	for _, q := range e.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil || visited[ref] {
+			continue
+		}
+		visited[ref] = true
+		if child := bestPhysicalChild(ref, stats); child != nil {
+			collectScanSargComparisons(child, stats, set, visited)
+		}
+	}
+}
+
+// comparisonSetKey renders a comparison's identity as Java's Comparison.equals
+// does — by type and comparand (and the parameter name for parameter-bound
+// comparisons) — with NO column/position component.
+func comparisonSetKey(c *predicates.Comparison) string {
+	operand := ""
+	if c.Operand != nil {
+		operand = values.ExplainValue(c.Operand)
+	}
+	return fmt.Sprintf("%d|%s|%s", int(c.Type), operand, c.ParameterName)
+}
+
+// setDifferenceEmpty reports whether a − b is empty (every key of a is in b).
+func setDifferenceEmpty(a, b map[string]struct{}) bool {
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // isSingularIndexScanWithFetch matches Java's check: a single index scan

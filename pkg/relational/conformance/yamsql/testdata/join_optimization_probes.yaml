@@ -54,12 +54,22 @@ tests:
       - ['Bob', 'eng']
       - ['Charlie', 'sales']
 
-  # Self-join with filter
+  # Self-join with filter. RFC-188 finding 3 (comparePrimaryScanToIndexScan SARG
+  # sub-case): the inner leg correlates on the join key `b.did = a.did`. The
+  # index IDX_EMP_DID SARGs that equality and needs no type filter, whereas a
+  # primary scan of EMP must add a high-discard TypeFilter([EMP]) and SARGs
+  # nothing extra. The index scan SARGs strictly more than the primary → prefer
+  # the index (Java's comparePrimaryScanToIndexScan). Before the sub-case, Go's
+  # PREFER_SCAN default picked the type-filtered primary range scan. (Contrast
+  # the e.did = d.did joins above, which do NOT flip: DEPT's PK already covers
+  # the equality, so no index SARGs strictly more.)
   - query: |-
       SELECT a.ename, b.ename FROM emp AS a
       INNER JOIN emp AS b ON a.did = b.did
       WHERE a.eid < b.eid
       ORDER BY a.eid, b.eid
+    plan_contains: "IndexScan(IDX_EMP_DID"
+    plan_not_contains: "TypeFilter([EMP], Scan(EMP"
     rows:
       - ['Alice', 'Bob']
       - ['Charlie', 'Diana']

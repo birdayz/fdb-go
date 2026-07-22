@@ -175,13 +175,21 @@ Go's `PlanContext` has no `IndexScanPreference` knob (grep-confirmed absent); Ca
 multi-type-no-PK-prefix default (`RecordQueryPlanner:194`) is out of scope for finding 3 (the SARG
 sub-case lands regardless). Nobody sets it today; book for when a config surface needs it.
 
-### [ ] Finding 3 (HIGH, worse plan) — comparePrimaryScanVsIndexScan drops Java's type-filter SARG subcase
-`planning_cost_model.go:878` ports only the shape check (its comment falsely claims "matches Java's
-check") and drops Java `PlanningCostModel.java:381-408`: when the primary side carries a type filter,
-the index side none, and the index applies extra SARGs the primary lacks, Java prefers the INDEX. Also
-ignores `IndexScanPreference` (PREFER_INDEX/PREFER_PRIMARY_KEY_INDEX). → picks full primary scan +
-high-discard type filter over the selective index. Plan-choice divergence (wire-visible for cross-engine
-continuation resumption).
+### [x] Finding 3 (HIGH, worse plan) — comparePrimaryScanVsIndexScan drops Java's type-filter SARG subcase — DONE
+`planning_cost_model.go` ported only the shape check and dropped Java's SARG sub-case: when the primary
+side carries a type filter, the index side none, and the index SARGs strictly more than the primary,
+Java prefers the INDEX. FIXED: added `primaryVsIndexVerdict` (SARG sub-case + PREFER_SCAN default),
+threading the sign by which side is the primary scan (Java's flipFlop negation). Comparison set built
+from BARE comparisons (type + comparand, column/position EXCLUDED — Java's ComparisonsProperty
+`Set<Comparison>`), via `scanSargComparisonSet`. `IndexScanPreference` confirmed absent in Go (Cascades
+default PREFER_SCAN); config knob booked separately (Finding 3-followup).
+**Reachability verified:** the rung fires 34× across the corpus with 2 firings at `tfA=1 tfB=0` (the
+sub-case precondition). Explain-diff: exactly ONE plan flips — `join_optimization_probes#4` (EMP
+self-join on `did`) inner leg goes `PredicatesFilter(TypeFilter([EMP], Scan(EMP)))` →
+`Fetch(PredicatesFilter(IndexScan(IDX_EMP_DID, [=])))`. The `e.did = d.did` joins correctly do NOT flip
+(DEPT's PK covers the equality). Pins: yamsql `join_optimization_probes#4` EXPLAIN
+(`plan_contains: IndexScan(IDX_EMP_DID`, `plan_not_contains: TypeFilter([EMP]`) + unit
+`TestComparisonSetKey_BareComparisonIdentity` / `TestSetDifferenceEmpty`.
 
 ### [ ] Finding 5 (MED) — scalar signed-zero ConstantValue: equal-but-different-hash
 `values/map_field_values.go:254` scalar fallthrough `return a == b` (−0.0==+0.0 true) vs
