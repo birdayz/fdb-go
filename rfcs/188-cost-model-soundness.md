@@ -1,9 +1,10 @@
 # RFC-188 — Cost/cardinality-model soundness: align with Java, kill the estimate-as-correctness-gate
 
-**Status:** DRAFT rev 2 — folds the first review lap. Graefe + Torvalds both NAK'd rev 1; rev 2 adopts
+**Status:** ACKED (rev 2) — Graefe + Torvalds both NAK'd rev 1, both ACK rev 2 delta. Rev 2 adopts
 every required change (finding 2 → **delete**, not rename; finding 3 → bare-comparison set + flipFlop
 sign + config confirmed-absent; finding 6 → sparse-sorted first-map iteration; finding 10 M4 → booked as
-plan-metadata plumbing, ordering premise dropped). Awaiting delta re-confirmation.
+plan-metadata plumbing, ordering premise dropped). Implementation may proceed; final impl HEAD gets one
+joint delta review lap.
 **Tracks:** TODO.md "FINDINGS 2026-07-22" systemic problem **B** — the cost/cardinality subsystem is a
 regression-tuned re-derivation, not a port. Covers findings 2 (HIGH wrong results), 3 (HIGH worse
 plan), 6 (MED sign flip), 10 (MED missing rungs / property divergences).

@@ -142,8 +142,11 @@ every commit. Only the two booked follow-ups remain (nested-agg-index SUPPORT; �
 ordinalization) — both distinct from A's wrong-rows/wrong-order fix.
 
 **Systemic problem B (cost/cardinality-model soundness) = findings 2, 3, 6, 10, covered by
-`rfcs/188-cost-model-soundness.md` (branch feat/rfc188-cost-model-soundness). Java refs confirmed
-against 4.12.11.0. Grind order: 2 → 6 → 3 → 10(M2/M4/M5/M3).**
+`rfcs/188-cost-model-soundness.md` (branch feat/rfc188-cost-model-soundness). RFC ACKED rev 2 (Graefe +
+Torvalds; rev 1 NAK'd, rev 2 folded: finding 2 → DELETE not rename, finding 3 → bare-comparison set +
+flipFlop sign + config confirmed-absent, finding 6 → sparse-sorted first-map, finding 10 M4 → plan
+plumbing). Java refs confirmed against 4.12.11.0. Grind order: 2 → 6 → 3 → 10(M2 → M5 → M3&M4).
+Two follow-ups booked below (port Java's real RemoveRangeOne; model IndexScanPreference config).**
 
 ### [ ] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate
 `rule_remove_range_one.go:52,68` gates deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;
@@ -151,8 +154,21 @@ against 4.12.11.0. Grind order: 2 → 6 → 3 → 10(M2/M4/M5/M3).**
 `LeafScanCardinality=1e6`, so `1e6*0.5^20≈0.95<1.0` → LIMIT deleted → query returns ALL matching
 rows. Correctness gated on a heuristic constant (cardinal sin). Also: the rule wears Java's name but
 does something Java's `RemoveRangeOneRule` (remove an unreferenced `RANGE(0,1)` quantifier) does not —
-Go invention. Fix: `.Floor(1)` on the estimate path AND a provable-max-cardinality check (or rename).
-Regression: N-predicate LIMIT-1 shape.
+Go invention. **Fix (RFC-188 §1, Graefe ruling): DELETE the rule + tests + registration** — Java has no
+limit-removal rule (keeping one is itself a plan divergence), and the narrowed-to-`LogicalValues` rule
+is production-dead (`NewLogicalValuesExpression`: 0 non-test callers). Regression: FDB e2e row-count pin
+(20-conjunct `LIMIT 1` returns exactly one row + EXPLAIN shows limit retained).
+
+### [ ] Finding 2-followup-a — port Java's REAL RemoveRangeOneRule (booked by RFC-188 §1)
+Java `RemoveRangeOneRule.java:45-102` drops an unreferenced `RANGE(0,1)` table-function quantifier from
+a `SelectExpression` (nothing to do with LIMIT) — UNPORTED. Porting it reclaims the `RemoveRangeOne`
+name cleanly. Distinct missing-rule item; needs Graefe+Torvalds review (query-engine rule).
+
+### [ ] Finding 3-followup — model IndexScanPreference config (booked by RFC-188 §2)
+Go's `PlanContext` has no `IndexScanPreference` knob (grep-confirmed absent); Cascades default is
+`PREFER_SCAN` (proto enum 0). Modeling `PREFER_INDEX`/`PREFER_PRIMARY_KEY_INDEX` + the legacy
+multi-type-no-PK-prefix default (`RecordQueryPlanner:194`) is out of scope for finding 3 (the SARG
+sub-case lands regardless). Nobody sets it today; book for when a config surface needs it.
 
 ### [ ] Finding 3 (HIGH, worse plan) — comparePrimaryScanVsIndexScan drops Java's type-filter SARG subcase
 `planning_cost_model.go:878` ports only the shape check (its comment falsely claims "matches Java's
