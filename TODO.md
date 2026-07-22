@@ -27,28 +27,31 @@ milestone review lap), each its own PR.
   and defended by construction via the shared `unnestAliasReject` guard (dedupes 4 inline AS==AT
   guards). Audit doc refreshed truthfully; regression pins on every converted site. Remaining
   panic surface = §4 asserts + RFC-173 seed tripwires (retire with item 4).
-- [ ] **2. Cost model soundness.** Graefe: `getWinnerForOrdering` (`winner_lookup.go:46-50`)
-  silently falls back to the global cheapest — callers can mistake it for satisfaction proof.
-  Codex: REWRITING cost depends on memo population history, not the candidate tree
-  (`properties/expression_count_property.go:15-32`, `planning_cost_model.go:147-173` traverse
-  exploratory members / AllMembers — a direct violation of "properties derived from the
-  expression tree"; Java's `ExpressionCountProperty` requires exactly one final expression per
-  child); the Go-only concrete join-cost walk treats any all-equality prefix scan as a one-row
-  point probe without checking PK length (`planning_cost_model.go:1227-1256`; the correct check
-  exists at :1521-1550) — catastrophic join orders on composite PKs; the recursive switch omits
-  limits/aggregations/unions/IN/recursive plans (`planning_cost_model.go:1122-1224`).
-- [ ] **3. Debt ledger understates reality.** Torvalds: two ADMITTED wrong-rows bugs shipping —
-  `plans/recursive_level_union.go:177` `CanCorrelate()→true` (DIVERGENCES.md:412 "UNSAFE, fix
-  first") and DIVERGENCES.md:452 "memo costs an expression that is not the one that executes —
-  CURRENT BUG". Codex: DIVERGENCES.md:662 claims byte-identical continuations while
-  `executor/continuation.go:20-25` documents a Go-private aggregate payload under Java's proto
-  message NAMES (cross-engine resume = silently wrong aggregates, not a loud error), and
-  TODO.md's plan-cache "fixed" entry covers only the FNV collision — the `GetText()` key is
-  non-injective (`SELECT AB FROM T` vs `SELECT A B FROM T` both key `SELECTABFROMT`,
-  `cascades_generator.go:254-277`) and unscoped by schema identity/version (Java:
-  `QueryCacheKey.java:103-142`; own RFC-024 requires it). Fix the two admitted bugs, fix the
-  cache key (port AstNormalizer approach), divorce or port the continuation payloads, make the
-  ledger truthful.
+- [x] **2. Cost model soundness** — DONE (PR #510, merged `2b053c0d8`; Graefe + Torvalds + codex
+  + @claude all ACK). RFC-186 rewriting-cost-derivation: (a) `getWinnerForOrdering` now returns
+  `(expr, satisfied bool)` so a global-cheapest fallback can't be mistaken for satisfaction (§2C);
+  (b) the memo-population-history dependence is replaced by the DESIGNATED-final virtual prune
+  (`designated_final.go`) — REWRITING cost derives through one deterministically-chosen final per
+  child, generation-keyed, with cycle + exploratory-child taint guards (§2A); (c) the all-equality
+  point-probe now gates on full-PK equality binding via `strictPKGate`/`pkFullyEqualityBound`
+  (§2B); (d) the missing plan types get `HintCost` dispatch + `warnUnpricedPlanType` (§2D). Plus
+  the codex adversarial rounds (identity refinement, attribute-aware tie-break) and two latent
+  bugs found en route (PartitionBinarySelect noe-leg absorption, memo orphan registration).
+- [x] **3. Debt ledger understates reality** — DONE (this PR). Four sub-fixes:
+  - **3a** `RecordQueryRecursiveLevelUnionPlan.CanCorrelate` false (Java parity) — the UNSAFE
+    wrong-rows anchor that suppressed an outer alias a leg reads; pinned by a colliding-alias
+    propagation test.
+  - **3b** "memo costs an expression that is not the one that executes" — VERIFIED already fixed
+    by RFC-184 W2 (wrappers deleted; physical plans store children solely as quantifiers, so the
+    dual-storage divergence is unrepresentable). Ledger corrected CURRENT-BUG → CLOSED; pinned by
+    `TestFlatMapPlan_WithQuantifiers_NoStalePlanSnapshot`.
+  - **3c** plan-cache key: injective (`canonicalTextOf` not `GetText`; quote-aware normalizeSQL
+    for delimited-id case + string-literal whitespace) + schema-scoped (schema name + metadata
+    version). Pinned by `plan_cache_key_test.go`.
+  - **3d** aggregate continuation fails LOUD on any non-Go-format shape (was silent zero-fill);
+    ledger's blanket "byte-identical continuations" claim carved out to name the engine-private
+    aggregate + in-memory-sort payloads precisely. Pinned by
+    `TestDecodeAggregateContinuation_ForeignShapeFailsLoud`.
 - [ ] **4. Name-string/ordinal seam** (= RFC-173 endgame, the existing freeze item). Not a
   relapse — the booked last mile: 2 DEEP ordinalizations (enclosed-chain merge
   `buried_2chain_straddle`; `SELECT *` multi-source lateral unnest) + 1 loud-reject (FULL-box +
