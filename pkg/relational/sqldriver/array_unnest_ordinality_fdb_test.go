@@ -4239,6 +4239,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			if perr != nil {
 				t.Fatalf("plan %q: %v", sql, perr)
 			}
+			// POSITIONAL gather (not name-model): the multi-source SELECT * unnest is a
+			// FlatMap-over-Explode over the source scan, never a name-model merged row.
+			if !strings.Contains(plan.Explain(), "FlatMap(outer=Scan(WSRC), inner=Explode(field") {
+				t.Fatalf("multi-source SELECT * %q must gather positionally (FlatMap-over-Explode over WSRC); plan=%s", sql, plan.Explain())
+			}
 			if got := embedded.ResultColumnLabelsForPlan(plan, md); fmt.Sprintf("%v", got) != fmt.Sprintf("%v", wantCols) {
 				t.Fatalf("star columns %q\n got=%v\nwant=%v\nplan=%s", sql, got, wantCols, plan.Explain())
 			}

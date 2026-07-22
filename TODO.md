@@ -61,14 +61,19 @@ milestone review lap), each its own PR.
     dual-window §5 oracle machinery gone (`2b285eb69`). Grep for any live field access / func def
     of these returns nothing; only historical WHY-comments remain (verified: runtime is
     Positional-only, no live name-model path in these targets).
-  - The **three shapes are green live on FDB** and ordinalize (PLAN-pinned, not just rows):
-    `buried_2chain_straddle` (`chained_unnest_3link_filtered_ordinal_fdb_test.go`, `assertOrdinal3Link`
-    pins the `Explode`/bake placement); `SELECT *` multi-source unnest (W5, PR #466 — plan-pinned via
-    `unnestMustContain` in `array_unnest_ordinality_fdb_test.go`; the `cte_box…` file exercises it for
-    rows/error-code); and FULL-box+subquery — which now GATHERS positionally rather than the
-    originally-planned loud-reject (`baretwin_gather_fdb_test.go` `grouped_subquery_conjunct_gathers`
-    now asserts the baked GROUP-BY ordinal `X#N` over a FlatMap-over-Explode; a better outcome, only a
-    duplicate-FROM-alias shape still loud-declines).
+  - The **three shapes are green live on FDB** and ordinalize positionally — each now PLAN-pinned
+    (the plan assertions were added in the item-4 closure PR after review found the shapes were
+    row-pinned only):
+    - `buried_2chain_straddle` (`chained_unnest_3link_filtered_ordinal_fdb_test.go`): asserts the
+      output bakes to a positional ordinal (`Y.Y#0`) over nested FlatMap-over-Explode — the buried
+      path is positional, distinct from the chained-ordinal DISPATCH the 5 sibling cases take.
+    - `SELECT *` multi-source unnest (W5, PR #466): the `starRows` helper in
+      `array_unnest_ordinality_fdb_test.go` now asserts every multi-source `SELECT *` gathers as
+      `FlatMap(outer=Scan(WSRC), inner=Explode(field…))`, never a name-model merged row.
+    - FULL-box+subquery: `baretwin_gather_fdb_test.go` `grouped_subquery_conjunct_gathers` asserts
+      the baked GROUP-BY ordinal (`X#N`) over a FlatMap-over-Explode gather of the FULL OUTER box.
+      This GATHERS positionally — a better outcome than the originally-planned loud-reject; only a
+      duplicate-FROM-alias shape still loud-declines.
   - Graefe **DESIGN-ACK** is recorded in the RFC for every endgame piece (W5 multi-source,
     S4 AnchoredJoin demolition boundary), no NAK.
   The residual RFC-173 work (B/C/D-phase: the runtime `FieldIndex(name)` census, `PositionalRow.GetByName`

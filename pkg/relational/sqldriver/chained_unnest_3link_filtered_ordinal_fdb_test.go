@@ -262,8 +262,19 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	// never reaches the chained ordinal dispatch): stays on the buried-unnest path.
 	// T4(1) Y∈{1,7}, ID=1=Y=1 → {Y:1} × 3 T4C rows = {1,1,1}.
 	q6 := `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y", T4 AS "T4C" WHERE T4."ID" = "Y"`
-	_, r6 := run("buried_2chain_straddle", q6)
+	ex6, r6 := run("buried_2chain_straddle", q6)
 	wantRows("buried_2chain_straddle", r6, []string{"map[Y:1]", "map[Y:1]", "map[Y:1]"}, q6)
+	// POSITIONAL even on the buried path: the output column bakes to an ORDINAL
+	// slot (`Y.Y#0`, the ofOrdinal) over nested FlatMap-over-Explode links — a
+	// name-model row would render `Y.Y` with no `#N`. (Distinct from the
+	// chained-ordinal DISPATCH the 5 cases above take; the buried path is still
+	// positional, just a different producer.)
+	if !strings.Contains(ex6, "Y#") {
+		t.Fatalf("buried_2chain_straddle must bake the output POSITIONALLY (Y#N), not name-model; plan=%s", ex6)
+	}
+	if !strings.Contains(ex6, "FlatMap(outer=") || !strings.Contains(ex6, "Explode(field)") {
+		t.Fatalf("buried_2chain_straddle must gather via FlatMap-over-Explode; plan=%s", ex6)
+	}
 
 	// FORK chain: W's owner is X, TWO links back — not the immediately preceding Y.
 	// This ORDINALIZES: the collection roots at the OWNER
