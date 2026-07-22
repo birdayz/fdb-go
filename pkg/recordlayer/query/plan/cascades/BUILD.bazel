@@ -220,6 +220,7 @@ go_test(
         "eval_must_test.go",
         "exists_join_fold_seed_test.go",
         "expression_matcher_test.go",
+        "expression_partition_column_identity_test.go",
         "expression_partition_test.go",
         "expression_rule_call_test.go",
         "f20_winner_f21_memo_test.go",
@@ -800,6 +801,7 @@ go_test(
         "rfc186_pk_gate_test.go",
         "rule_match_intermediate_column_identity_test.go",
         "rule_ordered_scan_column_identity_test.go",
+        "expression_partition_column_identity_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

@@ -201,27 +201,42 @@ func toPlanPartitionsFallback(ref *expressions.Reference) []*PlanPartition {
 }
 
 func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
-	type propKey struct {
+	type bucket struct {
 		distinct     bool
 		stored       bool
 		orderingHash uint64
 	}
 
-	groups := make(map[propKey]*PlanPartition)
-	var order []propKey // preserve first-seen order
+	// The ordering hash BUCKETS candidate partitions; orderingsEqual is the
+	// AUTHORITY within a bucket — the same structural equality the sibling
+	// RollUpPlanPartitions path uses (the two were asymmetric before: RollUp
+	// compared structurally, this grouped by hash alone). A hash collision
+	// between two genuinely different orderings therefore splits into separate
+	// partitions instead of silently co-partitioning, so GetOrdering never
+	// reports one member's order for another (the wrong-ORDER-BY bug). With the
+	// full accessor path now in the hash, collisions are rare; equality is still
+	// what decides.
+	byHash := make(map[bucket][]*PlanPartition)
+	var result []*PlanPartition // preserve first-seen order
 	for _, expr := range pm.Expressions() {
 		props := pm.GetProperties(expr)
 		ordering := props.GetOrdering()
-		key := propKey{
+		b := bucket{
 			distinct:     props.GetBool(properties.PropDistinctRecords),
 			stored:       props.GetBool(properties.PropStoredRecord),
 			orderingHash: orderingPartitionHash(ordering),
 		}
-		part, ok := groups[key]
-		if !ok {
+		var part *PlanPartition
+		for _, cand := range byHash[b] {
+			if orderingsEqual(cand.partitionProps.GetOrdering(), ordering) {
+				part = cand
+				break
+			}
+		}
+		if part == nil {
 			partProps := properties.PropertyMap{
-				properties.PropDistinctRecords: key.distinct,
-				properties.PropStoredRecord:    key.stored,
+				properties.PropDistinctRecords: b.distinct,
+				properties.PropStoredRecord:    b.stored,
 				properties.PropPrimaryKey:      props[properties.PropPrimaryKey],
 				properties.PropOrdering:        props[properties.PropOrdering],
 			}
@@ -229,15 +244,10 @@ func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
 				partitionProps: partProps,
 				exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap),
 			}
-			groups[key] = part
-			order = append(order, key)
+			byHash[b] = append(byHash[b], part)
+			result = append(result, part)
 		}
 		part.addExpression(expr, props)
-	}
-
-	result := make([]*PlanPartition, 0, len(order))
-	for _, key := range order {
-		result = append(result, groups[key])
 	}
 	return result
 }
@@ -258,7 +268,22 @@ func orderingPartitionHash(o properties.Ordering) uint64 {
 	h := fnv.New64a()
 	for i, k := range o.Keys {
 		if fv, ok := k.(*values.FieldValue); ok {
-			h.Write([]byte(fv.Field))
+			// Hash the FULL accessor NAME path, not just the leaf Field: two
+			// same-leaf-name ordering keys from different sources (addr.city vs a
+			// top-level city, or two self-join legs' x) must land in DIFFERENT
+			// partitions, else a sort is elided against the wrong column. The name
+			// path is deterministic (no minted q$N alias — the reason the leaf-name
+			// special-case existed); a dotted/pure-ordinal FieldValue the path
+			// primitive cannot resolve falls back to its literal Field (still
+			// alias-free, and orderingsEqual is the authority in toPartitionsFromMap).
+			if path, pok := values.AccessorNamePath(fv); pok {
+				for _, seg := range path {
+					h.Write([]byte(seg))
+					h.Write([]byte{0}) // separator: ["a","bc"] must not collide with ["ab","c"]
+				}
+			} else {
+				h.Write([]byte(fv.Field))
+			}
 		} else {
 			h.Write([]byte(values.ExplainValue(k)))
 		}
