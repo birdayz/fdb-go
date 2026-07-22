@@ -133,6 +133,18 @@ func PredicateEquals(a, b QueryPredicate) bool {
 			return false
 		}
 		return valueNamesEqual(ap.Value, bp.Value)
+	case *ExistentialValuePredicate:
+		bp, ok := b.(*ExistentialValuePredicate)
+		if !ok {
+			return false
+		}
+		// The wrapped Value is a QOV over the existential quantifier; the
+		// Comparison is always IsNotNull. Two EXISTS over the same quantifier are
+		// the same predicate, so `EXISTS(q) AND EXISTS(q)` collapses via AndDedup.
+		// Memo interning already handles the correctness dedup; the missing case
+		// here made PredicateEquals (which only drives AndDedup/OrDedup) fall
+		// through to false — an optimization inconsistency, not wrong results.
+		return ap.Comparison.Type == bp.Comparison.Type && valueNamesEqual(ap.Value, bp.Value)
 	case *ComparisonPredicate:
 		bp, ok := b.(*ComparisonPredicate)
 		if !ok {

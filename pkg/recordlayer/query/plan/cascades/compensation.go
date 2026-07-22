@@ -356,6 +356,26 @@ func NewResultCompensationFunction(needed bool) *ResultCompensationFunction {
 	return &ResultCompensationFunction{needed: needed}
 }
 
+// unionResultCompensation combines the two legs' result-compensation functions
+// for a ForMatchCompensation.Union, mirroring Java Compensation.java:617-624:
+//   - neither needed → no result compensation;
+//   - BOTH needed → either serves (the legs share the result shape); Java picks
+//     the first after Verify.verify asserts both;
+//   - exactly one needed → the invariant Java asserts against. Return ok=false
+//     so the caller declines the union (ImpossibleCompensation) instead of
+//     silently emitting the wrong output shape — the fix for RFC-189 C3
+//     (finding 12c). Fail-closed rather than panic (library code never panics).
+func unionResultCompensation(rcf, otherRcf *ResultCompensationFunction) (*ResultCompensationFunction, bool) {
+	switch {
+	case !rcf.IsNeeded() && !otherRcf.IsNeeded():
+		return NoResultCompensation(), true
+	case rcf.IsNeeded() && otherRcf.IsNeeded():
+		return rcf, true
+	default:
+		return nil, false
+	}
+}
+
 // ResultCompensationOfValue creates a ResultCompensationFunction from
 // a result Value. When applied, it translates the value through the
 // translation map. Ports Java's ResultCompensationFunction.ofValue.
@@ -1031,14 +1051,13 @@ func (c *ForMatchCompensation) Union(other *ForMatchCompensation) Compensation {
 		return ImpossibleCompensation
 	}
 
-	// Result compensation: pick one side (same shape guaranteed).
-	var newResultFn *ResultCompensationFunction
-	rcf := c.resultCompensationFn
-	otherRcf := other.resultCompensationFn
-	if !rcf.IsNeeded() && !otherRcf.IsNeeded() {
-		newResultFn = NoResultCompensation()
-	} else {
-		newResultFn = rcf
+	// Result compensation: both legs must share the result shape, so Java
+	// (Compensation.java:617-624) ASSERTS both sides are needed (Verify.verify)
+	// before picking one. Go previously picked c's rcf UNCONDITIONALLY — even
+	// when only other's was needed — yielding the wrong output shape.
+	newResultFn, ok := unionResultCompensation(c.resultCompensationFn, other.resultCompensationFn)
+	if !ok {
+		return ImpossibleCompensation
 	}
 
 	// Predicate map union: merge both sides. Java throws on duplicates;

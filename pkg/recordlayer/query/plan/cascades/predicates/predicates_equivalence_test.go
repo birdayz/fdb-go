@@ -24,6 +24,35 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// TestPredicateEquals_ExistentialValuePredicate pins RFC-189 C4 (finding 12d):
+// PredicateEquals had no *ExistentialValuePredicate case, so two EXISTS always
+// fell through to false and `EXISTS(q) AND EXISTS(q)` never collapsed via
+// AndDedup (an optimization inconsistency — memo interning handles correctness).
+// Two EXISTS over the same quantifier are now equal; over different quantifiers
+// they stay distinct.
+func TestPredicateEquals_ExistentialValuePredicate(t *testing.T) {
+	t.Parallel()
+	mkExists := func(a values.CorrelationIdentifier) *ExistentialValuePredicate {
+		return &ExistentialValuePredicate{
+			Value:      values.NewQuantifiedObjectValue(a),
+			Comparison: Comparison{Type: ComparisonIsNotNull},
+		}
+	}
+	q := values.NamedCorrelationIdentifier("q")
+	r := values.NamedCorrelationIdentifier("r")
+
+	if !PredicateEquals(mkExists(q), mkExists(q)) {
+		t.Fatal("EXISTS over the same quantifier must be equal (was always false pre-fix)")
+	}
+	if PredicateEquals(mkExists(q), mkExists(r)) {
+		t.Fatal("EXISTS over different quantifiers must NOT be equal")
+	}
+	// Not equal to an unrelated predicate type.
+	if PredicateEquals(mkExists(q), mkValuePred("a", "x")) {
+		t.Fatal("EXISTS must not equal a ValuePredicate")
+	}
+}
+
 // TestPredicateEquals_OrPositional pins the documented positional
 // behaviour for OR. `Or(p1, p2, p3)` is NOT equal to `Or(p3, p2, p1)`
 // under our PredicateEquals — Java's `OrPredicate.or(p1,p2,p3) ==
