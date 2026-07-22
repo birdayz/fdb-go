@@ -225,6 +225,7 @@ go_test(
         "expression_partition_test.go",
         "expression_rule_call_test.go",
         "f20_winner_f21_memo_test.go",
+        "fanout_candidate_distinct_test.go",
         "fused_max_match_fuzz_test.go",
         "fuzz_cte_test.go",
         "graph_expansion_test.go",
@@ -814,6 +815,7 @@ go_test(
         "default_on_empty_count_test.go",
         "index_primary_key_property_test.go",
         "whole_plan_cardinality_guard_test.go",
+        "fanout_candidate_distinct_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

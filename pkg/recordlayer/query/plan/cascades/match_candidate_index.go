@@ -72,7 +72,7 @@ func NewValueIndexScanMatchCandidate(
 ) *ValueIndexScanMatchCandidate {
 	return NewValueIndexScanMatchCandidateWithFunctions(
 		indexName, recordTypes, columnNames, nil, sargableAliases,
-		flowedType, unique, pkColumnNames,
+		flowedType, unique, pkColumnNames, false,
 	)
 }
 
@@ -90,6 +90,7 @@ func NewValueIndexScanMatchCandidateWithFunctions(
 	flowedType values.Type,
 	unique bool,
 	pkColumnNames []string,
+	createsDuplicates bool,
 ) *ValueIndexScanMatchCandidate {
 	aliases := make([]values.CorrelationIdentifier, len(sargableAliases))
 	copy(aliases, sargableAliases)
@@ -105,14 +106,15 @@ func NewValueIndexScanMatchCandidateWithFunctions(
 		copy(fns, columnFunctions)
 	}
 	return &ValueIndexScanMatchCandidate{
-		indexName:       indexName,
-		recordTypes:     types,
-		columnNames:     cols,
-		columnFunctions: fns,
-		pkColumnNames:   pkCols,
-		sargableAliases: aliases,
-		flowedType:      flowedType,
-		unique:          unique,
+		indexName:         indexName,
+		recordTypes:       types,
+		columnNames:       cols,
+		columnFunctions:   fns,
+		pkColumnNames:     pkCols,
+		sargableAliases:   aliases,
+		flowedType:        flowedType,
+		unique:            unique,
+		createsDuplicates: createsDuplicates,
 	}
 }
 

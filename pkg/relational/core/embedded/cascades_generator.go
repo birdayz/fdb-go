@@ -2031,6 +2031,12 @@ func (d *metadataIndexDef) IndexName() string          { return d.idx.Name }
 func (d *metadataIndexDef) IndexColumnNames() []string { return d.idx.RootExpression.FieldNames() }
 func (d *metadataIndexDef) IndexIsUnique() bool        { return d.idx.IsUnique() }
 
+// IndexCreatesDuplicates reports whether the index's root key expression fans
+// out (Java index.getRootExpression().createsDuplicates()) — satisfies
+// cascades.IndexDefWithCreatesDuplicates so the DistinctRecordsProperty is
+// correct for fan-out indexes (RFC-188 M4).
+func (d *metadataIndexDef) IndexCreatesDuplicates() bool { return d.idx.CreatesDuplicates() }
+
 // IndexColumnFunctions returns the per-column function tags parallel to
 // IndexColumnNames: "" for a plain field, cascades.FunctionKindCardinality for
 // a CARDINALITY()-keyed column. Returns nil when every column is a plain field

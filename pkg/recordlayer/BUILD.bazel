@@ -211,6 +211,7 @@ go_test(
         "hnsw_stats_test.go",
         "index_bug_verify_test.go",
         "index_candidacy_classification_test.go",
+        "index_creates_duplicates_test.go",
         "index_edge_cases_test.go",
         "index_maintainer_test.go",
         "index_predicate_test.go",

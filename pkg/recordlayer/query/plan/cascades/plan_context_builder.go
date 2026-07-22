@@ -38,6 +38,17 @@ type IndexDefWithColumnFunctions interface {
 	IndexColumnFunctions() []string
 }
 
+// IndexDefWithCreatesDuplicates is an optional extension of IndexDef for indexes
+// that can state whether their root key expression FANS OUT (a repeated/collection
+// field produces multiple entries per record). Ports Java's
+// index.getRootExpression().createsDuplicates(). A fan-out index does NOT produce
+// distinct records; defs that don't implement this interface are treated as
+// non-fan-out (the safe under-report — see DistinctRecordsProperty / RFC-188 M4).
+type IndexDefWithCreatesDuplicates interface {
+	IndexDef
+	IndexCreatesDuplicates() bool
+}
+
 // NewPlanContextFromIndexDefs builds a PlanContext with one
 // ValueIndexScanMatchCandidate per index definition. Column names
 // are upper-cased for SQL-convention case-insensitive matching
@@ -77,6 +88,13 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 				flowed = t
 			}
 		}
+		// Fan-out (createsDuplicates) drives DistinctRecordsProperty (RFC-188 M4):
+		// a repeated-field index does NOT produce distinct records. Threaded from
+		// the def's root key expression when available; absent → non-fan-out.
+		createsDuplicates := false
+		if dup, ok := def.(IndexDefWithCreatesDuplicates); ok {
+			createsDuplicates = dup.IndexCreatesDuplicates()
+		}
 		candidates = append(candidates, NewValueIndexScanMatchCandidateWithFunctions(
 			def.IndexName(),
 			def.IndexRecordTypes(),
@@ -86,6 +104,7 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 			flowed,
 			def.IndexIsUnique(),
 			upperPK,
+			createsDuplicates,
 		))
 	}
 	return &builtPlanContext{candidates: candidates}

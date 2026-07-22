@@ -241,7 +241,13 @@ result value appears → wrong projection. `PullUpValues(parts, m.candidateValue
   production index-plan build sites (stampIndexMetadata, wrapScanPlanWithCoverage×2, streaming-agg,
   ordered-index-scan) via `candidateDistinctSignal`. Empty-candidate → false (Java default). A non-unique
   SCALAR index is now correctly distinct. Pin: `TestComputeDistinctRecords_IndexFanOutSignal` (4 cases).
-  Explain-diff: no corpus flip (latent DISTINCT-elision gap, not hit by corpus).
+  **Graefe NAK fold:** the candidate's `createsDuplicates` was NEVER populated (constructor omitted it →
+  constant false → fan-out indexes over-reported distinct = UNSAFE dropped-dedup direction). Fixed:
+  exported `Index.CreatesDuplicates()` (over the root key expression, `createsDuplicates(RootExpression)`),
+  optional `IndexDefWithCreatesDuplicates` interface, `metadataIndexDef.IndexCreatesDuplicates()`, threaded
+  through the candidate constructor. Pins: `TestIndex_CreatesDuplicates` (FanOut→true, scalar/nested/empty),
+  `TestPlanContext_ThreadsCreatesDuplicates` (fan-out def → candidate true; absent → false). Explain-diff:
+  no corpus flip (no fan-out index in the SQL corpus).
 - [x] M5: PrimaryKey for index scans — DONE. `computePrimaryKey` now returns FieldValues over the index's
   `GetPKColumnNames()` (Java `PrimaryKeyProperty.visitIndexPlan`) — the SAME representation the primary
   scan uses, so `commonPKFromChildren` matches a scan child against an index child over the same table.
