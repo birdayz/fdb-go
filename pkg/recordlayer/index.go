@@ -77,21 +77,30 @@ func (i *Index) CreatesDuplicates() bool {
 	if i.RootExpression == nil {
 		return false
 	}
-	// Only a plain VALUE index's scan-time distinctness is governed by its key
-	// expression's fan-out (root.createsDuplicates()). Every OTHER index type
-	// that can reach a value-scan candidate may emit multiple entries per record
-	// — a TEXT index tokenizes to one entry per token; multidimensional/rank and
-	// the like have their own scan shapes — so FAIL CLOSED to duplicate-producing
-	// for them. The M4 DistinctRecords signal then never wrongly marks such a
-	// scan distinct and elides a required DISTINCT (which would leak duplicate
-	// rows, cross-engine reachable via a Java-created index in shared metadata).
-	// Over-reporting for a genuinely-distinct non-VALUE type is the safe
-	// direction: identical rows, at most a redundant DISTINCT. aggregate/vector/
-	// atomic-mutation indexes are already excluded upstream from value candidates.
-	if i.Type != IndexTypeValue {
+	// Java builds a ValueIndexScanMatchCandidate for VALUE and VERSION indexes
+	// and governs their scan-time distinctness by the root key expression's
+	// fan-out (index.getRootExpression().createsDuplicates()). A VERSION index is
+	// one entry per record (VersionKeyExpression.createsDuplicates()==false), so
+	// it produces DISTINCT records — the earlier blanket non-VALUE fail-closed
+	// over-reported it as duplicate-producing and lost a DISTINCT elision.
+	// createsDuplicatesRec self-protects: an UNRECOGNIZED root returns the
+	// `unrecognized=true` fail-closed default, so this can report distinct ONLY
+	// when the root is provably non-fan-out.
+	//
+	// Every OTHER index type that can reach a value-scan candidate may emit
+	// multiple entries per record — TEXT tokenizes to one entry per token;
+	// multidimensional / time-window-leaderboard have their own scan shapes; a
+	// RANK value-scan's distinctness is unverified — so FAIL CLOSED to
+	// duplicate-producing for them (the safe direction: identical rows,
+	// at most a redundant DISTINCT, never a dropped dedup). aggregate / vector /
+	// atomic-mutation indexes are already excluded upstream from value candidates
+	// (RANK/PERMUTED-min/max reach the aggregate candidate, not this path).
+	switch i.Type {
+	case IndexTypeValue, IndexTypeVersion:
+		return createsDuplicatesRec(i.RootExpression, true)
+	default:
 		return true
 	}
-	return createsDuplicatesRec(i.RootExpression, true)
 }
 
 type Index struct {

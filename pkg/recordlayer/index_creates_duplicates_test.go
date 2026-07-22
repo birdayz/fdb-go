@@ -77,4 +77,25 @@ func TestIndex_CreatesDuplicates(t *testing.T) {
 	if !textIdx.CreatesDuplicates() {
 		t.Fatal("TEXT index must create duplicates (one entry per token) regardless of scalar root")
 	}
+
+	// --- RFC-189 B2: VERSION indexes compute real root fan-out (Java builds a
+	// value candidate for them). A VERSION index is one entry per record, so it
+	// does NOT create duplicates — the earlier blanket non-VALUE fail-closed
+	// wrongly reported it as duplicate-producing and lost a DISTINCT elision. ---
+
+	versionScalar := &Index{Name: "idx_ver", Type: IndexTypeVersion, RootExpression: VersionKey()}
+	if versionScalar.CreatesDuplicates() {
+		t.Fatal("VERSION index (one entry per record) must NOT create duplicates")
+	}
+	// A VERSION index over a fan-out field still fans out.
+	versionFanOut := &Index{Name: "idx_ver_fan", Type: IndexTypeVersion, RootExpression: FanOut("tags")}
+	if !versionFanOut.CreatesDuplicates() {
+		t.Fatal("VERSION index over a fan-out field must create duplicates")
+	}
+	// A VERSION index with an UNRECOGNIZED root still fails closed (self-protected
+	// by createsDuplicatesRec's unrecognized=true default).
+	versionCustom := &Index{Name: "idx_ver_custom", Type: IndexTypeVersion, RootExpression: &customKeyExpression{}}
+	if !versionCustom.CreatesDuplicates() {
+		t.Fatal("VERSION index with an unrecognized root must FAIL CLOSED to true")
+	}
 }
