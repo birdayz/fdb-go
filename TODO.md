@@ -102,11 +102,21 @@ ACKED rev 2):** the residuals below are being ground out in ONE PR (owner direct
   resolved (RFC-188 round 7). GetPlans: no change needed (already guarded).
 - **RECLASSIFIED:** finding 13 intersection-rule deletion → KEEP (fuzz completeness net + white-box tests
   exercise the logical→physical path; SQL-unreachable but not dead-in-the-harmful-sense).
-- **REMAINING (large/plan-flip/infra — not to be rushed):** finding 10-M5-followup (B3 structural PK —
-  translator + both arms + dropped-rows FDB guard + 1M stress), finding 13 MatchIntermediate permutation
-  port, finding 11 (F1 OR-expansion phase relocation, Graefe-gated), finding 10-M4-followup (E1
-  Fetch-storedRecord ~48 flips), finding 6-followup (E2 dense producer ~11 flips) — E1/E2 per the
-  per-flip-audit protocol. Then the milestone review lap (Graefe+Torvalds+codex+@claude) + PR.
+- **DONE (added):** finding 10-M5-followup (B3 structural PK — index arm re-ported structurally via a new
+  KeyExpression→Value translator; validated by rowdiff+plandiff+1M-stress, no flip/no dropped rows;
+  scan-arm item-d booked — B1 cardinality-count ripple).
+- **E2 (finding 6-followup) — AUDITED, REVERTED, KEPT BOOKED:** the dense predicate-count producer is
+  Java-faithful in isolation but REGRESSES designated survivors — for Sort(Scan) vs Scan (both 0 preds)
+  the dense tree-depth tiebreak fires the predicate-count rung too early (before a simplicity rung) and
+  prefers the deeper Sort(Scan). plandiff/rowdiff/1M-stress were green (final plans unaffected) but the
+  designation-invariant unit tests caught the regression. Root cause = Go's designated-comparator RUNG
+  ORDER; proper fix needs Java rung-order verification, not just densifying the producer. Low value; keep
+  booked (as RFC-188 deliberately did). This is the per-flip audit protocol working as intended.
+- **REMAINING (large/review-gated — not to be rushed):** finding 13 MatchIntermediate permutation port
+  (medium, edge-case optimization), finding 11 (F1 OR-expansion phase relocation — Graefe-gated infra),
+  finding 10-M4-followup (E1 Fetch-storedRecord ~48 flips — the DANGEROUS dropped-dedup direction, needs
+  the full per-flip duplicate-bearing audit + reviewer sign-off; E2's outcome shows these arms can
+  regress). Then the milestone review lap (Graefe+Torvalds+codex+@claude) + PR.
 
 **Owner directive (2026-07-22): land finding A (leaf-name column matching) IN FULL —
 principles-first, no quick fixes: RFC → Graefe+Torvalds review → implement in full → review.
