@@ -147,6 +147,7 @@ go_test(
         "value_exists_test.go",
         "value_first_or_default_streaming_test.go",
         "value_first_or_default_test.go",
+        "value_in_exact_test.go",
         "value_in_test.go",
         "value_incarnation_test.go",
         "value_index_entry_object_test.go",

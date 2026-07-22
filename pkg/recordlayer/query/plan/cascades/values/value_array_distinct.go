@@ -98,7 +98,9 @@ func arrayContainsByValue(arr []any, target any) bool {
 		if _, ok := e.([]byte); ok {
 			continue // target isn't []byte but element is — not equal
 		}
-		if e == target {
+		// comparableEqual, not bare `==`: a non-comparable element ([]any, map)
+		// would panic under `==`. reflect.DeepEqual is panic-safe and structural.
+		if comparableEqual(e, target) {
 			return true
 		}
 	}
