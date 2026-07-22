@@ -221,13 +221,16 @@ candidate part to `QOV(alias)` (case-1 self-equal always fires) vs Java's root-r
 `candidateValue.pullUp(mapping.values(), …)`. Masked until a covering-index `RecordConstructorValue`
 result value appears → wrong projection. `PullUpValues(parts, m.candidateValue, alias)` exists unused.
 
-### [ ] Finding 10 (MED) — missing Java cost rungs / property divergences
-- M2: no `numDefaultOnEmpty` rung (`RecordQueryDefaultOnEmptyPlan` uncounted) vs Java `PlanningCostModel:308`.
-- M3: criterion #2 lacks Java's whole-plan-cardinality OUTER guard (`PlanningCostModel:121`) → decides
+### [ ] Finding 10 (MED) — missing Java cost rungs / property divergences (M2✓ M5 M3 M4)
+- [x] M2: `numDefaultOnEmpty` rung — DONE. Count `RecordQueryDefaultOnEmptyPlan` in all 3 count sites
+  (walk/merge/concrete); rung "fewer ON EMPTY NULL wins" after the ordinal rungs, before the scalar-cost
+  extension (Java's last ordinal rung before the planHash tiebreak). Pin:
+  `TestConcretePlanCounts_DefaultOnEmpty`. Explain-diff: no corpus flip (faithful port, latent-gap fix).
+- [ ] M3: criterion #2 lacks Java's whole-plan-cardinality OUTER guard (`PlanningCostModel:121`) → decides
   on data-access cardinality where Java abstains.
-- M4: `plan_properties.go:64` DistinctRecords for index uses `IsUnique()` not Java's `!createsDuplicates()`
+- [ ] M4: `plan_properties.go:64` DistinctRecords for index uses `IsUnique()` not Java's `!createsDuplicates()`
   → misses DISTINCT elision over non-unique scalar-index scans.
-- M5: `plan_properties.go:216` PrimaryKey nil for index scans vs Java's common-PK → loses PK-based dedup/order.
+- [ ] M5: `plan_properties.go:216` PrimaryKey nil for index scans vs Java's common-PK → loses PK-based dedup/order.
 
 ### [ ] Finding 11 (MED) — PredicateToLogicalUnionRule expands every top-level OR
 `rule_predicate_to_logical_union.go:99` fires OR→`Distinct(Union)` unconditionally; Java

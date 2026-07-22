@@ -214,6 +214,7 @@ go_test(
         "cost_selectivity_test.go",
         "cross_product_test.go",
         "data_access_types_test.go",
+        "default_on_empty_count_test.go",
         "default_rules_test.go",
         "depth_rung_sort_gate_test.go",
         "edge_case_test.go",
@@ -808,6 +809,7 @@ go_test(
         "limit_retained_over_multirow_filter_test.go",
         "predicate_count_by_level_test.go",
         "primary_vs_index_sarg_test.go",
+        "default_on_empty_count_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

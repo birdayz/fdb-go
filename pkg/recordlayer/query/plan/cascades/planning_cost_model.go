@@ -352,6 +352,14 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(opsA.inMemorySortCount, opsB.inMemorySortCount)
 	}
 
+	// Fewer ON EMPTY NULL operations wins (Java PlanningCostModel: the last
+	// ordinal rung before the planHash tiebreak). This is a structural count
+	// criterion, so it sits with the other ordinal rungs — before Go's
+	// statistics scalar-cost extension and the final hash tiebreak.
+	if opsA.numDefaultOnEmpty != opsB.numDefaultOnEmpty {
+		return intCompare(opsA.numDefaultOnEmpty, opsB.numDefaultOnEmpty)
+	}
+
 	// Statistics-driven scalar cost — a Go EXTENSION in the tiebreak
 	// slot. Java's PlanningCostModel is purely heuristic (ordinal rungs
 	// ending in a planHash tiebreak; no statistics rung exists), so this
@@ -400,6 +408,7 @@ type expressionCounts struct {
 	unmatchedFieldCount      int
 	inMemorySortCount        int
 	nljPredicateCount        int
+	numDefaultOnEmpty        int
 	maxDataAccessCardinality float64 // -1 means unknown (no PROVABLY-bounded data access)
 	// unboundedDataAccess is set when ANY data access lacks a PROVABLE max-cardinality bound
 	// (a range/partial/full scan, a non-unique or partially-bound index, an aggregate/vector
@@ -591,6 +600,9 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	// A fetch is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		counts.fetchCount++
+	// The ON EMPTY NULL default is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryDefaultOnEmptyPlan:
+		counts.numDefaultOnEmpty++
 	// The InMemorySort is its own physical expression now (RFC-184 W2) — the
 	// memo-descent cost walk over a LOGICAL parent counts the sort here (the
 	// physical top path already routes bare sorts via concretePlanCounts).
@@ -1447,6 +1459,7 @@ func mergeCounts(dst *expressionCounts, src expressionCounts) {
 	dst.unmatchedFieldCount += src.unmatchedFieldCount
 	dst.inMemorySortCount += src.inMemorySortCount
 	dst.nljPredicateCount += src.nljPredicateCount
+	dst.numDefaultOnEmpty += src.numDefaultOnEmpty
 	if src.maxDataAccessCardinality > dst.maxDataAccessCardinality {
 		dst.maxDataAccessCardinality = src.maxDataAccessCardinality
 	}
@@ -1572,6 +1585,8 @@ func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pl
 		counts.fetchCount++
 	case *plans.RecordQueryInMemorySortPlan:
 		counts.inMemorySortCount++
+	case *plans.RecordQueryDefaultOnEmptyPlan:
+		counts.numDefaultOnEmpty++
 	}
 	return false
 }
