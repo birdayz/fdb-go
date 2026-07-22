@@ -6015,6 +6015,11 @@ per-shape ordinalization gate. Items below, most-actionable first.
   > 2-quantifier; a 3+-quantifier `outer + EXISTS + EXISTS` cluster strands). That operator is the single
   > critical-path unblocker for {B producer deletion, C's last 7 sites, D}. It is a deep Cascades physical-
   > rule slice (chain N existential FlatMaps, Java parity) needing its own design gauntlet.
+  > **CORRECTION (2026-07-22): this "BLOCKED on the multi-esq producer" framing is SUPERSEDED — B's
+  > AnchoredJoin producer was deleted (`715c8d20e`), so there is no longer an anchored-RC provenance to
+  > gate on. The 7 lazy sites and the D heuristics must be RE-MEASURED against the positional-only
+  > runtime; the D header below already carries the corrected framing. Re-census is the first step of the
+  > next B/C/D slice (out of scope for the endgame closure).**
 
 ### D. Kill Go-invented name heuristics (residual silent-first-match hazards)
 > D DEPENDS ON C completing (probe → 0). Post-B measurement (the "multi-esq operator" framing
