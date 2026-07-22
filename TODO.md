@@ -121,11 +121,22 @@ NAME-based by construction (`columnNames []string`, no ordinals), so raw `Semant
 binds nothing (baked≠lazy) and leaf-name `EqualFold` was the bridge. A nested ref also exists in 3
 forms (nested-Child, fused-baked, flat-dotted). Fix (Graefe-ACKed name-path, `rfcs/187-column-identity-matching.md`):
 one `values.AccessorNamePath`/`ColumnNamePathsEqual` primitive (full accessor NAME path, root-alias
-excluded, loud `ok=false` on pure-ordinal accessors) at ALL 10 sites S1-S10, + fix the aggregate
-candidate's nested-column mis-flatten (`groupCols[0]="addr"` for `GROUP BY addr.city`).
-Follow-up (RFC-187 §8, post-RFC-173): ordinalize the candidate (resolve `columnNames`→ordinals) so
+excluded, loud `ok=false` on pure-ordinal accessors) at ALL 10 sites S1-S10.
+Aggregate sites (S4/S5/S8) ship the TRANSITIONAL reject-nested via `aggColumnMatches` (query
+grouping-key/agg-operand compared by full path against the candidate's declared column): a nested
+query key does not match → base-record StreamingAgg (correct rows).
+Follow-up A (Graefe RFC-187 §3.2 condition 3, booked): full nested-aggregate-index SUPPORT needs the
+candidate to carry real nested paths end-to-end — fix the `cascades_generator.go` group/agg column
+mis-flatten (`groupCols[0]="addr"` for `GROUP BY addr.city`), `ColumnValue` to build nested
+placeholder FieldValues, and expansion/execution (`WithGroupColumns`) — before nested agg matches can
+be safely ENABLED. Also form-(c) flat-dotted qualified grouping keys (`T.city`) conservatively miss
+the agg index until grouping keys are uniformly structured.
+Follow-up B (RFC-187 §8, post-RFC-173): ordinalize the candidate (resolve `columnNames`→ordinals) so
 both match sides are baked and match-domain identity collapses into Java's `FieldPath` ordinal
 identity — the true-parity endgame, entangled with RFC-173.
+
+Progress (branch feat/rfc187-column-identity-matching): [x] primitive [x] S1 [x] S2/S3 [x] S6
+[x] S4/S5/S8; remaining [ ] S7/S9/S10 [ ] milestone review lap + stress/determinism.
 
 ### [ ] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate
 `rule_remove_range_one.go:52,68` gates deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;

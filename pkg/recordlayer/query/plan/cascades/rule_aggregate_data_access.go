@@ -192,7 +192,13 @@ func groupColEqualityIndex(cp *predicates.ComparisonPredicate, groupCols []strin
 		return -1
 	}
 	for i, col := range groupCols {
-		if eqFold(fv.Field, col) || eqFold(fieldNameOnly(fv.Field), col) {
+		// Match the grouping column by full accessor PATH, not leaf name, so a
+		// nested `addr.city` group-key predicate never binds a same-leaf-named
+		// top-level `city` aggregate index (RFC-187 S5). Dropping the former
+		// dotted-leaf-strip fallback means a form-(c) flat-dotted qualified key
+		// (`T.city`) that cannot be structurally resolved falls back to a
+		// StreamingAgg (correct rows) rather than risk the nested collision.
+		if aggColumnMatches(fv, col) {
 			return i
 		}
 	}
@@ -279,16 +285,6 @@ func aggregateFlowedColumnName(aggFunc, aggColumn string) string {
 		return aggFunc + "(*)"
 	}
 	return aggFunc + "(" + aggColumn + ")"
-}
-
-// fieldNameOnly strips a "TABLE." prefix from a qualified field name.
-func fieldNameOnly(qualified string) string {
-	for i := len(qualified) - 1; i >= 0; i-- {
-		if qualified[i] == '.' {
-			return qualified[i+1:]
-		}
-	}
-	return qualified
 }
 
 // tryMultiAggregateIntersection attempts to satisfy a multi-aggregate

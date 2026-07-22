@@ -200,6 +200,7 @@ go_test(
     name = "cascades_test",
     srcs = [
         "abstract_data_access_rule_test.go",
+        "aggregate_column_identity_test.go",
         "alias_aware_interning_shadow_delta_test.go",
         "alias_map_test.go",
         "asymmetric_union_planning_test.go",
@@ -802,6 +803,7 @@ go_test(
         "rule_match_intermediate_column_identity_test.go",
         "rule_ordered_scan_column_identity_test.go",
         "expression_partition_column_identity_test.go",
+        "aggregate_column_identity_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
