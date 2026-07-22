@@ -141,6 +141,10 @@ implementation [x] 1M stress green (no row-count/plan regression) [x] full 56-ta
 every commit. Only the two booked follow-ups remain (nested-agg-index SUPPORT; §8 candidate
 ordinalization) — both distinct from A's wrong-rows/wrong-order fix.
 
+**Systemic problem B (cost/cardinality-model soundness) = findings 2, 3, 6, 10, covered by
+`rfcs/188-cost-model-soundness.md` (branch feat/rfc188-cost-model-soundness). Java refs confirmed
+against 4.12.11.0. Grind order: 2 → 6 → 3 → 10(M2/M4/M5/M3).**
+
 ### [ ] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate
 `rule_remove_range_one.go:52,68` gates deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;
 `cost.go:520` (LogicalFilter) and `:609` (Select) compute `in * 0.5^numPreds` UNFLOORED over
