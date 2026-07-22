@@ -426,7 +426,15 @@ bound aliases propagate from one child to its siblings. Java's default
    `plans/recursive_level_union_correlation_test.go` pins that a colliding outer alias now
    propagates. Java DOES override `canCorrelate() → true` on the sibling
    `RecordQueryRecursiveDfsJoinPlan.java:156` (Go matches, `:200`), so the divergence was
-   specific to the LEVEL union.
+   specific to the LEVEL union. **Residual (tracked, non-blocking):** Java's physical level union
+   pairs `canCorrelate=false` with an EXPLICIT `computeCorrelatedTo` filter that drops
+   `tempTableScanAlias`/`tempTableInsertAlias` from the propagated set. Go ports the flag but not
+   that filter — `TempTableScanExpression` surfaces its alias as a free correlation, so the temp
+   aliases leak upward as apparent external correlations. This is NEUTRAL w.r.t. the flag flip
+   (temp aliases are not quantifier aliases, so they leak identically under `true` or `false`) and
+   is therefore neither introduced nor regressed here — a pre-existing unclosed divergence. Close
+   it by overriding the level-union plan's transitive correlated-to to filter the two temp aliases
+   (Java `computeCorrelatedTo`).
 2. **`RecordQueryInJoinPlan`** — Java `:198` returns `true`; Go has no override, so `false`.
    Conservative direction (Go propagates where Java anchors) — safe, costs optimization reach.
    Deliberately not flipped here: adding anchoring changes plan shapes and belongs to a planner

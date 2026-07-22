@@ -4,41 +4,37 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
-
-	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // planCacheScopeDelim separates the schema/version scope from the query text
-// in a plan-cache key. It survives normalizeSQL (not whitespace, ToUpper-
-// stable) and cannot occur in a schema name or SQL source, so the scope can
-// never bleed into the query text.
+// in a plan-cache key. It cannot occur in a schema name or SQL source, so the
+// scope can never bleed into the query text.
 const planCacheScopeDelim = "\x01"
 
-// planCacheKeyInput builds the plan-cache lookup input for a query. It fixes
-// two correctness bugs in the prior q.GetText() key:
+// planCacheScope builds the VERBATIM (un-normalized) plan-cache scope — the
+// schema identity + metadata version — that PlanCache prepends to the
+// normalized query text. A SET SCHEMA switch (connection.go SetSchema mutates
+// only the session schema, never the cache) or a metadata-version bump then
+// keys differently, so the same SQL against a different schema/table set can
+// no longer return a stale plan. Java's QueryCacheKey carries the schema
+// template version for the same reason (RFC-024).
 //
-//   - INJECTIVE: canonicalTextOf preserves token boundaries (it reads the
-//     source span). GetText() concatenated tokens with NO separator, so
-//     `SELECT AB FROM T` and `SELECT A B FROM T` both collapsed to
-//     "SELECTABFROMT" and shared one cache entry — a wrong-plan bug.
-//     PlanCache.normalizeSQL then case/whitespace/comment-folds the canonical
-//     text, so equivalent spellings still share an entry.
-//   - SCOPED: prefixing the schema identity + metadata version means a
-//     SET SCHEMA switch (connection.go SetSchema mutates only the session
-//     schema, never the cache) or a metadata-version bump can no longer return
-//     a plan resolved against a different schema/table set. Java's
-//     QueryCacheKey carries the schema template version for the same reason
-//     (RFC-024). DDL on this connection already flushes the whole cache; this
-//     scope is the additional guard for the SET SCHEMA case.
+// The scope is kept out of normalizeSQL deliberately: schema names are
+// case-SENSITIVE (the catalog/session preserve them exactly), so normalizing
+// the scope would fold `s` and `S` into one key — the very staleness bug this
+// scope exists to prevent. PlanCache.Get/Put normalize ONLY the query text.
+//
+// The companion query text is canonicalTextOf(q): it preserves token
+// boundaries (GetText() concatenated tokens with no separator, colliding
+// `SELECT AB` with `SELECT A B` — a wrong-plan bug), and normalizeSQL then
+// case/whitespace/comment-folds equivalent spellings so they still share.
 //
 // NOTE (optimization gap, not a correctness bug): Java's AstNormalizer also
 // PARAMETERIZES literals so `... WHERE x = 1` and `... WHERE x = 2` share a
 // plan with different bindings. Go keys on the literal text, so those miss —
 // more cache misses, never a wrong plan. Closing that is a separate reach item.
-func planCacheKeyInput(schema string, metaDataVersion int, q antlrgen.IQueryContext) string {
-	return schema + planCacheScopeDelim +
-		strconv.Itoa(metaDataVersion) + planCacheScopeDelim +
-		canonicalTextOf(q)
+func planCacheScope(schema string, metaDataVersion int) string {
+	return schema + planCacheScopeDelim + strconv.Itoa(metaDataVersion)
 }
 
 // normalizeSQL strips comments, collapses whitespace, uppercases
@@ -62,7 +58,8 @@ func normalizeSQL(sql string) string {
 //     wrong-plan bug in the same family as the GetText() non-injectivity.
 //
 // Each quote kind closes on its own delimiter and honours the doubled-quote
-// escape (`”`, `""`, ` “ `) so an escaped quote stays inside the span.
+// escape (two of the same quote char in a row) so an escaped quote stays
+// inside the span.
 func upperOutsideStrings(sql string) string {
 	var b strings.Builder
 	b.Grow(len(sql))
@@ -90,7 +87,8 @@ func upperOutsideStrings(sql string) string {
 	return b.String()
 }
 
-// stripComments removes single-line (--) and block (/* */) comments.
+// stripComments removes single-line (-- and MySQL #) and block (/* */)
+// comments.
 func stripComments(sql string) string {
 	var b strings.Builder
 	b.Grow(len(sql))
@@ -116,9 +114,17 @@ func stripComments(sql string) string {
 			continue
 		}
 
-		// Single-line comment: -- to end of line
-		if i+1 < len(sql) && sql[i] == '-' && sql[i+1] == '-' {
-			i += 2
+		// Single-line comment: `--` or MySQL `#` to end of line. The lexer
+		// routes both to the hidden channel (LINE_COMMENT), so q.GetText()
+		// dropped them; canonicalTextOf keeps them (it reads the raw source
+		// span), so they must be stripped here or a `# trace` comment change
+		// would churn the cache for an otherwise-identical query.
+		if (i+1 < len(sql) && sql[i] == '-' && sql[i+1] == '-') || sql[i] == '#' {
+			if sql[i] == '#' {
+				i++
+			} else {
+				i += 2
+			}
 			for i < len(sql) && sql[i] != '\n' {
 				i++
 			}
@@ -168,15 +174,20 @@ func collapseWhitespace(sql string) string {
 	var b strings.Builder
 	b.Grow(len(sql))
 
+	// Rune iteration (not bytes): a multibyte codepoint outside quotes — e.g.
+	// U+00A0 NBSP — must be classified by unicode.IsSpace as a whole rune, not
+	// have one of its UTF-8 bytes misfire the ASCII-space test. Quote chars are
+	// ASCII, so rune comparison against them is exact.
+	runes := []rune(sql)
 	inSpace := false
-	var quote byte
-	for i := 0; i < len(sql); i++ {
-		ch := sql[i]
+	var quote rune
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
 		if quote != 0 {
-			b.WriteByte(ch)
-			if ch == quote {
-				if i+1 < len(sql) && sql[i+1] == quote {
-					b.WriteByte(sql[i+1])
+			b.WriteRune(r)
+			if r == quote {
+				if i+1 < len(runes) && runes[i+1] == quote {
+					b.WriteRune(runes[i+1])
 					i++
 					continue
 				}
@@ -184,13 +195,13 @@ func collapseWhitespace(sql string) string {
 			}
 			continue
 		}
-		if ch == '\'' || ch == '"' || ch == '`' {
-			quote = ch
+		if r == '\'' || r == '"' || r == '`' {
+			quote = r
 			inSpace = false
-			b.WriteByte(ch)
+			b.WriteRune(r)
 			continue
 		}
-		if r := rune(ch); unicode.IsSpace(r) {
+		if unicode.IsSpace(r) {
 			if !inSpace {
 				b.WriteByte(' ')
 				inSpace = true
@@ -198,7 +209,7 @@ func collapseWhitespace(sql string) string {
 			continue
 		}
 		inSpace = false
-		b.WriteByte(ch)
+		b.WriteRune(r)
 	}
 
 	return b.String()

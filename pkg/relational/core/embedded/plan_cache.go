@@ -60,12 +60,15 @@ func NewPlanCache(maxSize int) *PlanCache {
 	}
 }
 
-// Get looks up a cached plan by SQL text. The SQL is normalized
-// internally (case-folded, whitespace-collapsed, comments stripped)
-// before lookup. Returns the plan, scalar subquery bindings, and true
-// on a cache hit; nil, nil, false on miss.
-func (c *PlanCache) Get(sql string) (plans.RecordQueryPlan, []PlannedScalarSubquery, bool) {
-	key := normalizeSQL(sql)
+// Get looks up a cached plan. `scope` (schema identity + metadata version)
+// is used VERBATIM — it must NOT be normalized, because schema names are
+// case-sensitive and folding them would collide case-distinct schemas
+// (`s` vs `S`) into one key, returning a plan built for the wrong schema.
+// Only the `sql` is normalized (case-folded outside quotes,
+// whitespace-collapsed, comments stripped). Returns the plan, scalar subquery
+// bindings, and true on a cache hit; nil, nil, false on miss.
+func (c *PlanCache) Get(scope, sql string) (plans.RecordQueryPlan, []PlannedScalarSubquery, bool) {
+	key := scope + planCacheScopeDelim + normalizeSQL(sql)
 
 	c.mu.Lock()
 	el, ok := c.items[key]
@@ -82,10 +85,11 @@ func (c *PlanCache) Get(sql string) (plans.RecordQueryPlan, []PlannedScalarSubqu
 	return entry.plan, entry.scalarSubs, true
 }
 
-// Put stores a plan in the cache keyed by normalized SQL text. If the
-// cache is at capacity, the least recently used entry is evicted.
-func (c *PlanCache) Put(sql string, plan plans.RecordQueryPlan, subs []PlannedScalarSubquery) {
-	key := normalizeSQL(sql)
+// Put stores a plan keyed by (verbatim scope, normalized sql) — see Get for
+// why the scope must not be normalized. If the cache is at capacity, the
+// least recently used entry is evicted.
+func (c *PlanCache) Put(scope, sql string, plan plans.RecordQueryPlan, subs []PlannedScalarSubquery) {
+	key := scope + planCacheScopeDelim + normalizeSQL(sql)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -88,15 +88,15 @@ CREATE TABLE CUSTOMERS (
 			const capacity = 256
 			cache := NewPlanCache(capacity)
 			for i := 0; i < capacity-1; i++ {
-				cache.Put("filler query number "+strconv.Itoa(i), warm, nil)
+				cache.Put("", "filler query number "+strconv.Itoa(i), warm, nil)
 			}
-			cache.Put(sc.sql, warm, nil)
-			if _, _, ok := cache.Get(sc.sql); !ok {
+			cache.Put("", sc.sql, warm, nil)
+			if _, _, ok := cache.Get("", sc.sql); !ok {
 				b.Fatal("hot key evicted during fill")
 			}
 			// b.Loop() excludes the fill above from timing.
 			for b.Loop() {
-				if _, _, ok := cache.Get(sc.sql); !ok {
+				if _, _, ok := cache.Get("", sc.sql); !ok {
 					b.Fatal("expected cache hit")
 				}
 			}

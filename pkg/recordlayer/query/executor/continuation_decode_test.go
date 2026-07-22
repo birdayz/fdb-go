@@ -1521,4 +1521,24 @@ func TestDecodeAggregateContinuation_ForeignShapeFailsLoud(t *testing.T) {
 	if _, _, _, err := decodeAggregateContinuation(good, numAggs); err != nil {
 		t.Fatalf("valid Go-format continuation rejected: %v", err)
 	}
+
+	// (d) NIL EXTREMA — a group with no MIN/MAX partial yet (the encoder writes
+	// a lone contValNil tag, non-empty bytes). The loud BytesState assertion
+	// must NOT reject this valid Go continuation, and the decoded extrema must
+	// come back nil.
+	gsNil := &groupState{
+		count: 1, counts: []int64{1}, sums: []float64{0}, sumsI: []int64{0},
+		allInt: []bool{false}, mins: []any{nil}, maxs: []any{nil},
+	}
+	nilExtrema, err := encodeAggregateContinuation(nil, "", nil, gsNil, specs)
+	if err != nil {
+		t.Fatalf("encode nil-extrema: %v", err)
+	}
+	_, _, decoded, err := decodeAggregateContinuation(nilExtrema, numAggs)
+	if err != nil {
+		t.Fatalf("nil-extrema Go continuation rejected: %v", err)
+	}
+	if decoded.mins[0] != nil || decoded.maxs[0] != nil {
+		t.Fatalf("nil extrema round-tripped non-nil: min=%v max=%v", decoded.mins[0], decoded.maxs[0])
+	}
 }
