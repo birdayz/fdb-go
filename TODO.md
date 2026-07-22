@@ -304,6 +304,18 @@ a recognized type. The M4 fail-closed need must be DECOUPLED from the shared def
 → distinct=false, safe) for a root type not in the recognized set, without touching the Split-validation
 default. Or add fan-out to the KeyExpression interface contract (Java's approach: abstract method).
 
+### [ ] Finding 10-M4-followup-3 — refine the non-VALUE fail-closed (optimization) + audit value-candidacy vs Java
+`Index.CreatesDuplicates()` fails closed to duplicate-producing for ANY non-VALUE index type that reaches a
+value-scan candidate (TEXT tokenizes → dup; the conservative default also covers rank/multidimensional/
+time_window_leaderboard/non-atomic bitmap). This is SAFE (identical rows cross-engine; at most a redundant
+DISTINCT) but may OVER-report duplicates for a genuinely-distinct non-VALUE type (e.g. a VERSION index —
+one entry per record), losing a DISTINCT elision. Refinement (safe, optimization-only): per-type analysis
+of which non-VALUE types' SCANS actually emit multiple entries per record, narrowing the fail-closed to
+those. Deeper (Java-parity): should Go EXCLUDE these types from value candidates entirely (as it already
+does for aggregate/vector/atomic-mutation), matching Java, rather than value-scanning them — surfaced by
+the M4 signal but pre-existing. Not a correctness gap now (fail-closed is safe); cross-engine reachable
+(Java-created index in shared metadata).
+
 ### [ ] Finding 10-M3-followup — recognize equality-bound primary scans in the outer guard (codex P2)
 `wholePlanMaxCardinalityKnown` uses `computeCardinalities`, whose `RecordQueryScanPlan` arm always returns
 `UnknownMaxCardinality` — so a full-PK-equality primary scan (a point lookup, max=1, which
