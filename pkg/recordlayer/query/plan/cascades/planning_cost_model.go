@@ -7,7 +7,6 @@ import (
 	"hash/fnv"
 	"io"
 	"os"
-	"sort"
 	"strings"
 	"sync"
 
@@ -114,36 +113,36 @@ func RewritingCostModelLess(a, b expressions.RelationalExpression) bool {
 }
 
 // comparePredicateCountByLevel ports Java's PredicateCountByLevelProperty.compare.
-// It iterates ONLY the first map's entries in ascending key order (Java uses a
-// SortedMap), reading the second map's count via getOrDefault(level, 0); the
-// first level whose counts differ decides. Levels present only in b are NEVER
-// visited in the loop — they surface only through the highest-level tiebreak.
-// This comparator is deliberately ASYMMETRIC (compare(a,b) may equal
-// compare(b,a) in sign); the first-map iteration is load-bearing, so a's keys
-// must be walked sparse and sorted — a dense 0..max loop would visit b-only
-// levels and flip the sign, and unsorted map iteration would make the
-// first-difference return nondeterministic.
+// Java iterates the FIRST map's SortedMap entries reading getOrDefault(level, 0)
+// on the second, but Java's producer is DENSE — every level 0..highest has an
+// entry (0 for a non-predicate node) — so iterating a's entries covers all
+// levels. Go's producer (designationScope.predCountByLevel) is likewise dense
+// now, so the faithful and ANTISYMMETRIC form is a single ascending pass over
+// the UNION of levels (0..max): on dense maps this equals Java's first-map
+// iteration, and it stays antisymmetric even if a caller passes a sparse map (a
+// first-map-only pass would return the same sign in both orientations for e.g.
+// {2:1} vs {1:1}, making the REWRITING survivor insertion-order dependent).
+// Ties fall to the highest-level comparison — the tree depth, since the map is
+// dense (Java's getHighestLevel).
 func comparePredicateCountByLevel(a, b map[int]int) int {
-	levels := make([]int, 0, len(a))
-	maxLevelA := -1
+	maxLevelA, maxLevelB := -1, -1
 	for k := range a {
-		levels = append(levels, k)
 		if k > maxLevelA {
 			maxLevelA = k
 		}
 	}
-	sort.Ints(levels)
-	for _, level := range levels {
-		ac := a[level]
-		bc := b[level] // 0 if absent — matches getOrDefault(level, 0)
-		if ac != bc {
-			return intCompare(ac, bc)
-		}
-	}
-	maxLevelB := -1
 	for k := range b {
 		if k > maxLevelB {
 			maxLevelB = k
+		}
+	}
+	maxLevel := maxLevelA
+	if maxLevelB > maxLevel {
+		maxLevel = maxLevelB
+	}
+	for level := 0; level <= maxLevel; level++ {
+		if a[level] != b[level] { // absent == 0 == getOrDefault(level, 0)
+			return intCompare(a[level], b[level])
 		}
 	}
 	return intCompare(maxLevelA, maxLevelB)

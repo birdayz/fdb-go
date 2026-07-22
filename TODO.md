@@ -201,13 +201,26 @@ filter) is not SQL-corpus-reachable today. Pins: unit `TestComparisonSetKey_Bare
 `semantic_hash.go:156` `%v` (renders "-0"≠"0"). The []float64/[]float32 arms already fixed this with
 `math.Float64bits` (RFC-176 §2); scalar wasn't. → memo dedup miss/dup. Fix: bitwise-compare scalar floats.
 
-### [x] Finding 6 (MED) — comparePredicateCountByLevel iterates union of levels; Java iterates first-arg only — DONE
-`planning_cost_model.go` `for level:=0; level<=maxLevel` (dense union) vs Java
-`PredicateCountByLevelInfo.compare` (first-map entries in ascending SortedMap order + highest-level
-tiebreak). Sign flip on asymmetric-depth predicate maps → different REWRITING survivor. FIXED: walk a's
-actual keys sparse+sorted-ascending, b via map-default 0, highest-level tiebreak. Pin:
-`TestComparePredicateCountByLevel_AsymmetricLevels` ({0:1,2:5} vs {0:1,1:3} → +1, was -1) +
-`_SanityCases`. The deliberate Java asymmetry (compare(a,b) sign may equal compare(b,a)) is preserved.
+### [x] Finding 6 (MED) — comparePredicateCountByLevel: keep the antisymmetric UNION iteration — DONE (self-corrected)
+Original claim (walk a's keys first-map-only to "match Java") was WRONG — it rested on misreading Java as
+having a SPARSE producer. Java's `PredicateCountByLevelVisitor.evaluateAtExpression` ALWAYS
+`.put(currentLevel, count)` (0 for a non-predicate node) → its maps are DENSE, so "iterate a's entries" =
+iterate ALL levels = the ascending UNION pass. On Go's SPARSE producer
+(`designationScope.predCountByLevel`), a first-map-only pass is NON-ANTISYMMETRIC (`Filter(Distinct(Scan))`
+{2:1} vs `Distinct(Filter(Scan))` {1:1} → +1 in BOTH orientations → REWRITING survivor becomes
+insertion-order dependent, a determinism bug) AND diverges from Java (returns +1 where Java returns -1).
+Reverted to the UNION iteration (= master), which is antisymmetric on any input and equals Java's per-level
+counts on sparse input. Pin: `TestComparePredicateCountByLevel_Antisymmetric` (compare(a,b)==-compare(b,a)
+incl. the {2:1}/{1:1} trap) + `_SanityCases`. Explain-diff vs master: zero (this was a no-op-vs-master
+correction of a mistaken change).
+
+### [ ] Finding 6-followup — dense predicate-count producer for Java tiebreak parity
+Go's `predCountByLevel` is SPARSE, so the highest-level tiebreak (`intCompare(maxLevelA, maxLevelB)`) uses
+the highest PREDICATE level, not Java's tree-depth `getHighestLevel` (dense). Only bites when every
+per-level count ties (rare). Making the producer dense (always `counts[currentLevel]+=predCount`, 0
+included — matching Java's visitor) closes it, but FLIPS ~11 corpus plan lines (REWRITING survivors:
+e.g. a nested redundant Project, a Limit/Project reorder) that each need Java-verification before shipping.
+Pre-existing (master's producer is sparse too); booked, not bundled into RFC-188.
 
 ### [ ] Finding 7 (MED, fragile) — Quantifier.GetCorrelatedTo() returns empty; Java transitive-walks
 `expressions/quantifier.go:250` returns `{}` vs Java `getRangesOver().getCorrelatedTo()`. UNDER-
