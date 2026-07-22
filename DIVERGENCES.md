@@ -397,7 +397,7 @@ written down with **"what invariant does Java carry that this drops?"** and each
 | **Scalar cost fallback + Go-only tiebreakers** (15b `compareFlatMapVsNLJ`, 15c `EstimateCostWith`) — no `advancePlannerStage`, so Go's flat member list has ties Java's prune-to-1-winner avoids | Structural single-winner selection; total-order tie resolution | nondeterministic / wrong index pick | **PARTIAL** — cost ORDERING pinned by WS-4 `TestBoundSelectivity_CostMonotonicity` (#405 class); equality-tie determinism pinned by `TestPlanDeterminism_*` (#409). **TRACKED:** the InJoin inner correlated-equality tie (WS-4 #2, OPEN — RFC-167 Phase 1b). |
 | **Hand-rolled `AggregateDataAccessRule`** (aggregate-index matching, not Java's generic data-access) | Guard(match)==consumer(build/execute) — one classifier | wrong agg result / wrong index match (COUNT-COL class) | **COVERED for the known drift** — WS-3 `expressions.IsCountStar` is the single source of truth for the planner candidate + the executor group cursors (#413); group-key matcher deduped via `groupColEqualityIndex` (RFC-163). **TRACKED:** the translator's OWN count-star normalization (`aggregateNamesStableForUnion`) is deliberately a SEPARATE classifier (`cascades_translator.go` — different question/scope) → audit whether it should share (WS-3 other-guard/consumer-pairs); the `COUNT(NULL)` fold fidelity (Graefe follow-up). |
 | **`WithPrimaryKeyIntersector` discards `requestedOrderings`** (over-generates `Intersection` with no merged-ordering gate, vs Java's `WithPrimaryKeyDataAccessRule` common-ordering gate) | Every intersection leg shares a pk-monotonic ordering (the sorted-merge precondition) | wrong rows — a non-pk-ordered leg (value RANGE, or vector distance) feeds the pk-keyed sorted-merge and drops rows | **PARTIAL** — the VECTOR leg is excluded (RFC-167 Phase 4, #411, pinned by `TestFDB_VectorSearch_MultiPartition_InequalityResidualK2`). **TRACKED:** the VALUE-RANGE leg (`a=5 AND b>10`) is LATENT — generated but not selected. The old reason ("a cheaper shell wins") EXPIRED with RFC-183: shells no longer exist, and intersections roughly doubled in the corpus (7 → 13) once real costs applied. Re-verified after that change: no range-leg intersection is selected anywhere in the 2407-query corpus, and a direct probe of `a=5 AND b>10` (plus BETWEEN / two-range / range-plus-third-equality variants over separate single-column indexes) always keeps the range predicate as a RESIDUAL and only ever pairs EQUALITY legs. So what holds it latent is the intersector's own leg selection, not shell cost — a sturdier reason than the one it replaces, but still not a gate. Whether the sorted-merge would actually drop rows for a range leg remains RFC-167 **OQ#2** (unconfirmed: `MaximumCoverageMatches` or an inserted sort may prevent it). Fix approach is unblocked (**OQ#6** resolved — the vector-leg exclusion): port Java's `isCompatibleComparisonKey`/`enumerateSatisfyingComparisonKeyValues` gate (RFC-167 Phase 4 value-range, lands with Phase 1b). |
-| **Per-wrapper relink** (RFC-070 nil-inner shells across ~20 wrappers, vs Java's eager `memoizePlan` to concrete) | Every non-leaf plan has its child; deterministic relink to the cost winner; one final member | dropped/nil child (0 rows); nondeterministic plan/cache | **CLOSED for the shell half (RFC-183).** Rules now bake the concrete child at rule time, matching Java's memoizePlan-as-constructor-argument; `verifyChildrenMemoized` rejects a holed expression at yield, always-on (ports `CascadesRuleCall.verifyChildrenMemoized`); the ~600 lines of repair machinery are deleted, after instrumentation showed ZERO shells across the full suite and all 2407 corpus queries. `ValidatePlanInvariants` remains as the sink-side backstop. **STILL TRACKED:** prune-to-one-final-member, and retiring `findBestPhysicalPlan` — extraction's ad-hoc cost pick outside the cost framework, now wired to ONE site against `findPhysicalPlan`'s twenty. Do NOT "fix" that asymmetry by propagating the cheapest-selector: it is ordering-blind and turns `ORDER BY … DESC` into ASC (measured; see RFC-183 §10). The parent→child edge is still stored twice (quantifier Reference + embedded plan pointer) — unifying the hierarchies so the state is unrepresentable is RFC-183 P5. **P5's terminal step (deleting the wrappers) is BLOCKED and its premise is FALSIFIED — see RFC-183 §11.** The wrapper's quantifier and the plan's child pointer are NOT two copies of one fact: `rule_implement_nested_loop_join.go` builds compensating filters at :814, :828 and :841 that are never memoized, so the plan pointer holds what EXECUTES while the quantifier holds what the memo COSTS. Measured at rule time: 9868 edges, 472 semantically different. Collapsing them drops a `DefaultOnEmpty` (wrong outer-join NULLs) and residual filters (wrong rows). **A LIVE DEFECT falls out of the same finding: the memo is costing expressions that are not the ones that execute, today** — masked only because `WithChildren` never swaps. Prerequisite before any wrapper deletion: those three sites must memoize their compensating plans and range the quantifier over that reference, as `rule_implement_simple_select.go:97-117` already does. **RETRACTED:** an earlier revision of this row cited "1186 references hold multiple finals, 1125 multiple PHYSICAL finals" as P5's blocker. That measurement was taken at RULE TIME while rules were still firing, where groups legitimately hold alternatives; it says nothing about the extraction-time property P5 needs, which does hold (`TestOneFinalPlanPerReference`). Note also the split's stated rationale in `plans/plan.go:23-28` — "physical and logical plan trees live in different namespaces in Java" — is FALSE: `QueryPlan<T> extends RelationalExpression` (`QueryPlan.java:51`), so a Java plan IS a RelationalExpression; the comment conflates package separation (real) with hierarchy separation (not real). |
+| **Per-wrapper relink** (RFC-070 nil-inner shells across ~20 wrappers, vs Java's eager `memoizePlan` to concrete) | Every non-leaf plan has its child; deterministic relink to the cost winner; one final member | dropped/nil child (0 rows); nondeterministic plan/cache | **CLOSED for the shell half (RFC-183).** Rules now bake the concrete child at rule time, matching Java's memoizePlan-as-constructor-argument; `verifyChildrenMemoized` rejects a holed expression at yield, always-on (ports `CascadesRuleCall.verifyChildrenMemoized`); the ~600 lines of repair machinery are deleted, after instrumentation showed ZERO shells across the full suite and all 2407 corpus queries. `ValidatePlanInvariants` remains as the sink-side backstop. **NOW CLOSED (RFC-184 W2):** P5's terminal step landed — every physical wrapper is deleted, so the parent→child edge is no longer stored twice. A physical plan is its own cascades expression holding its children SOLELY as quantifiers (`RecordQueryFlatMapPlan`/`RecordQueryNestedLoopJoinPlan` carry `outerQ`/`innerQ` and no embedded plan-snapshot field; `GetChildren` resolves through them), so the dual-storage state is unrepresentable. The earlier BLOCKER — `rule_implement_nested_loop_join.go` building compensating filters that were never memoized, so the plan pointer held what EXECUTES while the quantifier held what the memo COSTS (9868 rule-time edges, 472 semantically different) — is resolved: those rules now memoize each compensating operator and advance the quantifier over that reference in lockstep (the FlatMap collapse), matching `rule_implement_simple_select.go`'s long-standing shape. The **LIVE DEFECT** that fell out of the same finding (the memo costing expressions that are not the ones that execute) is therefore gone — see the "memo costs an expression that is not the one that executes — CLOSED" section below. **STILL TRACKED (separate concerns):** prune-to-one-final-member; retiring `findBestPhysicalPlan` — extraction's ad-hoc cost pick outside the cost framework, wired to ONE site against `findPhysicalPlan`'s twenty (do NOT "fix" that asymmetry by propagating the cheapest-selector: it is ordering-blind and turns `ORDER BY … DESC` into ASC, measured, see RFC-183 §10); and the reachability tally still driving a residual population of unreachable edges to zero (`plan_reachability.go` — a completeness/hygiene concern, NOT the wrong-tree-costing defect, which is closed). **RETRACTED:** an earlier revision of this row cited "1186 references hold multiple finals, 1125 multiple PHYSICAL finals" as P5's blocker. That measurement was taken at RULE TIME while rules were still firing, where groups legitimately hold alternatives; it says nothing about the extraction-time property P5 needs, which does hold (`TestOneFinalPlanPerReference`). Note also the split's stated rationale in `plans/plan.go:23-28` — "physical and logical plan trees live in different namespaces in Java" — is FALSE: `QueryPlan<T> extends RelationalExpression` (`QueryPlan.java:51`), so a Java plan IS a RelationalExpression; the comment conflates package separation (real) with hierarchy separation (not real). |
 | **Go-only physical-filter builders** (`ImplementIndexScanRule`, `ImplementSimpleSelectRule`, NLJ residual — extra paths past `Compensation`) | Index-only predicates never become an executable residual | panic / wrong plan on a vector `DistanceRank` residual | **COVERED** — `ImplementFilterRule` `!isIndexOnly()` gate (RFC-151) + the retained `validateNoIndexOnlyResidual` catch-all backstop (pinned by `TestVectorPlan_*`). **TRACKED end-state:** gate the remaining builders so the net can retire. |
 
 **Method for the next reservoir found:** name the Java invariant it drops, classify the risk
@@ -415,21 +415,32 @@ rather than fixed in-branch. Verified against Java 4.12.11.0.
 bound aliases propagate from one child to its siblings. Java's default
 (`cascades/expressions/RelationalExpression.java:251`) is `false`.
 
-1. **`RecordQueryRecursiveLevelUnionPlan` — UNSAFE, fix first.** Go's
-   `plans/recursive_level_union.go:162` returns `true`. Java's
-   `RecordQueryRecursiveLevelUnionPlan.java` has **no `canCorrelate` override at all**, so Java
-   answers `false`. This is the one divergence that errs toward MORE correlation than Java
-   permits: claiming anchor status suppresses propagation of bound aliases past the operator,
-   which is a wrong-rows shape, not a missed-optimization one. Go's wrapper
-   (`physicalRecursiveLevelUnionWrapper`) says `true` too, so the plan side is a faithful copy of
-   an already-divergent wrapper — fixing it means fixing both, and `TestPlanWrapperFlagParity`
-   will hold them together. Note Java DOES override `canCorrelate() → true` on the sibling
-   `RecordQueryRecursiveDfsJoinPlan.java:156`, so the divergence is specific to the LEVEL union,
-   not to recursion generally.
+1. **`RecordQueryRecursiveLevelUnionPlan` — FIXED (was UNSAFE).** Go now returns `false`
+   (`plans/recursive_level_union.go`), matching Java's no-override default. The prior `true`
+   claimed anchor status, which suppressed propagation of an outer alias a leg legitimately
+   reads (a wrong-rows shape when a recursive CTE sits on the inner side of a lateral
+   correlation and Go's human-readable alias reuse collides an outer alias with a leg's own).
+   The recursion's level-to-level binding is satisfied by the cursor + the temp-table alias
+   filter, not by anchoring here. The wrapper is gone (RFC-184 W2), so only the plan needed the
+   flip; `plan_expression_flag_parity_test.go` pins `false`, and
+   `plans/recursive_level_union_correlation_test.go` pins that a colliding outer alias now
+   propagates. Java DOES override `canCorrelate() → true` on the sibling
+   `RecordQueryRecursiveDfsJoinPlan.java:156` (Go matches, `:200`), so the divergence was
+   specific to the LEVEL union. **Residual (tracked, non-blocking):** Java's physical level union
+   pairs `canCorrelate=false` with an EXPLICIT `computeCorrelatedTo` filter that drops
+   `tempTableScanAlias`/`tempTableInsertAlias` from the propagated set. Go ports the flag but not
+   that filter — `TempTableScanExpression` surfaces its alias as a free correlation, so the temp
+   aliases leak upward as apparent external correlations. This is NEUTRAL w.r.t. the flag flip
+   (temp aliases are not quantifier aliases, so they leak identically under `true` or `false`) and
+   is therefore neither introduced nor regressed here — a pre-existing unclosed divergence. Close
+   it by overriding the level-union plan's transitive correlated-to to filter the two temp aliases
+   (Java `computeCorrelatedTo`).
 2. **`RecordQueryInJoinPlan`** — Java `:198` returns `true`; Go has no override, so `false`.
    Conservative direction (Go propagates where Java anchors) — safe, costs optimization reach.
+   Deliberately not flipped here: adding anchoring changes plan shapes and belongs to a planner
+   milestone with its own review lap, not the wrong-rows-truth pass.
 3. **`RecordQueryInUnionPlan`** — Java `:230` returns `true`; Go has no override, so `false`.
-   Same conservative direction as (2).
+   Same conservative direction as (2); same deferral rationale.
 
 ### Index metadata has a dual source of truth
 
@@ -449,15 +460,27 @@ site) never calls `.WithIndexMetadata(...)`. Every other construction goes throu
 the WRAPPER, which carries its own metadata. It becomes a live sort-elision bug the moment the
 plan-side bodies go live (see above).
 
-### The memo costs an expression that is not the one that executes — CURRENT BUG
+### The memo costs an expression that is not the one that executes — CLOSED (RFC-184 W2)
 
-Not merely a gate on P5's terminal step: it is wrong **today**. See the **Per-wrapper relink** row
-above and RFC-183 §11 for the measurement (9868 rule-time edges, 472 semantically different) and
-the root cause (four rules build compensating plans they never memoize). What masks it is that
-`WithChildren` keeps `plan: w.plan` and swaps only quantifiers, so the divergent quantifier never
-reaches execution — the memo simply ranks alternatives by the cost of a DIFFERENT tree than the
-one it will run. Cost-model output is therefore unsound wherever a compensating operator was
-built locally, which is exactly the outer-join and residual-filter shapes.
+**Was a live bug; fixed by the wrapper deletion the row above once called blocked.** The root
+cause was DUAL STORAGE: a physical wrapper held both a `plan` snapshot AND its quantifiers, and
+`WithChildren` kept `plan: w.plan` while swapping only quantifiers, so a compensating operator a
+rule built locally (472 of 9868 rule-time edges) lived in the plan snapshot while the memo cost
+the bare quantifier tree — masked only because the divergent quantifier never reached execution.
+
+RFC-184 W2 deleted every physical wrapper (`InMemorySort` was the last; see
+`plan_expression_flag_parity_test.go`). A physical plan is now its OWN cascades expression and
+stores its children SOLELY as quantifiers — e.g. `RecordQueryFlatMapPlan` /
+`RecordQueryNestedLoopJoinPlan` carry `outerQ`/`innerQ` and nothing else, and `GetChildren`
+resolves through them. There is no second copy to diverge from: the dual-storage state the bug
+required is now UNREPRESENTABLE. The compensating-operator rules (the NLJ existential path and
+its siblings) memoize each operator and advance the quantifier over that reference in lockstep,
+so the plan and its quantifiers name the same expressions by construction
+(`rule_implement_nested_loop_join.go`, the FlatMap collapse; `rule_implement_simple_select.go`
+always had this shape). `verifyChildrenMemoized` (always-on at every yield) rejects a holed or
+shell expression at the source, and the full suite is green with the mask (the wrapper) gone —
+which it could not be if any divergence survived. Pinned by `verifyChildrenMemoized`,
+`TestOneFinalPlanPerReference`, and the flag-parity test.
 
 ## Quantifier identity: SQL-visible aliases vs Java's always-unique ids (W4-left F3 ruling)
 
@@ -666,9 +689,35 @@ envelope (version + plan_hash + binding_hash + execution_state) and
 gates resumes through PlanValidator. Go has no envelope and NO SQL
 resume entry point at all — statement paging is internal to one
 execution (`paginatingRows`), and tokens never cross the API boundary.
+
 The RECORD-LAYER continuation framing below the SQL layer is
-byte-identical and conformance-proven (including the magic
-KeyValueCursorContinuation wrapper); the SQL-layer envelope is not.
+byte-identical and conformance-proven for the LEAF/structural cursors —
+notably the magic `KeyValueCursorContinuation` wrapper and the union/
+intersection/flat-map framing. It is NOT byte-identical for the
+aggregate and in-memory-sort cursors, and this is now stated precisely
+rather than folded into a blanket "byte-identical" claim:
+
+- **StreamingAggregation** (`AggregateCursorContinuation` /
+  `PartialAggregationResult`): Go reuses Java's proto message SCHEMA but
+  packs a Go-PRIVATE layout into `AccumulatorState.state` — exactly
+  `[count] ++ per-aggregate[count, sum, sumI, allInt, min, max]`
+  (`1 + 6*numAggs` typed slots) with a lossless typed codec for MIN/MAX,
+  which is not Java's `StreamGrouping` per-aggregate serialization. A
+  Java-authored token would proto-Unmarshal cleanly and then be mis-read
+  positionally, so `decodeAggregateContinuation` now REQUIRES the exact
+  Go slot count and slot types and rejects any other shape loudly
+  (`TestDecodeAggregateContinuation_ForeignShapeFailsLoud`) — never a
+  silent zero-fill.
+- **In-memory sort** (`MemorySortContinuation`): a Go extension with no
+  Java counterpart at all (Java's Cascades has no physical sort
+  operator), so there is nothing Java could produce or consume.
+
+Both are SAFE because they never cross an engine boundary: the SQL layer
+rejects an externally-supplied continuation with
+`ErrCodeUnsupportedOperation`, and the record-layer executor that pages
+them is Go's own engine. The shared proto message NAMES are a schema
+convenience, not an interop promise; the payloads are engine-private and
+now fail loud on any foreign shape rather than corrupting silently.
 
 Decision: Go SQL tokens are ENGINE-PRIVATE until a real resume surface
 exists. The boundary is loud, not silent: supplying api.OptContinuation

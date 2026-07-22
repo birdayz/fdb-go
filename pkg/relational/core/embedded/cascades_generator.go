@@ -251,19 +251,26 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 // false so EXPLAIN does not emit a phantom planning event (Java's getPlan
 // funnel does not fire for EXPLAIN-internal planning).
 func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData, logMetrics bool) (plan query.Plan, err error) {
-	sqlText := q.GetText()
+	// Plan-cache key parts: a VERBATIM schema+version scope (case-sensitive,
+	// never normalized) and the injective canonical query text. NOT q.GetText()
+	// — that concatenated tokens with no separator, colliding `SELECT AB` with
+	// `SELECT A B`. PlanCache normalizes only the query text (see planCacheScope
+	// / PlanCache.Get).
+	cacheScope := planCacheScope(g.c.sess.Schema, md.Version())
+	cacheSQL := canonicalTextOf(q)
 	var ls *planLogScope
 	if logMetrics {
 		// Log the original whitespace-preserved SQL (canonicalTextOf), not
 		// q.GetText() — the latter concatenates tokens without whitespace
 		// ("SELECTid=1FROMorders"), which is useless to an operator. The cache
-		// key still uses GetText() (RFC-029), a separate concern.
+		// key (cacheScope + cacheSQL, built above) is also off canonicalTextOf,
+		// so both are injective.
 		ls = g.beginPlanLog(ctx, canonicalTextOf(q))
 	}
 	defer func() { ls.finish(err) }()
 
 	if g.cache != nil {
-		if cachedPlan, cachedSubs, ok := g.cache.Get(sqlText); ok {
+		if cachedPlan, cachedSubs, ok := g.cache.Get(cacheScope, cacheSQL); ok {
 			ls.setPlan(cachedPlan)
 			ls.setCache(PlanCacheHit)
 			return &cascadesPlan{
@@ -446,7 +453,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// not applied post-execution, so the cached plan is complete.
 	if g.cache != nil {
 		ls.setCache(PlanCacheMiss)
-		g.cache.Put(sqlText, physPlan, scalarSubs)
+		g.cache.Put(cacheScope, cacheSQL, physPlan, scalarSubs)
 	} else {
 		ls.setCache(PlanCacheSkip)
 	}

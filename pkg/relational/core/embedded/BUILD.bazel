@@ -92,6 +92,7 @@ go_test(
         "nway_exists_memo_shape_test.go",
         "one_final_member_test.go",
         "parse_decimal_test.go",
+        "plan_cache_key_test.go",
         "plan_cache_planner_bench_test.go",
         "plan_cache_test.go",
         "plan_determinism_test.go",

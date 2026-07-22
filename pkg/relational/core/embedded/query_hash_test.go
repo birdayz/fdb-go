@@ -24,9 +24,21 @@ func TestNormalizeSQL(t *testing.T) {
 		{"case insensitive", "SeLeCt * FrOm FoO", "SELECT * FROM FOO"},
 		{"string literal preserved", "SELECT 'hello' FROM foo", "SELECT 'hello' FROM FOO"},
 		{"comment inside string literal", "SELECT '--not a comment' FROM foo", "SELECT '--not a comment' FROM FOO"},
+		{"hash inside string literal", "SELECT '#not a comment' FROM foo", "SELECT '#not a comment' FROM FOO"},
+		{"hash inside delimited id", "SELECT \"c#1\" FROM foo", "SELECT \"c#1\" FROM FOO"},
 		{"block comment inside string", "SELECT '/*not a comment*/' FROM foo", "SELECT '/*not a comment*/' FROM FOO"},
+		{"hash line comment stripped", "SELECT * FROM foo # trailing", "SELECT * FROM FOO"},
 		{"escaped quote in literal", "SELECT 'it''s' FROM foo", "SELECT 'it''s' FROM FOO"},
 		{"unterminated block comment", "SELECT * FROM foo /* unterminated", "SELECT * FROM FOO D"},
+		// Quote-aware case/whitespace preservation (item 3c):
+		{"delimited-id case preserved", `SELECT "aB" FROM foo`, `SELECT "aB" FROM FOO`},
+		{"whitespace inside literal preserved", "SELECT 'a  b' FROM foo", "SELECT 'a  b' FROM FOO"},
+		{"whitespace inside delimited id preserved", "SELECT \"a  b\" FROM foo", "SELECT \"a  b\" FROM FOO"},
+		// Rune-safety (multibyte outside quotes must not be corrupted by
+		// byte-wise whitespace classification): U+00A0 NBSP collapses as ONE
+		// space rune, and a multibyte literal round-trips intact.
+		{"nbsp collapses cleanly", "select * from foo", "SELECT * FROM FOO"},
+		{"multibyte literal preserved", "SELECT 'café' FROM foo", "SELECT 'café' FROM FOO"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

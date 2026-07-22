@@ -28,10 +28,20 @@ type PlanCache struct {
 	// anyway — a plain Mutex, not an RWMutex.
 	mu      sync.Mutex
 	ll      *list.List // values are *lruItem; front = LRU, back = MRU
-	items   map[string]*list.Element
+	items   map[cacheKey]*list.Element
 	maxSize int
 	hits    atomic.Int64
 	misses  atomic.Int64
+}
+
+// cacheKey is the map key: a COMPARABLE struct of the verbatim scope and the
+// normalized query text. Using a struct (not scope+delim+sql concatenated into
+// one string) avoids allocating and copying the normalized SQL a second time
+// on every warm hit — a measurable regression on the benchmarked hot path —
+// while still keeping the scope out of normalizeSQL (case-sensitive schema).
+type cacheKey struct {
+	scope string
+	sql   string
 }
 
 type planCacheEntry struct {
@@ -43,7 +53,7 @@ type planCacheEntry struct {
 // so eviction (which starts from the list front) can delete the matching
 // map entry in O(1).
 type lruItem struct {
-	key   string
+	key   cacheKey
 	entry *planCacheEntry
 }
 
@@ -55,17 +65,20 @@ func NewPlanCache(maxSize int) *PlanCache {
 	}
 	return &PlanCache{
 		ll:      list.New(),
-		items:   make(map[string]*list.Element, maxSize),
+		items:   make(map[cacheKey]*list.Element, maxSize),
 		maxSize: maxSize,
 	}
 }
 
-// Get looks up a cached plan by SQL text. The SQL is normalized
-// internally (case-folded, whitespace-collapsed, comments stripped)
-// before lookup. Returns the plan, scalar subquery bindings, and true
-// on a cache hit; nil, nil, false on miss.
-func (c *PlanCache) Get(sql string) (plans.RecordQueryPlan, []PlannedScalarSubquery, bool) {
-	key := normalizeSQL(sql)
+// Get looks up a cached plan. `scope` (schema identity + metadata version)
+// is used VERBATIM — it must NOT be normalized, because schema names are
+// case-sensitive and folding them would collide case-distinct schemas
+// (`s` vs `S`) into one key, returning a plan built for the wrong schema.
+// Only the `sql` is normalized (case-folded outside quotes,
+// whitespace-collapsed, comments stripped). Returns the plan, scalar subquery
+// bindings, and true on a cache hit; nil, nil, false on miss.
+func (c *PlanCache) Get(scope, sql string) (plans.RecordQueryPlan, []PlannedScalarSubquery, bool) {
+	key := cacheKey{scope: scope, sql: normalizeSQL(sql)}
 
 	c.mu.Lock()
 	el, ok := c.items[key]
@@ -82,10 +95,11 @@ func (c *PlanCache) Get(sql string) (plans.RecordQueryPlan, []PlannedScalarSubqu
 	return entry.plan, entry.scalarSubs, true
 }
 
-// Put stores a plan in the cache keyed by normalized SQL text. If the
-// cache is at capacity, the least recently used entry is evicted.
-func (c *PlanCache) Put(sql string, plan plans.RecordQueryPlan, subs []PlannedScalarSubquery) {
-	key := normalizeSQL(sql)
+// Put stores a plan keyed by (verbatim scope, normalized sql) — see Get for
+// why the scope must not be normalized. If the cache is at capacity, the
+// least recently used entry is evicted.
+func (c *PlanCache) Put(scope, sql string, plan plans.RecordQueryPlan, subs []PlannedScalarSubquery) {
+	key := cacheKey{scope: scope, sql: normalizeSQL(sql)}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -120,7 +134,7 @@ func (c *PlanCache) Invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ll.Init()
-	c.items = make(map[string]*list.Element, c.maxSize)
+	c.items = make(map[cacheKey]*list.Element, c.maxSize)
 }
 
 // Stats returns the cumulative hit and miss counts.

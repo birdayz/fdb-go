@@ -172,9 +172,20 @@ func (p *RecordQueryRecursiveLevelUnionPlan) EqualsWithoutChildren(other express
 	return planEqualsAsExpression(p, other)
 }
 
-// CanCorrelate reports that this operator anchors a correlation between its
-// children (each level binds what the next level reads).
-func (p *RecordQueryRecursiveLevelUnionPlan) CanCorrelate() bool { return true }
+// CanCorrelate matches Java's RecordQueryRecursiveLevelUnionPlan, which has NO
+// canCorrelate override and so answers false (the default). The recursion's
+// level-to-level binding is NOT a Cascades correlation anchored here: Java
+// satisfies the temp-table scan/insert aliases explicitly in
+// computeCorrelatedTo (filtered out), and the cursor (RecursiveUnionCursor)
+// carries the per-level temp-table flip at execution — nothing in the memo
+// binds a sibling leg's alias through this operator. Answering true would
+// (via Reference.GetCorrelatedTo) SUPPRESS propagation of an outer alias a
+// leg legitimately reads — a wrong-rows shape when a recursive CTE sits on the
+// inner side of a lateral correlation and Go's human-readable alias reuse
+// collides an outer alias with a leg's own. The sibling
+// RecordQueryRecursiveDfsJoinPlan DOES override to true (Java parity) — the
+// divergence is specific to the LEVEL union.
+func (p *RecordQueryRecursiveLevelUnionPlan) CanCorrelate() bool { return false }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
 // interface). The plan carries its two legs as LIVE memo edges, so the relink is a

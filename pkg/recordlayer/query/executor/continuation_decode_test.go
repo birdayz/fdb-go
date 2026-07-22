@@ -28,6 +28,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
 
 // mustContValue / mustAggGroupKey wrap the now-erroring typed encoders for
@@ -1445,5 +1446,99 @@ func TestContValue_CorruptListAndProto_F53(t *testing.T) {
 				t.Fatalf("readContValue(%x) = nil error, want corrupt-payload rejection", tc.in)
 			}
 		})
+	}
+}
+
+// TestDecodeAggregateContinuation_ForeignShapeFailsLoud pins the item-3d
+// divorce guard: the AggregateCursorContinuation proto SCHEMA is shared with
+// Java, but the AccumulatorState.state LAYOUT is Go-private
+// ([count] ++ per-agg[count,sum,sumI,allInt,min,max]). A continuation whose
+// slot count or slot type does not match Go's exact layout — a Java-authored
+// continuation, or a corrupt one — must fail LOUD, never proto-Unmarshal
+// cleanly and then silently zero-fill the partials (wrong aggregates on
+// resume).
+func TestDecodeAggregateContinuation_ForeignShapeFailsLoud(t *testing.T) {
+	t.Parallel()
+
+	mustMarshal := func(m proto.Message) []byte {
+		b, err := proto.Marshal(m)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return b
+	}
+
+	// Go's exact layout for numAggs=1 is 1 + 6*1 = 7 typed slots.
+	const numAggs = 1
+
+	// (a) WRONG SLOT COUNT — a foreign layout (e.g. Java's per-aggregate state)
+	// with a different number of typed slots.
+	wrongCount := mustMarshal(&gen.AggregateCursorContinuation{
+		PartialAggregationResults: &gen.PartialAggregationResult{
+			AccumulatorStates: []*gen.AccumulatorState{{
+				State: []*gen.OneOfTypedState{
+					{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
+					{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
+				}, // 2 slots, not 7
+			}},
+		},
+	})
+	if _, _, _, err := decodeAggregateContinuation(wrongCount, numAggs); err == nil {
+		t.Fatal("wrong slot COUNT must fail loud (silent zero-fill = wrong aggregates on resume)")
+	}
+
+	// (b) CORRECT COUNT, WRONG SLOT TYPE — the count matches Go's layout but a
+	// slot carries the wrong oneof (here: agg-sum slot is int64, not double).
+	states := make([]*gen.OneOfTypedState, 0, 1+6*numAggs)
+	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 1}}) // count
+	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 1}}) // agg-count
+	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 9}}) // agg-sum — WRONG (want double)
+	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 0}}) // agg-sumI
+	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 0}}) // agg-allInt
+	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{}})              // min
+	states = append(states, &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{}})              // max
+	wrongType := mustMarshal(&gen.AggregateCursorContinuation{
+		PartialAggregationResults: &gen.PartialAggregationResult{
+			AccumulatorStates: []*gen.AccumulatorState{{State: states}},
+		},
+	})
+	if _, _, _, err := decodeAggregateContinuation(wrongType, numAggs); err == nil {
+		t.Fatal("wrong slot TYPE must fail loud")
+	}
+
+	// (c) SANITY — Go's own encoder output round-trips cleanly (the guard does
+	// not reject valid Go-format continuations).
+	gs := &groupState{
+		count:  2,
+		counts: []int64{2}, sums: []float64{3.5}, sumsI: []int64{0},
+		allInt: []bool{false}, mins: []any{int64(1)}, maxs: []any{int64(9)},
+	}
+	specs := make([]expressions.AggregateSpec, numAggs)
+	good, err := encodeAggregateContinuation(nil, "", nil, gs, specs)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if _, _, _, err := decodeAggregateContinuation(good, numAggs); err != nil {
+		t.Fatalf("valid Go-format continuation rejected: %v", err)
+	}
+
+	// (d) NIL EXTREMA — a group with no MIN/MAX partial yet (the encoder writes
+	// a lone contValNil tag, non-empty bytes). The loud BytesState assertion
+	// must NOT reject this valid Go continuation, and the decoded extrema must
+	// come back nil.
+	gsNil := &groupState{
+		count: 1, counts: []int64{1}, sums: []float64{0}, sumsI: []int64{0},
+		allInt: []bool{false}, mins: []any{nil}, maxs: []any{nil},
+	}
+	nilExtrema, err := encodeAggregateContinuation(nil, "", nil, gsNil, specs)
+	if err != nil {
+		t.Fatalf("encode nil-extrema: %v", err)
+	}
+	_, _, decoded, err := decodeAggregateContinuation(nilExtrema, numAggs)
+	if err != nil {
+		t.Fatalf("nil-extrema Go continuation rejected: %v", err)
+	}
+	if decoded.mins[0] != nil || decoded.maxs[0] != nil {
+		t.Fatalf("nil extrema round-tripped non-nil: min=%v max=%v", decoded.mins[0], decoded.maxs[0])
 	}
 }

@@ -835,6 +835,26 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 	}
 
 	as := par.AccumulatorStates[0]
+
+	// SHAPE GUARD — the format is GO-ENGINE-PRIVATE (see the file header): the
+	// AggregateCursorContinuation proto SCHEMA is shared with Java, but Go packs
+	// a Go-specific layout into AccumulatorState.state — exactly
+	// [count] ++ per-aggregate[count, sum, sumI, allInt, min, max] = 1+6*numAggs
+	// typed slots. Java's StreamGrouping writes a different layout under the same
+	// schema, so a foreign continuation would proto-Unmarshal cleanly and then be
+	// mis-read positionally — silently zero-filling the partials (wrong
+	// aggregates on resume, no error). Requiring the EXACT Go slot count rejects
+	// any non-Go-format continuation loudly, and also catches internal
+	// encode/decode drift. (Reachable only defensively today: the SQL layer
+	// rejects external continuations with ErrCodeUnsupportedOperation, and the
+	// record-layer executor is Go's own engine — but correct-or-loud, never
+	// silent.)
+	if want := 1 + 6*numAggs; len(as.State) != want {
+		return nil, "", nil, fmt.Errorf(
+			"aggregate continuation: accumulator has %d typed states, expected %d (1 + 6*%d aggregates) — not a Go-format continuation",
+			len(as.State), want, numAggs)
+	}
+
 	gs = &groupState{
 		keyVals: keyVals,
 		counts:  make([]int64, numAggs),
@@ -845,59 +865,76 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		maxs:    make([]any, numAggs),
 	}
 
+	// Positional decode, correct-or-loud: each slot MUST carry the type the
+	// encoder wrote. A type mismatch is a foreign/corrupt continuation (the
+	// shape guard above already rejects a wrong slot COUNT; this rejects a wrong
+	// slot TYPE at a matching count) — error, never silently coerce to zero.
 	idx := 0
-	if idx < len(as.State) {
-		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_Int64State); ok {
-			gs.count = v.Int64State
+	int64At := func(what string) (int64, error) {
+		v, ok := as.State[idx].State.(*gen.OneOfTypedState_Int64State)
+		if !ok {
+			return 0, fmt.Errorf("aggregate continuation: %s slot %d is not int64 — not a Go-format continuation", what, idx)
 		}
 		idx++
+		return v.Int64State, nil
 	}
-	for i := 0; i < numAggs && idx+5 < len(as.State); i++ {
-		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_Int64State); ok {
-			gs.counts[i] = v.Int64State
+	doubleAt := func(what string) (float64, error) {
+		v, ok := as.State[idx].State.(*gen.OneOfTypedState_DoubleState)
+		if !ok {
+			return 0, fmt.Errorf("aggregate continuation: %s slot %d is not double — not a Go-format continuation", what, idx)
 		}
 		idx++
-		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_DoubleState); ok {
-			gs.sums[i] = v.DoubleState
+		return v.DoubleState, nil
+	}
+	if gs.count, err = int64At("count"); err != nil {
+		return nil, "", nil, err
+	}
+	for i := 0; i < numAggs; i++ {
+		if gs.counts[i], err = int64At("agg-count"); err != nil {
+			return nil, "", nil, err
 		}
-		idx++
-		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_Int64State); ok {
-			gs.sumsI[i] = v.Int64State
+		if gs.sums[i], err = doubleAt("agg-sum"); err != nil {
+			return nil, "", nil, err
 		}
-		idx++
-		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_Int64State); ok {
-			gs.allInt[i] = v.Int64State != 0
+		if gs.sumsI[i], err = int64At("agg-sumI"); err != nil {
+			return nil, "", nil, err
 		}
-		idx++
-		// min_i / max_i: one typed value each. The len > 0 guard is the legitimate
-		// "no state" case (an absent field, 0 bytes); a present state always
-		// carries at least the tag byte. Corrupt bytes must error, not silently
-		// drop the partial (which would return a wrong aggregate on resume).
-		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState); ok && len(v.BytesState) > 0 {
-			minVal, _, dErr := readContValue(v.BytesState)
+		allIntVal, aiErr := int64At("agg-allInt")
+		if aiErr != nil {
+			return nil, "", nil, aiErr
+		}
+		gs.allInt[i] = allIntVal != 0
+		// min_i / max_i: one BYTES slot each (the encoder always writes
+		// BytesState). A non-bytes slot is a foreign/corrupt continuation →
+		// loud, matching the numeric slots above. An EMPTY byte run is the
+		// legitimate "no partial" case (nil min/max); non-empty bytes must
+		// decode and validate.
+		extremum := func(what string) (any, error) {
+			v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState)
+			if !ok {
+				return nil, fmt.Errorf("aggregate continuation: %s slot %d is not bytes — not a Go-format continuation", what, idx)
+			}
+			idx++
+			if len(v.BytesState) == 0 {
+				return nil, nil // absent partial
+			}
+			val, _, dErr := readContValue(v.BytesState)
 			if dErr != nil {
-				return nil, "", nil, fmt.Errorf("failed to decode MIN state in aggregate continuation: %w", dErr)
+				return nil, fmt.Errorf("failed to decode %s state in aggregate continuation: %w", what, dErr)
 			}
-			// MIN partials are scalar NUMERICS or nil — anything else (a []any,
-			// a string, a proto placeholder) is crafted/corrupt (validateAggExtremum).
-			if gErr := validateAggExtremum(minVal); gErr != nil {
-				return nil, "", nil, fmt.Errorf("invalid MIN state in aggregate continuation: %w", gErr)
+			// A partial is a scalar NUMERIC or nil — anything else (a []any, a
+			// string, a proto placeholder) is crafted/corrupt.
+			if gErr := validateAggExtremum(val); gErr != nil {
+				return nil, fmt.Errorf("invalid %s state in aggregate continuation: %w", what, gErr)
 			}
-			gs.mins[i] = minVal
+			return val, nil
 		}
-		idx++
-		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState); ok && len(v.BytesState) > 0 {
-			maxVal, _, dErr := readContValue(v.BytesState)
-			if dErr != nil {
-				return nil, "", nil, fmt.Errorf("failed to decode MAX state in aggregate continuation: %w", dErr)
-			}
-			// MAX partials: same numeric-or-nil gate as MIN.
-			if gErr := validateAggExtremum(maxVal); gErr != nil {
-				return nil, "", nil, fmt.Errorf("invalid MAX state in aggregate continuation: %w", gErr)
-			}
-			gs.maxs[i] = maxVal
+		if gs.mins[i], err = extremum("MIN"); err != nil {
+			return nil, "", nil, err
 		}
-		idx++
+		if gs.maxs[i], err = extremum("MAX"); err != nil {
+			return nil, "", nil, err
+		}
 	}
 
 	return innerContinuation, groupKey, gs, nil
