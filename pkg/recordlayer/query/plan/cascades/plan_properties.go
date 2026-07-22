@@ -214,7 +214,21 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		}
 		return nil
 	case *plans.RecordQueryIndexPlan:
-		return nil
+		// Java PrimaryKeyProperty.visitIndexPlan returns the index's common
+		// primary key translated to Values (index entries carry the PK). Build
+		// FieldValues over the PK column names — the SAME representation the
+		// primary scan uses (rule_primary_scan.go), so commonPKFromChildren can
+		// match an index-scan child against a scan child over the same table
+		// (enables PK-based dedup/ordering reasoning for plans over index scans).
+		pkCols := p.GetPKColumnNames()
+		if len(pkCols) == 0 {
+			return nil
+		}
+		pkVals := make([]values.Value, len(pkCols))
+		for i, col := range pkCols {
+			pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
+		}
+		return pkVals
 	case *plans.RecordQueryFilterPlan,
 		*plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQueryTypeFilterPlan,

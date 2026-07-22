@@ -231,6 +231,7 @@ go_test(
         "group_by_mappings_test.go",
         "groupby_column_identity_test.go",
         "index_expansion_test.go",
+        "index_primary_key_property_test.go",
         "index_test_plan_context_test.go",
         "intersector_primary_key_test.go",
         "left_outer_existential_test.go",
@@ -810,6 +811,7 @@ go_test(
         "predicate_count_by_level_test.go",
         "primary_vs_index_sarg_test.go",
         "default_on_empty_count_test.go",
+        "index_primary_key_property_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

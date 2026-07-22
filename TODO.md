@@ -230,7 +230,10 @@ result value appears → wrong projection. `PullUpValues(parts, m.candidateValue
   on data-access cardinality where Java abstains.
 - [ ] M4: `plan_properties.go:64` DistinctRecords for index uses `IsUnique()` not Java's `!createsDuplicates()`
   → misses DISTINCT elision over non-unique scalar-index scans.
-- [ ] M5: `plan_properties.go:216` PrimaryKey nil for index scans vs Java's common-PK → loses PK-based dedup/order.
+- [x] M5: PrimaryKey for index scans — DONE. `computePrimaryKey` now returns FieldValues over the index's
+  `GetPKColumnNames()` (Java `PrimaryKeyProperty.visitIndexPlan`) — the SAME representation the primary
+  scan uses, so `commonPKFromChildren` matches a scan child against an index child over the same table.
+  Pin: `TestComputePrimaryKey_IndexScanCarriesCommonPK`. Explain-diff: no corpus flip (safe direction).
 
 ### [ ] Finding 11 (MED) — PredicateToLogicalUnionRule expands every top-level OR
 `rule_predicate_to_logical_union.go:99` fires OR→`Distinct(Union)` unconditionally; Java
