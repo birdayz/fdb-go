@@ -113,7 +113,15 @@ func (m *Memo) reachable(from, target *expressions.Reference) bool {
 			return false
 		}
 		visited[r] = struct{}{}
-		for _, mem := range r.Members() {
+		// Walk AllMembers() (exploratory + final), not just exploratory
+		// members: the consumers this guard protects (GetCorrelatedTo,
+		// childRefsMatchInMemo) traverse finals, so the guard must enumerate
+		// the same surface or a cycle reachable only through a final edge is
+		// invisible here yet fatal there. Exploratory-only reachability is
+		// sound only under the REWRITING invariant that every final is also an
+		// exploratory member (FinalizeExpressionsRule promotes the same
+		// pointer); one distinct-final InsertFinal during REWRITING breaks it.
+		for _, mem := range r.AllMembers() {
 			for _, q := range mem.GetQuantifiers() {
 				if c := q.GetRangesOver(); c != nil && walk(c) {
 					return true
@@ -122,7 +130,7 @@ func (m *Memo) reachable(from, target *expressions.Reference) bool {
 		}
 		return false
 	}
-	for _, mem := range from.Members() {
+	for _, mem := range from.AllMembers() {
 		for _, q := range mem.GetQuantifiers() {
 			if c := q.GetRangesOver(); c != nil && walk(c) {
 				return true
