@@ -86,7 +86,11 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		*plans.RecordQueryInsertPlan,
 		*plans.RecordQueryDeletePlan,
 		*plans.RecordQueryUpdatePlan,
-		*plans.RecordQueryTempTableInsertPlan:
+		*plans.RecordQueryTempTableInsertPlan,
+		// A fetch is 1:1 (one record per index entry) — Java treats it as
+		// transparent in DistinctRecordsProperty. Without this arm the M4
+		// distinct fact is hidden above the common Fetch(IndexScan).
+		*plans.RecordQueryFetchFromPartialRecordPlan:
 		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryFirstOrDefaultPlan:
 		return true
@@ -242,7 +246,10 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		*plans.RecordQueryInJoinPlan,
 		*plans.RecordQueryInUnionPlan,
 		*plans.RecordQueryFirstOrDefaultPlan,
-		*plans.RecordQueryDeletePlan:
+		*plans.RecordQueryDeletePlan,
+		// A fetch is 1:1 — Java's PrimaryKeyProperty passes it through to its
+		// single child, so the M5 index common-PK survives above the fetch.
+		*plans.RecordQueryFetchFromPartialRecordPlan:
 		return pkFromChildren(plan.GetChildren())
 	case *plans.RecordQueryUnionPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
@@ -371,7 +378,11 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 	case *plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryProjectionPlan,
-		*plans.RecordQueryTempTableInsertPlan:
+		*plans.RecordQueryTempTableInsertPlan,
+		// A fetch is 1:1 — Java's CardinalitiesProperty passes it through, so a
+		// bounded index access under a Fetch keeps its proven max cardinality
+		// (feeds the M3 whole-plan guard and criterion #2).
+		*plans.RecordQueryFetchFromPartialRecordPlan:
 		return cardinalitiesFromChildRef(w)
 
 	// --- DefaultOnEmpty: floor at 1 ---

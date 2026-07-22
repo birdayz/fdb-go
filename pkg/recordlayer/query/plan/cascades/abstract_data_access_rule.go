@@ -459,13 +459,14 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 	return stamped
 }
 
-// candidateDistinctSignal returns the candidate's createsDuplicates fan-out
-// signal for the DistinctRecords property, or nil when the candidate does not
-// expose one (Java's empty-candidate default → the plan stays not-distinct).
+// candidateDistinctSignal returns the candidate's fan-out signal for the
+// DistinctRecords property, or nil when the candidate does not KNOW its fan-out
+// status (Java's empty-candidate default → the plan stays not-distinct). A
+// candidate whose IndexDef omitted the signal reports nil here rather than a
+// hardcoded false, so a fan-out index is never mis-stamped as distinct.
 func candidateDistinctSignal(cand MatchCandidate) *bool {
-	if dup, ok := cand.(interface{ CreatesDuplicates() bool }); ok {
-		v := dup.CreatesDuplicates()
-		return &v
+	if sig, ok := cand.(interface{ DistinctRecordsSignal() *bool }); ok {
+		return sig.DistinctRecordsSignal()
 	}
 	return nil
 }

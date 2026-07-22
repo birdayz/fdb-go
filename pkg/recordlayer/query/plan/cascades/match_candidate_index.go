@@ -45,7 +45,16 @@ type ValueIndexScanMatchCandidate struct {
 	// createsDuplicates is true when the index's root expression can
 	// produce multiple entries per record (fan-out / repeated-field
 	// indexes). Ports Java's index.getRootExpression().createsDuplicates().
+	// Meaningful only when createsDuplicatesKnown is true; false otherwise
+	// (the ordering-suffix logic treats unknown as non-fan-out, unchanged).
 	createsDuplicates bool
+	// createsDuplicatesKnown reports whether the fan-out status was supplied
+	// by the IndexDef. When false (no signal), the DistinctRecords property
+	// abstains (distinct=false) rather than assuming non-fan-out — otherwise a
+	// fan-out index whose def omits the signal would over-report distinct and
+	// let an enclosing DISTINCT be wrongly elided. Mirrors Java's
+	// empty-match-candidate default in DistinctRecordsProperty.
+	createsDuplicatesKnown bool
 
 	traversalOnce sync.Once
 	traversal     *Traversal
@@ -72,7 +81,7 @@ func NewValueIndexScanMatchCandidate(
 ) *ValueIndexScanMatchCandidate {
 	return NewValueIndexScanMatchCandidateWithFunctions(
 		indexName, recordTypes, columnNames, nil, sargableAliases,
-		flowedType, unique, pkColumnNames, false,
+		flowedType, unique, pkColumnNames, nil,
 	)
 }
 
@@ -90,7 +99,7 @@ func NewValueIndexScanMatchCandidateWithFunctions(
 	flowedType values.Type,
 	unique bool,
 	pkColumnNames []string,
-	createsDuplicates bool,
+	createsDuplicatesSignal *bool,
 ) *ValueIndexScanMatchCandidate {
 	aliases := make([]values.CorrelationIdentifier, len(sargableAliases))
 	copy(aliases, sargableAliases)
@@ -106,15 +115,16 @@ func NewValueIndexScanMatchCandidateWithFunctions(
 		copy(fns, columnFunctions)
 	}
 	return &ValueIndexScanMatchCandidate{
-		indexName:         indexName,
-		recordTypes:       types,
-		columnNames:       cols,
-		columnFunctions:   fns,
-		pkColumnNames:     pkCols,
-		sargableAliases:   aliases,
-		flowedType:        flowedType,
-		unique:            unique,
-		createsDuplicates: createsDuplicates,
+		indexName:              indexName,
+		recordTypes:            types,
+		columnNames:            cols,
+		columnFunctions:        fns,
+		pkColumnNames:          pkCols,
+		sargableAliases:        aliases,
+		flowedType:             flowedType,
+		unique:                 unique,
+		createsDuplicates:      createsDuplicatesSignal != nil && *createsDuplicatesSignal,
+		createsDuplicatesKnown: createsDuplicatesSignal != nil,
 	}
 }
 
@@ -338,6 +348,18 @@ func (c *ValueIndexScanMatchCandidate) GetColumnSize() int { return len(c.column
 // entries per record (fan-out / repeated-field indexes).
 // Implements ValueIndexLikeMatchCandidate.
 func (c *ValueIndexScanMatchCandidate) CreatesDuplicates() bool { return c.createsDuplicates }
+
+// DistinctRecordsSignal returns the fan-out signal for the DistinctRecords
+// property, or nil when the IndexDef supplied none (unknown → the property
+// abstains to distinct=false, the safe under-report). A non-nil result carries
+// the known createsDuplicates value.
+func (c *ValueIndexScanMatchCandidate) DistinctRecordsSignal() *bool {
+	if !c.createsDuplicatesKnown {
+		return nil
+	}
+	v := c.createsDuplicates
+	return &v
+}
 
 // HasAndOrderedByRecordTypeKey reports whether the index key starts
 // with the record type key. For standard value indexes this is false;

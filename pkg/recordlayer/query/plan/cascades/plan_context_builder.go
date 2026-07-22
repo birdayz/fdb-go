@@ -90,10 +90,14 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 		}
 		// Fan-out (createsDuplicates) drives DistinctRecordsProperty (RFC-188 M4):
 		// a repeated-field index does NOT produce distinct records. Threaded from
-		// the def's root key expression when available; absent → non-fan-out.
-		createsDuplicates := false
+		// the def's root key expression when available. When the def does NOT
+		// supply the signal, pass nil (unknown) — the property abstains to
+		// distinct=false rather than assuming non-fan-out, so a fan-out index is
+		// never mis-stamped as distinct (the safe under-report).
+		var createsDuplicatesSignal *bool
 		if dup, ok := def.(IndexDefWithCreatesDuplicates); ok {
-			createsDuplicates = dup.IndexCreatesDuplicates()
+			v := dup.IndexCreatesDuplicates()
+			createsDuplicatesSignal = &v
 		}
 		candidates = append(candidates, NewValueIndexScanMatchCandidateWithFunctions(
 			def.IndexName(),
@@ -104,7 +108,7 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 			flowed,
 			def.IndexIsUnique(),
 			upperPK,
-			createsDuplicates,
+			createsDuplicatesSignal,
 		))
 	}
 	return &builtPlanContext{candidates: candidates}

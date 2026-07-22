@@ -253,6 +253,36 @@ result value appears → wrong projection. `PullUpValues(parts, m.candidateValue
   scan uses, so `commonPKFromChildren` matches a scan child against an index child over the same table.
   Pin: `TestComputePrimaryKey_IndexScanCarriesCommonPK`. Explain-diff: no corpus flip (safe direction).
 
+**Codex milestone-review fold (finding B):** codex NAK surfaced 1 P1 + 3 P2.
+- [x] P1 (fixed): absent `IndexDefWithCreatesDuplicates` was read as known non-fan-out (stamped
+  distinct=true) — a fan-out index whose def omits the signal would over-report distinct. Fixed with a
+  known/unknown tri-state: candidate carries `createsDuplicatesKnown`; the constructor takes a `*bool`
+  signal (nil = unknown); `DistinctRecordsSignal()` returns nil when unknown → property abstains to
+  distinct=false (safe). Pin: `TestPlanContext_ThreadsCreatesDuplicates` (plain def → nil signal).
+- [x] P2 Fetch transparency (fixed): `RecordQueryFetchFromPartialRecordPlan` is 1:1 but was absent from the
+  DistinctRecords/PrimaryKey/Cardinalities switches (fell through to default), hiding M4/M5/M3 above the
+  common `Fetch(IndexScan)`. Added the transparent arm to all three (Java treats Fetch transparent). Pin:
+  `TestComputeDistinctRecords_FetchIsTransparent`. Explain-diff: no corpus flip.
+
+### [ ] Finding 10-followup — P2: carry the index common PK separately from the ordering suffix (codex)
+`candidatePKColumns` returns nil when `CreatesDuplicates()` is true (correct — a fan-out key part can't
+extend the ORDERING suffix). But M5's PK PROPERTY reuses that same `pkColumnNames`, so a correctly-tagged
+fan-out index now reports no common PK even though each index entry carries one — losing PK-based
+union/dedup reasoning for fan-out indexes. Safe direction (missed optimization) and not SQL-reachable (no
+fan-out index via CREATE INDEX today), so booked: decouple the PK-for-property from the
+ordering-suffix `pkColumnNames` (carry the common PK on the plan independently, suppress only in ordering
+derivation). Surfaced by the M4 fan-out fix (before it, createsDuplicates was always false → PK always
+returned).
+
+### [ ] Finding 10-followup — P2: primary-vs-index SARG walk uses bestPhysicalChild, not the winner (codex)
+`scanSargComparisonSet` (finding 3) recurses child refs via `bestPhysicalChild(ref, stats)` — the SAME
+scalar-cost child selection the ENTIRE comparator's counts walk uses (`walkExpressionTree`,
+planning_cost_model.go:651). If the ref's `Winner()` differs from the scalar-best member, the SARG set (and
+every count-based rung) reads from a non-winner member. This is a pre-existing comparator-wide convention,
+not a finding-3 regression — switching only the SARG walk to `ref.Winner()` would be inconsistent with the
+rest of the comparator. Booked: evaluate migrating the whole comparator's child selection to winner-based
+(out of RFC-188 scope). No observed divergence (finding-3 explain-diff produced the correct single flip).
+
 ### [ ] Finding 11 (MED) — PredicateToLogicalUnionRule expands every top-level OR
 `rule_predicate_to_logical_union.go:99` fires OR→`Distinct(Union)` unconditionally; Java
 `PredicateToLogicalUnionRule:197` only expands index-exploitable ORs (`partiallyMatchedOrs`). Memo bloat
