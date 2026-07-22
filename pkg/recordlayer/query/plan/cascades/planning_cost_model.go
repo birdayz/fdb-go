@@ -184,20 +184,32 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 
 	// Criterion #2: max cardinality of all data accesses — lower wins.
 	// Unknown (-1) loses to known.
-	cardA := opsA.maxDataAccessCardinality
-	cardB := opsB.maxDataAccessCardinality
-	if cardA >= 0 || cardB >= 0 {
-		if cardA < 0 {
-			return 1 // a unknown, b known — b wins
-		}
-		if cardB < 0 {
-			return -1 // a known, b unknown — a wins
-		}
-		if cardA != cardB {
-			if cardA < cardB {
-				return -1
+	//
+	// OUTER GUARD (Java PlanningCostModel: the whole-plan max-cardinality gate
+	// around the data-access-cardinality criterion): only consult the
+	// data-access maxima when the PROVEN WHOLE-PLAN max cardinality of at least
+	// one side is known. When both whole-plan maxima are unknown but a data
+	// access is provably bounded (e.g. an InUnion/Explode over point lookups,
+	// where the bounded access sits under an unbounded multiplier), Java
+	// abstains here rather than ranking on the data-access maximum — the
+	// bounded access does not bound the plan's output. Go used to skip this
+	// gate and rank anyway.
+	if wholePlanMaxCardinalityKnown(a) || wholePlanMaxCardinalityKnown(b) {
+		cardA := opsA.maxDataAccessCardinality
+		cardB := opsB.maxDataAccessCardinality
+		if cardA >= 0 || cardB >= 0 {
+			if cardA < 0 {
+				return 1 // a unknown, b known — b wins
 			}
-			return 1
+			if cardB < 0 {
+				return -1 // a known, b unknown — a wins
+			}
+			if cardA != cardB {
+				if cardA < cardB {
+					return -1
+				}
+				return 1
+			}
 		}
 	}
 
@@ -391,6 +403,24 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 func isPhysical(e expressions.RelationalExpression) bool {
 	_, ok := e.(physicalPlanExpression)
 	return ok
+}
+
+// wholePlanMaxCardinalityKnown reports whether the PROVEN whole-plan max
+// cardinality of e is known — Java's cardinalities().evaluate(e).getMaxCardinality()
+// gate. Computed from e's children's plan properties (computeCardinalities);
+// falls back to unknown (guard fails → abstain) when e is not a physical plan
+// or its children's properties are unavailable, which is the conservative
+// direction (matches Java abstaining when the whole-plan bound is unknown).
+func wholePlanMaxCardinalityKnown(e expressions.RelationalExpression) bool {
+	ph, ok := e.(physicalPlanExpression)
+	if !ok {
+		return false
+	}
+	plan := ph.GetRecordQueryPlan()
+	if plan == nil {
+		return false
+	}
+	return !computeCardinalities(ph, plan).GetMaxCardinality().IsUnknown()
 }
 
 type expressionCounts struct {

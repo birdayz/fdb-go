@@ -221,13 +221,19 @@ candidate part to `QOV(alias)` (case-1 self-equal always fires) vs Java's root-r
 `candidateValue.pullUp(mapping.values(), …)`. Masked until a covering-index `RecordConstructorValue`
 result value appears → wrong projection. `PullUpValues(parts, m.candidateValue, alias)` exists unused.
 
-### [ ] Finding 10 (MED) — missing Java cost rungs / property divergences (M2✓ M5 M3 M4)
+### [x] Finding 10 (MED) — missing Java cost rungs / property divergences — DONE (M2 M5 M4 M3)
 - [x] M2: `numDefaultOnEmpty` rung — DONE. Count `RecordQueryDefaultOnEmptyPlan` in all 3 count sites
   (walk/merge/concrete); rung "fewer ON EMPTY NULL wins" after the ordinal rungs, before the scalar-cost
   extension (Java's last ordinal rung before the planHash tiebreak). Pin:
   `TestConcretePlanCounts_DefaultOnEmpty`. Explain-diff: no corpus flip (faithful port, latent-gap fix).
-- [ ] M3: criterion #2 lacks Java's whole-plan-cardinality OUTER guard (`PlanningCostModel:121`) → decides
-  on data-access cardinality where Java abstains.
+- [x] M3: whole-plan-cardinality OUTER guard — DONE. Criterion #2 (max data-access cardinality) is now
+  gated behind `wholePlanMaxCardinalityKnown(a) || ...(b)` — the PROVEN whole-plan max cardinality
+  (`computeCardinalities().GetMaxCardinality()`), Java `PlanningCostModel`'s outer guard. When both
+  whole-plan maxima are unknown but a data access is provably bounded (InUnion/Explode over point
+  lookups), Go now abstains like Java instead of ranking on the data-access maximum. Pin:
+  `TestWholePlanMaxCardinalityKnown` (scan→unknown, FirstOrDefault→known — proves the guard
+  discriminates). Explain-diff: no corpus flip (reachability caveat resolved — no spurious over-abstention;
+  the divergence case is not in the corpus).
 - [x] M4: DistinctRecords for index — DONE. `computeDistinctRecords` now returns
   `!matchCandidate.createsDuplicates()` (Java `DistinctRecordsProperty.visitIndexPlan`), not `IsUnique()`.
   Plumbed the candidate fan-out signal onto `RecordQueryIndexPlan` (`createsDuplicates` +

@@ -412,6 +412,7 @@ go_test(
         "value_semantic_hash_fuzz_test.go",
         "value_semantic_hash_registry_test.go",
         "value_semantic_hash_test.go",
+        "whole_plan_cardinality_guard_test.go",
         "winner_lookup_test.go",
         "wrap_physical_plan_test.go",
     ],
@@ -812,6 +813,7 @@ go_test(
         "primary_vs_index_sarg_test.go",
         "default_on_empty_count_test.go",
         "index_primary_key_property_test.go",
+        "whole_plan_cardinality_guard_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
