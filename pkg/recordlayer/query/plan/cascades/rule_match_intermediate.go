@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -612,10 +610,12 @@ func bindOrientedComparison(
 			continue
 		}
 		// The column operand must be a column of the matched source, not an
-		// outer correlation. valuesMatchColumn compares FieldValues by NAME
-		// only (the bound alias map isn't built yet), so a join predicate like
-		// `Customer.id = Order.customer_id` matching the ORDER source would
-		// otherwise bind Customer.id to Order's same-named PK column (id),
+		// outer correlation. valuesMatchColumn compares the accessor PATH
+		// alias-invariantly (the root correlation is excluded), so it cannot by
+		// itself tell `Customer.id` from `Order.id` — both are path [ID]. This
+		// guard is what pins the comparison to the matched source: without it a
+		// join predicate like `Customer.id = Order.customer_id` matching the
+		// ORDER source would bind Customer.id to Order's same-path PK column,
 		// seeking Order.id = Customer.id — the wrong column, 0 rows
 		// (TestFDB_InnerJoin). Reject a column operand whose correlations
 		// exclude the matched source. A flat FieldValue (no correlation) is
@@ -727,66 +727,50 @@ func isPassThroughSingleSourceSelect(sel *expressions.SelectExpression) bool {
 	return ok && qov.Correlation == qs[0].GetAlias()
 }
 
-// valuesMatchColumn checks if two values reference the same column.
-// Uses structural comparison via ValuesStructurallyEqual; the cross-alias
-// FieldValue fallback compares field names case-INsensitively (EqualFold) —
-// belt-and-suspenders against any casing drift, even though SQL identifier
-// resolution normalises column names to a single canonical casing. A case-only
-// collision on a DIFFERENT table cannot leak through here: the caller already
-// requires the operand to be correlated to the matched source (the
-// outer-correlation guard), so this only compares columns of the same source
-// against that source's candidate placeholders. For complex values (arithmetic,
-// casts, etc.) it recursively compares the value tree.
+// valuesMatchColumn reports whether a query column operand and a candidate
+// placeholder value denote the same column. Column identity routes through the
+// match-domain name-path comparison (values.ColumnNamePathsEqual): the full
+// accessor path, not the leaf name, so a nested `addr.city` never binds a
+// same-leaf-named top-level `city` index. The comparison is
+// representation-agnostic — a resolver-baked query ref matches a lazy candidate
+// over the same column (the candidate is name-based by construction; the query
+// side may be baked) — and alias-invariant at the root, which is why the
+// alias-map bridge the pre-name-path design needed is unnecessary. The caller's
+// outer-correlation guard has already established both operands are over the
+// matched source. CardinalityValue is a transparent wrapper handled by the same
+// primitive; a complex non-column value (arithmetic, cast, …) that is not a
+// distance key matches only by exact structural equality.
 func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 	if queryValue == nil || placeholderValue == nil {
 		return false
 	}
-	// Fast path: structural equality (same field name, same child structure).
+	// Fast path / complex-expression path: exact structural equality (same
+	// representation and aliases — arithmetic, casts, expression-index keys the
+	// name-path primitive does not model).
 	if values.ValuesStructurallyEqual(queryValue, placeholderValue) {
 		return true
 	}
-	// Cross-alias match: compare field names ignoring child QOV aliases.
-	// This handles the case where the query has a flat FieldValue
-	// ("COL") and the candidate has a child-bearing FieldValue
-	// (QOV(alias)."COL") — or both have children with different aliases.
-	// Mirrors Java's semanticEquals with alias equivalence map.
-	qFV, qOk := queryValue.(*values.FieldValue)
-	pFV, pOk := placeholderValue.(*values.FieldValue)
-	if qOk && pOk {
-		return strings.EqualFold(qFV.Field, pFV.Field)
+	// Vector K-NN distance key: same metric class + same partition/argument
+	// column paths.
+	if distanceRowNumberValuesMatch(queryValue, placeholderValue) {
+		return true
 	}
-	// CARDINALITY() index: the query's predicate LHS for
-	// `WHERE CARDINALITY(arr) = N` / `IS [NOT] NULL` is a
-	// CardinalityValue(FieldValue(arr)); the candidate's placeholder is the same
-	// value over the index column (built by ColumnValue). The QOV aliases differ
-	// at this point (the alias map is built only after binding), so — like the
-	// FieldValue and distance-row-number cases — match alias-invariantly by the
-	// wrapped field name.
-	if qCard, ok := queryValue.(*values.CardinalityValue); ok {
-		if pCard, ok := placeholderValue.(*values.CardinalityValue); ok {
-			return valuesMatchColumn(qCard.Child, pCard.Child)
-		}
-		return false
-	}
-	// Vector K-NN: the query's DistanceRank predicate LHS is a metric-specific
-	// DistanceRowNumberValue; the candidate's distance placeholder is the same
-	// value over the index columns. Match alias-invariantly by metric class +
-	// partition/argument field names (the alias map is built only after this
-	// binding step, so compare by name like the FieldValue case above).
-	return distanceRowNumberValuesMatch(queryValue, placeholderValue)
+	// Column identity across the mixed baked/lazy representation and any nested
+	// accessor path — the wrong-column bind the leaf-name compare produced.
+	return values.ColumnNamePathsEqual(queryValue, placeholderValue)
 }
 
 // distanceRowNumberValuesMatch reports whether a and b are the same
-// distance-row-number metric class with matching partition + argument field
-// names (ignoring QOV aliases).
+// distance-row-number metric class with matching partition + argument column
+// accessor paths (alias-invariant at the root).
 func distanceRowNumberValuesMatch(a, b values.Value) bool {
 	ma, wa, oka := distanceRowNumberWindowed(a)
 	mb, wb, okb := distanceRowNumberWindowed(b)
 	if !oka || !okb || ma != mb {
 		return false
 	}
-	return fieldNamesMatch(wa.PartitioningValues, wb.PartitioningValues) &&
-		fieldNamesMatch(wa.ArgumentValues, wb.ArgumentValues)
+	return columnPathListsMatch(wa.PartitioningValues, wb.PartitioningValues) &&
+		columnPathListsMatch(wa.ArgumentValues, wb.ArgumentValues)
 }
 
 // distanceRowNumberWindowed returns a metric tag + the embedded WindowedValue
@@ -806,16 +790,16 @@ func distanceRowNumberWindowed(v values.Value) (string, *values.WindowedValue, b
 	}
 }
 
-// fieldNamesMatch reports whether two value lists are positionally equal as
-// FieldValues compared by (case-insensitive) field name, ignoring QOV aliases.
-func fieldNamesMatch(a, b []values.Value) bool {
+// columnPathListsMatch reports whether two column-value lists are positionally
+// equal by accessor name path — the path-aware replacement for a leaf-name list
+// compare, so a nested partition/argument column is not conflated with a
+// same-leaf-named top-level one.
+func columnPathListsMatch(a, b []values.Value) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
-		fa, oka := a[i].(*values.FieldValue)
-		fb, okb := b[i].(*values.FieldValue)
-		if !oka || !okb || !strings.EqualFold(fa.Field, fb.Field) {
+		if !values.ColumnNamePathsEqual(a[i], b[i]) {
 			return false
 		}
 	}

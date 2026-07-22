@@ -338,6 +338,7 @@ go_test(
         "rule_index_test.go",
         "rule_intersection_merge_test.go",
         "rule_limit_merge_test.go",
+        "rule_match_intermediate_column_identity_test.go",
         "rule_match_intermediate_test.go",
         "rule_match_leaf_test.go",
         "rule_noop_filter_test.go",
@@ -796,6 +797,7 @@ go_test(
         "rewriting_final_invariant.go",
         "rewriting_final_invariant_test.go",
         "rfc186_pk_gate_test.go",
+        "rule_match_intermediate_column_identity_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
