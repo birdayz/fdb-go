@@ -30,6 +30,16 @@ func TestComparisonSetKey_BareComparisonIdentity(t *testing.T) {
 	if comparisonSetKey(eq5a) == comparisonSetKey(gt5) {
 		t.Fatal("different comparison type collapsed to the same key")
 	}
+
+	// STRUCTURAL identity, not display text: int64(1) and float64(1) both render
+	// as "1" via ExplainValue but are different comparands (Java Comparison.equals
+	// distinguishes them). A text collision would make Sets.difference treat them
+	// as equal and spuriously report a strict SARG superset.
+	eqInt1 := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))}
+	eqFloat1 := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(float64(1))}
+	if comparisonSetKey(eqInt1) == comparisonSetKey(eqFloat1) {
+		t.Fatal("int64(1) and float64(1) collapsed to the same comparison key (text collision, not structural)")
+	}
 }
 
 // TestSetDifferenceEmpty pins the "index SARGs strictly more" predicate: the

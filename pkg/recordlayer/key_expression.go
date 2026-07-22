@@ -888,6 +888,12 @@ func createsDuplicates(expr KeyExpression) bool {
 		// Java GroupingKeyExpression.createsDuplicates() delegates to the whole
 		// key — a grouping/aggregate index over a fan-out field still fans out.
 		return createsDuplicates(e.wholeKey)
+	case *EmptyKeyExpression:
+		// No columns → one (empty) tuple per record, no fan-out.
+		return false
+	case *LiteralKeyExpression:
+		// A constant → single value per record, no fan-out.
+		return false
 	case *DimensionsKeyExpression:
 		return createsDuplicates(e.WholeKey)
 	case *ListKeyExpression:
@@ -898,7 +904,16 @@ func createsDuplicates(expr KeyExpression) bool {
 		}
 		return false
 	default:
-		return false
+		// FAIL CLOSED: every standard KeyExpression that can be an index root
+		// has an explicit arm above. An UNRECOGNIZED (custom / externally
+		// implemented) expression whose fan-out we cannot determine is treated
+		// conservatively as DUPLICATING — so a consumer (e.g. the M4
+		// DistinctRecords signal, index.CreatesDuplicates) never mis-classifies
+		// an unknown fan-out expression as distinct and elides a required
+		// DISTINCT. Java sidesteps this by making createsDuplicates() an abstract
+		// method every subclass must implement; the exhaustive-switch analog
+		// fails closed on the residual default.
+		return true
 	}
 }
 

@@ -44,4 +44,21 @@ func TestIndex_CreatesDuplicates(t *testing.T) {
 	if (&Index{Name: "empty"}).CreatesDuplicates() {
 		t.Fatal("index with no root expression must not report duplicates")
 	}
+
+	// Empty / Literal roots do NOT fan out — explicit false arms.
+	if (&Index{Name: "idx_empty", RootExpression: &EmptyKeyExpression{}}).CreatesDuplicates() {
+		t.Fatal("EmptyKeyExpression must not create duplicates")
+	}
+	if (&Index{Name: "idx_lit", RootExpression: &LiteralKeyExpression{}}).CreatesDuplicates() {
+		t.Fatal("LiteralKeyExpression must not create duplicates")
+	}
+
+	// FAIL CLOSED: an UNRECOGNIZED (custom/external) key expression whose fan-out
+	// cannot be determined must be treated conservatively as DUPLICATING, so the
+	// M4 DistinctRecords signal never mis-classifies it as distinct.
+	// customKeyExpression (bug_bounty_test.go) stands in for such a type — the
+	// createsDuplicates switch has no arm for it, so it hits the fail-closed default.
+	if !(&Index{Name: "idx_custom", RootExpression: &customKeyExpression{}}).CreatesDuplicates() {
+		t.Fatal("unrecognized key expression must FAIL CLOSED to creates-duplicates=true")
+	}
 }

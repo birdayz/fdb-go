@@ -1033,9 +1033,15 @@ func collectPlanSargComparisons(p plans.RecordQueryPlan, set map[string]struct{}
 // does — by type and comparand (and the parameter name for parameter-bound
 // comparisons) — with NO column/position component.
 func comparisonSetKey(c *predicates.Comparison) string {
-	operand := ""
+	// Key by the comparison's STRUCTURAL identity (type + comparand + param),
+	// mirroring Java Comparison.equals. Use the operand's SemanticHashCode, not
+	// its ExplainValue display text: distinct constants can render identically
+	// (int64(1) vs float64(1) → "1"; unsupported constants collapse to "?"), and
+	// a text collision would make the sub-case's Sets.difference treat different
+	// comparands as equal — spuriously reporting a strict SARG superset.
+	operand := "nil"
 	if c.Operand != nil {
-		operand = values.ExplainValue(c.Operand)
+		operand = fmt.Sprintf("%x", values.SemanticHashCode(c.Operand))
 	}
 	return fmt.Sprintf("%d|%s|%s", int(c.Type), operand, c.ParameterName)
 }
