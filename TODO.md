@@ -183,13 +183,18 @@ threading the sign by which side is the primary scan (Java's flipFlop negation).
 from BARE comparisons (type + comparand, column/position EXCLUDED — Java's ComparisonsProperty
 `Set<Comparison>`), via `scanSargComparisonSet`. `IndexScanPreference` confirmed absent in Go (Cascades
 default PREFER_SCAN); config knob booked separately (Finding 3-followup).
-**Reachability verified:** the rung fires 34× across the corpus with 2 firings at `tfA=1 tfB=0` (the
-sub-case precondition). Explain-diff: exactly ONE plan flips — `join_optimization_probes#4` (EMP
-self-join on `did`) inner leg goes `PredicatesFilter(TypeFilter([EMP], Scan(EMP)))` →
-`Fetch(PredicatesFilter(IndexScan(IDX_EMP_DID, [=])))`. The `e.did = d.did` joins correctly do NOT flip
-(DEPT's PK covers the equality). Pins: yamsql `join_optimization_probes#4` EXPLAIN
-(`plan_contains: IndexScan(IDX_EMP_DID`, `plan_not_contains: TypeFilter([EMP]`) + unit
-`TestComparisonSetKey_BareComparisonIdentity` / `TestSetDifferenceEmpty`.
+**Reachability (corrected after codex P1a fold): INERT on the corpus.** The sub-case's SARG walk must
+descend the CONCRETE plan (the production `scanPlanExpression`/`TypeFilter(Scan)` wrapper exposes no
+quantifiers — `GetQuantifiers()==nil`), else the primary SARG set is spuriously empty and the sub-case
+fires whenever the index has any SARG (could demote a PK point lookup). After that fix
+(`scanSargComparisonSet` → `collectPlanSargComparisons` over `GetRecordQueryPlan().GetChildren()`), the
+earlier `join_optimization_probes#4` "flip" REVERTS: the EMP self-join primary SARGs an eid inequality
+the index lacks while the index SARGs the did equality the primary lacks — NEITHER is a strict superset,
+so the sub-case correctly abstains → PREFER_SCAN (matches master, matches Java). The genuine strict-
+superset shape (index SARGs everything the primary does plus a record-type-key comparison, no type
+filter) is not SQL-corpus-reachable today. Pins: unit `TestComparisonSetKey_BareComparisonIdentity` /
+`TestSetDifferenceEmpty` (the set logic); `join_optimization_probes#4` keeps a rows-only correctness pin
+(the sub-case correctly does NOT fire there). Faithful Java port, latent-gap like M2/M3/M5.
 
 ### [ ] Finding 5 (MED) — scalar signed-zero ConstantValue: equal-but-different-hash
 `values/map_field_values.go:254` scalar fallthrough `return a == b` (−0.0==+0.0 true) vs
@@ -248,10 +253,30 @@ result value appears → wrong projection. `PullUpValues(parts, m.candidateValue
   through the candidate constructor. Pins: `TestIndex_CreatesDuplicates` (FanOut→true, scalar/nested/empty),
   `TestPlanContext_ThreadsCreatesDuplicates` (fan-out def → candidate true; absent → false). Explain-diff:
   no corpus flip (no fan-out index in the SQL corpus).
-- [x] M5: PrimaryKey for index scans — DONE. `computePrimaryKey` now returns FieldValues over the index's
-  `GetPKColumnNames()` (Java `PrimaryKeyProperty.visitIndexPlan`) — the SAME representation the primary
-  scan uses, so `commonPKFromChildren` matches a scan child against an index child over the same table.
-  Pin: `TestComputePrimaryKey_IndexScanCarriesCommonPK`. Explain-diff: no corpus flip (safe direction).
+- [~] M5: PrimaryKey for index scans — REVERTED to nil (safe); re-booked as structural. The by-COLUMN-NAME
+  PK (`GetPKColumnNames()` → FieldValues) wrongly equates record types whose PK EXPRESSIONS differ but
+  share field names (`Field("ID")` vs `Concat(RecordTypeKey(), Field("ID"))` both flatten to `["ID"]`),
+  which would let `ImplementDistinctUnionRule` dedup two legs that must both survive (dropped rows —
+  codex P1b, a finding-A-class leaf-name bug). `computePrimaryKey` now returns nil for index scans (safe
+  under-report: disables the optimization, never wrong dedup). Pin:
+  `TestComputePrimaryKey_IndexScanIsNilPendingStructuralPK`. See Finding 10-M5-followup.
+
+### [ ] Finding 10-M5-followup — structural common-PK for index scans (Java parity)
+Port Java `PrimaryKeyProperty.visitIndexPlan` PROPERLY: `ScalarTranslationVisitor.translateKeyExpression(
+index.getCommonPrimaryKey(), …)` — translate the index's common PK KEY EXPRESSION to Values that encode
+STRUCTURE (record-type-key prefixes, nesting), not bare column names. Then `commonPKFromChildren`'s
+`ValuesStructurallyEqual` compares real PK identity and cannot equate `Field("ID")` with
+`Concat(RecordTypeKey(), Field("ID"))`. Finding-A-class (carry the key expression / translated Values on
+the plan; also handles the fan-out case — a fan-out index's entries DO carry the common PK, so it should
+be surfaced for the PK property while still suppressed for the ordering suffix). Needs Graefe+Torvalds.
+
+### [ ] Finding 10-M3-followup — recognize equality-bound primary scans in the outer guard (codex P2)
+`wholePlanMaxCardinalityKnown` uses `computeCardinalities`, whose `RecordQueryScanPlan` arm always returns
+`UnknownMaxCardinality` — so a full-PK-equality primary scan (a point lookup, max=1, which
+`concretePlanCounts`/`scanProvableMaxCard` DO bound) is reported unknown, and the M3 outer guard
+over-abstains for a bounded-primary-scan-vs-unbounded comparison where Java would apply criterion #2.
+Safe direction (abstain → falls through to other rungs); zero corpus impact. Fix: bound a full-PK-equality
+scan in `computeCardinalities` (needs the PK column count → thread `ctx`, like `scanProvableMaxCard`).
 
 **Codex milestone-review fold (finding B):** codex NAK surfaced 1 P1 + 3 P2.
 - [x] P1 (fixed): absent `IndexDefWithCreatesDuplicates` was read as known non-fan-out (stamped
@@ -264,24 +289,12 @@ result value appears → wrong projection. `PullUpValues(parts, m.candidateValue
   common `Fetch(IndexScan)`. Added the transparent arm to all three (Java treats Fetch transparent). Pin:
   `TestComputeDistinctRecords_FetchIsTransparent`. Explain-diff: no corpus flip.
 
-### [ ] Finding 10-followup — P2: carry the index common PK separately from the ordering suffix (codex)
-`candidatePKColumns` returns nil when `CreatesDuplicates()` is true (correct — a fan-out key part can't
-extend the ORDERING suffix). But M5's PK PROPERTY reuses that same `pkColumnNames`, so a correctly-tagged
-fan-out index now reports no common PK even though each index entry carries one — losing PK-based
-union/dedup reasoning for fan-out indexes. Safe direction (missed optimization) and not SQL-reachable (no
-fan-out index via CREATE INDEX today), so booked: decouple the PK-for-property from the
-ordering-suffix `pkColumnNames` (carry the common PK on the plan independently, suppress only in ordering
-derivation). Surfaced by the M4 fan-out fix (before it, createsDuplicates was always false → PK always
-returned).
-
-### [ ] Finding 10-followup — P2: primary-vs-index SARG walk uses bestPhysicalChild, not the winner (codex)
-`scanSargComparisonSet` (finding 3) recurses child refs via `bestPhysicalChild(ref, stats)` — the SAME
-scalar-cost child selection the ENTIRE comparator's counts walk uses (`walkExpressionTree`,
-planning_cost_model.go:651). If the ref's `Winner()` differs from the scalar-best member, the SARG set (and
-every count-based rung) reads from a non-winner member. This is a pre-existing comparator-wide convention,
-not a finding-3 regression — switching only the SARG walk to `ref.Winner()` would be inconsistent with the
-rest of the comparator. Booked: evaluate migrating the whole comparator's child selection to winner-based
-(out of RFC-188 scope). No observed divergence (finding-3 explain-diff produced the correct single flip).
+(Round-1 codex P2s resolved/superseded: the "carry index common PK separately from the ordering suffix"
+item is folded into Finding 10-M5-followup — with M5 reverted to nil, the fan-out-PK concern is subsumed
+by the structural-PK re-port, which must surface the PK for the property while suppressing it in ordering.
+The "SARG walk uses bestPhysicalChild not the winner" item is RESOLVED: the P1a fold rewrote
+`scanSargComparisonSet` to walk `GetRecordQueryPlan().GetChildren()` — the concrete plan being compared —
+so there is no ref child-selection left in the SARG walk.)
 
 ### [ ] Finding 11 (MED) — PredicateToLogicalUnionRule expands every top-level OR
 `rule_predicate_to_logical_union.go:99` fires OR→`Distinct(Union)` unconditionally; Java

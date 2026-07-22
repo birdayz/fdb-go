@@ -221,21 +221,17 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		}
 		return nil
 	case *plans.RecordQueryIndexPlan:
-		// Java PrimaryKeyProperty.visitIndexPlan returns the index's common
-		// primary key translated to Values (index entries carry the PK). Build
-		// FieldValues over the PK column names — the SAME representation the
-		// primary scan uses (rule_primary_scan.go), so commonPKFromChildren can
-		// match an index-scan child against a scan child over the same table
-		// (enables PK-based dedup/ordering reasoning for plans over index scans).
-		pkCols := p.GetPKColumnNames()
-		if len(pkCols) == 0 {
-			return nil
-		}
-		pkVals := make([]values.Value, len(pkCols))
-		for i, col := range pkCols {
-			pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
-		}
-		return pkVals
+		// M5 (index common PK) is INTENTIONALLY nil — see the "Finding 10-M5
+		// (reverted)" TODO. Java's PrimaryKeyProperty.visitIndexPlan translates
+		// index.getCommonPrimaryKey() STRUCTURALLY; a by-column-NAME PK (the only
+		// thing the plan carries via GetPKColumnNames) wrongly equates record
+		// types whose PK expressions differ but share field names — e.g.
+		// Field("ID") vs Concat(RecordTypeKey(), Field("ID")) both flatten to
+		// ["ID"] — which would let ImplementDistinctUnionRule dedup two legs that
+		// must both survive (dropped rows). Returning nil (no common PK) is the
+		// safe under-report: it disables the optimization, never wrong dedup. The
+		// correct structural-PK port is booked.
+		return nil
 	case *plans.RecordQueryFilterPlan,
 		*plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQueryTypeFilterPlan,

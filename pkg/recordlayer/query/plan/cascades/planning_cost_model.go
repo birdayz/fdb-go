@@ -257,7 +257,7 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return cmp
 	}
 
-	if cmp := comparePrimaryScanVsIndexScan(a, b, opsA, opsB, stats); cmp != 0 {
+	if cmp := comparePrimaryScanVsIndexScan(a, b, opsA, opsB); cmp != 0 {
 		return cmp
 	}
 
@@ -931,20 +931,20 @@ func isFetchExpression(e expressions.RelationalExpression) bool {
 // doesn't enter this path. When it fires it runs the type-filter SARG sub-case
 // (prefer the index when it SARGs strictly more, needing no type filter) and
 // otherwise applies the PREFER_SCAN default — see primaryVsIndexVerdict.
-func comparePrimaryScanVsIndexScan(a, b expressions.RelationalExpression, opsA, opsB expressionCounts, stats properties.StatisticsProvider) int {
+func comparePrimaryScanVsIndexScan(a, b expressions.RelationalExpression, opsA, opsB expressionCounts) int {
 	aIsPrimaryScan := opsA.scanCount == 1 && opsA.indexScanCount == 0 && opsA.coveringIndexCount == 0 && opsA.inMemorySortCount == 0
 	bIsPrimaryScan := opsB.scanCount == 1 && opsB.indexScanCount == 0 && opsB.coveringIndexCount == 0 && opsB.inMemorySortCount == 0
 	aIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsA)
 	bIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsB)
 
 	if aIsPrimaryScan && bIsIndexScanWithFetch {
-		return primaryVsIndexVerdict(a, b, opsA, opsB, stats)
+		return primaryVsIndexVerdict(a, b, opsA, opsB)
 	}
 	if bIsPrimaryScan && aIsIndexScanWithFetch {
 		// Roles swapped: b is the primary scan, a the index. The verdict is
 		// computed in the (primary, index) orientation, then negated — Java's
 		// flipFlop(compare(primary,index), compare(index,primary)) negation.
-		return -primaryVsIndexVerdict(b, a, opsB, opsA, stats)
+		return -primaryVsIndexVerdict(b, a, opsB, opsA)
 	}
 	return 0
 }
@@ -961,10 +961,10 @@ func comparePrimaryScanVsIndexScan(a, b expressions.RelationalExpression, opsA, 
 // filter), prefer the index. Otherwise fall back to the IndexScanPreference
 // default — which in Go is always PREFER_SCAN (the config knob is unmodeled;
 // see RFC-188 §2), i.e. prefer the primary scan.
-func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpression, opsPrimary, opsIndex expressionCounts, stats properties.StatisticsProvider) int {
+func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpression, opsPrimary, opsIndex expressionCounts) int {
 	if opsPrimary.typeFilterCount > 0 && opsIndex.typeFilterCount == 0 {
-		primaryComparisons := scanSargComparisonSet(primaryScan, stats)
-		indexComparisons := scanSargComparisonSet(indexScan, stats)
+		primaryComparisons := scanSargComparisonSet(primaryScan)
+		indexComparisons := scanSargComparisonSet(indexScan)
 		// primary − index empty AND index − primary non-empty ⇒ the index
 		// SARGs everything the primary does plus more, without a type filter.
 		if setDifferenceEmpty(primaryComparisons, indexComparisons) &&
@@ -978,24 +978,35 @@ func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpressi
 
 // scanSargComparisonSet collects the BARE SARG comparisons (comparison type +
 // comparand only; the column/field is implicit in ScanComparisons position and
-// is deliberately EXCLUDED) from every scan/index plan in e's physical subtree.
-// This mirrors Java's ComparisonsProperty, whose value is a
+// is deliberately EXCLUDED) from every scan/index plan in e's CONCRETE plan
+// tree. This mirrors Java's ComparisonsProperty, whose value is a
 // Set<Comparisons.Comparison> keyed by the bare comparison, so equal comparisons
 // at different positions collapse to one element. Keying by column would make
 // the set difference non-empty where Java's is empty and fire the sub-case on
 // the wrong queries.
-func scanSargComparisonSet(e expressions.RelationalExpression, stats properties.StatisticsProvider) map[string]struct{} {
+//
+// It unwraps to the concrete RecordQueryPlan (GetRecordQueryPlan) and walks it
+// via GetChildren — the production scanPlanExpression / TypeFilter(Scan) wrapper
+// exposes NO quantifiers (GetQuantifiers()==nil, like the counts walk's
+// findExpressionsByType unwrap), so an expression-level walk would miss the
+// nested scan's SARGs and make the primary set spuriously empty, firing the
+// sub-case whenever the index has any SARG (e.g. demoting a PK point lookup).
+func scanSargComparisonSet(e expressions.RelationalExpression) map[string]struct{} {
 	set := map[string]struct{}{}
-	collectScanSargComparisons(e, stats, set, map[*expressions.Reference]bool{})
+	if ph, ok := e.(physicalPlanExpression); ok {
+		if plan := ph.GetRecordQueryPlan(); plan != nil {
+			collectPlanSargComparisons(plan, set)
+		}
+	}
 	return set
 }
 
-func collectScanSargComparisons(e expressions.RelationalExpression, stats properties.StatisticsProvider, set map[string]struct{}, visited map[*expressions.Reference]bool) {
-	if e == nil {
+func collectPlanSargComparisons(p plans.RecordQueryPlan, set map[string]struct{}) {
+	if p == nil {
 		return
 	}
 	var ranges []*predicates.ComparisonRange
-	switch w := e.(type) {
+	switch w := p.(type) {
 	case *plans.RecordQueryScanPlan:
 		ranges = w.GetScanComparisons()
 	case *plans.RecordQueryIndexPlan:
@@ -1013,15 +1024,8 @@ func collectScanSargComparisons(e expressions.RelationalExpression, stats proper
 			}
 		}
 	}
-	for _, q := range e.GetQuantifiers() {
-		ref := q.GetRangesOver()
-		if ref == nil || visited[ref] {
-			continue
-		}
-		visited[ref] = true
-		if child := bestPhysicalChild(ref, stats); child != nil {
-			collectScanSargComparisons(child, stats, set, visited)
-		}
+	for _, c := range p.GetChildren() {
+		collectPlanSargComparisons(c, set)
 	}
 }
 
