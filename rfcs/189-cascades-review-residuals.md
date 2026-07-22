@@ -1,9 +1,30 @@
 # RFC-189 — Cascades quality review residuals (2026-07-22 findings)
 
-**Status:** ACKED (rev 2). Graefe ACK (two A4 conditions folded below + hardening notes adopted);
-Torvalds conditional ACK (conditions 2/3/4 folded; condition 1 — physical PR split — reconciled
-below within one PR per owner directive). Implementation may proceed; final impl HEAD gets one joint
-milestone review lap.
+**Status:** ACKED (rev 2), IMPLEMENTATION IN PROGRESS. Graefe ACK (two A4 conditions folded below +
+hardening notes adopted); Torvalds conditional ACK (conditions 2/3/4 folded; condition 1 — physical PR
+split — reconciled below within one PR per owner directive). Final impl HEAD gets one joint milestone
+review lap.
+
+**Implementation progress (branch `feat/rfc189-cascades-review-residuals`):**
+- **DONE (landed, each RED→GREEN + full 56-target FDB suite green per commit):** WS-A correctness
+  cluster — A1 (finding 8, hang), A2 (finding 5, signed-zero), A3 (finding 9, projection), A4 (finding 7,
+  correlation); WS-B safe plan-quality — B1 (M3 point-scan cardinality, + a `WithPrimaryKey` builder
+  field-drop footgun fixed en route), B2 (M4-fu-3 VERSION fan-out); WS-C value-layer — C1 (12a int
+  precision + panic guard), C2 (12b CAST trim set), C3 (12c Union `IsNeeded` assert), C4 (12d EXISTS
+  dedup); WS-D dead-function deletes (Demote, findMatchingReachableCandidate wrapper, isExploratoryMember
+  dup) — the intersection-rule deletion was RECLASSIFIED to KEEP (see WS-D below); WS-F — F2 (real
+  RemoveRangeOneRule port), F3 (IndexScanPreference wired into the config mirror). GetPlans deprecate-lite:
+  no change needed (already documented + the aligned `GetPhysicalExpressions` twin; callers use it).
+- **REMAINING (the large / plan-flip / infra tail — each needs dedicated implementation + heavy
+  validation, NOT a rushed marathon-tail pass):** **B3** (M5 structural common-PK — a new
+  `KeyExpression→[]Value` translator + IndexDef/PlanContext widening + BOTH the index and primary-scan
+  arms + the dropped-rows FDB guard + 1M stress; the dangerous direction — a subtly-wrong translator
+  drops rows, so it stays nil/safe until proven); **WS-D MatchIntermediate** permutation-enumeration port
+  (bijection matching); **F1** (finding 11 OR-expansion PLANNING phase relocation + mapping-kind taxonomy
+  — Graefe-gated); **E1** (M4 Fetch-storedRecord, ~48 flips) and **E2** (finding-6 dense producer, ~11
+  flips) — each per the mandatory per-flip audit protocol in WS-E (row-level + EXPLAIN + Java-verify +
+  1M stress + reviewer sign-off). These are deferred within this PR, not dropped: the correctness content
+  is banked first, and these land as the reviewable, independently-revertable remainder.
 
 **Rev-2 review folds:** A4 — carry the `dep != q.GetAlias()` self-filter onto the now-live
 `rule_partition_select.go:674` and drop the redundant manual walk (Graefe); correct the

@@ -91,6 +91,23 @@ CORE (epoch termination, memo merge/cycle guards, 3-tier interning, `memoEqual` 
 guard, 3VL null logic, directional cost rungs) was traced and is SOUND — the defects are in
 the periphery/derivations.
 
+**RFC-189 STATUS (branch `feat/rfc189-cascades-review-residuals`, `rfcs/189-cascades-review-residuals.md`,
+ACKED rev 2):** the residuals below are being ground out in ONE PR (owner directive).
+- **DONE (landed green):** finding 8 (A1 hang), finding 5 (A2 signed-zero), finding 9 (A3 projection),
+  finding 7 (A4 correlation → DIVERGENCES.md closed); finding 10-M3-followup (B1) + a `WithPrimaryKey`
+  builder footgun; finding 10-M4-followup-3 (B2 VERSION fan-out); finding 12 a/b/c/d (C1–C4; 12b premise
+  corrected — Java also trims; 12c-GroupBy pull-up booked separately); dead-fn deletes (Demote,
+  findMatchingReachableCandidate wrapper, isExploratoryMember dup); finding 2-followup-a (F2 real
+  RemoveRangeOne); finding 3-followup (F3 IndexScanPreference). finding 10-M4-followup-2: confirmed already
+  resolved (RFC-188 round 7). GetPlans: no change needed (already guarded).
+- **RECLASSIFIED:** finding 13 intersection-rule deletion → KEEP (fuzz completeness net + white-box tests
+  exercise the logical→physical path; SQL-unreachable but not dead-in-the-harmful-sense).
+- **REMAINING (large/plan-flip/infra — not to be rushed):** finding 10-M5-followup (B3 structural PK —
+  translator + both arms + dropped-rows FDB guard + 1M stress), finding 13 MatchIntermediate permutation
+  port, finding 11 (F1 OR-expansion phase relocation, Graefe-gated), finding 10-M4-followup (E1
+  Fetch-storedRecord ~48 flips), finding 6-followup (E2 dense producer ~11 flips) — E1/E2 per the
+  per-flip-audit protocol. Then the milestone review lap (Graefe+Torvalds+codex+@claude) + PR.
+
 **Owner directive (2026-07-22): land finding A (leaf-name column matching) IN FULL —
 principles-first, no quick fixes: RFC → Graefe+Torvalds review → implement in full → review.
 A is the current focus; the rest are booked below in severity order. A is the planner-side
