@@ -1048,19 +1048,52 @@ func sargSubset(sub, super []*predicates.Comparison) bool {
 	return true
 }
 
-// sargComparisonEqual is the structural identity of a scan comparison, the
-// analog of Java Comparisons.Comparison.equals — type + comparand (via the
-// alias-SENSITIVE ValuesStructurallyEqual, so k1=outerA.id and k2=outerB.id are
-// distinct) + escape + parameter name. NO column/position component (that is
-// implicit in ScanComparisons position and deliberately excluded).
+// sargComparisonEqual is the FULL structural identity of a scan comparison, the
+// analog of the polymorphic Java Comparisons.Comparison.equals — every identity
+// field of the flat Go Comparison struct: type, comparand (alias-SENSITIVE
+// ValuesStructurallyEqual, so k1=outerA.id and k2=outerB.id are distinct),
+// escape, parameter name, the text-search variants (tokenizer/analyzer/max
+// distance/strict prefix) and the vector distance-rank variants (query vector /
+// EfSearch / IsReturningVectors). The comparand is IGNORED for unary comparisons
+// (IS NULL / IS NOT NULL), where it is semantically absent. NO column/position
+// component (implicit in ScanComparisons position, deliberately excluded).
 func sargComparisonEqual(a, b *predicates.Comparison) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.Type == b.Type &&
-		a.Escape == b.Escape &&
-		a.ParameterName == b.ParameterName &&
-		values.ValuesStructurallyEqual(a.Operand, b.Operand)
+	if a.Type != b.Type ||
+		a.Escape != b.Escape ||
+		a.ParameterName != b.ParameterName ||
+		a.TextTokenizerName != b.TextTokenizerName ||
+		a.TextAnalyzerName != b.TextAnalyzerName ||
+		a.TextMaxDistance != b.TextMaxDistance ||
+		a.TextStrictPrefix != b.TextStrictPrefix {
+		return false
+	}
+	if !intPtrEqual(a.EfSearch, b.EfSearch) || !boolPtrEqual(a.IsReturningVectors, b.IsReturningVectors) {
+		return false
+	}
+	if !values.ValuesStructurallyEqual(a.QueryVector, b.QueryVector) {
+		return false
+	}
+	if a.Type.IsUnary() {
+		return true // comparand semantically absent for IS NULL / IS NOT NULL
+	}
+	return values.ValuesStructurallyEqual(a.Operand, b.Operand)
+}
+
+func intPtrEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func boolPtrEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // isSingularIndexScanWithFetch matches Java's check: a single index scan

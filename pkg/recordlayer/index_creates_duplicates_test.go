@@ -53,14 +53,17 @@ func TestIndex_CreatesDuplicates(t *testing.T) {
 		t.Fatal("LiteralKeyExpression must not create duplicates")
 	}
 
-	// An UNRECOGNIZED (custom/external) key expression hits the default → false,
-	// matching master and the SplitKeyExpression validator (which uses
-	// createsDuplicates as positive proof — a fail-closed `true` here would
-	// wrongly admit Split(customScalar)). The M4 DistinctRecords signal's
-	// separate fail-closed need for an unknown INDEX ROOT is booked to
-	// index.CreatesDuplicates, not this shared function. customKeyExpression
+	// An UNRECOGNIZED (custom/external) key expression FAILS CLOSED at the INDEX
+	// level: Index.CreatesDuplicates()==true (conservatively duplicating) so the
+	// M4 DistinctRecords signal never mis-reports an unknown-fan-out index as
+	// distinct. The SHARED helper createsDuplicates() still returns false for it
+	// (validateSplitKeyExpression reads that as positive proof — a fail-closed
+	// true there would wrongly admit Split(customScalar)). customKeyExpression
 	// (bug_bounty_test.go) stands in for such a type.
-	if (&Index{Name: "idx_custom", RootExpression: &customKeyExpression{}}).CreatesDuplicates() {
-		t.Fatal("unrecognized key expression must default to false (shared with Split validation)")
+	if !(&Index{Name: "idx_custom", RootExpression: &customKeyExpression{}}).CreatesDuplicates() {
+		t.Fatal("unrecognized index root must FAIL CLOSED to CreatesDuplicates()=true (M4 safety)")
+	}
+	if createsDuplicates(&customKeyExpression{}) {
+		t.Fatal("shared createsDuplicates() must keep default false for Split validation")
 	}
 }

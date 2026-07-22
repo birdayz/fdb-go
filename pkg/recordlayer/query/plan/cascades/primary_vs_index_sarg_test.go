@@ -48,6 +48,22 @@ func TestSargComparisonEqual_StructuralIdentity(t *testing.T) {
 	if sargComparisonEqual(a, b) {
 		t.Fatal("correlated operands over different aliases must NOT be equal (alias-sensitive)")
 	}
+
+	// Unary comparisons (IS NULL) ignore the comparand — two IS NULLs are equal
+	// regardless of any (semantically-absent) operand.
+	null1 := &predicates.Comparison{Type: predicates.ComparisonIsNull, Operand: values.LiteralValue(int64(1))}
+	null2 := &predicates.Comparison{Type: predicates.ComparisonIsNull, Operand: values.LiteralValue(int64(99))}
+	if !sargComparisonEqual(null1, null2) {
+		t.Fatal("unary IS NULL comparisons must be equal (comparand semantically ignored)")
+	}
+
+	// A text-search variant identity field (tokenizer) distinguishes otherwise-
+	// identical comparisons.
+	tokA := &predicates.Comparison{Type: predicates.ComparisonTextContainsAll, TextTokenizerName: "std"}
+	tokB := &predicates.Comparison{Type: predicates.ComparisonTextContainsAll, TextTokenizerName: "ngram"}
+	if sargComparisonEqual(tokA, tokB) {
+		t.Fatal("different text tokenizer must NOT be equal (variant identity field)")
+	}
 }
 
 // TestSargSubset pins the "index SARGs strictly more" predicate: prefer the

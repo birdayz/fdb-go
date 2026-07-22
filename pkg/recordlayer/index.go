@@ -70,12 +70,14 @@ type IndexPredicate func(msg proto.Message) bool
 // repeated/collection field). Ports Java's
 // index.getRootExpression().createsDuplicates(); such an index does NOT produce
 // distinct records (DistinctRecordsProperty). Returns false when the root
-// expression is unset.
+// expression is unset. FAILS CLOSED (conservatively duplicating) for an
+// UNRECOGNIZED root type so the M4 DistinctRecords signal never mis-reports an
+// unknown-fan-out index as distinct (which would elide a required DISTINCT).
 func (i *Index) CreatesDuplicates() bool {
 	if i.RootExpression == nil {
 		return false
 	}
-	return createsDuplicates(i.RootExpression)
+	return createsDuplicatesRec(i.RootExpression, true)
 }
 
 type Index struct {
