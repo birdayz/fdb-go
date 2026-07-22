@@ -109,6 +109,33 @@ func TestColumnNamePathsEqual(t *testing.T) {
 	}
 }
 
+func TestAccessorNamePathKey(t *testing.T) {
+	t.Parallel()
+	// Nested and top-level same-leaf keys must produce DIFFERENT keys (so a
+	// path-keyed set distinguishes them), while equal columns produce the same
+	// key — and the key agrees with ColumnNamePathsEqual.
+	nestedK, ok := AccessorNamePathKey(lazyNested("addr", "city"))
+	if !ok {
+		t.Fatal("nested addr.city produced no path key")
+	}
+	flatK, ok := AccessorNamePathKey(lazyFlat("city"))
+	if !ok {
+		t.Fatal("flat city produced no path key")
+	}
+	if nestedK == flatK {
+		t.Fatal("nested addr.city and top-level city produced the same path key")
+	}
+	// Equal ⟹ same key (baked and lazy over the same column agree).
+	bakedK, _ := AccessorNamePathKey(bakedSingle("city", 4))
+	if bakedK != flatK {
+		t.Fatalf("baked and lazy city produced different keys (%q vs %q)", bakedK, flatK)
+	}
+	// Ambiguous form (c) and pure-ordinal yield no key.
+	if _, ok := AccessorNamePathKey(lazyFlat("addr.city")); ok {
+		t.Fatal("flat-dotted form c produced a path key (should be ok=false)")
+	}
+}
+
 func TestAccessorNamePathMatchesNames(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

@@ -229,6 +229,7 @@ go_test(
         "fuzz_cte_test.go",
         "graph_expansion_test.go",
         "group_by_mappings_test.go",
+        "groupby_column_identity_test.go",
         "index_expansion_test.go",
         "index_test_plan_context_test.go",
         "intersector_primary_key_test.go",
@@ -804,6 +805,7 @@ go_test(
         "rule_ordered_scan_column_identity_test.go",
         "expression_partition_column_identity_test.go",
         "aggregate_column_identity_test.go",
+        "groupby_column_identity_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

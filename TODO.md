@@ -136,7 +136,7 @@ both match sides are baked and match-domain identity collapses into Java's `Fiel
 identity — the true-parity endgame, entangled with RFC-173.
 
 Progress (branch feat/rfc187-column-identity-matching): [x] primitive [x] S1 [x] S2/S3 [x] S6
-[x] S4/S5/S8; remaining [ ] S7/S9/S10 [ ] milestone review lap + stress/determinism.
+[x] S4/S5/S8 [x] S7/S9/S10 (all 10 sites done); remaining [ ] milestone review lap + stress/determinism.
 
 ### [ ] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate
 `rule_remove_range_one.go:52,68` gates deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;

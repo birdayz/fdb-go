@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -201,15 +199,10 @@ func orderingSatisfiesGroupingKeys(o properties.Ordering, groupingKeys []values.
 		return false
 	}
 	for i, gk := range groupingKeys {
-		fv, ok := gk.(*values.FieldValue)
-		if !ok {
-			return false
-		}
-		oFV, ok := o.Keys[i].(*values.FieldValue)
-		if !ok {
-			return false
-		}
-		if !strings.EqualFold(fv.Field, oFV.Field) {
+		// Compare grouping key and ordering key by full accessor path, not leaf
+		// name (RFC-187 S10): a nested grouping key is not satisfied by an
+		// ordering on a same-leaf-named top-level column.
+		if !values.ColumnNamePathsEqual(gk, o.Keys[i]) {
 			return false
 		}
 	}

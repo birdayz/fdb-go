@@ -119,6 +119,20 @@ func ColumnNamePathsEqual(a, b Value) bool {
 	return true
 }
 
+// AccessorNamePathKey returns a canonical map key for a column reference's
+// accessor path (the path segments joined with a NUL separator), or ok=false
+// when the path cannot be established (AccessorNamePath !ok). It is the
+// map-keyed form of column identity: two references produce the same key iff
+// ColumnNamePathsEqual reports them equal, so a set keyed by this string
+// distinguishes a nested addr.city from a same-leaf-named top-level city.
+func AccessorNamePathKey(v Value) (string, bool) {
+	path, ok := AccessorNamePath(v)
+	if !ok {
+		return "", false
+	}
+	return strings.Join(path, "\x00"), true
+}
+
 // AccessorNamePathMatchesNames reports whether v's accessor name path equals the
 // given candidate name path (already UPPER-cased accessor names, root→leaf). It
 // is the value↔declared-path form used by the sites whose candidate side is a
