@@ -60,12 +60,12 @@ func (r *OrderedPrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 	matches := true
 	reverse := false
 	for i, sk := range sortKeys {
-		fv, ok := sk.Value.(*values.FieldValue)
-		if !ok {
-			matches = false
-			break
-		}
-		if !eqFold(fv.Field, pkCols[i]) {
+		// Match the sort key's full accessor path against the declared PK
+		// column, not its leaf name — so a nested sort key `addr.city` never
+		// binds a same-leaf-named top-level PK column `city` (RFC-187). A
+		// non-FieldValue / ambiguous sort key path fails to match (correct rows
+		// via a materialized sort).
+		if !values.AccessorNamePathMatchesNames(sk.Value, []string{pkCols[i]}) {
 			matches = false
 			break
 		}

@@ -345,6 +345,7 @@ go_test(
         "rule_noop_limit_elim_test.go",
         "rule_normalize_predicates_test.go",
         "rule_ordered_index_scan_test.go",
+        "rule_ordered_scan_column_identity_test.go",
         "rule_partition_binary_select_test.go",
         "rule_partition_select_singleton_guard_test.go",
         "rule_partition_select_test.go",
@@ -798,6 +799,7 @@ go_test(
         "rewriting_final_invariant_test.go",
         "rfc186_pk_gate_test.go",
         "rule_match_intermediate_column_identity_test.go",
+        "rule_ordered_scan_column_identity_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
