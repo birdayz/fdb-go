@@ -904,16 +904,17 @@ func createsDuplicates(expr KeyExpression) bool {
 		}
 		return false
 	default:
-		// FAIL CLOSED: every standard KeyExpression that can be an index root
-		// has an explicit arm above. An UNRECOGNIZED (custom / externally
-		// implemented) expression whose fan-out we cannot determine is treated
-		// conservatively as DUPLICATING — so a consumer (e.g. the M4
-		// DistinctRecords signal, index.CreatesDuplicates) never mis-classifies
-		// an unknown fan-out expression as distinct and elides a required
-		// DISTINCT. Java sidesteps this by making createsDuplicates() an abstract
-		// method every subclass must implement; the exhaustive-switch analog
-		// fails closed on the residual default.
-		return true
+		// Unrecognized (custom / externally implemented) expression. Returns
+		// false to preserve master behavior for the OTHER caller,
+		// validateSplitKeyExpression, which uses createsDuplicates as POSITIVE
+		// proof ("must produce multiple values") — a fail-closed `true` here
+		// would wrongly ADMIT Split(customScalar) that master rejects. Every
+		// standard KeyExpression that can be an index root has an explicit arm
+		// above, so this default is unreachable via proto/SQL metadata. The M4
+		// DistinctRecords signal's separate need — fail closed to not-distinct
+		// for an unknown index root — must therefore be handled at the
+		// index.CreatesDuplicates level, not this shared default (booked).
+		return false
 	}
 }
 

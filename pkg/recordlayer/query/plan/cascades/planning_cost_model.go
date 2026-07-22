@@ -963,12 +963,12 @@ func comparePrimaryScanVsIndexScan(a, b expressions.RelationalExpression, opsA, 
 // see RFC-188 §2), i.e. prefer the primary scan.
 func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpression, opsPrimary, opsIndex expressionCounts) int {
 	if opsPrimary.typeFilterCount > 0 && opsIndex.typeFilterCount == 0 {
-		primaryComparisons := scanSargComparisonSet(primaryScan)
-		indexComparisons := scanSargComparisonSet(indexScan)
+		primaryComparisons := scanSargComparisons(primaryScan)
+		indexComparisons := scanSargComparisons(indexScan)
 		// primary − index empty AND index − primary non-empty ⇒ the index
 		// SARGs everything the primary does plus more, without a type filter.
-		if setDifferenceEmpty(primaryComparisons, indexComparisons) &&
-			!setDifferenceEmpty(indexComparisons, primaryComparisons) {
+		if sargSubset(primaryComparisons, indexComparisons) &&
+			!sargSubset(indexComparisons, primaryComparisons) {
 			return 1 // prefer the index scan
 		}
 	}
@@ -976,14 +976,10 @@ func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpressi
 	return -1
 }
 
-// scanSargComparisonSet collects the BARE SARG comparisons (comparison type +
-// comparand only; the column/field is implicit in ScanComparisons position and
-// is deliberately EXCLUDED) from every scan/index plan in e's CONCRETE plan
-// tree. This mirrors Java's ComparisonsProperty, whose value is a
-// Set<Comparisons.Comparison> keyed by the bare comparison, so equal comparisons
-// at different positions collapse to one element. Keying by column would make
-// the set difference non-empty where Java's is empty and fire the sub-case on
-// the wrong queries.
+// scanSargComparisons collects the BARE SARG comparisons (compared by Comparison
+// identity — type/comparand/escape/parameter — NOT by column, which is implicit
+// in ScanComparisons position) from every scan/index plan in e's CONCRETE plan
+// tree. Mirrors Java's ComparisonsProperty (a Set<Comparisons.Comparison>).
 //
 // It unwraps to the concrete RecordQueryPlan (GetRecordQueryPlan) and walks it
 // via GetChildren — the production scanPlanExpression / TypeFilter(Scan) wrapper
@@ -991,17 +987,22 @@ func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpressi
 // findExpressionsByType unwrap), so an expression-level walk would miss the
 // nested scan's SARGs and make the primary set spuriously empty, firing the
 // sub-case whenever the index has any SARG (e.g. demoting a PK point lookup).
-func scanSargComparisonSet(e expressions.RelationalExpression) map[string]struct{} {
-	set := map[string]struct{}{}
+//
+// Comparisons are compared by structural equality (sargComparisonEqual), NOT a
+// rendered/hashed key: display text collides distinct constants (int64(1) vs
+// float64(1)) and an alias-blind hash collides correlated composite-key SARGs
+// (k1=outerA.id vs k2=outerB.id).
+func scanSargComparisons(e expressions.RelationalExpression) []*predicates.Comparison {
+	var out []*predicates.Comparison
 	if ph, ok := e.(physicalPlanExpression); ok {
 		if plan := ph.GetRecordQueryPlan(); plan != nil {
-			collectPlanSargComparisons(plan, set)
+			collectPlanSargComparisons(plan, &out)
 		}
 	}
-	return set
+	return out
 }
 
-func collectPlanSargComparisons(p plans.RecordQueryPlan, set map[string]struct{}) {
+func collectPlanSargComparisons(p plans.RecordQueryPlan, out *[]*predicates.Comparison) {
 	if p == nil {
 		return
 	}
@@ -1016,44 +1017,48 @@ func collectPlanSargComparisons(p plans.RecordQueryPlan, set map[string]struct{}
 		switch {
 		case r.IsEquality():
 			if eq := r.GetEqualityComparison(); eq != nil {
-				set[comparisonSetKey(eq)] = struct{}{}
+				*out = append(*out, eq)
 			}
 		case r.IsInequality():
-			for _, ineq := range r.GetInequalityComparisons() {
-				set[comparisonSetKey(ineq)] = struct{}{}
-			}
+			*out = append(*out, r.GetInequalityComparisons()...)
 		}
 	}
 	for _, c := range p.GetChildren() {
-		collectPlanSargComparisons(c, set)
+		collectPlanSargComparisons(c, out)
 	}
 }
 
-// comparisonSetKey renders a comparison's identity as Java's Comparison.equals
-// does — by type and comparand (and the parameter name for parameter-bound
-// comparisons) — with NO column/position component.
-func comparisonSetKey(c *predicates.Comparison) string {
-	// Key by the comparison's STRUCTURAL identity (type + comparand + param),
-	// mirroring Java Comparison.equals. Use the operand's SemanticHashCode, not
-	// its ExplainValue display text: distinct constants can render identically
-	// (int64(1) vs float64(1) → "1"; unsupported constants collapse to "?"), and
-	// a text collision would make the sub-case's Sets.difference treat different
-	// comparands as equal — spuriously reporting a strict SARG superset.
-	operand := "nil"
-	if c.Operand != nil {
-		operand = fmt.Sprintf("%x", values.SemanticHashCode(c.Operand))
-	}
-	return fmt.Sprintf("%d|%s|%s", int(c.Type), operand, c.ParameterName)
-}
-
-// setDifferenceEmpty reports whether a − b is empty (every key of a is in b).
-func setDifferenceEmpty(a, b map[string]struct{}) bool {
-	for k := range a {
-		if _, ok := b[k]; !ok {
+// sargSubset reports whether every comparison in sub also appears in super
+// (i.e. sub − super is empty), by full Comparison identity.
+func sargSubset(sub, super []*predicates.Comparison) bool {
+	for _, c := range sub {
+		found := false
+		for _, s := range super {
+			if sargComparisonEqual(c, s) {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return false
 		}
 	}
 	return true
+}
+
+// sargComparisonEqual is the structural identity of a scan comparison, the
+// analog of Java Comparisons.Comparison.equals — type + comparand (via the
+// alias-SENSITIVE ValuesStructurallyEqual, so k1=outerA.id and k2=outerB.id are
+// distinct) + escape + parameter name. NO column/position component (that is
+// implicit in ScanComparisons position and deliberately excluded).
+func sargComparisonEqual(a, b *predicates.Comparison) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Type == b.Type &&
+		a.Escape == b.Escape &&
+		a.ParameterName == b.ParameterName &&
+		values.ValuesStructurallyEqual(a.Operand, b.Operand)
 }
 
 // isSingularIndexScanWithFetch matches Java's check: a single index scan

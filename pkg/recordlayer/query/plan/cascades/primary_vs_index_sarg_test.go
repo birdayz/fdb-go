@@ -7,73 +7,81 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// TestComparisonSetKey_BareComparisonIdentity pins RFC-188 finding 3: the SARG
-// comparison set is keyed by the BARE comparison (type + comparand), never by
-// column/position — Java's ComparisonsProperty is a Set<Comparisons.Comparison>
-// and Comparison.equals ignores the field, which is implicit in the
-// ScanComparisons position. Keying by column would make Sets.difference
-// non-empty where Java's is empty and fire the sub-case on the wrong queries.
-func TestComparisonSetKey_BareComparisonIdentity(t *testing.T) {
+func eqComp(op values.Value) *predicates.Comparison {
+	return &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: op}
+}
+
+// TestSargComparisonEqual_StructuralIdentity pins RFC-188 finding 3: the SARG
+// set compares by BARE Comparison identity (type + comparand + escape + param),
+// the analog of Java Comparisons.Comparison.equals — NOT rendered text or an
+// alias-blind hash. Distinct constants that render alike (int64(1) vs float64(1))
+// and correlated composite-key operands with the same structure but different
+// aliases must NOT be treated as equal.
+func TestSargComparisonEqual_StructuralIdentity(t *testing.T) {
 	t.Parallel()
 
-	eq5a := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))}
-	eq5b := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))}
-	eq7 := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(7))}
+	if !sargComparisonEqual(eqComp(values.LiteralValue(int64(5))), eqComp(values.LiteralValue(int64(5)))) {
+		t.Fatal("same type + comparand must be equal")
+	}
+	if sargComparisonEqual(eqComp(values.LiteralValue(int64(5))), eqComp(values.LiteralValue(int64(7)))) {
+		t.Fatal("different comparand must NOT be equal")
+	}
+	// int64(1) vs float64(1): render identically ("1") but are different
+	// comparands — must not collide.
+	if sargComparisonEqual(eqComp(values.LiteralValue(int64(1))), eqComp(values.LiteralValue(float64(1)))) {
+		t.Fatal("int64(1) and float64(1) must NOT be equal (structural, not display text)")
+	}
+	// Different comparison type.
 	gt5 := &predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(5))}
-
-	if comparisonSetKey(eq5a) != comparisonSetKey(eq5b) {
-		t.Fatal("same type+comparand produced different keys — set membership would double-count")
+	if sargComparisonEqual(eqComp(values.LiteralValue(int64(5))), gt5) {
+		t.Fatal("different comparison type must NOT be equal")
 	}
-	if comparisonSetKey(eq5a) == comparisonSetKey(eq7) {
-		t.Fatal("different comparand collapsed to the same key")
+	// Different Escape — a Comparison identity field that a type+comparand key omits.
+	esc := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5)), Escape: '\\'}
+	if sargComparisonEqual(eqComp(values.LiteralValue(int64(5))), esc) {
+		t.Fatal("different Escape must NOT be equal")
 	}
-	if comparisonSetKey(eq5a) == comparisonSetKey(gt5) {
-		t.Fatal("different comparison type collapsed to the same key")
-	}
-
-	// STRUCTURAL identity, not display text: int64(1) and float64(1) both render
-	// as "1" via ExplainValue but are different comparands (Java Comparison.equals
-	// distinguishes them). A text collision would make Sets.difference treat them
-	// as equal and spuriously report a strict SARG superset.
-	eqInt1 := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))}
-	eqFloat1 := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(float64(1))}
-	if comparisonSetKey(eqInt1) == comparisonSetKey(eqFloat1) {
-		t.Fatal("int64(1) and float64(1) collapsed to the same comparison key (text collision, not structural)")
+	// Correlated operands over DIFFERENT quantifier aliases must NOT be equal
+	// (ValuesStructurallyEqual is alias-sensitive).
+	a := eqComp(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("OUTERA")))
+	b := eqComp(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("OUTERB")))
+	if sargComparisonEqual(a, b) {
+		t.Fatal("correlated operands over different aliases must NOT be equal (alias-sensitive)")
 	}
 }
 
-// TestSetDifferenceEmpty pins the "index SARGs strictly more" predicate: the
-// sub-case prefers the index iff (primary − index) is empty AND (index −
-// primary) is non-empty.
-func TestSetDifferenceEmpty(t *testing.T) {
+// TestSargSubset pins the "index SARGs strictly more" predicate: prefer the
+// index iff (primary − index) is empty AND (index − primary) is non-empty.
+func TestSargSubset(t *testing.T) {
 	t.Parallel()
 
-	key := func(op int64, typ predicates.ComparisonType) string {
-		return comparisonSetKey(&predicates.Comparison{Type: typ, Operand: values.LiteralValue(op)})
-	}
-	pk := key(1, predicates.ComparisonEquals)    // shared: pk = ?
-	rt := key(99, predicates.ComparisonEquals)   // index-only: recordType = ?
-	extra := key(2, predicates.ComparisonEquals) // primary-only
+	pk := eqComp(values.LiteralValue(int64(1)))    // shared
+	rt := eqComp(values.LiteralValue(int64(99)))   // index-only
+	extra := eqComp(values.LiteralValue(int64(2))) // primary-only
 
-	primary := map[string]struct{}{pk: {}}
-	index := map[string]struct{}{pk: {}, rt: {}}
+	primary := []*predicates.Comparison{pk}
+	index := []*predicates.Comparison{pk, rt}
 
-	// The index has everything the primary has (pk) plus more (rt): prefer index.
-	if !setDifferenceEmpty(primary, index) {
-		t.Fatal("primary − index should be empty (index covers pk)")
+	// Index has everything the primary has (pk) plus more (rt) → strict superset.
+	if !sargSubset(primary, index) {
+		t.Fatal("primary ⊆ index should hold (index covers pk)")
 	}
-	if setDifferenceEmpty(index, primary) {
-		t.Fatal("index − primary should be NON-empty (rt is index-only)")
+	if sargSubset(index, primary) {
+		t.Fatal("index ⊄ primary should hold (rt is index-only)")
 	}
 
-	// Primary has an extra SARG the index lacks: sub-case must NOT fire.
-	primaryExtra := map[string]struct{}{pk: {}, extra: {}}
-	if setDifferenceEmpty(primaryExtra, index) {
-		t.Fatal("primary − index should be non-empty when primary has an extra SARG")
+	// Primary has an extra SARG the index lacks → not a superset.
+	primaryExtra := []*predicates.Comparison{pk, extra}
+	if sargSubset(primaryExtra, index) {
+		t.Fatal("primaryExtra ⊄ index (extra is primary-only)")
 	}
 
-	// Identical sets: neither difference non-empty → sub-case does not fire.
-	if !setDifferenceEmpty(index, index) || !setDifferenceEmpty(primary, primary) {
-		t.Fatal("a − a must be empty")
+	// Identical sets ⊆ each other.
+	if !sargSubset(index, index) || !sargSubset(primary, primary) {
+		t.Fatal("a ⊆ a must hold")
+	}
+	// Empty is a subset of anything.
+	if !sargSubset(nil, index) {
+		t.Fatal("∅ ⊆ index must hold")
 	}
 }

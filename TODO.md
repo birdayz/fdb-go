@@ -281,6 +281,16 @@ optimization surface that needs its own validation (row-level + EXPLAIN review o
 + reviewer sign-off), not a milestone-end add. The distinct/PK/cardinality Fetch-transparency arms
 already landed (safe, zero-flip); this is the storedRecord arm that turns them on.
 
+### [ ] Finding 10-M4-followup-2 — fail-closed distinct for an UNKNOWN index-root key expression (codex)
+`createsDuplicates`'s default returns false (shared with `validateSplitKeyExpression`, which uses it as
+POSITIVE proof — a fail-closed `true` there wrongly admits `Split(customScalar)` that master rejects). So
+an index whose RootExpression is an UNRECOGNIZED (custom/external) KeyExpression is stamped known
+non-fan-out → M4 distinct=true (theoretically unsafe). NOT reachable today: every proto/SQL index root is
+a recognized type. The M4 fail-closed need must be DECOUPLED from the shared default — e.g.
+`index.CreatesDuplicates()` (or `metadataIndexDef.IndexCreatesDuplicates`) returns UNKNOWN (→ don't stamp
+→ distinct=false, safe) for a root type not in the recognized set, without touching the Split-validation
+default. Or add fan-out to the KeyExpression interface contract (Java's approach: abstract method).
+
 ### [ ] Finding 10-M3-followup — recognize equality-bound primary scans in the outer guard (codex P2)
 `wholePlanMaxCardinalityKnown` uses `computeCardinalities`, whose `RecordQueryScanPlan` arm always returns
 `UnknownMaxCardinality` — so a full-PK-equality primary scan (a point lookup, max=1, which

@@ -53,12 +53,14 @@ func TestIndex_CreatesDuplicates(t *testing.T) {
 		t.Fatal("LiteralKeyExpression must not create duplicates")
 	}
 
-	// FAIL CLOSED: an UNRECOGNIZED (custom/external) key expression whose fan-out
-	// cannot be determined must be treated conservatively as DUPLICATING, so the
-	// M4 DistinctRecords signal never mis-classifies it as distinct.
-	// customKeyExpression (bug_bounty_test.go) stands in for such a type — the
-	// createsDuplicates switch has no arm for it, so it hits the fail-closed default.
-	if !(&Index{Name: "idx_custom", RootExpression: &customKeyExpression{}}).CreatesDuplicates() {
-		t.Fatal("unrecognized key expression must FAIL CLOSED to creates-duplicates=true")
+	// An UNRECOGNIZED (custom/external) key expression hits the default → false,
+	// matching master and the SplitKeyExpression validator (which uses
+	// createsDuplicates as positive proof — a fail-closed `true` here would
+	// wrongly admit Split(customScalar)). The M4 DistinctRecords signal's
+	// separate fail-closed need for an unknown INDEX ROOT is booked to
+	// index.CreatesDuplicates, not this shared function. customKeyExpression
+	// (bug_bounty_test.go) stands in for such a type.
+	if (&Index{Name: "idx_custom", RootExpression: &customKeyExpression{}}).CreatesDuplicates() {
+		t.Fatal("unrecognized key expression must default to false (shared with Split validation)")
 	}
 }
