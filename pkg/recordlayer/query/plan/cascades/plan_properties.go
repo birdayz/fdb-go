@@ -62,11 +62,14 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 	case *plans.RecordQueryScanPlan:
 		return true
 	case *plans.RecordQueryIndexPlan:
-		// The index scan is its own physical expression now (RFC-184 W2) — its
-		// UNIQUE flag lives on the plan. A unique index scan produces distinct
-		// records (each index entry maps to one record).
+		// Java DistinctRecordsProperty.visitIndexPlan: distinct iff the match
+		// candidate did NOT create duplicates (empty candidate → false). NOT the
+		// UNIQUE flag — a non-unique SCALAR index does not create duplicates and
+		// so produces distinct records; only a fan-out index does not. The
+		// candidate's createsDuplicates signal is stamped onto the plan at
+		// build time (WithDistinctRecordsSignal).
 		if ip, ok := plan.(*plans.RecordQueryIndexPlan); ok {
-			return ip.IsUnique()
+			return ip.ProducesDistinctRecords()
 		}
 		return false
 	case *plans.RecordQueryProjectionPlan:

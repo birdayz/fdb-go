@@ -384,7 +384,7 @@ func DataAccessForMatchPartition(
 		// data-access scan look non-unique/unordered, so a non-unique
 		// index could beat the unique one and sorts weren't eliminated.
 		unique := candidateUnique(cand)
-		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering, coveringCols, unique, cand.GetColumnNames(), candidatePKColumns(cand))
+		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering, coveringCols, unique, cand.GetColumnNames(), candidatePKColumns(cand), candidateDistinctSignal(cand))
 
 		if comp.IsNeeded() {
 			if fmc, ok := comp.(*ForMatchCompensation); ok {
@@ -452,7 +452,22 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 	if cand == nil || idxPlan == nil {
 		return idxPlan
 	}
-	return idxPlan.WithIndexMetadata(cand.GetColumnNames(), candidatePKColumns(cand), candidateUnique(cand))
+	stamped := idxPlan.WithIndexMetadata(cand.GetColumnNames(), candidatePKColumns(cand), candidateUnique(cand))
+	if sig := candidateDistinctSignal(cand); sig != nil {
+		stamped = stamped.WithDistinctRecordsSignal(*sig)
+	}
+	return stamped
+}
+
+// candidateDistinctSignal returns the candidate's createsDuplicates fan-out
+// signal for the DistinctRecords property, or nil when the candidate does not
+// expose one (Java's empty-candidate default → the plan stays not-distinct).
+func candidateDistinctSignal(cand MatchCandidate) *bool {
+	if dup, ok := cand.(interface{ CreatesDuplicates() bool }); ok {
+		v := dup.CreatesDuplicates()
+		return &v
+	}
+	return nil
 }
 
 func candidatePKColumns(cand MatchCandidate) []string {
@@ -470,7 +485,7 @@ func candidatePKColumns(cand MatchCandidate) []string {
 func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) expressions.RelationalExpression {
 	cand := access.GetPartialMatch().GetMatchCandidate()
 	unique, columnNames := candidateScanProps(cand)
-	return wrapScanPlanWithCoverage(plan, false, nil, unique, columnNames, candidatePKColumns(cand))
+	return wrapScanPlanWithCoverage(plan, false, nil, unique, columnNames, candidatePKColumns(cand), candidateDistinctSignal(cand))
 }
 
 // wrapScanPlanWithCoverage wraps a scan plan as the properly-typed physical
@@ -495,7 +510,7 @@ func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) exp
 //
 // For a bare IndexScan (no Fetch — e.g. a primary scan) isCovering IS applied
 // directly, since there is no fetch to defer to.
-func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, coveringColumns []string, unique bool, columnNames []string, pkColumnNames []string) expressions.RelationalExpression {
+func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, coveringColumns []string, unique bool, columnNames []string, pkColumnNames []string, distinctSignal *bool) expressions.RelationalExpression {
 	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
 			// Covering is decided downstream by MergeProjectionAndFetchRule (see
@@ -504,6 +519,9 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 			// The index scan is its own cascades expression now (RFC-184 W2) — a bare
 			// leaf carrying its index metadata (columns/pk/unique) on the plan.
 			idxLeaf := innerIdx.WithIndexMetadata(columnNames, pkColumnNames, unique)
+			if distinctSignal != nil {
+				idxLeaf = idxLeaf.WithDistinctRecordsSignal(*distinctSignal)
+			}
 			idxRef := expressions.InitialOf(idxLeaf)
 			fetchQ := expressions.ForEachQuantifier(idxRef)
 			// The fetch is its own cascades expression carrying the live idxRef
@@ -524,7 +542,11 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 		// covering flag lives on the plan (WithCovering above); index metadata
 		// (columns/pk/unique) is threaded onto the plan so its HintRichOrdering and
 		// the cost model read the same facts the wrapper used to carry separately.
-		return idxPlan.WithIndexMetadata(columnNames, pkColumnNames, unique)
+		idxPlan = idxPlan.WithIndexMetadata(columnNames, pkColumnNames, unique)
+		if distinctSignal != nil {
+			idxPlan = idxPlan.WithDistinctRecordsSignal(*distinctSignal)
+		}
+		return idxPlan
 	}
 	if vecPlan, ok := plan.(*plans.RecordQueryVectorIndexPlan); ok {
 		// The vector scan is its own Cascades expression now (RFC-184 W2) — a bare

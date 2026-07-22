@@ -228,8 +228,14 @@ result value appears → wrong projection. `PullUpValues(parts, m.candidateValue
   `TestConcretePlanCounts_DefaultOnEmpty`. Explain-diff: no corpus flip (faithful port, latent-gap fix).
 - [ ] M3: criterion #2 lacks Java's whole-plan-cardinality OUTER guard (`PlanningCostModel:121`) → decides
   on data-access cardinality where Java abstains.
-- [ ] M4: `plan_properties.go:64` DistinctRecords for index uses `IsUnique()` not Java's `!createsDuplicates()`
-  → misses DISTINCT elision over non-unique scalar-index scans.
+- [x] M4: DistinctRecords for index — DONE. `computeDistinctRecords` now returns
+  `!matchCandidate.createsDuplicates()` (Java `DistinctRecordsProperty.visitIndexPlan`), not `IsUnique()`.
+  Plumbed the candidate fan-out signal onto `RecordQueryIndexPlan` (`createsDuplicates` +
+  `distinctRecordsKnown` fields, `WithDistinctRecordsSignal`, `ProducesDistinctRecords`), stamped at all
+  production index-plan build sites (stampIndexMetadata, wrapScanPlanWithCoverage×2, streaming-agg,
+  ordered-index-scan) via `candidateDistinctSignal`. Empty-candidate → false (Java default). A non-unique
+  SCALAR index is now correctly distinct. Pin: `TestComputeDistinctRecords_IndexFanOutSignal` (4 cases).
+  Explain-diff: no corpus flip (latent DISTINCT-elision gap, not hit by corpus).
 - [x] M5: PrimaryKey for index scans — DONE. `computePrimaryKey` now returns FieldValues over the index's
   `GetPKColumnNames()` (Java `PrimaryKeyProperty.visitIndexPlan`) — the SAME representation the primary
   scan uses, so `commonPKFromChildren` matches a scan child against an index child over the same table.
