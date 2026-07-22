@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -118,23 +116,26 @@ func synthesizeGroupByOrdering(reqOrd *properties.RequestedOrdering, groupingKey
 	}
 	groupKeyMap := make(map[string]groupKeyEntry, len(groupingKeys))
 	for i, gk := range groupingKeys {
-		fv, ok := gk.(*values.FieldValue)
+		// Key by full accessor path, not leaf name (RFC-187 S9): a nested
+		// grouping key must not be satisfied by an ordering on a same-leaf-named
+		// top-level column.
+		key, ok := values.AccessorNamePathKey(gk)
 		if !ok {
-			// Non-FieldValue grouping key — can't match ordering parts.
+			// Non-column / ambiguous grouping key — can't match ordering parts.
 			return nil
 		}
-		groupKeyMap[strings.ToUpper(fv.Field)] = groupKeyEntry{index: i, value: gk}
+		groupKeyMap[key] = groupKeyEntry{index: i, value: gk}
 	}
 
 	consumed := make([]bool, len(groupingKeys))
 	parts := make([]properties.RequestedOrderingPart, 0, len(groupingKeys))
 
 	for _, p := range reqOrd.GetParts() {
-		fv, ok := p.Value.(*values.FieldValue)
+		key, ok := values.AccessorNamePathKey(p.Value)
 		if !ok {
 			return nil
 		}
-		entry, found := groupKeyMap[strings.ToUpper(fv.Field)]
+		entry, found := groupKeyMap[key]
 		if !found {
 			// Ordering part doesn't match any grouping key — incompatible.
 			return nil

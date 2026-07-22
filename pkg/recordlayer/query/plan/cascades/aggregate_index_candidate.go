@@ -122,11 +122,7 @@ func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExp
 		return false
 	}
 	for i, k := range keys {
-		fv, ok := k.(*values.FieldValue)
-		if !ok {
-			return false
-		}
-		if !eqFold(fv.Field, c.groupCols[i]) {
+		if !aggColumnMatches(k, c.groupCols[i]) {
 			return false
 		}
 	}
@@ -144,17 +140,9 @@ func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExp
 		if expressions.IsCountStar(aggs[0]) {
 			return c.aggColumn == ""
 		}
-		opFV, ok := aggs[0].Operand.(*values.FieldValue)
-		if !ok {
-			return false
-		}
-		return c.aggColumn != "" && eqFold(opFV.Field, c.aggColumn)
+		return c.aggColumn != "" && aggColumnMatches(aggs[0].Operand, c.aggColumn)
 	}
-	opFV, ok := aggs[0].Operand.(*values.FieldValue)
-	if !ok {
-		return false
-	}
-	return eqFold(opFV.Field, c.aggColumn)
+	return aggColumnMatches(aggs[0].Operand, c.aggColumn)
 }
 
 // MatchesSingleAggregateOf reports whether this candidate's grouping
@@ -168,11 +156,7 @@ func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.
 		return false
 	}
 	for i, k := range keys {
-		fv, ok := k.(*values.FieldValue)
-		if !ok {
-			return false
-		}
-		if !eqFold(fv.Field, c.groupCols[i]) {
+		if !aggColumnMatches(k, c.groupCols[i]) {
 			return false
 		}
 	}
@@ -191,17 +175,22 @@ func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.
 		if expressions.IsCountStar(agg) {
 			return c.aggColumn == ""
 		}
-		opFV, ok := agg.Operand.(*values.FieldValue)
-		if !ok {
-			return false
-		}
-		return c.aggColumn != "" && eqFold(opFV.Field, c.aggColumn)
+		return c.aggColumn != "" && aggColumnMatches(agg.Operand, c.aggColumn)
 	}
-	opFV, ok := agg.Operand.(*values.FieldValue)
-	if !ok {
-		return false
-	}
-	return eqFold(opFV.Field, c.aggColumn)
+	return aggColumnMatches(agg.Operand, c.aggColumn)
+}
+
+// aggColumnMatches reports whether a query grouping-key / aggregate-operand
+// value denotes the aggregate index's declared column `col` — by full accessor
+// PATH, not leaf name, so a nested `addr.city` grouping key never matches a
+// same-leaf-named top-level `city` aggregate index (RFC-187 S4/S5/S8). The
+// candidate carries single top-level column names today, so a multi-accessor
+// (nested) query path does not match and the query falls back to a base-record
+// StreamingAgg (correct rows, slower) — the transitional reject-nested until the
+// candidate exposes real nested column paths end-to-end (construction, index
+// expansion, and execution), tracked as the RFC-187 §3.2 follow-up.
+func aggColumnMatches(v values.Value, col string) bool {
+	return values.AccessorNamePathMatchesNames(v, []string{col})
 }
 
 var _ MatchCandidate = (*AggregateIndexMatchCandidate)(nil)

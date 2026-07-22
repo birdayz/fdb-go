@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -87,16 +85,15 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 // would be a lossy shortcut. A reference matching no key is returned unchanged.
 func rebindGroupKeyRefToInner(keys []values.Value) func(values.Value) values.Value {
 	return func(v values.Value) values.Value {
-		fv, ok := v.(*values.FieldValue)
-		if !ok {
+		if _, ok := v.(*values.FieldValue); !ok {
 			return v
 		}
+		// Match by full accessor path, not leaf name (RFC-187 S7): a predicate
+		// field is rebound to a grouping key only when they denote the same
+		// column, so a nested `addr.city` is not rewritten to a same-leaf-named
+		// top-level `city` grouping key.
 		for _, k := range keys {
-			kfv, isFV := k.(*values.FieldValue)
-			if !isFV {
-				continue
-			}
-			if strings.EqualFold(kfv.Field, fv.Field) {
+			if values.ColumnNamePathsEqual(k, v) {
 				return k
 			}
 		}
@@ -104,14 +101,18 @@ func rebindGroupKeyRefToInner(keys []values.Value) func(values.Value) values.Val
 	}
 }
 
+// buildGroupKeySet keys the grouping columns by their canonical accessor PATH
+// (RFC-187 S7), so predicate-pushdown membership distinguishes a nested
+// `addr.city` grouping key from a same-leaf-named top-level `city`. Returns nil
+// (pushdown disabled) if any grouping key's column identity can't be established.
 func buildGroupKeySet(keys []values.Value) map[string]struct{} {
 	m := make(map[string]struct{}, len(keys))
 	for _, k := range keys {
-		fv, ok := k.(*values.FieldValue)
+		key, ok := values.AccessorNamePathKey(k)
 		if !ok {
 			return nil
 		}
-		m[strings.ToUpper(fv.Field)] = struct{}{}
+		m[key] = struct{}{}
 	}
 	return m
 }
@@ -128,11 +129,11 @@ func predicateReferencesOnlyKeys(p predicates.QueryPredicate, keySet map[string]
 		// ComparisonPredicate on a grouping column is pushable (RFC-166).
 		return false
 	}
-	fv, ok := cp.Operand.(*values.FieldValue)
+	key, ok := values.AccessorNamePathKey(cp.Operand)
 	if !ok {
 		return false
 	}
-	if _, inKeys := keySet[strings.ToUpper(fv.Field)]; !inKeys {
+	if _, inKeys := keySet[key]; !inKeys {
 		return false
 	}
 	// The RHS comparand must ALSO reference only grouping keys / constants.
@@ -156,7 +157,11 @@ func comparandReferencesOnlyKeys(c predicates.Comparison, keySet map[string]stru
 	}
 	switch rhs := c.Operand.(type) {
 	case *values.FieldValue:
-		_, inKeys := keySet[strings.ToUpper(rhs.Field)]
+		key, ok := values.AccessorNamePathKey(rhs)
+		if !ok {
+			return false
+		}
+		_, inKeys := keySet[key]
 		return inKeys
 	case *values.ConstantValue, *values.NullValue, *values.BooleanValue:
 		return true

@@ -82,6 +82,153 @@ milestone review lap), each its own PR.
 
 ---
 
+## FINDINGS 2026-07-22 — Cascades engine quality review (owner-directed)
+
+Source: 2026-07-22 Cascades quality review — 5 parallel subsystem review agents (rules,
+matching/data-access, cost/properties, values/predicates, memo/tasks) + main-context
+verification. Every finding below was spot-checked against the code AND Java 4.12.11.0. The
+CORE (epoch termination, memo merge/cycle guards, 3-tier interning, `memoEqual` correlation
+guard, 3VL null logic, directional cost rungs) was traced and is SOUND — the defects are in
+the periphery/derivations.
+
+**Owner directive (2026-07-22): land finding A (leaf-name column matching) IN FULL —
+principles-first, no quick fixes: RFC → Graefe+Torvalds review → implement in full → review.
+A is the current focus; the rest are booked below in severity order. A is the planner-side
+analog of the RFC-173 fight (stop resolving columns by leaf name), on the index-match path.**
+
+### [x] A — SYSTEMIC: leaf-name column matching across the planner — DONE (RFC-187, all 10 sites)
+The same `strings.EqualFold(fv.Field, …)` / bare-leaf-name shortcut recurs, each ignoring the
+`FieldValue.Child` accessor chain — it binds/matches the WRONG column when a nested-path leaf
+name collides with a top-level (or differently-rooted) column of the same source. Violates the
+CLAUDE.md prime directive ("fix the resolution infrastructure — don't strip qualifiers with
+string hacks"). `buildTranslateValueFunction` (match_candidate_index.go:405) was hardened
+against exactly this collision; the rest were not. Sites:
+- `rule_match_intermediate.go:755` `valuesMatchColumn` FieldValue arm — **CRITICAL, wrong rows**
+  (finding 1): `WHERE addr.city='NYC'` binds as a sargable seek on a same-named top-level `city`
+  index, marked matched → no residual re-check → returns rows where top-level `city='NYC'`.
+- `aggregate_index_candidate.go:129,151,157,175,198,204` `MatchesGroupBy`/`MatchesSingleAggregateOf`
+  — `GROUP BY addr.city` / `COUNT(addr.city)` matches a top-level `city` aggregate index → wrong column.
+- `rule_aggregate_data_access.go:195` `groupColEqualityIndex` — group-key `WHERE addr.city='x'`
+  → AISCAN bound on top-level `city`.
+- `expression_partition.go:261` `orderingPartitionHash` — hashes `fv.Field` only, drops `fv.Child`;
+  `toPartitionsFromMap:218` groups hash-only (sibling RollUp path uses `ValuesStructurallyEqual`)
+  → same-leaf-name orderings from different sources collapse → sort elided → **wrong ORDER BY** (finding 4).
+- `rule_push_filter_through_groupby.go:107,135` + `rule_streaming_agg_from_index.go:80` — pushdown
+  eligibility by leaf name (documented "at worst leaks a duplicate").
+Root cause (proven, RFC-187 §2): match-time column identity is compared across a MIXED, MULTI
+representation — query qualified refs are resolver-BAKED (ordinal) while the candidate is LAZY,
+NAME-based by construction (`columnNames []string`, no ordinals), so raw `SemanticEqualsUnderAliasMap`
+binds nothing (baked≠lazy) and leaf-name `EqualFold` was the bridge. A nested ref also exists in 3
+forms (nested-Child, fused-baked, flat-dotted). Fix (Graefe-ACKed name-path, `rfcs/187-column-identity-matching.md`):
+one `values.AccessorNamePath`/`ColumnNamePathsEqual` primitive (full accessor NAME path, root-alias
+excluded, loud `ok=false` on pure-ordinal accessors) at ALL 10 sites S1-S10.
+Aggregate sites (S4/S5/S8) ship the TRANSITIONAL reject-nested via `aggColumnMatches` (query
+grouping-key/agg-operand compared by full path against the candidate's declared column): a nested
+query key does not match → base-record StreamingAgg (correct rows).
+Follow-up A (Graefe RFC-187 §3.2 condition 3, booked): full nested-aggregate-index SUPPORT needs the
+candidate to carry real nested paths end-to-end — fix the `cascades_generator.go` group/agg column
+mis-flatten (`groupCols[0]="addr"` for `GROUP BY addr.city`), `ColumnValue` to build nested
+placeholder FieldValues, and expansion/execution (`WithGroupColumns`) — before nested agg matches can
+be safely ENABLED. Also form-(c) flat-dotted qualified grouping keys (`T.city`) conservatively miss
+the agg index until grouping keys are uniformly structured.
+Follow-up B (RFC-187 §8, post-RFC-173): ordinalize the candidate (resolve `columnNames`→ordinals) so
+both match sides are baked and match-domain identity collapses into Java's `FieldPath` ordinal
+identity — the true-parity endgame, entangled with RFC-173.
+
+DONE (branch feat/rfc187-column-identity-matching): [x] primitive [x] S1 [x] S2/S3 [x] S6
+[x] S4/S5/S8 [x] S7/S9/S10 (all 10 sites) [x] milestone review lap — Graefe ACK + Torvalds ACK on the
+implementation [x] 1M stress green (no row-count/plan regression) [x] full 56-target suite green on
+every commit. Only the two booked follow-ups remain (nested-agg-index SUPPORT; §8 candidate
+ordinalization) — both distinct from A's wrong-rows/wrong-order fix.
+
+### [ ] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate
+`rule_remove_range_one.go:52,68` gates deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;
+`cost.go:520` (LogicalFilter) and `:609` (Select) compute `in * 0.5^numPreds` UNFLOORED over
+`LeafScanCardinality=1e6`, so `1e6*0.5^20≈0.95<1.0` → LIMIT deleted → query returns ALL matching
+rows. Correctness gated on a heuristic constant (cardinal sin). Also: the rule wears Java's name but
+does something Java's `RemoveRangeOneRule` (remove an unreferenced `RANGE(0,1)` quantifier) does not —
+Go invention. Fix: `.Floor(1)` on the estimate path AND a provable-max-cardinality check (or rename).
+Regression: N-predicate LIMIT-1 shape.
+
+### [ ] Finding 3 (HIGH, worse plan) — comparePrimaryScanVsIndexScan drops Java's type-filter SARG subcase
+`planning_cost_model.go:878` ports only the shape check (its comment falsely claims "matches Java's
+check") and drops Java `PlanningCostModel.java:381-408`: when the primary side carries a type filter,
+the index side none, and the index applies extra SARGs the primary lacks, Java prefers the INDEX. Also
+ignores `IndexScanPreference` (PREFER_INDEX/PREFER_PRIMARY_KEY_INDEX). → picks full primary scan +
+high-discard type filter over the selective index. Plan-choice divergence (wire-visible for cross-engine
+continuation resumption).
+
+### [ ] Finding 5 (MED) — scalar signed-zero ConstantValue: equal-but-different-hash
+`values/map_field_values.go:254` scalar fallthrough `return a == b` (−0.0==+0.0 true) vs
+`semantic_hash.go:156` `%v` (renders "-0"≠"0"). The []float64/[]float32 arms already fixed this with
+`math.Float64bits` (RFC-176 §2); scalar wasn't. → memo dedup miss/dup. Fix: bitwise-compare scalar floats.
+
+### [ ] Finding 6 (MED) — comparePredicateCountByLevel iterates union of levels; Java iterates first-arg only
+`planning_cost_model.go:115-139` `for level:=0; level<=maxLevel` vs Java
+`PredicateCountByLevelInfo.compare` (first-map entries + highest-level tiebreak). Sign flip on
+asymmetric-depth predicate maps → different REWRITING survivor.
+
+### [ ] Finding 7 (MED, fragile) — Quantifier.GetCorrelatedTo() returns empty; Java transitive-walks
+`expressions/quantifier.go:250` returns `{}` vs Java `getRangesOver().getCorrelatedTo()`. UNDER-
+approximation (dangerous direction) — any new consumer treats a correlated leg as free-standing (0-row
+class). Contained today (consumers rewired), latent trap.
+
+### [ ] Finding 8 (MED, latent hang) — merge cycle guard walks Members() only, not FinalMembers()
+`memo_merge.go:103-133` `reachable` recurses `r.Members()`; correct only by the undocumented REWRITING
+invariant that every final is also an exploratory member. One distinct-final `InsertFinal` away from
+`mergeable` approving a cycle → planner hang (`childRefsMatchInMemo`/`GetCorrelatedTo` are cycle-guard-free).
+Fix: walk `AllMembers()`.
+
+### [ ] Finding 9 (MED, latent) — TranslateQueryValueMaybe pulls up candidate sub-values against themselves
+`max_match_map.go:771` `PullUpValue(entry.candidateValue, entry.candidateValue, alias)` collapses every
+candidate part to `QOV(alias)` (case-1 self-equal always fires) vs Java's root-relative
+`candidateValue.pullUp(mapping.values(), …)`. Masked until a covering-index `RecordConstructorValue`
+result value appears → wrong projection. `PullUpValues(parts, m.candidateValue, alias)` exists unused.
+
+### [ ] Finding 10 (MED) — missing Java cost rungs / property divergences
+- M2: no `numDefaultOnEmpty` rung (`RecordQueryDefaultOnEmptyPlan` uncounted) vs Java `PlanningCostModel:308`.
+- M3: criterion #2 lacks Java's whole-plan-cardinality OUTER guard (`PlanningCostModel:121`) → decides
+  on data-access cardinality where Java abstains.
+- M4: `plan_properties.go:64` DistinctRecords for index uses `IsUnique()` not Java's `!createsDuplicates()`
+  → misses DISTINCT elision over non-unique scalar-index scans.
+- M5: `plan_properties.go:216` PrimaryKey nil for index scans vs Java's common-PK → loses PK-based dedup/order.
+
+### [ ] Finding 11 (MED) — PredicateToLogicalUnionRule expands every top-level OR
+`rule_predicate_to_logical_union.go:99` fires OR→`Distinct(Union)` unconditionally; Java
+`PredicateToLogicalUnionRule:197` only expands index-exploitable ORs (`partiallyMatchedOrs`). Memo bloat
++ worse-plan risk for `a=1 OR b=2` with no indexes.
+
+### [ ] Finding 12 (LOW-MED, latent) — value-layer / compensation gaps
+- `values/value_in.go:52` value-layer IN promotes both int64→float64 → loses precision >2^53 (disagrees
+  with exact predicate-layer IN); `:55`/`value_array_distinct.go:101` `==` panics on non-comparable
+  slice/map elements.
+- `values/values.go:3365,3394,3519` `CAST(string AS INT/LONG/DOUBLE)` `TrimSpace` where Java rejects.
+- `compensation.go:1035` `ForMatchCompensation.Union` picks c's rcf even when only other's is needed
+  (Java `Verify.verify` both) → wrong output shape; `:151` `ComputeResultCompensation` hardcodes
+  `EmptyGroupByMappings` vs Java's `pullUpAggregateCandidateMappings`. Both latent (single-child gated).
+- `predicates/predicates.go:117` `PredicateEquals` has no `ExistentialValuePredicate` case →
+  EXISTS AND EXISTS never deduped (optimization only; memo interning DOES handle it — inconsistent).
+
+### [ ] Finding 13 (LOW) — dead code / missed matches / maintainability
+- Dead rules: `rule_implement_intersection.go:46`, `rule_intersection_merge.go:37`,
+  `rule_set_op_singleton.go:49` (no query seeds `LogicalIntersectionExpression`) — + latent unsound if
+  reached (grabs unordered winner for a merge that requires ordered legs).
+- `rule_merge_fetch_into_covering_index.go` unreachable (`wrapScanPlanWithCoverage` strips the Fetch) —
+  unported Java optimization.
+- `rule_match_intermediate.go:227` MatchIntermediateRule pairs quantifiers POSITIONALLY; Java enumerates
+  permutations → silently misses index matches for permuted multi-quantifier expressions.
+- `matched_ordering_part.go:193` `Demote()` dead + panics; `max_match_map.go:643`
+  `findMatchingReachableCandidate` dead.
+- `expression_partition.go:69` `PlanPartition.GetPlans()` not index-aligned with `GetExpressions()`
+  (footgun, bit `rule_implement_in_join` once); `:30` `NewPlanPartition` map-iteration nondeterminism (dead path).
+- `unified_tasks.go:675/696` `isExploratoryMember` ≡ `isAlreadyExploratoryMember` (byte-identical dup);
+  O(n) membership scans in per-round loops (O(n²)/group); cost comparator re-walks whole subtrees uncached.
+- Maintainability: NLJ rule 3417 LOC vs Java 331 (10×, #1 churn file, hand-rolled existential/buried-leg
+  subsystem); ~40% comment density carrying reverted-attempt process narrative (violates CLAUDE.md comment
+  guidance).
+
+---
+
 # ⛔ ALL WORK FROZEN — sole priority is RFC-173 (ordinal/group column-resolution migration)
 
 **Owner directive (2026-07-01): pause ALL other project work until RFC-173 lands.** Do NOT pick up

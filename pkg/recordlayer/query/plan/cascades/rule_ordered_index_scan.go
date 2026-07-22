@@ -118,21 +118,23 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 }
 
 // sortKeyMatchesColumn reports whether a sort key's Value binds to the i-th
-// index key column. When the candidate supplies per-column Values, it compares
-// the sort key against ColumnValue(i, base) by alias-invariant Value-tree
-// equality (valuesMatchColumn) — this is how a CardinalityValue sort key binds
-// to a CARDINALITY()-keyed column, and how a plain FieldValue sort key binds to
-// a plain column. Without a provider it falls back to the historical
-// FieldValue-name string comparison (primary scan, which has no provider).
+// index key column. Both branches route through valuesMatchColumn (the
+// match-domain name-path comparison): the sort key's full accessor path, not
+// its leaf name, so a nested sort key `addr.city` never binds a same-leaf-named
+// top-level `city` column. When the candidate supplies per-column Values it
+// compares against ColumnValue(i, base) — this is how a CardinalityValue sort
+// key binds to a CARDINALITY()-keyed column. Without a provider (primary scan)
+// the candidate column is a plain FieldValue built from the declared column name
+// (base alias irrelevant — the comparison is alias-invariant at the root).
 func sortKeyMatchesColumn(skValue values.Value, provider columnValueProvider, i int, colName string) bool {
+	base := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	var colValue values.Value
 	if provider != nil {
-		// The base alias is irrelevant: valuesMatchColumn compares
-		// FieldValue/CardinalityValue alias-invariantly by (inner) field name.
-		colValue := provider.ColumnValue(i, values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()))
-		return valuesMatchColumn(skValue, colValue)
+		colValue = provider.ColumnValue(i, base)
+	} else {
+		colValue = values.NewFieldValue(base, colName, values.UnknownType)
 	}
-	fv, ok := skValue.(*values.FieldValue)
-	return ok && eqFold(fv.Field, colName)
+	return valuesMatchColumn(skValue, colValue)
 }
 
 var _ ExpressionRule = (*OrderedIndexScanRule)(nil)
