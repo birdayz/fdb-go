@@ -48,6 +48,18 @@ type designationScope struct {
 	// the disease this file exists to kill). Single-threaded per scope, so
 	// snapshot-before/compare-after brackets a computation exactly.
 	backEdgeHits int
+	// exploratoryHits counts members-fallback designations within this
+	// scope. The generation counter observes FINAL-set mutations only, so a
+	// designation that transitively consumed an UNFINALIZED child's
+	// members-derived answer is not protected by the generation key: a later
+	// exploratory Insert on that child changes the child's answer WITHOUT a
+	// bump, and a cached ancestor would serve the stale derivation — the
+	// pre-prune coherence check then reports a mismatch against the fresh
+	// OptimizeGroup ranking and fails valid plans. Same bracket discipline
+	// as backEdgeHits: any ancestor whose computation consumed a fallback
+	// stays uncached until the child finalizes (that InsertFinal bumps the
+	// generation and the cached tier takes over).
+	exploratoryHits int
 }
 
 func newDesignationScope() *designationScope {
@@ -78,6 +90,9 @@ func (s *designationScope) designated(ref *expressions.Reference, visiting map[*
 	fromFinals := len(candidates) > 0
 	if !fromFinals {
 		candidates = ref.Members()
+		// Taint every enclosing computation: an ancestor that consumes this
+		// members-derived answer must not cache (see exploratoryHits).
+		s.exploratoryHits++
 	}
 	if len(candidates) == 0 {
 		return nil
@@ -92,6 +107,7 @@ func (s *designationScope) designated(ref *expressions.Reference, visiting map[*
 		visiting = map[*expressions.Reference]bool{}
 	}
 	hitsBefore := s.backEdgeHits
+	exHitsBefore := s.exploratoryHits
 	visiting[ref] = true
 	for _, c := range candidates {
 		if best == nil || s.compare(c, best, visiting) < 0 {
@@ -99,7 +115,7 @@ func (s *designationScope) designated(ref *expressions.Reference, visiting map[*
 		}
 	}
 	delete(visiting, ref)
-	if fromFinals && s.backEdgeHits == hitsBefore {
+	if fromFinals && s.backEdgeHits == hitsBefore && s.exploratoryHits == exHitsBefore {
 		s.cache[ref] = designationEntry{expr: best, gen: gen}
 	}
 	// !fromFinals is deliberately NOT cached: the generation counter bumps
@@ -259,15 +275,39 @@ func (s *designationScope) predCountByLevel(e expressions.RelationalExpression, 
 	return currentLevel
 }
 
-// deepHash hashes the designated tree — node content hash folded with the
-// designated children's hashes, order-sensitive (see deepHashCode's
-// commutative-XOR caution).
+// deepHash hashes the designated tree — node content hash folded with each
+// child edge's quantifier attributes and the designated children's hashes,
+// order-sensitive (see deepHashCode's commutative-XOR caution).
+//
+// The EDGE ATTRIBUTES (kind / null-on-empty / strict-single) must be folded:
+// they live on the quantifier, so HashCodeWithoutChildren cannot see them and
+// the child content is identical — two finals differing only in a
+// quantifier's flag (a LEFT box vs its INNER twin, both retained by the
+// refined memo identity) would otherwise tie through every comparator tier
+// and leave the designation insertion-order dependent, the exact
+// nondeterminism the virtual prune exists to kill. Folded regardless of
+// whether the descent leafs at a back-edge — the edge itself is still part
+// of the tree's identity.
 func (s *designationScope) deepHash(e expressions.RelationalExpression, visiting map[*expressions.Reference]bool) uint64 {
 	if e == nil {
 		return 0
 	}
 	h := e.HashCodeWithoutChildren()
 	for _, q := range e.GetQuantifiers() {
+		// attrs == 0 is the default edge (plain ForEach): folded as a no-op
+		// so attribute-default trees keep their exact pre-refinement hash —
+		// only a variant edge perturbs. The guarantee needed is variant ≠
+		// plain, which a one-sided fold provides.
+		attrs := uint64(q.Kind()) << 2
+		if q.IsNullOnEmpty() {
+			attrs |= 1 << 1
+		}
+		if q.IsStrictSingle() {
+			attrs |= 1
+		}
+		if attrs != 0 {
+			h = h*0x100000001b3 ^ (attrs + 0x9e3779b97f4a7c15)
+		}
 		s.descendDesignated(q.GetRangesOver(), visiting, func(child expressions.RelationalExpression) {
 			childHash := s.deepHash(child, visiting)
 			h = h*0x100000001b3 ^ (childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142)

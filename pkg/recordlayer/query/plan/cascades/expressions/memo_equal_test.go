@@ -169,3 +169,63 @@ func TestMemoEqual_OuterJoinNotChildrenAsSet(t *testing.T) {
 		t.Fatal("swapped FULL OUTER joins must NOT be MemoEqual (ChildrenAsSet must be false)")
 	}
 }
+
+// TestMemoEqual_QuantifierAttributeVariantsDoNotIntern pins the RFC-186
+// quantifier-attribute identity refinement at the MEMO layer, independent of
+// any rule: edge attributes (kind / null-on-empty / strict-single) travel on
+// the quantifier, not the child content, so two selects over the SAME child
+// reference that differ only in a quantifier flag are DIFFERENT semantics — a
+// LEFT box vs an INNER join, a semi-join vs a join, a cardinality gate vs
+// none — and must not collapse into one memo member. Before the refinement,
+// both MemoEqual and the sameChildReferences interning fast path in
+// Reference.Insert conflated them, leaving the first arrival's flags
+// authoritative for both (the wrong-rows class the box-join families
+// surfaced).
+func TestMemoEqual_QuantifierAttributeVariantsDoNotIntern(t *testing.T) {
+	t.Parallel()
+	scanRef := InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	alias := values.NamedCorrelationIdentifier("q")
+	selOver := func(q Quantifier) RelationalExpression {
+		return NewSelectExpression(q.GetFlowedObjectValue(), []Quantifier{q}, nil)
+	}
+	plain := selOver(NamedForEachQuantifier(alias, scanRef))
+	noe := selOver(NamedForEachNullOnEmptyQuantifier(alias, scanRef))
+	strictSingle := selOver(NamedForEachStrictSingleQuantifier(alias, scanRef))
+	existential := selOver(NamedExistentialQuantifier(alias, scanRef))
+
+	// Precondition: node-info alone cannot tell the variants apart — the
+	// quantifier attribute is the ONLY discriminator, so an equal hash means
+	// the attribute check is what MemoEqual's verdict rides on.
+	if plain.HashCodeWithoutChildren() != noe.HashCodeWithoutChildren() {
+		t.Fatal("precondition: node-info hash must not see the noe flag — test vacuous otherwise")
+	}
+
+	if MemoEqual(plain, noe) {
+		t.Fatal("selects differing only in a quantifier's null-on-empty flag must NOT be MemoEqual (LEFT box vs INNER join)")
+	}
+	if MemoEqual(plain, strictSingle) {
+		t.Fatal("selects differing only in a quantifier's strict-single flag must NOT be MemoEqual")
+	}
+	if MemoEqual(plain, existential) {
+		t.Fatal("selects differing only in quantifier KIND must NOT be MemoEqual (join vs semi-join)")
+	}
+	// Sanity: identical attributes over the same child ARE MemoEqual — the
+	// refinement narrows identity, it does not break interning.
+	if !MemoEqual(plain, selOver(NamedForEachQuantifier(alias, scanRef))) {
+		t.Fatal("attribute-identical selects over the same child must remain MemoEqual")
+	}
+
+	// The Insert/InsertFinal interning fast path (sameChildReferences) must
+	// make the same distinction: the noe variant is a NEW member, an
+	// attribute-identical twin dedups.
+	ref := InitialOf(plain)
+	if !ref.Insert(noe) {
+		t.Fatal("noe variant must insert as a DISTINCT member (interning fast path conflated the flags)")
+	}
+	if got := len(ref.Members()); got != 2 {
+		t.Fatalf("expected 2 distinct members after inserting the noe variant, got %d", got)
+	}
+	if ref.Insert(selOver(NamedForEachQuantifier(alias, scanRef))) {
+		t.Fatal("attribute-identical twin must dedup against the existing member")
+	}
+}

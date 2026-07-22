@@ -202,6 +202,41 @@ func TestOptimizeGroup_CoherencePhaseGateAndDetection(t *testing.T) {
 			t.Fatal("a stale designation surviving at the current generation must be reported — the instrument's detection wiring is dead")
 		}
 	})
+
+	t.Run("poisoned cache detected through Run's own call order", func(t *testing.T) {
+		t.Parallel()
+		// The subtest above proves the DETECTION wiring by calling
+		// checkRewritingCoherence directly; this one pins the CALL ORDER
+		// inside OptimizeGroupTask.Run. The check must run BEFORE
+		// PruneToSet: pruning bumps the finals generation, which evicts a
+		// poisoned entry and recomputes against the post-prune singleton —
+		// so under the old post-prune ordering this poison is silently
+		// laundered and Run reports nothing. Only the pre-prune ordering
+		// catches it through the real path.
+		//
+		// finalsGeneration is process-global, so a concurrent test's bump
+		// between poisoning and the check would ALSO evict the entry —
+		// retry on that interference instead of flaking.
+		for attempt := 0; ; attempt++ {
+			ref := build()
+			p := NewPlanner(nil, nil)
+			p.constraintMap = NewConstraintMap()
+			p.dscope = newDesignationScope()
+			p.SetVerifyRewritingCoherence(true)
+			impostor := rfc186SortOver(expressions.InitialOf(newScan()))
+			gen := expressions.FinalsGeneration()
+			p.dscope.cache[ref.Canonical()] = designationEntry{expr: impostor, gen: gen}
+			task := &OptimizeGroupTask{Phase: PhaseRewriting, Ref: ref}
+			task.Run(p)
+			if len(p.RewritingCoherenceViolations()) > 0 {
+				return // detected through Run — the pre-prune ordering is live
+			}
+			if expressions.FinalsGeneration() != gen+1 && attempt < 20 {
+				continue // external bump evicted the poison mid-run — retry
+			}
+			t.Fatal("a poisoned designation must be detected by OptimizeGroupTask.Run itself — the coherence check no longer runs against the pre-prune candidate set")
+		}
+	})
 }
 
 // TestDesignatedFinal_NoCacheInUnfinalizedWindow pins the review-required
@@ -255,5 +290,113 @@ func TestDesignatedFinal_BackEdgeTaintNotCached(t *testing.T) {
 	}
 	if _, cached := s.cache[ref.Canonical()]; cached {
 		t.Fatal("the computation that CONSUMED a tainted child designation must not cache either")
+	}
+}
+
+// rfc186SelectOver wraps a child reference in a single-quantifier
+// SelectExpression, with the quantifier supplied by the caller so edge
+// attributes (null-on-empty, kind) can vary while the child content stays
+// identical.
+func rfc186SelectOver(q expressions.Quantifier) expressions.RelationalExpression {
+	return expressions.NewSelectExpression(q.GetFlowedObjectValue(), []expressions.Quantifier{q}, nil)
+}
+
+// TestDesignatedFinal_ExploratoryChildTaintNotCached pins the ancestor half
+// of the no-cache-unfinalized rule: a designation that TRANSITIVELY consumed
+// an unfinalized child's members-derived answer must not be cached either.
+// The generation key observes final-set mutations only — a later exploratory
+// Insert on the child changes the child's answer WITHOUT a bump, so a cached
+// ancestor would keep serving the pre-growth derivation while a fresh scope
+// (and OptimizeGroup's compare loop) ranks with the post-growth one; the
+// pre-prune coherence check then reports the mismatch and fails a valid
+// plan.
+func TestDesignatedFinal_ExploratoryChildTaintNotCached(t *testing.T) {
+	t.Parallel()
+	// finalsGeneration is process-global: a concurrent test's bump between
+	// the warming lookup and the post-growth lookup would evict a (buggy)
+	// cached ancestor and mask the regression — retry on interference so the
+	// pin is deterministic in both directions.
+	for attempt := 0; ; attempt++ {
+		// child: UNFINALIZED, holding one deep member (2 nested selects).
+		inner := expressions.InitialOf(rfc186Scan("T"))
+		innerSel := expressions.InitialOf(rfc186SelectOver(expressions.ForEachQuantifier(inner)))
+		child := expressions.InitialOf(rfc186SelectOver(expressions.ForEachQuantifier(innerSel)))
+
+		// parent finals: fA = select over the unfinalized child (select-count
+		// tracks the child's designated member: 3 now, 1 after growth);
+		// fB = select over a FINALIZED 1-select tree (constant count 2).
+		fA := rfc186SelectOver(expressions.ForEachQuantifier(child))
+		fbInner := expressions.InitialOf(rfc186SelectOver(expressions.ForEachQuantifier(expressions.InitialOf(rfc186Scan("U")))))
+		fbInner.InsertFinal(rfc186SelectOver(expressions.ForEachQuantifier(expressions.InitialOf(rfc186Scan("U")))))
+		fB := rfc186SelectOver(expressions.ForEachQuantifier(fbInner))
+		parent := expressions.InitialOf(fA)
+		parent.InsertFinal(fA)
+		parent.InsertFinal(fB)
+
+		s := newDesignationScope()
+		gen := expressions.FinalsGeneration()
+		first := s.designated(parent, nil)
+		if first != fB {
+			t.Fatalf("precondition: with the deep child, fB (constant 2 selects) must out-rank fA (3), got %T", first)
+		}
+
+		// Exploratory growth on the child: a bare scan (0 selects) becomes
+		// its members-best — NO finals-generation bump.
+		child.Insert(rfc186Scan("T"))
+
+		second := s.designated(parent, nil)
+		fresh := newDesignationScope().designated(parent, nil)
+		if fresh != fA {
+			t.Fatalf("precondition: after growth a fresh scope must rank fA (1 select) over fB (2), got %T", fresh)
+		}
+		if second != fresh {
+			t.Fatal("stale designation served from cache after exploratory child growth — the ancestor consumed an unfinalized child's answer and must not have been cached (exploratory taint)")
+		}
+		if expressions.FinalsGeneration() == gen || attempt >= 20 {
+			return // clean window: the scope genuinely re-derived through the grown child
+		}
+		// An external generation bump would ALSO have evicted a (buggy)
+		// cached ancestor, making this pass prove nothing — resample until a
+		// clean window is observed.
+	}
+}
+
+// TestDesignatedFinal_AttributeVariantTieBreak pins the deep-hash tier
+// against the refined memo identity: two finals differing ONLY in a
+// quantifier's null-on-empty flag (a LEFT box and its INNER twin over the
+// SAME child) tie through tiers 1-4, so the deep-hash tie-break must see
+// the edge attribute — otherwise the designation flips with insertion
+// order, and with it every derived cost property (which rules fire, which
+// twin PartitionBinarySelectRule sees).
+func TestDesignatedFinal_AttributeVariantTieBreak(t *testing.T) {
+	t.Parallel()
+	build := func(noeFirst bool) *expressions.Reference {
+		child := expressions.InitialOf(rfc186Scan("T"))
+		child.InsertFinal(rfc186Scan("T"))
+		alias := values.NamedCorrelationIdentifier("q")
+		plain := rfc186SelectOver(expressions.NamedForEachQuantifier(alias, child))
+		noe := rfc186SelectOver(expressions.NamedForEachNullOnEmptyQuantifier(alias, child))
+		ref := expressions.InitialOf(plain)
+		if noeFirst {
+			ref.InsertFinal(noe)
+			ref.InsertFinal(plain)
+		} else {
+			ref.InsertFinal(plain)
+			ref.InsertFinal(noe)
+		}
+		return ref
+	}
+	pick := func(ref *expressions.Reference) bool {
+		d := newDesignationScope().designated(ref, nil)
+		sel, ok := d.(*expressions.SelectExpression)
+		if !ok {
+			t.Fatalf("designated must be a select, got %T", d)
+		}
+		return sel.GetQuantifiers()[0].IsNullOnEmpty()
+	}
+	a := pick(build(false))
+	b := pick(build(true))
+	if a != b {
+		t.Fatalf("designation flipped with insertion order (noe=%v vs noe=%v) — the deep-hash tie-break is blind to quantifier attributes", a, b)
 	}
 }
