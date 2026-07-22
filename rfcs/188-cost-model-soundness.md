@@ -1,6 +1,9 @@
 # RFC-188 — Cost/cardinality-model soundness: align with Java, kill the estimate-as-correctness-gate
 
-**Status:** DRAFT — awaiting Graefe (Cascades alignment) + Torvalds (code quality) ACK before implementation.
+**Status:** DRAFT rev 2 — folds the first review lap. Graefe + Torvalds both NAK'd rev 1; rev 2 adopts
+every required change (finding 2 → **delete**, not rename; finding 3 → bare-comparison set + flipFlop
+sign + config confirmed-absent; finding 6 → sparse-sorted first-map iteration; finding 10 M4 → booked as
+plan-metadata plumbing, ordering premise dropped). Awaiting delta re-confirmation.
 **Tracks:** TODO.md "FINDINGS 2026-07-22" systemic problem **B** — the cost/cardinality subsystem is a
 regression-tuned re-derivation, not a port. Covers findings 2 (HIGH wrong results), 3 (HIGH worse
 plan), 6 (MED sign flip), 10 (MED missing rungs / property divergences).
@@ -36,22 +39,34 @@ constant. Cost estimates decide *between correct plans*; they must NEVER decide 
 preserves semantics*. And the Go rule wears Java's `RemoveRangeOneRule` name for a completely different
 (Go-invented) behavior — a false-parity trap.
 
-**Fix:**
-- `isAtMostOneRow` drops the `EstimateCardinality <= 1.0` gate entirely and returns true only for
-  **structurally-provable** single-row inners — today `LogicalValuesExpression` (one row of constants,
-  the sole case the existing tests rely on). This keeps the sound optimization (a redundant `LIMIT 1`
-  over `VALUES` is removed) and makes the wrong-rows path unreachable: a 20-conjunct filter is not a
-  `LogicalValuesExpression`, so the LIMIT stays.
-- **Rename** the Go rule to name what it does (proposed `EliminateLimitOverSingleRowRule`) so it no
-  longer collides with Java's unrelated `RemoveRangeOneRule`. Update its registration
-  (`default_rules.go`) and any `%T`-keyed `DisabledRules` reference.
-- **Follow-up (booked, not A/B scope):** Java's *actual* `RemoveRangeOneRule` (drop an unreferenced
-  `RANGE(0,1)` quantifier) is UNPORTED — a distinct missing-rule item, filed separately.
+**Disposition (rev 2, Graefe ruling): DELETE the rule and its tests — do not rename-and-keep.** Two
+reasons, both grep-confirmed:
+1. **Java has no limit-removal rule at all.** A Go rule that drops a `LIMIT` Java *retains* is itself a
+   plan-choice divergence — the exact class findings 3/6/10 exist to eliminate. Keeping it (even
+   narrowed to a structural check) is internally inconsistent with the rest of this RFC.
+2. **The narrowed rule would be production-dead.** `LogicalValuesExpression` has **zero production
+   construction sites** — `NewLogicalValuesExpression` is called only from `*_test.go` (grep: 0
+   non-test callers). A rule whose only trigger is the fixtures of its own tests is exactly the
+   "suspect Go-only rule" the query-engine guidance warns against. Narrowing it to LogicalValues-only
+   keeps a rule alive solely to pass its own tests.
 
-**Test:** `TestRemoveRangeOne_ManyPredicateFilterKeepsLimit` — a 20-equality-conjunct `LIMIT 1` over a
-scan must NOT have its LIMIT removed (red on baseline: the estimate deletes it). Plus the existing
-`LimitOverValues` positive stays green. Plus an FDB row-count pin: the 20-conjunct query returns the
-correct single row, and a multi-match variant returns exactly one, not all.
+**Fix:**
+- **Delete** `rule_remove_range_one.go` + `rule_remove_range_one_test.go` + `isAtMostOneRow`, and remove
+  the `NewRemoveRangeOneRule()` registration at `default_rules.go:124`. (grep-confirmed: the sole
+  reference outside the rule's own files is that one registration; **no** `%T`-keyed `DisabledRules`
+  entry, **no** yamsql/plan test asserts limit-removal — deletion is safe end-to-end.) With the rule
+  gone the `LIMIT 1` is always retained → the wrong-rows path is unreachable and Go matches Java (which
+  keeps the limit).
+- **Follow-up (booked, not B scope):** Java's *actual* `RemoveRangeOneRule` (drop an unreferenced
+  `RANGE(0,1)` table-function quantifier from a `SelectExpression`) is UNPORTED — a distinct
+  missing-rule item, filed in TODO.md. Porting *that* reclaims the `RemoveRangeOne` name cleanly (no
+  rename churn), which is why delete beats rename here.
+
+**Test:** the pin moves from a rule-internal unit test (deleted with the rule) to an **FDB e2e row-count
+pin** — the right level for a wrong-rows bug. `TestFDB_LimitOneKeepsLimitOverManyPredicateFilter`: a
+20-equality-conjunct `SELECT … LIMIT 1` with multiple matching rows returns **exactly one** row (RED on
+baseline: the rule deletes the limit and returns all matches). Plus the `EXPLAIN` shows the limit plan
+survives.
 
 ---
 
@@ -61,29 +76,46 @@ correct single row, and a multi-match variant returns exactly one, not all.
 SHAPE (primary-scan vs singular-index-scan-with-fetch) and unconditionally returns the `PREFER_SCAN`
 direction (`-1`/`+1`). Its comment falsely claims "matches Java's check."
 
-**Java:** `PlanningCostModel.java:376-415`. When the shape matches, FIRST (`:381-406`) the SARG
+**Java:** `PlanningCostModel.java:comparePrimaryScanToIndexScan` (called via `flipFlop`). The method is
+written with the assumption **first arg = primary scan, second arg = index scan**, and `flipFlop` runs
+it in both orderings, **negating** the result of the second. When the shape matches, FIRST the SARG
 sub-case: if `typeFilterCountPrimaryScan > 0 && typeFilterCountIndexScan == 0`, compute
 `primaryMinusIndex = Sets.difference(primaryComparisons, indexComparisons)`; if empty, compute
 `indexMinusPrimary = Sets.difference(indexComparisons, primaryComparisons)`; if **non-empty**, return
-`+1` (the index has an extra SARG the primary lacks and needs no type filter → prefer the index).
-THEN (`:408-412`) the config branch: `PREFER_SCAN` → `-1`; else (`PREFER_INDEX` /
-`PREFER_PRIMARY_KEY_INDEX`) → `+1`.
+`+1` (index has an extra SARG the primary lacks and needs no type filter → prefer the index). THEN the
+config branch: `PREFER_SCAN` → `-1`; else (`PREFER_INDEX`/`PREFER_PRIMARY_KEY_INDEX`) → `+1`.
+
+Two fidelity points the rev-1 draft got wrong:
+- **The comparison set is `Set<Comparisons.Comparison>`, keyed by BARE comparison (type + comparand),
+  NOT by column.** Java's `ComparisonsProperty implements ExpressionProperty<Set<Comparisons.Comparison>>`;
+  the `Comparison` object carries only the comparison type and comparand — the column/field is *implicit*
+  in the position within `ScanComparisons` and is **not** part of the object. Keying Go's set by column
+  would make `Sets.difference` non-empty where Java's is empty → the sub-case fires (or doesn't) on the
+  wrong queries. Build the set from bare comparisons.
+- **The sign is relative to which side is the primary scan.** The `+1`/`-1` above are stated in the
+  (primary=first, index=second) orientation. In the comparator, whichever of `a`/`b` is the *index*
+  scan must flip the sign (Java's `flipFlop` negation). The rung returns "empty/no-opinion" when neither
+  ordering matches the shape.
 
 **Consequence:** with a multi-record-type table indexed on `(recordType, pk…)` and `WHERE pk=?`, plan A
 = `TypeFilter(Scan)` (SARGs pk, needs the type filter), plan B = `Fetch(IndexScan)` (SARGs pk AND
-recordType). Java prefers B; Go returns `-1` → a near-full-table scan + high-discard type filter.
+recordType). Java prefers B; Go returns the `PREFER_SCAN` direction → a near-full-table scan +
+high-discard type filter.
 
 **Fix:**
-- Pass the two sides' type-filter counts (already in `opsA/opsB.typeFilterCount`) and the two plans
-  into the rung; extract each scan's SARG comparison SET (a helper over `ScanComparisons` producing a
-  comparable set — column + comparison), compute the two `Sets.difference`, and return `+1` in the
-  exact sub-case Java does. The rung's signature grows to carry the concrete `a, b` expressions (the
-  comparator already has them).
-- **IndexScanPreference config:** honor it if `PlanContext` exposes it (finding says Go "silently
-  ignores" `PREFER_INDEX`/`PREFER_PRIMARY_KEY_INDEX`). Implementation checks whether Go models the
-  config; if it does, thread it and match Java's branch; if Go has no such config knob today, the
-  `PREFER_SCAN` default is Go's only behavior — the SARG sub-case is the wrong-plan fix, and honoring
-  the (currently-absent) config is booked as a separate small item. Either way the SARG sub-case lands.
+- Pass the two sides' type-filter counts (already in `opsA/opsB.typeFilterCount`) and the concrete `a, b`
+  expressions into the rung (the comparator already holds them; this is a signature growth, not a
+  refactor). Extract each scan's SARG comparison SET **from bare comparisons over `ScanComparisons`**
+  (no column key), compute the two `Sets.difference`, and return the index-favoring sign in the exact
+  sub-case Java does, **threading the sign by which side is the primary scan**.
+- **IndexScanPreference config — confirmed ABSENT in Go, not "assess in impl."** `grep -rn
+  IndexScanPreference|PREFER_ pkg/` returns nothing: Go's `PlanContext` has no such knob. The Cascades
+  config default *is* `PREFER_SCAN` (proto enum `PREFER_SCAN = 0`; the `PREFER_INDEX` multi-type
+  override lives in the legacy `RecordQueryPlanner` constructor, not the Cascades `PlanningCostModel`),
+  so Go's only behavior is the `PREFER_SCAN` branch (`-1` in the primary-first orientation). The SARG
+  sub-case is the wrong-plan fix and lands regardless; **modeling the config knob** (`PREFER_INDEX`/
+  `PREFER_PRIMARY_KEY_INDEX` + the legacy multi-type-no-PK-prefix default) is **out of scope, booked
+  separately in TODO.md** — nobody sets it today.
 
 **Test:** `TestFDB_PrimaryVsIndex_SargScanPrefersIndex` (EXPLAIN pin): the multi-type `WHERE pk=?` shape
 plans the selective index, not the type-filtered primary scan. Red on baseline.
@@ -93,23 +125,26 @@ plans the selective index, not the type-filtered primary scan. Red on baseline.
 ## 3. Finding 6 (MED) — comparePredicateCountByLevel iterates the union; Java iterates the first map
 
 **Go:** `planning_cost_model.go:115-139` iterates `for level := 0; level <= maxLevel` over the UNION of
-both maps' levels.
+both maps' levels (`maxLevel = max(maxLevelA, maxLevelB)`).
 
 **Java:** `PredicateCountByLevelProperty.java:182-193` iterates ONLY the first map's entries
-(`aLevelToPredicateCount.entrySet()`, an `ImmutableSortedMap` → ascending), reading
+(`aLevelToPredicateCount.entrySet()`, a `SortedMap` → **ascending key order**), reading
 `bLevelToPredicateCount.getOrDefault(level, 0)`; first differing level returns
 `Integer.compare(aCount, bCount)`; final tiebreak `Integer.compare(a.getHighestLevel(),
 b.getHighestLevel())`. It does NOT visit levels present only in `b` (except via the highest-level
 tiebreak).
 
 **Consequence:** for asymmetric-depth predicate maps (`a={0:1,2:5}`, `b={0:1,1:3}`) Java returns `+1`
-(level 2: `compare(5,0)`), Go returns `-1` (level 1: `compare(0,3)`) — opposite. This is the REWRITING
-"more predicates deeper wins" rung (`designated_final.go`), so it selects a different logical survivor.
-(This comparator is deliberately asymmetric in Java — `compare(a,b) != -compare(b,a)` — and Go must
-match that asymmetry, not "fix" it.)
+(level 2: `compare(5,0)`), Go's dense loop hits level 1 first (present only in `b`): `compare(a[1]=0,
+b[1]=3)` → `-1` — opposite. This is the REWRITING "more predicates deeper wins" rung
+(`designated_final.go`), so it selects a different logical survivor. (This comparator is deliberately
+asymmetric in Java — `compare(a,b) != -compare(b,a)` — and Go must match that asymmetry, not "fix" it.)
 
-**Fix:** iterate `a`'s levels in ascending order only, `b`'s count via `getOrDefault(level, 0)`; final
-tiebreak on the highest level of each. Exactly Java's loop.
+**Fix:** iterate `a`'s **actual keys, sparse and sorted ascending** (collect `a`'s keys, `sort.Ints`,
+range over them) — **not** a dense `0..maxLevelA` and **not** Go's random map order (both wrong: a dense
+loop still visits `b`-only levels, and unsorted iteration makes the first-difference return
+nondeterministic). `b`'s count via map default `0` (= `getOrDefault(level, 0)`); final tiebreak
+`intCompare(maxLevelA, maxLevelB)` (already correct). Exactly Java's loop.
 
 **Test:** `TestComparePredicateCountByLevel_AsymmetricLevels` (unit): the `a={0:1,2:5}` vs `b={0:1,1:3}`
 pair returns `+1` (was `-1`). Plus the symmetric cases stay unchanged.
@@ -139,10 +174,17 @@ is not yet computed for the comparator's inputs, that plumbing is part of this f
 `plan_properties.go:64` returns `ip.IsUnique()`; Java returns `!matchCandidate.createsDuplicates()`. A
 non-unique index on a scalar field does not create duplicates → Java reports distinct, Go reports not,
 missing a `SELECT DISTINCT` elision. Safe direction (under-report) but a real divergence.
-**Fix:** derive from "index does not create duplicates" (a fan-out index on a repeated/collection field
-creates duplicates; a scalar-field index does not) rather than uniqueness. Implementation locates Go's
-equivalent of `createsDuplicates` (index type / key-expression fan-out); if absent, add the minimal
-predicate on the index metadata.
+**Scope (rev 2, Torvalds catch): this is plan-metadata plumbing, same class as M3 — NOT a light
+property tweak.** The `createsDuplicates` signal *exists* in Go, but on the **match candidate**
+(`ValueIndexScanMatchCandidate.CreatesDuplicates()`, porting `index.getRootExpression().createsDuplicates()`)
+— **not** on the plan node the property visitor sees. `RecordQueryIndexPlan` carries only
+`GetColumnNames`/`GetPKColumnNames`/`IsUnique`; it has no key expression and no fan-out flag. So the fix
+must plumb the fan-out signal onto the plan (or derive it at property-compute time from the index root
+expression / metadata), exactly the class of plumbing M3 needs — the rev-1 "M4 is light, order it before
+M3" premise is dropped.
+**Fix:** carry `createsDuplicates` (or the index root expression) onto `RecordQueryIndexPlan`, and return
+`!createsDuplicates()` instead of `IsUnique()`. A fan-out index on a repeated/collection field creates
+duplicates; a scalar-field index does not.
 
 **M5 — PrimaryKey for index scans (Java `PrimaryKeyProperty.java:293-294`).** `plan_properties.go:216`
 returns `nil`; Java returns the translated common primary key (index entries carry the PK). Loses
@@ -163,7 +205,7 @@ bounded → abstain). M4 — `TestDistinctRecords_NonUniqueScalarIndexIsDistinct
   wire-visible only for cross-engine continuation resumption of the same query). None change key/record/
   index/continuation *format*.
 - These are FIDELITY fixes to existing cost rungs/properties — no new Cascades rule, phase, or physical
-  operator (except finding 2's rule rename + gate change). Graefe: match-then-implement untouched.
+  operator (finding 2 *removes* a Go-only rule; it adds nothing). Graefe: match-then-implement untouched.
 - The Go-only extension rungs the quality review CLEARED (statistics scalar-cost, `compareJoinOrdering`,
   redundant-sort) are NOT touched — they are documented, test-pinned substitutes for Java's early
   `CardinalitiesProperty` join discrimination, and stay.
@@ -173,19 +215,25 @@ bounded → abstain). M4 — `TestDistinctRecords_NonUniqueScalarIndexIsDistinct
 - **R1 — plan churn.** Cost changes flip plans on unrelated queries. Full 56-target suite +
   determinism ×10 on affected planner tests + **1M stress before/after** gate every change; any EXPLAIN
   change is reviewed as a correctness/parity improvement or a neutral shape change, never waved through.
-- **R2 — M3/M4/M5 plumbing.** If the whole-plan Cardinalities / createsDuplicates / commonPK are not
-  reachable where the fix needs them, that plumbing is in scope; if it proves larger than a property
-  tweak, the specific sub-item ships behind a test with a booked TODO (never a silent skip). Default is
-  the full fix.
+- **R2 — M3/M4 plumbing (M5 is light — plan already carries `GetPKColumnNames`).** M3's whole-plan
+  `Cardinalities` and M4's `createsDuplicates` both live off the `RecordQueryIndexPlan` the property
+  visitor sees (M4's signal is on the match candidate; M3's `Cardinalities` is computed on physical
+  plans but not necessarily reachable in the comparator). Plumbing them onto the plan is **in scope** —
+  the full fix, not a property tweak. If either proves larger than expected, that sub-item ships behind
+  a test with a booked TODO (never a silent skip); default is the full fix.
 - **R3 — finding 6 asymmetry.** The corrected comparator is intentionally asymmetric (Java's shape);
   the determinism harness must still pass (the REWRITING designation is deterministic per-side).
 
 ## 7. Implementation order (DFS, one finding to completion, green per commit, e2e each)
 
-1. **Finding 2** (wrong results) — gate on structural provability + rename; unit + FDB row-count pins.
-2. **Finding 6** (pure comparator, low risk) — first-map iteration; unit pin.
-3. **Finding 3** (worse plan) — SARG sub-case (+ config if modeled); EXPLAIN pin + stress.
-4. **Finding 10** M2 → M4 → M5 → M3 (M3 last — most plumbing); unit pins each + stress.
+1. **Finding 2** (wrong results) — **delete** the rule + tests + registration; FDB e2e row-count pin
+   (LIMIT retained) + EXPLAIN. File the "port Java's real `RemoveRangeOneRule`" follow-up in TODO.md.
+2. **Finding 6** (pure comparator, low risk) — sparse-sorted first-map iteration; unit pin.
+3. **Finding 3** (worse plan) — SARG sub-case (bare-comparison set + flipFlop sign, `PREFER_SCAN`
+   default; config knob booked separately); EXPLAIN pin + stress.
+4. **Finding 10** — light first, plumbing last: **M2** (add count field + rung) → **M5** (plan already
+   carries `GetPKColumnNames`) → **M3 & M4** (both need plan-metadata plumbing — whole-plan
+   `Cardinalities` outer guard; `createsDuplicates` onto the plan). Unit pins each + stress.
 5. Full suite + determinism ×10 + 1M stress; milestone review lap (Graefe + Torvalds), fold, delta.
 
 No finding "done" until a test (unit + FDB where row/plan-visible) pins the corrected behavior. No
