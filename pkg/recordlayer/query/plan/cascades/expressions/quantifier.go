@@ -24,9 +24,12 @@ const (
 	// NOT EXISTS legs (see compensation.go's existential handling).
 	QuantifierExistential
 
-	// QuantifierPhysical: a quantifier in the physical (post-planning)
-	// tree. Unused in Go — the physical tree is the separate
-	// plans.RecordQueryPlan hierarchy, bridged by physical wrappers.
+	// QuantifierPhysical: a quantifier ranging over a Reference whose
+	// member is a physical plan. Minted by PLANNING implementation rules
+	// (NewPhysicalQuantifier / NamedPhysicalQuantifier) to wire plan
+	// wrappers over memoized children. Distinct from ForEach under memo
+	// identity: a physical wrapper and its logical twin must not dedup
+	// as one member.
 	QuantifierPhysical
 )
 

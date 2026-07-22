@@ -46,8 +46,8 @@ func (r *ImplementRecursiveLevelUnionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	initialWinner := getWinnerForOrdering(initialRef, properties.PreserveOrdering(), call.CostModel())
-	recursiveWinner := getWinnerForOrdering(recursiveRef, properties.PreserveOrdering(), call.CostModel())
+	initialWinner, _ := getWinnerForOrdering(initialRef, properties.PreserveOrdering(), call.CostModel())
+	recursiveWinner, _ := getWinnerForOrdering(recursiveRef, properties.PreserveOrdering(), call.CostModel())
 	if initialWinner == nil || recursiveWinner == nil {
 		return
 	}

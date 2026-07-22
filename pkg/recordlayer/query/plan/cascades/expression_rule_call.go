@@ -151,9 +151,20 @@ func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpres
 		ref := c.memo.MemoizeExpression(expr)
 		// Compare canonical identities: after a cross-group merge (RFC-037)
 		// the memoized Reference and c.Reference may be the same group
-		// reached via different pointers.
+		// reached via different pointers. Reusing the rule's OWN group
+		// would create a self-edge (the yielded expression ranging over
+		// its own group — a cycle), so a fresh reference is minted — and
+		// it MUST be REGISTERED with the memo: Java's no-reuse path is
+		// addNewReference (CascadesRuleCall.memoizeExploratoryExpressions;
+		// self-reuse is structurally impossible there and Verify-guarded).
+		// An unregistered orphan is invisible to the topology and to task
+		// scheduling — a yielded tree wired over it strands with a logical
+		// member no exploration ever implements ("best expression is not a
+		// physical plan"; the LEFT-box + unnest + EXISTS no-plan).
 		if ref.Canonical() == c.Reference.Canonical() {
-			return expressions.InitialOf(expr)
+			fresh := expressions.InitialOf(expr)
+			c.memo.ScheduleFreshReference(fresh)
+			return fresh
 		}
 		return ref
 	}

@@ -202,6 +202,23 @@ func (r *PartitionBinarySelectRule) tryPartition(
 		return
 	}
 
+	// A NULL-ON-EMPTY leg must not absorb predicates. The select's predicates
+	// are evaluated AFTER the leg's null-supplying step (a dissolved outer box
+	// carries its outer-join edge on the quantifier flag): pushing one into the
+	// leg moves a post-box WHERE inside the box — ON-clause semantics — so the
+	// box still emits null-supplied rows the filter was meant to reject.
+	// (Rebuilding the wrapped leg would also mint a plain ForEach, silently
+	// discarding the flag and interning an INNER-ized tree as memo-equivalent
+	// to the box.) When the predicate provably rejects the null tuple,
+	// EliminateNullOnEmptyRule strips the flag first and partitioning then
+	// fires on the plain twin; a null-ACCEPTING predicate must stay above the
+	// box, so decline. A leg with NO absorbed predicates passes through
+	// verbatim below, flag intact.
+	if (len(leftPredicates) > 0 && leftQuantifier.IsNullOnEmpty()) ||
+		(len(rightPredicates) > 0 && rightQuantifier.IsNullOnEmpty()) {
+		return
+	}
+
 	// Build the new left quantifier (possibly wrapped in a new Select
 	// with absorbed predicates).
 	var newLeftQuantifier expressions.Quantifier

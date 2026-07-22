@@ -6,7 +6,9 @@ import (
 	"hash"
 	"hash/fnv"
 	"io"
+	"os"
 	"strings"
+	"sync"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -95,81 +97,19 @@ func NewPlanningCostModelLessWithContext(stats properties.StatisticsProvider, ct
 // materialized-NLJ alternative — a regression, not a fix (pinned by
 // TestFDB_ArrayUnnestOrdinality, which asserts the materialized NLJ box, and by
 // TestRewritingCostModel_KeepsUnrewrittenOuterJoin).
+// RFC-186: every tier derives through DESIGNATED child finals (the virtual
+// prune, designated_final.go) — a function of a deterministically-chosen
+// candidate tree, never of memo-population history. The pre-RFC-186 tiers
+// summed over ALL memo members (exploratory included), so two equivalent
+// candidates scored differently by how many rewrites their child groups
+// happened to accumulate — and tier 3's physical-only descent counted
+// nothing at all on the all-logical REWRITING memo. This package-level
+// function mints a fresh designation scope per call (identical semantics to
+// the planner-owned scope, merely uncached); the planner's REWRITING cost
+// model uses its own scope so OptimizeGroup winners and designations come
+// from the SAME comparator (coherence, RFC-186 instrument).
 func RewritingCostModelLess(a, b expressions.RelationalExpression) bool {
-	return rewritingCostModelCompare(a, b) < 0
-}
-
-func rewritingCostModelCompare(a, b expressions.RelationalExpression) int {
-	selectsA := properties.EvaluateExpressionCount(a, isSelectExpression)
-	selectsB := properties.EvaluateExpressionCount(b, isSelectExpression)
-	if selectsA != selectsB {
-		return intCompare(selectsA, selectsB)
-	}
-
-	tfA := properties.EvaluateExpressionCount(a, isTableFunctionExpression)
-	tfB := properties.EvaluateExpressionCount(b, isTableFunctionExpression)
-	if tfA != tfB {
-		return intCompare(tfA, tfB)
-	}
-
-	conjA := countResidualPredicates(a)
-	conjB := countResidualPredicates(b)
-	if conjA != conjB {
-		return intCompare(conjA, conjB)
-	}
-
-	infoA := predicateCountByLevel(a)
-	infoB := predicateCountByLevel(b)
-	if cmp := comparePredicateCountByLevel(infoB, infoA); cmp != 0 {
-		return cmp
-	}
-
-	hashA := deepHashCode(a)
-	hashB := deepHashCode(b)
-	if hashA != hashB {
-		if hashA < hashB {
-			return -1
-		}
-		return 1
-	}
-	return 0
-}
-
-// predicateCountByLevel computes predicate counts at each tree depth.
-// Level 0 = leaves, increasing towards root. Matches Java's
-// PredicateCountByLevelProperty.
-func predicateCountByLevel(e expressions.RelationalExpression) map[int]int {
-	result := map[int]int{}
-	predicateCountByLevelRec(e, result)
-	return result
-}
-
-func predicateCountByLevelRec(e expressions.RelationalExpression, counts map[int]int) int {
-	if e == nil {
-		return -1
-	}
-	maxChildLevel := -1
-	// AllMembers (not firstPhysicalChild) — this runs in the REWRITING phase
-	// where all members are logical and firstPhysicalChild would return nil.
-	for _, q := range e.GetQuantifiers() {
-		ref := q.GetRangesOver()
-		if ref == nil {
-			continue
-		}
-		for _, m := range ref.AllMembers() {
-			childLevel := predicateCountByLevelRec(m, counts)
-			if childLevel > maxChildLevel {
-				maxChildLevel = childLevel
-			}
-		}
-	}
-	currentLevel := maxChildLevel + 1
-	predCount := 0
-	if wp, ok := e.(expressions.RelationalExpressionWithPredicates); ok {
-		predCount = len(wp.GetPredicates())
-	}
-	counts[currentLevel] += predCount
-	return currentLevel
+	return newDesignationScope().compare(a, b, nil) < 0
 }
 
 func comparePredicateCountByLevel(a, b map[int]int) int {
@@ -272,11 +212,21 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 	// (the RFC-069 multiway regression: an index-probe order lost to a full-scan order on
 	// fetch count despite being far cheaper). It self-gates to join-wrapper pairs; non-join
 	// comparisons fall straight through (RFC-069).
-	if cmp := compareJoinOrdering(a, b, stats, ctx); cmp != 0 {
+	// Recursive-CTE DECOMPOSITION choice (DFS join vs level union) runs
+	// BEFORE join-order costing: the two candidates are different
+	// algorithms over different subtrees, not two orders of one join —
+	// outside compareJoinOrdering's jurisdiction. Pre-RFC-186 §2D the
+	// concrete walk priced both recursive roots transparently (equal) and
+	// abstained here by accident; the HintCost dispatch made it
+	// discriminate across the decompositions' non-comparable children and
+	// steal the choice from this comparison (the RecursiveCTE plan-shape
+	// pin caught the flip). Jurisdiction, not ordering luck, now encodes
+	// the precedence.
+	if cmp := compareRecursiveCTE(a, b); cmp != 0 {
 		return cmp
 	}
 
-	if cmp := compareRecursiveCTE(a, b); cmp != 0 {
+	if cmp := compareJoinOrdering(a, b, stats, ctx); cmp != 0 {
 		return cmp
 	}
 
@@ -1039,8 +989,8 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 	if stats == nil {
 		stats = properties.DefaultStatistics{}
 	}
-	costA := concretePlanCost(planA, stats, ctx)
-	costB := concretePlanCost(planB, stats, ctx)
+	costA := concretePlanCostStrict(planA, stats, ctx, true)
+	costB := concretePlanCostStrict(planB, stats, ctx, true)
 
 	// A materialized NLJ vs a correlated FlatMap (DIFFERENT root join shapes) is a
 	// Go-ONLY comparison — Java keeps no materialized NLJ (RewriteOuterJoinRule
@@ -1125,15 +1075,28 @@ func joinShapesDiffer(planA, planB plans.RecordQueryPlan) bool {
 // and CPU roll up from children exactly as the wrapper cost does, so a join's total
 // cost reflects each sub-product's real (embedded) plan, not a shared-group winner.
 func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
+	return concretePlanCostStrict(p, stats, ctx, false)
+}
+
+// concretePlanCostStrict is concretePlanCost with the RFC-186 §2B
+// point-probe policy selectable: strictPKGate=true (the JOIN-ORDERING
+// entry, compareJoinOrdering) requires PROVABLE full-PK coverage for the
+// 1-row shortcut — an unprovable bind is never a point probe there,
+// because a composite-PK prefix priced as 1 row drives catastrophic join
+// orders. strictPKGate=false (the data-access HintCost adapter, which has
+// no PlanContext) keeps the ADVISORY policy: a full-equality bind prices
+// as a point lookup — imposing strictness there re-broke the documented
+// id-IN-(...) full-scan mis-cost the adapter exists to fix.
+func concretePlanCostStrict(p plans.RecordQueryPlan, stats properties.StatisticsProvider, ctx PlanContext, strictPKGate bool) properties.Cost {
 	if p == nil {
 		return properties.Cost{}
 	}
 	kids := p.GetChildren()
 	child := make([]properties.Cost, len(kids))
 	for i, c := range kids {
-		child[i] = concretePlanCost(c, stats, ctx)
+		child[i] = concretePlanCostStrict(c, stats, ctx, strictPKGate)
 	}
-	return combineConcreteCost(p, child, stats, ctx)
+	return combineConcreteCost(p, child, stats, ctx, strictPKGate)
 }
 
 // combineConcreteCost applies a plan node's per-operator cost formula to its
@@ -1141,7 +1104,7 @@ func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvid
 // children is expressible independently of the recursion. The per-operator
 // formulas (cost_formulas.go) are the single source of truth shared with the
 // physical-wrapper HintCost methods.
-func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
+func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext, strictPKGate bool) properties.Cost {
 	c0 := func() properties.Cost {
 		if len(child) > 0 {
 			return child[0]
@@ -1150,8 +1113,16 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 	}
 	switch pl := p.(type) {
 	case *plans.RecordQueryScanPlan:
-		// Primary-key scan: a full-equality bind on the PK is provably unique → 1 row.
-		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, true)
+		// Primary-key scan: 1 row ONLY on a PROVABLE full-PK equality bind
+		// (RFC-186 §2B). nil-ctx/unprovable policy at THIS site — STRICTER
+		// than scanPlanProvableMaxCard's: never a point probe. The old
+		// unconditional `true` let `numBound == len(comps)` pass for a
+		// correlated composite-PK PREFIX bind (only tenant_id of
+		// (tenant_id, order_id) present as a comparison): a potentially
+		// million-row prefix scan priced as a repeatable 1-row inner probe —
+		// catastrophic join orders.
+		fullBind, provable := pkFullyEqualityBound(pl, ctx)
+		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, fullBind && (provable || !strictPKGate))
 	case *plans.RecordQueryIndexPlan:
 		// Secondary index: a full-equality bind is a single row only if the index is
 		// UNIQUE. Resolve uniqueness from PlanContext when available;
@@ -1212,7 +1183,29 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		}
 		return properties.IntersectionCost(child)
 	default:
-		// Transparent / unknown: roll up the first child's cardinality + summed CPU.
+		// RFC-186 §2D: an operator without an explicit arm dispatches to its
+		// own HintCost — the per-plan formulas in plan/plans/cost.go are the
+		// single source of truth — so a limit caps its child's cardinality,
+		// an aggregation collapses to its group estimate, a union sums its
+		// children and pays merge CPU, and every NEW plan type is priced
+		// automatically the day it gains a HintCost. The explicit arms above
+		// remain only where the join-ordering recursion deliberately
+		// diverges from HintCost: the RFC-069 selectivity-only scan/index
+		// leaves and the join/filter operators the walk recurses through
+		// with its own child costs. Before this dispatch, whole operator
+		// classes (limits, aggregations, unions, IN operators, recursive
+		// plans) fell to first-child transparency — a join under a union
+		// exposed only the first branch's cardinality and paid no merge
+		// cost, flipping join-order selection.
+		if hc, ok := p.(interface {
+			HintCost([]properties.Cost, properties.StatisticsProvider) properties.Cost
+		}); ok {
+			return hc.HintCost(child, stats)
+		}
+		// No HintCost either: first-child-transparent, but LOUDLY (once per
+		// concrete type) — silent transparency is how the class went
+		// unpriced. Every new plan type must take a position.
+		warnUnpricedPlanType(p)
 		sumCPU := 0.0
 		for _, c := range child {
 			sumCPU += c.CPU
@@ -1222,6 +1215,21 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		}
 		return properties.Cost{Cardinality: properties.LeafScanCardinality, CPU: properties.LeafScanCardinality * properties.ScanCPU}
 	}
+}
+
+// warnedUnpricedPlanTypes tracks which plan types have already produced the
+// §2D transparency warning, so a hot planning loop emits each diagnosis
+// exactly once per process.
+var warnedUnpricedPlanTypes sync.Map
+
+func warnUnpricedPlanType(p plans.RecordQueryPlan) {
+	name := fmt.Sprintf("%T", p)
+	if _, loaded := warnedUnpricedPlanTypes.LoadOrStore(name, struct{}{}); loaded {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"cascades: join-ordering cost walk found plan type %s with neither an explicit arm nor a HintCost — priced first-child-transparent (add a HintCost; RFC-186 §2D)\n",
+		name)
 }
 
 // scanLikeCost is the metadata-independent leaf cost for the concrete join-ordering
@@ -1525,29 +1533,45 @@ func indexMetadata(pl *plans.RecordQueryIndexPlan, ctx PlanContext) ([]string, b
 // columns to cover the FULL primary key (a partial equality prefix of a composite PK is
 // still a range, hence unbounded).
 func scanPlanProvableMaxCard(pl *plans.RecordQueryScanPlan, ctx PlanContext) (float64, bool) {
+	fullBind, _ := pkFullyEqualityBound(pl, ctx)
+	if !fullBind {
+		return 0, false
+	}
+	// nil-ctx policy at THIS site: unprovable full-PK coverage still ALLOWS
+	// the 1-row bound (the bound is advisory; legacy behavior). The
+	// join-ordering leaf cost applies the STRICTER policy — see the
+	// RecordQueryScanPlan arm of the concrete join-cost switch.
+	return 1, true
+}
+
+// pkFullyEqualityBound is RFC-186 §2B's ONE shared full-PK-equality
+// predicate — two subtly different inline gates in one file is how the
+// composite-PK point-probe bug was born. fullBind reports that every
+// present comparison is an equality with none absent AND, when coverage is
+// provable, that the bound columns cover the FULL primary key (a partial
+// equality prefix of a composite PK is still a range). provable reports
+// whether ctx resolved the PK column count. Each call site states its own
+// nil-ctx/unprovable policy explicitly.
+func pkFullyEqualityBound(pl *plans.RecordQueryScanPlan, ctx PlanContext) (fullBind, provable bool) {
 	comps := pl.GetScanComparisons()
 	if len(comps) == 0 {
-		return 0, false
+		return false, false
 	}
 	numBound := 0
-	allEquality := true
 	for _, cr := range comps {
-		if !cr.IsEmpty() {
-			numBound++
-			if !cr.IsEquality() {
-				allEquality = false
-			}
+		if cr.IsEmpty() || !cr.IsEquality() {
+			return false, false
 		}
+		numBound++
 	}
-	if numBound == 0 || !allEquality || numBound != len(comps) {
-		return 0, false
+	if ctx == nil || len(pl.GetRecordTypes()) == 0 {
+		return true, false
 	}
-	if ctx != nil && len(pl.GetRecordTypes()) > 0 {
-		if pkLen := len(ctx.GetPrimaryKeyColumns(pl.GetRecordTypes()[0])); pkLen > 0 && numBound < pkLen {
-			return 0, false
-		}
+	pkLen := len(ctx.GetPrimaryKeyColumns(pl.GetRecordTypes()[0]))
+	if pkLen == 0 {
+		return true, false
 	}
-	return 1, true
+	return numBound >= pkLen, true
 }
 
 // indexPlanProvableMaxCard returns an index scan's PROVABLE max cardinality (1) and

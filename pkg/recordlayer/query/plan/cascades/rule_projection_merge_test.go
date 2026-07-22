@@ -114,3 +114,60 @@ func TestProjectionMergeRule_TriplyNested_FlattensInTwoFires(t *testing.T) {
 		t.Fatalf("exploration did not produce a 1-deep projection over Scan; members=%d", len(members))
 	}
 }
+
+// TestProjectionMergeRule_PinsOuterEffectiveNames pins the merged
+// projection's OUTPUT SCHEMA: an outer projection whose output names come
+// from its VALUES' own field names (lazy reads, alias list nil) must keep
+// those names after composition substitutes the inner's values — the field
+// name rides the replaced value, so the merge must pin each slot's
+// effective name (OutputColumnName) as the merged alias. Pre-fix the
+// merged output regressed to the INNER values' names — for a CTE
+// `WITH c AS (SELECT la.k AS ak, lb.k AS bk ...) SELECT ak, bk FROM c`
+// the output schema became the dup-bare [K, K] and the consumer's column
+// VANISHED (the RFC-186 winner-flip triage's wrong-rows case).
+func TestProjectionMergeRule_PinsOuterEffectiveNames(t *testing.T) {
+	t.Parallel()
+
+	// Inner projection: two values whose bare names collide (K, K),
+	// aliased apart as AK / BK — the CTE-body shape.
+	innerVals := []values.Value{
+		&values.FieldValue{Field: "K", Typ: values.UnknownType},
+		&values.FieldValue{Field: "K2", Typ: values.UnknownType},
+	}
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	innerProj := expressions.NewLogicalProjectionExpressionWithAliases(innerVals, []string{"AK", "BK"}, innerQ)
+
+	// Outer projection: LAZY reads of the aliased names, NO alias list —
+	// the CTE-consumer shape (`SELECT "AK", "BK" FROM "C"`).
+	outerVals := []values.Value{
+		&values.FieldValue{Field: "AK", Typ: values.UnknownType},
+		&values.FieldValue{Field: "BK", Typ: values.UnknownType},
+	}
+	outerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerProj))
+	outer := expressions.NewLogicalProjectionExpression(outerVals, outerQ)
+
+	ref := expressions.InitialOf(outer)
+	yielded := FireExpressionRule(NewProjectionMergeRule(), ref)
+	if len(yielded) != 1 {
+		t.Fatalf("rule yielded %d expressions, want 1", len(yielded))
+	}
+	flat, ok := yielded[0].(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("yielded %T, want *LogicalProjectionExpression", yielded[0])
+	}
+	pv := flat.GetProjectedValues()
+	al := flat.GetAliases()
+	if len(pv) != 2 {
+		t.Fatalf("flat projected values len=%d, want 2", len(pv))
+	}
+	for i, want := range []string{"AK", "BK"} {
+		alias := ""
+		if al != nil {
+			alias = al[i]
+		}
+		if got := values.OutputColumnName(pv[i], alias); got != want {
+			t.Fatalf("merged output name[%d] = %q, want %q (outer effective name must survive the merge; inner names [K K2] must not leak)", i, got, want)
+		}
+	}
+}

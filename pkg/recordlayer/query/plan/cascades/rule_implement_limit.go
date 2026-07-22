@@ -49,7 +49,13 @@ func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 
 	seen := make(map[expressions.RelationalExpression]bool)
 	for _, ordering := range orderings {
-		winner := getWinnerForOrdering(innerRef, ordering, call.CostModel())
+		// satisfied deliberately DISCARDED (RFC-186 §2C): this wrapper is an
+		// orderingDelegator — its ordering claim is re-derived through
+		// OrderingSourceRef at lookup time and pinOrderedSpine declines
+		// unsatisfied spines, so an unordered fallback yield here can never
+		// be CLAIMED as ordered; it is the member the in-memory-sort
+		// enforcer wraps (declining instead would empty the group — no plan).
+		winner, _ := getWinnerForOrdering(innerRef, ordering, call.CostModel())
 		if winner == nil {
 			continue
 		}

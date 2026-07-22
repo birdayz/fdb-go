@@ -3174,6 +3174,18 @@ each on its own stacked branch.
 
 ## Known gaps
 
+- **[RFC-186 follow-up] PartitionSelectRule (≥3-way) null-on-empty axis is unprobed.**
+  PartitionBinarySelectRule now declines to absorb predicates into a null-on-empty leg
+  (post-box WHERE must not move inside a dissolved outer box; pinned in
+  rule_partition_binary_select_test.go). The ≥3-way twin has no such guard, but every
+  observed noe-carrying invocation across the box-join families exits at its `>= 3`
+  quantifier gate (probed 2026-07-22: 108/108 hits were binary), so the axis is latent,
+  not live. If a ≥3-quantifier noe-carrying select ever reaches it, the same placement
+  question applies with an extra wrinkle: a noe leg peeled into a lower select away
+  from the preserved sibling it null-supplies against would move the outer-join edge
+  across a select boundary. Needs a probe + guard (or a proof it composes) before any
+  producer of that shape lands.
+
 - **[RFC-180 follow-up, pre-existing] Output-alias vs rendered-item name collision
   under the IMMEDIATE post-aggregate strip.** `SELECT player AS "SUM(SCORE)",
   SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC` sorts by
@@ -4601,6 +4613,17 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 ## Stress test 1M baseline (2026-05-27)
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
+
+**2026-07-22 (RFC-186 §2A-§2D — designated-final derivation, PK point-probe gate,
+HintCost dispatch): back-to-back master worktree vs branch, same box, sequential
+runs. All subtests PASS both sides; everything within single-run noise: full scans
+master 3.15/3.40/3.66/3.13s vs branch 3.08/3.27/3.47/3.02s (branch equal-or-faster),
+order_by_pk_full 3.40 vs 3.54s (+4%), point lookups/index-eq at the 10-30ms floor
+both sides; index_amount_range 0.15 vs 0.23s (+53%) and group_by_customer_having 0.13 vs
+0.20s (+54%) — small-absolute sub-second deltas from SINGLE runs each side, so
+noise vs signal is NOT demonstrated for those two rows; no order-of-magnitude
+shift anywhere and no plan-shape change in the suites. FOLLOW-UP: re-measure
+those two subtests (3× each side) before reading them as a §2 effect.**
 
 **2026-07-17 (RFC-180 D2+I3 — winner map deletion, requested-ordering retention,
 root-operator rule index, exact integer comparators): branch (HEAD 0aea06b48),

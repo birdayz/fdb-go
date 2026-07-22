@@ -789,3 +789,79 @@ func TestPartitionBinarySelectRule_ResultValuePreserved(t *testing.T) {
 		t.Errorf("result value type mismatch: original is RCV=%v, result is RCV=%v", origIsRCV, resultIsRCV)
 	}
 }
+
+// pbForEachNoeOf wraps an expression in a NULL-ON-EMPTY ForEach quantifier —
+// the null-supplying leg of a dissolved outer-join box.
+func pbForEachNoeOf(expr expressions.RelationalExpression) expressions.Quantifier {
+	return expressions.ForEachNullOnEmptyQuantifier(expressions.InitialOf(expr))
+}
+
+func TestPartitionBinarySelectRule_DeclinesAbsorbIntoNullOnEmptyLeg(t *testing.T) {
+	t.Parallel()
+
+	// A predicate routed to a NULL-ON-EMPTY leg must NOT be absorbed into it:
+	// the select's predicates run AFTER the leg's null-supplying step, so
+	// wrapping the leg in a filtered sub-select moves a post-box WHERE inside
+	// the box (ON-clause semantics) — and the rebuilt wrapper quantifier would
+	// silently drop the flag, interning an INNER-ized tree as memo-equivalent
+	// to the box. Both orderings route the predicate into the noe leg, so the
+	// rule must yield nothing.
+	tQ := baseT()
+	tauNoeQ := pbForEachNoeOf(expressions.NewLogicalTypeFilterExpression(
+		[]string{"TAU"},
+		expressions.ForEachQuantifier(expressions.InitialOf(&expressions.FullUnorderedScanExpression{})),
+	))
+
+	sel := joinOf(tQ, tauNoeQ).
+		addResultColumn(tQ, "a").
+		addResultColumn(tauNoeQ, "alpha").
+		addPredicate(pbFieldPred(tauNoeQ, "beta", pbLiteralCmp(predicates.ComparisonGreaterThan, "world"))).
+		buildSelect()
+
+	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), expressions.InitialOf(sel))
+	if len(yielded) != 0 {
+		t.Fatalf("expected no yields (predicate absorbed into a null-on-empty leg), got %d: %T", len(yielded), yielded[0])
+	}
+}
+
+func TestPartitionBinarySelectRule_PreservesNullOnEmptyOnUntouchedLeg(t *testing.T) {
+	t.Parallel()
+
+	// A predicate on the PRESERVED leg partitions fine — filtering the
+	// preserved side commutes with the box — and the null-on-empty leg, which
+	// absorbs nothing, must pass through VERBATIM with its flag intact.
+	tQ := baseT()
+	tauNoeQ := pbForEachNoeOf(expressions.NewLogicalTypeFilterExpression(
+		[]string{"TAU"},
+		expressions.ForEachQuantifier(expressions.InitialOf(&expressions.FullUnorderedScanExpression{})),
+	))
+
+	sel := joinOf(tQ, tauNoeQ).
+		addResultColumn(tQ, "a").
+		addResultColumn(tauNoeQ, "alpha").
+		addPredicate(pbFieldPred(tQ, "b", pbLiteralCmp(predicates.ComparisonGreaterThan, "hello"))).
+		buildSelect()
+
+	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), expressions.InitialOf(sel))
+	if len(yielded) == 0 {
+		t.Fatal("expected the preserved-leg predicate to partition")
+	}
+	for i, y := range yielded {
+		result, ok := y.(*expressions.SelectExpression)
+		if !ok {
+			t.Fatalf("yield[%d]: expected *SelectExpression, got %T", i, y)
+		}
+		found := false
+		for _, q := range result.GetQuantifiers() {
+			if q.GetAlias() == tauNoeQ.GetAlias() {
+				found = true
+				if !q.IsNullOnEmpty() {
+					t.Errorf("yield[%d]: null-on-empty flag dropped from the untouched leg", i)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("yield[%d]: noe leg's alias missing from partitioned select", i)
+		}
+	}
+}

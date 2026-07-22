@@ -83,6 +83,9 @@ func matchChildrenInMemo(member, expr RelationalExpression, mq, eq []Quantifier,
 		found := permute(indices, 0, func(perm []int) bool {
 			b := equiv
 			for i := 0; i < n; i++ {
+				if !quantifierAttributesEqual(mq[i], eq[perm[i]]) {
+					return false
+				}
 				if !childRefsMatchInMemo(mq[i].GetRangesOver(), eq[perm[i]].GetRangesOver(), b) {
 					return false
 				}
@@ -102,6 +105,12 @@ func matchChildrenInMemo(member, expr RelationalExpression, mq, eq []Quantifier,
 	}
 	b := equiv
 	for i := 0; i < n; i++ {
+		// Edge attributes (kind / null-on-empty / strict-single) are part
+		// of memo identity — see sameChildReferences and
+		// quantifierAttributesEqual.
+		if !quantifierAttributesEqual(mq[i], eq[i]) {
+			return nil, false
+		}
 		if !childRefsMatchInMemo(mq[i].GetRangesOver(), eq[i].GetRangesOver(), b) {
 			return nil, false
 		}

@@ -28,7 +28,7 @@ func TestGetWinnerForOrdering_PreserveReturnsNoPropsWinner(t *testing.T) {
 	ref.SetWinner(physExpr)
 
 	// getWinnerForOrdering(PRESERVE) should return the stamped winner
-	winner := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
+	winner, _ := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering(PRESERVE) returned nil")
 	}
@@ -47,7 +47,7 @@ func TestGetWinnerForOrdering_FallbackToFindBestWhenNoWinner(t *testing.T) {
 	FireExpressionRule(scanRule, ref)
 
 	// No winner stamped — getWinnerForOrdering should fall back to findBestValidPhysicalExpr
-	winner := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
+	winner, _ := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering(PRESERVE) returned nil (fallback should work)")
 	}
@@ -82,7 +82,7 @@ func TestGetWinnerForOrdering_OrderingLookup(t *testing.T) {
 	}
 	reqOrd := properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false)
 
-	winner := getWinnerForOrdering(ref, reqOrd, nil)
+	winner, _ := getWinnerForOrdering(ref, reqOrd, nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering returned nil for matching ordering")
 	}
@@ -154,7 +154,7 @@ func TestBestSatisfyingMember_CounterflowNullsGate(t *testing.T) {
 	// getWinnerForOrdering falls back to the cheapest plan when nothing
 	// satisfies — it must not return the counterflow-mismatched member AS
 	// the satisfying winner, but it still returns a plan (the sort stays).
-	if w := getWinnerForOrdering(refNatural, reqOn(properties.RequestedSortOrderAscendingNullsLast), nil); w != natural {
+	if w, _ := getWinnerForOrdering(refNatural, reqOn(properties.RequestedSortOrderAscendingNullsLast), nil); w != natural {
 		t.Fatalf("fallback should return the cheapest member, got %T", w)
 	}
 }
@@ -196,7 +196,7 @@ func TestFindPhysicalPlanVsFindBestPhysicalExpr_InsertionOrderMatters(t *testing
 	t.Logf("findBestValidPhysicalExpr returned: %v (type %T)", best, best)
 
 	// Test getWinnerForOrdering with no winner stamped
-	winner := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
+	winner, _ := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering returned nil")
 	}
@@ -265,13 +265,13 @@ func TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical(t *testing.T) {
 	}
 
 	// Verify getWinnerForOrdering(PRESERVE) finds something (no winners stamped)
-	winner := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
+	winner, _ := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering(PRESERVE) returned nil — this is the bug")
 	}
 
 	// Also verify with nil ordering
-	winner2 := getWinnerForOrdering(ref, nil, nil)
+	winner2, _ := getWinnerForOrdering(ref, nil, nil)
 	if winner2 == nil {
 		t.Fatal("getWinnerForOrdering(nil) returned nil")
 	}
@@ -421,4 +421,48 @@ func TestPinOrderedSpine_DeclinesWhenRelinkRefused(t *testing.T) {
 			t.Fatalf("pin returned a wrapper whose executable plan does NOT contain the pinned projection child — the relink was refused and the pin is a lie (%T)", got)
 		}
 	}
+}
+
+// TestGetWinnerForOrdering_SatisfiedContract pins RFC-186 §2C: the second
+// return distinguishes a member that SATISFIES the requested ordering from
+// the load-bearing unordered FALLBACK. The fallback must still YIELD
+// (returning nothing would empty the group under a sort — the child's only
+// requested ordering is the sort's, and ImplementInMemorySortRule bails on
+// an empty group: no plan at all); satisfied=false is the caller's signal
+// that the ordering claim, if any, must come from downstream re-derivation
+// (orderingDelegator / pinOrderedSpine), never from this return.
+func TestGetWinnerForOrdering_SatisfiedContract(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	ref := expressions.InitialOf(scan)
+	FireExpressionRule(NewPrimaryScanRule(), ref)
+	phys := findPhysicalExpr(ref)
+	if phys == nil {
+		t.Fatal("no physical expr after PrimaryScanRule")
+	}
+	ref.SetWinner(phys)
+
+	t.Run("preserve is trivially satisfied", func(t *testing.T) {
+		t.Parallel()
+		w, satisfied := getWinnerForOrdering(ref, properties.PreserveOrdering(), nil)
+		if w == nil || !satisfied {
+			t.Fatalf("(w=%v, satisfied=%v), want stamped winner with satisfied=true", w, satisfied)
+		}
+	})
+
+	t.Run("unsatisfiable ordering yields the fallback with satisfied=false", func(t *testing.T) {
+		t.Parallel()
+		// A bare unordered primary scan cannot satisfy an ordering on X.
+		reqX := properties.NewRequestedOrdering(
+			[]properties.RequestedOrderingPart{{Value: values.NewFlatFieldValue("X", values.UnknownType), SortOrder: properties.RequestedSortOrderAscending}},
+			properties.DistinctnessPreserveDistinctness, false)
+		w, satisfied := getWinnerForOrdering(ref, reqX, nil)
+		if w == nil {
+			t.Fatal("the unordered fallback must still YIELD (no-empty-group: the enforcer wraps it)")
+		}
+		if satisfied {
+			t.Fatal("an unordered scan must never be reported as satisfying an ordering on X")
+		}
+	})
 }

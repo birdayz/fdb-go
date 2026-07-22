@@ -694,7 +694,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		return
 	}
 
-	outerExpr := getWinnerForOrdering(outerRef, properties.PreserveOrdering(), call.CostModel())
+	outerExpr, _ := getWinnerForOrdering(outerRef, properties.PreserveOrdering(), call.CostModel())
 	if outerExpr == nil {
 		return
 	}
@@ -704,7 +704,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	}
 	outerPlan := outerPh.GetRecordQueryPlan()
 
-	innerExpr := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
+	innerExpr, _ := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
 	if innerExpr == nil {
 		return
 	}
@@ -776,6 +776,64 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// Both the fast path and the below-FOD path then see correct refs; the below-FOD
 	// window branch is a no-op (single rebase authority — no double-rebase).
 	// CORRECT-or-LOUD: an unmappable ref declines the yield.
+	// PROPERTY-DRIVEN outer selection: a below-FOD predicate that references a
+	// BURIED leg of the outer box (an alias that is neither the outer binding,
+	// an inner leg, nor a pre-evaluated scalar binding) can only be bound
+	// through the positional-seed window rebase — the outer's result value must
+	// BE the baked ordinal-seed RecordConstructor. That is a REQUIRED PROPERTY
+	// of the outer child for this shape, exactly like a requested ordering: the
+	// cost winner is only usable if it satisfies it. Equivalence-class members
+	// share row SEMANTICS, not result-value STRUCTURE — a name-keyed merged
+	// select and the gathered seed coexist as finals of the same group — so
+	// when the cost winner lacks the seed shape, reselect the cheapest final
+	// that HAS it rather than failing closed on an arbitrary tie-break. (Blind
+	// winner consumption only ever worked because kind/noe-blind memo identity
+	// used to dedup the non-seed twins away; RFC-186's refined identity keeps
+	// them, making the tie-break — and this reselection — load-bearing.)
+	// If NO final carries the seed shape, the fail-closed buried-ref guard
+	// below still declines the yield.
+	if w, _ := ordinalSeedLegWindowsOf(planResultValue(outerPlan)); w == nil {
+		needBuried := false
+		for _, p := range regularPreds {
+			if !predicateReferencesInnerLeg(p, innerLegs) {
+				continue
+			}
+			scalarAliases := scalarSubqueryAliasesOfPredicate(p)
+			for a := range predicates.GetCorrelatedToOfPredicate(p) {
+				if a == outerCorr {
+					continue
+				}
+				if _, ok := innerLegs[a]; ok {
+					continue
+				}
+				if _, ok := scalarAliases[a]; ok {
+					continue
+				}
+				needBuried = true
+			}
+		}
+		if needBuried {
+			less := call.CostModel()
+			var bestSeed physicalPlanExpression
+			for _, fm := range outerRef.FinalMembers() {
+				ph, isPh := fm.(physicalPlanExpression)
+				if !isPh {
+					continue
+				}
+				if fw, _ := ordinalSeedLegWindowsOf(planResultValue(ph.GetRecordQueryPlan())); fw == nil {
+					continue
+				}
+				if bestSeed == nil || less(ph, bestSeed) {
+					bestSeed = ph
+				}
+			}
+			if bestSeed != nil {
+				outerExpr = bestSeed
+				outerPh = bestSeed
+				outerPlan = bestSeed.GetRecordQueryPlan()
+			}
+		}
+	}
 	windowsHoisted := false
 	if windows, mergedRowType := ordinalSeedLegWindowsOf(planResultValue(outerPlan)); windows != nil {
 		windowsHoisted = true
@@ -2023,9 +2081,9 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		return
 	}
 
-	leftExpr := getWinnerForOrdering(leftRef, properties.PreserveOrdering(), call.CostModel())
-	rightExpr := getWinnerForOrdering(rightRef, properties.PreserveOrdering(), call.CostModel())
-	existExpr := getWinnerForOrdering(existRef, properties.PreserveOrdering(), call.CostModel())
+	leftExpr, _ := getWinnerForOrdering(leftRef, properties.PreserveOrdering(), call.CostModel())
+	rightExpr, _ := getWinnerForOrdering(rightRef, properties.PreserveOrdering(), call.CostModel())
+	existExpr, _ := getWinnerForOrdering(existRef, properties.PreserveOrdering(), call.CostModel())
 	if leftExpr == nil || rightExpr == nil || existExpr == nil {
 		return
 	}
@@ -2049,6 +2107,21 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	}
 	if len(aliases) >= 3 {
 		existAlias = aliases[2]
+	}
+	if existAlias == "" {
+		// The positional source-alias triple is USER-FACING naming and a
+		// coexisting select form (the memo-identity refinement lets the
+		// LEFT-box and dissolved forms coexist as members) may not carry a
+		// third entry. The correlation authority for the FirstOrDefault
+		// column and the EXISTS residual is the existential QUANTIFIER'S
+		// OWN alias — fall back to it rather than minting a zero-value
+		// correlation (a construction panic) or declining a shape with no
+		// other implementer (a no-plan failure; the null-supplied-conjunct
+		// LEFT+EXISTS pin is exactly that query).
+		existAlias = quants[2].GetAlias().Name()
+	}
+	if existAlias == "" {
+		return // no correlation authority at all — fail closed
 	}
 
 	// The materialized step-1 NLJ executes each leg INDEPENDENTLY, so it
@@ -2569,7 +2642,7 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		if quants[i].IsNullOnEmpty() {
 			return
 		}
-		expr := getWinnerForOrdering(ref, properties.PreserveOrdering(), call.CostModel())
+		expr, _ := getWinnerForOrdering(ref, properties.PreserveOrdering(), call.CostModel())
 		if expr == nil {
 			return
 		}
@@ -2613,7 +2686,7 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		}
 	}
 
-	existExpr := getWinnerForOrdering(existRef, properties.PreserveOrdering(), call.CostModel())
+	existExpr, _ := getWinnerForOrdering(existRef, properties.PreserveOrdering(), call.CostModel())
 	if existExpr == nil {
 		return
 	}

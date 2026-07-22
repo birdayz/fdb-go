@@ -224,6 +224,21 @@ func (m *Memo) RegisterReference(ref *expressions.Reference) {
 	m.indexReference(ref)
 }
 
+// ScheduleFreshReference registers a rule-minted reference AND schedules
+// its exploration directly. A fresh reference normally explores when a
+// parent's child-walk reaches it — but a reference minted by
+// MemoizeExpression's self-collision arm can be wired into a yielded tree
+// whose own insertion deduped (no parent walk ever comes), leaving the
+// group permanently unscheduled and its logical member unimplemented (the
+// no-plan strand). Java's addNewReference path never produces unscheduled
+// references; this is its Go equivalent for the out-of-band mint.
+func (m *Memo) ScheduleFreshReference(ref *expressions.Reference) {
+	m.indexReference(ref)
+	if m.reExplore != nil {
+		m.reExplore(ref)
+	}
+}
+
 // MemoizeExpression is the core memoization entry point. Given an
 // expression, it either:
 //   - finds an existing Reference in the Memo that already contains a
