@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**337 scenarios · 2675 query/assertion cases** across 18 feature areas.
+**338 scenarios · 2676 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -21,7 +21,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | CTEs | 12 | 105 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 210 |
-| Ordering & pagination | 13 | 114 |
+| Ordering & pagination | 14 | 115 |
 | Scalar functions & expressions | 33 | 358 |
 | Predicates & WHERE | 12 | 104 |
 | Column resolution & aliasing | 7 | 59 |
@@ -275,6 +275,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `e2e_order_management` | 5 | End-to-end order management |
 | `index_scan_order` | 5 | Index scan ordering (ASC/DESC) |
 | `limit_offset_java` | 10 | LIMIT and OFFSET patterns. |
+| `limit_one_over_wide_filter` | 1 | RFC-188 finding 2 SQL-surface guard. |
 | `limit_zero` | 3 | LIMIT 0 edge case |
 | `offset` | 8 | LIMIT / OFFSET (Go extension) |
 | `order_by_complex` | 3 | Complex ORDER BY patterns |

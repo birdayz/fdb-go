@@ -12,7 +12,9 @@ plan), 6 (MED sign flip), 10 (MED missing rungs / property divergences).
 **Work branch** `feat/rfc188-cost-model-soundness`.
 
 **Why this matters:** plan choice is read-side, but it IS wire-visible for cross-engine continuation
-resumption, and finding 2 is a **wrong-rows** correctness bug. The directional cost rungs are correct
+resumption, and finding 2 is a **memo-level wrong-rows** correctness bug (a `LIMIT 1` stripped when the
+rule fires — proven at the planner level; SQL-masked today only by conjunct collapse, see §1). The
+directional cost rungs are correct
 (verified in the quality review — no sign flips in the physical comparator); the defects are *missing*
 Java rungs, one *wrong-iteration* rung, two under-derived properties, and one correctness transform
 gated on a heuristic estimate.
@@ -63,11 +65,23 @@ reasons, both grep-confirmed:
   missing-rule item, filed in TODO.md. Porting *that* reclaims the `RemoveRangeOne` name cleanly (no
   rename churn), which is why delete beats rename here.
 
-**Test:** the pin moves from a rule-internal unit test (deleted with the rule) to an **FDB e2e row-count
-pin** — the right level for a wrong-rows bug. `TestFDB_LimitOneKeepsLimitOverManyPredicateFilter`: a
-20-equality-conjunct `SELECT … LIMIT 1` with multiple matching rows returns **exactly one** row (RED on
-baseline: the rule deletes the limit and returns all matches). Plus the `EXPLAIN` shows the limit plan
-survives.
+**Reachability (verified during impl, corrects the review's framing):** the wrong-rows path is **real at
+the memo/planner level** but **not currently SQL-reachable**. Probed directly: planning `Limit(1,
+filter-with-24-separate-predicates over a 1e6 scan)` through the full pipeline yields
+`PredicatesFilter(Scan, [24 preds])` — the LIMIT is stripped (all rows). But the SQL translation
+collapses `c0=? AND … AND c23=?` into a **single `AndPredicate`** (numPreds=1 → estimate 5e5 →
+`isAtMostOneRow=false`), so the rule never fires via SQL today. It is a latent landmine, not a live SQL
+regression — which only strengthens the case to delete a Go-only rule that gates correctness on a
+heuristic and hasn't detonated purely by translation accident.
+
+**Test (two levels):**
+- **Planner-level red→green (primary):** `TestPlanner_LimitOneOverMultiRowFilterRetainsLimit` — plan
+  `Limit(1, 24-separate-predicate-filter)` and assert the plan retains `Limit`. RED with the rule
+  present (`PredicatesFilter(Scan, [24 preds])`, no Limit); GREEN after deletion. Deterministic, no FDB.
+- **SQL-surface guard (sentinel):** yamsql `limit_one_over_wide_filter` — `SELECT c0 … WHERE (24
+  conjuncts) LIMIT 1` returns exactly one row and `plan_contains: Limit(1,`. GREEN today (masked by
+  AndPredicate collapse); guards the boundary against any future conjunct-splitting normalization
+  re-detonating the wrong-rows path at the SQL surface.
 
 ---
 

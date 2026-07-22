@@ -148,16 +148,21 @@ flipFlop sign + config confirmed-absent, finding 6 → sparse-sorted first-map, 
 plumbing). Java refs confirmed against 4.12.11.0. Grind order: 2 → 6 → 3 → 10(M2 → M5 → M3&M4).
 Two follow-ups booked below (port Java's real RemoveRangeOne; model IndexScanPreference config).**
 
-### [ ] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate
-`rule_remove_range_one.go:52,68` gates deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;
+### [x] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate — DONE
+`rule_remove_range_one.go:52,68` gated deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;
 `cost.go:520` (LogicalFilter) and `:609` (Select) compute `in * 0.5^numPreds` UNFLOORED over
-`LeafScanCardinality=1e6`, so `1e6*0.5^20≈0.95<1.0` → LIMIT deleted → query returns ALL matching
-rows. Correctness gated on a heuristic constant (cardinal sin). Also: the rule wears Java's name but
-does something Java's `RemoveRangeOneRule` (remove an unreferenced `RANGE(0,1)` quantifier) does not —
-Go invention. **Fix (RFC-188 §1, Graefe ruling): DELETE the rule + tests + registration** — Java has no
+`LeafScanCardinality=1e6`, so `1e6*0.5^24≈0.06<1.0` → LIMIT deleted → plan returns ALL matching rows.
+Correctness gated on a heuristic constant (cardinal sin). Also: the rule wore Java's name but did
+something Java's `RemoveRangeOneRule` (remove an unreferenced `RANGE(0,1)` quantifier) does not — Go
+invention. **DONE (RFC-188 §1, Graefe ruling): DELETED the rule + tests + registration** — Java has no
 limit-removal rule (keeping one is itself a plan divergence), and the narrowed-to-`LogicalValues` rule
-is production-dead (`NewLogicalValuesExpression`: 0 non-test callers). Regression: FDB e2e row-count pin
-(20-conjunct `LIMIT 1` returns exactly one row + EXPLAIN shows limit retained).
+is production-dead (`NewLogicalValuesExpression`: 0 non-test callers).
+**Reachability (verified): memo-level real, not SQL-reachable today.** Probed: `Limit(1,
+24-separate-predicate-filter)` planned to `PredicatesFilter(Scan,[24 preds])` — limit stripped. But SQL
+collapses `a AND b AND …` into ONE `AndPredicate` (numPreds=1 → estimate 5e5 → never fires). Latent
+landmine, not a live SQL regression. Pins: planner-level red→green
+`TestPlanner_LimitOneOverMultiRowFilterRetainsLimit` (RED = limit stripped, GREEN = retained) + yamsql
+`limit_one_over_wide_filter` SQL-surface guard (green sentinel for the conjunct-collapse boundary).
 
 ### [ ] Finding 2-followup-a — port Java's REAL RemoveRangeOneRule (booked by RFC-188 §1)
 Java `RemoveRangeOneRule.java:45-102` drops an unreferenced `RANGE(0,1)` table-function quantifier from
