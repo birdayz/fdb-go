@@ -87,9 +87,14 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 			canCorrelate: true,
 		},
 		{
+			// Java's RecordQueryRecursiveLevelUnionPlan has NO canCorrelate
+			// override → false. The temp-table level binding is satisfied via
+			// computeCorrelatedTo's explicit alias filter + the cursor, not by
+			// anchoring a Cascades correlation here. (The sibling DFS join DOES
+			// anchor — hence the pair above stays true.)
 			name:         "RecursiveLevelUnion",
 			plan:         &plans.RecordQueryRecursiveLevelUnionPlan{},
-			canCorrelate: true,
+			canCorrelate: false,
 		},
 
 		// --- a sample of the false/false majority, so a spurious override

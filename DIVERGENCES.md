@@ -415,21 +415,24 @@ rather than fixed in-branch. Verified against Java 4.12.11.0.
 bound aliases propagate from one child to its siblings. Java's default
 (`cascades/expressions/RelationalExpression.java:251`) is `false`.
 
-1. **`RecordQueryRecursiveLevelUnionPlan` — UNSAFE, fix first.** Go's
-   `plans/recursive_level_union.go:162` returns `true`. Java's
-   `RecordQueryRecursiveLevelUnionPlan.java` has **no `canCorrelate` override at all**, so Java
-   answers `false`. This is the one divergence that errs toward MORE correlation than Java
-   permits: claiming anchor status suppresses propagation of bound aliases past the operator,
-   which is a wrong-rows shape, not a missed-optimization one. Go's wrapper
-   (`physicalRecursiveLevelUnionWrapper`) says `true` too, so the plan side is a faithful copy of
-   an already-divergent wrapper — fixing it means fixing both, and `TestPlanWrapperFlagParity`
-   will hold them together. Note Java DOES override `canCorrelate() → true` on the sibling
-   `RecordQueryRecursiveDfsJoinPlan.java:156`, so the divergence is specific to the LEVEL union,
-   not to recursion generally.
+1. **`RecordQueryRecursiveLevelUnionPlan` — FIXED (was UNSAFE).** Go now returns `false`
+   (`plans/recursive_level_union.go`), matching Java's no-override default. The prior `true`
+   claimed anchor status, which suppressed propagation of an outer alias a leg legitimately
+   reads (a wrong-rows shape when a recursive CTE sits on the inner side of a lateral
+   correlation and Go's human-readable alias reuse collides an outer alias with a leg's own).
+   The recursion's level-to-level binding is satisfied by the cursor + the temp-table alias
+   filter, not by anchoring here. The wrapper is gone (RFC-184 W2), so only the plan needed the
+   flip; `plan_expression_flag_parity_test.go` pins `false`, and
+   `plans/recursive_level_union_correlation_test.go` pins that a colliding outer alias now
+   propagates. Java DOES override `canCorrelate() → true` on the sibling
+   `RecordQueryRecursiveDfsJoinPlan.java:156` (Go matches, `:200`), so the divergence was
+   specific to the LEVEL union.
 2. **`RecordQueryInJoinPlan`** — Java `:198` returns `true`; Go has no override, so `false`.
    Conservative direction (Go propagates where Java anchors) — safe, costs optimization reach.
+   Deliberately not flipped here: adding anchoring changes plan shapes and belongs to a planner
+   milestone with its own review lap, not the wrong-rows-truth pass.
 3. **`RecordQueryInUnionPlan`** — Java `:230` returns `true`; Go has no override, so `false`.
-   Same conservative direction as (2).
+   Same conservative direction as (2); same deferral rationale.
 
 ### Index metadata has a dual source of truth
 
