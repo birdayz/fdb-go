@@ -116,14 +116,17 @@ func RewritingCostModelLess(a, b expressions.RelationalExpression) bool {
 // Java iterates the FIRST map's SortedMap entries reading getOrDefault(level, 0)
 // on the second, but Java's producer is DENSE — every level 0..highest has an
 // entry (0 for a non-predicate node) — so iterating a's entries covers all
-// levels. Go's producer (designationScope.predCountByLevel) is likewise dense
-// now, so the faithful and ANTISYMMETRIC form is a single ascending pass over
-// the UNION of levels (0..max): on dense maps this equals Java's first-map
-// iteration, and it stays antisymmetric even if a caller passes a sparse map (a
+// levels. Go's producer (designationScope.predCountByLevel) is SPARSE, so the
+// faithful and ANTISYMMETRIC form is a single ascending pass over the UNION of
+// levels (0..max): absent==0==getOrDefault makes the per-level counts equal
+// Java's, and the union stays antisymmetric on the sparse maps Go passes — a
 // first-map-only pass would return the same sign in both orientations for e.g.
-// {2:1} vs {1:1}, making the REWRITING survivor insertion-order dependent).
-// Ties fall to the highest-level comparison — the tree depth, since the map is
-// dense (Java's getHighestLevel).
+// {2:1} vs {1:1}, making the REWRITING survivor insertion-order dependent.
+// The residual divergence from Java is the highest-level TIEBREAK: because Go's
+// map is sparse, maxLevelA/maxLevelB are the highest PREDICATE levels, not
+// Java's tree-depth getHighestLevel (dense). Only bites on a full per-level tie;
+// closing it (dense producer) flips REWRITING survivors — booked as Finding
+// 6-followup.
 func comparePredicateCountByLevel(a, b map[int]int) int {
 	maxLevelA, maxLevelB := -1, -1
 	for k := range a {
