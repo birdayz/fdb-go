@@ -180,25 +180,37 @@ func TestOptimizeGroup_CoherencePhaseGateAndDetection(t *testing.T) {
 
 	t.Run("poisoned designation cache is detected", func(t *testing.T) {
 		t.Parallel()
-		ref := build()
-		p := NewPlanner(nil, nil)
-		p.constraintMap = NewConstraintMap()
-		p.dscope = newDesignationScope()
-		p.SetVerifyRewritingCoherence(true)
+		// finalsGeneration is process-global: a concurrent test's bump inside
+		// the poison→check window evicts the injected entry and the check
+		// legitimately recomputes — retry on that interference instead of
+		// flaking (the sibling Run-order subtest's builds alone can trigger
+		// it).
+		for attempt := 0; ; attempt++ {
+			ref := build()
+			p := NewPlanner(nil, nil)
+			p.constraintMap = NewConstraintMap()
+			p.dscope = newDesignationScope()
+			p.SetVerifyRewritingCoherence(true)
 
-		task := &OptimizeGroupTask{Phase: PhaseRewriting, Ref: ref}
-		task.Run(p)
-		if v := p.RewritingCoherenceViolations(); len(v) != 0 {
-			t.Fatalf("healthy run must be coherent, got: %v", v)
-		}
-		// Simulate the staleness bug class the instrument canaries: a cache
-		// entry that SURVIVED at the current generation while naming a
-		// different expression (i.e. a mutation that failed to bump, or a
-		// comparator bypassing the scope). The check must report it.
-		impostor := rfc186SortOver(expressions.InitialOf(newScan()))
-		p.dscope.cache[ref.Canonical()] = designationEntry{expr: impostor, gen: expressions.FinalsGeneration()}
-		p.checkRewritingCoherence(ref, ref.Winner())
-		if v := p.RewritingCoherenceViolations(); len(v) == 0 {
+			task := &OptimizeGroupTask{Phase: PhaseRewriting, Ref: ref}
+			task.Run(p)
+			if v := p.RewritingCoherenceViolations(); len(v) != 0 {
+				t.Fatalf("healthy run must be coherent, got: %v", v)
+			}
+			// Simulate the staleness bug class the instrument canaries: a cache
+			// entry that SURVIVED at the current generation while naming a
+			// different expression (i.e. a mutation that failed to bump, or a
+			// comparator bypassing the scope). The check must report it.
+			impostor := rfc186SortOver(expressions.InitialOf(newScan()))
+			gen := expressions.FinalsGeneration()
+			p.dscope.cache[ref.Canonical()] = designationEntry{expr: impostor, gen: gen}
+			p.checkRewritingCoherence(ref, ref.Winner())
+			if len(p.RewritingCoherenceViolations()) > 0 {
+				return // the stale entry was reported — detection wiring is live
+			}
+			if expressions.FinalsGeneration() != gen && attempt < 20 {
+				continue // external bump evicted the poison mid-window — retry
+			}
 			t.Fatal("a stale designation surviving at the current generation must be reported — the instrument's detection wiring is dead")
 		}
 	})
