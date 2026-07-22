@@ -1,8 +1,9 @@
 # RFC-187 — Alias-aware column identity in index/aggregate matching (kill leaf-name column matching)
 
-**Status:** REVIEWED (draft 2). Graefe **conditional-ACK** — ruled name-path is the correct
-match-domain identity (see §3.0), conditions 1–4 folded below. Torvalds NAK (draft 1) folded
-(missed sites §1.2, R1 resolved §2, §3.2 decided). Awaiting delta re-confirm on this draft.
+**Status:** ACKED — Graefe ACK (name-path is the correct match-domain identity, §3.0; conditions
+1–4 folded) + Torvalds ACK (all 3 NAK points resolved; mixed-rep proof verified). Implementation-
+ready. Final nits folded: no-split primitive (§3.0, disposes of the quoted-dot concern), §3.2 path
+citation, §5.0 probe generalized.
 **Tracks:** TODO.md "FINDINGS 2026-07-22" item **A** — subsumes finding 1 (CRITICAL wrong rows)
 and finding 4 (wrong ORDER BY).
 **Baseline:** master at `139060801`. Work branch `feat/rfc187-column-identity-matching`.
@@ -92,15 +93,21 @@ the candidate is the RFC-173-endgame follow-up (§8), not this fix.
 Add to `values`:
 
 ```
-// AccessorNamePath returns the ordered accessor NAME path of a plan-time column
-// reference (root-alias EXCLUDED), normalizing all three representations:
-//   (a) nested Child chain  → walk Child, prepend each Field
-//   (b) fused baked         → Resolved.Accessors[].Field
-//   (c) flat dotted Field   → split on '.'
-// ok=false when ANY accessor is pure-ordinal (Field==""): a machinery-owned bake
-// (join/gather) has no name to compare — callers MUST treat ok=false as "cannot
-// establish identity → do NOT match" (Graefe condition 1: asserted bridge, never a
-// silent name fallback). Names are UPPER-cased (the resolver's normalization).
+// AccessorNamePath returns the ordered accessor NAME path (root QOV/alias EXCLUDED)
+// of a plan-time column reference, from the two STRUCTURED representations only:
+//   (a) nested Child chain → walk Child, prepend each Field, stop at the root QOV
+//   (b) baked Resolved     → Resolved.Accessors[].Field (Child is the root QOV, excluded)
+// ok=false — a conservative "cannot establish identity", callers MUST NOT match — when:
+//   - any accessor is pure-ordinal (Field==""): a machinery-owned bake has no name (cond 1)
+//   - a LAZY Field carries a '.' (flat-dotted form c): the string is AMBIGUOUS — a real
+//     nested path (addr.city) and an alias-qualified leaf (T.city / leg.COL, built by
+//     clustered_outer_scalar / cascades_translator) are INDISTINGUISHABLE as strings, so
+//     splitting on '.' would be the very string hack this RFC kills AND could mis-root an
+//     alias as an accessor. We deliberately do NOT split (this also disposes of Graefe's
+//     quoted-`"a.b"`-identifier concern — no split, no hack). Form (c) must not reach a
+//     match site (§5.0 probe); if one does, ok=false makes it a loud conservative miss,
+//     never a wrong bind.
+// Names are UPPER-cased (the resolver's normalization).
 func AccessorNamePath(v Value) (path []string, ok bool)
 
 // ColumnNamePathsEqual reports whether two plan-time column refs denote the same
@@ -133,7 +140,7 @@ design because names are compared directly and roots are excluded — a simplifi
 
 ### 3.2 S4/S5/S8 — aggregate & agg-from-index (Graefe condition 3: candidate must carry the REAL path)
 
-The aggregate candidate mis-flattens nested columns: `cascades_generator.go:2213-2228` indexes
+The aggregate candidate mis-flattens nested columns: `pkg/relational/core/embedded/cascades_generator.go:2213-2228` indexes
 `gke.FieldNames()` (which for `GROUP BY addr.city` returns `["addr","city"]`,
 `key_expression.go:836`) by the *logical* `groupingCount`, so `groupCols[0]="addr"` — the parent, not
 the path. Name-path against a corrupt candidate path is still wrong. **Fix the candidate to carry
@@ -197,6 +204,14 @@ identity; they do not conflate columns and are out of A's wrong-rows scope. Book
 ## 5. Test plan (red→green on the unprobed dimension; positive binds pinned per Torvalds R1)
 
 ### 5.0 Reachability probes FIRST (before any code change)
+- `TestProbe_NoFlatDottedFieldAtMatchSites` (Graefe impl-confirm; supersedes the split concern):
+  the primitive does NOT split on `.` (a lazy dotted `Field` → `ok=false`). So the safety property
+  to confirm is that a form-(c) flat-dotted `Field` (real nested `addr.city`, alias-qualified
+  `T.city`/`leg.COL`, or a quoted `"a.b"` identifier) does not reach S1-S10 for a column that SHOULD
+  match — otherwise `ok=false` regresses a valid bind. Probe: for each match site's inputs, assert
+  the query column arrives as structured form (a) nested-Child or (b) baked-Resolved (never a lazy
+  dotted `Field`). If a real match input is form (c), that input's producer must emit a structured
+  form instead (fix the producer), not have the primitive guess by splitting.
 - `TestProbe_NestedPredicateColumnRepresentation`: plan `SELECT * FROM t WHERE addr.city='x'` (t has
   nested `addr.city` + top-level `city` index) and inspect `orient.column`'s form (a/b/c) and
   whether the `city` index binds today. Establishes finding-1's actual reachability and pins the
