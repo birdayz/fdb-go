@@ -2858,10 +2858,17 @@ fail-closed decline itself is replaced — NOT here. Commit 4's observable is th
 RIGHT-box-under-EXISTS class running ordinal (dualwindow-equivalent today; S4-ready)
 plus the fast-path wrong-rows fix.
 
-**← WE ARE HERE:** QP-REF-BIND **item 1 — design substrate BANKED, awaiting the
-Graefe design ruling** (see § "QP-REF-BIND item 1 — design substrate" at the end of
-this file; forks F-A [star layout in-slice vs S4] and F-B [message unification scope]
-need rulings BEFORE the first impl commit). Item 2 is CHARTER-COMPLETE (2026-07-05):
+**← STATUS (2026-07-22):** the migration ENDGAME is complete on master (HEAD `8d847810a`).
+QP-REF-BIND items 1, 2, 3 are ALL MERGED: item 1 (dup-alias per-attribute resolution +
+`SELECT *` star layout, PR #481, `36c938f0a`), item 3 (mixed-nesting LEFT widening —
+clustered outer boxes, boxes as legs, stranded-correlation keystone, PR #483, `29d77a846`),
+and item 2's six commits below. The name-model machinery (`AnchoredJoin`,
+`buildUnnestResultValue`, `QueryResult.Datum`, the §5 dual-window oracle) is DELETED; the
+runtime is Positional-only; the last-mile shapes (`buried_2chain_straddle`, multi-source
+`SELECT *`, FULL-box+subquery) all ordinalize green. What REMAINS is the separate B/C/D-phase
+name-heuristic residue (the runtime `FieldIndex(name)` census, `PositionalRow.GetByName`,
+`descendResolvedPath`) tracked in the B/C/D sections above — a later phase, not the endgame.
+The historical item-1 fork record follows for provenance. Item 2 is CHARTER-COMPLETE (2026-07-05):
 commits 1–4 (PRs #469/#471/#472/#475) + 5a (#476) + B/C/D/E (#478) + 5c (#479) +
 5b (#480) ALL MERGED. The item-2 5a record follows: commit **5a MERGED** (PR #476, master 2dbe743d5,
 four-gate tally across ELEVEN review rounds: architecture gate ACK round-10 substance +
@@ -6008,6 +6015,11 @@ per-shape ordinalization gate. Items below, most-actionable first.
   > 2-quantifier; a 3+-quantifier `outer + EXISTS + EXISTS` cluster strands). That operator is the single
   > critical-path unblocker for {B producer deletion, C's last 7 sites, D}. It is a deep Cascades physical-
   > rule slice (chain N existential FlatMaps, Java parity) needing its own design gauntlet.
+  > **CORRECTION (2026-07-22): this "BLOCKED on the multi-esq producer" framing is SUPERSEDED — B's
+  > AnchoredJoin producer was deleted (`715c8d20e`), so there is no longer an anchored-RC provenance to
+  > gate on. The 7 lazy sites and the D heuristics must be RE-MEASURED against the positional-only
+  > runtime; the D header below already carries the corrected framing. Re-census is the first step of the
+  > next B/C/D slice (out of scope for the endgame closure).**
 
 ### D. Kill Go-invented name heuristics (residual silent-first-match hazards)
 > D DEPENDS ON C completing (probe → 0). Post-B measurement (the "multi-esq operator" framing

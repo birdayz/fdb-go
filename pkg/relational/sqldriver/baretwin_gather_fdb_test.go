@@ -291,8 +291,18 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// gate is now exercised only at translation by those stranding shapes; this
 	// pin covers the gathered-correctness side.
 	t.Run("grouped_subquery_conjunct_gathers", func(t *testing.T) {
-		wantRows(t, `SELECT "X", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" > (SELECT MAX("M") FROM C) GROUP BY "X"`,
+		explain := wantRows(t, `SELECT "X", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" > (SELECT MAX("M") FROM C) GROUP BY "X"`,
 			[]string{"map[COUNT(*):1 X:7]", "map[COUNT(*):1 X:8]"})
+		// PROOF of POSITIONAL gather (not name-model): the GROUP BY key bakes to
+		// an ORDINAL slot (`X#5` — the ofOrdinal positional bake), and the FULL
+		// box gathers as a FlatMap-over-Explode. A name-model row would key the
+		// StreamingAgg by a qualified name (`q$2.X`), never a baked `#N`.
+		if !strings.Contains(explain, "X#") {
+			t.Fatalf("grouped FULL box must bake the GROUP BY key POSITIONALLY (X#N), not name-model; plan=%s", explain)
+		}
+		if !strings.Contains(explain, "FlatMap(outer=") || !strings.Contains(explain, "Explode") {
+			t.Fatalf("grouped FULL box must gather as FlatMap-over-Explode; plan=%s", explain)
+		}
 	})
 
 	// BOX-INVOLVED CROSS-LEG dup: a merge-opaque box `(A LEFT C)` BURIES A.K, and a

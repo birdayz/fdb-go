@@ -1775,8 +1775,8 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		return nil
 	}
 	// P2b (silent-wrong, overwrite): the AS element alias and the AT
-	// ordinal alias MUST be distinct. `FROM t, t.arr AS X AT X` appends the element
-	// and the ordinal under the SAME bare+qualified names in buildUnnestResultValue;
+	// ordinal alias MUST be distinct. `FROM t, t.arr AS X AT X` would append the
+	// element and the ordinal under the SAME bare+qualified names;
 	// RecordConstructorValue.Evaluate stores fields in a map, so the ordinal
 	// (appended last) silently OVERWRITES the element — `SELECT X` returns the
 	// ordinal, not the unnested value. Reject cleanly BEFORE constructing the result,

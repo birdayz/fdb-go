@@ -52,13 +52,33 @@ milestone review lap), each its own PR.
     ledger's blanket "byte-identical continuations" claim carved out to name the engine-private
     aggregate + in-memory-sort payloads precisely. Pinned by
     `TestDecodeAggregateContinuation_ForeignShapeFailsLoud`.
-- [ ] **4. Name-string/ordinal seam** (= RFC-173 endgame, the existing freeze item). Not a
-  relapse — the booked last mile: 2 DEEP ordinalizations (enclosed-chain merge
-  `buried_2chain_straddle`; `SELECT *` multi-source lateral unnest) + 1 loud-reject (FULL-box +
-  subquery), then the deletion pass (`QueryResult.Datum`, name arms, `AnchoredJoin`,
-  `buildUnnestResultValue`, dual-window oracle). Meanwhile `rule_implement_nested_loop_join.go`
-  is 3,344 LOC vs Java's 331 and still growing — the seam's carrying cost compounds until this
-  lands. Graefe ACK required (guarded enclosure invariants).
+- [x] **4. Name-string/ordinal seam** (= RFC-173 endgame) — DONE. This item's parenthetical was
+  STALE the day the LATEST PRIOS list was written (2026-07-21): it was copied verbatim from the
+  2026-07-13 "S4 CAP checkpoint" block and never updated, while the endgame it describes had
+  already landed in-tree. Verified against `master` (HEAD `8d847810a`, `git log master..HEAD` = 0):
+  - The **deletion pass is complete** — `QueryResult.Datum` gone (`29d50bf90`), `AnchoredJoin`
+    flag+producer + `NewAnchoredJoinRecord` + `buildUnnestResultValue` gone (`715c8d20e`), the
+    dual-window §5 oracle machinery gone (`2b285eb69`). Grep for any live field access / func def
+    of these returns nothing; only historical WHY-comments remain (verified: runtime is
+    Positional-only, no live name-model path in these targets).
+  - The **three shapes are green live on FDB** and ordinalize positionally — each now PLAN-pinned
+    (the plan assertions were added in the item-4 closure PR after review found the shapes were
+    row-pinned only):
+    - `buried_2chain_straddle` (`chained_unnest_3link_filtered_ordinal_fdb_test.go`): asserts the
+      output bakes to a positional ordinal (`Y.Y#0`) over nested FlatMap-over-Explode — the buried
+      path is positional, distinct from the chained-ordinal DISPATCH the 5 sibling cases take.
+    - `SELECT *` multi-source unnest (W5, PR #466): the `starRows` helper in
+      `array_unnest_ordinality_fdb_test.go` now asserts every multi-source `SELECT *` gathers as
+      `FlatMap(outer=Scan(WSRC), inner=Explode(field…))`, never a name-model merged row.
+    - FULL-box+subquery: `baretwin_gather_fdb_test.go` `grouped_subquery_conjunct_gathers` asserts
+      the baked GROUP-BY ordinal (`X#N`) over a FlatMap-over-Explode gather of the FULL OUTER box.
+      This GATHERS positionally — a better outcome than the originally-planned loud-reject; only a
+      duplicate-FROM-alias shape still loud-declines.
+  - Graefe **DESIGN-ACK** is recorded in the RFC for every endgame piece (W5 multi-source,
+    S4 AnchoredJoin demolition boundary), no NAK.
+  The residual RFC-173 work (B/C/D-phase: the runtime `FieldIndex(name)` census, `PositionalRow.GetByName`
+  heuristic, `descendResolvedPath`) is a SEPARATE, later migration phase tracked in the RFC — NOT
+  this endgame item, whose named targets (the 3 shapes + the 5 deleted machineries) are all closed.
 
 ---
 
