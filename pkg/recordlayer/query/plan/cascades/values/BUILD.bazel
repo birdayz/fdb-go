@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "values",
     srcs = [
+        "accessor_name_path.go",
         "coercion.go",
         "correlation.go",
         "folder.go",
@@ -85,6 +86,7 @@ go_library(
 go_test(
     name = "values_test",
     srcs = [
+        "accessor_name_path_test.go",
         "baked_field_value_identity_test.go",
         "baked_ordinal_unification_test.go",
         "cast_round_bughunt_test.go",
