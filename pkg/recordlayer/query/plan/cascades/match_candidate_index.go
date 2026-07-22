@@ -56,8 +56,28 @@ type ValueIndexScanMatchCandidate struct {
 	// empty-match-candidate default in DistinctRecordsProperty.
 	createsDuplicatesKnown bool
 
+	// commonPrimaryKeyValues is the index's common primary key translated to
+	// structure-encoding Values (RFC-189 B3), threaded from the IndexDef and
+	// stamped onto the RecordQueryIndexPlan for PrimaryKeyProperty. Populated
+	// regardless of fan-out (index entries always carry the PK); nil when the
+	// def supplies no structural PK (the property then abstains).
+	commonPrimaryKeyValues []values.Value
+
 	traversalOnce sync.Once
 	traversal     *Traversal
+}
+
+// WithCommonPrimaryKey sets the index's structural common primary key on the
+// (freshly constructed) candidate and returns it (RFC-189 B3).
+func (c *ValueIndexScanMatchCandidate) WithCommonPrimaryKey(pk []values.Value) *ValueIndexScanMatchCandidate {
+	c.commonPrimaryKeyValues = pk
+	return c
+}
+
+// GetCommonPrimaryKeyValues returns the index's structural common primary key
+// (RFC-189 B3), or nil when the def supplied none.
+func (c *ValueIndexScanMatchCandidate) GetCommonPrimaryKeyValues() []values.Value {
+	return c.commonPrimaryKeyValues
 }
 
 // FunctionKindCardinality is the columnFunctions entry marking a key column as

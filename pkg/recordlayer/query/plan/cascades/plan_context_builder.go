@@ -49,6 +49,16 @@ type IndexDefWithCreatesDuplicates interface {
 	IndexCreatesDuplicates() bool
 }
 
+// IndexDefWithCommonPrimaryKey is an optional extension of IndexDef exposing the
+// index's common primary key translated to structure-encoding Values (record-type
+// -key prefixes, nesting) — the input to PrimaryKeyProperty (RFC-189 B3). Defs
+// that don't implement it (or return nil) leave the property abstaining, so the
+// DistinctUnion dedup optimization is disabled rather than risking a wrong one.
+type IndexDefWithCommonPrimaryKey interface {
+	IndexDef
+	IndexCommonPrimaryKeyValues() []values.Value
+}
+
 // NewPlanContextFromIndexDefs builds a PlanContext with one
 // ValueIndexScanMatchCandidate per index definition. Column names
 // are upper-cased for SQL-convention case-insensitive matching
@@ -99,6 +109,12 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 			v := dup.IndexCreatesDuplicates()
 			createsDuplicatesSignal = &v
 		}
+		// Structural common PK (RFC-189 B3) — for PrimaryKeyProperty; nil unless
+		// the def supplies it, in which case the property abstains.
+		var commonPK []values.Value
+		if pkDef, ok := def.(IndexDefWithCommonPrimaryKey); ok {
+			commonPK = pkDef.IndexCommonPrimaryKeyValues()
+		}
 		candidates = append(candidates, NewValueIndexScanMatchCandidateWithFunctions(
 			def.IndexName(),
 			def.IndexRecordTypes(),
@@ -109,7 +125,7 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 			def.IndexIsUnique(),
 			upperPK,
 			createsDuplicatesSignal,
-		))
+		).WithCommonPrimaryKey(commonPK))
 	}
 	return &builtPlanContext{candidates: candidates}
 }

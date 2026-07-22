@@ -221,16 +221,18 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		}
 		return nil
 	case *plans.RecordQueryIndexPlan:
-		// M5 (index common PK) is INTENTIONALLY nil — see the "Finding 10-M5
-		// (reverted)" TODO. Java's PrimaryKeyProperty.visitIndexPlan translates
-		// index.getCommonPrimaryKey() STRUCTURALLY; a by-column-NAME PK (the only
-		// thing the plan carries via GetPKColumnNames) wrongly equates record
-		// types whose PK expressions differ but share field names — e.g.
-		// Field("ID") vs Concat(RecordTypeKey(), Field("ID")) both flatten to
-		// ["ID"] — which would let ImplementDistinctUnionRule dedup two legs that
-		// must both survive (dropped rows). Returning nil (no common PK) is the
-		// safe under-report: it disables the optimization, never wrong dedup. The
-		// correct structural-PK port is booked.
+		// RFC-189 B3 (re-port of the reverted M5): the plan carries the index's
+		// common primary key translated to STRUCTURE-encoding Values (record-type
+		// -key prefixes, nesting), stamped from the match candidate. Java's
+		// PrimaryKeyProperty.visitIndexPlan does the same via
+		// ScalarTranslationVisitor. Structural identity means Field("ID") never
+		// equates Concat(RecordTypeKey(), Field("ID")) — the by-name conflation
+		// that made M5 unsafe (ImplementDistinctUnionRule dropping rows). nil when
+		// the candidate/def supplied no structural PK → the property abstains
+		// (no dedup), the safe under-report.
+		if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
+			return pk
+		}
 		return nil
 	case *plans.RecordQueryFilterPlan,
 		*plans.RecordQueryPredicatesFilterPlan,

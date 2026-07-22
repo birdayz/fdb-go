@@ -69,6 +69,17 @@ type RecordQueryIndexPlan struct {
 	// (WithDistinctRecordsSignal), mirroring Java's empty-candidate default.
 	createsDuplicates    bool
 	distinctRecordsKnown bool
+	// commonPrimaryKeyValues is the index's common primary key translated to
+	// STRUCTURE-encoding Values (RFC-189 B3 / Java PrimaryKeyProperty.visitIndexPlan
+	// via ScalarTranslationVisitor): record-type-key prefixes and nesting are
+	// encoded so PK identity compares by structure, not bare column names. Feeds
+	// PrimaryKeyProperty (computePrimaryKey's index arm) so ImplementDistinctUnionRule
+	// dedups two index legs only when they carry the SAME structural PK — never
+	// conflating Field("ID") with Concat(RecordTypeKey(), Field("ID")). nil = the
+	// property abstains (no dedup); populated REGARDLESS of fan-out (index entries
+	// always carry the PK), unlike pkColumnNames which doubles as the ordering
+	// suffix and is empty for fan-out.
+	commonPrimaryKeyValues []values.Value
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this leaf emits — minted once at construction, returned by
 	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
@@ -130,21 +141,43 @@ func (p *RecordQueryIndexPlan) WithScanComparisons(comps []*predicates.Compariso
 	copied := make([]*predicates.ComparisonRange, len(comps))
 	copy(copied, comps)
 	return &RecordQueryIndexPlan{
-		indexName:            p.indexName,
-		scanComparisons:      copied,
-		recordTypes:          p.recordTypes,
-		flowedType:           p.flowedType,
-		reverse:              p.reverse,
-		strictlySorted:       p.strictlySorted,
-		covering:             p.covering,
-		coveringColumns:      p.coveringColumns,
-		columnNames:          p.columnNames,
-		pkColumnNames:        p.pkColumnNames,
-		unique:               p.unique,
-		createsDuplicates:    p.createsDuplicates,
-		distinctRecordsKnown: p.distinctRecordsKnown,
-		resultValue:          p.resultValue,
+		indexName:              p.indexName,
+		scanComparisons:        copied,
+		recordTypes:            p.recordTypes,
+		flowedType:             p.flowedType,
+		reverse:                p.reverse,
+		strictlySorted:         p.strictlySorted,
+		covering:               p.covering,
+		coveringColumns:        p.coveringColumns,
+		columnNames:            p.columnNames,
+		pkColumnNames:          p.pkColumnNames,
+		unique:                 p.unique,
+		createsDuplicates:      p.createsDuplicates,
+		distinctRecordsKnown:   p.distinctRecordsKnown,
+		commonPrimaryKeyValues: p.commonPrimaryKeyValues,
+		resultValue:            p.resultValue,
 	}
+}
+
+// WithCommonPrimaryKey returns a copy carrying the index's structural common
+// primary key (RFC-189 B3). Shallow copy (cp := *p) so every other field
+// auto-carries.
+func (p *RecordQueryIndexPlan) WithCommonPrimaryKey(pk []values.Value) *RecordQueryIndexPlan {
+	cp := *p
+	if pk != nil {
+		copied := make([]values.Value, len(pk))
+		copy(copied, pk)
+		cp.commonPrimaryKeyValues = copied
+	} else {
+		cp.commonPrimaryKeyValues = nil
+	}
+	return &cp
+}
+
+// GetCommonPrimaryKeyValues returns the index's structural common primary key
+// (RFC-189 B3), or nil when unknown/abstaining.
+func (p *RecordQueryIndexPlan) GetCommonPrimaryKeyValues() []values.Value {
+	return p.commonPrimaryKeyValues
 }
 
 // GetColumnNames returns the index's key column names, in index-key order.
