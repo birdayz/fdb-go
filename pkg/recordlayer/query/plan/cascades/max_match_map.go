@@ -767,19 +767,21 @@ func (m *MaxMatchMap) TranslateQueryValueMaybe(
 	// Build substitution map: ExplainValue(query subtree) → pulled-up value.
 	substitutions := make(map[string]values.Value, len(m.mapping))
 	for key, entry := range m.mapping {
-		// Pull up the candidate value through candidateAlias.
-		pulledUp := values.PullUpValue(entry.candidateValue, entry.candidateValue, candidateAlias)
+		// Pull up each candidate PART relative to the ROOT candidate value
+		// (Java MaxMatchMap.translateQueryValueMaybe: candidateValue.pullUp(
+		// mapping.values(), …)) — NOT against itself. A self-pull-up
+		// (PullUpValue(part, part, alias)) collapses every part to QOV(alias)
+		// via case-1 self-equality, so a multi-field covering-index
+		// RecordConstructor result value mis-projects (every column becomes the
+		// whole record / a wrong column). The identity case (part == root) still
+		// resolves to QOV(alias) here via that same case-1, so it is unchanged.
+		pulledUp := values.PullUpValue(entry.candidateValue, m.candidateValue, candidateAlias)
 		if pulledUp == nil {
-			// Cannot pull up this candidate value — for the identity
-			// case (query == candidate), just use a QOV directly.
-			if values.ValuesStructurallyEqual(entry.queryValue, entry.candidateValue) {
-				pulledUp = &values.QuantifiedObjectValue{
-					Correlation: candidateAlias,
-					Typ:         entry.candidateValue.Type(),
-				}
-			} else {
-				return nil
-			}
+			// Java returns Optional.empty() when a part cannot be pulled up
+			// against the root — no QOV fallback. Fail the whole translation
+			// (fail-closed); a translate that can't express a part must fail,
+			// not silently emit QOV(alias).
+			return nil
 		}
 		substitutions[key] = pulledUp
 	}

@@ -243,6 +243,7 @@ go_test(
         "match_info_test.go",
         "match_max_match_map_test.go",
         "matched_ordering_part_test.go",
+        "max_match_map_covering_test.go",
         "max_match_map_fused_test.go",
         "max_match_map_fuzz_test.go",
         "max_match_map_test.go",
@@ -818,6 +819,7 @@ go_test(
         "whole_plan_cardinality_guard_test.go",
         "fanout_candidate_distinct_test.go",
         "fetch_transparency_test.go",
+        "max_match_map_covering_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
