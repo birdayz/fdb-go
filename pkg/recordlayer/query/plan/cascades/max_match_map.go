@@ -629,24 +629,15 @@ func computeForCurrent(
 }
 
 // ---------------------------------------------------------------------------
-// findMatchingReachableCandidate
+// findMatchingReachableCandidateWithEquivalence
 // ---------------------------------------------------------------------------
 
-// findMatchingReachableCandidate walks the candidate tree (only descending
-// into RecordConstructorValue for reachability) and checks if any
-// reachable subtree is structurally equal to queryValue, or equal via
-// the ValueEquivalence (if provided).
-//
-// Returns (true, candidateValue) on match, (false, nil) otherwise.
-//
-// Ports Java's MaxMatchMap.findMatchingReachableCandidateValue.
-func findMatchingReachableCandidate(
-	queryValue values.Value,
-	candidateRoot values.Value,
-) (bool, values.Value) {
-	return findMatchingReachableCandidateWithEquivalence(queryValue, candidateRoot, nil)
-}
-
+// findMatchingReachableCandidateWithEquivalence walks the candidate tree (only
+// descending into RecordConstructorValue for reachability) and checks if any
+// reachable subtree is structurally equal to queryValue, or equal via the
+// ValueEquivalence (if provided). Returns (true, candidateValue) on match,
+// (false, nil) otherwise. Ports Java's
+// MaxMatchMap.findMatchingReachableCandidateValue.
 func findMatchingReachableCandidateWithEquivalence(
 	queryValue values.Value,
 	candidateRoot values.Value,

@@ -142,62 +142,6 @@ func TestNewMatchedOrderingPart_NilComparisonRangeDefaultsToEmpty(t *testing.T) 
 	}
 }
 
-func TestMatchedOrderingPart_Demote(t *testing.T) {
-	t.Parallel()
-	pid := values.NamedCorrelationIdentifier("p3")
-	v := &values.FieldValue{Field: "col_c", Typ: values.UnknownType}
-
-	// Build an equality range.
-	eqComp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42))
-	cr := predicates.EmptyComparisonRange()
-	res := cr.Merge(&eqComp)
-	if !res.Ok {
-		t.Fatal("merge should succeed")
-	}
-	cr = res.Range
-	if !cr.IsEquality() {
-		t.Fatal("range should be equality")
-	}
-
-	mop := NewMatchedOrderingPart(pid, v, cr, MatchedSortOrderAscending)
-	demoted := mop.Demote()
-
-	// Demoted part has empty range.
-	if !demoted.GetComparisonRange().IsEmpty() {
-		t.Fatal("demoted range should be empty")
-	}
-	// Preserves other fields.
-	if demoted.GetParameterId() != pid {
-		t.Fatal("demoted parameterId mismatch")
-	}
-	if demoted.GetValue() != v {
-		t.Fatal("demoted value mismatch")
-	}
-	if demoted.GetMatchedSortOrder() != MatchedSortOrderAscending {
-		t.Fatal("demoted sort order mismatch")
-	}
-	// Original unchanged.
-	if !mop.GetComparisonRange().IsEquality() {
-		t.Fatal("original should still be equality")
-	}
-}
-
-func TestMatchedOrderingPart_DemotePanicsOnNonEquality(t *testing.T) {
-	t.Parallel()
-	pid := values.NamedCorrelationIdentifier("p4")
-	v := &values.FieldValue{Field: "col_d", Typ: values.UnknownType}
-
-	// Empty range (not equality) should panic on Demote.
-	mop := NewMatchedOrderingPart(pid, v, predicates.EmptyComparisonRange(), MatchedSortOrderAscending)
-
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("Demote on non-equality should panic")
-		}
-	}()
-	mop.Demote()
-}
-
 func TestMatchedOrderingPart_String(t *testing.T) {
 	t.Parallel()
 	pid := values.NamedCorrelationIdentifier("p5")

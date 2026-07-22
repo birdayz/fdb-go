@@ -456,7 +456,7 @@ func (t *TransformImplTask) Run(p *Planner) {
 			// the finals generation), so the virtual prune stays fresh while
 			// the member set keeps every alternative PLANNING needs.
 			t.Ref.InsertFinal(y)
-			if !isAlreadyExploratoryMember(t.Ref, y) {
+			if !isExploratoryMember(t.Ref, y) {
 				// OptimizeInputs only for PHYSICAL yields — third of the three gated
 				// rule-yield sites (with ExploreGroupTask + the TransformExprTask yield).
 				// ImplementationRule yields are physical wrappers, so this is a no-op in
@@ -513,7 +513,7 @@ func (t *TransformImplTask) Run(p *Planner) {
 						return
 					}
 					t.Ref.InsertFinal(y)
-					if !isAlreadyExploratoryMember(t.Ref, y) {
+					if !isExploratoryMember(t.Ref, y) {
 						// NOTE: this 4th OptimizeInputs site — the
 						// swapped-quantifier impl yield — is INTENTIONALLY NOT gated to
 						// isPhysical. Unlike the other three, it is load-bearing, not a
@@ -682,18 +682,6 @@ func isExploratoryMember(ref *expressions.Reference, expr expressions.Relational
 
 func isFinalMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
 	for _, m := range ref.FinalMembers() {
-		if m == expr {
-			return true
-		}
-	}
-	return false
-}
-
-// isAlreadyExploratoryMember checks if expr is already in the Reference's
-// exploratory members (by pointer identity). Used to skip re-exploration
-// of FinalizeExpressionsRule yields.
-func isAlreadyExploratoryMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
-	for _, m := range ref.Members() {
 		if m == expr {
 			return true
 		}

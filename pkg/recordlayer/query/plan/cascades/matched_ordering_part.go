@@ -183,25 +183,6 @@ func (m *MatchedOrderingPart) GetMatchedSortOrder() MatchedSortOrder {
 	return m.matchedSortOrder
 }
 
-// Demote converts an equality-bound ordering part to an empty
-// (universe) range, preserving the parameter ID, value, and sort
-// order. Panics if the comparison range is not an equality range.
-// Returns a new MatchedOrderingPart (immutable pattern).
-//
-// This is used during ordering satisfaction when an equality-bound
-// prefix part can be "demoted" to allow sorting on later parts.
-func (m *MatchedOrderingPart) Demote() *MatchedOrderingPart {
-	if !m.comparisonRange.IsEquality() {
-		panic("MatchedOrderingPart.Demote: comparison range is not equality")
-	}
-	return &MatchedOrderingPart{
-		parameterId:      m.parameterId,
-		value:            m.value,
-		comparisonRange:  predicates.EmptyComparisonRange(),
-		matchedSortOrder: m.matchedSortOrder,
-	}
-}
-
 // String returns a human-readable representation.
 func (m *MatchedOrderingPart) String() string {
 	return fmt.Sprintf("%s%s", values.ExplainValue(m.value), m.matchedSortOrder.ArrowIndicator())
