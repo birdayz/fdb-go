@@ -62,3 +62,45 @@ func TestRecursiveLevelUnion_CanCorrelateFalse_PropagatesOuterAlias(t *testing.T
 			outer.Name(), corr)
 	}
 }
+
+// TestFlatMapPlan_WithQuantifiers_NoStalePlanSnapshot pins the item-3b fix
+// (DIVERGENCES "memo costs an expression that is not the one that executes"):
+// a physical plan stores its children SOLELY as quantifiers, with no separate
+// plan-snapshot field. WithQuantifiers must therefore re-point the children
+// entirely — GetChildren re-resolves through the new quantifiers. The old
+// wrapper bug kept `plan: w.plan` and swapped only quantifiers, so GetChildren
+// returned the STALE snapshot while the memo cost the new quantifier tree (the
+// 472 semantically-divergent edges). If that dual storage ever returns, this
+// test catches it.
+func TestFlatMapPlan_WithQuantifiers_NoStalePlanSnapshot(t *testing.T) {
+	t.Parallel()
+
+	scan := func(name string) *plans.RecordQueryScanPlan {
+		return plans.NewRecordQueryScanPlan([]string{name}, values.UnknownType, false)
+	}
+	q := func(p plans.RecordQueryPlan) expressions.Quantifier {
+		return expressions.NewPhysicalQuantifier(expressions.FinalOf(p))
+	}
+
+	fm := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
+		q(scan("OUTER_OLD")), q(scan("INNER_OLD")),
+		values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"),
+		values.NewNullValue(values.UnknownType), false,
+	)
+
+	swapped := fm.WithQuantifiers([]expressions.Quantifier{
+		q(scan("OUTER_NEW")), q(scan("INNER_NEW")),
+	}).(*plans.RecordQueryFlatMapPlan)
+
+	children := swapped.GetChildren()
+	if len(children) != 2 {
+		t.Fatalf("expected 2 children, got %d", len(children))
+	}
+	gotOuter := children[0].(*plans.RecordQueryScanPlan).GetRecordTypes()[0]
+	gotInner := children[1].(*plans.RecordQueryScanPlan).GetRecordTypes()[0]
+	if gotOuter != "OUTER_NEW" || gotInner != "INNER_NEW" {
+		t.Fatalf("WithQuantifiers returned a STALE plan snapshot: GetChildren = [%s, %s], "+
+			"want [OUTER_NEW, INNER_NEW] — the memo would cost a different tree than executes",
+			gotOuter, gotInner)
+	}
+}
