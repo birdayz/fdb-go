@@ -122,9 +122,12 @@ func ColumnNamePathsEqual(a, b Value) bool {
 // AccessorNamePathKey returns a canonical map key for a column reference's
 // accessor path (the path segments joined with a NUL separator), or ok=false
 // when the path cannot be established (AccessorNamePath !ok). It is the
-// map-keyed form of column identity: two references produce the same key iff
-// ColumnNamePathsEqual reports them equal, so a set keyed by this string
-// distinguishes a nested addr.city from a same-leaf-named top-level city.
+// map-keyed form of column identity over plain FieldValue references: two such
+// references produce the same key iff ColumnNamePathsEqual reports them equal,
+// so a set keyed by this string distinguishes a nested addr.city from a
+// same-leaf-named top-level city. (It does NOT cover the CardinalityValue
+// wrapper ColumnNamePathsEqual also handles — a CardinalityValue yields
+// ok=false here; the key-form callers, S7/S9 grouping keys, never pass one.)
 func AccessorNamePathKey(v Value) (string, bool) {
 	path, ok := AccessorNamePath(v)
 	if !ok {

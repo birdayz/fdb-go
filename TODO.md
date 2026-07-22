@@ -96,7 +96,7 @@ principles-first, no quick fixes: RFC → Graefe+Torvalds review → implement i
 A is the current focus; the rest are booked below in severity order. A is the planner-side
 analog of the RFC-173 fight (stop resolving columns by leaf name), on the index-match path.**
 
-### [ ] A — SYSTEMIC: leaf-name column matching across the planner  ← IN PROGRESS (RFC)
+### [x] A — SYSTEMIC: leaf-name column matching across the planner — DONE (RFC-187, all 10 sites)
 The same `strings.EqualFold(fv.Field, …)` / bare-leaf-name shortcut recurs, each ignoring the
 `FieldValue.Child` accessor chain — it binds/matches the WRONG column when a nested-path leaf
 name collides with a top-level (or differently-rooted) column of the same source. Violates the
@@ -135,8 +135,11 @@ Follow-up B (RFC-187 §8, post-RFC-173): ordinalize the candidate (resolve `colu
 both match sides are baked and match-domain identity collapses into Java's `FieldPath` ordinal
 identity — the true-parity endgame, entangled with RFC-173.
 
-Progress (branch feat/rfc187-column-identity-matching): [x] primitive [x] S1 [x] S2/S3 [x] S6
-[x] S4/S5/S8 [x] S7/S9/S10 (all 10 sites done); remaining [ ] milestone review lap + stress/determinism.
+DONE (branch feat/rfc187-column-identity-matching): [x] primitive [x] S1 [x] S2/S3 [x] S6
+[x] S4/S5/S8 [x] S7/S9/S10 (all 10 sites) [x] milestone review lap — Graefe ACK + Torvalds ACK on the
+implementation [x] 1M stress green (no row-count/plan regression) [x] full 56-target suite green on
+every commit. Only the two booked follow-ups remain (nested-agg-index SUPPORT; §8 candidate
+ordinalization) — both distinct from A's wrong-rows/wrong-order fix.
 
 ### [ ] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate
 `rule_remove_range_one.go:52,68` gates deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;
