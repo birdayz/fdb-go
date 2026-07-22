@@ -669,9 +669,35 @@ envelope (version + plan_hash + binding_hash + execution_state) and
 gates resumes through PlanValidator. Go has no envelope and NO SQL
 resume entry point at all — statement paging is internal to one
 execution (`paginatingRows`), and tokens never cross the API boundary.
+
 The RECORD-LAYER continuation framing below the SQL layer is
-byte-identical and conformance-proven (including the magic
-KeyValueCursorContinuation wrapper); the SQL-layer envelope is not.
+byte-identical and conformance-proven for the LEAF/structural cursors —
+notably the magic `KeyValueCursorContinuation` wrapper and the union/
+intersection/flat-map framing. It is NOT byte-identical for the
+aggregate and in-memory-sort cursors, and this is now stated precisely
+rather than folded into a blanket "byte-identical" claim:
+
+- **StreamingAggregation** (`AggregateCursorContinuation` /
+  `PartialAggregationResult`): Go reuses Java's proto message SCHEMA but
+  packs a Go-PRIVATE layout into `AccumulatorState.state` — exactly
+  `[count] ++ per-aggregate[count, sum, sumI, allInt, min, max]`
+  (`1 + 6*numAggs` typed slots) with a lossless typed codec for MIN/MAX,
+  which is not Java's `StreamGrouping` per-aggregate serialization. A
+  Java-authored token would proto-Unmarshal cleanly and then be mis-read
+  positionally, so `decodeAggregateContinuation` now REQUIRES the exact
+  Go slot count and slot types and rejects any other shape loudly
+  (`TestDecodeAggregateContinuation_ForeignShapeFailsLoud`) — never a
+  silent zero-fill.
+- **In-memory sort** (`MemorySortContinuation`): a Go extension with no
+  Java counterpart at all (Java's Cascades has no physical sort
+  operator), so there is nothing Java could produce or consume.
+
+Both are SAFE because they never cross an engine boundary: the SQL layer
+rejects an externally-supplied continuation with
+`ErrCodeUnsupportedOperation`, and the record-layer executor that pages
+them is Go's own engine. The shared proto message NAMES are a schema
+convenience, not an interop promise; the payloads are engine-private and
+now fail loud on any foreign shape rather than corrupting silently.
 
 Decision: Go SQL tokens are ENGINE-PRIVATE until a real resume surface
 exists. The boundary is loud, not silent: supplying api.OptContinuation
