@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // planCacheScopeDelim separates the schema/version scope from the query text
@@ -174,42 +175,64 @@ func collapseWhitespace(sql string) string {
 	var b strings.Builder
 	b.Grow(len(sql))
 
-	// Rune iteration (not bytes): a multibyte codepoint outside quotes — e.g.
-	// U+00A0 NBSP — must be classified by unicode.IsSpace as a whole rune, not
-	// have one of its UTF-8 bytes misfire the ASCII-space test. Quote chars are
-	// ASCII, so rune comparison against them is exact.
-	runes := []rune(sql)
+	// ASCII fast path: iterate BYTES and decode a full rune only when a
+	// multibyte lead byte is seen. This keeps ordinary ASCII SQL (the warm
+	// cache-hit case) allocation-free — a []rune conversion would heap-allocate
+	// on every hit — while still classifying a multibyte codepoint outside
+	// quotes (e.g. U+00A0 NBSP) as a whole rune, not letting one of its UTF-8
+	// bytes misfire the ASCII-space test. Quote chars are ASCII, so byte
+	// comparison against them is exact.
 	inSpace := false
-	var quote rune
-	for i := 0; i < len(runes); i++ {
-		r := runes[i]
+	var quote byte
+	for i := 0; i < len(sql); {
+		ch := sql[i]
 		if quote != 0 {
-			b.WriteRune(r)
-			if r == quote {
-				if i+1 < len(runes) && runes[i+1] == quote {
-					b.WriteRune(runes[i+1])
-					i++
+			b.WriteByte(ch)
+			if ch == quote {
+				if i+1 < len(sql) && sql[i+1] == quote {
+					b.WriteByte(sql[i+1])
+					i += 2
 					continue
 				}
 				quote = 0
 			}
+			i++
 			continue
 		}
-		if r == '\'' || r == '"' || r == '`' {
-			quote = r
+		if ch == '\'' || ch == '"' || ch == '`' {
+			quote = ch
 			inSpace = false
-			b.WriteRune(r)
+			b.WriteByte(ch)
+			i++
 			continue
 		}
+		if ch < utf8.RuneSelf {
+			// ASCII: the byte IS the rune, so unicode.IsSpace(rune(ch)) is
+			// exact and allocation-free.
+			if unicode.IsSpace(rune(ch)) {
+				if !inSpace {
+					b.WriteByte(' ')
+					inSpace = true
+				}
+			} else {
+				inSpace = false
+				b.WriteByte(ch)
+			}
+			i++
+			continue
+		}
+		// Multibyte: decode the whole rune to classify whitespace correctly.
+		r, size := utf8.DecodeRuneInString(sql[i:])
 		if unicode.IsSpace(r) {
 			if !inSpace {
 				b.WriteByte(' ')
 				inSpace = true
 			}
-			continue
+		} else {
+			inSpace = false
+			b.WriteString(sql[i : i+size])
 		}
-		inSpace = false
-		b.WriteRune(r)
+		i += size
 	}
 
 	return b.String()

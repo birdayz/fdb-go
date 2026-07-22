@@ -28,7 +28,7 @@ func checkInvariants(t *testing.T, c *PlanCache) {
 	if c.ll.Len() > c.maxSize {
 		t.Fatalf("invariant: list len %d exceeds maxSize %d", c.ll.Len(), c.maxSize)
 	}
-	seen := make(map[string]bool, c.ll.Len())
+	seen := make(map[cacheKey]bool, c.ll.Len())
 	for e := c.ll.Front(); e != nil; e = e.Next() {
 		it := e.Value.(*lruItem)
 		if seen[it.key] {
@@ -51,10 +51,10 @@ func checkInvariants(t *testing.T, c *PlanCache) {
 }
 
 // cacheKeys returns the current set of keys held by the cache. White-box.
-func cacheKeys(c *PlanCache) map[string]struct{} {
+func cacheKeys(c *PlanCache) map[cacheKey]struct{} {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	m := make(map[string]struct{}, len(c.items))
+	m := make(map[cacheKey]struct{}, len(c.items))
 	for k := range c.items {
 		m[k] = struct{}{}
 	}
@@ -65,16 +65,16 @@ func cacheKeys(c *PlanCache) map[string]struct{} {
 // differential-test ground truth. order[0] is the LRU, the tail is the MRU —
 // the same recency discipline the production cache must implement.
 type lruOracle struct {
-	order []string
-	set   map[string]struct{}
+	order []cacheKey
+	set   map[cacheKey]struct{}
 	max   int
 }
 
 func newLRUOracle(max int) *lruOracle {
-	return &lruOracle{set: make(map[string]struct{}), max: max}
+	return &lruOracle{set: make(map[cacheKey]struct{}), max: max}
 }
 
-func (o *lruOracle) touch(k string) {
+func (o *lruOracle) touch(k cacheKey) {
 	for i, x := range o.order {
 		if x == k {
 			o.order = append(o.order[:i], o.order[i+1:]...)
@@ -86,7 +86,7 @@ func (o *lruOracle) touch(k string) {
 
 // get reports whether k is present, promoting it on a hit (a miss never
 // changes recency, matching PlanCache.Get).
-func (o *lruOracle) get(k string) bool {
+func (o *lruOracle) get(k cacheKey) bool {
 	if _, ok := o.set[k]; ok {
 		o.touch(k)
 		return true
@@ -94,7 +94,7 @@ func (o *lruOracle) get(k string) bool {
 	return false
 }
 
-func (o *lruOracle) put(k string) {
+func (o *lruOracle) put(k cacheKey) {
 	if _, ok := o.set[k]; ok {
 		o.touch(k)
 		return
@@ -108,15 +108,15 @@ func (o *lruOracle) put(k string) {
 	}
 }
 
-func (o *lruOracle) keys() map[string]struct{} {
-	m := make(map[string]struct{}, len(o.set))
+func (o *lruOracle) keys() map[cacheKey]struct{} {
+	m := make(map[cacheKey]struct{}, len(o.set))
 	for k := range o.set {
 		m[k] = struct{}{}
 	}
 	return m
 }
 
-func sameKeySet(t *testing.T, ctx string, got, want map[string]struct{}) {
+func sameKeySet(t *testing.T, ctx string, got, want map[cacheKey]struct{}) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Fatalf("%s: key-set size mismatch: got %d want %d (got=%v want=%v)", ctx, len(got), len(want), got, want)
@@ -492,7 +492,7 @@ func TestPlanCache_DifferentialModel(t *testing.T) {
 					// is 1:1 over this key space (distinct integers → distinct
 					// normalized keys), so the stored stubPlan.label (raw k) is
 					// unambiguous on a hit.
-					nk := "" + planCacheScopeDelim + normalizeSQL(k)
+					nk := cacheKey{scope: "", sql: normalizeSQL(k)}
 
 					switch r := rng.Intn(10); {
 					case r < 5: // Put (50%)

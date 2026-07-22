@@ -263,8 +263,8 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		// Log the original whitespace-preserved SQL (canonicalTextOf), not
 		// q.GetText() — the latter concatenates tokens without whitespace
 		// ("SELECTid=1FROMorders"), which is useless to an operator. The cache
-		// key is built separately above (planCacheKeyInput), also off
-		// canonicalTextOf, so both are injective.
+		// key (cacheScope + cacheSQL, built above) is also off canonicalTextOf,
+		// so both are injective.
 		ls = g.beginPlanLog(ctx, canonicalTextOf(q))
 	}
 	defer func() { ls.finish(err) }()

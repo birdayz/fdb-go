@@ -24,7 +24,10 @@ func TestNormalizeSQL(t *testing.T) {
 		{"case insensitive", "SeLeCt * FrOm FoO", "SELECT * FROM FOO"},
 		{"string literal preserved", "SELECT 'hello' FROM foo", "SELECT 'hello' FROM FOO"},
 		{"comment inside string literal", "SELECT '--not a comment' FROM foo", "SELECT '--not a comment' FROM FOO"},
+		{"hash inside string literal", "SELECT '#not a comment' FROM foo", "SELECT '#not a comment' FROM FOO"},
+		{"hash inside delimited id", "SELECT \"c#1\" FROM foo", "SELECT \"c#1\" FROM FOO"},
 		{"block comment inside string", "SELECT '/*not a comment*/' FROM foo", "SELECT '/*not a comment*/' FROM FOO"},
+		{"hash line comment stripped", "SELECT * FROM foo # trailing", "SELECT * FROM FOO"},
 		{"escaped quote in literal", "SELECT 'it''s' FROM foo", "SELECT 'it''s' FROM FOO"},
 		{"unterminated block comment", "SELECT * FROM foo /* unterminated", "SELECT * FROM FOO D"},
 		// Quote-aware case/whitespace preservation (item 3c):
