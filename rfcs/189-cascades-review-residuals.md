@@ -403,17 +403,24 @@ Comparison.
 
 ## Workstream D — dead code, missed matches, maintainability (finding 13)
 
-**Deletes (dead + unseeded; safe now):**
-- **Intersection rules** `rule_implement_intersection.go`, `rule_intersection_merge.go`,
-  `rule_set_op_singleton.go` — DEAD: `intersector_primary_key.go:17-19` documents the deliberate bypass
-  (Go builds `RecordQueryIntersectionPlan` **directly** as a physical plan, never seeding
-  `LogicalIntersectionExpression`); the only construction sites require an instance to already exist
-  (`plan_extraction.go:557` copy helper, the merge rule's own yield `:55`) — nothing seeds one. They are
-  also latent-unsound if reached (grab an unordered winner for a merge that requires ordered legs).
-  **DELETE** the three rules + registrations + tests. (Graefe ruling requested: the *underlying*
-  divergence — Go bypasses the logical-intersection Cascades flow — is a separate architectural item, NOT
-  in scope; this deletes the unreachable Go-only rules that don't match Java's match-then-implement
-  mechanism.)
+**Intersection rules — RECLASSIFIED to KEEP (implementation-discovered, supersedes the RFC's DELETE
+proposal; flagged for milestone re-confirmation).** The RFC proposed deleting `rule_implement_intersection.go`,
+`rule_intersection_merge.go`, and the `IntersectionSingletonElimRule` in `rule_set_op_singleton.go` as an
+SQL-unreachable "closed dead loop" — SQL intersections are built directly as physical plans by
+`WithPrimaryKeyIntersector` (`intersector_primary_key.go:17-19`), never via a `LogicalIntersectionExpression`.
+That reachability claim is correct, BUT implementation revealed the rules are a **complete, working
+logical→physical intersection path that is a live planner-completeness SAFETY NET**: `FuzzPlanner_WithBatchA_NoPanic`
+(`planner_batch_a_fuzz_test.go`) builds logical-intersection shapes (opcode 7) and asserts the planner
+produces a complete physical plan (the BestMember invariant), and `TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection`
+white-box-tests the same. Deleting the rules breaks those with an invariant-break (no BestMember) — not a
+latent bug — i.e. it removes real fuzz/white-box coverage of the logical-intersection planning path for
+marginal benefit. They are not dead in the harmful (regression-masking / latent-unsound) sense: they are
+exercised and pass. **Disposition: keep the rules; the `IntersectionSingletonElimRule` in
+`rule_set_op_singleton.go` also shares its file with the LIVE `UnionSingletonElimRule` (unions ARE seeded),
+so the file stays regardless.** The underlying divergence (SQL bypasses the logical-intersection flow) remains
+the separately-booked architectural item. Milestone review re-confirms this reclassification with Graefe.
+
+**Deletes (genuinely dead; done):**
 - `matched_ordering_part.go:193` `Demote()` — DEAD (only test callers; panics on non-equality). **DELETE**
   with its tests.
 - `max_match_map.go:647` `findMatchingReachableCandidate` — DEAD thin `nil`-equivalence wrapper;
