@@ -289,6 +289,7 @@ go_test(
         "planner_test.go",
         "planning_cost_model_hash_test.go",
         "planning_cost_model_test.go",
+        "predicate_count_by_level_test.go",
         "predicate_matchers_test.go",
         "predicate_multi_map_test.go",
         "predicate_semantic_hash_test.go",
@@ -804,6 +805,7 @@ go_test(
         "aggregate_column_identity_test.go",
         "groupby_column_identity_test.go",
         "limit_retained_over_multirow_filter_test.go",
+        "predicate_count_by_level_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

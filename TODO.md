@@ -188,10 +188,13 @@ continuation resumption).
 `semantic_hash.go:156` `%v` (renders "-0"≠"0"). The []float64/[]float32 arms already fixed this with
 `math.Float64bits` (RFC-176 §2); scalar wasn't. → memo dedup miss/dup. Fix: bitwise-compare scalar floats.
 
-### [ ] Finding 6 (MED) — comparePredicateCountByLevel iterates union of levels; Java iterates first-arg only
-`planning_cost_model.go:115-139` `for level:=0; level<=maxLevel` vs Java
-`PredicateCountByLevelInfo.compare` (first-map entries + highest-level tiebreak). Sign flip on
-asymmetric-depth predicate maps → different REWRITING survivor.
+### [x] Finding 6 (MED) — comparePredicateCountByLevel iterates union of levels; Java iterates first-arg only — DONE
+`planning_cost_model.go` `for level:=0; level<=maxLevel` (dense union) vs Java
+`PredicateCountByLevelInfo.compare` (first-map entries in ascending SortedMap order + highest-level
+tiebreak). Sign flip on asymmetric-depth predicate maps → different REWRITING survivor. FIXED: walk a's
+actual keys sparse+sorted-ascending, b via map-default 0, highest-level tiebreak. Pin:
+`TestComparePredicateCountByLevel_AsymmetricLevels` ({0:1,2:5} vs {0:1,1:3} → +1, was -1) +
+`_SanityCases`. The deliberate Java asymmetry (compare(a,b) sign may equal compare(b,a)) is preserved.
 
 ### [ ] Finding 7 (MED, fragile) — Quantifier.GetCorrelatedTo() returns empty; Java transitive-walks
 `expressions/quantifier.go:250` returns `{}` vs Java `getRangesOver().getCorrelatedTo()`. UNDER-
