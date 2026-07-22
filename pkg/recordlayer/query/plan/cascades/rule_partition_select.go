@@ -663,16 +663,20 @@ func computeTransitiveCorrelationOrder(
 	}
 
 	// Direct dependency map: alias → set of owned aliases it depends on.
-	// Quantifier.GetCorrelatedTo() returns the empty set in Go (registered
-	// divergence, DIVERGENCES.md): in the flat canonical select this term
-	// is empty anyway — join predicates live on the Select, not inside the
-	// legs — and buried merge-leg deps are re-exposed separately via
-	// quantifierMergeSeedLegDeps (RFC-142).
+	// Quantifier.GetCorrelatedTo() delegates to the ranged-over Reference's
+	// transitive walk (Java parity) — this captures the quantifier's OWN
+	// expression-level correlations to sibling quantifiers, e.g. a plain
+	// lateral UNNEST's Explode correlating to its array source with NO
+	// predicate between them (without the edge the source and the unnest look
+	// like separate independent components and a cross-product bipartition
+	// silently NULLs the AS/AT columns). Self-filter dep != q.GetAlias():
+	// q.alias is bound at the parent, but Go reuses human-readable aliases, so
+	// guard against a leg re-exposing its own alias.
 	directDeps := make(map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{}, len(quantifiers))
 	for _, q := range quantifiers {
 		deps := make(map[values.CorrelationIdentifier]struct{})
 		for dep := range q.GetCorrelatedTo() {
-			if _, ok := owned[dep]; ok {
+			if _, ok := owned[dep]; ok && dep != q.GetAlias() {
 				deps[dep] = struct{}{}
 			}
 		}
@@ -686,24 +690,6 @@ func computeTransitiveCorrelationOrder(
 		for leg := range quantifierMergeSeedLegDeps(q) {
 			if _, ok := owned[leg]; ok {
 				deps[leg] = struct{}{}
-			}
-		}
-		// The quantifier's OWN expression-level correlations to sibling
-		// quantifiers — Java's Quantifier.getCorrelatedTo() delegates to
-		// rangesOver.getCorrelatedTo(), which Go's quantifier does not
-		// (registered divergence); the transitive Reference walk IS
-		// implemented, so recover the edges here. A plain lateral UNNEST's
-		// Explode correlates to its array source with NO predicate between
-		// them: without this edge the source and the unnest are separate
-		// "independent components", and the cross-product paths above happily
-		// bipartition between them — plans whose AS/AT columns silently NULL.
-		// Ordinary table quantifiers have no expression correlations; sibling
-		// edges appear exactly where Java sees them.
-		if ref := q.GetRangesOver(); ref != nil {
-			for dep := range ref.GetCorrelatedTo() {
-				if _, ok := owned[dep]; ok && dep != q.GetAlias() {
-					deps[dep] = struct{}{}
-				}
 			}
 		}
 		directDeps[q.GetAlias()] = deps

@@ -183,6 +183,39 @@ func TestReference_GetCorrelatedTo_OwnAliasNotFree(t *testing.T) {
 	}
 }
 
+// TestQuantifier_GetCorrelatedTo_Transitive pins RFC-189 A4 (finding 7):
+// Quantifier.GetCorrelatedTo() returned the EMPTY set (an under-approximation —
+// a correlated leg reported as free-standing), where Java's
+// Quantifier.getCorrelatedTo() delegates to getRangesOver().getCorrelatedTo().
+// A quantifier ranging over a reference that correlates to an external alias
+// must report that alias transitively; the reference's own bound alias must not
+// leak.
+func TestQuantifier_GetCorrelatedTo_Transitive(t *testing.T) {
+	t.Parallel()
+	innerQ := ForEachQuantifier(InitialOf(&leafScan{name: "T"}))
+	x := values.NamedCorrelationIdentifier("X")
+	// Select over innerQ whose predicate references the external alias X (free).
+	pred := predicates.NewComparisonPredicate(
+		innerQ.GetFlowedObjectValue(),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: values.NewQuantifiedObjectValue(x),
+		},
+	)
+	sel := NewSelectExpression(innerQ.GetFlowedObjectValue(), []Quantifier{innerQ}, []predicates.QueryPredicate{pred})
+	ref := InitialOf(sel)
+
+	// A quantifier ranging over that reference must surface X transitively.
+	q := ForEachQuantifier(ref)
+	got := q.GetCorrelatedTo()
+	if _, ok := got[x]; !ok {
+		t.Fatalf("quantifier correlation set %v must contain external alias %v (transitive delegation, was empty pre-fix)", got, x)
+	}
+	if _, leak := got[innerQ.GetAlias()]; leak {
+		t.Fatalf("bound inner alias %v leaked into quantifier correlation set %v", innerQ.GetAlias(), got)
+	}
+}
+
 // TestReference_GetCorrelatedTo_NonCorrelatableParentRetains pins the OTHER
 // half of Java's computeCorrelatedTo (the `!canCorrelate() || !bound`
 // disjunct on child correlations): a parent that CANNOT anchor correlation

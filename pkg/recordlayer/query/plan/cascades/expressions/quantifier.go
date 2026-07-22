@@ -230,23 +230,15 @@ func (q Quantifier) GetFlowedObjectValue() values.Value {
 }
 
 // GetCorrelatedTo returns the set of CorrelationIdentifiers the inner
-// expression depends on — i.e. the Quantifier's transitive correlation
-// set.
-//
-// DIVERGENCE (registered in DIVERGENCES.md): Java's Quantifier
-// delegates to rangesOver.getCorrelatedTo(); Go returns the EMPTY set,
-// even though Reference.GetCorrelatedTo (the transitive walk) is
-// implemented. The consumers compensate structurally: the IN-like
-// ordering rule's containsAll guard is disabled with the downstream
-// implementation rules carrying the real check
-// (rule_push_requested_ordering_through_in_like_select.go), AdjustMatch
-// checks node-local correlations only (rule_adjust_match.go
-// correlatedToEquals), PartitionSelectRule re-exposes buried merge-leg
-// deps itself (computeTransitiveCorrelationOrder), and
-// SplitSelectExtractIndependentQuantifiersRule computes its own walk
-// (quantifierCorrelationSet). Delegating to the Reference walk changes
-// what those guards reject and is plan-shape sensitive — it needs its
-// own review cycle, not a drive-by rewire.
+// expression depends on — the Quantifier's transitive correlation set,
+// delegating to the ranged-over Reference exactly as Java's
+// Quantifier.getCorrelatedTo() delegates to getRangesOver().getCorrelatedTo().
+// (Reference.GetCorrelatedTo already excludes each member's own bound
+// quantifier aliases; q.alias is bound at the PARENT, not inside the
+// ranged-over reference, so it is not in this set.)
 func (q Quantifier) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	if ref := q.GetRangesOver(); ref != nil {
+		return ref.GetCorrelatedTo()
+	}
 	return map[values.CorrelationIdentifier]struct{}{}
 }
