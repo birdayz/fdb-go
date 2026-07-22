@@ -115,9 +115,17 @@ against exactly this collision; the rest were not. Sites:
   → same-leaf-name orderings from different sources collapse → sort elided → **wrong ORDER BY** (finding 4).
 - `rule_push_filter_through_groupby.go:107,135` + `rule_streaming_agg_from_index.go:80` — pushdown
   eligibility by leaf name (documented "at worst leaks a duplicate").
-Root cause: a missing alias-aware column-identity primitive; the string shortcuts fill that gap.
-Fix = one qualified-column/accessor-chain comparator applied at ALL sites, not another one-off.
-RFC: `rfcs/187-*` (to be written).
+Root cause (proven, RFC-187 §2): match-time column identity is compared across a MIXED, MULTI
+representation — query qualified refs are resolver-BAKED (ordinal) while the candidate is LAZY,
+NAME-based by construction (`columnNames []string`, no ordinals), so raw `SemanticEqualsUnderAliasMap`
+binds nothing (baked≠lazy) and leaf-name `EqualFold` was the bridge. A nested ref also exists in 3
+forms (nested-Child, fused-baked, flat-dotted). Fix (Graefe-ACKed name-path, `rfcs/187-column-identity-matching.md`):
+one `values.AccessorNamePath`/`ColumnNamePathsEqual` primitive (full accessor NAME path, root-alias
+excluded, loud `ok=false` on pure-ordinal accessors) at ALL 10 sites S1-S10, + fix the aggregate
+candidate's nested-column mis-flatten (`groupCols[0]="addr"` for `GROUP BY addr.city`).
+Follow-up (RFC-187 §8, post-RFC-173): ordinalize the candidate (resolve `columnNames`→ordinals) so
+both match sides are baked and match-domain identity collapses into Java's `FieldPath` ordinal
+identity — the true-parity endgame, entangled with RFC-173.
 
 ### [ ] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate
 `rule_remove_range_one.go:52,68` gates deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;
