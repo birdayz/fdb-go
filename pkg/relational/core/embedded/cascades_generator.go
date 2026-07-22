@@ -251,7 +251,10 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 // false so EXPLAIN does not emit a phantom planning event (Java's getPlan
 // funnel does not fire for EXPLAIN-internal planning).
 func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData, logMetrics bool) (plan query.Plan, err error) {
-	sqlText := q.GetText()
+	// Plan-cache key: schema-scoped, injective canonical text. NOT q.GetText()
+	// — that concatenated tokens with no separator, colliding `SELECT AB` with
+	// `SELECT A B`, and carried no schema scope (see planCacheKeyInput).
+	sqlText := planCacheKeyInput(g.c.sess.Schema, md.Version(), q)
 	var ls *planLogScope
 	if logMetrics {
 		// Log the original whitespace-preserved SQL (canonicalTextOf), not

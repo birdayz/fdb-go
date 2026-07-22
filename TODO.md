@@ -4579,7 +4579,23 @@ The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING,
 
 - [x] **🚩 P0.4 DML executes through Cascades.** Fixed in RFC-035 — all DML (INSERT VALUES/SELECT, UPDATE, DELETE) routes through `planDML` → Cascades executor; `planOne` no longer branches on exec mode and the naive `execStatement` DML path (`execInsert`/`execUpdate`/`execDelete`/`execInsertSelect`, `pkPushdownCursor`) is deleted. INSERT VALUES reuses the Explode operator (RecordConstructor→Array→Explode→Insert) with plan-time arity/NOT-NULL/coercion; UPDATE SET RHS resolves to Values; DELETE/UPDATE WHERE gets EXISTS/scalar-subquery support via `upgradeDMLWhereWithCatalog`; INSERT…SELECT maps projection→target positionally and materializes (Halloween-safe). `IsUpdate()` derived from physical plan type; `RowsAffected` counted (Java's countUpdates); DML respects explicit transactions via `runInTx`. Fixed a latent non-correlated-EXISTS semi-join bug that also affected SELECT. QueryContext rejects update plans before executing (use Exec) — documented divergence in DIVERGENCES.md. Corner-case tests in `dml_cascades_fdb_test.go`. Graefe+Torvalds ACK (direction + implementation).
 - [x] **P0.1 NLJ memory bomb.** Fixed in PR #203 — `CollectAllBounded` with configurable materialization limit (default 100K rows) on all 6 `CollectAll` sites. `MaterializationLimitExceededError` typed error. All cursor leaks on error path fixed. 11 regression tests. RFC-028.
-- [x] **P0.2 Plan cache serves wrong plans.** Fixed in RFC-029 — cache keys on normalized SQL string directly (was uint64 FNV-64a hash with no text comparison on hit → collision = wrong plan). Scalar subquery staleness was a non-issue: `scalarSubqueryBinding` stores plans not results, re-evaluated per page fetch. `QueryHash` retained for tests only.
+- [x] **P0.2 Plan cache serves wrong plans.** Fixed across RFC-029 + item 3c. RFC-029 keyed on the
+  normalized SQL string (killing the uint64 FNV-64a collision), but the key had THREE residual
+  non-injectivity bugs, all now closed (item 3c, `query_hash.go` + `planCacheKeyInput`): (1) the key
+  was built from `q.GetText()`, which concatenates tokens with NO separator, so `SELECT AB FROM T`
+  and `SELECT A B FROM T` both keyed `SELECTABFROMT` → now `canonicalTextOf` preserves token
+  boundaries; (2) `normalizeSQL` uppercased inside DOUBLE-quoted / backtick delimited identifiers,
+  which are case-SENSITIVE here (`"a"` vs `"A"` are distinct columns) → now case-preserved like
+  single-quoted literals; (3) `collapseWhitespace` folded whitespace INSIDE string literals
+  (`'a  b'` vs `'a b'`) and `stripComments` didn't guard delimited ids → both now quote-aware.
+  The key is ALSO now schema-scoped (schema name + metadata version prefix): `SetSchema` mutates
+  only the session schema, so the same SQL against a different schema previously returned a stale
+  plan (Java's QueryCacheKey carries the schema template version; RFC-024). Pins:
+  `plan_cache_key_test.go` (all three injectivity cases + schema/version scoping, red pre-fix).
+  Optimization gap remaining (NOT a correctness bug): Java's AstNormalizer parameterizes literals
+  (`x = 1` / `x = 2` share a plan); Go keys on literal text → more misses, never a wrong plan.
+  Scalar subquery staleness was a non-issue: `scalarSubqueryBinding` stores plans not results,
+  re-evaluated per page fetch. `QueryHash` retained for tests only.
 - [x] **P0.3 No context cancellation in executor.** Fixed in RFC-030 — `ctx.Err()` checks at the top of every cursor OnNext loop and drain function (44 sites across 19 files). `autoContinuingCursor` was the worst offender (created new FDB transactions on cancelled contexts). All cursor combinators, executor cursors, utility drains, DML drains, legacy query path drains, and iterator adapters now respect Go context cancellation. 24 unit tests verify prompt cancellation.
 
 ### P1 — fix before relying on the optimizer for real workloads (plan quality)
