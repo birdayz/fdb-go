@@ -121,7 +121,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPushLimitThroughProjectionRule(),
 		NewPushLimitThroughUnionRule(),
 		NewNoOpLimitElimRule(),
-		NewRemoveRangeOneRule(),
 		NewSelectMergeRule(),
 		NewSplitSelectExtractIndependentQuantifiersRule(),
 		NewNormalizePredicatesRule(),

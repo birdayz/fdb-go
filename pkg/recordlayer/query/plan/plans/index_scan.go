@@ -60,6 +60,15 @@ type RecordQueryIndexPlan struct {
 	// unique reports whether the index is declared UNIQUE — an all-equality
 	// scan over a unique index's full key yields at most one row.
 	unique bool
+	// createsDuplicates and distinctRecordsKnown carry the match candidate's
+	// fan-out signal onto the plan for the DistinctRecords property. Java's
+	// DistinctRecordsProperty.visitIndexPlan returns !matchCandidate.createsDuplicates()
+	// (empty candidate → false) — a fan-out index (repeated/collection field)
+	// creates duplicates; a scalar-field index does NOT, regardless of
+	// uniqueness. distinctRecordsKnown is false until the signal is stamped
+	// (WithDistinctRecordsSignal), mirroring Java's empty-candidate default.
+	createsDuplicates    bool
+	distinctRecordsKnown bool
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this leaf emits — minted once at construction, returned by
 	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
@@ -121,18 +130,20 @@ func (p *RecordQueryIndexPlan) WithScanComparisons(comps []*predicates.Compariso
 	copied := make([]*predicates.ComparisonRange, len(comps))
 	copy(copied, comps)
 	return &RecordQueryIndexPlan{
-		indexName:       p.indexName,
-		scanComparisons: copied,
-		recordTypes:     p.recordTypes,
-		flowedType:      p.flowedType,
-		reverse:         p.reverse,
-		strictlySorted:  p.strictlySorted,
-		covering:        p.covering,
-		coveringColumns: p.coveringColumns,
-		columnNames:     p.columnNames,
-		pkColumnNames:   p.pkColumnNames,
-		unique:          p.unique,
-		resultValue:     p.resultValue,
+		indexName:            p.indexName,
+		scanComparisons:      copied,
+		recordTypes:          p.recordTypes,
+		flowedType:           p.flowedType,
+		reverse:              p.reverse,
+		strictlySorted:       p.strictlySorted,
+		covering:             p.covering,
+		coveringColumns:      p.coveringColumns,
+		columnNames:          p.columnNames,
+		pkColumnNames:        p.pkColumnNames,
+		unique:               p.unique,
+		createsDuplicates:    p.createsDuplicates,
+		distinctRecordsKnown: p.distinctRecordsKnown,
+		resultValue:          p.resultValue,
 	}
 }
 
@@ -144,6 +155,27 @@ func (p *RecordQueryIndexPlan) GetPKColumnNames() []string { return p.pkColumnNa
 
 // IsUnique reports whether the scanned index is declared UNIQUE.
 func (p *RecordQueryIndexPlan) IsUnique() bool { return p.unique }
+
+// WithDistinctRecordsSignal stamps the match candidate's fan-out signal onto a
+// shallow copy (Java DistinctRecordsProperty). Call it when building an index
+// plan from a candidate that exposes createsDuplicates(); it marks the signal
+// known so the DistinctRecords property no longer falls back to the
+// empty-candidate default.
+func (p *RecordQueryIndexPlan) WithDistinctRecordsSignal(createsDuplicates bool) *RecordQueryIndexPlan {
+	cp := *p
+	cp.createsDuplicates = createsDuplicates
+	cp.distinctRecordsKnown = true
+	return &cp
+}
+
+// ProducesDistinctRecords ports Java DistinctRecordsProperty.visitIndexPlan:
+// an index scan produces distinct records iff its match candidate did NOT
+// create duplicates. Until the signal is stamped (no candidate) it returns
+// false — Java's empty-candidate default. Independent of UNIQUE: a non-unique
+// scalar index does not create duplicates and so IS distinct.
+func (p *RecordQueryIndexPlan) ProducesDistinctRecords() bool {
+	return p.distinctRecordsKnown && !p.createsDuplicates
+}
 
 // WithIndexMetadata returns a shallow copy carrying the index's key columns,
 // the record type's primary-key columns, and the UNIQUE flag. These describe

@@ -99,7 +99,10 @@ func TestEdge_ComputeRefPlanProperties_MultiplePlans(t *testing.T) {
 	scanW := scan
 
 	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
-	idxW := idx.WithIndexMetadata(nil, nil, true)
+	// Stamp the candidate fan-out signal (RFC-188 M4): a non-fan-out index does
+	// not create duplicates → distinct. Without the signal the property returns
+	// false (Java's empty-candidate default).
+	idxW := idx.WithIndexMetadata(nil, nil, true).WithDistinctRecordsSignal(false)
 
 	ref := expressions.InitialOf(scanW)
 	ref.Insert(idxW)

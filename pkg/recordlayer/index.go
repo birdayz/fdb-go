@@ -65,6 +65,35 @@ type IndexPredicate func(msg proto.Message) bool
 
 // Index represents a secondary index definition.
 // Matches Java's com.apple.foundationdb.record.metadata.Index.
+// CreatesDuplicates reports whether the index's root key expression fans out —
+// a single record can produce multiple index entries (e.g. an index over a
+// repeated/collection field). Ports Java's
+// index.getRootExpression().createsDuplicates(); such an index does NOT produce
+// distinct records (DistinctRecordsProperty). Returns false when the root
+// expression is unset. FAILS CLOSED (conservatively duplicating) for an
+// UNRECOGNIZED root type so the M4 DistinctRecords signal never mis-reports an
+// unknown-fan-out index as distinct (which would elide a required DISTINCT).
+func (i *Index) CreatesDuplicates() bool {
+	if i.RootExpression == nil {
+		return false
+	}
+	// Only a plain VALUE index's scan-time distinctness is governed by its key
+	// expression's fan-out (root.createsDuplicates()). Every OTHER index type
+	// that can reach a value-scan candidate may emit multiple entries per record
+	// — a TEXT index tokenizes to one entry per token; multidimensional/rank and
+	// the like have their own scan shapes — so FAIL CLOSED to duplicate-producing
+	// for them. The M4 DistinctRecords signal then never wrongly marks such a
+	// scan distinct and elides a required DISTINCT (which would leak duplicate
+	// rows, cross-engine reachable via a Java-created index in shared metadata).
+	// Over-reporting for a genuinely-distinct non-VALUE type is the safe
+	// direction: identical rows, at most a redundant DISTINCT. aggregate/vector/
+	// atomic-mutation indexes are already excluded upstream from value candidates.
+	if i.Type != IndexTypeValue {
+		return true
+	}
+	return createsDuplicatesRec(i.RootExpression, true)
+}
+
 type Index struct {
 	Name                string
 	Type                string

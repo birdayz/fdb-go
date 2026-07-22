@@ -849,27 +849,45 @@ func (n *NestingKeyExpression) ColumnSize() int {
 
 // createsDuplicates returns true if a key expression can produce multiple tuples
 // for a single record (e.g., FanOut on a repeated field). Matches Java's
-// KeyExpression.createsDuplicates() — used to validate primary keys don't fan out.
+// KeyExpression.createsDuplicates() — used to validate primary keys don't fan
+// out. An UNRECOGNIZED (custom/external) type returns false here (master
+// behavior for validateSplitKeyExpression, which reads this as POSITIVE proof —
+// a fail-closed true would wrongly admit Split(customScalar) that master
+// rejects).
 func createsDuplicates(expr KeyExpression) bool {
+	return createsDuplicatesRec(expr, false)
+}
+
+// createsDuplicatesRec is createsDuplicates with an explicit result for an
+// UNRECOGNIZED key expression type, threaded through the recursion. The two
+// callers want OPPOSITE unknown-handling (Java sidesteps this by making
+// createsDuplicates() an abstract method every subclass implements): Split
+// validation passes unrecognized=false (see above); index.CreatesDuplicates
+// passes unrecognized=true — FAIL CLOSED, so the M4 DistinctRecords signal never
+// reports an unknown-fan-out index root as producing distinct records and elides
+// a required DISTINCT (duplicate rows). Every standard index-root type has an
+// explicit arm, so the default is unreachable via proto/SQL metadata; it only
+// guards a custom/externally-implemented expression.
+func createsDuplicatesRec(expr KeyExpression, unrecognized bool) bool {
 	switch e := expr.(type) {
 	case *FieldKeyExpression:
 		return e.fanType == FanTypeFanOut
 	case *NestingKeyExpression:
-		return e.fanType == FanTypeFanOut || createsDuplicates(e.child)
+		return e.fanType == FanTypeFanOut || createsDuplicatesRec(e.child, unrecognized)
 	case *CompositeKeyExpression:
 		for _, child := range e.expressions {
-			if createsDuplicates(child) {
+			if createsDuplicatesRec(child, unrecognized) {
 				return true
 			}
 		}
 		return false
 	case *RecordTypeKeyExpression:
 		if e.nested != nil {
-			return createsDuplicates(e.nested)
+			return createsDuplicatesRec(e.nested, unrecognized)
 		}
 		return false
 	case *KeyWithValueExpression:
-		return createsDuplicates(e.innerKey)
+		return createsDuplicatesRec(e.innerKey, unrecognized)
 	case *VersionKeyExpression:
 		return false
 	case *CardinalityFunctionKeyExpression:
@@ -884,17 +902,27 @@ func createsDuplicates(expr KeyExpression) bool {
 	case *SplitKeyExpression:
 		// Matches Java's SplitKeyExpression.createsDuplicates() which returns true.
 		return true
+	case *GroupingKeyExpression:
+		// Java GroupingKeyExpression.createsDuplicates() delegates to the whole
+		// key — a grouping/aggregate index over a fan-out field still fans out.
+		return createsDuplicatesRec(e.wholeKey, unrecognized)
+	case *EmptyKeyExpression:
+		// No columns → one (empty) tuple per record, no fan-out.
+		return false
+	case *LiteralKeyExpression:
+		// A constant → single value per record, no fan-out.
+		return false
 	case *DimensionsKeyExpression:
-		return createsDuplicates(e.WholeKey)
+		return createsDuplicatesRec(e.WholeKey, unrecognized)
 	case *ListKeyExpression:
 		for _, child := range e.children {
-			if createsDuplicates(child) {
+			if createsDuplicatesRec(child, unrecognized) {
 				return true
 			}
 		}
 		return false
 	default:
-		return false
+		return unrecognized
 	}
 }
 

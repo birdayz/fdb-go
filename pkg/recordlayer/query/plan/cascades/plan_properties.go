@@ -62,11 +62,14 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 	case *plans.RecordQueryScanPlan:
 		return true
 	case *plans.RecordQueryIndexPlan:
-		// The index scan is its own physical expression now (RFC-184 W2) — its
-		// UNIQUE flag lives on the plan. A unique index scan produces distinct
-		// records (each index entry maps to one record).
+		// Java DistinctRecordsProperty.visitIndexPlan: distinct iff the match
+		// candidate did NOT create duplicates (empty candidate → false). NOT the
+		// UNIQUE flag — a non-unique SCALAR index does not create duplicates and
+		// so produces distinct records; only a fan-out index does not. The
+		// candidate's createsDuplicates signal is stamped onto the plan at
+		// build time (WithDistinctRecordsSignal).
 		if ip, ok := plan.(*plans.RecordQueryIndexPlan); ok {
-			return ip.IsUnique()
+			return ip.ProducesDistinctRecords()
 		}
 		return false
 	case *plans.RecordQueryProjectionPlan:
@@ -83,7 +86,11 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		*plans.RecordQueryInsertPlan,
 		*plans.RecordQueryDeletePlan,
 		*plans.RecordQueryUpdatePlan,
-		*plans.RecordQueryTempTableInsertPlan:
+		*plans.RecordQueryTempTableInsertPlan,
+		// A fetch is 1:1 (one record per index entry) — Java treats it as
+		// transparent in DistinctRecordsProperty. Without this arm the M4
+		// distinct fact is hidden above the common Fetch(IndexScan).
+		*plans.RecordQueryFetchFromPartialRecordPlan:
 		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryFirstOrDefaultPlan:
 		return true
@@ -214,6 +221,16 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		}
 		return nil
 	case *plans.RecordQueryIndexPlan:
+		// M5 (index common PK) is INTENTIONALLY nil — see the "Finding 10-M5
+		// (reverted)" TODO. Java's PrimaryKeyProperty.visitIndexPlan translates
+		// index.getCommonPrimaryKey() STRUCTURALLY; a by-column-NAME PK (the only
+		// thing the plan carries via GetPKColumnNames) wrongly equates record
+		// types whose PK expressions differ but share field names — e.g.
+		// Field("ID") vs Concat(RecordTypeKey(), Field("ID")) both flatten to
+		// ["ID"] — which would let ImplementDistinctUnionRule dedup two legs that
+		// must both survive (dropped rows). Returning nil (no common PK) is the
+		// safe under-report: it disables the optimization, never wrong dedup. The
+		// correct structural-PK port is booked.
 		return nil
 	case *plans.RecordQueryFilterPlan,
 		*plans.RecordQueryPredicatesFilterPlan,
@@ -225,7 +242,10 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		*plans.RecordQueryInJoinPlan,
 		*plans.RecordQueryInUnionPlan,
 		*plans.RecordQueryFirstOrDefaultPlan,
-		*plans.RecordQueryDeletePlan:
+		*plans.RecordQueryDeletePlan,
+		// A fetch is 1:1 — Java's PrimaryKeyProperty passes it through to its
+		// single child, so the M5 index common-PK survives above the fetch.
+		*plans.RecordQueryFetchFromPartialRecordPlan:
 		return pkFromChildren(plan.GetChildren())
 	case *plans.RecordQueryUnionPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
@@ -354,7 +374,11 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 	case *plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryProjectionPlan,
-		*plans.RecordQueryTempTableInsertPlan:
+		*plans.RecordQueryTempTableInsertPlan,
+		// A fetch is 1:1 — Java's CardinalitiesProperty passes it through, so a
+		// bounded index access under a Fetch keeps its proven max cardinality
+		// (feeds the M3 whole-plan guard and criterion #2).
+		*plans.RecordQueryFetchFromPartialRecordPlan:
 		return cardinalitiesFromChildRef(w)
 
 	// --- DefaultOnEmpty: floor at 1 ---

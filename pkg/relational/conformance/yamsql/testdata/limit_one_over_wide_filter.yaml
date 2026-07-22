@@ -1,0 +1,27 @@
+# limit_one_over_wide_filter.yaml — RFC-188 finding 2 SQL-surface guard.
+#
+# A LIMIT 1 over a wide residual filter must return exactly one row and keep its
+# Limit node. The deleted RemoveRangeOneRule stripped the LIMIT whenever the
+# inner's HEURISTIC estimate underflowed below 1.0 (LeafScanCardinality 1e6 *
+# FilterSelectivity 0.5^numPreds). The memo-level firing was real and produced a
+# limit-stripped plan (pinned red->green at the planner level by
+# TestPlanner_LimitOneOverMultiRowFilterRetainsLimit), but the SQL surface masks
+# it: the translation collapses `c0=0 AND c1=0 AND ...` into a SINGLE
+# AndPredicate, so numPreds=1, the estimate is 5e5, and the rule never fired.
+# This scenario is the e2e sentinel for that boundary — it stays GREEN and would
+# catch any future conjunct-splitting normalization re-detonating the wrong-rows
+# path at the SQL surface. Cost estimates decide between correct plans; they must
+# never decide whether a rewrite preserves semantics.
+name: limit_one_over_wide_filter
+schema_template: |
+  CREATE TABLE wide (id BIGINT NOT NULL, c0 BIGINT, c1 BIGINT, c2 BIGINT, c3 BIGINT, c4 BIGINT, c5 BIGINT, c6 BIGINT, c7 BIGINT, c8 BIGINT, c9 BIGINT, c10 BIGINT, c11 BIGINT, c12 BIGINT, c13 BIGINT, c14 BIGINT, c15 BIGINT, c16 BIGINT, c17 BIGINT, c18 BIGINT, c19 BIGINT, c20 BIGINT, c21 BIGINT, c22 BIGINT, c23 BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO wide VALUES (1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), (2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), (3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+tests:
+  # All three rows match every conjunct; every matching row projects c0 = 0,
+  # so the single surviving row is deterministic regardless of which physical
+  # row the scan yields first. Without the LIMIT the query returns three rows.
+  - query: SELECT c0 FROM wide WHERE c0 = 0 AND c1 = 0 AND c2 = 0 AND c3 = 0 AND c4 = 0 AND c5 = 0 AND c6 = 0 AND c7 = 0 AND c8 = 0 AND c9 = 0 AND c10 = 0 AND c11 = 0 AND c12 = 0 AND c13 = 0 AND c14 = 0 AND c15 = 0 AND c16 = 0 AND c17 = 0 AND c18 = 0 AND c19 = 0 AND c20 = 0 AND c21 = 0 AND c22 = 0 AND c23 = 0 LIMIT 1
+    plan_contains: "Limit(1,"
+    rows:
+      - [0]

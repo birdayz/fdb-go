@@ -141,32 +141,86 @@ implementation [x] 1M stress green (no row-count/plan regression) [x] full 56-ta
 every commit. Only the two booked follow-ups remain (nested-agg-index SUPPORT; §8 candidate
 ordinalization) — both distinct from A's wrong-rows/wrong-order fix.
 
-### [ ] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate
-`rule_remove_range_one.go:52,68` gates deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;
-`cost.go:520` (LogicalFilter) and `:609` (Select) compute `in * 0.5^numPreds` UNFLOORED over
-`LeafScanCardinality=1e6`, so `1e6*0.5^20≈0.95<1.0` → LIMIT deleted → query returns ALL matching
-rows. Correctness gated on a heuristic constant (cardinal sin). Also: the rule wears Java's name but
-does something Java's `RemoveRangeOneRule` (remove an unreferenced `RANGE(0,1)` quantifier) does not —
-Go invention. Fix: `.Floor(1)` on the estimate path AND a provable-max-cardinality check (or rename).
-Regression: N-predicate LIMIT-1 shape.
+**Systemic problem B (cost/cardinality-model soundness) = findings 2, 3, 6, 10, covered by
+`rfcs/188-cost-model-soundness.md` (branch feat/rfc188-cost-model-soundness). RFC ACKED rev 2 (Graefe +
+Torvalds; rev 1 NAK'd, rev 2 folded: finding 2 → DELETE not rename, finding 3 → bare-comparison set +
+flipFlop sign + config confirmed-absent, finding 6 → sparse-sorted first-map, finding 10 M4 → plan
+plumbing). Java refs confirmed against 4.12.11.0. Grind order: 2 → 6 → 3 → 10(M2 → M5 → M3&M4).
+Two follow-ups booked below (port Java's real RemoveRangeOne; model IndexScanPreference config).**
 
-### [ ] Finding 3 (HIGH, worse plan) — comparePrimaryScanVsIndexScan drops Java's type-filter SARG subcase
-`planning_cost_model.go:878` ports only the shape check (its comment falsely claims "matches Java's
-check") and drops Java `PlanningCostModel.java:381-408`: when the primary side carries a type filter,
-the index side none, and the index applies extra SARGs the primary lacks, Java prefers the INDEX. Also
-ignores `IndexScanPreference` (PREFER_INDEX/PREFER_PRIMARY_KEY_INDEX). → picks full primary scan +
-high-discard type filter over the selective index. Plan-choice divergence (wire-visible for cross-engine
-continuation resumption).
+### [x] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate — DONE
+`rule_remove_range_one.go:52,68` gated deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;
+`cost.go:520` (LogicalFilter) and `:609` (Select) compute `in * 0.5^numPreds` UNFLOORED over
+`LeafScanCardinality=1e6`, so `1e6*0.5^24≈0.06<1.0` → LIMIT deleted → plan returns ALL matching rows.
+Correctness gated on a heuristic constant (cardinal sin). Also: the rule wore Java's name but did
+something Java's `RemoveRangeOneRule` (remove an unreferenced `RANGE(0,1)` quantifier) does not — Go
+invention. **DONE (RFC-188 §1, Graefe ruling): DELETED the rule + tests + registration** — Java has no
+limit-removal rule (keeping one is itself a plan divergence), and the narrowed-to-`LogicalValues` rule
+is production-dead (`NewLogicalValuesExpression`: 0 non-test callers).
+**Reachability (verified): memo-level real, not SQL-reachable today.** Probed: `Limit(1,
+24-separate-predicate-filter)` planned to `PredicatesFilter(Scan,[24 preds])` — limit stripped. But SQL
+collapses `a AND b AND …` into ONE `AndPredicate` (numPreds=1 → estimate 5e5 → never fires). Latent
+landmine, not a live SQL regression. Pins: planner-level red→green
+`TestPlanner_LimitOneOverMultiRowFilterRetainsLimit` (RED = limit stripped, GREEN = retained) + yamsql
+`limit_one_over_wide_filter` SQL-surface guard (green sentinel for the conjunct-collapse boundary).
+
+### [ ] Finding 2-followup-a — port Java's REAL RemoveRangeOneRule (booked by RFC-188 §1)
+Java `RemoveRangeOneRule.java:45-102` drops an unreferenced `RANGE(0,1)` table-function quantifier from
+a `SelectExpression` (nothing to do with LIMIT) — UNPORTED. Porting it reclaims the `RemoveRangeOne`
+name cleanly. Distinct missing-rule item; needs Graefe+Torvalds review (query-engine rule).
+
+### [ ] Finding 3-followup — model IndexScanPreference config (booked by RFC-188 §2)
+Go's `PlanContext` has no `IndexScanPreference` knob (grep-confirmed absent); Cascades default is
+`PREFER_SCAN` (proto enum 0). Modeling `PREFER_INDEX`/`PREFER_PRIMARY_KEY_INDEX` + the legacy
+multi-type-no-PK-prefix default (`RecordQueryPlanner:194`) is out of scope for finding 3 (the SARG
+sub-case lands regardless). Nobody sets it today; book for when a config surface needs it.
+
+### [x] Finding 3 (HIGH, worse plan) — comparePrimaryScanVsIndexScan drops Java's type-filter SARG subcase — DONE
+`planning_cost_model.go` ported only the shape check and dropped Java's SARG sub-case: when the primary
+side carries a type filter, the index side none, and the index SARGs strictly more than the primary,
+Java prefers the INDEX. FIXED: added `primaryVsIndexVerdict` (SARG sub-case + PREFER_SCAN default),
+threading the sign by which side is the primary scan (Java's flipFlop negation). Comparison set built
+from BARE comparisons (type + comparand, column/position EXCLUDED — Java's ComparisonsProperty
+`Set<Comparison>`), via `scanSargComparisonSet`. `IndexScanPreference` confirmed absent in Go (Cascades
+default PREFER_SCAN); config knob booked separately (Finding 3-followup).
+**Reachability (corrected after codex P1a fold): INERT on the corpus.** The sub-case's SARG walk must
+descend the CONCRETE plan (the production `scanPlanExpression`/`TypeFilter(Scan)` wrapper exposes no
+quantifiers — `GetQuantifiers()==nil`), else the primary SARG set is spuriously empty and the sub-case
+fires whenever the index has any SARG (could demote a PK point lookup). After that fix
+(`scanSargComparisonSet` → `collectPlanSargComparisons` over `GetRecordQueryPlan().GetChildren()`), the
+earlier `join_optimization_probes#4` "flip" REVERTS: the EMP self-join primary SARGs an eid inequality
+the index lacks while the index SARGs the did equality the primary lacks — NEITHER is a strict superset,
+so the sub-case correctly abstains → PREFER_SCAN (matches master, matches Java). The genuine strict-
+superset shape (index SARGs everything the primary does plus a record-type-key comparison, no type
+filter) is not SQL-corpus-reachable today. Pins: unit `TestComparisonSetKey_BareComparisonIdentity` /
+`TestSetDifferenceEmpty` (the set logic); `join_optimization_probes#4` keeps a rows-only correctness pin
+(the sub-case correctly does NOT fire there). Faithful Java port, latent-gap like M2/M3/M5.
 
 ### [ ] Finding 5 (MED) — scalar signed-zero ConstantValue: equal-but-different-hash
 `values/map_field_values.go:254` scalar fallthrough `return a == b` (−0.0==+0.0 true) vs
 `semantic_hash.go:156` `%v` (renders "-0"≠"0"). The []float64/[]float32 arms already fixed this with
 `math.Float64bits` (RFC-176 §2); scalar wasn't. → memo dedup miss/dup. Fix: bitwise-compare scalar floats.
 
-### [ ] Finding 6 (MED) — comparePredicateCountByLevel iterates union of levels; Java iterates first-arg only
-`planning_cost_model.go:115-139` `for level:=0; level<=maxLevel` vs Java
-`PredicateCountByLevelInfo.compare` (first-map entries + highest-level tiebreak). Sign flip on
-asymmetric-depth predicate maps → different REWRITING survivor.
+### [x] Finding 6 (MED) — comparePredicateCountByLevel: keep the antisymmetric UNION iteration — DONE (self-corrected)
+Original claim (walk a's keys first-map-only to "match Java") was WRONG — it rested on misreading Java as
+having a SPARSE producer. Java's `PredicateCountByLevelVisitor.evaluateAtExpression` ALWAYS
+`.put(currentLevel, count)` (0 for a non-predicate node) → its maps are DENSE, so "iterate a's entries" =
+iterate ALL levels = the ascending UNION pass. On Go's SPARSE producer
+(`designationScope.predCountByLevel`), a first-map-only pass is NON-ANTISYMMETRIC (`Filter(Distinct(Scan))`
+{2:1} vs `Distinct(Filter(Scan))` {1:1} → +1 in BOTH orientations → REWRITING survivor becomes
+insertion-order dependent, a determinism bug) AND diverges from Java (returns +1 where Java returns -1).
+Reverted to the UNION iteration (= master), which is antisymmetric on any input and equals Java's per-level
+counts on sparse input. Pin: `TestComparePredicateCountByLevel_Antisymmetric` (compare(a,b)==-compare(b,a)
+incl. the {2:1}/{1:1} trap) + `_SanityCases`. Explain-diff vs master: zero (this was a no-op-vs-master
+correction of a mistaken change).
+
+### [ ] Finding 6-followup — dense predicate-count producer for Java tiebreak parity
+Go's `predCountByLevel` is SPARSE, so the highest-level tiebreak (`intCompare(maxLevelA, maxLevelB)`) uses
+the highest PREDICATE level, not Java's tree-depth `getHighestLevel` (dense). Only bites when every
+per-level count ties (rare). Making the producer dense (always `counts[currentLevel]+=predCount`, 0
+included — matching Java's visitor) closes it, but FLIPS ~11 corpus plan lines (REWRITING survivors:
+e.g. a nested redundant Project, a Limit/Project reorder) that each need Java-verification before shipping.
+Pre-existing (master's producer is sparse too); booked, not bundled into RFC-188.
 
 ### [ ] Finding 7 (MED, fragile) — Quantifier.GetCorrelatedTo() returns empty; Java transitive-walks
 `expressions/quantifier.go:250` returns `{}` vs Java `getRangesOver().getCorrelatedTo()`. UNDER-
@@ -185,13 +239,108 @@ candidate part to `QOV(alias)` (case-1 self-equal always fires) vs Java's root-r
 `candidateValue.pullUp(mapping.values(), …)`. Masked until a covering-index `RecordConstructorValue`
 result value appears → wrong projection. `PullUpValues(parts, m.candidateValue, alias)` exists unused.
 
-### [ ] Finding 10 (MED) — missing Java cost rungs / property divergences
-- M2: no `numDefaultOnEmpty` rung (`RecordQueryDefaultOnEmptyPlan` uncounted) vs Java `PlanningCostModel:308`.
-- M3: criterion #2 lacks Java's whole-plan-cardinality OUTER guard (`PlanningCostModel:121`) → decides
-  on data-access cardinality where Java abstains.
-- M4: `plan_properties.go:64` DistinctRecords for index uses `IsUnique()` not Java's `!createsDuplicates()`
-  → misses DISTINCT elision over non-unique scalar-index scans.
-- M5: `plan_properties.go:216` PrimaryKey nil for index scans vs Java's common-PK → loses PK-based dedup/order.
+### [x] Finding 10 (MED) — missing Java cost rungs / property divergences — DONE (M2 M5 M4 M3)
+- [x] M2: `numDefaultOnEmpty` rung — DONE. Count `RecordQueryDefaultOnEmptyPlan` in all 3 count sites
+  (walk/merge/concrete); rung "fewer ON EMPTY NULL wins" after the ordinal rungs, before the scalar-cost
+  extension (Java's last ordinal rung before the planHash tiebreak). Pin:
+  `TestConcretePlanCounts_DefaultOnEmpty`. Explain-diff: no corpus flip (faithful port, latent-gap fix).
+- [x] M3: whole-plan-cardinality OUTER guard — DONE. Criterion #2 (max data-access cardinality) is now
+  gated behind `wholePlanMaxCardinalityKnown(a) || ...(b)` — the PROVEN whole-plan max cardinality
+  (`computeCardinalities().GetMaxCardinality()`), Java `PlanningCostModel`'s outer guard. When both
+  whole-plan maxima are unknown but a data access is provably bounded (InUnion/Explode over point
+  lookups), Go now abstains like Java instead of ranking on the data-access maximum. Pin:
+  `TestWholePlanMaxCardinalityKnown` (scan→unknown, FirstOrDefault→known — proves the guard
+  discriminates). Explain-diff: no corpus flip (reachability caveat resolved — no spurious over-abstention;
+  the divergence case is not in the corpus).
+- [x] M4: DistinctRecords for index — DONE. `computeDistinctRecords` now returns
+  `!matchCandidate.createsDuplicates()` (Java `DistinctRecordsProperty.visitIndexPlan`), not `IsUnique()`.
+  Plumbed the candidate fan-out signal onto `RecordQueryIndexPlan` (`createsDuplicates` +
+  `distinctRecordsKnown` fields, `WithDistinctRecordsSignal`, `ProducesDistinctRecords`), stamped at all
+  production index-plan build sites (stampIndexMetadata, wrapScanPlanWithCoverage×2, streaming-agg,
+  ordered-index-scan) via `candidateDistinctSignal`. Empty-candidate → false (Java default). A non-unique
+  SCALAR index is now correctly distinct. Pin: `TestComputeDistinctRecords_IndexFanOutSignal` (4 cases).
+  **Graefe NAK fold:** the candidate's `createsDuplicates` was NEVER populated (constructor omitted it →
+  constant false → fan-out indexes over-reported distinct = UNSAFE dropped-dedup direction). Fixed:
+  exported `Index.CreatesDuplicates()` (over the root key expression, `createsDuplicates(RootExpression)`),
+  optional `IndexDefWithCreatesDuplicates` interface, `metadataIndexDef.IndexCreatesDuplicates()`, threaded
+  through the candidate constructor. Pins: `TestIndex_CreatesDuplicates` (FanOut→true, scalar/nested/empty),
+  `TestPlanContext_ThreadsCreatesDuplicates` (fan-out def → candidate true; absent → false). Explain-diff:
+  no corpus flip (no fan-out index in the SQL corpus).
+- [~] M5: PrimaryKey for index scans — REVERTED to nil (safe); re-booked as structural. The by-COLUMN-NAME
+  PK (`GetPKColumnNames()` → FieldValues) wrongly equates record types whose PK EXPRESSIONS differ but
+  share field names (`Field("ID")` vs `Concat(RecordTypeKey(), Field("ID"))` both flatten to `["ID"]`),
+  which would let `ImplementDistinctUnionRule` dedup two legs that must both survive (dropped rows —
+  codex P1b, a finding-A-class leaf-name bug). `computePrimaryKey` now returns nil for index scans (safe
+  under-report: disables the optimization, never wrong dedup). Pin:
+  `TestComputePrimaryKey_IndexScanIsNilPendingStructuralPK`. See Finding 10-M5-followup.
+
+### [ ] Finding 10-M5-followup — structural common-PK for index scans (Java parity)
+Port Java `PrimaryKeyProperty.visitIndexPlan` PROPERLY: `ScalarTranslationVisitor.translateKeyExpression(
+index.getCommonPrimaryKey(), …)` — translate the index's common PK KEY EXPRESSION to Values that encode
+STRUCTURE (record-type-key prefixes, nesting), not bare column names. Then `commonPKFromChildren`'s
+`ValuesStructurallyEqual` compares real PK identity and cannot equate `Field("ID")` with
+`Concat(RecordTypeKey(), Field("ID"))`. Finding-A-class (carry the key expression / translated Values on
+the plan; also handles the fan-out case — a fan-out index's entries DO carry the common PK, so it should
+be surfaced for the PK property while still suppressed for the ordering suffix). Needs Graefe+Torvalds.
+
+### [ ] Finding 10-M4-followup — Fetch stored-record transparency to activate the non-covering DISTINCT elision (codex P2)
+`computeStoredRecord` has no `RecordQueryFetchFromPartialRecordPlan` arm (Java StoredRecordProperty treats
+a fetch as producing a stored record → true), so `ImplementDistinctFinalRule` filters out the
+`Fetch(IndexScan)` partition and the M4 non-unique-scalar-index DISTINCT elision does not fire on the
+common non-covering path. Adding the arm is Java-faithful BUT activates the elision broadly: explain-diff
+showed ~48 changed plan lines — `InMemorySort([ID], Fetch(InJoin(IndexScan)))` → `InUnion(IndexScan)` on
+IN-list queries (sort elimination, apparent improvements). Deferred from RFC-188 because it opens a NEW
+optimization surface that needs its own validation (row-level + EXPLAIN review of every flip + 1M stress
++ reviewer sign-off), not a milestone-end add. The distinct/PK/cardinality Fetch-transparency arms
+already landed (safe, zero-flip); this is the storedRecord arm that turns them on.
+
+### [ ] Finding 10-M4-followup-2 — fail-closed distinct for an UNKNOWN index-root key expression (codex)
+`createsDuplicates`'s default returns false (shared with `validateSplitKeyExpression`, which uses it as
+POSITIVE proof — a fail-closed `true` there wrongly admits `Split(customScalar)` that master rejects). So
+an index whose RootExpression is an UNRECOGNIZED (custom/external) KeyExpression is stamped known
+non-fan-out → M4 distinct=true (theoretically unsafe). NOT reachable today: every proto/SQL index root is
+a recognized type. The M4 fail-closed need must be DECOUPLED from the shared default — e.g.
+`index.CreatesDuplicates()` (or `metadataIndexDef.IndexCreatesDuplicates`) returns UNKNOWN (→ don't stamp
+→ distinct=false, safe) for a root type not in the recognized set, without touching the Split-validation
+default. Or add fan-out to the KeyExpression interface contract (Java's approach: abstract method).
+
+### [ ] Finding 10-M4-followup-3 — refine the non-VALUE fail-closed (optimization) + audit value-candidacy vs Java
+`Index.CreatesDuplicates()` fails closed to duplicate-producing for ANY non-VALUE index type that reaches a
+value-scan candidate (TEXT tokenizes → dup; the conservative default also covers rank/multidimensional/
+time_window_leaderboard/non-atomic bitmap). This is SAFE (identical rows cross-engine; at most a redundant
+DISTINCT) but may OVER-report duplicates for a genuinely-distinct non-VALUE type (e.g. a VERSION index —
+one entry per record), losing a DISTINCT elision. Refinement (safe, optimization-only): per-type analysis
+of which non-VALUE types' SCANS actually emit multiple entries per record, narrowing the fail-closed to
+those. Deeper (Java-parity): should Go EXCLUDE these types from value candidates entirely (as it already
+does for aggregate/vector/atomic-mutation), matching Java, rather than value-scanning them — surfaced by
+the M4 signal but pre-existing. Not a correctness gap now (fail-closed is safe); cross-engine reachable
+(Java-created index in shared metadata).
+
+### [ ] Finding 10-M3-followup — recognize equality-bound primary scans in the outer guard (codex P2)
+`wholePlanMaxCardinalityKnown` uses `computeCardinalities`, whose `RecordQueryScanPlan` arm always returns
+`UnknownMaxCardinality` — so a full-PK-equality primary scan (a point lookup, max=1, which
+`concretePlanCounts`/`scanProvableMaxCard` DO bound) is reported unknown, and the M3 outer guard
+over-abstains for a bounded-primary-scan-vs-unbounded comparison where Java would apply criterion #2.
+Safe direction (abstain → falls through to other rungs); zero corpus impact. Fix: bound a full-PK-equality
+scan in `computeCardinalities` (needs the PK column count → thread `ctx`, like `scanProvableMaxCard`).
+
+**Codex milestone-review fold (finding B):** codex NAK surfaced 1 P1 + 3 P2.
+- [x] P1 (fixed): absent `IndexDefWithCreatesDuplicates` was read as known non-fan-out (stamped
+  distinct=true) — a fan-out index whose def omits the signal would over-report distinct. Fixed with a
+  known/unknown tri-state: candidate carries `createsDuplicatesKnown`; the constructor takes a `*bool`
+  signal (nil = unknown); `DistinctRecordsSignal()` returns nil when unknown → property abstains to
+  distinct=false (safe). Pin: `TestPlanContext_ThreadsCreatesDuplicates` (plain def → nil signal).
+- [x] P2 Fetch transparency (fixed): `RecordQueryFetchFromPartialRecordPlan` is 1:1 but was absent from the
+  DistinctRecords/PrimaryKey/Cardinalities switches (fell through to default), hiding M4/M5/M3 above the
+  common `Fetch(IndexScan)`. Added the transparent arm to all three (Java treats Fetch transparent). Pin:
+  `TestComputeDistinctRecords_FetchIsTransparent`. Explain-diff: no corpus flip.
+
+(Round-1 codex P2s resolved/superseded: the "carry index common PK separately from the ordering suffix"
+item is folded into Finding 10-M5-followup — with M5 reverted to nil, the fan-out-PK concern is subsumed
+by the structural-PK re-port, which must surface the PK for the property while suppressing it in ordering.
+The "SARG walk uses bestPhysicalChild not the winner" item is RESOLVED: the P1a fold rewrote
+`scanSargComparisonSet` to walk `GetRecordQueryPlan().GetChildren()` — the concrete plan being compared —
+so there is no ref child-selection left in the SARG walk.)
 
 ### [ ] Finding 11 (MED) — PredicateToLogicalUnionRule expands every top-level OR
 `rule_predicate_to_logical_union.go:99` fires OR→`Distinct(Union)` unconditionally; Java

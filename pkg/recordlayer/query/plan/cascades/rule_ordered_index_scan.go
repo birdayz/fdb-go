@@ -112,8 +112,12 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		// The index scan is its own cascades expression now (RFC-184 W2) — a bare
-		// leaf carrying its index metadata (columns/pk/unique) on the plan.
-		call.Yield(idxPlan.WithIndexMetadata(colNames, candidatePKColumns(cand), cand.IsUnique()))
+		// leaf carrying its index metadata (columns/pk/unique/fan-out) on the plan.
+		stamped := idxPlan.WithIndexMetadata(colNames, candidatePKColumns(cand), cand.IsUnique())
+		if sig := candidateDistinctSignal(cand); sig != nil {
+			stamped = stamped.WithDistinctRecordsSignal(*sig)
+		}
+		call.Yield(stamped)
 	}
 }
 

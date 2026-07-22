@@ -269,6 +269,14 @@ func (s *designationScope) predCountByLevel(e expressions.RelationalExpression, 
 		})
 	}
 	currentLevel := maxChildLevel + 1
+	// This map is SPARSE (entries only at levels that carry predicates), unlike
+	// Java's DENSE PredicateCountByLevelVisitor (which always puts a 0 entry for
+	// a non-predicate level). comparePredicateCountByLevel walks the UNION of
+	// levels, so it stays antisymmetric and matches Java's per-level counts on
+	// sparse input; the ONLY residual divergence is the highest-level tiebreak,
+	// which here is the highest PREDICATE level rather than Java's tree depth —
+	// a pre-existing gap booked as Finding 6-followup (making this dense flips
+	// REWRITING survivors and needs Java-verification of each).
 	if wp, ok := e.(expressions.RelationalExpressionWithPredicates); ok {
 		counts[currentLevel] += len(wp.GetPredicates())
 	}

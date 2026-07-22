@@ -24,23 +24,42 @@ func TestComputeDistinctRecords_ScanIsTrue(t *testing.T) {
 	}
 }
 
-func TestComputeDistinctRecords_UniqueIndexIsTrue(t *testing.T) {
+// TestComputeDistinctRecords_IndexFanOutSignal pins RFC-188 finding 10 M4:
+// DistinctRecords for an index scan follows Java DistinctRecordsProperty.visitIndexPlan
+// — !matchCandidate.createsDuplicates(), INDEPENDENT of UNIQUE. A non-unique
+// SCALAR index does not create duplicates and so IS distinct; only a fan-out
+// index is not. Until the candidate signal is stamped (WithDistinctRecordsSignal)
+// the property returns false — Java's empty-candidate default. The old code
+// returned IsUnique(), missing DISTINCT elision over non-unique scalar indexes.
+func TestComputeDistinctRecords_IndexFanOutSignal(t *testing.T) {
 	t.Parallel()
-	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
-	wrapper := idx.WithIndexMetadata(nil, nil, true)
-	got := computeDistinctRecords(wrapper, wrapper)
-	if !got {
-		t.Fatal("unique index scan should produce distinct records")
+	mk := func() *plans.RecordQueryIndexPlan {
+		return plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
 	}
-}
 
-func TestComputeDistinctRecords_NonUniqueIndexIsFalse(t *testing.T) {
-	t.Parallel()
-	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
-	wrapper := idx.WithIndexMetadata(nil, nil, false)
-	got := computeDistinctRecords(wrapper, wrapper)
-	if got {
-		t.Fatal("non-unique index scan should NOT produce distinct records")
+	// No candidate signal → false (Java empty-candidate default).
+	unstamped := mk().WithIndexMetadata(nil, nil, false)
+	if computeDistinctRecords(unstamped, unstamped) {
+		t.Fatal("index without a stamped candidate signal must NOT be distinct (Java empty-candidate default)")
+	}
+
+	// Non-unique SCALAR index (does not create duplicates) → distinct=TRUE.
+	// The M4 fix: the old IsUnique()-based code returned false here.
+	scalarNonUnique := mk().WithIndexMetadata(nil, nil, false).WithDistinctRecordsSignal(false)
+	if !computeDistinctRecords(scalarNonUnique, scalarNonUnique) {
+		t.Fatal("non-unique SCALAR index does not create duplicates → should be distinct (M4)")
+	}
+
+	// Unique index (also does not create duplicates) → distinct=TRUE.
+	unique := mk().WithIndexMetadata(nil, nil, true).WithDistinctRecordsSignal(false)
+	if !computeDistinctRecords(unique, unique) {
+		t.Fatal("unique index does not create duplicates → should be distinct")
+	}
+
+	// Fan-out index (creates duplicates) → distinct=FALSE.
+	fanOut := mk().WithIndexMetadata(nil, nil, false).WithDistinctRecordsSignal(true)
+	if computeDistinctRecords(fanOut, fanOut) {
+		t.Fatal("fan-out index creates duplicates → must NOT be distinct")
 	}
 }
 

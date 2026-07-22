@@ -54,7 +54,16 @@ tests:
       - ['Bob', 'eng']
       - ['Charlie', 'sales']
 
-  # Self-join with filter
+  # Self-join with filter. The inner leg here is NOT a case where RFC-188
+  # finding 3's comparePrimaryScanToIndexScan SARG sub-case fires: the primary
+  # scan SARGs an eid inequality (a.eid < b.eid) that the IDX_EMP_DID index scan
+  # lacks, while the index SARGs the did equality the primary lacks — so NEITHER
+  # is a strict SARG superset, the sub-case abstains, and Go's PREFER_SCAN
+  # default keeps the primary scan (matching Java). The sub-case only prefers the
+  # index on a genuine strict superset (index SARGs everything the primary does
+  # plus more, with no type filter) — a shape the SQL corpus does not currently
+  # produce; the sub-case logic itself is unit-pinned (TestComparisonSetKey_*,
+  # TestSetDifferenceEmpty). Rows are the correctness pin here.
   - query: |-
       SELECT a.ename, b.ename FROM emp AS a
       INNER JOIN emp AS b ON a.did = b.did

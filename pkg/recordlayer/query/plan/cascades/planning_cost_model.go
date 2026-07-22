@@ -112,6 +112,21 @@ func RewritingCostModelLess(a, b expressions.RelationalExpression) bool {
 	return newDesignationScope().compare(a, b, nil) < 0
 }
 
+// comparePredicateCountByLevel ports Java's PredicateCountByLevelProperty.compare.
+// Java iterates the FIRST map's SortedMap entries reading getOrDefault(level, 0)
+// on the second, but Java's producer is DENSE — every level 0..highest has an
+// entry (0 for a non-predicate node) — so iterating a's entries covers all
+// levels. Go's producer (designationScope.predCountByLevel) is SPARSE, so the
+// faithful and ANTISYMMETRIC form is a single ascending pass over the UNION of
+// levels (0..max): absent==0==getOrDefault makes the per-level counts equal
+// Java's, and the union stays antisymmetric on the sparse maps Go passes — a
+// first-map-only pass would return the same sign in both orientations for e.g.
+// {2:1} vs {1:1}, making the REWRITING survivor insertion-order dependent.
+// The residual divergence from Java is the highest-level TIEBREAK: because Go's
+// map is sparse, maxLevelA/maxLevelB are the highest PREDICATE levels, not
+// Java's tree-depth getHighestLevel (dense). Only bites on a full per-level tie;
+// closing it (dense producer) flips REWRITING survivors — booked as Finding
+// 6-followup.
 func comparePredicateCountByLevel(a, b map[int]int) int {
 	maxLevelA, maxLevelB := -1, -1
 	for k := range a {
@@ -129,10 +144,8 @@ func comparePredicateCountByLevel(a, b map[int]int) int {
 		maxLevel = maxLevelB
 	}
 	for level := 0; level <= maxLevel; level++ {
-		ac := a[level]
-		bc := b[level]
-		if ac != bc {
-			return intCompare(ac, bc)
+		if a[level] != b[level] { // absent == 0 == getOrDefault(level, 0)
+			return intCompare(a[level], b[level])
 		}
 	}
 	return intCompare(maxLevelA, maxLevelB)
@@ -173,20 +186,32 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 
 	// Criterion #2: max cardinality of all data accesses — lower wins.
 	// Unknown (-1) loses to known.
-	cardA := opsA.maxDataAccessCardinality
-	cardB := opsB.maxDataAccessCardinality
-	if cardA >= 0 || cardB >= 0 {
-		if cardA < 0 {
-			return 1 // a unknown, b known — b wins
-		}
-		if cardB < 0 {
-			return -1 // a known, b unknown — a wins
-		}
-		if cardA != cardB {
-			if cardA < cardB {
-				return -1
+	//
+	// OUTER GUARD (Java PlanningCostModel: the whole-plan max-cardinality gate
+	// around the data-access-cardinality criterion): only consult the
+	// data-access maxima when the PROVEN WHOLE-PLAN max cardinality of at least
+	// one side is known. When both whole-plan maxima are unknown but a data
+	// access is provably bounded (e.g. an InUnion/Explode over point lookups,
+	// where the bounded access sits under an unbounded multiplier), Java
+	// abstains here rather than ranking on the data-access maximum — the
+	// bounded access does not bound the plan's output. Go used to skip this
+	// gate and rank anyway.
+	if wholePlanMaxCardinalityKnown(a) || wholePlanMaxCardinalityKnown(b) {
+		cardA := opsA.maxDataAccessCardinality
+		cardB := opsB.maxDataAccessCardinality
+		if cardA >= 0 || cardB >= 0 {
+			if cardA < 0 {
+				return 1 // a unknown, b known — b wins
 			}
-			return 1
+			if cardB < 0 {
+				return -1 // a known, b unknown — a wins
+			}
+			if cardA != cardB {
+				if cardA < cardB {
+					return -1
+				}
+				return 1
+			}
 		}
 	}
 
@@ -234,7 +259,7 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return cmp
 	}
 
-	if cmp := comparePrimaryScanVsIndexScan(opsA, opsB); cmp != 0 {
+	if cmp := comparePrimaryScanVsIndexScan(a, b, opsA, opsB); cmp != 0 {
 		return cmp
 	}
 
@@ -341,6 +366,14 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(opsA.inMemorySortCount, opsB.inMemorySortCount)
 	}
 
+	// Fewer ON EMPTY NULL operations wins (Java PlanningCostModel: the last
+	// ordinal rung before the planHash tiebreak). This is a structural count
+	// criterion, so it sits with the other ordinal rungs — before Go's
+	// statistics scalar-cost extension and the final hash tiebreak.
+	if opsA.numDefaultOnEmpty != opsB.numDefaultOnEmpty {
+		return intCompare(opsA.numDefaultOnEmpty, opsB.numDefaultOnEmpty)
+	}
+
 	// Statistics-driven scalar cost — a Go EXTENSION in the tiebreak
 	// slot. Java's PlanningCostModel is purely heuristic (ordinal rungs
 	// ending in a planHash tiebreak; no statistics rung exists), so this
@@ -374,6 +407,24 @@ func isPhysical(e expressions.RelationalExpression) bool {
 	return ok
 }
 
+// wholePlanMaxCardinalityKnown reports whether the PROVEN whole-plan max
+// cardinality of e is known — Java's cardinalities().evaluate(e).getMaxCardinality()
+// gate. Computed from e's children's plan properties (computeCardinalities);
+// falls back to unknown (guard fails → abstain) when e is not a physical plan
+// or its children's properties are unavailable, which is the conservative
+// direction (matches Java abstaining when the whole-plan bound is unknown).
+func wholePlanMaxCardinalityKnown(e expressions.RelationalExpression) bool {
+	ph, ok := e.(physicalPlanExpression)
+	if !ok {
+		return false
+	}
+	plan := ph.GetRecordQueryPlan()
+	if plan == nil {
+		return false
+	}
+	return !computeCardinalities(ph, plan).GetMaxCardinality().IsUnknown()
+}
+
 type expressionCounts struct {
 	scanCount                int
 	indexScanCount           int
@@ -389,6 +440,7 @@ type expressionCounts struct {
 	unmatchedFieldCount      int
 	inMemorySortCount        int
 	nljPredicateCount        int
+	numDefaultOnEmpty        int
 	maxDataAccessCardinality float64 // -1 means unknown (no PROVABLY-bounded data access)
 	// unboundedDataAccess is set when ANY data access lacks a PROVABLE max-cardinality bound
 	// (a range/partial/full scan, a non-unique or partially-bound index, an aggregate/vector
@@ -580,6 +632,9 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	// A fetch is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		counts.fetchCount++
+	// The ON EMPTY NULL default is its own physical expression now (RFC-184 W2).
+	case *plans.RecordQueryDefaultOnEmptyPlan:
+		counts.numDefaultOnEmpty++
 	// The InMemorySort is its own physical expression now (RFC-184 W2) — the
 	// memo-descent cost walk over a LOGICAL parent counts the sort here (the
 	// physical top path already routes bare sorts via concretePlanCounts).
@@ -871,23 +926,174 @@ func isFetchExpression(e expressions.RelationalExpression) bool {
 	return ok
 }
 
-// comparePrimaryScanVsIndexScan mirrors Java's comparePrimaryScanToIndexScan.
-// Only fires when one plan is a singular primary scan and the other is a
-// singular index scan WITH a fetch (non-covering or covering+fetch).
-// A covering index without fetch is strictly better and doesn't enter this path.
-func comparePrimaryScanVsIndexScan(opsA, opsB expressionCounts) int {
+// comparePrimaryScanVsIndexScan ports Java's comparePrimaryScanToIndexScan
+// (invoked via flipFlop). Only fires when one plan is a singular primary scan
+// and the other is a singular index scan WITH a fetch (non-covering or
+// covering+fetch); a covering index without fetch is strictly better and
+// doesn't enter this path. When it fires it runs the type-filter SARG sub-case
+// (prefer the index when it SARGs strictly more, needing no type filter) and
+// otherwise applies the PREFER_SCAN default — see primaryVsIndexVerdict.
+func comparePrimaryScanVsIndexScan(a, b expressions.RelationalExpression, opsA, opsB expressionCounts) int {
 	aIsPrimaryScan := opsA.scanCount == 1 && opsA.indexScanCount == 0 && opsA.coveringIndexCount == 0 && opsA.inMemorySortCount == 0
 	bIsPrimaryScan := opsB.scanCount == 1 && opsB.indexScanCount == 0 && opsB.coveringIndexCount == 0 && opsB.inMemorySortCount == 0
 	aIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsA)
 	bIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsB)
 
 	if aIsPrimaryScan && bIsIndexScanWithFetch {
-		return -1
+		return primaryVsIndexVerdict(a, b, opsA, opsB)
 	}
 	if bIsPrimaryScan && aIsIndexScanWithFetch {
-		return 1
+		// Roles swapped: b is the primary scan, a the index. The verdict is
+		// computed in the (primary, index) orientation, then negated — Java's
+		// flipFlop(compare(primary,index), compare(index,primary)) negation.
+		return -primaryVsIndexVerdict(b, a, opsB, opsA)
 	}
 	return 0
+}
+
+// primaryVsIndexVerdict ports the body of Java's comparePrimaryScanToIndexScan
+// in its native (primaryScan=first, indexScan=second) orientation. Returns +1
+// when the INDEX scan is preferred (the primary loses), -1 when the primary
+// scan is preferred. The caller negates when the roles are swapped (flipFlop).
+//
+// The SARG sub-case: if the primary side carries a type filter and the index
+// side none, and the two scans SARG the same comparisons EXCEPT the index has
+// extra comparisons the primary lacks (e.g. a record-type-key comparison the
+// index gets for free but the primary must pay for with a high-discard type
+// filter), prefer the index. Otherwise fall back to the IndexScanPreference
+// default — which in Go is always PREFER_SCAN (the config knob is unmodeled;
+// see RFC-188 §2), i.e. prefer the primary scan.
+func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpression, opsPrimary, opsIndex expressionCounts) int {
+	if opsPrimary.typeFilterCount > 0 && opsIndex.typeFilterCount == 0 {
+		primaryComparisons := scanSargComparisons(primaryScan)
+		indexComparisons := scanSargComparisons(indexScan)
+		// primary − index empty AND index − primary non-empty ⇒ the index
+		// SARGs everything the primary does plus more, without a type filter.
+		if sargSubset(primaryComparisons, indexComparisons) &&
+			!sargSubset(indexComparisons, primaryComparisons) {
+			return 1 // prefer the index scan
+		}
+	}
+	// PREFER_SCAN default (Go models no IndexScanPreference config).
+	return -1
+}
+
+// scanSargComparisons collects the BARE SARG comparisons (compared by Comparison
+// identity — type/comparand/escape/parameter — NOT by column, which is implicit
+// in ScanComparisons position) from every scan/index plan in e's CONCRETE plan
+// tree. Mirrors Java's ComparisonsProperty (a Set<Comparisons.Comparison>).
+//
+// It unwraps to the concrete RecordQueryPlan (GetRecordQueryPlan) and walks it
+// via GetChildren — the production scanPlanExpression / TypeFilter(Scan) wrapper
+// exposes NO quantifiers (GetQuantifiers()==nil, like the counts walk's
+// findExpressionsByType unwrap), so an expression-level walk would miss the
+// nested scan's SARGs and make the primary set spuriously empty, firing the
+// sub-case whenever the index has any SARG (e.g. demoting a PK point lookup).
+//
+// Comparisons are compared by structural equality (sargComparisonEqual), NOT a
+// rendered/hashed key: display text collides distinct constants (int64(1) vs
+// float64(1)) and an alias-blind hash collides correlated composite-key SARGs
+// (k1=outerA.id vs k2=outerB.id).
+func scanSargComparisons(e expressions.RelationalExpression) []*predicates.Comparison {
+	var out []*predicates.Comparison
+	if ph, ok := e.(physicalPlanExpression); ok {
+		if plan := ph.GetRecordQueryPlan(); plan != nil {
+			collectPlanSargComparisons(plan, &out)
+		}
+	}
+	return out
+}
+
+func collectPlanSargComparisons(p plans.RecordQueryPlan, out *[]*predicates.Comparison) {
+	if p == nil {
+		return
+	}
+	var ranges []*predicates.ComparisonRange
+	switch w := p.(type) {
+	case *plans.RecordQueryScanPlan:
+		ranges = w.GetScanComparisons()
+	case *plans.RecordQueryIndexPlan:
+		ranges = w.GetScanComparisons()
+	}
+	for _, r := range ranges {
+		switch {
+		case r.IsEquality():
+			if eq := r.GetEqualityComparison(); eq != nil {
+				*out = append(*out, eq)
+			}
+		case r.IsInequality():
+			*out = append(*out, r.GetInequalityComparisons()...)
+		}
+	}
+	for _, c := range p.GetChildren() {
+		collectPlanSargComparisons(c, out)
+	}
+}
+
+// sargSubset reports whether every comparison in sub also appears in super
+// (i.e. sub − super is empty), by full Comparison identity.
+func sargSubset(sub, super []*predicates.Comparison) bool {
+	for _, c := range sub {
+		found := false
+		for _, s := range super {
+			if sargComparisonEqual(c, s) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// sargComparisonEqual is the FULL structural identity of a scan comparison, the
+// analog of the polymorphic Java Comparisons.Comparison.equals — every identity
+// field of the flat Go Comparison struct: type, comparand (alias-SENSITIVE
+// ValuesStructurallyEqual, so k1=outerA.id and k2=outerB.id are distinct),
+// escape, parameter name, the text-search variants (tokenizer/analyzer/max
+// distance/strict prefix) and the vector distance-rank variants (query vector /
+// EfSearch / IsReturningVectors). The comparand is IGNORED for unary comparisons
+// (IS NULL / IS NOT NULL), where it is semantically absent. NO column/position
+// component (implicit in ScanComparisons position, deliberately excluded).
+func sargComparisonEqual(a, b *predicates.Comparison) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Type != b.Type ||
+		a.Escape != b.Escape ||
+		a.ParameterName != b.ParameterName ||
+		a.TextTokenizerName != b.TextTokenizerName ||
+		a.TextAnalyzerName != b.TextAnalyzerName ||
+		a.TextMaxDistance != b.TextMaxDistance ||
+		a.TextStrictPrefix != b.TextStrictPrefix {
+		return false
+	}
+	if !intPtrEqual(a.EfSearch, b.EfSearch) || !boolPtrEqual(a.IsReturningVectors, b.IsReturningVectors) {
+		return false
+	}
+	if !values.ValuesStructurallyEqual(a.QueryVector, b.QueryVector) {
+		return false
+	}
+	if a.Type.IsUnary() {
+		return true // comparand semantically absent for IS NULL / IS NOT NULL
+	}
+	return values.ValuesStructurallyEqual(a.Operand, b.Operand)
+}
+
+func intPtrEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func boolPtrEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // isSingularIndexScanWithFetch matches Java's check: a single index scan
@@ -1333,6 +1539,7 @@ func mergeCounts(dst *expressionCounts, src expressionCounts) {
 	dst.unmatchedFieldCount += src.unmatchedFieldCount
 	dst.inMemorySortCount += src.inMemorySortCount
 	dst.nljPredicateCount += src.nljPredicateCount
+	dst.numDefaultOnEmpty += src.numDefaultOnEmpty
 	if src.maxDataAccessCardinality > dst.maxDataAccessCardinality {
 		dst.maxDataAccessCardinality = src.maxDataAccessCardinality
 	}
@@ -1458,6 +1665,8 @@ func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pl
 		counts.fetchCount++
 	case *plans.RecordQueryInMemorySortPlan:
 		counts.inMemorySortCount++
+	case *plans.RecordQueryDefaultOnEmptyPlan:
+		counts.numDefaultOnEmpty++
 	}
 	return false
 }
