@@ -28,6 +28,18 @@ func TestIndex_CreatesDuplicates(t *testing.T) {
 		t.Fatal("nested fan-out index MUST create duplicates")
 	}
 
+	// A grouping/aggregate index delegates to its whole key (Java
+	// GroupingKeyExpression.createsDuplicates → getWholeKey().createsDuplicates).
+	// A grouping key over a fan-out field fans out; over scalars it does not.
+	groupFanOut := &Index{Name: "idx_grp_fan", RootExpression: GroupBy(Field("total"), FanOut("tags"))}
+	if !groupFanOut.CreatesDuplicates() {
+		t.Fatal("grouping index whose grouping key fans out MUST create duplicates (whole-key delegation)")
+	}
+	groupScalar := &Index{Name: "idx_grp_scalar", RootExpression: GroupBy(Field("total"), Field("region"))}
+	if groupScalar.CreatesDuplicates() {
+		t.Fatal("grouping index over scalar keys must NOT create duplicates")
+	}
+
 	// Unset root expression → false (safe default, no panic).
 	if (&Index{Name: "empty"}).CreatesDuplicates() {
 		t.Fatal("index with no root expression must not report duplicates")

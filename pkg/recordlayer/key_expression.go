@@ -884,6 +884,10 @@ func createsDuplicates(expr KeyExpression) bool {
 	case *SplitKeyExpression:
 		// Matches Java's SplitKeyExpression.createsDuplicates() which returns true.
 		return true
+	case *GroupingKeyExpression:
+		// Java GroupingKeyExpression.createsDuplicates() delegates to the whole
+		// key — a grouping/aggregate index over a fan-out field still fans out.
+		return createsDuplicates(e.wholeKey)
 	case *DimensionsKeyExpression:
 		return createsDuplicates(e.WholeKey)
 	case *ListKeyExpression:

@@ -270,6 +270,17 @@ STRUCTURE (record-type-key prefixes, nesting), not bare column names. Then `comm
 the plan; also handles the fan-out case — a fan-out index's entries DO carry the common PK, so it should
 be surfaced for the PK property while still suppressed for the ordering suffix). Needs Graefe+Torvalds.
 
+### [ ] Finding 10-M4-followup — Fetch stored-record transparency to activate the non-covering DISTINCT elision (codex P2)
+`computeStoredRecord` has no `RecordQueryFetchFromPartialRecordPlan` arm (Java StoredRecordProperty treats
+a fetch as producing a stored record → true), so `ImplementDistinctFinalRule` filters out the
+`Fetch(IndexScan)` partition and the M4 non-unique-scalar-index DISTINCT elision does not fire on the
+common non-covering path. Adding the arm is Java-faithful BUT activates the elision broadly: explain-diff
+showed ~48 changed plan lines — `InMemorySort([ID], Fetch(InJoin(IndexScan)))` → `InUnion(IndexScan)` on
+IN-list queries (sort elimination, apparent improvements). Deferred from RFC-188 because it opens a NEW
+optimization surface that needs its own validation (row-level + EXPLAIN review of every flip + 1M stress
++ reviewer sign-off), not a milestone-end add. The distinct/PK/cardinality Fetch-transparency arms
+already landed (safe, zero-flip); this is the storedRecord arm that turns them on.
+
 ### [ ] Finding 10-M3-followup — recognize equality-bound primary scans in the outer guard (codex P2)
 `wholePlanMaxCardinalityKnown` uses `computeCardinalities`, whose `RecordQueryScanPlan` arm always returns
 `UnknownMaxCardinality` — so a full-PK-equality primary scan (a point lookup, max=1, which
