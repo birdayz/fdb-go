@@ -402,6 +402,21 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 
 	// --- Scans ---
 	case *plans.RecordQueryScanPlan:
+		// A full-PK-equality primary scan is a point lookup (max 1), exactly as
+		// Java's CardinalitiesProperty.visitRecordQueryScanPlan bounds a scan
+		// whose equality-bound values cover the whole primary key. This feeds
+		// the M3 whole-plan-cardinality outer guard (RFC-188) so a
+		// bounded-primary-scan-vs-unbounded comparison is no longer reported
+		// unknown (over-abstaining criterion #2). A range / partial / prefix
+		// bind stays unknown. scanProvableMaxCard proves all-equality + all
+		// present comparisons bound; the len == PK-column-count check
+		// (mirroring the index arm's len(comps)==len(GetColumnNames)) proves the
+		// bind covers the FULL primary key, not just a prefix.
+		if _, known := scanProvableMaxCard(p); known {
+			if pkVals := p.GetPrimaryKeyValues(); pkVals != nil && len(p.GetScanComparisons()) == len(pkVals) {
+				return properties.AtMostOne()
+			}
+		}
 		return properties.UnknownMaxCardinality()
 
 	case *plans.RecordQueryIndexPlan:

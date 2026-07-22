@@ -299,6 +299,7 @@ go_test(
         "predicate_multi_map_test.go",
         "predicate_semantic_hash_test.go",
         "predicate_simplify_fuzz_test.go",
+        "primary_point_lookup_cardinality_test.go",
         "primary_vs_index_sarg_test.go",
         "rebase_ordinal_layout_test.go",
         "reference_winner_test.go",
@@ -820,6 +821,7 @@ go_test(
         "fanout_candidate_distinct_test.go",
         "fetch_transparency_test.go",
         "max_match_map_covering_test.go",
+        "primary_point_lookup_cardinality_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
