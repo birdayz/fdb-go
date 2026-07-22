@@ -1,6 +1,32 @@
 # RFC-189 — Cascades quality review residuals (2026-07-22 findings)
 
-**Status:** DRAFT — awaiting Graefe + Torvalds ACK before implementation.
+**Status:** ACKED (rev 2). Graefe ACK (two A4 conditions folded below + hardening notes adopted);
+Torvalds conditional ACK (conditions 2/3/4 folded; condition 1 — physical PR split — reconciled
+below within one PR per owner directive). Implementation may proceed; final impl HEAD gets one joint
+milestone review lap.
+
+**Rev-2 review folds:** A4 — carry the `dep != q.GetAlias()` self-filter onto the now-live
+`rule_partition_select.go:674` and drop the redundant manual walk (Graefe); correct the
+`in_like_select:141` text — it is a structural no-op regardless of the fix (Graefe). A1 — add a
+bounded `visited` guard to the two cycle-guard-free consumers (`GetCorrelatedTo`,
+`childRefsMatchInMemo`) as defense-in-depth, since Go's cross-group merge breaks Java's
+acyclic-by-interning guarantee (Graefe). B3 — return an empty Values list, not nil, for a null PK
+(Java `Optional.of(emptyList())`) so `ValuesStructurallyEqual` stays consistent (Graefe). C2 — the
+test must use a code point in (U+0020, Unicode-WS], e.g. NBSP U+00A0 (Torvalds — ASCII space trims
+in both engines). E1 — each elision-class flip needs a **duplicate-bearing** row-level cross-engine
+assertion, not count-parity on random data (Torvalds). F1 — the gate keys on *that* OrPredicate
+being index-matched, not merely any match (Graefe). F3 — wire `IndexScanPreference` into the
+existing `PlannerConfiguration` mirror (consulted by the cost model), not a bespoke dead knob
+(Torvalds); if that surface can't reach it, drop it.
+
+**Packaging (Torvalds condition 1, reconciled).** Owner directive is one PR (chosen after the split
+was explicitly offered); Graefe rules bundling E1/E2 Cascades-acceptable ("risk is review fatigue,
+not correctness"). Torvalds' correctness concern — a bad plan flip must not block the A1 hang / A2
+memo fixes — is met *within* one PR by ordering: workstreams A–D/C/F land as the first commits;
+**E1/E2 land last as self-contained, independently-revertable commits.** A failed per-flip audit
+reverts only those commits (`git revert`), leaving the correctness fixes on the branch to merge. This
+gives the "independently releasable" property Torvalds requires without a physical split. Re-presented
+to Torvalds at the milestone lap; escalate to the owner if the packaging NAK holds.
 **Tracks:** TODO.md "FINDINGS 2026-07-22" — the residual findings after systemic problems A
 (RFC-187, leaf-name column matching) and B (RFC-188, cost-model soundness) shipped. Covers the
 latent correctness/hang cluster (findings 8, 5, 9, 7), the safe-direction cost/property follow-ups
@@ -64,6 +90,14 @@ This aligns the guard's enumeration with the exact surface its consumers travers
 emergent-property fix (design principle 10), not a downstream `if cycle {}` check. Near-zero cost:
 `AllMembers()` returns `r.members` directly when finals are empty (`reference.go:280-282`), which is the
 REWRITING hot path; it allocates a fresh slice only when finals are non-empty (`:283`).
+**Defense-in-depth (Graefe hardening note, adopted):** because Go's cross-group merge is a Go-only
+extension that breaks Java's acyclic-by-interning guarantee, the guard is the *only* thing keeping the
+two cycle-guard-free consumers safe — `GetCorrelatedTo` (`reference.go:772,796`) sets its cache only at
+the end of the recursion, so a cycle recurses forever, and `childRefsMatchInMemo`
+(`memo_equal.go:142-153`) has no guard at all. Add a bounded `visited` set to both so a
+guard-under-approximation (or any future merge bug) degrades to a wrong/incomplete result, never a
+hang. A hang is worse than a wrong row; the guard fix removes the trigger, the consumer guards remove
+the failure *mode*.
 
 **Reachability:** purely latent today (no REWRITING rule inserts a distinct final). The existing
 `TestMemoMerge_SkipsCyclicMerge` (`memo_merge_test.go:128`) routes its ancestor edge through an
@@ -164,13 +198,23 @@ uncorrelated.
 inside the ranged-over ref, so no self-filter needed).
 
 **Reachability:** both current quantifier-direct call sites are already compensated, so returning empty
-is load-bearing-safe *today*: `rule_push_requested_ordering_through_in_like_select.go:141` is a no-op loop
-(`_ = alias`, unused; the real check runs downstream in ImplementInJoin/InUnion), and
-`rule_partition_select.go:674` re-derives the same walk itself (`:702-708`). The fix makes the latter's
-manual walk redundant-but-harmless and turns the former from a no-op into a real (passing) guard. It IS a
-Cascades change (the quantifier's correlation contract), so it trips the Graefe gate; "contained today,
-latent trap" is accurate — any new consumer calling `q.GetCorrelatedTo()` (as Java code freely does)
-silently gets `{}`.
+is load-bearing-safe *today* — but each needs care once the accessor returns real correlations (Graefe
+A4 conditions):
+- `rule_partition_select.go:674` becomes **live**. Its sibling walk (`:702-708`) deliberately applies a
+  `dep != q.GetAlias()` self-filter, which the `:674` consumer does not — and given Go's documented
+  quantifier alias-reuse (`reference.go:781-785`), "redundant-but-harmless" is **unproven**. **Fix:**
+  carry the `dep != q.GetAlias()` self-filter onto the `:674` use of the now-real correlation set and
+  **remove** the now-redundant manual walk at `:702-708` (one derivation, not two). This is the substance
+  of the A4 fix, not an afterthought.
+- `rule_push_requested_ordering_through_in_like_select.go:141` is a structural **no-op** (`_ = alias`,
+  result unused) **regardless** of this fix — the real ordering check runs downstream in
+  ImplementInJoin/InUnion. The fix does **not** turn it into a real guard (the earlier draft's claim was
+  wrong); it stays a no-op. Leave the line as-is (or delete the dead `_ = alias`); do not wire a reject
+  here (that would be a separate change with over-reject risk).
+
+It IS a Cascades change (the quantifier's correlation contract), so it trips the Graefe gate; "contained
+today, latent trap" is accurate — any new consumer calling `q.GetCorrelatedTo()` (as Java code freely
+does) silently gets `{}`.
 
 **Test:** `TestQuantifier_GetCorrelatedTo_Transitive` — a quantifier ranging over a Reference whose member
 correlates to external alias `X` (Select with predicate `QOV(X).f`); assert `q.GetCorrelatedTo()` contains
@@ -257,7 +301,10 @@ independent fields resolves the conflation: the common-PK field is populated **r
 (index entries always carry the PK), while `pkColumnNames`/ordering-suffix stays empty for fan-out.
 `computePrimaryKey`'s index arm returns the translated Values; `commonPKFromChildren` (`:268-293`, already
 comparing `[]values.Value` via `ValuesStructurallyEqual`) then compares real PK identity and cannot equate
-`Field("ID")` with `Concat(RecordTypeKey(), Field("ID"))`.
+`Field("ID")` with `Concat(RecordTypeKey(), Field("ID"))`. **Null-PK case (Graefe note):** Java returns
+`Optional.of(emptyList())` for a null common PK, not empty/absent — so the Go index arm must return an
+**empty (non-nil) Values list** for that case, keeping `ValuesStructurallyEqual` consistent (an empty list
+is a known-empty PK, distinct from `nil` = "unknown, don't dedup").
 
 **Reachability / flip risk:** MODERATE — re-enables `ImplementDistinctUnionRule` dedup on index-scan legs.
 A correct **structural** PK is precisely what makes that dedup safe (the M5 revert's whole rationale). Any
@@ -308,7 +355,9 @@ trims (`CastValue.java:187,195,203,211` all `…trim()`). The actual (much narro
 (`strings.TrimFunc(s, func(r rune) bool { return r <= ' ' })`) — **not** "drop the trim." Low priority,
 exotic-whitespace only, but a real cross-engine CAST divergence.
 
-**Test:** `CAST(' 5' AS INT)` errors (parity with Java); ASCII-space cases still trim.
+**Test:** `CAST(' 5' AS INT)` (NBSP-prefixed, U+00A0) must error (Java does not strip NBSP). **Torvalds condition 3:** the probe MUST
+use a code point in (U+0020, Unicode-WS] — an ASCII space (U+0020) trims in *both* engines and proves
+nothing; keep an ASCII-space control that still trims in both.
 
 ### C3. Finding 12c — ForMatchCompensation.Union asserts both result-fns needed
 
@@ -404,11 +453,17 @@ its own RFC — booked, not touched here.
 Both items below open/reorder an optimization surface. Per the CLAUDE.md, a plan flip must never be
 waved through — each flip is EXPLAIN-diffed and verified as a genuine improvement (sort elimination,
 safe dedup), NEVER a dropped-dedup or dropped-row. These land AFTER workstreams A–D so the correctness
-fixes are banked first. **Per-flip audit protocol (mandatory, both items):** capture full corpus EXPLAIN
-before/after; for EVERY changed plan line, (1) confirm row-level equivalence (same rows, cross-engine),
-(2) classify the flip as a genuine optimization vs a regression, (3) Java-verify the new shape is what
-the Java planner produces; 1M stress before/after; codex + Graefe + Torvalds sign-off on the flip set.
-Any flip that isn't a provable improvement blocks the arm (revert + book), never ships.
+fixes are banked first, **as self-contained independently-revertable commits** (packaging reconciliation
+in the header): a failed audit reverts only these commits, never the correctness fixes. **Per-flip audit
+protocol (mandatory, both items):** capture full corpus EXPLAIN before/after; for EVERY changed plan
+line, (1) confirm row-level equivalence (same rows, cross-engine), (2) classify the flip as a genuine
+optimization vs a regression, (3) Java-verify the new shape is what the Java planner produces; 1M stress
+before/after; codex + Graefe + Torvalds sign-off on the flip set. **E1 (DISTINCT-elision) additionally
+(Torvalds condition 2):** 1M *random* stress + EXPLAIN pins do NOT catch a dropped dedup unless duplicate
+keys are present — so every elision-class flip needs a **duplicate-bearing** row-level cross-engine
+assertion (a fixture with repeated keys on the eliminated-DISTINCT column, asserting the elided plan
+still returns the correct DISTINCT row set), not count-parity on random data. Any flip that isn't a
+provable improvement blocks the arm (revert + book), never ships.
 
 ### E1. M4-followup — Fetch stored-record transparency (~48 plan flips)
 
@@ -426,8 +481,10 @@ queries (apparent sort-elimination improvements). **Fix:** add the transparent a
 audit above on all ~48 flips. Ships only if every flip is a proven safe sort-elimination.
 
 **Test:** `TestStoredRecord_FetchIsTransparent` (unit, the arm) + the IN-list EXPLAIN pins for the flipped
-shapes + row-level FDB correctness on a representative flipped query (assert identical rows before/after,
-DISTINCT semantics preserved).
+shapes + a **duplicate-bearing** row-level FDB correctness test (Torvalds condition 2): a fixture with
+repeated values on the DISTINCT column, asserting the elided `InUnion(IndexScan)` plan returns the exact
+same DISTINCT row set as the pre-flip `InMemorySort(Fetch(InJoin(IndexScan)))` — count-parity on random
+data would silently pass a dropped dedup.
 
 ### E2. Finding 6-followup — dense predicate-count producer (~11 plan flips)
 
@@ -465,6 +522,10 @@ index matching and binds existing `PartialMatch`es. Gate (`:197-211`): build `pa
 each match's predicate-map entries with `MappingKind.OR_TERM_IMPLIES_CANDIDATE`; if any to-be-expanded
 `OrPredicate` is **not** in `partiallyMatchedOrs`, `return` (no union). So Java expands only ORs a partial
 match already mapped to an index candidate; `a=1 OR b=2` with no index → no partial match → no expansion.
+**Gate precision (Graefe):** the gate keys on *that specific OrPredicate* appearing in `partiallyMatchedOrs`
+(an `OR_TERM_IMPLIES_CANDIDATE` mapping for that exact predicate) — NOT merely on the expression having
+*any* partial match. A rule that expands whenever some unrelated predicate matched an index would
+re-introduce the bloat.
 
 **Fix (infra — Graefe-sensitive):** this is not a gate-add — Go's rule is a REWRITING expression rule with
 no access to match partitions or a predicate-mapping-kind taxonomy. Replicating Java needs (a) Go's
@@ -507,17 +568,25 @@ no `IndexScanPreference` knob.
 `PREFER_SCAN`. The multi-type flip (`recordTypes>1 && !primaryKeyHasRecordTypePrefix ? PREFER_INDEX :
 PREFER_SCAN`, `RecordQueryPlanner.java:193-195`) is the **legacy** constructor's default only.
 
-**Fix + honest scope note:** model the config field on `PlanContext` and thread it into
-`primaryVsIndexVerdict` (the `PREFER_INDEX`/`PREFER_PRIMARY_KEY_INDEX` sign + an "index-scan-is-on-PK"
-check for PREFER_PRIMARY_KEY_INDEX). **Zero behavioral effect on any reachable SQL today** — no surface
-sets it, and the only divergent branch (multi-type store whose PK lacks a record-type prefix) cannot fire
-because SQL-surface PKs always carry a RecordTypeKey prefix → `!primaryKeyHasRecordTypePrefix` is false →
-`PREFER_SCAN` anyway. So the value here is *parity of the mechanism*, not a behavior change; the test must
-exercise the `PREFER_INDEX` branch by constructing a `PlanContext` with the preference set directly (since
-no SQL sets it), asserting the verdict flips — otherwise this is untested dead config.
+**Fix (Torvalds condition 4 — wire it, don't add a dead knob):** add an `IndexScanPreference` field to
+the **existing `PlannerConfiguration` mirror** (`plan_context.go:41`, which already models the consulted
+subset of Java's `RecordQueryPlannerConfiguration` — `allowDuplicateProjections`, `shouldJoinRightDeep`,
+`deferCrossProducts` — all modeled, defaulted, and consulted by rules), defaulting `PREFER_SCAN` in
+`DefaultPlannerConfiguration()`. Consult it in `primaryVsIndexVerdict` (the `PREFER_INDEX`/
+`PREFER_PRIMARY_KEY_INDEX` sign + an "index-scan-is-on-PK" check for `PREFER_PRIMARY_KEY_INDEX`). This is
+wired into the real config surface exactly like its sibling fields — not a bespoke `PlanContext` knob.
+**Honest scope note:** the non-default branch has **zero behavioral effect on any reachable SQL today**
+(no surface sets a non-default `PlannerConfiguration`, same as its siblings; and the only divergent case
+— multi-type store whose PK lacks a record-type prefix — cannot fire because SQL-surface PKs always
+carry a RecordTypeKey prefix). The value is *parity of the mechanism*, consistent with how Go already
+models the rest of `RecordQueryPlannerConfiguration`. If, on inspection, the `PlannerConfiguration` mirror
+turns out not to be consultable from `primaryVsIndexVerdict`'s call path, **drop** the field and book it
+(no dead config).
 
-**Test:** `TestPrimaryVsIndexVerdict_HonorsIndexScanPreference` — a `PlanContext` with `PREFER_INDEX` set
-flips the verdict toward the index for a shape where `PREFER_SCAN` prefers the scan.
+**Test:** `TestPrimaryVsIndexVerdict_HonorsIndexScanPreference` — a `PlannerConfiguration{IndexScanPreference:
+PREFER_INDEX}` (a legitimate config value, the same shape Java's config object takes) flips the verdict
+toward the index for a shape where the `PREFER_SCAN` default prefers the scan; same pattern as any
+sibling-config test.
 
 ---
 
