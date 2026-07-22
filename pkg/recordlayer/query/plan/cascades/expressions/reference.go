@@ -823,6 +823,18 @@ func sameChildReferences(a, b RelationalExpression) bool {
 		if aQs[i].GetRangesOver() != bQs[i].GetRangesOver() {
 			return false
 		}
+		// Edge attributes travel on the quantifier, not the child content
+		// — two selects over the SAME child references still differ in
+		// semantics when a paired quantifier differs in kind /
+		// null-on-empty / strict-single (a LEFT box vs an INNER join; a
+		// scalar-subquery cardinality gate vs none). Without this, the
+		// interning fast path in Insert/InsertFinal collapses them into
+		// one member and the first arrival's flags become authoritative
+		// for both (the wrong-rows class quantifierAttributesEqual closes
+		// for SemanticEquals).
+		if !quantifierAttributesEqual(aQs[i], bQs[i]) {
+			return false
+		}
 	}
 	return true
 }

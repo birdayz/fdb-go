@@ -66,6 +66,17 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 			// their implementable form. Full prune-to-1 requires
 			// PLANNING re-derivation parity first; until then
 			// unoptimized groups cross with their full canonical set.
+			//
+			// The promote-and-clear applies to PHYSICAL finals too (a
+			// mid-PLANNING MemoizeFinalExpression mint visited later): a
+			// stage-preserving variant that kept plans as finals was
+			// tried while chasing the LEFT-box + unnest + EXISTS no-plan
+			// and reverted — the extra surviving finals flipped unrelated
+			// cost races (in_list_index_plan lost its InUnion to a
+			// sort-wrapped InJoin), and the actual no-plan root cause was
+			// the existential rule consuming a winner without the
+			// required seed-shaped result value (see the property-driven
+			// reselection in rule_implement_nested_loop_join.go).
 			t.Ref.AdvancePlannerStage(targetStage)
 		} else {
 			// No finals to promote — keep the exploratory members, but
@@ -593,25 +604,27 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 			}
 		}
 	}
-	t.Ref.PruneToSet(keep)
-	t.Ref.SetWinner(bestFinal)
-
+	// Coherence is checked BEFORE the prune: the designation must rank the
+	// SAME multi-final candidate set the compare loop just ranked — after
+	// PruneToSet the group holds only {bestFinal} and the generation bump
+	// forces a recompute, so a post-prune check matches by construction and
+	// can never report the staleness/drift it exists to canary.
 	if t.Phase == PhaseRewriting {
 		p.checkRewritingCoherence(t.Ref, bestFinal)
 	}
+	t.Ref.PruneToSet(keep)
+	t.Ref.SetWinner(bestFinal)
 }
 
 // checkRewritingCoherence is the RFC-186 coherence instrument: the winner a
-// REWRITING OptimizeGroup just stamped and the designation cost properties
-// derive through must be the SAME expression — both come from the same
-// comparator (the planner's designation scope), so a mismatch means the
-// designation cache went stale or the comparators drifted, and REWRITING
-// costing is again history-dependent. Called AFTER the prune: PruneToSet
-// bumped the finals generation, so a healthy cache recomputes against the
-// post-prune set and matches by construction — what this canaries is
-// precisely the staleness/drift bug classes (a cache entry surviving a
-// mutation, a comparator bypassing the scope). Extracted so the detection
-// wiring is testable in isolation.
+// REWRITING OptimizeGroup is about to stamp and the designation cost
+// properties derive through must be the SAME expression — both come from
+// the same comparator (the planner's designation scope) ranking the same
+// pre-prune candidate set, so a mismatch means the designation cache went
+// stale (an entry surviving a mutation at an unbumped generation) or the
+// comparators drifted (a compare path bypassing the scope), and REWRITING
+// costing is again history-dependent. Extracted so the detection wiring is
+// testable in isolation.
 func (p *Planner) checkRewritingCoherence(ref *expressions.Reference, bestFinal expressions.RelationalExpression) {
 	if !p.verifyRewritingCoherence || p.dscope == nil || ref == nil {
 		return

@@ -23,11 +23,14 @@ import (
 // Per-alias: a null-rejecting predicate over alias A eliminates A's null-on-empty
 // flag while leaving a null-ACCEPTING sibling (`B IS NULL`) over alias B intact.
 //
-// Reachability note (RFC-144 §1.2): `ForEachNullOnEmptyQuantifier` has no SQL
-// producer in Go today (outer joins use the materialized NLJ; FirstOrDefault uses
-// a streaming Value, not a null-on-empty quantifier). This rule is Java-parity /
-// latent-rule hygiene: IF a null-on-empty producer is wired later (or a synthetic
-// path hits it) it is correct, and Go matches Java's rule set.
+// Reachability: RewriteOuterJoinRule dissolves an outer-join box into an INNER
+// select whose null-supplying leg rides a null-on-empty ForEach quantifier, so
+// this rule is live on any LEFT/FULL-box query whose WHERE provably rejects the
+// null tuple at that leg (`... LEFT JOIN b ... WHERE b.k = 110`). Stripping the
+// flag is also what unlocks partitioning: PartitionBinarySelectRule declines to
+// absorb predicates into a null-on-empty leg (post-box WHERE must not move
+// inside the box), so the null-rejecting case flows ENOE-first, then partitions
+// the plain twin.
 type EliminateNullOnEmptyRule struct {
 	matcher matching.BindingMatcher
 }

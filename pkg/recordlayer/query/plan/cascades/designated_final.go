@@ -82,19 +82,12 @@ func (s *designationScope) designated(ref *expressions.Reference, visiting map[*
 	if len(candidates) == 0 {
 		return nil
 	}
+	// Cycle safety lives in the WALKERS, not here: descendDesignated treats
+	// an in-visiting reference as a traversal leaf (and taints the
+	// computation), so ranking with the full comparator is cycle-safe and
+	// this function is never entered for a reference already in visiting —
+	// its only in-visiting caller is descendDesignated, which leafs first.
 	var best expressions.RelationalExpression
-	if visiting[ref] {
-		// Back-edge: rank by node-content hash only, no recursion. Not
-		// cached (context-dependent), and the hit taints every computation
-		// currently in flight above (see backEdgeHits).
-		s.backEdgeHits++
-		for _, c := range candidates {
-			if best == nil || c.HashCodeWithoutChildren() < best.HashCodeWithoutChildren() {
-				best = c
-			}
-		}
-		return best
-	}
 	if visiting == nil {
 		visiting = map[*expressions.Reference]bool{}
 	}
@@ -170,6 +163,36 @@ func (s *designationScope) compare(a, b expressions.RelationalExpression, visiti
 	return 0
 }
 
+// descendDesignated resolves a child reference's designated final and, when
+// the descent is admissible, invokes walk over it with the reference marked
+// in visiting for the walk's duration. A reference already in visiting is a
+// TRAVERSAL LEAF: without this every property walker would re-enter a
+// recursive-CTE back-edge's designated tree unboundedly (the visiting guard
+// on designated() protects only candidate RANKING — the cache is consulted
+// first, so a cached cyclic designation would recurse straight past it to a
+// fatal stack overflow). Marking during the descent also makes deepHash
+// cycle-safe as the back-edge tie-break.
+func (s *designationScope) descendDesignated(ref *expressions.Reference, visiting map[*expressions.Reference]bool, walk func(expressions.RelationalExpression)) {
+	if ref == nil {
+		return
+	}
+	cref := ref.Canonical()
+	if visiting[cref] {
+		// Back-edge: opaque leaf. This is THE cycle event — the walk's
+		// result now depends on which ancestors were in flight, so the
+		// computation is tainted and must not be cached (see backEdgeHits).
+		s.backEdgeHits++
+		return
+	}
+	child := s.designated(cref, visiting)
+	if child == nil {
+		return
+	}
+	visiting[cref] = true
+	walk(child)
+	delete(visiting, cref)
+}
+
 // exprCount counts tree nodes passing filter, recursing through each child
 // reference's DESIGNATED final (Java ExpressionCountProperty.visitDefault +
 // forReference-getOnlyElement, with designation as the virtual prune).
@@ -182,9 +205,9 @@ func (s *designationScope) exprCount(e expressions.RelationalExpression, filter 
 		count = 1
 	}
 	for _, q := range e.GetQuantifiers() {
-		if child := s.designated(q.GetRangesOver(), visiting); child != nil {
+		s.descendDesignated(q.GetRangesOver(), visiting, func(child expressions.RelationalExpression) {
 			count += s.exprCount(child, filter, visiting)
-		}
+		})
 	}
 	return count
 }
@@ -207,9 +230,9 @@ func (s *designationScope) residualConjuncts(e expressions.RelationalExpression,
 		}
 	}
 	for _, q := range e.GetQuantifiers() {
-		if child := s.designated(q.GetRangesOver(), visiting); child != nil {
+		s.descendDesignated(q.GetRangesOver(), visiting, func(child expressions.RelationalExpression) {
 			count += s.residualConjuncts(child, visiting)
-		}
+		})
 	}
 	return count
 }
@@ -223,11 +246,11 @@ func (s *designationScope) predCountByLevel(e expressions.RelationalExpression, 
 	}
 	maxChildLevel := -1
 	for _, q := range e.GetQuantifiers() {
-		if child := s.designated(q.GetRangesOver(), visiting); child != nil {
+		s.descendDesignated(q.GetRangesOver(), visiting, func(child expressions.RelationalExpression) {
 			if lvl := s.predCountByLevel(child, counts, visiting); lvl > maxChildLevel {
 				maxChildLevel = lvl
 			}
-		}
+		})
 	}
 	currentLevel := maxChildLevel + 1
 	if wp, ok := e.(expressions.RelationalExpressionWithPredicates); ok {
@@ -245,10 +268,10 @@ func (s *designationScope) deepHash(e expressions.RelationalExpression, visiting
 	}
 	h := e.HashCodeWithoutChildren()
 	for _, q := range e.GetQuantifiers() {
-		if child := s.designated(q.GetRangesOver(), visiting); child != nil {
+		s.descendDesignated(q.GetRangesOver(), visiting, func(child expressions.RelationalExpression) {
 			childHash := s.deepHash(child, visiting)
 			h = h*0x100000001b3 ^ (childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142)
-		}
+		})
 	}
 	return h
 }

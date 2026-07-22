@@ -138,6 +138,9 @@ func (r *ProjectionMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// the output schema; the RFC-186 winner-flip triage caught exactly that
 	// as a vanished column).
 	outerAliases := outer.GetAliases()
+	if outerAliases != nil && len(outerAliases) != len(outerVals) {
+		return // malformed outer alias list — decline, mirroring the inner guard
+	}
 	mergedAliases := make([]string, len(outerVals))
 	for i, v := range outerVals {
 		alias := ""

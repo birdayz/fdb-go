@@ -3174,6 +3174,18 @@ each on its own stacked branch.
 
 ## Known gaps
 
+- **[RFC-186 follow-up] PartitionSelectRule (≥3-way) null-on-empty axis is unprobed.**
+  PartitionBinarySelectRule now declines to absorb predicates into a null-on-empty leg
+  (post-box WHERE must not move inside a dissolved outer box; pinned in
+  rule_partition_binary_select_test.go). The ≥3-way twin has no such guard, but every
+  observed noe-carrying invocation across the box-join families exits at its `>= 3`
+  quantifier gate (probed 2026-07-22: 108/108 hits were binary), so the axis is latent,
+  not live. If a ≥3-quantifier noe-carrying select ever reaches it, the same placement
+  question applies with an extra wrinkle: a noe leg peeled into a lower select away
+  from the preserved sibling it null-supplies against would move the outer-join edge
+  across a select boundary. Needs a probe + guard (or a proof it composes) before any
+  producer of that shape lands.
+
 - **[RFC-180 follow-up, pre-existing] Output-alias vs rendered-item name collision
   under the IMMEDIATE post-aggregate strip.** `SELECT player AS "SUM(SCORE)",
   SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC` sorts by

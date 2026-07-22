@@ -82,20 +82,32 @@ func TestConcreteJoinCost_CompositePKPrefixNotPointProbe(t *testing.T) {
 
 	prefix := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))})
-	if cost := concretePlanCost(prefix, stats, compositeCtx); cost.Cardinality == 1 {
+	if cost := concretePlanCostStrict(prefix, stats, compositeCtx, true); cost.Cardinality == 1 {
 		t.Fatalf("composite-PK prefix bind priced as point probe (cardinality=1); want selectivity estimate")
 	}
 
 	full := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))})
-	if cost := concretePlanCost(full, stats, compositeCtx); cost.Cardinality != 1 {
+	if cost := concretePlanCostStrict(full, stats, compositeCtx, true); cost.Cardinality != 1 {
 		t.Fatalf("provable full-PK bind must stay a point probe, got cardinality=%v", cost.Cardinality)
 	}
 
-	// nil ctx (unprovable coverage): STRICTER policy at the join leaf —
+	// nil ctx (unprovable coverage) under the STRICT join-ordering policy:
 	// never a point probe, even on an all-equality bind.
-	if cost := concretePlanCost(full, stats, nil); cost.Cardinality == 1 {
-		t.Fatalf("unprovable coverage must not price as point probe at the join leaf, got cardinality=1")
+	if cost := concretePlanCostStrict(full, stats, nil, true); cost.Cardinality == 1 {
+		t.Fatalf("unprovable coverage must not price as point probe at the strict join leaf, got cardinality=1")
+	}
+
+	// The ADVISORY policy (the data-access HintCost adapter path — no
+	// PlanContext available): a full-equality bind still prices as a point
+	// lookup; imposing strictness here re-broke the documented id-IN-(...)
+	// full-scan mis-cost the adapter exists to fix.
+	if cost := concretePlanCost(full, stats, nil); cost.Cardinality != 1 {
+		t.Fatalf("advisory policy must keep the full-equality point lookup, got cardinality=%v", cost.Cardinality)
+	}
+	// Advisory + PROVABLY partial coverage still declines the shortcut.
+	if cost := concretePlanCost(prefix, stats, compositeCtx); cost.Cardinality == 1 {
+		t.Fatalf("advisory policy with provably partial coverage must not price as point probe")
 	}
 }
 

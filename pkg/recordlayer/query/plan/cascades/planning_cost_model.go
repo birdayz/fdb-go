@@ -989,8 +989,8 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 	if stats == nil {
 		stats = properties.DefaultStatistics{}
 	}
-	costA := concretePlanCost(planA, stats, ctx)
-	costB := concretePlanCost(planB, stats, ctx)
+	costA := concretePlanCostStrict(planA, stats, ctx, true)
+	costB := concretePlanCostStrict(planB, stats, ctx, true)
 
 	// A materialized NLJ vs a correlated FlatMap (DIFFERENT root join shapes) is a
 	// Go-ONLY comparison — Java keeps no materialized NLJ (RewriteOuterJoinRule
@@ -1075,15 +1075,28 @@ func joinShapesDiffer(planA, planB plans.RecordQueryPlan) bool {
 // and CPU roll up from children exactly as the wrapper cost does, so a join's total
 // cost reflects each sub-product's real (embedded) plan, not a shared-group winner.
 func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
+	return concretePlanCostStrict(p, stats, ctx, false)
+}
+
+// concretePlanCostStrict is concretePlanCost with the RFC-186 §2B
+// point-probe policy selectable: strictPKGate=true (the JOIN-ORDERING
+// entry, compareJoinOrdering) requires PROVABLE full-PK coverage for the
+// 1-row shortcut — an unprovable bind is never a point probe there,
+// because a composite-PK prefix priced as 1 row drives catastrophic join
+// orders. strictPKGate=false (the data-access HintCost adapter, which has
+// no PlanContext) keeps the ADVISORY policy: a full-equality bind prices
+// as a point lookup — imposing strictness there re-broke the documented
+// id-IN-(...) full-scan mis-cost the adapter exists to fix.
+func concretePlanCostStrict(p plans.RecordQueryPlan, stats properties.StatisticsProvider, ctx PlanContext, strictPKGate bool) properties.Cost {
 	if p == nil {
 		return properties.Cost{}
 	}
 	kids := p.GetChildren()
 	child := make([]properties.Cost, len(kids))
 	for i, c := range kids {
-		child[i] = concretePlanCost(c, stats, ctx)
+		child[i] = concretePlanCostStrict(c, stats, ctx, strictPKGate)
 	}
-	return combineConcreteCost(p, child, stats, ctx)
+	return combineConcreteCost(p, child, stats, ctx, strictPKGate)
 }
 
 // combineConcreteCost applies a plan node's per-operator cost formula to its
@@ -1091,7 +1104,7 @@ func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvid
 // children is expressible independently of the recursion. The per-operator
 // formulas (cost_formulas.go) are the single source of truth shared with the
 // physical-wrapper HintCost methods.
-func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
+func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext, strictPKGate bool) properties.Cost {
 	c0 := func() properties.Cost {
 		if len(child) > 0 {
 			return child[0]
@@ -1109,7 +1122,7 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		// million-row prefix scan priced as a repeatable 1-row inner probe —
 		// catastrophic join orders.
 		fullBind, provable := pkFullyEqualityBound(pl, ctx)
-		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, provable && fullBind)
+		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, fullBind && (provable || !strictPKGate))
 	case *plans.RecordQueryIndexPlan:
 		// Secondary index: a full-equality bind is a single row only if the index is
 		// UNIQUE. Resolve uniqueness from PlanContext when available;
