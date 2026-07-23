@@ -525,6 +525,55 @@ func TestMatchIntermediate_FilterSubsumedBySelect_SinglePredicate(t *testing.T) 
 	}
 }
 
+// TestMatchIntermediate_FilterSubsumedBySelect_EdgeMismatchRejected pins the
+// quantifier-edge check on the SUBSUMPTION path (matchSingleSourceAgainstSelect),
+// which the structural bijection path bypasses. It is the SinglePredicate setup
+// with the candidate leg made NULL-ON-EMPTY: identical otherwise, so
+// SinglePredicate proves this shape DOES match without the edge guard. With the
+// guard the plain-ForEach query filter must NOT subsume the NULL-ON-EMPTY index
+// candidate — else a substitution would drop the null-extended row.
+func TestMatchIntermediate_FilterSubsumedBySelect_EdgeMismatchRejected(t *testing.T) {
+	t.Parallel()
+
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
+	queryFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "col0"},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
+			),
+		},
+		queryScanQ,
+	)
+	queryFilterRef := expressions.InitialOf(queryFilter)
+
+	// Candidate Select ranges over the scan via a NULL-ON-EMPTY quantifier — the
+	// ONLY difference from the passing SinglePredicate case.
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanQ := expressions.ForEachNullOnEmptyQuantifier(candidateScanRef)
+	alias0 := values.UniqueCorrelationIdentifier()
+	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{candidateScanQ},
+		[]predicates.QueryPredicate{ph0},
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+	mc := &testMatchCandidate{name: "idx_col0_noe", traversal: NewTraversal(candidateSelectRef)}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	FireExpressionRuleWithMemo(NewMatchLeafRule(), queryScanRef, ctx, nil)
+	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), queryFilterRef, ctx, nil)
+
+	if n := len(GetPartialMatchesForCandidate(queryFilterRef, mc)); n != 0 {
+		t.Fatalf("a plain-ForEach filter must NOT subsume a NULL-ON-EMPTY index candidate via the subsumption path, got %d matches", n)
+	}
+}
+
 // TestMatchIntermediate_FilterSubsumedBySelect_MultiplePredicates
 // verifies that a query with two ComparisonPredicates (col0 = 5 AND
 // col1 > 10) correctly binds both candidate Placeholders.

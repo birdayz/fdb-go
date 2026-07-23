@@ -32,11 +32,11 @@ import (
 //
 // Ports Java's
 // com.apple.foundationdb.record.query.plan.cascades.rules.MatchIntermediateRule.
-// Go uses ordered quantifier matching (query[i] <-> candidate[i])
-// rather than Java's full graph-matching enumeration via
-// RelationalExpression.match(). This handles the common case (same
-// quantifier count, same order); extend to the full combinatorial
-// matcher if a candidate shape ever needs permuted matching.
+// Like Java's RelationalExpression.match(), the structural path enumerates every
+// quantifier bijection (query-q[i] ↔ candidate-q[perm[i]]) up to a factorial cap,
+// pairing quantifiers only when their edges are compatible
+// (quantifierEdgesCompatible) and re-checking node equality under each bijection's
+// alias map; beyond the cap it falls back to positional pairing.
 type MatchIntermediateRule struct {
 	matcher *ExpressionMatcher[expressions.RelationalExpression]
 }
@@ -285,6 +285,20 @@ func permuteUntil(arr []int, k int, accept func(perm []int) bool) bool {
 	return false
 }
 
+// quantifierEdgesCompatible reports whether two quantifiers agree on the edge
+// attributes that RelationalExpression.EqualsWithoutChildren excludes: kind,
+// null-on-empty, and strict-single. Java pairs quantifiers via
+// quantifier.semanticEquals (RelationalExpression.match's matchPredicate), which
+// includes these; a match that ignored them could let e.g. a plain-ForEach leg
+// substitute a NULL-ON-EMPTY leg and drop the null-extended row. Used on BOTH
+// the structural bijection path and the single-source subsumption path so no
+// match route can accept an edge-incompatible quantifier pairing.
+func quantifierEdgesCompatible(a, b expressions.Quantifier) bool {
+	return a.Kind() == b.Kind() &&
+		a.IsNullOnEmpty() == b.IsNullOnEmpty() &&
+		a.IsStrictSingle() == b.IsStrictSingle()
+}
+
 // tryIntermediateBijection attempts one quantifier bijection (query-q[i] ↔
 // candidate-q[perm[i]]): every query quantifier's child must be backed by a
 // child PartialMatch whose candidate ref is the permuted candidate child. On
@@ -308,14 +322,10 @@ func tryIntermediateBijection(
 
 		// Java pairs quantifiers via quantifier.semanticEquals (see
 		// RelationalExpression.match's matchPredicate), which compares the
-		// quantifier EDGE — its kind and null-on-empty / strict-single flags —
-		// not only the ranged-over reference. EqualsWithoutChildren (re-checked
-		// below) deliberately excludes those edges, so without this guard a Select
-		// over a ForEach-null-on-empty leg would match the same node over a plain
-		// ForEach leg and a later substitution would drop the null-extended row.
-		if queryQ.Kind() != candidateQ.Kind() ||
-			queryQ.IsNullOnEmpty() != candidateQ.IsNullOnEmpty() ||
-			queryQ.IsStrictSingle() != candidateQ.IsStrictSingle() {
+		// quantifier EDGE — kind, null-on-empty, strict-single — not only the
+		// ranged-over reference. EqualsWithoutChildren (re-checked below)
+		// deliberately excludes those edges (see quantifierEdgesCompatible).
+		if !quantifierEdgesCompatible(queryQ, candidateQ) {
 			return false
 		}
 
@@ -449,6 +459,14 @@ func matchSingleSourceAgainstSelect(
 	queryQs := queryExpr.GetQuantifiers()
 	candidateQs := candidateSelect.GetQuantifiers()
 	if len(queryQs) != 1 || len(candidateQs) != 1 {
+		return
+	}
+	// The single query/candidate quantifiers must have compatible edges, exactly
+	// as the structural bijection path checks — this subsumption route bypasses
+	// that path, so without this a pass-through Select over a NULL-ON-EMPTY leg
+	// could subsume an index candidate over a plain ForEach leg and a later
+	// substitution would drop the null-extended row.
+	if !quantifierEdgesCompatible(queryQs[0], candidateQs[0]) {
 		return
 	}
 
@@ -596,10 +614,16 @@ func matchSingleSourceAgainstSelect(
 	}
 
 	// Step 3: Build alias map incorporating child aliases +
-	// quantifier mapping.
+	// quantifier mapping. Compose conflict-checked (as the bijection path does):
+	// a child binding that contradicts the single quantifier mapping invalidates
+	// the match rather than being silently dropped.
 	aliasBuilder := NewAliasMapBuilder()
-	aliasBuilder.PutAll(childMatch.GetBoundAliasMap())
-	aliasBuilder.Put(queryQs[0].GetAlias(), candidateQs[0].GetAlias())
+	if !aliasBuilder.PutAllChecked(childMatch.GetBoundAliasMap()) {
+		return
+	}
+	if !aliasBuilder.PutChecked(queryQs[0].GetAlias(), candidateQs[0].GetAlias()) {
+		return
+	}
 	boundAliasMap := aliasBuilder.Build()
 
 	// Build the predicate map. BuildMaybe returns nil on conflicts
