@@ -242,16 +242,70 @@ func matchIntermediateStructural(
 		return false
 	}
 
-	// Build the alias map from quantifier bindings and verify that
-	// each quantifier pair is backed by a child PartialMatch.
+	// Enumerate ALL bijections query-q[i] ↔ candidate-q[perm[i]] and yield a
+	// PartialMatch for EACH that succeeds — Java's RelationalExpression.subsumedBy
+	// enumerates every quantifier mapping via EnumeratingIterable, not just the
+	// positional one. The identity permutation is the common case; permutations
+	// catch multi-quantifier expressions whose candidate quantifier order differs
+	// from the query's (positional-only pairing silently missed those index
+	// matches). Capped at matchIntermediateMaxPermutations to bound the factorial;
+	// beyond the cap fall back to positional pairing only (as before).
+	n := len(queryQs)
+	perm := make([]int, n)
+	for i := range perm {
+		perm[i] = i
+	}
+	if n > matchIntermediateMaxPermutations {
+		return tryIntermediateBijection(call, queryExpr, candidate, candidateRef, candidateExpr, queryQs, candidateQs, perm)
+	}
+	matchedAny := false
+	permuteAll(perm, 0, func(p []int) {
+		if tryIntermediateBijection(call, queryExpr, candidate, candidateRef, candidateExpr, queryQs, candidateQs, p) {
+			matchedAny = true
+		}
+	})
+	return matchedAny
+}
+
+// matchIntermediateMaxPermutations bounds the bijection enumeration factorial
+// (mirrors expressions.MaxPermutationChildren).
+const matchIntermediateMaxPermutations = 8
+
+// permuteAll enumerates EVERY permutation of arr in place, calling visit on each
+// (no early stop — Java yields all successful quantifier mappings).
+func permuteAll(arr []int, k int, visit func(perm []int)) {
+	if k == len(arr) {
+		visit(arr)
+		return
+	}
+	for i := k; i < len(arr); i++ {
+		arr[k], arr[i] = arr[i], arr[k]
+		permuteAll(arr, k+1, visit)
+		arr[k], arr[i] = arr[i], arr[k]
+	}
+}
+
+// tryIntermediateBijection attempts one quantifier bijection (query-q[i] ↔
+// candidate-q[perm[i]]): every query quantifier's child must be backed by a
+// child PartialMatch whose candidate ref is the permuted candidate child. On
+// success it builds and records the composite PartialMatch and returns true.
+func tryIntermediateBijection(
+	call *ExpressionRuleCall,
+	queryExpr expressions.RelationalExpression,
+	candidate MatchCandidate,
+	candidateRef *expressions.Reference,
+	candidateExpr expressions.RelationalExpression,
+	queryQs, candidateQs []expressions.Quantifier,
+	perm []int,
+) bool {
 	aliasBuilder := NewAliasMapBuilder()
 
 	for i, queryQ := range queryQs {
 		queryChildRef := queryQ.GetRangesOver()
-		candidateChildRef := candidateQs[i].GetRangesOver()
+		candidateChildRef := candidateQs[perm[i]].GetRangesOver()
 
-		// Find a PartialMatch on queryChildRef for this candidate
-		// whose candidate-side ref matches candidateChildRef.
+		// Find a PartialMatch on queryChildRef for this candidate whose
+		// candidate-side ref matches the permuted candidateChildRef.
 		found := false
 		childMatches := GetPartialMatchesForCandidate(queryChildRef, candidate)
 		for _, pm := range childMatches {
@@ -260,7 +314,6 @@ func matchIntermediateStructural(
 				continue
 			}
 			if pmi.GetCandidateRef() == candidateChildRef {
-				// Incorporate the child's alias mappings.
 				aliasBuilder.PutAll(pmi.GetBoundAliasMap())
 				found = true
 				break
@@ -269,18 +322,12 @@ func matchIntermediateStructural(
 		if !found {
 			return false
 		}
-
-		// Map the query quantifier's alias to the candidate
-		// quantifier's alias.
-		aliasBuilder.Put(queryQ.GetAlias(), candidateQs[i].GetAlias())
+		aliasBuilder.Put(queryQ.GetAlias(), candidateQs[perm[i]].GetAlias())
 	}
 
-	// All quantifiers matched — create a composite PartialMatch.
+	// All quantifiers matched under this bijection — create the composite match.
 	boundAliasMap := aliasBuilder.Build()
 
-	// MaxMatchMap between the query's and candidate's result values
-	// (Java's structural subsumedBy path). Mandatory — see
-	// buildMatchMaxMatchMap.
 	mmm := buildMatchMaxMatchMap(
 		queryExpr.GetResultValue(),
 		candidateExpr.GetResultValue(),

@@ -256,6 +256,59 @@ func TestMatchIntermediateRule_MultipleQuantifiers(t *testing.T) {
 	}
 }
 
+// TestMatchIntermediateRule_CyclicQuantifierPermutation pins RFC-189's
+// MatchIntermediate permutation port (finding 13): the rule enumerates ALL
+// quantifier bijections (Java's subsumedBy via EnumeratingIterable), not just the
+// positional pairing. Three quantifiers are used deliberately — FireExpressionRule
+// already swaps the FIRST TWO quantifiers of a ChildrenAsSet Select, so a 2-way
+// swap is covered without the port; a CYCLIC permutation is not. Query
+// Select(A, B, C) vs candidate Select(B, C, A): the only successful bijection is
+// perm=[2,0,1] (query A ↔ candidate A at position 2, B↔position 0, C↔position 1),
+// which neither positional pairing nor the single first-two swap reaches.
+func TestMatchIntermediateRule_CyclicQuantifierPermutation(t *testing.T) {
+	t.Parallel()
+
+	newScanRef := func(rt string) *expressions.Reference {
+		return expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{rt}, values.UnknownType))
+	}
+
+	// Query: Select(A, B, C).
+	qA, qB, qC := newScanRef("A"), newScanRef("B"), newScanRef("C")
+	querySelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{
+			expressions.ForEachQuantifier(qA),
+			expressions.ForEachQuantifier(qB),
+			expressions.ForEachQuantifier(qC),
+		}, nil)
+	querySelectRef := expressions.InitialOf(querySelect)
+
+	// Candidate: Select(B, C, A) — a cyclic permutation of the query order.
+	cB, cC, cA := newScanRef("B"), newScanRef("C"), newScanRef("A")
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{
+			expressions.ForEachQuantifier(cB),
+			expressions.ForEachQuantifier(cC),
+			expressions.ForEachQuantifier(cA),
+		}, nil)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+	mc := &testMatchCandidate{name: "idx_join3", traversal: NewTraversal(candidateSelectRef)}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	leafRule := NewMatchLeafRule()
+	FireExpressionRuleWithMemo(leafRule, qA, ctx, nil)
+	FireExpressionRuleWithMemo(leafRule, qB, ctx, nil)
+	FireExpressionRuleWithMemo(leafRule, qC, ctx, nil)
+
+	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+
+	if len(GetPartialMatchesForCandidate(querySelectRef, mc)) == 0 {
+		t.Fatal("expected a PartialMatch via the cyclic bijection [2,0,1]; positional + first-two-swap both miss it")
+	}
+}
+
 // TestMatchIntermediateRule_LeafSkipped verifies that the intermediate
 // rule does not fire on leaf expressions (no quantifiers).
 func TestMatchIntermediateRule_LeafSkipped(t *testing.T) {
