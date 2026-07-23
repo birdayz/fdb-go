@@ -581,21 +581,40 @@ func cardinalitiesFromChildRef(w physicalPlanExpression) properties.Cardinalitie
 }
 
 // cardinalitiesFromChildRefOrInner is cardinalitiesFromChildRef for a transparent
-// (1:1) wrapper, with a fallback to the concrete embedded child when the
-// child-ref path yields no bound. The data-access path exposes a composite (e.g.
-// TypeFilter(Scan) over a full-PK-equality point scan) as a single plan whose
-// child edge is a SNAPSHOT quantifier — its Reference carries no populated
-// property map, so cardinalitiesForRef reports unknown and a point lookup never
-// receives its proven AtMostOne (the booked M3-followup). A
-// transparent wrapper's cardinality equals its child's, so when the ref path is
-// unknown, computing the concrete embedded child directly is exact — and only
-// ever TIGHTENS the bound (the M3 guard's safe direction). The len==0 case (a
-// wrapper exposing no child quantifier at all) lands in the same fallback.
+// (1:1) wrapper, with a narrow fallback to the concrete embedded child. The
+// data-access path exposes a composite (e.g. TypeFilter(Scan) over a
+// full-PK-equality point scan) as a single plan whose child edge is a SNAPSHOT
+// quantifier — its Reference carries NO populated property map, so
+// cardinalitiesForRef reports unknown and a point lookup never receives its
+// proven AtMostOne (the booked M3-followup).
+//
+// The fallback is deliberately conservative, per two hazards:
+//   - A POPULATED property map that weakens to unknown is a LEGITIMATE unknown,
+//     not a missing property (a group with both bounded and unbounded final
+//     members correctly weakens to the least-constraining bound). Never
+//     second-guess it by reading one member — only fall back when the child ref
+//     has NO property map at all.
+//   - The concrete child is read via plan.GetChildren() → planFromQuantifier,
+//     which PANICS on a reference with multiple plan-typed final members and no
+//     winner. Only descend when the child ref is a PROVEN SINGLETON.
+//
+// Under those guards computing the embedded child directly is exact for a 1:1
+// wrapper and can only TIGHTEN the bound (the M3 guard's safe direction).
 func cardinalitiesFromChildRefOrInner(w physicalPlanExpression, plan plans.RecordQueryPlan) properties.Cardinalities {
-	if qs := w.GetQuantifiers(); len(qs) == 1 {
-		if c := cardinalitiesForRef(qs[0].GetRangesOver()); !c.GetMaxCardinality().IsUnknown() {
-			return c
-		}
+	qs := w.GetQuantifiers()
+	if len(qs) != 1 {
+		return properties.UnknownCardinalities()
+	}
+	childRef := qs[0].GetRangesOver()
+	if pm := GetRefPlanPropertiesMap(childRef); pm != nil && len(pm.All()) > 0 {
+		// Populated — trust the (possibly weakened) group cardinality as-is.
+		return cardinalitiesForRef(childRef)
+	}
+	// No property map (a data-access snapshot quantifier). Recover the bound from
+	// the concrete child, but only when the ref is a single-member group so the
+	// descent is unambiguous and cannot trip planFromQuantifier's singleton guard.
+	if len(childRef.AllMembers()) != 1 {
+		return properties.UnknownCardinalities()
 	}
 	children := plan.GetChildren()
 	if len(children) == 1 {

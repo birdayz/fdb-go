@@ -3,6 +3,7 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -95,6 +96,30 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		tf := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scan)
 		if wholePlanMaxCardinalityKnown(tf) {
 			t.Fatal("a composite-PK prefix bind under a TypeFilter must stay unknown")
+		}
+	})
+
+	// The concrete-child fallback must NEVER descend into a multi-member child
+	// reference with no winner: plan.GetChildren() → planFromQuantifier PANICS on
+	// a reference with multiple plan-typed final members. When the transparent
+	// wrapper's child ref is not a proven singleton, the arm returns unknown
+	// instead of reading (and crashing on) an ambiguous group.
+	t.Run("multi_member_child_ref_does_not_panic", func(t *testing.T) {
+		t.Parallel()
+		bound := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithPrimaryKey(pk2)
+		other := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+		// A child reference holding TWO plan-typed final members and no winner.
+		childRef := expressions.FinalOf(bound)
+		if !childRef.InsertFinal(other) {
+			t.Fatal("failed to build a two-member child reference")
+		}
+		tf := plans.NewRecordQueryTypeFilterPlanFromQuantifier([]string{"T"},
+			expressions.ForEachQuantifier(childRef))
+		// Must not panic; the ambiguous group yields unknown.
+		if wholePlanMaxCardinalityKnown(tf) {
+			t.Fatal("a multi-member no-winner child ref must yield unknown (not a tightened bound)")
 		}
 	})
 }

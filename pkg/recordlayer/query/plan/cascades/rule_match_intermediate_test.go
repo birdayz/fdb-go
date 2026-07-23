@@ -370,6 +370,43 @@ func TestMatchIntermediateRule_NodeReCheckUnderBijectionMap(t *testing.T) {
 	}
 }
 
+// TestMatchIntermediateRule_QuantifierAttributesMustMatch pins the quantifier-edge
+// check: Java pairs quantifiers via quantifier.semanticEquals, which compares the
+// edge (kind, null-on-empty, strict-single), but EqualsWithoutChildren excludes
+// it. A query Select over a plain ForEach leg must NOT match a candidate Select
+// over a ForEach-NULL-ON-EMPTY leg — substituting the index would drop the
+// null-extended row. Same scan, same (empty) result value, so the ONLY thing that
+// differs is the quantifier edge; without the guard the node re-check passes and
+// a wrong match is created.
+func TestMatchIntermediateRule_QuantifierAttributesMustMatch(t *testing.T) {
+	t.Parallel()
+
+	queryScanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	querySelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{expressions.ForEachQuantifier(queryScanRef)}, nil,
+	)
+	querySelectRef := expressions.InitialOf(querySelect)
+
+	// Candidate Select ranges over the SAME scan via a NULL-ON-EMPTY quantifier.
+	candScanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{expressions.ForEachNullOnEmptyQuantifier(candScanRef)}, nil,
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+	mc := &testMatchCandidate{name: "idx_noe", traversal: NewTraversal(candidateSelectRef)}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	FireExpressionRuleWithMemo(NewMatchLeafRule(), queryScanRef, ctx, nil)
+	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+
+	if n := len(GetPartialMatchesForCandidate(querySelectRef, mc)); n != 0 {
+		t.Fatalf("a plain-ForEach Select must NOT match a NULL-ON-EMPTY Select (edge mismatch), got %d matches", n)
+	}
+}
+
 // TestMatchIntermediateRule_LeafSkipped verifies that the intermediate
 // rule does not fire on leaf expressions (no quantifiers).
 func TestMatchIntermediateRule_LeafSkipped(t *testing.T) {

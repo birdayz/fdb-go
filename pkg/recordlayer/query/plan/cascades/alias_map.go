@@ -80,6 +80,42 @@ func (b *AliasMapBuilder) PutAll(other *AliasMap) {
 	}
 }
 
+// PutChecked adds source→target, returning true if the mapping was added OR was
+// already present IDENTICALLY, and false only on a genuine CONFLICT (source
+// already maps to a different target, or target is already claimed by a
+// different source). Unlike Put — which reports false for any pre-existing
+// source/target, including an identical re-binding — PutChecked treats an
+// identical duplicate as consistent. It is the conflict-aware primitive for
+// composing quantifier bijections, where a child PartialMatch may legitimately
+// re-assert a binding the composition already holds; only a contradictory
+// binding invalidates the permutation.
+func (b *AliasMapBuilder) PutChecked(source, target values.CorrelationIdentifier) bool {
+	if existing, ok := b.forward[source]; ok {
+		return existing == target
+	}
+	if _, ok := b.inverse[target]; ok {
+		return false // target already claimed by a different source
+	}
+	b.forward[source] = target
+	b.inverse[target] = source
+	return true
+}
+
+// PutAllChecked copies all entries from other via PutChecked, returning false as
+// soon as any entry CONFLICTS with an existing mapping. Unlike PutAll (which
+// silently skips conflicts), this reports them so a caller composing child bound
+// maps into a quantifier bijection can reject an inconsistent composition —
+// Java's match() only ever combines COMPATIBLE bound maps, never a contradictory
+// merge.
+func (b *AliasMapBuilder) PutAllChecked(other *AliasMap) bool {
+	for source, target := range other.forward {
+		if !b.PutChecked(source, target) {
+			return false
+		}
+	}
+	return true
+}
+
 // Build creates an immutable AliasMap from the builder's state.
 func (b *AliasMapBuilder) Build() *AliasMap {
 	fwd := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(b.forward))

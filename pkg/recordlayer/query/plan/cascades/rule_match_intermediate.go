@@ -304,8 +304,23 @@ func tryIntermediateBijection(
 	nodeAliasMap := expressions.EmptyAliasMap()
 
 	for i, queryQ := range queryQs {
+		candidateQ := candidateQs[perm[i]]
+
+		// Java pairs quantifiers via quantifier.semanticEquals (see
+		// RelationalExpression.match's matchPredicate), which compares the
+		// quantifier EDGE — its kind and null-on-empty / strict-single flags —
+		// not only the ranged-over reference. EqualsWithoutChildren (re-checked
+		// below) deliberately excludes those edges, so without this guard a Select
+		// over a ForEach-null-on-empty leg would match the same node over a plain
+		// ForEach leg and a later substitution would drop the null-extended row.
+		if queryQ.Kind() != candidateQ.Kind() ||
+			queryQ.IsNullOnEmpty() != candidateQ.IsNullOnEmpty() ||
+			queryQ.IsStrictSingle() != candidateQ.IsStrictSingle() {
+			return false
+		}
+
 		queryChildRef := queryQ.GetRangesOver()
-		candidateChildRef := candidateQs[perm[i]].GetRangesOver()
+		candidateChildRef := candidateQ.GetRangesOver()
 
 		// Find a PartialMatch on queryChildRef for this candidate whose
 		// candidate-side ref matches the permuted candidateChildRef.
@@ -317,7 +332,15 @@ func tryIntermediateBijection(
 				continue
 			}
 			if pmi.GetCandidateRef() == candidateChildRef {
-				aliasBuilder.PutAll(pmi.GetBoundAliasMap())
+				// Compose this child match's bound aliases into the bijection.
+				// Java only ever combines COMPATIBLE bound maps: a child binding
+				// that contradicts one already established (e.g. a sibling
+				// correlation the child resolved to a different leg than this
+				// permutation assigns) invalidates the whole permutation, so a
+				// silent skip would forge an inconsistent composite match.
+				if !aliasBuilder.PutAllChecked(pmi.GetBoundAliasMap()) {
+					return false
+				}
 				found = true
 				break
 			}
@@ -325,8 +348,13 @@ func tryIntermediateBijection(
 		if !found {
 			return false
 		}
-		aliasBuilder.Put(queryQ.GetAlias(), candidateQs[perm[i]].GetAlias())
-		nam, ok := nodeAliasMap.With(queryQ.GetAlias(), candidateQs[perm[i]].GetAlias())
+		// The this-level quantifier mapping must be consistent with the composed
+		// child bindings (a child may have already bound this query alias to a
+		// different candidate leg — reject rather than silently drop).
+		if !aliasBuilder.PutChecked(queryQ.GetAlias(), candidateQ.GetAlias()) {
+			return false
+		}
+		nam, ok := nodeAliasMap.With(queryQ.GetAlias(), candidateQ.GetAlias())
 		if !ok {
 			return false
 		}
