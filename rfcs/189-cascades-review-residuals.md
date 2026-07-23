@@ -150,20 +150,22 @@ miss). The `[]float64`/`[]float32` arms (`:230-253`) already fixed exactly this 
 **Java:** `LiteralValue.equalsWithoutChildren` (`:116`) → `Comparisons.evalComparison(EQUALS,…)` →
 `toClassWithRealEquals(v).equals(…)` = `Double.equals` (doubleToLongBits): `-0.0 ≠ +0.0`. Its hash is
 bit-based too (`objectPlanHash` → `Double.hashCode`), so Java is self-consistent and treats signed
-zeros as **unequal**. The bitwise fix is therefore **Java-aligned**, not Go-only plumbing — Go's `==`
-is the anomaly.
+zeros as **unequal**. The canonical-bit fix is therefore **Java-aligned**, not Go-only plumbing —
+Go's `==` is the anomaly.
 
-**Fix:** before `map_field_values.go:254`, mirror the array arms — `float64`/`float32` type-switch
-comparing `math.Float64bits`/`math.Float32bits`, else `return a == b`. Signed zeros become unequal
-(matching Java and the `%v` hash); identical-bit NaN equal and hash-coherent; differing-bit NaN unequal
-sharing a bucket (an allowed collision, same as the array-arm comment). No wire impact — memo-internal
-semantic identity only, not continuation/plan hash.
+**Fix:** before `map_field_values.go:254`, add scalar `float64`/`float32` arms comparing Java-style
+canonical bits (`Double.doubleToLongBits` / `Float.floatToIntBits`): preserve the zero sign bit, but
+map every NaN encoding to the canonical quiet NaN. Signed zeros become unequal (matching Java and
+the `%v` hash); all NaNs become equal and hash-coherent. The direct `[]float64`/`[]float32` vector
+carriers retain their separately documented raw-bit identity. No wire impact — memo-internal semantic
+identity only, not continuation/plan hash.
 
 **Test:** `TestConstantValue_SignedZeroEqualsIsHashConsistent` (values pkg unit): `a =
 &ConstantValue{math.Copysign(0,-1)}`, `b = &ConstantValue{0.0}`; pin the invariant
 `EqualsWithoutChildren(a,b) ⟹ semanticHash(a)==semanticHash(b)` (pre-fix: equal=true, hashes differ →
-RED). Controls: two `+0.0` and two identical-bit NaN → equal AND same hash. Plus a memo/Reference insert
-asserting no false-duplicate.
+RED). Controls: two `+0.0` and two distinct-payload NaNs → equal AND same hash. The direct equality/hash
+pin is the sharp memo-interning contract; an additional Reference insert would exercise the same gate
+less directly.
 
 ### A3. Finding 9 (latent wrong projection) — TranslateQueryValueMaybe self-pull-up
 
@@ -650,7 +652,7 @@ sibling-config test.
 ## Implementation order (DFS, one finding to completion, green per commit, e2e each)
 
 1. **A1** finding 8 (hang) — `AllMembers()` + the through-final cycle regression.
-2. **A2** finding 5 (memo dedup) — bitwise scalar float + hash-consistency pin.
+2. **A2** finding 5 (memo dedup) — canonical-bit scalar float + hash-consistency pin.
 3. **A3** finding 9 (projection) — root pull-up + delete dead nil-fallback + covering-index unit.
 4. **A4** finding 7 (correlation) — transitive delegate + correlated-quantifier pin.
 5. **B1** M3 (cardinality) — bound the point-scan; **B2** M4-fu-3 (fail-closed narrow); **B3** M5

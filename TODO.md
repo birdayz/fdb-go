@@ -127,10 +127,16 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   explain corpus: 2,579/2,579 identical, zero flips. Post-change 1M FDB stress: all 23 subtests
   green with correct rows. **FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.**
   Full `just test`: 56/56 targets green.
-- [ ] **190.x-bundled (cheap latents, fold in)** — finding 5 scalar signed-zero hash
-  (`values/map_field_values.go:254` + `semantic_hash.go:156`, bitwise-compare) and finding 8 merge
-  cycle guard walks `Members()` not `AllMembers()` (`memo_merge.go:103`) — both already booked
-  2026-07-22, both one-liners, both correctness. Ride along on RFC-190.
+- [x] **190.x-bundled (cheap latents)** — both findings had already landed as discrete RFC-189
+  commits: finding 8's final-only merge-cycle guard in `eac6ef9ab` and finding 5's scalar
+  signed-zero equality/hash repair in `8fcb1a426`. RFC-190's re-audit caught one over-broad parity
+  claim in the latter: raw `math.FloatNNbits` distinguishes NaN payloads, while Java boxed
+  Float/Double equality canonicalizes them. Scalar equality now uses Java-style canonical bits for
+  both widths (zero sign preserved, all NaNs canonical), with distinct-payload/sign NaN and
+  signed-zero hash-bucket controls. The direct vector-slice carriers keep their separately
+  documented raw-bit identity. The final-only cycle and scalar-float regressions are green 20×.
+  Parent-vs-current explain corpus: 2,579/2,579 identical, zero flips. **FINAL REVIEW: Graefe ACK
+  + Torvalds ACK + independent Codex ACK.** Full `just test`: 56/56 targets green.
 
 **Fidelity / optimization reach (Graefe-gated design):**
 - [ ] **190.4 (MED)** — `MatchIntermediateRule` requires equal quantifier count
@@ -401,10 +407,13 @@ filter) is not SQL-corpus-reachable today. Pins: unit `TestComparisonSetKey_Bare
 `TestSetDifferenceEmpty` (the set logic); `join_optimization_probes#4` keeps a rows-only correctness pin
 (the sub-case correctly does NOT fire there). Faithful Java port, latent-gap like M2/M3/M5.
 
-### [ ] Finding 5 (MED) — scalar signed-zero ConstantValue: equal-but-different-hash
-`values/map_field_values.go:254` scalar fallthrough `return a == b` (−0.0==+0.0 true) vs
-`semantic_hash.go:156` `%v` (renders "-0"≠"0"). The []float64/[]float32 arms already fixed this with
-`math.Float64bits` (RFC-176 §2); scalar wasn't. → memo dedup miss/dup. Fix: bitwise-compare scalar floats.
+### [x] Finding 5 (MED) — scalar signed-zero ConstantValue: equal-but-different-hash — DONE
+Landed in `8fcb1a426`: scalar float equality no longer falls through to Go `==`, so −0.0 and +0.0
+remain distinct exactly like Java and no longer compare equal while `%v` hashes them apart. RFC-190
+review tightened the implementation from raw bits to Java's canonical Float/Double bit identity:
+the zero sign remains significant, while every NaN payload/sign encoding compares equal and hashes
+coherently. `TestConstantValue_SignedZeroEqualsIsHashConsistent` covers both widths, signed zero,
+ordinary equality, and distinct-payload NaNs.
 
 ### [x] Finding 6 (MED) — comparePredicateCountByLevel: keep the antisymmetric UNION iteration — DONE (self-corrected)
 Original claim (walk a's keys first-map-only to "match Java") was WRONG — it rested on misreading Java as
@@ -432,11 +441,11 @@ Pre-existing (master's producer is sparse too); booked, not bundled into RFC-188
 approximation (dangerous direction) — any new consumer treats a correlated leg as free-standing (0-row
 class). Contained today (consumers rewired), latent trap.
 
-### [ ] Finding 8 (MED, latent hang) — merge cycle guard walks Members() only, not FinalMembers()
-`memo_merge.go:103-133` `reachable` recurses `r.Members()`; correct only by the undocumented REWRITING
-invariant that every final is also an exploratory member. One distinct-final `InsertFinal` away from
-`mergeable` approving a cycle → planner hang (`childRefsMatchInMemo`/`GetCorrelatedTo` are cycle-guard-free).
-Fix: walk `AllMembers()`.
+### [x] Finding 8 (MED, latent hang) — merge cycle guard walks all members — DONE
+Landed in `eac6ef9ab`: `reachable` traverses `AllMembers()` rather than relying on the undocumented
+"every final is exploratory" invariant. `TestMemoMerge_SkipsCyclicMergeThroughFinal` constructs an
+ancestor edge visible only through a distinct final member and proves `mergeable` declines the
+self-cycle.
 
 ### [ ] Finding 9 (MED, latent) — TranslateQueryValueMaybe pulls up candidate sub-values against themselves
 `max_match_map.go:771` `PullUpValue(entry.candidateValue, entry.candidateValue, alias)` collapses every

@@ -308,15 +308,26 @@ post-change 1M FDB stress passed all 23 subtests with correct row counts.
 **190.3 FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.** The complete
 `just test` gate is green (56/56 targets).
 
-### 190.x-bundled (cheap correctness latents, already booked 2026-07-22)
+### 190.x-bundled (cheap correctness latents) — closed
 
-- **finding 5** scalar signed-zero: `values/map_field_values.go:254` scalar fallthrough `a == b`
-  (−0.0==+0.0) vs `semantic_hash.go:156` `%v` ("−0"≠"0") → memo dedup miss. Bitwise-compare scalar
-  floats (the []float arms already do, RFC-176 §2). Pin `TestScalarConstant_SignedZeroHashConsistent`.
-- **finding 8** merge cycle guard: `memo_merge.go:103` `reachable` recurses `Members()` only;
-  correct only by the undocumented "every final is also an exploratory member" invariant. One
-  distinct-final `InsertFinal` from approving a cycle → planner hang. Walk `AllMembers()`. Pin a
-  distinct-final-with-cycle regression.
+- **Finding 5 (scalar signed-zero):** already landed as its own RFC-189 commit `8fcb1a426`.
+  `constantValuesEqual` has scalar float32/float64 arms, so Go's native −0.0==+0.0 no longer
+  violates the `%v` semantic-hash partition. RFC-190 review found the original raw-bit
+  implementation's Java-parity claim was incomplete: Java `Float.floatToIntBits` /
+  `Double.doubleToLongBits` canonicalizes every NaN encoding. The scalar arms now compare
+  canonical Java bits (signed zeros unequal, all NaNs equal); direct vector-slice carriers retain
+  their explicitly raw-bit identity. `TestConstantValue_SignedZeroEqualsIsHashConsistent` covers
+  both widths, distinct signed-zero hash buckets, ordinary equality, and distinct-payload/sign NaNs.
+- **Finding 8 (merge cycle guard):** already landed as its own RFC-189 commit `eac6ef9ab`.
+  `reachable` walks `AllMembers()` and
+  `TestMemoMerge_SkipsCyclicMergeThroughFinal` constructs the exact distinct-final-only ancestor
+  edge that a `Members()` walk missed, proving the merge is declined before it can create a cycle.
+
+Both focused regressions are green 20×. The stale RFC-190/TODO copies were reconciled here rather
+than duplicating already-landed code. Parent-vs-current explain corpus is 2,579/2,579 identical
+(zero flips/regressions); full `just test` is green (56/56 targets).
+
+**190.x-bundled FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.**
 
 ### 190.4 (MED) — MatchIntermediateRule subset subsumption
 
@@ -449,7 +460,9 @@ resolved by **commit discipline within the single PR**, not by splitting it:
    preserving" claim is otherwise only manual before/after).
 2. Then the **zero-intended-flip** group (190.13 docs, 190.10/190.11 tests, 190.7/190.8/190.9
    refactors) — each commit must show the golden UNCHANGED. Any flip here is a bug in the "refactor".
-3. Then **correctness** (190.1, 190.2, 190.3, the bundled 5/8), one logical change per commit.
+3. Then **correctness** (190.1, 190.2, 190.3), one logical change per commit. Bundled findings 5/8
+   already had discrete RFC-189 commits (`8fcb1a426`, `eac6ef9ab`); RFC-190 only reconciles their
+   stale ledger entries and folds the signed-zero review delta.
 4. Then the **Graefe-gated reach** items (190.4, 190.5, 190.6), one per commit.
 
 **Per-flip gate at COMMIT granularity, not PR granularity:** every plan-affecting commit is

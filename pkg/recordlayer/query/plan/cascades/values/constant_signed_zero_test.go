@@ -9,10 +9,10 @@ import (
 // 5): scalar ConstantValue equality used Go's `==`, which calls -0.0 == +0.0
 // true, while writeSemanticHash's %v renders "-0" vs "0" — an
 // equal-but-different-hash memo violation (a duplicate/miss on interning). The
-// fix compares scalar floats bitwise (math.FloatNNbits), matching Java's
-// Double.equals(doubleToLongBits): signed zeros are UNEQUAL, so the memo
-// invariant "equal ⟹ same hash" is restored, and identical-bit NaNs stay equal
-// and hash-coherent.
+// fix compares scalar floats by Java's canonicalized bit identity
+// (Float.floatToIntBits / Double.doubleToLongBits): signed zeros are
+// UNEQUAL, restoring the memo invariant "equal ⟹ same hash". Java canonicalizes
+// every NaN encoding, so distinct-payload NaNs also stay equal and hash-coherent.
 func TestConstantValue_SignedZeroEqualsIsHashConsistent(t *testing.T) {
 	t.Parallel()
 
@@ -30,9 +30,12 @@ func TestConstantValue_SignedZeroEqualsIsHashConsistent(t *testing.T) {
 		negZero := &ConstantValue{Value: math.Copysign(0, -1), Typ: NullableDouble}
 		posZero := &ConstantValue{Value: 0.0, Typ: NullableDouble}
 		// Sharp RED→GREEN pin: `==` reported these equal (with different hashes);
-		// bitwise reports them unequal.
+		// canonical bit identity reports them unequal.
 		if EqualsWithoutChildren(negZero, posZero) {
-			t.Fatal("-0.0 and +0.0 double constants must be UNEQUAL (bitwise, Java Double.equals parity)")
+			t.Fatal("-0.0 and +0.0 double constants must be UNEQUAL (Java Double.equals parity)")
+		}
+		if SemanticHashCode(negZero) == SemanticHashCode(posZero) {
+			t.Fatal("-0.0 and +0.0 double constants should occupy distinct semantic-hash buckets")
 		}
 		requireHashInvariant(t, negZero, posZero)
 	})
@@ -42,7 +45,10 @@ func TestConstantValue_SignedZeroEqualsIsHashConsistent(t *testing.T) {
 		negZero := &ConstantValue{Value: float32(math.Copysign(0, -1)), Typ: NullableFloat}
 		posZero := &ConstantValue{Value: float32(0.0), Typ: NullableFloat}
 		if EqualsWithoutChildren(negZero, posZero) {
-			t.Fatal("-0.0 and +0.0 float32 constants must be UNEQUAL (bitwise)")
+			t.Fatal("-0.0 and +0.0 float32 constants must be UNEQUAL (Java Float.equals parity)")
+		}
+		if SemanticHashCode(negZero) == SemanticHashCode(posZero) {
+			t.Fatal("-0.0 and +0.0 float32 constants should occupy distinct semantic-hash buckets")
 		}
 		requireHashInvariant(t, negZero, posZero)
 	})
@@ -59,16 +65,27 @@ func TestConstantValue_SignedZeroEqualsIsHashConsistent(t *testing.T) {
 		}
 	})
 
-	t.Run("identical_bit_nan_equal_and_hash_coherent", func(t *testing.T) {
+	t.Run("double_nan_payloads_canonical_and_hash_coherent", func(t *testing.T) {
 		t.Parallel()
-		// math.NaN() yields a fixed bit pattern, so these are identical-bit NaNs.
-		a := &ConstantValue{Value: math.NaN(), Typ: NullableDouble}
-		b := &ConstantValue{Value: math.NaN(), Typ: NullableDouble}
+		a := &ConstantValue{Value: math.Float64frombits(0x7ff8000000000001), Typ: NullableDouble}
+		b := &ConstantValue{Value: math.Float64frombits(0xfff8000000000002), Typ: NullableDouble}
 		if !EqualsWithoutChildren(a, b) {
-			t.Fatal("identical-bit NaN constants must be equal")
+			t.Fatal("all double NaN encodings must compare equal (Java Double.doubleToLongBits parity)")
 		}
 		if SemanticHashCode(a) != SemanticHashCode(b) {
-			t.Fatal("equal (identical-bit) NaN constants must hash equal")
+			t.Fatal("equal double NaN constants must hash equal")
+		}
+	})
+
+	t.Run("float32_nan_payloads_canonical_and_hash_coherent", func(t *testing.T) {
+		t.Parallel()
+		a := &ConstantValue{Value: math.Float32frombits(0x7fc00001), Typ: NullableFloat}
+		b := &ConstantValue{Value: math.Float32frombits(0xffc00002), Typ: NullableFloat}
+		if !EqualsWithoutChildren(a, b) {
+			t.Fatal("all float32 NaN encodings must compare equal (Java Float.floatToIntBits parity)")
+		}
+		if SemanticHashCode(a) != SemanticHashCode(b) {
+			t.Fatal("equal float32 NaN constants must hash equal")
 		}
 	})
 }
