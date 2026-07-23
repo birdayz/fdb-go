@@ -73,7 +73,8 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// (the fetch's inner): a fetch preserves ordering, so the distinct below it is
 	// still streaming-eligible when that inner is ordered by the dedup key — a
 	// constructor reset would otherwise drop a resume-clean streaming distinct to
-	// the cross-page-buggy hash-set as a competing alternative (TODO C5).
+	// the memory-heavy hash-set as a competing alternative (TODO C5: cross-page
+	// correctness fixed 2026-07-20; streaming preferred for O(1) memory).
 	streaming := distinctStreamingEligible(fetchInnerExpr, fetchInnerPlan)
 	// The distinct's edge ranges over the BAKED concrete inner frozen in a
 	// detached single-member final reference — the memo-canonical structure

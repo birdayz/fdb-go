@@ -3,19 +3,17 @@
 // planner and Java's Cascades planner, capture each side's plan tree,
 // and produce a structural diff plus a plan-cache-key hash diff.
 //
-// First-cut scope: Go-side baseline only.
-// The naive Go generator is exercised against an embedded query corpus;
-// each query's plan tree is captured via `query.Plan.Explain()` and a
-// stable Go-internal hash is computed over the normalised tree text.
-// The Java engine is stubbed (`ErrJavaUnimplemented`) — the
-// `fdb-relational` Maven deps that would let `conformance_server.java`
-// run real planning aren't wired into Bazel yet (TODO.md §CRITICAL
-// "Java↔Go SQL conformance harness Phase B").
+// Both engines are wired. The Go side plans+executes through the single
+// Cascades path (there is no "naive" generator — that path was retired). The
+// Java side drives the real `fdb-relational` Cascades engine over HTTP via
+// NewJavaRunnerHTTP → the Bazel-built `conformance_server`; the live
+// cross-engine specs pass a real cluster + server URL, and Java is the spec.
+// The no-URL forms (NewJavaRunner / NewGoRunner → ErrJavaRunUnimplemented /
+// ErrGoUnimplemented) are OFFLINE fallbacks so a Go-only CI gate can exercise
+// the harness plumbing without a Java server — not the primary path.
 //
-// Even Go-only, the harness is useful as a regression detector: any
-// change to the naive planner that alters the plan tree for known
-// queries surfaces as a diff against the golden output. Once Java is
-// wired the same harness shape will produce real Go-vs-Java diffs.
+// The harness is a cross-engine regression detector: a Go plan-tree change or
+// a Go-vs-Java row divergence surfaces as a diff against Java on the live specs.
 //
 // Output shape: a Report with one Diff per Query. Each Diff records the
 // per-engine PlanResult (Tree text + cache-key hash + error), a Status

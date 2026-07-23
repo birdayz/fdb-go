@@ -14,7 +14,7 @@ import (
 // against the NEW inner (the filter's inner), not reset it via the constructor.
 // A filter preserves ordering, so a distinct streaming-eligible over
 // Filter(inner) is still streaming-eligible over inner; a rebuild that dropped
-// Streaming would seed the memo with the cross-page-buggy hash-set alternative.
+// Streaming would seed the memo with the memory-heavy hash-set alternative.
 // Here the filter's inner is an in-memory sort ordered by G over a RECORD<G>
 // row, so the pushed distinct must come back Streaming=true.
 func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
@@ -66,7 +66,7 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 	if !dp.Streaming {
 		t.Fatal("pushed distinct must be Streaming=true — the filter's inner is ordered by the " +
 			"dedup key G, so a constructor rebuild that dropped Streaming would revert to the " +
-			"cross-page-buggy hash-set")
+			"memory-heavy hash-set")
 	}
 }
 
@@ -75,7 +75,7 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 // → Fetch(Distinct(inner))) must likewise re-derive the streaming mode against
 // the fetch's inner. A fetch preserves ordering, so a distinct over an ordered
 // inner stays streaming-eligible; the constructor rebuild would otherwise drop
-// it to the cross-page-buggy hash-set (TODO C5).
+// it to the memory-heavy hash-set (TODO C5).
 func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 	t.Parallel()
 
@@ -126,6 +126,6 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 	if !dp.Streaming {
 		t.Fatal("pushed distinct must be Streaming=true — the fetch's inner is ordered by the " +
 			"dedup key G, so a constructor rebuild that dropped Streaming would revert to the " +
-			"cross-page-buggy hash-set")
+			"memory-heavy hash-set")
 	}
 }

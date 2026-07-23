@@ -76,9 +76,13 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   golden → GREEN). This is the standing net every later RFC-190 commit is explain-diff'd against.
 
 **Doc rot + diagnostics:**
-- [ ] **190.13 (LOW)** — fix stale comments: `plandiff.go:10`/`runsql.go:84` "Java engine stubbed"
-  (it's LIVE), `abstract_data_access_rule.go:~29` "no containment pruning yet" (it DOES prune),
-  `plans/distinct.go:38` + 3 sites "cross-page-buggy" (fixed 2026-07-20 per C5).
+- [x] **190.13 (LOW)** — DONE. `plandiff.go` header rewritten (Java IS wired via NewJavaRunnerHTTP →
+  the Bazel `conformance_server`; the no-URL forms are offline fallbacks; the "naive generator" was
+  retired — single Cascades path); `abstract_data_access_rule.go:29` corrected (Pareto containment
+  pruning IS implemented via `findContainingAccess`); all "cross-page-buggy hash-set" occurrences
+  (4 source + 1 test, no `distinct.go:38` — it was `:172`) corrected to "memory-heavy hash-set" with
+  a C5 note (cross-page correctness fixed 2026-07-20; streaming preferred for O(1) memory, not
+  correctness). Comment/string-only, zero logic change.
 - [ ] **190.14 (LOW)** — cost model: no unpriced-type detector on the counts/residual walks
   (`countConcreteNode`/`concreteResidualPredicates` fall through silently, unlike the cost path's
   `warnUnpricedPlanType`); and `warnUnpricedPlanType` writes to `os.Stderr` from library code.

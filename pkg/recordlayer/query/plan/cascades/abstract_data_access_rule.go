@@ -26,9 +26,10 @@ import (
 //   - createScansForMatches
 //   - dataAccessForMatchPartition
 //
-// Compensation and ordering satisfaction are fully wired.
-// Remaining: Pareto filtering in MaximumCoverageMatches (no containment
-// pruning yet — every match is kept, which is conservative/correct).
+// Compensation and ordering satisfaction are fully wired. Pareto containment
+// pruning in MaximumCoverageMatches IS implemented (findContainingAccess ports
+// Java's AbstractDataAccessRule.findContainingAccess) — a match dominated by
+// another is dropped rather than kept.
 
 // IntersectorFunc is the function type for computing intersections of
 // multiple data accesses. Concrete rules provide their own intersection
