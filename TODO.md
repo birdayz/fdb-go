@@ -6,6 +6,83 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
+## LATEST PRIOS 2026-07-23 — Cascades quality review v2 (owner-directed, RFC-190)
+
+Source: 2026-07-23 full-engine quality assessment — 5 parallel subsystem review agents
+(architecture fidelity A−, cost-model soundness B, rule-set completeness A / fidelity B+,
+test coverage B+, code quality B) cross-verified against Java 4.12.11.0 and the current tree.
+Wire-compat hard line is CLEAN — every item below is read/optimization-path. **ONE branch
+(`feat/rfc190-cascades-quality-audit`), ONE RFC (`rfcs/190-cascades-quality-audit.md`), ONE PR.**
+Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, regression test each)
+→ milestone review lap → @claude LGTM. Grind order = severity (correctness first).
+
+**Correctness:**
+- [ ] **190.1 (HIGH, crash-at-execution)** — the N-way projected-EXISTS join arm
+  `implementNWayJoinWithExistential` (`rule_implement_nested_loop_join.go:2607`) emits plans that
+  die at execution for a real SQL shape (`SELECT a.v, EXISTS(SELECT 1 FROM d WHERE d.id=a.id)
+  FROM a,b,c WHERE a.id=b.id AND b.id=c.id`) — its own gravestone (:2907) admits "HAS NEVER
+  PRODUCED AN EXECUTABLE PLAN". Fake checkbox by CLAUDE.md's E2E rule. Fix the ordinal-binding
+  path or delete the arm (Graefe call). If deleted, verify the shape plans via another path or
+  fails LOUD at plan time (not execution).
+- [ ] **190.2 (MED, unpinned hazard)** — cost-comparator transitivity. Five sort-count-gated
+  rungs (`planning_cost_model.go:286,302,315,320,337`) can make the relation non-transitive →
+  winner depends on member iteration order (the nondeterminism the hash tie-break exists to kill).
+  No transitivity test exists. Add a transitivity/antisymmetry test over generated plan sets; make
+  the comparator provably total (ungate the rungs or add a total fallback ordering that dominates).
+- [ ] **190.3 (MED, narrow)** — partial-PK prefix scan priced as a 1-row point probe in the
+  metadata-unaware path (`plans/cost.go:31-36` `HintCost`), inconsistent with the ctx-aware path
+  RFC-186 §2B fixed; criterion #2 abstains for two-unbounded comparisons, leaving a scalar-fallback
+  window. Gate the `HintCost` point-probe on full-PK coverage (or keep it out of the fallback).
+- [ ] **190.x-bundled (cheap latents, fold in)** — finding 5 scalar signed-zero hash
+  (`values/map_field_values.go:254` + `semantic_hash.go:156`, bitwise-compare) and finding 8 merge
+  cycle guard walks `Members()` not `AllMembers()` (`memo_merge.go:103`) — both already booked
+  2026-07-22, both one-liners, both correctness. Ride along on RFC-190.
+
+**Fidelity / optimization reach (Graefe-gated design):**
+- [ ] **190.4 (MED)** — `MatchIntermediateRule` requires equal quantifier count
+  (`rule_match_intermediate.go:225,459`); no non-exact/subset subsumption (Java's existential
+  Example-2 multi-match). Bijection enumeration landed (RFC-189); subset subsumption did not.
+- [ ] **190.5 (MED)** — index-intersection reach: 3-way cap + ≤4 candidates/≤8 matches
+  (`intersector_primary_key.go:94`, `planner.go:662,709`), PK-only comparison key, no reverse-
+  ordered (`DESC`) intersections (`plans/intersection.go:90`). Java: unbounded k-way + any common
+  ordering + `isReversed`.
+- [ ] **190.6 (architectural — Graefe ruling)** — Go strips requested-ordering enumeration OUT of
+  the join/set-op rules and recovers it via a centralized physical sort (`ImplementInMemorySortRule`
+  RFC-001 + `winner_lookup.go:103` `pinOrderedSpine`), vs Java folding ordered-variant enumeration
+  into each rule. Misses some sort-free ordered joins Java finds AND contradicts CLAUDE.md ("Java
+  has no physical sort operator … Go doesn't have one either"). Resolve on the record: sanctioned
+  extension (update CLAUDE.md + DIVERGENCES.md) or port the in-rule enumeration.
+
+**Maintainability:**
+- [ ] **190.7 (MED-HIGH)** — extract the 4×-duplicated existential compensation chain
+  (`rule_implement_nested_loop_join.go:986,2436,2851,3189`; :2436≡:2851 byte-identical, :986 already
+  drifted) into `buildExistsCompensationChain`; dedupe `tryExistsFlatMap`/`buildExistsFlatMap`. NLJ
+  file is 3417 LOC vs Java 331.
+- [ ] **190.8 (LOW)** — tri-layer scalar-function duplication synced by comment only
+  (`values/values.go:1971` `evalScalarFunction` ↔ `embedded/scalar_functions.go` ↔
+  `query/expr/walk.go`) → plan-time constant-fold can silently disagree with runtime eval. Shared table.
+- [ ] **190.9 (LOW)** — NLJ cursor twin inner-loop bodies (`executor/streaming_cursors.go:1561`
+  hash-probe ≈ :1609 linear-scan) — unify via candidate-index slice.
+
+**Test gaps (the plan-quality axis):**
+- [ ] **190.10 (MED)** — behavioral tests for the 12 untested rules (8 zero-reference: all
+  ordering/projection/fetch optimizers whose effect is invisible to row tests).
+- [ ] **190.11 (MED)** — cost-model test suite (currently 3 tests + 1 fuzz-sanity for the component
+  that picks the winner). Add selection-flip / rung-order / transitivity coverage.
+- [ ] **190.12 (MED)** — commit an `explaindiff` plan-shape golden as a standing drift net
+  (`explaindiff_test.go:166` baselines are explicitly NOT committed → cross-commit plan drift caught
+  only by manual before/after).
+
+**Doc rot + diagnostics:**
+- [ ] **190.13 (LOW)** — fix stale comments: `plandiff.go:10`/`runsql.go:84` "Java engine stubbed"
+  (it's LIVE), `abstract_data_access_rule.go:~29` "no containment pruning yet" (it DOES prune),
+  `plans/distinct.go:38` + 3 sites "cross-page-buggy" (fixed 2026-07-20 per C5).
+- [ ] **190.14 (LOW)** — cost model: no unpriced-type detector on the counts/residual walks
+  (`countConcreteNode`/`concreteResidualPredicates` fall through silently, unlike the cost path's
+  `warnUnpricedPlanType`); and `warnUnpricedPlanType` writes to `os.Stderr` from library code.
+
+---
+
 ## LATEST PRIOS 2026-07-21 — owner directive (takes precedence over everything below until done)
 
 Source: 2026-07-21 full-engine triple review — Graefe (Cascades alignment, B+), Torvalds (code
