@@ -17,13 +17,43 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
 → milestone review lap → @claude LGTM. Grind order = severity (correctness first).
 
 **Correctness:**
-- [ ] **190.1 (HIGH, crash-at-execution)** — the N-way projected-EXISTS join arm
-  `implementNWayJoinWithExistential` (`rule_implement_nested_loop_join.go:2607`) emits plans that
-  die at execution for a real SQL shape (`SELECT a.v, EXISTS(SELECT 1 FROM d WHERE d.id=a.id)
-  FROM a,b,c WHERE a.id=b.id AND b.id=c.id`) — its own gravestone (:2907) admits "HAS NEVER
-  PRODUCED AN EXECUTABLE PLAN". Fake checkbox by CLAUDE.md's E2E rule. Fix the ordinal-binding
-  path or delete the arm (Graefe call). If deleted, verify the shape plans via another path or
-  fails LOUD at plan time (not execution).
+- [ ] **190.1 (HIGH) — RE-SCOPED; original delete premise INVALIDATED (do not delete the arm).**
+  The RFC-190 delete plan (Graefe-ACKed) rested on the arm's own gravestone: *"HAS NEVER PRODUCED
+  AN EXECUTABLE PLAN."* **That gravestone is FALSE.** Attempting the delete broke two FDB tests:
+  `TestFDB_BuriedInnerJoinProjectedExists` and `_Discriminating` (`0AF00: could not plan query`) —
+  the arm DOES produce correct working plans (`[[10 true]]`, Java-verified in-test) for the
+  explicit-`JOIN…ON` projected-EXISTS-over-3-way shape (`SELECT p.v, EXISTS(…) FROM p JOIN q ON…
+  JOIN r ON…`). The crash is specific to the **comma-join** shape (`FROM a,b,c WHERE a.id=b.id…`)
+  the gravestone author tested and over-generalized from. Both are flat `[ForEach×3, Existential]`
+  selects that reach the arm; the comma-join's seed trips the RFC-173 ordinal tripwire, the
+  explicit-join's does not. **Deleting the arm is a net regression — forbidden.** Corpus checks
+  (golden byte-identical, "zero firings") missed this because these are hand-written FDB tests, not
+  corpus queries — a reminder that FDB is the gold standard, not the corpus.
+  Real fix options (both DEEP, Graefe-gated, need a corrected RFC + re-review since the premise
+  changed): **(a)** fix the comma-join ordinal-seed crash INSIDE the arm (the RFC-173 tripwire), or
+  **(b)** route BOTH shapes through the gathered-cluster wrap with a correct projected-EXISTS
+  correlation. Option (b) was attempted (remove the `:309` decline + admit `ExistsValue{QOV(esq)}`
+  in `wrapRVFullyBaked`): it PLANS but returns WRONG ROWS — the correlation `d.id=a.id` is dropped
+  over the wrap → the existential inner scans all of `nd` → **always-true EXISTS** (a.id=2 wrongly
+  true). The wrap was built for WHERE-EXISTS (semi-join FILTER); projected EXISTS needs the
+  existential inner CORRELATED to the box's `a.id` (per-row boolean via FirstOrDefault), like
+  `buildExistentialJoinSelect` does. That correlation wiring over the wrap is the deep part.
+  Also: the false gravestone comment (`rule_implement_nested_loop_join.go` ~:2907) must be corrected.
+  **RE-DESIGNED (Graefe ACK, 2-round dialogue).** Converged solution = **Option A**: make Go's
+  `PartitionSelectRule` partition existential selects the Java way (`all(anyQuantifier())`), guarded.
+  Replace the over-broad `existentialCount==1` bail with a targeted **live-existential guard** (reject
+  any bipartition whose live set `lowersCorrelatedToByUppers` contains an existential — Go's
+  `positionalMergeCase`/Case-2 can't represent a projected existential as a positional ordinal, a real
+  Go constraint Java lacks). This decomposes the flat `[ForEach×N, Existential]` select into binary
+  sub-selects Go's existing `implementExistentialSelect` already handles, SARG-preserving, retiring
+  BOTH the N-way arm AND the gathered-cluster wrap. Round-1 NAK (Graefe's `{a,δ}` counterexample
+  reached the merge case → wrong rows) closed by the guard; round-2 ACK verified airtight (all lower-
+  flow sites `:537`/`:550`/`:559` covered, no plan lost, `{a,δ}` now rejected before `:550`). 5-step
+  migration, **Step 2 (guard) BEFORE Step 3 (retire arm)** — the invariant the naive delete violated.
+  Cell 7 (multi projected EXISTS) = honest conservative decline (0AF00, never wrong rows), NOT claimed
+  fixed. Full design in `rfcs/190-cascades-quality-audit.md` §190.1. **Both gates PASS: Graefe ACK
+  (2-round dialogue) + Torvalds ACK (3 conditions folded — Step 1+2 atomic, Step 3 helper-ref proof,
+  Step 5 1M stress; LOC arm 388/wrap 477). Implementing Steps 0→5.**
 - [ ] **190.2 (MED, unpinned hazard)** — cost-comparator transitivity. Five sort-count-gated
   rungs (`planning_cost_model.go:286,302,315,320,337`) can make the relation non-transitive →
   winner depends on member iteration order (the nondeterminism the hash tie-break exists to kill).

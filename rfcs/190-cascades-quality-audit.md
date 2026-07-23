@@ -1,6 +1,13 @@
 # RFC-190 — Cascades quality audit v2
 
-Status: **Reviewed — implementing** (Graefe ACK + Torvalds ACK on the RFC)
+Status: **Reviewed — implementing** (Graefe ACK + Torvalds ACK on the RFC).
+190.1 was **materially re-designed** after its original delete premise proved false (the arm's
+"never produced an executable plan" gravestone is a lie — deleting it regresses working FDB tests).
+The new 190.1 (converge on Java's two-rule architecture via a guarded `PartitionSelectRule`) carries
+a fresh **Graefe ACK** from a two-round adversarial design dialogue (round 1 NAK: a wrong-rows
+merge-case hole; round 2 ACK: the live-existential guard verified airtight) **and a Torvalds ACK**
+(three impl-discipline conditions folded: Step 1+2 atomic, Step 3 helper-reference proof, Step 5 1M
+stress gate; LOC corrected to arm 388 / wrap 477). §190.1 is fully gated — ready to implement.
 Branch: `feat/rfc190-cascades-quality-audit` · one branch, one PR.
 Reviewers: Graefe (Cascades alignment) + Torvalds (code quality) on RFC and impl.
 
@@ -14,52 +21,118 @@ each lands its own commit(s) + regression test. Grouped for one review lap + one
 
 ## Items
 
-### 190.1 (HIGH, crash-at-execution) — dead N-way projected-EXISTS join arm
+### 190.1 (HIGH) — EXISTS over an N-way join: converge on Java's two-rule architecture
 
-`implementNWayJoinWithExistential` (`rule_implement_nested_loop_join.go:2607`) emits a plan that
-plans fine then **dies at execution** for `SELECT a.v, EXISTS(SELECT 1 FROM d WHERE d.id=a.id)
-FROM a,b,c WHERE a.id=b.id AND b.id=c.id` (projected EXISTS over >2 ForEach legs). Its own
-gravestone (`:2907`) admits: *"HAS NEVER PRODUCED AN EXECUTABLE PLAN"* — the binding failure is a
-correlated FieldValue that can't resolve against a multi-leg merged row. Zero corpus firings. By
-CLAUDE.md's "E2E or it's not done" rule this is a fake checkbox shipping a broken plan.
+**Premise correction (the original delete plan was WRONG).** The first RFC-190 draft (Graefe+Torvalds
+ACK) rested on the arm's gravestone comment: *"HAS NEVER PRODUCED AN EXECUTABLE PLAN."* **That comment
+is FALSE.** Implementing the delete broke two FDB tests (`TestFDB_BuriedInnerJoinProjectedExists` +
+`_Discriminating` → `0AF00: could not plan query`): the arm `implementNWayJoinWithExistential`
+(`rule_implement_nested_loop_join.go:~2607`) DOES produce correct working plans (`[[10 true]]`,
+Java-verified in-test) for the **explicit-`JOIN…ON`** projected-EXISTS-over-3-way shape. It only
+crashes for the **comma-join** shape (RFC-173 ordinal tripwire). Deleting it is a net regression.
+So 190.1 is not a dead-code delete; it is a real architecture fix — re-designed principles-first and
+re-reviewed (this design carries a fresh **Graefe ACK** via a two-round adversarial design dialogue
+that caught and closed a wrong-rows hole before any code; needs Torvalds ACK on the revised RFC).
 
-**Investigation (confirmed):** the arm is a Go invention with **no Java analog** — Java's
-`ImplementNestedLoopJoinRule.java:97` matches exactly two quantifiers; a 3+-quantifier flat select
-is illegal in Java and must be partitioned into nested BINARY sub-selects first. Java DOES support
-projected EXISTS over a 3-way join, but via left-deep binary `FlatMap` composition correlating by
-alias — never a positional "merged-row-with-ordinal-windows" physical construct. The Go arm's root
-failure is the deep RFC-173 ordinal tripwire ("multi-leg row cannot serve a source-relative
-ordinal", `values.go:869,902`), NOT a localized rebase bug — the obvious RV-rebase fix was tried
-and reverted (`:2929`). A delete-probe (isolated worktree, dispatch disabled) empirically confirms
-the trigger query then fails **LOUD at plan time** (`best expression is not a physical plan:
-*SelectExpression` = UnableToPlan), not a crash, not wrong rows — strictly better than today.
+**The functionality (form × projection × correlation).** EXISTS over a ≥3-way join, comma-join AND
+explicit-JOIN surface forms, projected (`SELECT …, EXISTS(…)`) AND WHERE (`… WHERE EXISTS(…)`),
+correlated AND uncorrelated. Java plans EVERY such shape through exactly two rules — `PartitionSelectRule`
+(reduce an ≥3-quantifier `SelectExpression` to binary sub-selects; `PartitionSelectRule.java:63` admits
+ANY quantifier via `all(anyQuantifier())`, existential included) and `ImplementNestedLoopJoinRule`
+(matches EXACTLY 2 quantifiers; existential inner → `FirstOrDefault(NULL)` + existential-flag `FlatMap`,
+`.java:187,313-316`). Java has **no N-way arm and no positional-merged-row join construct**.
 
-**Fix — DELETE the arm AND route the shape through the working wrap (Java parity):**
-1. **Delete (scope corrected per Torvalds — grep-verified):** the arm body
-   `implementNWayJoinWithExistential` (`:2607-2988`); the N-way FORWARD inside
-   `implementJoinWithExistential` (`:2047-2050` — so a ≥3-ForEach-leg existential select now
-   declines instead of hitting the arm; `OnMatch` and the 2-leg path are untouched);
-   `existInnerIsScanSafe` (`:2551-2562,2706` — genuinely arm-only); the `nwayOuterProbe` global +
-   `NWayOuterYieldCount`; the arm's `scanPlanExpression` memo-opacity hack USE at `:2977` (the cost
-   pollution); and `nway_exists_memo_shape_test.go`.
-   **KEEP (all live in retained paths — deleting them breaks the build):** `collectInnerLegAliases`
-   (`:763` `implementExistentialSelect`, `:2225`), `foldStep1Seed`/`reconstructFoldStep1Seed`
-   (`:2271` retained 2-leg path), `buriedLegOrdinalLayout`/`planBuriedLegConcat` (`:480`), the
-   `scanPlanExpression` TYPE (defined in `abstract_data_access_rule.go:587`, used at NLJ `:499`),
-   and the shared ordinal-seed infra (`ordinalSeedLegWindowsOf`
-   et al. — used by `left_outer_existential.go`/`ordinal_join.go`/`unnest_gather.go`).
-2. **Close the parity gap properly:** the WHERE-EXISTS variant of this exact shape already
-   plans+executes SARG-preservingly via `translateExistsOverGatheredCluster`
-   (`exists_gathered_cluster_wrap.go`) — it translates the ≥3-way join as its own gathered ordinal
-   cluster (a reference `PartitionSelectRule` enumerates) + a 2-quantifier existential select. That
-   wrap **explicitly declines projected-EXISTS** (`:308-315`). Remove the decline and fold the
-   projection over the box positional output using the existing `rebaseLegRefsToBox`/`wrapRVFullyBaked`
-   machinery → the trigger query routes through the proven binary-lowered mechanism, genuine Java
-   parity, plans AND executes correctly.
-Regression: an FDB integration test running the trigger query end-to-end asserting the correct rows
-(parity with Java). If step 2 proves deeper than the wrap-decline removal suggests, land step 1
-(fail-loud, strictly correct) in this PR and book step 2 as a tracked reach follow-up — Graefe's
-call on scope.
+**Root diagnosis.** Go carries a Go-only positional-ordinal join pipeline — the N-way arm AND a second
+mechanism `translateExistsOverGatheredCluster` (`exists_gathered_cluster_wrap.go`, the WHERE-EXISTS
+path) — that exists ONLY because Go's `PartitionSelectRule` (`rule_partition_select.go`) **refuses to
+partition existential selects**: the `existentialCount==1` bail (`:67-69`) and the projected-multi
+decline (`:70-86`). Both Go-only constructs are workarounds for that refusal. The code's own comment
+admits it (`:57-60`): *"subsuming that Go-only arm into partitioning is separable … that migration is
+its own slice."* This is that slice.
+
+**Fix — Option A: make `PartitionSelectRule` partition existential selects the Java way (guarded).**
+Replace the over-broad `existentialCount==1` bail with a **targeted per-bipartition guard**, so the flat
+`[ForEach×N, Existential]` select decomposes into binary sub-selects Go's existing existential-FlatMap
+path (`implementExistentialSelect`) already implements — SARG-preserving (no cross-product), projected
+`ExistsValue` riding through unchanged — **retiring both the N-way arm and (follow-on) the wrap**.
+
+The guard (design dialogue, Graefe-verified airtight): **reject any bipartition whose LIVE set
+(`lowersCorrelatedToByUppers`, computed at `rule_partition_select.go:~415`) contains an existential
+quantifier.** Rationale: that live set is exactly what `positionalMergeCase` collapses into positional
+ordinals (`:550`, ≥2 live) and what Case-2 flows as the lower's own row (`:559`, ==1 live) — and Go's
+merge/Case-2 machinery **cannot represent a projected existential as a positional ordinal** (a real Go
+constraint Java lacks — Graefe's NAK, sustained). A **projected** δ in a lower is necessarily live
+(`ExistsValue.GetCorrelatedTo`→δ, `value_exists.go:107`) → caught. A **WHERE** δ is never live (its
+`ExistsValue` is a predicate classified to `lowerPredicates` at `:403`, never in the live set) →
+admitted as a correct Case-1/Case-2 semi-join filter — so the guard **preserves the working WHERE
+multi-EXISTS peel (cell 8)**. Case-1 (`:537`) flows only `LiteralValue(1)`, never a live alias, so it
+needs no guarding. Graefe verified `:550`/`:559` are the ONLY sites that flow/collapse a lower alias,
+that the guard's key is complete, and that no correct plan is lost (the complementary δ-upper split is
+always co-enumerated, chaining to the terminal binary `[ForEach, Existential]`).
+
+**Hazard proof (Graefe-ACK'd):** under the guard, no existential is ever a member of the live set at the
+case dispatch → none is collapsed by `:550` or flowed by `:559`; a projected δ is always upper →
+survives to the terminal binary select → `ImplementNestedLoopJoinRule` implements it as
+`FirstOrDefault(NULL)` + existential flag. Graefe's `{a,δ}` counterexample (which reached
+`positionalMergeCase` under the naive delete) is now rejected before `:550`. No wrong-rows path exists.
+
+**Migration (strict order — the guard MUST land before retiring the arm, the invariant the naive
+delete violated). Step 1 and 2 are ONE atomic commit — Torvalds condition B:** the name-model emit
+alone has no clean planner (with the `==1` bail still live, `PartitionSelectRule` declines the flat
+select and it would fall to the arm, which crashes on the comma-join shape). Landing the emit and the
+guard together means the intermediate never exists — the comma-join goes crash→correct in one commit,
+and no shape has an ambiguous "who plans this" window.
+- **Step 0** — correct the false gravestone (`rule_implement_nested_loop_join.go:2907`); add the
+  comma-join projected-EXISTS FDB test as the RED baseline (cell 1 crashes today). No behavior change.
+- **Step 1+2 (atomic)** — (a) emit the existential join select in the **name model**
+  (`buildExistentialJoinSelect`, `cascades_translator.go:~4084`): stop the AXIS-1 un-enclosure
+  (`existsLegBuildsPositional` gate, `:4140`) for the projected-EXISTS-over-INNER-cluster shape; emit
+  `[ForEach(a),…,Existential(δ)]` with join predicates as select predicates. (b) Replace the
+  `existentialCount==1` bail (`rule_partition_select.go:67-69`) with the live-existential guard
+  immediately after `lowersCorrelatedToByUppers = dedupAliases(...)` (`:415`, before the case dispatch
+  at `:537/:550/:559`): `continue` the bipartition loop if any live-set member is existential. KEEP the
+  `existentialCount>=2` projected-multi decline (`:70-86`) as a scoped conservative reach-gap (cell 7),
+  reworded; keep `applyExistentialSourceAliases` (`:103-144`). *Validate: cell 1 → `[[10 true]]`,
+  `_Discriminating` → `[[7 true],[8 false]]`; cells 2-6,8 green; a static unit test asserting no yielded
+  lower carries a live existential.*
+- **Step 3** — retire the N-way arm (`:53-58` dispatch + the arm body `:2607-2995`, ~388 lines). **Torvalds
+  condition A:** BEFORE deleting the arm-only helpers, grep-prove each is unreferenced by the retained
+  paths — `existInnerIsScanSafe`, `nwayOuterProbe`/`NWayOuterYieldCount` are arm-only, but
+  `planBuriedLegConcat`/`reconstructFoldStep1Seed`/`legIsOrdinalSafe`/`collectInnerLegAliases` are
+  shared with `implementExistentialSelect` (`:686`)/left-outer/unnest and MUST be kept (this is the
+  exact scope error the naive delete tripped on). Go's NLJ rule now matches Java's exactly-2 shape.
+  *Validate: all four `buried_inner` FDB tests + N-way WHERE/NOT-EXISTS/4-leg tests green via the
+  partitioned path.*
+- **Step 4** (separable follow-on, same workstream) — retire `translateExistsOverGatheredCluster`
+  (477 lines) once cells 3/4/8 are demonstrably served by the partitioned name-model WHERE-EXISTS
+  select. Gated by full-corpus explain-diff + preservation of scalar-subquery pre-eval registration.
+- **Step 5** — SARG regression (`EXPLAIN` asserting each decomposed binary join SARGs its inner — an
+  index/PK probe, NOT a merged-row `PredicatesFilter` over a cross-product) + **1M stress gating
+  before/after (Torvalds condition C)** — the arm's cross-product was O(N³); the SARG'd decomposition
+  must not resurface as a regression (point-lookup <5ms, index-equality <10ms thresholds hold).
+
+**Cell 7 (multi projected EXISTS, `SELECT …, EXISTS(…) x, EXISTS(…) y`) — honest scoped decline, NOT
+claimed fixed.** Keep Go's `existentialCount>=2` projected decline: it strands cleanly (0AF00, never
+wrong rows), backed by the guard. **Java parity is asymmetric (Graefe correction):** for a *same-leg*
+sibling correlation Java's `PartitionSelectRule.java:234-243` also rejects, but for a *cross-leg*
+correlation (δ1→a, δ2→b) Java falls into its Case-3 merge and *does* attempt the reduction (correctness
+unverified). So Go's decline is **conservative**, not symmetric-with-Java; it never ships wrong rows.
+Book cell 7's full support (nested, not flat, translation) as a follow-on.
+
+**Why Option A over the alternatives (Graefe's terms):** (B) fix-the-crash-in-the-arm keeps a Go-only
+rule matching ≥3 quantifiers that builds a SARG-destroying cross-product Java never emits; (C) extend
+the wrap to correlate projected EXISTS reinvents the FlatMap existential path over a positional box
+(already tried → wrong rows, correlation dropped). Only (A) restores logical/physical separation (the
+join is *explored* as logical sub-selects, SARG/join-order emergent), rides EXISTS as the emergent
+`FirstOrDefault`+flag property rather than bolted-on positional plumbing, and deletes the ~388-line arm
+(+ the 477-line wrap in Step 4) to converge Go onto Java's exact two-rule architecture.
+
+**Test plan:** the full form×projection×correlation matrix as FDB rows tests (Java-4.12.11.0 semantics),
+the buried-leg discriminators (all legs share column `k`; a mis-bind flips value AND boolean), an
+explicit hazard-bipartition probe on Graefe's `{a,δ}` shape (correct rows + plan shape shows
+`FlatMap`/`FirstOrDefault`, not a merged-row δ projection), a NOT-EXISTS/below-FOD-filtered variant
+that proves the *guard* (not the coincidental positive-case fallback) carries correctness, SARG
+plan-shape assertions, and full-corpus explain-diff gating Steps 3-4.
 
 ### 190.2 (MED, unpinned) — cost-comparator transitivity
 
