@@ -263,28 +263,51 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return cmp
 	}
 
+	// Reject a redundant in-memory sort HERE — before every sort-blind
+	// structural rung below (typeFilterCount/Depth, fetch metrics,
+	// distinctDepth, unmatchedFieldCount, inJoinCount, mapFilter). Go's
+	// RecordQueryInMemorySortPlan is a read-side extension Java has no cost
+	// rung for at all: Java eliminates a redundant sort STRUCTURALLY
+	// (RemoveSortRule), before its PlanningCostModel ever runs, so a
+	// "Sort(X)" candidate never competes against a sort-free "X" sibling in
+	// Java's memo in the first place. Promoting this rung to fire as soon as
+	// cardinality/residuals/data-access-count/join-ordering/IN-plan/
+	// primary-vs-index all TIE is the cost-time analog of that structural
+	// elimination: once two candidates have done provably the same amount of
+	// "real" work, the one carrying an extra full materializing sort is
+	// strictly worse, full stop — no structural rung below should ever get a
+	// chance to prefer the sorted candidate on some unrelated axis. This is a
+	// pure lexicographic REORDER (the rung's own comparison is unchanged,
+	// only its position moves earlier), so it cannot introduce a
+	// transitivity violation: an ordinal comparator built by lexicographic
+	// composition of total-preorder criteria is transitive regardless of
+	// criterion order.
+	if opsA.inMemorySortCount != opsB.inMemorySortCount {
+		return intCompare(opsA.inMemorySortCount, opsB.inMemorySortCount)
+	}
+
 	if opsA.typeFilterCount != opsB.typeFilterCount {
 		return intCompare(opsA.typeFilterCount, opsB.typeFilterCount)
 	}
 
-	// Structural tiebreaks abstain when either side carries an in-memory sort. A
-	// redundant InMemorySort is an extra TOP node: it inflates every descendant's
-	// structural depth by +1 (so a depth comparison between a sorted and a
-	// sort-elided plan measures depths from DIFFERENT roots, always favouring the
-	// taller sorted plan), AND it lets a sorted plan over a clean inner win a
-	// node-count tiebreak (map/filter count) against a differently-shaped
-	// sort-elided sibling (e.g. one whose residual filter got pushdown-split into
-	// two nodes). Either way the sorted plan wins a structural rung before the
-	// sort-vs-elision decision — which belongs to criterion #12 (fewer in-memory
-	// sorts). So every structural tiebreak below abstains when either side has a
-	// sort, matching the unmatched-field gate. The type-filter-COUNT and fetch-COUNT
-	// rungs stay ungated (a sort adds neither a type filter nor a fetch, so those
-	// counts are sort-invariant across an elided/sorted pair); the map/filter count
-	// is gated because pushdown makes the elided sibling's filter count diverge.
+	// Structural depth tiebreaks (typeFilterDepth/fetchDepth/distinctDepth) are
+	// SORT-INVARIANT (RFC-190 190.2): concretePlanDepth treats an in-memory sort
+	// as transparent, so a redundant InMemorySort no longer inflates a
+	// descendant's measured depth relative to a sort-elided sibling — the two
+	// plans' depths are measured from the SAME effective root regardless of
+	// which one happens to carry a sort. That, plus the promoted
+	// inMemorySortCount rung above (which now guarantees every rung from here
+	// down only ever compares candidates with an EQUAL sort count), was the
+	// fix for the non-transitive 3-cycle a per-rung sort gate used to paper
+	// over (a gated rung decided a sort-free pair outright but was skipped
+	// whenever one side carried a sort, handing the decision to a later
+	// ungated rung — two different rungs governing "the same slot" for
+	// different pairs of the same plans). These three depth rungs, the
+	// fetch/unmatchedFieldCount rungs, and the map/filter node-count rung
+	// below are therefore all UNGATED.
 	typeFilterDepthA := costExprDepth(a, matchTypeFilter)
 	typeFilterDepthB := costExprDepth(b, matchTypeFilter)
-	if typeFilterDepthA >= 0 && typeFilterDepthB >= 0 && typeFilterDepthA != typeFilterDepthB &&
-		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
+	if typeFilterDepthA >= 0 && typeFilterDepthB >= 0 && typeFilterDepthA != typeFilterDepthB {
 		return intCompare(typeFilterDepthB, typeFilterDepthA)
 	}
 
@@ -295,12 +318,11 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		if fetchA != fetchB {
 			return intCompare(fetchA, fetchB)
 		}
-		// Depth rung — abstains when either side carries a sort (see the
-		// type-filter-depth gate above); the fetch-COUNT rungs stay ungated.
+		// Depth rung — sort-invariant, ungated (see the type-filter-depth
+		// comment above); the fetch-COUNT rungs are also ungated.
 		fetchDepthA := costExprDepth(a, matchFetch)
 		fetchDepthB := costExprDepth(b, matchFetch)
-		if fetchDepthA >= 0 && fetchDepthB >= 0 && fetchDepthA != fetchDepthB &&
-			opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
+		if fetchDepthA >= 0 && fetchDepthB >= 0 && fetchDepthA != fetchDepthB {
 			return intCompare(fetchDepthA, fetchDepthB)
 		}
 		if opsA.fetchCount != opsB.fetchCount {
@@ -308,17 +330,17 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		}
 	}
 
-	// Depth rung — abstains when either side carries a sort (see the
-	// type-filter-depth gate above).
+	// Depth rung — sort-invariant, ungated (see the type-filter-depth comment
+	// above).
 	distinctDepthA := costExprDepth(a, matchDistinct)
 	distinctDepthB := costExprDepth(b, matchDistinct)
-	if distinctDepthA >= 0 && distinctDepthB >= 0 && distinctDepthA != distinctDepthB &&
-		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
+	if distinctDepthA >= 0 && distinctDepthB >= 0 && distinctDepthA != distinctDepthB {
 		return intCompare(distinctDepthB, distinctDepthA)
 	}
 
-	if opsA.unmatchedFieldCount != opsB.unmatchedFieldCount &&
-		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
+	// A sort adds no unmatched index fields, so this count is already
+	// sort-invariant across an elided/sorted pair — ungated.
+	if opsA.unmatchedFieldCount != opsB.unmatchedFieldCount {
 		return intCompare(opsA.unmatchedFieldCount, opsB.unmatchedFieldCount)
 	}
 
@@ -326,16 +348,18 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(opsB.inJoinCount, opsA.inJoinCount)
 	}
 
-	// Structural node-count tiebreak — abstains when either side carries a sort
-	// (see the type-filter-depth gate above). A redundant sort keeps its own
-	// map/filter count unchanged, but the sort-elided sibling it is compared
-	// against can carry a pushdown-SPLIT residual (one filter node → two), so
-	// this rung would otherwise prefer the sorted plan on "fewer filters" before
-	// criterion #12 can drop the sort.
+	// Structural node-count tiebreak (RFC-190 190.2: ungated, matching Java's
+	// unconditional countSimpleOps). Any concern about a sort-elided sibling
+	// carrying a pushdown-SPLIT residual (one filter node → two) winning
+	// against a sorted-but-unsplit plan is moot here: by this point
+	// opsA.inMemorySortCount == opsB.inMemorySortCount is GUARANTEED (the
+	// promoted inMemorySortCount rung above already returned if they
+	// differed), so this rung only ever compares two candidates with the
+	// SAME sort count — the split-vs-sort interaction the old gate worried
+	// about cannot arise here anymore.
 	mapFilterA := opsA.mapCount + opsA.predicatesFilterCount
 	mapFilterB := opsB.mapCount + opsB.predicatesFilterCount
-	if mapFilterA != mapFilterB &&
-		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
+	if mapFilterA != mapFilterB {
 		return intCompare(mapFilterA, mapFilterB)
 	}
 
@@ -348,23 +372,12 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 	// (see D-4 wiring investigation). The scalar model's per-operator
 	// cost formulas discriminate between plans that look identical to
 	// the ordinal criteria.
-	// Reject a redundant in-memory sort BEFORE the scalar-cost fallback. When two
-	// plans tie on every ordinal criterion above (same data access, residuals,
-	// joins, fetches, …) and differ only in how many in-memory sorts they carry,
-	// the one with fewer sorts does strictly less work — a sort over identical
-	// data access is pure overhead. Java eliminates such sorts structurally
-	// (RemoveSortRule); Go's ImplementInMemorySortRule yields the sort
-	// unconditionally and would otherwise rely on the scalar cost to discard it.
-	// But the scalar fallback (EstimateCostWith) descends the Memo by best-member,
-	// which costs a wrapper's child group at its CHEAPEST member rather than the
-	// child actually embedded — so an InMemorySort over a StreamingAgg can look as
-	// cheap as the aggregate group's cheapest member (an aggregate-index scan),
-	// and a redundant ORDER BY sort over an already-grouping-ordered aggregate
-	// wins at scale (RFC-069 group_by_status). Discriminating on sort count here,
-	// before that phantom-prone fallback, restores the sort-eliminated plan.
-	if opsA.inMemorySortCount != opsB.inMemorySortCount {
-		return intCompare(opsA.inMemorySortCount, opsB.inMemorySortCount)
-	}
+	//
+	// The redundant-in-memory-sort rejection that used to sit HERE (just
+	// before this scalar fallback) is now promoted — see the
+	// inMemorySortCount rung right after comparePrimaryScanVsIndexScan,
+	// above — so it runs before the sort-blind structural rungs instead of
+	// after them (RFC-190 190.2).
 
 	// Fewer ON EMPTY NULL operations wins (Java PlanningCostModel: the last
 	// ordinal rung before the planHash tiebreak). This is a structural count
@@ -527,7 +540,7 @@ func findExpressionsByType(e expressions.RelationalExpression, stats properties.
 	}
 	counts := expressionCounts{maxDataAccessCardinality: -1}
 	visited := make(map[*expressions.Reference]bool)
-	walkExpressionTree(e, &counts, stats, visited)
+	walkExpressionTree(e, &counts, stats, ctx, visited)
 	// Java's max-of-max-cardinalities is unknown if ANY data access is unbounded.
 	if counts.unboundedDataAccess {
 		counts.maxDataAccessCardinality = -1
@@ -556,7 +569,7 @@ func bestPhysicalChild(ref *expressions.Reference, stats properties.StatisticsPr
 	return firstPhysicalChild(ref)
 }
 
-func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCounts, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) {
+func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCounts, stats properties.StatisticsProvider, ctx PlanContext, visited map[*expressions.Reference]bool) {
 	if e == nil {
 		return
 	}
@@ -573,6 +586,7 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		} else {
 			counts.unboundedDataAccess = true
 		}
+		counts.unmatchedFieldCount += unmatchedFieldsForScan(w, ctx)
 	// The aggregate-index plan is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryAggregateIndexPlan:
 		counts.coveringIndexCount++
@@ -651,7 +665,7 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		}
 		visited[ref] = true
 		if child := bestPhysicalChild(ref, stats); child != nil {
-			walkExpressionTree(child, counts, stats, visited)
+			walkExpressionTree(child, counts, stats, ctx, visited)
 		}
 	}
 }
@@ -1592,6 +1606,7 @@ func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pl
 		} else {
 			counts.unboundedDataAccess = true
 		}
+		counts.unmatchedFieldCount += unmatchedFieldsForScan(pl, ctx)
 	case *plans.RecordQueryIndexPlan:
 		cols, unique := indexMetadata(pl, ctx)
 		if pl.IsCovering() {
@@ -1868,6 +1883,62 @@ func unmatchedFieldsForIndex(pl *plans.RecordQueryIndexPlan, cols []string) int 
 	return columnSize - numComparisons
 }
 
+// unmatchedFieldsForScan computes the UnmatchedFieldsCount contribution of a
+// PRIMARY scan: PK-column-count minus numComparisons. Ports Java's
+// UnmatchedFieldsCountProperty, which counts a RecordQueryScanPlan via
+// commonPrimaryKey.getColumnSize() exactly like it counts an index plan via
+// the index's key-column count — Go's port had ONLY the index-plan branch
+// (this function did not exist), so a bare full scan (e.g. one driving an
+// explicit in-memory sort to satisfy an ORDER BY that no index provides for
+// free) silently scored 0 "unmatched fields" regardless of how few of its PK
+// columns were bound, while a covering index scan used PURELY for ordering
+// (every comparison empty — the index is walked only for the free sort
+// order it provides, not for any WHERE-clause SARG) scored columnSize > 0.
+// That is an apples-to-oranges comparison (only one side of the pair ever
+// accrues a nonzero count), and once criterion #12 stopped being gated
+// behind the in-memory-sort check (RFC-190 190.2 Part A/B), it let this
+// asymmetry spuriously prefer the full-scan-plus-sort candidate over a
+// well-targeted covering index scan the index already sorts for free — a
+// real regression the golden diff caught (bytes.yaml `ORDER BY b` and
+// siblings), traced to this missing branch by reading
+// UnmatchedFieldsCountProperty.java line-for-line.
+//
+// Returns 0 (conservative, matching indexMetadata's not-found convention)
+// when ctx is nil, the scan carries no record type, or ctx has no PK
+// metadata for the type — the same "unknown metadata ⇒ no contribution"
+// fallback the rest of this file uses (pkFullyEqualityBound,
+// scanPlanProvableMaxCard).
+func unmatchedFieldsForScan(pl *plans.RecordQueryScanPlan, ctx PlanContext) int {
+	if ctx == nil || len(pl.GetRecordTypes()) == 0 {
+		return 0
+	}
+	pkCols := ctx.GetPrimaryKeyColumns(pl.GetRecordTypes()[0])
+	if len(pkCols) == 0 {
+		return 0
+	}
+	equalitySize := 0
+	hasInequality := false
+	for _, cr := range pl.GetScanComparisons() {
+		if cr.IsEmpty() {
+			continue
+		}
+		if cr.IsEquality() {
+			equalitySize++
+		} else {
+			hasInequality = true
+		}
+	}
+	numComparisons := equalitySize
+	if hasInequality {
+		numComparisons++
+	}
+	columnSize := len(pkCols)
+	if columnSize < numComparisons {
+		columnSize = numComparisons
+	}
+	return columnSize - numComparisons
+}
+
 // concreteResidualPredicates sums the CNF size of every residual predicate
 // (PredicatesFilter + legacy Filter) in a concrete plan tree (criterion #3).
 func concreteResidualPredicates(p plans.RecordQueryPlan) int {
@@ -1932,12 +2003,32 @@ func concretePlanMatches(p plans.RecordQueryPlan, kind planMatchKind) bool {
 // concretePlanDepth returns the minimum depth (root = 0) at which a node matching
 // kind appears in the concrete plan tree, or -1 if none. Mirrors Java's
 // ExpressionDepthProperty over the concrete plan.
+//
+// SORT-INVARIANT (RFC-190 190.2): an in-memory sort is TRANSPARENT for
+// structural depth — it does not increment the count. Java has no in-memory
+// sort node at all (RemoveSortRule eliminates it before planning), so Java's
+// structural depths never see one; a redundant Go RecordQueryInMemorySortPlan
+// sitting on top of an otherwise-identical plan must not inflate every
+// descendant's depth by +1 relative to a sort-elided sibling — that inflation
+// made a depth comparison between a sorted and a sort-free plan measure from
+// DIFFERENT roots, which is what produced the non-transitive 3-cycle this
+// function's gate used to paper over (see cost_transitivity_test.go).
 func concretePlanDepth(p plans.RecordQueryPlan, kind planMatchKind) int {
 	if p == nil {
 		return -1
 	}
 	if concretePlanMatches(p, kind) {
 		return 0
+	}
+	if _, ok := p.(*plans.RecordQueryInMemorySortPlan); ok {
+		best := -1
+		for _, c := range p.GetChildren() {
+			d := concretePlanDepth(c, kind)
+			if d >= 0 && (best < 0 || d < best) {
+				best = d
+			}
+		}
+		return best
 	}
 	best := -1
 	for _, c := range p.GetChildren() {

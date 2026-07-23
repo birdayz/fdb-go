@@ -2746,7 +2746,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === composite_secondary_index_prefix_pushdown.yaml#0
 sql:   SELECT id FROM rp WHERE region = 'us' ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], Fetch(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *]))))
+plan:  Project([ID#0], InMemorySort([ID ASC], Fetch(IndexScan(IDX_REGION_PLAN, [=, *]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFetchFromPartialRecordPlan
@@ -2767,7 +2767,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === composite_secondary_index_prefix_pushdown.yaml#3
 sql:   SELECT id FROM rp WHERE region = 'eu' ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], Fetch(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *]))))
+plan:  Project([ID#0], InMemorySort([ID ASC], Fetch(IndexScan(IDX_REGION_PLAN, [=, *]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFetchFromPartialRecordPlan
@@ -2798,7 +2798,7 @@ shape:   RecordQueryFetchFromPartialRecordPlan
 shape:     RecordQueryIndexPlan
 === composite_secondary_index_prefix_pushdown.yaml#8
 sql:   SELECT id, tier FROM rp WHERE region = 'eu' ORDER BY id
-plan:  Project([ID#0, TIER#3], InMemorySort([ID ASC], Fetch(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *]))))
+plan:  Project([ID#0, TIER#3], InMemorySort([ID ASC], Fetch(IndexScan(IDX_REGION_PLAN, [=, *]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFetchFromPartialRecordPlan
@@ -2811,7 +2811,7 @@ shape:   RecordQueryFetchFromPartialRecordPlan
 shape:     RecordQueryIndexPlan
 === composite_secondary_index_prefix_pushdown.yaml#10
 sql:   SELECT id FROM rp WHERE region = 'eu' ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], Fetch(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *]))))
+plan:  Project([ID#0], InMemorySort([ID ASC], Fetch(IndexScan(IDX_REGION_PLAN, [=, *]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFetchFromPartialRecordPlan
@@ -5218,12 +5218,11 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === e2e_inventory.yaml#4
 sql:   SELECT product_id, warehouse_id, quantity FROM stock WHERE product_id IN (1, 2) ORDER BY product_id, warehouse_id
-plan:  Project([PRODUCT_ID#0, WAREHOUSE_ID#1, QUANTITY#2], InMemorySort([PRODUCT_ID ASC, WAREHOUSE_ID ASC], InJoin(TypeFilter([STOCK], Scan(STOCK, [=])), binding ASC)))
+plan:  Project([PRODUCT_ID#0, WAREHOUSE_ID#1, QUANTITY#2], InUnion(TypeFilter([STOCK], Scan(STOCK, [=])), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
 === e2e_order_management.yaml#0
 sql:   SELECT o.id, SUM(li.qty * li.price) FROM orders o, line_items li WHERE li.order_id = o.id GROUP BY o.id ORDER BY o.id
 plan:  StreamingAgg(keys=[O.ID#0], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(LINE_ITEMS), inner=TypeFilter([ORDERS], Scan(ORDERS, [=])))))
@@ -6965,12 +6964,10 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === in_expression_types.yaml#4
 sql:   SELECT id FROM items WHERE name IN ('apple', 'cherry') ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], InJoin(PredicatesFilter(Scan(ITEMS), [1 preds]), binding)))
+plan:  Project([ID#0], PredicatesFilter(Scan(ITEMS), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === in_expression_types.yaml#5
 sql:   SELECT name FROM items WHERE id IN (1, 2, 3, 4) AND price > 15 ORDER BY name
 plan:  Project([NAME#1], InMemorySort([NAME ASC], PredicatesFilter(Scan(ITEMS), [1 preds])))
@@ -6980,12 +6977,10 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === in_list_advanced.yaml#0
 sql:   SELECT a, b FROM ta WHERE b IN (1 + 0, 3 + 0, 5, 7) ORDER BY a
-plan:  Project([A#0, B#1], InMemorySort([A ASC], InJoin(PredicatesFilter(Scan(TA), [1 preds]), binding)))
+plan:  Project([A#0, B#1], PredicatesFilter(Scan(TA), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === in_list_advanced.yaml#1
 sql:   SELECT a, b FROM ta WHERE b IN (6)
 plan:  Project([A#0, B#1], PredicatesFilter(Scan(TA), [1 preds]))
@@ -7024,12 +7019,10 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === in_list_advanced.yaml#7
 sql:   SELECT a, b FROM ta WHERE b IN (1, 2, 1, 3) ORDER BY a
-plan:  Project([A#0, B#1], InMemorySort([A ASC], InJoin(PredicatesFilter(Scan(TA), [1 preds]), binding)))
+plan:  Project([A#0, B#1], PredicatesFilter(Scan(TA), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === in_list_advanced.yaml#8 expect-error=42601
 sql:   SELECT a FROM ta WHERE b IN ()
 plan:  <PLAN-ERROR: parse SQL: 42601: syntax error: SELECT a FROM ta WHERE b IN () ^^>
@@ -7126,13 +7119,12 @@ shape:   RecordQueryInJoinPlan
 shape:     RecordQueryIndexPlan
 === in_list_index_plan.yaml#5
 sql:   SELECT id, name FROM items WHERE category IN ('books', 'electronics') AND price > 50 ORDER BY id
-plan:  Project([ID#0, NAME#2], InMemorySort([ID ASC], InJoin(PredicatesFilter(Fetch(IndexScan(IDX_PRICE, [<>])), [1 preds]), binding)))
+plan:  Project([ID#0, NAME#2], InMemorySort([ID ASC], PredicatesFilter(Fetch(IndexScan(IDX_PRICE, [<>])), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFetchFromPartialRecordPlan
-shape:           RecordQueryIndexPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFetchFromPartialRecordPlan
+shape:         RecordQueryIndexPlan
 === in_list_null.yaml#0 expect-error=42809
 sql:   SELECT id FROM t WHERE v IN (2, NULL)
 plan:  <PLAN-ERROR: 42809: NULL values are not allowed in the IN list>
@@ -7151,12 +7143,11 @@ sql:   SELECT id FROM t WHERE v IN ()
 plan:  <PLAN-ERROR: parse SQL: 42601: syntax error: SELECT id FROM t WHERE v IN () ^^>
 === in_list_pushdown.yaml#0
 sql:   SELECT id, name FROM t WHERE id IN (1, 3) ORDER BY id
-plan:  Project([ID#0, NAME#1], InMemorySort([ID ASC], InJoin(TypeFilter([T], Scan(T, [=])), binding ASC)))
+plan:  Project([ID#0, NAME#1], InUnion(TypeFilter([T], Scan(T, [=])), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#1
 sql:   SELECT id FROM t WHERE id IN (2)
 plan:  Project([ID#0], TypeFilter([T], Scan(T, [=])))
@@ -7174,12 +7165,11 @@ sql:   SELECT id FROM t WHERE id IN (5, NULL)
 plan:  <PLAN-ERROR: 42809: NULL values are not allowed in the IN list>
 === in_list_pushdown.yaml#4
 sql:   SELECT id FROM t WHERE id IN (1, 2, 3, 4, 5) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], InJoin(TypeFilter([T], Scan(T, [=])), binding ASC)))
+plan:  Project([ID#0], InUnion(TypeFilter([T], Scan(T, [=])), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#5
 sql:   SELECT id FROM t WHERE id IN (100, 200, 300)
 plan:  Project([ID#0], InJoin(TypeFilter([T], Scan(T, [=])), binding ASC))
@@ -7189,12 +7179,11 @@ shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#6
 sql:   SELECT id FROM t WHERE id IN (2, 99, 4) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], InJoin(TypeFilter([T], Scan(T, [=])), binding ASC)))
+plan:  Project([ID#0], InUnion(TypeFilter([T], Scan(T, [=])), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#7
 sql:   SELECT DISTINCT id FROM t WHERE id IN (1, 1, 2) ORDER BY id
 plan:  Distinct(Project([ID#0], InUnion(TypeFilter([T], Scan(T, [=])), bindings=1, ASC)))
@@ -7238,20 +7227,18 @@ sql:   SELECT id FROM t WHERE id IN (1, 'two', 3)
 plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>
 === in_list_pushdown.yaml#16
 sql:   SELECT k FROM ts WHERE k IN ('alpha', 'gamma') ORDER BY k
-plan:  Project([K#0], InMemorySort([K ASC], InJoin(TypeFilter([TS], Scan(TS, [=])), binding ASC)))
+plan:  Project([K#0], InUnion(TypeFilter([TS], Scan(TS, [=])), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#17
 sql:   SELECT k, w FROM ts WHERE k IN ('beta', 'missing') ORDER BY k
-plan:  Project([K#0, W#1], InMemorySort([K ASC], InJoin(TypeFilter([TS], Scan(TS, [=])), binding ASC)))
+plan:  Project([K#0, W#1], InUnion(TypeFilter([TS], Scan(TS, [=])), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#18
 sql:   UPDATE t SET name = 'updated' WHERE id IN (1, 3)
 plan:  Update(T, [1 transforms], InJoin(TypeFilter([T], Scan(T, [=])), binding ASC))
@@ -7261,12 +7248,11 @@ shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#19
 sql:   SELECT id, name FROM t WHERE id IN (1, 2, 3) ORDER BY id
-plan:  Project([ID#0, NAME#1], InMemorySort([ID ASC], InJoin(TypeFilter([T], Scan(T, [=])), binding ASC)))
+plan:  Project([ID#0, NAME#1], InUnion(TypeFilter([T], Scan(T, [=])), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#20
 sql:   DELETE FROM t WHERE id IN (4, 5)
 plan:  Delete(T, InJoin(TypeFilter([T], Scan(T, [=])), binding ASC))
@@ -7281,12 +7267,10 @@ shape: RecordQueryStreamingAggregationPlan
 shape:   RecordQueryScanPlan
 === in_list_pushdown.yaml#22
 sql:   SELECT a, b, c FROM kvw WHERE b IN (10, 30) ORDER BY a, b
-plan:  Project([A#0, B#1, C#2], InMemorySort([A ASC, B ASC], InJoin(PredicatesFilter(Scan(KVW), [1 preds]), binding)))
+plan:  Project([A#0, B#1, C#2], PredicatesFilter(Scan(KVW), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#23
 sql:   SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 20) ORDER BY b, c
 plan:  Project([A#0, B#1, C#2], InMemorySort([B ASC, C ASC], InJoin(PredicatesFilter(TypeFilter([KVW], Scan(KVW, [=])), [1 preds]), binding)))
@@ -15538,13 +15522,12 @@ shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryScanPlan
 === union_aggregate_java.yaml#3
 sql:   SELECT SUM(y) AS s FROM (SELECT COUNT(*) AS y FROM t1 GROUP BY col1 UNION ALL SELECT COUNT(*) AS y FROM t2 GROUP BY col1) AS x
-plan:  StreamingAgg(keys=[], UnorderedUnion(Project([Y#0], Project([COUNT(*)#1], StreamingAgg(keys=[COL1#1], IndexScan(VI1, [*] COVERING)))), Project([Y#0], Project([COUNT(*)#1], StreamingAgg(keys=[COL1#1], InMemorySort([COL1#1 ASC], Scan(T2)))))))
+plan:  StreamingAgg(keys=[], Union(Project([COUNT(*)#1], StreamingAgg(keys=[COL1#1], IndexScan(VI1, [*] COVERING))), Project([Y#0], Project([COUNT(*)#1], StreamingAgg(keys=[COL1#1], InMemorySort([COL1#1 ASC], Scan(T2)))))))
 shape: RecordQueryStreamingAggregationPlan
-shape:   RecordQueryUnorderedUnionPlan
+shape:   RecordQueryUnionPlan
 shape:     RecordQueryProjectionPlan
-shape:       RecordQueryProjectionPlan
-shape:         RecordQueryStreamingAggregationPlan
-shape:           RecordQueryIndexPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryIndexPlan
 shape:     RecordQueryProjectionPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryStreamingAggregationPlan

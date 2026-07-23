@@ -69,8 +69,16 @@ tests:
   # Basic: single-col PK IN-list, two values
   # -------------------------------------------------------------------
 
+  # ORDER BY over a PK IN-list is an IN-UNION, not an InJoin: the merge
+  # across per-value streams PROVIDES the requested id order for free
+  # (Java's RecordQueryInUnionPlan is the ordered-IN plan — InJoin gives no
+  # cross-value order and would need an extra enforcer sort on top).
+  # Mirrors the already-documented rule at in_list_index_plan.yaml:56-60.
+  # RFC-190 190.2 re-pinned this from `plan_contains: InJoin`, which
+  # predated the sort-invariant/promoted-sort-count cost model fix and
+  # enshrined the InJoin-plus-materializing-sort shape this rule replaces.
   - query: SELECT id, name FROM t WHERE id IN (1, 3) ORDER BY id
-    plan_contains: InJoin
+    plan_contains: InUnion
     rows:
       - [1, 'one']
       - [3, 'three']

@@ -213,6 +213,7 @@ go_test(
         "cost_fuzz_test.go",
         "cost_monotonicity_test.go",
         "cost_selectivity_test.go",
+        "cost_transitivity_test.go",
         "cross_product_test.go",
         "data_access_types_test.go",
         "default_on_empty_count_test.go",
@@ -828,6 +829,7 @@ go_test(
         "index_scan_preference_test.go",
         "rule_remove_range_one.go",
         "rule_remove_range_one_test.go",
+        "cost_transitivity_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

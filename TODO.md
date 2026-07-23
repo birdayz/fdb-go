@@ -81,11 +81,26 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   notes booked. See RFC §190.1 FU-1..FU-4: (FU-1) fix positionalMergeCase 2-alias existential correlation
   then retire the 2-way arm (full convergence); (FU-2) rename `qualifyOuterPositional`→`qualifyPositional`;
   (FU-3) extract direct-emit/AXIS-1 shared ~12 lines; (FU-4) retire the WHERE-EXISTS gathered-cluster wrap.
-- [ ] **190.2 (MED, unpinned hazard)** — cost-comparator transitivity. Five sort-count-gated
-  rungs (`planning_cost_model.go:286,302,315,320,337`) can make the relation non-transitive →
-  winner depends on member iteration order (the nondeterminism the hash tie-break exists to kill).
-  No transitivity test exists. Add a transitivity/antisymmetry test over generated plan sets; make
-  the comparator provably total (ungate the rungs or add a total fallback ordering that dominates).
+- [x] **190.2 (MED, unpinned hazard) — DONE (impl; awaiting review lap).** Cost-comparator
+  transitivity. The 5 sort-count-gated rungs made the relation non-transitive (verified: real
+  3-cycles → arbitrary/nondeterministic winner). Fixed per Graefe's 3-round ruling (root cause: Go's
+  `ImplementInMemorySortRule` is a read-side extension Java has no cost rung for; Java's ordinal rungs
+  assume a no-sort invariant): (1) **sort-invariant depth** — `concretePlanDepth` skips the
+  `InMemorySort` node (Java-verbatim: `ExpressionDepthProperty` strips nothing because Java's tree has
+  no sort node), and the 5 rungs are UNGATED; (2) **promoted the `inMemorySortCount` rung** to fire
+  just before the structural block (the cost-time analog of Java's structural `RemoveSortRule` — reject
+  a redundant sort before the sort-blind rungs; lexicographic reorder, preserves transitivity); (3)
+  found+fixed a **real Java-parity bug** — `unmatchedFieldsCount` was missing Java's
+  `RecordQueryScanPlan` branch (`UnmatchedFieldsCountProperty.java:96-119`). Pinned by
+  `cost_transitivity_test.go` (33 plans, 32736 triples, incl. two sort-bearing 3-cycles), RED→GREEN.
+  Golden re-blessed: 7 flips, all rows-correct (yamsql 338/338) — 6 are sort-elimination/InUnion
+  improvements or benign (Graefe-verified); the `covering_index_java` regression REVERTED (fix 2). Two
+  stale `plan_contains: InJoin` pins re-pinned per Graefe (the InJoin re-scanned per IN-value / provided
+  no order — the old sort-gate resurrected the worse plan; Java produces InUnion/filtered-scan).
+  **Follow-up (booked): `union_aggregate_java#3` UnorderedUnion→Union+partial-agg flip** — un-traced,
+  rows-correct, un-pinned, Graefe ruled not-a-blocker; verify the plan shape vs Java (likely the
+  Java-faithful `unmatchedFieldsCount` fix moving Go toward Java). NEXT: 1M stress + review lap
+  (Graefe delta-confirm the evolved impl + Torvalds + codex).
 - [ ] **190.3 (MED, narrow)** — partial-PK prefix scan priced as a 1-row point probe in the
   metadata-unaware path (`plans/cost.go:31-36` `HintCost`), inconsistent with the ctx-aware path
   RFC-186 §2B fixed; criterion #2 abstains for two-unbounded comparisons, leaving a scalar-fallback
