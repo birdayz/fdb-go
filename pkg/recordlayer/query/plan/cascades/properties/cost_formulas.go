@@ -218,3 +218,20 @@ func BoundSelectivity(comps []*predicates.ComparisonRange) (sel float64, numBoun
 	}
 	return sel, numBound, allEquality
 }
+
+// EqualityBoundsCoverKey reports whether the comparison prefix proves that
+// every column of a key with keyColumnCount columns is equality-bound.
+//
+// Scan comparisons contain only the bound prefix, so "every comparison that
+// happens to be present is an equality" does not prove full coverage of a
+// composite key. Unknown key arity (keyColumnCount <= 0), nil/empty gaps, and
+// ranges all fail closed. More comparisons than the key arity are tolerated
+// only when every one is a non-empty equality; primary-scan construction should
+// not normally produce that shape, but full key coverage still holds.
+func EqualityBoundsCoverKey(comps []*predicates.ComparisonRange, keyColumnCount int) bool {
+	if keyColumnCount <= 0 {
+		return false
+	}
+	_, numBound, allEquality := BoundSelectivity(comps)
+	return allEquality && numBound >= keyColumnCount && numBound == len(comps)
+}

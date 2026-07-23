@@ -313,6 +313,7 @@ go_test(
         "rfc153_p2_correlation_test.go",
         "rfc165_nulls_ordering_test.go",
         "rfc186_pk_gate_test.go",
+        "rfc190_scan_hint_cost_test.go",
         "rule_adjust_match_test.go",
         "rule_aggregate_data_access_test.go",
         "rule_decorrelate_values_test.go",
@@ -830,6 +831,7 @@ go_test(
         "rule_remove_range_one.go",
         "rule_remove_range_one_test.go",
         "cost_transitivity_test.go",
+        "rfc190_scan_hint_cost_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

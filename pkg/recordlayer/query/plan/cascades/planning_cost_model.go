@@ -478,21 +478,8 @@ func scanProvableMaxCard(plan *plans.RecordQueryScanPlan) (float64, bool) {
 	if plan == nil {
 		return 0, false
 	}
-	comps := plan.GetScanComparisons()
-	if len(comps) == 0 {
-		return 0, false
-	}
-	numBound := 0
-	allEquality := true
-	for _, cr := range comps {
-		if !cr.IsEmpty() {
-			numBound++
-			if !cr.IsEquality() {
-				allEquality = false
-			}
-		}
-	}
-	if numBound > 0 && allEquality && numBound == len(comps) {
+	fullBind, provable := pkFullyEqualityBound(plan, nil)
+	if fullBind && provable {
 		return 1, true
 	}
 	return 0, false
@@ -584,7 +571,7 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	// physical top path already routes bare scans via concretePlanCounts).
 	case *plans.RecordQueryScanPlan:
 		counts.scanCount++
-		if card, known := scanProvableMaxCard(w); known {
+		if card, known := scanPlanProvableMaxCard(w, ctx); known {
 			if card > counts.maxDataAccessCardinality {
 				counts.maxDataAccessCardinality = card
 			}
@@ -1240,8 +1227,8 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 	if stats == nil {
 		stats = properties.DefaultStatistics{}
 	}
-	costA := concretePlanCostStrict(planA, stats, ctx, true)
-	costB := concretePlanCostStrict(planB, stats, ctx, true)
+	costA := concretePlanCost(planA, stats, ctx)
+	costB := concretePlanCost(planB, stats, ctx)
 
 	// A materialized NLJ vs a correlated FlatMap (DIFFERENT root join shapes) is a
 	// Go-ONLY comparison — Java keeps no materialized NLJ (RewriteOuterJoinRule
@@ -1326,28 +1313,15 @@ func joinShapesDiffer(planA, planB plans.RecordQueryPlan) bool {
 // and CPU roll up from children exactly as the wrapper cost does, so a join's total
 // cost reflects each sub-product's real (embedded) plan, not a shared-group winner.
 func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
-	return concretePlanCostStrict(p, stats, ctx, false)
-}
-
-// concretePlanCostStrict is concretePlanCost with the RFC-186 §2B
-// point-probe policy selectable: strictPKGate=true (the JOIN-ORDERING
-// entry, compareJoinOrdering) requires PROVABLE full-PK coverage for the
-// 1-row shortcut — an unprovable bind is never a point probe there,
-// because a composite-PK prefix priced as 1 row drives catastrophic join
-// orders. strictPKGate=false (the data-access HintCost adapter, which has
-// no PlanContext) keeps the ADVISORY policy: a full-equality bind prices
-// as a point lookup — imposing strictness there re-broke the documented
-// id-IN-(...) full-scan mis-cost the adapter exists to fix.
-func concretePlanCostStrict(p plans.RecordQueryPlan, stats properties.StatisticsProvider, ctx PlanContext, strictPKGate bool) properties.Cost {
 	if p == nil {
 		return properties.Cost{}
 	}
 	kids := p.GetChildren()
 	child := make([]properties.Cost, len(kids))
 	for i, c := range kids {
-		child[i] = concretePlanCostStrict(c, stats, ctx, strictPKGate)
+		child[i] = concretePlanCost(c, stats, ctx)
 	}
-	return combineConcreteCost(p, child, stats, ctx, strictPKGate)
+	return combineConcreteCost(p, child, stats, ctx)
 }
 
 // combineConcreteCost applies a plan node's per-operator cost formula to its
@@ -1355,7 +1329,7 @@ func concretePlanCostStrict(p plans.RecordQueryPlan, stats properties.Statistics
 // children is expressible independently of the recursion. The per-operator
 // formulas (cost_formulas.go) are the single source of truth shared with the
 // physical-wrapper HintCost methods.
-func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext, strictPKGate bool) properties.Cost {
+func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
 	c0 := func() properties.Cost {
 		if len(child) > 0 {
 			return child[0]
@@ -1365,15 +1339,12 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 	switch pl := p.(type) {
 	case *plans.RecordQueryScanPlan:
 		// Primary-key scan: 1 row ONLY on a PROVABLE full-PK equality bind
-		// (RFC-186 §2B). nil-ctx/unprovable policy at THIS site — STRICTER
-		// than scanPlanProvableMaxCard's: never a point probe. The old
-		// unconditional `true` let `numBound == len(comps)` pass for a
-		// correlated composite-PK PREFIX bind (only tenant_id of
-		// (tenant_id, order_id) present as a comparison): a potentially
-		// million-row prefix scan priced as a repeatable 1-row inner probe —
-		// catastrophic join orders.
+		// (RFC-186 §2B, RFC-190.3). The plan's stamped PK arity is
+		// authoritative; a single-record-type PlanContext is only a fallback
+		// for older/hand-built plans. Unknown coverage fails closed instead of
+		// treating an all-equality prefix as a point probe.
 		fullBind, provable := pkFullyEqualityBound(pl, ctx)
-		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, fullBind && (provable || !strictPKGate))
+		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, fullBind && provable)
 	case *plans.RecordQueryIndexPlan:
 		// Secondary index: a full-equality bind is a single row only if the index is
 		// UNIQUE. Resolve uniqueness from PlanContext when available;
@@ -1788,45 +1759,37 @@ func indexMetadata(pl *plans.RecordQueryIndexPlan, ctx PlanContext) ([]string, b
 // columns to cover the FULL primary key (a partial equality prefix of a composite PK is
 // still a range, hence unbounded).
 func scanPlanProvableMaxCard(pl *plans.RecordQueryScanPlan, ctx PlanContext) (float64, bool) {
-	fullBind, _ := pkFullyEqualityBound(pl, ctx)
-	if !fullBind {
+	fullBind, provable := pkFullyEqualityBound(pl, ctx)
+	if !fullBind || !provable {
 		return 0, false
 	}
-	// nil-ctx policy at THIS site: unprovable full-PK coverage still ALLOWS
-	// the 1-row bound (the bound is advisory; legacy behavior). The
-	// join-ordering leaf cost applies the STRICTER policy — see the
-	// RecordQueryScanPlan arm of the concrete join-cost switch.
 	return 1, true
 }
 
 // pkFullyEqualityBound is RFC-186 §2B's ONE shared full-PK-equality
 // predicate — two subtly different inline gates in one file is how the
-// composite-PK point-probe bug was born. fullBind reports that every
-// present comparison is an equality with none absent AND, when coverage is
-// provable, that the bound columns cover the FULL primary key (a partial
-// equality prefix of a composite PK is still a range). provable reports
-// whether ctx resolved the PK column count. Each call site states its own
-// nil-ctx/unprovable policy explicitly.
+// composite-PK point-probe bug was born. fullBind reports that equality
+// comparisons cover the FULL primary key (a partial equality prefix of a
+// composite PK is still a range). provable reports whether the PK arity is
+// known, independently of whether the scan is fully bound. Plan-stamped
+// metadata is authoritative; a single-record-type ctx is the fallback.
 func pkFullyEqualityBound(pl *plans.RecordQueryScanPlan, ctx PlanContext) (fullBind, provable bool) {
-	comps := pl.GetScanComparisons()
-	if len(comps) == 0 {
+	if pl == nil {
 		return false, false
 	}
-	numBound := 0
-	for _, cr := range comps {
-		if cr.IsEmpty() || !cr.IsEquality() {
-			return false, false
-		}
-		numBound++
+	pkLen := len(pl.GetPrimaryKeyValues())
+	if pkLen > 0 {
+		return properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), pkLen), true
 	}
-	if ctx == nil || len(pl.GetRecordTypes()) == 0 {
-		return true, false
+	recordTypes := pl.GetRecordTypes()
+	if ctx == nil || len(recordTypes) != 1 {
+		return false, false
 	}
-	pkLen := len(ctx.GetPrimaryKeyColumns(pl.GetRecordTypes()[0]))
+	pkLen = len(ctx.GetPrimaryKeyColumns(recordTypes[0]))
 	if pkLen == 0 {
-		return true, false
+		return false, false
 	}
-	return numBound >= pkLen, true
+	return properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), pkLen), true
 }
 
 // indexPlanProvableMaxCard returns an index scan's PROVABLE max cardinality (1) and

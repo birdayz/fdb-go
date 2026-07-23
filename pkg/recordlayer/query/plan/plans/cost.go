@@ -22,7 +22,8 @@ import (
 
 // HintCost: a full scan reads every record of the covered types, discounted by
 // the bound-comparison selectivity. A fully-equality-bound scan over the
-// primary key is a point lookup (one row).
+// primary key is a point lookup (one row), but only when the primary-key shape
+// stamped on the plan proves that the comparison prefix covers the whole key.
 func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
 	if p == nil {
 		card := stats.RecordTypeCardinality("")
@@ -30,8 +31,8 @@ func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.Sta
 	}
 	comps := p.GetScanComparisons()
 	// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY).
-	sel, numBound, allEquality := properties.BoundSelectivity(comps)
-	if numBound > 0 && allEquality && numBound == len(comps) {
+	sel, _, _ := properties.BoundSelectivity(comps)
+	if properties.EqualityBoundsCoverKey(comps, len(p.GetPrimaryKeyValues())) {
 		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
 	}
 	types := p.GetRecordTypes()

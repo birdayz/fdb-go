@@ -410,14 +410,11 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 		// the M3 whole-plan-cardinality outer guard (RFC-188) so a
 		// bounded-primary-scan-vs-unbounded comparison is no longer reported
 		// unknown (over-abstaining criterion #2). A range / partial / prefix
-		// bind stays unknown. scanProvableMaxCard proves all-equality + all
-		// present comparisons bound; the len == PK-column-count check
-		// (mirroring the index arm's len(comps)==len(GetColumnNames)) proves the
-		// bind covers the FULL primary key, not just a prefix.
+		// bind stays unknown. scanProvableMaxCard consults the PK arity stamped
+		// on the scan and proves full coverage, not merely that every comparison
+		// in the (possibly partial) prefix is an equality.
 		if _, known := scanProvableMaxCard(p); known {
-			if pkVals := p.GetPrimaryKeyValues(); pkVals != nil && len(p.GetScanComparisons()) == len(pkVals) {
-				return properties.AtMostOne()
-			}
+			return properties.AtMostOne()
 		}
 		return properties.UnknownMaxCardinality()
 

@@ -18,52 +18,137 @@ type pkGateTestCtx struct {
 
 func (c *pkGateTestCtx) GetPrimaryKeyColumns(string) []string { return c.pk }
 
-func pkGateEq(t *testing.T, v any) *predicates.ComparisonRange {
+func pkGateComparison(t *testing.T, comparisonType predicates.ComparisonType, v any) *predicates.ComparisonRange {
 	t.Helper()
-	cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, v)
+	cmp := predicates.NewLiteralComparison(comparisonType, v)
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
 	if !res.Ok {
-		t.Fatal("failed to build equality range")
+		t.Fatalf("failed to build %v range", comparisonType)
 	}
 	return res.Range
+}
+
+func pkGateEq(t *testing.T, v any) *predicates.ComparisonRange {
+	t.Helper()
+	return pkGateComparison(t, predicates.ComparisonEquals, v)
 }
 
 // TestPKFullyEqualityBound pins RFC-186 §2B's shared predicate arms.
 func TestPKFullyEqualityBound(t *testing.T) {
 	t.Parallel()
-	scan := func(comps ...*predicates.ComparisonRange) *plans.RecordQueryScanPlan {
-		return plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithScanComparisons(comps)
+	pk2 := []values.Value{
+		&values.FieldValue{Field: "TENANT", Typ: values.UnknownType},
+		&values.FieldValue{Field: "ORDER", Typ: values.UnknownType},
+	}
+	scan := func(recordTypes []string, pk []values.Value, comps ...*predicates.ComparisonRange) *plans.RecordQueryScanPlan {
+		plan := plans.NewRecordQueryScanPlan(recordTypes, values.UnknownType, false)
+		if pk != nil {
+			plan = plan.WithPrimaryKey(pk)
+		}
+		return plan.WithScanComparisons(comps)
 	}
 	compositeCtx := &pkGateTestCtx{pk: []string{"TENANT", "ORDER"}}
+	singleCtx := &pkGateTestCtx{pk: []string{"ID"}}
 
-	t.Run("no comparisons", func(t *testing.T) {
+	t.Run("unknown arity and no comparisons", func(t *testing.T) {
 		t.Parallel()
-		fullBind, provable := pkFullyEqualityBound(scan(), nil)
+		fullBind, provable := pkFullyEqualityBound(scan([]string{"T"}, nil), nil)
 		if fullBind || provable {
 			t.Fatalf("empty comparisons = (%v,%v), want (false,false)", fullBind, provable)
 		}
 	})
-	t.Run("nil ctx: full bind unprovable", func(t *testing.T) {
+	t.Run("stamped arity and no comparisons", func(t *testing.T) {
 		t.Parallel()
-		fullBind, provable := pkFullyEqualityBound(scan(pkGateEq(t, int64(1))), nil)
-		if !fullBind || provable {
-			t.Fatalf("nil-ctx all-equality = (%v,%v), want (true,false)", fullBind, provable)
+		fullBind, provable := pkFullyEqualityBound(scan([]string{"T"}, pk2), nil)
+		if fullBind || !provable {
+			t.Fatalf("stamped empty comparisons = (%v,%v), want (false,true)", fullBind, provable)
 		}
 	})
-	t.Run("composite PK partial prefix bind is NOT full", func(t *testing.T) {
+	t.Run("nil ctx and unstamped equality is unprovable", func(t *testing.T) {
+		t.Parallel()
+		fullBind, provable := pkFullyEqualityBound(
+			scan([]string{"T"}, nil, pkGateEq(t, int64(1))),
+			nil,
+		)
+		if fullBind || provable {
+			t.Fatalf("unstamped nil-ctx equality = (%v,%v), want (false,false)", fullBind, provable)
+		}
+	})
+	t.Run("stamped composite PK partial prefix bind is not full", func(t *testing.T) {
+		t.Parallel()
+		fullBind, provable := pkFullyEqualityBound(
+			scan([]string{"T"}, pk2, pkGateEq(t, int64(7))),
+			nil,
+		)
+		if fullBind || !provable {
+			t.Fatalf("stamped partial prefix = (%v,%v), want (false,true)", fullBind, provable)
+		}
+	})
+	t.Run("stamped composite PK fully bound with nil ctx", func(t *testing.T) {
+		t.Parallel()
+		fullBind, provable := pkFullyEqualityBound(
+			scan([]string{"T"}, pk2, pkGateEq(t, int64(7)), pkGateEq(t, int64(9))),
+			nil,
+		)
+		if !fullBind || !provable {
+			t.Fatalf("stamped full bind = (%v,%v), want (true,true)", fullBind, provable)
+		}
+	})
+	t.Run("context fallback rejects composite PK partial prefix", func(t *testing.T) {
 		t.Parallel()
 		// One comparison present (tenant only) against PK (TENANT, ORDER):
 		// a prefix scan, never a point probe.
-		fullBind, provable := pkFullyEqualityBound(scan(pkGateEq(t, int64(7))), compositeCtx)
+		fullBind, provable := pkFullyEqualityBound(
+			scan([]string{"T"}, nil, pkGateEq(t, int64(7))),
+			compositeCtx,
+		)
 		if fullBind || !provable {
 			t.Fatalf("partial prefix = (%v,%v), want (false,true)", fullBind, provable)
 		}
 	})
-	t.Run("composite PK fully bound", func(t *testing.T) {
+	t.Run("context fallback accepts composite PK fully bound", func(t *testing.T) {
 		t.Parallel()
-		fullBind, provable := pkFullyEqualityBound(scan(pkGateEq(t, int64(7)), pkGateEq(t, int64(9))), compositeCtx)
+		fullBind, provable := pkFullyEqualityBound(
+			scan([]string{"T"}, nil, pkGateEq(t, int64(7)), pkGateEq(t, int64(9))),
+			compositeCtx,
+		)
 		if !fullBind || !provable {
 			t.Fatalf("full bind = (%v,%v), want (true,true)", fullBind, provable)
+		}
+	})
+	t.Run("stamped arity wins over conflicting context", func(t *testing.T) {
+		t.Parallel()
+		fullBind, provable := pkFullyEqualityBound(
+			scan([]string{"T"}, pk2, pkGateEq(t, int64(7))),
+			singleCtx,
+		)
+		if fullBind || !provable {
+			t.Fatalf("stamped composite prefix with single-column ctx = (%v,%v), want (false,true)", fullBind, provable)
+		}
+	})
+	t.Run("range is never a full equality bind", func(t *testing.T) {
+		t.Parallel()
+		fullBind, provable := pkFullyEqualityBound(
+			scan(
+				[]string{"T"},
+				pk2,
+				pkGateEq(t, int64(7)),
+				pkGateComparison(t, predicates.ComparisonGreaterThan, int64(9)),
+			),
+			nil,
+		)
+		if fullBind || !provable {
+			t.Fatalf("stamped range = (%v,%v), want (false,true)", fullBind, provable)
+		}
+	})
+	t.Run("unstamped multi-type scan does not use first type context", func(t *testing.T) {
+		t.Parallel()
+		fullBind, provable := pkFullyEqualityBound(
+			scan([]string{"T", "U"}, nil, pkGateEq(t, int64(7))),
+			singleCtx,
+		)
+		if fullBind || provable {
+			t.Fatalf("unstamped multi-type equality = (%v,%v), want (false,false)", fullBind, provable)
 		}
 	})
 }
@@ -79,35 +164,41 @@ func TestConcreteJoinCost_CompositePKPrefixNotPointProbe(t *testing.T) {
 	t.Parallel()
 	stats := properties.DefaultStatistics{}
 	compositeCtx := &pkGateTestCtx{pk: []string{"TENANT", "ORDER"}}
+	pk2 := []values.Value{
+		&values.FieldValue{Field: "TENANT", Typ: values.UnknownType},
+		&values.FieldValue{Field: "ORDER", Typ: values.UnknownType},
+	}
 
 	prefix := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithPrimaryKey(pk2).
 		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))})
-	if cost := concretePlanCostStrict(prefix, stats, compositeCtx, true); cost.Cardinality == 1 {
+	if cost := concretePlanCost(prefix, stats, compositeCtx); cost.Cardinality == 1 {
 		t.Fatalf("composite-PK prefix bind priced as point probe (cardinality=1); want selectivity estimate")
 	}
 
 	full := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithPrimaryKey(pk2).
 		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))})
-	if cost := concretePlanCostStrict(full, stats, compositeCtx, true); cost.Cardinality != 1 {
+	if cost := concretePlanCost(full, stats, compositeCtx); cost.Cardinality != 1 {
 		t.Fatalf("provable full-PK bind must stay a point probe, got cardinality=%v", cost.Cardinality)
 	}
 
-	// nil ctx (unprovable coverage) under the STRICT join-ordering policy:
-	// never a point probe, even on an all-equality bind.
-	if cost := concretePlanCostStrict(full, stats, nil, true); cost.Cardinality == 1 {
-		t.Fatalf("unprovable coverage must not price as point probe at the strict join leaf, got cardinality=1")
+	// The plan stamp proves coverage even without PlanContext.
+	if cost := concretePlanCost(full, stats, nil); cost.Cardinality != 1 {
+		t.Fatalf("stamped full-PK bind with nil ctx must stay a point probe, got cardinality=%v", cost.Cardinality)
 	}
 
-	// The ADVISORY policy (the data-access HintCost adapter path — no
-	// PlanContext available): a full-equality bind still prices as a point
-	// lookup; imposing strictness here re-broke the documented id-IN-(...)
-	// full-scan mis-cost the adapter exists to fix.
-	if cost := concretePlanCost(full, stats, nil); cost.Cardinality != 1 {
-		t.Fatalf("advisory policy must keep the full-equality point lookup, got cardinality=%v", cost.Cardinality)
+	// Without either a plan stamp or context, equality coverage is unproven
+	// and must fall back to selectivity pricing.
+	unstampedFull := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))})
+	if cost := concretePlanCost(unstampedFull, stats, nil); cost.Cardinality == 1 {
+		t.Fatalf("unstamped nil-ctx equality must not price as a point probe")
 	}
-	// Advisory + PROVABLY partial coverage still declines the shortcut.
-	if cost := concretePlanCost(prefix, stats, compositeCtx); cost.Cardinality == 1 {
-		t.Fatalf("advisory policy with provably partial coverage must not price as point probe")
+
+	// A single-record-type context remains a fallback for unstamped plans.
+	if cost := concretePlanCost(unstampedFull, stats, compositeCtx); cost.Cardinality != 1 {
+		t.Fatalf("context-proven full-PK bind must be a point probe, got cardinality=%v", cost.Cardinality)
 	}
 }
 

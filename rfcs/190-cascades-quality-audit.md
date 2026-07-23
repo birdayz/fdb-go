@@ -274,15 +274,39 @@ gate is green (56/56 targets).
 `plans/cost.go:34` prices a scan as cardinality=1 when `numBound > 0 && allEquality && numBound ==
 len(comps)`. But `comps = GetScanComparisons()` is the **bound prefix only** — a composite-PK scan
 bound on just the first column has `numBound == len(comps) == 1` and is priced as a 1-row point
-probe. The ctx-aware path (`planning_cost_model.go pkFullyEqualityBound`) correctly checks
-`numBound >= pkLen`; `HintCost` has no ctx so it can't. Criterion #2 abstains for two-unbounded
-comparisons, leaving a scalar-fallback window where a prefix scan beats a genuinely cheaper plan.
+probe. The old ctx-aware path rejected a provably partial key only under the strict join-ordering
+policy; the metadata-free advisory adapter and the separate logical cardinality helper still
+accepted the prefix. Criterion #2 can abstain for two-unbounded comparisons, leaving a
+scalar-fallback window where the mispriced prefix beats a genuinely cheaper plan.
 
-**Fix:** stamp the primary scan plan with its PK column count (or a `fullPKEqualityBound` bool) at
-construction (where metadata is available, like `WithIndexMetadata`/`WithDistinctRecordsSignal`),
-and gate the `HintCost` point-probe on full-PK coverage. When PK coverage is unknown/partial, fall
-back to selectivity pricing, never cardinality=1.
-Regression: `TestScanHintCost_PartialPKPrefixNotPointProbe`.
+**Implemented:** `RecordQueryScanPlan` already carried the full `primaryKeyVals` shape, stamped by
+`PrimaryScanRule`, `OrderedPrimaryScanRule`, and `PrimaryScanMatchCandidate.ToScanPlan`, and
+preserved by both copy builders and every comparison rewrite. No second metadata field was needed.
+`properties.EqualityBoundsCoverKey` is now the shared fail-closed comparison/arity gate. The plan
+stamp is authoritative; only an unstamped, exactly-one-record-type scan may fall back to
+`PlanContext`. Unknown arity, multi-type ambiguity, a partial prefix, gaps, or ranges never take the
+1-row shortcut. The RFC-186 `strictPKGate` advisory/strict split was removed, so direct
+`HintCost`, concrete/adapter costing, logical operator counting, and cardinality derivation agree.
+
+RED→GREEN coverage:
+
+- `TestScanHintCost_PartialPKPrefixNotPointProbe`: exact selectivity prices for stamped partial,
+  unstamped, and range scans; stamped full equality stays cardinality 1.
+- `TestPKFullyEqualityBound`: stamped and ctx-fallback partial/full, stamp-over-conflicting-ctx,
+  known-arity empty/range, unknown metadata, and multi-type abstention.
+- `TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe`: the real
+  `PrimaryScanMatchCandidate` → `TypeFilter` → `scanPlanExpression` production path, partial and
+  full controls.
+- `TestScanProvableMaxCard_UsesStampedPKArity`,
+  `TestLogicalCounts_PrimaryKeyContextFallback`, and the existing whole-plan cardinality matrix:
+  logical memo descent uses its available context fallback, while both it and `Cardinalities` keep
+  composite prefixes unbounded.
+
+Validation: parent-vs-current explain corpus is 2,579/2,579 identical (zero flips/regressions);
+post-change 1M FDB stress passed all 23 subtests with correct row counts.
+
+**190.3 FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.** The complete
+`just test` gate is green (56/56 targets).
 
 ### 190.x-bundled (cheap correctness latents, already booked 2026-07-22)
 

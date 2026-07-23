@@ -116,10 +116,17 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   the extra Go candidate instead of calling it ordered or Java-aligned.
   **FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.** Full `just test`:
   56/56 targets green.
-- [ ] **190.3 (MED, narrow)** — partial-PK prefix scan priced as a 1-row point probe in the
-  metadata-unaware path (`plans/cost.go:31-36` `HintCost`), inconsistent with the ctx-aware path
-  RFC-186 §2B fixed; criterion #2 abstains for two-unbounded comparisons, leaving a scalar-fallback
-  window. Gate the `HintCost` point-probe on full-PK coverage (or keep it out of the fallback).
+- [x] **190.3 (MED, narrow)** — partial-PK prefix scan priced as a 1-row point probe. The
+  existing plan-stamped `primaryKeyVals` arity is now authoritative; unknown/partial coverage
+  falls back to exact selectivity pricing, and an exactly-one-record-type `PlanContext` is only
+  the legacy/hand-built-plan fallback. The obsolete RFC-186 strict/advisory policy split is gone.
+  The shared gate covers direct `HintCost`, concrete/adapter costing, logical operator counts, and
+  cardinality derivation. Production candidate + copy paths were audited and pinned. RED→GREEN
+  regressions cover partial/full/missing/range, conflicting ctx, multi-type abstention, the real
+  TypeFilter-backed data-access adapter, and the logical max-cardinality walk. Parent-vs-current
+  explain corpus: 2,579/2,579 identical, zero flips. Post-change 1M FDB stress: all 23 subtests
+  green with correct rows. **FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.**
+  Full `just test`: 56/56 targets green.
 - [ ] **190.x-bundled (cheap latents, fold in)** — finding 5 scalar signed-zero hash
   (`values/map_field_values.go:254` + `semantic_hash.go:156`, bitwise-compare) and finding 8 merge
   cycle guard walks `Members()` not `AllMembers()` (`memo_merge.go:103`) — both already booked
@@ -203,8 +210,9 @@ milestone review lap), each its own PR.
   (b) the memo-population-history dependence is replaced by the DESIGNATED-final virtual prune
   (`designated_final.go`) — REWRITING cost derives through one deterministically-chosen final per
   child, generation-keyed, with cycle + exploratory-child taint guards (§2A); (c) the all-equality
-  point-probe now gates on full-PK equality binding via `strictPKGate`/`pkFullyEqualityBound`
-  (§2B); (d) the missing plan types get `HintCost` dispatch + `warnUnpricedPlanType` (§2D). Plus
+  point-probe gates on full-PK equality binding via `pkFullyEqualityBound` (§2B; its original
+  strict/advisory split was later unified around plan-stamped PK arity by RFC-190.3);
+  (d) the missing plan types get `HintCost` dispatch + `warnUnpricedPlanType` (§2D). Plus
   the codex adversarial rounds (identity refinement, attribute-aware tie-break) and two latent
   bugs found en route (PartitionBinarySelect noe-leg absorption, memo orphan registration).
 - [x] **3. Debt ledger understates reality** — DONE (this PR). Four sub-fixes:

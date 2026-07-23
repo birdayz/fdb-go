@@ -20,6 +20,47 @@ func scanQ(types ...string) expressions.Quantifier {
 	return expressions.ForEachQuantifier(scan(types...))
 }
 
+func costFormulaRange(t *testing.T, comparisonType predicates.ComparisonType) *predicates.ComparisonRange {
+	t.Helper()
+	comparison := predicates.NewLiteralComparison(comparisonType, int64(7))
+	merge := predicates.EmptyComparisonRange().Merge(&comparison)
+	if !merge.Ok {
+		t.Fatalf("failed to build %v comparison range", comparisonType)
+	}
+	return merge.Range
+}
+
+func TestEqualityBoundsCoverKey(t *testing.T) {
+	t.Parallel()
+
+	eq := costFormulaRange(t, predicates.ComparisonEquals)
+	rng := costFormulaRange(t, predicates.ComparisonGreaterThan)
+	tests := []struct {
+		name     string
+		comps    []*predicates.ComparisonRange
+		keyArity int
+		want     bool
+	}{
+		{name: "unknown key arity", comps: []*predicates.ComparisonRange{eq}, keyArity: 0},
+		{name: "partial composite prefix", comps: []*predicates.ComparisonRange{eq}, keyArity: 2},
+		{name: "full composite equality", comps: []*predicates.ComparisonRange{eq, eq}, keyArity: 2, want: true},
+		{name: "range", comps: []*predicates.ComparisonRange{eq, rng}, keyArity: 2},
+		{name: "nil gap", comps: []*predicates.ComparisonRange{eq, nil}, keyArity: 2},
+		{name: "all-equality overcoverage", comps: []*predicates.ComparisonRange{eq, eq, eq}, keyArity: 2, want: true},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := EqualityBoundsCoverKey(test.comps, test.keyArity); got != test.want {
+				t.Fatalf("EqualityBoundsCoverKey(%d comparisons, arity %d) = %v, want %v",
+					len(test.comps), test.keyArity, got, test.want)
+			}
+		})
+	}
+}
+
 func TestCost_Less_OrdersByTotalThenCardinality(t *testing.T) {
 	t.Parallel()
 	cheap := Cost{Cardinality: 100, CPU: 10}

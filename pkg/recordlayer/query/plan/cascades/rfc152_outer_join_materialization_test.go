@@ -173,6 +173,7 @@ func rfc152Plans() (preservedNLJ, preservedFlatMap, probeNLJ, probeFlatMap plans
 	eqProbe := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))
 	eqRange := predicates.EmptyComparisonRange().Merge(&eqProbe).Range
 	probeScanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false).
+		WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}}).
 		WithScanComparisons([]*predicates.ComparisonRange{eqRange})
 	probeDoE := plans.NewRecordQueryDefaultOnEmptyPlan(probeScanB, values.NewNullValue(values.UnknownType))
 	probeFlatMap = plans.NewRecordQueryFlatMapPlan(scanA, probeDoE, aliasA, aliasB, resVal, false)
