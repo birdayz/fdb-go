@@ -328,6 +328,429 @@ func TestMatchIntermediateStructural_RetainsValidChildProducts(t *testing.T) {
 	}
 }
 
+func TestExpandIntermediateChildPartialMatches_CallbackReceivesStableSnapshots(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	fixture := newMatchIntermediateStructuralTwoLegFixture(
+		"idx_structural_callback_snapshots",
+	)
+	parameter := values.UniqueCorrelationIdentifier()
+	childAOne := fixture.seedChild(
+		t,
+		0,
+		0,
+		EmptyAliasMap(),
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+			parameter: matchIntermediateStructuralEqualityRange(t, int64(1)),
+		},
+	)
+	childATwo := fixture.seedChild(
+		t,
+		0,
+		0,
+		EmptyAliasMap(),
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+			parameter: matchIntermediateStructuralEqualityRange(t, int64(2)),
+		},
+	)
+	childB := fixture.seedChild(t, 1, 1, EmptyAliasMap(), nil)
+
+	mapping := []quantifierMapping{
+		{queryIndex: 0, candidateIndex: 0},
+		{queryIndex: 1, candidateIndex: 1},
+	}
+	topAliasBuilder := NewAliasMapBuilder()
+	for _, pair := range mapping {
+		if !topAliasBuilder.PutChecked(
+			fixture.queryQuantifiers[pair.queryIndex].GetAlias(),
+			fixture.candidateQs[pair.candidateIndex].GetAlias(),
+		) {
+			t.Fatal("failed to build the two-leg alias skeleton")
+		}
+	}
+
+	var captured [][]quantifierPartialMatch
+	matched := expandIntermediateChildPartialMatches(
+		NewExpressionRuleCall(fixture.querySelectRef, nil, nil),
+		fixture.querySelect,
+		fixture.candidate,
+		fixture.candidateSelectRef,
+		fixture.queryQuantifiers,
+		fixture.candidateQs,
+		mapping,
+		topAliasBuilder.Build(),
+		&matchIntermediateSearchBudget{},
+		func(
+			_ *AliasMap,
+			children []quantifierPartialMatch,
+			yield func(intermediateMatchInfoBuilder) bool,
+		) bool {
+			captured = append(captured, children)
+			return yield(func() (intermediateMatchInfoInputs, bool) {
+				return intermediateMatchInfoInputs{
+					additionalGroupByMappings: EmptyGroupByMappings(),
+				}, true
+			})
+		},
+	)
+	if !matched {
+		t.Fatal("two valid child products produced no parent match")
+	}
+	if len(captured) != 2 {
+		t.Fatalf("callback products = %d, want 2", len(captured))
+	}
+	if len(captured[0]) != 2 || len(captured[1]) != 2 {
+		t.Fatalf(
+			"callback child counts = [%d, %d], want [2, 2]",
+			len(captured[0]),
+			len(captured[1]),
+		)
+	}
+	if &captured[0][0] == &captured[1][0] {
+		t.Fatal("callback products share the recursive scratch backing array")
+	}
+
+	expected := [][]*PartialMatchImpl{
+		{childAOne, childB},
+		{childATwo, childB},
+	}
+	for productIndex, product := range captured {
+		for childIndex, selected := range product {
+			got, ok := selected.partialMatch.(*PartialMatchImpl)
+			if !ok {
+				t.Fatalf(
+					"callback product %d child %d was cleared after backtracking",
+					productIndex,
+					childIndex,
+				)
+			}
+			if got != expected[productIndex][childIndex] {
+				t.Fatalf(
+					"callback product %d child %d = %p, want %p",
+					productIndex,
+					childIndex,
+					got,
+					expected[productIndex][childIndex],
+				)
+			}
+		}
+	}
+}
+
+func TestExpandIntermediateChildPartialMatches_RetainsMetadataAlternatives(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	fixture := newMatchIntermediateStructuralTwoLegFixture(
+		"idx_structural_metadata_alternatives",
+	)
+	fixture.seedChild(t, 0, 0, EmptyAliasMap(), nil)
+	fixture.seedChild(t, 1, 1, EmptyAliasMap(), nil)
+
+	mapping := []quantifierMapping{
+		{queryIndex: 0, candidateIndex: 0},
+		{queryIndex: 1, candidateIndex: 1},
+	}
+	topAliasBuilder := NewAliasMapBuilder()
+	for _, pair := range mapping {
+		if !topAliasBuilder.PutChecked(
+			fixture.queryQuantifiers[pair.queryIndex].GetAlias(),
+			fixture.candidateQs[pair.candidateIndex].GetAlias(),
+		) {
+			t.Fatal("failed to build the two-leg alias skeleton")
+		}
+	}
+	topAliasMap := topAliasBuilder.Build()
+
+	parameter := values.UniqueCorrelationIdentifier()
+	budget := &matchIntermediateSearchBudget{}
+	matched := expandIntermediateChildPartialMatches(
+		NewExpressionRuleCall(fixture.querySelectRef, nil, nil),
+		fixture.querySelect,
+		fixture.candidate,
+		fixture.candidateSelectRef,
+		fixture.queryQuantifiers,
+		fixture.candidateQs,
+		mapping,
+		topAliasMap,
+		budget,
+		func(
+			_ *AliasMap,
+			_ []quantifierPartialMatch,
+			yield func(intermediateMatchInfoBuilder) bool,
+		) bool {
+			if !yield(func() (intermediateMatchInfoInputs, bool) {
+				return intermediateMatchInfoInputs{
+					parameterBindingMap: map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+						parameter: matchIntermediateStructuralEqualityRange(
+							t,
+							int64(1),
+						),
+					},
+					additionalGroupByMappings: EmptyGroupByMappings(),
+				}, true
+			}) {
+				return false
+			}
+			return yield(func() (intermediateMatchInfoInputs, bool) {
+				return intermediateMatchInfoInputs{
+					parameterBindingMap: map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+						parameter: matchIntermediateStructuralEqualityRange(
+							t,
+							int64(2),
+						),
+					},
+					additionalGroupByMappings: EmptyGroupByMappings(),
+				}, true
+			})
+		},
+	)
+	if !matched {
+		t.Fatal("metadata alternatives produced no parent match")
+	}
+
+	parents := GetPartialMatchesForExpression(
+		fixture.querySelectRef,
+		fixture.querySelect,
+	)
+	if len(parents) != 2 {
+		t.Fatalf("metadata-alternative parents = %d, want 2", len(parents))
+	}
+	if budget.uniqueResults != 2 {
+		t.Fatalf("unique results = %d, want 2", budget.uniqueResults)
+	}
+	// Two child inspections + one complete-product attempt + the second
+	// metadata alternative. The first alternative is covered by the
+	// complete-product charge so singleton structural behavior stays stable.
+	if budget.visitedStates != 4 {
+		t.Fatalf("visited states = %d, want 4", budget.visitedStates)
+	}
+
+	// Leave room for exactly two child inspections and the complete-product
+	// charge. The first alternative may then build; the second must be stopped
+	// before its builder runs.
+	tightBudget := &matchIntermediateSearchBudget{
+		visitedStates: matchIntermediateMaxVisitedStates - 3,
+	}
+	builtAlternatives := 0
+	expandIntermediateChildPartialMatches(
+		NewExpressionRuleCall(fixture.querySelectRef, nil, nil),
+		fixture.querySelect,
+		fixture.candidate,
+		fixture.candidateSelectRef,
+		fixture.queryQuantifiers,
+		fixture.candidateQs,
+		mapping,
+		topAliasMap,
+		tightBudget,
+		func(
+			_ *AliasMap,
+			_ []quantifierPartialMatch,
+			yield func(intermediateMatchInfoBuilder) bool,
+		) bool {
+			build := func(
+				literal int64,
+			) intermediateMatchInfoBuilder {
+				return func() (intermediateMatchInfoInputs, bool) {
+					builtAlternatives++
+					return intermediateMatchInfoInputs{
+						parameterBindingMap: map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+							parameter: matchIntermediateStructuralEqualityRange(
+								t,
+								literal,
+							),
+						},
+						additionalGroupByMappings: EmptyGroupByMappings(),
+					}, true
+				}
+			}
+			if !yield(build(int64(3))) {
+				return false
+			}
+			return yield(build(int64(4)))
+		},
+	)
+	if builtAlternatives != 1 {
+		t.Fatalf(
+			"metadata builders run = %d, want only the admitted first alternative",
+			builtAlternatives,
+		)
+	}
+	if !tightBudget.exhausted ||
+		tightBudget.visitedStates != matchIntermediateMaxVisitedStates {
+		t.Fatalf(
+			"tight budget = {visited:%d exhausted:%v}, want max/exhausted",
+			tightBudget.visitedStates,
+			tightBudget.exhausted,
+		)
+	}
+}
+
+func TestExpandIntermediateChildPartialMatches_DeferralRejectionIsBranchLocal(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	queryLeaf := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	queryLeafRef := expressions.InitialOf(queryLeaf)
+	unmatchedForEach := expressions.ForEachQuantifier(queryLeafRef)
+	nonDeferableQuery := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{unmatchedForEach},
+		nil,
+	)
+	queryChildRef := expressions.InitialOf(nonDeferableQuery)
+	deferableQuery := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	if !queryChildRef.Insert(deferableQuery) {
+		t.Fatal("failed to add the deferable child alternative")
+	}
+
+	queryQ := expressions.ForEachQuantifier(queryChildRef)
+	querySelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{queryQ},
+		nil,
+	)
+	querySelectRef := expressions.InitialOf(querySelect)
+
+	candidateScan := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateQ := expressions.ForEachQuantifier(candidateScanRef)
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{candidateQ},
+		nil,
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidate := &testMatchCandidate{
+		name:      "idx_select_deferral_branch",
+		traversal: NewTraversal(candidateSelectRef),
+	}
+
+	newChild := func(
+		queryExpression expressions.RelationalExpression,
+	) *PartialMatchImpl {
+		return NewPartialMatch(
+			EmptyAliasMap(),
+			candidate,
+			queryChildRef,
+			queryExpression,
+			candidateScanRef,
+			NewRegularMatchInfo(
+				nil,
+				EmptyAliasMap(),
+				nil,
+				nil,
+				nil,
+				EmptyGroupByMappings(),
+				nil,
+				nil,
+			),
+		)
+	}
+	nonDeferableChild := newChild(nonDeferableQuery)
+	deferableChild := newChild(deferableQuery)
+	if nonDeferableChild.CompensationCanBeDeferred() {
+		t.Fatal("first child unexpectedly allows compensation deferral")
+	}
+	if !deferableChild.CompensationCanBeDeferred() {
+		t.Fatal("second child unexpectedly rejects compensation deferral")
+	}
+	if !AddPartialMatchForCandidate(
+		queryChildRef,
+		candidate,
+		nonDeferableChild,
+	) {
+		t.Fatal("failed to seed the first, non-deferable child")
+	}
+	if !AddPartialMatchForCandidate(
+		queryChildRef,
+		candidate,
+		deferableChild,
+	) {
+		t.Fatal("failed to seed the later, deferable child")
+	}
+
+	topAliasMap := AliasMapOfAliases(
+		queryQ.GetAlias(),
+		candidateQ.GetAlias(),
+	)
+	var callbackChildren []*PartialMatchImpl
+	matched := expandIntermediateChildPartialMatches(
+		NewExpressionRuleCall(querySelectRef, nil, nil),
+		querySelect,
+		candidate,
+		candidateSelectRef,
+		[]expressions.Quantifier{queryQ},
+		[]expressions.Quantifier{candidateQ},
+		[]quantifierMapping{{queryIndex: 0, candidateIndex: 0}},
+		topAliasMap,
+		&matchIntermediateSearchBudget{},
+		func(
+			_ *AliasMap,
+			children []quantifierPartialMatch,
+			yield func(intermediateMatchInfoBuilder) bool,
+		) bool {
+			if len(children) != 1 {
+				t.Fatalf("callback children = %d, want 1", len(children))
+			}
+			child, ok := children[0].partialMatch.(*PartialMatchImpl)
+			if !ok {
+				t.Fatalf(
+					"callback child has type %T, want *PartialMatchImpl",
+					children[0].partialMatch,
+				)
+			}
+			callbackChildren = append(callbackChildren, child)
+			if !selectSubsumptionChildMatchesCanBeDeferred(children) {
+				return true
+			}
+			return yield(func() (intermediateMatchInfoInputs, bool) {
+				return intermediateMatchInfoInputs{
+					additionalGroupByMappings: EmptyGroupByMappings(),
+				}, true
+			})
+		},
+	)
+	if !matched {
+		t.Fatal("later deferable branch produced no parent match")
+	}
+	if len(callbackChildren) != 2 {
+		t.Fatalf("callback visits = %d, want both child alternatives", len(callbackChildren))
+	}
+	if callbackChildren[0] != nonDeferableChild ||
+		callbackChildren[1] != deferableChild {
+		t.Fatalf(
+			"callback order = [%p, %p], want non-deferable %p then deferable %p",
+			callbackChildren[0],
+			callbackChildren[1],
+			nonDeferableChild,
+			deferableChild,
+		)
+	}
+
+	parents := GetPartialMatchesForExpression(querySelectRef, querySelect)
+	if len(parents) != 1 {
+		t.Fatalf("accepted parent products = %d, want exactly 1", len(parents))
+	}
+	if got := parents[0].GetRegularMatchInfo().
+		GetChildPartialMatchMaybe(queryQ.GetAlias()); got != deferableChild {
+		t.Fatalf("accepted child = %p, want later deferable child %p", got, deferableChild)
+	}
+}
+
 func TestMatchIntermediateStructural_ResultCapRefireDoesNotPage(t *testing.T) {
 	t.Parallel()
 

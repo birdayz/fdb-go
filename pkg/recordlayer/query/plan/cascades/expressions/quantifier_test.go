@@ -93,6 +93,21 @@ func TestNamedExistentialQuantifier_PreservesAlias(t *testing.T) {
 	}
 }
 
+func TestQuantifier_ZeroValueHasNoRangesOver(t *testing.T) {
+	t.Parallel()
+
+	var quantifier Quantifier
+	if got := quantifier.GetRangesOver(); got != nil {
+		t.Fatalf("zero-value ranges-over = %v, want nil", got)
+	}
+	if correlatedTo := quantifier.GetCorrelatedTo(); len(correlatedTo) != 0 {
+		t.Fatalf(
+			"zero-value correlations = %v, want empty",
+			correlatedTo,
+		)
+	}
+}
+
 // TestQuantifierKind_DoesNotAffectFlowedObjectValue pins that
 // GetFlowedObjectValue returns a QuantifiedObjectValue regardless of
 // kind. The seed treats ForEach and Existential identically here —

@@ -317,6 +317,34 @@ func quantifierEdgesCompatible(a, b expressions.Quantifier) bool {
 		a.IsStrictSingle() == b.IsStrictSingle()
 }
 
+// intermediateMatchInfoInputs is the node-local metadata to merge with one
+// selected Cartesian product of child PartialMatches.
+type intermediateMatchInfoInputs struct {
+	parameterBindingMap       map[values.CorrelationIdentifier]*predicates.ComparisonRange
+	predicateMap              *PredicateMultiMap
+	maxMatchMap               *MaxMatchMap
+	additionalGroupByMappings *GroupByMappings
+	rollUpToGroupingValues    []values.Value
+	additionalPlanConstraint  *QueryPlanConstraint
+}
+
+// intermediateMatchInfoBuilder computes one node-local metadata alternative
+// after the shared search budget has admitted it. Returning false rejects that
+// alternative without suppressing later alternatives or child products.
+type intermediateMatchInfoBuilder func() (intermediateMatchInfoInputs, bool)
+
+// intermediateMatchInfoFactory validates one complete child product and
+// streams every node-local metadata alternative it produces through yield.
+// The factory must stop and return false when yield returns false; returning
+// true means its alternatives were exhausted normally. It must not eagerly
+// materialize a cross-product before yielding: the builder handed to yield is
+// invoked only after the shared budget charges that alternative.
+type intermediateMatchInfoFactory func(
+	bindingAliasMap *AliasMap,
+	children []quantifierPartialMatch,
+	yield func(intermediateMatchInfoBuilder) bool,
+) bool
+
 // tryIntermediateMapping expands every compatible child-PartialMatch branch
 // for one complete alias skeleton. It returns true if the skeleton produced a
 // semantically valid parent match, including an exact match already stored by
@@ -351,6 +379,74 @@ func tryIntermediateMapping(
 	}
 	topAliasMap := topAliasBuilder.Build()
 
+	return expandIntermediateChildPartialMatches(
+		call,
+		queryExpr,
+		candidate,
+		candidateRef,
+		queryQs,
+		candidateQs,
+		mapping,
+		topAliasMap,
+		budget,
+		func(
+			composed *AliasMap,
+			_ []quantifierPartialMatch,
+			yield func(intermediateMatchInfoBuilder) bool,
+		) bool {
+			return yield(func() (intermediateMatchInfoInputs, bool) {
+				nodeAliasMap := expressions.EmptyAliasMap()
+				for _, source := range composed.Sources() {
+					var ok bool
+					nodeAliasMap, ok = nodeAliasMap.With(
+						source,
+						composed.GetTarget(source),
+					)
+					if !ok {
+						return intermediateMatchInfoInputs{}, false
+					}
+				}
+				if !queryExpr.EqualsWithoutChildren(
+					candidateExpr,
+					nodeAliasMap,
+				) {
+					return intermediateMatchInfoInputs{}, false
+				}
+
+				return intermediateMatchInfoInputs{
+					maxMatchMap: buildMatchMaxMatchMap(
+						queryExpr.GetResultValue(),
+						candidateExpr.GetResultValue(),
+						composed,
+					),
+					additionalGroupByMappings: EmptyGroupByMappings(),
+				}, true
+			})
+		},
+	)
+}
+
+// expandIntermediateChildPartialMatches expands the child PartialMatch
+// Cartesian product for a quantifier mapping, merges each accepted product's
+// metadata, and records every semantically distinct parent PartialMatch.
+//
+// Pair semantics remain the caller's responsibility. This helper enforces only
+// the mechanics shared by exact structural and Select-subsumption consumers:
+// canonical candidate-reference identity, checked alias-map composition,
+// single use of each child PartialMatch per product, branch-local rejection,
+// bounded-work charging, checked RegularMatchInfo merge, and semantic result
+// deduplication.
+func expandIntermediateChildPartialMatches(
+	call *ExpressionRuleCall,
+	queryExpr expressions.RelationalExpression,
+	candidate MatchCandidate,
+	candidateRef *expressions.Reference,
+	queryQs, candidateQs []expressions.Quantifier,
+	mapping []quantifierMapping,
+	initialAliasMap *AliasMap,
+	budget *matchIntermediateSearchBudget,
+	matchInfoFactory intermediateMatchInfoFactory,
+) bool {
 	selected := make([]quantifierPartialMatch, len(mapping))
 	usedChildren := make(map[*PartialMatchImpl]struct{}, len(mapping))
 	matched := false
@@ -367,59 +463,71 @@ func tryIntermediateMapping(
 			if !budget.chargeState() {
 				return false
 			}
-			nodeAliasMap := expressions.EmptyAliasMap()
-			for _, source := range composed.Sources() {
-				var ok bool
-				nodeAliasMap, ok = nodeAliasMap.With(
-					source,
-					composed.GetTarget(source),
-				)
-				if !ok {
+			// selected is the recursive walker's scratch storage and is
+			// overwritten during backtracking. Give the expression-specific
+			// consumer a stable snapshot so it can safely retain or compare
+			// child products after this callback returns.
+			childSnapshot := append(
+				[]quantifierPartialMatch(nil),
+				selected...,
+			)
+			alternativeIndex := 0
+			exhaustedAlternatives := matchInfoFactory(
+				composed,
+				childSnapshot,
+				func(
+					buildInputs intermediateMatchInfoBuilder,
+				) bool {
+					if buildInputs == nil || budget.shouldStop() {
+						return false
+					}
+					// The complete-child-product charge above covers the first
+					// semantic metadata alternative. Every additional predicate
+					// cross-product is admitted before its metadata is computed.
+					if alternativeIndex > 0 && !budget.chargeState() {
+						return false
+					}
+					alternativeIndex++
+					inputs, ok := buildInputs()
+					if !ok {
+						return !budget.shouldStop()
+					}
+					mi, ok := tryMergeRegularMatchInfo(
+						composed,
+						selected,
+						inputs.parameterBindingMap,
+						inputs.predicateMap,
+						inputs.maxMatchMap,
+						inputs.additionalGroupByMappings,
+						inputs.rollUpToGroupingValues,
+						inputs.additionalPlanConstraint,
+					)
+					if !ok {
+						return !budget.shouldStop()
+					}
+					pm := NewPartialMatch(
+						composed,
+						candidate,
+						call.Reference,
+						queryExpr,
+						candidateRef,
+						mi,
+					)
+					matched = true
+					if budget.recordResult(pm) {
+						AddPartialMatchForCandidate(
+							call.Reference,
+							candidate,
+							pm,
+						)
+					}
+					if budget.shouldStop() {
+						return false
+					}
 					return true
-				}
-			}
-			if !queryExpr.EqualsWithoutChildren(
-				candidateExpr,
-				nodeAliasMap,
-			) {
-				return true
-			}
-
-			mmm := buildMatchMaxMatchMap(
-				queryExpr.GetResultValue(),
-				candidateExpr.GetResultValue(),
-				composed,
+				},
 			)
-			mi, ok := tryMergeRegularMatchInfo(
-				composed,
-				selected,
-				nil,
-				nil,
-				mmm,
-				EmptyGroupByMappings(),
-				nil,
-				nil,
-			)
-			if !ok {
-				return true
-			}
-			pm := NewPartialMatch(
-				composed,
-				candidate,
-				call.Reference,
-				queryExpr,
-				candidateRef,
-				mi,
-			)
-			matched = true
-			if budget.recordResult(pm) {
-				AddPartialMatchForCandidate(
-					call.Reference,
-					candidate,
-					pm,
-				)
-			}
-			return !budget.shouldStop()
+			return exhaustedAlternatives && !budget.shouldStop()
 		}
 
 		pair := mapping[depth]
@@ -462,7 +570,7 @@ func tryIntermediateMapping(
 			},
 		)
 	}
-	expand(0, topAliasMap)
+	expand(0, initialAliasMap)
 	return matched
 }
 

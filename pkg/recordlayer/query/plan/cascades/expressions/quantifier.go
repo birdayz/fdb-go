@@ -208,7 +208,12 @@ func (q Quantifier) GetAlias() values.CorrelationIdentifier { return q.alias }
 // sees the surviving Reference. This single accessor is the only reader of
 // the raw rangesOver field, so resolving here covers all consumers without
 // rewriting in-flight expressions.
-func (q Quantifier) GetRangesOver() *Reference { return q.rangesOver.Canonical() }
+func (q Quantifier) GetRangesOver() *Reference {
+	if q.rangesOver == nil {
+		return nil
+	}
+	return q.rangesOver.Canonical()
+}
 
 // IsNullOnEmpty returns true for ForEach quantifiers that should
 // produce a NULL row when the inner is empty (LEFT JOIN semantics).
