@@ -261,6 +261,7 @@ go_test(
         "nulls_counterflow_repro_test.go",
         "nulls_order_probe_test.go",
         "nullsupply_barrier_fdb_test.go",
+        "nway_comma_join_projected_exists_fdb_test.go",
         "nway_join_correlated_exists_fdb_test.go",
         "offset_empty_agg_probe_test.go",
         "on_clause_shapes_probe_test.go",

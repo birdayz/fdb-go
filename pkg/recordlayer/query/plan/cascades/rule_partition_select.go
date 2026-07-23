@@ -48,23 +48,43 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Existential quantifiers partition ONLY when there are ≥2 of them — the
+	// Existential quantifiers partition when there are ≥2 of them — the
 	// sibling multi-EXISTS case (`WHERE EXISTS(A) AND EXISTS(B)`) that otherwise
 	// STRANDS: the NLJ rule is 2-quantifier and can't match [outer, EXISTS, EXISTS],
 	// and the old ForEach-only bail left it unplannable (0AF00). Peeling lower
 	// {outer, EXISTS(A)} + upper {newq(outer), EXISTS(B)} produces 2-quantifier
 	// existential selects the NLJ rule implements, recursing to 1-existential leaves.
-	// A select with ≤1 existential is left to the existing direct-NLJ /
-	// implementJoinWithExistential path (partitioning it too would race a competing
-	// alternative); subsuming that Go-only arm into partitioning is separable (Java's
-	// PartitionSelectRule admits any quantifier, but that migration is its own slice).
+	// A select with EXACTLY 1 existential is partitioned only when it also has
+	// >2 ForEach legs (the genuine N-WAY cluster, RFC-190 190.1's direct-emit
+	// shape — see the bail below): with ≤2 ForEach legs it is left to the
+	// existing direct-NLJ / implementJoinWithExistential path, which already
+	// handles that exact shape directly — partitioning it too would race that
+	// working arm with an alternate decomposition instead of merely
+	// duplicating it.
 	existentialCount := 0
+	foreachCount := 0
 	for _, q := range quantifiers {
 		if q.Kind() == expressions.QuantifierExistential {
 			existentialCount++
+		} else {
+			foreachCount++
 		}
 	}
-	if existentialCount == 1 {
+	if existentialCount == 1 && foreachCount <= 2 {
+		// Exactly the shape implementJoinWithExistential's working 2-leg fold
+		// already handles directly (2 ForEach + 1 Existential — a plain
+		// 2-table join with a projected/WHERE EXISTS, e.g. `t1 JOIN t2 ON …
+		// WHERE EXISTS (…)`). Partitioning it too would RACE that
+		// byte-identical arm with an alternate decomposition — and for this
+		// narrower shape the race is not merely redundant, it can WIN with a
+		// malformed plan: the positional-merge Case (below) decomposing a
+		// plain 2-alias existential correlation produced "ordinal
+		// resolution: field … not resolvable" execution errors on
+		// previously-passing 2-way EXISTS tests once the bail was dropped.
+		// Only a GENUINE N-way cluster (>2 ForEach legs) needs partitioning
+		// to reach a plan at all — that shape has no working direct-NLJ
+		// alternative to race, so only it is exempted from this bail; the
+		// live-existential guard further below is scoped to that case.
 		return
 	}
 	if existentialCount >= 2 {
@@ -413,6 +433,20 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// Without this a merged lower would list duplicate
 		// aliases.
 		lowersCorrelatedToByUppers = dedupAliases(lowersCorrelatedToByUppers)
+
+		// Live-existential guard (RFC-190 190.1): reject a bipartition whose live
+		// set contains an existential (Go's merge/Case-2 can't represent a
+		// projected existential as a positional ordinal).
+		liveExistential := false
+		for _, a := range lowersCorrelatedToByUppers {
+			if aliasToQ[a].Kind() == expressions.QuantifierExistential {
+				liveExistential = true
+				break
+			}
+		}
+		if liveExistential {
+			continue
+		}
 
 		// Skip a disconnected lower: ≥2 quantifiers no predicate links (a pure
 		// cross product, e.g. {A,C} for chain A—B—C or {xx,yy} for a star). Its

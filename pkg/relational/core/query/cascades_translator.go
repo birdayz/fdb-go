@@ -4128,6 +4128,52 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 		// is unaffected — ON ≡ WHERE for an inner join, so the predicate filters.
 		return nil
 	}
+	// RFC-190 190.1 direct-emit: an INNER cluster of ≥3 legs is dissolved into a
+	// flat NAME-model [ForEach×N, Existential] select (QueryVisitor.java:429-434
+	// port, alias-bound). PartitionSelectRule decomposes it by alias.
+	if j.Kind == logical.JoinInner && f != nil {
+		legs := t.gatherInnerClusterLegs(j)
+		if len(legs) > 2 {
+			ops := make([]logical.LogicalOperator, len(legs))
+			for i, l := range legs {
+				ops[i] = l.op
+			}
+			if mintedBindingLeg(ops...) != "" {
+				return nil
+			}
+			prevEnc := t.inInnerCluster
+			quants := make([]expressions.Quantifier, 0, len(legs)+len(f.ExistsSubqueries))
+			srcAliases := make([]string, 0, len(legs)+len(f.ExistsSubqueries))
+			for _, leg := range legs {
+				t.inInnerCluster = true
+				legRef := t.translateRef(leg.op)
+				t.inInnerCluster = prevEnc
+				if legRef == nil {
+					return nil
+				}
+				quants = append(quants, expressions.NamedForEachQuantifier(
+					values.NamedCorrelationIdentifier(leg.binding), legRef))
+				srcAliases = append(srcAliases, leg.binding)
+			}
+			var preds []predicates.QueryPredicate
+			preds = append(preds, t.gatherInnerClusterOnPredicates(j)...)
+			preds = append(preds, splitNonExistsPredicates(f.Predicate)...)
+			preds = append(preds, extractExistsPredicates(f.Predicate)...)
+			for _, esq := range f.ExistsSubqueries {
+				subRef := t.translateSubqueryRef(esq.Plan)
+				if subRef == nil {
+					return nil
+				}
+				quants = append(quants, expressions.NamedExistentialQuantifier(esq.Alias, subRef))
+				innerCorrName, joinPred := existsInnerCorrelation(esq)
+				if joinPred != nil {
+					preds = append(preds, joinPred)
+				}
+				srcAliases = append(srcAliases, innerCorrName)
+			}
+			return expressions.NewSelectExpressionWithAliases(resultValue, quants, preds, srcAliases)
+		}
+	}
 	// Same enclosure as translateJoinWithExists — the
 	// existential flatten is a name-model parent; its ForEach legs are enclosed.
 	// AXIS 1: a bare INNER gated-box fold leg is translated

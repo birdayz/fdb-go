@@ -4,15 +4,20 @@ package query
 // (arity >= 3) INNER join under a correlated WHERE EXISTS ORDINALIZES while
 // preserving the index SARG.
 //
-// WHY A WRAP: a flat [ForEach×N, Existential] select is unimplementable
-// except MATERIALIZED — PartitionSelectRule refuses any select carrying an
-// existential quantifier (rule_partition_select.go ForEach-only guard), so
-// the only physical implementer is implementNWayJoinWithExistential, which
-// builds a predicate-free left-deep cross-product and applies ALL join
-// predicates as one post-filter (SARG lost by construction). And Go's
-// single-pass Cascades cannot re-plan a sub-select minted at OnMatch, so the
-// join can only be enumerated separately if it is a SEPARATE REFERENCE at
-// translation. Hence: translate the join + the WHERE's non-EXISTS conjuncts
+// WHY A WRAP: a flat [ForEach×N, Existential] select carrying a CORRELATED
+// existential is unimplementable except MATERIALIZED. RFC-190 190.1 retired
+// the ordinal N-way arm this comment used to cite as the only physical
+// implementer (implementNWayJoinWithExistential built a predicate-free
+// left-deep cross-product and applied ALL join predicates as one post-filter,
+// losing the SARG) — the general >=3-way flat existential now decomposes via
+// PartitionSelectRule into ordinary 2-quantifier pairs instead. That
+// decomposition covers the UNCORRELATED case (buildExistentialJoinSelect's
+// direct-emit translation); a CORRELATED existential still has no such route
+// (PartitionSelectRule cannot represent a live existential positionally), so
+// this wrap remains the mechanism for it. And Go's single-pass Cascades
+// cannot re-plan a sub-select minted at OnMatch, so the join can only be
+// enumerated separately if it is a SEPARATE REFERENCE at translation. Hence:
+// translate the join + the WHERE's non-EXISTS conjuncts
 // as its OWN gathered ordinal cluster (SARG-preserving,
 // PartitionSelectRule-enumerable, zero name-model producers), and wrap it
 // with a 2-quantifier [ForEach(box), Existential...] select

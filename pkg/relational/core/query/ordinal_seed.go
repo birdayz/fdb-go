@@ -286,6 +286,31 @@ func (t *cascadesTranslator) gatherInnerClusterLegs(j *logical.LogicalJoin) []cl
 	return legs
 }
 
+// gatherInnerClusterOnPredicates collects the ON predicates of every inner node
+// in the direct-nesting cluster gatherInnerClusterLegs flattens (RFC-190 190.1).
+func (t *cascadesTranslator) gatherInnerClusterOnPredicates(j *logical.LogicalJoin) []predicates.QueryPredicate {
+	var preds []predicates.QueryPredicate
+	var walk func(op logical.LogicalOperator)
+	walk = func(op logical.LogicalOperator) {
+		nj, isJoin := op.(*logical.LogicalJoin)
+		if !isJoin || nj.Kind != logical.JoinInner || len(nj.OnExistsSubqueries) != 0 {
+			return
+		}
+		if _, isUnnest := nj.Right.(*logical.LogicalUnnest); isUnnest {
+			return
+		}
+		if nj.OnPredicate != nil {
+			if qp, ok := nj.OnPredicate.(predicates.QueryPredicate); ok {
+				preds = append(preds, qp)
+			}
+		}
+		walk(nj.Left)
+		walk(nj.Right)
+	}
+	walk(j)
+	return preds
+}
+
 // legsOfGatedJoin is the kind-aware leg list of a GATED join: an INNER root
 // gathers its whole direct-nesting cluster (flat N-way); an outer box keeps
 // its two box legs verbatim (each leg may itself be a gated inner cluster —

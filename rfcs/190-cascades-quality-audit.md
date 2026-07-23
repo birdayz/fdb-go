@@ -7,7 +7,30 @@ The new 190.1 (converge on Java's two-rule architecture via a guarded `Partition
 a fresh **Graefe ACK** from a two-round adversarial design dialogue (round 1 NAK: a wrong-rows
 merge-case hole; round 2 ACK: the live-existential guard verified airtight) **and a Torvalds ACK**
 (three impl-discipline conditions folded: Step 1+2 atomic, Step 3 helper-reference proof, Step 5 1M
-stress gate; LOC corrected to arm 388 / wrap 477). §190.1 is fully gated — ready to implement.
+stress gate; LOC corrected to arm 388 / wrap 477).
+
+**190.1 IMPLEMENTED (Step 1 core + the arm retirement) — awaiting the milestone review lap.** The
+direct-emit + guard + arm-retirement landed atomically; the full N-way matrix returns correct rows
+(comma-join projected EXISTS was crash→`[100|true,200|false,300|true]`; buried_inner PK no longer
+panics; `_Discriminating`, WHERE-EXISTS, NOT-EXISTS, 4-leg all green), the plan-shape golden is
+BYTE-IDENTICAL (zero corpus drift), and the full 1165-test sqldriver sweep is green. Two things the
+design did NOT anticipate, both folded and flagged for the review lap:
+- **A pre-existing executor bug the new shape exposed (`isIdentityInnerRV`).** A FlatMap result value
+  can be an identity pass-through of the INNER quantifier, not only the outer; `flat_map_cursor.go`
+  had `isIdentityOuterRV` but no inner mirror, so when the cost model assigned `PartitionSelectRule`'s
+  Case-2 flowed alias to the physical inner leg, `computeResultLegs` scalar-wrapped a whole row → the
+  E-scan's PK-column SARG (`P.ID#0`) read that wrapper's slot 0 and got the nested record (unencodable
+  → panic; the non-PK `P.K#2` case got lucky). Fixed by adding the symmetric inner-identity branch —
+  a principled completion of a missing case, benefits any Case-2 select the cost model flips inner.
+- **Scoped bail, not full removal (deviation from the pure design — needs a Graefe ruling).** Removing
+  the `existentialCount==1` bail ENTIRELY raced the working Go-only 2-way arm (2 ForEach + 1 Existential)
+  and yielded malformed plans on 7 existing tests. Scoped to `existentialCount==1 && foreachCount<=2`
+  (keep the working 2-way case on the arm; partition only the genuine N-way, `foreachCount>2`). The
+  guard's correctness proof is unaffected (the 2-way case never reaches it). Full 2-way convergence
+  (retire the 2-way arm too) is a separable follow-on.
+
+Step 2 (SARG + 1M stress gate) in progress; Step 3 (retire the WHERE-EXISTS wrap) is the separable
+follow-on. §190.1 goes to the milestone review lap (Graefe+Torvalds+codex+@claude) at PR time.
 Branch: `feat/rfc190-cascades-quality-audit` · one branch, one PR.
 Reviewers: Graefe (Cascades alignment) + Torvalds (code quality) on RFC and impl.
 
