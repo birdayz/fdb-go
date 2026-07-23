@@ -69,9 +69,11 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   ordering/projection/fetch optimizers whose effect is invisible to row tests).
 - [ ] **190.11 (MED)** — cost-model test suite (currently 3 tests + 1 fuzz-sanity for the component
   that picks the winner). Add selection-flip / rung-order / transitivity coverage.
-- [ ] **190.12 (MED)** — commit an `explaindiff` plan-shape golden as a standing drift net
-  (`explaindiff_test.go:166` baselines are explicitly NOT committed → cross-commit plan drift caught
-  only by manual before/after).
+- [x] **190.12 (MED)** — DONE (impl commit #1). Committed `explaindiff/testdata/plan_shape.golden`
+  (16550 lines, 2421 queries + 158 DML) + `TestPlanShapeGolden` (`plan_shape_golden_test.go`) — an
+  always-on, no-FDB snapshot net that fails on any un-blessed physical-plan-shape change and prints
+  the first divergence + a re-bless command. Red-verified (perturbed a plan line → RED; committed
+  golden → GREEN). This is the standing net every later RFC-190 commit is explain-diff'd against.
 
 **Doc rot + diagnostics:**
 - [ ] **190.13 (LOW)** — fix stale comments: `plandiff.go:10`/`runsql.go:84` "Java engine stubbed"
