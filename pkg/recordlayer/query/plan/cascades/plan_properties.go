@@ -631,15 +631,18 @@ func cardinalitiesFromChildRefOrInner(w physicalPlanExpression, plan plans.Recor
 }
 
 // childPlanIfUnambiguous returns the single concrete plan a child reference
-// resolves to, and true, only when that resolution is unambiguous and matches
-// what planFromQuantifier would return without tripping its
-// ≥2-distinct-final-plans panic. It mirrors planFromQuantifier's resolution
-// order: a group winner first; else exactly one distinct plan-typed FINAL member
-// (≥2 there is the onlyPlanFromFinalMembers panic case → ambiguous); else, with
-// NO plan among the final members, exactly one distinct plan-typed general member
-// (planFromQuantifier's firstPlanFromMembers path — MemoizeExpression can leave a
-// lone InitialOf(plan) exploratory member here during planning). Any other shape
-// (no plan, or ≥2 distinct competing plans) returns ok=false.
+// resolves to, and true, only when that resolution is UNAMBIGUOUS. It follows
+// planFromQuantifier's resolution ORDER — a group winner first; else exactly one
+// distinct plan-typed FINAL member (≥2 there is the onlyPlanFromFinalMembers
+// panic case → ambiguous); else, with NO plan among the final members, a lone
+// distinct plan-typed general member (the InitialOf(plan) exploratory shape
+// MemoizeExpression can leave during planning) — but is deliberately STRICTER
+// than planFromQuantifier at the last step: where firstPlanFromMembers would pick
+// an arbitrary first among ≥2 competing general members, this declines (ok=false),
+// because following an arbitrary member's cardinality would be unsound and
+// UnknownCardinalities is the M3 guard's safe direction. It therefore resolves
+// the same plan whenever it resolves, and never resolves a shape planFromQuantifier
+// panics on.
 func childPlanIfUnambiguous(ref *expressions.Reference) (plans.RecordQueryPlan, bool) {
 	if ref == nil {
 		return nil, false
