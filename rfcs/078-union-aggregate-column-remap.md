@@ -51,12 +51,12 @@ to the remap.
 Investigation during impl found the reproduced shape plans as `UnorderedUnion`
 (`RecordQueryUnorderedUnionPlan`), executed by `executeUnorderedUnion`
 (`executor_new_plans.go`) — which **concatenated branch cursors with NO column
-normalization at all**, unlike the ordered `RecordQueryUnionPlan`/`executeUnionStreaming`
+normalization at all**, unlike the sibling concat `RecordQueryUnionPlan`/`executeUnionStreaming`
 (which already remaps). So two changes:
 
 1. **`executeUnorderedUnion` remaps later branches to the first branch's column names by
    position** (`remapUnionColumnsByPosition`, keyed on `planColumnNamesWithMD`) — exactly
-   as the ordered union does. A no-op when names already agree (the common case). This
+   as the sibling concat union does. A no-op when names already agree (the common case). This
    fixes ALL union-by-name reads over differently-named branches, not just aggregates.
 
 2. **`planColumnNamesWithMD` reports a `*RecordQueryStreamingAggregationPlan`'s output
@@ -80,13 +80,13 @@ normalization at all**, unlike the ordered `RecordQueryUnionPlan`/`executeUnionS
   canonical `aggFunc(col)` name, never the alias (`rule_aggregate_data_access` drops it),
   so naming it by the alias would not match its row keys. Fixing it needs the index cursor
   to carry the alias first — not handled here; documented in TODO 7.6-union-remap.
-- **An ORDERED union of `Project([expr])`-over-aggregate branches** (e.g.
+- **A Go-specific concat union of `Project([expr])`-over-aggregate branches** (e.g.
   `SELECT COUNT(*)+1 AS x FROM a UNION ALL SELECT COUNT(*)+1 AS y FROM b`, read by name):
-  this plans as the ordered `Union(Project([(COUNT(*)+1)], StreamingAgg), …)` and returns
+  this plans as `Union(Project([(COUNT(*)+1)], StreamingAgg), …)` and returns
   `[NULL, NULL]` — the projection's `AS x` alias is not applied to the output row (the row
   is keyed by the expression text `(COUNT(*)+1)`), so a by-name read of `x` finds nothing.
   This is a SEPARATE pre-existing bug (verified `[NULL,NULL]` on master AND at this branch's
-  base, independent of the streaming-agg remap fixed here — different root cause: ordered-union
+  base, independent of the streaming-agg remap fixed here — different root cause: concat-union
   projection-alias application, not the unordered-union column remap). Filed as a follow-up;
   out of RFC-078 scope.
 - **Re-enabling the union-as-join-leg aggregate case** (relaxing the RFC-077

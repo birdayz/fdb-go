@@ -63,7 +63,7 @@ Comprehensive audit of Go's Cascades planner against Java's `fdb-record-layer-co
 | `RecordQueryTableFunctionPlan` | `RecordQueryTableFunctionPlan` | Aligned |
 | `RecordQueryIntersectionPlan` | `RecordQueryIntersectionPlan` | Aligned (unified) |
 | `RecordQueryMultiIntersectionOnValuesPlan` | `RecordQueryMultiIntersectionOnValuesPlan` | Aligned |
-| `RecordQueryUnionPlan` | `RecordQueryUnionPlan` | Aligned (unified) |
+| `RecordQueryUnionOnKeyExpressionPlan` / `RecordQueryUnionOnValuesPlan` | `RecordQueryMergeSortUnionPlan` | Ordered-union analogue; Java subclasses collapsed, with a Go-only no-dedup mode |
 | `RecordQueryUnorderedUnionPlan` | `RecordQueryUnorderedUnionPlan` | Aligned |
 | `RecordQueryInJoinPlan` | `RecordQueryInJoinPlan` | Aligned (3 Java subclasses collapsed) |
 | `RecordQueryInUnionPlan` | `RecordQueryInUnionPlan` | Aligned (2 Java subclasses collapsed) |
@@ -87,7 +87,7 @@ Comprehensive audit of Go's Cascades planner against Java's `fdb-record-layer-co
 | — | `RecordQueryProjectionPlan` | **Go extension** |
 | — | `RecordQuerySortPlan` | **Go extension** |
 | — | `RecordQueryValuesPlan` | **Go extension** |
-| — | `RecordQueryMergeSortUnionPlan` | **Go extension** |
+| — | `RecordQueryUnionPlan` | **Go extension:** keyless, orderless, no-dedup concat alternative |
 
 **32 Java plans aligned, 2 intentional divergences, 8 Go extensions.**
 
@@ -156,7 +156,9 @@ Comprehensive audit of Go's Cascades planner against Java's `fdb-record-layer-co
 
 ### Cost Model: PlanningCostModel.java vs planning_cost_model.go
 
-**DONE (swingshift-91).** All 16 criteria ported and wired in. Scalar `CostLess` retained as tiebreak fallback. 46/46 tests green. See D-4 in TODO.md.
+**DONE at swingshift-91; subsequently evolved.** Java criteria #1–#17 are accounted for.
+Go broadens/hoists join ordering and adds explicit sort-count, NLJ-predicate, and scalar-cost
+rungs; RFC-190 removed the non-transitive sort gates. See the live table in `DIVERGENCES.md`.
 
 ---
 
@@ -226,7 +228,7 @@ All Java fdb-record-layer-core Cascades types are ported. Every PlanningRuleSet 
 4. **SelectExpression decomposition** — Go uses ~25 extra rewrite rules for explicit operator types
 5. **NormalizePredicatesRule EXISTS guard** — Go guards against fixpoint-related structural invariant issues
 6. **WithPrimaryKeyDataAccessRule as explicit pass** — same inputs/outputs, different trigger mechanism
-7. **Plan hierarchy collapse** — Go unifies Java's class hierarchies (3 InJoin→1, 2 Union→1, etc.)
+7. **Plan hierarchy collapse** — 2 ordered Union subclasses → 1 `RecordQueryMergeSortUnionPlan`; Java unordered remains separate, and Go additionally has a keyless concat plan
 8. **Predicate simplification** — Go uses a dedicated engine vs Java's Cascades rules
 
 ### Truly out of scope (fdb-relational, NOT fdb-record-layer-core):

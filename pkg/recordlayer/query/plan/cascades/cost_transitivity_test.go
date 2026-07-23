@@ -9,21 +9,17 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// RFC-190 190.2 — cost-comparator transitivity.
+// RFC-190 190.2 — cost-comparator transitivity regression.
 //
-// planningCostModelCompareWith gates FIVE structural rungs (typeFilterDepth,
-// fetchDepth, distinctDepth, unmatchedFieldCount, mapFilter) on
-// "opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0", but the
-// inMemorySortCount TIEBREAK itself runs near the very end of the function —
-// AFTER several UNGATED rungs (the fetch-COUNT rung, inJoinCount,
-// nljPredicateCount). The result: a gated rung decides a sort-free pair
-// outright, but is SKIPPED for any pair where one side carries a sort,
-// letting a later ungated rung decide instead. Two different rungs governing
-// "the same slot" for different pairs of the same three plans is exactly how
-// a non-transitive relation (a 3-cycle) arises — pairwise antisymmetric,
-// globally inconsistent. A linear min-scan (findBestValidPhysicalExpr) has no
-// well-defined minimum over an intransitive relation, so plan choice becomes
-// order-dependent / nondeterministic.
+// Before 190.2, planningCostModelCompareWith gated five structural rungs
+// (typeFilterDepth, fetchDepth, distinctDepth, unmatchedFieldCount,
+// mapFilter) on both candidates being sort-free, while its inMemorySortCount
+// tiebreak ran after several ungated rungs. A gated rung could therefore
+// decide a sort-free pair but be skipped when either side carried a sort,
+// letting a different rung decide another pair in the same triple. That
+// produced a non-transitive 3-cycle and made linear minimum selection
+// insertion-order-dependent. The current comparator promotes sort count
+// ahead of every affected structural rung and makes those rungs unconditional.
 
 // planChainSpec builds a synthetic physical plan chain purely to exercise the
 // comparator's structural rungs. The leaf is always a single non-covering,
@@ -184,17 +180,18 @@ type namedPlan struct {
 // same slot" this whole fix targets.
 //
 //	D2 = IndexScan (bare leaf)                    sort=0 inJoinCount=0 fetchDepth=0
-//	E2 = InJoin(IndexScan)                         sort=0 inJoinCount=1 fetchDepth=1
-//	F2 = InMemorySort(InJoin(IndexScan))           sort=1 inJoinCount=1 fetchDepth=1 (irrelevant — gate skipped)
+//	E2 = Map(InJoin(IndexScan))                    sort=0 inJoinCount=1 fetchDepth=2
+//	F2 = InMemorySort(Map(InJoin(IndexScan)))      sort=1 inJoinCount=1 fetchDepth=2 (irrelevant — gate skipped)
 //
 // Under the PRE-190.2 comparator (gated depth rungs, inMemorySortCount at
 // its OLD low position, matching oldGatedCompare in the fix's derivation):
 //
 //	compare(D2,E2): both sort=0 -> fetchDepth GATE ACTIVE ("shallower wins"):
-//	                depth(D2)=0 < depth(E2)=1 -> D2 wins -> compare(D2,E2) = -1  (D2<E2)
+//	                depth(D2)=0 < depth(E2)=2 -> D2 wins -> compare(D2,E2) = -1  (D2<E2)
 //	compare(E2,F2): F2.sort=1  -> fetchDepth GATE SKIPPED. fetch-COUNT ties (1=1, same
-//	                underlying IndexScan+InJoin core). inJoinCount TIES too (1=1 — F2 is
-//	                literally E2 wrapped in a sort, so wrapping adds no InJoin). Falls all
+//	                underlying Map+IndexScan+InJoin core). inJoinCount and mapCount TIE too
+//	                (F2 is literally E2 wrapped in a sort). The Map roots deliberately keep
+//	                compareInPlan from intercepting this structural regression. Falls all
 //	                the way to the OLD low-position inMemorySortCount rung: sort(E2)=0 <
 //	                sort(F2)=1 -> E2 wins -> compare(E2,F2) = -1  (E2<F2)
 //	compare(F2,D2): F2.sort=1  -> fetchDepth GATE SKIPPED. fetch-COUNT ties (1=1). This
@@ -208,22 +205,26 @@ type namedPlan struct {
 //	single alternate fallback as in A/B/C.
 func buildFetchDepthInJoinCycle() []namedPlan {
 	d2 := plans.NewRecordQueryIndexPlan("idx_D2", nil, []string{"T"}, values.UnknownType, false)
-	e2 := plans.NewRecordQueryInJoinPlan(
-		plans.NewRecordQueryIndexPlan("idx_E2", nil, []string{"T"}, values.UnknownType, false),
-		"b", false, false)
-	f2 := plans.NewRecordQueryInMemorySortPlan(
+	e2 := plans.NewRecordQueryMapPlan(
 		plans.NewRecordQueryInJoinPlan(
-			plans.NewRecordQueryIndexPlan("idx_F2", nil, []string{"T"}, values.UnknownType, false),
+			plans.NewRecordQueryIndexPlan("idx_E2", nil, []string{"T"}, values.UnknownType, false),
 			"b", false, false),
+		nil)
+	f2 := plans.NewRecordQueryInMemorySortPlan(
+		plans.NewRecordQueryMapPlan(
+			plans.NewRecordQueryInJoinPlan(
+				plans.NewRecordQueryIndexPlan("idx_F2", nil, []string{"T"}, values.UnknownType, false),
+				"b", false, false),
+			nil),
 		nil)
 	return []namedPlan{
 		{name: "D2_bare_leaf", plan: d2},
-		{name: "E2_injoin_leaf", plan: e2},
-		{name: "F2_sorted_injoin_leaf", plan: f2},
+		{name: "E2_map_injoin_leaf", plan: e2},
+		{name: "F2_sorted_map_injoin_leaf", plan: f2},
 	}
 }
 
-// buildTransitivityCorpus returns the diverse plan set TestCostModel_ComparatorTransitivity
+// buildTransitivityCorpus returns the diverse plan set TestCostModel_SortGateCycleRegression
 // scans. Plans "A", "B", "C" are the PINNED minimal 3-cycle (see the derivation in the
 // comparator-order trace below); the rest are structural-diversity filler that broadens
 // the brute-force pairwise/triple sweep without being load-bearing for the pinned cycle.
@@ -285,7 +286,7 @@ func buildTransitivityCorpus() ([]namedPlan, PlanContext) {
 		// 190.2 Verify step 1): a pushdown-split proxy — one vs two
 		// zero-predicate PredicatesFilter nodes (CNF size 0, so criterion #3
 		// ties) — in both sort-free and sorted flavors, exercising the
-		// STILL-GATED mapFilter rung (#14) plus its interaction with the
+		// now-ungated mapFilter rung (#14) plus its interaction with the
 		// now-ungated depth rungs above it. ---
 		{name: "split1_sortfree", sorted: false, typeFilter: true, predFilterNodes: 1},
 		{name: "split2_sortfree", sorted: false, typeFilter: true, predFilterNodes: 2},
@@ -295,10 +296,18 @@ func buildTransitivityCorpus() ([]namedPlan, PlanContext) {
 
 	ctx := buildTransitivityCtx(specs)
 
-	out := make([]namedPlan, 0, len(specs)+2)
+	out := make([]namedPlan, 0, len(specs)+6)
 	for _, s := range specs {
 		out = append(out, namedPlan{name: s.name, plan: s.build()})
 	}
+	// Deliberate comparator-equivalent clone. The stable hash includes index
+	// identity, so independently named candidates otherwise never tie and a
+	// tie-consistency loop would be vacuous.
+	out = append(out, namedPlan{
+		name: "sf_tf0_f0_equivalent",
+		plan: plans.NewRecordQueryIndexPlan(
+			"idx_sf_tf0_f0", nil, []string{"T"}, values.UnknownType, false),
+	})
 	// NLJ diversity — nljPredicateCount / join-shape coverage.
 	out = append(out, namedPlan{name: "nlj_1pred", plan: nljPlan("nlj1", 1)})
 	out = append(out, namedPlan{name: "nlj_3pred", plan: nljPlan("nlj3", 3)})
@@ -323,20 +332,20 @@ func planProfile(p plans.RecordQueryPlan, ctx PlanContext) string {
 		c.nljPredicateCount, c.unmatchedFieldCount)
 }
 
-// TestCostModel_ComparatorTransitivity is the RFC-190 190.2 RED/GREEN test.
-// It brute-forces every pair (antisymmetry) and every triple (no 3-cycle) over
-// a diverse corpus of physical plan chains built specifically to exercise the
-// FIVE sort-gated structural rungs (typeFilterDepth, fetchDepth, distinctDepth,
-// unmatchedFieldCount, mapFilter) against the UNGATED rungs beneath them
-// (fetch-count, inJoinCount, nljPredicateCount) and the sort-count tiebreak
-// that currently sits AFTER all of them.
+// TestCostModel_SortGateCycleRegression is the RFC-190 190.2 RED/GREEN test.
+// It brute-forces every pair and triple over a diverse corpus of physical plan
+// chains, asserting antisymmetry, strict-order transitivity, and consistency
+// of comparator ties. The corpus exercises the five formerly sort-gated
+// structural rungs against the later rungs that exposed the old cycle. It is
+// deliberately an all-index, sort-gate-scoped corpus; it does not claim a
+// global total-order contract across Java's retained applicability gates.
 //
-// Before the RFC-190 190.2 fix (moving the sort-count tiebreak to just after
+// Before the RFC-190 190.2 fix (moving the sort-count tiebreak to just before
 // the typeFilterCount rung, and dropping the now-moot per-rung sort gates),
 // this test finds a genuine 3-cycle: plans A, B, C with compare(A,B)<0,
 // compare(B,C)<0, compare(C,A)<0 — see buildTransitivityCorpus's doc comment
 // for the exact rung-by-rung derivation.
-func TestCostModel_ComparatorTransitivity(t *testing.T) {
+func TestCostModel_SortGateCycleRegression(t *testing.T) {
 	t.Parallel()
 
 	corpus, ctx := buildTransitivityCorpus()
@@ -355,6 +364,35 @@ func TestCostModel_ComparatorTransitivity(t *testing.T) {
 			cmp[i][j] = planningCostModelCompareWith(corpus[i].plan, corpus[j].plan, nil, ctx)
 		}
 	}
+	less := func(i, j int) bool { return cmp[i][j] < 0 }
+
+	// Pin the repaired orientation of both pre-190.2 cycles explicitly; the
+	// property sweep below must not be allowed to pass after corpus drift has
+	// accidentally removed either load-bearing triple.
+	byName := make(map[string]int, n)
+	for i, candidate := range corpus {
+		byName[candidate.name] = i
+	}
+	assertLess := func(left, right string) {
+		t.Helper()
+		i, iOK := byName[left]
+		j, jOK := byName[right]
+		if !iOK || !jOK {
+			t.Fatalf("missing pinned candidate(s): %q=%v %q=%v", left, iOK, right, jOK)
+		}
+		if !less(i, j) {
+			t.Errorf("pinned order: compare(%s,%s)=%d, want < 0\n  %s: %s\n  %s: %s",
+				left, right, cmp[i][j],
+				left, planProfile(corpus[i].plan, ctx),
+				right, planProfile(corpus[j].plan, ctx))
+		}
+	}
+	assertLess("A_sortfree_deepTF_fetch2", "B_sortfree_shallowTF_fetch0")
+	assertLess("B_sortfree_shallowTF_fetch0", "C_sorted_TF_fetch1")
+	assertLess("A_sortfree_deepTF_fetch2", "C_sorted_TF_fetch1")
+	assertLess("D2_bare_leaf", "E2_map_injoin_leaf")
+	assertLess("E2_map_injoin_leaf", "F2_sorted_map_injoin_leaf")
+	assertLess("D2_bare_leaf", "F2_sorted_map_injoin_leaf")
 
 	// --- Property 1: antisymmetry. compare(a,b) == -compare(b,a). ---
 	antisymViolations := 0
@@ -362,50 +400,82 @@ func TestCostModel_ComparatorTransitivity(t *testing.T) {
 		for j := i + 1; j < n; j++ {
 			if cmp[i][j] != -cmp[j][i] {
 				antisymViolations++
-				t.Errorf("ANTISYMMETRY VIOLATION: compare(%s,%s)=%d but compare(%s,%s)=%d (want %d)\n  %s: %s\n  %s: %s",
-					corpus[i].name, corpus[j].name, cmp[i][j],
-					corpus[j].name, corpus[i].name, cmp[j][i], -cmp[i][j],
-					corpus[i].name, planProfile(corpus[i].plan, ctx),
-					corpus[j].name, planProfile(corpus[j].plan, ctx))
+				if antisymViolations <= 20 {
+					t.Errorf("ANTISYMMETRY VIOLATION: compare(%s,%s)=%d but compare(%s,%s)=%d (want %d)\n  %s: %s\n  %s: %s",
+						corpus[i].name, corpus[j].name, cmp[i][j],
+						corpus[j].name, corpus[i].name, cmp[j][i], -cmp[i][j],
+						corpus[i].name, planProfile(corpus[i].plan, ctx),
+						corpus[j].name, planProfile(corpus[j].plan, ctx))
+				}
 			}
 		}
 	}
 
-	// --- Property 2: transitivity (no 3-cycle). ---
-	// For every ordered triple (i,j,k), it must NOT be the case that
-	// compare(i,j)<0 && compare(j,k)<0 && compare(k,i)<0 (a forward 3-cycle);
-	// checking every ordered triple also catches the reverse cycle (it shows
-	// up as a forward cycle on the reversed triple).
-	cycles := 0
+	// --- Property 2: strict-order transitivity. ---
+	// If i < j and j < k, then i must be strictly less than k. Requiring a
+	// strict result catches both a 3-cycle and the subtler i < j < k but
+	// i ties k case that would still make minimum selection order-dependent.
+	transitivityViolations := 0
 	for i := 0; i < n; i++ {
 		for j := 0; j < n; j++ {
-			if j == i {
-				continue
-			}
 			for k := 0; k < n; k++ {
-				if k == i || k == j {
-					continue
-				}
-				if cmp[i][j] < 0 && cmp[j][k] < 0 && cmp[k][i] < 0 {
-					cycles++
-					t.Errorf("TRANSITIVITY VIOLATION (3-cycle): %s < %s < %s < %s\n"+
-						"  compare(%s,%s)=%d compare(%s,%s)=%d compare(%s,%s)=%d\n"+
-						"  %s: %s\n  %s: %s\n  %s: %s",
-						corpus[i].name, corpus[j].name, corpus[k].name, corpus[i].name,
-						corpus[i].name, corpus[j].name, cmp[i][j],
-						corpus[j].name, corpus[k].name, cmp[j][k],
-						corpus[k].name, corpus[i].name, cmp[k][i],
-						corpus[i].name, planProfile(corpus[i].plan, ctx),
-						corpus[j].name, planProfile(corpus[j].plan, ctx),
-						corpus[k].name, planProfile(corpus[k].plan, ctx))
+				if less(i, j) && less(j, k) && !less(i, k) {
+					transitivityViolations++
+					if transitivityViolations <= 20 {
+						t.Errorf("TRANSITIVITY VIOLATION: %s < %s and %s < %s, but compare(%s,%s)=%d\n"+
+							"  compare(%s,%s)=%d compare(%s,%s)=%d\n"+
+							"  %s: %s\n  %s: %s\n  %s: %s",
+							corpus[i].name, corpus[j].name, corpus[j].name, corpus[k].name,
+							corpus[i].name, corpus[k].name, cmp[i][k],
+							corpus[i].name, corpus[j].name, cmp[i][j],
+							corpus[j].name, corpus[k].name, cmp[j][k],
+							corpus[i].name, planProfile(corpus[i].plan, ctx),
+							corpus[j].name, planProfile(corpus[j].plan, ctx),
+							corpus[k].name, planProfile(corpus[k].plan, ctx))
+					}
 				}
 			}
 		}
 	}
 
-	if antisymViolations == 0 && cycles == 0 {
-		t.Logf("no violations found across %d plans (%d pairs, %d ordered triples)", n, n*(n-1)/2, n*(n-1)*(n-2))
+	// --- Property 3: tie consistency. ---
+	// Comparator equality must be substitutable: if i ties j, every third
+	// candidate k must relate to i and j in the same direction. This also
+	// implies transitivity of the induced equivalence relation.
+	tieViolations := 0
+	tiesChecked := 0
+	for i := 0; i < n; i++ {
+		for j := i + 1; j < n; j++ {
+			if less(i, j) || less(j, i) {
+				continue
+			}
+			tiesChecked++
+			for k := 0; k < n; k++ {
+				if less(i, k) != less(j, k) || less(k, i) != less(k, j) {
+					tieViolations++
+					if tieViolations <= 20 {
+						t.Errorf("TIE-CONSISTENCY VIOLATION: %s ~ %s, but their relation to %s differs\n"+
+							"  compare(%s,%s)=%d compare(%s,%s)=%d\n"+
+							"  compare(%s,%s)=%d compare(%s,%s)=%d",
+							corpus[i].name, corpus[j].name, corpus[k].name,
+							corpus[i].name, corpus[k].name, cmp[i][k],
+							corpus[j].name, corpus[k].name, cmp[j][k],
+							corpus[k].name, corpus[i].name, cmp[k][i],
+							corpus[k].name, corpus[j].name, cmp[k][j])
+					}
+				}
+			}
+		}
+	}
+	if tiesChecked == 0 {
+		t.Error("tie-consistency corpus is vacuous: no equivalent candidate pair")
+	}
+
+	if antisymViolations == 0 && transitivityViolations == 0 && tieViolations == 0 {
+		t.Logf("strict weak ordering holds across the scoped %d-plan corpus (%d pairs, %d ordered triples, %d ties)",
+			n, n*(n-1)/2, n*(n-1)*(n-2), tiesChecked)
 	} else {
-		t.Logf("found %d antisymmetry violations and %d 3-cycles across %d plans", antisymViolations, cycles, n)
+		t.Logf("found %d antisymmetry, %d transitivity, and %d tie-consistency violations across %d plans",
+			antisymViolations, transitivityViolations, tieViolations, n)
 	}
 }

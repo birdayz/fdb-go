@@ -1,7 +1,8 @@
 # RFC-190 — Cascades quality audit v2
 
 Status: **Implementing** (Graefe ACK + Torvalds ACK on the RFC; **190.1 milestone Graefe+Torvalds ACK
-on `95598761f`** — codex + @claude at PR). Landed: 190.12 golden, 190.13 docs, 190.1 (N-way EXISTS).
+on `95598761f`** — codex + @claude at PR). Landed: 190.12 golden, 190.13 docs, 190.1 (N-way EXISTS),
+and 190.2 (cost-comparator transitivity).
 190.1 was **materially re-designed** after its original delete premise proved false (the arm's
 "never produced an executable plan" gravestone is a lie — deleting it regresses working FDB tests).
 The new 190.1 (converge on Java's two-rule architecture via a guarded `PartitionSelectRule`) carries
@@ -10,7 +11,7 @@ merge-case hole; round 2 ACK: the live-existential guard verified airtight) **an
 (three impl-discipline conditions folded: Step 1+2 atomic, Step 3 helper-reference proof, Step 5 1M
 stress gate; LOC corrected to arm 388 / wrap 477).
 
-**190.1 IMPLEMENTED (Step 1 core + the arm retirement) — awaiting the milestone review lap.** The
+**190.1 MILESTONE COMPLETE (Step 1 core + the arm retirement).** The
 direct-emit + guard + arm-retirement landed atomically; the full N-way matrix returns correct rows
 (comma-join projected EXISTS was crash→`[100|true,200|false,300|true]`; buried_inner PK no longer
 panics; `_Discriminating`, WHERE-EXISTS, NOT-EXISTS, 4-leg all green), the plan-shape golden is
@@ -28,7 +29,8 @@ design did NOT anticipate, both folded and flagged for the review lap:
   and yielded malformed plans on 7 existing tests. Scoped to `existentialCount==1 && foreachCount<=2`
   (keep the working 2-way case on the arm; partition only the genuine N-way, `foreachCount>2`). The
   guard's correctness proof is unaffected (the 2-way case never reaches it). Full 2-way convergence
-  (retire the 2-way arm too) is a separable follow-on.
+  (retire the 2-way arm too) is a tracked follow-on; the milestone review accepted the scoped bail
+  as the correct intermediate state.
 
 **190.1 MILESTONE REVIEW LAP: Graefe ACK + Torvalds ACK on HEAD `95598761f`** (1M stress green =
 Torvalds condition C satisfied). Graefe: direct-emit faithful to `QueryVisitor.java:429-434`, guard
@@ -200,12 +202,12 @@ explicit hazard-bipartition probe on Graefe's `{a,δ}` shape (correct rows + pla
 that proves the *guard* (not the coincidental positive-case fallback) carries correctness, SARG
 plan-shape assertions, and full-corpus explain-diff gating Steps 3-4.
 
-### 190.2 (MED, unpinned) — cost-comparator transitivity
+### 190.2 (MED) — cost-comparator transitivity
 
-`planning_cost_model.go` gates five structural rungs on `opsA.inMemorySortCount == 0 &&
+Before 190.2, `planning_cost_model.go` gated five structural rungs on `opsA.inMemorySortCount == 0 &&
 opsB.inMemorySortCount == 0` (`:286` typeFilterDepth, `:302` fetchDepth, `:315` distinctDepth,
-`:320` unmatchedField, `:337` mapFilter). A conditionally-skipped rung breaks transitivity.
-**Concrete cycle** (constructed, will be the red test): plans A, B both sort-free and tied on
+`:320` unmatchedField, `:337` mapFilter). A conditionally-skipped rung broke transitivity.
+**Concrete cycle** (the RED regression): plans A, B both sort-free and tied on
 rungs 1–5; A beats B on the gated `typeFilterDepth` rung (`:286`); B beats A on the ungated
 `fetchCount` rung (`:306`) — which never evaluates for the A,B pair because `:286` short-circuits.
 Introduce C carrying a sort with `fetchCount == fetchB < fetchA`, tied to both on rungs 1–5:
@@ -232,10 +234,40 @@ both plans are index-based), so it stays for parity even though it is technicall
 The claim is therefore "removes the Go-specific sort-gate intransitivity," **not** "provably total"
 (the Java-inherited index-scan conditional is retained by design). Verify no unexplained corpus flip
 via explain-diff; Java-verify any flip.
-Regression: `TestCostModel_ComparatorTransitivity` — a property test over generated op-profiles
+Regression: `TestCostModel_SortGateCycleRegression` — a property test over generated op-profiles
 asserting antisymmetry + transitivity, **scoped to the sort-class fix** (the A/B/C sort-gate cycle
-above), RED on current code. The test must not flag a cycle arising solely from the Java-faithful
+above), RED on the pre-190.2 comparator and GREEN on the implementation. The test must not flag a cycle arising solely from the Java-faithful
 `:291` index-scan conditional as a Go defect.
+
+**Implementation/review outcome.** Landed in `cebcbd94b`: sort-invariant concrete depth, the five
+Go-specific sort gates removed, `inMemorySortCount` promoted before the sort-blind structural block,
+and Java's missing primary-scan `unmatchedFieldsCount` branch ported. The regression corpus covers
+34 real plans / 35,904 ordered triples, including two sort-bearing cycles and a deliberate comparator
+tie; yamsql 338/338, the full
+hook/live Java row conformance, and 1M stress are green. The review delta also makes the logical memo
+fallback (`expressionDepthRec`) sort-transparent; its dedicated test is RED on `cebcbd94b` and GREEN
+with the fold.
+
+The one unexplained golden flip was root-caused rather than waved through. For
+`union_aggregate_java#3`, the old `UnorderedUnion` and new Go `Union` candidates tie on scan count,
+covering-index count, sort count, residuals, and unmatched fields. The newly ungated fetch-depth rung
+decides: old depth 5, new depth 4, because the indexed arm in the new candidate has one fewer
+projection. Neither sort transparency nor the new scan unmatched-field arm causes the flip. Go's
+`RecordQueryUnionPlan` is not an ordered merge: it has no comparison keys or ordering hint, executes
+through `executeUnionStreaming`/`ConcatCursors`, and shares the unordered plan's union cost. The
+partial `StreamingAgg` already existed in both goldens. Live Java rejects the exact grouped
+aggregate-over-union query as unable to plan; Java's rules and analogous upstream fixtures select
+`ImplementUnorderedUnionRule` for a bare logical union. Verdict: a benign wrapper-shallower concat
+winner, not redundant ordering, so no comparator special case is warranted.
+
+**Follow-on (taxonomy, outside the 190.2 cost fix):** Go currently has two bare concat UNION ALL
+plans/rules: Java-aligned `RecordQueryUnorderedUnionPlan`/`ImplementUnorderedUnionRule` and the
+Go-specific `RecordQueryUnionPlan`/`ImplementUnionRule`. Retire or rename the duplicate path in a
+separate architecture change; until then it is documented as an extension, never as Java's ordered
+union.
+
+**190.2 FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.** The complete `just test`
+gate is green (56/56 targets).
 
 ### 190.3 (MED, narrow) — partial-PK prefix scan mispriced as a point probe
 

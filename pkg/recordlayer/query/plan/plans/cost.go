@@ -332,12 +332,12 @@ func unionLikeCost(child []properties.Cost) properties.Cost {
 	}
 }
 
-// HintCost: every leg is scanned and merged.
+// HintCost: every leg is scanned and concatenated.
 func (p *RecordQueryUnionPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	return unionLikeCost(child)
 }
 
-// HintCost: every leg is scanned and merged.
+// HintCost: every leg is scanned and concatenated.
 func (p *RecordQueryUnorderedUnionPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	return unionLikeCost(child)
 }

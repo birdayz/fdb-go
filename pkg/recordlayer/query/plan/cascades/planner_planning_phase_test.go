@@ -81,7 +81,7 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 	// below can no longer pin per-implementation visibility — physical
 	// yields land ONLY in FinalMembers and OptimizeGroup prunes finals to
 	// the winner (Java's prune-to-1), so the unordered wrapper may lose
-	// to the sibling ordered-union implementation and vanish from
+	// to Go's sibling concat-union implementation and vanish from
 	// AllMembers(). Fire the rule directly to pin that it FORMS.
 	{
 		wA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
@@ -116,7 +116,7 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 	}
 
 	// WINNER SHAPE: after the full planner run, SOME physical union
-	// implementation (unordered or ordered — whichever the cost model
+	// implementation (either concat variant — whichever the cost model
 	// keeps) must survive in the root's members with a valid 2-child plan.
 	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
 	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
@@ -150,7 +150,7 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 		for i, f := range finals {
 			types[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected a physical union wrapper (unordered or ordered) in members, got types: %v", types)
+		t.Fatalf("expected a physical concat-union wrapper in members, got types: %v", types)
 	}
 	kids, ok := unionPlan.(interface {
 		GetChildren() []plans.RecordQueryPlan

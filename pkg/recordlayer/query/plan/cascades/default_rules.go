@@ -189,7 +189,9 @@ func PlanningExplorationRules() []ExpressionRule {
 // PLANNING phase via WithPlanningExpressionRules. They yield to
 // InsertFinal so their results land in FinalMembers.
 //
-// Matches Java's PlanningRuleSet.IMPLEMENTATION_RULES.
+// Uses Java's PlanningRuleSet.IMPLEMENTATION_RULES as its base. Documented Go
+// extensions are included where the read-side architecture differs; notably,
+// NewImplementUnionRule emits Go's additional concat UNION ALL plan.
 func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),

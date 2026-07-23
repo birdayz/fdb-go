@@ -68,7 +68,7 @@ grouped case is the deferred follow-up (a).
 `planColumnNamesWithMD`, which RFC-078 taught to report a StreamingAgg's *output* schema. For an
 unordered union of StreamingAgg branches over differently-named inners, that would build a rename
 `MapPlan` reading columns absent from the aggregate row → NULLs. (In practice such unions plan as the
-ordered `Union`, whose executor path already remaps correctly — the reproduction returns correct rows
+Go `Union` concat alternative, whose executor path already remaps correctly — the reproduction returns correct rows
 — so this is a latent inconsistency, not a triggered bug; but the gate relax widens the
 aggregate-union surface, so it is fixed here.) The fix: `physicalPlanColumnNames` returns nil for a
 StreamingAgg (does not unwrap), deferring that branch's normalization to the executor's position-remap

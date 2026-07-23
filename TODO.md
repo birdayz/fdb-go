@@ -17,7 +17,7 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
 → milestone review lap → @claude LGTM. Grind order = severity (correctness first).
 
 **Correctness:**
-- [ ] **190.1 (HIGH) — RE-SCOPED; original delete premise INVALIDATED (do not delete the arm).**
+- [x] **190.1 (HIGH) — DONE; original delete premise INVALIDATED (do not delete the arm).**
   The RFC-190 delete plan (Graefe-ACKed) rested on the arm's own gravestone: *"HAS NEVER PRODUCED
   AN EXECUTABLE PLAN."* **That gravestone is FALSE.** Attempting the delete broke two FDB tests:
   `TestFDB_BuriedInnerJoinProjectedExists` and `_Discriminating` (`0AF00: could not plan query`) —
@@ -81,7 +81,7 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   notes booked. See RFC §190.1 FU-1..FU-4: (FU-1) fix positionalMergeCase 2-alias existential correlation
   then retire the 2-way arm (full convergence); (FU-2) rename `qualifyOuterPositional`→`qualifyPositional`;
   (FU-3) extract direct-emit/AXIS-1 shared ~12 lines; (FU-4) retire the WHERE-EXISTS gathered-cluster wrap.
-- [x] **190.2 (MED, unpinned hazard) — DONE (impl; awaiting review lap).** Cost-comparator
+- [x] **190.2 (MED) — DONE (implementation + review findings folded).** Cost-comparator
   transitivity. The 5 sort-count-gated rungs made the relation non-transitive (verified: real
   3-cycles → arbitrary/nondeterministic winner). Fixed per Graefe's 3-round ruling (root cause: Go's
   `ImplementInMemorySortRule` is a read-side extension Java has no cost rung for; Java's ordinal rungs
@@ -92,15 +92,30 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   a redundant sort before the sort-blind rungs; lexicographic reorder, preserves transitivity); (3)
   found+fixed a **real Java-parity bug** — `unmatchedFieldsCount` was missing Java's
   `RecordQueryScanPlan` branch (`UnmatchedFieldsCountProperty.java:96-119`). Pinned by
-  `cost_transitivity_test.go` (33 plans, 32736 triples, incl. two sort-bearing 3-cycles), RED→GREEN.
+  `TestCostModel_SortGateCycleRegression` (34 plans, 35,904 triples, incl. two explicitly pinned
+  sort-bearing 3-cycles), RED→GREEN.
   Golden re-blessed: 7 flips, all rows-correct (yamsql 338/338) — 6 are sort-elimination/InUnion
   improvements or benign (Graefe-verified); the `covering_index_java` regression REVERTED (fix 2). Two
   stale `plan_contains: InJoin` pins re-pinned per Graefe (the InJoin re-scanned per IN-value / provided
   no order — the old sort-gate resurrected the worse plan; Java produces InUnion/filtered-scan).
-  **Follow-up (booked): `union_aggregate_java#3` UnorderedUnion→Union+partial-agg flip** — un-traced,
-  rows-correct, un-pinned, Graefe ruled not-a-blocker; verify the plan shape vs Java (likely the
-  Java-faithful `unmatchedFieldsCount` fix moving Go toward Java). NEXT: 1M stress + review lap
-  (Graefe delta-confirm the evolved impl + Torvalds + codex).
+  The review lap found and closed two final gaps. The logical memo fallback
+  (`expressionDepthRec`) now treats `InMemorySort` as transparent too, pinned RED→GREEN by
+  `TestExpressionDepth_LogicalFallbackSortTransparent`. The previously unexplained
+  `union_aggregate_java#3` flip is benign and fully traced: both candidates have one sort and the
+  same scan/index/unmatched-field profile; ungating Java's fetch-depth rung makes the Go
+  `RecordQueryUnionPlan` candidate win at depth 4 over `RecordQueryUnorderedUnionPlan` at depth 5
+  because its indexed arm has one fewer projection. Go's `RecordQueryUnionPlan` is not Java's
+  ordered merge here — it has no comparison key/ordering hint and executes through
+  `executeUnionStreaming`/`ConcatCursors`, with the same union cost as the unordered sibling.
+  Live Java cannot plan this exact aggregate-over-union query; Java's rule set and analogous
+  upstream fixtures use `ImplementUnorderedUnionRule`. The partial `StreamingAgg` was present
+  before and after. No redundant-order regression and no cost change required.
+  **Follow-on (taxonomy, not a 190.2 cost fix):** retire or rename Go's duplicate concat
+  `RecordQueryUnionPlan`/`ImplementUnionRule` path. Java implements a bare logical UNION only as
+  `RecordQueryUnorderedUnionPlan`; until convergence, comments and `DIVERGENCES.md` explicitly mark
+  the extra Go candidate instead of calling it ordered or Java-aligned.
+  **FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.** Full `just test`:
+  56/56 targets green.
 - [ ] **190.3 (MED, narrow)** — partial-PK prefix scan priced as a 1-row point probe in the
   metadata-unaware path (`plans/cost.go:31-36` `HintCost`), inconsistent with the ctx-aware path
   RFC-186 §2B fixed; criterion #2 abstains for two-unbounded comparisons, leaving a scalar-fallback
@@ -5052,11 +5067,11 @@ so the index-probe variant is both cheaper AND resolvable.
   - [ ] **Follow-up (RFC-083): replace the guard + `AggregateSlots` marker with Java's `PromoteValue` projection nodes** — the single mechanism that both rejects-at-plan and widens-at-runtime, dissolving the dual lattice-encoding (guard + converters) and the load-bearing "aggregate-slot ⇒ guard" coupling (Graefe's end-state). Subsumes reliably typing `FieldValue`/`ArithmeticValue` projections, which then closes the **residual deferred cases**: bare-column `SELECT double_col → BIGINT` over an empty source, and `UPDATE … SET int_col = <double-expr>` — both currently rely on the runtime converter (correct for non-empty rows, miss the 0-row case).
   - [ ] **Follow-up (RFC-083): bare GROUP BY-aggregate INSERT…SELECT source.** `INSERT … SELECT g, AVG(v) … GROUP BY g` has a `LogicalAggregate` as the insert Source (no `LogicalProject`), so the guard can't read column order and defers it (runtime rejects the non-empty case). Also observed a possible PK-mapping/grouping anomaly on that execution path (a 23505 where the rows shouldn't collide) — investigate separately.
   - [ ] **Adjacent (separate index-type bug): `GetIndexTypeName` hardcodes `MIN_EVER_LONG`/`MAX_EVER_LONG`** — MIN/MAX over a non-long operand needs `MIN_EVER_TUPLE` (Java `permuted_min/max`).
-- [x] **🚩 TODO 7.6-union-remap — aggregate UNION branch with a mismatched output alias drops rows (pre-existing executor gap).** Fixed for STREAMING aggregates in **RFC-078**: (1) `executeUnorderedUnion` (executor_new_plans.go) now remaps later branches' columns to the first branch's names by position — it previously concatenated branch cursors with NO normalization at all (unlike the ordered `RecordQueryUnionPlan`/`executeUnionStreaming`); (2) `planColumnNamesWithMD` (executor.go) reports a `RecordQueryStreamingAggregationPlan`'s output names (group keys + alias-or-canonical) instead of descending through `GetInner()` to the input scan. `SELECT u.x FROM (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) u` now returns both counts (was `[2, NULL]`). Pinned by `TestFDB_UnionAggregateColumnRemap`. Graefe + Torvalds ACK.
+- [x] **🚩 TODO 7.6-union-remap — aggregate UNION branch with a mismatched output alias drops rows (pre-existing executor gap).** Fixed for STREAMING aggregates in **RFC-078**: (1) `executeUnorderedUnion` (executor_new_plans.go) now remaps later branches' columns to the first branch's names by position — it previously concatenated branch cursors with NO normalization at all (unlike the sibling concat `RecordQueryUnionPlan`/`executeUnionStreaming`); (2) `planColumnNamesWithMD` (executor.go) reports a `RecordQueryStreamingAggregationPlan`'s output names (group keys + alias-or-canonical) instead of descending through `GetInner()` to the input scan. `SELECT u.x FROM (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) u` now returns both counts (was `[2, NULL]`). Pinned by `TestFDB_UnionAggregateColumnRemap`. Graefe + Torvalds ACK.
   - [x] **Follow-up (RFC-078) c — FIXED in RFC-080: re-enable the union-as-join-leg / derived-table aggregate case for UNGROUPED aggregates.** The gate's `LogicalAggregate` case is hit only by a *bare* aggregate branch (no Project). Graefe's review caught that a bare aggregate can be GROUPED (an unaliased, all-visible `SELECT g, COUNT(*) FROM t GROUP BY g` skips `buildSelectShell`'s stripping Project). Only the UNGROUPED sub-shape is safe to normalize: an ungrouped aggregate produces **no** aggregate-index candidate (`tryAggregateIndexCandidate` returns nil when `groupingCount == 0`, `cascades_generator.go`), so it always plans as StreamingAgg, which flows every aggregate under its alias (RFC-078). So `unionBranchNormalizable`'s `LogicalAggregate` arm relaxed from `false` to `len(Aggregates) >= 1 && len(GroupKeys) == 0`. `TestFDB_UnionJoinLeg` case (3) flipped clean-error→correct-rows. Pinned by `TestFDB_UnionScalarAggregateAlias` (single + multi ungrouped unions read by name + no-AggregateIndex invariant), `TestFDB_UnionGroupedAggregateStillGated` (grouped union, which DOES plan as AggregateIndex, stays gated), `TestUnionBranchNormalizable_AggregateArity`. plandiff byte-identical. Graefe + Torvalds ACK.
     - [x] **Follow-up (a) — GROUPED bare aggregate union by name — FIXED in RFC-081.** A bare GROUPED aggregate union branch (`SELECT g, COUNT(*) FROM a GROUP BY g UNION ALL …` read by name) plans as `AggregateIndex` (single agg) or `MultiIntersection`/`StreamingAgg` (multi agg). The fix was *reporting*, not cursor changes: the AggregateIndex and MultiIntersection cursors already write rows keyed by their output names (group cols + canonical aggregate name; a bare aggregate is always unaliased, so no alias to carry). Added `RecordQueryAggregateIndexPlan.OutputColumnNames()` + `planColumnNamesWithMD` arms for AggregateIndex (group cols + `CanonicalAggColumnName`) and MultiIntersection (result-value field names, verbatim), then dropped the `len(GroupKeys) == 0` clause → gate is now `len(Aggregates) >= 1`. `TestFDB_UnionGroupedAggregate` (single + multi grouped union join legs, mismatched group-key names → correct rows; EXPLAIN-pins AggregateIndex), `TestPlanColumnNames_{AggregateIndexReportsOutputSchema,MultiIntersectionReportsResultValueNames}`, `TestAggregateIndexPlan_OutputColumnNames`, gate unit test grouped→true. plandiff byte-identical. Graefe + Torvalds ACK.
       - [ ] **Sub-follow-up (codex): DIVERGENT-NAMED aggregate union branches.** A bare aggregate whose output name differs between the logical leg schema (`aggregateOutputColumns`, raw text) and the physical row key (`aggResultName`/AggregateIndex canonical) NULLs when union-remapped by name. Divergent forms: qualified operand (`SUM(t.c)`→`SUM(C)`), constant (`COUNT(1)`/`COUNT(NULL)`→`COUNT(*)`), expression (`SUM(a*b)`), DISTINCT. RFC-081 GATES all of them **in the GROUPED case** via `aggregateNamesStableForUnion` (whitelist `COUNT(*)`/`FUNC(bare-col)`; clean error, `TestFDB_UnionQualifiedAggregateGated` + `TestFDB_UnionGroupedCountConstantGated`). UNGROUPED branches are left as RFC-080 (always StreamingAgg, not re-gated, to avoid regressing working ungrouped legs); any ungrouped divergent form (e.g. bare ungrouped `SUM(t.c)`/`COUNT(NULL)`) is a pre-existing RFC-080 latent NULL, fixed by the same naming-unification below. To OPEN them: unify aggregate output naming so the logical schema and the physical row key agree for every form (strip qualifier consistently + reconcile count-star normalization between StreamingAgg and AggregateIndex), then relax the whitelist. NOTE: a separate pre-existing bug — `SELECT u.*` star-expansion over an aggregate union join leg mis-derives the aggregate column name (NULL) even for ALIASED aggregates (Project-topped) — is orthogonal to the gate and also needs fixing. Trivial cleanup (@claude): `deriveColumnsFromAggregateIndex` (cascades_generator.go) builds the canonical `FUNC(col)`/`FUNC(*)` name inline (a third copy alongside `CanonicalAggColumnName` + the cursor) — for schema-metadata column-type derivation, not row-key naming, so it doesn't interact with the union remap, but it should call `aggIdx.CanonicalAggColumnName()` to complete the single-source consolidation.
-  - [x] **(b) ordered-union projection-alias — FIXED in RFC-079.** A UNION branch projecting a post-aggregate EXPRESSION with an alias (`SELECT COUNT(*)+1 AS x FROM a UNION ALL SELECT COUNT(*)+1 AS y FROM b`, read by name) returned `[NULL,NULL]` — the legacy `buildSelectShell` builder (the UNION-branch path) built the post-agg projection with `nil` aliases, dropping the `AS x`. Fixed by extracting the projection-building loop into one shared `buildPostAggregateProjection` helper called by both `visitSelectGroupBy` (modern) and `buildSelectShell` (legacy) — one source of alias truth. Pinned by `TestFDB_UnionAggregateExprAlias` + `TestBuildLogicalPlan_PostAggExprAlias_CarriesAlias`. Modern path plandiff byte-identical. Graefe + Torvalds ACK.
+  - [x] **(b) Go concat-union projection-alias — FIXED in RFC-079.** A UNION branch projecting a post-aggregate EXPRESSION with an alias (`SELECT COUNT(*)+1 AS x FROM a UNION ALL SELECT COUNT(*)+1 AS y FROM b`, read by name) returned `[NULL,NULL]` — the legacy `buildSelectShell` builder (the UNION-branch path) built the post-agg projection with `nil` aliases, dropping the `AS x`. Fixed by extracting the projection-building loop into one shared `buildPostAggregateProjection` helper called by both `visitSelectGroupBy` (modern) and `buildSelectShell` (legacy) — one source of alias truth. Pinned by `TestFDB_UnionAggregateExprAlias` + `TestBuildLogicalPlan_PostAggExprAlias_CarriesAlias`. Modern path plandiff byte-identical. Graefe + Torvalds ACK.
   - [ ] **Follow-up (RFC-087, Graefe): reject aggregate-in-scalar-context at PLAN time.** `WHERE COUNT(*) > 0` reaches `AggregateValue.Evaluate` at row eval; RFC-087 made it a clean runtime `AggregateEvalError` → 42803 (was an uncaught goroutine crash on master — Graefe confirmed). Java rejects this at semantic-analysis / plan time ("unable to eval an aggregation function with eval()"). Detect an aggregate in a per-row scalar predicate (WHERE / JOIN-ON / projection-not-under-GROUP BY) during planning and reject there, matching Java exactly. Runtime 42803 is the safety net; plan-time is the parity fix.
   - [ ] **Follow-up (RFC-087, Graefe): thread `ComparisonKeyFunc` error channel.** The 5 executor merge/sort comparison-key sites (`intersectionCompKeyFunc`, `multiIntersectionCompKeyFunc`, `mergeSortCursor.isBetter`/`extractKey`, executor.go:1391) `panic(err)` on a stray key-eval error — pre-existing behaviour (no recover before/after RFC-087), and keys are pre-projected field refs so the typed-error family is unreachable today. To make it airtight, give `ComparisonKeyFunc` an `error` return and thread it (ripples into wire-adjacent `merge_cursor.go`). Low priority — not reachable from current SQL.
   - [ ] **Follow-up (RFC-088, Graefe condition): converge `validateGroupByProjection`'s existence check onto the semantic resolver.** Java does NO standalone existence check for GROUP BY keys — `SemanticAnalyzer.resolveIdentifier` over the full multi-source scope already guarantees existence, and `validateGroupByAggregates` enforces only the algebraic 42803 rule (key must be grouped-or-aggregated). Go currently runs a SECOND, hand-rolled existence oracle (`tableFields` = union of all source descriptor field names, bare-name match) that is deliberately qualifier-blind, so it would false-ACCEPT a wrong-qualifier key (`e.dname` where dname is on the joined dept) — SAFE today ONLY because the precise resolver runs first at every call site (top-level `resolveColumnName` ~L1002; correlated-scalar GROUP-BY-key resolution in `buildCorrelatedScalar`), an ordering invariant now pinned by a code comment at `validateGroupByProjection` and by `TestFDB_GroupByWrongQualifierRejected`. End-state: route existence through `resolver.ResolveIdentifier` and leave `validateGroupByProjection` enforcing only 42803, removing the duplicate oracle and the ordering dependency.
@@ -5074,7 +5089,7 @@ so the index-probe variant is both cheaper AND resolvable.
 
 ## Production readiness (Graefe review, 2026-05-28)
 
-The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING, 16-criteria cost model, match-candidate infra all well-ported. The production risks are all at the **boundaries**: planner↔executor, executor↔runtime, system↔operator. Priority tiers below.
+The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING, multi-criteria cost model, match-candidate infra all well-ported. The production risks are all at the **boundaries**: planner↔executor, executor↔runtime, system↔operator. Priority tiers below.
 
 ### P0 — fix before deploying anywhere (correctness/availability)
 
@@ -5317,8 +5332,9 @@ Audit findings (2026-07-18 quality audit) still open, in recommended order:
   (all 34 sibling wrappers propagate); memo leaf criterion `memo.go:522-542`
   requires ALL members quantifier-free where Java's Traversal uses ANY.
 - [ ] DIVERGENCES.md ledger corrections: windowed candidate is DEAD (zero
-  constructors), not "Aligned"; cost-model "16 criteria" table stale;
-  compensation-intersect note (now partially wired via the RFC-182 fix).
+  constructors), not "Aligned"; compensation-intersect note is now partially
+  wired via the RFC-182 fix. The stale cost-model "16 criteria" table was
+  corrected by RFC-190.
 - [ ] Matcher arc (Graefe audit findings 1-3, one RFC): dependency-aware alias
   matcher (`AliasMap.findCompleteMatches`), MatchIntermediate permutation
   enumeration, retire the phantom `WithSwappedQuantifiers` double-fire.
@@ -6525,8 +6541,11 @@ is the change that caused the 49 shape flips.
   (b775b8572). The sort required a genuine cost-model fix (Graefe-ACK'd): the
   wrapper cost-over-first masked a latent bug where a redundant InMemorySort wins
   STRUCTURAL tie-breakers (depth +1, or a pushdown-split map/filter count) before
-  criterion #12 — fixed by gating 4 structural rungs to abstain when a sort is
-  present. Enabling infra: the DML-aware explain-differ (51ee03bf5 — the SELECT-only
+  the fewer-sorts comparison. RFC-184 initially gated 4 additional structural
+  rungs when a sort was present; RFC-190 later proved the resulting 5-gate
+  comparator non-transitive and superseded it with sort-transparent depth,
+  unconditional Java rungs, and a promoted fewer-sorts comparison before the
+  structural block. Enabling infra: the DML-aware explain-differ (51ee03bf5 — the SELECT-only
   differ was unsound; it let a fod DML corruption read clean) + the residual-
   correlation DML regression test (e2b2a7395). Every behavior change is Graefe-ACK'd;
   gated on memoinvariant unreachable=0 + rowdiff Ordering/Stats/Cost sweeps +
@@ -6539,9 +6558,9 @@ is the change that caused the 49 shape flips.
     (i) root-cause why the unsplit-elided plan (Project(PredicatesFilter(Fetch(
         IndexScan)))) is ABSENT at the Project group for rowdiff seeds 132/214 — a
         W2 disentangled-capture search-completeness asymmetry, not a cost-model bug.
-    (ii) evaluate the terminal form: hoist criterion #12 (fewer in-memory sorts)
-        ABOVE all structural rungs, or gate each structural rung on EQUAL sort counts
-        (not ==0-both), retiring the 4 per-rung gates. Same rowdiff-sweep validation.
+    (ii) ✅ DONE in RFC-190: hoisted the fewer-in-memory-sorts comparison above all
+         affected structural rungs, made depth sort-transparent, and retired all
+         5 Go-specific per-rung sort gates. Full rowdiff/yamsql/FDB sweep green.
     (iii) RecordQueryMapPlan/RecordQueryProjectionPlan inherit the empty
         PlanExprBase GetCorrelatedToWithoutChildren default while Java's
         RecordQueryMapPlan.getCorrelatedToWithoutChildren folds the result value.

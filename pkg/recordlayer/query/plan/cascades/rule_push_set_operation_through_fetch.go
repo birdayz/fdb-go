@@ -7,8 +7,9 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// PushUnionThroughFetchRule handles the Union case.
-// Java: PushSetOperationThroughFetchRule<RecordQueryUnionOnValuesPlan>.
+// PushUnionThroughFetchRule handles Go's extra concat Union case. It has no
+// direct Java counterpart: Java's ordered RecordQueryUnionOnValuesPlan maps
+// to PushMergeSortUnionThroughFetchRule below.
 type PushUnionThroughFetchRule struct {
 	matcher matching.BindingMatcher
 }

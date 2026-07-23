@@ -197,18 +197,15 @@ func TestPhase3_DistinctOverUnion(t *testing.T) {
 		t.Fatal("expected *plans.RecordQueryUnionPlan or *plans.RecordQueryUnorderedUnionPlan in explored graph")
 	}
 
-	// Distinct should yield either a *plans.RecordQueryDistinctPlan (wrapping
-	// a non-distinct inner) or the inner plan directly (if the union
-	// provides distinct semantics — RecordQueryUnionPlan deduplicates).
+	// Distinct must yield either a RecordQueryDistinctPlan or a merge-sort
+	// union whose removeDuplicates flag is set. Neither concat UNION ALL plan
+	// provides distinct semantics.
 	foundDistinctResult := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
 		if _, ok := expr.(*plans.RecordQueryDistinctPlan); ok {
 			return true
 		}
-		if _, ok := expr.(*plans.RecordQueryUnionPlan); ok {
-			return true
-		}
-		if _, ok := expr.(*plans.RecordQueryUnorderedUnionPlan); ok {
-			return true
+		if union, ok := expr.(*plans.RecordQueryMergeSortUnionPlan); ok {
+			return union.RemovesDuplicates()
 		}
 		return false
 	})

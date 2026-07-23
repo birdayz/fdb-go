@@ -96,8 +96,8 @@ func TestAsymmetricUnion_BothLegsPlan(t *testing.T) {
 	// Tighter than "a winner exists": the extracted plan must be a physical
 	// union with BOTH legs present. Before the fix the merged leg had no
 	// physical member, so the union had < 2 children and could not form at all.
-	// Which physical union (ordered RecordQueryUnionPlan vs concatenating
-	// RecordQueryUnorderedUnionPlan) wins is a cost-model choice — either is a
+	// Which concatenating physical union (Go-specific RecordQueryUnionPlan vs
+	// Java-aligned RecordQueryUnorderedUnionPlan) wins is a cost-model choice — either is a
 	// valid implementation; the regression was NO physical union whatsoever.
 	switch plan.(type) {
 	case *plans.RecordQueryUnionPlan, *plans.RecordQueryUnorderedUnionPlan:

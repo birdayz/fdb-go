@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -659,8 +660,8 @@ func TestPlanningCostModelLess_Criterion11_DistinctDepth(t *testing.T) {
 }
 
 // TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount verifies
-// that the plan with fewer unmatched index fields wins, and that the
-// criterion is suppressed when either plan has an in-memory sort.
+// that the plan with fewer unmatched index fields wins for both sort-free
+// and sorted candidates.
 func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 	t.Parallel()
 
@@ -674,79 +675,106 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 	// (NewPlanningCostModelLessWithContext). With ctx==nil the column count is
 	// unresolvable and unmatchedFieldCount conservatively degrades to 0.
 	//
-	// Plan A: 1-column index, 1 equality bound → unmatched=0.
-	eqComp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}}
-	cr := predicates.EmptyComparisonRange()
-	mr := cr.Merge(&eqComp)
-	if !mr.Ok {
-		t.Fatal("failed to merge equality comparison")
-	}
-	indexA := plans.NewRecordQueryIndexPlan("idx_a", []*predicates.ComparisonRange{mr.Range}, []string{"T"}, values.UnknownType, false).
+	// Keep the candidates scalar-cost-tied so the unmatched-field rung is the
+	// only semantic discriminator. Their names are intentionally hash-adverse:
+	// without criterion 12, the final hash rung prefers "many".
+	//
+	// Plan A: 1-column unbound index → unmatched=1.
+	indexA := plans.NewRecordQueryIndexPlan("few", nil, []string{"T"}, values.UnknownType, false).
 		WithCovering(nil).WithIndexMetadata([]string{"a"}, nil, false)
 
 	// Plan B: 3-column index, 0 bounds → unmatched=3.
-	indexB := plans.NewRecordQueryIndexPlan("idx_b", nil, []string{"T"}, values.UnknownType, false).
+	indexB := plans.NewRecordQueryIndexPlan("many", nil, []string{"T"}, values.UnknownType, false).
 		WithCovering(nil).WithIndexMetadata([]string{"a", "b", "c"}, nil, false)
 
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
-		NewValueIndexScanMatchCandidate("idx_a", []string{"T"}, []string{"a"}, nil, values.UnknownType, false, nil),
-		NewValueIndexScanMatchCandidate("idx_b", []string{"T"}, []string{"a", "b", "c"}, nil, values.UnknownType, false, nil),
+		NewValueIndexScanMatchCandidate("few", []string{"T"}, []string{"a"}, nil, values.UnknownType, false, nil),
+		NewValueIndexScanMatchCandidate("many", []string{"T"}, []string{"a", "b", "c"}, nil, values.UnknownType, false, nil),
 	}}
 	costLess := NewPlanningCostModelLessWithContext(nil, ctx)
 
 	opsA := findExpressionsByType(indexA, nil, ctx)
 	opsB := findExpressionsByType(indexB, nil, ctx)
-	if opsA.unmatchedFieldCount != 0 {
-		t.Fatalf("plan A unmatchedFieldCount = %d, want 0", opsA.unmatchedFieldCount)
+	if opsA.unmatchedFieldCount != 1 {
+		t.Fatalf("plan A unmatchedFieldCount = %d, want 1", opsA.unmatchedFieldCount)
 	}
 	if opsB.unmatchedFieldCount != 3 {
 		t.Fatalf("plan B unmatchedFieldCount = %d, want 3", opsB.unmatchedFieldCount)
 	}
 
-	// Both have inMemorySortCount=0, so criterion 12 fires: fewer unmatched wins.
+	// Criterion 12 fires for the sort-free pair: fewer unmatched wins.
 	if !costLess(indexA, indexB) {
-		t.Error("unmatched=0 should beat unmatched=3 (no in-memory sort)")
+		t.Error("unmatched=1 should beat unmatched=3 (no in-memory sort)")
 	}
 	if costLess(indexB, indexA) {
-		t.Error("unmatched=3 should NOT beat unmatched=0")
+		t.Error("unmatched=3 should NOT beat unmatched=1")
 	}
 
-	// Now wrap plan B in an in-memory sort — criterion 12 must not fire.
-	// With inMemorySortCount>0 on plan B, criterion 12 is suppressed.
-	// Plans will then be compared by later criteria or hash.
+	// Wrap both plans in an in-memory sort. RFC-190 190.2 removed the old
+	// sort gate from criterion 12, so equal-sort candidates must still be
+	// ordered by unmatchedFieldCount.
+	indexARef := expressions.InitialOf(indexA)
+	indexAQ := expressions.NewPhysicalQuantifier(indexARef)
+	withSortA := plans.NewRecordQueryInMemorySortPlanFromQuantifier(indexAQ, nil)
 	indexBRef := expressions.InitialOf(indexB)
 	indexBQ := expressions.NewPhysicalQuantifier(indexBRef)
 	// Since RFC-184 W2 the bare in-memory sort IS its own physical member (no
 	// physicalInMemorySortWrapper), ranging over indexB via a live memo edge.
-	withSort := plans.NewRecordQueryInMemorySortPlanFromQuantifier(indexBQ, nil)
+	withSortB := plans.NewRecordQueryInMemorySortPlanFromQuantifier(indexBQ, nil)
 
-	opsWithSort := findExpressionsByType(withSort, nil, ctx)
-	if opsWithSort.inMemorySortCount != 1 {
-		t.Fatalf("withSort inMemorySortCount = %d, want 1", opsWithSort.inMemorySortCount)
+	opsWithSortA := findExpressionsByType(withSortA, nil, ctx)
+	opsWithSortB := findExpressionsByType(withSortB, nil, ctx)
+	if opsWithSortA.inMemorySortCount != 1 || opsWithSortB.inMemorySortCount != 1 {
+		t.Fatalf("sorted inMemorySortCount = (%d, %d), want (1, 1)",
+			opsWithSortA.inMemorySortCount, opsWithSortB.inMemorySortCount)
+	}
+	if opsWithSortA.unmatchedFieldCount != 1 || opsWithSortB.unmatchedFieldCount != 3 {
+		t.Fatalf("sorted unmatchedFieldCount = (%d, %d), want (1, 3)",
+			opsWithSortA.unmatchedFieldCount, opsWithSortB.unmatchedFieldCount)
+	}
+	costA := properties.EstimateCost(withSortA)
+	costB := properties.EstimateCost(withSortB)
+	if costA != costB {
+		t.Fatalf("scalar fallback precondition: costs differ: few=%+v many=%+v", costA, costB)
+	}
+	hashA := costExprHash(withSortA)
+	hashB := costExprHash(withSortB)
+	if hashB >= hashA {
+		t.Fatalf("hash-adversarial precondition: hash(many)=%d, want < hash(few)=%d", hashB, hashA)
+	}
+	if !costLess(withSortA, withSortB) {
+		t.Error("sorted unmatched=1 should beat sorted unmatched=3")
+	}
+	if costLess(withSortB, withSortA) {
+		t.Error("sorted unmatched=3 should NOT beat sorted unmatched=1")
+	}
+}
+
+// TestUnmatchedFields_PrimaryScanConcreteAndLogical pins both cost-walk
+// dispatch arms for Java's RecordQueryScanPlan unmatched-fields property.
+// The concrete arm handles extracted plans (including a sort wrapper), while
+// the logical arm is used when a not-yet-physical parent descends through a
+// physical scan member.
+func TestUnmatchedFields_PrimaryScanConcreteAndLogical(t *testing.T) {
+	t.Parallel()
+
+	ctx := &pkGateTestCtx{pk: []string{"TENANT", "ORDER_ID", "VERSION"}}
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+
+	assertUnmatched := func(label string, expr expressions.RelationalExpression) {
+		t.Helper()
+		if got := findExpressionsByType(expr, nil, ctx).unmatchedFieldCount; got != 3 {
+			t.Errorf("%s unmatchedFieldCount = %d, want 3", label, got)
+		}
 	}
 
-	// When plan B has an in-memory sort, the guard fires: criterion 12 must return 0.
-	// The guard condition is: opsA.inMemorySortCount==0 && opsB.inMemorySortCount==0.
-	// Verify via the counts directly.
-	opsNoSort := findExpressionsByType(indexA, nil, ctx)
-	if opsNoSort.inMemorySortCount != 0 || opsWithSort.inMemorySortCount != 1 {
-		t.Fatal("unexpected inMemorySortCount values")
-	}
-	// Criterion 12 should not fire (guard fails): unmatchedFieldCount check is skipped.
-	// intCompare fires only when both inMemorySortCount==0.
-	suppressed := opsNoSort.unmatchedFieldCount != opsWithSort.unmatchedFieldCount &&
-		opsNoSort.inMemorySortCount == 0 && opsWithSort.inMemorySortCount == 0
-	if suppressed {
-		t.Error("criterion 12 should be suppressed when plan B has in-memory sort")
-	}
+	assertUnmatched("concrete scan", scan)
+	assertUnmatched("concrete sorted scan", plans.NewRecordQueryInMemorySortPlan(scan, nil))
 
-	// Behavioral check: the cost model should NOT pick indexA over withSort based
-	// on unmatchedFieldCount alone — the guard suppresses it. If criterion 12 were
-	// NOT suppressed, indexA (0 unmatched) would always beat withSort (3 unmatched).
-	// With suppression, the result depends on later criteria (hash tiebreak), so we
-	// just verify it doesn't crash and returns a deterministic result.
-	_ = costLess(indexA, withSort)
-	_ = costLess(withSort, indexA)
+	logicalParent := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		expressions.ForEachQuantifier(expressions.FinalOf(scan)),
+	})
+	assertUnmatched("logical-parent fallback", logicalParent)
 }
 
 // TestPlanningCostModelLess_Criterion13_InJoinCount verifies that

@@ -17,29 +17,34 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// PlanningCostModelLess is the Java-aligned multi-criteria plan comparator.
-// Mirrors Java's PlanningCostModel.compare() from fdb-record-layer-core.
+// PlanningCostModelLess is the Java-aligned multi-criteria plan comparator,
+// with the documented Go-specific criteria called out below.
 //
 // Returns true if a is strictly preferred over b. The comparison uses
-// ordered tie-breaking criteria matching Java's priority:
+// these ordered tie-breaking criteria. Parenthetical numbers are the stable
+// Java-aligned labels used by focused tests and design docs; Go extensions do
+// not renumber those labels:
 //
-//  1. Physical plan beats non-physical
-//  2. Max cardinality of all data accesses (lower wins)
-//  3. Fewer normalized residual predicates
-//  4. Fewer data access operators (scan + index + covering)
-//  5. Recursive CTE tie-breaker (DFS > level-based)
-//  6. IN-plan penalty (penalize if IN-values aren't SARGs)
-//  7. Primary scan vs index-scan-with-fetch (prefer primary)
-//  8. Type filter count (fewer = better)
-//  9. Type filter depth (deeper = better)
-//  10. Index fetch metrics (fewer non-covering + fetch = better)
-//  11. Distinct depth (deeper = better)
-//  12. Unmatched index field count (fewer = better)
-//  13. IN-join source count (more = better)
-//  14. MAP + PredicatesFilter count (fewer = better)
-//  15. Streaming aggregation beats hash aggregation
-//  16. Scalar cost fallback (EstimateCost)
-//  17. Plan hash deterministic tie-break
+//   - Physical plan beats non-physical (#1)
+//   - Max cardinality of all data accesses, lower wins (#2)
+//   - Fewer normalized residual predicates (#3)
+//   - Fewer data access operators: scan + index + covering (#4)
+//   - Recursive CTE tie-breaker: DFS beats level-based (#5)
+//   - Join-order cost (#15, broadened and hoisted in Go)
+//   - IN-plan penalty when IN-values are not SARGs (#6)
+//   - Primary scan vs index-scan-with-fetch preference (#7)
+//   - In-memory sort count, fewer wins (Go sort-elimination analogue)
+//   - Type filter count, fewer wins (#8)
+//   - Type filter depth, deeper wins (#9)
+//   - Index fetch metrics, fewer non-covering scans/fetches win (#10)
+//   - Distinct depth, deeper wins (#11)
+//   - Unmatched primary-scan/index key field count, fewer wins (#12)
+//   - IN-join source count, more wins (#13)
+//   - MAP + PredicatesFilter count, fewer wins (#14)
+//   - Nested-loop-join predicate count, more wins (Go extension)
+//   - ON EMPTY NULL operation count, fewer wins (#16)
+//   - Scalar cost fallback (Go statistics extension)
+//   - Plan hash deterministic tie-break (#17)
 func PlanningCostModelLess(a, b expressions.RelationalExpression) bool {
 	cmp := planningCostModelCompareWith(a, b, nil, nil)
 	return cmp < 0
@@ -56,7 +61,7 @@ func NewPlanningCostModelLess(stats properties.StatisticsProvider) func(a, b exp
 // comparator. The returned function uses real record counts (via stats)
 // for cardinality estimation and resolves index/primary-key metadata via
 // ctx so the criterion-#2 (provable max cardinality) and criterion-#12
-// (unmatched index fields) properties are computed faithfully from the
+// (unmatched primary-scan/index key fields) properties are computed faithfully from the
 // CONCRETE plan tree (RFC-069). Pass nil stats for default
 // (LeafScanCardinality); pass nil ctx to resolve index metadata
 // conservatively (treat indexes as non-unique).
@@ -902,6 +907,16 @@ func expressionDepthRec(e expressions.RelationalExpression, match func(expressio
 	if match(e) {
 		return depth
 	}
+	// Sort-invariant depth, in parity with concretePlanDepth (RFC-190 190.2): an
+	// InMemorySort is transparent — it contributes no depth level — so this
+	// logical-fallback path measures depth the same way the physical path does
+	// (and the same way Java's sort-node-free tree would). Reachable because the
+	// recursion descends into physical children (firstPhysicalChild below), which
+	// can be an InMemorySort.
+	inc := 1
+	if _, isSort := e.(*plans.RecordQueryInMemorySortPlan); isSort {
+		inc = 0
+	}
 	best := -1
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
@@ -909,7 +924,7 @@ func expressionDepthRec(e expressions.RelationalExpression, match func(expressio
 			continue
 		}
 		if child := firstPhysicalChild(ref); child != nil {
-			d := expressionDepthRec(child, match, depth+1)
+			d := expressionDepthRec(child, match, depth+inc)
 			if d >= 0 && (best < 0 || d < best) {
 				best = d
 			}

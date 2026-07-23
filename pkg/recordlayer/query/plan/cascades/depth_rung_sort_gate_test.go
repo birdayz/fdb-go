@@ -3,6 +3,7 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -47,6 +48,34 @@ func scanT() plans.RecordQueryPlan {
 
 func indexT() plans.RecordQueryPlan {
 	return plans.NewRecordQueryIndexPlan("idx", nil, []string{"T"}, values.UnknownType, false)
+}
+
+// TestExpressionDepth_LogicalFallbackSortTransparent pins the logical memo
+// fallback used while a parent is not physical yet. The physical path was
+// already sort-invariant, but the fallback descends through physical child
+// members and could therefore encounter an InMemorySort too. A sort must not
+// add a structural depth level there either.
+func TestExpressionDepth_LogicalFallbackSortTransparent(t *testing.T) {
+	t.Parallel()
+
+	fetch := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		indexT(), nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+	logicalOver := func(child plans.RecordQueryPlan) expressions.RelationalExpression {
+		return expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+			expressions.ForEachQuantifier(expressions.FinalOf(child)),
+		})
+	}
+
+	plainDepth := costExprDepth(logicalOver(fetch), matchFetch)
+	sortedDepth := costExprDepth(
+		logicalOver(plans.NewRecordQueryInMemorySortPlan(fetch, nil)),
+		matchFetch)
+	if plainDepth != 1 {
+		t.Fatalf("logical fallback fetch depth without sort = %d, want 1", plainDepth)
+	}
+	if sortedDepth != plainDepth {
+		t.Fatalf("logical fallback fetch depth with transparent sort = %d, want %d", sortedDepth, plainDepth)
+	}
 }
 
 // TestDepthRung_TypeFilterDepth_SortInvariant — the type-filter-depth rung

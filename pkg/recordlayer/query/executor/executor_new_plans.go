@@ -550,8 +550,8 @@ func executeUnorderedUnion(
 	// differently from the first branch (e.g. mismatched aggregate aliases X vs Y)
 	// flowed its rows under its OWN keys, and a downstream by-name read of the union's
 	// (first-branch) column dropped them (TODO 7.6-union-remap / RFC-078). Remap each
-	// later branch's keys to the first branch's, position-wise, exactly as the ordered
-	// union does. A no-op when names already agree (the common case).
+	// later branch's keys to the first branch's, position-wise, exactly as the sibling
+	// concat RecordQueryUnionPlan does. A no-op when names already agree (the common case).
 	firstBranchKeys := planColumnNamesWithMD(inners[0], md)
 	childProps := props.ClearSkipAndLimit()
 	u := &unorderedUnionCursor{
