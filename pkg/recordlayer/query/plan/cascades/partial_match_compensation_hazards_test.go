@@ -764,6 +764,123 @@ func TestCompensate_PrefersPossiblePredicateAlternative(t *testing.T) {
 	}
 }
 
+// TestCompensate_PrefersTopLevelPredicateMappingBeforeLegacyFlatten pins the
+// representation seam between the general Select subsumption path and the
+// older single-source Filter adapter. General Select matching keys a mapping
+// by the original top-level predicate identity; flattening an AND before the
+// lookup asks for its children instead and silently drops the whole residual.
+func TestCompensate_PrefersTopLevelPredicateMappingBeforeLegacyFlatten(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	left := predicates.NewConstantPredicate(predicates.TriTrue)
+	right := predicates.NewConstantPredicate(predicates.TriFalse)
+	topLevelAnd := predicates.NewAnd(left, right)
+
+	putResidual := func(
+		builder *PredicateMultiMapBuilder,
+		queryPredicate predicates.QueryPredicate,
+	) {
+		t.Helper()
+		builder.Put(
+			queryPredicate,
+			RegularMappingBuilder(
+				queryPredicate,
+				queryPredicate,
+				predicates.NewConstantPredicate(predicates.TriTrue),
+			).setKnownPredicateCompensation(
+				reapplyResidualCompensation(queryPredicate),
+				"residual",
+			).Build(),
+		)
+	}
+
+	t.Run("top-level identity wins", func(t *testing.T) {
+		builder := NewPredicateMultiMapBuilder()
+		putResidual(builder, topLevelAnd)
+		// Populate the legacy leaf keys too. Their presence makes the
+		// precedence assertion load-bearing: a compensator that flattens
+		// first would emit both leaves in addition to (or instead of) the AND.
+		putResidual(builder, left)
+		putResidual(builder, right)
+
+		pm := hazardScanPM(
+			t,
+			[]predicates.QueryPredicate{topLevelAnd},
+			builder.Build(),
+		)
+		compensation := pm.CompensateCompleteMatch(
+			nil,
+			values.NamedCorrelationIdentifier("candidate_top"),
+		)
+		forMatch, ok := compensation.(*ForMatchCompensation)
+		if !ok {
+			t.Fatalf(
+				"top-level AND compensation = %T, want *ForMatchCompensation",
+				compensation,
+			)
+		}
+		predicateCompensation := forMatch.GetPredicateCompensationMap()
+		if predicateCompensation.Len() != 1 {
+			t.Fatalf(
+				"predicate compensation count = %d, want only the top-level AND",
+				predicateCompensation.Len(),
+			)
+		}
+		if predicateCompensation.Get(topLevelAnd) == nil {
+			t.Fatal("top-level AND residual mapping was dropped by conjunct flattening")
+		}
+		if predicateCompensation.Get(left) != nil ||
+			predicateCompensation.Get(right) != nil {
+			t.Fatal("top-level mapping must win before the legacy conjunct fallback")
+		}
+		residuals := predicateCompensation.ApplyCompensations(nil)
+		if len(residuals) != 1 || residuals[0] != topLevelAnd {
+			t.Fatalf("residuals = %v, want the one original top-level AND", residuals)
+		}
+	})
+
+	t.Run("legacy leaf fallback remains complete", func(t *testing.T) {
+		builder := NewPredicateMultiMapBuilder()
+		putResidual(builder, left)
+		putResidual(builder, right)
+
+		pm := hazardScanPM(
+			t,
+			[]predicates.QueryPredicate{topLevelAnd},
+			builder.Build(),
+		)
+		compensation := pm.CompensateCompleteMatch(
+			nil,
+			values.NamedCorrelationIdentifier("candidate_top"),
+		)
+		forMatch, ok := compensation.(*ForMatchCompensation)
+		if !ok {
+			t.Fatalf(
+				"legacy leaf compensation = %T, want *ForMatchCompensation",
+				compensation,
+			)
+		}
+		predicateCompensation := forMatch.GetPredicateCompensationMap()
+		if predicateCompensation.Len() != 2 {
+			t.Fatalf(
+				"predicate compensation count = %d, want both legacy leaves",
+				predicateCompensation.Len(),
+			)
+		}
+		if predicateCompensation.Get(topLevelAnd) != nil ||
+			predicateCompensation.Get(left) == nil ||
+			predicateCompensation.Get(right) == nil {
+			t.Fatal("legacy fallback must compensate each mapped leaf exactly once")
+		}
+		residuals := predicateCompensation.ApplyCompensations(nil)
+		if len(residuals) != 2 || residuals[0] != left || residuals[1] != right {
+			t.Fatalf("residuals = %v, want left and right once in order", residuals)
+		}
+	})
+}
+
 // TestNestPullUp_RootIsOnlyOwnedWhenNestingStartsAMatch pins which of the two
 // returned pull-ups is the "root of match".
 //

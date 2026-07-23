@@ -232,18 +232,10 @@ func (p *PartialMatchImpl) compensate(
 	if pp, ok := p.queryExpression.(interface {
 		GetPredicates() []predicates.QueryPredicate
 	}); ok {
-		// Flatten conjuncts to match how matchSingleSourceAgainstSelect
-		// built the predicate map (it keys by flattenConjuncts sub-
-		// predicates). Iterating the un-flattened predicates here would
-		// look up an AndPredicate that isn't a map key, silently dropping
-		// the residual compensation for every conjunct (a multi-predicate
-		// WHERE/QUALIFY lost its non-sargable conjunct → wrong rows).
-		for _, pred := range flattenConjuncts(pp.GetPredicates()) {
-			mappings := predicateMap.Get(pred)
-			if len(mappings) == 0 {
-				continue
-			}
-
+		compensatePredicate := func(
+			pred predicates.QueryPredicate,
+			mappings []*PredicateMapping,
+		) {
 			// If the predicate references an unmatched quantifier,
 			// compensation is impossible.
 			for alias := range predicates.GetCorrelatedToOfPredicate(pred) {
@@ -293,6 +285,30 @@ func (p *PartialMatchImpl) compensate(
 				}
 				predCompKeys = append(predCompKeys, pred)
 				predCompVals = append(predCompVals, compensationFunction)
+			}
+		}
+
+		for _, topLevelPredicate := range pp.GetPredicates() {
+			// General Select subsumption maps the original top-level predicate
+			// node, including an AndPredicate, exactly as Java does. Prefer that
+			// identity before consulting the legacy flattened representation.
+			// Otherwise a mapped top-level AND has no entry under its children
+			// and its residual compensation silently disappears.
+			if mappings := predicateMap.Get(topLevelPredicate); len(mappings) > 0 {
+				compensatePredicate(topLevelPredicate, mappings)
+				continue
+			}
+
+			// The older single-source Filter-to-Select matcher keys its map by
+			// flattened conjuncts. Retain that representation as a fallback so
+			// existing index matches continue to compensate every residual
+			// conjunct.
+			for _, conjunct := range flattenConjuncts(
+				[]predicates.QueryPredicate{topLevelPredicate},
+			) {
+				if mappings := predicateMap.Get(conjunct); len(mappings) > 0 {
+					compensatePredicate(conjunct, mappings)
+				}
 			}
 		}
 	}

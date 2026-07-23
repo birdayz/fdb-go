@@ -730,11 +730,40 @@ func TestRichOrdering_PullUpThroughValue_RecordConstructor(t *testing.T) {
 	if len(pulled.GetKeys()) != 2 {
 		t.Fatalf("expected 2 keys, got %d", len(pulled.GetKeys()))
 	}
-	if values.ExplainValue(pulled.GetKeys()[0]) != "a" {
-		t.Fatalf("expected first key 'a', got %q", values.ExplainValue(pulled.GetKeys()[0]))
+	if values.ExplainValue(pulled.GetKeys()[0]) != "q1.a" {
+		t.Fatalf("expected first key 'q1.a', got %q", values.ExplainValue(pulled.GetKeys()[0]))
 	}
-	if values.ExplainValue(pulled.GetKeys()[1]) != "b" {
-		t.Fatalf("expected second key 'b', got %q", values.ExplainValue(pulled.GetKeys()[1]))
+	if values.ExplainValue(pulled.GetKeys()[1]) != "q1.b" {
+		t.Fatalf("expected second key 'q1.b', got %q", values.ExplainValue(pulled.GetKeys()[1]))
+	}
+
+	// Pull-up has crossed into q1's output scope, so a request in that scope
+	// must carry the same anchor. A flat "a" key no longer has enough identity
+	// to distinguish same-named columns from different candidate legs.
+	requested := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{
+				Value: values.NewFieldValue(
+					values.NewQuantifiedObjectValue(alias),
+					"a",
+					values.NullableLong,
+				),
+				SortOrder: RequestedSortOrderAscending,
+			},
+			{
+				Value: values.NewFieldValue(
+					values.NewQuantifiedObjectValue(alias),
+					"b",
+					values.NullableString,
+				),
+				SortOrder: RequestedSortOrderDescending,
+			},
+		},
+		DistinctnessNotDistinct,
+		false,
+	)
+	if !pulled.Satisfies(requested) {
+		t.Fatal("pulled ordering does not satisfy its candidate-anchored request")
 	}
 }
 
@@ -761,8 +790,8 @@ func TestRichOrdering_PullUpThroughValue_PartialMatch(t *testing.T) {
 	if len(pulled.GetKeys()) != 1 {
 		t.Fatalf("expected 1 key (z dropped), got %d", len(pulled.GetKeys()))
 	}
-	if values.ExplainValue(pulled.GetKeys()[0]) != "a" {
-		t.Fatalf("expected key 'a', got %q", values.ExplainValue(pulled.GetKeys()[0]))
+	if values.ExplainValue(pulled.GetKeys()[0]) != "q1.a" {
+		t.Fatalf("expected key 'q1.a', got %q", values.ExplainValue(pulled.GetKeys()[0]))
 	}
 }
 

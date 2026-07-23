@@ -12,15 +12,15 @@ package values
 //
 // Examples (where resultValue = RecordConstructor(a=FV("x"), b=FV("y"))):
 //
-//   - v = FV("x") → FV("a")       // input field "x" becomes output field "a"
-//   - v = FV("y") → FV("b")       // input field "y" becomes output field "b"
-//   - v = resultValue → QOV(alias) // the whole result maps to the output alias
+//   - v = FV("x") → FV(QOV(alias), "a") // input field "x" becomes output field "a"
+//   - v = FV("y") → FV(QOV(alias), "b") // input field "y" becomes output field "b"
+//   - v = resultValue → QOV(alias)       // the whole result maps to the output alias
 //
 // For non-RecordConstructor result values (e.g. a QuantifiedObjectValue
 // passthrough), v is matched directly:
 //
 //   - v = resultValue → QOV(alias)
-//   - v = FV("x"), resultValue = QOV(q) → FV("x") // field access passes through
+//   - v = FV("x"), resultValue = QOV(q) → FV(QOV(alias), "x")
 func PullUpValue(v Value, resultValue Value, alias CorrelationIdentifier) Value {
 	if v == nil || resultValue == nil {
 		return nil
@@ -39,12 +39,12 @@ func PullUpValue(v Value, resultValue Value, alias CorrelationIdentifier) Value 
 
 	// Case 3: resultValue is a QuantifiedObjectValue or ObjectValue —
 	// a passthrough. If v is a FieldValue, field access passes
-	// through unchanged (different field, same base).
+	// through with its base rebound to the output alias.
 	if _, ok := resultValue.(*QuantifiedObjectValue); ok {
-		return pullUpThroughPassthrough(v, alias)
+		return pullUpThroughPassthrough(v, resultValue, alias)
 	}
 	if _, ok := resultValue.(*ObjectValue); ok {
-		return pullUpThroughPassthrough(v, alias)
+		return pullUpThroughPassthrough(v, resultValue, alias)
 	}
 
 	return nil
@@ -71,7 +71,14 @@ func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias C
 	}
 	for i, field := range rc.Fields {
 		if semanticEqual(v, field.Value) {
-			out := &FieldValue{Field: field.Name, Typ: field.Value.Type()}
+			out := &FieldValue{
+				Field: field.Name,
+				Typ:   field.Value.Type(),
+				Child: &QuantifiedObjectValue{
+					Correlation: alias,
+					Typ:         rc.Type(),
+				},
+			}
 			if inBaked || rcHasDuplicateNames(rc) {
 				// The frontier-contract bit INHERITS from the input: a pinned
 				// seed ref pulled through the join's RC still reads a
@@ -101,26 +108,39 @@ func rcHasDuplicateNames(rc *RecordConstructorValue) bool {
 }
 
 // pullUpThroughPassthrough handles pull-up through an identity-like
-// result value (QOV, ObjectValue). Field accesses pass through
-// unchanged.
-//
-// Limitation: the pulled-up value is a bare FieldValue without anchoring
-// it to the alias. In multi-source contexts (e.g. joins), Java would
-// produce a FieldAccessValue(QuantifiedObjectValue(alias), field) to
-// disambiguate which source the field comes from. Go doesn't have
-// FieldAccessValue yet. In practice this is safe because the call sites
-// (ordering pullup) use this in single-source contexts where there's no
-// ambiguity. If multi-source passthrough pull-up is needed, either add
-// FieldAccessValue or prefix the field with the alias ("alias.field").
-func pullUpThroughPassthrough(v Value, alias CorrelationIdentifier) Value {
-	if fv, ok := v.(*FieldValue); ok {
-		// Preserve the baked-ordinal marker through the copy: the passthrough
-		// is an identity result value (same record flows), so the baked
-		// position stays valid; dropping it would silently degrade a BAKED
-		// node to lazy (the conflation hazard).
-		return &FieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: fv.Resolved}
+// result value (QOV, ObjectValue). Field accesses keep their resolved path but
+// are re-anchored on the candidate alias so same-named fields from different
+// sources remain correlation-distinct.
+func pullUpThroughPassthrough(
+	v Value,
+	resultValue Value,
+	alias CorrelationIdentifier,
+) Value {
+	fv, ok := v.(*FieldValue)
+	if !ok || fv == nil || !nonNilPassthroughValue(resultValue) {
+		return nil
 	}
-	return nil
+	// A correlated field can pass through only the value it is rooted on.
+	// Re-anchoring a field over a different QOV/ObjectValue silently changes
+	// which source owns the column. This check also declines the legacy chained
+	// FieldValue representation: copying only its outer node would drop the
+	// inner path. Canonical fused paths are supported because their Child is
+	// the passthrough root and their complete path lives in Resolved.
+	if fv.Child != nil &&
+		!ValuesStructurallyEqual(fv.Child, resultValue) {
+		return nil
+	}
+
+	// Preserve the baked-ordinal marker through the copy: the passthrough is an
+	// identity result value (same record flows), so the baked position stays
+	// valid; dropping it would silently degrade a BAKED node to lazy (the
+	// conflation hazard).
+	return &FieldValue{
+		Field:    fv.Field,
+		Typ:      fv.Typ,
+		Child:    &QuantifiedObjectValue{Correlation: alias, Typ: resultValue.Type()},
+		Resolved: fv.Resolved,
+	}
 }
 
 // PushDownValue rewrites v (which references the output of resultValue)
@@ -186,26 +206,61 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 		}
 	}
 
-	// Case 3: resultValue is a passthrough (QOV/ObjectValue) — field
-	// accesses pass through unchanged.
+	// Case 3: resultValue is a passthrough (QOV/ObjectValue) — a legacy flat
+	// field stays flat, while an upper-anchored field is restored to this
+	// passthrough source.
 	if _, ok := resultValue.(*QuantifiedObjectValue); ok {
-		return pushDownThroughPassthrough(v)
+		return pushDownThroughPassthrough(v, resultValue, upperAlias)
 	}
 	if _, ok := resultValue.(*ObjectValue); ok {
-		return pushDownThroughPassthrough(v)
+		return pushDownThroughPassthrough(v, resultValue, upperAlias)
 	}
 
 	return nil
 }
 
-// pushDownThroughPassthrough handles push-down through identity-like
-// result values. Field accesses pass through unchanged.
-func pushDownThroughPassthrough(v Value) Value {
-	if fv, ok := v.(*FieldValue); ok {
-		// Preserve the baked-ordinal marker — see pullUpThroughPassthrough.
-		return &FieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: fv.Resolved}
+// pushDownThroughPassthrough handles push-down through identity-like result
+// values. Legacy flat fields stay flat. A field anchored on the upper alias is
+// restored to the passthrough source; any other base declines rather than
+// changing source identity or dropping a chained nested path.
+func pushDownThroughPassthrough(
+	v Value,
+	resultValue Value,
+	upperAlias CorrelationIdentifier,
+) Value {
+	fv, ok := v.(*FieldValue)
+	if !ok || fv == nil || !nonNilPassthroughValue(resultValue) {
+		return nil
 	}
-	return nil
+	if fv.Child == nil {
+		// Preserve the baked-ordinal marker — see pullUpThroughPassthrough.
+		return &FieldValue{
+			Field:    fv.Field,
+			Typ:      fv.Typ,
+			Resolved: fv.Resolved,
+		}
+	}
+	qov, ok := fv.Child.(*QuantifiedObjectValue)
+	if !ok || qov == nil || qov.Correlation != upperAlias {
+		return nil
+	}
+	return &FieldValue{
+		Field:    fv.Field,
+		Typ:      fv.Typ,
+		Child:    resultValue,
+		Resolved: fv.Resolved,
+	}
+}
+
+func nonNilPassthroughValue(value Value) bool {
+	switch value := value.(type) {
+	case *QuantifiedObjectValue:
+		return value != nil
+	case *ObjectValue:
+		return value != nil
+	default:
+		return false
+	}
 }
 
 // PullUpValues translates a list of values through a result value,

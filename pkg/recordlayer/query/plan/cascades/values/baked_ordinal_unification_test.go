@@ -10,9 +10,9 @@ import (
 // and the recursive-CTE wrap's ResolvedOrdinal/HasResolvedOrdinal twin fields
 // were unified onto a single ResolvedAccessor with a FrontierPinned contract
 // bit: the loudness contract must be a property of the VALUE, invariant
-// under transformation, because pullup/pushdown passthrough copies strip
-// Child while sharing the accessor pointer. These tests pin the exact seams
-// that unification closed (a regression could silently reopen them).
+// under transformation, because passthrough copies may replace or strip Child
+// while sharing the accessor pointer. These tests pin the exact seams that
+// unification closed (a regression could silently reopen them).
 
 func singleAccessorOf(fv *FieldValue) (ResolvedAccessor, bool) {
 	if fv.Resolved == nil {
@@ -40,10 +40,19 @@ func unifiedTestQOV(t *testing.T) (*QuantifiedObjectValue, *RecordType) {
 func TestWrapNodeSurvivesPassthroughCopies(t *testing.T) {
 	t.Parallel()
 	wrap := NewFieldValueWithResolvedOrdinal("X", 1, UnknownType)
+	passthrough := NewQuantifiedObjectValue(NamedCorrelationIdentifier("source"))
 
 	for name, copied := range map[string]Value{
-		"pullUpThroughPassthrough":   pullUpThroughPassthrough(wrap, NamedCorrelationIdentifier("up")),
-		"pushDownThroughPassthrough": pushDownThroughPassthrough(wrap),
+		"pullUpThroughPassthrough": pullUpThroughPassthrough(
+			wrap,
+			passthrough,
+			NamedCorrelationIdentifier("up"),
+		),
+		"pushDownThroughPassthrough": pushDownThroughPassthrough(
+			wrap,
+			passthrough,
+			NamedCorrelationIdentifier("up"),
+		),
 	} {
 		fv, ok := copied.(*FieldValue)
 		if !ok {
@@ -62,11 +71,10 @@ func TestWrapNodeSurvivesPassthroughCopies(t *testing.T) {
 }
 
 // TestPinnedStaysLoudThroughPassthrough pins the required property: a
-// FRONTIER-PINNED seed node copied through the passthrough — which STRIPS
+// FRONTIER-PINNED seed node copied through the passthrough — which RE-ANCHORS
 // Child while sharing the accessor pointer — must STAY LOUD on a name-keyed
-// context. A child-presence guard alone would silently demote this copy to a
-// quiet name read (the copy is childless); the FrontierPinned bit correctly
-// keeps the contract traveling with the accessor regardless of Child.
+// context. The FrontierPinned bit keeps the contract traveling with the
+// accessor independently of which QOV child anchors it.
 func TestPinnedStaysLoudThroughPassthrough(t *testing.T) {
 	t.Parallel()
 	qov, _ := unifiedTestQOV(t)
@@ -74,13 +82,19 @@ func TestPinnedStaysLoudThroughPassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
 	}
-	copied := pullUpThroughPassthrough(seed, NamedCorrelationIdentifier("up"))
+	up := NamedCorrelationIdentifier("up")
+	copied := pullUpThroughPassthrough(seed, qov, up)
 	fv, ok := copied.(*FieldValue)
 	if !ok {
 		t.Fatalf("passthrough returned %T, want *FieldValue", copied)
 	}
-	if fv.Child != nil {
-		t.Fatalf("fixture invalid: the passthrough copy must strip Child (got %T) — the test exists because it does", fv.Child)
+	child, ok := fv.Child.(*QuantifiedObjectValue)
+	if !ok || child.Correlation != up {
+		t.Fatalf(
+			"passthrough child = %#v, want QOV anchored on %v",
+			fv.Child,
+			up,
+		)
 	}
 	if fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 		t.Fatalf("passthrough copy lost the FrontierPinned contract (Resolved=%+v)", fv.Resolved)
@@ -89,7 +103,7 @@ func TestPinnedStaysLoudThroughPassthrough(t *testing.T) {
 	var bnce *BakedNameContextError
 	var uce *UnboundEvalContextError
 	if !errors.As(evalErr, &bnce) && !errors.As(evalErr, &uce) {
-		t.Fatalf("childless PINNED copy on a name-keyed row = %v, want loud *BakedNameContextError or *UnboundEvalContextError — the frontier contract must survive the child-stripping copy", evalErr)
+		t.Fatalf("re-anchored PINNED copy on a name-keyed row = %v, want loud *BakedNameContextError or *UnboundEvalContextError — the frontier contract must survive the passthrough copy", evalErr)
 	}
 }
 

@@ -265,11 +265,13 @@ func TestFieldValueBaked_CopyPreservesResolved(t *testing.T) {
 	// RebaseValue — alias remap rebuilds through withChildren.
 	assertBaked("RebaseValue", RebaseValue(baked1, AliasMap{corrQ: corrR}))
 
-	// Pullup/pushdown passthrough copies (these drop Child by design; the
-	// marker must survive — the passthrough flows the identical record, so the
-	// baked position stays valid).
-	assertBaked("PullUpValue(passthrough)", PullUpValue(baked1, qov, NamedCorrelationIdentifier("up")))
-	assertBaked("PushDownValue(passthrough)", PushDownValue(baked1, qov, NamedCorrelationIdentifier("up")))
+	// Pullup/pushdown passthrough copies. Pullup re-anchors Child on its output
+	// alias and pushdown restores the source Child; either way the marker must
+	// survive because the passthrough flows the identical record.
+	up := NamedCorrelationIdentifier("up")
+	pulled := PullUpValue(baked1, qov, up)
+	assertBaked("PullUpValue(passthrough)", pulled)
+	assertBaked("PushDownValue(passthrough)", PushDownValue(pulled, qov, up))
 
 	// Control: the copies still compare EQUAL to the original under the
 	// refined identity (same name, same ordinal).
@@ -439,9 +441,9 @@ func TestFieldValueBaked_LoudOnNameContext(t *testing.T) {
 	got, err = baked.Evaluate(nameRow)
 	assertLoud("qualified-key map", got, err)
 
-	// Non-correlated map arm (childless PINNED baked copy, e.g. a seed ref
-	// post-passthrough — pullup strips Child but shares the accessor, so the
-	// FrontierPinned contract survives and the guard stays loud).
+	// Non-correlated map arm (an explicitly flattened, PINNED baked seed ref).
+	// The FrontierPinned contract survives on the path and keeps the guard loud
+	// even without a child.
 	orphan := &FieldValue{Field: "ID", Typ: NotNullLong, Resolved: NewFieldPathOfSingle("ID", 0, true)}
 	got, err = orphan.Evaluate(nameRow)
 	assertLoud("plain map arm", got, err)
