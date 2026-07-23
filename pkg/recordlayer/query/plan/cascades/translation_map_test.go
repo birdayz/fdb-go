@@ -540,6 +540,26 @@ func TestAliasMapBuilder_PutChecked(t *testing.T) {
 	if b3.PutAllChecked(AliasMapOfAliases(a, y)) {
 		t.Fatal("PutAllChecked of a contradictory {a→y} (a already maps to x) must be rejected")
 	}
+
+	// PutAllChecked is ATOMIC: a rejected map must leave the builder UNCHANGED so a
+	// caller can try the next candidate on the same builder (the order-independence
+	// the bijection composition relies on). Compose a two-entry map whose SECOND
+	// entry conflicts — the first must not leak in.
+	b4 := NewAliasMapBuilder()
+	b4.PutChecked(a, x) // pins x's inverse to a
+	twoEntry := NewAliasMapBuilder()
+	twoEntry.PutChecked(b, y) // fine on its own
+	twoEntry.PutChecked(values.NamedCorrelationIdentifier("c"), x)
+	if b4.PutAllChecked(twoEntry.Build()) {
+		t.Fatal("PutAllChecked with a conflicting entry (c→x, x claimed by a) must reject")
+	}
+	built := b4.Build()
+	if built.Size() != 1 || built.GetTarget(a) != x {
+		t.Fatalf("rejected PutAllChecked must leave the builder unchanged (only a→x), got size=%d", built.Size())
+	}
+	if built.ContainsSource(b) {
+		t.Fatal("atomicity violated: the compatible first entry (b→y) leaked in after the map was rejected")
+	}
 }
 
 func TestLeafValue_QuantifiedObjectValue(t *testing.T) {

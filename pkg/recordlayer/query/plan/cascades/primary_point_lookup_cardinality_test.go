@@ -122,4 +122,42 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 			t.Fatal("a multi-member no-winner child ref must yield unknown (not a tightened bound)")
 		}
 	})
+
+	// The data-access path can present the composite as a scanPlanExpression
+	// adapter that reports NO child quantifier (GetQuantifiers()==nil) even though
+	// the wrapped plan has a child. The fallback must resolve the child off the
+	// PLAN, not the wrapper, so a full-PK point lookup keeps its bound.
+	t.Run("scan_plan_adapter_len0_propagates", func(t *testing.T) {
+		t.Parallel()
+		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithPrimaryKey(pk2)
+		tf := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scan)
+		adapter := &scanPlanExpression{plan: tf}
+		if len(adapter.GetQuantifiers()) != 0 {
+			t.Fatal("precondition: the adapter must expose no child quantifier")
+		}
+		if !wholePlanMaxCardinalityKnown(adapter) {
+			t.Fatal("a scanPlanExpression(TypeFilter(pointScan)) must propagate AtMostOne through the plan's child")
+		}
+	})
+
+	// A child ref with ONE distinct plan-typed FINAL member plus an exploratory
+	// (non-final) member is unambiguous — planFromQuantifier cannot panic — so the
+	// bound must still propagate (the guard keys on distinct FINAL plans, not on
+	// AllMembers()).
+	t.Run("one_final_plan_plus_exploratory_resolves", func(t *testing.T) {
+		t.Parallel()
+		bound := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithPrimaryKey(pk2)
+		childRef := expressions.FinalOf(bound)
+		// A non-final exploratory member alongside the single final plan.
+		childRef.Insert(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+		tf := plans.NewRecordQueryTypeFilterPlanFromQuantifier([]string{"T"},
+			expressions.ForEachQuantifier(childRef))
+		if !wholePlanMaxCardinalityKnown(tf) {
+			t.Fatal("one final plan + exploratory members must still resolve the point-lookup bound")
+		}
+	})
 }

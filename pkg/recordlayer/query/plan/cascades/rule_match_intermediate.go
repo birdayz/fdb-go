@@ -333,24 +333,22 @@ func tryIntermediateBijection(
 		candidateChildRef := candidateQ.GetRangesOver()
 
 		// Find a PartialMatch on queryChildRef for this candidate whose
-		// candidate-side ref matches the permuted candidateChildRef.
+		// candidate-side ref matches the permuted candidateChildRef AND whose
+		// bound aliases COMPOSE with the bindings accumulated from earlier
+		// siblings. A child reference can hold several partial matches for the
+		// same candidate child (different bound maps); an earlier sibling may have
+		// fixed a binding that only SOME of them agree with, so try each and take
+		// the first that composes — never let partial-match insertion ORDER decide
+		// whether the permutation matches. PutAllChecked is atomic, so a rejected
+		// candidate leaves the builder unchanged for the next attempt. Java only
+		// ever combines COMPATIBLE bound maps.
 		found := false
-		childMatches := GetPartialMatchesForCandidate(queryChildRef, candidate)
-		for _, pm := range childMatches {
+		for _, pm := range GetPartialMatchesForCandidate(queryChildRef, candidate) {
 			pmi, ok := pm.(*PartialMatchImpl)
-			if !ok {
+			if !ok || pmi.GetCandidateRef() != candidateChildRef {
 				continue
 			}
-			if pmi.GetCandidateRef() == candidateChildRef {
-				// Compose this child match's bound aliases into the bijection.
-				// Java only ever combines COMPATIBLE bound maps: a child binding
-				// that contradicts one already established (e.g. a sibling
-				// correlation the child resolved to a different leg than this
-				// permutation assigns) invalidates the whole permutation, so a
-				// silent skip would forge an inconsistent composite match.
-				if !aliasBuilder.PutAllChecked(pmi.GetBoundAliasMap()) {
-					return false
-				}
+			if aliasBuilder.PutAllChecked(pmi.GetBoundAliasMap()) {
 				found = true
 				break
 			}

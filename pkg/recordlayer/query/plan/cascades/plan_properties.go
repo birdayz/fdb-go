@@ -581,48 +581,91 @@ func cardinalitiesFromChildRef(w physicalPlanExpression) properties.Cardinalitie
 }
 
 // cardinalitiesFromChildRefOrInner is cardinalitiesFromChildRef for a transparent
-// (1:1) wrapper, with a narrow fallback to the concrete embedded child. The
-// data-access path exposes a composite (e.g. TypeFilter(Scan) over a
-// full-PK-equality point scan) as a single plan whose child edge is a SNAPSHOT
-// quantifier — its Reference carries NO populated property map, so
-// cardinalitiesForRef reports unknown and a point lookup never receives its
-// proven AtMostOne (the booked M3-followup).
+// (1:1) wrapper, with a fallback to the concrete embedded child. The data-access
+// path exposes a composite (e.g. TypeFilter(Scan) over a full-PK-equality point
+// scan) EITHER as a wrapper with a single SNAPSHOT-quantifier child whose
+// Reference carries no populated property map, OR as a scanPlanExpression adapter
+// that reports NO child quantifier at all — in both forms cardinalitiesForRef
+// reports unknown and a point lookup never receives its proven AtMostOne (the
+// booked M3-followup).
 //
-// The fallback is deliberately conservative, per two hazards:
+// Two hazards shape the fallback:
 //   - A POPULATED property map that weakens to unknown is a LEGITIMATE unknown,
 //     not a missing property (a group with both bounded and unbounded final
 //     members correctly weakens to the least-constraining bound). Never
-//     second-guess it by reading one member — only fall back when the child ref
-//     has NO property map at all.
-//   - The concrete child is read via plan.GetChildren() → planFromQuantifier,
-//     which PANICS on a reference with multiple plan-typed final members and no
-//     winner. Only descend when the child ref is a PROVEN SINGLETON.
+//     second-guess it — trust the ref when its property map is populated.
+//   - The concrete child is reached through planFromQuantifier, which PANICS on a
+//     reference with ≥2 DISTINCT plan-typed final members and no winner. Resolve
+//     the child edge only when it is unambiguous (childPlanIfUnambiguous).
 //
-// Under those guards computing the embedded child directly is exact for a 1:1
-// wrapper and can only TIGHTEN the bound (the M3 guard's safe direction).
+// Under those guards computing the embedded child is exact for a 1:1 wrapper and
+// can only TIGHTEN the bound (the M3 guard's safe direction).
 func cardinalitiesFromChildRefOrInner(w physicalPlanExpression, plan plans.RecordQueryPlan) properties.Cardinalities {
-	qs := w.GetQuantifiers()
-	if len(qs) != 1 {
-		return properties.UnknownCardinalities()
+	if qs := w.GetQuantifiers(); len(qs) == 1 {
+		childRef := qs[0].GetRangesOver()
+		if pm := GetRefPlanPropertiesMap(childRef); pm != nil && len(pm.All()) > 0 {
+			// Populated — trust the (possibly weakened) group cardinality as-is.
+			return cardinalitiesForRef(childRef)
+		}
 	}
-	childRef := qs[0].GetRangesOver()
-	if pm := GetRefPlanPropertiesMap(childRef); pm != nil && len(pm.All()) > 0 {
-		// Populated — trust the (possibly weakened) group cardinality as-is.
-		return cardinalitiesForRef(childRef)
-	}
-	// No property map (a data-access snapshot quantifier). Recover the bound from
-	// the concrete child, but only when the ref is a single-member group so the
-	// descent is unambiguous and cannot trip planFromQuantifier's singleton guard.
-	if len(childRef.AllMembers()) != 1 {
-		return properties.UnknownCardinalities()
-	}
-	children := plan.GetChildren()
-	if len(children) == 1 {
-		if ph, ok := children[0].(physicalPlanExpression); ok {
-			return computeCardinalities(ph, children[0])
+	// No populated child-ref property map (a snapshot quantifier), or the wrapper
+	// exposes no child quantifier at all (the scanPlanExpression adapter). Recover
+	// the bound from the plan's own single child, resolved unambiguously.
+	if childPlan, ok := childPlanIfUnambiguous(plan); ok {
+		if ph, ok := childPlan.(physicalPlanExpression); ok {
+			return computeCardinalities(ph, childPlan)
 		}
 	}
 	return properties.UnknownCardinalities()
+}
+
+// childPlanIfUnambiguous returns the single concrete plan the plan's ONE child
+// quantifier resolves to, and true, only when that resolution cannot trip
+// planFromQuantifier's ≥2-distinct-final-plans panic: a group winner
+// disambiguates the group, otherwise there must be exactly one distinct
+// plan-typed FINAL member (exploratory non-final members, and the same plan
+// appearing in several member sets, do not count). Returns ok=false when the
+// plan has other than one child quantifier, or the child group is genuinely
+// ambiguous. Resolving off the PLAN's quantifier (not the physical wrapper's)
+// covers the scanPlanExpression adapter, whose wrapper reports no quantifier.
+func childPlanIfUnambiguous(plan plans.RecordQueryPlan) (plans.RecordQueryPlan, bool) {
+	qs := plan.GetQuantifiers()
+	if len(qs) != 1 {
+		return nil, false
+	}
+	ref := qs[0].GetRangesOver()
+	if ref == nil {
+		return nil, false
+	}
+	// A group winner is what planFromQuantifier returns first — unambiguous.
+	if wn := ref.Winner(); wn != nil {
+		if ph, ok := wn.(physicalPlanExpression); ok {
+			if p := ph.GetRecordQueryPlan(); p != nil {
+				return p, true
+			}
+		}
+	}
+	// No usable winner: safe only with exactly one distinct plan-typed final
+	// member (≥2 is the panic case; 0 means no concrete plan to read).
+	var only plans.RecordQueryPlan
+	for _, m := range ref.FinalMembers() {
+		ph, ok := m.(physicalPlanExpression)
+		if !ok {
+			continue
+		}
+		p := ph.GetRecordQueryPlan()
+		if p == nil || p == only {
+			continue
+		}
+		if only != nil {
+			return nil, false // ≥2 distinct final plans — ambiguous
+		}
+		only = p
+	}
+	if only == nil {
+		return nil, false
+	}
+	return only, true
 }
 
 // cardinalitiesFromChildRefs returns Cardinalities for each child

@@ -101,17 +101,33 @@ func (b *AliasMapBuilder) PutChecked(source, target values.CorrelationIdentifier
 	return true
 }
 
-// PutAllChecked copies all entries from other via PutChecked, returning false as
-// soon as any entry CONFLICTS with an existing mapping. Unlike PutAll (which
-// silently skips conflicts), this reports them so a caller composing child bound
-// maps into a quantifier bijection can reject an inconsistent composition —
-// Java's match() only ever combines COMPATIBLE bound maps, never a contradictory
-// merge.
+// PutAllChecked copies all entries from other, returning false if ANY entry
+// CONFLICTS with an existing mapping. It is ATOMIC: on conflict the builder is
+// left UNCHANGED (all entries are verified before any is applied), so a caller
+// that composes child bound maps into a quantifier bijection can try one
+// candidate child match, and on rejection try the next on the SAME builder
+// without a partial mutation leaking through. Unlike PutAll (which silently skips
+// conflicts), this reports them — Java's match() only ever combines COMPATIBLE
+// bound maps, never a contradictory merge.
 func (b *AliasMapBuilder) PutAllChecked(other *AliasMap) bool {
+	// Phase 1: verify every entry is compatible with the CURRENT builder state
+	// (other is itself a bijection, so its entries never conflict among
+	// themselves).
 	for source, target := range other.forward {
-		if !b.PutChecked(source, target) {
+		if existing, ok := b.forward[source]; ok {
+			if existing != target {
+				return false
+			}
+			continue
+		}
+		if _, ok := b.inverse[target]; ok {
 			return false
 		}
+	}
+	// Phase 2: all compatible — apply.
+	for source, target := range other.forward {
+		b.forward[source] = target
+		b.inverse[target] = source
 	}
 	return true
 }
