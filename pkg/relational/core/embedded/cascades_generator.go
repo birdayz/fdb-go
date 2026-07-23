@@ -2165,7 +2165,7 @@ func (d *metadataIndexDef) IndexCommonPrimaryKeyValues() []values.Value {
 	if len(rts) == 0 || rts[0].PrimaryKey == nil {
 		return nil
 	}
-	common := recordlayer.TranslatePrimaryKeyToValues(rts[0].PrimaryKey)
+	common := recordlayer.TranslatePrimaryKeyToValues(rts[0].PrimaryKey, strings.ToUpper)
 	if common == nil {
 		return nil
 	}
@@ -2173,7 +2173,7 @@ func (d *metadataIndexDef) IndexCommonPrimaryKeyValues() []values.Value {
 		if rt.PrimaryKey == nil {
 			return nil
 		}
-		other := recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey)
+		other := recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey, strings.ToUpper)
 		if !commonPKValuesStructurallyEqual(common, other) {
 			return nil
 		}

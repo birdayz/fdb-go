@@ -66,4 +66,35 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 			t.Fatal("bare full scan must be unknown")
 		}
 	})
+
+	// In a multi-record-type store the primary point scan is wrapped in a
+	// RecordQueryTypeFilterPlan (primary_scan_match_candidate) whose child edge is
+	// a SNAPSHOT quantifier — its Reference carries no populated property map, so
+	// the transparent-wrapper arm's cardinalitiesForRef reported unknown and the
+	// point lookup lost its proven AtMostOne through the type filter (the booked
+	// M3-followup). The arm now falls back to the concrete embedded child, so the
+	// bound propagates.
+	t.Run("type_filter_over_point_lookup_propagates", func(t *testing.T) {
+		t.Parallel()
+		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithPrimaryKey(pk2)
+		tf := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scan)
+		if !wholePlanMaxCardinalityKnown(tf) {
+			t.Fatal("a full-PK-equality point lookup under a TypeFilter must stay bounded (max 1)")
+		}
+	})
+
+	t.Run("type_filter_over_prefix_stays_unknown", func(t *testing.T) {
+		t.Parallel()
+		// A prefix bind under a type filter can still match many rows — the
+		// fallback must not manufacture a bound the child doesn't prove.
+		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
+			WithPrimaryKey(pk2)
+		tf := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scan)
+		if wholePlanMaxCardinalityKnown(tf) {
+			t.Fatal("a composite-PK prefix bind under a TypeFilter must stay unknown")
+		}
+	})
 }

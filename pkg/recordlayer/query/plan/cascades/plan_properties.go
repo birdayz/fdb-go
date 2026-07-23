@@ -381,7 +381,7 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 		// bounded index access under a Fetch keeps its proven max cardinality
 		// (feeds the M3 whole-plan guard and criterion #2).
 		*plans.RecordQueryFetchFromPartialRecordPlan:
-		return cardinalitiesFromChildRef(w)
+		return cardinalitiesFromChildRefOrInner(w, plan)
 
 	// --- DefaultOnEmpty: floor at 1 ---
 	case *plans.RecordQueryDefaultOnEmptyPlan:
@@ -578,6 +578,32 @@ func cardinalitiesFromChildRef(w physicalPlanExpression) properties.Cardinalitie
 		return properties.UnknownCardinalities()
 	}
 	return cardinalitiesForRef(qs[0].GetRangesOver())
+}
+
+// cardinalitiesFromChildRefOrInner is cardinalitiesFromChildRef for a transparent
+// (1:1) wrapper, with a fallback to the concrete embedded child when the
+// child-ref path yields no bound. The data-access path exposes a composite (e.g.
+// TypeFilter(Scan) over a full-PK-equality point scan) as a single plan whose
+// child edge is a SNAPSHOT quantifier — its Reference carries no populated
+// property map, so cardinalitiesForRef reports unknown and a point lookup never
+// receives its proven AtMostOne (the booked M3-followup). A
+// transparent wrapper's cardinality equals its child's, so when the ref path is
+// unknown, computing the concrete embedded child directly is exact — and only
+// ever TIGHTENS the bound (the M3 guard's safe direction). The len==0 case (a
+// wrapper exposing no child quantifier at all) lands in the same fallback.
+func cardinalitiesFromChildRefOrInner(w physicalPlanExpression, plan plans.RecordQueryPlan) properties.Cardinalities {
+	if qs := w.GetQuantifiers(); len(qs) == 1 {
+		if c := cardinalitiesForRef(qs[0].GetRangesOver()); !c.GetMaxCardinality().IsUnknown() {
+			return c
+		}
+	}
+	children := plan.GetChildren()
+	if len(children) == 1 {
+		if ph, ok := children[0].(physicalPlanExpression); ok {
+			return computeCardinalities(ph, children[0])
+		}
+	}
+	return properties.UnknownCardinalities()
 }
 
 // cardinalitiesFromChildRefs returns Cardinalities for each child

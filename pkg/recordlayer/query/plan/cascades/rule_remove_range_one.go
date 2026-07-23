@@ -45,6 +45,18 @@ func (r *RemoveRangeOneRule) OnMatch(call *ExpressionRuleCall) {
 	if len(quantifiers) <= 1 {
 		return
 	}
+	// Only INNER/CROSS joins: removing a one-row RANGE leg from a LEFT OUTER
+	// SelectExpression changes cardinality (a preserved RANGE side with an empty
+	// counterpart emits one null-extended row before but zero after). And decline
+	// a quantifier-swapped Select: reconstructing it would
+	// have to restore the swap + its SQL column ordering, which the removal path
+	// does not model — declining is always safe for an optimization rule.
+	if sel.GetJoinType() != expressions.JoinInner && sel.GetJoinType() != expressions.JoinCross {
+		return
+	}
+	if sel.IsQuantifiersSwapped() {
+		return
+	}
 
 	for i, q := range quantifiers {
 		if q.Kind() != expressions.QuantifierForEach || !isRangeOneQuantifier(q) {
@@ -64,16 +76,35 @@ func (r *RemoveRangeOneRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
-		// A RANGE(0, 1) quantifier whose value is never referenced — drop it.
+		// A RANGE(0, 1) quantifier whose value is never referenced — drop it,
+		// preserving the Select's source aliases (minus the removed leg's) and
+		// join type so later NLJ implementation still qualifies rows correctly
+		// (NewSelectExpression alone discards this metadata).
 		remaining := make([]expressions.Quantifier, 0, len(quantifiers)-1)
 		for j, other := range quantifiers {
 			if j != i {
 				remaining = append(remaining, other)
 			}
 		}
-		call.Yield(expressions.NewSelectExpression(sel.GetResultValue(), remaining, sel.GetPredicates()))
+		remainingAliases := removeSourceAliasAt(sel.GetSourceAliases(), i)
+		call.Yield(expressions.NewSelectExpressionWithJoinType(
+			sel.GetResultValue(), remaining, sel.GetPredicates(), remainingAliases, sel.GetJoinType(),
+		))
 		return
 	}
+}
+
+// removeSourceAliasAt drops the alias parallel to the removed quantifier at index
+// i, tolerating a nil/short sourceAliases slice (aliases need not be present for
+// every quantifier).
+func removeSourceAliasAt(aliases []string, i int) []string {
+	if i < 0 || i >= len(aliases) {
+		return aliases
+	}
+	out := make([]string, 0, len(aliases)-1)
+	out = append(out, aliases[:i]...)
+	out = append(out, aliases[i+1:]...)
+	return out
 }
 
 func anyPredicateCorrelatedTo(preds []predicates.QueryPredicate, id values.CorrelationIdentifier) bool {

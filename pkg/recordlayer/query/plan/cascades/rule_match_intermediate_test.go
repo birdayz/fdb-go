@@ -280,7 +280,8 @@ func TestMatchIntermediateRule_CyclicQuantifierPermutation(t *testing.T) {
 			expressions.ForEachQuantifier(qA),
 			expressions.ForEachQuantifier(qB),
 			expressions.ForEachQuantifier(qC),
-		}, nil)
+		}, nil,
+	)
 	querySelectRef := expressions.InitialOf(querySelect)
 
 	// Candidate: Select(B, C, A) — a cyclic permutation of the query order.
@@ -291,7 +292,8 @@ func TestMatchIntermediateRule_CyclicQuantifierPermutation(t *testing.T) {
 			expressions.ForEachQuantifier(cB),
 			expressions.ForEachQuantifier(cC),
 			expressions.ForEachQuantifier(cA),
-		}, nil)
+		}, nil,
+	)
 	candidateSelectRef := expressions.InitialOf(candidateSelect)
 
 	mc := &testMatchCandidate{name: "idx_join3", traversal: NewTraversal(candidateSelectRef)}
@@ -306,6 +308,65 @@ func TestMatchIntermediateRule_CyclicQuantifierPermutation(t *testing.T) {
 
 	if len(GetPartialMatchesForCandidate(querySelectRef, mc)) == 0 {
 		t.Fatal("expected a PartialMatch via the cyclic bijection [2,0,1]; positional + first-two-swap both miss it")
+	}
+}
+
+// TestMatchIntermediateRule_NodeReCheckUnderBijectionMap pins RFC-189's
+// MatchIntermediate node re-check: the node-level
+// EqualsWithoutChildren must be evaluated UNDER the quantifier bijection's alias
+// map, not once with an empty map. Query and candidate use DIFFERENT quantifier
+// aliases, so a result value that references those aliases is unequal under an
+// empty map and equal only under the bijection {query-q → candidate-q}. The
+// candidate quantifier order is swapped (cB, cA) so the sole valid child
+// bijection is the non-identity perm [1,0]; the result values reference the QOVs
+// (record{f: qA, g: qB} vs record{f: cA, g: cB}) so the node check genuinely
+// depends on the map. The old empty-map pre-check rejected this valid match
+// before any permutation was tried — this test fails without the per-bijection
+// re-check.
+func TestMatchIntermediateRule_NodeReCheckUnderBijectionMap(t *testing.T) {
+	t.Parallel()
+
+	// Query: Select(scanA, scanB) with result record{f: qA.qov, g: qB.qov}.
+	qARef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType))
+	qBRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType))
+	qA := expressions.ForEachQuantifier(qARef)
+	qB := expressions.ForEachQuantifier(qBRef)
+	querySelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "f", Value: qA.GetFlowedObjectValue()},
+			values.RecordConstructorField{Name: "g", Value: qB.GetFlowedObjectValue()},
+		),
+		[]expressions.Quantifier{qA, qB}, nil,
+	)
+	querySelectRef := expressions.InitialOf(querySelect)
+
+	// Candidate: Select(scanB, scanA) — SWAPPED positional order — with result
+	// record{f: cA.qov, g: cB.qov}. The only same-type child bijection is
+	// qA↔cA, qB↔cB, i.e. query positions [0,1] → candidate positions [1,0].
+	cBRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType))
+	cARef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType))
+	cB := expressions.ForEachQuantifier(cBRef)
+	cA := expressions.ForEachQuantifier(cARef)
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "f", Value: cA.GetFlowedObjectValue()},
+			values.RecordConstructorField{Name: "g", Value: cB.GetFlowedObjectValue()},
+		),
+		[]expressions.Quantifier{cB, cA}, nil,
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+	mc := &testMatchCandidate{name: "idx_join_qov", traversal: NewTraversal(candidateSelectRef)}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	leafRule := NewMatchLeafRule()
+	FireExpressionRuleWithMemo(leafRule, qARef, ctx, nil)
+	FireExpressionRuleWithMemo(leafRule, qBRef, ctx, nil)
+
+	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+
+	if len(GetPartialMatchesForCandidate(querySelectRef, mc)) == 0 {
+		t.Fatal("expected a PartialMatch: the QOV-referencing result values are equal only under the bijection {qA→cA, qB→cB}; an empty-map node check rejects this valid match")
 	}
 }
 

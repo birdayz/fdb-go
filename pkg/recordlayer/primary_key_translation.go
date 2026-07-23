@@ -20,9 +20,17 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 // the dedup optimization rather than risking a wrong one. The base of every
 // leaf is nil (the flat field-reference model), so the translation is
 // self-consistent and independent of any quantifier alias.
-func TranslatePrimaryKeyToValues(pk KeyExpression) []values.Value {
+// normalizeName maps a raw protobuf field name into the caller's namespace (the
+// SQL layer uppercases; a nil transform means identity). The translated field
+// names MUST live in the SAME namespace as the plan's ordering/column values or
+// values.ValuesStructurallyEqual never matches and the dedup silently never
+// fires (the field-casing mismatch that made the structural common-PK inert).
+func TranslatePrimaryKeyToValues(pk KeyExpression, normalizeName func(string) string) []values.Value {
 	if pk == nil {
 		return nil
+	}
+	if normalizeName == nil {
+		normalizeName = func(s string) string { return s }
 	}
 	normalized := normalizeKeyForPositions(pk)
 	if len(normalized) == 0 {
@@ -30,7 +38,7 @@ func TranslatePrimaryKeyToValues(pk KeyExpression) []values.Value {
 	}
 	result := make([]values.Value, 0, len(normalized))
 	for _, ke := range normalized {
-		v := translateKeyComponent(ke, nil)
+		v := translateKeyComponent(ke, nil, normalizeName)
 		if v == nil {
 			return nil
 		}
@@ -42,21 +50,30 @@ func TranslatePrimaryKeyToValues(pk KeyExpression) []values.Value {
 // translateKeyComponent maps a single normalized key-position expression to a
 // structure-encoding Value over `base` (nil = the record root). Returns nil for
 // any component whose scan identity is not a plain structural field path.
-func translateKeyComponent(ke KeyExpression, base values.Value) values.Value {
+func translateKeyComponent(ke KeyExpression, base values.Value, normalizeName func(string) string) values.Value {
 	switch e := ke.(type) {
 	case *FieldKeyExpression:
 		if e.fanType != FanTypeNone {
 			return nil
 		}
-		return &values.FieldValue{Field: e.fieldName, Typ: values.UnknownType, Child: base}
+		return &values.FieldValue{Field: normalizeName(e.fieldName), Typ: values.UnknownType, Child: base}
 	case *RecordTypeKeyExpression:
+		// A RecordTypeKey with a NESTED key (RecordTypeKey().Nest(Field("id")))
+		// carries the nested field as part of its identity (Evaluate/ColumnSize
+		// include it). Translating to a bare RecordTypeValue would drop the nested
+		// field, so two structurally-DIFFERENT nested PKs would translate
+		// identically → wrong dedup → dropped rows. Fail-safe: abstain (nil) for
+		// the nested shape rather than risk a wrong common-PK match.
+		if e.nested != nil {
+			return nil
+		}
 		return values.NewRecordTypeValue(base)
 	case *NestingKeyExpression:
 		if e.fanType != FanTypeNone {
 			return nil
 		}
-		nestedBase := &values.FieldValue{Field: e.parentField, Typ: values.UnknownType, Child: base}
-		return translateKeyComponent(e.child, nestedBase)
+		nestedBase := &values.FieldValue{Field: normalizeName(e.parentField), Typ: values.UnknownType, Child: base}
+		return translateKeyComponent(e.child, nestedBase, normalizeName)
 	default:
 		return nil
 	}

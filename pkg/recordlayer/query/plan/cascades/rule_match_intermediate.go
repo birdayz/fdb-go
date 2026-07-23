@@ -236,20 +236,20 @@ func matchIntermediateStructural(
 		return false
 	}
 
-	// Structural equality check at this level (ignoring children).
-	exprAliasMap := expressions.EmptyAliasMap()
-	if !queryExpr.EqualsWithoutChildren(candidateExpr, exprAliasMap) {
-		return false
-	}
-
-	// Enumerate ALL bijections query-q[i] ↔ candidate-q[perm[i]] and yield a
-	// PartialMatch for EACH that succeeds — Java's RelationalExpression.subsumedBy
-	// enumerates every quantifier mapping via EnumeratingIterable, not just the
-	// positional one. The identity permutation is the common case; permutations
-	// catch multi-quantifier expressions whose candidate quantifier order differs
-	// from the query's (positional-only pairing silently missed those index
-	// matches). Capped at matchIntermediateMaxPermutations to bound the factorial;
-	// beyond the cap fall back to positional pairing only (as before).
+	// Enumerate bijections query-q[i] ↔ candidate-q[perm[i]] — Java's
+	// RelationalExpression.subsumedBy tries every quantifier mapping via
+	// EnumeratingIterable, not just the positional one. The identity permutation
+	// is the common case; permutations catch multi-quantifier expressions whose
+	// candidate quantifier order differs from the query's (positional-only
+	// pairing silently missed those index matches). We stop at the FIRST fully
+	// valid bijection: AddPartialMatchForCandidate dedups by (query expr,
+	// candidate ref), so every mapping past the first is discarded anyway —
+	// yielding more would be dead work. The node-level EqualsWithoutChildren is
+	// re-checked UNDER each bijection's built alias map inside
+	// tryIntermediateBijection, not once with an empty map (an empty-map
+	// pre-check can both over-filter a valid permuted match and admit an invalid
+	// one). Capped at matchIntermediateMaxPermutations to bound
+	// the factorial; beyond the cap, positional pairing only.
 	n := len(queryQs)
 	perm := make([]int, n)
 	for i := range perm {
@@ -258,31 +258,31 @@ func matchIntermediateStructural(
 	if n > matchIntermediateMaxPermutations {
 		return tryIntermediateBijection(call, queryExpr, candidate, candidateRef, candidateExpr, queryQs, candidateQs, perm)
 	}
-	matchedAny := false
-	permuteAll(perm, 0, func(p []int) {
-		if tryIntermediateBijection(call, queryExpr, candidate, candidateRef, candidateExpr, queryQs, candidateQs, p) {
-			matchedAny = true
-		}
+	return permuteUntil(perm, 0, func(p []int) bool {
+		return tryIntermediateBijection(call, queryExpr, candidate, candidateRef, candidateExpr, queryQs, candidateQs, p)
 	})
-	return matchedAny
 }
 
 // matchIntermediateMaxPermutations bounds the bijection enumeration factorial
 // (mirrors expressions.MaxPermutationChildren).
 const matchIntermediateMaxPermutations = 8
 
-// permuteAll enumerates EVERY permutation of arr in place, calling visit on each
-// (no early stop — Java yields all successful quantifier mappings).
-func permuteAll(arr []int, k int, visit func(perm []int)) {
+// permuteUntil enumerates permutations of arr in place, calling accept on each,
+// and STOPS at the first accept that returns true (returning true). Returns
+// false if no permutation is accepted.
+func permuteUntil(arr []int, k int, accept func(perm []int) bool) bool {
 	if k == len(arr) {
-		visit(arr)
-		return
+		return accept(arr)
 	}
 	for i := k; i < len(arr); i++ {
 		arr[k], arr[i] = arr[i], arr[k]
-		permuteAll(arr, k+1, visit)
+		if permuteUntil(arr, k+1, accept) {
+			arr[k], arr[i] = arr[i], arr[k]
+			return true
+		}
 		arr[k], arr[i] = arr[i], arr[k]
 	}
+	return false
 }
 
 // tryIntermediateBijection attempts one quantifier bijection (query-q[i] ↔
@@ -299,6 +299,9 @@ func tryIntermediateBijection(
 	perm []int,
 ) bool {
 	aliasBuilder := NewAliasMapBuilder()
+	// nodeAliasMap carries just THIS node's quantifier bijection (query-q alias →
+	// candidate-q alias), for the node-level EqualsWithoutChildren re-check below.
+	nodeAliasMap := expressions.EmptyAliasMap()
 
 	for i, queryQ := range queryQs {
 		queryChildRef := queryQ.GetRangesOver()
@@ -323,6 +326,21 @@ func tryIntermediateBijection(
 			return false
 		}
 		aliasBuilder.Put(queryQ.GetAlias(), candidateQs[perm[i]].GetAlias())
+		nam, ok := nodeAliasMap.With(queryQ.GetAlias(), candidateQs[perm[i]].GetAlias())
+		if !ok {
+			return false
+		}
+		nodeAliasMap = nam
+	}
+
+	// Re-check node-level structural equality UNDER this bijection's quantifier
+	// alias map: the query and candidate result value /
+	// predicates may reference quantifier aliases that the bijection translates
+	// to different legs, so two nodes equal under an empty map can be unequal
+	// under the real mapping (and vice-versa). Only a bijection whose node
+	// comparison holds under its own map is a valid match.
+	if !queryExpr.EqualsWithoutChildren(candidateExpr, nodeAliasMap) {
+		return false
 	}
 
 	// All quantifiers matched under this bijection — create the composite match.
