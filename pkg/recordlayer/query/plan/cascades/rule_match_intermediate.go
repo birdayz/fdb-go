@@ -410,18 +410,18 @@ func tryIntermediateBijection(
 	return true
 }
 
-// matchFilterAgainstSelect handles the subsumption case where a
-// query LogicalFilterExpression is matched against a candidate
-// SelectExpression with Placeholder predicates. This is the core
-// of index matching: query predicates (ComparisonPredicates) bind
-// to candidate Placeholders, producing parameter bindings
-// (ComparisonRanges) that the physical index scan uses.
+// matchSingleSourceAgainstSelect handles the subsumption case where a
+// single-source query Filter or pass-through Select is matched against a
+// candidate SelectExpression with Placeholder predicates. This is the core of
+// index matching: query predicates (ComparisonPredicates) bind to candidate
+// Placeholders, producing parameter bindings (ComparisonRanges) that the
+// physical index scan uses.
 //
 // Algorithm:
-//  1. Both expressions must have exactly one quantifier (single-
-//     source filter/select). The query's inner quantifier ranges
-//     over the scan; the candidate's ForEach quantifier ranges over
-//     the candidate scan. A child PartialMatch must link them.
+//  1. The query must have exactly one ForEach quantifier. The candidate must
+//     have exactly one ForEach quantifier, plus only guarded, semantically dead
+//     existential quantifiers. A child PartialMatch must link the two ForEach
+//     legs.
 //  2. For each candidate Placeholder, find a query
 //     ComparisonPredicate whose operand references the same column.
 //     If found, merge the comparison into a ComparisonRange and
@@ -453,18 +453,73 @@ func matchSingleSourceAgainstSelect(
 	candidate MatchCandidate,
 	candidateRef *expressions.Reference,
 ) {
-	// Step 1: Match quantifiers. Both sides must have exactly one.
+	// Step 1: Match the query's single ForEach quantifier to the candidate's
+	// single ForEach quantifier. A candidate Select may additionally own
+	// existential quantifiers, but only when they are provably dead: an
+	// unmatched candidate ForEach can change cardinality, and a referenced
+	// existential can filter or shape the candidate, so neither can be skipped.
+	//
+	// This is the bounded, compensation-safe subset of Java's non-exact
+	// SelectExpression subsumption that this single-source path can represent.
+	// The full Java matcher also enumerates query-side subsets and
+	// Existential→ForEach pairings; those require multi-match identity and
+	// general predicate-implication infrastructure beyond this routine.
 	queryQs := queryExpr.GetQuantifiers()
 	candidateQs := candidateSelect.GetQuantifiers()
-	if len(queryQs) != 1 || len(candidateQs) != 1 {
+	if len(queryQs) != 1 || queryQs[0].Kind() != expressions.QuantifierForEach || len(candidateQs) == 0 {
 		return
 	}
-	// The single query/candidate quantifiers must have compatible edges, exactly
+	switch candidateSelect.GetJoinType() {
+	case expressions.JoinInner, expressions.JoinCross:
+		// These join types do not encode directional/null-extension semantics.
+	default:
+		return
+	}
+
+	candidateForEachIndex := -1
+	skippedCandidateAliases := make(map[values.CorrelationIdentifier]struct{})
+	for i, candidateQ := range candidateQs {
+		switch candidateQ.Kind() {
+		case expressions.QuantifierForEach:
+			if candidateForEachIndex >= 0 {
+				return // every candidate ForEach must be matched
+			}
+			candidateForEachIndex = i
+		case expressions.QuantifierExistential:
+			skippedCandidateAliases[candidateQ.GetAlias()] = struct{}{}
+		default:
+			return
+		}
+	}
+	if candidateForEachIndex < 0 {
+		return
+	}
+	candidateQ := candidateQs[candidateForEachIndex]
+
+	// A skipped existential is safe only when it is semantically inert. Check
+	// every place at this node that could observe it, including tautological
+	// predicates (the test is correlation-based, not predicate-class-based) and
+	// dependencies of the selected ForEach leg.
+	for skippedAlias := range skippedCandidateAliases {
+		if _, referenced := values.GetCorrelatedToOfValue(candidateSelect.GetResultValue())[skippedAlias]; referenced {
+			return
+		}
+		if _, dependency := candidateQ.GetCorrelatedTo()[skippedAlias]; dependency {
+			return
+		}
+		for _, candidatePredicate := range candidateSelect.GetPredicates() {
+			if _, referenced := predicates.GetCorrelatedToOfPredicate(candidatePredicate)[skippedAlias]; referenced {
+				return
+			}
+		}
+	}
+
+	// The matched query/candidate quantifiers must have compatible edges, exactly
 	// as the structural bijection path checks — this subsumption route bypasses
 	// that path, so without this a pass-through Select over a NULL-ON-EMPTY leg
 	// could subsume an index candidate over a plain ForEach leg and a later
 	// substitution would drop the null-extended row.
-	if !quantifierEdgesCompatible(queryQs[0], candidateQs[0]) {
+	if !quantifierEdgesCompatible(queryQs[0], candidateQ) {
 		return
 	}
 
@@ -477,7 +532,7 @@ func matchSingleSourceAgainstSelect(
 	// composed alias map is reused below (Java only combines COMPATIBLE bound
 	// maps).
 	queryChildRef := queryQs[0].GetRangesOver()
-	candidateChildRef := candidateQs[0].GetRangesOver()
+	candidateChildRef := candidateQ.GetRangesOver()
 
 	var childMatch *PartialMatchImpl
 	var boundAliasMap *AliasMap
@@ -490,7 +545,7 @@ func matchSingleSourceAgainstSelect(
 		if !ab.PutAllChecked(pmi.GetBoundAliasMap()) {
 			continue
 		}
-		if !ab.PutChecked(queryQs[0].GetAlias(), candidateQs[0].GetAlias()) {
+		if !ab.PutChecked(queryQs[0].GetAlias(), candidateQ.GetAlias()) {
 			continue
 		}
 		childMatch = pmi
@@ -522,10 +577,14 @@ func matchSingleSourceAgainstSelect(
 	for _, candPred := range candidatePreds {
 		ph, ok := candPred.(*predicates.Placeholder)
 		if !ok {
-			// Non-Placeholder candidate predicates (e.g. constant
-			// tautologies) are ignored — they don't constrain the
-			// match.
-			continue
+			// A candidate predicate that filters rows cannot be ignored: the
+			// candidate would then produce a subset of the query and no
+			// compensation can restore the eliminated records. Java removes
+			// only remaining tautologies at this point.
+			if predicates.IsTautology(candPred) {
+				continue
+			}
+			return
 		}
 
 		matched := false
@@ -836,6 +895,14 @@ func comparandIndependentOfSource(comparand values.Value, sourceAlias values.Cor
 // must not take this path (the index scan returns full rows, not the
 // projection), so it is rejected here.
 func isPassThroughSingleSourceSelect(sel *expressions.SelectExpression) bool {
+	switch sel.GetJoinType() {
+	case expressions.JoinInner, expressions.JoinCross:
+		// A one-source Select has no join direction, but retaining this gate
+		// prevents a future outer-join representation from entering the subset
+		// path and losing null-extension semantics.
+	default:
+		return false
+	}
 	qs := sel.GetQuantifiers()
 	if len(qs) != 1 || qs[0].Kind() != expressions.QuantifierForEach {
 		return false

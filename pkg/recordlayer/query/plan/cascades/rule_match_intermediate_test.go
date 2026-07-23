@@ -256,6 +256,234 @@ func TestMatchIntermediateRule_MultipleQuantifiers(t *testing.T) {
 	}
 }
 
+// TestMatchIntermediateRule_SelectSubsetSubsumesMultiQuantifierCandidate pins
+// RFC-190.4's non-exact MatchIntermediate path. The query has one ForEach leg,
+// while the index-like candidate has the matching ForEach leg plus an
+// unreferenced Existential leg. Java's matcher enumerates equal-sized subsets
+// of both quantifier sets; SelectExpression.subsumedBy then permits the
+// candidate-only existential (but not an unmatched candidate ForEach).
+//
+// The candidate also carries a Placeholder so this proves the useful
+// index-matching route, not merely a structural subset: the query comparison
+// must bind the placeholder and the composite PartialMatch must point at the
+// multi-quantifier candidate Select.
+func TestMatchIntermediateRule_SelectSubsetSubsumesMultiQuantifierCandidate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                    string
+		extraKind               expressions.QuantifierKind
+		extraFirst              bool
+		extraPredicate          bool
+		candidateFalsePredicate bool
+		resultUsesExtra         bool
+		selectedDependsOnExtra  bool
+		queryJoinType           expressions.JoinType
+		candidateJoinType       expressions.JoinType
+		expectPartialMatch      bool
+	}{
+		{
+			name:               "dead trailing candidate existential is safely skipped",
+			extraKind:          expressions.QuantifierExistential,
+			expectPartialMatch: true,
+		},
+		{
+			name:               "dead leading candidate existential is safely skipped",
+			extraKind:          expressions.QuantifierExistential,
+			extraFirst:         true,
+			expectPartialMatch: true,
+		},
+		{
+			name:               "candidate ForEach cannot be skipped",
+			extraKind:          expressions.QuantifierForEach,
+			extraFirst:         true,
+			expectPartialMatch: false,
+		},
+		{
+			name:               "candidate physical leg cannot be skipped",
+			extraKind:          expressions.QuantifierPhysical,
+			expectPartialMatch: false,
+		},
+		{
+			name:               "filtering candidate existential cannot be skipped",
+			extraKind:          expressions.QuantifierExistential,
+			extraPredicate:     true,
+			expectPartialMatch: false,
+		},
+		{
+			name:                    "unmapped candidate filter cannot be ignored",
+			extraKind:               expressions.QuantifierExistential,
+			candidateFalsePredicate: true,
+			expectPartialMatch:      false,
+		},
+		{
+			name:               "result-producing candidate existential cannot be skipped",
+			extraKind:          expressions.QuantifierExistential,
+			resultUsesExtra:    true,
+			expectPartialMatch: false,
+		},
+		{
+			name:                   "selected candidate leg cannot depend on skipped existential",
+			extraKind:              expressions.QuantifierExistential,
+			selectedDependsOnExtra: true,
+			expectPartialMatch:     false,
+		},
+		{
+			name:               "outer query Select cannot use subset path",
+			extraKind:          expressions.QuantifierExistential,
+			queryJoinType:      expressions.JoinLeftOuter,
+			expectPartialMatch: false,
+		},
+		{
+			name:               "outer candidate Select cannot use subset path",
+			extraKind:          expressions.QuantifierExistential,
+			candidateJoinType:  expressions.JoinLeftOuter,
+			expectPartialMatch: false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			// Query: SELECT q FROM T q WHERE q.col0 = 5.
+			queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+			queryScanRef := expressions.InitialOf(queryScan)
+			queryQ := expressions.ForEachQuantifier(queryScanRef)
+			queryPred := predicates.NewComparisonPredicate(
+				values.NewFieldValue(queryQ.GetFlowedObjectValue(), "col0", values.UnknownType),
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
+			)
+			querySelect := expressions.NewSelectExpressionWithJoinType(
+				queryQ.GetFlowedObjectValue(),
+				[]expressions.Quantifier{queryQ},
+				[]predicates.QueryPredicate{queryPred},
+				nil,
+				test.queryJoinType,
+			)
+			querySelectRef := expressions.InitialOf(querySelect)
+
+			// Candidate: SELECT c FROM T c, <extra U> WHERE c.col0 = $p.
+			extraRef := expressions.InitialOf(
+				expressions.NewFullUnorderedScanExpression([]string{"U"}, values.UnknownType),
+			)
+			var extraQ expressions.Quantifier
+			switch test.extraKind {
+			case expressions.QuantifierExistential:
+				extraQ = expressions.ExistentialQuantifier(extraRef)
+			case expressions.QuantifierForEach:
+				extraQ = expressions.ForEachQuantifier(extraRef)
+			case expressions.QuantifierPhysical:
+				extraQ = expressions.NewPhysicalQuantifier(extraRef)
+			default:
+				t.Fatalf("unsupported test quantifier kind %v", test.extraKind)
+			}
+			candidateScanRef := expressions.InitialOf(
+				expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
+			)
+			if test.selectedDependsOnExtra {
+				dependentFilter := expressions.NewLogicalFilterExpression(
+					[]predicates.QueryPredicate{predicates.NewExistentialAlias(extraQ.GetAlias())},
+					expressions.ForEachQuantifier(candidateScanRef),
+				)
+				candidateScanRef = expressions.InitialOf(dependentFilter)
+			}
+			candidateQ := expressions.ForEachQuantifier(candidateScanRef)
+
+			parameterAlias := values.UniqueCorrelationIdentifier()
+			placeholder := predicates.NewPlaceholder(
+				parameterAlias,
+				values.NewFieldValue(candidateQ.GetFlowedObjectValue(), "col0", values.UnknownType),
+			)
+			candidatePreds := []predicates.QueryPredicate{placeholder}
+			if test.extraPredicate {
+				candidatePreds = append(candidatePreds, predicates.NewExistentialAlias(extraQ.GetAlias()))
+			}
+			if test.candidateFalsePredicate {
+				candidatePreds = append(candidatePreds, predicates.NewConstantPredicate(predicates.TriFalse))
+			}
+			candidateResult := candidateQ.GetFlowedObjectValue()
+			if test.resultUsesExtra {
+				candidateResult = extraQ.GetFlowedObjectValue()
+			}
+			candidateQs := []expressions.Quantifier{candidateQ, extraQ}
+			if test.extraFirst {
+				candidateQs[0], candidateQs[1] = candidateQs[1], candidateQs[0]
+			}
+			candidateSelect := expressions.NewSelectExpressionWithJoinType(
+				candidateResult,
+				candidateQs,
+				candidatePreds,
+				nil,
+				test.candidateJoinType,
+			)
+			candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+			mc := &testMatchCandidate{
+				name:      "idx_col0_with_extra_leg",
+				traversal: NewTraversal(candidateSelectRef),
+			}
+			ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+			if test.selectedDependsOnExtra {
+				// Seed the exact candidate child ref directly so the root subset
+				// matcher is reached; MatchLeafRule would otherwise stop at the
+				// FullScan below the dependency-carrying filter.
+				childMI := NewRegularMatchInfo(
+					nil, EmptyAliasMap(), nil, nil, nil, EmptyGroupByMappings(), nil, nil,
+				)
+				childPM := NewPartialMatch(
+					EmptyAliasMap(), mc, queryScanRef, queryScan, candidateScanRef, childMI,
+				)
+				AddPartialMatchForCandidate(queryScanRef, mc, childPM)
+			} else {
+				FireExpressionRuleWithMemo(NewMatchLeafRule(), queryScanRef, ctx, nil)
+			}
+			if got := len(GetPartialMatchesForCandidate(queryScanRef, mc)); got == 0 {
+				t.Fatal("leaf PartialMatch not seeded on query scan")
+			}
+
+			FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+
+			pms := GetPartialMatchesForCandidate(querySelectRef, mc)
+			if !test.expectPartialMatch {
+				if len(pms) != 0 {
+					t.Fatalf("unsafe candidate subset produced %d PartialMatches", len(pms))
+				}
+				return
+			}
+			if len(pms) == 0 {
+				t.Fatal("expected subset-subsumption PartialMatch against the multi-quantifier candidate")
+			}
+			pmi := pms[0].(*PartialMatchImpl)
+			if pmi.GetCandidateRef() != candidateSelectRef {
+				t.Fatal("subset PartialMatch does not point at the candidate Select")
+			}
+			if got := pmi.GetBoundAliasMap().GetTarget(queryQ.GetAlias()); got != candidateQ.GetAlias() {
+				t.Fatalf("query ForEach alias mapped to %v, want %v", got, candidateQ.GetAlias())
+			}
+			boundRange := pmi.GetRegularMatchInfo().GetParameterBindingMap()[parameterAlias]
+			if boundRange == nil || !boundRange.IsEquality() {
+				t.Fatalf("candidate placeholder binding = %v, want equality", boundRange)
+			}
+			matchedQs := pmi.GetMatchedQuantifiers()
+			if len(matchedQs) != 1 || matchedQs[0].GetAlias() != queryQ.GetAlias() {
+				t.Fatalf("matched query quantifiers = %v, want only %v", matchedQs, queryQ.GetAlias())
+			}
+			if unmatchedQs := pmi.GetUnmatchedQuantifiers(); len(unmatchedQs) != 0 {
+				t.Fatalf("unmatched query quantifiers = %v, want none", unmatchedQs)
+			}
+			candidateTopAlias := values.UniqueCorrelationIdentifier()
+			comp := pmi.CompensateCompleteMatch(nil, candidateTopAlias)
+			if comp.IsImpossible() {
+				t.Fatalf("subset match produced unusable compensation: %v", comp)
+			}
+			if comp.IsNeeded() {
+				t.Fatalf("dead candidate-only existential introduced compensation: %v", comp)
+			}
+		})
+	}
+}
+
 // TestMatchIntermediateRule_CyclicQuantifierPermutation pins RFC-189's
 // MatchIntermediate permutation port (finding 13): the rule enumerates ALL
 // quantifier bijections (Java's subsumedBy via EnumeratingIterable), not just the

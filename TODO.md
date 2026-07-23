@@ -139,9 +139,22 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   + Torvalds ACK + independent Codex ACK.** Full `just test`: 56/56 targets green.
 
 **Fidelity / optimization reach (Graefe-gated design):**
-- [ ] **190.4 (MED)** — `MatchIntermediateRule` requires equal quantifier count
-  (`rule_match_intermediate.go:225,459`); no non-exact/subset subsumption (Java's existential
-  Example-2 multi-match). Bijection enumeration landed (RFC-189); subset subsumption did not.
+- [ ] **190.4 (Graefe-reruled)** — the original “query fewer / compensate candidate extras” MED
+  premise is NAK: executable Java enumerates dependency-sound partial bijections and then applies
+  expression-specific subsumption; every Select `ForEach` on both sides must still be covered.
+  Staged closure:
+  - [x] **190.4a** — guarded single-source reach for candidate-only dead existential legs:
+    position-independent sole-`ForEach` selection, dead-alias/result/predicate/dependency checks,
+    outer/extra-`ForEach`/non-tautology rejection, child-match retention, and usable-compensation
+    regression plus negative twins. Focused regression green 20×; parent-vs-current explain corpus
+    2,579/2,579 identical; full `just test` 56/56. **FINAL REVIEW: Graefe ACK + Torvalds ACK +
+    independent Codex ACK.** This is explicitly not the full Java port.
+  - [ ] **190.4b** — dependency-sound/topological subset enumeration, all child-match branches,
+    `RegularMatchInfo` merge/child metadata, semantic multi-match dedup, and deterministic bounded
+    search (40,320 attempted mappings / 64 unique outputs; safe miss on exhaustion).
+  - [ ] **190.4c** — current Java Select `ForEach` coverage, existential ownership/dependencies,
+    predicate implication/candidate coverage, child pull-up/result mapping, compensation state,
+    and end-to-end cardinality regressions.
 - [ ] **190.5 (MED)** — index-intersection reach: 3-way cap + ≤4 candidates/≤8 matches
   (`intersector_primary_key.go:94`, `planner.go:662,709`), PK-only comparison key, no reverse-
   ordered (`DESC`) intersections (`plans/intersection.go:90`). Java: unbounded k-way + any common

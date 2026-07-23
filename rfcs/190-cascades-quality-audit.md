@@ -2,7 +2,9 @@
 
 Status: **Implementing** (Graefe ACK + Torvalds ACK on the RFC; **190.1 milestone Graefe+Torvalds ACK
 on `95598761f`** — codex + @claude at PR). Landed: 190.12 golden, 190.13 docs, 190.1 (N-way EXISTS),
-and 190.2 (cost-comparator transitivity).
+190.2 (cost-comparator transitivity), 190.3 (point-scan PK proof), the bundled scalar-NaN ledger
+closure, and 190.4a (guarded dead candidate existentials). The Graefe-reruled 190.4 umbrella stays
+open for 190.4b/190.4c.
 190.1 was **materially re-designed** after its original delete premise proved false (the arm's
 "never produced an executable plan" gravestone is a lie — deleting it regresses working FDB tests).
 The new 190.1 (converge on Java's two-rule architecture via a guarded `PartitionSelectRule`) carries
@@ -329,15 +331,64 @@ than duplicating already-landed code. Parent-vs-current explain corpus is 2,579/
 
 **190.x-bundled FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.**
 
-### 190.4 (MED) — MatchIntermediateRule subset subsumption
+### 190.4 (Graefe-reruled) — MatchIntermediateRule partial subsumption
 
-`rule_match_intermediate.go:225,459` requires equal quantifier count (`matchIntermediateStructural`)
-and hard-gates `matchSingleSourceAgainstSelect` to one quantifier per side — no non-exact/subset
-subsumption (Java's existential Example-2 multi-match, `MatchIntermediateRule.java:112-149`).
-Bijection enumeration landed (RFC-189); subset did not. **Fix:** port Java's subset subsumption —
-a query SelectExpression with fewer quantifiers subsumed by a candidate with more, binding the
-extra as compensation. Graefe-gated (matching-infra). Regression: an index-match test on a
-multi-quantifier candidate that Go currently misses.
+**The original MED premise and one-step fix are NAK.** Executable Java does not generally take “a
+query Select with fewer quantifiers” and bind candidate extras as compensation. Its
+`ComputingMatcher` enumerates dependency-sound, equal-sized subsets from *both* quantifier sets,
+then dispatches each partial bijection to expression-specific `subsumedBy`. Candidate omissions
+are never compensation. Current `SelectExpression.subsumedBy` requires every query and candidate
+`ForEach` to participate; only existential legs may remain unmatched. The old Example-2 prose is
+stale where it conflicts with those executable gates.
+
+A faithful eager enumeration has
+`sum(C(n,k) * C(m,k) * k!, k=1..min(n,m))` mappings (1,441,728 at 8×8), before child-match and
+predicate-mapping products. Go also currently drops the metadata and multiplicity that Java needs:
+the structural path does not retain child `PartialMatch`es in `RegularMatchInfo`, and
+`AddPartialMatchForCandidate` collapses every result with the same `(queryExpression,
+candidateRef)`. The work is therefore split at Graefe's design gate:
+
+#### 190.4a — guarded dead candidate-existential reach
+
+Extend the existing single-source index matcher only when there is exactly one candidate
+`ForEach` to pair with the query `ForEach` and every other candidate quantifier is an existential
+that is provably dead: its alias is absent from the candidate result, every candidate predicate,
+and the selected leg's dependency set. Reject outer/full join semantics, unmatched candidate
+`ForEach` legs, physical legs, edge incompatibility, and every unmapped non-tautological candidate
+predicate. Retain the selected child match in `RegularMatchInfo`.
+
+Regression coverage uses an index-like multi-quantifier candidate with the dead existential in
+both leading and trailing positions and proves the placeholder equality binding plus usable
+compensation. Negative twins cover an extra `ForEach`, filtering and result-producing
+existentials, a selected leg dependent on the skipped existential, an unmapped candidate filter,
+and outer query/candidate Selects. This is a bounded safe reach improvement, **not** the full Java
+partial matcher.
+
+Validation: the index-like multi-quantifier regression was genuinely RED before implementation and
+is green 20×; the Cascades package and full `just test` gate are green (56/56 targets).
+Parent-vs-current explain corpus is byte-identical (2,579/2,579; zero flips). **190.4a FINAL
+REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.**
+
+#### 190.4b — matcher metadata, enumeration, and identity infrastructure
+
+Port dependency-convex/topological partial-bijection enumeration; branch over all compatible child
+matches; atomically merge alias/parameter maps; retain every selected child match; and implement
+the relevant `RegularMatchInfo.tryMerge` semantics for ordering, grouping, roll-up, and
+constraints. Replace pair-only partial-match dedup with a stable semantic fingerprint so distinct
+subset mappings survive while exact refires still collapse. Use deterministic full/exact-first
+search with per-attempt limits of 40,320 visited mapping states and 64 unique emitted partial
+matches; exhaustion is a safe optimization miss, never a relaxed or positional match.
+
+#### 190.4c — Select predicate/result/compensation semantics
+
+Port current Java's Select-specific semantic gate: complete `ForEach` coverage on both sides;
+dependency-safe unmatched query existentials; the owning existential-predicate rule for matched
+query existentials (including existential-to-`ForEach` pairings); conflict-safe predicate
+implication/placeholder bindings and candidate-predicate coverage; composed child pull-ups;
+result-value coverage; and correct possible/impossible compensation state. Close with
+multi-match-dedup, dependency, child-conflict, and end-to-end empty/duplicate cardinality tests.
+
+The umbrella 190.4 remains open until 190.4b and 190.4c land.
 
 ### 190.5 (MED) — index-intersection reach
 
@@ -463,7 +514,8 @@ resolved by **commit discipline within the single PR**, not by splitting it:
 3. Then **correctness** (190.1, 190.2, 190.3), one logical change per commit. Bundled findings 5/8
    already had discrete RFC-189 commits (`8fcb1a426`, `eac6ef9ab`); RFC-190 only reconciles their
    stale ledger entries and folds the signed-zero review delta.
-4. Then the **Graefe-gated reach** items (190.4, 190.5, 190.6), one per commit.
+4. Then the **Graefe-gated reach** items (190.4a/190.4b/190.4c, 190.5, 190.6), one staged
+   logical change per commit.
 
 **Per-flip gate at COMMIT granularity, not PR granularity:** every plan-affecting commit is
 explain-diff'd against its OWN PARENT (not the whole PR vs master), so each flip is attributable to
