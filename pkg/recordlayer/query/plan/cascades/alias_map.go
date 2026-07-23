@@ -80,6 +80,58 @@ func (b *AliasMapBuilder) PutAll(other *AliasMap) {
 	}
 }
 
+// PutChecked adds source→target, returning true if the mapping was added OR was
+// already present IDENTICALLY, and false only on a genuine CONFLICT (source
+// already maps to a different target, or target is already claimed by a
+// different source). Unlike Put — which reports false for any pre-existing
+// source/target, including an identical re-binding — PutChecked treats an
+// identical duplicate as consistent. It is the conflict-aware primitive for
+// composing quantifier bijections, where a child PartialMatch may legitimately
+// re-assert a binding the composition already holds; only a contradictory
+// binding invalidates the permutation.
+func (b *AliasMapBuilder) PutChecked(source, target values.CorrelationIdentifier) bool {
+	if existing, ok := b.forward[source]; ok {
+		return existing == target
+	}
+	if _, ok := b.inverse[target]; ok {
+		return false // target already claimed by a different source
+	}
+	b.forward[source] = target
+	b.inverse[target] = source
+	return true
+}
+
+// PutAllChecked copies all entries from other, returning false if ANY entry
+// CONFLICTS with an existing mapping. It is ATOMIC: on conflict the builder is
+// left UNCHANGED (all entries are verified before any is applied), so a caller
+// that composes child bound maps into a quantifier bijection can try one
+// candidate child match, and on rejection try the next on the SAME builder
+// without a partial mutation leaking through. Unlike PutAll (which silently skips
+// conflicts), this reports them — Java's match() only ever combines COMPATIBLE
+// bound maps, never a contradictory merge.
+func (b *AliasMapBuilder) PutAllChecked(other *AliasMap) bool {
+	// Phase 1: verify every entry is compatible with the CURRENT builder state
+	// (other is itself a bijection, so its entries never conflict among
+	// themselves).
+	for source, target := range other.forward {
+		if existing, ok := b.forward[source]; ok {
+			if existing != target {
+				return false
+			}
+			continue
+		}
+		if _, ok := b.inverse[target]; ok {
+			return false
+		}
+	}
+	// Phase 2: all compatible — apply.
+	for source, target := range other.forward {
+		b.forward[source] = target
+		b.inverse[target] = source
+	}
+	return true
+}
+
 // Build creates an immutable AliasMap from the builder's state.
 func (b *AliasMapBuilder) Build() *AliasMap {
 	fwd := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(b.forward))

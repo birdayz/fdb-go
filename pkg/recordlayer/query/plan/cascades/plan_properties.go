@@ -221,16 +221,18 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		}
 		return nil
 	case *plans.RecordQueryIndexPlan:
-		// M5 (index common PK) is INTENTIONALLY nil — see the "Finding 10-M5
-		// (reverted)" TODO. Java's PrimaryKeyProperty.visitIndexPlan translates
-		// index.getCommonPrimaryKey() STRUCTURALLY; a by-column-NAME PK (the only
-		// thing the plan carries via GetPKColumnNames) wrongly equates record
-		// types whose PK expressions differ but share field names — e.g.
-		// Field("ID") vs Concat(RecordTypeKey(), Field("ID")) both flatten to
-		// ["ID"] — which would let ImplementDistinctUnionRule dedup two legs that
-		// must both survive (dropped rows). Returning nil (no common PK) is the
-		// safe under-report: it disables the optimization, never wrong dedup. The
-		// correct structural-PK port is booked.
+		// RFC-189 B3 (re-port of the reverted M5): the plan carries the index's
+		// common primary key translated to STRUCTURE-encoding Values (record-type
+		// -key prefixes, nesting), stamped from the match candidate. Java's
+		// PrimaryKeyProperty.visitIndexPlan does the same via
+		// ScalarTranslationVisitor. Structural identity means Field("ID") never
+		// equates Concat(RecordTypeKey(), Field("ID")) — the by-name conflation
+		// that made M5 unsafe (ImplementDistinctUnionRule dropping rows). nil when
+		// the candidate/def supplied no structural PK → the property abstains
+		// (no dedup), the safe under-report.
+		if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
+			return pk
+		}
 		return nil
 	case *plans.RecordQueryFilterPlan,
 		*plans.RecordQueryPredicatesFilterPlan,
@@ -379,7 +381,7 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 		// bounded index access under a Fetch keeps its proven max cardinality
 		// (feeds the M3 whole-plan guard and criterion #2).
 		*plans.RecordQueryFetchFromPartialRecordPlan:
-		return cardinalitiesFromChildRef(w)
+		return cardinalitiesFromChildRefOrInner(w, plan)
 
 	// --- DefaultOnEmpty: floor at 1 ---
 	case *plans.RecordQueryDefaultOnEmptyPlan:
@@ -402,6 +404,21 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 
 	// --- Scans ---
 	case *plans.RecordQueryScanPlan:
+		// A full-PK-equality primary scan is a point lookup (max 1), exactly as
+		// Java's CardinalitiesProperty.visitRecordQueryScanPlan bounds a scan
+		// whose equality-bound values cover the whole primary key. This feeds
+		// the M3 whole-plan-cardinality outer guard (RFC-188) so a
+		// bounded-primary-scan-vs-unbounded comparison is no longer reported
+		// unknown (over-abstaining criterion #2). A range / partial / prefix
+		// bind stays unknown. scanProvableMaxCard proves all-equality + all
+		// present comparisons bound; the len == PK-column-count check
+		// (mirroring the index arm's len(comps)==len(GetColumnNames)) proves the
+		// bind covers the FULL primary key, not just a prefix.
+		if _, known := scanProvableMaxCard(p); known {
+			if pkVals := p.GetPrimaryKeyValues(); pkVals != nil && len(p.GetScanComparisons()) == len(pkVals) {
+				return properties.AtMostOne()
+			}
+		}
 		return properties.UnknownMaxCardinality()
 
 	case *plans.RecordQueryIndexPlan:
@@ -561,6 +578,118 @@ func cardinalitiesFromChildRef(w physicalPlanExpression) properties.Cardinalitie
 		return properties.UnknownCardinalities()
 	}
 	return cardinalitiesForRef(qs[0].GetRangesOver())
+}
+
+// cardinalitiesFromChildRefOrInner is cardinalitiesFromChildRef for a transparent
+// (1:1) wrapper, with a fallback to the concrete embedded child. The data-access
+// path exposes a composite (e.g. TypeFilter(Scan) over a full-PK-equality point
+// scan) EITHER as a wrapper with a single SNAPSHOT-quantifier child whose
+// Reference carries no populated property map, OR as a scanPlanExpression adapter
+// that reports NO child quantifier at all — in both forms cardinalitiesForRef
+// reports unknown and a point lookup never receives its proven AtMostOne (the
+// booked M3-followup).
+//
+// Two hazards shape the fallback:
+//   - A POPULATED property map that weakens to unknown is a LEGITIMATE unknown,
+//     not a missing property (a group with both bounded and unbounded final
+//     members correctly weakens to the least-constraining bound). Never
+//     second-guess it — trust the ref when its property map is populated.
+//   - The concrete child is reached through planFromQuantifier, which PANICS on a
+//     reference with ≥2 DISTINCT plan-typed final members and no winner. Resolve
+//     the child edge only when it is unambiguous (childPlanIfUnambiguous).
+//
+// Under those guards computing the embedded child is exact for a 1:1 wrapper and
+// can only TIGHTEN the bound (the M3 guard's safe direction).
+func cardinalitiesFromChildRefOrInner(w physicalPlanExpression, plan plans.RecordQueryPlan) properties.Cardinalities {
+	// Resolve the child edge off the PLAN, not the physical wrapper: a
+	// scanPlanExpression adapter exposes NO wrapper quantifier while the wrapped
+	// plan has a live child, so w.GetQuantifiers() would miss both the child's
+	// populated property map and its concrete plan.
+	qs := plan.GetQuantifiers()
+	if len(qs) != 1 {
+		return properties.UnknownCardinalities()
+	}
+	childRef := qs[0].GetRangesOver()
+	if childRef == nil {
+		return properties.UnknownCardinalities()
+	}
+	if pm := GetRefPlanPropertiesMap(childRef); pm != nil && len(pm.All()) > 0 {
+		// Populated — trust the (possibly weakened) group cardinality as-is. A
+		// mixed bounded/unbounded group legitimately weakens to unknown and must
+		// not be second-guessed by following one member's bound.
+		return cardinalitiesForRef(childRef)
+	}
+	// No populated property map (a snapshot quantifier, or the scanPlanExpression
+	// adapter). Recover the bound from the single concrete child, resolved
+	// unambiguously.
+	if childPlan, ok := childPlanIfUnambiguous(childRef); ok {
+		if ph, ok := childPlan.(physicalPlanExpression); ok {
+			return computeCardinalities(ph, childPlan)
+		}
+	}
+	return properties.UnknownCardinalities()
+}
+
+// childPlanIfUnambiguous returns the single concrete plan a child reference
+// resolves to, and true, only when that resolution is UNAMBIGUOUS. It follows
+// planFromQuantifier's resolution ORDER — a group winner first; else exactly one
+// distinct plan-typed FINAL member (≥2 there is the onlyPlanFromFinalMembers
+// panic case → ambiguous); else, with NO plan among the final members, a lone
+// distinct plan-typed general member (the InitialOf(plan) exploratory shape
+// MemoizeExpression can leave during planning) — but is deliberately STRICTER
+// than planFromQuantifier at the last step: where firstPlanFromMembers would pick
+// an arbitrary first among ≥2 competing general members, this declines (ok=false),
+// because following an arbitrary member's cardinality would be unsound and
+// UnknownCardinalities is the M3 guard's safe direction. It therefore resolves
+// the same plan whenever it resolves, and never resolves a shape planFromQuantifier
+// panics on.
+func childPlanIfUnambiguous(ref *expressions.Reference) (plans.RecordQueryPlan, bool) {
+	if ref == nil {
+		return nil, false
+	}
+	// A group winner is what planFromQuantifier returns first — unambiguous.
+	if wn := ref.Winner(); wn != nil {
+		if ph, ok := wn.(physicalPlanExpression); ok {
+			if p := ph.GetRecordQueryPlan(); p != nil {
+				return p, true
+			}
+		}
+	}
+	// Final members: exactly one distinct plan resolves; ≥2 is the panic case.
+	if p, n := distinctPlanMember(ref.FinalMembers()); n == 1 {
+		return p, true
+	} else if n >= 2 {
+		return nil, false
+	}
+	// No plan among final members — resolve a lone exploratory member.
+	if p, n := distinctPlanMember(ref.Members()); n == 1 {
+		return p, true
+	}
+	return nil, false
+}
+
+// distinctPlanMember returns the sole distinct plan-typed member and a count
+// capped at 2 (0 = none, 1 = exactly one, 2 = two or more distinct plans). The
+// distinct dedup by pointer identity mirrors onlyPlanFromFinalMembers.
+func distinctPlanMember(members []expressions.RelationalExpression) (plans.RecordQueryPlan, int) {
+	var only plans.RecordQueryPlan
+	n := 0
+	for _, m := range members {
+		ph, ok := m.(physicalPlanExpression)
+		if !ok {
+			continue
+		}
+		p := ph.GetRecordQueryPlan()
+		if p == nil || p == only {
+			continue
+		}
+		if only != nil {
+			return only, 2 // ≥2 distinct plans
+		}
+		only = p
+		n = 1
+	}
+	return only, n
 }
 
 // cardinalitiesFromChildRefs returns Cardinalities for each child

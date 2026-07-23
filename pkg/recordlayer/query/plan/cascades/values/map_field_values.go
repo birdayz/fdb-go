@@ -251,6 +251,21 @@ func constantValuesEqual(a, b any) bool {
 		}
 		return true
 	}
+	// Scalar float bitwise compare, same defect class as the []floatNN arms
+	// above (RFC-176 §2): `==` calls +0.0 equal to -0.0 while writeSemanticHash's
+	// %v renders "0" vs "-0" — an equal-but-different-hash memo violation. Java's
+	// LiteralValue.equalsWithoutChildren is Double.equals (doubleToLongBits), so
+	// this bitwise compare is Java-ALIGNED, not a Go-only refinement: signed
+	// zeros are UNEQUAL, identical-bit NaNs EQUAL and hash-coherent, differing-bit
+	// NaNs unequal sharing a hash bucket (an allowed collision).
+	if af, ok := a.(float64); ok {
+		bf, ok := b.(float64)
+		return ok && math.Float64bits(af) == math.Float64bits(bf)
+	}
+	if af, ok := a.(float32); ok {
+		bf, ok := b.(float32)
+		return ok && math.Float32bits(af) == math.Float32bits(bf)
+	}
 	return a == b
 }
 

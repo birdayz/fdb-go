@@ -2152,6 +2152,47 @@ func (d *metadataIndexDef) IndexPrimaryKeyColumns() []string {
 	return pkCols
 }
 
+// IndexCommonPrimaryKeyValues returns the index's common primary key translated
+// to structure-encoding Values (RFC-189 B3) — for PrimaryKeyProperty. Only
+// non-nil when EVERY record type the index covers has a STRUCTURALLY IDENTICAL
+// primary key (translated equal); a multi-type index whose types' PKs differ, or
+// any un-translatable PK (fan-out/version/function), yields nil so the property
+// abstains (no DistinctUnion dedup). The translation encodes the record-type-key
+// prefix, so two legs over different record types with the same PK STRUCTURE
+// dedup on a key that includes the type discriminator — never dropping rows.
+func (d *metadataIndexDef) IndexCommonPrimaryKeyValues() []values.Value {
+	rts := d.md.RecordTypesForIndex(d.idx)
+	if len(rts) == 0 || rts[0].PrimaryKey == nil {
+		return nil
+	}
+	common := recordlayer.TranslatePrimaryKeyToValues(rts[0].PrimaryKey, strings.ToUpper)
+	if common == nil {
+		return nil
+	}
+	for _, rt := range rts[1:] {
+		if rt.PrimaryKey == nil {
+			return nil
+		}
+		other := recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey, strings.ToUpper)
+		if !commonPKValuesStructurallyEqual(common, other) {
+			return nil
+		}
+	}
+	return common
+}
+
+func commonPKValuesStructurallyEqual(a, b []values.Value) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !values.ValuesStructurallyEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 	if c.md == nil {
 		return nil

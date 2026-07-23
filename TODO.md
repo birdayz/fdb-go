@@ -91,6 +91,33 @@ CORE (epoch termination, memo merge/cycle guards, 3-tier interning, `memoEqual` 
 guard, 3VL null logic, directional cost rungs) was traced and is SOUND — the defects are in
 the periphery/derivations.
 
+**RFC-189 STATUS (branch `feat/rfc189-cascades-review-residuals`, `rfcs/189-cascades-review-residuals.md`,
+ACKED rev 2):** the residuals below are being ground out in ONE PR (owner directive).
+- **DONE (landed green):** finding 8 (A1 hang), finding 5 (A2 signed-zero), finding 9 (A3 projection),
+  finding 7 (A4 correlation → DIVERGENCES.md closed); finding 10-M3-followup (B1) + a `WithPrimaryKey`
+  builder footgun; finding 10-M4-followup-3 (B2 VERSION fan-out); finding 12 a/b/c/d (C1–C4; 12b premise
+  corrected — Java also trims; 12c-GroupBy pull-up booked separately); dead-fn deletes (Demote,
+  findMatchingReachableCandidate wrapper, isExploratoryMember dup); finding 2-followup-a (F2 real
+  RemoveRangeOne); finding 3-followup (F3 IndexScanPreference). finding 10-M4-followup-2: confirmed already
+  resolved (RFC-188 round 7). GetPlans: no change needed (already guarded).
+- **RECLASSIFIED:** finding 13 intersection-rule deletion → KEEP (fuzz completeness net + white-box tests
+  exercise the logical→physical path; SQL-unreachable but not dead-in-the-harmful-sense).
+- **DONE (added):** finding 10-M5-followup (B3 structural PK — index arm re-ported structurally via a new
+  KeyExpression→Value translator; validated by rowdiff+plandiff+1M-stress, no flip/no dropped rows;
+  scan-arm item-d booked — B1 cardinality-count ripple).
+- **E2 (finding 6-followup) — AUDITED, REVERTED, KEPT BOOKED:** the dense predicate-count producer is
+  Java-faithful in isolation but REGRESSES designated survivors — for Sort(Scan) vs Scan (both 0 preds)
+  the dense tree-depth tiebreak fires the predicate-count rung too early (before a simplicity rung) and
+  prefers the deeper Sort(Scan). plandiff/rowdiff/1M-stress were green (final plans unaffected) but the
+  designation-invariant unit tests caught the regression. Root cause = Go's designated-comparator RUNG
+  ORDER; proper fix needs Java rung-order verification, not just densifying the producer. Low value; keep
+  booked (as RFC-188 deliberately did). This is the per-flip audit protocol working as intended.
+- **REMAINING (large/review-gated — not to be rushed):** finding 13 MatchIntermediate permutation port
+  (medium, edge-case optimization), finding 11 (F1 OR-expansion phase relocation — Graefe-gated infra),
+  finding 10-M4-followup (E1 Fetch-storedRecord ~48 flips — the DANGEROUS dropped-dedup direction, needs
+  the full per-flip duplicate-bearing audit + reviewer sign-off; E2's outcome shows these arms can
+  regress). Then the milestone review lap (Graefe+Torvalds+codex+@claude) + PR.
+
 **Owner directive (2026-07-22): land finding A (leaf-name column matching) IN FULL —
 principles-first, no quick fixes: RFC → Graefe+Torvalds review → implement in full → review.
 A is the current focus; the rest are booked below in severity order. A is the planner-side

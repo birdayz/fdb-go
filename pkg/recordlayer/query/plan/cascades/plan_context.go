@@ -63,7 +63,33 @@ type PlannerConfiguration struct {
 	// smaller pieces. Mirrors Java's
 	// RecordQueryPlannerConfiguration.shouldDeferCrossProducts().
 	ShouldDeferCrossProducts bool
+
+	// IndexScanPreference mirrors Java's
+	// RecordQueryPlannerConfiguration.getIndexScanPreference() (proto enum
+	// PREFER_SCAN=0 / PREFER_INDEX=1 / PREFER_PRIMARY_KEY_INDEX=2). Consulted by
+	// the cost model's primary-vs-index tie-break (comparePrimaryScanToIndexScan).
+	// Zero value = PreferScan, the Cascades default; no SQL surface sets a
+	// non-default today (same as the sibling knobs), so this changes no reachable
+	// plan — it models the mechanism for parity.
+	IndexScanPreference IndexScanPreference
 }
+
+// IndexScanPreference selects the default direction of the cost model's
+// primary-scan-vs-index-scan tie-break, mirroring Java's
+// RecordQueryPlannerConfiguration.IndexScanPreference proto enum.
+type IndexScanPreference int
+
+const (
+	// PreferScan prefers a full/primary scan over an index scan (Cascades
+	// default; proto PREFER_SCAN = 0).
+	PreferScan IndexScanPreference = iota
+	// PreferIndex prefers an index scan (proto PREFER_INDEX = 1).
+	PreferIndex
+	// PreferPrimaryKeyIndex prefers an index scan on the primary key (proto
+	// PREFER_PRIMARY_KEY_INDEX = 2). Java's comparePrimaryScanToIndexScan treats
+	// it identically to PREFER_INDEX in the tie-break (prefer the index).
+	PreferPrimaryKeyIndex
+)
 
 // DefaultPlannerConfiguration mirrors Java's
 // `RecordQueryPlannerConfiguration.defaultPlannerConfiguration()`.

@@ -19,23 +19,51 @@ import (
 // structural port lands, the property returns nil — the safe under-report
 // (disables the optimization, never wrong dedup). This test guards that nil so a
 // by-name PK is never reintroduced without the structural fix.
-func TestComputePrimaryKey_IndexScanIsNilPendingStructuralPK(t *testing.T) {
+// TestComputePrimaryKey_IndexScanStructuralPK pins RFC-189 B3: an index scan's
+// PrimaryKeyProperty is the STRUCTURAL common PK stamped from the match candidate
+// (never the by-name columns, which conflate). An unstamped plan abstains (nil);
+// a stamped plan surfaces its structural PK; and the union anti-conflation
+// prevents dropped rows.
+func TestComputePrimaryKey_IndexScanStructuralPK(t *testing.T) {
 	t.Parallel()
 
-	// Bare index scan → nil.
 	bare := plans.NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false)
+
+	// No structural PK stamped → abstain (nil). By-name PK metadata is NOT
+	// surfaced as a common PK.
 	if pk := computePrimaryKey(bare); pk != nil {
-		t.Fatalf("index scan PK must be nil (structural-PK port pending), got %v", pk)
+		t.Fatalf("unstamped index scan PK must be nil (abstain), got %v", pk)
+	}
+	if pk := computePrimaryKey(bare.WithIndexMetadata([]string{"V"}, []string{"ID"}, false)); pk != nil {
+		t.Fatalf("by-name PK metadata must NOT surface a common PK, got %v", pk)
 	}
 
-	// Index scan WITH PK column-name metadata → STILL nil. The by-name columns
-	// must not be surfaced as a common PK (they are not structural identity).
-	idx := bare.WithIndexMetadata([]string{"V"}, []string{"ID"}, false)
-	if pk := computePrimaryKey(idx); pk != nil {
-		t.Fatalf("index scan with by-name PK metadata must STILL yield nil (no wrong dedup), got %v", pk)
+	// Stamped structural PK → surfaced.
+	structPK := []values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}}
+	stamped := bare.WithCommonPrimaryKey(structPK)
+	if pk := computePrimaryKey(stamped); pk == nil {
+		t.Fatal("a stamped index scan must surface its structural common PK")
 	}
 
-	// The primary scan continues to carry its (structural, value-level) PK.
+	// Anti-conflation at the union level (the dropped-rows prevention). Two legs
+	// with the SAME structural PK → a common PK (safe dedup). Two legs whose PKs
+	// share the leaf name "ID" but differ structurally (bare Field vs
+	// record-type-prefixed) → NO common PK, so ImplementDistinctUnionRule cannot
+	// dedup them (which would drop rows — the M5 hazard).
+	flat := bare.WithCommonPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}})
+	flatSame := bare.WithCommonPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}})
+	prefixed := bare.WithCommonPrimaryKey([]values.Value{
+		values.NewRecordTypeValue(nil),
+		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+	})
+	if commonPKFromChildren([]plans.RecordQueryPlan{flat, flatSame}) == nil {
+		t.Fatal("two legs with identical structural PKs must share a common PK (safe dedup)")
+	}
+	if commonPKFromChildren([]plans.RecordQueryPlan{flat, prefixed}) != nil {
+		t.Fatal("Field(ID) and Concat(RecordTypeKey(), Field(ID)) legs must NOT share a common PK (dropped-rows prevention)")
+	}
+
+	// Primary scan still carries its PK values (unchanged).
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}})
 	if pk := computePrimaryKey(scan); pk == nil {

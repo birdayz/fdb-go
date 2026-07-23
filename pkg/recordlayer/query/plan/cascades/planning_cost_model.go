@@ -259,7 +259,7 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return cmp
 	}
 
-	if cmp := comparePrimaryScanVsIndexScan(a, b, opsA, opsB); cmp != 0 {
+	if cmp := comparePrimaryScanVsIndexScan(a, b, opsA, opsB, indexScanPreferenceOf(ctx)); cmp != 0 {
 		return cmp
 	}
 
@@ -933,22 +933,32 @@ func isFetchExpression(e expressions.RelationalExpression) bool {
 // doesn't enter this path. When it fires it runs the type-filter SARG sub-case
 // (prefer the index when it SARGs strictly more, needing no type filter) and
 // otherwise applies the PREFER_SCAN default — see primaryVsIndexVerdict.
-func comparePrimaryScanVsIndexScan(a, b expressions.RelationalExpression, opsA, opsB expressionCounts) int {
+func comparePrimaryScanVsIndexScan(a, b expressions.RelationalExpression, opsA, opsB expressionCounts, pref IndexScanPreference) int {
 	aIsPrimaryScan := opsA.scanCount == 1 && opsA.indexScanCount == 0 && opsA.coveringIndexCount == 0 && opsA.inMemorySortCount == 0
 	bIsPrimaryScan := opsB.scanCount == 1 && opsB.indexScanCount == 0 && opsB.coveringIndexCount == 0 && opsB.inMemorySortCount == 0
 	aIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsA)
 	bIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsB)
 
 	if aIsPrimaryScan && bIsIndexScanWithFetch {
-		return primaryVsIndexVerdict(a, b, opsA, opsB)
+		return primaryVsIndexVerdict(a, b, opsA, opsB, pref)
 	}
 	if bIsPrimaryScan && aIsIndexScanWithFetch {
 		// Roles swapped: b is the primary scan, a the index. The verdict is
 		// computed in the (primary, index) orientation, then negated — Java's
 		// flipFlop(compare(primary,index), compare(index,primary)) negation.
-		return -primaryVsIndexVerdict(b, a, opsB, opsA)
+		return -primaryVsIndexVerdict(b, a, opsB, opsA, pref)
 	}
 	return 0
+}
+
+// indexScanPreferenceOf reads the IndexScanPreference from the planner config,
+// defaulting to PreferScan (the Cascades default) when the context or config is
+// absent.
+func indexScanPreferenceOf(ctx PlanContext) IndexScanPreference {
+	if ctx == nil {
+		return PreferScan
+	}
+	return ctx.GetPlannerConfiguration().IndexScanPreference
 }
 
 // primaryVsIndexVerdict ports the body of Java's comparePrimaryScanToIndexScan
@@ -961,9 +971,9 @@ func comparePrimaryScanVsIndexScan(a, b expressions.RelationalExpression, opsA, 
 // extra comparisons the primary lacks (e.g. a record-type-key comparison the
 // index gets for free but the primary must pay for with a high-discard type
 // filter), prefer the index. Otherwise fall back to the IndexScanPreference
-// default — which in Go is always PREFER_SCAN (the config knob is unmodeled;
-// see RFC-188 §2), i.e. prefer the primary scan.
-func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpression, opsPrimary, opsIndex expressionCounts) int {
+// config branch (Java: PREFER_SCAN → prefer the primary; PREFER_INDEX /
+// PREFER_PRIMARY_KEY_INDEX → prefer the index).
+func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpression, opsPrimary, opsIndex expressionCounts, pref IndexScanPreference) int {
 	if opsPrimary.typeFilterCount > 0 && opsIndex.typeFilterCount == 0 {
 		primaryComparisons := scanSargComparisons(primaryScan)
 		indexComparisons := scanSargComparisons(indexScan)
@@ -974,8 +984,14 @@ func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpressi
 			return 1 // prefer the index scan
 		}
 	}
-	// PREFER_SCAN default (Go models no IndexScanPreference config).
-	return -1
+	// Config branch (Java comparePrimaryScanToIndexScan): PREFER_SCAN prefers the
+	// primary scan (-1); the non-scan preferences prefer the index (+1). The
+	// Cascades default is PREFER_SCAN, so with no config surface setting a
+	// non-default this stays -1 (unchanged behavior).
+	if pref == PreferScan {
+		return -1
+	}
+	return 1
 }
 
 // scanSargComparisons collects the BARE SARG comparisons (compared by Comparison

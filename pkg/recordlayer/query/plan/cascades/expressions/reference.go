@@ -764,10 +764,31 @@ func (r *Reference) InvalidateCorrelatedToCache() {
 // bound by each member's own quantifiers. Result is cached after
 // first computation.
 func (r *Reference) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	return r.getCorrelatedToGuarded(nil)
+}
+
+// getCorrelatedToGuarded is GetCorrelatedTo with a bounded re-entrancy guard.
+// The memo DAG is kept acyclic by the cross-group merge cycle guard
+// (memo_merge.go), so in normal operation no Reference is ever re-entered and
+// this behaves exactly like an unguarded walk (the per-Reference cache
+// short-circuits every already-computed child before the guard is consulted).
+// The `visited` set is defense-in-depth: should a cycle ever reach here (a
+// merge-guard under-approximation, a future bug), a re-entered in-progress
+// Reference contributes the empty set instead of recursing forever — a hang is
+// worse than an incomplete correlation set. visited is nil on the top-level
+// call and lazily allocated only when we actually descend.
+func (r *Reference) getCorrelatedToGuarded(visited map[*Reference]struct{}) map[values.CorrelationIdentifier]struct{} {
 	r = r.Canonical()
 	if r.correlatedToCache != nil {
 		return r.correlatedToCache
 	}
+	if _, seen := visited[r]; seen {
+		return map[values.CorrelationIdentifier]struct{}{}
+	}
+	if visited == nil {
+		visited = make(map[*Reference]struct{})
+	}
+	visited[r] = struct{}{}
 	result := make(map[values.CorrelationIdentifier]struct{})
 	for _, m := range r.AllMembers() {
 		ownAliases := make(map[values.CorrelationIdentifier]struct{})
@@ -793,7 +814,7 @@ func (r *Reference) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} 
 			if childRef == nil {
 				continue
 			}
-			for k := range childRef.GetCorrelatedTo() {
+			for k := range childRef.getCorrelatedToGuarded(visited) {
 				// Java keeps a child's correlation when the parent cannot
 				// correlate (a union's legs can't bind sibling aliases) OR
 				// the alias is not bound here.

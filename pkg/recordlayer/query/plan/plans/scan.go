@@ -58,15 +58,20 @@ func NewRecordQueryScanPlan(recordTypes []string, flowedType values.Type, revers
 }
 
 // WithPrimaryKey returns a copy of the scan plan with PK values set.
+// Preserves scanComparisons (a copy must carry every scan field — dropping the
+// comparisons here silently un-narrows the scan; production happens to set the
+// PK before the comparisons, so the drop was latent, but the asymmetry with
+// WithScanComparisons was a footgun).
 func (p *RecordQueryScanPlan) WithPrimaryKey(pk []values.Value) *RecordQueryScanPlan {
 	copied := make([]values.Value, len(pk))
 	copy(copied, pk)
 	return &RecordQueryScanPlan{
-		recordTypes:    p.recordTypes,
-		flowedType:     p.flowedType,
-		reverse:        p.reverse,
-		primaryKeyVals: copied,
-		resultValue:    p.resultValue,
+		recordTypes:     p.recordTypes,
+		flowedType:      p.flowedType,
+		reverse:         p.reverse,
+		primaryKeyVals:  copied,
+		scanComparisons: p.scanComparisons,
+		resultValue:     p.resultValue,
 	}
 }
 

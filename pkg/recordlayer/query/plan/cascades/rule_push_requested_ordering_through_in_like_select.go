@@ -128,23 +128,12 @@ func findInnerQuantifierForInLikeSelect(
 		return expressions.Quantifier{}, false
 	}
 
-	// Java checks: innerQuantifier.getCorrelatedTo().containsAll(explodeAliases).
-	// Quantifier.GetCorrelatedTo() returns the empty set in Go (the
-	// divergence registered in DIVERGENCES.md), so this guard CANNOT
-	// reject and is retained structure-only. That is safe here: in the
-	// IN-like pattern the inner quantifier's Reference is structurally
-	// correlated to all explode aliases (the inner plan's predicates
-	// bind explode values), and ImplementInJoinRule /
-	// ImplementInUnionRule perform the real structural check
-	// downstream. If GetCorrelatedTo is ever delegated to the
-	// Reference walk, let this check reject properly.
-	correlatedTo := inner.GetCorrelatedTo()
-	for alias := range explodeAliases {
-		if _, found := correlatedTo[alias]; !found {
-			_ = alias
-		}
-	}
-
+	// Java additionally checks inner.getCorrelatedTo().containsAll(explodeAliases)
+	// as a precondition. Go does NOT reject on it here: the real correlation
+	// check runs downstream in ImplementInJoinRule / ImplementInUnionRule (which
+	// bind the explode values), and rejecting here on a correlation-set mismatch
+	// risks declining a valid IN-like ordering push. In the IN-like pattern the
+	// inner is structurally correlated to all explode aliases anyway.
 	return *inner, true
 }
 

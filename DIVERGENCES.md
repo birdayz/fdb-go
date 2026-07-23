@@ -100,18 +100,17 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **Impact:** FDB integration tests pass without `promoteInJoinWinners`/`promoteByDataAccessCost` — `finalMembers` + real statistics is sufficient. Promotion hacks remain for unit tests without statistics.
 
-### Quantifier.GetCorrelatedTo returns the empty set (consumers compensate structurally)
+### Quantifier.GetCorrelatedTo — CLOSED (RFC-189 A4)
 
 **Java:** `Quantifier.getCorrelatedTo()` delegates to `rangesOver.getCorrelatedTo()` — the transitive correlation set of the inner Reference.
-**Go:** `expressions.Quantifier.GetCorrelatedTo()` returns the EMPTY set, even though `Reference.GetCorrelatedTo` (the transitive, cached walk) is fully implemented. The one-line delegation was never wired.
+**Go (now):** `expressions.Quantifier.GetCorrelatedTo()` delegates to `q.GetRangesOver().GetCorrelatedTo()` — Java parity. (Previously returned the empty set, an under-approximation; the one-line delegation was wired in RFC-189 A4 under the query-engine gate.)
 
-**Consumers compensate structurally** (each documented at the call site):
-- `rule_push_requested_ordering_through_in_like_select.go` — Java's `containsAll(explodeAliases)` guard is disabled; the downstream `ImplementInJoinRule`/`ImplementInUnionRule` carry the real structural check.
-- `rule_adjust_match.go` `correlatedToEquals` — checks node-local correlations only.
-- `rule_partition_select.go` `computeTransitiveCorrelationOrder` — the `q.GetCorrelatedTo()` term is empty in the flat canonical select (join predicates live on the Select, not inside the legs); buried merge-leg deps are re-exposed separately (`quantifierMergeSeedLegDeps`, RFC-142).
-- `rule_split_select_extract_independent.go` — computes its own walk (`quantifierCorrelationSet`).
+Consumer follow-through at close:
+- `rule_partition_select.go` — the `q.GetCorrelatedTo()` term now carries real sibling-correlation edges; the previously-redundant manual `q.GetRangesOver().GetCorrelatedTo()` walk was removed and its `dep != q.GetAlias()` self-filter carried onto the primary loop.
+- `rule_push_requested_ordering_through_in_like_select.go` — the structural no-op guard was removed (the real correlation check runs downstream in `ImplementInJoinRule`/`ImplementInUnionRule`; rejecting here risks over-rejection).
+- `rule_split_select_extract_independent.go` — retains its own `quantifierCorrelationSet` walk (unions merge-leg/without-children deps the way that rule needs).
 
-**To close:** delegate to `q.GetRangesOver().GetCorrelatedTo()` and re-enable the Java-faithful guards. Plan-shape sensitive (the guards start rejecting): needs its own review cycle with plandiff + the correlated-join sentinels, not a drive-by rewire.
+Pinned by `TestQuantifier_GetCorrelatedTo_Transitive` (a quantifier ranging over a reference correlated to an external alias surfaces it; the bound inner alias does not leak).
 
 ### Go has an explicit in-memory sort physical operator
 

@@ -135,6 +135,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		// (RFC-041) picks the cheapest order. Firing them in REWRITING locked the
 		// FROM-order associativity at the phase boundary (RFC-042).
 		NewDecorrelateValuesRule(),
+		NewRemoveRangeOneRule(),
 		NewEliminateNullOnEmptyRule(),
 		// Index-candidate matching (MatchLeafRule / MatchIntermediateRule) is
 		// PLANNING-only — see PlanningExplorationRules, matching Java's

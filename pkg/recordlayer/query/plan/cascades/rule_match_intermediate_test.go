@@ -256,6 +256,157 @@ func TestMatchIntermediateRule_MultipleQuantifiers(t *testing.T) {
 	}
 }
 
+// TestMatchIntermediateRule_CyclicQuantifierPermutation pins RFC-189's
+// MatchIntermediate permutation port (finding 13): the rule enumerates ALL
+// quantifier bijections (Java's subsumedBy via EnumeratingIterable), not just the
+// positional pairing. Three quantifiers are used deliberately — FireExpressionRule
+// already swaps the FIRST TWO quantifiers of a ChildrenAsSet Select, so a 2-way
+// swap is covered without the port; a CYCLIC permutation is not. Query
+// Select(A, B, C) vs candidate Select(B, C, A): the only successful bijection is
+// perm=[2,0,1] (query A ↔ candidate A at position 2, B↔position 0, C↔position 1),
+// which neither positional pairing nor the single first-two swap reaches.
+func TestMatchIntermediateRule_CyclicQuantifierPermutation(t *testing.T) {
+	t.Parallel()
+
+	newScanRef := func(rt string) *expressions.Reference {
+		return expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{rt}, values.UnknownType))
+	}
+
+	// Query: Select(A, B, C).
+	qA, qB, qC := newScanRef("A"), newScanRef("B"), newScanRef("C")
+	querySelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{
+			expressions.ForEachQuantifier(qA),
+			expressions.ForEachQuantifier(qB),
+			expressions.ForEachQuantifier(qC),
+		}, nil,
+	)
+	querySelectRef := expressions.InitialOf(querySelect)
+
+	// Candidate: Select(B, C, A) — a cyclic permutation of the query order.
+	cB, cC, cA := newScanRef("B"), newScanRef("C"), newScanRef("A")
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{
+			expressions.ForEachQuantifier(cB),
+			expressions.ForEachQuantifier(cC),
+			expressions.ForEachQuantifier(cA),
+		}, nil,
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+	mc := &testMatchCandidate{name: "idx_join3", traversal: NewTraversal(candidateSelectRef)}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	leafRule := NewMatchLeafRule()
+	FireExpressionRuleWithMemo(leafRule, qA, ctx, nil)
+	FireExpressionRuleWithMemo(leafRule, qB, ctx, nil)
+	FireExpressionRuleWithMemo(leafRule, qC, ctx, nil)
+
+	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+
+	if len(GetPartialMatchesForCandidate(querySelectRef, mc)) == 0 {
+		t.Fatal("expected a PartialMatch via the cyclic bijection [2,0,1]; positional + first-two-swap both miss it")
+	}
+}
+
+// TestMatchIntermediateRule_NodeReCheckUnderBijectionMap pins RFC-189's
+// MatchIntermediate node re-check: the node-level
+// EqualsWithoutChildren must be evaluated UNDER the quantifier bijection's alias
+// map, not once with an empty map. Query and candidate use DIFFERENT quantifier
+// aliases, so a result value that references those aliases is unequal under an
+// empty map and equal only under the bijection {query-q → candidate-q}. The
+// candidate quantifier order is swapped (cB, cA) so the sole valid child
+// bijection is the non-identity perm [1,0]; the result values reference the QOVs
+// (record{f: qA, g: qB} vs record{f: cA, g: cB}) so the node check genuinely
+// depends on the map. The old empty-map pre-check rejected this valid match
+// before any permutation was tried — this test fails without the per-bijection
+// re-check.
+func TestMatchIntermediateRule_NodeReCheckUnderBijectionMap(t *testing.T) {
+	t.Parallel()
+
+	// Query: Select(scanA, scanB) with result record{f: qA.qov, g: qB.qov}.
+	qARef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType))
+	qBRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType))
+	qA := expressions.ForEachQuantifier(qARef)
+	qB := expressions.ForEachQuantifier(qBRef)
+	querySelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "f", Value: qA.GetFlowedObjectValue()},
+			values.RecordConstructorField{Name: "g", Value: qB.GetFlowedObjectValue()},
+		),
+		[]expressions.Quantifier{qA, qB}, nil,
+	)
+	querySelectRef := expressions.InitialOf(querySelect)
+
+	// Candidate: Select(scanB, scanA) — SWAPPED positional order — with result
+	// record{f: cA.qov, g: cB.qov}. The only same-type child bijection is
+	// qA↔cA, qB↔cB, i.e. query positions [0,1] → candidate positions [1,0].
+	cBRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType))
+	cARef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType))
+	cB := expressions.ForEachQuantifier(cBRef)
+	cA := expressions.ForEachQuantifier(cARef)
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "f", Value: cA.GetFlowedObjectValue()},
+			values.RecordConstructorField{Name: "g", Value: cB.GetFlowedObjectValue()},
+		),
+		[]expressions.Quantifier{cB, cA}, nil,
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+	mc := &testMatchCandidate{name: "idx_join_qov", traversal: NewTraversal(candidateSelectRef)}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	leafRule := NewMatchLeafRule()
+	FireExpressionRuleWithMemo(leafRule, qARef, ctx, nil)
+	FireExpressionRuleWithMemo(leafRule, qBRef, ctx, nil)
+
+	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+
+	if len(GetPartialMatchesForCandidate(querySelectRef, mc)) == 0 {
+		t.Fatal("expected a PartialMatch: the QOV-referencing result values are equal only under the bijection {qA→cA, qB→cB}; an empty-map node check rejects this valid match")
+	}
+}
+
+// TestMatchIntermediateRule_QuantifierAttributesMustMatch pins the quantifier-edge
+// check: Java pairs quantifiers via quantifier.semanticEquals, which compares the
+// edge (kind, null-on-empty, strict-single), but EqualsWithoutChildren excludes
+// it. A query Select over a plain ForEach leg must NOT match a candidate Select
+// over a ForEach-NULL-ON-EMPTY leg — substituting the index would drop the
+// null-extended row. Same scan, same (empty) result value, so the ONLY thing that
+// differs is the quantifier edge; without the guard the node re-check passes and
+// a wrong match is created.
+func TestMatchIntermediateRule_QuantifierAttributesMustMatch(t *testing.T) {
+	t.Parallel()
+
+	queryScanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	querySelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{expressions.ForEachQuantifier(queryScanRef)}, nil,
+	)
+	querySelectRef := expressions.InitialOf(querySelect)
+
+	// Candidate Select ranges over the SAME scan via a NULL-ON-EMPTY quantifier.
+	candScanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{expressions.ForEachNullOnEmptyQuantifier(candScanRef)}, nil,
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+	mc := &testMatchCandidate{name: "idx_noe", traversal: NewTraversal(candidateSelectRef)}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	FireExpressionRuleWithMemo(NewMatchLeafRule(), queryScanRef, ctx, nil)
+	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+
+	if n := len(GetPartialMatchesForCandidate(querySelectRef, mc)); n != 0 {
+		t.Fatalf("a plain-ForEach Select must NOT match a NULL-ON-EMPTY Select (edge mismatch), got %d matches", n)
+	}
+}
+
 // TestMatchIntermediateRule_LeafSkipped verifies that the intermediate
 // rule does not fire on leaf expressions (no quantifiers).
 func TestMatchIntermediateRule_LeafSkipped(t *testing.T) {
@@ -371,6 +522,121 @@ func TestMatchIntermediate_FilterSubsumedBySelect_SinglePredicate(t *testing.T) 
 	}
 	if !cr.IsEquality() {
 		t.Fatalf("expected equality ComparisonRange for col0 = 5, got range type %v", cr.GetRangeType())
+	}
+}
+
+// TestMatchIntermediate_FilterSubsumedBySelect_EdgeMismatchRejected pins the
+// quantifier-edge check on the SUBSUMPTION path (matchSingleSourceAgainstSelect),
+// which the structural bijection path bypasses. It is the SinglePredicate setup
+// with the candidate leg made NULL-ON-EMPTY: identical otherwise, so
+// SinglePredicate proves this shape DOES match without the edge guard. With the
+// guard the plain-ForEach query filter must NOT subsume the NULL-ON-EMPTY index
+// candidate — else a substitution would drop the null-extended row.
+func TestMatchIntermediate_FilterSubsumedBySelect_EdgeMismatchRejected(t *testing.T) {
+	t.Parallel()
+
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
+	queryFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "col0"},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
+			),
+		},
+		queryScanQ,
+	)
+	queryFilterRef := expressions.InitialOf(queryFilter)
+
+	// Candidate Select ranges over the scan via a NULL-ON-EMPTY quantifier — the
+	// ONLY difference from the passing SinglePredicate case.
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanQ := expressions.ForEachNullOnEmptyQuantifier(candidateScanRef)
+	alias0 := values.UniqueCorrelationIdentifier()
+	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{candidateScanQ},
+		[]predicates.QueryPredicate{ph0},
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+	mc := &testMatchCandidate{name: "idx_col0_noe", traversal: NewTraversal(candidateSelectRef)}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	FireExpressionRuleWithMemo(NewMatchLeafRule(), queryScanRef, ctx, nil)
+	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), queryFilterRef, ctx, nil)
+
+	if n := len(GetPartialMatchesForCandidate(queryFilterRef, mc)); n != 0 {
+		t.Fatalf("a plain-ForEach filter must NOT subsume a NULL-ON-EMPTY index candidate via the subsumption path, got %d matches", n)
+	}
+}
+
+// TestMatchIntermediate_SubsumptionChildMatchOrderIndependent pins the
+// subsumption path's order-independence: when the query child reference holds
+// several partial matches for the same candidate child (a conflicting one first,
+// a compatible one second), matchSingleSourceAgainstSelect must try each and use
+// the one that COMPOSES with the quantifier mapping — not commit to the first and
+// suppress a valid index match. Two matches with the same (queryExpr, candidateRef)
+// are seeded via the direct Reference.AddPartialMatch (bypassing the dedup wrapper)
+// to force the multi-match shape.
+func TestMatchIntermediate_SubsumptionChildMatchOrderIndependent(t *testing.T) {
+	t.Parallel()
+
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
+	queryFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "col0"},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
+			),
+		},
+		queryScanQ,
+	)
+	queryFilterRef := expressions.InitialOf(queryFilter)
+
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
+	alias0 := values.UniqueCorrelationIdentifier()
+	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{candidateScanQ},
+		[]predicates.QueryPredicate{ph0},
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+	mc := &testMatchCandidate{name: "idx_col0_order", traversal: NewTraversal(candidateSelectRef)}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	craft := func(boundMap *AliasMap) *PartialMatchImpl {
+		candResult := candidateScan.GetResultValue()
+		mmm := buildMatchMaxMatchMap(candResult, candResult, boundMap)
+		mi := NewRegularMatchInfo(nil, boundMap, nil, nil, mmm, EmptyGroupByMappings(), nil, nil)
+		return NewPartialMatch(boundMap, mc, queryScanRef, queryScan, candidateScanRef, mi)
+	}
+	// First match: bound map already fixes the query quantifier alias to a WRONG
+	// leg, so composing with {queryScanQ → candidateScanQ} conflicts.
+	wrong := values.UniqueCorrelationIdentifier()
+	first := craft(AliasMapOfAliases(queryScanQ.GetAlias(), wrong))
+	// Second match: empty bound map, composes cleanly.
+	second := craft(EmptyAliasMap())
+	if !queryScanRef.AddPartialMatch(mc, first) {
+		t.Fatal("failed to seed the first (conflicting) child match")
+	}
+	if !queryScanRef.AddPartialMatch(mc, second) {
+		t.Fatal("failed to seed the second (compatible) child match")
+	}
+
+	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), queryFilterRef, ctx, nil)
+
+	if n := len(GetPartialMatchesForCandidate(queryFilterRef, mc)); n == 0 {
+		t.Fatal("expected a match via the compatible (second) child match; committing to the conflicting first suppresses it")
 	}
 }
 

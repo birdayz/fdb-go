@@ -1,6 +1,9 @@
 package values
 
-import "bytes"
+import (
+	"bytes"
+	"reflect"
+)
 
 // InOpValue is the Value-layer SQL `IN` operator: tests whether a
 // probe value matches any element of a list of candidate values.
@@ -37,8 +40,7 @@ type InOpValue struct {
 // equalsAny compares two `any` values without panicking on
 // non-comparable types. Go's `==` on `any` would panic if both
 // sides were []byte (slices aren't comparable). bytes.Equal
-// handles the byte-slice case; everything else falls through to
-// `==`.
+// handles the byte-slice case.
 func equalsAny(a, b any) bool {
 	if ab, ok := a.([]byte); ok {
 		if bb, ok := b.([]byte); ok {
@@ -49,10 +51,36 @@ func equalsAny(a, b any) bool {
 	if _, ok := b.([]byte); ok {
 		return false
 	}
+	// Same-family integers compare EXACTLY — never round-trip two int64 through
+	// float64, whose promotion ties adjacent values above 2^53 (so
+	// 9007199254740993 IN (9007199254740992) would wrongly match). This mirrors
+	// the predicate-layer IN (comparisons.cmpAny → CompareExactInts); the
+	// value-layer IN previously promoted every numeric pair to float64.
+	if cmp, ok := CompareExactInts(a, b); ok {
+		return cmp == 0
+	}
+	// A genuine float on at least one side (not both integers): coerce to a
+	// common numeric type, matching Java's Comparisons.evalComparison(EQUALS).
 	if af, bf, ok := promoteNumeric(a, b); ok {
 		return af == bf
 	}
-	return a == b
+	return comparableEqual(a, b)
+}
+
+// comparableEqual reports value equality without panicking on non-comparable
+// dynamic types. Go's `==` on an `any` holding a slice/map/func panics; for
+// those (and for differing dynamic types) it falls back to reflect.DeepEqual,
+// which is panic-safe and gives structural equality for nested array/map
+// elements. Comparable same-type values use fast `==`.
+func comparableEqual(a, b any) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	ta := reflect.TypeOf(a)
+	if ta == reflect.TypeOf(b) && ta.Comparable() {
+		return a == b
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 // promoteNumeric promotes mixed-type numeric pairs for comparison.

@@ -149,6 +149,47 @@ func TestMemoMerge_SkipsCyclicMerge(t *testing.T) {
 	}
 }
 
+// TestMemoMerge_SkipsCyclicMergeThroughFinal pins Finding 8 (RFC-189 A1): the
+// merge cycle guard must walk AllMembers() (exploratory + final), not just
+// exploratory Members(). An ancestor→descendant edge existing ONLY through a
+// FINAL member is invisible to a Members()-only reachability walk, so the buggy
+// guard approves a cyclic merge — which later spins GetCorrelatedTo /
+// childRefsMatchInMemo forever (a planner hang). Here outer's EXPLORATORY member
+// ranges over scanRef (never inner); a FINAL member of outer ranges over inner,
+// so outer is inner's ancestor solely through the final edge — exactly the
+// "distinct-final InsertFinal" the invariant forbids.
+func TestMemoMerge_SkipsCyclicMergeThroughFinal(t *testing.T) {
+	t.Parallel()
+	scanRef := expressions.InitialOf(fixtureScan("T"))
+	inner := expressions.InitialOf(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanRef)))
+
+	// outer's exploratory member is Filter(→scanRef): reachable(outer, inner)
+	// over Members() alone walks scanRef and never reaches inner.
+	outer := filterOver(scanRef)
+
+	m := NewMemo(nil)
+	m.RegisterReference(outer) // indexes outer, scanRef
+	m.RegisterReference(inner) // indexes inner as a parent of scanRef
+
+	// A FINAL member of outer ranges over inner — outer is inner's ancestor
+	// ONLY through this final edge (a final that is not also an exploratory
+	// member). AllMembers() sees it; Members() does not.
+	outer.InsertFinal(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(inner)))
+
+	// Integrate into outer an expr equal to inner's member (Distinct(→scanRef)):
+	// findEquivalentRef matches inner. Merging outer≡inner would make outer's
+	// final member range over the merged group (itself) — a cycle.
+	yielded := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanRef))
+	m.Integrate(outer, yielded)
+
+	if m.MergeCount() != 0 {
+		t.Fatalf("cyclic merge through a FINAL edge must be skipped, got %d merges", m.MergeCount())
+	}
+	if outer.Canonical() == inner.Canonical() {
+		t.Fatal("ancestor (through final) and descendant must remain distinct groups")
+	}
+}
+
 // TestMemoMerge_SkipsWhenWinnersPresent is the §0 scope guard: a Reference
 // carrying PLANNING-phase bookkeeping is never merged (its embedded raw
 // References would not be canonicalized).

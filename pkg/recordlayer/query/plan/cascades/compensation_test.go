@@ -1921,3 +1921,28 @@ func TestUnionCompensations_TwoForMatch(t *testing.T) {
 		t.Fatalf("union predicate map should have 2 entries, got %d", fm.GetPredicateCompensationMap().Len())
 	}
 }
+
+// TestUnionResultCompensation pins RFC-189 C3 (finding 12c): Java's
+// Compensation.Union asserts BOTH legs' result compensations are needed
+// (Verify.verify) before picking one; Go previously picked c's rcf even when
+// only other's was needed, yielding the wrong output shape. The helper returns
+// ok=false for the exactly-one-needed case so Union declines (fail-closed).
+func TestUnionResultCompensation(t *testing.T) {
+	t.Parallel()
+	needed := NewResultCompensationFunction(true)
+	notNeeded := NewResultCompensationFunction(false)
+
+	if fn, ok := unionResultCompensation(notNeeded, notNeeded); !ok || fn.IsNeeded() {
+		t.Fatalf("neither needed → (no-compensation, ok); got (%v, %v)", fn, ok)
+	}
+	if fn, ok := unionResultCompensation(needed, needed); !ok || !fn.IsNeeded() {
+		t.Fatalf("both needed → (needed rcf, ok); got (%v, %v)", fn, ok)
+	}
+	// Exactly one needed — the invariant Java asserts against. Must decline.
+	if _, ok := unionResultCompensation(needed, notNeeded); ok {
+		t.Fatal("only c's rcf needed → must decline (ok=false), not silently pick c's shape")
+	}
+	if _, ok := unionResultCompensation(notNeeded, needed); ok {
+		t.Fatal("only other's rcf needed → must decline (ok=false)")
+	}
+}

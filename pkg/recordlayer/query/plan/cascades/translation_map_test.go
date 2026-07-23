@@ -500,6 +500,68 @@ func TestAliasMapBuilder_PutAll_SkipsConflicts(t *testing.T) {
 	}
 }
 
+// TestAliasMapBuilder_PutChecked pins the conflict-aware composition primitive
+// used to compose quantifier bijections in MatchIntermediate: PutChecked accepts
+// an identical re-binding but REJECTS a contradictory one (unlike PutAll, which
+// silently skips conflicts and would forge an inconsistent composite match).
+func TestAliasMapBuilder_PutChecked(t *testing.T) {
+	t.Parallel()
+	a := values.NamedCorrelationIdentifier("a")
+	b := values.NamedCorrelationIdentifier("b")
+	x := values.NamedCorrelationIdentifier("x")
+	y := values.NamedCorrelationIdentifier("y")
+
+	b1 := NewAliasMapBuilder()
+	if !b1.PutChecked(a, x) {
+		t.Fatal("first PutChecked(a,x) must succeed")
+	}
+	if !b1.PutChecked(a, x) {
+		t.Fatal("identical re-binding PutChecked(a,x) must be accepted as consistent")
+	}
+	if b1.PutChecked(a, y) {
+		t.Fatal("conflicting PutChecked(a,y) — a already maps to x — must be rejected")
+	}
+	if b1.PutChecked(b, x) {
+		t.Fatal("conflicting PutChecked(b,x) — x already claimed by a — must be rejected")
+	}
+	if !b1.PutChecked(b, y) {
+		t.Fatal("non-conflicting PutChecked(b,y) must succeed")
+	}
+
+	// PutAllChecked: a compatible map composes; a contradictory one is rejected
+	// wholesale (returns false), never silently merged.
+	b2 := NewAliasMapBuilder()
+	b2.PutChecked(a, x)
+	if !b2.PutAllChecked(AliasMapOfAliases(b, y)) {
+		t.Fatal("PutAllChecked of a compatible {b→y} must succeed")
+	}
+	b3 := NewAliasMapBuilder()
+	b3.PutChecked(a, x)
+	if b3.PutAllChecked(AliasMapOfAliases(a, y)) {
+		t.Fatal("PutAllChecked of a contradictory {a→y} (a already maps to x) must be rejected")
+	}
+
+	// PutAllChecked is ATOMIC: a rejected map must leave the builder UNCHANGED so a
+	// caller can try the next candidate on the same builder (the order-independence
+	// the bijection composition relies on). Compose a two-entry map whose SECOND
+	// entry conflicts — the first must not leak in.
+	b4 := NewAliasMapBuilder()
+	b4.PutChecked(a, x) // pins x's inverse to a
+	twoEntry := NewAliasMapBuilder()
+	twoEntry.PutChecked(b, y) // fine on its own
+	twoEntry.PutChecked(values.NamedCorrelationIdentifier("c"), x)
+	if b4.PutAllChecked(twoEntry.Build()) {
+		t.Fatal("PutAllChecked with a conflicting entry (c→x, x claimed by a) must reject")
+	}
+	built := b4.Build()
+	if built.Size() != 1 || built.GetTarget(a) != x {
+		t.Fatalf("rejected PutAllChecked must leave the builder unchanged (only a→x), got size=%d", built.Size())
+	}
+	if built.ContainsSource(b) {
+		t.Fatal("atomicity violated: the compatible first entry (b→y) leaked in after the map was rejected")
+	}
+}
+
 func TestLeafValue_QuantifiedObjectValue(t *testing.T) {
 	t.Parallel()
 	src := values.NamedCorrelationIdentifier("src")

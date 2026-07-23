@@ -779,7 +779,7 @@ func TestFindMatchingReachableCandidate_RCVChild(t *testing.T) {
 		values.RecordConstructorField{Name: "b", Value: fb},
 	)
 
-	found, match := findMatchingReachableCandidate(fa, candidate)
+	found, match := findMatchingReachableCandidateWithEquivalence(fa, candidate, nil)
 	if !found {
 		t.Fatal("A should be reachable inside RCV")
 	}
@@ -797,7 +797,7 @@ func TestFindMatchingReachableCandidate_ArithChild(t *testing.T) {
 	// Candidate is arithmetic — children are NOT reachable.
 	candidate := &values.ArithmeticValue{Op: values.OpAdd, Left: fa, Right: fb}
 
-	found, _ := findMatchingReachableCandidate(fa, candidate)
+	found, _ := findMatchingReachableCandidateWithEquivalence(fa, candidate, nil)
 	if found {
 		t.Fatal("A should NOT be reachable inside ArithmeticValue")
 	}

@@ -3297,6 +3297,16 @@ func (c *CastValue) Type() Type {
 // purely due to floating-point error — e.g. the largest double below 0.5
 // (0.49999999999999994) must round to 0, not 1. Go's math.Round differs (it
 // rounds half AWAY from zero, so -0.5 → -1 vs Java's 0), so it cannot be used.
+// trimJavaWhitespace strips leading/trailing characters the way Java's
+// String.trim() does — ONLY code points <= U+0020 — not the full Unicode
+// whitespace set strings.TrimSpace removes. Numeric CAST(string AS
+// INT/LONG/DOUBLE) delegates to Integer/Long/Double.parseXxx(s.trim()) in Java
+// (CastValue.java:187,195,211), so e.g. CAST(NBSP+"5" AS INT) must THROW (NBSP,
+// U+00A0, is not stripped) rather than yield 5 as strings.TrimSpace would.
+func trimJavaWhitespace(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool { return r <= ' ' })
+}
+
 func javaMathRound(a float64) float64 {
 	// Integer bit-ops on the IEEE-754 representation, exactly as Java does —
 	// floor(a+0.5) can't be patched up in float (the correcting subtraction
@@ -3362,13 +3372,13 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 			}
 			return int64(int32(rounded)), nil
 		case string:
-			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 32)
+			n, err := strconv.ParseInt(trimJavaWhitespace(val), 10, 32)
 			if err != nil {
 				// Java STRING_TO_INT wraps Integer.parseInt's
 				// NumberFormatException — its message is the stock
 				// `For input string: "X"` for syntax AND range failures
 				// alike (CastValue.java:185-192), never Go's strconv text.
-				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to INT: For input string: \"%s\"", val, strings.TrimSpace(val))}
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to INT: For input string: \"%s\"", val, trimJavaWhitespace(val))}
 			}
 			return n, nil
 		}
@@ -3391,10 +3401,10 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 			}
 			return int64(rounded), nil
 		case string:
-			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
+			n, err := strconv.ParseInt(trimJavaWhitespace(val), 10, 64)
 			if err != nil {
 				// Java STRING_TO_LONG: Long.parseLong's stock message.
-				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to LONG: For input string: \"%s\"", val, strings.TrimSpace(val))}
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to LONG: For input string: \"%s\"", val, trimJavaWhitespace(val))}
 			}
 			return n, nil
 		}
@@ -3516,7 +3526,7 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		case int64:
 			return float64(val), nil
 		case string:
-			f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+			f, err := strconv.ParseFloat(trimJavaWhitespace(val), 64)
 			if err != nil {
 				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DOUBLE: %s", val, err)}
 			}

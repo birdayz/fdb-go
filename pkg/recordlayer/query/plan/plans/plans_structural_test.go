@@ -9,6 +9,31 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// TestRecordQueryScanPlan_WithPrimaryKey_PreservesComparisons pins the
+// builder-preservation footgun fixed in RFC-189 B1: WithPrimaryKey dropped the
+// scan comparisons on copy (asymmetric with WithScanComparisons, which preserves
+// the PK), silently un-narrowing a scan when the PK was set AFTER the
+// comparisons. Production set the PK first so it was latent, but a copy must
+// carry every scan field.
+func TestRecordQueryScanPlan_WithPrimaryKey_PreservesComparisons(t *testing.T) {
+	t.Parallel()
+	cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))
+	res := predicates.EmptyComparisonRange().Merge(&cmp)
+	if !res.Ok {
+		t.Fatal("failed to build equality range")
+	}
+	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithScanComparisons([]*predicates.ComparisonRange{res.Range}).
+		WithPrimaryKey([]values.Value{&values.ConstantValue{Value: int64(7), Typ: values.NullableLong}})
+
+	if got := scan.GetScanComparisons(); len(got) != 1 {
+		t.Fatalf("WithPrimaryKey dropped the scan comparisons: got %d, want 1", len(got))
+	}
+	if got := scan.GetPrimaryKeyValues(); len(got) != 1 {
+		t.Fatalf("expected 1 PK value after WithPrimaryKey, got %d", len(got))
+	}
+}
+
 // stubPlan is a minimal RecordQueryPlan for use as an inner child.
 type stubPlan struct {
 	PlanExprBase

@@ -209,12 +209,12 @@ func isSimpleSelectForSplit(sel *expressions.SelectExpression, explodeAliases ma
 	return true
 }
 
-// quantifierCorrelationSet computes the correlation set of a
-// quantifier by walking the inner expression tree. Go's
-// Quantifier.GetCorrelatedTo() currently returns the empty set — a
-// registered divergence from Java (see DIVERGENCES.md, "Quantifier.
-// GetCorrelatedTo returns the empty set"); this walk is one of its
-// structurally-compensating call sites.
+// quantifierCorrelationSet computes the correlation set of a quantifier by
+// walking the inner expression tree directly. It predates
+// Quantifier.GetCorrelatedTo() delegating to the ranged-over Reference's
+// transitive walk (RFC-189 A4) and is retained as this rule's self-contained
+// walk (which additionally unions merge-leg/without-children deps in the way
+// this rule needs).
 //
 // For each member of the quantifier's Reference, we collect
 // GetCorrelatedToWithoutChildren() and recursively descend into
