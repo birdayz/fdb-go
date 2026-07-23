@@ -574,6 +574,72 @@ func TestMatchIntermediate_FilterSubsumedBySelect_EdgeMismatchRejected(t *testin
 	}
 }
 
+// TestMatchIntermediate_SubsumptionChildMatchOrderIndependent pins the
+// subsumption path's order-independence: when the query child reference holds
+// several partial matches for the same candidate child (a conflicting one first,
+// a compatible one second), matchSingleSourceAgainstSelect must try each and use
+// the one that COMPOSES with the quantifier mapping — not commit to the first and
+// suppress a valid index match. Two matches with the same (queryExpr, candidateRef)
+// are seeded via the direct Reference.AddPartialMatch (bypassing the dedup wrapper)
+// to force the multi-match shape.
+func TestMatchIntermediate_SubsumptionChildMatchOrderIndependent(t *testing.T) {
+	t.Parallel()
+
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
+	queryFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "col0"},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
+			),
+		},
+		queryScanQ,
+	)
+	queryFilterRef := expressions.InitialOf(queryFilter)
+
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
+	alias0 := values.UniqueCorrelationIdentifier()
+	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{candidateScanQ},
+		[]predicates.QueryPredicate{ph0},
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+	mc := &testMatchCandidate{name: "idx_col0_order", traversal: NewTraversal(candidateSelectRef)}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	craft := func(boundMap *AliasMap) *PartialMatchImpl {
+		candResult := candidateScan.GetResultValue()
+		mmm := buildMatchMaxMatchMap(candResult, candResult, boundMap)
+		mi := NewRegularMatchInfo(nil, boundMap, nil, nil, mmm, EmptyGroupByMappings(), nil, nil)
+		return NewPartialMatch(boundMap, mc, queryScanRef, queryScan, candidateScanRef, mi)
+	}
+	// First match: bound map already fixes the query quantifier alias to a WRONG
+	// leg, so composing with {queryScanQ → candidateScanQ} conflicts.
+	wrong := values.UniqueCorrelationIdentifier()
+	first := craft(AliasMapOfAliases(queryScanQ.GetAlias(), wrong))
+	// Second match: empty bound map, composes cleanly.
+	second := craft(EmptyAliasMap())
+	if !queryScanRef.AddPartialMatch(mc, first) {
+		t.Fatal("failed to seed the first (conflicting) child match")
+	}
+	if !queryScanRef.AddPartialMatch(mc, second) {
+		t.Fatal("failed to seed the second (compatible) child match")
+	}
+
+	FireExpressionRuleWithMemo(NewMatchIntermediateRule(), queryFilterRef, ctx, nil)
+
+	if n := len(GetPartialMatchesForCandidate(queryFilterRef, mc)); n == 0 {
+		t.Fatal("expected a match via the compatible (second) child match; committing to the conflicting first suppresses it")
+	}
+}
+
 // TestMatchIntermediate_FilterSubsumedBySelect_MultiplePredicates
 // verifies that a query with two ComparisonPredicates (col0 = 5 AND
 // col1 > 10) correctly binds both candidate Placeholders.

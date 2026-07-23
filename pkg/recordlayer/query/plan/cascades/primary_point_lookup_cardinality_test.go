@@ -142,6 +142,34 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 		}
 	})
 
+	// A scanPlanExpression adapter exposes no wrapper quantifier, so the populated
+	// property map must be consulted off the PLAN's child, not the wrapper's. A
+	// mixed bounded/unbounded group legitimately weakens to unknown; the fallback
+	// must trust that, NOT follow the bounded winner and report AtMostOne (which
+	// would wrongly enable the cost model's point-lookup criterion).
+	t.Run("scan_adapter_populated_mixed_group_stays_unknown", func(t *testing.T) {
+		t.Parallel()
+		bounded := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithPrimaryKey(pk2)
+		unbounded := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+		childRef := expressions.FinalOf(bounded)
+		if !childRef.InsertFinal(unbounded) {
+			t.Fatal("failed to build the mixed child reference")
+		}
+		pm := NewPlanPropertiesMap()
+		pm.Add(bounded)
+		pm.Add(unbounded)
+		childRef.SetPlanProperties(pm)
+		childRef.SetWinner(bounded) // winner is the bounded leg
+		tf := plans.NewRecordQueryTypeFilterPlanFromQuantifier([]string{"T"},
+			expressions.ForEachQuantifier(childRef))
+		adapter := &scanPlanExpression{plan: tf}
+		if wholePlanMaxCardinalityKnown(adapter) {
+			t.Fatal("a populated mixed bounded/unbounded group must stay unknown, not follow the bounded winner")
+		}
+	})
+
 	// A child ref with ONE distinct plan-typed FINAL member plus an exploratory
 	// (non-final) member is unambiguous — planFromQuantifier cannot panic — so the
 	// bound must still propagate (the guard keys on distinct FINAL plans, not on
@@ -158,6 +186,26 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 			expressions.ForEachQuantifier(childRef))
 		if !wholePlanMaxCardinalityKnown(tf) {
 			t.Fatal("one final plan + exploratory members must still resolve the point-lookup bound")
+		}
+	})
+
+	// planFromQuantifier resolves a lone EXPLORATORY member (empty final set, one
+	// member plan — the MemoizeExpression InitialOf(plan) shape) via
+	// firstPlanFromMembers. childPlanIfUnambiguous must match that: a
+	// FinalMembers()-only scan would drop the bound.
+	t.Run("exploratory_only_singleton_resolves", func(t *testing.T) {
+		t.Parallel()
+		bound := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
+			WithPrimaryKey(pk2)
+		childRef := expressions.InitialOf(bound) // Members=[bound], FinalMembers=[]
+		if len(childRef.FinalMembers()) != 0 {
+			t.Fatal("precondition: InitialOf must leave the final set empty")
+		}
+		tf := plans.NewRecordQueryTypeFilterPlanFromQuantifier([]string{"T"},
+			expressions.ForEachQuantifier(childRef))
+		if !wholePlanMaxCardinalityKnown(tf) {
+			t.Fatal("a lone exploratory member plan must resolve the point-lookup bound (Members fallback)")
 		}
 	})
 }

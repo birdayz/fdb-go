@@ -468,19 +468,34 @@ func matchSingleSourceAgainstSelect(
 		return
 	}
 
-	// Verify a child PartialMatch exists linking the two scan
-	// references.
+	// Select a child PartialMatch linking the two child references whose bound
+	// aliases COMPOSE with the single quantifier mapping. A child reference can
+	// hold several matches for the same candidate child (different bound maps); a
+	// correlated child may bind the query alias to a leg incompatible with this
+	// mapping, so try each and take the first that composes — never let
+	// partial-match insertion ORDER decide whether the subsumption matches. The
+	// composed alias map is reused below (Java only combines COMPATIBLE bound
+	// maps).
 	queryChildRef := queryQs[0].GetRangesOver()
 	candidateChildRef := candidateQs[0].GetRangesOver()
 
 	var childMatch *PartialMatchImpl
+	var boundAliasMap *AliasMap
 	for _, pm := range GetPartialMatchesForCandidate(queryChildRef, candidate) {
-		if pmi, ok := pm.(*PartialMatchImpl); ok {
-			if pmi.GetCandidateRef() == candidateChildRef {
-				childMatch = pmi
-				break
-			}
+		pmi, ok := pm.(*PartialMatchImpl)
+		if !ok || pmi.GetCandidateRef() != candidateChildRef {
+			continue
 		}
+		ab := NewAliasMapBuilder()
+		if !ab.PutAllChecked(pmi.GetBoundAliasMap()) {
+			continue
+		}
+		if !ab.PutChecked(queryQs[0].GetAlias(), candidateQs[0].GetAlias()) {
+			continue
+		}
+		childMatch = pmi
+		boundAliasMap = ab.Build()
+		break
 	}
 	if childMatch == nil {
 		return
@@ -611,18 +626,8 @@ func matchSingleSourceAgainstSelect(
 		residualCount++
 	}
 
-	// Step 3: Build alias map incorporating child aliases +
-	// quantifier mapping. Compose conflict-checked (as the bijection path does):
-	// a child binding that contradicts the single quantifier mapping invalidates
-	// the match rather than being silently dropped.
-	aliasBuilder := NewAliasMapBuilder()
-	if !aliasBuilder.PutAllChecked(childMatch.GetBoundAliasMap()) {
-		return
-	}
-	if !aliasBuilder.PutChecked(queryQs[0].GetAlias(), candidateQs[0].GetAlias()) {
-		return
-	}
-	boundAliasMap := aliasBuilder.Build()
+	// The bound alias map was composed conflict-checked during child-match
+	// selection above; reuse it here.
 
 	// Build the predicate map. BuildMaybe returns nil on conflicts
 	// (not expected for a single-source expression). A nil result
