@@ -268,3 +268,52 @@ func expressionCorrelatedTo(e RelationalExpression) map[values.CorrelationIdenti
 	}
 	return result
 }
+
+// GetCorrelatedToOfExpression returns the exact external correlations of one
+// expression member. Unlike Reference.GetCorrelatedTo, it does not union the
+// correlations of alternate members in the same memo group. Match metadata
+// pull-up needs the member-local answer: treating an alias exposed only by an
+// alternative member as constant can preserve a value that this expression
+// does not actually hold constant.
+func GetCorrelatedToOfExpression(
+	e RelationalExpression,
+) map[values.CorrelationIdentifier]struct{} {
+	if e == nil {
+		return nil
+	}
+	if recursiveUnion, ok := e.(*RecursiveUnionExpression); ok {
+		// RecursiveUnion satisfies the two temporary-table correlations
+		// itself. Java overrides computeCorrelatedTo for this expression
+		// instead of using the generic with-children implementation.
+		result := make(map[values.CorrelationIdentifier]struct{})
+		for _, quantifier := range recursiveUnion.GetQuantifiers() {
+			for alias := range quantifier.GetCorrelatedTo() {
+				if alias != recursiveUnion.GetTempTableScanAlias() &&
+					alias != recursiveUnion.GetTempTableInsertAlias() {
+					result[alias] = struct{}{}
+				}
+			}
+		}
+		return result
+	}
+
+	ownAliases := make(map[values.CorrelationIdentifier]struct{})
+	for _, quantifier := range e.GetQuantifiers() {
+		ownAliases[quantifier.GetAlias()] = struct{}{}
+	}
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for alias := range e.GetCorrelatedToWithoutChildren() {
+		if _, bound := ownAliases[alias]; !bound {
+			result[alias] = struct{}{}
+		}
+	}
+	for _, quantifier := range e.GetQuantifiers() {
+		for alias := range quantifier.GetCorrelatedTo() {
+			_, bound := ownAliases[alias]
+			if !e.CanCorrelate() || !bound {
+				result[alias] = struct{}{}
+			}
+		}
+	}
+	return result
+}

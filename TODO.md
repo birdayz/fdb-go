@@ -149,9 +149,12 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
     regression plus negative twins. Focused regression green 20×; parent-vs-current explain corpus
     2,579/2,579 identical; full `just test` 56/56. **FINAL REVIEW: Graefe ACK + Torvalds ACK +
     independent Codex ACK.** This is explicitly not the full Java port.
-  - [ ] **190.4b** — dependency-sound/topological subset enumeration, all child-match branches,
+  - [x] **190.4b** — dependency-sound/topological subset enumeration, all child-match branches,
     `RegularMatchInfo` merge/child metadata, semantic multi-match dedup, and deterministic bounded
-    search (40,320 attempted mappings / 64 unique outputs; safe miss on exhaustion).
+    search (40,320 visited search states / 64 unique outputs; safe miss on exhaustion). Includes
+    constant-aware recursive group-value pull-up and fail-closed multi-member metadata adjustment.
+    Focused regressions green 20×; affected uncached Bazel targets 3/3 green; full `just test`
+    56/56. **FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.**
   - [ ] **190.4c** — current Java Select `ForEach` coverage, existential ownership/dependencies,
     predicate implication/candidate coverage, child pull-up/result mapping, compensation state,
     and end-to-end cardinality regressions.

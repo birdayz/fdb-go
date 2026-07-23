@@ -117,3 +117,32 @@ func GetCorrelatedToOfValue(v Value) map[CorrelationIdentifier]struct{} {
 	})
 	return out
 }
+
+// GetCorrelatedToWithoutChildrenOfValue returns only the correlations carried
+// by v itself, excluding correlations contributed by descendant Values.
+//
+// This is the Go counterpart of Java Value.getCorrelatedToWithoutChildren().
+// Keep the switch in lockstep with the correlation-bearing leaf cases in
+// GetCorrelatedToOfValue. Composite wrappers such as FieldValue and
+// ExistsValue deliberately contribute nothing here even though their full
+// subtree correlation set is non-empty.
+func GetCorrelatedToWithoutChildrenOfValue(
+	v Value,
+) map[CorrelationIdentifier]struct{} {
+	out := map[CorrelationIdentifier]struct{}{}
+	switch correlated := v.(type) {
+	case *QuantifiedObjectValue:
+		out[correlated.Correlation] = struct{}{}
+	case *QuantifiedRecordValue:
+		out[correlated.Alias] = struct{}{}
+	case *ScalarSubqueryValue:
+		out[correlated.Alias] = struct{}{}
+	case *ObjectValue:
+		out[correlated.Alias] = struct{}{}
+	case *UnmatchedAggregateValue:
+		out[correlated.UnmatchedID] = struct{}{}
+	case *ConstantObjectValue:
+		out[correlated.Alias] = struct{}{}
+	}
+	return out
+}

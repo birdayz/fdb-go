@@ -173,3 +173,70 @@ func TestSingleMatchedAccess_String(t *testing.T) {
 		t.Fatalf("String() = %q, want to contain 'top1'", s)
 	}
 }
+
+func TestSingleMatchedAccess_MultiMemberCandidateRefFailsGroupMetadataClosed(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	lowerAlias := values.NamedCorrelationIdentifier("multi_member_lower")
+	firstResult := values.NewQuantifiedObjectValue(lowerAlias)
+	firstCandidate := expressions.NewSelectExpression(firstResult, nil, nil)
+	secondCandidate := expressions.NewSelectExpression(
+		values.LiteralValue(int64(2)),
+		nil,
+		nil,
+	)
+	candidateRef := expressions.InitialOf(firstCandidate)
+	if !candidateRef.Insert(secondCandidate) {
+		t.Fatal("test candidate alternatives unexpectedly deduplicated")
+	}
+	if got := len(candidateRef.AllMembers()); got != 2 {
+		t.Fatalf("candidate member count = %d, want 2", got)
+	}
+
+	queryKey := values.LiteralValue(int64(1))
+	matched := NewValueBiMap()
+	matched.Put(queryKey, firstResult)
+	matchInfo := NewRegularMatchInfo(
+		nil,
+		EmptyAliasMap(),
+		nil,
+		nil,
+		NewMaxMatchMap(nil, nil, nil),
+		NewGroupByMappings(
+			matched,
+			NewValueBiMap(),
+			NewCorrValueBiMap(),
+		),
+		nil,
+		nil,
+	)
+	queryExpression := expressions.NewSelectExpression(queryKey, nil, nil)
+	partialMatch := NewPartialMatch(
+		EmptyAliasMap(),
+		stubMatchCandidate{name: "multi_member_group_metadata"},
+		expressions.InitialOf(queryExpression),
+		queryExpression,
+		candidateRef,
+		matchInfo,
+	)
+	access := NewSingleMatchedAccess(
+		partialMatch,
+		NoCompensation,
+		values.NamedCorrelationIdentifier("candidate_top"),
+		false,
+		EmptyTranslationMap(),
+		nil,
+	)
+
+	pulled := access.GetPulledUpGroupByMappingsForOrdering()
+	if pulled == nil {
+		t.Fatal("fail-closed group metadata is nil")
+	}
+	if pulled.MatchedGroupingsMap().Len() != 0 ||
+		pulled.MatchedAggregatesMap().Len() != 0 ||
+		pulled.UnmatchedAggregatesMap().Len() != 0 {
+		t.Fatal("multi-member candidate reference retained arbitrary group metadata")
+	}
+}

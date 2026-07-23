@@ -246,3 +246,74 @@ func TestReference_GetCorrelatedTo_NonCorrelatableParentRetains(t *testing.T) {
 		t.Fatalf("union (CanCorrelate=false) must RETAIN the branch's free correlation A despite the sibling alias coincidence: %v", got)
 	}
 }
+
+func TestGetCorrelatedToOfExpression_NonCorrelatableParentRetainsOwnedAlias(t *testing.T) {
+	t.Parallel()
+
+	alias := values.NamedCorrelationIdentifier("reexposed")
+	child := NewSelectExpression(
+		values.NewQuantifiedObjectValue(alias),
+		nil,
+		nil,
+	)
+	parent := NewLogicalDistinctExpression(
+		NamedForEachQuantifier(alias, InitialOf(child)),
+	)
+
+	got := GetCorrelatedToOfExpression(parent)
+	if _, present := got[alias]; !present {
+		t.Fatalf(
+			"non-correlatable parent correlations = %v, want retained child alias %s",
+			got,
+			alias,
+		)
+	}
+}
+
+func TestGetCorrelatedToOfExpression_RecursiveUnionConsumesTempAliases(t *testing.T) {
+	t.Parallel()
+
+	scanAlias := values.NamedCorrelationIdentifier("temp_scan")
+	insertAlias := values.NamedCorrelationIdentifier("temp_insert")
+	outerAlias := values.NamedCorrelationIdentifier("outer")
+	initialChild := NewSelectExpression(
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{
+				Name:  "scan",
+				Value: values.NewQuantifiedObjectValue(scanAlias),
+			},
+			values.RecordConstructorField{
+				Name:  "outer",
+				Value: values.NewQuantifiedObjectValue(outerAlias),
+			},
+		),
+		nil,
+		nil,
+	)
+	recursiveChild := NewSelectExpression(
+		values.NewQuantifiedObjectValue(insertAlias),
+		nil,
+		nil,
+	)
+	expression := NewRecursiveUnionExpression(
+		NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("initial"),
+			InitialOf(initialChild),
+		),
+		NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("recursive"),
+			InitialOf(recursiveChild),
+		),
+		scanAlias,
+		insertAlias,
+		TraversalAny,
+	)
+
+	got := GetCorrelatedToOfExpression(expression)
+	if len(got) != 1 {
+		t.Fatalf("recursive-union correlations = %v, want only %s", got, outerAlias)
+	}
+	if _, present := got[outerAlias]; !present {
+		t.Fatalf("recursive-union correlations = %v, missing %s", got, outerAlias)
+	}
+}

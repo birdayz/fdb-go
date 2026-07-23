@@ -138,6 +138,7 @@ go_test(
         "value_condition_selector_test.go",
         "value_constant_object_test.go",
         "value_correlation_fuzz_test.go",
+        "value_correlation_without_children_test.go",
         "value_derived_test.go",
         "value_distance_fuzz_test.go",
         "value_distance_row_number_test.go",

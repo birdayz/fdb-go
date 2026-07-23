@@ -424,3 +424,74 @@ func TestAdjustPartialMatches_NoDuplicateExplosionOnRepeatedCalls(t *testing.T) 
 		t.Fatalf("duplicate explosion: %d matches after 1 call, %d after 11 calls (content dedup must keep it stable)", after1, afterN)
 	}
 }
+
+func TestAdjustMatchForSelect_RejectsMultiMemberLowerReference(t *testing.T) {
+	t.Parallel()
+
+	firstLower := expressions.NewSelectExpression(
+		values.LiteralValue(int64(1)),
+		nil,
+		nil,
+	)
+	secondLower := expressions.NewSelectExpression(
+		values.LiteralValue(int64(2)),
+		nil,
+		nil,
+	)
+	lowerRef := expressions.InitialOf(firstLower)
+	inner := expressions.ForEachQuantifier(lowerRef)
+	upperResult := values.NewQuantifiedObjectValue(inner.GetAlias())
+	upperSelect := expressions.NewSelectExpression(
+		upperResult,
+		[]expressions.Quantifier{inner},
+		nil,
+	)
+
+	matchedValue := values.LiteralValue(int64(7))
+	maxMatchMap := NewMaxMatchMap(
+		map[values.Value]values.Value{matchedValue: matchedValue},
+		matchedValue,
+		matchedValue,
+	)
+	matchedGroupings := NewValueBiMap()
+	matchedGroupings.Put(
+		values.LiteralValue(int64(8)),
+		matchedValue,
+	)
+	matchInfo := NewRegularMatchInfo(
+		nil,
+		EmptyAliasMap(),
+		nil,
+		nil,
+		maxMatchMap,
+		NewGroupByMappings(
+			matchedGroupings,
+			NewValueBiMap(),
+			NewCorrValueBiMap(),
+		),
+		nil,
+		nil,
+	)
+	queryExpression := expressions.NewSelectExpression(matchedValue, nil, nil)
+	partialMatch := NewPartialMatch(
+		EmptyAliasMap(),
+		stubMatchCandidate{name: "adjust_select_singleton_guard"},
+		expressions.InitialOf(queryExpression),
+		queryExpression,
+		expressions.InitialOf(firstLower),
+		matchInfo,
+	)
+
+	if adjusted := adjustMatchForSelect(upperSelect, partialMatch); adjusted == nil {
+		t.Fatal("singleton lower reference did not reach the adjustment guard")
+	}
+	if !lowerRef.Insert(secondLower) {
+		t.Fatal("test lower alternatives unexpectedly deduplicated")
+	}
+	if got := len(lowerRef.AllMembers()); got != 2 {
+		t.Fatalf("lower member count = %d, want 2", got)
+	}
+	if adjusted := adjustMatchForSelect(upperSelect, partialMatch); adjusted != nil {
+		t.Fatal("multi-member lower reference selected an arbitrary result value")
+	}
+}

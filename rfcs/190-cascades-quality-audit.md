@@ -3,8 +3,8 @@
 Status: **Implementing** (Graefe ACK + Torvalds ACK on the RFC; **190.1 milestone Graefe+Torvalds ACK
 on `95598761f`** — codex + @claude at PR). Landed: 190.12 golden, 190.13 docs, 190.1 (N-way EXISTS),
 190.2 (cost-comparator transitivity), 190.3 (point-scan PK proof), the bundled scalar-NaN ledger
-closure, and 190.4a (guarded dead candidate existentials). The Graefe-reruled 190.4 umbrella stays
-open for 190.4b/190.4c.
+closure, 190.4a (guarded dead candidate existentials), and 190.4b (matcher metadata/enumeration).
+The Graefe-reruled 190.4 umbrella stays open for 190.4c.
 190.1 was **materially re-designed** after its original delete premise proved false (the arm's
 "never produced an executable plan" gravestone is a lie — deleting it regresses working FDB tests).
 The new 190.1 (converge on Java's two-rule architecture via a guarded `PartitionSelectRule`) carries
@@ -376,8 +376,14 @@ matches; atomically merge alias/parameter maps; retain every selected child matc
 the relevant `RegularMatchInfo.tryMerge` semantics for ordering, grouping, roll-up, and
 constraints. Replace pair-only partial-match dedup with a stable semantic fingerprint so distinct
 subset mappings survive while exact refires still collapse. Use deterministic full/exact-first
-search with per-attempt limits of 40,320 visited mapping states and 64 unique emitted partial
+search with per-attempt limits of 40,320 visited search states and 64 unique emitted partial
 matches; exhaustion is a safe optimization miss, never a relaxed or positional match.
+
+The merge path also ports constant-aware recursive group-value pull-up (nested constructors,
+field-prefix/suffix compensation, and ambiguity rejection) and requires singleton candidate
+references wherever result-dependent metadata is adjusted. Focused regressions are green 20×;
+the affected uncached Bazel targets are 3/3 green; full `just test` is 56/56.
+**190.4b FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.**
 
 #### 190.4c — Select predicate/result/compensation semantics
 

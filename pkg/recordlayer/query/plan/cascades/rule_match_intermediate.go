@@ -32,11 +32,11 @@ import (
 //
 // Ports Java's
 // com.apple.foundationdb.record.query.plan.cascades.rules.MatchIntermediateRule.
-// Like Java's RelationalExpression.match(), the structural path enumerates every
-// quantifier bijection (query-q[i] ↔ candidate-q[perm[i]]) up to a factorial cap,
-// pairing quantifiers only when their edges are compatible
-// (quantifierEdgesCompatible) and re-checking node equality under each bijection's
-// alias map; beyond the cap it falls back to positional pairing.
+// Like Java's RelationalExpression.match(), the structural path enumerates
+// dependency-sound quantifier bijections and every compatible child-match
+// branch. A strict shared visit budget may truncate the deterministic search as
+// a safe optimization miss; it never falls back to positional pairing or
+// relaxes a semantic gate.
 type MatchIntermediateRule struct {
 	matcher *ExpressionMatcher[expressions.RelationalExpression]
 }
@@ -87,9 +87,14 @@ func (r *MatchIntermediateRule) OnMatch(call *ExpressionRuleCall) {
 	// any of the child references. This mirrors Java's:
 	//   childMatchCandidates.addAll(rangesOverGroup.getMatchCandidates())
 	candidateSet := make(map[MatchCandidate]struct{})
+	candidates := make([]MatchCandidate, 0)
 	for _, childRef := range rangesOverRefs {
 		for _, cand := range GetPartialMatchCandidatesTyped(childRef) {
+			if _, seen := candidateSet[cand]; seen {
+				continue
+			}
 			candidateSet[cand] = struct{}{}
+			candidates = append(candidates, cand)
 		}
 	}
 
@@ -97,24 +102,22 @@ func (r *MatchIntermediateRule) OnMatch(call *ExpressionRuleCall) {
 	// traversal that reference the candidate-side refs from the child
 	// PartialMatches. This mirrors Java's
 	// MatchCandidate.findReferencingExpressions.
-	for candidate := range candidateSet {
+	for _, candidate := range candidates {
 		traversal := candidate.GetTraversal()
 		if traversal == nil {
 			continue
 		}
 
-		refToExpressionMap := findReferencingExpressionsForCandidate(
+		referencingExpressions := findReferencingExpressionsForCandidate(
 			rangesOverRefs, candidate, traversal,
 		)
 
 		// For each (candidateRef, candidateExpr) pair, attempt to
 		// match the query expression against the candidate expression.
-		for candidateRef, candidateExprs := range refToExpressionMap {
-			for _, candidateExpr := range candidateExprs {
-				matchIntermediateWithCandidate(
-					call, expr, candidate, candidateRef, candidateExpr,
-				)
-			}
+		for _, parent := range referencingExpressions {
+			matchIntermediateWithCandidate(
+				call, expr, candidate, parent.ref, parent.expr,
+			)
 		}
 	}
 }
@@ -125,14 +128,15 @@ func (r *MatchIntermediateRule) OnMatch(call *ExpressionRuleCall) {
 // for each PartialMatch walks upward from the candidate-side reference
 // to find the parent (ref, expr) pairs in the traversal.
 //
-// Returns a map from candidate Reference to the expressions that own
-// quantifiers ranging over it.
+// Returns pairs in first-discovery order. Preserving traversal order is
+// load-bearing: the order becomes PartialMatch insertion order and eventually
+// participates in deterministic equal-cost plan selection.
 func findReferencingExpressionsForCandidate(
 	queryChildRefs []*expressions.Reference,
 	candidate MatchCandidate,
 	traversal *Traversal,
-) map[*expressions.Reference][]expressions.RelationalExpression {
-	result := make(map[*expressions.Reference][]expressions.RelationalExpression)
+) []refExprPair {
+	var result []refExprPair
 
 	type pairKey struct {
 		ref  *expressions.Reference
@@ -154,7 +158,7 @@ func findReferencingExpressionsForCandidate(
 					continue
 				}
 				seen[key] = true
-				result[parent.ref] = append(result[parent.ref], parent.expr)
+				result = append(result, parent)
 			}
 		}
 	}
@@ -167,10 +171,10 @@ func findReferencingExpressionsForCandidate(
 // Checks structural equality of the expressions and verifies that
 // every quantifier pair is backed by a child PartialMatch.
 //
-// Ordered quantifier matching (queryQs[i] <-> candidateQs[i]).
-// Java's full implementation uses RelationalExpression.match(), which
-// enumerates all valid quantifier permutations; Go handles the
-// common case of same-order, same-count quantifiers.
+// The exact structural path consumes complete dependency-sound bijections.
+// The separate single-source Select path remains the bounded 190.4a
+// candidate-existential subset; generic partial mappings are not admitted
+// until Select-specific 190.4c semantics are present.
 func matchIntermediateWithCandidate(
 	call *ExpressionRuleCall,
 	queryExpr expressions.RelationalExpression,
@@ -178,9 +182,25 @@ func matchIntermediateWithCandidate(
 	candidateRef *expressions.Reference,
 	candidateExpr expressions.RelationalExpression,
 ) {
+	// Structural and expression-specific subsumption are two routes for one
+	// query/candidate-expression attempt, so they share one hard work/output
+	// budget. Exhausting the structural route is a safe optimization miss; it
+	// must not buy a second budget by falling through to the specialized path.
+	budget := &matchIntermediateSearchBudget{}
+
 	// Structural equality path: same expression type, same quantifier
 	// count, structurally equal (ignoring children).
-	if matchIntermediateStructural(call, queryExpr, candidate, candidateRef, candidateExpr) {
+	if matchIntermediateStructural(
+		call,
+		queryExpr,
+		candidate,
+		candidateRef,
+		candidateExpr,
+		budget,
+	) {
+		return
+	}
+	if budget.shouldStop() {
 		return
 	}
 
@@ -203,7 +223,15 @@ func matchIntermediateWithCandidate(
 	}
 	switch qe := queryExpr.(type) {
 	case *expressions.LogicalFilterExpression:
-		matchSingleSourceAgainstSelect(call, qe, flattenConjuncts(qe.GetPredicates()), cs, candidate, candidateRef)
+		matchSingleSourceAgainstSelect(
+			call,
+			qe,
+			flattenConjuncts(qe.GetPredicates()),
+			cs,
+			candidate,
+			candidateRef,
+			budget,
+		)
 	case *expressions.SelectExpression:
 		// A pass-through single-source SelectExpression (the absorbed inner
 		// of a join, PartitionBinarySelectRule output) matches an index
@@ -213,7 +241,15 @@ func matchIntermediateWithCandidate(
 		// general SelectExpression.subsumedBy; the Go port previously only
 		// matched LogicalFilter queries, so a join inner never index-matched.
 		if isPassThroughSingleSourceSelect(qe) {
-			matchSingleSourceAgainstSelect(call, qe, flattenConjuncts(qe.GetPredicates()), cs, candidate, candidateRef)
+			matchSingleSourceAgainstSelect(
+				call,
+				qe,
+				flattenConjuncts(qe.GetPredicates()),
+				cs,
+				candidate,
+				candidateRef,
+				budget,
+			)
 		}
 	}
 }
@@ -228,6 +264,7 @@ func matchIntermediateStructural(
 	candidate MatchCandidate,
 	candidateRef *expressions.Reference,
 	candidateExpr expressions.RelationalExpression,
+	budget *matchIntermediateSearchBudget,
 ) bool {
 	queryQs := queryExpr.GetQuantifiers()
 	candidateQs := candidateExpr.GetQuantifiers()
@@ -236,53 +273,34 @@ func matchIntermediateStructural(
 		return false
 	}
 
-	// Enumerate bijections query-q[i] ↔ candidate-q[perm[i]] — Java's
-	// RelationalExpression.subsumedBy tries every quantifier mapping via
-	// EnumeratingIterable, not just the positional one. The identity permutation
-	// is the common case; permutations catch multi-quantifier expressions whose
-	// candidate quantifier order differs from the query's (positional-only
-	// pairing silently missed those index matches). We stop at the FIRST fully
-	// valid bijection: AddPartialMatchForCandidate dedups by (query expr,
-	// candidate ref), so every mapping past the first is discarded anyway —
-	// yielding more would be dead work. The node-level EqualsWithoutChildren is
-	// re-checked UNDER each bijection's built alias map inside
-	// tryIntermediateBijection, not once with an empty map (an empty-map
-	// pre-check can both over-filter a valid permuted match and admit an invalid
-	// one). Capped at matchIntermediateMaxPermutations to bound
-	// the factorial; beyond the cap, positional pairing only.
-	n := len(queryQs)
-	perm := make([]int, n)
-	for i := range perm {
-		perm[i] = i
-	}
-	if n > matchIntermediateMaxPermutations {
-		return tryIntermediateBijection(call, queryExpr, candidate, candidateRef, candidateExpr, queryQs, candidateQs, perm)
-	}
-	return permuteUntil(perm, 0, func(p []int) bool {
-		return tryIntermediateBijection(call, queryExpr, candidate, candidateRef, candidateExpr, queryQs, candidateQs, p)
-	})
-}
-
-// matchIntermediateMaxPermutations bounds the bijection enumeration factorial
-// (mirrors expressions.MaxPermutationChildren).
-const matchIntermediateMaxPermutations = 8
-
-// permuteUntil enumerates permutations of arr in place, calling accept on each,
-// and STOPS at the first accept that returns true (returning true). Returns
-// false if no permutation is accepted.
-func permuteUntil(arr []int, k int, accept func(perm []int) bool) bool {
-	if k == len(arr) {
-		return accept(arr)
-	}
-	for i := k; i < len(arr); i++ {
-		arr[k], arr[i] = arr[i], arr[k]
-		if permuteUntil(arr, k+1, accept) {
-			arr[k], arr[i] = arr[i], arr[k]
-			return true
-		}
-		arr[k], arr[i] = arr[i], arr[k]
-	}
-	return false
+	// 190.4b deliberately wires only the COMPLETE structural consumer. The
+	// enumerator can expose dependency-sound proper subsets, but accepting
+	// those requires Select-specific predicate/cardinality/compensation gates
+	// that land separately in 190.4c.
+	matched := false
+	enumerateQuantifierMappings(
+		queryQs,
+		candidateQs,
+		true,
+		budget,
+		func(mapping []quantifierMapping) bool {
+			if tryIntermediateMapping(
+				call,
+				queryExpr,
+				candidate,
+				candidateRef,
+				candidateExpr,
+				queryQs,
+				candidateQs,
+				mapping,
+				budget,
+			) {
+				matched = true
+			}
+			return !budget.shouldStop()
+		},
+	)
+	return matched
 }
 
 // quantifierEdgesCompatible reports whether two quantifiers agree on the edge
@@ -299,115 +317,164 @@ func quantifierEdgesCompatible(a, b expressions.Quantifier) bool {
 		a.IsStrictSingle() == b.IsStrictSingle()
 }
 
-// tryIntermediateBijection attempts one quantifier bijection (query-q[i] ↔
-// candidate-q[perm[i]]): every query quantifier's child must be backed by a
-// child PartialMatch whose candidate ref is the permuted candidate child. On
-// success it builds and records the composite PartialMatch and returns true.
-func tryIntermediateBijection(
+// tryIntermediateMapping expands every compatible child-PartialMatch branch
+// for one complete alias skeleton. It returns true if the skeleton produced a
+// semantically valid parent match, including an exact match already stored by
+// an earlier rule firing.
+func tryIntermediateMapping(
 	call *ExpressionRuleCall,
 	queryExpr expressions.RelationalExpression,
 	candidate MatchCandidate,
 	candidateRef *expressions.Reference,
 	candidateExpr expressions.RelationalExpression,
 	queryQs, candidateQs []expressions.Quantifier,
-	perm []int,
+	mapping []quantifierMapping,
+	budget *matchIntermediateSearchBudget,
 ) bool {
-	aliasBuilder := NewAliasMapBuilder()
-	// nodeAliasMap carries just THIS node's quantifier bijection (query-q alias →
-	// candidate-q alias), for the node-level EqualsWithoutChildren re-check below.
-	nodeAliasMap := expressions.EmptyAliasMap()
+	topAliasBuilder := NewAliasMapBuilder()
+	for _, pair := range mapping {
+		queryQ := queryQs[pair.queryIndex]
+		candidateQ := candidateQs[pair.candidateIndex]
 
-	for i, queryQ := range queryQs {
-		candidateQ := candidateQs[perm[i]]
-
-		// Java pairs quantifiers via quantifier.semanticEquals (see
-		// RelationalExpression.match's matchPredicate), which compares the
-		// quantifier EDGE — kind, null-on-empty, strict-single — not only the
-		// ranged-over reference. EqualsWithoutChildren (re-checked below)
-		// deliberately excludes those edges (see quantifierEdgesCompatible).
+		// Strict edge equality belongs to this exact structural consumer, not
+		// the generic enumerator: Select subsumption can later authorize a
+		// query Existential→candidate ForEach pair under additional gates.
 		if !quantifierEdgesCompatible(queryQ, candidateQ) {
 			return false
 		}
-
-		queryChildRef := queryQ.GetRangesOver()
-		candidateChildRef := candidateQ.GetRangesOver()
-
-		// Find a PartialMatch on queryChildRef for this candidate whose
-		// candidate-side ref matches the permuted candidateChildRef AND whose
-		// bound aliases COMPOSE with the bindings accumulated from earlier
-		// siblings. A child reference can hold several partial matches for the
-		// same candidate child (different bound maps); an earlier sibling may have
-		// fixed a binding that only SOME of them agree with, so try each and take
-		// the first that composes — never let partial-match insertion ORDER decide
-		// whether the permutation matches. PutAllChecked is atomic, so a rejected
-		// candidate leaves the builder unchanged for the next attempt. Java only
-		// ever combines COMPATIBLE bound maps.
-		found := false
-		for _, pm := range GetPartialMatchesForCandidate(queryChildRef, candidate) {
-			pmi, ok := pm.(*PartialMatchImpl)
-			if !ok || pmi.GetCandidateRef() != candidateChildRef {
-				continue
-			}
-			if aliasBuilder.PutAllChecked(pmi.GetBoundAliasMap()) {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !topAliasBuilder.PutChecked(
+			queryQ.GetAlias(),
+			candidateQ.GetAlias(),
+		) {
 			return false
 		}
-		// The this-level quantifier mapping must be consistent with the composed
-		// child bindings (a child may have already bound this query alias to a
-		// different candidate leg — reject rather than silently drop).
-		if !aliasBuilder.PutChecked(queryQ.GetAlias(), candidateQ.GetAlias()) {
-			return false
-		}
-		nam, ok := nodeAliasMap.With(queryQ.GetAlias(), candidateQ.GetAlias())
-		if !ok {
-			return false
-		}
-		nodeAliasMap = nam
 	}
+	topAliasMap := topAliasBuilder.Build()
 
-	// Re-check node-level structural equality UNDER this bijection's quantifier
-	// alias map: the query and candidate result value /
-	// predicates may reference quantifier aliases that the bijection translates
-	// to different legs, so two nodes equal under an empty map can be unequal
-	// under the real mapping (and vice-versa). Only a bijection whose node
-	// comparison holds under its own map is a valid match.
-	if !queryExpr.EqualsWithoutChildren(candidateExpr, nodeAliasMap) {
-		return false
+	selected := make([]quantifierPartialMatch, len(mapping))
+	usedChildren := make(map[*PartialMatchImpl]struct{}, len(mapping))
+	matched := false
+	var expand func(int, *AliasMap) bool
+	expand = func(depth int, composed *AliasMap) bool {
+		if budget.shouldStop() {
+			return false
+		}
+		if depth == len(mapping) {
+			// Reaching a complete child product is a semantic match attempt,
+			// whether node equality or metadata merge ultimately accepts it.
+			// Charge before either potentially expensive operation so rejected
+			// leaves cannot bypass the shared work cap.
+			if !budget.chargeState() {
+				return false
+			}
+			nodeAliasMap := expressions.EmptyAliasMap()
+			for _, source := range composed.Sources() {
+				var ok bool
+				nodeAliasMap, ok = nodeAliasMap.With(
+					source,
+					composed.GetTarget(source),
+				)
+				if !ok {
+					return true
+				}
+			}
+			if !queryExpr.EqualsWithoutChildren(
+				candidateExpr,
+				nodeAliasMap,
+			) {
+				return true
+			}
+
+			mmm := buildMatchMaxMatchMap(
+				queryExpr.GetResultValue(),
+				candidateExpr.GetResultValue(),
+				composed,
+			)
+			mi, ok := tryMergeRegularMatchInfo(
+				composed,
+				selected,
+				nil,
+				nil,
+				mmm,
+				EmptyGroupByMappings(),
+				nil,
+				nil,
+			)
+			if !ok {
+				return true
+			}
+			pm := NewPartialMatch(
+				composed,
+				candidate,
+				call.Reference,
+				queryExpr,
+				candidateRef,
+				mi,
+			)
+			matched = true
+			if budget.recordResult(pm) {
+				AddPartialMatchForCandidate(
+					call.Reference,
+					candidate,
+					pm,
+				)
+			}
+			return !budget.shouldStop()
+		}
+
+		pair := mapping[depth]
+		queryQ := queryQs[pair.queryIndex]
+		candidateQ := candidateQs[pair.candidateIndex]
+		return forEachPartialMatchForCandidate(
+			queryQ.GetRangesOver(),
+			candidate,
+			func(child PartialMatch) bool {
+				if !budget.chargeState() {
+					return false
+				}
+				childImpl, ok := child.(*PartialMatchImpl)
+				if !ok ||
+					childImpl.GetCandidateRef().Canonical() !=
+						candidateQ.GetRangesOver().Canonical() {
+					return true
+				}
+				if _, duplicate := usedChildren[childImpl]; duplicate {
+					return true
+				}
+				next, ok := mergeAliasMapsChecked(
+					composed,
+					childImpl.GetBoundAliasMap(),
+				)
+				if !ok {
+					return true
+				}
+				usedChildren[childImpl] = struct{}{}
+				selected[depth] = quantifierPartialMatch{
+					quantifier:   queryQ,
+					partialMatch: child,
+				}
+				if !expand(depth+1, next) {
+					return false
+				}
+				delete(usedChildren, childImpl)
+				selected[depth] = quantifierPartialMatch{}
+				return true
+			},
+		)
 	}
+	expand(0, topAliasMap)
+	return matched
+}
 
-	// All quantifiers matched under this bijection — create the composite match.
-	boundAliasMap := aliasBuilder.Build()
-
-	mmm := buildMatchMaxMatchMap(
-		queryExpr.GetResultValue(),
-		candidateExpr.GetResultValue(),
-		boundAliasMap,
-	)
-	mi := NewRegularMatchInfo(
-		nil,                    // parameterBindingMap
-		boundAliasMap,          // bindingAliasMap
-		nil,                    // predicateMap
-		nil,                    // matchedOrderingParts
-		mmm,                    // maxMatchMap
-		EmptyGroupByMappings(), // groupByMappings
-		nil,                    // rollUpToGroupingValues
-		nil,                    // additionalPlanConstraint
-	)
-
-	pm := NewPartialMatch(
-		boundAliasMap,
-		candidate,
-		call.Reference,
-		queryExpr,
-		candidateRef,
-		mi,
-	)
-	AddPartialMatchForCandidate(call.Reference, candidate, pm)
-	return true
+func mergeAliasMapsChecked(left, right *AliasMap) (*AliasMap, bool) {
+	builder := NewAliasMapBuilder()
+	if left != nil && !builder.PutAllChecked(left) {
+		return nil, false
+	}
+	if right != nil && !builder.PutAllChecked(right) {
+		return nil, false
+	}
+	return builder.Build(), true
 }
 
 // matchSingleSourceAgainstSelect handles the subsumption case where a
@@ -452,6 +519,7 @@ func matchSingleSourceAgainstSelect(
 	candidateSelect *expressions.SelectExpression,
 	candidate MatchCandidate,
 	candidateRef *expressions.Reference,
+	budget *matchIntermediateSearchBudget,
 ) {
 	// Step 1: Match the query's single ForEach quantifier to the candidate's
 	// single ForEach quantifier. A candidate Select may additionally own
@@ -533,28 +601,6 @@ func matchSingleSourceAgainstSelect(
 	// maps).
 	queryChildRef := queryQs[0].GetRangesOver()
 	candidateChildRef := candidateQ.GetRangesOver()
-
-	var childMatch *PartialMatchImpl
-	var boundAliasMap *AliasMap
-	for _, pm := range GetPartialMatchesForCandidate(queryChildRef, candidate) {
-		pmi, ok := pm.(*PartialMatchImpl)
-		if !ok || pmi.GetCandidateRef() != candidateChildRef {
-			continue
-		}
-		ab := NewAliasMapBuilder()
-		if !ab.PutAllChecked(pmi.GetBoundAliasMap()) {
-			continue
-		}
-		if !ab.PutChecked(queryQs[0].GetAlias(), candidateQ.GetAlias()) {
-			continue
-		}
-		childMatch = pmi
-		boundAliasMap = ab.Build()
-		break
-	}
-	if childMatch == nil {
-		return
-	}
 
 	// Step 2: Match predicates. Try to bind each candidate
 	// Placeholder with a query ComparisonPredicate.
@@ -680,13 +726,13 @@ func matchSingleSourceAgainstSelect(
 			residualPred,
 			residualPred,
 			predicates.NewConstantPredicate(predicates.TriTrue),
-		).SetPredicateCompensation(reapplyResidualCompensation(residualPred)).Build()
+		).setKnownPredicateCompensation(
+			reapplyResidualCompensation(residualPred),
+			"residual",
+		).Build()
 		predicateMapBuilder.Put(residualPred, mapping)
 		residualCount++
 	}
-
-	// The bound alias map was composed conflict-checked during child-match
-	// selection above; reuse it here.
 
 	// Build the predicate map. BuildMaybe returns nil on conflicts
 	// (not expected for a single-source expression). A nil result
@@ -700,35 +746,81 @@ func matchSingleSourceAgainstSelect(
 		predMultiMap = &predMap.PredicateMultiMap
 	}
 
-	// MaxMatchMap between the query's result value and the candidate
-	// SelectExpression's result value (Java SelectExpression.subsumedBy).
-	// Mandatory — see buildMatchMaxMatchMap.
-	mmm := buildMatchMaxMatchMap(
-		queryExpr.GetResultValue(),
-		candidateSelect.GetResultValue(),
-		boundAliasMap,
-	)
-	mi := NewRegularMatchInfo(
-		paramBindings,          // parameterBindingMap
-		boundAliasMap,          // bindingAliasMap
-		predMultiMap,           // predicateMap
-		nil,                    // matchedOrderingParts
-		mmm,                    // maxMatchMap
-		EmptyGroupByMappings(), // groupByMappings
-		nil,                    // rollUpToGroupingValues
-		nil,                    // additionalPlanConstraint
-	)
-	mi.SetChildPartialMatch(queryQs[0].GetAlias(), childMatch)
-
-	pm := NewPartialMatch(
-		boundAliasMap,
+	// Every compatible child branch participates. A child can carry parameter
+	// or other metadata that conflicts with the local predicate bindings; that
+	// rejects only that branch, never later alternatives.
+	forEachPartialMatchForCandidate(
+		queryChildRef,
 		candidate,
-		call.Reference,
-		queryExpr,
-		candidateRef,
-		mi,
+		func(child PartialMatch) bool {
+			if !budget.chargeState() {
+				return false
+			}
+			childMatch, ok := child.(*PartialMatchImpl)
+			if !ok ||
+				childMatch.GetCandidateRef().Canonical() !=
+					candidateChildRef.Canonical() {
+				return true
+			}
+			aliasBuilder := NewAliasMapBuilder()
+			if !aliasBuilder.PutAllChecked(childMatch.GetBoundAliasMap()) ||
+				!aliasBuilder.PutChecked(
+					queryQs[0].GetAlias(),
+					candidateQ.GetAlias(),
+				) {
+				return true
+			}
+			boundAliasMap := aliasBuilder.Build()
+
+			// This alias-compatible child is now a semantic match attempt.
+			// Charge before value matching and metadata merge so a rejected
+			// branch consumes the same bounded-work unit as a successful one.
+			if !budget.chargeState() {
+				return false
+			}
+
+			// MaxMatchMap between the query's result value and the candidate
+			// SelectExpression's result value (Java SelectExpression.subsumedBy).
+			// Mandatory — see buildMatchMaxMatchMap.
+			mmm := buildMatchMaxMatchMap(
+				queryExpr.GetResultValue(),
+				candidateSelect.GetResultValue(),
+				boundAliasMap,
+			)
+			mi, ok := tryMergeRegularMatchInfo(
+				boundAliasMap,
+				[]quantifierPartialMatch{{
+					quantifier:   queryQs[0],
+					partialMatch: childMatch,
+				}},
+				paramBindings,
+				predMultiMap,
+				mmm,
+				EmptyGroupByMappings(),
+				nil,
+				nil,
+			)
+			if !ok {
+				return true
+			}
+
+			pm := NewPartialMatch(
+				boundAliasMap,
+				candidate,
+				call.Reference,
+				queryExpr,
+				candidateRef,
+				mi,
+			)
+			if budget.recordResult(pm) {
+				AddPartialMatchForCandidate(call.Reference, candidate, pm)
+			}
+			if budget.shouldStop() {
+				return false
+			}
+			return true
+		},
 	)
-	AddPartialMatchForCandidate(call.Reference, candidate, pm)
 }
 
 // comparisonOrientation is one way to read a ComparisonPredicate as

@@ -296,13 +296,19 @@ func adjustMatchForMatchableSort(mse *expressions.MatchableSortExpression, pm *P
 		orderingParts = childMatchInfo.GetMatchedOrderingParts()
 	}
 
-	// Java calls childMatchInfo.adjustGroupByMappings(inner) which
-	// pulls up candidate-side group-by values through the inner
-	// quantifier. The full pullUp infrastructure is not yet ported;
-	// pass through the child's group-by mappings unchanged. This is
-	// correct for non-aggregate indexes (which have empty group-by
-	// mappings) and will be refined when Value.pullUp lands.
-	groupByMappings := childMatchInfo.GetGroupByMappings()
+	candidateLowerRef := mse.GetInner().GetRangesOver()
+	candidateLowerExpression, single := onlyReferenceMember(candidateLowerRef)
+	if !single {
+		return nil
+	}
+	groupByMappings, ok := AdjustGroupByMappings(
+		childMatchInfo.GetGroupByMappings(),
+		innerAlias,
+		candidateLowerExpression,
+	)
+	if !ok {
+		return nil
+	}
 
 	return NewAdjustedBuilder(childMatchInfo).
 		SetMaxMatchMap(adjustedMaxMatchMap).
@@ -357,7 +363,19 @@ func adjustMatchForSelect(sel *expressions.SelectExpression, pm *PartialMatchImp
 	}
 
 	orderingParts := childMatchInfo.GetMatchedOrderingParts()
-	groupByMappings := childMatchInfo.GetGroupByMappings()
+	candidateLowerRef := qs[0].GetRangesOver()
+	candidateLowerExpression, single := onlyReferenceMember(candidateLowerRef)
+	if !single {
+		return nil
+	}
+	groupByMappings, ok := AdjustGroupByMappings(
+		childMatchInfo.GetGroupByMappings(),
+		innerAlias,
+		candidateLowerExpression,
+	)
+	if !ok {
+		return nil
+	}
 
 	return NewAdjustedBuilder(childMatchInfo).
 		SetMaxMatchMap(adjustedMaxMatchMap).

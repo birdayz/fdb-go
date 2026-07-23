@@ -1,24 +1,19 @@
 package cascades
 
-import (
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-)
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 
 // AddPartialMatchForCandidate stores a PartialMatch for the given
 // MatchCandidate on the Reference. Typed wrapper around
 // Reference.AddPartialMatch. Mirrors Java's
 // Reference.addPartialMatchForCandidate.
 //
-// Content dedup: Reference.AddPartialMatch dedups only by pointer
-// identity, but the matching rules (and the AdjustMatch absorption loop)
-// re-fire many times during PLANNING exploration, each minting a fresh
-// PartialMatch pointer for the SAME logical match. For a given
-// (queryExpression, candidateRef) the binding is deterministic — the
-// same predicates bind the same placeholders — so that pair uniquely
-// identifies the match. Without content dedup these duplicates
-// accumulate unbounded (a 2-index query reached 200+ matches), skewing
-// MaximumCoverageMatches and tripping the intersection match cap. Drop a
-// new match whose (queryExpression, candidateRef) already exists.
+// Semantic dedup: Reference.AddPartialMatch dedups only by pointer
+// identity, but matching rules re-fire and reconstruct the SAME logical
+// match. Endpoint-only dedup is too coarse, however: partial matching can
+// produce several valid alias maps, child selections, and bindings for one
+// (queryExpression, candidateRef) pair. Drop only an exact semantic re-add;
+// retain alternatives whose downstream matching or compensation metadata
+// differs.
 func AddPartialMatchForCandidate(
 	ref *expressions.Reference,
 	candidate MatchCandidate,
@@ -31,9 +26,8 @@ func AddPartialMatchForCandidate(
 			if !ok {
 				continue
 			}
-			if epm.GetQueryExpression() == pmi.GetQueryExpression() &&
-				epm.GetCandidateRef() == pmi.GetCandidateRef() {
-				return false // content-equivalent match already present
+			if partialMatchesSemanticallyEqual(epm, pmi) {
+				return false // exact semantic match already present
 			}
 		}
 	}
@@ -57,6 +51,27 @@ func GetPartialMatchesForCandidate(
 		result[i] = r.(PartialMatch)
 	}
 	return result
+}
+
+// forEachPartialMatchForCandidate visits stored matches in deterministic
+// insertion order without allocating a typed copy of the entire slice. It is
+// used by budgeted matcher searches, where even inspecting a candidate match
+// consumes work and an adversarially large reference must be stoppable.
+func forEachPartialMatchForCandidate(
+	ref *expressions.Reference,
+	candidate MatchCandidate,
+	visit func(PartialMatch) bool,
+) bool {
+	for _, raw := range ref.GetPartialMatchesFor(candidate) {
+		match, ok := raw.(PartialMatch)
+		if !ok {
+			continue
+		}
+		if !visit(match) {
+			return false
+		}
+	}
+	return true
 }
 
 // GetPartialMatchesForExpression returns all PartialMatches stored on
