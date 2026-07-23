@@ -388,18 +388,30 @@ func DataAccessForMatchPartition(
 		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering, coveringCols, unique, cand.GetColumnNames(), candidatePKColumns(cand), candidateDistinctSignal(cand))
 
 		if comp.IsNeeded() {
-			if fmc, ok := comp.(*ForMatchCompensation); ok {
-				// Java AbstractDataAccessRule.applyCompensationForSingleDataAccessMaybe:
-				//   compensation.applyAllNeededCompensations(memoizer, plan,
-				//       realizedAlias -> TranslationMap.ofAliases(candidateTopAlias, realizedAlias))
-				// The function receives the matched query-side ForEach alias (the
-				// realized base-quantifier alias) and rebases compensated predicates
-				// from the candidate's top alias onto it.
-				candidateTopAlias := access.GetCandidateTopAlias()
-				expr = fmc.ApplyAllNeeded(expr, func(realizedAlias values.CorrelationIdentifier) TranslationMap {
-					return TranslationMapOfAliases(candidateTopAlias, realizedAlias)
-				})
+			fmc, ok := comp.(*ForMatchCompensation)
+			if !ok {
+				// A needed compensation only the ForMatch form can realize.
+				// Treat any other implementation as an optimization miss
+				// rather than emitting the scan without its required work.
+				continue
 			}
+			// Java AbstractDataAccessRule.applyCompensationForSingleDataAccessMaybe:
+			//   compensation.applyAllNeededCompensations(memoizer, plan,
+			//       realizedAlias -> TranslationMap.ofAliases(candidateTopAlias, realizedAlias))
+			// The function receives the matched query-side ForEach alias (the
+			// realized base-quantifier alias) and rebases compensated predicates
+			// from the candidate's top alias onto it.
+			candidateTopAlias := access.GetCandidateTopAlias()
+			applied, appliedOK := fmc.ApplyAllNeeded(expr, func(realizedAlias values.CorrelationIdentifier) TranslationMap {
+				return TranslationMapOfAliases(candidateTopAlias, realizedAlias)
+			})
+			if !appliedOK {
+				// A malformed or otherwise unappliable compensation is an
+				// optimization miss, never permission to use the scan
+				// without its required filters/result shaping.
+				continue
+			}
+			expr = applied
 		}
 		resultExprs = append(resultExprs, expr)
 	}

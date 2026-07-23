@@ -320,6 +320,9 @@ func (p *AndPredicate) Children() []QueryPredicate { return p.SubPredicates }
 func (p *AndPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
 	for _, child := range p.SubPredicates {
+		if child == nil {
+			continue
+		}
 		for k := range child.GetCorrelatedTo() {
 			out[k] = struct{}{}
 		}
@@ -387,6 +390,9 @@ func (p *OrPredicate) Children() []QueryPredicate { return p.SubPredicates }
 func (p *OrPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
 	for _, child := range p.SubPredicates {
+		if child == nil {
+			continue
+		}
 		for k := range child.GetCorrelatedTo() {
 			out[k] = struct{}{}
 		}

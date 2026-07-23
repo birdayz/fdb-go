@@ -266,6 +266,7 @@ go_test(
         "optimize_group_ordering_test.go",
         "ordinal_chain_corpus_test.go",
         "ordinal_star_planning_budget_test.go",
+        "partial_match_compensation_hazards_test.go",
         "partial_match_identity_test.go",
         "partial_match_ref_test.go",
         "partial_match_test.go",
@@ -852,6 +853,7 @@ go_test(
         "rule_match_intermediate_branch_test.go",
         "rule_match_intermediate_budget_test.go",
         "rule_match_intermediate_determinism_test.go",
+        "partial_match_compensation_hazards_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

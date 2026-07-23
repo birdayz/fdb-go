@@ -103,15 +103,28 @@ func (p *Placeholder) Negate() QueryPredicate {
 	return p
 }
 
-// GetCorrelatedTo returns the set of correlation identifiers this
-// placeholder references. The parameter alias is always included;
-// additionally, any correlations from the carried Value are merged in.
+// GetCorrelatedTo returns the set of correlation identifiers this placeholder
+// references: its parameter alias, the correlations of the constrained Value,
+// and those of every comparison in its range.
+//
+// The range comparisons count. A placeholder bound to a range whose comparand
+// is itself correlated (a parameter compared against another quantifier's
+// column) references that quantifier, and a caller that cannot see it will
+// treat the placeholder as independent of a quantifier it actually needs.
 func (p *Placeholder) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{
 		p.ParameterAlias: {},
 	}
 	if p.Value != nil {
 		for k := range values.GetCorrelatedToOfValue(p.Value) {
+			out[k] = struct{}{}
+		}
+	}
+	for _, c := range p.CompRange.GetComparisons() {
+		if c == nil {
+			continue
+		}
+		for k := range c.GetCorrelatedTo() {
 			out[k] = struct{}{}
 		}
 	}

@@ -149,10 +149,11 @@ type MatchCandidate interface {
 	// a record (unique index or primary key).
 	IsUnique() bool
 
-	// ComputeBoundParameterPrefixMap computes the valid index-scan
-	// prefix from a parameter→ComparisonRange binding map. Returns the
-	// longest prefix of sargable parameters that satisfies the index
-	// scan discipline (N equalities + optional trailing inequality).
+	// ComputeBoundParameterPrefixMap computes the subset of parameter bindings
+	// that this candidate's physical scan can consume. For ordinary ordered
+	// scans that is the longest valid sargable prefix (N equalities plus an
+	// optional trailing inequality); specialized candidates may retain
+	// independent index-only bindings as well.
 	ComputeBoundParameterPrefixMap(
 		bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	) map[values.CorrelationIdentifier]*predicates.ComparisonRange

@@ -129,13 +129,11 @@ func matchLeafWithCandidate(
 	// value). Without it PartialMatch.PullUp returns nil and compensation
 	// is impossible, so the data-access path never produces a scan.
 	// The leaf subsumption above proved EqualsWithoutChildren(query,
-	// candidate): the two leaves flow the identical row. Java relates them
-	// via the leaf translationMap (query scan alias → candidate scan
-	// alias), so translatedQueryResultValue == candidateResultValue — an
-	// identity MaxMatchMap. Go's leaves carry no stable result-value alias
-	// (FullUnorderedScanExpression.GetResultValue mints a fresh QOV each
-	// call), so model the identity directly: use the candidate's result
-	// value for both sides.
+	// candidate): the two leaves flow the identical row, and a scan's result
+	// value is an uncorrelated QueriedValue that compares structurally, so the
+	// two sides are already the same value. Using the candidate's result value
+	// for both sides states that identity directly — the same identity Java
+	// arrives at by relating the leaves through the leaf translation map.
 	candResult := candidateExpr.GetResultValue()
 	mmm := buildMatchMaxMatchMap(candResult, candResult, boundAliasMap)
 	mi := NewRegularMatchInfo(

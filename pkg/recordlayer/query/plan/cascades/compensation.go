@@ -28,11 +28,11 @@ type TranslationMapFunc func(realizedAlias values.CorrelationIdentifier) Transla
 //
 // Ports Java's com.apple.foundationdb.record.query.plan.cascades.Compensation.
 //
-// ForMatchCompensation implements Intersect, Union, and Apply.
-// applyFinal requires memoizer infrastructure (not yet ported).
+// ForMatchCompensation implements Intersect, Union, Apply, and ApplyFinal.
 type Compensation interface {
 	// IsNeeded reports whether this compensation must be applied.
-	// Returns false only for NoCompensation.
+	// A ForMatch compensation can also report false when all of its
+	// components are empty.
 	IsNeeded() bool
 
 	// IsImpossible reports whether this compensation cannot be applied.
@@ -505,7 +505,7 @@ func NewForMatchCompensation(
 		ca[k] = v
 	}
 
-	return &ForMatchCompensation{
+	c := &ForMatchCompensation{
 		impossible:               impossible,
 		childCompensation:        childCompensation,
 		predicateCompensationMap: predicateCompensationMap,
@@ -515,6 +515,23 @@ func NewForMatchCompensation(
 		resultCompensationFn:     resultCompensationFn,
 		groupByMappings:          groupByMappings,
 	}
+
+	// A compensation that has to be applied must know the single base ForEach
+	// alias it rebuilds itself on. Enforcing that centrally means every
+	// composition path (derived, intersect, union) marks the match impossible
+	// before a data-access caller considers it. Apply checks the invariant
+	// again and reports failure; neither layer ever guesses an alias.
+	//
+	// The predicate is exactly the two paths that go on to ask for that alias.
+	// The broader IsNeeded also covers a compensation needed only for a
+	// CHILD's final shape, where this level never builds a base quantifier;
+	// failing those closed would discard usable matches for nothing.
+	if c.IsNeededForFiltering() || c.IsFinalNeeded() {
+		if _, ok := c.MatchedForEachAliasMaybe(); !ok {
+			c.impossible = true
+		}
+	}
+	return c
 }
 
 // IsNeeded reports whether this compensation must be applied. Mirrors
@@ -614,16 +631,56 @@ func (c *ForMatchCompensation) GetGroupByMappings() *GroupByMappings {
 	return c.groupByMappings
 }
 
-// GetMatchedForEachAlias returns the single ForEach quantifier alias
-// among the matched quantifiers. Java uses this as the target for the
-// matchedToRealizedTranslationMap. Ports Java's getMatchedForEachAlias.
-func (c *ForMatchCompensation) GetMatchedForEachAlias() values.CorrelationIdentifier {
+// MatchedForEachAliasMaybe returns the single base ForEach alias this
+// compensation rebuilds itself on top of, and whether that alias is
+// well-defined.
+//
+// Applying a compensation means re-introducing a base quantifier over the
+// compensated expression and re-pointing the residual predicates and result
+// value at it. That has an answer only when exactly one matched quantifier is
+// a ForEach supplying the rows: with none there is no alias to rebuild on,
+// with several there is no way to choose and the losers' correlations dangle.
+// Java asserts this with Iterables.getOnlyElement and crashes; Go reports it
+// so callers can drop the match instead of building on a guessed alias.
+//
+// The compensated aliases must also be exactly the matched ones. That pair of
+// sets is what the compensation claims responsibility for; when they disagree
+// the compensation is describing a different set of quantifiers than the one
+// it is about to rebuild, and composing it (intersect, union) propagates the
+// disagreement. Java verifies the equality before selecting the sole ForEach
+// for the same reason.
+func (c *ForMatchCompensation) MatchedForEachAliasMaybe() (values.CorrelationIdentifier, bool) {
+	matchedAliases := make(map[values.CorrelationIdentifier]struct{}, len(c.matchedQuantifiers))
 	for _, q := range c.matchedQuantifiers {
-		if q.Kind() == expressions.QuantifierForEach {
-			return q.GetAlias()
+		matchedAliases[q.GetAlias()] = struct{}{}
+	}
+	// Java builds an alias-to-quantifier map here and rejects duplicate keys.
+	// A collision is equally invalid in Go: two quantifiers with one alias
+	// cannot both be reconstructed or addressed unambiguously.
+	if len(matchedAliases) != len(c.matchedQuantifiers) {
+		return values.CorrelationIdentifier{}, false
+	}
+	if len(matchedAliases) != len(c.compensatedAliases) {
+		return values.CorrelationIdentifier{}, false
+	}
+	for alias := range c.compensatedAliases {
+		if _, ok := matchedAliases[alias]; !ok {
+			return values.CorrelationIdentifier{}, false
 		}
 	}
-	return values.CorrelationIdentifier{}
+
+	var found values.CorrelationIdentifier
+	count := 0
+	for _, q := range c.matchedQuantifiers {
+		if q.Kind() == expressions.QuantifierForEach {
+			found = q.GetAlias()
+			count++
+		}
+	}
+	if count != 1 || found.IsZero() {
+		return values.CorrelationIdentifier{}, false
+	}
+	return found, true
 }
 
 // String returns a human-readable representation of this compensation.
@@ -642,9 +699,9 @@ func (c *ForMatchCompensation) String() string {
 // Apply / Intersect
 // ---------------------------------------------------------------------------
 
-// Apply applies this compensation to a relational expression by
-// wrapping it with residual predicate filters. Returns the original
-// expression if no compensation is needed.
+// Apply applies this compensation to a relational expression by wrapping it
+// with residual predicate filters. It returns false when the compensation
+// cannot be applied faithfully; callers must discard that match.
 //
 // translationMapFunc, given the realized base-quantifier alias, yields a
 // TranslationMap that rebases compensated predicates from the candidate's
@@ -662,19 +719,37 @@ func (c *ForMatchCompensation) String() string {
 func (c *ForMatchCompensation) Apply(
 	expr expressions.RelationalExpression,
 	translationMapFunc TranslationMapFunc,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, bool) {
+	// Java verifies this precondition before touching the expression. In Go,
+	// infeasibility is an expected planner branch, so report it instead of
+	// panicking or silently returning an under-compensated expression.
+	if c.IsImpossible() {
+		return nil, false
+	}
+
+	// Validate this level before applying its child. Otherwise an invalid
+	// outer compensation can return a partially compensated expression.
+	matchedForEachAlias, ok := c.MatchedForEachAliasMaybe()
+	if !ok {
+		return nil, false
+	}
+
 	if c.childCompensation != nil && c.childCompensation.IsNeededForFiltering() {
-		if child, ok := c.childCompensation.(*ForMatchCompensation); ok {
-			expr = child.Apply(expr, translationMapFunc)
+		child, ok := c.childCompensation.(*ForMatchCompensation)
+		if !ok {
+			return nil, false
+		}
+		expr, ok = child.Apply(expr, translationMapFunc)
+		if !ok {
+			return nil, false
 		}
 	}
 
 	// matchedForEachAlias is the matched query-side ForEach alias (Java
 	// getMatchedForEachAlias). Both the rebase translation map and the
 	// realized base quantifier are keyed to it.
-	matchedForEachAlias := c.GetMatchedForEachAlias()
 	var translationMap TranslationMap = EmptyTranslationMap()
-	if translationMapFunc != nil && !matchedForEachAlias.IsZero() {
+	if translationMapFunc != nil {
 		translationMap = translationMapFunc(matchedForEachAlias)
 	}
 
@@ -716,20 +791,19 @@ func (c *ForMatchCompensation) Apply(
 	}
 
 	if len(compensatedPreds) == 0 && len(toBePulledUp) == 0 {
-		return expr
+		return expr, true
 	}
 
 	// Create the base quantifier over the compensated expression, reusing
 	// the matched query-side ForEach alias (Java: Quantifier.forEach(ref,
 	// matchedForEachAlias)). The residual predicates already reference this
 	// alias for scan-record columns, and the surrounding graph correlates to
-	// it, so reusing it keeps both linkages intact. Only fall back to a fresh
-	// alias when there is no matched ForEach (degenerate/test cases).
+	// it, so reusing it keeps both linkages intact.
 	newBaseQ := newCompensationBaseQuantifier(matchedForEachAlias, expr)
 
 	if len(toBePulledUp) == 0 {
 		// Then-branch: simple filter, no join needed.
-		return expressions.NewLogicalFilterExpression(compensatedPreds, newBaseQ)
+		return expressions.NewLogicalFilterExpression(compensatedPreds, newBaseQ), true
 	}
 
 	// Else-branch: build a SelectExpression that joins the base scan
@@ -744,12 +818,12 @@ func (c *ForMatchCompensation) Apply(
 	}
 	expansion := builder.Build()
 	sealed := expansion.Seal()
-	return sealed.BuildSelectWithResultValue(newBaseQ.GetFlowedObjectValue())
+	return sealed.BuildSelectWithResultValue(newBaseQ.GetFlowedObjectValue()), true
 }
 
 // ApplyFinal applies the result (shape) compensation by wrapping the
-// expression in a SelectExpression with the translated result value.
-// Returns the original expression if no result compensation is needed.
+// expression in a SelectExpression with the translated result value. It
+// returns false when a needed final compensation cannot be applied faithfully.
 //
 // Ports Java's Compensation.WithSelectCompensation.applyFinal which
 // uses GraphExpansion.builder().addQuantifier(base).build()
@@ -757,18 +831,24 @@ func (c *ForMatchCompensation) Apply(
 func (c *ForMatchCompensation) ApplyFinal(
 	expr expressions.RelationalExpression,
 	translationMapFunc TranslationMapFunc,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, bool) {
 	if !c.resultCompensationFn.IsNeeded() {
-		return expr
+		return expr, true
 	}
-	matchedForEachAlias := c.GetMatchedForEachAlias()
+	if c.IsImpossible() {
+		return nil, false
+	}
+	matchedForEachAlias, ok := c.MatchedForEachAliasMaybe()
+	if !ok {
+		return nil, false
+	}
 	var translationMap TranslationMap = EmptyTranslationMap()
-	if translationMapFunc != nil && !matchedForEachAlias.IsZero() {
+	if translationMapFunc != nil {
 		translationMap = translationMapFunc(matchedForEachAlias)
 	}
 	resultVal := c.resultCompensationFn.ApplyCompensationForResult(translationMap)
 	if resultVal == nil {
-		return expr
+		return nil, false
 	}
 	// Reuse the matched query-side ForEach alias for the realized base
 	// quantifier (Java: Quantifier.forEach(ref, matchedForEachAlias)), so the
@@ -778,38 +858,49 @@ func (c *ForMatchCompensation) ApplyFinal(
 	builder.AddQuantifier(newBaseQ)
 	expansion := builder.Build()
 	sealed := expansion.Seal()
-	return sealed.BuildSelectWithResultValue(resultVal)
+	return sealed.BuildSelectWithResultValue(resultVal), true
 }
 
 // ApplyAllNeeded applies both filter compensation (Apply) and result
-// compensation (ApplyFinal) as needed. This is the primary entry point
-// for applying compensation to a plan expression.
+// compensation (ApplyFinal) as needed. This is the primary entry point for
+// applying compensation to a plan expression; false makes the data-access
+// alternative non-viable.
 //
 // Ports Java's Compensation.applyAllNeededCompensations.
 func (c *ForMatchCompensation) ApplyAllNeeded(
 	expr expressions.RelationalExpression,
 	translationMapFunc TranslationMapFunc,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, bool) {
+	if c.IsImpossible() {
+		return nil, false
+	}
+	var ok bool
 	if c.IsNeededForFiltering() {
-		expr = c.Apply(expr, translationMapFunc)
+		expr, ok = c.Apply(expr, translationMapFunc)
+		if !ok {
+			return nil, false
+		}
 	}
 	if c.IsFinalNeeded() {
-		expr = c.ApplyFinal(expr, translationMapFunc)
+		expr, ok = c.ApplyFinal(expr, translationMapFunc)
+		if !ok {
+			return nil, false
+		}
 	}
-	return expr
+	return expr, true
 }
 
 // newCompensationBaseQuantifier builds the ForEach quantifier that the
-// compensation expression ranges over. When the compensation has a matched
-// query-side ForEach alias, that alias is reused (Java
-// Quantifier.forEach(ref, matchedForEachAlias)) so the compensated predicates
-// and the surrounding query graph keep resolving against the same alias. The
-// degenerate no-matched-ForEach case (test doubles) falls back to a fresh
+// compensation expression ranges over, on the matched query-side ForEach alias
+// (Java Quantifier.forEach(ref, matchedForEachAlias)) so the compensated
+// predicates and the surrounding query graph keep resolving against the same
 // alias.
+//
+// There is deliberately no fresh-alias fallback. The alias is not a detail the
+// compensation may choose — it is the name the rest of the graph already uses
+// to reach these rows, so a substitute silently detaches them. Callers get the
+// alias from MatchedForEachAliasMaybe and bail when it is not well-defined.
 func newCompensationBaseQuantifier(matchedForEachAlias values.CorrelationIdentifier, expr expressions.RelationalExpression) expressions.Quantifier {
-	if matchedForEachAlias.IsZero() {
-		return expressions.ForEachQuantifier(expressions.InitialOf(expr))
-	}
 	return expressions.NamedForEachQuantifier(matchedForEachAlias, expressions.InitialOf(expr))
 }
 
@@ -821,17 +912,15 @@ func newCompensationBaseQuantifier(matchedForEachAlias values.CorrelationIdentif
 // Ports Java's Compensation.WithSelectCompensation.intersect.
 func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensation {
 	// Phase 1: Handle edge cases.
-	if c.IsImpossible() || other.IsImpossible() {
-		return ImpossibleCompensation
-	}
-	if !c.IsNeeded() && !other.IsNeeded() {
+	//
+	// NoCompensation is the absorbing element for intersection: if one side
+	// needs nothing, there is no residual common to both sides. Do not inherit
+	// either ForMatch's aggregate impossible flag here. An intersection can
+	// legitimately discard a leg-local impossible residual and retain a
+	// possible residual shared by both legs; the algorithm below recomputes
+	// impossibility from exactly what survives.
+	if !c.IsNeeded() || !other.IsNeeded() {
 		return NoCompensation
-	}
-	if !c.IsNeeded() {
-		return other
-	}
-	if !other.IsNeeded() {
-		return c
 	}
 
 	// Phase 2: Intersect child compensations.
@@ -976,15 +1065,16 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 		}
 	}
 
-	// Phase 8: Build derived compensation.
-	// Java: Preconditions.checkArgument(compensatedAliases.equals(other.compensatedAliases))
-	// Merge both sides (defensive — Java asserts identity).
-	mergedAliases := make(map[values.CorrelationIdentifier]struct{}, len(c.compensatedAliases))
-	for k, v := range c.compensatedAliases {
-		mergedAliases[k] = v
+	// Phase 8: Build derived compensation. Both legs must carry the same alias
+	// responsibility. Merging different sets manufactures a responsibility
+	// neither leg proved and can make an invalid intersection look possible
+	// merely because the union also matches the unioned quantifier set.
+	if !aliasSetsEqual(c.compensatedAliases, other.compensatedAliases) {
+		return ImpossibleCompensation
 	}
-	for k, v := range other.compensatedAliases {
-		mergedAliases[k] = v
+	compensatedAliases := make(map[values.CorrelationIdentifier]struct{}, len(c.compensatedAliases))
+	for k, v := range c.compensatedAliases {
+		compensatedAliases[k] = v
 	}
 	return DerivedCompensation(
 		intersectedChild,
@@ -992,7 +1082,7 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 		combinedPredMap,
 		intersectedMatched,
 		intersectedUnmatched,
-		mergedAliases,
+		compensatedAliases,
 		newResultFn,
 		newGroupByMappings,
 	)

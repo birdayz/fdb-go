@@ -302,9 +302,10 @@ func NewDistanceRankComparison(typ ComparisonType, queryVector, comparand values
 	}, true
 }
 
-// GetCorrelatedTo returns the set of correlation identifiers referenced
-// by this comparison's RHS operand. Used by ordering-aware rules to
-// match comparison bindings to explode aliases.
+// GetCorrelatedTo returns the set of correlation identifiers referenced by
+// every Value this comparison carries: its RHS operand and, for distance-rank
+// comparisons, its query vector. Used by ordering-aware rules to match
+// comparison bindings to explode aliases.
 func (c Comparison) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
 	if c.Operand != nil {
@@ -734,14 +735,19 @@ func NewComparisonPredicate(operand values.Value, cmp Comparison) *ComparisonPre
 
 func (*ComparisonPredicate) Children() []QueryPredicate { return []QueryPredicate{} }
 
-// GetCorrelatedTo returns the union of correlations from the LHS
-// operand Value and the RHS comparison operand Value.
+// GetCorrelatedTo returns the union of correlations from the LHS operand Value
+// and everything the RHS Comparison carries.
+//
+// The RHS goes through Comparison.GetCorrelatedTo rather than reading its
+// Operand directly: a comparison can carry more than one Value — a DistanceRank
+// comparison also holds a query vector — and reading only Operand silently
+// drops those correlations.
 func (p *ComparisonPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
 	for k := range values.GetCorrelatedToOfValue(p.Operand) {
 		out[k] = struct{}{}
 	}
-	for k := range values.GetCorrelatedToOfValue(p.Comparison.Operand) {
+	for k := range p.Comparison.GetCorrelatedTo() {
 		out[k] = struct{}{}
 	}
 	return out

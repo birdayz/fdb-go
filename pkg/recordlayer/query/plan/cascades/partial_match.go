@@ -99,65 +99,93 @@ func (p *PartialMatchImpl) String() string {
 	return fmt.Sprintf("%s[%s]", exprType.Name(), p.matchCandidate.CandidateName())
 }
 
-// GetBoundParameterPrefixMap returns the parameter binding map from
-// the match info. Ports Java's PartialMatch.getBoundParameterPrefixMap().
+// GetBoundParameterPrefixMap returns the candidate-defined subset of bound
+// parameters that its physical scan can actually satisfy — NOT the whole
+// binding map. For ordinary ordered scans that subset is a leading prefix;
+// specialized candidates may retain independent index-only bindings. Ports Java's
+// PartialMatch.getBoundParameterPrefixMap → MatchCandidate.
+// computeBoundParameterPrefixMap (MatchCandidate.java:147-180).
+//
+// The distinction is load-bearing: a scan binds an index prefix, so a
+// parameter bound out of order (or after a gap) is NOT usable by the scan
+// and must stay a residual the compensation re-applies. Returning the full
+// map claimed bindings the scan never performs — under-compensating (the
+// dropped predicate silently stops filtering) and over-counting bound
+// parameters wherever the count drives ranking.
+//
+// Which bindings form a usable prefix is the CANDIDATE's decision, not a
+// generic rule, so this delegates rather than walking the sargable aliases
+// itself. A value index consumes a contiguous equality run and may end on one
+// inequality; a vector index keeps its DistanceRank binding even across a
+// partial partition prefix and refuses partition inequalities outright. Every
+// other consumer of a prefix map already goes through the candidate, and a
+// second, generic implementation here would silently disagree with the scan
+// that ultimately gets built.
 func (p *PartialMatchImpl) GetBoundParameterPrefixMap() map[values.CorrelationIdentifier]*predicates.ComparisonRange {
-	return p.GetRegularMatchInfo().GetParameterBindingMap()
+	if p.matchCandidate == nil {
+		return map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
+	}
+	return p.matchCandidate.ComputeBoundParameterPrefixMap(
+		p.GetRegularMatchInfo().GetParameterBindingMap())
 }
 
 // PullUp computes the PullUp chain for this partial match from the
-// candidate side. The rangedOverAliases are the candidate-side
-// quantifier aliases (targets in the binding alias map).
-// Ports Java's PartialMatch.pullUp(candidateAlias).
-// PullUp creates the PullUp for this match from the MaxMatchMap's
-// candidate value and the binding alias map's target aliases.
-// Java's PartialMatch.pullUp delegates to nestPullUp which walks
-// through the candidate expression hierarchy; the flat construction
-// is equivalent for non-adjusted matches (the common case).
+// candidate side, by nesting through the candidate expression hierarchy.
+// Returns nil when the chain cannot be built faithfully (see NestPullUp).
+//
+// Ports Java's PartialMatch.pullUp(candidateAlias), which is defined as
+// nestPullUp(null, candidateAlias).getRight().
 func (p *PartialMatchImpl) PullUp(candidateAlias values.CorrelationIdentifier) *PullUp {
-	mi := p.GetRegularMatchInfo()
-	mmm := mi.GetMaxMatchMap()
-	if mmm == nil {
-		return nil
-	}
-	bam := mi.GetBindingAliasMap()
-	rangedOver := make(map[values.CorrelationIdentifier]struct{})
-	for _, src := range bam.Sources() {
-		rangedOver[bam.GetTarget(src)] = struct{}{}
-	}
-	return NewPullUp(nil, candidateAlias, mmm.GetCandidateValue(), rangedOver)
+	_, current := NestPullUp(p, nil, candidateAlias)
+	return current
 }
 
-// CompensateCompleteMatch computes compensation for a complete match.
-// Computes child compensation (union of matched quantifier compensations),
-// predicate compensation (residual filters), and result compensation.
+// CompensateCompleteMatch computes compensation for a complete match, at the
+// top of a match tree. The bound-parameter prefix map computed here is the one
+// the WHOLE tree compensates against — the parameters belong to the match
+// candidate, not to any single level — so it is threaded down unchanged.
 //
-// Ports Java's PartialMatch.compensateCompleteMatch +
-// SelectExpression.compensate (full predicate compensation computation).
+// Ports Java's PartialMatch.compensateCompleteMatch.
 func (p *PartialMatchImpl) CompensateCompleteMatch(
 	unificationPullUp *PullUp,
 	candidateTopAlias values.CorrelationIdentifier,
 ) Compensation {
-	// Build the PullUp. For adjusted match infos (match wrapping),
-	// use NestPullUp to build a chain through the candidate expression
-	// hierarchy. For simple matches, use the flat PullUp.
-	var pullUp *PullUp
+	return p.compensate(p.GetBoundParameterPrefixMap(), unificationPullUp, candidateTopAlias)
+}
+
+// compensate computes child compensation (union of matched quantifier
+// compensations), predicate compensation (residual filters), and result
+// compensation for this match level.
+//
+// The two pull-ups this level derives are NOT interchangeable. `current` is
+// the innermost level: predicates and child matches live in that scope, so
+// they translate through it. `root` is the level this nesting introduced on
+// top of the incoming chain, which is the scope the query's RESULT value has
+// to reach; it is nil when this level continues someone else's match, meaning
+// no result compensation is owed here. Using one where the other belongs
+// either loses a level of translation or invents one.
+//
+// Ports Java's PartialMatch.compensate + SelectExpression.compensate.
+func (p *PartialMatchImpl) compensate(
+	boundPrefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	incomingPullUp *PullUp,
+	candidateTopAlias values.CorrelationIdentifier,
+) Compensation {
 	mi := p.GetRegularMatchInfo()
-	if p.GetMatchInfo().IsAdjusted() && p.GetCandidateRef() != nil {
-		rootOfMatchPullUp, _ := NestPullUp(p, unificationPullUp, candidateTopAlias)
-		pullUp = rootOfMatchPullUp
-	}
+
+	rootOfMatchPullUp, pullUp := NestPullUp(p, incomingPullUp, candidateTopAlias)
 	if pullUp == nil {
-		pullUp = p.PullUp(candidateTopAlias)
-		if pullUp == nil {
-			return ImpossibleCompensation
-		}
+		// The candidate chain could not be rebuilt faithfully; compensating
+		// off a guessed chain is how wrong rows get shipped.
+		return ImpossibleCompensation
 	}
 
 	quantifiers := p.queryExpression.GetQuantifiers()
 
 	// Phase 1: Compute child compensation — union of compensations from
-	// matched ForEach quantifiers' child partial matches.
+	// matched ForEach quantifiers' child partial matches. Each child nests
+	// UNDER this level's pull-up and compensates against the same
+	// candidate-wide prefix map.
 	var childCompensations []Compensation
 	for _, q := range quantifiers {
 		if q.Kind() != expressions.QuantifierForEach {
@@ -170,7 +198,7 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 		if childPMI, ok := childPM.(*PartialMatchImpl); ok {
 			bam := mi.GetBindingAliasMap()
 			childAlias := bam.GetTarget(q.GetAlias())
-			childComp := childPMI.CompensateCompleteMatch(nil, childAlias)
+			childComp := childPMI.compensate(boundPrefixMap, pullUp, childAlias)
 			childCompensations = append(childCompensations, childComp)
 		}
 	}
@@ -189,7 +217,6 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 		unmatchedAliases[q.GetAlias()] = struct{}{}
 	}
 
-	boundPrefixMap := p.GetBoundParameterPrefixMap()
 	isAnyCompensationFunctionImpossible := false
 	isAnyCompensationFunctionNeeded := false
 
@@ -219,15 +246,21 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 
 			// If the predicate references an unmatched quantifier,
 			// compensation is impossible.
-			predCorrelated := predicates.GetCorrelatedToOfPredicate(pred)
-			for alias := range predCorrelated {
+			for alias := range predicates.GetCorrelatedToOfPredicate(pred) {
 				if _, unmatched := unmatchedAliases[alias]; unmatched {
 					isAnyCompensationFunctionImpossible = true
 				}
 			}
 
-			// Iterate over mappings: use first non-empty compensation.
-			// If any mapping says "not needed", skip this predicate entirely.
+			// Several mappings can compensate the same predicate. If any of
+			// them says "not needed" the predicate needs no compensation at
+			// all (that mapping is a tautological placeholder). Otherwise take
+			// a POSSIBLE alternative in preference to an impossible one:
+			// keeping the first-seen function while reporting "possible"
+			// because some later mapping was possible hands the applier a
+			// function that cannot be applied. Falls back to the first
+			// function when every alternative is impossible, so the
+			// impossibility still propagates.
 			var compensationFunction PredicateCompensationFunc
 			isCompensationFunctionNeeded := true
 			isCompensationFunctionImpossible := true
@@ -239,10 +272,16 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 					isCompensationFunctionNeeded = false
 					break
 				}
-				if compensationFunction == nil {
-					compensationFunction = compFn
+				if compFn.IsImpossible() {
+					if compensationFunction == nil {
+						compensationFunction = compFn
+					}
+					continue
 				}
-				if !compFn.IsImpossible() {
+				if isCompensationFunctionImpossible {
+					// First possible alternative — it wins over any impossible
+					// one recorded so far.
+					compensationFunction = compFn
 					isCompensationFunctionImpossible = false
 				}
 			}
@@ -260,8 +299,10 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 
 	predicateCompensationMap := NewPredicateCompensationMap(predCompKeys, predCompVals)
 
-	// Phase 3: Result compensation via PullUp.
-	cr := ComputeResultCompensation(p, pullUp)
+	// Phase 3: Result compensation, against the ROOT of this match's nesting
+	// (nil when this level continues an enclosing match, which means the
+	// enclosing level owns the result and nothing is owed here).
+	cr := ComputeResultCompensation(p, rootOfMatchPullUp)
 	if cr == nil {
 		return ImpossibleCompensation
 	}
@@ -293,6 +334,8 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 		return ImpossibleCompensation
 	}
 
+	// NewForMatchCompensation enforces the base-ForEach invariant itself, so a
+	// compensation that comes back needed is one that can actually be applied.
 	return NewForMatchCompensation(
 		isAnyCompensationFunctionImpossible,
 		childCompensation,
@@ -361,19 +404,53 @@ func (p *PartialMatchImpl) GetBoundSargableAliases() map[values.CorrelationIdent
 
 // GetCompensatedAliases returns the set of quantifier aliases that
 // this partial match compensates for. Ports Java's
-// PartialMatch.getCompensatedAliases.
+// PartialMatch.computeCompensatedAliases (PartialMatch.java:284-305):
+// the matched quantifiers' aliases PLUS, for every query predicate the
+// match mapped, that predicate's correlations which are OWNED by the query
+// expression (i.e. name one of its own quantifiers).
+//
+// The predicate-owned half matters because a mapped predicate can reference
+// a local quantifier that is not itself a matched quantifier (an existential
+// carried by an EXISTS predicate is the common case). Omitting those aliases
+// under-reports what the match covers, so a consumer intersecting or
+// composing matches can conclude an alias is still free and double-apply or
+// drop the compensation that owns it.
 func (p *PartialMatchImpl) GetCompensatedAliases() map[values.CorrelationIdentifier]struct{} {
 	result := make(map[values.CorrelationIdentifier]struct{})
 	for _, q := range p.GetMatchedQuantifiers() {
 		result[q.GetAlias()] = struct{}{}
 	}
+
+	// Aliases this query expression owns — only these may be added from a
+	// predicate's correlation set (a deeper/outer correlation is not ours to
+	// claim as compensated).
+	owned := make(map[values.CorrelationIdentifier]struct{})
+	if p.queryExpression != nil {
+		for _, q := range p.queryExpression.GetQuantifiers() {
+			owned[q.GetAlias()] = struct{}{}
+		}
+	}
+	if len(owned) == 0 {
+		return result
+	}
+	if pm := p.GetRegularMatchInfo().GetPredicateMap(); pm != nil {
+		for _, queryPredicate := range pm.KeySet() {
+			// QueryPredicate's contract is transitive across carried Values,
+			// comparisons, ranges, and child predicates. Under-reporting here
+			// hands a consumer an alias it incorrectly believes is free.
+			for alias := range predicates.GetCorrelatedToOfPredicate(queryPredicate) {
+				if _, isOwned := owned[alias]; isOwned {
+					result[alias] = struct{}{}
+				}
+			}
+		}
+	}
 	return result
 }
 
-// Remaining not yet ported: nestPullUp, prepareForUnification,
-// pullUpToParent, getPulledUpPredicateMappings, compensate (full
-// SelectExpression delegation), compensateExistential,
-// getAccumulatedPredicateMap, matchInfosFromMap.
+// Remaining Java parity work includes prepareForUnification,
+// pullUpToParent, getPulledUpPredicateMappings, compensateExistential,
+// getAccumulatedPredicateMap, and matchInfosFromMap.
 
 // Compile-time interface satisfaction check.
 var _ PartialMatch = (*PartialMatchImpl)(nil)

@@ -193,13 +193,114 @@ func TestPlaceholder_GetCorrelatedTo_IncludesValueCorrelations(t *testing.T) {
 	}
 }
 
+func TestPlaceholder_GetCorrelatedTo_IncludesRangeComparands(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		typ  ComparisonType
+	}{
+		{name: "equality", typ: ComparisonEquals},
+		{name: "inequality", typ: ComparisonGreaterThan},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			parameterAlias := values.NamedCorrelationIdentifier("p_" + tc.name)
+			valueAlias := values.NamedCorrelationIdentifier("value_" + tc.name)
+			comparandAlias := values.NamedCorrelationIdentifier("comparand_" + tc.name)
+			comparison := Comparison{
+				Type:    tc.typ,
+				Operand: values.NewQuantifiedObjectValue(comparandAlias),
+			}
+			merged := EmptyComparisonRange().Merge(&comparison)
+			if !merged.Ok {
+				t.Fatal("setup: comparison did not merge into an empty range")
+			}
+
+			placeholder := NewPlaceholder(
+				parameterAlias,
+				values.NewQuantifiedObjectValue(valueAlias),
+			).WithRange(merged.Range)
+			correlations := placeholder.GetCorrelatedTo()
+			for _, want := range []values.CorrelationIdentifier{
+				parameterAlias,
+				valueAlias,
+				comparandAlias,
+			} {
+				if _, ok := correlations[want]; !ok {
+					t.Fatalf("correlations missing %q", want.Name())
+				}
+			}
+			if len(correlations) != 3 {
+				t.Fatalf("correlations = %v, want exactly three aliases", correlations)
+			}
+		})
+	}
+}
+
+func TestPlaceholder_GetCorrelatedTo_IncludesEveryInequalityComparand(t *testing.T) {
+	t.Parallel()
+
+	lowerAlias := values.NamedCorrelationIdentifier("lower")
+	upperAlias := values.NamedCorrelationIdentifier("upper")
+	lower := Comparison{
+		Type:    ComparisonGreaterThan,
+		Operand: values.NewQuantifiedObjectValue(lowerAlias),
+	}
+	upper := Comparison{
+		Type:    ComparisonLessThan,
+		Operand: values.NewQuantifiedObjectValue(upperAlias),
+	}
+	merged := EmptyComparisonRange().Merge(&lower)
+	if !merged.Ok {
+		t.Fatal("setup: lower comparison did not merge")
+	}
+	merged = merged.Range.Merge(&upper)
+	if !merged.Ok {
+		t.Fatal("setup: upper comparison did not merge")
+	}
+
+	placeholder := NewPlaceholder(
+		values.NamedCorrelationIdentifier("parameter"),
+		values.LiteralValue(int64(1)),
+	).WithRange(merged.Range)
+	correlations := placeholder.GetCorrelatedTo()
+	for _, want := range []values.CorrelationIdentifier{lowerAlias, upperAlias} {
+		if _, ok := correlations[want]; !ok {
+			t.Fatalf("correlations missing inequality comparand alias %q", want.Name())
+		}
+	}
+}
+
+func TestPlaceholder_GetCorrelatedTo_NilRange(t *testing.T) {
+	t.Parallel()
+
+	parameterAlias := values.NamedCorrelationIdentifier("p_nil_range")
+	valueAlias := values.NamedCorrelationIdentifier("value_nil_range")
+	placeholder := NewPlaceholder(
+		parameterAlias,
+		values.NewQuantifiedObjectValue(valueAlias),
+	).WithRange(nil)
+
+	correlations := placeholder.GetCorrelatedTo()
+	for _, want := range []values.CorrelationIdentifier{parameterAlias, valueAlias} {
+		if _, ok := correlations[want]; !ok {
+			t.Fatalf("correlations missing %q", want.Name())
+		}
+	}
+	if len(correlations) != 2 {
+		t.Fatalf("correlations = %v, want only parameter and value aliases", correlations)
+	}
+}
+
 func TestPlaceholder_GetCorrelatedToOfPredicate_Integration(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("ph_alias")
 	val := &values.FieldValue{Field: "col"}
 	p := NewPlaceholder(alias, val)
 
-	// Use the package-level walk function.
+	// Use the package-level helper.
 	corr := GetCorrelatedToOfPredicate(p)
 	if _, ok := corr[alias]; !ok {
 		t.Fatal("GetCorrelatedToOfPredicate(Placeholder) missing the parameter alias")

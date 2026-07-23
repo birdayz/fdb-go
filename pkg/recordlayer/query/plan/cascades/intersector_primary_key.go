@@ -207,7 +207,7 @@ func compensateIntersection(
 			})
 		}
 		return b.Build()
-	}), true
+	})
 }
 
 func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanContext) []values.Value {

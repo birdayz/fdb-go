@@ -732,33 +732,77 @@ func TestCompatibleTypeEvolutionPredicate_GetCorrelatedTo(t *testing.T) {
 	}
 }
 
-// TestGetCorrelatedTo_MatchesGetCorrelatedToOfPredicate verifies that the
-// new interface method returns the same result as the standalone walk function
-// for a compound tree.
-func TestGetCorrelatedTo_MatchesGetCorrelatedToOfPredicate(t *testing.T) {
+func TestCompoundPredicate_GetCorrelatedTo_SkipsNilChildren(t *testing.T) {
 	t.Parallel()
-	alias1 := values.NamedCorrelationIdentifier("q1")
-	alias2 := values.NamedCorrelationIdentifier("q_exists")
+
+	alias := values.NamedCorrelationIdentifier("q_live")
+	correlated := NewValuePredicate(values.NewQuantifiedObjectValue(alias))
+	for _, tc := range []struct {
+		name      string
+		predicate QueryPredicate
+	}{
+		{name: "and", predicate: NewAnd(nil, correlated)},
+		{name: "or", predicate: NewOr(nil, correlated)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			correlations := GetCorrelatedToOfPredicate(tc.predicate)
+			if _, ok := correlations[alias]; !ok {
+				t.Fatalf("correlations missing the non-nil sibling alias %q", alias.Name())
+			}
+			if len(correlations) != 1 {
+				t.Fatalf("correlations = %v, want only the non-nil sibling alias", correlations)
+			}
+		})
+	}
+}
+
+func TestGetCorrelatedToOfPredicate_NilRoot(t *testing.T) {
+	t.Parallel()
+
+	if correlations := GetCorrelatedToOfPredicate(nil); correlations != nil {
+		t.Fatalf("nil predicate correlations = %v, want nil", correlations)
+	}
+	correlations := GetCorrelatedToOfPredicate(NewConstantPredicate(TriTrue))
+	if correlations == nil {
+		t.Fatal("non-nil uncorrelated predicate must return a non-nil empty map")
+	}
+	if len(correlations) != 0 {
+		t.Fatalf("constant predicate correlations = %v, want empty", correlations)
+	}
+}
+
+// TestGetCorrelatedToOfPredicate_ExactCompoundSet independently enumerates the
+// aliases carried by a compound tree. Comparing the wrapper to
+// QueryPredicate.GetCorrelatedTo would be vacuous because the wrapper delegates
+// to that method.
+func TestGetCorrelatedToOfPredicate_ExactCompoundSet(t *testing.T) {
+	t.Parallel()
+
+	lhsAlias := values.NamedCorrelationIdentifier("q_lhs")
+	rhsAlias := values.NamedCorrelationIdentifier("q_rhs")
+	existsAlias := values.NamedCorrelationIdentifier("q_exists")
 
 	tree := NewAnd(
 		NewComparisonPredicate(
-			values.NewQuantifiedObjectValue(alias1),
-			NewLiteralComparison(ComparisonEquals, int64(42)),
+			values.NewQuantifiedObjectValue(lhsAlias),
+			Comparison{
+				Type:    ComparisonEquals,
+				Operand: values.NewQuantifiedObjectValue(rhsAlias),
+			},
 		),
-		NewExistentialAlias(alias2),
+		NewExistentialAlias(existsAlias),
 		NewConstantPredicate(TriTrue),
 	)
 
-	fromMethod := tree.GetCorrelatedTo()
-	fromWalk := GetCorrelatedToOfPredicate(tree)
-
-	if len(fromMethod) != len(fromWalk) {
-		t.Fatalf("method len = %d, walk len = %d", len(fromMethod), len(fromWalk))
-	}
-	for k := range fromWalk {
-		if _, ok := fromMethod[k]; !ok {
-			t.Fatalf("method missing alias %s present in walk", k.Name())
+	correlations := GetCorrelatedToOfPredicate(tree)
+	for _, want := range []values.CorrelationIdentifier{lhsAlias, rhsAlias, existsAlias} {
+		if _, ok := correlations[want]; !ok {
+			t.Fatalf("correlations missing %q", want.Name())
 		}
+	}
+	if len(correlations) != 3 {
+		t.Fatalf("correlations = %v, want exactly three aliases", correlations)
 	}
 }
 

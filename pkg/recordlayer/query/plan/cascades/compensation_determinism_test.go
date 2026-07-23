@@ -69,14 +69,19 @@ func TestCompensationIntersect_QuantifierOrderDeterministic(t *testing.T) {
 			[]PredicateCompensationFunc{ImpossiblePredicateCompensation()},
 		)
 	}
+	// Every compensation shares one ForEach base quantifier: an appliable
+	// compensation rebuilds itself on exactly one, and sharing it keeps the
+	// composed result at exactly one too. The ordered pool stays existential.
+	qBase := namedForEachQuantifier("qBase")
 	build := func(subset []string, pm *PredicateCompensationMap) *ForMatchCompensation {
-		qs := make([]expressions.Quantifier, len(subset))
-		for i, n := range subset {
-			qs[i] = namedExistentialQuantifier(n)
+		qs := make([]expressions.Quantifier, 0, len(subset)+1)
+		qs = append(qs, qBase)
+		for _, n := range subset {
+			qs = append(qs, namedExistentialQuantifier(n))
 		}
 		return NewForMatchCompensation(
 			false, NoCompensation, pm,
-			qs, nil, nil,
+			qs, nil, aliasesOf(qs...),
 			NoResultCompensation(), EmptyGroupByMappings(),
 		)
 	}
@@ -86,7 +91,7 @@ func TestCompensationIntersect_QuantifierOrderDeterministic(t *testing.T) {
 	// makes a map-order regression overwhelmingly likely to surface: Go
 	// randomizes map iteration per range, so ten runs landing on the one
 	// correct order of six is vanishingly rare.
-	want := []string{"q1", "q2", "q3", "q4", "q5", "q6"}
+	want := []string{"qBase", "q1", "q2", "q3", "q4", "q5", "q6"}
 	assertOrder := func(label string, qs []expressions.Quantifier) {
 		t.Helper()
 		if len(qs) != len(want) {
@@ -99,8 +104,11 @@ func TestCompensationIntersect_QuantifierOrderDeterministic(t *testing.T) {
 		}
 	}
 	for run := 0; run < 10; run++ {
-		a := build(names[:4], sharedMap) // q1..q4
-		b := build(names[2:], sharedMap) // q3..q6
+		// Intersect requires identical compensated-alias responsibility on
+		// both sides. Feed the same aliases in different orders and assert
+		// that the left side's insertion order wins deterministically.
+		a := build(names, sharedMap)
+		b := build([]string{"q3", "q4", "q5", "q6", "q1", "q2"}, sharedMap)
 
 		intersected, ok := a.Intersect(b).(*ForMatchCompensation)
 		if !ok {
@@ -108,6 +116,8 @@ func TestCompensationIntersect_QuantifierOrderDeterministic(t *testing.T) {
 		}
 		assertOrder("Intersect", intersected.GetMatchedQuantifiers())
 
+		// Union is allowed to grow the responsibility set, so retain the
+		// overlapping-subset shape that exercises ordered append.
 		ua := build(names[:4], freshMap())
 		ub := build(names[2:], freshMap())
 		unioned, ok := ua.Union(ub).(*ForMatchCompensation)

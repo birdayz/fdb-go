@@ -19,6 +19,12 @@ type PullUp struct {
 	pullThroughValue  values.Value
 	rangedOverAliases map[values.CorrelationIdentifier]struct{}
 	root              *PullUp
+	// isMatch distinguishes Java's PullUp.MatchPullUp (built per candidate
+	// expression while nesting through a match) from PullUp.UnificationPullUp
+	// (built once at unification). NestPullUp reads it to decide whether this
+	// nesting owns a "root of match" level, so it is load-bearing, not
+	// bookkeeping.
+	isMatch bool
 }
 
 // NewPullUp constructs a PullUp level.
@@ -103,8 +109,14 @@ func ForMatch(
 	candidateExpression expressions.RelationalExpression,
 ) *PullUp {
 	pullThroughValue, rangedOverAliases := visitForPullUp(candidateExpression)
-	return NewPullUp(parent, candidateAlias, pullThroughValue, rangedOverAliases)
+	p := NewPullUp(parent, candidateAlias, pullThroughValue, rangedOverAliases)
+	p.isMatch = true
+	return p
 }
+
+// IsMatch reports whether this level was built by ForMatch (Java's
+// PullUp.MatchPullUp) as opposed to ForUnification.
+func (p *PullUp) IsMatch() bool { return p != nil && p.isMatch }
 
 // visitForPullUp implements the PullUpVisitor logic: extracts the
 // pull-through value and ranged-over aliases from a candidate
@@ -141,8 +153,26 @@ func quantifierAliases(qs []expressions.Quantifier) map[values.CorrelationIdenti
 // expression to determine the pull-through value. If the match info is
 // adjusted (wrapping another), it descends through the adjustment chain.
 //
-// Returns (rootOfMatchPullUp, currentPullUp). rootOfMatchPullUp is the
-// first MatchPullUp level created (the topmost match-specific pullup).
+// Returns (rootOfMatchPullUp, currentPullUp). currentPullUp is the
+// innermost level, used to translate predicates and to nest child
+// matches. rootOfMatchPullUp is the level this nesting introduced on
+// top of the incoming chain — the one result compensation pulls the
+// query result value through. It is nil when the incoming pull-up is
+// itself a match level (this nesting continues someone else's match
+// rather than rooting a new one), which is Java's signal that no result
+// compensation is owed here.
+//
+// currentPullUp is nil when the chain cannot be built faithfully: a
+// missing candidate reference, a reference that does not hold exactly
+// one non-nil member, or an adjusted level whose candidate does not
+// have exactly one quantifier. Java asserts those (Reference.get, which
+// throws unless the reference holds exactly one member, and
+// Verify.verify on the quantifier count) and
+// crashes; Go fails closed instead so the caller degrades the match to
+// an impossible compensation. Both refuse to compensate off a guessed
+// chain — silently taking members[0] of a multi-member reference builds
+// a pull-up for an expression the match was never proved against, and
+// every value pulled through it is then wrong.
 //
 // Ports Java's PartialMatch.nestPullUp.
 func NestPullUp(
@@ -154,19 +184,16 @@ func NestPullUp(
 	currentCandidateRef := pm.GetCandidateRef()
 	currentMatchInfo := pm.GetMatchInfo()
 	currentCandidateAlias := candidateAlias
+	incomingIsMatch := pullUp.IsMatch()
 
 	for {
-		if currentCandidateRef == nil {
-			break
+		candidateExpr, ok := onlyReferenceMember(currentCandidateRef)
+		if !ok {
+			return nil, nil
 		}
-		members := currentCandidateRef.AllMembers()
-		if len(members) == 0 {
-			break
-		}
-		candidateExpr := members[0]
 
 		currentPullUp = ForMatch(currentPullUp, currentCandidateAlias, candidateExpr)
-		if rootOfMatchPullUp == nil {
+		if !incomingIsMatch && rootOfMatchPullUp == nil {
 			rootOfMatchPullUp = currentPullUp
 		}
 
@@ -176,20 +203,18 @@ func NestPullUp(
 
 		qs := candidateExpr.GetQuantifiers()
 		if len(qs) != 1 {
-			break
+			return nil, nil
 		}
 		currentCandidateAlias = qs[0].GetAlias()
 		currentCandidateRef = qs[0].GetRangesOver()
 
-		if adj, ok := currentMatchInfo.(*AdjustedMatchInfo); ok {
-			currentMatchInfo = adj.GetUnderlying()
-		} else {
-			break
+		adj, ok := currentMatchInfo.(*AdjustedMatchInfo)
+		if !ok {
+			// IsAdjusted() promised an AdjustedMatchInfo to descend into.
+			return nil, nil
 		}
+		currentMatchInfo = adj.GetUnderlying()
 	}
 
-	if rootOfMatchPullUp == nil {
-		rootOfMatchPullUp = currentPullUp
-	}
 	return rootOfMatchPullUp, currentPullUp
 }

@@ -4,51 +4,30 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// GetCorrelatedToOfPredicate walks p + its descendants AND the Value
-// trees those predicates carry, returning the union of every
-// QuantifiedObjectValue's correlation. The result is a fresh map.
+// GetCorrelatedToOfPredicate is a nil-safe wrapper around
+// QueryPredicate.GetCorrelatedTo: the transitive set of correlations p and its
+// descendants reference, as a fresh map. Returns nil for nil input, and a
+// non-nil empty map for a tree without correlations.
 //
-// Returns nil for nil input. Returns a non-nil empty map for trees
-// without any correlation.
-//
-// Predicates that carry Values (ValuePredicate, ComparisonPredicate)
-// have those Values walked too — so a `WHERE q.col = 5` with q being
-// a Quantifier alias will surface q in the correlation set, even
-// though the predicate-side WalkPredicate alone would only visit the
-// ComparisonPredicate node.
-//
-// Java's equivalent walks `QueryPredicate.getCorrelatedTo()` which
-// delegates per-impl. Same bridge story as values.GetCorrelatedToOfValue.
+// It asks each predicate rather than inspecting it. This used to be a manual
+// type switch over the predicate shapes that were known when it was written,
+// which silently reported NOTHING for every shape added since —
+// PredicateWithValueAndRanges in particular, whose correlations can live
+// entirely in its range comparands. Callers used the result to decide which
+// quantifiers a compensation still needs, so an unseen correlation became a
+// dangling alias in a rebuilt expression. Delegation is complete, including
+// for shapes not yet invented, as long as each QueryPredicate implementation
+// honors the interface's transitive contract by reporting its own carried
+// Values/comparisons and the union of its children.
 func GetCorrelatedToOfPredicate(p QueryPredicate) map[CorrelationIdentifier]struct{} {
 	if p == nil {
 		return nil
 	}
-	out := map[CorrelationIdentifier]struct{}{}
-	WalkPredicate(p, func(node QueryPredicate) bool {
-		switch np := node.(type) {
-		case *ValuePredicate:
-			for k := range values.GetCorrelatedToOfValue(np.Value) {
-				out[k] = struct{}{}
-			}
-		case *ComparisonPredicate:
-			for k := range values.GetCorrelatedToOfValue(np.Operand) {
-				out[k] = struct{}{}
-			}
-			for k := range values.GetCorrelatedToOfValue(np.Comparison.Operand) {
-				out[k] = struct{}{}
-			}
-		case *Placeholder:
-			out[np.ParameterAlias] = struct{}{}
-			for k := range values.GetCorrelatedToOfValue(np.Value) {
-				out[k] = struct{}{}
-			}
-		case *ExistentialValuePredicate:
-			for k := range values.GetCorrelatedToOfValue(np.Value) {
-				out[k] = struct{}{}
-			}
-		}
-		return true
-	})
+	correlations := p.GetCorrelatedTo()
+	out := make(map[CorrelationIdentifier]struct{}, len(correlations))
+	for k := range correlations {
+		out[k] = struct{}{}
+	}
 	return out
 }
 
