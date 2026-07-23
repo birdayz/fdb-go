@@ -52,8 +52,26 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   migration, **Step 2 (guard) BEFORE Step 3 (retire arm)** — the invariant the naive delete violated.
   Cell 7 (multi projected EXISTS) = honest conservative decline (0AF00, never wrong rows), NOT claimed
   fixed. Full design in `rfcs/190-cascades-quality-audit.md` §190.1. **Both gates PASS: Graefe ACK
-  (2-round dialogue) + Torvalds ACK (3 conditions folded — Step 1+2 atomic, Step 3 helper-ref proof,
-  Step 5 1M stress; LOC arm 388/wrap 477). Implementing Steps 0→5.**
+  (2-round dialogue) + Torvalds ACK.**
+  **IMPLEMENTATION PROBED — approach VALIDATED, NOT yet complete (own focused effort).** The RFC's
+  original "Step 1 = stop the un-enclosure, flag-flip" estimate was WRONG (proven): Go ordinalizes
+  N-way clusters at TRANSLATION time (`cluster_gate.go:399-419`), so the guard alone on the ordinal
+  seed gives WRONG ROWS and flipping enclosure gives `0AF00: did not ordinalize`. Correct Step 1 =
+  DIRECT-EMIT (a `QueryVisitor.java:429-434` port — dissolve the ≥3-way cluster into a flat NAME-model
+  `[ForEach×N, Existential]` select, bypassing the ordinalization machinery), ATOMIC with the guard +
+  arm-retirement (the arm's matcher also matches the name-model select → competing crash). Re-scoped +
+  Graefe-re-confirmed; RFC §190.1 migration corrected to the atomic direct-emit.
+  Probe result (branch reverted to clean): direct-emit + guard + arm-disable makes
+  `TestFDB_BuriedInnerJoinProjectedExists_Discriminating` (HARDEST shape — dup columns, non-PK
+  correlation) **PASS** — architecture proven. TWO remaining bugs, both on a **PK-column existential
+  correlation** through PartitionSelectRule decomposition: (a) comma-join `d.id=a.id` (a.id=PK) →
+  correlation DROPPED → always-true EXISTS; (b) `buried_inner` `e.eid=p.id` (p.id=PK) → outer resolves
+  to its WHOLE ROW → `PositionalRow` unencodable panic. `_Discriminating`'s non-PK `e.eid=p.k` proves
+  it's specific to PK-column correlations in the decomposed existential SARG. NEXT (focused session):
+  root-cause the PK-correlation FieldValue resolution / predicate classification in the direct-emit →
+  PartitionSelectRule path, then land the atomic commit + full matrix + SARG + 1M stress. Groundwork
+  (`gatherInnerClusterOnPredicates`, direct-emit branch, live-existential guard) captured in RFC §190.1
+  and reproducible.
 - [ ] **190.2 (MED, unpinned hazard)** — cost-comparator transitivity. Five sort-count-gated
   rungs (`planning_cost_model.go:286,302,315,320,337`) can make the relation non-transitive →
   winner depends on member iteration order (the nondeterminism the hash tie-break exists to kill).

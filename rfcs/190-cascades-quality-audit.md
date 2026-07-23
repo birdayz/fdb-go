@@ -76,40 +76,64 @@ survives to the terminal binary select → `ImplementNestedLoopJoinRule` impleme
 `FirstOrDefault(NULL)` + existential flag. Graefe's `{a,δ}` counterexample (which reached
 `positionalMergeCase` under the naive delete) is now rejected before `:550`. No wrong-rows path exists.
 
-**Migration (strict order — the guard MUST land before retiring the arm, the invariant the naive
-delete violated). Step 1 and 2 are ONE atomic commit — Torvalds condition B:** the name-model emit
-alone has no clean planner (with the `==1` bail still live, `PartitionSelectRule` declines the flat
-select and it would fall to the arm, which crashes on the comma-join shape). Landing the emit and the
-guard together means the intermediate never exists — the comma-join goes crash→correct in one commit,
-and no shape has an ambiguous "who plans this" window.
-- **Step 0** — correct the false gravestone (`rule_implement_nested_loop_join.go:2907`); add the
-  comma-join projected-EXISTS FDB test as the RED baseline (cell 1 crashes today). No behavior change.
-- **Step 1+2 (atomic)** — (a) emit the existential join select in the **name model**
-  (`buildExistentialJoinSelect`, `cascades_translator.go:~4084`): stop the AXIS-1 un-enclosure
-  (`existsLegBuildsPositional` gate, `:4140`) for the projected-EXISTS-over-INNER-cluster shape; emit
-  `[ForEach(a),…,Existential(δ)]` with join predicates as select predicates. (b) Replace the
-  `existentialCount==1` bail (`rule_partition_select.go:67-69`) with the live-existential guard
-  immediately after `lowersCorrelatedToByUppers = dedupAliases(...)` (`:415`, before the case dispatch
-  at `:537/:550/:559`): `continue` the bipartition loop if any live-set member is existential. KEEP the
-  `existentialCount>=2` projected-multi decline (`:70-86`) as a scoped conservative reach-gap (cell 7),
-  reworded; keep `applyExistentialSourceAliases` (`:103-144`). *Validate: cell 1 → `[[10 true]]`,
-  `_Discriminating` → `[[7 true],[8 false]]`; cells 2-6,8 green; a static unit test asserting no yielded
-  lower carries a live existential.*
-- **Step 3** — retire the N-way arm (`:53-58` dispatch + the arm body `:2607-2995`, ~388 lines). **Torvalds
-  condition A:** BEFORE deleting the arm-only helpers, grep-prove each is unreferenced by the retained
-  paths — `existInnerIsScanSafe`, `nwayOuterProbe`/`NWayOuterYieldCount` are arm-only, but
-  `planBuriedLegConcat`/`reconstructFoldStep1Seed`/`legIsOrdinalSafe`/`collectInnerLegAliases` are
-  shared with `implementExistentialSelect` (`:686`)/left-outer/unnest and MUST be kept (this is the
-  exact scope error the naive delete tripped on). Go's NLJ rule now matches Java's exactly-2 shape.
-  *Validate: all four `buried_inner` FDB tests + N-way WHERE/NOT-EXISTS/4-leg tests green via the
-  partitioned path.*
-- **Step 4** (separable follow-on, same workstream) — retire `translateExistsOverGatheredCluster`
-  (477 lines) once cells 3/4/8 are demonstrably served by the partitioned name-model WHERE-EXISTS
-  select. Gated by full-corpus explain-diff + preservation of scalar-subquery pre-eval registration.
-- **Step 5** — SARG regression (`EXPLAIN` asserting each decomposed binary join SARGs its inner — an
-  index/PK probe, NOT a merged-row `PredicatesFilter` over a cross-product) + **1M stress gating
-  before/after (Torvalds condition C)** — the arm's cross-product was O(N³); the SARG'd decomposition
-  must not resurface as a regression (point-lookup <5ms, index-equality <10ms thresholds hold).
+**Migration — CORRECTED after implementation probing (the RFC's original "Step 1 = stop the
+un-enclosure, near-flag-flip" estimate was WRONG; proven empirically).** Go ordinalizes N-way
+existential clusters at TRANSLATION time (positional seeds via the cluster-gate machinery,
+`cluster_gate.go:399-419`, porting Java `QueryVisitor.java:429-434`). Two probes established the
+truth: (i) the guard alone, on the existing ORDINAL seed, converts the comma-join crash into SILENT
+WRONG ROWS (always-true EXISTS — δ→a mis-wires as an ordinal) → **the guard is UNSAFE on an ordinal
+seed and CANNOT ship as a standalone safety net**; (ii) merely flipping `inInnerCluster=true` marks
+the box name-model-enclosed but nothing ordinalizes it → `0AF00: join did not ordinalize`
+(`cluster_gate.go:399`), breaking the WORKING explicit-JOIN shape too. So the emit, the guard, and
+the arm-retirement are **ONE ATOMIC commit** — they cannot be separated.
+
+The correct Step 1 is **direct-emit**: a Java-faithful port of `QueryVisitor.java:429-434` — dissolve
+the ≥3-way INNER cluster into a flat NAME-model `[ForEach×N, Existential]` select (each leg a plain
+alias-bound ForEach), **bypassing** `translateRef`-on-the-box and thus the ordinalization machinery
+(which stays intact for every other shape). Java has no ordinal seed; its flat select is alias-bound —
+direct-emit is that, ported. `PartitionSelectRule` then decomposes it BY ALIAS (its entire logic is
+alias-keyed: `aliasToQ`, `computeTransitiveCorrelationOrder` from `GetCorrelatedTo`), so δ→a stays a
+name correlation and the wrong-rows mis-wire is gone; the dup-column discriminator is *trivially* safe
+(distinct QOVs, no positional last-leg-wins hazard).
+
+- **Step 0** — correct the false gravestone (`rule_implement_nested_loop_join.go:2907`). No behavior
+  change. (The RED comma-join FDB test lands in the atomic commit below, not as a separate red commit —
+  no-red-commit rule.)
+- **Step 1 (ATOMIC: direct-emit + guard + arm-retirement, ~250-400 lines, three call sites):**
+  1. Add `gatherInnerClusterOnPredicates(j)` beside `gatherInnerClusterLegs` (`ordinal_seed.go`) —
+     walk the inner-join tree collecting each node's `OnPredicate` (`gatherInnerClusterLegs` discards
+     nested ONs — for `(p JOIN q ON q.qid=p.id) JOIN r ON r.rid=p.id` only the top ON is gathered; the
+     buried `q.qid=p.id` must be recovered). Comma-joins carry predicates in the WHERE
+     (`splitNonExistsPredicates`) — already gathered.
+  2. In `buildExistentialJoinSelect` (`cascades_translator.go:4084`), add the `clusterHasBoxLeg(j)`
+     branch BEFORE the AXIS-1 block: gather legs, decline (`return nil`) on `mintedBindingLeg` (dup-alias,
+     mirroring the wrap `exists_gathered_cluster_wrap.go:71`); translate each `leg.op` (with
+     `inInnerCluster=false`) as `NamedForEachQuantifier(NamedCorrelationIdentifier(leg.binding), ref)`,
+     `sourceAliases=leg.binding`; predicates = nested ONs + `splitNonExistsPredicates(f.Predicate)` +
+     `extractExistsPredicates`; append each `esq` as `NamedExistentialQuantifier` with
+     `existsInnerCorrelation`'s joinPred; `return NewSelectExpressionWithAliases(resultValue, quants,
+     preds, sourceAliases)`.
+  3. Remove the `existentialCount==1` bail (`rule_partition_select.go:67-69`) + add the live-existential
+     guard after `:415` (`continue` if any live-set member is existential). KEEP the `>=2` projected
+     decline (`:70-86`) as the scoped cell-7 reach-gap; keep `applyExistentialSourceAliases`.
+  4. Delete the arm's `≥3` dispatch (`rule_implement_nested_loop_join.go:53-58`) + `implementNWay­JoinWithExistential`
+     (~388 lines) **in the SAME commit** — its matcher also matches `[ForEach×N, Existential]`, so on the
+     name-model select BOTH it and PartitionSelectRule fire; the arm would re-ordinalize into a competing
+     crash. **Torvalds condition A:** grep-prove `planBuriedLegConcat`/`reconstructFoldStep1Seed`/
+     `legIsOrdinalSafe`/`collectInnerLegAliases` are still referenced by retained paths (kept); delete
+     only `existInnerIsScanSafe`/`nwayOuterProbe` (arm-only).
+  *Validate: comma AND explicit projected EXISTS → `[[10 true]]`; `_Discriminating` → `[[7 true],[8
+  false]]`; `FourLegJoinDiscriminating`; cells 3/4/8 (WHERE) still green via the wrap; a static unit
+  test asserting no yielded lower carries a live existential.*
+- **Step 2 — SARG + stress gate (same commit or immediate follow):** `EXPLAIN` asserting each
+  decomposed binary join SARGs its inner (index/PK probe, NOT a merged-row `PredicatesFilter` over a
+  cross-product) + **1M stress before/after (Torvalds condition C)** — the arm's cross-product was
+  O(N³); the SARG'd decomposition must not resurface as a regression (point-lookup <5ms, index-equality
+  <10ms thresholds hold) + full-corpus explain-diff against the committed golden (all flips Java-verified).
+- **Step 3 (separable follow-on, same PR or later)** — retire `translateExistsOverGatheredCluster`
+  (477 lines, the WHERE-EXISTS wrap) once cells 3/4/8 are demonstrably served by the partitioned
+  name-model WHERE-EXISTS select. NOT urgent — WHERE rides the wrap, untouched by the arm-retirement.
+  Gated by full-corpus explain-diff + preservation of scalar-subquery pre-eval registration.
 
 **Cell 7 (multi projected EXISTS, `SELECT …, EXISTS(…) x, EXISTS(…) y`) — honest scoped decline, NOT
 claimed fixed.** Keep Go's `existentialCount>=2` projected decline: it strands cleanly (0AF00, never
