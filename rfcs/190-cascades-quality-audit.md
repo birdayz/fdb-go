@@ -1,6 +1,7 @@
 # RFC-190 — Cascades quality audit v2
 
-Status: **Reviewed — implementing** (Graefe ACK + Torvalds ACK on the RFC).
+Status: **Implementing** (Graefe ACK + Torvalds ACK on the RFC; **190.1 milestone Graefe+Torvalds ACK
+on `95598761f`** — codex + @claude at PR). Landed: 190.12 golden, 190.13 docs, 190.1 (N-way EXISTS).
 190.1 was **materially re-designed** after its original delete premise proved false (the arm's
 "never produced an executable plan" gravestone is a lie — deleting it regresses working FDB tests).
 The new 190.1 (converge on Java's two-rule architecture via a guarded `PartitionSelectRule`) carries
@@ -29,8 +30,26 @@ design did NOT anticipate, both folded and flagged for the review lap:
   guard's correctness proof is unaffected (the 2-way case never reaches it). Full 2-way convergence
   (retire the 2-way arm too) is a separable follow-on.
 
-Step 2 (SARG + 1M stress gate) in progress; Step 3 (retire the WHERE-EXISTS wrap) is the separable
-follow-on. §190.1 goes to the milestone review lap (Graefe+Torvalds+codex+@claude) at PR time.
+**190.1 MILESTONE REVIEW LAP: Graefe ACK + Torvalds ACK on HEAD `95598761f`** (1M stress green =
+Torvalds condition C satisfied). Graefe: direct-emit faithful to `QueryVisitor.java:429-434`, guard
+airtight, executor fix principled (cost-based join direction is rightly free to place the flowed
+alias inner; the outer-only `computeResultLegs` was a genuine gap), arm retirement correct. Graefe
+ruled the SCOPED BAIL an **ACK-as-intermediate** (not done): keeping the Go-only 2-way arm is
+"correct-or-decline beats convergence-at-any-cost" — dropping it ships malformed plans because Go's
+`positionalMergeCase` can't yet decompose a 2-alias existential correlation — conditioned on the
+follow-on staying tracked (booked below). Torvalds ACK, all-follow-up notes (booked below).
+codex + @claude run on the whole PR at PR time. **Booked follow-ons (§190.1-FU):**
+- **FU-1 (Graefe's condition):** fix `positionalMergeCase` to faithfully decompose a 2-alias
+  existential correlation, THEN retire the Go-only 2-way existential arm too (`implementJoinWithExistential`'s
+  2-leg fold) so `PartitionSelectRule`+binary-NLJ is the single path for ALL existential-join arities
+  (full Java two-rule convergence). Until then the scoped bail (`existentialCount==1 && foreachCount<=2`)
+  keeps the working 2-way arm.
+- **FU-2 (Torvalds):** rename `qualifyOuterPositional`→`qualifyPositional` (it already serves the inner
+  side, `streaming_cursors.go:1444` + the new `isIdentityInnerRV` branch — pre-existing naming smell).
+- **FU-3 (Torvalds):** extract the ~12 lines the direct-emit branch shares with the AXIS-1 tail
+  (`cascades_translator.go`) into a helper.
+- **FU-4 (Step 3):** retire the WHERE-EXISTS gathered-cluster wrap (`translateExistsOverGatheredCluster`,
+  477 lines) once cells 3/4/8 are served by the partitioned path — separable, non-urgent.
 Branch: `feat/rfc190-cascades-quality-audit` · one branch, one PR.
 Reviewers: Graefe (Cascades alignment) + Torvalds (code quality) on RFC and impl.
 

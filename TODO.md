@@ -74,8 +74,13 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   Files: `cascades_translator.go` (direct-emit + `gatherInnerClusterOnPredicates`), `rule_partition_select.go`
   (scoped bail + live-existential guard), `rule_implement_nested_loop_join.go` (arm retired, −444 LOC),
   `flat_map_cursor.go` (`isIdentityInnerRV`), memo-shape test strengthened, comma-join FDB regression
-  added. REMAINING: 1M stress gate (running), then the milestone review lap (Graefe+Torvalds+codex+@claude)
-  at PR; Step 3 (retire the WHERE-EXISTS gathered-cluster wrap) = separable follow-on.
+  added. Committed `95598761f`; 1M stress green.
+  **MILESTONE DONE — Graefe ACK + Torvalds ACK on `95598761f`** (codex+@claude at PR). Graefe ruled the
+  scoped bail ACK-as-intermediate (correct-or-decline; the follow-on to retire the 2-way arm once
+  `positionalMergeCase` decomposes a 2-alias existential correlation is booked). Torvalds ACK, follow-up
+  notes booked. See RFC §190.1 FU-1..FU-4: (FU-1) fix positionalMergeCase 2-alias existential correlation
+  then retire the 2-way arm (full convergence); (FU-2) rename `qualifyOuterPositional`→`qualifyPositional`;
+  (FU-3) extract direct-emit/AXIS-1 shared ~12 lines; (FU-4) retire the WHERE-EXISTS gathered-cluster wrap.
 - [ ] **190.2 (MED, unpinned hazard)** — cost-comparator transitivity. Five sort-count-gated
   rungs (`planning_cost_model.go:286,302,315,320,337`) can make the relation non-transitive →
   winner depends on member iteration order (the nondeterminism the hash tie-break exists to kill).
