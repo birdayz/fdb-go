@@ -258,11 +258,14 @@ func buildSelectSubsumptionPredicateAlternative(
 		// conflict checks use candidate identity, so sharing one TRUE object
 		// across two query predicates would reject an otherwise valid product.
 		freshTautology := predicates.NewConstantPredicate(predicates.TriTrue)
-		residualMapping := RegularMappingBuilder(
+		residualMappingBuilder := RegularMappingBuilder(
 			originalQueryPredicate,
 			translatedQueryPredicates[queryIndex],
 			freshTautology,
-		).setKnownPredicateCompensation(
+		)
+		residualMapping := selectSubsumptionMappingBuilderWithCompensation(
+			residualMappingBuilder,
+			originalQueryPredicate,
 			reapplyResidualCompensation(originalQueryPredicate),
 			"residual",
 		).Build()
@@ -358,11 +361,14 @@ func selectSubsumptionPredicateImpliedMappingMaybe(
 	if selectSubsumptionCandidatePredicateIsNonFiltering(
 		candidatePredicate,
 	) {
-		return RegularMappingBuilder(
+		mappingBuilder := RegularMappingBuilder(
 			originalQueryPredicate,
 			translatedQueryPredicate,
 			candidatePredicate,
-		).setKnownPredicateCompensation(
+		)
+		return selectSubsumptionMappingBuilderWithCompensation(
+			mappingBuilder,
+			originalQueryPredicate,
 			reapplyResidualCompensation(originalQueryPredicate),
 			"residual",
 		).Build(), true
@@ -375,11 +381,129 @@ func selectSubsumptionPredicateImpliedMappingMaybe(
 	) {
 		return nil, false
 	}
-	return RegularMappingBuilder(
+	mappingBuilder := RegularMappingBuilder(
 		originalQueryPredicate,
 		translatedQueryPredicate,
 		candidatePredicate,
+	)
+	return selectSubsumptionMappingBuilderWithCompensation(
+		mappingBuilder,
+		originalQueryPredicate,
+		DefaultPredicateCompensation(),
+		"default",
 	).Build(), true
+}
+
+// selectSubsumptionMappingBuilderWithCompensation installs Java's
+// child-aware EVP compensation factory whenever the original query predicate
+// owns an existential. All other predicate kinds retain their branch-specific
+// compensation.
+func selectSubsumptionMappingBuilderWithCompensation(
+	mappingBuilder *PredicateMappingBuilder,
+	originalQueryPredicate predicates.QueryPredicate,
+	fallback PredicateCompensation,
+	fallbackIdentity string,
+) *PredicateMappingBuilder {
+	existentialPredicate, isExistential := originalQueryPredicate.(*predicates.ExistentialValuePredicate)
+	if isExistential && existentialPredicate != nil {
+		return mappingBuilder.setKnownPredicateCompensation(
+			selectSubsumptionExistentialPredicateCompensation(
+				existentialPredicate,
+			),
+			"select-existential-child",
+		)
+	}
+	return mappingBuilder.setKnownPredicateCompensation(
+		fallback,
+		fallbackIdentity,
+	)
+}
+
+type existentialCompensatingPartialMatch interface {
+	CompensateExistential(
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	) Compensation
+}
+
+// selectSubsumptionExistentialPredicateCompensation ports
+// ExistentialValuePredicate.computeCompensationFunction. The matched owning
+// existential's child decides whether EXISTS itself still needs to be
+// evaluated: a missing/invalid child, impossible child compensation, or any
+// child filtering requirement reapplies the original EVP. A possible child
+// with no filtering requirement makes the EVP redundant, even when that child
+// still needs result-only compensation.
+func selectSubsumptionExistentialPredicateCompensation(
+	originalQueryPredicate *predicates.ExistentialValuePredicate,
+) PredicateCompensation {
+	return func(
+		partialMatch PartialMatch,
+		boundParameterPrefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+		_ *PullUp,
+	) PredicateCompensationFunc {
+		reapply := func() PredicateCompensationFunc {
+			return OfExistentialValuePredicateCompensation(
+				originalQueryPredicate,
+			)
+		}
+		if originalQueryPredicate == nil ||
+			partialMatch == nil ||
+			selectSubsumptionIsTypedNil(partialMatch) {
+			return reapply()
+		}
+
+		existentialAlias := originalQueryPredicate.GetExistentialAlias()
+		if existentialAlias.IsZero() {
+			return reapply()
+		}
+		queryExpression := partialMatch.GetQueryExpression()
+		if queryExpression == nil ||
+			selectSubsumptionIsTypedNil(queryExpression) {
+			return reapply()
+		}
+
+		ownerFound := false
+		for _, queryQuantifier := range queryExpression.GetQuantifiers() {
+			if queryQuantifier.GetAlias() != existentialAlias {
+				continue
+			}
+			if ownerFound ||
+				queryQuantifier.Kind() != expressions.QuantifierExistential {
+				return reapply()
+			}
+			ownerFound = true
+		}
+		if !ownerFound {
+			// The EVP is owned by an outer Select. This match level neither
+			// consumes nor compensates it.
+			return NoPredicateCompensationNeeded()
+		}
+
+		regularMatchInfo := partialMatch.GetRegularMatchInfo()
+		if regularMatchInfo == nil {
+			return reapply()
+		}
+		childPartialMatch := regularMatchInfo.GetChildPartialMatchMaybe(
+			existentialAlias,
+		)
+		if childPartialMatch == nil ||
+			selectSubsumptionIsTypedNil(childPartialMatch) {
+			return reapply()
+		}
+		compensatingChild, ok := childPartialMatch.(existentialCompensatingPartialMatch)
+		if !ok || selectSubsumptionIsTypedNil(compensatingChild) {
+			return reapply()
+		}
+		childCompensation := compensatingChild.CompensateExistential(
+			boundParameterPrefixMap,
+		)
+		if childCompensation == nil ||
+			selectSubsumptionIsTypedNil(childCompensation) ||
+			childCompensation.IsImpossible() ||
+			childCompensation.IsNeededForFiltering() {
+			return reapply()
+		}
+		return NoPredicateCompensationNeeded()
+	}
 }
 
 func selectSubsumptionSargablePredicateCompensation(

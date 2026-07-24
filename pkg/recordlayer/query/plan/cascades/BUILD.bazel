@@ -424,6 +424,7 @@ go_test(
         "scan_like_cost_unique_test.go",
         "select_merge_fused_leg_test.go",
         "select_merge_ordinal_child_test.go",
+        "select_subsumption_existential_compensation_test.go",
         "select_subsumption_predicates_test.go",
         "select_subsumption_test.go",
         "select_subsumption_translation_test.go",
@@ -868,6 +869,7 @@ go_test(
         "select_subsumption_translation.go",
         "select_subsumption_translation_test.go",
         "rule_match_intermediate_select_semantic_test.go",
+        "select_subsumption_existential_compensation_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

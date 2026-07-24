@@ -153,6 +153,31 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 	return p.compensate(p.GetBoundParameterPrefixMap(), unificationPullUp, candidateTopAlias)
 }
 
+// CompensateExistential computes the child compensation used by an owning
+// ExistentialValuePredicate. Unlike complete-match compensation, Java starts a
+// fresh match pull-up for this existential child and forwards the candidate's
+// already-computed bound prefix unchanged. The caller cares only whether this
+// child still needs filtering; result-only compensation does not change the
+// truth of EXISTS.
+func (p *PartialMatchImpl) CompensateExistential(
+	boundParameterPrefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+) Compensation {
+	if p == nil ||
+		p.matchInfo == nil ||
+		selectSubsumptionIsTypedNil(p.matchInfo) ||
+		p.queryExpression == nil ||
+		selectSubsumptionIsTypedNil(p.queryExpression) ||
+		p.candidateRef == nil ||
+		p.matchInfo.GetRegularMatchInfo() == nil {
+		return ImpossibleCompensation
+	}
+	return p.compensate(
+		boundParameterPrefixMap,
+		nil,
+		values.UniqueCorrelationIdentifier(),
+	)
+}
+
 // compensate computes child compensation (union of matched quantifier
 // compensations), predicate compensation (residual filters), and result
 // compensation for this match level.

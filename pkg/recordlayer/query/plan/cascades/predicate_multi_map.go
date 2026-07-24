@@ -199,6 +199,52 @@ func OfPredicateCompensation(pred predicates.QueryPredicate, shouldSimplifyValue
 	}
 }
 
+// predicateCompensationOfExistentialValuePredicate reapplies an owning EXISTS
+// predicate in its original query scope. Java deliberately ignores the
+// apply-time TranslationMap here: the existential alias names a query
+// quantifier that compensation retains/pulls up, not a candidate result alias
+// to rebase.
+type predicateCompensationOfExistentialValuePredicate struct {
+	predicate *predicates.ExistentialValuePredicate
+}
+
+func (*predicateCompensationOfExistentialValuePredicate) IsNeeded() bool {
+	return true
+}
+
+func (*predicateCompensationOfExistentialValuePredicate) IsImpossible() bool {
+	return false
+}
+
+func (f *predicateCompensationOfExistentialValuePredicate) Amend(
+	*BiMap[values.CorrelationIdentifier, values.Value],
+	map[values.Value]values.Value,
+) PredicateCompensationFunc {
+	return f
+}
+
+func (f *predicateCompensationOfExistentialValuePredicate) ApplyCompensationForPredicate(
+	TranslationMap,
+) []predicates.QueryPredicate {
+	if f == nil || f.predicate == nil {
+		return nil
+	}
+	return []predicates.QueryPredicate{f.predicate}
+}
+
+// OfExistentialValuePredicateCompensation creates Java's specialized EVP
+// compensation function. A malformed nil predicate fails closed.
+func OfExistentialValuePredicateCompensation(
+	predicate *predicates.ExistentialValuePredicate,
+) PredicateCompensationFunc {
+	if predicate == nil {
+		return ImpossiblePredicateCompensation()
+	}
+	return &predicateCompensationOfExistentialValuePredicate{
+		predicate: predicate,
+	}
+}
+
 // NoPredicateCompensationNeeded returns a PredicateCompensationFunc
 // indicating no compensation is required.
 func NoPredicateCompensationNeeded() PredicateCompensationFunc {
