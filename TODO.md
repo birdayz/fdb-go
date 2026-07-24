@@ -15,10 +15,14 @@ next item. Correctness work is correct-or-loud: an unsupported shape must fail
 closed rather than silently alter rows or output schema.
 
 **Correctness and semantic identity:**
-- [ ] **CQ-1 (HIGH) — make WHERE predicate installation correct-or-loud.**
-  `plan_visitor.go` discards `upgradeFirstFilter`'s success result and can return
-  an unfiltered operator when predicate construction fails. Prove each reachable
-  path with a regression and return a typed error whenever no filter is installed.
+- [x] **CQ-1 (LOW, audit-corrected) — harden WHERE predicate installation.**
+  The suspected fail-open path is not reachable: `visitWhere` retains a
+  text-only `LogicalFilter` when predicate construction declines, and the
+  Cascades translator rejects that filter rather than translating its input as
+  an unfiltered scan. A focused regression now pins that behavior. Every live
+  `upgradeFirstFilter` installation result is checked and returns a typed 0AF00
+  if the builder's filter-on-unary-spine invariant ever breaks; successful
+  comparison and correlated-EXISTS attachment paths are pinned too.
 - [ ] **CQ-2 (HIGH) — include projection aliases in semantic identity.**
   Logical and physical projection equality/hashing must preserve schema-bearing
   aliases; `IsIdentity` and `RemoveProjectionRule` must not erase an alias or a

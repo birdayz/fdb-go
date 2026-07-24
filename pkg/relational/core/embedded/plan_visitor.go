@@ -1114,12 +1114,20 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		if qErr != nil {
 			return nil, qErr
 		}
-		_ = upgradeFirstFilter(op, combined)
+		if installErr := installFirstWherePredicate(op, combined); installErr != nil {
+			return nil, installErr
+		}
 		if len(existsPlanner.subqueries) > 0 {
-			upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+			if !upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE subqueries could not be installed on the logical plan")
+			}
 		}
 		if len(existsPlanner.scalarSubqueries) > 0 {
-			upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
+			if !upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE scalar subqueries could not be installed on the logical plan")
+			}
 		}
 		op = wrapGlobalRankVectorLimit(op, combined)
 		return op, nil
@@ -1131,7 +1139,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		if qErr != nil {
 			return nil, qErr
 		}
-		_ = upgradeFirstFilter(op, combined)
+		if installErr := installFirstWherePredicate(op, combined); installErr != nil {
+			return nil, installErr
+		}
 		op = wrapGlobalRankVectorLimit(op, combined)
 		return op, nil
 	}
@@ -1152,9 +1162,15 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		pred, predOk = buildWherePredicate(v.md, v.schemaName, sq, sq.whereExpr)
 	}
 	if !predOk {
+		// Keep the canonical text filter created by visitWhere. The Cascades
+		// translator deliberately declines text-only filters, so this remains
+		// fail closed while downstream table/CTE validation can report a more
+		// specific SQLSTATE for an unresolved source.
 		return op, nil
 	}
-	_ = upgradeFirstFilter(op, pred)
+	if installErr := installFirstWherePredicate(op, pred); installErr != nil {
+		return nil, installErr
+	}
 	return op, nil
 }
 

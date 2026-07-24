@@ -2679,12 +2679,20 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				"EXISTS within an OR (disjunction) is not supported")
 		}
 
-		_ = upgradeFirstFilter(op, pred)
+		if installErr := installFirstWherePredicate(op, pred); installErr != nil {
+			return nil, installErr
+		}
 		if len(existsPlanner.subqueries) > 0 {
-			upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+			if !upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE subqueries could not be installed on the logical plan")
+			}
 		}
 		if len(existsPlanner.scalarSubqueries) > 0 {
-			upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
+			if !upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE scalar subqueries could not be installed on the logical plan")
+			}
 		}
 		return op, nil
 	}
@@ -2721,7 +2729,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	if !ok {
 		return op, nil
 	}
-	_ = upgradeFirstFilter(op, pred)
+	if installErr := installFirstWherePredicate(op, pred); installErr != nil {
+		return nil, installErr
+	}
 	op = wrapGlobalRankVectorLimit(op, pred)
 	return op, nil
 }
@@ -3336,6 +3346,23 @@ func upgradeFirstFilter(op logical.LogicalOperator, pred predicates.QueryPredica
 		cur = ch[0]
 	}
 	return false
+}
+
+// installFirstWherePredicate is the checked form of upgradeFirstFilter for
+// WHERE-bearing production builders. Those builders create a LogicalFilter
+// before adding unary SELECT shells; if that structural invariant ever drifts,
+// fail closed with a typed SQL error instead of returning a logical tree whose
+// text-only filter cannot be translated.
+func installFirstWherePredicate(op logical.LogicalOperator, pred predicates.QueryPredicate) error {
+	if pred == nil {
+		return api.NewError(api.ErrCodeUnsupportedQuery,
+			"WHERE predicate could not be constructed")
+	}
+	if !upgradeFirstFilter(op, pred) {
+		return api.NewError(api.ErrCodeUnsupportedQuery,
+			"WHERE predicate could not be installed on the logical plan")
+	}
+	return nil
 }
 
 // upgradeProjectionValues walks the unary spine from op to find the
@@ -4290,7 +4317,9 @@ func buildLogicalPlanForDeleteWithCatalog(
 	if !ok {
 		return op, nil
 	}
-	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
+	if installErr := installFirstWherePredicate(op, pred); installErr != nil {
+		return nil, installErr
+	}
 	return op, nil
 }
 
@@ -4397,14 +4426,20 @@ func upgradeDMLWhereWithCatalog(
 		}
 		return false, nil
 	}
-	if !upgradeFirstFilter(op, predicates.SimplifyPredicateValues(walked)) {
-		return false, nil
+	if installErr := installFirstWherePredicate(op, predicates.SimplifyPredicateValues(walked)); installErr != nil {
+		return false, installErr
 	}
 	if len(existsPlanner.subqueries) > 0 {
-		upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+		if !upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries) {
+			return false, api.NewError(api.ErrCodeUnsupportedQuery,
+				"WHERE subqueries could not be installed on the logical plan")
+		}
 	}
 	if len(existsPlanner.scalarSubqueries) > 0 {
-		upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
+		if !upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries) {
+			return false, api.NewError(api.ErrCodeUnsupportedQuery,
+				"WHERE scalar subqueries could not be installed on the logical plan")
+		}
 	}
 	return true, nil
 }
@@ -4507,7 +4542,9 @@ func buildLogicalPlanForUpdateWithCatalog(
 				return nil, werr
 			}
 			if ok {
-				_ = upgradeFirstFilter(op, pred)
+				if installErr := installFirstWherePredicate(op, pred); installErr != nil {
+					return nil, installErr
+				}
 			}
 		}
 	}

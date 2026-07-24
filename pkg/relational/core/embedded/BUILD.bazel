@@ -102,6 +102,7 @@ go_test(
         "plan_harness_dml_test.go",
         "plan_harness_test.go",
         "plan_logging_test.go",
+        "plan_visitor_where_installation_test.go",
         "push_filter_covered_columns_test.go",
         "query_hash_test.go",
         "resource_limits_test.go",
