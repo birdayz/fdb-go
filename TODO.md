@@ -6,6 +6,75 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
+## LATEST PRIOS 2026-07-24 — Cascades quality follow-ups
+
+Source: 2026-07-24 end-to-end Cascades quality assessment on `master` at
+`2543c4cf5`. Work branch: **`feat/cascades-quality-followups`**. Implement one
+item at a time, with a focused regression test and review before starting the
+next item. Correctness work is correct-or-loud: an unsupported shape must fail
+closed rather than silently alter rows or output schema.
+
+**Correctness and semantic identity:**
+- [ ] **CQ-1 (HIGH) — make WHERE predicate installation correct-or-loud.**
+  `plan_visitor.go` discards `upgradeFirstFilter`'s success result and can return
+  an unfiltered operator when predicate construction fails. Prove each reachable
+  path with a regression and return a typed error whenever no filter is installed.
+- [ ] **CQ-2 (HIGH) — include projection aliases in semantic identity.**
+  Logical and physical projection equality/hashing must preserve schema-bearing
+  aliases; `IsIdentity` and `RemoveProjectionRule` must not erase an alias or a
+  projection over the wrong quantifier.
+- [ ] **CQ-3 (HIGH) — fix correlated EXISTS over non-grouped aggregates with
+  LIMIT/OFFSET.** Materialize aggregate cardinality before applying pagination;
+  flip the existing wrong-row sentinel to the SQL-correct result.
+- [ ] **CQ-4 (HIGH) — finish correlated scalar-subquery cardinality enforcement.**
+  Enforce SQLSTATE 21000 for grouped correlated scalars returning multiple groups
+  and for the separate WHERE-comparison lowering, while preserving explicit user
+  LIMIT semantics.
+- [ ] **CQ-5 (MED) — preserve SELECT-list order for GROUP BY output.**
+  Carry the key/aggregate interleaving through `LogicalAggregate` and add the
+  required post-aggregate projection for positional clients.
+
+**Planner lifecycle and operations:**
+- [ ] **CQ-6 (MED) — make the Planner lifecycle explicit and safe.**
+  Either fully reset every per-run field or reject a second `Plan` call; cover
+  success-after-success and retry-after-cap/error.
+- [ ] **CQ-7 (MED) — make planning cancelable.** Thread `context.Context` through
+  production planning entry points and task execution, returning cancellation
+  without leaving reusable stale state.
+- [ ] **CQ-8 (MED) — preserve planner failure diagnostics.** Stop collapsing cap,
+  cancellation, invariant, and genuinely unsupported failures into one generic
+  `0AF00` message; retain safe user-facing error classes and wrapped causes.
+
+**Optimizer quality and scalability:**
+- [ ] **CQ-9 (HIGH) — bound N-way join enumeration with a scalable search policy.**
+  Port or adapt cross-product/right-deep deferral, make the 5-way all-live star
+  converge within budget, and add larger chain/star planning gates without
+  weakening the 100,000-task safety cap.
+- [ ] **CQ-10 (MED) — make winner comparison globally order-safe.** Define and
+  property-test antisymmetry/transitivity for heterogeneous IN-plan comparisons
+  so insertion order cannot select a different winner.
+- [ ] **CQ-11 (MED) — enrich and calibrate planner statistics.** Add at least
+  distinct-count/selectivity hooks beyond table cardinality, keep safe defaults,
+  and calibrate the model against representative indexed, skewed, and join
+  workloads.
+
+**Verification, performance, and documentation:**
+- [ ] **CQ-12 (LOW) — make the rule-registry tests repeatable.** Remove permanent
+  global test mutations so `go test ... -count=2` and repeated in-process runs pass.
+- [ ] **CQ-13 (MED) — strengthen performance and concurrency gates.** Benchmarks
+  must validate planning success before recording time, compare against a
+  regression baseline, directly race-test Cascades in PR CI, and accurately
+  report which stress scales are actually exercised.
+- [ ] **CQ-14 (LOW) — reconcile the advertised SQL surface with conformance.**
+  Remove the README claim that `IN (SELECT ...)` is supported until the
+  conformance corpus accepts it, and make generated rejection cases visibly
+  distinguish unsupported features from supported positive cases.
+
+**Exit gate:** focused tests for every item, Cascades unit + race suites,
+planner/translator tests, explain-plan golden, yamsql/FDB conformance, generated
+file drift checks, and the repository's full non-stress CI suite. Keep this
+checklist updated in the same commit as each completed item.
+
 ## LATEST PRIOS 2026-07-23 — Cascades quality review v2 (owner-directed, RFC-190)
 
 Source: 2026-07-23 full-engine quality assessment — 5 parallel subsystem review agents
