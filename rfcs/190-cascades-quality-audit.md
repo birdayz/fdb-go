@@ -839,8 +839,9 @@ via `findContainingAccess`); `plans/distinct.go:38` + 3 sites "cross-page-buggy"
 TODO C5). No code change — comments only; but they send the next reader down phantom paths.
 
 **190.13 is complete.** Final whole-RFC audit also removed the accidentally tracked terminal log
-and corrected every surviving production and regression comment that still described the retired
-N-way arm or incorrectly denied PartitionSelectRule's correlated-existential route.
+and corrected every surviving production, regression, and historical-ledger description that still
+presented the retired N-way arm as live or incorrectly denied PartitionSelectRule's
+correlated-existential route.
 
 ### 190.14 (LOW) — cost-model diagnostics + library stderr
 

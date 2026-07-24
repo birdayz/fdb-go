@@ -320,9 +320,9 @@ Current RFC state: **implemented; final whole-PR Graefe/Torvalds delta review an
   (4 source + 1 test, no `distinct.go:38` — it was `:172`) corrected to "memory-heavy hash-set" with
   a C5 note (cross-page correctness fixed 2026-07-20; streaming preferred for O(1) memory, not
   correctness). Final audit removed the accidentally tracked `screenlog.0`, ignored future GNU
-  Screen logs, narrowed the retired N-way dead dispatch, and corrected every surviving production
-  and regression comment that still described that arm as live or denied PartitionSelectRule's
-  correlated-existential route. Zero plan behavior change.
+  Screen logs, narrowed the retired N-way dead dispatch, and corrected every surviving production,
+  regression, and historical-ledger description that still presented that arm as live or denied
+  PartitionSelectRule's correlated-existential route. Zero plan behavior change.
 - [x] **190.14 (LOW)** — DONE. A shared exhaustive taxonomy assigns all 41 production
   `RecordQueryPlan` types an explicit count and residual policy; unknown types and future
   unhandled policy kinds warn on the concrete/logical count and residual walks, while a type
@@ -4170,10 +4170,12 @@ return EXISTS=true even when the inner join `e JOIN f` was EMPTY: the inner join
 dropped through the correlation lift. Repro (Java 4.12.11.0 = `[[10 false]]`, Go returned `[[10 true]]`):
 `SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON f.fid=e.fid WHERE e.eid=p.id) FROM p, q WHERE q.qid=p.id`
 with `e(eid=1,fid=99), f(fid=88)` (no inner match). Now `[[10 false]]` on s4.
-- **The N-way arm** (`implementNWayJoinWithExistential`, RFC :2908/:3033) is FIXED conservatively: it
-  fail-closes on ANY non-scan existential inner (`existInnerIsScanSafe`) — declines the buggy explicit-join
-  case AND (over-conservatively) the working multi-table comma-join case; the N-way arm is new so nothing
-  regresses. So the N-way arm has NO silent-wrong; its reach gap is "multi-table/join EXISTS inner declines".
+- **Historical N-way-arm state before RFC-190.1.** At this checkpoint,
+  `implementNWayJoinWithExistential` fail-closed conservatively on any non-scan existential inner
+  (`existInnerIsScanSafe`), declining both the buggy explicit-join case and the then-working
+  multi-table comma-join case. RFC-190.1 later replaced the N-way route with guarded
+  PartitionSelectRule decomposition and retired this arm; the old reach-gap statement is not a
+  description of current code.
 - **The 2-leg fold arm** (`implementJoinWithExistential`): the "PRE-EXISTING silent-wrong, NOT yet fixed,
   three guard attempts mis-scoped, needs deep RFC-141 work" framing was RESOLVED and is now STALE. The
   proper fix — ENFORCE the inner ON under correlation — landed FRONT-END at `de5354139` (in
@@ -6595,11 +6597,20 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       Make the merged-row keys carry the qualified names the projection
       mints, or decline the shape at plan time.
 
-### [ ] N-way projected-EXISTS emits plans that cannot execute (RFC-183 §15 finding)
+### [x] N-way projected-EXISTS emits plans that cannot execute — RESOLVED by RFC-190.1 (RFC-183 §15 finding)
 
+**Resolution:** RFC-190.1 direct-emits the flat name-model
+`[ForEach×N, Existential]` shape, uses a live-existential guard while
+PartitionSelectRule decomposes it into ordinary binary NLJs, and retired
+`implementNWayJoinWithExistential` atomically with that replacement. The
+comma-join, explicit/buried-join, discriminating duplicate-column, four-leg,
+WHERE/NOT-EXISTS, and SARG/stress regressions pin the replacement path.
+
+**Historical RFC-183 diagnosis below (present tense in the original record
+referred to that checkpoint, not current code).** At the RFC-183 checkpoint,
 `ImplementNestedLoopJoinRule.implementNWayJoinWithExistential` — the N-WAY FLAT
-EXISTENTIAL arm — produces plans that die at execution. Every query reaching it
-fails with:
+EXISTENTIAL arm — produced plans that died at execution. Every query that
+reached it failed with:
 
     correlated FieldValue "V" (correlation "A") evaluated against an
     unbound/unrecognized context (*RowEvalContext (multi-leg row cannot serve a
@@ -6613,9 +6624,10 @@ one flattened Select):
     FROM a, b, c WHERE a.id = b.id AND b.id = c.id
 
 PRE-EXISTING, not introduced by RFC-183: confirmed by reverting that RFC's memo
-fix and re-running — identical failure. It is also why no corpus query reaches
-the arm (instrumenting the yield over all 2407 queries counts ZERO firings):
-the feature has never worked, so nobody could pin a scenario for it.
+fix and re-running — identical failure. It was also why no corpus query reached
+the arm (instrumenting the yield over all 2407 queries counted ZERO firings):
+the feature had never worked at that checkpoint, so nobody could pin a
+scenario for it.
 
 RFC-183 SHIPS NO REGRESSION HERE — proven by plan parity, recorded because the
 commit titled "the N-way EXISTS local fix converts a crash into WRONG ROWS —
@@ -6644,8 +6656,9 @@ ACTIVELY HARMFUL, not merely insufficient:
 Rebasing the projected result value through `rebaseOuterLegValueOrdinal` (the
 same treatment `joinPreds`/`existPreds` get, and the obvious candidate since
 the RV is passed unrebased at rule_implement_nested_loop_join.go's
-"passed through unrebased"). DIAGNOSED PROPERLY the second time — the current
-code computes the rebase and then DISCARDS it (`flatMapResult = projected`, not
+"passed through unrebased"). DIAGNOSED PROPERLY the second time — the
+then-current code computed the rebase and then DISCARDED it
+(`flatMapResult = projected`, not
 the rebased value), and the rebase genuinely works: `A.V#1` (source-relative
 ordinal) -> `q$N.V#3` (merged-relative). Applying `flatMapResult = rebased`
 makes the projection RESOLVE, and a single-row query then EXECUTES correctly
@@ -6672,9 +6685,10 @@ multi-leg row present a coherent OUTPUT name model that all three resolve
 against — which is exactly the qualified/bare seam, and a workstream, not a
 rule tweak.
 
-No yamsql scenario is pinned: the corpus is a regression net; pinning the error
-string promotes a defect to expected behaviour, and pinning the wrong rows is
-worse. Add the scenario as part of the real fix.
+No yamsql scenario was pinned at that checkpoint: pinning the error string
+would have promoted a defect to expected behaviour, and pinning the wrong rows
+would have been worse. RFC-190.1 instead added row, shape, SARG, and stress
+coverage for the replacement path.
 
 LIKELY THE SAME ROOT CAUSE AS THE COMMA-JOIN-OVER-NESTED-SHADOWING-CTE ENTRY
 above ("P.N vs merged-row keys [P.M N Q.M] — the qualified/bare name-model
@@ -6690,9 +6704,9 @@ The guard that fires is values.go:902, keyed on
 RootIsLegRelativeUnpinned() && rowIsMultiLeg() — deliberate correct-or-loud,
 not the bug itself.
 
-Decide first whether the arm should be FIXED or REMOVED — it has never
-produced a working plan, so removing it and declining the shape at plan time
-(correct-or-loud) is a legitimate outcome rather than a retreat.
+RFC-190.1 resolved this decision: the arm was removed only together with the
+direct-emit + guarded-partition replacement, so the supported N-way shapes now
+plan and execute rather than merely declining.
 
 ### [ ] RFC-183 residual: 32 no-quantifier memo edges (RFC-184 W2/W3)
 
