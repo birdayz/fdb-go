@@ -178,6 +178,7 @@ go_library(
         "single_matched_access.go",
         "string_util.go",
         "temp_table.go",
+        "tie_break_hash.go",
         "translation_map.go",
         "traversal.go",
         "unified_tasks.go",
@@ -902,6 +903,7 @@ go_test(
         "planning_cost_model_rungs_test.go",
         "in_union_cost_regression_test.go",
         "planning_cost_model_diagnostics_test.go",
+        "tie_break_hash.go",
     ],
     deps = [
         "//gen",

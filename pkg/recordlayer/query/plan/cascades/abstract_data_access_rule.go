@@ -711,6 +711,20 @@ func (s *scanPlanExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+// TieBreakHashCodeWithoutChildren preserves the adapter's historical
+// scanplanexpr framing while delegating its wrapped node to the schema-neutral
+// tie-break hash. A recursive-DFS leg can wrap a top-level physical Projection;
+// forwarding HashCodeWithoutChildren there would leak that projection's
+// schema-aware memo identity back into designation/extraction ranking.
+func (s *scanPlanExpression) TieBreakHashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("scanplanexpr|"))
+	if s.plan != nil {
+		writeHash64(h, tieBreakNodeHash(s.plan))
+	}
+	return h.Sum64()
+}
+
 // GetCorrelatedToWithoutChildren reports the outer correlations the wrapped plan
 // carries. A bare PK RecordQueryScanPlan SARGed with a join predicate (`pk =
 // QOV(outer).fk`) is a CORRELATED probe — returning nil here (the prior behaviour) let

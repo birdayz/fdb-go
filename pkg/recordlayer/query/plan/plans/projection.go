@@ -2,6 +2,7 @@ package plans
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -22,15 +23,15 @@ type RecordQueryProjectionPlan struct {
 
 func NewRecordQueryProjectionPlan(projections []values.Value, inner RecordQueryPlan) *RecordQueryProjectionPlan {
 	return &RecordQueryProjectionPlan{
-		projections: projections,
+		projections: slices.Clone(projections),
 		innerQ:      QuantifierOverPlan(inner),
 	}
 }
 
 func NewRecordQueryProjectionPlanWithAliases(projections []values.Value, aliases []string, inner RecordQueryPlan) *RecordQueryProjectionPlan {
 	return &RecordQueryProjectionPlan{
-		projections: projections,
-		aliases:     aliases,
+		projections: slices.Clone(projections),
+		aliases:     slices.Clone(aliases),
 		innerQ:      QuantifierOverPlan(inner),
 	}
 }
@@ -41,14 +42,16 @@ func NewRecordQueryProjectionPlanWithAliases(projections []values.Value, aliases
 // carrying the child edge once — no wrapper storing a second copy (RFC-184 W2).
 func NewRecordQueryProjectionPlanFromQuantifier(projections []values.Value, aliases []string, innerQ expressions.Quantifier) *RecordQueryProjectionPlan {
 	return &RecordQueryProjectionPlan{
-		projections: projections,
-		aliases:     aliases,
+		projections: slices.Clone(projections),
+		aliases:     slices.Clone(aliases),
 		innerQ:      innerQ,
 	}
 }
 
-func (p *RecordQueryProjectionPlan) GetProjections() []values.Value { return p.projections }
-func (p *RecordQueryProjectionPlan) GetAliases() []string           { return p.aliases }
+func (p *RecordQueryProjectionPlan) GetProjections() []values.Value {
+	return slices.Clone(p.projections)
+}
+func (p *RecordQueryProjectionPlan) GetAliases() []string { return slices.Clone(p.aliases) }
 
 func (p *RecordQueryProjectionPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
 
@@ -65,16 +68,22 @@ func (p *RecordQueryProjectionPlan) GetQuantifiers() []expressions.Quantifier {
 	return []expressions.Quantifier{p.innerQ}
 }
 
-// IsIdentity returns true if this projection passes all columns
-// through unchanged (a QuantifiedObjectValue that references the
-// inner's alias). An identity projection can be removed without
-// changing the output shape.
+// IsIdentity returns true if this projection passes all columns through
+// unchanged: it has no schema-changing output alias and its sole
+// QuantifiedObjectValue references this projection's inner quantifier. An
+// identity projection can be removed without changing either rows or schema.
 func (p *RecordQueryProjectionPlan) IsIdentity() bool {
 	if len(p.projections) != 1 {
 		return false
 	}
-	_, ok := p.projections[0].(*values.QuantifiedObjectValue)
-	return ok
+	// nil, an empty slice, and one explicit empty placeholder all mean "derive
+	// the output name". More entries are malformed for a one-slot projection;
+	// decline removal rather than guessing which schema was intended.
+	if len(p.aliases) > 1 || len(p.aliases) == 1 && p.aliases[0] != "" {
+		return false
+	}
+	qov, ok := p.projections[0].(*values.QuantifiedObjectValue)
+	return ok && qov.Correlation == p.innerQ.GetAlias()
 }
 
 func (p *RecordQueryProjectionPlan) GetResultType() values.Type { return values.UnknownType }
@@ -88,7 +97,8 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 }
 
 // structuralKey lists the fields that distinguish this projection in the memo:
-// the projection list, compared by semantic Value identity (RFC-176 P2 — see
+// the projection list and output aliases, compared by semantic identity
+// (RFC-176 P2 — see
 // semanticValueEquals): Java's model (RecordQueryMapPlan.equalsWithoutChildren
 // → semanticEqualsForResults), where every semantic discriminator a projected
 // Value carries — in particular a plan-time-resolved ordinal accessor
@@ -111,7 +121,31 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 // that, plus the matching injective discriminator in writeSemanticHash's
 // FieldValue arm.
 func (p *RecordQueryProjectionPlan) structuralKey() *structuralKey {
-	return newStructuralKey().Values(p.projections)
+	return newStructuralKey().
+		Values(p.projections).
+		Strs(projectionOutputIdentityKeys(p.projections, p.aliases))
+}
+
+// TieBreakHashCodeWithoutChildren returns the projection's schema-neutral
+// historical structural hash for deterministic candidate ranking. Memo
+// equality/hashing remains schema-aware through structuralKey.
+func (p *RecordQueryProjectionPlan) TieBreakHashCodeWithoutChildren() uint64 {
+	return newStructuralKey().Values(p.projections).Hash("projplan|")
+}
+
+// projectionOutputIdentityKeys returns one output-schema discriminator per
+// slot. The values package owns the exact normalization so logical and physical
+// projection identity cannot drift.
+func projectionOutputIdentityKeys(projections []values.Value, aliases []string) []string {
+	keys := make([]string, len(projections))
+	for i, projection := range projections {
+		alias := ""
+		if i < len(aliases) {
+			alias = aliases[i]
+		}
+		keys[i] = values.ProjectionOutputIdentityKey(projection, alias)
+	}
+	return keys
 }
 
 func (p *RecordQueryProjectionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {

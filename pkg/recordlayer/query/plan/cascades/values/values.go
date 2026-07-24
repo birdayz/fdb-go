@@ -1292,6 +1292,59 @@ func OutputColumnName(v Value, alias string) string {
 	return ProjectionColumnName(v)
 }
 
+// ProjectionOutputIdentityKey returns an opaque, boundary-safe discriminator
+// for the parts of a projection's executor-visible output name that semantic
+// Value identity does not already preserve.
+//
+// A non-empty alias is the entire output-name authority, normalized exactly as
+// OutputColumnName normalizes it. Without an alias, the Value's tree shape,
+// operators, literals, and correlation structure already participate in
+// semantic identity; the missing discriminator is every FieldValue's rendered
+// display path. In particular, baked FieldValues compare by ordinal path alone,
+// while ProjectionColumnName and ExplainValue still render their Field text
+// (and a multi-accessor Explain renders every ResolvedAccessor.Field). Walking
+// all nested FieldValues therefore distinguishes both A#0 from B#0 and
+// arithmetic expressions containing those reads.
+//
+// CorrelationIdentifier spellings are deliberately excluded. They are
+// alpha-renamable planner binders, not SQL output aliases:
+// SemanticEqualsUnderAliasMap equates their Values through an AliasMap and
+// SemanticHashCode is alias-invariant so hash-first memo lookup can find those
+// equal expressions. A stable SQL-visible projection name is carried by an
+// explicit projection alias or by FieldValue display paths, both folded here.
+func ProjectionOutputIdentityKey(v Value, alias string) string {
+	names := make([]string, 0, 1)
+	category := byte(0) // Value-derived output name.
+	if alias != "" {
+		category = 1 // Explicit alias overrides the entire derived name.
+		names = append(names, OutputColumnName(v, alias))
+	} else {
+		WalkValue(v, func(node Value) bool {
+			if field, ok := node.(*FieldValue); ok {
+				if field.Resolved != nil && len(field.Resolved.Accessors) > 1 {
+					for _, accessor := range field.Resolved.Accessors {
+						names = append(names, accessor.Field)
+					}
+				} else {
+					names = append(names, field.Field)
+				}
+			}
+			return true
+		})
+	}
+
+	// The category byte keeps an explicit alias "X" distinct from an unaliased
+	// computed expression whose only nested FieldValue is also "X": their name
+	// lists match, but their emitted names are X vs the computed rendering.
+	encoded := []byte{category}
+	encoded = binary.AppendUvarint(encoded, uint64(len(names)))
+	for _, name := range names {
+		encoded = binary.AppendUvarint(encoded, uint64(len(name)))
+		encoded = append(encoded, name...)
+	}
+	return string(encoded)
+}
+
 // ExplainValue renders a Value as a readable expression string.
 // Free function rather than a Value-interface method so existing
 // third-party Value impls (once the port grows) don't have to

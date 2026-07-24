@@ -1215,10 +1215,13 @@ func isSingularIndexScanWithFetch(ops expressionCounts) bool {
 // matching Java's planHash(CURRENT_FOR_CONTINUATION). Combines the
 // node's own hash with children's hashes via FNV mixing.
 //
-// Unlike stablePlanHash, this LOGICAL-path hash still folds
+// Unlike stablePlanHash, this LOGICAL-path hash normally folds
 // HashCodeWithoutChildren — which carries minted correlation identifiers
 // (q$N) — so REWRITING-phase ties between alias-only twins resolve by
-// arrival order, not hash order. Tolerated deliberately: REWRITING's
+// arrival order, not hash order. Schema-bearing projections opt into their
+// historical schema-neutral tie-break hash: output names refine memo identity
+// but do not change the work being costed or the pre-existing winner. The
+// remaining alias sensitivity is tolerated deliberately: REWRITING's
 // criteria (select/table-function/conjunct counts, predicate depth) are
 // structural and rarely tie across genuinely different rewrites, no
 // nondeterminism has been observed there (the PLANNING-phase flip that
@@ -1230,7 +1233,7 @@ func deepHashCode(e expressions.RelationalExpression) uint64 {
 	if e == nil {
 		return 0
 	}
-	h := e.HashCodeWithoutChildren()
+	h := tieBreakNodeHash(e)
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
 		if ref == nil {
@@ -2420,6 +2423,11 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 		if rv := t.GetResultValue(); rv != nil {
 			stableHashU64(h, values.SemanticHashCode(rv))
 		}
+	case *plans.RecordQueryProjectionPlan:
+		// Deliberately type-only. Projection Values and output names belong to
+		// memo identity; the #17 cost tie-break historically treated two
+		// projections over the same child as equal work. Folding the new
+		// schema discriminator here would flip established plan shapes.
 	case *plans.RecordQueryInMemorySortPlan:
 		for _, k := range t.GetSortKeys() {
 			_, _ = io.WriteString(h, k.Field)

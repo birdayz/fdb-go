@@ -150,17 +150,17 @@ func extractTieBreakTypeKey(e expressions.RelationalExpression) string {
 }
 
 // extractTieBreakHash is a deterministic structural hash over the
-// expression DAG: the node's own HashCodeWithoutChildren folded
-// ORDER-SENSITIVELY over each quantifier's reference hash (quantifier
-// order is structural), where a reference hashes as the COMMUTATIVE
-// (XOR) fold of its members — so the value never depends on member
-// insertion order. Back-edges (recursive CTE references) are skipped
-// via the visited guard.
+// expression DAG: the node's schema-neutral tie-break hash folded
+// ORDER-SENSITIVELY over each quantifier's reference hash (quantifier order is
+// structural), where a reference hashes as the COMMUTATIVE (XOR) fold of its
+// members — so the value never depends on member insertion order. Memo identity
+// remains schema-aware. Back-edges (recursive CTE references) are skipped via
+// the visited guard.
 func extractTieBreakHash(e expressions.RelationalExpression, visited map[*expressions.Reference]bool) uint64 {
 	if e == nil {
 		return 0
 	}
-	h := e.HashCodeWithoutChildren()
+	h := tieBreakNodeHash(e)
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
 		if ref == nil || visited[ref] {

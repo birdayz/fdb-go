@@ -283,9 +283,10 @@ func (s *designationScope) predCountByLevel(e expressions.RelationalExpression, 
 	return currentLevel
 }
 
-// deepHash hashes the designated tree — node content hash folded with each
-// child edge's quantifier attributes and the designated children's hashes,
-// order-sensitive (see deepHashCode's commutative-XOR caution).
+// deepHash hashes the designated tree — schema-neutral tie-break node content
+// folded with each child edge's quantifier attributes and the designated
+// children's hashes, order-sensitive (see deepHashCode's commutative-XOR
+// caution). Memo identity remains independently schema-aware.
 //
 // The EDGE ATTRIBUTES (kind / null-on-empty / strict-single) must be folded:
 // they live on the quantifier, so HashCodeWithoutChildren cannot see them and
@@ -300,7 +301,7 @@ func (s *designationScope) deepHash(e expressions.RelationalExpression, visiting
 	if e == nil {
 		return 0
 	}
-	h := e.HashCodeWithoutChildren()
+	h := tieBreakNodeHash(e)
 	for _, q := range e.GetQuantifiers() {
 		// attrs == 0 is the default edge (plain ForEach): folded as a no-op
 		// so attribute-default trees keep their exact pre-refinement hash —

@@ -23,10 +23,21 @@ closed rather than silently alter rows or output schema.
   `upgradeFirstFilter` installation result is checked and returns a typed 0AF00
   if the builder's filter-on-unary-spine invariant ever breaks; successful
   comparison and correlated-EXISTS attachment paths are pinned too.
-- [ ] **CQ-2 (HIGH) — include projection aliases in semantic identity.**
-  Logical and physical projection equality/hashing must preserve schema-bearing
-  aliases; `IsIdentity` and `RemoveProjectionRule` must not erase an alias or a
-  projection over the wrong quantifier.
+- [x] **CQ-2 (HIGH) — include projection aliases in semantic identity.**
+  Confirmed reachable and fixed: logical and physical memo identity now includes
+  each slot's executor-visible `OutputColumnName` (including the Value-derived
+  name when its alias is missing/empty), and projection
+  constructors/accessors defensively protect that identity.
+  `ProjectionElimRule`, physical `IsIdentity`, and `RemoveProjectionRule` now
+  preserve schema-bearing aliases and reject a whole-row value over the wrong
+  quantifier. Internal `CorrelationIdentifier` spellings remain intentionally
+  excluded: they are alpha-renamable planner binders, not SQL output aliases,
+  as pinned by `TestRelationalAliasCompleteness` and
+  `TestPlanIdentity_SemanticHashAliasInvariant_RFC176`. Schema-aware memo
+  identity is deliberately decoupled from the historical schema-neutral
+  cost/designation/extraction tie-break hash, so this correctness refinement
+  does not churn otherwise-equivalent chosen plan shapes. Focused memo, rule,
+  plan-identity, and full-pipeline regressions pin all paths.
 - [ ] **CQ-3 (HIGH) — fix correlated EXISTS over non-grouped aggregates with
   LIMIT/OFFSET.** Materialize aggregate cardinality before applying pagination;
   flip the existing wrong-row sentinel to the SQL-correct result.
@@ -5570,17 +5581,13 @@ adjusted-MaxMatchMap reader) landed in the same branch, pinned by
   minimizer + yamsql draft emitter (§6), the forced-alternative mode
   (disable dominant plan families so losing memo alternatives get
   row-checked), non-correlated EXISTS/IN if feasible.
-- [ ] **`LogicalProjectionExpression` identity ignores its output ALIASES**
-  (`EqualsWithoutChildren` / `HashCodeWithoutChildren`). Aliases are output
-  schema but not expression identity, so the memo cannot tell an aliased
-  projection from a de-aliased one and the survivor of a merge is arbitrary
-  — which is WHY two separate alias-dropping rebuilds
-  (`PushLimitThroughProjectionRule`, `properties/extract.go`) stayed
-  invisible until a generative harness compared column names. Either fold
-  aliases into identity or assert alias-equality on merge. (Graefe, RFC-182
-  P2 join review.) Also: `plans.NewRecordQueryProjectionPlan` now has zero
-  non-test callers — delete it, it is the attractive nuisance that made the
-  plan-side version of this bug easy to write.
+- [x] **`LogicalProjectionExpression` identity ignores its output ALIASES**
+  — closed by CQ-2 above. Both logical and physical projection identity now
+  includes executor-visible output names, with memo non-collapse tests and
+  alias-preserving elimination regressions. `NewRecordQueryProjectionPlan`
+  remains for API/test compatibility, but now defensively copies its projection
+  slice and shares the same immutable, schema-aware physical identity
+  implementation.
 - [ ] **Nested IN over an intersection extracts `InJoin(<nil>)`** (RFC-167
   shell instance). `WHERE b IN (…) AND c = ? AND a IN (…)`: the inner IN
   wrapper is never handed to WithChildren, so no per-wrapper relink reaches
