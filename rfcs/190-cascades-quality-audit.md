@@ -748,9 +748,43 @@ byte-identical. `just generate`, `just lint`, and full `just test` pass (56/56).
 
 ### 190.11 (MED) — cost-model test suite
 
-The component that picks the winner has 3 tests + 1 fuzz-sanity. **Fix:** add selection-flip tests
-(which plan wins for representative op-profiles), rung-order tests, and the 190.2 transitivity
-property test. Target: every rung has a test that flips the winner when that rung changes.
+The original “3 tests + 1 fuzz” census was stale: `planning_cost_model_test.go` alone already had 25
+tests, and `FuzzCostSanity` checks scalar-cost finiteness rather than
+`PlanningCostModelLess`. A source audit enumerated 22 ordered PLANNING decision slots (20 conceptual
+criteria, with total-fetch count, fetch depth, and explicit-Fetch count separately decisive). Fifteen
+slots already had full-comparator winner coverage; seven did not.
+
+Seventeen focused tests now close every missing winner rung:
+
+- residual predicates before data-access count; data-access count before the Go sort extension; sort
+  before type-filter count; and type-filter count before depth;
+- recursive DFS before sort, plus a same-shape FlatMap winner that reverses when the two input-table
+  statistics are swapped;
+- the root-IN penalty before later tiers, a separately isolated nested-InJoin count, the configured
+  primary/index preference, and the strict-SARG-superset branch;
+- total fetches before fetch depth, explicit Fetch count before unmatched fields, NLJ top-level
+  predicate count, DefaultOnEmpty count, and the scalar-cost fallback; and
+- the two previously helper-only REWRITING decisions: residual-conjunct count and predicate depth.
+
+Late-rung fixtures are intentionally adversarial: where applicable, scalar cost or the final stable
+hash prefers the loser, so removing the asserted rung turns the test red instead of accidentally
+passing at fallback. The existing sort-cycle regression is strengthened into a scoped strict-weak-
+ordering gate over 34 homogeneous plans: irreflexivity, antisymmetry, totality up to stable identity,
+35,904 ordered triples, tie substitutability, and permutation-independent minimum selection across
+all 68 cyclic forward/reverse orders. The scope is deliberate. Java's heterogeneous root-IN
+`flipFlop` short circuit can report `+1` in both orientations for a SARGed InJoin(index) versus an
+unsarged InJoin(primary); 190.11 does not make a false global antisymmetry claim.
+
+The audit also surfaced a separate production defect: `firstMemberCostMemoised` walks only
+exploratory `Reference.Members()` even though `Reference.Get()` falls back to final members. A
+one-line probe changed six golden plans—two filter/aggregate shapes and four IN shapes, the latter
+exposing likely `InUnion` underpricing. That experiment was reverted from this test-only milestone
+and booked as 190.11-FU for Java tracing, direct regression coverage, and per-flip review.
+
+Focused tests, race validation, and repeated execution pass; the full 2,600-entry plan golden remains
+byte-identical. `just generate`, `just lint`, and full `just test` pass (56/56).
+
+**190.11 is complete. FINAL REVIEW: two independent Codex audits ACK.**
 
 ### 190.12 (MED) — committed plan-shape golden
 

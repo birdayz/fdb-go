@@ -366,6 +366,23 @@ func TestCostModel_SortGateCycleRegression(t *testing.T) {
 	}
 	less := func(i, j int) bool { return cmp[i][j] < 0 }
 
+	// --- Property 0: irreflexivity. compare(a,a) == 0 and !(a < a). ---
+	irreflexiveViolations := 0
+	for i := 0; i < n; i++ {
+		selfCmp := planningCostModelCompareWith(corpus[i].plan, corpus[i].plan, nil, ctx)
+		selfLess := selfCmp < 0
+		if selfCmp != 0 || selfLess {
+			irreflexiveViolations++
+			t.Errorf(
+				"IRREFLEXIVITY VIOLATION: compare(%s,%s)=%d Less(self)=%v",
+				corpus[i].name,
+				corpus[i].name,
+				selfCmp,
+				selfLess,
+			)
+		}
+	}
+
 	// Pin the repaired orientation of both pre-190.2 cycles explicitly; the
 	// property sweep below must not be allowed to pass after corpus drift has
 	// accidentally removed either load-bearing triple.
@@ -396,6 +413,7 @@ func TestCostModel_SortGateCycleRegression(t *testing.T) {
 
 	// --- Property 1: antisymmetry. compare(a,b) == -compare(b,a). ---
 	antisymViolations := 0
+	totalityViolations := 0
 	for i := 0; i < n; i++ {
 		for j := i + 1; j < n; j++ {
 			if cmp[i][j] != -cmp[j][i] {
@@ -435,6 +453,27 @@ func TestCostModel_SortGateCycleRegression(t *testing.T) {
 					}
 				}
 			}
+			if cmp[i][j] == 0 && cmp[j][i] == 0 {
+				hashI := costExprHash(corpus[i].plan)
+				hashJ := costExprHash(corpus[j].plan)
+				explainI := corpus[i].plan.Explain()
+				explainJ := corpus[j].plan.Explain()
+				if hashI != hashJ || explainI != explainJ {
+					totalityViolations++
+					if totalityViolations <= 20 {
+						t.Errorf(
+							"TOTALITY VIOLATION: %s and %s tie despite distinct stable identities\n"+
+								"  hash=(%d,%d)\n  explain=(%q,%q)",
+							corpus[i].name,
+							corpus[j].name,
+							hashI,
+							hashJ,
+							explainI,
+							explainJ,
+						)
+					}
+				}
+			}
 		}
 	}
 
@@ -471,11 +510,70 @@ func TestCostModel_SortGateCycleRegression(t *testing.T) {
 		t.Error("tie-consistency corpus is vacuous: no equivalent candidate pair")
 	}
 
-	if antisymViolations == 0 && transitivityViolations == 0 && tieViolations == 0 {
-		t.Logf("strict weak ordering holds across the scoped %d-plan corpus (%d pairs, %d ordered triples, %d ties)",
-			n, n*(n-1)/2, n*(n-1)*(n-2), tiesChecked)
+	// --- Property 4: permutation-independent minimum selection. ---
+	// OptimizeGroup uses a linear minimum fold. A strict weak order must pick
+	// the same semantic minimum regardless of member arrival order. Exercise
+	// every cyclic rotation in both directions; comparator-equivalent clones
+	// may exchange pointer identity, but their stable hash and Explain must be
+	// identical.
+	minimum := func(order []int) int {
+		best := order[0]
+		for _, candidate := range order[1:] {
+			if less(candidate, best) {
+				best = candidate
+			}
+		}
+		return best
+	}
+	natural := make([]int, n)
+	for i := range natural {
+		natural[i] = i
+	}
+	baselineWinner := minimum(natural)
+	permutationViolations := 0
+	permutationsChecked := 0
+	for reverse := 0; reverse < 2; reverse++ {
+		for shift := 0; shift < n; shift++ {
+			order := make([]int, n)
+			for position := 0; position < n; position++ {
+				offset := position
+				if reverse == 1 {
+					offset = n - 1 - position
+				}
+				order[position] = (shift + offset) % n
+			}
+			winner := minimum(order)
+			permutationsChecked++
+			if costExprHash(corpus[winner].plan) != costExprHash(corpus[baselineWinner].plan) ||
+				corpus[winner].plan.Explain() != corpus[baselineWinner].plan.Explain() {
+				permutationViolations++
+				if permutationViolations <= 20 {
+					t.Errorf(
+						"PERMUTATION VIOLATION: rotation=%d reverse=%v chose %s, baseline chose %s",
+						shift,
+						reverse == 1,
+						corpus[winner].name,
+						corpus[baselineWinner].name,
+					)
+				}
+			}
+		}
+	}
+
+	if irreflexiveViolations == 0 && antisymViolations == 0 && totalityViolations == 0 &&
+		transitivityViolations == 0 && tieViolations == 0 && permutationViolations == 0 {
+		t.Logf("strict weak ordering holds across the scoped %d-plan corpus (%d pairs, %d ordered triples, %d ties, %d permutations)",
+			n, n*(n-1)/2, n*(n-1)*(n-2), tiesChecked, permutationsChecked)
 	} else {
-		t.Logf("found %d antisymmetry, %d transitivity, and %d tie-consistency violations across %d plans",
-			antisymViolations, transitivityViolations, tieViolations, n)
+		t.Logf(
+			"found %d irreflexivity, %d antisymmetry, %d totality, %d transitivity, %d tie-consistency, and %d permutation violations across %d plans",
+			irreflexiveViolations,
+			antisymViolations,
+			totalityViolations,
+			transitivityViolations,
+			tieViolations,
+			permutationViolations,
+			n,
+		)
 	}
 }

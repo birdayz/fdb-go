@@ -271,8 +271,27 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   constraint propagation. Red-verification by hiding one constructor reported exactly the omitted
   rule. Focused/race/repeat validation passes, the 2,600-entry plan golden is byte-identical, and
   full `just test` passes (56/56). **FINAL REVIEW: two independent Codex audits ACK.**
-- [ ] **190.11 (MED)** — cost-model test suite (currently 3 tests + 1 fuzz-sanity for the component
-  that picks the winner). Add selection-flip / rung-order / transitivity coverage.
+- [x] **190.11 (MED)** — DONE. The stale “3 tests + 1 fuzz” census understated the suite:
+  `planning_cost_model_test.go` already contained 25 tests, while the fuzz target checks scalar-cost
+  finiteness rather than the winner comparator. A source audit found 22 ordered PLANNING decision
+  slots (20 conceptual criteria; the fetch block has three separately decisive sub-rungs), with 15
+  covered end to end. Seventeen focused tests now close all seven missing winner rungs (data-access
+  count, recursive DFS, IN penalty, explicit Fetch count, nested InJoin count, NLJ predicate count,
+  DefaultOnEmpty), pin the primary/index config and strict-SARG branches, prove a same-shape
+  join-order winner flip under swapped statistics, exercise adversarial rung ordering, and cover the
+  two missing REWRITING tiers. Late-rung fixtures deliberately make scalar cost or stable hash favor
+  the loser. The scoped 34-plan property corpus checks irreflexivity, antisymmetry, totality up to
+  stable identity, 35,904 ordered triples, tie substitutability, and 68 rotated/reversed minimum
+  folds. Global antisymmetry is deliberately not claimed: Java's root-IN `flipFlop` can return `+1`
+  in both orientations for heterogeneous SARG states. Focused/race/repeat validation passes, the
+  2,600-entry plan golden is byte-identical, and full `just test` passes (56/56). **FINAL REVIEW:
+  two independent Codex audits ACK.**
+- [ ] **190.11-FU (MED)** — finals-only memo children are costed as unknown. The audit found
+  `firstMemberCostMemoised` iterating exploratory `Reference.Members()` even though `Reference.Get()`
+  deliberately falls back to final members. A one-line lookup probe changed six golden plans: two
+  filter/aggregate shapes improved, while four IN shapes exposed likely `InUnion` underpricing.
+  Reverted from the zero-flip 190.11 commit; fix with Java tracing, direct finals-only regressions,
+  and a per-flip audit rather than blessing mixed effects.
 - [x] **190.12 (MED)** — DONE (impl commit #1). Committed `explaindiff/testdata/plan_shape.golden`
   (16550 lines, 2421 queries + 158 DML) + `TestPlanShapeGolden` (`plan_shape_golden_test.go`) — an
   always-on, no-FDB snapshot net that fails on any un-blessed physical-plan-shape change and prints
@@ -461,7 +480,8 @@ ordinalization) — both distinct from A's wrong-rows/wrong-order fix.
 Torvalds; rev 1 NAK'd, rev 2 folded: finding 2 → DELETE not rename, finding 3 → bare-comparison set +
 flipFlop sign + config confirmed-absent, finding 6 → sparse-sorted first-map, finding 10 M4 → plan
 plumbing). Java refs confirmed against 4.12.11.0. Grind order: 2 → 6 → 3 → 10(M2 → M5 → M3&M4).
-Two follow-ups booked below (port Java's real RemoveRangeOne; model IndexScanPreference config).**
+One follow-up remains booked below (port Java's real RemoveRangeOne);
+`IndexScanPreference` configuration parity landed in RFC-189 F3.**
 
 ### [x] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate — DONE
 `rule_remove_range_one.go:52,68` gated deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;
@@ -484,11 +504,11 @@ Java `RemoveRangeOneRule.java:45-102` drops an unreferenced `RANGE(0,1)` table-f
 a `SelectExpression` (nothing to do with LIMIT) — UNPORTED. Porting it reclaims the `RemoveRangeOne`
 name cleanly. Distinct missing-rule item; needs Graefe+Torvalds review (query-engine rule).
 
-### [ ] Finding 3-followup — model IndexScanPreference config (booked by RFC-188 §2)
-Go's `PlanContext` has no `IndexScanPreference` knob (grep-confirmed absent); Cascades default is
-`PREFER_SCAN` (proto enum 0). Modeling `PREFER_INDEX`/`PREFER_PRIMARY_KEY_INDEX` + the legacy
-multi-type-no-PK-prefix default (`RecordQueryPlanner:194`) is out of scope for finding 3 (the SARG
-sub-case lands regardless). Nobody sets it today; book for when a config surface needs it.
+### [x] Finding 3-followup — model IndexScanPreference config (booked by RFC-188 §2) — DONE
+RFC-189 F3 (`7313c51c2`) added `IndexScanPreference` to the existing `PlannerConfiguration` mirror,
+defaults it to Cascades' `PREFER_SCAN`, and consults it through the real `PlanContext` cost-model path.
+`PREFER_INDEX` and `PREFER_PRIMARY_KEY_INDEX` mirror Java's index-preferring branch. Direct tests pin
+all three values and the config-read path; RFC-190.11 additionally pins a full-comparator winner flip.
 
 ### [x] Finding 3 (HIGH, worse plan) — comparePrimaryScanVsIndexScan drops Java's type-filter SARG subcase — DONE
 `planning_cost_model.go` ported only the shape check and dropped Java's SARG sub-case: when the primary
@@ -496,8 +516,9 @@ side carries a type filter, the index side none, and the index SARGs strictly mo
 Java prefers the INDEX. FIXED: added `primaryVsIndexVerdict` (SARG sub-case + PREFER_SCAN default),
 threading the sign by which side is the primary scan (Java's flipFlop negation). Comparison set built
 from BARE comparisons (type + comparand, column/position EXCLUDED — Java's ComparisonsProperty
-`Set<Comparison>`), via `scanSargComparisonSet`. `IndexScanPreference` confirmed absent in Go (Cascades
-default PREFER_SCAN); config knob booked separately (Finding 3-followup).
+`Set<Comparison>`), via `scanSargComparisonSet`. RFC-189 F3 subsequently wired the full
+`IndexScanPreference` config branch; RFC-190.11 pins both that branch and the strict-SARG-superset
+branch through the full comparator.
 **Reachability (corrected after codex P1a fold): INERT on the corpus.** The sub-case's SARG walk must
 descend the CONCRETE plan (the production `scanPlanExpression`/`TypeFilter(Scan)` wrapper exposes no
 quantifiers — `GetQuantifiers()==nil`), else the primary SARG set is spuriously empty and the sub-case

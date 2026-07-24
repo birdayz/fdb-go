@@ -308,6 +308,7 @@ go_test(
         "planner_planning_phase_test.go",
         "planner_test.go",
         "planning_cost_model_hash_test.go",
+        "planning_cost_model_rungs_test.go",
         "planning_cost_model_test.go",
         "predicate_count_by_level_test.go",
         "predicate_matchers_test.go",
@@ -896,6 +897,7 @@ go_test(
         "rule_push_requested_ordering_through_select_test.go",
         "rule_sink_limit_into_vector_scan_test.go",
         "rule_split_select_extract_independent_test.go",
+        "planning_cost_model_rungs_test.go",
     ],
     deps = [
         "//gen",
