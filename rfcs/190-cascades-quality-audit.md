@@ -7,7 +7,8 @@ closure, 190.4a (guarded dead candidate existentials), and 190.4b (matcher metad
 190.4c (Select semantics plus production correlated-UNNEST fan-out reach) is complete, closing the
 Graefe-reruled 190.4 umbrella. 190.5 (intersection reach), 190.6 (NLJ ordering), 190.7 (EXISTS
 compensation de-duplication), 190.8 (scalar catalog/type-carrier coherence), and 190.9 (NLJ
-candidate-loop de-duplication) are also complete.
+candidate-loop de-duplication) are also complete. 190.10 replaces the stale rule-reference census
+with direct behavioral coverage and an executable completeness gate over all 125 production rules.
 190.1 was **materially re-designed** after its original delete premise proved false (the arm's
 "never produced an executable plan" gravestone is a lie — deleting it regresses working FDB tests).
 The new 190.1 (converge on Java's two-rule architecture via a guarded `PartitionSelectRule`) carries
@@ -720,13 +721,30 @@ passes, and the complete 2,600-entry plan golden is byte-identical.
 
 ### 190.10 (MED) — behavioral tests for the 12 untested rules
 
-113/125 rules have direct coverage; 12 don't (8 zero-reference, all ordering/projection/fetch
-optimizers whose effect is invisible to row tests): `SplitSelectExtractIndependentQuantifiersRule`,
-`OrderedPrimaryScanRule`, `RemoveProjectionRule`, `PushUnorderedUnionThroughFetchRule`,
+The original 113/125 result was a text/reference census, not an executable direct-coverage proof:
+eight rules had no references, four were exercised only indirectly, and subsequent tests made part
+of that snapshot stale. The implemented gate derives the exact 125-rule universe from every
+production rule set and parses the package's test sources. A rule is covered only when its canonical
+constructor is called from a function Go itself can discover as a test. Comments, helper-only calls,
+bare identifiers/types, malformed test signatures, unrelated selectors, and locally shadowed
+constructors cannot satisfy it; correctly imported external-package tests can.
+
+Thirteen isolated positive tests close every missing or ambiguous direct-coverage case:
+`SplitSelectExtractIndependentQuantifiersRule`, `OrderedPrimaryScanRule`,
 `PushRequestedOrderingThrough{Select,SelectExistential,InLikeSelect,RecursiveUnion}Rule`,
-+ 4 with indirect e2e only. **Fix:** a unit test per rule that seeds the matching expression and
-asserts the transformation fires (plan-shape, not rows). Adds a completeness test: every registered
-rule has a behavioral test.
+`PushInJoinThroughFetchRule`, `PushUnorderedUnionThroughFetchRule`, `RemoveProjectionRule`,
+`SinkLimitIntoVectorScanRule`, `ImplementLimitRule`, `ImplementInMemorySortRule`, and
+`FinalizeExpressionsRule`. They assert the actual yielded plan or constraint, including alias and
+correlation translation, static-values versus runtime-parameter IN metadata, exact union/fetch
+child relinking, projection identity, vector limit sinking, and final-member promotion. Existing
+direct coverage for `MergeProjectionAndFetchRule` is retained and now enforced by the same gate.
+
+The completeness gate was red-verified by replacing the ordered-primary constructor call with an
+opaque lookup: it failed with exactly `OrderedPrimaryScanRule`, then returned green when restored.
+Focused tests, race validation, and repeated execution pass; the complete 2,600-entry plan golden is
+byte-identical. `just generate`, `just lint`, and full `just test` pass (56/56).
+
+**190.10 is complete. FINAL REVIEW: two independent Codex audits ACK.**
 
 ### 190.11 (MED) — cost-model test suite
 

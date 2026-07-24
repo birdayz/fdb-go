@@ -963,3 +963,174 @@ func TestPushMergeSortUnionThroughFetch_Fires(t *testing.T) {
 			len(mp.GetComparisonKeys()), mp.IsReverse(), mp.RemovesDuplicates())
 	}
 }
+
+func TestPushInJoinThroughFetchRule_Fires(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		sourceKind plans.InSourceKind
+		inValues   []any
+	}{
+		{
+			name:       "static values",
+			sourceKind: plans.InSourceValues,
+			inValues:   []any{int64(1), int64(2)},
+		},
+		{
+			name:       "runtime parameter",
+			sourceKind: plans.InSourceParameter,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
+				return v, true
+			}
+			indexPlan := plans.NewRecordQueryIndexPlan(
+				"idx_in", nil, []string{"T"}, values.UnknownType, false,
+			)
+			fetch := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+				expressions.ForEachQuantifier(expressions.InitialOf(indexPlan)),
+				translateFn,
+				values.UnknownType,
+				plans.FetchIndexRecordsPrimaryKey,
+			)
+			inJoin := plans.NewRecordQueryInJoinPlanFromQuantifier(
+				expressions.ForEachQuantifier(expressions.InitialOf(fetch)),
+				"__in_value",
+				true,
+				true,
+			)
+			inJoin.SetInValues(tc.inValues)
+			inJoin.SetSourceKind(tc.sourceKind)
+
+			yielded := FireImplementationRule(
+				NewPushInJoinThroughFetchRule(),
+				expressions.InitialOf(inJoin),
+			)
+			if len(yielded) != 1 {
+				t.Fatalf("expected one Fetch(InJoin(index)) result, got %d", len(yielded))
+			}
+			liftedFetch, ok := yielded[0].(*plans.RecordQueryFetchFromPartialRecordPlan)
+			if !ok {
+				t.Fatalf("yielded %T, want *plans.RecordQueryFetchFromPartialRecordPlan", yielded[0])
+			}
+			pushed, ok := liftedFetch.GetInner().(*plans.RecordQueryInJoinPlan)
+			if !ok {
+				t.Fatalf(
+					"lifted fetch inner = %T, want *plans.RecordQueryInJoinPlan",
+					liftedFetch.GetInner(),
+				)
+			}
+			if pushed.GetInner() != plans.RecordQueryPlan(indexPlan) {
+				t.Fatalf("pushed InJoin inner = %T, want the original index plan", pushed.GetInner())
+			}
+			if pushed.GetBindingName() != "__in_value" || !pushed.IsSorted() || !pushed.IsReverse() {
+				t.Fatalf(
+					"InJoin attributes changed: binding=%q sorted=%v reverse=%v",
+					pushed.GetBindingName(),
+					pushed.IsSorted(),
+					pushed.IsReverse(),
+				)
+			}
+			if pushed.GetSourceKind() != tc.sourceKind {
+				t.Fatalf(
+					"InJoin source kind = %v, want %v",
+					pushed.GetSourceKind(),
+					tc.sourceKind,
+				)
+			}
+			gotValues := pushed.GetInValues()
+			if len(gotValues) != len(tc.inValues) {
+				t.Fatalf("InJoin values = %#v, want %#v", gotValues, tc.inValues)
+			}
+			for i := range gotValues {
+				if gotValues[i] != tc.inValues[i] {
+					t.Fatalf("InJoin value %d = %#v, want %#v", i, gotValues[i], tc.inValues[i])
+				}
+			}
+		})
+	}
+}
+
+func TestPushUnorderedUnionThroughFetchRule_Fires(t *testing.T) {
+	t.Parallel()
+
+	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
+		return v, true
+	}
+	indexPlans := make([]*plans.RecordQueryIndexPlan, 0, 2)
+	makeFetchLeg := func(indexName string) expressions.Quantifier {
+		indexPlan := plans.NewRecordQueryIndexPlan(
+			indexName, nil, []string{"T"}, values.UnknownType, false,
+		)
+		indexPlans = append(indexPlans, indexPlan)
+		fetch := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+			expressions.ForEachQuantifier(expressions.InitialOf(indexPlan)),
+			translateFn,
+			values.UnknownType,
+			plans.FetchIndexRecordsPrimaryKey,
+		)
+		return expressions.ForEachQuantifier(expressions.InitialOf(fetch))
+	}
+	union := plans.NewRecordQueryUnorderedUnionPlanFromQuantifiers(
+		[]expressions.Quantifier{makeFetchLeg("idx_a"), makeFetchLeg("idx_b")},
+	)
+
+	yielded := FireImplementationRule(
+		NewPushUnorderedUnionThroughFetchRule(),
+		expressions.InitialOf(union),
+	)
+	if len(yielded) != 1 {
+		t.Fatalf("expected one Fetch(UnorderedUnion(indexes)) result, got %d", len(yielded))
+	}
+	liftedFetch, ok := yielded[0].(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if !ok {
+		t.Fatalf("yielded %T, want *plans.RecordQueryFetchFromPartialRecordPlan", yielded[0])
+	}
+	pushed, ok := liftedFetch.GetInner().(*plans.RecordQueryUnorderedUnionPlan)
+	if !ok {
+		t.Fatalf(
+			"lifted fetch inner = %T, want *plans.RecordQueryUnorderedUnionPlan",
+			liftedFetch.GetInner(),
+		)
+	}
+	inners := pushed.GetInners()
+	if len(inners) != 2 {
+		t.Fatalf("pushed unordered union has %d children, want two", len(inners))
+	}
+	for i := range inners {
+		if inners[i] != plans.RecordQueryPlan(indexPlans[i]) {
+			t.Fatalf("pushed child %d = %T, want the original index plan", i, inners[i])
+		}
+	}
+}
+
+func TestRemoveProjectionRule_FiresForIdentityProjection(t *testing.T) {
+	t.Parallel()
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scanRef := expressions.InitialOf(scan)
+	innerQ := expressions.ForEachQuantifier(scanRef)
+	projection := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{values.NewQuantifiedObjectValue(innerQ.GetAlias())},
+		nil,
+		innerQ,
+	)
+
+	yielded := FireImplementationRule(
+		NewRemoveProjectionRule(),
+		expressions.InitialOf(projection),
+	)
+	if len(yielded) != 1 {
+		t.Fatalf("expected the identity projection to be removed once, got %d yields", len(yielded))
+	}
+	if yielded[0] != scan {
+		t.Fatalf("yielded %T, want the exact inner scan", yielded[0])
+	}
+}

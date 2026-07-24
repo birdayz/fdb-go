@@ -261,8 +261,16 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   `just lint`, and full `just test` pass (56/56). **FINAL REVIEW: two independent Codex audits ACK.**
 
 **Test gaps (the plan-quality axis):**
-- [ ] **190.10 (MED)** — behavioral tests for the 12 untested rules (8 zero-reference: all
-  ordering/projection/fetch optimizers whose effect is invisible to row tests).
+- [x] **190.10 (MED)** — DONE. Replaced the stale text/reference census with a source-derived
+  completeness gate over the exact 125-rule production universe. The gate accepts only canonical
+  rule-constructor calls inside runnable Go tests (including correctly imported external-package
+  tests), and rejects comments, helpers, malformed test signatures, unrelated selectors, and
+  locally shadowed constructors. Thirteen isolated positive tests now pin the missing or ambiguous
+  ordering, projection, fetch, limit/sort implementation, and finalization transformations,
+  including alias/correlation translation, source-kind preservation, exact child relinking, and
+  constraint propagation. Red-verification by hiding one constructor reported exactly the omitted
+  rule. Focused/race/repeat validation passes, the 2,600-entry plan golden is byte-identical, and
+  full `just test` passes (56/56). **FINAL REVIEW: two independent Codex audits ACK.**
 - [ ] **190.11 (MED)** — cost-model test suite (currently 3 tests + 1 fuzz-sanity for the component
   that picks the winner). Add selection-flip / rung-order / transitivity coverage.
 - [x] **190.12 (MED)** — DONE (impl commit #1). Committed `explaindiff/testdata/plan_shape.golden`
