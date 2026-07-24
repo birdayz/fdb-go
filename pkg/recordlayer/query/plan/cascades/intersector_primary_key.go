@@ -47,104 +47,42 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 
 		var resultExprs []expressions.RelationalExpression
 
-		for i := 0; i < len(accesses)-1; i++ {
-			for j := i + 1; j < len(accesses); j++ {
-				ai := accesses[i].Value
-				aj := accesses[j].Value
-
-				// SAME-INDEX guard by candidate NAME, not object identity:
-				// the context can hold two candidate objects for one index
-				// (and epoch-driven re-matching seeds both), and an
-				// intersection of an index with itself is the same row set
-				// twice — a nonsensical self-intersection.
-				if ai.GetPartialMatch().GetMatchCandidate().CandidateName() ==
-					aj.GetPartialMatch().GetMatchCandidate().CandidateName() {
-					continue
+		// Java's AbstractDataAccessRule enumerates ChooseK(accesses, k) for
+		// every k from 2 through the candidate count. Record the structurally
+		// incompatible binary pairs as a sieve: every larger partition that
+		// contains one can be rejected without rebuilding its scans. Do NOT
+		// put compensation failures in the sieve — compensation intersection
+		// is a separate semantic question, and a larger partition must still
+		// get its own fold.
+		badPairs := make(map[[2]int]struct{})
+		for size := 2; size <= len(accesses); size++ {
+			hasStructurallyCompatiblePartition := false
+			forEachAccessCombination(accesses, size, func(partition []Vectored[*SingleMatchedAccess]) {
+				if partitionContainsBadPair(partition, badPairs) {
+					return
 				}
 
-				planI := createScanForAccess(ai)
-				planJ := createScanForAccess(aj)
-				if planI == nil || planJ == nil {
-					continue
-				}
-
-				bakedKeys := bakedIntersectionKeys(pkValues, []plans.RecordQueryPlan{planI, planJ})
-				if bakedKeys == nil {
-					continue
-				}
-
-				exprI := wrapAccessScan(ai, planI)
-				exprJ := wrapAccessScan(aj, planJ)
-				qI := expressions.ForEachQuantifier(expressions.InitialOf(exprI))
-				qJ := expressions.ForEachQuantifier(expressions.InitialOf(exprJ))
-
-				// The intersection carries its leg edges directly (RFC-184 W2).
-				intersectionPlan := plans.NewRecordQueryIntersectionPlanFromQuantifiers(
-					[]expressions.Quantifier{qI, qJ}, bakedKeys)
-
-				expr, viable := compensateIntersection(
-					[]*SingleMatchedAccess{ai, aj}, intersectionPlan)
-				if !viable {
-					continue
-				}
-				resultExprs = append(resultExprs, expr)
-			}
-		}
-
-		// Cap at 3-way: 4-way intersections have diminishing returns
-		// (each additional leg adds scan I/O but rarely improves
-		// selectivity beyond 3 independent predicates) and the
-		// candidate cap of 4 already limits the input size.
-		if len(accesses) >= 3 {
-			for i := 0; i < len(accesses)-2; i++ {
-				for j := i + 1; j < len(accesses)-1; j++ {
-					for k := j + 1; k < len(accesses); k++ {
-						ai := accesses[i].Value
-						aj := accesses[j].Value
-						ak := accesses[k].Value
-
-						// Same NAME-based guard as the pair loop: the context
-						// can hold two candidate OBJECTS for one index, so
-						// object identity under-detects and an A/A/B triple
-						// would keep the redundant same-index arm.
-						ni := ai.GetPartialMatch().GetMatchCandidate().CandidateName()
-						nj := aj.GetPartialMatch().GetMatchCandidate().CandidateName()
-						nk := ak.GetPartialMatch().GetMatchCandidate().CandidateName()
-						if ni == nj || ni == nk || nj == nk {
-							continue
-						}
-
-						planI := createScanForAccess(ai)
-						planJ := createScanForAccess(aj)
-						planK := createScanForAccess(ak)
-						if planI == nil || planJ == nil || planK == nil {
-							continue
-						}
-
-						bakedKeys := bakedIntersectionKeys(pkValues, []plans.RecordQueryPlan{planI, planJ, planK})
-						if bakedKeys == nil {
-							continue
-						}
-
-						exprI := wrapAccessScan(ai, planI)
-						exprJ := wrapAccessScan(aj, planJ)
-						exprK := wrapAccessScan(ak, planK)
-						qI := expressions.ForEachQuantifier(expressions.InitialOf(exprI))
-						qJ := expressions.ForEachQuantifier(expressions.InitialOf(exprJ))
-						qK := expressions.ForEachQuantifier(expressions.InitialOf(exprK))
-
-						// The intersection carries its leg edges directly (RFC-184 W2).
-						intersectionPlan := plans.NewRecordQueryIntersectionPlanFromQuantifiers(
-							[]expressions.Quantifier{qI, qJ, qK}, bakedKeys)
-
-						expr, viable := compensateIntersection(
-							[]*SingleMatchedAccess{ai, aj, ak}, intersectionPlan)
-						if !viable {
-							continue
-						}
-						resultExprs = append(resultExprs, expr)
+				expr, structurallyCompatible := createPrimaryKeyIntersection(partition, pkValues)
+				if !structurallyCompatible {
+					if size == 2 {
+						badPairs[orderedPositionPair(partition[0].Position, partition[1].Position)] = struct{}{}
 					}
+					return
 				}
+				hasStructurallyCompatiblePartition = true
+				if expr != nil {
+					// Java evicts subpartitions only after
+					// isPartitionRedundant proves the larger partition adds
+					// useful filtering. Go does not carry that proof yet, so
+					// retain every viable bounded subset; blindly evicting a
+					// useful pair for a redundant fourth scan is a regression.
+					resultExprs = append(resultExprs, expr)
+				}
+			})
+			if !hasStructurallyCompatiblePartition {
+				// Java's early-out: if no size-k partition can share the
+				// comparison contract, no size-(k+1) partition can either.
+				break
 			}
 		}
 
@@ -158,6 +96,100 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 			resultExprs,
 		)
 	}
+}
+
+// forEachAccessCombination streams lexicographic size-element subsets of
+// accesses. The callback's partition is a fresh slice and may be retained.
+func forEachAccessCombination(
+	accesses []Vectored[*SingleMatchedAccess],
+	size int,
+	visit func([]Vectored[*SingleMatchedAccess]),
+) {
+	if size <= 0 || size > len(accesses) {
+		return
+	}
+	partition := make([]Vectored[*SingleMatchedAccess], size)
+	var enumerate func(depth, start int)
+	enumerate = func(depth, start int) {
+		if depth == size {
+			visit(append([]Vectored[*SingleMatchedAccess](nil), partition...))
+			return
+		}
+		remaining := size - depth
+		for i := start; i <= len(accesses)-remaining; i++ {
+			partition[depth] = accesses[i]
+			enumerate(depth+1, i+1)
+		}
+	}
+	enumerate(0, 0)
+}
+
+func orderedPositionPair(a, b int) [2]int {
+	if a > b {
+		a, b = b, a
+	}
+	return [2]int{a, b}
+}
+
+func partitionContainsBadPair(
+	partition []Vectored[*SingleMatchedAccess],
+	badPairs map[[2]int]struct{},
+) bool {
+	for i := 0; i < len(partition)-1; i++ {
+		for j := i + 1; j < len(partition); j++ {
+			if _, bad := badPairs[orderedPositionPair(partition[i].Position, partition[j].Position)]; bad {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// createPrimaryKeyIntersection builds one arbitrary-arity partition. The bool
+// reports whether the partition has a coherent structural merge contract
+// (distinct candidate names, realizable scans, and comparison keys that bake
+// against every child layout). A nil expression with true means only that the
+// compensation fold could not be realized; callers must not use that as an
+// ordering-sieve failure.
+func createPrimaryKeyIntersection(
+	partition []Vectored[*SingleMatchedAccess],
+	pkValues []values.Value,
+) (expressions.RelationalExpression, bool) {
+	accesses := make([]*SingleMatchedAccess, 0, len(partition))
+	scans := make([]plans.RecordQueryPlan, 0, len(partition))
+	seenCandidates := make(map[string]struct{}, len(partition))
+	for _, vectored := range partition {
+		access := vectored.Value
+		name := access.GetPartialMatch().GetMatchCandidate().CandidateName()
+		if _, duplicate := seenCandidates[name]; duplicate {
+			return nil, false
+		}
+		seenCandidates[name] = struct{}{}
+
+		scan := createScanForAccess(access)
+		if scan == nil {
+			return nil, false
+		}
+		accesses = append(accesses, access)
+		scans = append(scans, scan)
+	}
+
+	bakedKeys := bakedIntersectionKeys(pkValues, scans)
+	if bakedKeys == nil {
+		return nil, false
+	}
+
+	childQs := make([]expressions.Quantifier, 0, len(partition))
+	for i, access := range accesses {
+		expr := wrapAccessScan(access, scans[i])
+		childQs = append(childQs, expressions.ForEachQuantifier(expressions.InitialOf(expr)))
+	}
+	intersectionPlan := plans.NewRecordQueryIntersectionPlanFromQuantifiers(childQs, bakedKeys)
+	expr, viable := compensateIntersection(accesses, intersectionPlan)
+	if !viable {
+		return nil, true
+	}
+	return expr, true
 }
 
 // compensateIntersection ports the compensation clause of Java's

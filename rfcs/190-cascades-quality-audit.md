@@ -440,6 +440,31 @@ k-way cap to Java's ChooseK enumeration (bounded by candidate count, not a magic
 comparison-key direction + reverse flag into `RecordQueryIntersectionPlan`. Graefe-gated.
 Regression: a 4-way intersection + a `DESC` intersection plan-shape test.
 
+#### 190.5a — bounded generic k-way reach
+
+The magic 3-way loop is gone. The forward-PK-safe intersector now enumerates `ChooseK` subsets
+from 2 through the four restricted candidates, records structurally incompatible pairs in a sieve,
+and stops when no size-k subset can share the current merge contract. The eight-match cap is applied
+after adjusted/raw twins collapse; the four-candidate cap counts only useful restricted candidates,
+so the unrestricted primary scan does not hide a four-secondary-index intersection. Re-entry is
+keyed by the exact maximum-coverage match set plus requested orderings, allowing later and
+same-cardinality adjusted matches without rebuilding an unchanged input.
+
+Unlike Java, this slice deliberately retains all viable bounded subsets. Java evicts a pair/triple
+only after `isPartitionRedundant` proves that the larger intersection adds useful filtering; Go
+does not yet carry that proof, so unconditional maximal pruning could replace a useful pair with a
+redundant extra scan. Production SQL and real FDB regressions prove one selected four-leg
+intersection and exact rows against four three-of-four decoys. The comparison key remains
+forward-only primary key in 190.5a. Focused planner tests are race-clean and repeat-green; all
+three affected Bazel targets pass; parent-vs-current EXPLAIN is 2,579/2,579 byte-identical; the
+1M FDB stress comparison passes all 23 subtests with identical row counts and 151.32s vs 151.71s
+total runtime; full `just test` is 56/56.
+
+**190.5 remains open.** The next atomic slice must port common rich-ordering derivation and
+redundancy proof, require every non-equality-bound PK component, and thread directional comparison
+parts plus `reverse` through plan identity, executor, ordering properties, and rewrites before
+admitting `DESC` legs.
+
 ### 190.6 (architectural — Graefe ruling) — NLJ ordering-obliviousness (localized, not systemic)
 
 Investigation corrected the premise: the join/set-op rules are **not** systemically

@@ -160,33 +160,61 @@ func TestIntersector_ThreeWay(t *testing.T) {
 		t.Fatal("expected viable intersection from 3 different candidates")
 	}
 
-	// 3 candidates produce C(3,2) = 3 two-way + C(3,3) = 1 three-way = 4.
+	// Until Java's isPartitionRedundant proof is ported, keep the useful
+	// subpartitions alongside the larger intersection.
 	exprs := result.GetExpressions()
 	if len(exprs) != 4 {
-		t.Fatalf("expected 4 intersection expressions (3 two-way + 1 three-way), got %d", len(exprs))
+		t.Fatalf("expected 3 pairs and 1 three-way intersection, got %d expressions", len(exprs))
 	}
 
-	// Count 2-leg and 3-leg plans.
-	twoWay, threeWay := 0, 0
-	for _, e := range exprs {
-		plan, ok := e.(*plans.RecordQueryIntersectionPlan)
+	byArity := map[int]int{}
+	for _, expr := range exprs {
+		plan, ok := expr.(*plans.RecordQueryIntersectionPlan)
 		if !ok {
-			t.Fatalf("expected *plans.RecordQueryIntersectionPlan, got %T", e)
+			t.Fatalf("expected *plans.RecordQueryIntersectionPlan, got %T", expr)
 		}
-		switch n := len(plan.GetChildren()); n {
-		case 2:
-			twoWay++
-		case 3:
-			threeWay++
-		default:
-			t.Fatalf("unexpected plan child count: %d", n)
+		byArity[len(plan.GetChildren())]++
+	}
+	if byArity[2] != 3 || byArity[3] != 1 {
+		t.Fatalf("intersection arities = %v, want map[2:3 3:1]", byArity)
+	}
+}
+
+func TestIntersector_FourWay(t *testing.T) {
+	t.Parallel()
+
+	accesses := make([]Vectored[*SingleMatchedAccess], 0, 4)
+	for i, name := range []string{"idxA", "idxB", "idxC", "idxD"} {
+		pm := makeDataAccessTestPartialMatch(
+			name,
+			1,
+			&testPlan{name: name + "_scan", resultType: testIntersectorRowType},
+		)
+		accesses = append(accesses, makeVectoredAccess(pm, i))
+	}
+
+	ctx := newTestPKContext("TestRecord", []string{"id"})
+	result := WithPrimaryKeyIntersector(ctx)(accesses, nil)
+	if !result.IsViable() {
+		t.Fatal("expected viable intersections from four different candidates")
+	}
+
+	byArity := map[int]int{}
+	for _, expr := range result.GetExpressions() {
+		plan, ok := expr.(*plans.RecordQueryIntersectionPlan)
+		if !ok {
+			t.Fatalf("expected *plans.RecordQueryIntersectionPlan, got %T", expr)
 		}
+		byArity[len(plan.GetChildren())]++
 	}
-	if twoWay != 3 {
-		t.Fatalf("expected 3 two-way intersections, got %d", twoWay)
+	if got := byArity[4]; got != 1 {
+		t.Fatalf("four-way intersections = %d, want C(4,4)=1", got)
 	}
-	if threeWay != 1 {
-		t.Fatalf("expected 1 three-way intersection, got %d", threeWay)
+	if byArity[2] != 6 || byArity[3] != 4 {
+		t.Fatalf("intersection arities = %v, want map[2:6 3:4 4:1]", byArity)
+	}
+	if got := len(result.GetExpressions()); got != 11 {
+		t.Fatalf("bounded intersection alternatives = %d, want 6+4+1=11", got)
 	}
 }
 
@@ -500,14 +528,9 @@ func TestIntersector_LowercasePKStillViable(t *testing.T) {
 	}
 }
 
-// TestPushCrossCandidateIntersection_StillFires is the over-decline
-// sentinel: driven at the PRODUCTION entry (pushCrossCandidateIntersection)
-// with two equality-bound partial matches seeded, an intersection final
-// must appear — the P0.1 gate declines non-PK-monotone legs, never
-// everything. (No e2e drives this path from SQL today — the cost model
-// dodges it and no yamsql/planner test produces a cross-candidate
-// intersection; that reachability gap is filed in RFC-181 as the P0.1
-// follow-up. This sentinel is the closest production seam.)
+// TestPushCrossCandidateIntersection_StillFires is the focused over-decline
+// sentinel at the production planner entry. The SQL/FDB tests below this
+// package prove the same path end to end.
 func TestPushCrossCandidateIntersection_StillFires(t *testing.T) {
 	t.Parallel()
 
@@ -534,6 +557,102 @@ func TestPushCrossCandidateIntersection_StillFires(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("pushCrossCandidateIntersection produced no intersection final for two equality-bound matches — the ordering gate over-declined")
+	}
+}
+
+func TestPushCrossCandidateIntersection_MatchGrowthReachesFourWay(t *testing.T) {
+	t.Parallel()
+
+	matches := make([]*testPartialMatch, 0, 4)
+	candidates := make([]MatchCandidate, 0, 4)
+	for _, name := range []string{"idxA", "idxB", "idxC", "idxD"} {
+		pm := makeDataAccessTestPartialMatch(
+			name,
+			1,
+			&testPlan{name: name + "_scan", resultType: testIntersectorRowType},
+		)
+		matches = append(matches, pm)
+		candidates = append(candidates, pm.GetMatchCandidate())
+	}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"TestRecord"}, values.UnknownType)
+	ref := expressions.InitialOf(scan)
+	for i := 0; i < 2; i++ {
+		AddPartialMatchForCandidate(ref, candidates[i], matches[i])
+	}
+
+	ctx := newTestPKContext("TestRecord", []string{"id"})
+	p := NewPlanner(nil, ctx)
+	requested := []*properties.RequestedOrdering{properties.PreserveOrdering()}
+	p.pushCrossCandidateIntersection(ref, candidates[:2], requested)
+
+	for i := 2; i < 4; i++ {
+		AddPartialMatchForCandidate(ref, candidates[i], matches[i])
+	}
+	p.pushCrossCandidateIntersection(ref, candidates, requested)
+
+	for _, member := range ref.FinalMembers() {
+		if plan, ok := member.(*plans.RecordQueryIntersectionPlan); ok &&
+			len(plan.GetChildren()) == 4 {
+			return
+		}
+	}
+	t.Fatal("a two-to-four match-set growth must produce a four-way intersection final")
+}
+
+func TestShouldConsumeIntersection_TracksExactInputSet(t *testing.T) {
+	t.Parallel()
+
+	pmA := makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType})
+	pmB := makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType})
+	pmC := makeDataAccessTestPartialMatch("idxC", 1, &testPlan{name: "scanC", resultType: testIntersectorRowType})
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"TestRecord"}, values.UnknownType)
+	ref := expressions.InitialOf(scan)
+	p := NewPlanner(nil, newTestPKContext("TestRecord", []string{"id"}))
+	requested := []*properties.RequestedOrdering{nil, properties.PreserveOrdering()}
+
+	ab := []Vectored[*SingleMatchedAccess]{makeVectoredAccess(pmA, 0), makeVectoredAccess(pmB, 1)}
+	if !p.shouldConsumeIntersection(ref, ab, requested) {
+		t.Fatal("first exact input must be consumed")
+	}
+	ba := []Vectored[*SingleMatchedAccess]{makeVectoredAccess(pmB, 0), makeVectoredAccess(pmA, 1)}
+	if p.shouldConsumeIntersection(ref, ba, requested) {
+		t.Fatal("the same match set in a different order must not be consumed twice")
+	}
+	ac := []Vectored[*SingleMatchedAccess]{makeVectoredAccess(pmA, 0), makeVectoredAccess(pmC, 1)}
+	if !p.shouldConsumeIntersection(ref, ac, requested) {
+		t.Fatal("a different match set at the same cardinality must be consumed")
+	}
+}
+
+func TestPushCrossCandidateIntersection_RestrictedCandidateCap(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"TestRecord"}, values.UnknownType)
+	ref := expressions.InitialOf(scan)
+	var candidates []MatchCandidate
+	for _, name := range []string{"idxA", "idxB", "idxC", "idxD", "idxE"} {
+		pm := makeDataAccessTestPartialMatch(
+			name,
+			1,
+			&testPlan{name: name + "_scan", resultType: testIntersectorRowType},
+		)
+		candidate := pm.GetMatchCandidate()
+		candidates = append(candidates, candidate)
+		AddPartialMatchForCandidate(ref, candidate, pm)
+	}
+
+	p := NewPlanner(nil, newTestPKContext("TestRecord", []string{"id"}))
+	p.pushCrossCandidateIntersection(
+		ref,
+		candidates,
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
+	)
+	for _, member := range ref.FinalMembers() {
+		if _, ok := member.(*plans.RecordQueryIntersectionPlan); ok {
+			t.Fatal("five restricted candidates must stay outside the bounded intersection search")
+		}
 	}
 }
 
@@ -659,7 +778,7 @@ func TestIntersector_DeclinesMixedLayoutLegs(t *testing.T) {
 }
 
 // TestIntersector_ThreeWay_DuplicateCandidateNameSkipped pins the NAME-based
-// same-index guard on the TRIPLE loop: epoch
+// same-index guard in generic subset enumeration: epoch
 // re-matching can seed TWO candidate OBJECTS for one index, and an object-
 // identity check under-detects — an A/A/B triple kept the redundant
 // same-index arm the guard exists to eliminate. With candidates
@@ -700,5 +819,32 @@ func TestIntersector_ThreeWay_DuplicateCandidateNameSkipped(t *testing.T) {
 	// A/B and A'/B — the A/A' pair is suppressed by name.
 	if n := len(result.GetExpressions()); n != 2 {
 		t.Fatalf("expected exactly the 2 distinct-name pairs, got %d", n)
+	}
+}
+
+func TestIntersector_FourWay_BadPairSieve(t *testing.T) {
+	t.Parallel()
+
+	accesses := []Vectored[*SingleMatchedAccess]{
+		makeVectoredAccess(makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA", resultType: testIntersectorRowType}), 0),
+		makeVectoredAccess(makeDataAccessTestPartialMatch("idxA", 1, &testPlan{name: "scanA2", resultType: testIntersectorRowType}), 1),
+		makeVectoredAccess(makeDataAccessTestPartialMatch("idxB", 1, &testPlan{name: "scanB", resultType: testIntersectorRowType}), 2),
+		makeVectoredAccess(makeDataAccessTestPartialMatch("idxC", 1, &testPlan{name: "scanC", resultType: testIntersectorRowType}), 3),
+	}
+
+	result := WithPrimaryKeyIntersector(newTestPKContext("TestRecord", []string{"id"}))(accesses, nil)
+	if !result.IsViable() {
+		t.Fatal("subsets that do not contain the duplicate-candidate pair must remain viable")
+	}
+	byArity := map[int]int{}
+	for _, expr := range result.GetExpressions() {
+		plan, ok := expr.(*plans.RecordQueryIntersectionPlan)
+		if !ok {
+			t.Fatalf("expected *plans.RecordQueryIntersectionPlan, got %T", expr)
+		}
+		byArity[len(plan.GetChildren())]++
+	}
+	if byArity[2] != 5 || byArity[3] != 2 || byArity[4] != 0 {
+		t.Fatalf("sieved intersection arities = %v, want map[2:5 3:2] and no four-way plan", byArity)
 	}
 }

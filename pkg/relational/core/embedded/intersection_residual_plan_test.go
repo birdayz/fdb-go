@@ -18,6 +18,34 @@ CREATE TABLE items (id BIGINT NOT NULL, category STRING, name STRING, price BIGI
 CREATE INDEX idx_category ON items (category)
 CREATE INDEX idx_price ON items (price)`
 
+const ixFourWaySchema = `
+CREATE TABLE ix4 (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, d BIGINT, payload STRING, PRIMARY KEY (id))
+CREATE INDEX idx_a ON ix4 (a)
+CREATE INDEX idx_b ON ix4 (b)
+CREATE INDEX idx_c ON ix4 (c)
+CREATE INDEX idx_d ON ix4 (d)`
+
+func TestIntersection_FourWayProductionShape(t *testing.T) {
+	t.Parallel()
+
+	plan, err := PlanQueryForTest(
+		"SELECT * FROM ix4 WHERE a = 1 AND b = 2 AND c = 3 AND d = 4",
+		ixFourWaySchema,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if !strings.Contains(plan, "Intersection(") {
+		t.Fatalf("four indexed equalities must reach an intersection, got: %s", plan)
+	}
+	for _, indexName := range []string{"IDX_A", "IDX_B", "IDX_C", "IDX_D"} {
+		if !strings.Contains(plan, "IndexScan("+indexName) {
+			t.Fatalf("four-way intersection is missing %s, got: %s", indexName, plan)
+		}
+	}
+}
+
 func TestIntersectionResidual_CompensatedShape(t *testing.T) {
 	t.Parallel()
 	plan, err := PlanQueryForTest(

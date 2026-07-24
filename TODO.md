@@ -168,10 +168,18 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
     affected Go/Bazel targets green; parent-vs-current explain corpus 2,579/2,579 identical; full
     `just test` 56/56. **FINAL REVIEW: three independent Codex audits ACK** (candidate parity,
     shortcut/cardinality safety, SQL/FDB semantics).
-- [ ] **190.5 (MED)** — index-intersection reach: 3-way cap + ≤4 candidates/≤8 matches
-  (`intersector_primary_key.go:94`, `planner.go:662,709`), PK-only comparison key, no reverse-
-  ordered (`DESC`) intersections (`plans/intersection.go:90`). Java: unbounded k-way + any common
-  ordering + `isReversed`.
+- [ ] **190.5 (MED)** — index-intersection reach: bounded generic k-way now lands, but the
+  comparison key remains forward-only PK and `RecordQueryIntersectionPlan` still carries no
+  reverse flag. Java: bounded-at-call-site `ChooseK` + any common ordering + `isReversed`.
+  - [x] **190.5a** — enumerate every 2..4 restricted-candidate subset under the existing
+    eight-match budget; pair sieve + early-out; exact-input re-entry guard; cap after adjusted-twin
+    collapse; retain subsets until Java's redundancy proof exists. Production SQL + real FDB prove
+    one selected four-way intersection and exclude every three-of-four decoy. Focused race/repeat,
+    affected Bazel 3/3, parent EXPLAIN 2,579/2,579, 1M stress 23/23, and full suite 56/56 green.
+  - [ ] **190.5b** — port rich common-ordering/comparison-key derivation and
+    `isPartitionRedundant`; require every free PK component; atomically carry comparison direction
+    and reverse through plan identity, execution, ordering properties, and fetch/set-op rewrites;
+    add the `DESC` SQL/FDB regression.
 - [ ] **190.6 (architectural — Graefe ruling)** — Go strips requested-ordering enumeration OUT of
   the join/set-op rules and recovers it via a centralized physical sort (`ImplementInMemorySortRule`
   RFC-001 + `winner_lookup.go:103` `pinOrderedSpine`), vs Java folding ordered-variant enumeration
@@ -2212,11 +2220,13 @@ piece if revived.
 >        (4) honest unknowns (:293-316 7.6 model gap, :1304-1352 probe
 >        multi-returns, :6431 NULL literal, :8267,:8286) — justify or leave.
 > Interleaved at phase boundaries (independent wrong-rows P0s, each small+red-pinned):
-> - [x] P0.1 PK-intersection ordering gate (row DROPS, plain SQL) + reverse threading.
+> - [x] P0.1 forward-PK intersection ordering gate (row DROPS, plain SQL).
 >       Follow-up CLOSED: the AND-over-two-indexes SQL shape fires the path e2e
 >       (and_index_intersection.yaml) — and exposed unbaked comparison keys
 >       (OrdinalResolutionError on every such query); fixed by flowing the
 >       descriptor row type into candidates + baking pk keys, plan-time decline.
+>       Ledger correction: reverse threading never landed; it remains the atomic
+>       RFC-190.5b plan/executor/ordering/rewrite slice.
 > - [x] P0.2 streaming-agg ordered child pinned (FinalOf) instead of shared-group memoize
 > - [x] P0.3 union-leg pinning (delegator-hint lie + arity bake → dup rows through DISTINCT)
 > - [x] P0.4 rebuildOrderedSpine executable-plan verification (extraction twin of RFC-180's)
@@ -5188,6 +5198,17 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 ## Stress test 1M baseline (2026-05-27)
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
+
+**2026-07-24 (RFC-190.5a — bounded generic k-way intersection reach):** exact
+parent `bde66debe` vs working tree, same quiet box, sequential fresh FDB
+containers. All 23 subtests PASS with identical row counts and byte-identical
+EXPLAIN corpus (2,579/2,579). Total runtime 151.32s parent vs 151.71s branch
+(+0.26%); million-row scans parent 3.40/3.22/3.41/2.96s vs branch
+3.38/3.29/3.40/2.99s. Bulk loads were effectively identical (customers
+6.224s vs 6.219s; orders 127.648s vs 127.736s). Early point probes on the
+second fresh container showed the known 5–15ms floor jitter, while later
+needle probes converged to 5.2–5.7ms on both sides; no sustained runtime,
+throughput, row-count, or plan-shape regression.
 
 **2026-07-22 (RFC-186 §2A-§2D — designated-final derivation, PK point-probe gate,
 HintCost dispatch): back-to-back master worktree vs branch, same box, sequential
