@@ -326,6 +326,7 @@ go_test(
         "rfc153_p2_correlation_test.go",
         "rfc165_nulls_ordering_test.go",
         "rfc186_pk_gate_test.go",
+        "rfc190_exists_compensation_chain_test.go",
         "rfc190_flatmap_ordering_property_test.go",
         "rfc190_ordered_join_leg_enumeration_test.go",
         "rfc190_ordering_pushdown_test.go",
@@ -882,6 +883,7 @@ go_test(
         "rfc190_ordered_join_leg_enumeration_test.go",
         "rfc190_ordering_pushdown_test.go",
         "rfc190_ordering_recovery_safety_test.go",
+        "rfc190_exists_compensation_chain_test.go",
     ],
     deps = [
         "//gen",

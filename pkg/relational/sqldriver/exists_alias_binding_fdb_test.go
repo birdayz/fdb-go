@@ -203,8 +203,7 @@ func equalStrings(a, b []string) bool {
 // TestFDB_ProjectedExists_FastPath_AliasBinding pins RFC-141 Phase 2 P1b:
 // a PROJECTED `SELECT x, EXISTS(...)` whose EXISTS correlation matches the
 // inner table's PRIMARY KEY (or a secondary index), taking the
-// correlated-scan fast path (tryExistsFlatMap → buildExistsFlatMap →
-// yieldExistsFlatMap).
+// correlated-scan fast path (tryExistsFlatMap → yieldExistsFlatMap).
 //
 // The bug: the fast path pushes the correlation into a parameterized
 // PK/index scan, wraps it in FirstOrDefault, and binds the inner row

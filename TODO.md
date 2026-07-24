@@ -211,10 +211,20 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   collision coverage findings.
 
 **Maintainability:**
-- [ ] **190.7 (MED-HIGH)** — extract the 4×-duplicated existential compensation chain
-  (`rule_implement_nested_loop_join.go:986,2436,2851,3189`; :2436≡:2851 byte-identical, :986 already
-  drifted) into `buildExistsCompensationChain`; dedupe `tryExistsFlatMap`/`buildExistsFlatMap`. NLJ
-  file is 3417 LOC vs Java 331.
+- [x] **190.7 (MED-HIGH)** — DONE. The original four-copy census was stale after 190.1 retired the
+  N-way arm: three source sites remained, reached through four behavioral routes (direct fallback,
+  join fold, primary-key fast path, and secondary-index fast path). Their below-FOD filter →
+  `FirstOrDefault(NULL)` → optional existential residual is now centralized in
+  `buildExistsCompensationChain`; its explicit mode preserves the direct path's fresh bookkeeping
+  aliases and the correlated paths' real inner alias. `buildExistsFlatMap` was removed: its
+  comparison-range construction and residual split are shared with `tryExistsFlatMap`, while the
+  distinct PK/index failure behavior remains local. `buildCorrelatedFlatMapPlan` intentionally
+  remains separate because its ForEach, strict-FOD/default-on-empty, compensation, and predicate
+  ordering contracts differ. The alias-contract regression passes 20×; affected Cascades, yamsql
+  (26/26), and real-FDB routes pass, including race coverage. The parent-to-worktree EXPLAIN corpus
+  is byte-identical (2,581/2,581), and generate, lint, and full `just test` pass (56/56).
+  **FINAL REVIEW: two independent Codex audits ACK** after the zero-below-FOD and predicate/QOV
+  identity coverage was added.
 - [ ] **190.8 (LOW)** — tri-layer scalar-function duplication synced by comment only
   (`values/values.go:1971` `evalScalarFunction` ↔ `embedded/scalar_functions.go` ↔
   `query/expr/walk.go`) → plan-time constant-fold can silently disagree with runtime eval. Shared table.
@@ -644,9 +654,10 @@ so there is no ref child-selection left in the SARG walk.)
   (footgun, bit `rule_implement_in_join` once); `:30` `NewPlanPartition` map-iteration nondeterminism (dead path).
 - `unified_tasks.go:675/696` `isExploratoryMember` ≡ `isAlreadyExploratoryMember` (byte-identical dup);
   O(n) membership scans in per-round loops (O(n²)/group); cost comparator re-walks whole subtrees uncached.
-- Maintainability: NLJ rule 3417 LOC vs Java 331 (10×, #1 churn file, hand-rolled existential/buried-leg
-  subsystem); ~40% comment density carrying reverted-attempt process narrative (violates CLAUDE.md comment
-  guidance).
+- Maintainability: the NLJ rule remains ~3.5k LOC vs Java 331 (10×, #1 churn file, hand-rolled
+  existential/buried-leg subsystem), though RFC-190.7 centralized its repeated existential
+  compensation tail; ~40% comment density carries reverted-attempt process narrative (violates
+  CLAUDE.md comment guidance).
 
 ---
 
@@ -4041,7 +4052,12 @@ ACK'd it). The one clean extraction: pull the per-join ON classification loop bo
 into `classifyJoinOn(...) (nodeOn, lifted, err)` — the densest, most independent, most nameable sub-decision;
 would drop the function to ~340 and make the loop legible. Recommended, not a should-fix.
 
-### [ ] query-engine follow-on (Torvalds ACK book): extract `buildExistentialFlatMapTail(...)` — the existential-wrap tail (belowFOD → FirstOrDefault(NULL) → optional IS[NOT]NULL residual → FlatMap) is now stamped out 4× (implementExistentialSelect ~:924, the 2-leg fold arm ~:2230, the N-way arm ~:2612, yieldExistsFlatMap ~:2836). A future residual-polarity/FOD-contract fix has FOUR landing sites (the EXISTS correlation-leak fix already had to be applied in >1). Extract the invariant tail once the N-way arm is battle-tested; the differing parts (rebasing, FlatMap outer, memo bookkeeping) stay at the call sites. Not a blocker — booked follow-up.
+### [x] query-engine follow-on (Torvalds ACK book): existential compensation-tail extraction — RESOLVED by RFC-190.7
+The original four-copy census became stale when RFC-190.1 retired the N-way arm. RFC-190.7
+centralized the three surviving belowFOD → FirstOrDefault(NULL) → optional IS[NOT]NULL chains in
+`buildExistsCompensationChain`, with fresh-vs-preserved bookkeeping aliases as an explicit mode.
+Caller-specific outer-leg rebasing and FlatMap construction remain local; the PK and secondary-index
+fast routes share one yield path without erasing their distinct decline behavior.
 
 ### [x] query-engine: a DERIVED-TABLE inner in a correlated EXISTS loses its body → wrong rows — FIXED 2026-07-08 (resolve-body path)
 A correlated EXISTS whose inner FROM is a DERIVED TABLE (`(SELECT …) AS d`) entered via the `buildCorrelatedExists` fallback's no-WHERE/no-ON fast path (entered only because the ignored inner SELECT references an outer column) returned silent-wrong rows: the fast path rebuilt each derived source as `NewScan("d")` — a scan of the non-existent catalog table `d`, which the executor treats as EMPTY → EXISTS tested the wrong (empty) relation. Confirmed at BASELINE `a34e9e21d` and reproduced fresh (`[[1 false],[2 false]]` where correct is `[[1 true],[2 true]]`, d={1} non-empty) — PRE-EXISTING master bug, not introduced by the JOIN-ON work.

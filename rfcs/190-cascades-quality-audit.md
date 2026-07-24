@@ -599,13 +599,35 @@ collision, ordinal mismatch, and ambiguous two-QOV roots.
 
 ### 190.7 (MED-HIGH) — de-duplicate the existential-join family
 
-The 37-line compensating-operator chain appears 4× in `rule_implement_nested_loop_join.go`
-(`:986`, `:2436`, `:2851`, `:3189`); `:2436`≡`:2851` byte-identical (comments included), `:986`
-already reworded → hand-drift underway. `tryExistsFlatMap`≡`buildExistsFlatMap`. NLJ file is 3417
-LOC vs Java 331. **Fix:** extract `buildExistsCompensationChain(preserveAlias bool, corr, …)` (the
-fresh-vs-preserved alias fork is a param, not a copy) and collapse the yield helpers. Pure
-refactor — behavior-preserving; the existing NLJ tests + explain-diff are the safety net (zero
-plan change required). Torvalds-gated.
+The audit's original four-copy census was stale after 190.1 retired the N-way arm. Three source
+sites remained, reached by four behavioral routes: the direct existential-select fallback, the
+join-fold arm, and the primary-key and secondary-index fast paths through `yieldExistsFlatMap`.
+All three repeated below-FOD filter → `FirstOrDefault(NULL)` → optional `QOV(inner) IS [NOT] NULL`
+chains now use `buildExistsCompensationChain`.
+
+The helper makes the load-bearing alias contract explicit. The direct fallback advances with a
+fresh physical bookkeeping alias at every wrapper, preventing memo interning from collapsing two
+filters; completed correlated paths preserve the real inner correlation so the bound alias can be
+subtracted. Callers still own their different base memo group, concrete correlated plan, outer-leg
+rebasing, FlatMap construction, and PK-return-false versus index-continue decline behavior, so the
+extraction does not blur their control flow or memo boundaries.
+
+`buildExistsFlatMap` was removed. Its primary-key scan construction was folded into
+`tryExistsFlatMap`, while comparison-range construction and inner/outer residual classification are
+shared with the secondary-index route. `buildCorrelatedFlatMapPlan` intentionally remains separate:
+it uses ForEach quantifiers, strict FirstOrDefault and DefaultOnEmpty variants, compensation, and
+different predicate-ordering semantics.
+
+The focused alias-contract regression pins fresh and preserved chains, positive and negative
+residual polarity, exact QOV correlation, predicate retention, and the zero-below-FOD projected
+route; it passes 20×. The affected Cascades subtree, 26/26 yamsql cases, and targeted real-FDB
+direct/join/PK/index routes pass, including race coverage. The before/after plan corpus is
+byte-identical: old=2,581, new=2,581, identical=2,581, differing=0. `just generate`, `just lint`,
+and the full `just test` suite pass (56/56).
+
+**190.7 is complete. FINAL REVIEW: two independent Codex audits ACK.** The only review gap—direct
+coverage of a nil below-FOD predicate set plus predicate/QOV identity assertions—was closed before
+the final gates.
 
 ### 190.8 (LOW) — scalar-function semantics: one source of truth
 

@@ -40,7 +40,7 @@ func TestPlanPhysicalDMLForTest_DeleteWhereExists(t *testing.T) {
 		t.Fatalf("root must be RecordQueryDeletePlan, got %T: %s", plan, plan.Explain())
 	}
 	// The EXISTS semi-join: a FlatMap whose inner is the one-row existential
-	// FirstOrDefault (implementJoinWithExistential / buildExistsFlatMap).
+	// FirstOrDefault (implementJoinWithExistential / yieldExistsFlatMap).
 	if !planHasType[*plans.RecordQueryFlatMapPlan](plan) {
 		t.Errorf("DELETE-WHERE-EXISTS must carry a FlatMap semi-join, got: %s", plan.Explain())
 	}
