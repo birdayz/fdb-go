@@ -61,6 +61,12 @@ func (r *SplitSelectExtractIndependentQuantifiersRule) Matcher() matching.Bindin
 func (r *SplitSelectExtractIndependentQuantifiersRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
 	quantifiers := sel.GetQuantifiers()
+	// Splitting changes which expression owns each edge and introduces a fresh
+	// plain ForEach over the lower select. The strict scalar carrier cannot be
+	// re-oriented or delegated by this rule, so keep the whole select opaque.
+	if hasStrictSingleQuantifier(quantifiers) {
+		return
+	}
 
 	// Step 1: Identify ForEach quantifiers ranging over ExplodeExpressions.
 	explodeAliases := map[values.CorrelationIdentifier]struct{}{}

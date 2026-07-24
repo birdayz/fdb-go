@@ -476,6 +476,14 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 	if errors.As(walkErr, &binErr) {
 		return api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
 	}
+	// A nested planner may deliberately carry the more specific
+	// UnsupportedQuery (0AF00) classification through a correlation wrapper.
+	// Preserve it before the generic CorrelatedExistsError fallback maps
+	// message-only unsupported shapes to UnsupportedOperation (0A000).
+	var carriedAPI *api.Error
+	if errors.As(walkErr, &carriedAPI) && carriedAPI.Code == api.ErrCodeUnsupportedQuery {
+		return carriedAPI
+	}
 	var corrExistsErr *CorrelatedExistsError
 	if errors.As(walkErr, &corrExistsErr) {
 		// Every GENUINE semantic resolution error (Ambiguous / ColumnNotFound /
@@ -2558,6 +2566,13 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		if herr := upgradeHavingPredicate(op, sq, md, schemaName, cteScopes, existsPlanner); herr != nil {
 			return nil, herr
 		}
+		// HAVING has no per-group correlated-scalar quantifier lowering yet.
+		// Never let the freshly minted alias escape unattached into runtime
+		// evaluation (an UnboundScalarSubqueryError on valid SQL).
+		if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"correlated scalar subquery in a HAVING predicate is not supported")
+		}
 	}
 
 	upgradeSortKeyValues(op, sq, md, schemaName, cteScopes)
@@ -2667,7 +2682,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	// or scalar), use it directly. The buildWherePredicate functions
 	// build their own resolvers without a SubqueryPlanner — they'd
 	// decline these shapes and fall back to text, losing the plans.
-	hasSubqueries := existsPlanner != nil && (len(existsPlanner.subqueries) > 0 || len(existsPlanner.scalarSubqueries) > 0)
+	hasSubqueries := existsPlanner != nil &&
+		(len(existsPlanner.subqueries) > 0 ||
+			len(existsPlanner.scalarSubqueries) > 0 ||
+			len(existsPlanner.correlatedScalarSubqueries) > 0)
 	if hasSubqueries && preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
 
@@ -2692,6 +2710,12 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			if !upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries) {
 				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 					"WHERE scalar subqueries could not be installed on the logical plan")
+			}
+		}
+		if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+			if !upgradeFirstFilterCorrelatedScalarSubqueries(op, existsPlanner.correlatedScalarSubqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE correlated scalar subqueries could not be installed on the logical plan")
 			}
 		}
 		return op, nil
@@ -3319,6 +3343,26 @@ func upgradeFirstFilterScalarSubqueries(op logical.LogicalOperator, subqueries [
 	for cur := op; cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
 			f.ScalarSubqueries = subqueries
+			return true
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			return false
+		}
+		cur = ch[0]
+	}
+	return false
+}
+
+// upgradeFirstFilterCorrelatedScalarSubqueries attaches correlated scalar
+// plans to the WHERE filter that owns their ScalarSubqueryValue references.
+// Unlike uncorrelated scalars these plans are not pre-evaluated: the Cascades
+// translator materializes each scalar per outer row through the strict
+// LEFT-scalar join lowering.
+func upgradeFirstFilterCorrelatedScalarSubqueries(op logical.LogicalOperator, subqueries []logical.CorrelatedScalarSubquery) bool {
+	for cur := op; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			f.CorrelatedScalarSubqueries = subqueries
 			return true
 		}
 		ch := cur.Children()
@@ -4414,17 +4458,29 @@ func upgradeDMLWhereWithCatalog(
 		if errors.As(err, &colNF) || errors.As(err, &ambig) || errors.As(err, &srcNF) {
 			return false, mapPredicateWalkError(err)
 		}
-		// A specific carried SQLSTATE from a subquery PLAN failure (the EXISTS inner build
-		// returned an *api.Error, e.g. WRONG_OBJECT_TYPE for an AT-on-a-table source) takes
-		// precedence over the text fallback. Gate on the WHERE actually containing an EXISTS
-		// atom: that is the one shape the plain text builder cannot plan AT ALL, so the
-		// catalog path's error is authoritative — for a plain comparison WHERE the text
-		// fallback may still succeed, and swallowing a generic api error here preserves that.
+		// A specific carried SQLSTATE from a subquery PLAN failure (an EXISTS inner
+		// build, or a scalar build rejecting LIMIT > 1 / DISTINCT / a window)
+		// takes precedence over the text fallback. Gate on the WHERE actually
+		// containing either subquery atom: those are precisely the shapes the
+		// plain text builder cannot plan, so the catalog path's error is
+		// authoritative. For a plain comparison WHERE the text fallback may still
+		// succeed, and swallowing a generic api error here preserves that.
 		var apiErr *api.Error
-		if errors.As(err, &apiErr) && expr.ContainsExistsAtom(whereExpr.Expression()) {
+		hasSubqueryAtom := expr.ContainsExistsAtom(whereExpr.Expression()) ||
+			expr.ContainsSubqueryAtom(whereExpr.Expression())
+		if errors.As(err, &apiErr) && hasSubqueryAtom {
 			return false, apiErr
 		}
 		return false, nil
+	}
+	// The SELECT lowering hides its materialized scalar slot with an outer-only
+	// projection. DML consumes record identity directly, so that projection is
+	// not yet proven transparent to UPDATE/DELETE record+primary-key plumbing.
+	// Decline before attaching the carrier; never let DML fall into an unbound
+	// alias or a reshaped-record write.
+	if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+		return false, api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated scalar subquery in a DML WHERE predicate is not supported")
 	}
 	if installErr := installFirstWherePredicate(op, predicates.SimplifyPredicateValues(walked)); installErr != nil {
 		return false, installErr
@@ -8276,6 +8332,26 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			Message: fmt.Sprintf("correlated scalar subquery: %v", err), Cause: err,
 		}
 	}
+	userPagination, paginationErr := correlatedScalarHasResolvedPagination(q)
+	if paginationErr != nil {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: fmt.Sprintf("correlated scalar subquery: %v", paginationErr), Cause: paginationErr,
+		}
+	}
+	if sq.distinct {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: "correlated scalar subquery: SELECT DISTINCT is not yet supported",
+			Cause: api.NewError(api.ErrCodeUnsupportedQuery,
+				"SELECT DISTINCT in a correlated scalar subquery is not yet supported"),
+		}
+	}
+	if queryScopeHasWindowedAggregate(body) || sq.qualifyExpr != nil {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: "correlated scalar subquery: window functions are not yet supported",
+			Cause: api.NewError(api.ErrCodeUnsupportedQuery,
+				"window functions in a correlated scalar subquery are not yet supported"),
+		}
+	}
 
 	// Strip the session-schema qualifier off a schema-qualified table source
 	// (`s.PB` → `PB`) BEFORE building the scan/join tree and resolving join sources
@@ -8410,6 +8486,33 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			break
 		}
 	}
+	// The current non-strict LEFT-scalar join null-fills an empty inner but does
+	// not collapse multiple post-pagination rows. LIMIT 0/1 therefore has an
+	// exact lowering for every shape. A larger limit is also exact for a
+	// non-grouped real aggregate, whose pre-pagination cardinality is already
+	// <=1; for data-dependent rows/groups it could fan one outer row into
+	// several. Preserve the written limit by declining those multi-row-capable
+	// shapes typed-loud until a post-page scalar-collapse mode exists; never clamp
+	// with a hidden LIMIT 1.
+	if userPagination && sq.limit > 1 && (!hasRealAgg || len(sq.groupBy) > 0) {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: "correlated scalar subquery: LIMIT greater than 1 requires post-pagination scalar collapse",
+			Cause: api.NewError(api.ErrCodeUnsupportedQuery,
+				"LIMIT greater than 1 in a correlated scalar subquery is not yet supported"),
+		}
+	}
+	// The group-key-only branch materializes grouping keys but has no HAVING
+	// rewrite/bake onto that aggregate output. Letting it proceed would silently
+	// ignore HAVING and then run the strict cardinality probe against the wrong
+	// (pre-HAVING) group set. Real-aggregate HAVING is lowered below; this
+	// distinct shape remains correct-or-loud until it has the same output rewrite.
+	if !hasRealAgg && sq.havingExpr != nil {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: "correlated scalar subquery: HAVING over a group-key-only projection is not yet supported",
+			Cause: api.NewError(api.ErrCodeUnsupportedQuery,
+				"HAVING over a group-key-only correlated scalar subquery is not yet supported"),
+		}
+	}
 
 	// A scalar subquery must produce exactly one output column. Count the
 	// visible SELECT items: under a GROUP BY each item is a visible aggCol (an
@@ -8442,17 +8545,17 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 	}
 
 	var scalarCol string
-	// strictSingle is set by the non-aggregate branch below when the subquery has
-	// no user LIMIT, so the lowering enforces at-most-one via a strict FirstOrDefault.
+	// strictSingle is set whenever a data-dependent inner can emit more than one
+	// row and the user did not write a LIMIT. The lowering then enforces
+	// at-most-one via a strict FirstOrDefault.
 	var strictSingle bool
 	if hasRealAgg {
 		// Build the aggregate over the correlated filter. With GROUP BY the
-		// aggregate may emit more than one group; the scalar contract is then
-		// enforced by FirstOrDefault — the LIMIT 1 below plus the LEFT-OUTER
-		// NULL-on-empty wrap in the translator — not a runtime cardinality
-		// assertion (which would need look-ahead and breaks continuation-based
-		// pagination). Empty input => zero groups => NULL falls out naturally,
-		// whereas the no-GROUP-BY scalar aggregate emits one row (e.g. COUNT=0).
+		// aggregate may emit more than one group, so an uncapped scalar must use
+		// the same strict FirstOrDefault cardinality barrier as a non-aggregate
+		// scalar: a second group is SQLSTATE 21000, never an implicit first-group
+		// choice. Empty input => zero groups => NULL falls out naturally, whereas
+		// the no-GROUP-BY scalar aggregate emits one row (e.g. COUNT=0).
 		//
 		// Compute EVERY aggregate the query needs — the single visible one (the
 		// scalar's value) AND any non-visible ones the parser harvested for
@@ -8667,9 +8770,9 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			aggOp.HavingPredicate = rewriteAggregateRefsInPredicate(havingPred)
 		}
 		innerOp = aggOp
-		// ORDER BY over the grouped output: sort the groups BEFORE the LIMIT 1 so
-		// FirstOrDefault picks the ordered-first group deterministically. Keys are
-		// canonicalised to the exact post-aggregate datum keys (RFC-085).
+		// ORDER BY over the grouped output: sort the groups before an explicit
+		// user LIMIT (when present). Keys are canonicalised to the exact
+		// post-aggregate datum keys (RFC-085).
 		if len(sq.orderBy) > 0 {
 			sortKeys, skErr := groupedScalarSortKeys(sq, aggDatumKey)
 			if skErr != nil {
@@ -8677,12 +8780,16 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			}
 			innerOp = logical.NewSort(innerOp, sortKeys)
 		}
-		// GROUP BY may yield many groups; HAVING may filter the single group
-		// to none. Cap at the first group (FirstOrDefault) for the scalar
-		// contract. The plain scalar aggregate (no GROUP BY, no HAVING) already
-		// emits exactly one row, so it is left uncapped.
-		if len(sq.groupBy) > 0 || sq.havingExpr != nil {
-			innerOp = logical.NewLimit(innerOp, 1, 0)
+		// Accepted user LIMIT/OFFSET is deliberate pagination and is preserved
+		// exactly. A grouped aggregate accepts only LIMIT 0/1 here, so the
+		// post-page result is <=1 and needs no strict probe. A global aggregate,
+		// with or without HAVING, is intrinsically <=1 and safely accepts a larger
+		// limit too. Without pagination, GROUP BY is the only real-aggregate shape
+		// capable of producing multiple rows, so leave it uncapped and strict.
+		if userPagination {
+			innerOp = logical.NewLimit(innerOp, sq.limit, sq.offset)
+		} else if len(sq.groupBy) > 0 {
+			strictSingle = true
 		}
 	} else {
 		// Non-aggregate correlated scalar subquery. The single output column is
@@ -8886,13 +8993,14 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 
 		// SQL standard: scalar subquery must return at most 1 row.
-		// A user-written LIMIT is the user's deliberate truncation intent — respect
-		// it and do NOT enforce strict cardinality. With NO user LIMIT (limit < 0),
+		// An accepted user-written LIMIT (0/1; larger limits decline above) is
+		// deliberate truncation intent — preserve it and do NOT enforce strict
+		// cardinality. With NO user LIMIT,
 		// leave the inner UNCAPPED and mark StrictSingle: the lowering then enforces
 		// at-most-one via a strict FirstOrDefault barrier (a second inner row → 21000),
 		// rather than a silent LIMIT 1 truncation (which the planner could also push
 		// into the scan as a returned-row limit, bypassing the check).
-		if sq.limit >= 0 {
+		if userPagination {
 			innerOp = logical.NewLimit(innerOp, sq.limit, sq.offset)
 		} else {
 			// No user LIMIT (and, in this grammar, therefore no OFFSET either — a
@@ -8933,6 +9041,39 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		StrictSingle: strictSingle,
 	})
 	return alias, nil
+}
+
+// correlatedScalarHasResolvedPagination distinguishes an absent LIMIT from a
+// clause whose atom is still unresolved in this planning invocation.
+// parseLimitClause uses the same -1 sentinel for both, which would otherwise
+// misclassify `LIMIT ?` as "no user LIMIT" and install a strict probe over the
+// unpaginated input. Public driver bindings are substituted before parsing and
+// therefore arrive here as resolved literals.
+func correlatedScalarHasResolvedPagination(q antlrgen.IQueryContext) (bool, error) {
+	if q == nil {
+		return false, nil
+	}
+	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return false, nil
+	}
+	simpleTable, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok {
+		return false, nil
+	}
+	limitClause := simpleTable.LimitClause()
+	if limitClause == nil {
+		return false, nil
+	}
+	for _, atom := range limitClause.AllLimitClauseAtom() {
+		if _, resolved, atomErr := resolveLimitAtom(atom); atomErr != nil {
+			return false, atomErr
+		} else if !resolved {
+			return false, api.NewError(api.ErrCodeUnsupportedQuery,
+				"a correlated scalar subquery with a planning-time unresolved LIMIT/OFFSET is not supported")
+		}
+	}
+	return true, nil
 }
 
 // innerSourceAliases collects the UPPER source aliases a correlated scalar

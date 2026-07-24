@@ -99,6 +99,7 @@ go_test(
         "correlated_index_exists_permanent_fdb_test.go",
         "correlated_null_inequality_test.go",
         "correlated_null_key_probe_test.go",
+        "correlated_scalar_cardinality_followup_fdb_test.go",
         "correlated_scalar_join_inner_column_agg_fdb_test.go",
         "correlated_scalar_join_inner_fdb_test.go",
         "correlated_scalar_over_clustered_outer_fdb_test.go",

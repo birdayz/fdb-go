@@ -4799,6 +4799,9 @@ func subqueryPlans(op logical.LogicalOperator) []logical.LogicalOperator {
 		for _, ssq := range o.ScalarSubqueries {
 			plans = append(plans, ssq.Plan)
 		}
+		for _, csq := range o.CorrelatedScalarSubqueries {
+			plans = append(plans, csq.InnerPlan)
+		}
 	case *logical.LogicalProject:
 		for _, ssq := range o.ScalarSubqueries {
 			plans = append(plans, ssq.Plan)

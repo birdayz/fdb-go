@@ -38,10 +38,46 @@ func NewImplementNestedLoopJoinRule() *ImplementNestedLoopJoinRule {
 
 func (r *ImplementNestedLoopJoinRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+// hasStrictSingleQuantifier reports whether an expression owns a semantic
+// at-most-one-row edge. Rewrites that do not explicitly preserve and implement
+// this carrier must treat it as a barrier; otherwise an ordinary ForEach rebuild
+// can silently turn a scalar cardinality violation into fan-out.
+func hasStrictSingleQuantifier(quantifiers []expressions.Quantifier) bool {
+	for _, q := range quantifiers {
+		if q.IsStrictSingle() {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
 
 	quants := sel.GetQuantifiers()
+
+	// StrictSingle has exactly one physical authority in this rule: the SQL
+	// translator's scalar-subquery shape, LEFT OUTER [plain outer, strict right].
+	// That path routes the flagged inner leg through buildCorrelatedFlatMapPlan's
+	// strict FirstOrDefault compensation. The orientation and join kind are part
+	// of the contract: applying the same null-defaulting compensation to an
+	// INNER/CROSS join would turn an empty inner into a NULL row, while a strict
+	// left leg is not an inner-per-outer scalar evaluation. Every other shape
+	// must therefore fail closed before it can yield a competing or
+	// semantics-changing plan.
+	hasStrictSingle := hasStrictSingleQuantifier(quants)
+	if hasStrictSingle {
+		isSupportedStrictSingleShape := len(quants) == 2 &&
+			allForEach(quants) &&
+			sel.GetJoinType() == expressions.JoinLeftOuter &&
+			!quants[0].IsStrictSingle() &&
+			!quants[0].IsNullOnEmpty() &&
+			quants[1].IsStrictSingle() &&
+			!quants[1].IsNullOnEmpty()
+		if !isSupportedStrictSingleShape {
+			return
+		}
+	}
 
 	// Two ForEach quantifiers plus one trailing Existential use the retained
 	// projected/WHERE-EXISTS fold. Flat selects with more than two ForEach legs
@@ -195,9 +231,22 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	rightProvided := physicalProvidedAliases(rightExpr, quants[1].GetAlias())
 	leftDepsRight := legReferencesAny(leftRef, rightProvided)
 	rightDepsLeft := legReferencesAny(rightRef, leftProvided)
+	leftStrictSingle := quants[0].IsStrictSingle()
+	rightStrictSingle := quants[1].IsStrictSingle()
 	canSwap := joinType != plans.JoinLeftOuter
-	hasCorrelation := leftDepsRight || rightDepsLeft
-	if !hasCorrelation {
+
+	// StrictSingle is a semantic edge contract, not merely a hint attached to
+	// syntactic correlation. Predicate simplification can erase the inner
+	// reference to the outer row (`inner.fk = outer.id OR 1 = 1`) while the scalar
+	// subquery must still enforce at-most-one row. Route such an edge through the
+	// same FlatMap + strict FirstOrDefault compensation as an explicitly
+	// correlated leg. In particular, do not yield the ordinary materialized NLJ:
+	// it has no cardinality barrier and would be a competing fan-out plan in the
+	// memo even when today's cost model happens to choose the strict alternative.
+	leftNeedsRightEvaluation := leftDepsRight || leftStrictSingle
+	rightNeedsLeftEvaluation := rightDepsLeft || rightStrictSingle
+	requiresFlatMap := leftNeedsRightEvaluation || rightNeedsLeftEvaluation
+	if !requiresFlatMap {
 		// Incomplete-bipartition guard: if BOTH legs reference (via re-exposed
 		// merge seeds) the SAME external table that is neither leg's own provided
 		// alias, the two legs are connected through a sibling that this bipartition
@@ -207,11 +256,12 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		// FlatMap(d, …) that binds d; the cost model can otherwise pick it as a
 		// standalone root with d unbound → 0 rows (TestFDB_DerivedTableExistsJoin
 		// three-way). The leg's d-correlation is bound inside the leg's own merge select,
-		// so neither hasCorrelation nor the planner's root-correlation check sees it.
+		// so neither the ordinary leg-dependency check nor the planner's
+		// root-correlation check sees it.
 		// Skipping the materialized NLJ here leaves the COMPLETE bipartitions (which
 		// keep d as a real quantifier and produce the correct correlated FlatMap
 		// chain) to win. A legitimate leg-to-leg correlation is handled by the
-		// hasCorrelation FlatMap branch above; a true OUTER correlation is bound by
+		// correlated FlatMap branch above; a true OUTER correlation is bound by
 		// an enclosing FlatMap and reaches only ONE leg, so it does not trip this
 		// both-legs-share guard.
 		leftExternal := legExternalAliases(leftRef, leftProvided)
@@ -249,18 +299,18 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// where predicates are absorbed into sub-Selects creating correlation. The inner's
 	// null-on-empty flag (set by RewriteOuterJoinRule for LEFT OUTER) drives the
 	// DefaultOnEmpty null-extension inside yieldGeneralFlatMap.
-	if leftDepsRight && !rightDepsLeft && canSwap {
+	if leftNeedsRightEvaluation && !rightNeedsLeftEvaluation && canSwap {
 		r.yieldGeneralFlatMap(call, sel,
 			rightPlan, leftPlan, rightCorr, leftCorr,
 			rightExpr, leftExpr, rightRef, leftRef, joinType,
 			selQuantifierIsNullOnEmpty(sel, leftCorr),
-			selQuantifierIsStrictSingle(sel, leftCorr))
-	} else if rightDepsLeft && !leftDepsRight {
+			leftStrictSingle)
+	} else if rightNeedsLeftEvaluation && !leftNeedsRightEvaluation {
 		r.yieldGeneralFlatMap(call, sel,
 			leftPlan, rightPlan, leftCorr, rightCorr,
 			leftExpr, rightExpr, leftRef, rightRef, joinType,
 			selQuantifierIsNullOnEmpty(sel, rightCorr),
-			selQuantifierIsStrictSingle(sel, rightCorr))
+			rightStrictSingle)
 	}
 }
 
@@ -275,7 +325,7 @@ func referenceIsCorrelatedTo(ref *expressions.Reference, targetAlias values.Corr
 // so a spanning predicate in the OTHER leg that reads A's column (`p.x = a.y`) is
 // seen as correlated to $m. Recurses through the leg's member quantifiers (the
 // buried tables of a re-enumerated merge). Without this, a predicate referencing a
-// BURIED merge leg (not the merge alias itself) is invisible to the hasCorrelation
+// BURIED merge leg (not the merge alias itself) is invisible to the leg-dependency
 // check, so a spanning 3-way join (a connects both b and c) emits a MATERIALIZED
 // NLJ that embeds a leg with the buried table unbound → 0 rows
 // (TestFDB_DerivedTableExistsJoin three-way; the GROUP-BY-wrapped twin of
@@ -346,19 +396,6 @@ func selQuantifierIsNullOnEmpty(sel *expressions.SelectExpression, alias values.
 	for _, q := range sel.GetQuantifiers() {
 		if q.GetAlias() == alias {
 			return q.IsNullOnEmpty()
-		}
-	}
-	return false
-}
-
-// selQuantifierIsStrictSingle reports whether sel's quantifier with the given alias
-// is a strict-single correlated-scalar-subquery inner (the translator marks it when
-// the subquery has no user LIMIT). Drives the strict FirstOrDefault wrap in
-// yieldGeneralFlatMap.
-func selQuantifierIsStrictSingle(sel *expressions.SelectExpression, alias values.CorrelationIdentifier) bool {
-	for _, q := range sel.GetQuantifiers() {
-		if q.GetAlias() == alias {
-			return q.IsStrictSingle()
 		}
 	}
 	return false
@@ -2780,7 +2817,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// executes the inner correlated): orient the dependent/null-extended
 	// leg INNER and build step 1 as the correlated FlatMap — the identical
 	// construction (and identical provided-alias authority) as the
-	// 2-quantifier hasCorrelation branches. Orientation keys on the
+	// 2-quantifier dependency/strict-single FlatMap branches. Orientation keys on the
 	// correlation topology, so the ChildrenAsSet swapped firing converges
 	// to the same plan.
 	leftProvided := physicalProvidedAliases(leftExpr, quants[0].GetAlias())

@@ -157,6 +157,10 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 	if len(quantifiers) < 2 {
 		return
 	}
+	// InUnion merge execution does not own StrictSingle semantics.
+	if hasStrictSingleQuantifier(quantifiers) {
+		return
+	}
 
 	resultValue := selectExpr.GetResultValue()
 

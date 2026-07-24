@@ -984,15 +984,14 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			return nil, herr
 		}
 		// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
-		// HAVING walk has no lowering — ScalarSubqueryValue's evaluation
-		// contract is pre-eval (uncorrelated) only, and the projection attach
-		// (13) already ran and nil'd the lists, so anything here would reach
-		// the executor as an unbindable alias (runtime
-		// UnboundScalarSubqueryError on a valid query). Decline TYPED; Java's
-		// quantifier lowering is the booked follow-up.
+		// HAVING walk has no grouped-output lowering. WHERE has its own
+		// LEFT-scalar materialization, but HAVING would need to preserve the
+		// grouped row while exposing and then hiding the private scalar slot.
+		// The projection attach (13) already ran and cleared its lists, so an
+		// unattached alias here would reach runtime unbound. Decline typed.
 		if len(existsPlanner.correlatedScalarSubqueries) > 0 {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"correlated scalar subquery in a WHERE/HAVING predicate is not supported")
+				"correlated scalar subquery in a HAVING predicate is not supported")
 		}
 	}
 
@@ -1082,25 +1081,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		}
 	}
 
-	// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
-	// WHERE walk above has no lowering. ScalarSubqueryValue's evaluation
-	// contract is pre-eval (uncorrelated) only — the uncorrelated list below
-	// attaches to the filter (upgradeFirstFilterScalarSubqueries) and the
-	// executor pre-binds it, but the correlated list's ONLY consumer is the
-	// PROJECTION path (materialized per-row column), whose attach step (13)
-	// already ran and nil'd the lists. A WHERE-position reference therefore
-	// reached the executor with an unbindable alias — the loud runtime
-	// UnboundScalarSubqueryError on a valid query (yamsql scalar_subquery_java:
-	// `WHERE e.salary = (SELECT MAX(e2.salary) … WHERE e2.dept_id =
-	// e.dept_id)`). Java lowers the subquery to a quantifier and lets the
-	// predicate reference its result — the booked RFC-180 follow-up; until
-	// then decline TYPED at plan time.
-	if len(existsPlanner.correlatedScalarSubqueries) > 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"correlated scalar subquery in a WHERE/HAVING predicate is not supported")
-	}
-
-	hasSubqueries := len(existsPlanner.subqueries) > 0 || len(existsPlanner.scalarSubqueries) > 0
+	hasSubqueries := len(existsPlanner.subqueries) > 0 ||
+		len(existsPlanner.scalarSubqueries) > 0 ||
+		len(existsPlanner.correlatedScalarSubqueries) > 0
 	if hasSubqueries && preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
 		// EXISTS is lowered to a conjunctive semi-join; under an OR that loses
@@ -1127,6 +1110,12 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			if !upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries) {
 				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 					"WHERE scalar subqueries could not be installed on the logical plan")
+			}
+		}
+		if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+			if !upgradeFirstFilterCorrelatedScalarSubqueries(op, existsPlanner.correlatedScalarSubqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE correlated scalar subqueries could not be installed on the logical plan")
 			}
 		}
 		op = wrapGlobalRankVectorLimit(op, combined)

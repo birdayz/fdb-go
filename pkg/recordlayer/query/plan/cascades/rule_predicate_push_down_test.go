@@ -535,6 +535,85 @@ func TestPredicatePushDown_NullOnEmptySkipped(t *testing.T) {
 	}
 }
 
+// TestPredicatePushDown_StrictSingleSkipped verifies that a scalar
+// cardinality edge is a non-pushable barrier. Moving the predicate below the
+// strict FirstOrDefault could filter away a second row before it raises 21000,
+// and rebuilding the edge would drop the StrictSingle flag entirely.
+func TestPredicatePushDown_StrictSingleSkipped(t *testing.T) {
+	t.Parallel()
+
+	scanRef := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+	strictAlias := values.NamedCorrelationIdentifier("SCALAR")
+	strictQ := expressions.NamedForEachStrictSingleQuantifier(strictAlias, scanRef)
+	pred := &predicates.ComparisonPredicate{
+		Operand: values.NewQuantifiedObjectValue(strictAlias),
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: "one-row-match"},
+		},
+	}
+	sel := expressions.NewSelectExpression(
+		strictQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{strictQ},
+		[]predicates.QueryPredicate{pred},
+	)
+
+	yielded := FireExpressionRule(
+		NewPredicatePushDownRule(), expressions.InitialOf(sel))
+	if len(yielded) != 0 {
+		t.Fatalf("expected 0 yields (strictSingle quantifier skipped), got %d", len(yielded))
+	}
+	if !sel.GetQuantifiers()[0].IsStrictSingle() {
+		t.Fatal("original strictSingle carrier was mutated")
+	}
+}
+
+// TestPredicatePushDown_StrictSingleNestedChildFailsClosed covers the second
+// carrier boundary: the parent quantifier itself is plain, but its child Select
+// owns the strict scalar edge. Absorbing the parent predicate into that child
+// would let it filter rows before strict FirstOrDefault observes row two.
+func TestPredicatePushDown_StrictSingleNestedChildFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	outerRef := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+	scalarRef := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+	outerQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("OUTER"), outerRef)
+	scalarQ := expressions.NamedForEachStrictSingleQuantifier(
+		values.NamedCorrelationIdentifier("SCALAR"), scalarRef)
+	strictChild := expressions.NewSelectExpressionWithJoinType(
+		outerQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{outerQ, scalarQ},
+		nil,
+		[]string{"OUTER", "SCALAR"},
+		expressions.JoinLeftOuter,
+	)
+
+	parentQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("PARENT"), expressions.InitialOf(strictChild))
+	parentPredicate := &predicates.ComparisonPredicate{
+		Operand: values.NewQuantifiedObjectValue(parentQ.GetAlias()),
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: "could-hide-row-two"},
+		},
+	}
+	parent := expressions.NewSelectExpression(
+		parentQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{parentQ},
+		[]predicates.QueryPredicate{parentPredicate},
+	)
+
+	yielded := FireExpressionRule(
+		NewPredicatePushDownRule(), expressions.InitialOf(parent))
+	if len(yielded) != 0 {
+		t.Fatalf("nested strict-single child yielded %d predicate-push rewrite(s), want zero", len(yielded))
+	}
+	if !strictChild.GetQuantifiers()[1].IsStrictSingle() {
+		t.Fatal("nested strict-single carrier was mutated")
+	}
+}
+
 // TestPredicatePushDown_ThroughUnique tests pushing predicates through
 // a LogicalUniqueExpression.
 func TestPredicatePushDown_ThroughUnique(t *testing.T) {

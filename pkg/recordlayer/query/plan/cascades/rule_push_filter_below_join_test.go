@@ -305,6 +305,40 @@ func TestPushFilterBelowJoin_LeftOuterJoin_Skips(t *testing.T) {
 	}
 }
 
+func TestPushFilterBelowJoin_StrictSingleFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	scanARef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType))
+	scanBRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType))
+	qA := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("A"), scanARef)
+	qB := expressions.NamedForEachStrictSingleQuantifier(
+		values.NamedCorrelationIdentifier("B"), scanBRef)
+	sel := expressions.NewSelectExpressionWithJoinType(
+		qA.GetFlowedObjectValue(),
+		[]expressions.Quantifier{qA, qB},
+		nil,
+		[]string{"A", "B"},
+		expressions.JoinInner,
+	)
+	filterQ := expressions.ForEachQuantifier(expressions.InitialOf(sel))
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{predicates.NewComparisonPredicate(
+			&values.FieldValue{Field: "B.STATUS", Typ: values.TypeString},
+			predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+		)},
+		filterQ,
+	)
+
+	yielded := FireExpressionRule(
+		NewPushFilterBelowJoinRule(), expressions.InitialOf(filter))
+	if len(yielded) != 0 {
+		t.Fatalf("strict-single join yielded %d filter-push rewrite(s), want zero", len(yielded))
+	}
+}
+
 func TestPushFilterBelowJoin_BothSidesPushed(t *testing.T) {
 	t.Parallel()
 

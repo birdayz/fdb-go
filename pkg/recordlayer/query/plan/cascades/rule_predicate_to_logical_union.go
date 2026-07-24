@@ -70,6 +70,12 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 	}
 
 	quantifiers := sel.GetQuantifiers()
+	// Every DNF leg is rebuilt with a plain ForEach. Duplicating a scalar edge
+	// would both erase StrictSingle and change how often its cardinality check
+	// runs, so the carrier is an unconditional barrier here.
+	if hasStrictSingleQuantifier(quantifiers) {
+		return
+	}
 
 	// Guard: exactly 1 ForEach quantifier and no Existential quantifiers.
 	// Mirrors Java's check on ownedForEachAliases.size() != 1.

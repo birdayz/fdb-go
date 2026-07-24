@@ -56,10 +56,24 @@ closed rather than silently alter rows or output schema.
   DML shares SELECT's parse-tree window-aggregate rejection. Focused
   classifier/fold/planner tests, live COUNT/MAX/SUM + joined-outer/gathered +
   DML FDB regressions, and yamsql controls pin the result.
-- [ ] **CQ-4 (HIGH) — finish correlated scalar-subquery cardinality enforcement.**
-  Enforce SQLSTATE 21000 for grouped correlated scalars returning multiple groups
-  and for the separate WHERE-comparison lowering, while preserving explicit user
-  LIMIT semantics.
+- [x] **CQ-4 (HIGH) — finish correlated scalar-subquery cardinality enforcement.**
+  Projection and scoped single-source WHERE consumers now share one LEFT-scalar
+  join authority. Every data-dependent unpaged inner (raw rows or groups) carries
+  a strict FirstOrDefault barrier, so a second post-WHERE/GROUP-BY/HAVING/ORDER-BY
+  row raises SQLSTATE 21000 per outer row; empty remains NULL. WHERE materializes
+  `[outer..., scalar]` on a fresh typed binding, filters above the LEFT/null and
+  strict-cardinality barriers, then projects the private scalar slot away.
+  Scalar-free top-level AND conjuncts run on the outer leg first, preventing an
+  excluded outer row from spuriously evaluating a bad scalar. Written
+  LIMIT/OFFSET is preserved exactly: multi-row-capable shapes accept LIMIT 0/1,
+  intrinsically-single global aggregates also accept larger limits, and
+  data-dependent LIMIT >1 or unresolved pagination rejects typed-loud until a
+  post-pagination scalar-collapse mode exists. SELECT DISTINCT, window/QUALIFY,
+  group-key-only HAVING, mixed/dual carriers, multi-source WHERE, and DML remain
+  explicit 0AF00 boundaries rather than silent rewrites. Plan, live FDB, and
+  yamsql regressions pin 0/1/2+ rows/groups, post-HAVING cardinality, ORDER BY
+  without LIMIT, explicit/bound pagination, NULL-on-empty/IS NULL, output-schema
+  hiding, per-outer isolation, and the correct-or-loud composition guards.
 - [ ] **CQ-5 (MED) — preserve SELECT-list order for GROUP BY output.**
   Carry the key/aggregate interleaving through `LogicalAggregate` and add the
   required post-aggregate projection for positional clients.
@@ -4426,49 +4440,71 @@ operand that is (or could be) the indexed column — wrap only the narrower NON-
 (indexed) operand bare so its index is still matched. Also confirm whether FLOAT↔DOUBLE tuple encodings differ
 (if so they need the same treatment). This is why it needs a Graefe DESIGN review, not just an ACK.
 
-### [~] query-engine: scalar-subquery cardinality (21000) NOT enforced for CORRELATED subqueries — Go-extension inconsistency (Graefe design, found 2026-06-28)
+### [x] query-engine: correlated scalar-subquery cardinality is enforced consistently — CQ-4 (found 2026-06-28, completed 2026-07-24)
 
-**Projection non-aggregate case DONE (option (a) — extend 21000 to the correlated path).** With no user
-LIMIT, the correlated-scalar lowering leaves the inner uncapped and marks
-`CorrelatedScalarSubquery.StrictSingle`; the join lowering
-(`ImplementNestedLoopJoinRule.yieldGeneralFlatMap`) wraps the inner in a STRICT `RecordQueryFirstOrDefaultPlan`
-(new `strict` field) instead of the old default `LIMIT 1`. `executeFirstOrDefault` probes one extra row and
-raises 21000 on a second — a non-pushable barrier that runs fresh per outer row under the driving FlatMap (so
-at-most-one is per outer row). A user-written LIMIT keeps `StrictSingle=false` and truncates (deliberate
-intent). Pinned by `scalar_subq_correlated_card_test.go` (multi-row→21000, single→value, empty→NULL,
-user-LIMIT→top-1) and the flipped `scalar_subquery_correlation_probe_test.go`.
+Go chose the SQL-standard contract for its scalar-subquery extension: a second
+row for one outer row is SQLSTATE 21000, not an implicit first-row choice. The
+single-source projection and WHERE paths now share
+`translateSingleSourceCorrelatedScalarJoin`, which materializes
+`[outer..., scalar]` with LEFT/null-on-empty semantics. An unpaged inner whose
+cardinality depends on data — raw rows, group-key-only groups, or real-aggregate
+groups after HAVING — carries `CorrelatedScalarSubquery.StrictSingle`;
+`ImplementNestedLoopJoinRule` lowers that to a strict
+`RecordQueryFirstOrDefaultPlan`, and `executeFirstOrDefault` probes one extra row
+inside each driving FlatMap evaluation. There is no synthetic grouped `LIMIT 1`,
+so ORDER BY alone never selects a first group and the strict probe observes the
+post-WHERE/GROUP-BY/HAVING/ORDER-BY result.
+StrictSingle is itself a routing contract. Its sole physical authority accepts
+exactly the translator-owned `LEFT OUTER [unflagged outer, StrictSingle-only
+right]` shape and emits only the compensated FlatMap; every other flagged join
+kind, orientation, or composition fails closed. Even if simplification erases
+the inner's final syntactic dependency on the outer row (for example,
+`c.parent_id = p.id OR 1 = 1`), no competing unwrapped materialized nested-loop
+plan is emitted.
+StrictSingle is also an optimizer-wide rewrite barrier: N-way/binary
+partitioning, predicate pushdown (including filter-below-join), select
+merge/split, OR-to-union, outer-join rewriting, simple-select, and IN
+implementations all treat a flagged edge as opaque unless they own an explicit
+preservation proof.
 
-**REMAINING (kept open — `StrictSingle` is projection + non-aggregate only, by design of the focused PR):**
-- **Aggregate correlated scalar WITH GROUP BY, >1 group** (`(SELECT status FROM o WHERE o.cid=c.id GROUP BY
-  status)`, no user LIMIT): the `hasRealAgg` branch (`logical_predicate.go`) still injects `LIMIT 1` and
-  silently truncates. (Bare aggregates — no GROUP key — are always single-row, so no gap there.)
-- **WHERE-clause correlated scalar** (`WHERE v = (SELECT … WHERE correlated)`): a different lowering path;
-  `StrictSingle` is set only in `translateProjectWithCorrelatedScalar`, so a WHERE-comparison correlated
-  scalar with >1 match is still unguarded.
-Each is a focused follow-up in its own path (kept separate per Graefe's single-purpose-PR ruling; not a
-blanket fix bundled here).
+The WHERE consumer binds the LEFT-scalar row to one fresh typed QOV, rebases the
+comparison (including IS NULL) onto it, filters above both the null-extension and
+strict-cardinality barriers, then projects the scalar's private final slot away.
+Only scalar-free top-level AND conjuncts whose correlations are empty or the
+single outer binding are installed on the outer leg first. OR/NOT stay atomic
+above the box. This makes cardinality per *eligible* outer row: `p.id=2 AND
+scalar(...)` does not evaluate a known-bad `p.id=1`, while a bad eligible row
+still raises 21000 even if exactly one of its inner values would satisfy the
+comparison. A dead carrier removed by predicate simplification is retired
+without evaluating its inner; an orphan/mismatched carrier rejects typed-loud.
 
+Explicit pagination is never replaced by a hidden cap. LIMIT 0/1 (with exact
+OFFSET) is accepted for multi-row-capable inners and clears StrictSingle because
+the post-page result is proven <=1. A non-grouped real aggregate is intrinsically
+<=1, so larger LIMITs are also exact and accepted (OFFSET 1 over its one row
+becomes NULL). LIMIT >1 over raw rows/groups and planning-time-unresolved
+LIMIT/OFFSET reject 0AF00 until a post-pagination scalar-collapse mode exists;
+otherwise the non-strict LEFT join could fan one outer row into several.
 
-A scalar subquery `(SELECT ...)` returning >1 row for a given outer row is, by SQL standard, a runtime
-cardinality violation. Findings:
-- **Java enforces NO cardinality at all** — its `ErrorCode` enum (fdb-relational-api) has no 21000 /
-  CARDINALITY_VIOLATION code, and there is no "more than one row" check anywhere in fdb-relational-core. So Java
-  silently takes some row.
-- **Go added 21000 enforcement** (`executor/scalar_subquery.go`, SQL-standard, stricter than Java) — but ONLY on
-  the NON-correlated path. `SELECT (SELECT salary FROM emp) FROM dept` → 21000. ✔
-- **Correlated scalar subqueries do NOT enforce it.** `SELECT (SELECT salary FROM emp e WHERE e.dept_id=dept.id)
-  FROM dept` with a dept that has 2 employees silently returns the FIRST salary (not 21000); in a WHERE comparison
-  it silently yields wrong rows. Correlated scalar subqueries are planned via the RFC-077 source-anchored join
-  (`NewScalarSubqueryAnchoredRecord`), which has no at-most-one guard and effectively first-or-defaults per outer
-  row.
+Correct-or-loud composition boundaries are explicit: SELECT DISTINCT, window/QUALIFY,
+group-key-only HAVING, a WHERE scalar over a multi-source outer, mixed
+EXISTS/uncorrelated-scalar + correlated-scalar WHERE, projected EXISTS over a
+scalar-bearing WHERE, simultaneous SELECT and WHERE correlated scalars, and DML
+correlated scalars reject 0AF00. Real-aggregate HAVING is supported and its
+0/1/2+-surviving-group behavior is pinned. The shared carrier participates in
+logical children/attached plans, Cascades subquery planning, unary rebuilds, and
+cluster gates, so it cannot be orphaned by an early fold or rewrite.
 
-This is a Go-extension INTERNAL inconsistency, **not a Java-conformance bug** (Java enforces neither, so neither
-direction diverges from Java). The decision is **Graefe's**: either (a) extend 21000 to the correlated path
-(SQL-standard, consistent — the RFC-077 join's inner needs an at-most-one-or-error operator, replacing the
-implicit first-or-default), or (b) drop the non-correlated 21000 to match Java's no-enforcement (consistent the
-other way). The current enforce-non-correlated-only middle is the wart. Behavior pinned by
-`scalar_subquery_correlation_probe_test.go` (`corr_scalar_multi_row_currently_unenforced` — flip to expect 21000
-if (a) is chosen). Not a safe unattended change (Cascades/RFC-077, high blast radius); needs the Graefe RFC.
+Coverage: `correlated_scalar_cardinality_plan_test.go`,
+`correlated_scalar_cardinality_followup_fdb_test.go`, the flipped
+`correlated_scalar_where_reject_fdb_test.go` boundary,
+`quality_probes_test.go`, and `scalar_subquery_java.yaml`. The existing
+non-correlated 21000 probes remain controls. This is a Go-only read-side
+extension; Java's SQL grammar does not expose correlated scalar expressions.
+
+**Future widening (not a correctness gap):** implement a post-pagination scalar
+collapse/probe so data-dependent LIMIT >1 can preserve the written page and then
+apply scalar cardinality semantics, rather than declining 0AF00.
 
 ### [ ] driver: NO read-your-writes inside an explicit transaction — SELECT auto-commits (divergence, found 2026-06-28)
 
@@ -5330,10 +5366,10 @@ so the index-probe variant is both cheaper AND resolvable.
 
 - [x] **Correlated filter without index.** Fixed in 56874f23 — ImplementFilterRule sets innerAlias on RecordQueryPredicatesFilterPlan. All correlated paths (scalar subquery, EXISTS, JOIN) work without indexes. 14+ integration tests verify.
 - [x] **RIGHT/FULL OUTER JOIN.** Done in RFC-036. (The old "only LEFT OUTER" note was stale — RIGHT already worked via operand-swap normalization in `cascades_translator.go`, pinned by `TestFDB_RightJoin`.) FULL OUTER added as a Go-only query extension: Java's SQL layer has **no** outer joins at all (`visitOuterJoin` is a no-op, zero tests), so LEFT/RIGHT/FULL are all read-path-only extensions with **zero wire-format impact** — Java apps still read/write the same records. FULL OUTER is implemented exclusively by the materialized NLJ cursor (`streaming_cursors.go`): LEFT-OUTER outer loop + a `matchedInner` bitmap + a drain phase emitting unmatched inner rows NULL-padded on the left. Routed away from the correlated FlatMap path (cannot observe global inner-match state); FULL+EXISTS rejected with a clear error. 9 FDB integration tests (all four row classes, NULL-key 3VL, many-to-many, large-inner hash+drain, WHERE-above-join, determinism, RIGHT NULL-key regression). Graefe+Torvalds ACK.
-- [x] **Correlated scalar subquery shapes widened.** Non-aggregate (ORDER BY + LIMIT), multi-table inner FROM (JOINs), multi-column validation, deep-walk replaceScalarSubqueryRef. GROUP BY/HAVING rejected with clear errors (PredicatePushDownRule AliasMap conflict). CorrelatedExistsError propagation fixed.
+- [x] **Correlated scalar subquery shapes widened.** Non-aggregate (ORDER BY + LIMIT), multi-table inner FROM (JOINs), multi-column validation, deep-walk replaceScalarSubqueryRef, and real-aggregate GROUP BY/HAVING are supported. Group-key-only HAVING and other unproven shapes reject typed-loud. CorrelatedExistsError propagation fixed.
 - [ ] **No *general-purpose* window functions — and Java has none either.** Investigation (RFC-045): Java's relational layer has **no** general streaming window operator. The general `windowClause` is commented out in Java's grammar ("don't want to deal with them now"); `LAG`/`LEAD` are grammar tokens with **no** value class; `RankValue implements Value.IndexOnlyValue` (computable only from a rank/leaderboard index, never over a result set). The **only** working window function in Java is `ROW_NUMBER() OVER (... ORDER BY <distance>) <= K` via `QUALIFY`, used exclusively for **vector/HNSW K-NN search**. So "match Java's window functions" ≡ "finish the vector/HNSW relational parity" — tracked as **Phase 9** below. General windowing over plain tables would be a *Go-only extension Java lacks entirely* (allowed if wire-compat holds + deep tests), not parity — deferred, not in Phase 9.
-- [x] **GROUP BY/HAVING in correlated scalar subqueries.** Done in RFC-047 — a Go-only read-side extension (Java rejects correlated scalar subqueries at the grammar level entirely; zero wire impact). The stale "PredicatePushDownRule AliasMap.Compose conflict" blocker no longer applies: GroupByExpression is already a push-down barrier (no case in `pushPredicateToExpression`) and the panicking `AliasMap.Compose` has no production callers. `buildCorrelatedScalar` now builds GROUP BY (+ HAVING) into the inner plan and caps with `LIMIT 1`; the scalar contract is FirstOrDefault (first group + LEFT-OUTER NULL-on-empty), NOT a runtime cardinality assertion (Graefe). Empty input → 0 groups → NULL falls out naturally (vs no-GROUP-BY COUNT → 0). Group keys + aggregate operands resolve via the semantic scope (`ResolveIdentifier`), scalar column named with the bare operand to avoid an embedded-`.` qualifier mis-parse. 42803 enforced via `validateGroupByProjection`; multi-column + EXISTS-in-HAVING + unresolvable-expr-arg/key rejected. 23 FDB integration probes (incl. EXPLAIN-pins-StreamingAgg, empty→NULL contrast, expression group key, join+GROUP BY, determinism 10×).
-  - [x] **Follow-up: `ORDER BY` over grouped output in a correlated scalar subquery.** Done in RFC-085 — a Go-only read-side extension. The interim rejection is gone; `ORDER BY` + `GROUP BY` now inserts a `LogicalSort` over the post-aggregate row (between the aggregate and the FirstOrDefault `LIMIT 1`) so the multi-group choice is deterministic. Sort keys resolve to the **exact** datum key the aggregate cursor emits (`groupedScalarSortKeys`, single-source: group keys → bare-upper, aggregates → the materialised alias) — translateSort/FieldValue do exact-case lookup, so a mismatched key would silently sort every row equal. ORDER BY a column that is neither grouped nor a *selected* aggregate is rejected loudly (no silent-nil sort). Wired in BOTH aggregate paths (hasRealAgg + group-key-only). **Sub-fix (same exact-case-datum-key bug class):** a qualified projection (`SELECT o.amount`) and a qualified ORDER BY key in the **non-aggregate** single-table path used to keep the `o.` qualifier and resolve to NULL / miss the sort — now stripped to the bare key (mirroring the join-vs-single-table convention at :910). Pinned by `ordered_grouped_scalar_subquery_fdb_test.go` (ASC/DESC group choice, determinism 10×, loud reject, qualified projection + qualified key) and `quality_probes_test.go` (order_by_with_group_by_deterministic, ASC+DESC SUM per group).
+- [x] **GROUP BY/HAVING in correlated scalar subqueries.** Done in RFC-047 and cardinality-corrected by CQ-4 — a Go-only read-side extension (Java rejects correlated scalar subqueries at the grammar level entirely; zero wire impact). The stale "PredicatePushDownRule AliasMap.Compose conflict" blocker no longer applies: GroupByExpression is already a push-down barrier (no case in `pushPredicateToExpression`) and the panicking `AliasMap.Compose` has no production callers. `buildCorrelatedScalar` builds GROUP BY (+ real-aggregate HAVING) into the inner plan and leaves an unpaged grouped result uncapped; the shared strict FirstOrDefault barrier raises 21000 if more than one post-HAVING group survives. Explicit LIMIT 0/1 is preserved exactly and intentionally selects at most one group. Empty input → 0 groups → LEFT-scalar NULL falls out naturally (vs no-GROUP-BY COUNT → 0). Group keys + aggregate operands resolve via the semantic scope (`ResolveIdentifier`), scalar column named with the bare operand to avoid an embedded-`.` qualifier mis-parse. 42803 is enforced via `validateGroupByProjection`; group-key-only HAVING, multi-column + EXISTS-in-HAVING, and unresolvable expr-arg/key shapes reject typed-loud. FDB integration probes pin StreamingAgg, empty→NULL contrast, expression group keys, join+GROUP BY, post-HAVING 0/1/2+, and exact 21000.
+  - [x] **Follow-up: `ORDER BY` over grouped output in a correlated scalar subquery.** Done in RFC-085, with CQ-4 removing the old implicit first-group contract. `ORDER BY` + `GROUP BY` inserts a `LogicalSort` over the post-aggregate row before either the written LIMIT/OFFSET or the strict cardinality probe. With explicit LIMIT 1 it deterministically chooses the requested group; without LIMIT it only orders the groups and a second group still raises 21000. Sort keys resolve to the **exact** datum key the aggregate cursor emits (`groupedScalarSortKeys`, single-source: group keys → bare-upper, aggregates → the materialised alias) — translateSort/FieldValue do exact-case lookup, so a mismatched key would silently sort every row equal. ORDER BY a column that is neither grouped nor a *selected* aggregate is rejected loudly (no silent-nil sort). Wired in BOTH aggregate paths (hasRealAgg + group-key-only). **Sub-fix (same exact-case-datum-key bug class):** a qualified projection (`SELECT o.amount`) and a qualified ORDER BY key in the **non-aggregate** single-table path used to keep the `o.` qualifier and resolve to NULL / miss the sort — now stripped to the bare key (mirroring the join-vs-single-table convention at :910). Pinned by `ordered_grouped_scalar_subquery_fdb_test.go`, `correlated_scalar_cardinality_followup_fdb_test.go`, and `quality_probes_test.go`.
   - [x] **Follow-up (single-source): expression/constant-argument aggregate that meets a *differing* aggregate via HAVING in a correlated scalar subquery.** DONE — the addendum unified producer and consumer on **one** canonicaliser (`canonicalAggName`, called by both `buildCorrelatedScalar` and `rewriteAggregateValue`), so the two name schemes can no longer drift; the prior fail-safe rejection is gone for single-source. The last silent-wrong corner (nested-arithmetic args like `SUM((amount+10)*2)` returning NULL → dropped groups) was a *separate* root cause — an inverted `!isArith` guard in `translateAggregate` that preferred a lossy text reparse over the resolved operand — fixed in RFC-048 (4dc3276c): the resolved `AggregateOperands[i]` is now always the source of truth. Works now (single-source): `SELECT COUNT(1) … HAVING COUNT(*)` both directions; `SELECT SUM(a*2) … HAVING SUM(a*3)`; decimal-literal args (`SUM(a*1.5)`); nested-arith args (`SUM((a+10)*2)`). `COUNT(DISTINCT 1)` correctly still rejected (DISTINCT unsupported here). Pinned by `quality_probes_test.go` (count_constant_with_having_works, expression_aggregate_in_having_works, decimal_literal_aggregate_arg_in_having, nested_arithmetic_aggregate_arg_in_having). **Residual (join only):** over a JOIN an expression-argument aggregate in HAVING is still rejected (the operand binds to the wrong quantifier through the parser round-trip) — pinned by `join_expression_aggregate_in_having_rejected`.
 - [x] **🚩 IN over an indexed column drops the outer projection (wrong result schema).** Fixed in **RFC-070**. Root cause was two defects: (1) `MergeProjectionAndFetchRule`'s fallback dropped the projection when the fetch's child was an InJoin (not a coverable index scan), leaking a bare `InJoin` ([ID,A]) into the root projection group where it won on cost; (2) `physicalProjectionWrapper`/`physicalFetchFromPartialRecordWrapper` `WithChildren` didn't relink a compound-join inner during extraction (left `Project([id], InJoin(<nil>))` / `Fetch(<nil>)`), because of an `isLeafReplaceable` gate — same gate RFC-069 removed from the in-memory sort wrapper. Fix: fallback retains the projection; the two transparent caps relink unconditionally. `SELECT id FROM t WHERE a IN (1,7)` → `Project([ID], InJoin(IndexScan(IDX_A,[=])))`; `SELECT id+100 ...` (was 0 rows) → `{101,107}`. Pinned by `TestFDB_INProj_OuterProjectionOverInJoin` (indexed+unindexed, multi-column, expression-projection, 8× determinism). Graefe+Torvalds ACK.
   - [ ] **Follow-up (RFC-070): `pushValue`-into-covering-result-value modeling gap.** Java's `MergeProjectionAndFetchRule` yields a bare `fetchPlan.getChild()` because `RecordQueryFetchFromPartialRecordPlan.pushValue` rewrites the projected value into the covering plan's own result value. Go's `WithCovering` only sets a flag (the scan still flows the full partial record), so Go compensates with a thin outer `Project`. Pushing the value into the covering result value would let both rule branches collapse to a bare child yield, matching Java. Cosmetic/architectural — current behaviour is correct.
@@ -6656,14 +6692,21 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       ValuePredicate(= TRUE) (Expression.java:371-400) and plans it as a
       residual filter; Go declines 0AF00. Port the wrap; restore the rows
       pins in case_when_in_java / case_exists_combo.
-- [ ] **Correlated scalar subquery in WHERE/HAVING — quantifier lowering
-      (RFC-180 Y4, extension):** ScalarSubqueryValue is pre-eval
-      (uncorrelated) only; the correlated materialized-column lowering exists
-      only for PROJECTION position. WHERE/HAVING-position correlated scalars
-      now decline TYPED 0AF00 (plan_visitor point checks — before the guard
-      they planned and died at runtime with UnboundScalarSubqueryError).
-      Lower via a quantifier (Java-style) and restore the rows pins in
-      scalar_subquery_java.
+- [x] **Correlated scalar subquery in WHERE — scoped quantifier lowering
+      (RFC-180 Y4 / CQ-4, extension):** a single correlated scalar over a
+      single-source outer is materialized per outer row through the shared
+      LEFT-scalar join, consumed by the WHERE predicate on a fresh typed row,
+      cardinality-checked, and hidden by an outer-only projection. The
+      `scalar_subquery_java` Bob/Dave/Eve rows pin is restored. Multi-source,
+      mixed-subquery, projected-EXISTS, and dual SELECT+WHERE scalar
+      compositions remain explicit 0AF00 boundaries.
+- [ ] **Correlated scalar subquery in HAVING — quantifier lowering
+      (RFC-180 Y4, extension):** outer HAVING still rejects typed 0AF00; its
+      grouped-output row shape and aggregate-reference rewrite have not been
+      proven compatible with the private scalar slot. This is distinct from a
+      real-aggregate HAVING *inside* a correlated scalar subquery, which CQ-4
+      supports and cardinality-checks after HAVING. Restore a dedicated HAVING
+      rows pin only when that outer consumer is implemented.
 - [ ] **Scalar subquery over a FROM-less SELECT (RFC-180 Y4, extension):**
       `SELECT (SELECT COUNT(*) FROM t) AS total` declines 0AF00 — the
       LogicalValues path carries no subquery plans. Restore rows pin when

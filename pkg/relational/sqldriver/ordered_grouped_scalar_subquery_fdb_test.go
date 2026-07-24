@@ -64,19 +64,19 @@ func ogsScalarStr(t *testing.T, ctx context.Context, db *sql.DB, q string) (stri
 }
 
 // TestFDB_OrderedGroupedScalarSubquery pins RFC-085: ORDER BY over the grouped
-// output of a correlated scalar subquery makes the multi-group FirstOrDefault
-// choice deterministic (was rejected outright).
+// output of a correlated scalar subquery gives the explicit user LIMIT 1 an
+// exact, deterministic page (the shape was previously rejected outright).
 func TestFDB_OrderedGroupedScalarSubquery(t *testing.T) {
 	t.Parallel()
 	db, ctx := ogsDB(t, "core")
 
-	// ORDER BY the group key ASC → first group 'a' → SUM(amount)=15.
+	// ORDER BY the group key ASC + written LIMIT 1 → group 'a' → SUM(amount)=15.
 	asc := "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status LIMIT 1) FROM customers c WHERE c.id = 1"
 	if got, ok := ogsScalar(t, ctx, db, asc); !ok || got != 15 {
 		t.Fatalf("ORDER BY status ASC: got %d (valid=%v), want 15 (group 'a')", got, ok)
 	}
 
-	// ORDER BY the group key DESC → first group 'b' → SUM(amount)=20.
+	// ORDER BY the group key DESC + written LIMIT 1 → group 'b' → SUM(amount)=20.
 	desc := "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status DESC LIMIT 1) FROM customers c WHERE c.id = 1"
 	if got, ok := ogsScalar(t, ctx, db, desc); !ok || got != 20 {
 		t.Fatalf("ORDER BY status DESC: got %d (valid=%v), want 20 (group 'b')", got, ok)
@@ -186,7 +186,7 @@ func TestFDB_OrderedGroupedScalarSubquery_GroupKeyOnly(t *testing.T) {
 }
 
 // TestFDB_OrderedGroupedScalarSubquery_Determinism runs the ordered subquery
-// repeatedly — the whole point is a stable group choice.
+// repeatedly — the written one-row page must select the same group every time.
 func TestFDB_OrderedGroupedScalarSubquery_Determinism(t *testing.T) {
 	t.Parallel()
 	db, ctx := ogsDB(t, "det")

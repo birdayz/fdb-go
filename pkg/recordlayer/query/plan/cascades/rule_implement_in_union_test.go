@@ -50,6 +50,28 @@ func TestImplementInUnionRule_FiresWithExplodeAndInner(t *testing.T) {
 	}
 }
 
+func TestImplementInUnionRule_StrictSingleFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	innerRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	innerAlias := values.NamedCorrelationIdentifier("STRICT")
+	innerQ := expressions.NamedForEachStrictSingleQuantifier(innerAlias, innerRef)
+	explodeQ := expressions.ForEachQuantifier(expressions.InitialOf(
+		expressions.NewExplodeExpression(values.LiteralValue([]any{int64(1), int64(2)}))))
+	sel := expressions.NewSelectExpression(
+		innerQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{explodeQ, innerQ},
+		nil,
+	)
+
+	results := FireImplementationRule(
+		NewImplementInUnionRule(), expressions.InitialOf(sel))
+	if len(results) != 0 {
+		t.Fatalf("strict-single IN shape yielded %d InUnion implementation(s), want zero", len(results))
+	}
+}
+
 func TestImplementInUnionRule_SkipsSingleQuantifier(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)

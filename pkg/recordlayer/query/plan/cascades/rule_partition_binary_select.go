@@ -53,6 +53,12 @@ func (r *PartitionBinarySelectRule) OnMatch(call *ExpressionRuleCall) {
 	if len(quantifiers) != 2 {
 		return
 	}
+	if hasStrictSingleQuantifier(quantifiers) {
+		// This rule rebuilds any predicate-absorbing edge as plain ForEach.
+		// Supported scalar lowering is a predicate-less LEFT select and does not
+		// need partitioning; fail every flagged variant closed.
+		return
+	}
 
 	// Only fire on inner joins. Java's Cascades SelectExpression models
 	// inner-join semantics — outer joins are a Go extension carried on the

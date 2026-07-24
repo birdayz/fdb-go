@@ -121,6 +121,231 @@ func TestImplementNestedLoopJoin_PlanOutput(t *testing.T) {
 	t.Logf("NLJ Explain: %s", explain)
 }
 
+// TestImplementNestedLoopJoin_StrictSingleForcesCompensatedFlatMap pins the
+// semantic carrier used by correlated scalar subqueries. A later simplification
+// can remove the inner plan's last syntactic reference to the outer row (for
+// example, `inner.fk = outer.id OR TRUE`), but that must not make the
+// strict-single edge eligible for the ordinary materialized NLJ path: that path
+// has no at-most-one-row check and would silently fan out the outer row.
+//
+// The edge flag is the durable contract. Even with two completely independent
+// scan references, it must force the existing FlatMap + strict
+// FirstOrDefault compensation and must produce no unwrapped NLJ alternative.
+func TestImplementNestedLoopJoin_StrictSingleForcesCompensatedFlatMap(t *testing.T) {
+	t.Parallel()
+
+	outerAlias := values.NamedCorrelationIdentifier("O")
+	innerAlias := values.NamedCorrelationIdentifier("I")
+
+	outerLogical := expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, values.UnknownType)
+	outerRef := expressions.InitialOf(outerLogical)
+	outerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"OUTER"}, values.UnknownType, false))
+
+	innerLogical := expressions.NewFullUnorderedScanExpression([]string{"INNER"}, values.UnknownType)
+	innerRef := expressions.InitialOf(innerLogical)
+	innerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"INNER"}, values.UnknownType, false))
+
+	outerQ := expressions.NamedForEachQuantifier(outerAlias, outerRef)
+	innerQ := expressions.NamedForEachStrictSingleQuantifier(innerAlias, innerRef)
+	sel := expressions.NewSelectExpressionWithJoinType(
+		outerQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{outerQ, innerQ},
+		nil,
+		[]string{"O", "I"},
+		expressions.JoinLeftOuter,
+	)
+
+	results := FireExpressionRule(NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+	if len(results) == 0 {
+		t.Fatal("strict-single select yielded no physical implementation")
+	}
+
+	foundStrictFlatMap := false
+	for _, result := range results {
+		if _, ok := result.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+			t.Fatalf("strict-single select yielded an unwrapped materialized NLJ: %T", result)
+		}
+		flatMap, ok := result.(*plans.RecordQueryFlatMapPlan)
+		if !ok {
+			continue
+		}
+		hasStrictFirstOrDefault := false
+		plans.Walk(flatMap, func(plan plans.RecordQueryPlan) bool {
+			if first, ok := plan.(*plans.RecordQueryFirstOrDefaultPlan); ok && first.IsStrict() {
+				hasStrictFirstOrDefault = true
+			}
+			return true
+		})
+		if hasStrictFirstOrDefault {
+			foundStrictFlatMap = true
+		}
+	}
+	if !foundStrictFlatMap {
+		t.Fatalf("strict-single select yielded no FlatMap with strict FirstOrDefault; results: %d", len(results))
+	}
+}
+
+// TestImplementNestedLoopJoin_DualStrictSingleFailsClosed covers a malformed
+// shape the SQL translator does not emit: both legs claim scalar cardinality.
+// The current FlatMap compensation can enforce one inner leg per outer, not two
+// mutually inner legs. The rule must therefore decline the shape rather than
+// fall back to an ordinary materialized NLJ that enforces neither contract.
+func TestImplementNestedLoopJoin_DualStrictSingleFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	leftAlias := values.NamedCorrelationIdentifier("L")
+	rightAlias := values.NamedCorrelationIdentifier("R")
+
+	leftRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"LEFT"}, values.UnknownType))
+	leftRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"LEFT"}, values.UnknownType, false))
+	rightRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"RIGHT"}, values.UnknownType))
+	rightRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"RIGHT"}, values.UnknownType, false))
+
+	leftQ := expressions.NamedForEachStrictSingleQuantifier(leftAlias, leftRef)
+	rightQ := expressions.NamedForEachStrictSingleQuantifier(rightAlias, rightRef)
+	sel := expressions.NewSelectExpressionWithJoinType(
+		leftQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{leftQ, rightQ},
+		nil,
+		[]string{"L", "R"},
+		expressions.JoinInner,
+	)
+
+	results := FireExpressionRule(NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+	if len(results) != 0 {
+		for _, result := range results {
+			if _, ok := result.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+				t.Fatalf("dual strict-single select yielded an unwrapped materialized NLJ: %T", result)
+			}
+		}
+		t.Fatalf("dual strict-single select must fail closed, got %d implementation(s)", len(results))
+	}
+}
+
+// TestImplementNestedLoopJoin_StrictSingleUnsupportedShapesFailClosed pins the
+// rule's global carrier invariant. StrictSingle has exactly one implementation:
+// LEFT OUTER [plain outer, strict right]. Other join kinds, orientations, and
+// special arms must not consume or materialize a flagged edge without the exact
+// scalar-subquery semantics owned by that path.
+func TestImplementNestedLoopJoin_StrictSingleUnsupportedShapesFailClosed(t *testing.T) {
+	t.Parallel()
+
+	newScanRef := func(name string) *expressions.Reference {
+		ref := expressions.InitialOf(
+			expressions.NewFullUnorderedScanExpression([]string{name}, values.UnknownType))
+		ref.InsertFinal(plans.NewRecordQueryScanPlan([]string{name}, values.UnknownType, false))
+		return ref
+	}
+	assertNoImplementation := func(t *testing.T, sel *expressions.SelectExpression) {
+		t.Helper()
+		results := FireExpressionRule(NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+		if len(results) != 0 {
+			t.Fatalf("strict-single unsupported shape yielded %d implementation(s), including %T",
+				len(results), results[0])
+		}
+	}
+
+	t.Run("full_outer", func(t *testing.T) {
+		leftQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithJoinType(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ},
+			nil,
+			[]string{"L", "R"},
+			expressions.JoinFullOuter,
+		))
+	})
+
+	t.Run("inner", func(t *testing.T) {
+		leftQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithJoinType(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ},
+			nil,
+			[]string{"L", "R"},
+			expressions.JoinInner,
+		))
+	})
+
+	t.Run("cross", func(t *testing.T) {
+		leftQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithJoinType(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ},
+			nil,
+			[]string{"L", "R"},
+			expressions.JoinCross,
+		))
+	})
+
+	t.Run("strict_left", func(t *testing.T) {
+		leftQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithJoinType(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ},
+			nil,
+			[]string{"L", "R"},
+			expressions.JoinLeftOuter,
+		))
+	})
+
+	t.Run("null_on_empty_left", func(t *testing.T) {
+		leftQ := expressions.NamedForEachNullOnEmptyQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithJoinType(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ},
+			nil,
+			[]string{"L", "R"},
+			expressions.JoinLeftOuter,
+		))
+	})
+
+	t.Run("three_quantifier_existential", func(t *testing.T) {
+		leftQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		existAlias := values.NamedCorrelationIdentifier("E")
+		existQ := expressions.NamedExistentialQuantifier(existAlias, newScanRef("EXISTS"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithAliases(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ, existQ},
+			[]predicates.QueryPredicate{predicates.NewExistentialAlias(existAlias)},
+			[]string{"L", "R", "E"},
+		))
+	})
+
+	t.Run("two_quantifier_existential", func(t *testing.T) {
+		leftQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		existAlias := values.NamedCorrelationIdentifier("E")
+		existQ := expressions.NamedExistentialQuantifier(existAlias, newScanRef("EXISTS"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithAliases(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, existQ},
+			[]predicates.QueryPredicate{predicates.NewExistentialAlias(existAlias)},
+			[]string{"L", "E"},
+		))
+	})
+}
+
 // TestImplementNestedLoopJoin_ExistsShortcutRejectsFanOutCandidate pins the
 // raw correlated-index shortcut used by nested EXISTS. A composite
 // (FK, TAGS FAN_OUT) index has no entry when TAGS is empty, even when FK

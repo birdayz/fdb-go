@@ -32,20 +32,17 @@ tests:
       - ['Eve']
 
   # Correlated scalar subquery in WHERE — max salary per department.
-  # TRACKED EXTENSION GAP (RFC-180): scalar subqueries in expression position
-  # are a Go-only grammar extension (Java's parser has no subquery
-  # expressionAtom — 42601). The extension's WHERE-position CORRELATED reach
-  # is not lowered yet: ScalarSubqueryValue is pre-eval (uncorrelated) only,
-  # and the correlated materialized-column lowering exists only for the
-  # PROJECTION position. Before the RFC-180 guard this planned and then died
-  # at runtime with UnboundScalarSubqueryError; now it declines TYPED at plan
-  # time. Restore the rows pin ([Bob],[Dave],[Eve]) when the quantifier
-  # lowering lands.
+  # Go-only grammar extension: the scalar is materialized per outer row,
+  # cardinality-checked, consumed by the comparison, then hidden from the
+  # output schema.
   - query: |
       SELECT e.name FROM employees e
       WHERE e.salary = (SELECT MAX(e2.salary) FROM employees e2 WHERE e2.dept_id = e.dept_id)
       ORDER BY e.name
-    error_code: "0AF00"
+    rows:
+      - ['Bob']
+      - ['Dave']
+      - ['Eve']
 
   # Scalar subquery as the sole projection of a FROM-less SELECT.
   # TRACKED EXTENSION GAP (RFC-180): the Go scalar-subquery extension does

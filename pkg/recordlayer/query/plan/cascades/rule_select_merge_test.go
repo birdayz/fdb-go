@@ -159,6 +159,55 @@ func TestSelectMergeRule_SelectChild(t *testing.T) {
 	}
 }
 
+func TestSelectMergeRule_StrictSingleBarrier(t *testing.T) {
+	t.Parallel()
+
+	scanRef := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+	pred := predicates.NewComparisonPredicate(
+		values.NewFlatFieldValue("X", values.UnknownType),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+	)
+
+	t.Run("strict_parent_target", func(t *testing.T) {
+		scanQ := expressions.ForEachQuantifier(scanRef)
+		filter := expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{pred}, scanQ)
+		targetAlias := values.NamedCorrelationIdentifier("STRICT_TARGET")
+		targetQ := expressions.NamedForEachStrictSingleQuantifier(
+			targetAlias, expressions.InitialOf(filter))
+		parent := expressions.NewSelectExpression(
+			targetQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{targetQ},
+			nil,
+		)
+		if yielded := FireExpressionRule(
+			NewSelectMergeRule(), expressions.InitialOf(parent)); len(yielded) != 0 {
+			t.Fatalf("strict parent target yielded %d merge(s), want zero", len(yielded))
+		}
+	})
+
+	t.Run("strict_child_edge", func(t *testing.T) {
+		strictAlias := values.NamedCorrelationIdentifier("STRICT_CHILD")
+		strictQ := expressions.NamedForEachStrictSingleQuantifier(
+			strictAlias, scanRef)
+		child := expressions.NewSelectExpression(
+			strictQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{strictQ},
+			[]predicates.QueryPredicate{pred},
+		)
+		parentQ := expressions.ForEachQuantifier(expressions.InitialOf(child))
+		parent := expressions.NewSelectExpression(
+			parentQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{parentQ},
+			nil,
+		)
+		if yielded := FireExpressionRule(
+			NewSelectMergeRule(), expressions.InitialOf(parent)); len(yielded) != 0 {
+			t.Fatalf("strict child edge yielded %d merge(s), want zero", len(yielded))
+		}
+	})
+}
+
 func TestSelectMergeRule_TwoQuantifiersOneFilter(t *testing.T) {
 	t.Parallel()
 

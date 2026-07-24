@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=338 queries=2446 dml=158 non_query=97 plan_errors=261 unexpected_errors=4
+# files=338 queries=2446 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14018,9 +14018,19 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
-=== scalar_subquery_java.yaml#1 expect-error=0AF00
+=== scalar_subquery_java.yaml#1
 sql:   SELECT e.name FROM employees e WHERE e.salary = (SELECT MAX(e2.salary) FROM employees e2 WHERE e2.dept_id = e.dept_id) ORDER BY e.name
-plan:  <PLAN-ERROR: 0AF00: correlated scalar subquery in a WHERE/HAVING predicate is not supported>
+plan:  Project([NAME#1], InMemorySort([NAME ASC], Project([q$0.ID#0, q$0.NAME#1, q$0.DEPT_ID#2, q$0.SALARY#3], PredicatesFilter(FlatMap(outer=Scan(EMPLOYEES), inner=DefaultOnEmpty(StreamingAgg(keys=[], PredicatesFilter(Scan(EMPLOYEES), [1 preds])))), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryFlatMapPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryDefaultOnEmptyPlan
+shape:             RecordQueryStreamingAggregationPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
 === scalar_subquery_java.yaml#2 expect-error=0AF00
 sql:   SELECT (SELECT COUNT(*) FROM employees) AS total
 plan:  <PLAN-ERROR: 0AF00: query is not supported>

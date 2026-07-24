@@ -7,23 +7,20 @@ package sqldriver_test
 // grammar has no scalar subquery in an expressionAtom) and returns correct
 // rows — the rowdiff harness covers it generatively.
 //
-// A CORRELATED scalar subquery in a WHERE or HAVING predicate is deliberately
-// declined TYPED with 0AF00 ("RFC-180 correct-or-loud", plan_visitor.go): it
-// has no lowering yet — its evaluation contract is pre-eval / uncorrelated
-// only, so letting it through would reach the executor as an unbindable alias
-// (runtime error) or, worse, silently wrong rows. This test locks in the LOUD
-// rejection so a future change to the lowering can't regress the correlated
-// case to a silent mis-evaluation unnoticed. Java's quantifier lowering is the
-// booked follow-up that would turn these into supported queries.
+// A CORRELATED scalar in WHERE now lowers through a per-outer LEFT scalar box:
+// the inner result is materialized before the comparison and strict cardinality
+// is checked per outer row. HAVING still has no per-group lowering and remains a
+// typed 0AF00 correct-or-loud boundary.
 import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
-func TestFDB_CorrelatedScalarInPredicate_DeclinesLoud(t *testing.T) {
+func TestFDB_CorrelatedScalarInPredicate_Boundary(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -65,26 +62,33 @@ func TestFDB_CorrelatedScalarInPredicate_DeclinesLoud(t *testing.T) {
 		}
 	})
 
-	// The correlated forms must decline LOUDLY (0AF00), never silently return
-	// wrong rows.
-	rejected := func(name, q string) {
-		t.Run(name, func(t *testing.T) {
-			rows, err := db.QueryContext(ctx, q)
-			if err == nil {
-				// Some drivers surface the plan error on the first Next/Scan.
-				defer rows.Close()
-				if rows.Next() {
-					t.Fatalf("correlated scalar subquery returned rows instead of declining: %s", q)
-				}
-				err = rows.Err()
+	t.Run("correlated_where", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT id FROM t WHERE a > (SELECT MAX(r.b) FROM t AS r WHERE r.c = t.c) ORDER BY id")
+		if err != nil {
+			t.Fatalf("correlated WHERE scalar must be supported: %v", err)
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatalf("scan: %v", err)
 			}
-			if err == nil || !strings.Contains(err.Error(), "0AF00") {
-				t.Errorf("%s error = %v, want 0AF00 (correlated scalar subquery in predicate unsupported)", name, err)
-			}
-		})
-	}
-	rejected("correlated_where",
-		"SELECT id FROM t WHERE a > (SELECT MAX(r.b) FROM t AS r WHERE r.c = t.c) ORDER BY id")
-	rejected("correlated_having",
-		"SELECT o.c FROM t AS o GROUP BY o.c HAVING SUM(o.b) > (SELECT MAX(r.a) FROM t AS r WHERE r.c = o.c)")
+			got = append(got, id)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if len(got) != 2 || got[0] != 1 || got[1] != 3 {
+			t.Fatalf("correlated WHERE scalar rows = %v, want [1 3]", got)
+		}
+	})
+
+	t.Run("correlated_having_still_typed_loud", func(t *testing.T) {
+		err := expectError(t, db,
+			"SELECT o.c FROM t AS o GROUP BY o.c HAVING SUM(o.b) > "+
+				"(SELECT MAX(r.a) FROM t AS r WHERE r.c = o.c)")
+		requireSQLSTATE(t, err, api.ErrCodeUnsupportedQuery)
+	})
 }

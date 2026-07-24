@@ -103,3 +103,29 @@ func TestSplitSelectExtractIndependentQuantifiersRule_Fires(t *testing.T) {
 		)
 	}
 }
+
+func TestSplitSelectExtractIndependentQuantifiersRule_StrictSingleFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	scanRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	scanAlias := values.NamedCorrelationIdentifier("STRICT")
+	scanQ := expressions.NamedForEachStrictSingleQuantifier(scanAlias, scanRef)
+	explodeQ := expressions.ForEachQuantifier(expressions.InitialOf(
+		expressions.NewExplodeExpression(values.LiteralValue([]any{int64(1), int64(2)}))))
+	pred := predicates.NewComparisonPredicate(
+		values.NewFieldValue(scanQ.GetFlowedObjectValue(), "ID", values.NullableLong),
+		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)),
+	)
+	sel := expressions.NewSelectExpression(
+		scanQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{scanQ, explodeQ},
+		[]predicates.QueryPredicate{pred},
+	)
+
+	yielded := FireExpressionRule(
+		NewSplitSelectExtractIndependentQuantifiersRule(), expressions.InitialOf(sel))
+	if len(yielded) != 0 {
+		t.Fatalf("strict-single select yielded %d split(s), want zero", len(yielded))
+	}
+}

@@ -57,16 +57,20 @@ type ScalarSubquery struct {
 // `(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id)`.
 // The inner plan has the correlation predicate baked in as a filter
 // child of the aggregate — the executor re-evaluates it per outer
-// row via FlatMap. Carried on LogicalProject.
+// row via FlatMap. Carried on LogicalProject or LogicalFilter,
+// depending on whether the scalar is consumed by SELECT or WHERE.
 type CorrelatedScalarSubquery struct {
 	Alias      values.CorrelationIdentifier
 	InnerPlan  LogicalOperator
 	InnerAlias string
 	ScalarCol  string // output column name from the inner aggregate
-	// StrictSingle is true when the subquery has NO user-written LIMIT, so SQL
-	// standard at-most-one-row semantics apply: matching more than one inner row
-	// per outer row is a cardinality violation (21000), not a silent truncation.
-	// A user LIMIT clears it — truncation is then the user's deliberate intent.
+	// StrictSingle is true when the source can produce multiple post-pagination
+	// rows, so SQL standard at-most-one-row semantics apply: a second inner row
+	// per outer row is a cardinality violation (21000), not silent truncation.
+	// It is false when exact pagination caps a multi-row-capable source to 0/1,
+	// or when the source is intrinsically <=1 (for example a non-grouped real
+	// aggregate, for which even LIMIT >1 remains safe). Data-dependent LIMIT >1
+	// is rejected before this IR until post-pagination scalar collapse exists.
 	StrictSingle bool
 }
 
@@ -163,11 +167,12 @@ func (u *LogicalUnnest) Explain(indent string) string {
 // builder is constructed without a metadata-backed catalog (the
 // catalog-less Explain path, which has no transaction in scope).
 type LogicalFilter struct {
-	Input            LogicalOperator
-	Predicate        predicates.QueryPredicate // preferred when non-nil
-	PredicateText    string                    // source-text fallback
-	ExistsSubqueries []ExistsSubquery          // subquery plans for EXISTS predicates
-	ScalarSubqueries []ScalarSubquery          // subquery plans for scalar subqueries
+	Input                      LogicalOperator
+	Predicate                  predicates.QueryPredicate  // preferred when non-nil
+	PredicateText              string                     // source-text fallback
+	ExistsSubqueries           []ExistsSubquery           // subquery plans for EXISTS predicates
+	ScalarSubqueries           []ScalarSubquery           // uncorrelated scalar plans (pre-evaluated)
+	CorrelatedScalarSubqueries []CorrelatedScalarSubquery // correlated scalar plans (per-row LEFT scalar join)
 }
 
 // NewFilter constructs a text-only LogicalFilter — used by the
@@ -992,6 +997,9 @@ func AttachedPlans(op LogicalOperator) []LogicalOperator {
 		}
 		for _, sq := range o.ScalarSubqueries {
 			add(sq.Plan)
+		}
+		for _, sq := range o.CorrelatedScalarSubqueries {
+			add(sq.InnerPlan)
 		}
 	case *LogicalProject:
 		for _, sq := range o.ScalarSubqueries {

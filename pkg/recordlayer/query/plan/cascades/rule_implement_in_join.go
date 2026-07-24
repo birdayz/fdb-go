@@ -47,6 +47,12 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 	if len(quantifiers) < 2 {
 		return
 	}
+	// IN-join chains have no strict scalar compensation. A malformed/future
+	// strict+Explode shape must stay unimplemented rather than bypass the sole
+	// FirstOrDefault authority in ImplementNestedLoopJoinRule.
+	if hasStrictSingleQuantifier(quantifiers) {
+		return
+	}
 
 	resultValue := selectExpr.GetResultValue()
 

@@ -67,7 +67,12 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 		if pushQ.Kind() != expressions.QuantifierForEach {
 			continue
 		}
-		if pushQ.IsNullOnEmpty() {
+		// Both flags are semantic barriers. NullOnEmpty must see predicates
+		// after null extension; StrictSingle must count rows before any
+		// scalar-dependent predicate can hide a second row. This rule rebuilds
+		// the pushed edge as a plain ForEach, so either flag also has to block
+		// the rewrite to prevent carrier erasure.
+		if pushQ.IsNullOnEmpty() || pushQ.IsStrictSingle() {
 			continue
 		}
 
@@ -230,6 +235,15 @@ func pushIntoSelect(
 	pushQuantifier expressions.Quantifier,
 	selectExpr *expressions.SelectExpression,
 ) expressions.RelationalExpression {
+	// A plain parent edge can still range over a Select that owns the strict
+	// scalar edge internally. Absorbing the parent's predicate into that Select
+	// would move it below the strict FirstOrDefault boundary, allowing the
+	// predicate to hide a second row before cardinality is checked. Treat the
+	// nested carrier as opaque just like a directly flagged push quantifier.
+	if hasStrictSingleQuantifier(selectExpr.GetQuantifiers()) {
+		return nil
+	}
+
 	// Build a TranslationMap: pushQuantifier.alias -> selectExpr.resultValue.
 	resultValue := selectExpr.GetResultValue()
 	tmBuilder := NewTranslationMapBuilder()

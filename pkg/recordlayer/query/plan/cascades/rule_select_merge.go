@@ -83,6 +83,12 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	}
 
 	quantifiers := sel.GetQuantifiers()
+	// Merging splices a target child's quantifiers into the parent and removes
+	// the target edge. Without a proof that the strict carrier remains oriented
+	// to its scalar outer, that can dissolve the only cardinality boundary.
+	if hasStrictSingleQuantifier(quantifiers) {
+		return
+	}
 
 	// An EXISTENTIAL WRAP select — exactly ONE ForEach (the box) plus
 	// existential quantifier(s) — must NOT have a POSITIONAL ordinal-seed
@@ -122,6 +128,12 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 		for _, member := range childRef.AllMembers() {
+			// A strict edge inside a child Select/Filter is equally opaque: the
+			// merge would splice it into a wider parent where no implementation
+			// owns its per-outer-row contract.
+			if hasStrictSingleQuantifier(member.GetQuantifiers()) {
+				continue
+			}
 			childSel, isChildSel := member.(*expressions.SelectExpression)
 			// An OUTER-join child SelectExpression is OPAQUE to merging: pulling
 			// its legs up into the parent would discard the child's outer-join

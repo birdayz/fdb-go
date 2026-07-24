@@ -48,6 +48,16 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	// StrictSingle is a semantic edge contract owned by the binary
+	// correlated-scalar lowering. This N-way partitioner rebuilds the lower edge
+	// as a plain ForEach, so accepting a flagged input would erase its
+	// at-most-one-row guarantee before ImplementNestedLoopJoinRule can install
+	// the strict FirstOrDefault. SQL lowering does not emit supported N-way
+	// strict shapes; fail closed until partitioning can preserve and orient one.
+	if hasStrictSingleQuantifier(quantifiers) {
+		return
+	}
+
 	// Existential quantifiers partition when there are ≥2 of them — the
 	// sibling multi-EXISTS case (`WHERE EXISTS(A) AND EXISTS(B)`) that otherwise
 	// STRANDS: the NLJ rule is 2-quantifier and can't match [outer, EXISTS, EXISTS],

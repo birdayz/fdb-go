@@ -47,6 +47,27 @@ func scanQuantifier(name string) expressions.Quantifier {
 	)
 }
 
+func TestPartitionSelect_StrictSingleFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	a := scanQuantifier("A")
+	bBase := scanQuantifier("B")
+	b := expressions.NamedForEachStrictSingleQuantifier(
+		bBase.GetAlias(), bBase.GetRangesOver())
+	c := scanQuantifier("C")
+	sel := expressions.NewSelectExpressionWithAliases(
+		a.GetFlowedObjectValue(),
+		[]expressions.Quantifier{a, b, c},
+		[]predicates.QueryPredicate{joinPred("A", "B"), joinPred("B", "C")},
+		[]string{"A", "B", "C"},
+	)
+
+	yielded := FireExpressionRule(NewPartitionSelectRule(), expressions.InitialOf(sel))
+	if len(yielded) != 0 {
+		t.Fatalf("N-way strict-single select yielded %d partition(s), want fail-closed zero", len(yielded))
+	}
+}
+
 // chainEqPred builds the join predicate `a.aCol = b.bCol` as QOV-rooted
 // FieldValues, so GetCorrelatedToOfPredicate = {a, b} — the spanning shape
 // PartitionSelectRule routes to the upper level.

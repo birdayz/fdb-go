@@ -561,9 +561,8 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	})
 
 	t.Run("non_aggregate_implicit_limit", func(t *testing.T) {
-		// Shape 1 variant: no explicit LIMIT — system enforces LIMIT 1.
-		// Uses Charlie (id=3) who has exactly 1 order, so the result is
-		// deterministic regardless of which row LIMIT 1 picks.
+		// Shape 1 variant: no explicit LIMIT — the strict scalar barrier checks
+		// at-most-one. Charlie has exactly one order, so its value is returned.
 		rows := collectRows(t, db, `SELECT name,
 			(SELECT status FROM orders o WHERE o.customer_id = c.id)
 			FROM customers c WHERE c.id = 3`)
@@ -796,28 +795,14 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("group_by_non_key_first_or_default", func(t *testing.T) {
-		// GROUP BY a non-correlation key may yield multiple groups. Per the
-		// FirstOrDefault contract we take the first group (no runtime
-		// cardinality error). Each (customer,status) pair has exactly one
-		// order here, so every group's COUNT is 1 regardless of group order —
-		// assert membership (>=1, non-NULL), NOT a specific group, to avoid
-		// pinning a nondeterministic group choice.
-		rows := collectRows(t, db, `SELECT name,
+	t.Run("group_by_non_key_multiple_groups_21000", func(t *testing.T) {
+		// GROUP BY a non-correlation key may yield multiple groups. A scalar
+		// subquery cannot choose one arbitrarily: the second group is a runtime
+		// cardinality violation.
+		err := expectError(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
-			FROM customers c ORDER BY name`)
-		if len(rows) != 4 {
-			t.Fatalf("want 4 rows, got %d", len(rows))
-		}
-		for _, r := range rows {
-			cnt, ok := r[1].(int64)
-			if !ok {
-				t.Fatalf("%v: count not int64, got %T (%v)", r[0], r[1], r[1])
-			}
-			if cnt < 1 {
-				t.Errorf("%v: want a positive group count, got %d", r[0], cnt)
-			}
-		}
+			FROM customers c WHERE c.id = 1`)
+		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("group_by_non_key_projection_rejected", func(t *testing.T) {
@@ -875,10 +860,10 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	})
 
 	t.Run("order_by_with_group_by_deterministic", func(t *testing.T) {
-		// RFC-085: ORDER BY combined with GROUP BY (ordering the groups before
-		// the FirstOrDefault LIMIT 1) is now SUPPORTED — it makes the multi-group
-		// scalar choice deterministic instead of arbitrary. ORDER BY status ASC
-		// picks the alphabetically-first group's SUM(amount); DESC picks the last.
+		// RFC-085: ORDER BY combined with GROUP BY is supported. The explicit
+		// user LIMIT 1 pages the ordered groups exactly (and therefore needs no
+		// strict cardinality probe): ASC selects the alphabetically first
+		// group's SUM(amount), DESC the last.
 		// Per-customer groups (status → SUM amount):
 		//   Alice:  pending=200.00, shipped=100.50
 		//   Bob:    cancelled=75.00, shipped=50.25

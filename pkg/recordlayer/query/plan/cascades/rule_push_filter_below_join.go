@@ -70,6 +70,12 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 		quantifiers[1].Kind() != expressions.QuantifierForEach {
 		return
 	}
+	// Wrapping either leg below the filter reconstructs it as plain ForEach.
+	// A StrictSingle edge may only move through a rewrite with an explicit
+	// cardinality-preservation proof; this rule has none.
+	if hasStrictSingleQuantifier(quantifiers) {
+		return
+	}
 
 	aliases := sel.GetSourceAliases()
 	if len(aliases) < 2 {

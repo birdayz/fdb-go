@@ -8,10 +8,60 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
+
+func TestPartitionCorrelatedScalarWherePredicate_OnlyTopLevelAndMoves(t *testing.T) {
+	t.Parallel()
+
+	outer := predicates.NewComparisonPredicate(
+		values.NewFieldValue(
+			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("P")),
+			"ID",
+			values.NotNullLong,
+		),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(2)},
+		},
+	)
+	scalar := predicates.NewComparisonPredicate(
+		values.NewScalarSubqueryValue(values.NamedCorrelationIdentifier("SQ"), values.NullableLong),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(30)},
+		},
+	)
+
+	pre, post := partitionCorrelatedScalarWherePredicate(
+		predicates.NewAnd(outer, scalar),
+		"P",
+	)
+	if !predicates.PredicateEquals(pre, outer) {
+		t.Fatalf("top-level outer conjunct was not isolated before the scalar box: %v", pre)
+	}
+	if !predicates.PredicateEquals(post, scalar) {
+		t.Fatalf("scalar conjunct did not remain above the scalar box: %v", post)
+	}
+
+	for name, wrapped := range map[string]predicates.QueryPredicate{
+		"or":  predicates.NewOr(outer, scalar),
+		"not": predicates.NewNot(predicates.NewAnd(outer, scalar)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			gotPre, gotPost := partitionCorrelatedScalarWherePredicate(wrapped, "P")
+			if gotPre != nil {
+				t.Fatalf("wrapped predicate produced a pre-scalar conjunct: %v", gotPre)
+			}
+			if !predicates.PredicateEquals(gotPost, wrapped) {
+				t.Fatalf("wrapped predicate was distributed across the scalar box: %v", gotPost)
+			}
+		})
+	}
+}
 
 // TestTableColumns_FromMetadata pins the md→columns derivation (tableColumns +
 // fieldTypeForFD) that 7.6 uses to source source-anchored join-leg columns. It
