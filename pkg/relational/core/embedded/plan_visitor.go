@@ -500,13 +500,16 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// simpleTable.OrderByClause() and resolves positional references
 	// against the SELECT column list.
 	hasAggregate := cls.countStar || len(cls.aggCols) > 0
-	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, groupKeyRefDisplays(cls.groupBy), cls.groupByAliases, cls.postSortStripProj, cls.postSortStripAliases)
+	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, groupKeyRefDisplays(cls.groupBy), cls.groupByAliases, cls.postSortStripProj, cls.postSortStripAliases, cls.postSortAggregateOutputOrdinals)
 
 	// Post-sort strip projection: when hasSortOnly is true in the
 	// aggregate path, the visible-only projection is deferred past
 	// Sort so sort-key columns remain accessible.
 	if len(cls.postSortStripProj) > 0 {
-		op = logical.NewProject(op, cls.postSortStripProj, cls.postSortStripAliases)
+		proj := logical.NewProject(op, cls.postSortStripProj, cls.postSortStripAliases)
+		proj.AggregateOutputOrdinals = append([]int(nil), cls.postSortAggregateOutputOrdinals...)
+		proj.IsComputed = append([]bool(nil), cls.postSortIsComputed...)
+		op = proj
 	}
 
 	// Step 5: Projection (non-aggregate) + DISTINCT → directly from
@@ -996,7 +999,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	}
 
 	// (15) Upgrade sort key values.
-	upgradeSortKeyValues(op, sq, v.md, v.schemaName, v.cteScopes)
+	if err := upgradeSortKeyValues(op, sq, v.md, v.schemaName, v.cteScopes); err != nil {
+		return nil, err
+	}
 
 	// (15a) RFC-142 (P2a): a BARE ORDER BY sort key that binds to a
 	// lateral-unnest SHADOWING source (`FROM t, t.arr AS v, …`) must sort by the
@@ -1342,9 +1347,6 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		return op, stripPrefix
 	}
 
-	var aggAliases []string
-	var aggCalls []logical.AggregateCall
-	hasDistinct := false
 	keys := logicalGroupKeys(cls.groupBy)
 	for i := range keys {
 		stripped := strip(keys[i].Display)
@@ -1355,110 +1357,28 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 			keys[i] = logical.GroupKey{Display: stripped, Bare: stripped}
 		}
 	}
-	if cls.countStar {
-		aggAliases = []string{cls.countStarAlias}
-		aggCalls = []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}
-	} else {
-		for _, ac := range cls.aggCols {
-			if ac.aggFunc != "" {
-				arg := ac.aggArg
-				if arg == "" && ac.aggExpr != nil {
-					arg = canonicalTextOf(ac.aggExpr)
-				}
-				if arg == "" {
-					arg = "*"
-				}
-				arg = strip(arg)
-				if ac.aggDistinct {
-					hasDistinct = true
-				}
-				aggCalls = append(aggCalls, logical.AggregateCall{
-					Func:       strings.ToUpper(ac.aggFunc),
-					Operand:    arg,
-					Star:       arg == "*",
-					Distinct:   ac.aggDistinct,
-					BareColumn: ac.aggArg != "" && ac.aggExpr == nil,
-					Qualified:  ac.aggArgQualified,
-				})
-				aggAliases = append(aggAliases, ac.outName)
-			}
-		}
-	}
+	aggCalls, hasDistinct := logicalAggregateCalls(cls.aggCols, cls.countStar, strip)
+	outputAggCols := visibleAggregateOutputColumns(cls.aggCols, cls.countStar, cls.countStarAlias)
+	// Every aggregate's internal ABI is canonical and alias-free:
+	// [group keys..., aggregate calls...]. SQL aliases belong exclusively to
+	// the final visible Project. Besides preventing key/alias collisions, this
+	// keeps memo identity honest because AggregateSpec aliases are not part of
+	// GroupByExpression equality/hash.
+	aggAliases := make([]string, len(aggCalls))
 	aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, cls.havingExpr != nil)
 	aggOp.HasDistinctAggregate = hasDistinct
+	aggOp.OutputSlots = buildAggregateOutputSlots(keys, outputAggCols, strip)
 	op = aggOp
 
-	// Post-aggregation projection for mixed SELECT lists that contain
-	// both aggregates and computed expressions / constants.
-	hasOutExpr := false
-	for _, ac := range cls.aggCols {
-		if ac.outExpr != nil && ac.aggFunc == "" && ac.visible {
-			hasOutExpr = true
-			break
-		}
-	}
-	if hasOutExpr {
-		if proj, antlr := buildPostAggregateProjection(op, cls.aggCols, strip); proj != nil {
-			op = proj
-			cls.postAggExprs = antlr
-		}
-	} else if len(keys) > 0 {
-		hasNonVisible := false
-		for _, ac := range cls.aggCols {
-			if !ac.visible {
-				hasNonVisible = true
-				break
-			}
-		}
-		var visibleProj []string
-		var visibleAliases []string
-		hasAggAlias := false
-		for _, ac := range cls.aggCols {
-			if !ac.visible {
-				continue
-			}
-			if ac.aggFunc != "" {
-				arg := ac.aggArg
-				if arg == "" && ac.aggExpr != nil {
-					arg = canonicalTextOf(ac.aggExpr)
-				}
-				if arg == "" {
-					arg = "*"
-				}
-				arg = strip(arg)
-				canonical := ac.aggFunc + "(" + arg + ")"
-				visibleProj = append(visibleProj, canonical)
-				alias := ""
-				if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
-					alias = ac.outName
-					hasAggAlias = true
-				}
-				visibleAliases = append(visibleAliases, alias)
-			} else if ac.groupCol != "" {
-				visibleProj = append(visibleProj, strip(ac.groupCol))
-				alias := ""
-				if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
-					alias = ac.outName
-				}
-				visibleAliases = append(visibleAliases, alias)
-			}
-		}
-		totalOutput := len(keys) + len(aggCalls)
-		needsStrip := len(visibleProj) != totalOutput || hasAggAlias || hasNonVisible
-		// != (not <): a DUPLICATE visible read of one group key
-		// (`SELECT id, id … GROUP BY id`) makes the visible list WIDER
-		// than the aggregate's deduplicated output — the reshaping
-		// projection must materialize each visible slot or downstream
-		// consumers (CTE column aliases, positional reads) see the
-		// internal one-slot layout.
-		if needsStrip {
-			if hasNonVisible || groupKeyMissingFromVisible(groupKeyDisplayNames(keys), visibleProj) {
-				cls.postSortStripProj = visibleProj
-				cls.postSortStripAliases = visibleAliases
-			} else {
-				op = logical.NewProject(op, visibleProj, visibleAliases)
-			}
-		}
+	// Every SQL aggregate has one public output boundary. It is deliberately
+	// deferred until after ORDER BY so hidden sort/HAVING accumulators remain
+	// available on the canonical [keys..., calls...] row.
+	if proj, antlr := buildPostAggregateProjection(op, outputAggCols, strip); proj != nil {
+		cls.postSortStripProj = append([]string(nil), proj.Projections...)
+		cls.postSortStripAliases = append([]string(nil), proj.Aliases...)
+		cls.postSortAggregateOutputOrdinals = append([]int(nil), proj.AggregateOutputOrdinals...)
+		cls.postSortIsComputed = append([]bool(nil), proj.IsComputed...)
+		cls.postAggExprs = antlr
 	}
 
 	return op, stripPrefix
@@ -1524,7 +1444,7 @@ func (v *PlanVisitor) buildCTEBodyQuery(inner antlrgen.IQueryContext) (logical.L
 // resolution. aggCols is the aggregate classification from
 // classifySelectElements, used as a fallback when the SELECT list
 // was reclassified (projCols nil, aggCols non-nil).
-func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string, groupBy []string, groupByAliases map[string]int, deferredStripProj, deferredStripAliases []string) logical.LogicalOperator {
+func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string, groupBy []string, groupByAliases map[string]int, deferredStripProj, deferredStripAliases []string, deferredOutputOrdinals []int) logical.LogicalOperator {
 	orderByCtx := simpleTable.OrderByClause()
 	if orderByCtx == nil {
 		return op
@@ -1609,7 +1529,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		}
 
 		// Handle positional references `ORDER BY N`.
-		posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), selectCols, selectAliases, aggCols)
+		posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), selectCols, selectAliases, aggCols, false)
 		if posErr != nil {
 			// Error during positional resolution — this was already
 			// validated by classifySelectElements, so this shouldn't
@@ -1632,7 +1552,12 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			// slots differ from the visible ones — bake the underlying
 			// expression text instead and drop the positional binding.
 			if len(deferredStripProj) > 0 && pos >= 1 && pos <= len(deferredStripProj) {
-				keys = append(keys, logical.SortKey{Expr: deferredStripProj[pos-1], Dir: dir, NullsFirst: nf})
+				sk := logical.SortKey{Expr: deferredStripProj[pos-1], Dir: dir, NullsFirst: nf, Pos: pos}
+				if pos <= len(deferredOutputOrdinals) && deferredOutputOrdinals[pos-1] >= 0 {
+					sk.AggregateOutputOrdinal = deferredOutputOrdinals[pos-1]
+					sk.HasAggregateOutputOrdinal = true
+				}
+				keys = append(keys, sk)
 				continue
 			}
 			// The positional name is ALIAS-preferred but this sort sits

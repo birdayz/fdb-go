@@ -220,6 +220,13 @@ type LogicalProject struct {
 	Aliases         []string       // parallel to Projections; "" means no alias
 	ProjectedValues []values.Value // parallel to Projections; nil slot = walker declined
 	IsComputed      []bool         // parallel to Projections; true = expression, not plain column ref
+	// AggregateOutputOrdinals is the exact native [group keys..., aggregate
+	// calls...] input slot for each post-aggregate projection item. A negative
+	// entry marks a computed item whose Value tree is bound separately. nil
+	// means this is not the SQL aggregate-output boundary. Keeping this
+	// identity separate from Projections/Aliases prevents a group key and an
+	// aggregate alias with the same spelling from being rebound by name.
+	AggregateOutputOrdinals []int
 	// AggregateSlots is parallel to Projections; true = the slot's value tree
 	// CONTAINS an aggregate. Captured pre-rewrite, where the *AggregateValue
 	// node is still present (rewriteAggregateValuesInTree destructively replaces
@@ -278,6 +285,16 @@ type SortKey struct {
 	// diverges for computed items whose canonical source text differs from the
 	// baked output spelling.
 	Pos int
+	// AggregateOutputOrdinal is an exact address into the grouped input's
+	// native [keys..., calls...] row. The bool distinguishes native slot zero
+	// from an unset field. It is used when the visible aggregate Project is
+	// deliberately above ORDER BY.
+	AggregateOutputOrdinal    int
+	HasAggregateOutputOrdinal bool
+	// AggregateOutputValueExact marks Value as already structurally bound to
+	// the native aggregate row (including a computed tree whose leaves are
+	// native ordinals). Generic sort rebasing must not overwrite it by name.
+	AggregateOutputValueExact bool
 	// Bare/Qualifier/Qualified: parse-tree segments of a plain column
 	// reference key; zero values for positional and expression keys (their
 	// Expr is a rendering only). Qualification is FullId SEGMENT COUNT.
@@ -420,6 +437,22 @@ type LogicalAggregate struct {
 	HavingPredicate        predicates.QueryPredicate
 	HavingExistsSubqueries []ExistsSubquery // EXISTS subquery plans inside HAVING
 	HavingScalarSubqueries []ScalarSubquery // scalar subquery plans inside HAVING
+	// OutputSlots is the visible SQL SELECT contract in SELECT-list order.
+	// NativeOrdinal addresses the aggregate's physical output row
+	// [GroupKeys..., Calls...]; -1 marks a computed post-aggregate item.
+	// The aggregate keeps producing its native row until the legal projection
+	// boundary above ORDER BY, where this contract is materialized. Public
+	// labels live exclusively on that Project and are not producer identity.
+	OutputSlots []AggregateOutputSlot
+}
+
+// AggregateOutputSlot preserves one visible aggregate SELECT item after the
+// parser's internal key/call harvesting and reordering. SelectOrdinal is
+// one-based and unique. NativeOrdinal is zero-based into
+// [group keys..., aggregate calls...], or -1 for a computed expression.
+type AggregateOutputSlot struct {
+	SelectOrdinal int
+	NativeOrdinal int
 }
 
 // AggregateCall is the STRUCTURED form of one aggregate in the SELECT list,

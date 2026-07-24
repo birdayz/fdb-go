@@ -30,3 +30,18 @@ func (r colRef) bare() string {
 func (r colRef) isQualified() bool {
 	return r.table != ""
 }
+
+// isPlainQualifiedColumnReference distinguishes the qualifier dot in a column
+// label from a dot rendered inside a function/expression label. Identifier
+// quotes have already been stripped at this layer, so punctuation cannot be
+// used as a general rejection criterion: a delimited machinery identifier may
+// legitimately contain spaces, dashes, or operators. Parentheses, however,
+// identify the rendered aggregate/function label at issue and are not part of
+// a plain qualified column reference after parsing.
+func isPlainQualifiedColumnReference(s string) bool {
+	ref := parseColRef(s)
+	if !ref.isQualified() || ref.table == "" || ref.col == "" {
+		return false
+	}
+	return !strings.ContainsAny(s, "()")
+}

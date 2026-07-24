@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"sort"
 	"strings"
 
 	"fdb.dev/pkg/relational/core/functions"
@@ -8,6 +9,177 @@ import (
 	"fdb.dev/pkg/relational/core/query/logical"
 	"github.com/antlr4-go/antlr/v4"
 )
+
+const (
+	computedAggregateOutputOrdinal = -1
+	invalidAggregateOutputOrdinal  = -2
+)
+
+// aggregateColumnsInSelectOrder returns visible aggregate-query SELECT items
+// ordered by their immutable SQL SELECT ordinal. aggCols itself is an internal
+// work list: classification may prepend group keys and append hidden
+// HAVING/ORDER BY accumulators, so its slice order is never an output contract.
+func aggregateColumnsInSelectOrder(aggCols []aggSelectCol) []int {
+	indices := make([]int, 0, len(aggCols))
+	for i := range aggCols {
+		if aggCols[i].visible {
+			indices = append(indices, i)
+		}
+	}
+	sort.SliceStable(indices, func(i, j int) bool {
+		return aggCols[indices[i]].selectOrdinal < aggCols[indices[j]].selectOrdinal
+	})
+	return indices
+}
+
+func visibleAggregateOutputColumns(aggCols []aggSelectCol, countStar bool, countStarAlias string) []aggSelectCol {
+	if !countStar {
+		return aggCols
+	}
+	return []aggSelectCol{{
+		outName:       countStarAlias,
+		selectOrdinal: 1,
+		aggFunc:       "COUNT",
+		aggArg:        "*",
+		visible:       true,
+	}}
+}
+
+// logicalAggregateCalls is the single aggregate-call construction authority
+// shared by both SQL builders. A sole visible COUNT(*) is synthetic in parser
+// state, but HAVING/ORDER BY may have harvested additional hidden aggCols. Keep
+// native order [visible COUNT(*), hidden calls in parser order], suppressing a
+// harvested duplicate COUNT(*) only; the public OutputSlots are built
+// separately from visibleAggregateOutputColumns and therefore never expose a
+// hidden call.
+func logicalAggregateCalls(
+	aggCols []aggSelectCol,
+	countStar bool,
+	strip func(string) string,
+) ([]logical.AggregateCall, bool) {
+	calls := make([]logical.AggregateCall, 0, len(aggCols)+1)
+	hasDistinct := false
+	if countStar {
+		calls = append(calls, logical.AggregateCall{Func: "COUNT", Operand: "*", Star: true})
+	}
+	for _, ac := range aggCols {
+		if ac.aggFunc == "" {
+			continue
+		}
+		arg := ac.aggArg
+		if arg == "" && ac.aggExpr != nil {
+			arg = canonicalTextOf(ac.aggExpr)
+		}
+		if arg == "" {
+			arg = "*"
+		}
+		arg = strip(arg)
+		call := logical.AggregateCall{
+			Func:       strings.ToUpper(ac.aggFunc),
+			Operand:    arg,
+			Star:       arg == "*",
+			Distinct:   ac.aggDistinct,
+			BareColumn: ac.aggArg != "" && ac.aggExpr == nil,
+			Qualified:  ac.aggArgQualified,
+		}
+		if countStar && call.Func == "COUNT" && call.Star && !call.Distinct {
+			continue
+		}
+		hasDistinct = hasDistinct || call.Distinct
+		calls = append(calls, call)
+	}
+	return calls, hasDistinct
+}
+
+func aggregateProjectionItem(ac aggSelectCol, strip func(string) string) (name, alias string, expr antlrgen.IExpressionContext) {
+	switch {
+	case ac.outExpr != nil && ac.aggFunc == "":
+		name = canonicalTextOf(ac.outExpr)
+		expr = ac.outExpr
+		if ac.outName != "" && !strings.EqualFold(ac.outName, name) {
+			alias = ac.outName
+		}
+	case ac.aggFunc != "":
+		arg := ac.aggArg
+		if arg == "" && ac.aggExpr != nil {
+			arg = canonicalTextOf(ac.aggExpr)
+		}
+		if arg == "" {
+			arg = "*"
+		}
+		name = ac.aggFunc + "(" + strip(arg) + ")"
+		if ac.outName != "" && !strings.EqualFold(ac.outName, name) {
+			alias = ac.outName
+		}
+	case ac.groupCol != "":
+		name = strip(ac.groupCol)
+		if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
+			alias = ac.outName
+		}
+	}
+	return name, alias, expr
+}
+
+// buildAggregateOutputSlots captures the public SELECT contract while the
+// parser's structural key/call identities are still available. The aggregate's
+// runtime ABI remains [keys..., calls...]; every direct visible item points to
+// that ABI by ordinal, never by its possibly-colliding label.
+func buildAggregateOutputSlots(keys []logical.GroupKey, aggCols []aggSelectCol, strip func(string) string) []logical.AggregateOutputSlot {
+	callOrdinal := make(map[int]int, len(aggCols))
+	nextCall := 0
+	for i, ac := range aggCols {
+		if ac.aggFunc == "" {
+			continue
+		}
+		callOrdinal[i] = len(keys) + nextCall
+		nextCall++
+	}
+
+	indices := aggregateColumnsInSelectOrder(aggCols)
+	slots := make([]logical.AggregateOutputSlot, 0, len(indices))
+	for _, colIdx := range indices {
+		ac := aggCols[colIdx]
+		native := invalidAggregateOutputOrdinal
+		switch {
+		case ac.outExpr != nil && ac.aggFunc == "":
+			native = computedAggregateOutputOrdinal
+		case ac.aggFunc != "":
+			native = callOrdinal[colIdx]
+		case ac.groupCol != "":
+			groupName := strip(ac.groupCol)
+			qualifierStripped := !strings.EqualFold(groupName, ac.groupCol)
+			for i, key := range keys {
+				same := false
+				switch {
+				case qualifierStripped:
+					// The builder deliberately collapsed a same-source
+					// qualifier on both the GroupKey and aggregate output.
+					same = !key.Qualified && strings.EqualFold(groupName, key.Bare)
+				case ac.groupColBare != "" && key.Bare != "":
+					same = ac.groupColQualified == key.Qualified &&
+						strings.EqualFold(ac.groupColBare, key.Bare) &&
+						(!ac.groupColQualified || strings.EqualFold(ac.groupColQualifier, key.Qualifier))
+				default:
+					// Expression-redirected GROUP BY items have no column
+					// segments. Their parse-derived canonical rendering is
+					// the remaining identity channel.
+					same = strings.EqualFold(strings.TrimSpace(strip(ac.groupCol)), strings.TrimSpace(key.Display))
+				}
+				if same {
+					// Duplicate identical GROUP BY keys produce equal values;
+					// deterministically address the first native slot.
+					native = i
+					break
+				}
+			}
+		}
+		slots = append(slots, logical.AggregateOutputSlot{
+			SelectOrdinal: ac.selectOrdinal,
+			NativeOrdinal: native,
+		})
+	}
+	return slots
+}
 
 // buildLogicalPlanForQuery is the outer-most builder entry point.
 // It handles WITH (CTE) wrapping, then delegates the main query
@@ -330,50 +502,39 @@ func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelec
 	var allProj []string
 	var allAliases []string
 	var allAntlr []antlrgen.IExpressionContext
+	var outputOrdinals []int
 	hasAlias := false
-	for _, ac := range aggCols {
-		if !ac.visible {
+	var slots []logical.AggregateOutputSlot
+	if agg, ok := op.(*logical.LogicalAggregate); ok {
+		slots = agg.OutputSlots
+	}
+	ordered := aggregateColumnsInSelectOrder(aggCols)
+	for i, colIdx := range ordered {
+		ac := aggCols[colIdx]
+		name, alias, expr := aggregateProjectionItem(ac, strip)
+		if name == "" {
 			continue
 		}
-		alias := ""
-		if ac.outExpr != nil && ac.aggFunc == "" {
-			canonical := canonicalTextOf(ac.outExpr)
-			allProj = append(allProj, canonical)
-			allAntlr = append(allAntlr, ac.outExpr)
-			if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
-				alias = ac.outName
-				hasAlias = true
-			}
-		} else if ac.aggFunc != "" {
-			arg := ac.aggArg
-			if arg == "" && ac.aggExpr != nil {
-				arg = canonicalTextOf(ac.aggExpr)
-			}
-			if arg == "" {
-				arg = "*"
-			}
-			arg = strip(arg)
-			canonical := ac.aggFunc + "(" + arg + ")"
-			allProj = append(allProj, canonical)
-			allAntlr = append(allAntlr, nil)
-			if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
-				alias = ac.outName
-				hasAlias = true
-			}
-		} else if ac.groupCol != "" {
-			allProj = append(allProj, strip(ac.groupCol))
-			allAntlr = append(allAntlr, nil)
-			if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
-				alias = ac.outName
-				hasAlias = true
-			}
+		if alias == "" && ac.aggFunc != "" && strings.Contains(name, ".") {
+			// The projection Value is an ordinal-bound FieldValue for the
+			// private aggregate slot. A dotted SQL rendering needs a machinery
+			// alias so metadata treats the whole expression as its label,
+			// never as a qualified base column (`MAX(E.SALARY)` must not be
+			// truncated to `SALARY)`). Non-dotted renderings already survive
+			// FieldValue label derivation verbatim and need no alias.
+			alias = name
 		}
-		// allAliases stays parallel to allProj because every VISIBLE aggSelectCol
-		// sets exactly one of outExpr/aggFunc/groupCol (select_parser.go invariant),
-		// so exactly one arm above appended to allProj. If that invariant is ever
-		// broken (a 4th column kind, or a visible col with none set), this append
-		// would desync aliases from projections — keep the arms total over visible cols.
+		allProj = append(allProj, name)
+		allAntlr = append(allAntlr, expr)
 		allAliases = append(allAliases, alias)
+		if alias != "" {
+			hasAlias = true
+		}
+		ordinal := invalidAggregateOutputOrdinal
+		if i < len(slots) {
+			ordinal = slots[i].NativeOrdinal
+		}
+		outputOrdinals = append(outputOrdinals, ordinal)
 	}
 	if len(allProj) == 0 {
 		return nil, nil
@@ -391,6 +552,7 @@ func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelec
 		computed[i] = e != nil
 	}
 	proj.IsComputed = computed
+	proj.AggregateOutputOrdinals = outputOrdinals
 	return proj, allAntlr
 }
 
@@ -413,9 +575,6 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 	//   - Mixed: aggCols carries both group-col and agg-function
 	//     entries with outName.
 	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
-		var aggAliases []string
-		var aggCalls []logical.AggregateCall
-		hasDistinct := false
 		keys := logicalGroupKeys(sq.groupBy)
 		for i := range keys {
 			stripped := strip(keys[i].Display)
@@ -426,114 +585,23 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				keys[i] = logical.GroupKey{Display: stripped, Bare: stripped}
 			}
 		}
-		if sq.countStar {
-			aggAliases = []string{sq.countStarAlias}
-			aggCalls = []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}
-		} else {
-			for _, ac := range sq.aggCols {
-				if ac.aggFunc != "" {
-					arg := ac.aggArg
-					if arg == "" && ac.aggExpr != nil {
-						arg = canonicalTextOf(ac.aggExpr)
-					}
-					if arg == "" {
-						arg = "*"
-					}
-					arg = strip(arg)
-					if ac.aggDistinct {
-						hasDistinct = true
-					}
-					aggCalls = append(aggCalls, logical.AggregateCall{
-						Func:       strings.ToUpper(ac.aggFunc),
-						Operand:    arg,
-						Star:       arg == "*",
-						Distinct:   ac.aggDistinct,
-						BareColumn: ac.aggArg != "" && ac.aggExpr == nil,
-						Qualified:  ac.aggArgQualified,
-					})
-					aggAliases = append(aggAliases, ac.outName)
-				}
-			}
-		}
+		aggCalls, hasDistinct := logicalAggregateCalls(sq.aggCols, sq.countStar, strip)
+		outputAggCols := visibleAggregateOutputColumns(sq.aggCols, sq.countStar, sq.countStarAlias)
+		aggAliases := make([]string, len(aggCalls))
 		aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, sq.havingExpr != nil)
 		aggOp.HasDistinctAggregate = hasDistinct
+		aggOp.OutputSlots = buildAggregateOutputSlots(keys, outputAggCols, strip)
 		op = aggOp
 
-		// Post-aggregation projection for mixed SELECT lists that contain
-		// both aggregates and computed expressions / constants. When outExpr
-		// entries exist, the projection must list ALL visible columns in
-		// SELECT-list order — aggregate outputs as column references,
-		// computed expressions as expressions to evaluate. Without this,
-		// the outExpr-only projection would drop the aggregate columns.
-		hasOutExpr := false
-		for _, ac := range sq.aggCols {
-			if ac.outExpr != nil && ac.aggFunc == "" && ac.visible {
-				hasOutExpr = true
-				break
-			}
-		}
-		if hasOutExpr {
-			if proj, antlr := buildPostAggregateProjection(op, sq.aggCols, strip); proj != nil {
-				op = proj
-				sq.postAggExprs = antlr
-			}
-		} else if len(keys) > 0 {
-			hasNonVisible := false
-			for _, ac := range sq.aggCols {
-				if !ac.visible {
-					hasNonVisible = true
-					break
-				}
-			}
-			var visibleProj []string
-			var visibleAliases []string
-			hasAggAlias := false
-			for _, ac := range sq.aggCols {
-				if !ac.visible {
-					continue
-				}
-				if ac.aggFunc != "" {
-					arg := ac.aggArg
-					if arg == "" && ac.aggExpr != nil {
-						arg = canonicalTextOf(ac.aggExpr)
-					}
-					if arg == "" {
-						arg = "*"
-					}
-					arg = strip(arg)
-					canonical := ac.aggFunc + "(" + arg + ")"
-					visibleProj = append(visibleProj, canonical)
-					alias := ""
-					if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
-						alias = ac.outName
-						hasAggAlias = true
-					}
-					visibleAliases = append(visibleAliases, alias)
-				} else if ac.groupCol != "" {
-					visibleProj = append(visibleProj, strip(ac.groupCol))
-					alias := ""
-					if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
-						alias = ac.outName
-					}
-					visibleAliases = append(visibleAliases, alias)
-				}
-			}
-			totalOutput := len(keys) + len(aggCalls)
-			needsStrip := len(visibleProj) != totalOutput || hasAggAlias || hasNonVisible
-			// != (not <): a DUPLICATE visible read of one group key
-			// (`SELECT id, id … GROUP BY id`) makes the visible list WIDER
-			// than the aggregate's deduplicated output — the reshaping
-			// projection must materialize each visible slot or downstream
-			// consumers (CTE column aliases, positional reads) see the
-			// internal one-slot layout.
-			if needsStrip {
-				if hasNonVisible || groupKeyMissingFromVisible(groupKeyDisplayNames(keys), visibleProj) {
-					sq.postSortStripProj = visibleProj
-					sq.postSortStripAliases = visibleAliases
-				} else {
-					op = logical.NewProject(op, visibleProj, visibleAliases)
-				}
-			}
+		// Every SQL aggregate has one public output boundary. It stays above
+		// ORDER BY so hidden accumulators remain available on the private
+		// canonical [keys..., calls...] row.
+		if proj, antlr := buildPostAggregateProjection(op, outputAggCols, strip); proj != nil {
+			sq.postSortStripProj = append([]string(nil), proj.Projections...)
+			sq.postSortStripAliases = append([]string(nil), proj.Aliases...)
+			sq.postSortAggregateOutputOrdinals = append([]int(nil), proj.AggregateOutputOrdinals...)
+			sq.postSortIsComputed = append([]bool(nil), proj.IsComputed...)
+			sq.postAggExprs = antlr
 		}
 	}
 
@@ -552,7 +620,6 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				// (stale segments silently mis-resolve against a
 				// same-spelled source column).
 				ob.bare, ob.qualifier, ob.qualified = ob.colName, "", false
-				ob.pos = 0
 				continue
 			}
 			// Output aliases bind BARE one-segment identifiers only: a
@@ -610,6 +677,11 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// select-list-carrying input (the aggregate reshaping
 			// projection or a union) — never a derived source's slots.
 			sk := logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Pos: ob.pos, BareRef: ob.bareRef, Bare: ob.bare, Qualifier: ob.qualifier, Qualified: ob.qualified}
+			if ob.pos >= 1 && ob.pos <= len(sq.postSortAggregateOutputOrdinals) &&
+				sq.postSortAggregateOutputOrdinals[ob.pos-1] >= 0 {
+				sk.AggregateOutputOrdinal = sq.postSortAggregateOutputOrdinals[ob.pos-1]
+				sk.HasAggregateOutputOrdinal = true
+			}
 			if ob.bare != "" && expr != ob.colName {
 				// A COLUMN key stripped/rebased to an internal name — bare
 				// from here on (the group-key strip rule). Expression keys
@@ -623,7 +695,10 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 	}
 
 	if len(sq.postSortStripProj) > 0 {
-		op = logical.NewProject(op, sq.postSortStripProj, sq.postSortStripAliases)
+		proj := logical.NewProject(op, sq.postSortStripProj, sq.postSortStripAliases)
+		proj.AggregateOutputOrdinals = append([]int(nil), sq.postSortAggregateOutputOrdinals...)
+		proj.IsComputed = append([]bool(nil), sq.postSortIsComputed...)
+		op = proj
 	}
 
 	// Projection: skip when the projection is SELECT * (projCols is
@@ -787,35 +862,4 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		})
 	}
 	return logical.NewUpdate(tableName, sets, scan)
-}
-
-// groupKeyMissingFromVisible reports whether any GROUP BY key is absent from
-// the visible SELECT list. Such a key is still a legal ORDER BY target
-// (`SELECT id,id FROM t GROUP BY id,v ORDER BY v`), so the reshaping
-// projection must be DEFERRED past the sort (postSortStrip) — stripping the
-// key before the sort consumes it fails ordinal resolution at runtime.
-// groupKeyDisplayNames renders display names for the visible-projection
-// membership check (name comparison is the check's own semantics).
-func groupKeyDisplayNames(keys []logical.GroupKey) []string {
-	out := make([]string, len(keys))
-	for i, k := range keys {
-		out[i] = k.Display
-	}
-	return out
-}
-
-func groupKeyMissingFromVisible(keys, visibleProj []string) bool {
-	for _, k := range keys {
-		found := false
-		for _, vp := range visibleProj {
-			if strings.EqualFold(k, vp) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return true
-		}
-	}
-	return false
 }

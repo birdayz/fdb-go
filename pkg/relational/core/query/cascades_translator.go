@@ -617,10 +617,12 @@ func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []value
 // unionBranchNormalizable reports whether the executor's union position-remap can
 // remap this branch's columns to the first branch's names — i.e. whether the
 // branch's SCHEMA-defining node is a projection or scan (planColumnNamesWithMD
-// reports those branches' true output names). An AGGREGATE-schema'd branch is NOT
-// normalizable (the executor unwraps it to its input scan's names — TODO
-// 7.6-union-remap). Mirrors derivedOutputColumns's recursion through the
-// row-shape-preserving wrappers; an unknown shape is conservatively not normalizable.
+// reports those branches' true output names). Every SQL-built aggregate now has
+// an exact final Project, so it reaches the first arm regardless of qualified or
+// constant aggregate labels. The LogicalAggregate arm remains defense for
+// directly constructed/legacy trees that do not carry that public contract.
+// Mirrors derivedOutputColumns's recursion through row-shape-preserving
+// wrappers; an unknown shape is conservatively not normalizable.
 func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator) bool {
 	switch o := op.(type) {
 	case *logical.LogicalProject, *logical.LogicalJoin:
@@ -628,9 +630,9 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 	case *logical.LogicalScan:
 		// A scan may be a CTE/derived-table reference (translateScan resolves it from
 		// the CTE body, not a real table). A real-table scan is remappable, but a
-		// CTE-reference scan is only remappable if its BODY is — a CTE whose body is a
-		// bare aggregate is NOT (the executor unwraps it to its input scan's
-		// names). Resolve cteScope and recurse, mirroring legColumns (remove-while-
+		// CTE-reference scan is only remappable if its BODY is. SQL aggregate
+		// bodies are Projects; a directly constructed bare aggregate is checked
+		// by the defensive arm below. Resolve cteScope and recurse, mirroring legColumns (remove-while-
 		// recursing so a same-named scan inside the body resolves to the real table,
 		// not back to the CTE). A pre-translated (recursive) CTE ref is unverifiable →
 		// conservatively not normalizable.
@@ -647,7 +649,7 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		}
 		return true
 	case *logical.LogicalAggregate:
-		// Bare aggregate branch (no Project).
+		// Direct-tree bare aggregate branch (SQL builders always add Project).
 		if len(o.Calls) < 1 {
 			return false // 0-aggregate (group-only) shape — distinct concern, gated.
 		}
@@ -659,7 +661,7 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		if len(o.GroupKeys) == 0 {
 			return true
 		}
-		// GROUPED (RFC-081): a bare grouped aggregate can plan as AggregateIndex / MultiIntersection,
+		// GROUPED direct tree: a bare grouped aggregate can plan as AggregateIndex / MultiIntersection,
 		// whose canonical row key can DIVERGE from the logical leg-schema name (aggregateOutputColumns,
 		// the raw aggregate text) — so the executor's position-remap reads a missing key → NULL. The
 		// names agree only for COUNT(*) and FUNC(<bare column>); a qualified operand (SUM(t.c) →
@@ -5991,6 +5993,30 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		// the select list's typed item Value (upgradeSortKeyValues) keeps
 		// that Value — the input projection here can be a DERIVED source's
 		// layout, whose slots are not this select's ordinals.
+		exactAggregateOrdinal := k.HasAggregateOutputOrdinal
+		exactAggregateValue := exactAggregateOrdinal || k.AggregateOutputValueExact
+		if exactAggregateOrdinal {
+			if sortGB == nil || k.AggregateOutputOrdinal < 0 || k.AggregateOutputOrdinal >= len(sortGBNames) {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+					"ORDER BY aggregate output ordinal is outside the native aggregate row"))
+				return nil
+			}
+			v = values.NewFieldValueWithResolvedOrdinal(
+				sortGBNames[k.AggregateOutputOrdinal], k.AggregateOutputOrdinal, values.UnknownType)
+		} else if k.AggregateOutputValueExact {
+			if sortGB == nil {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+					"exact ORDER BY aggregate Value has no native aggregate row"))
+				return nil
+			}
+			var valid bool
+			v, valid = canonicalizeAggregateOutputValue(v, sortGBNames)
+			if !valid {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+					"exact ORDER BY aggregate Value contains an invalid native ordinal"))
+				return nil
+			}
+		}
 		if v == nil && k.Pos > 0 && k.Pos <= len(inputCols) {
 			switch innerRef.Get().(type) {
 			case *expressions.LogicalProjectionExpression:
@@ -6016,7 +6042,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		if v == nil {
 			v = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
 		}
-		if sortGB != nil {
+		if sortGB != nil && !exactAggregateValue {
 			// WHOLE-value match first: an ORDER BY key that IS a group key /
 			// aggregate output — including a COMPUTED key (GROUP BY
 			// COALESCE(...) ORDER BY COALESCE(...)) — rebases onto the
@@ -6136,11 +6162,47 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 // projection, so for any sort input where this returns true, sortGB is nil
 // and the two rebase paths are mutually exclusive by construction.
 func projectionOverAggregate(p *logical.LogicalProject) bool {
-	cur := p.Input
+	return logicalAggregateUnder(p.Input) != nil
+}
+
+// canonicalizeAggregateOutputValue keeps an exact ordinal-bound sort Value
+// exact while replacing each one-slot FieldValue's display/name fallback with
+// the native GroupBy column name. The ordinal is identity; canonical naming is
+// required only so the name-model differential and provided-ordering matcher
+// agree with the PositionalRow model.
+func canonicalizeAggregateOutputValue(v values.Value, nativeNames []string) (values.Value, bool) {
+	valid := true
+	result := values.Replace(v, func(node values.Value) values.Value {
+		fv, ok := node.(*values.FieldValue)
+		if !ok {
+			return node
+		}
+		// Exact post-aggregate Values are allowed to address only a producer
+		// native slot. A child-bearing FieldValue addresses another row /
+		// quantifier, a lazy FieldValue has no proven identity, and a
+		// multi-accessor path descends beyond the aggregate's flat output.
+		// None can be made safe by preserving it or by borrowing a coincident
+		// final ordinal, so reject the complete tree loudly.
+		if fv.Child != nil || fv.Resolved == nil || len(fv.Resolved.Accessors) != 1 {
+			valid = false
+			return node
+		}
+		ordinal := fv.Resolved.Accessors[0].Ordinal
+		if ordinal < 0 || ordinal >= len(nativeNames) {
+			valid = false
+			return node
+		}
+		return values.NewFieldValueWithResolvedOrdinal(nativeNames[ordinal], ordinal, fv.Typ)
+	})
+	return result, valid
+}
+
+func logicalAggregateUnder(op logical.LogicalOperator) *logical.LogicalAggregate {
+	cur := op
 	for {
 		switch e := cur.(type) {
 		case *logical.LogicalAggregate:
-			return true
+			return e
 		case *logical.LogicalFilter:
 			cur = e.Input
 		case *logical.LogicalSort:
@@ -6148,7 +6210,7 @@ func projectionOverAggregate(p *logical.LogicalProject) bool {
 		case *logical.LogicalLimit:
 			cur = e.Input
 		default:
-			return false
+			return nil
 		}
 	}
 }
@@ -6163,10 +6225,24 @@ func projectionOverAggregate(p *logical.LogicalProject) bool {
 // name-match and diagnostics; ordinals are authoritative.
 func postAggregateProjectionFields(p *logical.LogicalProject) []values.RecordConstructorField {
 	fields := make([]values.RecordConstructorField, len(p.Projections))
+	var nativeNames []string
+	if agg := logicalAggregateUnder(p.Input); agg != nil {
+		nativeNames = logicalAggregateNativeOutputNames(agg)
+	}
 	for i, col := range p.Projections {
 		var v values.Value
 		if i < len(p.ProjectedValues) {
 			v = p.ProjectedValues[i]
+		}
+		if i < len(p.AggregateOutputOrdinals) && p.AggregateOutputOrdinals[i] >= 0 {
+			typ := values.Type(values.UnknownType)
+			if v != nil && v.Type() != nil {
+				typ = v.Type()
+			}
+			ordinal := p.AggregateOutputOrdinals[i]
+			if ordinal < len(nativeNames) {
+				v = values.NewFieldValueWithResolvedOrdinal(nativeNames[ordinal], ordinal, typ)
+			}
 		}
 		name := strings.ToUpper(col)
 		if i < len(p.Aliases) && p.Aliases[i] != "" {
@@ -6177,7 +6253,83 @@ func postAggregateProjectionFields(p *logical.LogicalProject) []values.RecordCon
 	return fields
 }
 
+func logicalAggregateNativeOutputNames(agg *logical.LogicalAggregate) []string {
+	names := make([]string, 0, len(agg.GroupKeys)+len(agg.Calls))
+	for _, key := range agg.GroupKeys {
+		name := stripColumnQualifier(key.Display)
+		if key.Value != nil {
+			if fv, ok := key.Value.(*values.FieldValue); ok {
+				name = fv.Field
+			} else {
+				name = values.ColumnNameValue(key.Value)
+			}
+		}
+		names = append(names, strings.ToUpper(name))
+	}
+	for i, call := range agg.Calls {
+		name := call.CanonicalName()
+		if i < len(agg.Aliases) && agg.Aliases[i] != "" {
+			name = agg.Aliases[i]
+		}
+		names = append(names, strings.ToUpper(name))
+	}
+	return names
+}
+
+// validateExactAggregateProjectContract checks the logical, producer-owned
+// SELECT-output contract before translateProject can take any early-return
+// path. Physical GroupBy output names and width are checked only after the
+// input has translated; this part deliberately needs no physical expression.
+func validateExactAggregateProjectContract(p *logical.LogicalProject) (*logical.LogicalAggregate, error) {
+	if p.AggregateOutputOrdinals == nil {
+		return nil, nil
+	}
+	agg := logicalAggregateUnder(p.Input)
+	if agg == nil || len(p.AggregateOutputOrdinals) != len(p.Projections) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"post-aggregate projection has an incomplete output-slot layout")
+	}
+	if len(agg.OutputSlots) != len(p.Projections) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"post-aggregate projection does not cover the aggregate SELECT output contract")
+	}
+	nativeWidth := len(agg.GroupKeys) + len(agg.Calls)
+	for i, ordinal := range p.AggregateOutputOrdinals {
+		computed := i < len(p.IsComputed) && p.IsComputed[i]
+		if agg.OutputSlots[i].SelectOrdinal != i+1 ||
+			agg.OutputSlots[i].NativeOrdinal != ordinal ||
+			(computed != (ordinal == -1)) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"post-aggregate projection disagrees with the aggregate SELECT output contract")
+		}
+		if ordinal < -1 || ordinal >= nativeWidth {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"post-aggregate projection contains an invalid native output ordinal")
+		}
+	}
+	return agg, nil
+}
+
 func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) expressions.RelationalExpression {
+	// Validate the exact aggregate boundary before any fold, correlated-scalar
+	// dispatch, or input translation can return. Malformed logical contracts
+	// are never eligible for another translation path.
+	exactAggregateLayout := p.AggregateOutputOrdinals != nil
+	exactAggregate, contractErr := validateExactAggregateProjectContract(p)
+	if contractErr != nil {
+		t.setTranslateErr(contractErr)
+		return nil
+	}
+	// The correlated-scalar lowering is a separate projection authority and
+	// returns before the physical GroupBy row is available here. Until it can
+	// consume and prove this exact aggregate contract itself, reject the
+	// composition rather than bypass native-slot canonicalization.
+	if exactAggregateLayout && len(p.CorrelatedScalarSubqueries) > 0 {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a post-aggregate projection with a correlated scalar subquery is not yet supported"))
+		return nil
+	}
+
 	// Collect scalar subquery plans from projections. This MUST run for every
 	// projection — including the RFC-141 projected-EXISTS fold below — because
 	// a SELECT can mix a projected EXISTS with an (uncorrelated) scalar
@@ -6319,13 +6471,59 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		}
 		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 	}
+	if exactAggregateLayout {
+		nativeWidth := len(exactAggregate.GroupKeys) + len(exactAggregate.Calls)
+		gb := underlyingGroupBy(innerRef.Get())
+		if gb == nil {
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"post-aggregate projection has no GroupBy output row"))
+			return nil
+		}
+		nativeNames := expressions.GroupByOutputColumnNames(gb.GetGroupingKeys(), gb.GetAggregates())
+		if len(nativeNames) != nativeWidth {
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"post-aggregate projection disagrees with the GroupBy output width"))
+			return nil
+		}
+		for i, ordinal := range p.AggregateOutputOrdinals {
+			switch {
+			case ordinal >= 0 && ordinal < nativeWidth:
+				typ := values.Type(values.UnknownType)
+				if projected[i] != nil && projected[i].Type() != nil {
+					typ = projected[i].Type()
+				}
+				// The display label is not identity. Reconstruct the direct
+				// slot from the proven native ordinal after all generic
+				// name-based setup, so alias collisions cannot rebind it.
+				projected[i] = values.NewFieldValueWithResolvedOrdinal(
+					nativeNames[ordinal], ordinal, typ)
+			case ordinal == -1:
+				if projected[i] == nil {
+					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+						"computed post-aggregate output did not resolve to a Value"))
+					return nil
+				}
+				var valid bool
+				projected[i], valid = canonicalizeAggregateOutputValue(projected[i], nativeNames)
+				if !valid {
+					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+						"computed post-aggregate output contains a non-native field reference"))
+					return nil
+				}
+			default:
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+					"post-aggregate projection contains an invalid native output ordinal"))
+				return nil
+			}
+		}
+	}
 	// A SELECT list over a GROUP BY resolves each aggregate/group-key
 	// reference to the aggregate OUTPUT COLUMN by ordinal (Java's
 	// FieldValue.ofOrdinalNumber over the GroupByExpression result) — so the
 	// alias-named aggregate slot resolves even though the projection references the
 	// canonical text. Without this the reference stays a free canonical name that
 	// misses the aggregate's ordinal PositionalRow (whose slot is alias-named).
-	if gb := underlyingGroupBy(innerRef.Get()); gb != nil {
+	if gb := underlyingGroupBy(innerRef.Get()); gb != nil && !exactAggregateLayout {
 		bakeGroupByOutputRefs(projected, gb)
 	}
 	// Any remaining FLAT lazy reference bakes against the input
@@ -6947,6 +7145,20 @@ func aggregateOperandReferencesColumn(a *logical.LogicalAggregate) bool {
 // too — gatheredSeedBakeContext walks the identity wrappers to the seed so the group keys /
 // operands bake positionally, correct in both name-model and demolition (flip) states.
 func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
+	if a.OutputSlots != nil {
+		nativeWidth := len(a.GroupKeys) + len(a.Calls)
+		seenSelectOrdinals := make(map[int]struct{}, len(a.OutputSlots))
+		for i, slot := range a.OutputSlots {
+			_, duplicate := seenSelectOrdinals[slot.SelectOrdinal]
+			if slot.SelectOrdinal != i+1 || duplicate ||
+				slot.NativeOrdinal < -1 || slot.NativeOrdinal >= nativeWidth {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+					"aggregate SELECT output layout is malformed"))
+				return nil
+			}
+			seenSelectOrdinals[slot.SelectOrdinal] = struct{}{}
+		}
+	}
 	if a.HasHaving && a.HavingPredicate == nil {
 		return nil
 	}

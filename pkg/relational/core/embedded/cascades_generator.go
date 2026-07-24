@@ -3186,7 +3186,7 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 		// dotted AND leaf-matches the projected column degrades to the bare
 		// leaf too — a pathological corner traded for the duplicated-leaf
 		// class matching Java's metadata.
-		if ref := parseColRef(label); ref.isQualified() &&
+		if ref := parseColRef(label); isPlainQualifiedColumnReference(label) && ref.isQualified() &&
 			strings.EqualFold(ref.bare(), parseColRef(fv.Field).bare()) {
 			displayLabel = strings.ToUpper(ref.bare())
 		}

@@ -114,7 +114,7 @@ func classifyPrimitiveType(cdt antlrgen.IConvertedDataTypeContext) string {
 //   - ("", 0, false, err): expression IS a positive integer literal but N is
 //     out of range. Postgres / MySQL error on this instead of treating the
 //     integer as a constant sort / group key, so we do the same.
-func resolveSelectListPosition(clause string, expr antlrgen.IExpressionContext, projCols, projAliases []string, aggCols []aggSelectCol) (string, int, bool, error) {
+func resolveSelectListPosition(clause string, expr antlrgen.IExpressionContext, projCols, projAliases []string, aggCols []aggSelectCol, countStar bool) (string, int, bool, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
 		return "", 0, false, nil
@@ -132,8 +132,12 @@ func resolveSelectListPosition(clause string, expr antlrgen.IExpressionContext, 
 		return "", 0, false, nil
 	}
 	listLen := len(projCols)
+	orderedAggCols := aggregateColumnsInSelectOrder(aggCols)
 	if listLen == 0 {
-		listLen = len(aggCols)
+		listLen = len(orderedAggCols)
+	}
+	if listLen == 0 && countStar {
+		listLen = 1
 	}
 	if int(n) > listLen {
 		return "", 0, false, api.NewErrorf(api.ErrCodeInvalidParameter,
@@ -145,8 +149,15 @@ func resolveSelectListPosition(clause string, expr antlrgen.IExpressionContext, 
 			return projAliases[n-1], int(n), true, nil
 		}
 		return projCols[n-1], int(n), true, nil
-	case len(aggCols) > 0:
-		return aggCols[n-1].outName, int(n), true, nil
+	case len(orderedAggCols) > 0:
+		ac := aggCols[orderedAggCols[n-1]]
+		name, alias, _ := aggregateProjectionItem(ac, func(s string) string { return s })
+		if alias != "" {
+			name = alias
+		}
+		return name, int(n), true, nil
+	case countStar:
+		return "COUNT(*)", int(n), true, nil
 	}
 	return "", 0, false, nil
 }

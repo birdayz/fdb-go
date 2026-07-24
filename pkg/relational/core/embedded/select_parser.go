@@ -257,6 +257,11 @@ func orderByLess(a, b driver.Value, ob orderByClause) (less, equal bool) {
 // aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
 type aggSelectCol struct {
 	outName string // output column name
+	// selectOrdinal is the immutable one-based position of a visible item in
+	// the SQL SELECT list. Internal aggregates harvested from HAVING, ORDER BY,
+	// or a wrapping expression keep zero. Reclassification may reorder
+	// aggSelectCol storage, but it must never rewrite this identity.
+	selectOrdinal int
 	// Exactly one of groupCol / aggFunc / outExpr is set (non-visible entries
 	// harvested from HAVING/ORDER BY always have aggFunc set).
 	groupCol string // plain group-by column reference
@@ -620,6 +625,9 @@ type projCol struct {
 	bare      string
 	qualifier string
 	qualified bool
+	// selectOrdinal is the immutable one-based SQL SELECT-list position. It
+	// follows this item when it is reclassified into aggSelectCol.
+	selectOrdinal int
 }
 
 // projColNames renders the name list for name-only consumers.
@@ -677,6 +685,12 @@ type selectClassification struct {
 	// need stripping after the Sort operator.
 	postSortStripProj    []string
 	postSortStripAliases []string
+	// postSortAggregateOutputOrdinals / postSortIsComputed stay parallel to
+	// postSortStripProj for the aggregate-output Project deliberately emitted
+	// after ORDER BY. Direct slots address the aggregate's native output ABI;
+	// negative slots are computed from postAggExprs.
+	postSortAggregateOutputOrdinals []int
+	postSortIsComputed              []bool
 }
 
 // selectQueryFromClassification builds a selectQuery from the
@@ -724,7 +738,8 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 	var selectExprsSnapshot []antlrgen.IExpressionContext
 	if selElems != nil {
 		elems := selElems.AllSelectElement()
-		for _, elem := range elems {
+		for selectIdx, elem := range elems {
+			selectOrdinal := selectIdx + 1
 			switch e := elem.(type) {
 			case *antlrgen.SelectStarElementContext:
 				if len(elems) > 1 {
@@ -745,7 +760,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				if len(elems) == 1 {
 					projQualifier = qual
 				} else {
-					projCols = append(projCols, projCol{}) // sentinel; actual names resolved at execution
+					projCols = append(projCols, projCol{selectOrdinal: selectOrdinal}) // sentinel; actual names resolved at execution
 					projAliases = append(projAliases, "")
 					projExprs = append(projExprs, nil)
 					projStarQualifiers = append(projStarQualifiers, qual)
@@ -761,7 +776,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 							"unsupported nested aggregate(s)")
 					}
-					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, aggArgQualified: argQual, aggArgBare: argBare, aggArgQualifier: argQualifier, visible: true})
+					aggCols = append(aggCols, aggSelectCol{outName: alias, selectOrdinal: selectOrdinal, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, aggArgQualified: argQual, aggArgBare: argBare, aggArgQualifier: argQualifier, visible: true})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
 					var expr antlrgen.IExpressionContext
@@ -825,9 +840,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 								aggCols = append(aggCols, h)
 								existingNames[h.outName] = struct{}{}
 							}
-							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr, visible: true})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, outExpr: expr, visible: true})
 						case expr != nil && !exprReferencesColumn(expr):
-							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr, visible: true})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, outExpr: expr, visible: true})
 						case expr != nil:
 							// Expression references columns but contains no
 							// aggregates. Java permits this when the columns
@@ -840,16 +855,16 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 							// the rowMap lookup errors at emit time with
 							// "column not in row" — close to SQL standard's
 							// 42803 grouping_error.
-							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr, visible: true})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, outExpr: expr, visible: true})
 						default:
 							gcBare, gcQual, gcQualified := splitColumnRef(e.Expression())
 							if gcBare == "" {
 								gcBare = colName
 							}
-							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, visible: true})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, groupCol: colName, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, visible: true})
 						}
 					} else {
-						pc := projCol{name: colName}
+						pc := projCol{name: colName, selectOrdinal: selectOrdinal}
 						if expr == nil {
 							// Plain column reference: parse-tree segments.
 							pc.bare, pc.qualifier, pc.qualified = splitColumnRef(e.Expression())
@@ -921,7 +936,12 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				if outName == "" {
 					outName = col.name
 				}
-				promoted = append(promoted, aggSelectCol{outName: outName, outExpr: projExprs[i], visible: true})
+				promoted = append(promoted, aggSelectCol{
+					outName:       outName,
+					selectOrdinal: col.selectOrdinal,
+					outExpr:       projExprs[i],
+					visible:       true,
+				})
 			}
 			if len(promoted) > 0 {
 				projCols = newProjCols
@@ -964,7 +984,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				}
 				switch {
 				case slotExpr != nil && !exprReferencesColumn(slotExpr):
-					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
+					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, visible: true}
 				case slotExpr != nil:
 					// Expression on group-by columns (no aggregates, no
 					// constants-only). Java permits this when all referenced
@@ -972,9 +992,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 					// post-aggregation against the rowMap holding group-by
 					// values. Symmetric with the in-SELECT-loop case at the
 					// mixed-agg classification site above.
-					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
+					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, visible: true}
 				default:
-					extra[i] = aggSelectCol{outName: out, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, visible: true}
+					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, visible: true}
 				}
 			}
 			aggCols = append(extra, aggCols...)
@@ -1031,7 +1051,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			// 1-indexed position into the SELECT list. Resolve to the
 			// matching output column's name so the downstream colIdx
 			// lookup in the sort path works uniformly.
-			posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projColNames(projCols), projAliases, aggCols)
+			posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projColNames(projCols), projAliases, aggCols, countStar)
 			if posErr != nil {
 				return nil, posErr
 			}
@@ -1110,7 +1130,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				}
 				seenAliases[aliasKey] = true
 			}
-			posName, _, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projColNames(projCols), projAliases, cls.aggCols)
+			posName, _, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projColNames(projCols), projAliases, cls.aggCols, cls.countStar)
 			if posErr != nil {
 				return nil, posErr
 			}
@@ -1218,7 +1238,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			// The rebased name is the underlying GROUP BY column text (the
 			// datum channel); segments come from the KEY so a qualified
 			// underlying keeps its real qualifier.
-			cls.projCols[i] = projCol{name: key.display, bare: key.bare, qualifier: key.qualifier, qualified: key.qualified}
+			cls.projCols[i] = projCol{name: key.display, bare: key.bare, qualifier: key.qualifier, qualified: key.qualified, selectOrdinal: col.selectOrdinal}
 		}
 		// Also rewrite aggCols entries: when the SELECT list mixes
 		// plain-col refs with aggregates, bare columns are classified
@@ -1328,9 +1348,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				// Constant or column-referencing expression — both route
 				// to outExpr and are evaluated post-aggregation against
 				// the rowMap (which carries group-by column values).
-				extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
+				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, visible: true}
 			default:
-				extra[i] = aggSelectCol{outName: out, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, visible: true}
+				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, visible: true}
 			}
 		}
 		cls.aggCols = extra
@@ -1476,8 +1496,8 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 		if cls.countStarAlias != "" {
 			outName = cls.countStarAlias
 		}
-		cls.aggCols = append(cls.aggCols, aggSelectCol{outName: outName, aggFunc: "COUNT", visible: true})
-		cls.projCols = []projCol{{name: outName, bare: outName}}
+		cls.aggCols = append(cls.aggCols, aggSelectCol{outName: outName, selectOrdinal: 1, aggFunc: "COUNT", visible: true})
+		cls.projCols = []projCol{{name: outName, bare: outName, selectOrdinal: 1}}
 		cls.projAliases = []string{""}
 		cls.projExprs = []antlrgen.IExpressionContext{nil}
 		cls.projStarQualifiers = []string{""}
@@ -1585,7 +1605,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 							}
 						}
 					}
-					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, visible: true})
+					prepended = append(prepended, aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: gc, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, visible: true})
 				}
 				cls.aggCols = append(prepended, cls.aggCols...)
 				cls.projCols = nil
