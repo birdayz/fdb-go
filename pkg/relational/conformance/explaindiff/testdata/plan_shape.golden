@@ -6713,10 +6713,10 @@ sql:   SELECT col1 FROM t1 GROUP BY col1 HAVING col2 > 5
 plan:  <PLAN-ERROR: 42803: column "COL2" must appear in the GROUP BY clause or be used in an aggregate function>
 === group_by_validation.yaml#26
 sql:   SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING col1 > 15 ORDER BY col1
-plan:  PredicatesFilter(StreamingAgg(keys=[COL1#1], InMemorySort([COL1#1 ASC], Scan(T1))), [1 preds])
-shape: RecordQueryPredicatesFilterPlan
-shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryInMemorySortPlan
+plan:  StreamingAgg(keys=[COL1#1], InMemorySort([COL1#1 ASC], PredicatesFilter(Scan(T1), [1 preds])))
+shape: RecordQueryStreamingAggregationPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === group_by_validation.yaml#27
 sql:   SELECT col1 FROM t1 GROUP BY col1 HAVING MAX(col2) > 250 ORDER BY col1
@@ -8344,10 +8344,10 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === java_alignment_probes.yaml#3
 sql:   SELECT col1, MAX(col2) FROM t1 GROUP BY col1 HAVING col1 > 10 ORDER BY col1
-plan:  PredicatesFilter(StreamingAgg(keys=[COL1#1], InMemorySort([COL1#1 ASC], Scan(T1))), [1 preds])
-shape: RecordQueryPredicatesFilterPlan
-shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryInMemorySortPlan
+plan:  StreamingAgg(keys=[COL1#1], InMemorySort([COL1#1 ASC], PredicatesFilter(Scan(T1), [1 preds])))
+shape: RecordQueryStreamingAggregationPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === java_alignment_probes.yaml#4
 sql:   SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING col1 >= 20 AND SUM(col2) > 400 ORDER BY col1

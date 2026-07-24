@@ -286,12 +286,19 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   in both orientations for heterogeneous SARG states. Focused/race/repeat validation passes, the
   2,600-entry plan golden is byte-identical, and full `just test` passes (56/56). **FINAL REVIEW:
   two independent Codex audits ACK.**
-- [ ] **190.11-FU (MED)** — finals-only memo children are costed as unknown. The audit found
-  `firstMemberCostMemoised` iterating exploratory `Reference.Members()` even though `Reference.Get()`
-  deliberately falls back to final members. A one-line lookup probe changed six golden plans: two
-  filter/aggregate shapes improved, while four IN shapes exposed likely `InUnion` underpricing.
-  Reverted from the zero-flip 190.11 commit; fix with Java tracing, direct finals-only regressions,
-  and a per-flip audit rather than blessing mixed effects.
+- [x] **190.11-FU (MED)** — DONE. Finals-only memo children now use `Reference.Get()`'s established
+  exploratory-first/final-fallback contract instead of becoming an unknown `1e6` subtree; the
+  explicit best-cost helpers include both exploratory and final members. The six-shape probe also
+  exposed and closed `InUnion` underpricing: literal fanout is the Cartesian product of source
+  sizes, unknown dimensions retain a conservative factor of ten, child CPU is paid once per
+  execution, and zero/one combinations match the executor's empty/pass-through fast paths. A
+  known-empty source now skips the child even beside an unknown source. Direct cost, cardinality,
+  comparator, and executor regressions cover finals-only, mixed-member, multi-final, literal,
+  unknown, empty, and order-invariant cases. The audited 2,600-query golden changes only the two
+  valid key-only HAVING pushdowns; all four repeated-full-scan IN regressions from the raw lookup
+  probe remain unchanged. Focused/race/20× validation passes; `just generate`, `just lint`,
+  `just build`, and full `just test` pass (56/56). **FINAL REVIEW: two independent Codex audits
+  ACK.**
 - [x] **190.12 (MED)** — DONE (impl commit #1). Committed `explaindiff/testdata/plan_shape.golden`
   (16550 lines, 2421 queries + 158 DML) + `TestPlanShapeGolden` (`plan_shape_golden_test.go`) — an
   always-on, no-FDB snapshot net that fails on any un-blessed physical-plan-shape change and prints
@@ -2141,20 +2148,22 @@ some `/invoke` steps write, so a retry could double-apply. The fix is a per-step
 read/plan steps like `RunSql SELECT`/`EXPLAIN`; never retry a write step) driven off the transport-error class.
 Low priority (mid-request drops are rare; keep-alive fix covers the observed flake).
 
-### [x] Soundness — empty IN-list `x IN ()` — INVESTIGATED: defensively-dead, not reachable
-`executeInJoin` (executor_new_plans.go:1033-1034) and `executeInUnion` (:1095-1097) short-circuit an EMPTY
-in-value list by running the inner plan directly (unbound) — which would return the inner's rows where SQL
-yields ZERO for `x IN ()`. Surfaced as a possible soundness divergence (Torvalds review point on the multi-leg
-PR). **Reachability verified — the branch cannot be reached by any query the engine plans:**
+### [x] Soundness — empty IN-list `x IN ()` — INVESTIGATED; InUnion hardened by RFC-190.11-FU
+`executeInJoin` short-circuits an EMPTY in-value list by running the inner plan directly (unbound) — which
+would return the inner's rows where SQL yields ZERO for `x IN ()`. Surfaced as a possible soundness divergence
+(Torvalds review point on the multi-leg PR). **InJoin reachability verified — the branch cannot be reached by
+any query the engine plans:**
 - literal `IN ()` is a PARSE ERROR — the grammar's `inList → '(' expressions ')'` and
   `expressions → expression (',' expression)*` require ≥1 element;
 - `IN (subquery)` lowers to a semi-join / projected `ExistsValue`, NOT a static-values `RecordQueryInJoinPlan`
   (whose `inValues` is specifically the STATIC literal comparand, in_join.go:106);
 - there is no parameter-IN path that builds an empty-static-`inValues` InJoin (`executeInJoin` reads only
   static `GetInValues()`, and the translator has no `InParameter`→InJoin lowering).
-So the `len(inValues)==0` arm is a defensive fallback that no valid plan reaches. No fix needed; a
-belt-and-suspenders empty-cursor return would be more correct-if-ever-reached but is an unreachable+untestable
-(hence gate-awkward) executor change — left as-is with this reachability record.
+So the InJoin `len(inValues)==0` arm is a defensive fallback that no valid plan reaches and remains as-is.
+`InUnion` is no longer part of that residual: RFC-190.11-FU distinguishes its absent outer source slice
+(the established pass-through constructor shape) from a present empty dimension, which now returns an exact
+empty cursor without executing the child. Direct tests cover a lone empty dimension and mixed unknown/empty
+dimensions in both orders.
 
 ### [x] Executor/ordinal-binding — 3-way join shared-column ordinal not resolvable — FIXED
 **FIXED** (branch fix-threeway-shared-col-ordinal, stacked on #501). Root cause: when

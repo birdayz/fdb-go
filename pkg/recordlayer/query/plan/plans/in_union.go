@@ -3,6 +3,7 @@ package plans
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"reflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -10,8 +11,9 @@ import (
 )
 
 // RecordQueryInUnionPlan is the IN-union variant: the inner plan is
-// executed once per IN-source value, and results are merge-sorted by
-// comparison keys. Mirrors Java's RecordQueryInUnionOnValuesPlan.
+// executed once per Cartesian-product combination of IN-source bindings,
+// and results are merge-sorted by comparison keys. Mirrors Java's
+// RecordQueryInUnionOnValuesPlan.
 type RecordQueryInUnionPlan struct {
 	PlanExprBase
 	innerQ         expressions.Quantifier
@@ -120,6 +122,49 @@ func (p *RecordQueryInUnionPlan) IsReverse() bool                   { return p.r
 func (p *RecordQueryInUnionPlan) GetMaxSize() int                   { return p.maxSize }
 func (p *RecordQueryInUnionPlan) GetInSources() [][]any             { return p.inSources }
 func (p *RecordQueryInUnionPlan) SetInSources(sources [][]any)      { p.inSources = sources }
+
+// LiteralFanout returns the exact number of child executions represented by
+// the plan-time IN sources. Each source is one binding dimension, so the
+// fanout is their Cartesian-product size. A nil inner source in a present
+// dimension means its runtime value was unavailable during planning and
+// therefore returns known=false; a non-nil empty source is an exact zero.
+// An absent outer source slice is a pass-through, even when binding names
+// exist; executeInUnion has always used that constructor shape to mean "no
+// materialized sources." Once sources are present, their dimension count must
+// equal the binding count.
+//
+// Overflow also returns unknown instead of wrapping to a negative cardinality.
+func (p *RecordQueryInUnionPlan) LiteralFanout() (fanout int64, known bool) {
+	if p == nil {
+		return 0, false
+	}
+	if len(p.inSources) == 0 {
+		return 1, true
+	}
+	if len(p.bindingNames) == 0 || len(p.inSources) != len(p.bindingNames) {
+		return 0, false
+	}
+	// A single known-empty dimension makes the whole Cartesian product empty,
+	// even when another dimension is unknown. Check all supplied sources before
+	// rejecting nil dimensions so the result is order-invariant.
+	for _, source := range p.inSources {
+		if source != nil && len(source) == 0 {
+			return 0, true
+		}
+	}
+	fanout = 1
+	for _, source := range p.inSources {
+		if source == nil {
+			return 0, false
+		}
+		size := int64(len(source))
+		if fanout > math.MaxInt64/size {
+			return 0, false
+		}
+		fanout *= size
+	}
+	return fanout, true
+}
 
 func (p *RecordQueryInUnionPlan) GetResultType() values.Type {
 	if p.innerQ.GetRangesOver() == nil {

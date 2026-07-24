@@ -1091,8 +1091,48 @@ func executeInUnion(
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	inSources := p.GetInSources()
 	bindingNames := p.GetBindingNames()
-	if len(inSources) == 0 || len(bindingNames) == 0 {
+	if len(inSources) == 0 {
 		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
+	}
+	if len(bindingNames) == 0 || len(inSources) != len(bindingNames) {
+		return nil, fmt.Errorf(
+			"executeInUnion: binding/source dimension mismatch (%d bindings, %d sources)",
+			len(bindingNames),
+			len(inSources),
+		)
+	}
+	for _, source := range inSources {
+		if source != nil && len(source) == 0 {
+			// The Cartesian product of the binding dimensions is empty, so the
+			// inner must not execute. A nil source is different: its values were
+			// unavailable at planning time and remain an unsupported runtime
+			// binding, not a known-empty list.
+			return recordlayer.Empty[QueryResult](), nil
+		}
+	}
+	if fanout, known := p.LiteralFanout(); known && fanout == 1 {
+		// Java binds the complete Cartesian context before its size==1
+		// fast path. This matters for multiple singleton dimensions: there is
+		// one child execution, but every binding must be present.
+		childContext := evalCtx
+		for i, source := range inSources {
+			childContext = childContext.WithBinding(
+				values.NamedCorrelationIdentifier(bindingNames[i]),
+				source[0],
+			)
+		}
+		cursor, err := ExecutePlan(
+			ctx,
+			p.GetInner(),
+			store,
+			childContext,
+			continuation,
+			props.ClearSkipAndLimit(),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 	}
 
 	// Single binding dimension: execute inner once per IN value,

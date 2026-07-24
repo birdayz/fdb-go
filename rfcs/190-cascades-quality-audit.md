@@ -786,6 +786,40 @@ byte-identical. `just generate`, `just lint`, and full `just test` pass (56/56).
 
 **190.11 is complete. FINAL REVIEW: two independent Codex audits ACK.**
 
+### 190.11-FU (MED) — finals-only child cost and InUnion fanout
+
+The booked production follow-up is complete. `firstMemberCostMemoised` now selects through
+`Reference.Get()`: an exploratory member still wins when present, while a finals-only pinned child
+falls back to its first final member instead of receiving the defensive unknown-subtree cost.
+`BestRefCostWith` and the recursive `BestMemberCostWith` walk now honor their separate “best”
+contracts across `AllMembers()`. This restores Go's existing reference-selection contract; it is
+not a literal port of Java's singleton-only `Reference.get()`.
+
+The raw one-line lookup probe was not safe to bless by itself. Four of its six golden flips selected
+an `InUnion` that repeatedly executed a full scan because the operator priced the number of binding
+dimensions, not the number of executions, and charged the child CPU only once. The repaired model
+uses the Cartesian product of literal source sizes, substitutes ten for each runtime-unknown
+dimension while preserving known factors, repeats child CPU per execution, and saturates overflow.
+Exact fanout one returns the child cost unchanged because execution bypasses the union wrapper;
+exact zero returns zero cost and the executor now returns an empty cursor without executing the
+child. An absent outer source slice remains the existing pass-through constructor shape. A known
+empty dimension dominates an unknown one in either order, which is a sound Go precision extension
+over Java's generic unknown-times-zero cardinality treatment because the Go executor enforces that
+short circuit.
+
+Direct regressions pin finals-only, exploratory-plus-final, multiple-final, and recursive best-cost
+selection; exact, unknown, mixed, zero, and one-combination fanout; cardinality propagation; the
+known-empty executor path; and a full-comparator case in which one filtered full scan must beat two
+`InUnion` executions. The 2,600-query explain-diff contains exactly two changes, both moving a
+key-only HAVING predicate below `StreamingAgg` and its sort. The four repeated-full-scan IN shapes
+from the unsafe probe no longer flip. Go deliberately supports this key-only GroupBy pushdown, so
+the two improvements are audited Go behavior rather than claimed Java parity.
+
+Focused affected-package tests, race validation, and 20× repeated regressions pass. `just generate`,
+`just lint`, `just build`, and full `just test` pass (56/56).
+
+**190.11-FU is complete. FINAL REVIEW: two independent Codex audits ACK.**
+
 ### 190.12 (MED) — committed plan-shape golden
 
 `explaindiff` renders every corpus query's plan but its baselines are explicitly NOT committed

@@ -1,6 +1,8 @@
 package plans
 
 import (
+	"math"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -419,20 +421,66 @@ func (p *RecordQueryInJoinPlan) HintCost(child []properties.Cost, _ properties.S
 	}
 }
 
-// HintCost: an InUnion runs its child once per IN-binding combination.
+// HintCost: an InUnion runs its child once per Cartesian-product
+// IN-binding combination. Literal sources have an exact fanout; each source
+// unavailable at planning time contributes the conservative default of 10
+// values. A single exact combination executes the child directly, so it must
+// not receive an artificial wrapper discount.
 func (p *RecordQueryInUnionPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
-	inDims := float64(len(p.GetBindingNames()))
-	if inDims < 1 {
-		inDims = 10
+	fanout := estimatedInUnionFanout(p)
+	if fanout == 0 {
+		return properties.Cost{}
+	}
+	if fanout == 1 {
+		return child[0]
 	}
 	in := child[0].Cardinality
 	return properties.Cost{
-		Cardinality: in * inDims * properties.PhysicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*inDims*properties.UnionCPU) * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: in * fanout * properties.PhysicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU*fanout + in*fanout*properties.UnionCPU) * properties.PhysicalWrapperCostMultiplier,
 	}
+}
+
+func estimatedInUnionFanout(p *RecordQueryInUnionPlan) float64 {
+	if exact, known := p.LiteralFanout(); known {
+		return float64(exact)
+	}
+	if p == nil {
+		return 1
+	}
+
+	// Preserve every known dimension and substitute ten only for an unknown
+	// one. Saturating at MaxInt64 keeps the heuristic finite even for a
+	// pathological number of dimensions.
+	fanout := int64(1)
+	bindings := p.GetBindingNames()
+	sources := p.GetInSources()
+	if len(sources) != len(bindings) {
+		// A present but malformed source/binding shape cannot be assigned a
+		// meaningful execution count. Keep it maximally conservative; valid
+		// plans always align the two slices.
+		return float64(math.MaxInt64)
+	}
+	if len(bindings) == 0 {
+		return 1
+	}
+	for i := range bindings {
+		size := int64(10)
+		if i < len(sources) && sources[i] != nil {
+			size = int64(len(sources[i]))
+		}
+		if size == 0 {
+			return 0
+		}
+		if fanout > math.MaxInt64/size {
+			return float64(math.MaxInt64)
+		}
+		fanout *= size
+	}
+	return float64(fanout)
 }
 
 // --- recursive operators ----------------------------------------------------

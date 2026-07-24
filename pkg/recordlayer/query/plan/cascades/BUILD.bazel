@@ -242,6 +242,7 @@ go_test(
         "graph_expansion_test.go",
         "group_by_mappings_test.go",
         "groupby_column_identity_test.go",
+        "in_union_cost_regression_test.go",
         "index_expansion_test.go",
         "index_primary_key_property_test.go",
         "index_scan_preference_test.go",
@@ -898,6 +899,7 @@ go_test(
         "rule_sink_limit_into_vector_scan_test.go",
         "rule_split_select_extract_independent_test.go",
         "planning_cost_model_rungs_test.go",
+        "in_union_cost_regression_test.go",
     ],
     deps = [
         "//gen",

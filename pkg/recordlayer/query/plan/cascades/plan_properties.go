@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"math"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -707,9 +709,27 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 			Max: inSize.Times(child.GetMaxCardinality()),
 		}
 
-	// --- InUnion: child × unknown (binding sizes not available) ---
+	// --- InUnion: child × Cartesian product of literal source sizes ---
 	case *plans.RecordQueryInUnionPlan:
-		return properties.UnknownMaxCardinality()
+		fanout, known := p.LiteralFanout()
+		if !known {
+			return properties.UnknownMaxCardinality()
+		}
+		if fanout == 0 {
+			// Go precision extension: a known-empty dimension makes the
+			// executor return an empty cursor even when another dimension is
+			// runtime-unknown. Java's generic unknown multiplication keeps
+			// that mixed maximum unknown; exact zero is stronger but sound.
+			return properties.Cardinalities{
+				Min: properties.OfCardinality(0),
+				Max: properties.OfCardinality(0),
+			}
+		}
+		child := cardinalitiesFromChildRefOrInner(w, plan)
+		return properties.Cardinalities{
+			Min: multiplyCardinalityBound(fanout, child.GetMinCardinality()),
+			Max: multiplyCardinalityBound(fanout, child.GetMaxCardinality()),
+		}
 
 	// --- DML: same as child ---
 	case *plans.RecordQueryInsertPlan,
@@ -769,6 +789,23 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 	default:
 		return properties.UnknownCardinalities()
 	}
+}
+
+// multiplyCardinalityBound multiplies an exact non-negative factor by one
+// cardinality bound without allowing int64 wraparound to reach OfCardinality.
+// An unrepresentable product conservatively becomes unknown.
+func multiplyCardinalityBound(factor int64, bound properties.Cardinality) properties.Cardinality {
+	if bound.IsUnknown() {
+		return properties.UnknownCardinality()
+	}
+	value := bound.Value()
+	if factor == 0 || value == 0 {
+		return properties.OfCardinality(0)
+	}
+	if factor > math.MaxInt64/value {
+		return properties.UnknownCardinality()
+	}
+	return properties.OfCardinality(factor * value)
 }
 
 // cardinalitiesFromChildRef returns the Cardinalities from the first

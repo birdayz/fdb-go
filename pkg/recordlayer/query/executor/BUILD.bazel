@@ -63,6 +63,7 @@ go_test(
         "frontier_ordinal_authority_test.go",
         "identity_passthrough_outer_kind_test.go",
         "in_memory_sort_over_ordered_scan_rowsread_test.go",
+        "in_union_empty_test.go",
         "intersection_compkey_error_test.go",
         "intersection_compkey_test.go",
         "limit_envelope_test.go",
@@ -170,6 +171,7 @@ go_test(
         "intersection_compkey_error_test.go",
         "flat_map_inherit_outer_properties_test.go",
         "unordered_pk_distinct_cardinality_test.go",
+        "in_union_empty_test.go",
     ],
     deps = [
         "//gen",

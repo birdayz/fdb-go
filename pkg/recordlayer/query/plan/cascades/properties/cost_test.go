@@ -312,6 +312,120 @@ func TestBestRefCost_NilOrEmptyReturnsZero(t *testing.T) {
 	}
 }
 
+func TestEstimateCost_FinalOnlyChildUsesPinnedFinal(t *testing.T) {
+	t.Parallel()
+
+	stats := FixedStatistics{Cardinality: 100}
+	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	parent := func(ref *expressions.Reference) expressions.RelationalExpression {
+		return expressions.NewLogicalSortExpression(
+			nil,
+			expressions.ForEachQuantifier(ref),
+		)
+	}
+
+	want := EstimateCostWith(parent(expressions.InitialOf(scanExpr)), stats)
+	got := EstimateCostWith(
+		parent(expressions.FinalOfAtStage(scanExpr, expressions.StageCanonical)),
+		stats,
+	)
+	if got != want {
+		t.Fatalf("final-only child cost = %+v, want pinned child cost %+v", got, want)
+	}
+}
+
+func TestEstimateCost_ExploratoryMemberPrecedesFinalFallback(t *testing.T) {
+	t.Parallel()
+
+	stats := MapStatistics{PerType: map[string]float64{"BIG": 1_000, "SMALL": 1}}
+	big := expressions.NewFullUnorderedScanExpression([]string{"BIG"}, nil)
+	small := expressions.NewFullUnorderedScanExpression([]string{"SMALL"}, nil)
+	mixed := expressions.InitialOf(big)
+	if !mixed.InsertFinal(small) {
+		t.Fatal("failed to add distinct final member")
+	}
+	parent := func(ref *expressions.Reference) expressions.RelationalExpression {
+		return expressions.NewLogicalFilterExpression(
+			nil,
+			expressions.ForEachQuantifier(ref),
+		)
+	}
+
+	want := EstimateCostWith(parent(expressions.InitialOf(big)), stats)
+	got := EstimateCostWith(parent(mixed), stats)
+	if got != want {
+		t.Fatalf("mixed-reference child cost = %+v, want exploratory-first cost %+v", got, want)
+	}
+
+	finalOnly := expressions.FinalOfAtStage(big, expressions.StageCanonical)
+	if !finalOnly.InsertFinal(small) {
+		t.Fatal("failed to add second distinct final member")
+	}
+	if got := EstimateCostWith(parent(finalOnly), stats); got != want {
+		t.Fatalf("multi-final child cost = %+v, want first-final cost %+v", got, want)
+	}
+}
+
+func TestBestCostWalks_IncludeFinalOnlyMembers(t *testing.T) {
+	t.Parallel()
+
+	stats := FixedStatistics{Cardinality: 100}
+	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	finalRef := expressions.FinalOfAtStage(scanExpr, expressions.StageCanonical)
+	wantLeaf := EstimateCostWith(scanExpr, stats)
+	if got := BestRefCostWith(finalRef, stats); got != wantLeaf {
+		t.Fatalf("BestRefCostWith(final-only) = %+v, want %+v", got, wantLeaf)
+	}
+
+	finalParent := expressions.NewLogicalFilterExpression(
+		nil,
+		expressions.ForEachQuantifier(finalRef),
+	)
+	exploratoryParent := expressions.NewLogicalFilterExpression(
+		nil,
+		expressions.ForEachQuantifier(expressions.InitialOf(scanExpr)),
+	)
+	wantParent := EstimateCostWith(exploratoryParent, stats)
+	if got := BestRefCostWith(expressions.InitialOf(finalParent), stats); got != wantParent {
+		t.Fatalf("BestRefCostWith(parent over final-only child) = %+v, want %+v", got, wantParent)
+	}
+	if got := BestMemberCostWith(finalParent, stats); got != wantParent {
+		t.Fatalf("BestMemberCostWith(final-only child) = %+v, want %+v", got, wantParent)
+	}
+}
+
+func TestBestCostWalks_ConsiderCheaperFinalAlongsideExploratory(t *testing.T) {
+	t.Parallel()
+
+	stats := MapStatistics{PerType: map[string]float64{"BIG": 1_000, "SMALL": 1}}
+	big := expressions.NewFullUnorderedScanExpression([]string{"BIG"}, nil)
+	small := expressions.NewFullUnorderedScanExpression([]string{"SMALL"}, nil)
+	mixed := expressions.InitialOf(big)
+	if !mixed.InsertFinal(small) {
+		t.Fatal("failed to add distinct final member")
+	}
+
+	wantLeaf := EstimateCostWith(small, stats)
+	if got := BestRefCostWith(mixed, stats); got != wantLeaf {
+		t.Fatalf("BestRefCostWith(mixed) = %+v, want cheaper final %+v", got, wantLeaf)
+	}
+
+	parent := expressions.NewLogicalFilterExpression(
+		nil,
+		expressions.ForEachQuantifier(mixed),
+	)
+	wantParent := EstimateCostWith(
+		expressions.NewLogicalFilterExpression(
+			nil,
+			expressions.ForEachQuantifier(expressions.InitialOf(small)),
+		),
+		stats,
+	)
+	if got := BestMemberCostWith(parent, stats); got != wantParent {
+		t.Fatalf("BestMemberCostWith(mixed child) = %+v, want cheaper final path %+v", got, wantParent)
+	}
+}
+
 func TestEstimateCost_DMLCardinalityEqualsInner(t *testing.T) {
 	t.Parallel()
 	// Insert/Update/Delete: cardinality equals inner (one effect per

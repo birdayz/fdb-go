@@ -73,6 +73,7 @@ go_test(
         "explode_test.go",
         "f21_comparand_identity_test.go",
         "in_join_test.go",
+        "in_union_cost_test.go",
         "multi_intersection_test.go",
         "new_plans_test.go",
         "plan_expression_memo_participation_test.go",
@@ -161,6 +162,7 @@ go_test(
         "recursive_cost_test.go",
         "recursive_level_union_correlation_test.go",
         "scan_cost_test.go",
+        "in_union_cost_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
