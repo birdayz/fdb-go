@@ -11,18 +11,18 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**338 scenarios · 2676 query/assertion cases** across 18 feature areas.
+**338 scenarios · 2697 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
 | Aggregates & GROUP BY | 50 | 322 |
-| Joins | 62 | 271 |
+| Joins | 62 | 273 |
 | Subqueries (EXISTS / IN / scalar) | 44 | 295 |
 | CTEs | 12 | 105 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 210 |
 | Ordering & pagination | 14 | 115 |
-| Scalar functions & expressions | 33 | 358 |
+| Scalar functions & expressions | 33 | 377 |
 | Predicates & WHERE | 12 | 104 |
 | Column resolution & aliasing | 7 | 59 |
 | NULL handling | 5 | 26 |
@@ -112,7 +112,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `flatmap_null_fk` | 2 | FlatMap with NULL foreign key values |
 | `flatmap_one_to_many` | 3 | FlatMap with 1:N relationship (high fan-out) |
 | `flatmap_regression` | 5 | FlatMap regression tests |
-| `flatmap_secondary_index` | 3 | FlatMap via secondary index |
+| `flatmap_secondary_index` | 5 | FlatMap via secondary index |
 | `flatmap_three_way` | 1 | Three-way join (chained FlatMap) |
 | `gr1_join` | 4 | SQL §7.10 GR1 with JOIN queries: the bare-col-with-aggregate without |
 | `group_by_null_join` | 3 | GROUP BY on nullable JOIN column |
@@ -311,7 +311,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `null_arithmetic_java` | 9 | NULL propagation through arithmetic |
 | `null_in_expressions` | 6 | NULL behavior in various expression contexts |
 | `nullif_coalesce_combined_java` | 6 | NULLIF and COALESCE combined |
-| `numeric_functions` | 28 | Scalar numeric functions: ABS / MOD / FLOOR / CEIL / CEILING / ROUND / |
+| `numeric_functions` | 47 | Scalar numeric functions: ABS / MOD / FLOOR / CEIL / CEILING / ROUND / |
 | `numeric_overflow_detection` | 5 | Numeric overflow detection |
 | `overflow` | 10 | nightshift-36: integer overflow is now checked. |
 | `overflow_mixed` | 3 | Follow-up probe for `feedback_next_shift_arithmetic_overflow` (which |

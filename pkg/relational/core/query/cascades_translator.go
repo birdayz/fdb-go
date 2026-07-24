@@ -1084,6 +1084,27 @@ func (t *cascadesTranslator) translateSubqueryRef(op logical.LogicalOperator) *e
 
 // --- Lateral array UNNEST (RFC-142) --------------------------------------
 
+// translateCorrelatedPrimaryUnnest lowers the standalone unnest used by a
+// correlated EXISTS primary source. Its collection was resolved in the outer
+// semantic scope and therefore carries the exact external correlation that the
+// enclosing ForEach quantifier binds. Regular lateral FROM unnests leave
+// CorrelatedCollection nil and are translated only through translateUnnestJoin.
+func (t *cascadesTranslator) translateCorrelatedPrimaryUnnest(
+	u *logical.LogicalUnnest,
+) expressions.RelationalExpression {
+	if u == nil || u.CorrelatedCollection == nil {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a standalone array unnest requires a resolved outer collection"))
+		return nil
+	}
+	if u.Alias == "" || u.AtAlias != "" {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a correlated EXISTS array source requires one element alias without ordinality"))
+		return nil
+	}
+	return expressions.NewExplodeExpressionWithOrdinality(u.CorrelatedCollection, false)
+}
+
 // findOuterScanTable resolves a lateral unnest's outer source alias to its
 // scanned table name among the VISIBLE FROM-scope sources of the outer leg.
 // It is the shared logical.FindOuterScanTable walk (the embedded cascades
@@ -2051,7 +2072,30 @@ func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnes
 		}
 		return values.Replace(v, func(node values.Value) values.Value {
 			fv, ok := node.(*values.FieldValue)
-			if !ok || fv.Child == nil {
+			if !ok {
+				return node
+			}
+			// A correlated-primary unnest is resolved as a one-column LOCAL
+			// virtual source inside the EXISTS scope. Its element reference is
+			// therefore a source-relative baked leaf (E#0), not the correlated
+			// FieldValue(QOV(E), E) produced by an ordinary lateral join. The
+			// Explode still flows the primitive element as the whole QOV. Admit
+			// exactly that standalone shape here: correlated collection,
+			// no ordinality, the explicit element alias, and source ordinal 0.
+			// A field below a record element has a child or a longer path and
+			// remains a real field access.
+			if fv.Child == nil {
+				if u.CorrelatedCollection != nil &&
+					!withOrdinality &&
+					asAlias != "" &&
+					strings.EqualFold(fv.Field, asAlias) &&
+					fv.SourceRelativeBaked() &&
+					fv.Resolved.Accessors[0].Ordinal == 0 {
+					return values.NewQuantifiedObjectValueOfType(
+						unnestCorr,
+						fv.Type(),
+					)
+				}
 				return node
 			}
 			qov, ok := fv.Child.(*values.QuantifiedObjectValue)
@@ -2352,6 +2396,8 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 	switch o := op.(type) {
 	case *logical.LogicalScan:
 		return t.translateScan(o)
+	case *logical.LogicalUnnest:
+		return t.translateCorrelatedPrimaryUnnest(o)
 	case *logical.LogicalFilter:
 		return t.translateFilter(o)
 	case *logical.LogicalLimit:
@@ -3002,9 +3048,18 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		return t.buildExistentialSelect(f, innerRef, nil)
 	}
 
+	pred := f.Predicate
+	if u, ok := f.Input.(*logical.LogicalUnnest); ok && u.CorrelatedCollection != nil && pred != nil {
+		// The semantic scope exposes the scalar element as a one-column local
+		// virtual source, so E resolves as a source-relative baked E#0 leaf.
+		// Explode itself flows the scalar QOV(E); collapse that wrapper exactly
+		// as the lateral-join path does or every primitive predicate evaluates
+		// through a field read on a scalar and filters all rows.
+		pred = rewriteUnnestPredicate(pred, u)
+	}
 	var preds []predicates.QueryPredicate
-	if f.Predicate != nil {
-		preds = []predicates.QueryPredicate{f.Predicate}
+	if pred != nil {
+		preds = []predicates.QueryPredicate{pred}
 	}
 	return expressions.NewLogicalFilterExpression(
 		preds,
@@ -4041,12 +4096,12 @@ func isScanFamilyLeg(op logical.LogicalOperator) bool {
 // existsLegBuildsPositional reports whether a projected-EXISTS fold leg is a
 // bare all-INNER cluster of scan-family leaves. Such a leg is translated
 // UN-ENCLOSED (AXIS 1) so its INNER box is born as a mergeable ordinal select;
-// SelectMergeRule then FLATTENS it into the fold, making the fold an N-way
-// `[ForEach×N, Existential]` select the generalized implementJoinWithExistential
-// plans (N-way flat existential). A scan leg is already
-// positional regardless of enclosure (returns false — no box to un-enclose); an
-// OUTER box or a wrapped join returns false (non-mergeable / out of INNER-first
-// scope).
+// SelectMergeRule can then expose the flat `[ForEach×N, Existential]` form.
+// RFC-190 routes that form through PartitionSelectRule's alias-aware
+// decomposition and ordinary binary NLJ implementation; the former generalized
+// implementJoinWithExistential arm is retired. A scan leg is already positional
+// regardless of enclosure (returns false — no box to un-enclose); an OUTER box
+// or a wrapped join returns false (non-mergeable / out of INNER-first scope).
 func existsLegBuildsPositional(op logical.LogicalOperator) bool {
 	j, isJoin := op.(*logical.LogicalJoin)
 	if !isJoin || j.Kind != logical.JoinInner {
@@ -4128,14 +4183,60 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 		// is unaffected — ON ≡ WHERE for an inner join, so the predicate filters.
 		return nil
 	}
+	// RFC-190 190.1 direct-emit: an INNER cluster of ≥3 legs is dissolved into a
+	// flat NAME-model [ForEach×N, Existential] select (QueryVisitor.java:429-434
+	// port, alias-bound). PartitionSelectRule decomposes it by alias.
+	if j.Kind == logical.JoinInner && f != nil {
+		legs := t.gatherInnerClusterLegs(j)
+		if len(legs) > 2 {
+			ops := make([]logical.LogicalOperator, len(legs))
+			for i, l := range legs {
+				ops[i] = l.op
+			}
+			if mintedBindingLeg(ops...) != "" {
+				return nil
+			}
+			prevEnc := t.inInnerCluster
+			quants := make([]expressions.Quantifier, 0, len(legs)+len(f.ExistsSubqueries))
+			srcAliases := make([]string, 0, len(legs)+len(f.ExistsSubqueries))
+			for _, leg := range legs {
+				t.inInnerCluster = true
+				legRef := t.translateRef(leg.op)
+				t.inInnerCluster = prevEnc
+				if legRef == nil {
+					return nil
+				}
+				quants = append(quants, expressions.NamedForEachQuantifier(
+					values.NamedCorrelationIdentifier(leg.binding), legRef))
+				srcAliases = append(srcAliases, leg.binding)
+			}
+			var preds []predicates.QueryPredicate
+			preds = append(preds, t.gatherInnerClusterOnPredicates(j)...)
+			preds = append(preds, splitNonExistsPredicates(f.Predicate)...)
+			preds = append(preds, extractExistsPredicates(f.Predicate)...)
+			for _, esq := range f.ExistsSubqueries {
+				subRef := t.translateSubqueryRef(esq.Plan)
+				if subRef == nil {
+					return nil
+				}
+				quants = append(quants, expressions.NamedExistentialQuantifier(esq.Alias, subRef))
+				innerCorrName, joinPred := existsInnerCorrelation(esq)
+				if joinPred != nil {
+					preds = append(preds, joinPred)
+				}
+				srcAliases = append(srcAliases, innerCorrName)
+			}
+			return expressions.NewSelectExpressionWithAliases(resultValue, quants, preds, srcAliases)
+		}
+	}
 	// Same enclosure as translateJoinWithExists — the
 	// existential flatten is a name-model parent; its ForEach legs are enclosed.
 	// AXIS 1: a bare INNER gated-box fold leg is translated
 	// UN-ENCLOSED so its box is born as a mergeable ordinal select; SelectMergeRule
 	// flattens it into the fold, making the fold an N-way [ForEach×N, Existential]
-	// select the generalized implementJoinWithExistential plans. Coupled to the
-	// executor's N-leg dispatch/seed. A non-bare-INNER-box leg
-	// (scan, OUTER box, wrapped) stays enclosed.
+	// select that PartitionSelectRule decomposes into ordinary binary NLJs while
+	// preserving the live existential. A non-bare-INNER-box leg (scan, OUTER box,
+	// wrapped) stays enclosed.
 	prevEnclosure := t.inInnerCluster
 	t.inInnerCluster = !existsLegBuildsPositional(j.Left)
 	leftRef := t.translateRef(j.Left)

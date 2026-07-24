@@ -70,9 +70,18 @@ tests:
     plan_contains: InJoin
     rows: []
 
-  # IN-list combined with another predicate — InJoin + post-filter
+  # IN-list combined with another predicate AND an ORDER BY that neither
+  # access path provides for free (id order has no relation to the price
+  # range scan) — a single IDX_PRICE range scan with a residual
+  # category-IN post-filter beats an InJoin that re-scans IDX_PRICE once
+  # PER category value: since a sort is unavoidable either way, paying for
+  # N re-scans (InJoin) is strictly more work than paying for one scan plus
+  # a residual filter. RFC-190 190.2 re-pinned this from `plan_contains:
+  # InJoin` — that pin predated the sort-invariant/promoted-sort-count cost
+  # model fix and enshrined the costlier per-category re-scan plan.
   - query: SELECT id, name FROM items WHERE category IN ('books', 'electronics') AND price > 50 ORDER BY id
-    plan_contains: InJoin
+    plan_not_contains: InJoin
+    plan_contains: IndexScan
     rows:
       - [2, 'Algorithms']
       - [3, 'Keyboard']

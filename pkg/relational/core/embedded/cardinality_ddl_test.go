@@ -92,6 +92,41 @@ func TestCardinalityDDL_CatalogRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMetadataIndexDef_FanOutRootAndNestedColumnsAreDefensiveAndParallel(t *testing.T) {
+	t.Parallel()
+
+	index := recordlayer.NewIndex(
+		"parent_children_kind_score",
+		recordlayer.NestFanOut(
+			"CHILDREN",
+			recordlayer.Concat(
+				recordlayer.Field("KIND"),
+				recordlayer.Field("SCORE"),
+			),
+		),
+	)
+	definition := &metadataIndexDef{idx: index}
+
+	if columns := definition.IndexColumnNames(); len(columns) != 2 ||
+		columns[0] != "KIND" || columns[1] != "SCORE" {
+		t.Fatalf("nested index columns = %v, want [KIND SCORE] (parent is a path segment)", columns)
+	}
+	if functions := definition.IndexColumnFunctions(); len(functions) != 0 {
+		t.Fatalf("plain nested index function tags = %v, want nil", functions)
+	}
+
+	first := definition.IndexRootKeyExpression()
+	if first == nil || first.GetNesting() == nil ||
+		first.GetNesting().GetParent().GetFieldName() != "CHILDREN" {
+		t.Fatalf("root key expression = %#v, want CHILDREN fanout nesting", first)
+	}
+	first.GetNesting().Parent.FieldName = proto.String("MUTATED")
+	second := definition.IndexRootKeyExpression()
+	if got := second.GetNesting().GetParent().GetFieldName(); got != "CHILDREN" {
+		t.Fatalf("root key expression was not defensively cloned: got parent %q", got)
+	}
+}
+
 // NOTE: the nested-struct array case (CARDINALITY(struct.int_arr), yamsql
 // tab2_index) is not exercised here: the metadata builder rejects STRUCT
 // columns ("only primitive column types are supported"), the same limitation

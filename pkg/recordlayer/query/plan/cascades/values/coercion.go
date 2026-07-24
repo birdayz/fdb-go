@@ -57,6 +57,17 @@ func canonicalFloat64Bits(f float64) int64 {
 	return int64(math.Float64bits(f))
 }
 
+// canonicalFloat32Bits returns the signed bit pattern Java's
+// Float.floatToIntBits produces. Like canonicalFloat64Bits, it preserves the
+// sign distinction between -0.0 and +0.0 while collapsing every NaN payload
+// and sign encoding to Java's canonical quiet NaN.
+func canonicalFloat32Bits(f float32) int32 {
+	if math.IsNaN(float64(f)) {
+		return int32(0x7fc00000)
+	}
+	return int32(math.Float32bits(f))
+}
+
 // ToInt64 reports whether v is an integral type; returns the int64
 // promotion when so.
 func ToInt64(v any) (int64, bool) {

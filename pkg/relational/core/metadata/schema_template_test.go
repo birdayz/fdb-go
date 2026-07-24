@@ -801,6 +801,62 @@ func TestBuilder_MultiColumnIndex(t *testing.T) {
 	}
 }
 
+func TestBuilder_WithFanOutIndex(t *testing.T) {
+	t.Parallel()
+
+	tmpl, err := NewSchemaTemplateBuilder().
+		SetName("fanout_indexed").
+		AddTable("T", []ColumnSpec{
+			NewColumnSpec("id", api.NewLongType(false), 1),
+			NewColumnSpec("tags", api.NewArrayType(api.NewLongType(false), true), 2),
+		}, []string{"id"}).
+		AddFanOutIndex("T", "by_tag", "tags").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	index := tmpl.Underlying().GetIndex("by_tag")
+	if index == nil || !index.CreatesDuplicates() {
+		t.Fatalf("fanout index = %#v, want a duplicate-producing index", index)
+	}
+	root := index.RootExpression.ToKeyExpression()
+	if root == nil || root.GetField() == nil ||
+		root.GetField().GetFieldName() != "tags" ||
+		root.GetField().GetFanType() != gen.Field_FAN_OUT {
+		t.Fatalf("fanout root = %#v, want field(tags, FAN_OUT)", root)
+	}
+}
+
+func TestBuilder_FanOutIndexRejectsInvalidTargets(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		table  string
+		column string
+	}{
+		{name: "unknown table", table: "MISSING", column: "tags"},
+		{name: "unknown column", table: "T", column: "missing"},
+		{name: "scalar column", table: "T", column: "id"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewSchemaTemplateBuilder().
+				SetName("bad_fanout").
+				AddTable("T", []ColumnSpec{
+					NewColumnSpec("id", api.NewLongType(false), 1),
+					NewColumnSpec("tags", api.NewArrayType(api.NewLongType(false), true), 2),
+				}, []string{"id"}).
+				AddFanOutIndex(tc.table, "by_tag", tc.column).
+				Build()
+			if err == nil {
+				t.Fatal("invalid fanout index unexpectedly built")
+			}
+		})
+	}
+}
+
 func TestBuilder_IndexOnUnknownTableFails(t *testing.T) {
 	t.Parallel()
 	_, err := NewSchemaTemplateBuilder().

@@ -13,9 +13,9 @@ import (
 // drop the non-first branch's rows (which it did, returning NULL, on master).
 //
 // Two pre-existing executor defects combined: (1) executeUnorderedUnion concatenated
-// branch cursors with NO column normalization (unlike the ordered RecordQueryUnionPlan),
+// branch cursors with NO column normalization (unlike the sibling concat RecordQueryUnionPlan),
 // and (2) planColumnNamesWithMD descended through a StreamingAgg to its input scan and
-// returned the SCAN's columns, so even the ordered path's position-remap saw both
+// returned the SCAN's columns, so even the sibling path's position-remap saw both
 // branches as identical and never fired. Now planColumnNamesWithMD reports the
 // aggregate's output schema (group keys + alias) and executeUnorderedUnion remaps later
 // branches to the first branch's names.

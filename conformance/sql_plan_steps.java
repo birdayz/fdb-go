@@ -269,6 +269,29 @@ class SqlPlanSteps {
     public JsonObject runWithSetupInjectingFaults(String clusterFile, String schemaTemplate,
                                                   java.util.List<String> setupSqls, String querySql,
                                                   int faultCount, int faultCode) throws Exception {
+        return runWithSetupInjectingFaults(
+            clusterFile, schemaTemplate, setupSqls, querySql, faultCount, faultCode, false);
+    }
+
+    /**
+     * TEST-ONLY raw-carrier sibling of {@link #runWithSetupInjectingFaults}.
+     * Real result-set iteration can surface {@link FDBException} directly
+     * (it is a {@link RuntimeException}) instead of wrapping it in
+     * {@link SQLException}. Keep both carriers pinned because the retry
+     * boundary must classify the FDB cause, not depend on the JDBC wrapper.
+     */
+    @ConformanceStep("runWithSetupInjectingRawFaults")
+    public JsonObject runWithSetupInjectingRawFaults(String clusterFile, String schemaTemplate,
+                                                     java.util.List<String> setupSqls, String querySql,
+                                                     int faultCount, int faultCode) throws Exception {
+        return runWithSetupInjectingFaults(
+            clusterFile, schemaTemplate, setupSqls, querySql, faultCount, faultCode, true);
+    }
+
+    private JsonObject runWithSetupInjectingFaults(String clusterFile, String schemaTemplate,
+                                                   java.util.List<String> setupSqls, String querySql,
+                                                   int faultCount, int faultCode,
+                                                   boolean rawFault) throws Exception {
         final AtomicInteger remaining = new AtomicInteger(faultCount);
         return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> {
             try (Statement st = conn.createStatement()) {
@@ -279,8 +302,11 @@ class SqlPlanSteps {
             RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
             return withFdbRetry(() -> {
                 if (remaining.getAndDecrement() > 0) {
-                    throw new SQLException("injected test fault",
-                        new FDBException("injected_test_fault", faultCode));
+                    FDBException fault = new FDBException("injected_test_fault", faultCode);
+                    if (rawFault) {
+                        throw fault;
+                    }
+                    throw new SQLException("injected test fault", fault);
                 }
                 try (RelationalPreparedStatement ps = rconn.prepareStatement(querySql);
                      RelationalResultSet rs = ps.executeQuery()) {
@@ -486,17 +512,15 @@ class SqlPlanSteps {
      * it's rethrown immediately, and the spec still fails loudly.
      */
     private static <T> T withFdbRetry(SqlSupplier<T> op) throws SQLException {
-        SQLException last = null;
         for (int attempt = 0; attempt < MAX_FDB_RETRIES; attempt++) {
             try {
                 return op.get();
-            } catch (SQLException e) {
+            } catch (SQLException | RuntimeException e) {
                 if (!isRetryableNotCommitted(e)) {
                     throw e;
                 }
-                last = e;
                 if (attempt == MAX_FDB_RETRIES - 1) {
-                    break; // out of budget — don't back off just to give up
+                    throw e; // out of budget — don't back off just to give up
                 }
                 // Exponential backoff (base 50ms..800ms) with additive jitter:
                 // sleep in [base, 2*base), so there's always a backoff floor and
@@ -512,10 +536,7 @@ class SqlPlanSteps {
                 }
             }
         }
-        // Unreachable with a positive MAX_FDB_RETRIES: the loop only falls
-        // through here after the final attempt's catch assigned `last` and
-        // broke, so `last` is non-null.
-        throw last;
+        throw new AssertionError("positive retry budget exhausted without returning or throwing");
     }
 
     private String runExplain(java.sql.Connection conn, String sql) throws SQLException {

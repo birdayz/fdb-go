@@ -114,10 +114,53 @@ Pinned by `TestQuantifier_GetCorrelatedTo_Transitive` (a quantifier ranging over
 
 ### Go has an explicit in-memory sort physical operator
 
-**Java:** Relies on `RemoveSortRule` to eliminate sorts; no in-memory sort plan exists.
+**Java:** `RecordQuerySortPlan` exists, but only the legacy `RecordQueryPlanner` constructs it.
+Java's Cascades planner relies on `RemoveSortRule` to eliminate every logical sort; if no child
+ordering satisfies the request, Cascades fails to plan rather than constructing a physical sort.
 **Go:** Has `RecordQueryInMemorySortPlan` (produced by `ImplementInMemorySortRule`). The Java-ported `ImplementSortRule` still eliminates the sort via index ordering where possible; `RecordQueryInMemorySortPlan` is the fallback when no index satisfies the requested ordering. (A legacy `RecordQuerySortPlan` — an orphaned port of Java's legacy-planner sort plan — was removed as producer-less dead code: Go has no legacy planner, so nothing ever constructed it.)
 
-Correctness improvement — ensures ORDER BY works even when no index satisfies it.
+This is a sanctioned read-side extension: it ensures `ORDER BY` works even when no access path
+satisfies it. It is not a substitute for the Java ordered-variant enumeration described below.
+
+### FlatMap/NLJ requested-order enumeration — RESOLVED (RFC-190.6 implementation)
+
+**Java 4.12.11:** `ImplementNestedLoopJoinRule` partitions child alternatives by their source
+ordering and applies three cases. Case 1 rolls max-one outers together and lets the inner determine
+the result order, retaining every satisfying inner source-order partition only for an exhaustive
+request. Case 2a uses an outer that satisfies the request by itself, retaining each satisfying
+outer source-order partition only for a `DISTINCT` request (exhaustiveness does not widen this
+case). Case 2b retains every viable distinct-outer source-order partition whose order does not
+satisfy alone, appends a satisfying inner ordering, and retains every such inner partition only
+for an exhaustive request. Each retained partition contributes its cheapest expression.
+
+**Go:** The NLJ/FlatMap implementation and the bottom-up sort boundary now use that same Case
+1/2a/2b source-order partition matrix while retaining the ordinary cost-best join. Ordered variants
+freeze both selected children in private exact-final singleton references, so extraction cannot
+replace an ordered leg with the shared group's cheaper unordered winner after the enclosing sort
+is removed. The join ordering property is correspondingly conservative: it reports Case 1/2a/2b
+ordering only for exact-final child edges.
+
+Translation across Go's mixed value representations is deliberately fail-closed. A safe ordering
+root bridge equates a source-local flat/baked `FieldValue` with a field under exactly one
+`QuantifiedObjectValue` only when the complete accessor path is identical; different baked
+ordinals, nested paths, and ambiguous roots do not collapse. Projected-EXISTS FlatMaps that declare
+`inheritOuterRecordProperties` use an ordering-only record-constructor lens that qualifies direct,
+correlation-free outer fields; it does not change the executable result value or claim inner,
+literal, or ordinary-FlatMap fields for the outer.
+
+If pruning has already hidden the needed child access, ordered-leg recovery reuses the existing
+ordered primary/index-scan rules and retained partial matches in private candidate space. It can
+recover a reverse unbounded primary scan from a retained forward final, but deliberately declines
+bounded-scan synthesis and re-verifies the completed join through the rich ordering property.
+Ambiguous/untranslatable requests and genuinely index-less `ORDER BY` queries still fall back to
+`RecordQueryInMemorySortPlan`.
+
+Final parent-to-worktree EXPLAIN census: 2,579 old entries and 2,581 new entries (the two
+additional entries are the new regression queries), with 2,491 identical and 90 differing. Of the 88
+comparable shape flips, 87 eliminate outer/unary sort enforcers; the remaining already-sorted
+fixture changes shape because its fixture now declares the new index. The plan-error classification
+contains zero regressions and zero recoveries. The release-gate results are recorded in
+RFC-190/TODO rather than being inferred from this census.
 
 ### FieldValue: string-qualified names vs CorrelationIdentifier-based resolution (PARTIALLY CLOSED)
 
@@ -147,11 +190,12 @@ Functionally equivalent for current query shapes — all generated plans use sin
 
 Consequence: Go's EXPLAIN output cannot show predicate/value detail without editing each node's `Explain()`, and the rendering logic is scattered. Port target: `ExplainTokens` + `DefaultExplainFormatter` + the per-node `explain()` visitors. Not on the RFC-173 critical path (frozen behind it per owner directive); food for a post-RFC-173 slice.
 
-## Planning-Layer: Fully Aligned
+## Planning-Layer: Java-aligned core with documented Go extensions
 
 ### Cost Model: PlanningCostModelLess
 
-All 16 criteria ported. Criterion-by-criterion analysis:
+Java PlanningCostModel criteria #1–#17 are accounted for below; Go broadens/hoists #15 and adds
+explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-criterion analysis:
 
 | Criterion | Java | Go | Status |
 |---|---|---|---|
@@ -161,19 +205,22 @@ All 16 criteria ported. Criterion-by-criterion analysis:
 | 4. Data access count | count(Scan, Index, Covering) | `scanCount + indexScanCount + coveringIndexCount` | Aligned |
 | 5. Recursive CTE DFS > level | flipFlop(compareRecursiveCte) | `compareRecursiveCTE` | Aligned |
 | 6. IN-plan SARG penalty | flipFlop(compareInOperator) | `compareInPlan` with `(int, bool)` flipFlop | Aligned |
-| 7. Primary vs index scan | comparison-set analysis + PREFER_INDEX | `comparePrimaryScanVsIndexScan` + `isSingularIndexScanWithFetch` | Aligned (PREFER_INDEX default; comparison-set analysis redundant for default config) |
+| 7. Primary vs index scan | comparison-set analysis + configured `IndexScanPreference` (Cascades default `PREFER_SCAN`) | `comparePrimaryScanVsIndexScan` + `isSingularIndexScanWithFetch` + mirrored configuration | Aligned; strict-SARG-superset and all three preference branches are behaviorally pinned |
+| Go sort extension | Cascades `RemoveSortRule` eliminates redundant sorts before costing and has no physical-sort cost rung (`RecordQuerySortPlan` is legacy-planner-only) | `inMemorySortCount`, fewer wins, promoted before the structural block | Go read-side extension / cost-time analogue (RFC-190) |
 | 8. Type filter count | TypeFilterCountProperty | `len(GetRecordTypes())` per filter | Aligned |
-| 9. Type filter depth | ExpressionDepthProperty | `expressionDepth` (min across all members) | Aligned |
-| 10. Index scan fetches | count(PlanWithIndex, Fetch) | `indexScanCount + fetchCount` | Aligned |
-| 11. Distinct depth | ExpressionDepthProperty | `expressionDepth` | Aligned |
-| 12. Unmatched fields | UnmatchedFieldsCountProperty (no guard) | `totalCols - boundCols`, guarded by `inMemorySortCount == 0` | **Go adds guard** — prevents double-counting unmatched fields when InMemorySort already accounts for ordering cost |
+| 9. Type filter depth | ExpressionDepthProperty | Concrete depth plus logical fallback, with `InMemorySort` transparent | Aligned after RFC-190; unconditional with respect to sort |
+| 10. Index scan fetches | count(PlanWithIndex, Fetch) | `indexScanCount + fetchCount` plus sort-transparent fetch depth | Aligned after RFC-190; ungated with respect to sort (the Java both-index applicability gate remains) |
+| 11. Distinct depth | ExpressionDepthProperty | Sort-transparent concrete/logical depth | Aligned after RFC-190; unconditional with respect to sort |
+| 12. Unmatched fields | `UnmatchedFieldsCountProperty`, unconditional for both `RecordQueryScanPlan` and index plans | `unmatchedFieldsForScan` + `unmatchedFieldsForIndex`, unconditional after equal sort count | Aligned after RFC-190: removed the Go sort gate and ported the missing primary-scan arm |
 | 13. InJoin count (more=better) | count(InJoinPlan) reversed | `inJoinCount` reversed | Aligned |
-| 14. Map/filter count | count(Map, PredicatesFilter) | `mapCount + predicatesFilterCount` | Aligned |
-| 15. FlatMap join ordering | Compare outer child cardinalities | `compareFlatMapJoinOrdering` compares outer quantifier cardinalities | Aligned |
+| 14. Map/filter count | count(Map, PredicatesFilter) | `mapCount + predicatesFilterCount`, unconditional after equal sort count | Aligned after RFC-190 |
+| 15. FlatMap join ordering | Compare FlatMap outer-child cardinalities | `compareJoinOrdering`, hoisted after recursive CTE; recursively compares concrete total cost for same-shape joins and CPU for NLJ-vs-FlatMap | **Documented Go broadening/order divergence** |
+| Go NLJ-predicate extension | No materialized predicate-bearing NLJ counterpart | `nljPredicateCount`, more wins | Go read-side extension |
+| 16. DefaultOnEmpty count | Count `RecordQueryDefaultOnEmptyPlan` with `onEmptyResult == NULL`, fewer wins | `numDefaultOnEmpty`, fewer wins | Aligned |
 | 15c. Scalar cost | Java CostModel is purely heuristic (ordinal rungs, planHash tiebreak — no statistics rung) | `EstimateCostWith` comparison | **Go extension in the tiebreak slot** — a statistics discriminator before the hash tiebreak, NOT a prune workaround (retiring it regressed genuine selectivity decisions) |
-| 16. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `costExprHash`→`concretePlanHash`/`exprConcreteHash` (FNV-flavored) | **Shape-aligned, NOT byte-aligned** (RFC-167 §5) — both break cost ties by a structural plan hash so each engine is *intra-engine* stable, but Go uses an FNV-flavored hash (RFC-024 cache key) ≠ Java's `planHash(CURRENT_FOR_CONTINUATION)`, so Go and Java may pick **different** tie-winner indexes for the same query (rows identical; EXPLAIN may differ). Convergence is deferred until cross-engine continuation re-planning is a requirement (RFC-167 OQ#5). |
+| 17. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `costExprHash`→`concretePlanHash`/`exprConcreteHash` (FNV-flavored) | **Shape-aligned, NOT byte-aligned** (RFC-167 §5) — both break cost ties by a structural plan hash so each engine is *intra-engine* stable, but Go uses an FNV-flavored hash (RFC-024 cache key) ≠ Java's `planHash(CURRENT_FOR_CONTINUATION)`, so Go and Java may pick **different** tie-winner indexes for the same query (rows identical; EXPLAIN may differ). Convergence is deferred until cross-engine continuation re-planning is a requirement (RFC-167 OQ#5). |
 
-Criterion 15b (`compareFlatMapVsNLJ`) is RETIRED (RFC-181 WS-P stage (d)): under the epoch convergence with finals-only physical yields and prune-to-winner, its recorded JOIN regression no longer reproduces — deleted with its tests. 15c is RECLASSIFIED: Java's PlanningCostModel is self-described heuristic — its rungs end in a planHash tiebreak and no statistics rung exists — so 15c is a Go statistics EXTENSION occupying that role slot (cost discriminator before the hash tiebreak), not a literal Java rung; the stage-(d) retirement probe regressed equality-index preference and vector outer-limit folding, proving it load-bearing. The maxRoundsPerRef load cap (10) is obsolete under epoch convergence (both constraint lattices are finite chains, so rounds are structurally bounded); it remains only as a loud divergence tripwire at 100. Audited earlier: removing criterion #12 guard causes GROUP BY regression (covering index scan penalized by unmatched trailing fields).
+Criterion 15b (`compareFlatMapVsNLJ`) is RETIRED (RFC-181 WS-P stage (d)): under the epoch convergence with finals-only physical yields and prune-to-winner, its recorded JOIN regression no longer reproduces — deleted with its tests. 15c is RECLASSIFIED: Java's PlanningCostModel is self-described heuristic — its rungs end in a planHash tiebreak and no statistics rung exists — so 15c is a Go statistics EXTENSION occupying that role slot (cost discriminator before the hash tiebreak), not a literal Java rung; the stage-(d) retirement probe regressed equality-index preference and vector outer-limit folding, proving it load-bearing. The maxRoundsPerRef load cap (10) is obsolete under epoch convergence (both constraint lattices are finite chains, so rounds are structurally bounded); it remains only as a loud divergence tripwire at 100. RFC-190 removed the five Go-specific per-rung sort gates and promoted sort count. The GROUP BY/covering-index flip exposed the missing `RecordQueryScanPlan` unmatched-fields arm; porting Java's scan branch fixed the apples-to-oranges comparison, so it is not evidence for retaining the gate.
 
 ### Cost Model: RewritingCostModelLess
 
@@ -291,7 +338,7 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | `GROUP BY` | Rejects ALL forms (`UnableToPlanException`) | Full support (streaming + hash aggregation) |
 | `LIMIT` / `OFFSET` | Rejects at parse time (uses JDBC `setMaxRows`) | `RecordQueryLimitPlan` |
 | `SELECT DISTINCT` (complex shapes) | Rejects most via Cascades | Broad support via `RecordQueryDistinctPlan` + hash distinct |
-| In-memory sort | No physical sort operator; `RemoveSortRule` eliminates or fails | `RecordQueryInMemorySortPlan` |
+| In-memory sort | Cascades eliminates or fails; legacy `RecordQueryPlanner` alone can construct `RecordQuerySortPlan` | `RecordQueryInMemorySortPlan` fallback |
 | Hash aggregation | Only streaming aggregation (requires ordered input) | `RecordQueryHashAggregationPlan` |
 | `INFORMATION_SCHEMA` | Rejects (`Unknown reference INFORMATION_SCHEMA.TABLES`) | Working system tables |
 | `NOT NULL` on scalar columns | Rejects (`NOT NULL is only allowed for ARRAY column type`) | SQL-standard behavior |
@@ -301,7 +348,7 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; throws UNSUPPORTED_QUERY | SQL-standard XOR with NULL propagation |
 | Scalar subqueries in expressions | Grammar has no `subqueryExpressionAtom` (parse error) | Translated via `ScalarSubqueryValue` (`DecorrelateValuesRule` covers the other values-box patterns) |
 
-Go-only plan types: `RecordQueryHashAggregationPlan`, `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryProjectionPlan`, `RecordQueryValuesPlan`, `RecordQueryMergeSortUnionPlan`, `RecordQueryNestedLoopJoinPlan`.
+Go-only plan types: `RecordQueryHashAggregationPlan`, `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryProjectionPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension.
 
 Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
 
@@ -335,7 +382,8 @@ side per the corpus's omit comment.
 |---|---|---|
 | 3 InJoin subclasses | 1 `RecordQueryInJoinPlan` with `InSourceKind` | Aligned |
 | 2 InUnion subclasses | 1 `RecordQueryInUnionPlan` | Aligned |
-| 2 Union subclasses | 1 `RecordQueryUnionPlan` + `RecordQueryMergeSortUnionPlan` | Aligned |
+| 2 ordered Union subclasses | `RecordQueryMergeSortUnionPlan` | Aligned for Java's deduplicating mode; Go additionally supports ordered UNION ALL |
+| `RecordQueryUnorderedUnionPlan` | `RecordQueryUnorderedUnionPlan` plus extra keyless `RecordQueryUnionPlan` | Java-aligned unordered plan plus a duplicate Go concat implementation; cleanup tracked by RFC-190 |
 | 2 Distinct plan variants | 1 `RecordQueryDistinctPlan` | Aligned |
 | CoveringIndexPlan | `covering bool` + `coveringColumns` on IndexPlan | Aligned (planner + executor) |
 | CountValue + NumericAggregationValue | `AggregateValue` | Aligned (no rule distinguishes them) |
@@ -395,7 +443,8 @@ written down with **"what invariant does Java carry that this drops?"** and each
 | **Simplified `RequestedSortOrder`** (NULLS axis was elided) | Full sort order incl. NULL placement (ASC→NULLS FIRST etc.) | wrong rows on ORDER BY | **COVERED** — NULLS axis restored (RFC-165) + `rfc165_nulls_ordering_test.go`; the NULLS-ORDER hunt bug is fixed + pinned. |
 | **Scalar cost fallback + Go-only tiebreakers** (15b `compareFlatMapVsNLJ`, 15c `EstimateCostWith`) — no `advancePlannerStage`, so Go's flat member list has ties Java's prune-to-1-winner avoids | Structural single-winner selection; total-order tie resolution | nondeterministic / wrong index pick | **PARTIAL** — cost ORDERING pinned by WS-4 `TestBoundSelectivity_CostMonotonicity` (#405 class); equality-tie determinism pinned by `TestPlanDeterminism_*` (#409). **TRACKED:** the InJoin inner correlated-equality tie (WS-4 #2, OPEN — RFC-167 Phase 1b). |
 | **Hand-rolled `AggregateDataAccessRule`** (aggregate-index matching, not Java's generic data-access) | Guard(match)==consumer(build/execute) — one classifier | wrong agg result / wrong index match (COUNT-COL class) | **COVERED for the known drift** — WS-3 `expressions.IsCountStar` is the single source of truth for the planner candidate + the executor group cursors (#413); group-key matcher deduped via `groupColEqualityIndex` (RFC-163). **TRACKED:** the translator's OWN count-star normalization (`aggregateNamesStableForUnion`) is deliberately a SEPARATE classifier (`cascades_translator.go` — different question/scope) → audit whether it should share (WS-3 other-guard/consumer-pairs); the `COUNT(NULL)` fold fidelity (Graefe follow-up). |
-| **`WithPrimaryKeyIntersector` discards `requestedOrderings`** (over-generates `Intersection` with no merged-ordering gate, vs Java's `WithPrimaryKeyDataAccessRule` common-ordering gate) | Every intersection leg shares a pk-monotonic ordering (the sorted-merge precondition) | wrong rows — a non-pk-ordered leg (value RANGE, or vector distance) feeds the pk-keyed sorted-merge and drops rows | **PARTIAL** — the VECTOR leg is excluded (RFC-167 Phase 4, #411, pinned by `TestFDB_VectorSearch_MultiPartition_InequalityResidualK2`). **TRACKED:** the VALUE-RANGE leg (`a=5 AND b>10`) is LATENT — generated but not selected. The old reason ("a cheaper shell wins") EXPIRED with RFC-183: shells no longer exist, and intersections roughly doubled in the corpus (7 → 13) once real costs applied. Re-verified after that change: no range-leg intersection is selected anywhere in the 2407-query corpus, and a direct probe of `a=5 AND b>10` (plus BETWEEN / two-range / range-plus-third-equality variants over separate single-column indexes) always keeps the range predicate as a RESIDUAL and only ever pairs EQUALITY legs. So what holds it latent is the intersector's own leg selection, not shell cost — a sturdier reason than the one it replaces, but still not a gate. Whether the sorted-merge would actually drop rows for a range leg remains RFC-167 **OQ#2** (unconfirmed: `MaximumCoverageMatches` or an inserted sort may prevent it). Fix approach is unblocked (**OQ#6** resolved — the vector-leg exclusion): port Java's `isCompatibleComparisonKey`/`enumerateSatisfyingComparisonKeyValues` gate (RFC-167 Phase 4 value-range, lands with Phase 1b). |
+| **`WithPrimaryKeyIntersector` was forward-PK-only and discarded `requestedOrderings`** (vs Java's rich common-ordering gate) | Every intersection leg shares the directional comparison ordering consumed by the sorted merge | wrong rows if reverse were widened piecemeal; safe misses for unsupported key encodings | **RESOLVED (RFC-190.5b):** rich common-order derivation, translated requests, fixed-binding dependency normalization, free-PK compatibility, redundancy proof, directional parts, reverse plan identity/execution/ordering/rewrites, and fan-out-leg PK distinct are one atomic path. Natural flat all-ASC/all-DESC keys execute; mixed/counterflow, ordered-bytes, non-flat, ambiguous-layout, stale-ordinal, and mixed structural/name-only PK-provider shapes decline safely. Multi-type layout remains separately tracked below. |
+| **Cross-candidate PK-intersection pruning retains singleton alternatives** | Java builds compensated singles and all intersections in one shared `IntersectionInfo` map, evicts immediate subpartitions only after a useful replacement, then yields survivors once | safe plan-space widening / possible winner difference, never missing or wrong rows | **TRACKED SAFE RESIDUAL (RFC-190.5b review):** Go first yields candidate-local accesses, then its separate cross-candidate pass builds a private eviction map. It correctly prunes smaller intersection expressions internally but cannot retract already-yielded exact singleton scans. Do not delete memo members post hoc. Closing this requires a partition-level assembler that creates singles once, shares the map with intersection enumeration, and flattens survivors before any yield; regressions must preserve unrelated finals and safe logical compensations. |
 | **Per-wrapper relink** (RFC-070 nil-inner shells across ~20 wrappers, vs Java's eager `memoizePlan` to concrete) | Every non-leaf plan has its child; deterministic relink to the cost winner; one final member | dropped/nil child (0 rows); nondeterministic plan/cache | **CLOSED for the shell half (RFC-183).** Rules now bake the concrete child at rule time, matching Java's memoizePlan-as-constructor-argument; `verifyChildrenMemoized` rejects a holed expression at yield, always-on (ports `CascadesRuleCall.verifyChildrenMemoized`); the ~600 lines of repair machinery are deleted, after instrumentation showed ZERO shells across the full suite and all 2407 corpus queries. `ValidatePlanInvariants` remains as the sink-side backstop. **NOW CLOSED (RFC-184 W2):** P5's terminal step landed — every physical wrapper is deleted, so the parent→child edge is no longer stored twice. A physical plan is its own cascades expression holding its children SOLELY as quantifiers (`RecordQueryFlatMapPlan`/`RecordQueryNestedLoopJoinPlan` carry `outerQ`/`innerQ` and no embedded plan-snapshot field; `GetChildren` resolves through them), so the dual-storage state is unrepresentable. The earlier BLOCKER — `rule_implement_nested_loop_join.go` building compensating filters that were never memoized, so the plan pointer held what EXECUTES while the quantifier held what the memo COSTS (9868 rule-time edges, 472 semantically different) — is resolved: those rules now memoize each compensating operator and advance the quantifier over that reference in lockstep (the FlatMap collapse), matching `rule_implement_simple_select.go`'s long-standing shape. The **LIVE DEFECT** that fell out of the same finding (the memo costing expressions that are not the ones that execute) is therefore gone — see the "memo costs an expression that is not the one that executes — CLOSED" section below. **STILL TRACKED (separate concerns):** prune-to-one-final-member; retiring `findBestPhysicalPlan` — extraction's ad-hoc cost pick outside the cost framework, wired to ONE site against `findPhysicalPlan`'s twenty (do NOT "fix" that asymmetry by propagating the cheapest-selector: it is ordering-blind and turns `ORDER BY … DESC` into ASC, measured, see RFC-183 §10); and the reachability tally still driving a residual population of unreachable edges to zero (`plan_reachability.go` — a completeness/hygiene concern, NOT the wrong-tree-costing defect, which is closed). **RETRACTED:** an earlier revision of this row cited "1186 references hold multiple finals, 1125 multiple PHYSICAL finals" as P5's blocker. That measurement was taken at RULE TIME while rules were still firing, where groups legitimately hold alternatives; it says nothing about the extraction-time property P5 needs, which does hold (`TestOneFinalPlanPerReference`). Note also the split's stated rationale in `plans/plan.go:23-28` — "physical and logical plan trees live in different namespaces in Java" — is FALSE: `QueryPlan<T> extends RelationalExpression` (`QueryPlan.java:51`), so a Java plan IS a RelationalExpression; the comment conflates package separation (real) with hierarchy separation (not real). |
 | **Go-only physical-filter builders** (`ImplementIndexScanRule`, `ImplementSimpleSelectRule`, NLJ residual — extra paths past `Compensation`) | Index-only predicates never become an executable residual | panic / wrong plan on a vector `DistanceRank` residual | **COVERED** — `ImplementFilterRule` `!isIndexOnly()` gate (RFC-151) + the retained `validateNoIndexOnlyResidual` catch-all backstop (pinned by `TestVectorPlan_*`). **TRACKED end-state:** gate the remaining builders so the net can retire. |
 

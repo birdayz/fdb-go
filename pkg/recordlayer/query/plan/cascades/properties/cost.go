@@ -21,7 +21,9 @@
 //     BestRefCostWith / BestMemberCostWith).
 //
 //   - Sub-Reference recursion in EstimateCostWith picks the FIRST
-//     member's cost, not the cheapest. Two reasons: (a) recursion
+//     exploratory member's cost, not the cheapest, and falls back to
+//     the first final member only for a finals-only pinned Reference.
+//     Two reasons: (a) recursion
 //     through the cheapest is well-defined for a DAG but exponential
 //     without memoisation; (b) exploration rules only ADD members —
 //     Reference.Insert appends, the original input expression stays at
@@ -268,12 +270,12 @@ func EstimateCost(e expressions.RelationalExpression) Cost {
 // per-record-type cardinality; all other operators use the default
 // per-operator constants.
 //
-// Sub-Reference recursion picks the FIRST member's cost (see package
+// Sub-Reference recursion picks the FIRST exploratory member's cost, falling
+// back to the first final member only for a finals-only Reference (see package
 // doc). This is the cost used by GetBest / winner extraction / stage
-// advancement; keeping it first-member preserves the established
-// winner-selection behaviour. The cost-optimal multi-way join decision
-// uses the recursive best-member walk (BestMemberCostWith) instead —
-// see RFC-041.
+// advancement; keeping it exploratory-first preserves the established
+// winner-selection behaviour. BestMemberCostWith remains available to callers
+// that explicitly need a fully recursive best-member walk.
 //
 // Pass nil to use DefaultStatistics.
 func EstimateCostWith(e expressions.RelationalExpression, stats StatisticsProvider) Cost {
@@ -306,7 +308,8 @@ func estimateCostMemoised(e expressions.RelationalExpression, memo map[*expressi
 	return localCost(e, childCosts, stats)
 }
 
-// firstMemberCost returns the cost of the first member of `ref`.
+// firstMemberCost returns the cost of the first exploratory member of `ref`,
+// falling back to its first final member for a finals-only pinned reference.
 // Returns Cost{Cardinality: LeafScanCardinality} if `ref` is nil or
 // empty (defensive — represents "unknown sub-tree"). See package doc
 // for why we use first-member rather than best-member here.
@@ -325,15 +328,15 @@ func firstMemberCostMemoised(ref *expressions.Reference, memo map[*expressions.R
 			return c
 		}
 	}
-	members := ref.Members()
-	if len(members) == 0 {
+	member := ref.Get()
+	if member == nil {
 		c := Cost{Cardinality: LeafScanCardinality}
 		if memo != nil {
 			memo[ref] = c
 		}
 		return c
 	}
-	c := estimateCostMemoised(members[0], memo, stats)
+	c := estimateCostMemoised(member, memo, stats)
 	if memo != nil {
 		memo[ref] = c
 	}
@@ -349,9 +352,10 @@ func BestRefCost(ref *expressions.Reference) Cost {
 }
 
 // BestRefCostWith returns the cheapest member's cost in `ref` under
-// the given StatisticsProvider. The TOP Reference's members are ranked
-// by best; their children recurse via first-member (see EstimateCostWith).
-// Used by Reference.GetBest extraction.
+// the given StatisticsProvider. All exploratory and final members of the TOP
+// Reference are ranked by best; their children recurse via first-member (see
+// EstimateCostWith). This helper backs BestRefCardinality and cost-sanity
+// checks; production Reference.GetBest callers use CostLessWith directly.
 //
 // Memoisation: builds a per-call `map[*Reference]Cost` so child
 // References shared across multiple members are walked only once.
@@ -361,7 +365,7 @@ func BestRefCostWith(ref *expressions.Reference, stats StatisticsProvider) Cost 
 	if ref == nil {
 		return Cost{}
 	}
-	members := ref.Members()
+	members := ref.AllMembers()
 	if len(members) == 0 {
 		return Cost{}
 	}
@@ -381,11 +385,11 @@ func BestRefCostWith(ref *expressions.Reference, stats StatisticsProvider) Cost 
 
 // BestMemberCostWith costs expression e with FULLY RECURSIVE best-member
 // sub-products: every child Reference (transitively) is costed at its
-// cheapest member, not its first. This is Cascades' "combined cost with
-// inputs" (§3.1) — a join's cost reflects each sub-product's WINNER.
-// Used only by the multi-way join-order decision (RFC-041), kept
-// separate from EstimateCostWith so winner extraction / stage
-// advancement retain their established first-member behaviour.
+// cheapest exploratory or final member, not its first. This is Cascades'
+// "combined cost with inputs" (§3.1). It is kept separate from
+// EstimateCostWith so winner extraction and stage advancement retain their
+// established exploratory-first behaviour; current join ordering uses its
+// concrete-plan cost walk instead.
 //
 // Per-call memoisation keeps a shared (e.g. union-find-merged)
 // sub-product to one walk: O(N+K) not O(N*K). The visited recursion-
@@ -447,7 +451,7 @@ func (w *costWalk) refCost(ref *expressions.Reference) Cost {
 	if w.visited[ref] {
 		return Cost{Cardinality: LeafScanCardinality}
 	}
-	members := ref.Members()
+	members := ref.AllMembers()
 	if len(members) == 0 {
 		c := Cost{Cardinality: LeafScanCardinality}
 		w.memo[ref] = c

@@ -12,13 +12,13 @@
 # typed-error channel: ABS(MinInt64)→22003, MOD(x,0)→22012, SQRT(<0)→22023.
 name: numeric_functions
 schema_template: |
-  CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, n BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, n BIGINT, f FLOAT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES
-      (1, 2.5, 10),
-      (2, -3.7, -5),
-      (3, 0.0, 0),
-      (4, null, null)
+      (1, 2.5, 10, 2.0),
+      (2, -3.7, -5, 2.0),
+      (3, 0.0, 0, 2.0),
+      (4, null, null, null)
 tests:
   # ---------------------------------------------------------------
   # ABS / SQRT / POWER / POW.
@@ -119,3 +119,73 @@ tests:
   - query: SELECT n % 3 FROM t WHERE id = 2
     rows:
       - [-2]
+
+  # ---------------------------------------------------------------
+  # Declared numeric type and runtime-carrier agreement.
+  # ---------------------------------------------------------------
+  # Otherwise an integral-looking DOUBLE result leaks out as int64 and the
+  # surrounding division silently takes the integer lane.
+  - query: SELECT COALESCE(3, 1.5) / 2 FROM t WHERE id = 1
+    rows:
+      - [1.5]
+  - query: SELECT GREATEST(3, 1.5) / 2 FROM t WHERE id = 1
+    rows:
+      - [1.5]
+  - query: SELECT FLOOR(3.7) / 2 FROM t WHERE id = 1
+    rows:
+      - [1.5]
+  - query: SELECT POWER(2, 3) / 3 FROM t WHERE id = 1
+    rows:
+      - [2.6666666666666665]
+  # Row-dependent controls prove the same invariant at execution, after the
+  # constant-folder can no longer collapse the scalar call.
+  - query: SELECT COALESCE(n, v) / 4 FROM t WHERE id = 1
+    rows:
+      - [2.5]
+  - query: SELECT GREATEST(n, v) / 4 FROM t WHERE id = 1
+    rows:
+      - [2.5]
+  - query: SELECT LEAST(n, v) / 2 FROM t WHERE id = 2
+    rows:
+      - [-2.5]
+  - query: SELECT FLOOR(v) / 3 FROM t WHERE id = 1
+    rows:
+      - [0.6666666666666666]
+  - query: SELECT POWER(n, 2) / 3 FROM t WHERE id = 1
+    rows:
+      - [33.333333333333336]
+  - query: SELECT (CASE WHEN id = 1 THEN 3 ELSE v END) / 2 FROM t WHERE id = 1
+    rows:
+      - [1.5]
+  # Common FLOAT promotion happens before nonlinear evaluation.
+  - query: SELECT MOD(16777217, f) FROM t WHERE id = 1
+    rows:
+      - [0]
+  - query: SELECT MOD(n + 16777207, f) FROM t WHERE id = 1
+    rows:
+      - [0]
+  # Integer ROUND honors negative precision before returning the integral
+  # carrier; NULL precision still propagates.
+  - query: SELECT ROUND(1234, -2) FROM t WHERE id = 1
+    rows:
+      - [1200]
+  - query: SELECT ROUND(-150, -2) FROM t WHERE id = 1
+    rows:
+      - [-200]
+  - query: SELECT ROUND(n, -1) FROM t WHERE id = 2
+    rows:
+      - [-10]
+  - query: SELECT ROUND(1, null) FROM t WHERE id = 1
+    rows:
+      - [~]
+  # Floating ROUND clamps extreme precision, preserves finite values when
+  # temporary scaling would overflow, and rounds ties away from zero.
+  - query: SELECT ROUND(1.25, 9223372036854775807) FROM t WHERE id = 1
+    rows:
+      - [1.25]
+  - query: SELECT ROUND(1.25, -31) FROM t WHERE id = 1
+    rows:
+      - [0]
+  - query: SELECT ROUND(-2.5) FROM t WHERE id = 1
+    rows:
+      - [-3]

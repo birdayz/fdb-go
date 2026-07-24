@@ -199,6 +199,52 @@ func OfPredicateCompensation(pred predicates.QueryPredicate, shouldSimplifyValue
 	}
 }
 
+// predicateCompensationOfExistentialValuePredicate reapplies an owning EXISTS
+// predicate in its original query scope. Java deliberately ignores the
+// apply-time TranslationMap here: the existential alias names a query
+// quantifier that compensation retains/pulls up, not a candidate result alias
+// to rebase.
+type predicateCompensationOfExistentialValuePredicate struct {
+	predicate *predicates.ExistentialValuePredicate
+}
+
+func (*predicateCompensationOfExistentialValuePredicate) IsNeeded() bool {
+	return true
+}
+
+func (*predicateCompensationOfExistentialValuePredicate) IsImpossible() bool {
+	return false
+}
+
+func (f *predicateCompensationOfExistentialValuePredicate) Amend(
+	*BiMap[values.CorrelationIdentifier, values.Value],
+	map[values.Value]values.Value,
+) PredicateCompensationFunc {
+	return f
+}
+
+func (f *predicateCompensationOfExistentialValuePredicate) ApplyCompensationForPredicate(
+	TranslationMap,
+) []predicates.QueryPredicate {
+	if f == nil || f.predicate == nil {
+		return nil
+	}
+	return []predicates.QueryPredicate{f.predicate}
+}
+
+// OfExistentialValuePredicateCompensation creates Java's specialized EVP
+// compensation function. A malformed nil predicate fails closed.
+func OfExistentialValuePredicateCompensation(
+	predicate *predicates.ExistentialValuePredicate,
+) PredicateCompensationFunc {
+	if predicate == nil {
+		return ImpossiblePredicateCompensation()
+	}
+	return &predicateCompensationOfExistentialValuePredicate{
+		predicate: predicate,
+	}
+}
+
 // NoPredicateCompensationNeeded returns a PredicateCompensationFunc
 // indicating no compensation is required.
 func NoPredicateCompensationNeeded() PredicateCompensationFunc {
@@ -221,12 +267,16 @@ func ImpossiblePredicateCompensation() PredicateCompensationFunc {
 //
 // Ports Java's PredicateMultiMap.PredicateMapping.
 type PredicateMapping struct {
-	mappingKey               MappingKey
-	predicateCompensation    PredicateCompensation
-	parameterAlias           *values.CorrelationIdentifier
-	comparisonRange          *predicates.ComparisonRange
-	constraint               *QueryPlanConstraint
-	translatedQueryPredicate predicates.QueryPredicate
+	mappingKey            MappingKey
+	predicateCompensation PredicateCompensation
+	// Empty means the closure is opaque to semantic dedup. Non-empty values
+	// name package-owned factories whose captured semantics are represented
+	// by this mapping's predicate fields.
+	predicateCompensationIdentity string
+	parameterAlias                *values.CorrelationIdentifier
+	comparisonRange               *predicates.ComparisonRange
+	constraint                    *QueryPlanConstraint
+	translatedQueryPredicate      predicates.QueryPredicate
 }
 
 // GetOriginalQueryPredicate returns the original query predicate.
@@ -285,14 +335,15 @@ func (m *PredicateMapping) WithTranslatedQueryPredicate(translated predicates.Qu
 // mapping's values. Mirrors Java's PredicateMapping.toBuilder().
 func (m *PredicateMapping) ToBuilder() *PredicateMappingBuilder {
 	b := &PredicateMappingBuilder{
-		originalQueryPredicate:   m.GetOriginalQueryPredicate(),
-		translatedQueryPredicate: m.translatedQueryPredicate,
-		candidatePredicate:       m.GetCandidatePredicate(),
-		mappingKind:              m.GetMappingKind(),
-		predicateCompensation:    m.predicateCompensation,
-		parameterAlias:           m.parameterAlias,
-		comparisonRange:          m.comparisonRange,
-		constraint:               m.constraint,
+		originalQueryPredicate:        m.GetOriginalQueryPredicate(),
+		translatedQueryPredicate:      m.translatedQueryPredicate,
+		candidatePredicate:            m.GetCandidatePredicate(),
+		mappingKind:                   m.GetMappingKind(),
+		predicateCompensation:         m.predicateCompensation,
+		predicateCompensationIdentity: m.predicateCompensationIdentity,
+		parameterAlias:                m.parameterAlias,
+		comparisonRange:               m.comparisonRange,
+		constraint:                    m.constraint,
 	}
 	return b
 }
@@ -304,14 +355,15 @@ func (m *PredicateMapping) ToBuilder() *PredicateMappingBuilder {
 // PredicateMappingBuilder builds a PredicateMapping.
 // Ports Java's PredicateMultiMap.PredicateMapping.Builder.
 type PredicateMappingBuilder struct {
-	originalQueryPredicate   predicates.QueryPredicate
-	translatedQueryPredicate predicates.QueryPredicate
-	candidatePredicate       predicates.QueryPredicate
-	mappingKind              MappingKind
-	predicateCompensation    PredicateCompensation
-	parameterAlias           *values.CorrelationIdentifier
-	comparisonRange          *predicates.ComparisonRange
-	constraint               *QueryPlanConstraint
+	originalQueryPredicate        predicates.QueryPredicate
+	translatedQueryPredicate      predicates.QueryPredicate
+	candidatePredicate            predicates.QueryPredicate
+	mappingKind                   MappingKind
+	predicateCompensation         PredicateCompensation
+	predicateCompensationIdentity string
+	parameterAlias                *values.CorrelationIdentifier
+	comparisonRange               *predicates.ComparisonRange
+	constraint                    *QueryPlanConstraint
 }
 
 // RegularMappingBuilder creates a PredicateMappingBuilder for a
@@ -323,12 +375,13 @@ func RegularMappingBuilder(
 	candidatePredicate predicates.QueryPredicate,
 ) *PredicateMappingBuilder {
 	return &PredicateMappingBuilder{
-		originalQueryPredicate:   originalQueryPredicate,
-		translatedQueryPredicate: translatedQueryPredicate,
-		candidatePredicate:       candidatePredicate,
-		mappingKind:              MappingRegularImpliesCandidate,
-		predicateCompensation:    DefaultPredicateCompensation(),
-		constraint:               &QueryPlanConstraint{},
+		originalQueryPredicate:        originalQueryPredicate,
+		translatedQueryPredicate:      translatedQueryPredicate,
+		candidatePredicate:            candidatePredicate,
+		mappingKind:                   MappingRegularImpliesCandidate,
+		predicateCompensation:         DefaultPredicateCompensation(),
+		predicateCompensationIdentity: "default",
+		constraint:                    &QueryPlanConstraint{},
 	}
 }
 
@@ -341,18 +394,33 @@ func OrTermMappingBuilder(
 	candidatePredicate predicates.QueryPredicate,
 ) *PredicateMappingBuilder {
 	return &PredicateMappingBuilder{
-		originalQueryPredicate:   originalQueryPredicate,
-		translatedQueryPredicate: translatedQueryPredicate,
-		candidatePredicate:       candidatePredicate,
-		mappingKind:              MappingOrTermImpliesCandidate,
-		predicateCompensation:    DefaultPredicateCompensation(),
-		constraint:               &QueryPlanConstraint{},
+		originalQueryPredicate:        originalQueryPredicate,
+		translatedQueryPredicate:      translatedQueryPredicate,
+		candidatePredicate:            candidatePredicate,
+		mappingKind:                   MappingOrTermImpliesCandidate,
+		predicateCompensation:         DefaultPredicateCompensation(),
+		predicateCompensationIdentity: "default",
+		constraint:                    &QueryPlanConstraint{},
 	}
 }
 
 // SetPredicateCompensation sets the predicate compensation function.
 func (b *PredicateMappingBuilder) SetPredicateCompensation(c PredicateCompensation) *PredicateMappingBuilder {
 	b.predicateCompensation = c
+	b.predicateCompensationIdentity = ""
+	return b
+}
+
+// setKnownPredicateCompensation records a package-owned compensation factory
+// whose captured inputs are already represented by the mapping's predicates.
+// Arbitrary callers stay opaque and therefore cannot be conflated by semantic
+// partial-match dedup.
+func (b *PredicateMappingBuilder) setKnownPredicateCompensation(
+	c PredicateCompensation,
+	identity string,
+) *PredicateMappingBuilder {
+	b.predicateCompensation = c
+	b.predicateCompensationIdentity = identity
 	return b
 }
 
@@ -397,11 +465,12 @@ func (b *PredicateMappingBuilder) Build() *PredicateMapping {
 			b.candidatePredicate,
 			b.mappingKind,
 		),
-		predicateCompensation:    b.predicateCompensation,
-		parameterAlias:           b.parameterAlias,
-		comparisonRange:          b.comparisonRange,
-		constraint:               b.constraint,
-		translatedQueryPredicate: b.translatedQueryPredicate,
+		predicateCompensation:         b.predicateCompensation,
+		predicateCompensationIdentity: b.predicateCompensationIdentity,
+		parameterAlias:                b.parameterAlias,
+		comparisonRange:               b.comparisonRange,
+		constraint:                    b.constraint,
+		translatedQueryPredicate:      b.translatedQueryPredicate,
 	}
 }
 

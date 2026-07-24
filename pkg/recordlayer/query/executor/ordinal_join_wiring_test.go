@@ -469,6 +469,62 @@ func TestNLJCursor_OrdinalBuild_FullDrain(t *testing.T) {
 	ojAssertSlots(t, results[1].Positional, nil, nil, int64(3), int64(300))
 }
 
+func TestNLJCursor_OrdinalBuild_FullDrainHashCandidates(t *testing.T) {
+	t.Parallel()
+	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
+
+	const matchKey = int64(1)
+	matchPositions := map[int]bool{3: true, 57: true, 99: true}
+	innerRows := make([]QueryResult, 120)
+	for i := range innerRows {
+		key := int64(1_000 + i)
+		if matchPositions[i] {
+			key = matchKey
+		}
+		innerRows[i] = ojLegQR(t, legB, key, int64(i))
+	}
+	outerRows := []QueryResult{
+		ojLegQR(t, legA, matchKey, int64(10)),
+		ojLegQR(t, legA, int64(-1), int64(20)), // hash miss, emitted null-padded
+	}
+	pred := ojEqPred(
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
+	)
+	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinFullOuter,
+		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+	defer c.Close()
+	if c.hashIndex == nil {
+		t.Fatal("fixture must build the hash index")
+	}
+
+	results := collectCursor(t, c)
+	const wantRows = 3 + 1 + 117
+	if len(results) != wantRows {
+		t.Fatalf("got %d rows, want %d (three matches + unmatched outer + unmatched-inner drain)",
+			len(results), wantRows)
+	}
+	for resultIndex, innerIndex := range []int{3, 57, 99} {
+		ojAssertSlots(t, results[resultIndex].Positional,
+			matchKey, int64(10), matchKey, int64(innerIndex))
+	}
+	ojAssertSlots(t, results[3].Positional, int64(-1), int64(20), nil, nil)
+
+	drainIndex := 4
+	for innerIndex, innerRow := range innerRows {
+		if matchPositions[innerIndex] {
+			continue
+		}
+		key, _ := innerRow.Positional.Get(0)
+		ojAssertSlots(t, results[drainIndex].Positional,
+			nil, nil, key, int64(innerIndex))
+		drainIndex++
+	}
+	if drainIndex != len(results) {
+		t.Fatalf("validated %d rows, result has %d", drainIndex, len(results))
+	}
+}
+
 // TestNLJCursor_BothSeedShapesEmitPositional pins that BOTH join-seed
 // shapes — the ordinal-build RC and a plain lazy (un-baked) join RC — emit a
 // leg-windowed Positional row: mergeRows is Positional-native, so even the
@@ -602,6 +658,7 @@ func TestDownstreamLegWindows(t *testing.T) {
 			"in-memory sort":    plans.NewRecordQueryInMemorySortPlan(nlj, nil),
 			"limit":             plans.NewRecordQueryLimitPlan(nlj, 10, 0),
 			"distinct":          plans.NewRecordQueryDistinctPlan(nlj),
+			"PK distinct":       plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(nlj),
 			"type filter":       plans.NewRecordQueryTypeFilterPlan(nil, nlj),
 			"filter":            plans.NewRecordQueryFilterPlan(nil, nlj),
 			"predicates filter": plans.NewRecordQueryPredicatesFilterPlan(nlj, nil),

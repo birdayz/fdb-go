@@ -37,6 +37,9 @@ type flatMapCursor struct {
 	innerAlias  values.CorrelationIdentifier
 	resultValue values.Value
 	props       recordlayer.ExecuteProperties
+	// inheritOuterRecordProperties keeps the outer stored-record and primary-key
+	// identity when the FlatMap computes a reshaped positional payload.
+	inheritOuterRecordProperties bool
 
 	innerCursor    recordlayer.RecordCursor[QueryResult]
 	currentOuter   *QueryResult
@@ -119,6 +122,34 @@ func newFlatMapCursor(
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 	props recordlayer.ExecuteProperties,
+) (*flatMapCursor, error) {
+	return newFlatMapCursorWithOuterProperties(
+		outerCursor,
+		outerPlan,
+		innerPlan,
+		store,
+		evalCtx,
+		outerAlias,
+		innerAlias,
+		resultValue,
+		props,
+		false,
+	)
+}
+
+// newFlatMapCursorWithOuterProperties is the production constructor for a
+// RecordQueryFlatMapPlan. newFlatMapCursor remains the default-false helper so
+// existing non-inheriting shapes cannot silently change semantics.
+func newFlatMapCursorWithOuterProperties(
+	outerCursor recordlayer.RecordCursor[QueryResult],
+	outerPlan plans.RecordQueryPlan,
+	innerPlan plans.RecordQueryPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	outerAlias, innerAlias values.CorrelationIdentifier,
+	resultValue values.Value,
+	props recordlayer.ExecuteProperties,
+	inheritOuterRecordProperties bool,
 ) (*flatMapCursor, error) {
 	build, err := newOrdinalJoinBuild(resultValue, nil)
 	if err != nil {
@@ -203,20 +234,21 @@ func newFlatMapCursor(
 			isIdentityOuterRV(resultValue, outerAlias)
 	}
 	return &flatMapCursor{
-		outerCursor:              outerCursor,
-		innerPlan:                innerPlan,
-		store:                    store,
-		evalCtx:                  evalCtx,
-		outerAlias:               outerAlias,
-		innerAlias:               innerAlias,
-		resultValue:              resultValue,
-		props:                    props,
-		build:                    build,
-		outerBakedType:           outerBakedType,
-		foldLegSpans:             foldLegSpans,
-		foldWindowsOK:            foldWindowsOK,
-		outerMergedType:          outerMergedType,
-		outerIdentityPassthrough: outerIdentityPassthrough,
+		outerCursor:                  outerCursor,
+		innerPlan:                    innerPlan,
+		store:                        store,
+		evalCtx:                      evalCtx,
+		outerAlias:                   outerAlias,
+		innerAlias:                   innerAlias,
+		resultValue:                  resultValue,
+		props:                        props,
+		inheritOuterRecordProperties: inheritOuterRecordProperties,
+		build:                        build,
+		outerBakedType:               outerBakedType,
+		foldLegSpans:                 foldLegSpans,
+		foldWindowsOK:                foldWindowsOK,
+		outerMergedType:              outerMergedType,
+		outerIdentityPassthrough:     outerIdentityPassthrough,
 	}, nil
 }
 
@@ -377,6 +409,26 @@ func isIdentityOuterRV(rv values.Value, outerAlias values.CorrelationIdentifier)
 	return ok && qov.Correlation == outerAlias
 }
 
+// isIdentityInnerRV is isIdentityOuterRV's mirror: the FlatMap's result value
+// is exactly the INNER quantifier's object, so the output IS the inner row,
+// flowed through unchanged. This shape is reachable even though a FlatMap's
+// inner is normally the CORRELATED (re-executed-per-outer-row) side: Cascades'
+// PartitionSelectRule can flow a single live lower alias through a bipartition
+// unchanged (a bare QOV(lowerAlias) result value), and the cost-based join
+// DIRECTION ImplementNestedLoopJoinRule then picks for that 2-quantifier select
+// is independent of which alias the flowed value names — the planner may
+// assign the flowed alias to the physical INNER leg rather than the outer.
+// Before this existed, computeResultLegs's non-RC branch treated such a
+// result value as "a non-identity scalar expression" and wrapped the
+// evaluated INNER ROW in scalarPositionalRow's 1-slot `_0` shape — corrupting
+// a multi-field record into a single slot holding the whole nested row, which
+// then failed a downstream ordinal read (or an FDB tuple pack) the moment
+// anything tried to read a field out of it positionally.
+func isIdentityInnerRV(rv values.Value, innerAlias values.CorrelationIdentifier) bool {
+	qov, ok := rv.(*values.QuantifiedObjectValue)
+	return ok && qov.Correlation == innerAlias
+}
+
 // qualifyOuterPositional stamps the outer quantifier's leg window onto the
 // outer scan row the WHERE-EXISTS identity pass-through flows, so a downstream
 // reference qualified by the outer alias (a source-relative baked QOV(E).FNAME)
@@ -426,7 +478,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			return QueryResult{}, err
 		}
 		// The ordinal-build FlatMap row IS its PositionalRow.
-		return QueryResult{Positional: pos}, nil
+		return c.withInheritedOuterProperties(outerRow, QueryResult{Positional: pos}), nil
 	}
 	innerRow := QueryResult{}
 	if inner != nil {
@@ -486,11 +538,15 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		foldPos = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
 	} else {
 		// A non-RC, non-identity result value: evaluate it to a scalar output row.
+		// Neither identity form (outer OR inner) reaches this wrap: both flow
+		// their source row through verbatim in the dedicated branches below —
+		// wrapping a full row's evaluation in scalarPositionalRow here would
+		// double-nest it (a 1-slot `_0` row whose slot holds the whole record).
 		computed, err := c.resultValue.Evaluate(rowCtx)
 		if err != nil {
 			return QueryResult{}, err
 		}
-		if !isIdentityOuterRV(c.resultValue, c.outerAlias) {
+		if !isIdentityOuterRV(c.resultValue, c.outerAlias) && !isIdentityInnerRV(c.resultValue, c.innerAlias) {
 			foldPos = scalarPositionalRow(computed)
 		}
 	}
@@ -551,7 +607,44 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		}
 		return out, nil
 	}
-	return QueryResult{Positional: foldPos}, nil
+	// Identity-over-inner FlatMap: the mirror of the outer branch above. The
+	// result value names the INNER quantifier, so the output IS the inner
+	// row, flowed through unchanged under the inner quantifier — Record/
+	// PrimaryKey come from innerRow (the row now represents the inner's
+	// entity, not the outer's).
+	//
+	// No adaptType (outerBakedType/outerMergedType) analog is needed here.
+	// That mechanism exists to re-synthesize an ORDINAL-GATED-JOIN outer's
+	// merged positional row into the layout a FrontierPinned baked reference
+	// expects — both probes (probeOuterBakedType, downstreamLegWindowsTyped)
+	// only ever recognize FrontierPinned (machinery-owned) baked refs, which
+	// this name-model identity-over-inner shape never produces (its
+	// references are source-relative bakes carried verbatim from the
+	// resolver). qualifyOuterPositional is alias-generic and already
+	// defensively correct for a merged inner row: it returns a row that
+	// already carries its own per-leg Legs metadata UNCHANGED (preserving
+	// sub-legs), and only stamps a fresh single-leg window over a legs-free
+	// (plain scan) row — so reusing it directly, keyed by the inner alias, is
+	// the complete and correct mirror of the outer's qualifyOuterPositional
+	// arm without needing a separate probe.
+	if isIdentityInnerRV(c.resultValue, c.innerAlias) {
+		out := QueryResult{Record: innerRow.Record, PrimaryKey: innerRow.PrimaryKey}
+		out.Positional = qualifyOuterPositional(innerRow.Positional, c.innerAlias.Name())
+		return c.withInheritedOuterProperties(outerRow, out), nil
+	}
+	return c.withInheritedOuterProperties(outerRow, QueryResult{Positional: foldPos}), nil
+}
+
+// withInheritedOuterProperties applies the FlatMap's record-identity contract
+// after computing its payload. The positional result remains the value selected
+// by the FlatMap; only stored-record and primary-key identity flow from outer.
+func (c *flatMapCursor) withInheritedOuterProperties(outerRow, result QueryResult) QueryResult {
+	if !c.inheritOuterRecordProperties {
+		return result
+	}
+	result.Record = outerRow.Record
+	result.PrimaryKey = outerRow.PrimaryKey
+	return result
 }
 
 // buildContinuation creates a FlatMapContinuation proto. The decision is purely

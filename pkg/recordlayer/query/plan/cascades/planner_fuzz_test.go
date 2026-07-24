@@ -6,6 +6,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // FuzzPlanner_Determinism pins that the task-stack Planner produces
@@ -238,15 +239,29 @@ func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpre
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
 		return expressions.NewLogicalUnionExpression([]expressions.Quantifier{q})
 	case 7:
-		// Intersection over two random children with a single
-		// FieldValue comparison key — exercises IntersectionMerge,
-		// IntersectionSingletonElim.
-		left := buildFuzzExpression(b, (start+1)%len(b), depth+1)
-		right := buildFuzzExpression(b, (start+2)%len(b), depth+1)
+		// A sorted intersection over two typed PK scans. The intersection
+		// executor is a merge, so arbitrary random children are not a valid
+		// fixture: every leg must emit the non-empty comparison key
+		// monotonically and the runtime key must be ordinal-bakeable.
+		rt := &values.RecordType{
+			RecordName: "T",
+			Fields: []values.Field{{
+				Name:      "K",
+				FieldType: values.NotNullLong,
+				Ordinal:   0,
+			}},
+		}
+		key := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
+		left := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
+			WithPrimaryKey([]values.Value{key})
+		right := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
+			WithPrimaryKey([]values.Value{key})
 		ql := expressions.ForEachQuantifier(expressions.InitialOf(left))
 		qr := expressions.ForEachQuantifier(expressions.InitialOf(right))
-		keys := []values.Value{&values.FieldValue{Field: "k", Typ: values.UnknownType}}
-		return expressions.NewLogicalIntersectionExpression([]expressions.Quantifier{ql, qr}, keys)
+		return expressions.NewLogicalIntersectionExpression(
+			[]expressions.Quantifier{ql, qr},
+			[]values.Value{key},
+		)
 	case 8:
 		// GroupBy over a random child — exercises GroupByExpression
 		// integration with cost model and ordering property.

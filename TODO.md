@@ -6,6 +6,340 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
+## LATEST PRIOS 2026-07-23 — Cascades quality review v2 (owner-directed, RFC-190)
+
+Source: 2026-07-23 full-engine quality assessment — 5 parallel subsystem review agents
+(architecture fidelity A−, cost-model soundness B, rule-set completeness A / fidelity B+,
+test coverage B+, code quality B) cross-verified against Java 4.12.11.0 and the current tree.
+Wire-compat hard line is CLEAN — every item below is read/optimization-path. **ONE branch
+(`feat/rfc190-cascades-quality-audit`), ONE RFC (`rfcs/190-cascades-quality-audit.md`), ONE PR.**
+Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, regression test each)
+→ milestone review lap → @claude LGTM. Grind order = severity (correctness first).
+
+Current RFC state: **complete.** Whole-PR Graefe/Torvalds review, current-head `@claude` review,
+and CI are enforced as PR merge gates.
+
+**Correctness:**
+- [x] **190.1 (HIGH) — DONE; naive delete premise INVALIDATED, redesigned N-way path safely retired the arm.**
+  The RFC-190 delete plan (Graefe-ACKed) rested on the arm's own gravestone: *"HAS NEVER PRODUCED
+  AN EXECUTABLE PLAN."* **That gravestone is FALSE.** Attempting the delete broke two FDB tests:
+  `TestFDB_BuriedInnerJoinProjectedExists` and `_Discriminating` (`0AF00: could not plan query`) —
+  the arm DOES produce correct working plans (`[[10 true]]`, Java-verified in-test) for the
+  explicit-`JOIN…ON` projected-EXISTS-over-3-way shape (`SELECT p.v, EXISTS(…) FROM p JOIN q ON…
+  JOIN r ON…`). The crash is specific to the **comma-join** shape (`FROM a,b,c WHERE a.id=b.id…`)
+  the gravestone author tested and over-generalized from. Both are flat `[ForEach×3, Existential]`
+  selects that reached the arm before the redesign; the comma-join's seed tripped the RFC-173 ordinal
+  tripwire, while the explicit-join's did not. **Deleting the arm without its replacement path was a
+  net regression — forbidden.** Corpus checks
+  (golden byte-identical, "zero firings") missed this because these are hand-written FDB tests, not
+  corpus queries — a reminder that FDB is the gold standard, not the corpus.
+  Real fix options (both DEEP, Graefe-gated, need a corrected RFC + re-review since the premise
+  changed): **(a)** fix the comma-join ordinal-seed crash INSIDE the arm (the RFC-173 tripwire), or
+  **(b)** route BOTH shapes through the gathered-cluster wrap with a correct projected-EXISTS
+  correlation. Option (b) was attempted (remove the `:309` decline + admit `ExistsValue{QOV(esq)}`
+  in `wrapRVFullyBaked`): it PLANS but returns WRONG ROWS — the correlation `d.id=a.id` is dropped
+  over the wrap → the existential inner scans all of `nd` → **always-true EXISTS** (a.id=2 wrongly
+  true). The wrap was built for WHERE-EXISTS (semi-join FILTER); projected EXISTS needs the
+  existential inner CORRELATED to the box's `a.id` (per-row boolean via FirstOrDefault), like
+  `buildExistentialJoinSelect` does. That correlation wiring over the wrap is the deep part.
+  Also: the false gravestone comment (`rule_implement_nested_loop_join.go` ~:2907) must be corrected.
+  **RE-DESIGNED (Graefe ACK, 2-round dialogue).** Converged solution = **Option A**: make Go's
+  `PartitionSelectRule` partition existential selects the Java way (`all(anyQuantifier())`), guarded.
+  Replace the over-broad `existentialCount==1` bail with a targeted **live-existential guard** (reject
+  any bipartition whose live set `lowersCorrelatedToByUppers` contains an existential — Go's
+  `positionalMergeCase`/Case-2 can't represent a projected existential as a positional ordinal, a real
+  Go constraint Java lacks). This decomposes the flat `[ForEach×N, Existential]` select into binary
+  sub-selects Go's existing `implementExistentialSelect` already handles, SARG-preserving, retiring
+  the N-way arm while retaining the separately useful gathered-cluster wrap (its retirement is
+  post-RFC FU-4). Round-1 NAK (Graefe's `{a,δ}` counterexample
+  reached the merge case → wrong rows) closed by the guard; round-2 ACK verified airtight (all lower-
+  flow sites `:537`/`:550`/`:559` covered, no plan lost, `{a,δ}` now rejected before `:550`). The
+  original five-step migration order was superseded by the atomic direct-emit + guard + retirement
+  below; its invariant still held inside that commit: the replacement and guard accompanied the arm
+  deletion, unlike the naive delete.
+  Cell 7 (multi projected EXISTS) = honest conservative decline (0AF00, never wrong rows), NOT claimed
+  fixed. Full design in `rfcs/190-cascades-quality-audit.md` §190.1. **Both gates PASS: Graefe ACK
+  (2-round dialogue) + Torvalds ACK.**
+  **IMPLEMENTATION CHECKPOINT (before the completed milestone review lap).** The RFC's
+  original "Step 1 = flag-flip" estimate was WRONG (Go ordinalizes N-way clusters at TRANSLATION time,
+  `cluster_gate.go:399-419`); the correct Step 1 is DIRECT-EMIT (a `QueryVisitor.java:429-434` port —
+  dissolve the ≥3-way cluster into a flat NAME-model `[ForEach×N, Existential]` select, bypassing the
+  ordinalization machinery), atomic with the guard + arm-retirement. DONE and green:
+  - Full N-way matrix returns CORRECT ROWS: comma-join projected EXISTS crash→`[100|t,200|f,300|t]`;
+    `buried_inner` PK no longer panics; `_Discriminating` (dup columns), WHERE-EXISTS, NOT-EXISTS,
+    4-leg all PASS. Plan-shape golden BYTE-IDENTICAL (zero corpus drift). Full 1165-test sqldriver
+    sweep green; nogo/gofumpt clean; +212/−552 LOC (arm retired, NLJ 3418→2974).
+  - **Root cause of the hard bug (PK-column existential correlation) = a PRE-EXISTING executor bug the
+    new shape exposed:** `flat_map_cursor.go` had `isIdentityOuterRV` but no `isIdentityInnerRV`, so a
+    FlatMap result value that passes the INNER quantifier's row through unchanged (which Case-2 flowing
+    + a cost-chosen inner-flowed join direction produces) got scalar-wrapped → whole row nested in slot
+    0 → PK-column SARG read the record (panic) / non-PK got lucky. Fixed with the symmetric inner branch.
+  - **Scoped bail (reviewed deviation from the pure design — Graefe accepted it for this milestone):** removing the
+    `existentialCount==1` bail ENTIRELY raced the working Go-only 2-way arm → malformed plans on 7
+    tests; scoped to `existentialCount==1 && foreachCount<=2` (2-way stays on the arm; N-way partitions).
+    Guard proof unaffected. Full 2-way convergence = separable follow-on.
+  Files: `cascades_translator.go` (direct-emit + `gatherInnerClusterOnPredicates`), `rule_partition_select.go`
+  (scoped bail + live-existential guard), `rule_implement_nested_loop_join.go` (arm retired, −444 LOC),
+  `flat_map_cursor.go` (`isIdentityInnerRV`), memo-shape test strengthened, comma-join FDB regression
+  added. Committed `95598761f`; 1M stress green.
+  **MILESTONE DONE — Graefe ACK + Torvalds ACK on `95598761f`.** Graefe accepted the scoped bail as
+  RFC-190's correct N-way endpoint (correct-or-decline); it does not claim the separately scoped
+  two-way convergence is finished. Post-RFC follow-ups remain explicit in RFC §190.1 FU-1..FU-4:
+  (FU-1) fix the 2-alias existential correlation then retire the 2-way arm; (FU-2) rename
+  `qualifyOuterPositional`→`qualifyPositional`; (FU-3) extract the direct-emit/AXIS-1 shared tail;
+  (FU-4) retire the WHERE-EXISTS gathered-cluster wrap.
+- [x] **190.2 (MED) — DONE (implementation + review findings folded).** Cost-comparator
+  transitivity. The 5 sort-count-gated rungs made the relation non-transitive (verified: real
+  3-cycles → arbitrary/nondeterministic winner). Fixed per Graefe's 3-round ruling (root cause: Go's
+  `ImplementInMemorySortRule` is a read-side extension Java has no cost rung for; Java's ordinal rungs
+  assume a no-sort invariant): (1) **sort-invariant depth** — `concretePlanDepth` skips the
+  `InMemorySort` node (Java-verbatim: `ExpressionDepthProperty` strips nothing because Java's tree has
+  no sort node), and the 5 rungs are UNGATED; (2) **promoted the `inMemorySortCount` rung** to fire
+  just before the structural block (the cost-time analog of Java's structural `RemoveSortRule` — reject
+  a redundant sort before the sort-blind rungs; lexicographic reorder, preserves transitivity); (3)
+  found+fixed a **real Java-parity bug** — `unmatchedFieldsCount` was missing Java's
+  `RecordQueryScanPlan` branch (`UnmatchedFieldsCountProperty.java:96-119`). Pinned by
+  `TestCostModel_SortGateCycleRegression` (34 plans, 35,904 triples, incl. two explicitly pinned
+  sort-bearing 3-cycles), RED→GREEN.
+  Golden re-blessed: 7 flips, all rows-correct (yamsql 338/338) — 6 are sort-elimination/InUnion
+  improvements or benign (Graefe-verified); the `covering_index_java` regression REVERTED (fix 2). Two
+  stale `plan_contains: InJoin` pins re-pinned per Graefe (the InJoin re-scanned per IN-value / provided
+  no order — the old sort-gate resurrected the worse plan; Java produces InUnion/filtered-scan).
+  The review lap found and closed two final gaps. The logical memo fallback
+  (`expressionDepthRec`) now treats `InMemorySort` as transparent too, pinned RED→GREEN by
+  `TestExpressionDepth_LogicalFallbackSortTransparent`. The previously unexplained
+  `union_aggregate_java#3` flip is benign and fully traced: both candidates have one sort and the
+  same scan/index/unmatched-field profile; ungating Java's fetch-depth rung makes the Go
+  `RecordQueryUnionPlan` candidate win at depth 4 over `RecordQueryUnorderedUnionPlan` at depth 5
+  because its indexed arm has one fewer projection. Go's `RecordQueryUnionPlan` is not Java's
+  ordered merge here — it has no comparison key/ordering hint and executes through
+  `executeUnionStreaming`/`ConcatCursors`, with the same union cost as the unordered sibling.
+  Live Java cannot plan this exact aggregate-over-union query; Java's rule set and analogous
+  upstream fixtures use `ImplementUnorderedUnionRule`. The partial `StreamingAgg` was present
+  before and after. No redundant-order regression and no cost change required.
+  **Follow-on (taxonomy, not a 190.2 cost fix):** retire or rename Go's duplicate concat
+  `RecordQueryUnionPlan`/`ImplementUnionRule` path. Java implements a bare logical UNION only as
+  `RecordQueryUnorderedUnionPlan`; until convergence, comments and `DIVERGENCES.md` explicitly mark
+  the extra Go candidate instead of calling it ordered or Java-aligned.
+  **FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.** Full `just test`:
+  56/56 targets green.
+- [x] **190.3 (MED, narrow)** — partial-PK prefix scan priced as a 1-row point probe. The
+  existing plan-stamped `primaryKeyVals` arity is now authoritative; unknown/partial coverage
+  falls back to exact selectivity pricing, and an exactly-one-record-type `PlanContext` is only
+  the legacy/hand-built-plan fallback. The obsolete RFC-186 strict/advisory policy split is gone.
+  The shared gate covers direct `HintCost`, concrete/adapter costing, logical operator counts, and
+  cardinality derivation. Production candidate + copy paths were audited and pinned. RED→GREEN
+  regressions cover partial/full/missing/range, conflicting ctx, multi-type abstention, the real
+  TypeFilter-backed data-access adapter, and the logical max-cardinality walk. Parent-vs-current
+  explain corpus: 2,579/2,579 identical, zero flips. Post-change 1M FDB stress: all 23 subtests
+  green with correct rows. **FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.**
+  Full `just test`: 56/56 targets green.
+- [x] **190.x-bundled (cheap latents)** — both findings had already landed as discrete RFC-189
+  commits: finding 8's final-only merge-cycle guard in `eac6ef9ab` and finding 5's scalar
+  signed-zero equality/hash repair in `8fcb1a426`. RFC-190's re-audit caught one over-broad parity
+  claim in the latter: raw `math.FloatNNbits` distinguishes NaN payloads, while Java boxed
+  Float/Double equality canonicalizes them. Scalar equality now uses Java-style canonical bits for
+  both widths (zero sign preserved, all NaNs canonical), with distinct-payload/sign NaN and
+  signed-zero hash-bucket controls. The direct vector-slice carriers keep their separately
+  documented raw-bit identity. The final-only cycle and scalar-float regressions are green 20×.
+  Parent-vs-current explain corpus: 2,579/2,579 identical, zero flips. **FINAL REVIEW: Graefe ACK
+  + Torvalds ACK + independent Codex ACK.** Full `just test`: 56/56 targets green.
+
+**Fidelity / optimization reach (Graefe-gated design):**
+- [x] **190.4 (Graefe-reruled)** — the original “query fewer / compensate candidate extras” MED
+  premise is NAK: executable Java enumerates dependency-sound partial bijections and then applies
+  expression-specific subsumption; every Select `ForEach` on both sides must still be covered.
+  Staged closure:
+  - [x] **190.4a** — guarded single-source reach for candidate-only dead existential legs:
+    position-independent sole-`ForEach` selection, dead-alias/result/predicate/dependency checks,
+    outer/extra-`ForEach`/non-tautology rejection, child-match retention, and usable-compensation
+    regression plus negative twins. Focused regression green 20×; parent-vs-current explain corpus
+    2,579/2,579 identical; full `just test` 56/56. **FINAL REVIEW: Graefe ACK + Torvalds ACK +
+    independent Codex ACK.** This is explicitly not the full Java port.
+  - [x] **190.4b** — dependency-sound/topological subset enumeration, all child-match branches,
+    `RegularMatchInfo` merge/child metadata, semantic multi-match dedup, and deterministic bounded
+    search (40,320 visited search states / 64 unique outputs; safe miss on exhaustion). Includes
+    constant-aware recursive group-value pull-up and fail-closed multi-member metadata adjustment.
+    Focused regressions green 20×; affected uncached Bazel targets 3/3 green; full `just test`
+    56/56. **FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.**
+  - [x] **190.4c** — current Java Select `ForEach` coverage, existential ownership/dependencies,
+    predicate implication/candidate coverage, composed child pull-up/result mapping, and
+    possible/impossible compensation state. Existential-to-`ForEach` matches install a required
+    PK `Unique` over the pinned physical access. Production correlated primary `UNNEST` reaches a
+    structurally expanded FAN_OUT index and yields
+    `Project → UnorderedPrimaryKeyDistinct → Fetch → IndexScan`, with no base-scan/filter/explode
+    fallback. Real FDB rows pin empty/nonmatching/duplicate-element cardinality, fresh-transaction
+    serialized continuations, and a five-row base `COUNT(*)` that must avoid the fan-out index.
+    Unknown/contradictory metadata, scalar nesting, unsupported fan-out/function shapes, false
+    coverage/ordering, and every raw cardinality shortcut fail closed. Focused race + 10× green;
+    affected Go/Bazel targets green; parent-vs-current explain corpus 2,579/2,579 identical; full
+    `just test` 56/56. **FINAL REVIEW: three independent Codex audits ACK** (candidate parity,
+    shortcut/cardinality safety, SQL/FDB semantics).
+- [x] **190.5 (MED)** — index-intersection reach: bounded generic k-way plus Java-faithful rich
+  common-ordering, redundancy, directional comparison-key, and reverse execution now land.
+  - [x] **190.5a** — enumerate every 2..4 restricted-candidate subset under the existing
+    eight-match budget; pair sieve + early-out; exact-input re-entry guard; cap after adjusted-twin
+    collapse; retain subsets until Java's redundancy proof exists. Production SQL + real FDB prove
+    one selected four-way intersection and exclude every three-of-four decoy. Focused race/repeat,
+    affected Bazel 3/3, parent EXPLAIN 2,579/2,579, 1M stress 23/23, and full suite 56/56 green.
+  - [x] **190.5b** — port rich common-ordering/comparison-key derivation and
+    `isPartitionRedundant`; require every free PK component; atomically carry comparison direction
+    and reverse through plan identity, execution, ordering properties, and fetch/set-op rewrites;
+    add the `DESC` SQL/FDB regression. The current Java target's top-to-top requested-order translation,
+    fixed-binding dependency normalization, fan-out-leg PK distinct wrapping, and non-empty-only
+    subpartition eviction are included. Natural forward-ASC/reverse-DESC flat field keys execute;
+    mixed/counterflow, ordered-bytes, ambiguous baked-layout, and non-flat shapes decline safely.
+    Focused race/repeat and affected Go/Bazel targets pass; real FDB pins exact DESC rows,
+    continuation, and low scan budget. Parent-vs-current EXPLAIN is 2,573/2,579 identical with six
+    Java-verified sort-elimination/ordered-index winners, zero regressions; their three row corpora
+    pass 58/58. The checked-in golden records those six flips. The 1M gate passes all 23 subtests in
+    150.95s vs the 190.5a checkpoint's 151.71s; full `just test` is 56/56. **FINAL REVIEW: two
+    independent Codex audits ACK.** Safe residual: Go's separate cross-candidate pass retains
+    already-yielded singleton alternatives that Java's shared partition map evicts; tracked in
+    `DIVERGENCES.md` as plan-space widening, not a row-safety gap.
+- [x] **190.6 (architectural — Graefe ruling)** —
+  port Java 4.12.11's NLJ/FlatMap Case 1/2a/2b source-order partition matrix while retaining Go's
+  sanctioned `RecordQueryInMemorySortPlan` fallback. Ordered variants keep the cheapest exact
+  expression per Java-retained source-order partition and freeze both legs in private final
+  singleton references. Rich ordering now pulls through result values with fixed-binding/
+  dependency preservation, a fail-closed value-root bridge, and a projected-EXISTS ordering lens;
+  ordered primary/index recovery reuses the existing scan rules and retained partial matches,
+  including safe reverse-unbounded-primary recovery while bounded synthesis declines. The paired
+  indexed/index-less regressions pin sort elimination versus fallback.
+  Final EXPLAIN census: old=2,579/new=2,581, identical=2,491, differing=90; the 88 comparable
+  shape flips are 87 eliminated outer/unary sort enforcers plus one already-sorted fixture changed
+  by its new index, with zero plan-error regressions/recoveries; the other two entries are the new
+  queries. Focused tests pass 20×; affected Cascades, yamsql, and real-FDB tests are race-clean.
+  Yamsql passes 5/5, and real FDB pins exact ASC/DESC/LIMIT/NOT-EXISTS rows plus the index-less
+  fallback. Generated ledgers/golden, lint, and the full `just test` suite pass (56/56). The uncached
+  1M FDB stress gate passes all 23 subtests with exact row counts; its four planner-query timings
+  remain within 1–4% of the prior checkpoint. **FINAL REVIEW: two independent Codex audits ACK**
+  after closing the cross-root baked-ordinal safety finding and three enumeration-control/key-map
+  collision coverage findings.
+
+**Maintainability:**
+- [x] **190.7 (MED-HIGH)** — DONE. The original four-copy census was stale after 190.1 retired the
+  N-way arm: three source sites remained, reached through four behavioral routes (direct fallback,
+  join fold, primary-key fast path, and secondary-index fast path). Their below-FOD filter →
+  `FirstOrDefault(NULL)` → optional existential residual is now centralized in
+  `buildExistsCompensationChain`; its explicit mode preserves the direct path's fresh bookkeeping
+  aliases and the correlated paths' real inner alias. `buildExistsFlatMap` was removed: its
+  comparison-range construction and residual split are shared with `tryExistsFlatMap`, while the
+  distinct PK/index failure behavior remains local. `buildCorrelatedFlatMapPlan` intentionally
+  remains separate because its ForEach, strict-FOD/default-on-empty, compensation, and predicate
+  ordering contracts differ. The alias-contract regression passes 20×; affected Cascades, yamsql
+  (26/26), and real-FDB routes pass, including race coverage. The parent-to-worktree EXPLAIN corpus
+  is byte-identical (2,581/2,581), and generate, lint, and full `just test` pass (56/56).
+  **FINAL REVIEW: two independent Codex audits ACK** after the zero-below-FOD and predicate/QOV
+  identity coverage was added.
+- [x] **190.8 (LOW)** — DONE. The original tri-layer/fold-v-runtime premise was stale after RFC-181:
+  constant folding, INSERT VALUES, and ordinary SELECT execution already shared
+  `ScalarFunctionValue.Evaluate`; `embedded/scalar_functions.go` is only the intentionally different
+  INFORMATION_SCHEMA map interpreter. The residual three-way duplication—name/operator dispatch,
+  generic-call result inference, and route admission—is now one values-owned catalog with separately
+  pinned capabilities (56 evaluator spellings, 53 Cascades-safe, 49 generic scalar calls, 12 legacy
+  map calls). Aliases share operators/result strategies; the expression walker and dedicated BIT*/
+  CURRENT_* routes obtain their types from the catalog; the map interpreter shares admission/operator
+  identity but retains its Java-aligned carrier, arity, parsing, and SQLSTATE bodies.
+  The audit also found and fixed a real wrong-result seam: common-typed scalars, CASE/PickValue, and
+  PromoteValue could declare DOUBLE/FLOAT while returning an integer carrier, so downstream division
+  took the integer lane (`COALESCE(3,1.5)/2 = 1`). Numeric results/promotions now honor the declared
+  carrier (including direct LONG→FLOAT single rounding), and arithmetic selects the DOUBLE lane from
+  static types. Integer ROUND now honors negative precision without float conversion, floating ROUND
+  clamps SQL precision and avoids temporary-scale overflow, and NULL precision propagates before the
+  integral fast path. Exhaustive catalog/operator/alias tests, constant-fold/runtime carrier
+  regressions, the 47/47 numeric yamsql scenario, and the generated ledgers pass. The required race
+  audit also exposed ANTLR's generated constructors sharing mutable DFA/context caches; all public
+  parse routes now lease bounded exclusive warmed state and detach returned read-only trees, with
+  concurrent valid/error/tree-reuse regressions. Existing plan shapes are unchanged (2,581/2,581
+  identical); the golden adds only the nineteen new regression queries. `just generate`, `just lint`,
+  and full `just test` pass (56/56). **FINAL REVIEW: two independent Codex audits ACK.**
+- [x] **190.9 (LOW)** — DONE. The twin hash/linear NLJ inner loops now share one candidate-position
+  body. A literal identity-index slice was rejected because it would add unbudgeted O(inner rows)
+  memory to every linear join; the final candidate view uses `(nil, count)` for zero-allocation
+  linear/degraded scans and `(bucket, len(bucket))` for hash hits, while keeping hash misses distinct
+  as `(nil, 0)`. Predicate evaluation, ordinal binding, match tracking, positional emission, and all
+  join types now have one implementation. Continuation PK capture/reposition uses the same view, so
+  hash positions remain bucket-relative and linear/degraded positions remain row-relative.
+  Regressions pin sparse hash-bucket resumes at every split, shifted-bucket PK repositioning,
+  positive time/string degraded probes, hash misses, and FULL OUTER matched-inner/drain bookkeeping
+  over noncontiguous indices. The executor is race-clean and 20× repeat-green, the large-inner
+  real-FDB FULL OUTER route passes, and the 2,600-entry plan golden is byte-identical. `just generate`,
+  `just lint`, and full `just test` pass (56/56). **FINAL REVIEW: two independent Codex audits ACK.**
+
+**Test gaps (the plan-quality axis):**
+- [x] **190.10 (MED)** — DONE. Replaced the stale text/reference census with a source-derived
+  completeness gate over the exact 125-rule production universe. The gate accepts only canonical
+  rule-constructor calls inside runnable Go tests (including correctly imported external-package
+  tests), and rejects comments, helpers, malformed test signatures, unrelated selectors, and
+  locally shadowed constructors. Thirteen isolated positive tests now pin the missing or ambiguous
+  ordering, projection, fetch, limit/sort implementation, and finalization transformations,
+  including alias/correlation translation, source-kind preservation, exact child relinking, and
+  constraint propagation. Red-verification by hiding one constructor reported exactly the omitted
+  rule. Focused/race/repeat validation passes, the 2,600-entry plan golden is byte-identical, and
+  full `just test` passes (56/56). **FINAL REVIEW: two independent Codex audits ACK.**
+- [x] **190.11 (MED)** — DONE. The stale “3 tests + 1 fuzz” census understated the suite:
+  `planning_cost_model_test.go` already contained 25 tests, while the fuzz target checks scalar-cost
+  finiteness rather than the winner comparator. A source audit found 22 ordered PLANNING decision
+  slots (20 conceptual criteria; the fetch block has three separately decisive sub-rungs), with 15
+  covered end to end. Seventeen focused tests now close all seven missing winner rungs (data-access
+  count, recursive DFS, IN penalty, explicit Fetch count, nested InJoin count, NLJ predicate count,
+  DefaultOnEmpty), pin the primary/index config and strict-SARG branches, prove a same-shape
+  join-order winner flip under swapped statistics, exercise adversarial rung ordering, and cover the
+  two missing REWRITING tiers. Late-rung fixtures deliberately make scalar cost or stable hash favor
+  the loser. The scoped 34-plan property corpus checks irreflexivity, antisymmetry, totality up to
+  stable identity, 35,904 ordered triples, tie substitutability, and 68 rotated/reversed minimum
+  folds. Global antisymmetry is deliberately not claimed: Java's root-IN `flipFlop` can return `+1`
+  in both orientations for heterogeneous SARG states. Focused/race/repeat validation passes, the
+  2,600-entry plan golden is byte-identical, and full `just test` passes (56/56). **FINAL REVIEW:
+  two independent Codex audits ACK.**
+- [x] **190.11-FU (MED)** — DONE. Finals-only memo children now use `Reference.Get()`'s established
+  exploratory-first/final-fallback contract instead of becoming an unknown `1e6` subtree; the
+  explicit best-cost helpers include both exploratory and final members. The six-shape probe also
+  exposed and closed `InUnion` underpricing: literal fanout is the Cartesian product of source
+  sizes, unknown dimensions retain a conservative factor of ten, child CPU is paid once per
+  execution, and zero/one combinations match the executor's empty/pass-through fast paths. A
+  known-empty source now skips the child even beside an unknown source. Direct cost, cardinality,
+  comparator, and executor regressions cover finals-only, mixed-member, multi-final, literal,
+  unknown, empty, and order-invariant cases. The audited 2,600-query golden changes only the two
+  valid key-only HAVING pushdowns; all four repeated-full-scan IN regressions from the raw lookup
+  probe remain unchanged. Focused/race/20× validation passes; `just generate`, `just lint`,
+  `just build`, and full `just test` pass (56/56). **FINAL REVIEW: two independent Codex audits
+  ACK.**
+- [x] **190.12 (MED)** — DONE (impl commit #1). Committed `explaindiff/testdata/plan_shape.golden`
+  (16550 lines, 2421 queries + 158 DML) + `TestPlanShapeGolden` (`plan_shape_golden_test.go`) — an
+  always-on, no-FDB snapshot net that fails on any un-blessed physical-plan-shape change and prints
+  the first divergence + a re-bless command. Red-verified (perturbed a plan line → RED; committed
+  golden → GREEN). This is the standing net every later RFC-190 commit is explain-diff'd against.
+
+**Doc rot + diagnostics:**
+- [x] **190.13 (LOW)** — DONE. `plandiff.go` header rewritten (Java IS wired via NewJavaRunnerHTTP →
+  the Bazel `conformance_server`; the no-URL forms are offline fallbacks; the "naive generator" was
+  retired — single Cascades path); `abstract_data_access_rule.go:29` corrected (Pareto containment
+  pruning IS implemented via `findContainingAccess`); all "cross-page-buggy hash-set" occurrences
+  (4 source + 1 test, no `distinct.go:38` — it was `:172`) corrected to "memory-heavy hash-set" with
+  a C5 note (cross-page correctness fixed 2026-07-20; streaming preferred for O(1) memory, not
+  correctness). Final audit removed the accidentally tracked `screenlog.0`, ignored future GNU
+  Screen logs, narrowed the retired N-way dead dispatch, and corrected every surviving production,
+  regression, and historical-ledger description that still presented that arm as live or denied
+  PartitionSelectRule's correlated-existential route. Zero plan behavior change.
+- [x] **190.14 (LOW)** — DONE. A shared exhaustive taxonomy assigns all 41 production
+  `RecordQueryPlan` types an explicit count and residual policy; unknown types and future
+  unhandled policy kinds warn on the concrete/logical count and residual walks, while a type
+  missing `HintCost` warns on the join-cost walk instead of silently becoming free. Diagnostics
+  are opt-in through the outermost
+  `WithCostModelDiagnostics(PlanContext, *slog.Logger)` wrapper, use structured stable walk tokens,
+  deduplicate concurrently per `(wrapper, walk, concrete type)`, and never call `Explain` or write
+  to `os.Stderr`; nil loggers mask an inner sink and disabled WARN levels do not consume a dedupe
+  key. Planner and both rule-call comparator paths retain the sink while preserving their
+  historical nil-context winner semantics. Twelve parallel regressions pin the 41-type inventory,
+  logical/concrete compatibility boundaries, folded children, future enum arms, logger scope and
+  concurrency, and end-to-end plumbing. Focused/race/20× tests pass; the 2,600-query plan golden is
+  byte-identical; `just generate`, `just lint`, `just build`, and full `just test` pass (56/56).
+  **FINAL REVIEW: adversarial Codex audit ACK; second independent audit ACK.**
+
+---
+
 ## LATEST PRIOS 2026-07-21 — owner directive (takes precedence over everything below until done)
 
 Source: 2026-07-21 full-engine triple review — Graefe (Cascades alignment, B+), Torvalds (code
@@ -33,8 +367,9 @@ milestone review lap), each its own PR.
   (b) the memo-population-history dependence is replaced by the DESIGNATED-final virtual prune
   (`designated_final.go`) — REWRITING cost derives through one deterministically-chosen final per
   child, generation-keyed, with cycle + exploratory-child taint guards (§2A); (c) the all-equality
-  point-probe now gates on full-PK equality binding via `strictPKGate`/`pkFullyEqualityBound`
-  (§2B); (d) the missing plan types get `HintCost` dispatch + `warnUnpricedPlanType` (§2D). Plus
+  point-probe gates on full-PK equality binding via `pkFullyEqualityBound` (§2B; its original
+  strict/advisory split was later unified around plan-stamped PK arity by RFC-190.3);
+  (d) the missing plan types get `HintCost` dispatch + `warnUnpricedPlanType` (§2D). Plus
   the codex adversarial rounds (identity refinement, attribute-aware tie-break) and two latent
   bugs found en route (PartitionBinarySelect noe-leg absorption, memo orphan registration).
 - [x] **3. Debt ledger understates reality** — DONE (this PR). Four sub-fixes:
@@ -173,7 +508,8 @@ ordinalization) — both distinct from A's wrong-rows/wrong-order fix.
 Torvalds; rev 1 NAK'd, rev 2 folded: finding 2 → DELETE not rename, finding 3 → bare-comparison set +
 flipFlop sign + config confirmed-absent, finding 6 → sparse-sorted first-map, finding 10 M4 → plan
 plumbing). Java refs confirmed against 4.12.11.0. Grind order: 2 → 6 → 3 → 10(M2 → M5 → M3&M4).
-Two follow-ups booked below (port Java's real RemoveRangeOne; model IndexScanPreference config).**
+One follow-up remains booked below (port Java's real RemoveRangeOne);
+`IndexScanPreference` configuration parity landed in RFC-189 F3.**
 
 ### [x] Finding 2 (HIGH, wrong results) — RemoveRangeOneRule deletes LIMIT 1 on an unfloored estimate — DONE
 `rule_remove_range_one.go:52,68` gated deletion of `LIMIT 1 OFFSET 0` on `EstimateCardinality(e)<=1.0`;
@@ -196,11 +532,11 @@ Java `RemoveRangeOneRule.java:45-102` drops an unreferenced `RANGE(0,1)` table-f
 a `SelectExpression` (nothing to do with LIMIT) — UNPORTED. Porting it reclaims the `RemoveRangeOne`
 name cleanly. Distinct missing-rule item; needs Graefe+Torvalds review (query-engine rule).
 
-### [ ] Finding 3-followup — model IndexScanPreference config (booked by RFC-188 §2)
-Go's `PlanContext` has no `IndexScanPreference` knob (grep-confirmed absent); Cascades default is
-`PREFER_SCAN` (proto enum 0). Modeling `PREFER_INDEX`/`PREFER_PRIMARY_KEY_INDEX` + the legacy
-multi-type-no-PK-prefix default (`RecordQueryPlanner:194`) is out of scope for finding 3 (the SARG
-sub-case lands regardless). Nobody sets it today; book for when a config surface needs it.
+### [x] Finding 3-followup — model IndexScanPreference config (booked by RFC-188 §2) — DONE
+RFC-189 F3 (`7313c51c2`) added `IndexScanPreference` to the existing `PlannerConfiguration` mirror,
+defaults it to Cascades' `PREFER_SCAN`, and consults it through the real `PlanContext` cost-model path.
+`PREFER_INDEX` and `PREFER_PRIMARY_KEY_INDEX` mirror Java's index-preferring branch. Direct tests pin
+all three values and the config-read path; RFC-190.11 additionally pins a full-comparator winner flip.
 
 ### [x] Finding 3 (HIGH, worse plan) — comparePrimaryScanVsIndexScan drops Java's type-filter SARG subcase — DONE
 `planning_cost_model.go` ported only the shape check and dropped Java's SARG sub-case: when the primary
@@ -208,8 +544,9 @@ side carries a type filter, the index side none, and the index SARGs strictly mo
 Java prefers the INDEX. FIXED: added `primaryVsIndexVerdict` (SARG sub-case + PREFER_SCAN default),
 threading the sign by which side is the primary scan (Java's flipFlop negation). Comparison set built
 from BARE comparisons (type + comparand, column/position EXCLUDED — Java's ComparisonsProperty
-`Set<Comparison>`), via `scanSargComparisonSet`. `IndexScanPreference` confirmed absent in Go (Cascades
-default PREFER_SCAN); config knob booked separately (Finding 3-followup).
+`Set<Comparison>`), via `scanSargComparisonSet`. RFC-189 F3 subsequently wired the full
+`IndexScanPreference` config branch; RFC-190.11 pins both that branch and the strict-SARG-superset
+branch through the full comparator.
 **Reachability (corrected after codex P1a fold): INERT on the corpus.** The sub-case's SARG walk must
 descend the CONCRETE plan (the production `scanPlanExpression`/`TypeFilter(Scan)` wrapper exposes no
 quantifiers — `GetQuantifiers()==nil`), else the primary SARG set is spuriously empty and the sub-case
@@ -223,10 +560,13 @@ filter) is not SQL-corpus-reachable today. Pins: unit `TestComparisonSetKey_Bare
 `TestSetDifferenceEmpty` (the set logic); `join_optimization_probes#4` keeps a rows-only correctness pin
 (the sub-case correctly does NOT fire there). Faithful Java port, latent-gap like M2/M3/M5.
 
-### [ ] Finding 5 (MED) — scalar signed-zero ConstantValue: equal-but-different-hash
-`values/map_field_values.go:254` scalar fallthrough `return a == b` (−0.0==+0.0 true) vs
-`semantic_hash.go:156` `%v` (renders "-0"≠"0"). The []float64/[]float32 arms already fixed this with
-`math.Float64bits` (RFC-176 §2); scalar wasn't. → memo dedup miss/dup. Fix: bitwise-compare scalar floats.
+### [x] Finding 5 (MED) — scalar signed-zero ConstantValue: equal-but-different-hash — DONE
+Landed in `8fcb1a426`: scalar float equality no longer falls through to Go `==`, so −0.0 and +0.0
+remain distinct exactly like Java and no longer compare equal while `%v` hashes them apart. RFC-190
+review tightened the implementation from raw bits to Java's canonical Float/Double bit identity:
+the zero sign remains significant, while every NaN payload/sign encoding compares equal and hashes
+coherently. `TestConstantValue_SignedZeroEqualsIsHashConsistent` covers both widths, signed zero,
+ordinary equality, and distinct-payload NaNs.
 
 ### [x] Finding 6 (MED) — comparePredicateCountByLevel: keep the antisymmetric UNION iteration — DONE (self-corrected)
 Original claim (walk a's keys first-map-only to "match Java") was WRONG — it rested on misreading Java as
@@ -254,11 +594,11 @@ Pre-existing (master's producer is sparse too); booked, not bundled into RFC-188
 approximation (dangerous direction) — any new consumer treats a correlated leg as free-standing (0-row
 class). Contained today (consumers rewired), latent trap.
 
-### [ ] Finding 8 (MED, latent hang) — merge cycle guard walks Members() only, not FinalMembers()
-`memo_merge.go:103-133` `reachable` recurses `r.Members()`; correct only by the undocumented REWRITING
-invariant that every final is also an exploratory member. One distinct-final `InsertFinal` away from
-`mergeable` approving a cycle → planner hang (`childRefsMatchInMemo`/`GetCorrelatedTo` are cycle-guard-free).
-Fix: walk `AllMembers()`.
+### [x] Finding 8 (MED, latent hang) — merge cycle guard walks all members — DONE
+Landed in `eac6ef9ab`: `reachable` traverses `AllMembers()` rather than relying on the undocumented
+"every final is exploratory" invariant. `TestMemoMerge_SkipsCyclicMergeThroughFinal` constructs an
+ancestor edge visible only through a distinct final member and proves `mergeable` declines the
+self-cycle.
 
 ### [ ] Finding 9 (MED, latent) — TranslateQueryValueMaybe pulls up candidate sub-values against themselves
 `max_match_map.go:771` `PullUpValue(entry.candidateValue, entry.candidateValue, alias)` collapses every
@@ -387,8 +727,9 @@ so there is no ref child-selection left in the SARG walk.)
 
 ### [ ] Finding 13 (LOW) — dead code / missed matches / maintainability
 - Dead rules: `rule_implement_intersection.go:46`, `rule_intersection_merge.go:37`,
-  `rule_set_op_singleton.go:49` (no query seeds `LogicalIntersectionExpression`) — + latent unsound if
-  reached (grabs unordered winner for a merge that requires ordered legs).
+  `rule_set_op_singleton.go:49` (no query seeds `LogicalIntersectionExpression`). RFC-190.5b resolves
+  the intersection rule's latent unordered-child bug with an explicit ASC request and ordered-winner
+  selection; the rule remains dead/maintainability-only.
 - `rule_merge_fetch_into_covering_index.go` unreachable (`wrapScanPlanWithCoverage` strips the Fetch) —
   unported Java optimization.
 - `rule_match_intermediate.go:227` MatchIntermediateRule pairs quantifiers POSITIONALLY; Java enumerates
@@ -399,9 +740,10 @@ so there is no ref child-selection left in the SARG walk.)
   (footgun, bit `rule_implement_in_join` once); `:30` `NewPlanPartition` map-iteration nondeterminism (dead path).
 - `unified_tasks.go:675/696` `isExploratoryMember` ≡ `isAlreadyExploratoryMember` (byte-identical dup);
   O(n) membership scans in per-round loops (O(n²)/group); cost comparator re-walks whole subtrees uncached.
-- Maintainability: NLJ rule 3417 LOC vs Java 331 (10×, #1 churn file, hand-rolled existential/buried-leg
-  subsystem); ~40% comment density carrying reverted-attempt process narrative (violates CLAUDE.md comment
-  guidance).
+- Maintainability: the NLJ rule remains ~3.5k LOC vs Java 331 (10×, #1 churn file, hand-rolled
+  existential/buried-leg subsystem), though RFC-190.7 centralized its repeated existential
+  compensation tail; ~40% comment density carries reverted-attempt process narrative (violates
+  CLAUDE.md comment guidance).
 
 ---
 
@@ -785,8 +1127,9 @@ suites are the correctness authority (the §5 dual-window is already retired —
     correlation, rebaseLegRefsToBox) to ofOrdinal(QOV(box), window.Offset+idx) via values.OrdinalSeedLegWindows,
     with a post-walk declining any surviving leg-QOV ref (correct-or-decline). Plus the SelectMergeRule
     existential-wrap guard (>2-window positional-seed box under a single-ForEach existential parent stays nested —
-    the flat form is only implementable MATERIALIZED since PartitionSelectRule is ForEach-only; 2-window seeds and
-    ≥2-ForEach parents keep merging, so the LEFT-residual + :2908/:3033 flatten stay byte-identical). VERIFIED:
+    at this B1 checkpoint the flat form was only implementable MATERIALIZED because PartitionSelectRule was
+    ForEach-only. RFC-190 later added guarded existential partitioning and retired the N-way arm; the guard remains
+    to preserve the gathered wrapper's deliberate SARG boundary). VERIFIED:
     census 0 producers on the shape (was 2 — U-1 retired); correlated-index SARG green; B1 cert
     (TestFDB_RFC173S4_B1_NwayExists) — EXISTS→1st/3rd/4th-leg falsification, comma-join, NOT EXISTS, conjunct,
     ORDER-BY fail-open, SARG+not-cross-product plan shape; FULL suite 55/55 incl. the dualwindow differential.
@@ -1827,20 +2170,22 @@ some `/invoke` steps write, so a retry could double-apply. The fix is a per-step
 read/plan steps like `RunSql SELECT`/`EXPLAIN`; never retry a write step) driven off the transport-error class.
 Low priority (mid-request drops are rare; keep-alive fix covers the observed flake).
 
-### [x] Soundness — empty IN-list `x IN ()` — INVESTIGATED: defensively-dead, not reachable
-`executeInJoin` (executor_new_plans.go:1033-1034) and `executeInUnion` (:1095-1097) short-circuit an EMPTY
-in-value list by running the inner plan directly (unbound) — which would return the inner's rows where SQL
-yields ZERO for `x IN ()`. Surfaced as a possible soundness divergence (Torvalds review point on the multi-leg
-PR). **Reachability verified — the branch cannot be reached by any query the engine plans:**
+### [x] Soundness — empty IN-list `x IN ()` — INVESTIGATED; InUnion hardened by RFC-190.11-FU
+`executeInJoin` short-circuits an EMPTY in-value list by running the inner plan directly (unbound) — which
+would return the inner's rows where SQL yields ZERO for `x IN ()`. Surfaced as a possible soundness divergence
+(Torvalds review point on the multi-leg PR). **InJoin reachability verified — the branch cannot be reached by
+any query the engine plans:**
 - literal `IN ()` is a PARSE ERROR — the grammar's `inList → '(' expressions ')'` and
   `expressions → expression (',' expression)*` require ≥1 element;
 - `IN (subquery)` lowers to a semi-join / projected `ExistsValue`, NOT a static-values `RecordQueryInJoinPlan`
   (whose `inValues` is specifically the STATIC literal comparand, in_join.go:106);
 - there is no parameter-IN path that builds an empty-static-`inValues` InJoin (`executeInJoin` reads only
   static `GetInValues()`, and the translator has no `InParameter`→InJoin lowering).
-So the `len(inValues)==0` arm is a defensive fallback that no valid plan reaches. No fix needed; a
-belt-and-suspenders empty-cursor return would be more correct-if-ever-reached but is an unreachable+untestable
-(hence gate-awkward) executor change — left as-is with this reachability record.
+So the InJoin `len(inValues)==0` arm is a defensive fallback that no valid plan reaches and remains as-is.
+`InUnion` is no longer part of that residual: RFC-190.11-FU distinguishes its absent outer source slice
+(the established pass-through constructor shape) from a present empty dimension, which now returns an exact
+empty cursor without executing the child. Direct tests cover a lone empty dimension and mixed unknown/empty
+dimensions in both orders.
 
 ### [x] Executor/ordinal-binding — 3-way join shared-column ordinal not resolvable — FIXED
 **FIXED** (branch fix-threeway-shared-col-ordinal, stacked on #501). Root cause: when
@@ -1999,11 +2344,13 @@ piece if revived.
 >        (4) honest unknowns (:293-316 7.6 model gap, :1304-1352 probe
 >        multi-returns, :6431 NULL literal, :8267,:8286) — justify or leave.
 > Interleaved at phase boundaries (independent wrong-rows P0s, each small+red-pinned):
-> - [x] P0.1 PK-intersection ordering gate (row DROPS, plain SQL) + reverse threading.
+> - [x] P0.1 forward-PK intersection ordering gate (row DROPS, plain SQL).
 >       Follow-up CLOSED: the AND-over-two-indexes SQL shape fires the path e2e
 >       (and_index_intersection.yaml) — and exposed unbaked comparison keys
 >       (OrdinalResolutionError on every such query); fixed by flowing the
 >       descriptor row type into candidates + baking pk keys, plan-time decline.
+>       Ledger correction: reverse threading never landed; it remains the atomic
+>       RFC-190.5b plan/executor/ordering/rewrite slice.
 > - [x] P0.2 streaming-agg ordered child pinned (FinalOf) instead of shared-group memoize
 > - [x] P0.3 union-leg pinning (delegator-hint lie + arity bake → dup rows through DISTINCT)
 > - [x] P0.4 rebuildOrderedSpine executable-plan verification (extraction twin of RFC-180's)
@@ -3398,13 +3745,10 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
        wrapper, so a Go-written NULL array can't be distinguished from an empty one. Closing this lets
        `CARDINALITY([])` be 0 (not NULL) for a non-null empty array, matching Java. Latent divergence
        (read path already unwraps Java-written wrappers via `unwrapWrappedArray`); separate from R6.
-   - **[ ] R6 follow-up — BITAND/BITOR/BITXOR unreachable through the walker (pre-existing drift).** The 3
-     scalar-function keyword lists drift: `BITAND/BITOR/BITXOR` are in `IsCascadesSafeScalarFunction` (so
-     the satellite gate admits them) but the `expr` walker's `walkBitExpression` builds a
-     `ScalarFunctionValue("BITAND"/...)` that is then rejected by `isCascadesSafeValue`/the catalog — they
-     never reach a working Cascades plan today. Surfaced while wiring CARDINALITY's by-name gate; NOT fixed
-     here (the by-name collapse only routed CARDINALITY). The clean fix is to finish collapsing the 3 lists
-     onto one by-name table; verify against Java first. Gate: **Graefe** + Torvalds.
+   - **[x] R6 follow-up — BITAND/BITOR/BITXOR registry drift.** The "unreachable" diagnosis became stale:
+     all three dedicated bit-expression routes execute and are covered by `bitwise.yaml`. RFC-190.8 closes
+     the real maintainability gap by moving their admission, evaluator operator, and declared result type
+     into the shared scalar-function catalog; the dedicated grammar lowering remains intentional.
    - **[x] R7** — LEFT/RIGHT OUTER JOIN reclassification + 4.12 null/boolean fixes (RFC-144). The parity
      sweep (53 ported `join-tests-outer.yamsql` cases) found + fixed **6 real outer-join divergences**
      (JOIN USING → cartesian; chained outer joins + INNER-then-LEFT dropped NULL-padding; derived-table-
@@ -3794,7 +4138,12 @@ ACK'd it). The one clean extraction: pull the per-join ON classification loop bo
 into `classifyJoinOn(...) (nodeOn, lifted, err)` — the densest, most independent, most nameable sub-decision;
 would drop the function to ~340 and make the loop legible. Recommended, not a should-fix.
 
-### [ ] query-engine follow-on (Torvalds ACK book): extract `buildExistentialFlatMapTail(...)` — the existential-wrap tail (belowFOD → FirstOrDefault(NULL) → optional IS[NOT]NULL residual → FlatMap) is now stamped out 4× (implementExistentialSelect ~:924, the 2-leg fold arm ~:2230, the N-way arm ~:2612, yieldExistsFlatMap ~:2836). A future residual-polarity/FOD-contract fix has FOUR landing sites (the EXISTS correlation-leak fix already had to be applied in >1). Extract the invariant tail once the N-way arm is battle-tested; the differing parts (rebasing, FlatMap outer, memo bookkeeping) stay at the call sites. Not a blocker — booked follow-up.
+### [x] query-engine follow-on (Torvalds ACK book): existential compensation-tail extraction — RESOLVED by RFC-190.7
+The original four-copy census became stale when RFC-190.1 retired the N-way arm. RFC-190.7
+centralized the three surviving belowFOD → FirstOrDefault(NULL) → optional IS[NOT]NULL chains in
+`buildExistsCompensationChain`, with fresh-vs-preserved bookkeeping aliases as an explicit mode.
+Caller-specific outer-leg rebasing and FlatMap construction remain local; the PK and secondary-index
+fast routes share one yield path without erasing their distinct decline behavior.
 
 ### [x] query-engine: a DERIVED-TABLE inner in a correlated EXISTS loses its body → wrong rows — FIXED 2026-07-08 (resolve-body path)
 A correlated EXISTS whose inner FROM is a DERIVED TABLE (`(SELECT …) AS d`) entered via the `buildCorrelatedExists` fallback's no-WHERE/no-ON fast path (entered only because the ignored inner SELECT references an outer column) returned silent-wrong rows: the fast path rebuilt each derived source as `NewScan("d")` — a scan of the non-existent catalog table `d`, which the executor treats as EMPTY → EXISTS tested the wrong (empty) relation. Confirmed at BASELINE `a34e9e21d` and reproduced fresh (`[[1 false],[2 false]]` where correct is `[[1 true],[2 true]]`, d={1} non-empty) — PRE-EXISTING master bug, not introduced by the JOIN-ON work.
@@ -3821,10 +4170,12 @@ return EXISTS=true even when the inner join `e JOIN f` was EMPTY: the inner join
 dropped through the correlation lift. Repro (Java 4.12.11.0 = `[[10 false]]`, Go returned `[[10 true]]`):
 `SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON f.fid=e.fid WHERE e.eid=p.id) FROM p, q WHERE q.qid=p.id`
 with `e(eid=1,fid=99), f(fid=88)` (no inner match). Now `[[10 false]]` on s4.
-- **The N-way arm** (`implementNWayJoinWithExistential`, RFC :2908/:3033) is FIXED conservatively: it
-  fail-closes on ANY non-scan existential inner (`existInnerIsScanSafe`) — declines the buggy explicit-join
-  case AND (over-conservatively) the working multi-table comma-join case; the N-way arm is new so nothing
-  regresses. So the N-way arm has NO silent-wrong; its reach gap is "multi-table/join EXISTS inner declines".
+- **Historical N-way-arm state before RFC-190.1.** At this checkpoint,
+  `implementNWayJoinWithExistential` fail-closed conservatively on any non-scan existential inner
+  (`existInnerIsScanSafe`), declining both the buggy explicit-join case and the then-working
+  multi-table comma-join case. RFC-190.1 later replaced the N-way route with guarded
+  PartitionSelectRule decomposition and retired this arm; the old reach-gap statement is not a
+  description of current code.
 - **The 2-leg fold arm** (`implementJoinWithExistential`): the "PRE-EXISTING silent-wrong, NOT yet fixed,
   three guard attempts mis-scoped, needs deep RFC-141 work" framing was RESOLVED and is now STALE. The
   proper fix — ENFORCE the inner ON under correlation — landed FRONT-END at `de5354139` (in
@@ -4897,11 +5248,11 @@ so the index-probe variant is both cheaper AND resolvable.
   - [ ] **Follow-up (RFC-083): replace the guard + `AggregateSlots` marker with Java's `PromoteValue` projection nodes** — the single mechanism that both rejects-at-plan and widens-at-runtime, dissolving the dual lattice-encoding (guard + converters) and the load-bearing "aggregate-slot ⇒ guard" coupling (Graefe's end-state). Subsumes reliably typing `FieldValue`/`ArithmeticValue` projections, which then closes the **residual deferred cases**: bare-column `SELECT double_col → BIGINT` over an empty source, and `UPDATE … SET int_col = <double-expr>` — both currently rely on the runtime converter (correct for non-empty rows, miss the 0-row case).
   - [ ] **Follow-up (RFC-083): bare GROUP BY-aggregate INSERT…SELECT source.** `INSERT … SELECT g, AVG(v) … GROUP BY g` has a `LogicalAggregate` as the insert Source (no `LogicalProject`), so the guard can't read column order and defers it (runtime rejects the non-empty case). Also observed a possible PK-mapping/grouping anomaly on that execution path (a 23505 where the rows shouldn't collide) — investigate separately.
   - [ ] **Adjacent (separate index-type bug): `GetIndexTypeName` hardcodes `MIN_EVER_LONG`/`MAX_EVER_LONG`** — MIN/MAX over a non-long operand needs `MIN_EVER_TUPLE` (Java `permuted_min/max`).
-- [x] **🚩 TODO 7.6-union-remap — aggregate UNION branch with a mismatched output alias drops rows (pre-existing executor gap).** Fixed for STREAMING aggregates in **RFC-078**: (1) `executeUnorderedUnion` (executor_new_plans.go) now remaps later branches' columns to the first branch's names by position — it previously concatenated branch cursors with NO normalization at all (unlike the ordered `RecordQueryUnionPlan`/`executeUnionStreaming`); (2) `planColumnNamesWithMD` (executor.go) reports a `RecordQueryStreamingAggregationPlan`'s output names (group keys + alias-or-canonical) instead of descending through `GetInner()` to the input scan. `SELECT u.x FROM (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) u` now returns both counts (was `[2, NULL]`). Pinned by `TestFDB_UnionAggregateColumnRemap`. Graefe + Torvalds ACK.
+- [x] **🚩 TODO 7.6-union-remap — aggregate UNION branch with a mismatched output alias drops rows (pre-existing executor gap).** Fixed for STREAMING aggregates in **RFC-078**: (1) `executeUnorderedUnion` (executor_new_plans.go) now remaps later branches' columns to the first branch's names by position — it previously concatenated branch cursors with NO normalization at all (unlike the sibling concat `RecordQueryUnionPlan`/`executeUnionStreaming`); (2) `planColumnNamesWithMD` (executor.go) reports a `RecordQueryStreamingAggregationPlan`'s output names (group keys + alias-or-canonical) instead of descending through `GetInner()` to the input scan. `SELECT u.x FROM (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) u` now returns both counts (was `[2, NULL]`). Pinned by `TestFDB_UnionAggregateColumnRemap`. Graefe + Torvalds ACK.
   - [x] **Follow-up (RFC-078) c — FIXED in RFC-080: re-enable the union-as-join-leg / derived-table aggregate case for UNGROUPED aggregates.** The gate's `LogicalAggregate` case is hit only by a *bare* aggregate branch (no Project). Graefe's review caught that a bare aggregate can be GROUPED (an unaliased, all-visible `SELECT g, COUNT(*) FROM t GROUP BY g` skips `buildSelectShell`'s stripping Project). Only the UNGROUPED sub-shape is safe to normalize: an ungrouped aggregate produces **no** aggregate-index candidate (`tryAggregateIndexCandidate` returns nil when `groupingCount == 0`, `cascades_generator.go`), so it always plans as StreamingAgg, which flows every aggregate under its alias (RFC-078). So `unionBranchNormalizable`'s `LogicalAggregate` arm relaxed from `false` to `len(Aggregates) >= 1 && len(GroupKeys) == 0`. `TestFDB_UnionJoinLeg` case (3) flipped clean-error→correct-rows. Pinned by `TestFDB_UnionScalarAggregateAlias` (single + multi ungrouped unions read by name + no-AggregateIndex invariant), `TestFDB_UnionGroupedAggregateStillGated` (grouped union, which DOES plan as AggregateIndex, stays gated), `TestUnionBranchNormalizable_AggregateArity`. plandiff byte-identical. Graefe + Torvalds ACK.
     - [x] **Follow-up (a) — GROUPED bare aggregate union by name — FIXED in RFC-081.** A bare GROUPED aggregate union branch (`SELECT g, COUNT(*) FROM a GROUP BY g UNION ALL …` read by name) plans as `AggregateIndex` (single agg) or `MultiIntersection`/`StreamingAgg` (multi agg). The fix was *reporting*, not cursor changes: the AggregateIndex and MultiIntersection cursors already write rows keyed by their output names (group cols + canonical aggregate name; a bare aggregate is always unaliased, so no alias to carry). Added `RecordQueryAggregateIndexPlan.OutputColumnNames()` + `planColumnNamesWithMD` arms for AggregateIndex (group cols + `CanonicalAggColumnName`) and MultiIntersection (result-value field names, verbatim), then dropped the `len(GroupKeys) == 0` clause → gate is now `len(Aggregates) >= 1`. `TestFDB_UnionGroupedAggregate` (single + multi grouped union join legs, mismatched group-key names → correct rows; EXPLAIN-pins AggregateIndex), `TestPlanColumnNames_{AggregateIndexReportsOutputSchema,MultiIntersectionReportsResultValueNames}`, `TestAggregateIndexPlan_OutputColumnNames`, gate unit test grouped→true. plandiff byte-identical. Graefe + Torvalds ACK.
       - [ ] **Sub-follow-up (codex): DIVERGENT-NAMED aggregate union branches.** A bare aggregate whose output name differs between the logical leg schema (`aggregateOutputColumns`, raw text) and the physical row key (`aggResultName`/AggregateIndex canonical) NULLs when union-remapped by name. Divergent forms: qualified operand (`SUM(t.c)`→`SUM(C)`), constant (`COUNT(1)`/`COUNT(NULL)`→`COUNT(*)`), expression (`SUM(a*b)`), DISTINCT. RFC-081 GATES all of them **in the GROUPED case** via `aggregateNamesStableForUnion` (whitelist `COUNT(*)`/`FUNC(bare-col)`; clean error, `TestFDB_UnionQualifiedAggregateGated` + `TestFDB_UnionGroupedCountConstantGated`). UNGROUPED branches are left as RFC-080 (always StreamingAgg, not re-gated, to avoid regressing working ungrouped legs); any ungrouped divergent form (e.g. bare ungrouped `SUM(t.c)`/`COUNT(NULL)`) is a pre-existing RFC-080 latent NULL, fixed by the same naming-unification below. To OPEN them: unify aggregate output naming so the logical schema and the physical row key agree for every form (strip qualifier consistently + reconcile count-star normalization between StreamingAgg and AggregateIndex), then relax the whitelist. NOTE: a separate pre-existing bug — `SELECT u.*` star-expansion over an aggregate union join leg mis-derives the aggregate column name (NULL) even for ALIASED aggregates (Project-topped) — is orthogonal to the gate and also needs fixing. Trivial cleanup (@claude): `deriveColumnsFromAggregateIndex` (cascades_generator.go) builds the canonical `FUNC(col)`/`FUNC(*)` name inline (a third copy alongside `CanonicalAggColumnName` + the cursor) — for schema-metadata column-type derivation, not row-key naming, so it doesn't interact with the union remap, but it should call `aggIdx.CanonicalAggColumnName()` to complete the single-source consolidation.
-  - [x] **(b) ordered-union projection-alias — FIXED in RFC-079.** A UNION branch projecting a post-aggregate EXPRESSION with an alias (`SELECT COUNT(*)+1 AS x FROM a UNION ALL SELECT COUNT(*)+1 AS y FROM b`, read by name) returned `[NULL,NULL]` — the legacy `buildSelectShell` builder (the UNION-branch path) built the post-agg projection with `nil` aliases, dropping the `AS x`. Fixed by extracting the projection-building loop into one shared `buildPostAggregateProjection` helper called by both `visitSelectGroupBy` (modern) and `buildSelectShell` (legacy) — one source of alias truth. Pinned by `TestFDB_UnionAggregateExprAlias` + `TestBuildLogicalPlan_PostAggExprAlias_CarriesAlias`. Modern path plandiff byte-identical. Graefe + Torvalds ACK.
+  - [x] **(b) Go concat-union projection-alias — FIXED in RFC-079.** A UNION branch projecting a post-aggregate EXPRESSION with an alias (`SELECT COUNT(*)+1 AS x FROM a UNION ALL SELECT COUNT(*)+1 AS y FROM b`, read by name) returned `[NULL,NULL]` — the legacy `buildSelectShell` builder (the UNION-branch path) built the post-agg projection with `nil` aliases, dropping the `AS x`. Fixed by extracting the projection-building loop into one shared `buildPostAggregateProjection` helper called by both `visitSelectGroupBy` (modern) and `buildSelectShell` (legacy) — one source of alias truth. Pinned by `TestFDB_UnionAggregateExprAlias` + `TestBuildLogicalPlan_PostAggExprAlias_CarriesAlias`. Modern path plandiff byte-identical. Graefe + Torvalds ACK.
   - [ ] **Follow-up (RFC-087, Graefe): reject aggregate-in-scalar-context at PLAN time.** `WHERE COUNT(*) > 0` reaches `AggregateValue.Evaluate` at row eval; RFC-087 made it a clean runtime `AggregateEvalError` → 42803 (was an uncaught goroutine crash on master — Graefe confirmed). Java rejects this at semantic-analysis / plan time ("unable to eval an aggregation function with eval()"). Detect an aggregate in a per-row scalar predicate (WHERE / JOIN-ON / projection-not-under-GROUP BY) during planning and reject there, matching Java exactly. Runtime 42803 is the safety net; plan-time is the parity fix.
   - [ ] **Follow-up (RFC-087, Graefe): thread `ComparisonKeyFunc` error channel.** The 5 executor merge/sort comparison-key sites (`intersectionCompKeyFunc`, `multiIntersectionCompKeyFunc`, `mergeSortCursor.isBetter`/`extractKey`, executor.go:1391) `panic(err)` on a stray key-eval error — pre-existing behaviour (no recover before/after RFC-087), and keys are pre-projected field refs so the typed-error family is unreachable today. To make it airtight, give `ComparisonKeyFunc` an `error` return and thread it (ripples into wire-adjacent `merge_cursor.go`). Low priority — not reachable from current SQL.
   - [ ] **Follow-up (RFC-088, Graefe condition): converge `validateGroupByProjection`'s existence check onto the semantic resolver.** Java does NO standalone existence check for GROUP BY keys — `SemanticAnalyzer.resolveIdentifier` over the full multi-source scope already guarantees existence, and `validateGroupByAggregates` enforces only the algebraic 42803 rule (key must be grouped-or-aggregated). Go currently runs a SECOND, hand-rolled existence oracle (`tableFields` = union of all source descriptor field names, bare-name match) that is deliberately qualifier-blind, so it would false-ACCEPT a wrong-qualifier key (`e.dname` where dname is on the joined dept) — SAFE today ONLY because the precise resolver runs first at every call site (top-level `resolveColumnName` ~L1002; correlated-scalar GROUP-BY-key resolution in `buildCorrelatedScalar`), an ordering invariant now pinned by a code comment at `validateGroupByProjection` and by `TestFDB_GroupByWrongQualifierRejected`. End-state: route existence through `resolver.ResolveIdentifier` and leave `validateGroupByProjection` enforcing only 42803, removing the duplicate oracle and the ordering dependency.
@@ -4919,7 +5270,7 @@ so the index-probe variant is both cheaper AND resolvable.
 
 ## Production readiness (Graefe review, 2026-05-28)
 
-The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING, 16-criteria cost model, match-candidate infra all well-ported. The production risks are all at the **boundaries**: planner↔executor, executor↔runtime, system↔operator. Priority tiers below.
+The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING, multi-criteria cost model, match-candidate infra all well-ported. The production risks are all at the **boundaries**: planner↔executor, executor↔runtime, system↔operator. Priority tiers below.
 
 ### P0 — fix before deploying anywhere (correctness/availability)
 
@@ -4975,6 +5326,26 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 ## Stress test 1M baseline (2026-05-27)
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
+
+**2026-07-24 (RFC-190.5b — directional rich-order intersection parity):** the
+recorded 190.5a checkpoint vs the current uncached run on the same host. All 23
+subtests PASS with identical row counts. Total runtime is 151.71s checkpoint vs
+150.95s current (-0.50%); comparable million-row scans are
+3.38/3.29/3.40/2.99s vs 3.36/3.22/3.36/2.93s, respectively. Bulk loads remain
+noise-level equal (customers 6.219s vs 6.240s; orders 127.736s vs 127.634s).
+Point lookups are 4.76-5.17ms, index equality 6.19ms, and no throughput,
+row-count, continuation, or plan-shape performance regression appears.
+
+**2026-07-24 (RFC-190.5a — bounded generic k-way intersection reach):** exact
+parent `bde66debe` vs working tree, same quiet box, sequential fresh FDB
+containers. All 23 subtests PASS with identical row counts and byte-identical
+EXPLAIN corpus (2,579/2,579). Total runtime 151.32s parent vs 151.71s branch
+(+0.26%); million-row scans parent 3.40/3.22/3.41/2.96s vs branch
+3.38/3.29/3.40/2.99s. Bulk loads were effectively identical (customers
+6.224s vs 6.219s; orders 127.648s vs 127.736s). Early point probes on the
+second fresh container showed the known 5–15ms floor jitter, while later
+needle probes converged to 5.2–5.7ms on both sides; no sustained runtime,
+throughput, row-count, or plan-shape regression.
 
 **2026-07-22 (RFC-186 §2A-§2D — designated-final derivation, PK point-probe gate,
 HintCost dispatch): back-to-back master worktree vs branch, same box, sequential
@@ -5162,8 +5533,9 @@ Audit findings (2026-07-18 quality audit) still open, in recommended order:
   (all 34 sibling wrappers propagate); memo leaf criterion `memo.go:522-542`
   requires ALL members quantifier-free where Java's Traversal uses ANY.
 - [ ] DIVERGENCES.md ledger corrections: windowed candidate is DEAD (zero
-  constructors), not "Aligned"; cost-model "16 criteria" table stale;
-  compensation-intersect note (now partially wired via the RFC-182 fix).
+  constructors), not "Aligned"; compensation-intersect note is now partially
+  wired via the RFC-182 fix. The stale cost-model "16 criteria" table was
+  corrected by RFC-190.
 - [ ] Matcher arc (Graefe audit findings 1-3, one RFC): dependency-aware alias
   matcher (`AliasMap.findCompleteMatches`), MatchIntermediate permutation
   enumeration, retire the phantom `WithSwappedQuantifiers` double-fire.
@@ -6225,27 +6597,38 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       Make the merged-row keys carry the qualified names the projection
       mints, or decline the shape at plan time.
 
-### [ ] N-way projected-EXISTS emits plans that cannot execute (RFC-183 §15 finding)
+### [x] N-way comma-join projected-EXISTS emitted a plan that could not execute — RESOLVED by RFC-190.1 (RFC-183 §15 finding)
 
-`ImplementNestedLoopJoinRule.implementNWayJoinWithExistential` — the N-WAY FLAT
-EXISTENTIAL arm — produces plans that die at execution. Every query reaching it
-fails with:
+**Resolution:** RFC-190.1 direct-emits the flat name-model
+`[ForEach×N, Existential]` shape, uses a live-existential guard while
+PartitionSelectRule decomposes it into ordinary binary NLJs, and retired
+`implementNWayJoinWithExistential` atomically with that replacement. The
+comma-join, explicit/buried-join, discriminating duplicate-column, four-leg,
+WHERE/NOT-EXISTS, and SARG/stress regressions pin the replacement path.
+
+**Historical RFC-183 comma-join diagnosis below (present tense in the original
+record referred to that checkpoint, not current code).** At the RFC-183
+checkpoint, `ImplementNestedLoopJoinRule.implementNWayJoinWithExistential` —
+the N-WAY FLAT EXISTENTIAL arm — produced a plan for the comma-join reproducer
+below that died at execution with:
 
     correlated FieldValue "V" (correlation "A") evaluated against an
     unbound/unrecognized context (*RowEvalContext (multi-leg row cannot serve a
     source-relative ordinal)) — no frontier row resolved (planner/executor bug)
 
-Reproducer (a PROJECTED exists over >2 ForEach legs; a WHERE-EXISTS does NOT
-reach this arm — it needs N>2 ForEach quantifiers plus a trailing Existential in
-one flattened Select):
+Comma-join reproducer (a PROJECTED exists over >2 ForEach legs; a WHERE-EXISTS
+does NOT reach this arm — it needs N>2 ForEach quantifiers plus a trailing
+Existential in one flattened Select):
 
     SELECT a.v, EXISTS (SELECT 1 FROM d WHERE d.id = a.id)
     FROM a, b, c WHERE a.id = b.id AND b.id = c.id
 
 PRE-EXISTING, not introduced by RFC-183: confirmed by reverting that RFC's memo
-fix and re-running — identical failure. It is also why no corpus query reaches
-the arm (instrumenting the yield over all 2407 queries counts ZERO firings):
-the feature has never worked, so nobody could pin a scenario for it.
+fix and re-running — identical failure. Instrumenting all 2407 corpus queries
+counted ZERO arm firings, so that corpus neither exposed this comma-join crash
+nor covered the distinct explicit-`JOIN…ON` path that already executed
+correctly. The zero count did not establish that the arm as a whole had never
+worked.
 
 RFC-183 SHIPS NO REGRESSION HERE — proven by plan parity, recorded because the
 commit titled "the N-way EXISTS local fix converts a crash into WRONG ROWS —
@@ -6266,7 +6649,8 @@ change that produces wrong rows.
 Related but SEPARATE, already fixed on the RFC-183 branch: the same arm was
 costing the whole N-way chain as `Scan(A)` — a memo-linkage bug. Pinned by
 `TestNWayProjectedExists_OuterQuantifierMatchesExecutedPlan`
-(pkg/relational/core/embedded). That fix does NOT make these plans executable.
+(pkg/relational/core/embedded). That fix does NOT make this comma-join plan
+executable.
 
 ALREADY TRIED AND REVERTED — TWICE, and the second attempt proved the fix is
 ACTIVELY HARMFUL, not merely insufficient:
@@ -6274,8 +6658,9 @@ ACTIVELY HARMFUL, not merely insufficient:
 Rebasing the projected result value through `rebaseOuterLegValueOrdinal` (the
 same treatment `joinPreds`/`existPreds` get, and the obvious candidate since
 the RV is passed unrebased at rule_implement_nested_loop_join.go's
-"passed through unrebased"). DIAGNOSED PROPERLY the second time — the current
-code computes the rebase and then DISCARDS it (`flatMapResult = projected`, not
+"passed through unrebased"). DIAGNOSED PROPERLY the second time — the
+then-current code computed the rebase and then DISCARDED it
+(`flatMapResult = projected`, not
 the rebased value), and the rebase genuinely works: `A.V#1` (source-relative
 ordinal) -> `q$N.V#3` (merged-relative). Applying `flatMapResult = rebased`
 makes the projection RESOLVE, and a single-row query then EXECUTES correctly
@@ -6302,9 +6687,10 @@ multi-leg row present a coherent OUTPUT name model that all three resolve
 against — which is exactly the qualified/bare seam, and a workstream, not a
 rule tweak.
 
-No yamsql scenario is pinned: the corpus is a regression net; pinning the error
-string promotes a defect to expected behaviour, and pinning the wrong rows is
-worse. Add the scenario as part of the real fix.
+No yamsql scenario was pinned at that checkpoint: pinning the error string
+would have promoted a defect to expected behaviour, and pinning the wrong rows
+would have been worse. RFC-190.1 instead added row, shape, SARG, and stress
+coverage for the replacement path.
 
 LIKELY THE SAME ROOT CAUSE AS THE COMMA-JOIN-OVER-NESTED-SHADOWING-CTE ENTRY
 above ("P.N vs merged-row keys [P.M N Q.M] — the qualified/bare name-model
@@ -6320,9 +6706,9 @@ The guard that fires is values.go:902, keyed on
 RootIsLegRelativeUnpinned() && rowIsMultiLeg() — deliberate correct-or-loud,
 not the bug itself.
 
-Decide first whether the arm should be FIXED or REMOVED — it has never
-produced a working plan, so removing it and declining the shape at plan time
-(correct-or-loud) is a legitimate outcome rather than a retreat.
+RFC-190.1 resolved this decision: the arm was removed only together with the
+direct-emit + guarded-partition replacement, so the supported N-way shapes now
+plan and execute rather than merely declining.
 
 ### [ ] RFC-183 residual: 32 no-quantifier memo edges (RFC-184 W2/W3)
 
@@ -6370,8 +6756,11 @@ is the change that caused the 49 shape flips.
   (b775b8572). The sort required a genuine cost-model fix (Graefe-ACK'd): the
   wrapper cost-over-first masked a latent bug where a redundant InMemorySort wins
   STRUCTURAL tie-breakers (depth +1, or a pushdown-split map/filter count) before
-  criterion #12 — fixed by gating 4 structural rungs to abstain when a sort is
-  present. Enabling infra: the DML-aware explain-differ (51ee03bf5 — the SELECT-only
+  the fewer-sorts comparison. RFC-184 initially gated 4 additional structural
+  rungs when a sort was present; RFC-190 later proved the resulting 5-gate
+  comparator non-transitive and superseded it with sort-transparent depth,
+  unconditional Java rungs, and a promoted fewer-sorts comparison before the
+  structural block. Enabling infra: the DML-aware explain-differ (51ee03bf5 — the SELECT-only
   differ was unsound; it let a fod DML corruption read clean) + the residual-
   correlation DML regression test (e2b2a7395). Every behavior change is Graefe-ACK'd;
   gated on memoinvariant unreachable=0 + rowdiff Ordering/Stats/Cost sweeps +
@@ -6384,9 +6773,9 @@ is the change that caused the 49 shape flips.
     (i) root-cause why the unsplit-elided plan (Project(PredicatesFilter(Fetch(
         IndexScan)))) is ABSENT at the Project group for rowdiff seeds 132/214 — a
         W2 disentangled-capture search-completeness asymmetry, not a cost-model bug.
-    (ii) evaluate the terminal form: hoist criterion #12 (fewer in-memory sorts)
-        ABOVE all structural rungs, or gate each structural rung on EQUAL sort counts
-        (not ==0-both), retiring the 4 per-rung gates. Same rowdiff-sweep validation.
+    (ii) ✅ DONE in RFC-190: hoisted the fewer-in-memory-sorts comparison above all
+         affected structural rungs, made depth sort-transparent, and retired all
+         5 Go-specific per-rung sort gates. Full rowdiff/yamsql/FDB sweep green.
     (iii) RecordQueryMapPlan/RecordQueryProjectionPlan inherit the empty
         PlanExprBase GetCorrelatedToWithoutChildren default while Java's
         RecordQueryMapPlan.getCorrelatedToWithoutChildren folds the result value.

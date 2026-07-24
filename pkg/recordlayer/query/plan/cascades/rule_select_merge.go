@@ -88,15 +88,11 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// existential quantifier(s) — must NOT have a POSITIONAL ordinal-seed
 	// box dissolved into it. The wrap is the semi-join shape
 	// implementExistentialSelect plans as FlatMap(box, FirstOrDefault(inner))
-	// with the box SEPARATELY enumerated (index SARGs live). Merging the box up
-	// yields a flat [ForEach×N, Existential] select that Go can only implement
-	// MATERIALIZED: PartitionSelectRule is ForEach-only (it never partitions a
-	// select carrying an existential), so the N-way existential arm builds a
-	// predicate-free left-deep cross-product with the join predicates as one
-	// post-filter — a strictly worse alternative that small-cardinality costing
-	// can still pick. A parent with >= 2 ForEach quantifiers (the projected-
-	// EXISTS-over-buried-box fold) is UNAFFECTED — its flatten is load-bearing
-	// (the N-way arm is its only implementer).
+	// with the box SEPARATELY enumerated so its index SARGs and ordinal contract
+	// stay intact. RFC-190 partitions deliberately emitted name-model N-way
+	// existential selects, but that does not make a positional gathered-cluster
+	// seed safe to dissolve into its parent. A parent that already has multiple
+	// ForEach quantifiers is not this wrapper shape and remains mergeable.
 	forEachCount, hasExistential := 0, false
 	for _, q := range quantifiers {
 		switch q.Kind() {

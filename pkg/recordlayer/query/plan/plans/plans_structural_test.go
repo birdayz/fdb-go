@@ -6,6 +6,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -31,6 +32,105 @@ func TestRecordQueryScanPlan_WithPrimaryKey_PreservesComparisons(t *testing.T) {
 	}
 	if got := scan.GetPrimaryKeyValues(); len(got) != 1 {
 		t.Fatalf("expected 1 PK value after WithPrimaryKey, got %d", len(got))
+	}
+}
+
+func TestRecordQueryIndexPlan_FanOutOrderingHintsAbstain(t *testing.T) {
+	t.Parallel()
+
+	empty := predicates.EmptyComparisonRange()
+	fanOut := NewRecordQueryIndexPlan(
+		"idx_tags",
+		[]*predicates.ComparisonRange{empty},
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithIndexMetadata(
+		[]string{"TAGS"},
+		[]string{"ID"},
+		false,
+	).WithDistinctRecordsSignal(true)
+
+	if ordering := fanOut.HintOrdering(); ordering.IsKnown ||
+		len(ordering.Keys) != 0 {
+		t.Fatalf(
+			"fan-out HintOrdering() = %#v, want conservative empty ordering",
+			ordering,
+		)
+	}
+	if rich := fanOut.HintRichOrdering(); len(rich.GetKeys()) != 0 {
+		t.Fatalf(
+			"fan-out HintRichOrdering() keys = %#v, want empty",
+			rich.GetKeys(),
+		)
+	}
+
+	scalar := NewRecordQueryIndexPlan(
+		"idx_score",
+		[]*predicates.ComparisonRange{empty},
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithIndexMetadata(
+		[]string{"SCORE"},
+		[]string{"ID"},
+		false,
+	).WithDistinctRecordsSignal(false)
+	if ordering := scalar.HintOrdering(); !ordering.IsKnown ||
+		len(ordering.Keys) != 2 {
+		t.Fatalf(
+			"scalar HintOrdering() = %#v, want SCORE + ID ordering",
+			ordering,
+		)
+	}
+	if rich := scalar.HintRichOrdering(); len(rich.GetKeys()) != 2 {
+		t.Fatalf(
+			"scalar HintRichOrdering() keys = %#v, want SCORE + ID",
+			rich.GetKeys(),
+		)
+	}
+}
+
+func TestRecordQueryIndexPlan_ExpressionKeyOrderingHintsAbstain(t *testing.T) {
+	t.Parallel()
+
+	expressionKey := NewRecordQueryIndexPlan(
+		"idx_cardinality_tags",
+		[]*predicates.ComparisonRange{predicates.EmptyComparisonRange()},
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithIndexMetadata(
+		[]string{"TAGS"},
+		[]string{"ID"},
+		false,
+	).WithDistinctRecordsSignal(false).
+		WithOrderingKeyNamesUnavailable()
+
+	if ordering := expressionKey.HintOrdering(); ordering.IsKnown ||
+		len(ordering.Keys) != 0 {
+		t.Fatalf(
+			"expression-key HintOrdering() = %#v, want conservative empty ordering",
+			ordering,
+		)
+	}
+	if rich := expressionKey.HintRichOrdering(); len(rich.GetKeys()) != 0 {
+		t.Fatalf(
+			"expression-key HintRichOrdering() keys = %#v, want empty",
+			rich.GetKeys(),
+		)
+	}
+
+	// A later metadata-preserving stamp must not erase the explicit unsafe
+	// state and reintroduce TAGS/ID ordering.
+	restamped := expressionKey.WithIndexMetadata(
+		[]string{"TAGS"},
+		[]string{"ID"},
+		false,
+	)
+	if restamped.HintOrdering().IsKnown ||
+		len(restamped.HintRichOrdering().GetKeys()) != 0 {
+		t.Fatal("WithIndexMetadata re-enabled expression-key ordering")
 	}
 }
 
@@ -629,6 +729,92 @@ func TestDistinctPlan_HashCodeWithoutChildren_SameAcrossInstances(t *testing.T) 
 }
 
 // ---------------------------------------------------------------------------
+// RecordQueryUnorderedPrimaryKeyDistinctPlan
+// ---------------------------------------------------------------------------
+
+func TestUnorderedPrimaryKeyDistinctPlan_QuantifierAndRelink(t *testing.T) {
+	t.Parallel()
+	inner := stub("Inner")
+	alias := values.NamedCorrelationIdentifier("pk_distinct_inner")
+	innerRef := expressions.FinalOfAtStage(inner, expressions.StageCanonical)
+	innerQ := expressions.NamedPhysicalQuantifier(alias, innerRef)
+	p := NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(innerQ)
+
+	if p.GetInner() != inner {
+		t.Fatal("GetInner() did not resolve the supplied quantifier")
+	}
+	if got := p.GetInnerQuantifier(); got.GetRangesOver() != innerRef ||
+		got.Kind() != expressions.QuantifierPhysical ||
+		got.GetAlias() != alias {
+		t.Fatalf("inner quantifier = %#v, want supplied physical quantifier", got)
+	}
+	resultQOV, ok := p.GetResultValue().(*values.QuantifiedObjectValue)
+	if !ok || resultQOV.Correlation != alias {
+		t.Fatalf("GetResultValue() = %#v, want QOV(%s)", p.GetResultValue(), alias)
+	}
+
+	replacement := stub("Replacement")
+	replacementQ := QuantifierOverPlan(replacement)
+	relinkedExpr, err := p.WithChildren([]expressions.Quantifier{replacementQ})
+	if err != nil {
+		t.Fatalf("WithChildren: %v", err)
+	}
+	relinked, ok := relinkedExpr.(*RecordQueryUnorderedPrimaryKeyDistinctPlan)
+	if !ok || relinked == p || relinked.GetInner() != replacement {
+		t.Fatalf("relinked plan = %#v, want fresh plan over replacement", relinkedExpr)
+	}
+	if p.GetInner() != inner {
+		t.Fatal("WithChildren mutated the receiver")
+	}
+	for _, invalid := range [][]expressions.Quantifier{
+		nil,
+		{innerQ, replacementQ},
+	} {
+		if _, err := p.WithChildren(invalid); err == nil {
+			t.Fatalf("WithChildren accepted %d children", len(invalid))
+		}
+	}
+
+	withInner := p.WithInner(replacement)
+	if withInner == p || withInner.GetInner() != replacement || p.GetInner() != inner {
+		t.Fatal("WithInner did not copy-preservingly relink the child")
+	}
+}
+
+func TestUnorderedPrimaryKeyDistinctPlan_Hints(t *testing.T) {
+	t.Parallel()
+	pk := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
+	inner := NewRecordQueryScanPlan(
+		[]string{"T"},
+		values.UnknownType,
+		true,
+	).WithPrimaryKey([]values.Value{pk})
+	p := NewRecordQueryUnorderedPrimaryKeyDistinctPlan(inner)
+
+	childCost := properties.Cost{Cardinality: 100, CPU: 7}
+	if got, want := p.HintCost(
+		[]properties.Cost{childCost},
+		nil,
+	), properties.DistinctCost(childCost); got != want {
+		t.Fatalf("HintCost() = %#v, want %#v", got, want)
+	}
+	if got := p.HintCost(nil, nil); got != (properties.Cost{}) {
+		t.Fatalf("HintCost(nil) = %#v, want zero", got)
+	}
+
+	if p.OrderingSourceRef() != p.GetInnerQuantifier().GetRangesOver() {
+		t.Fatal("ordering source is not the child reference")
+	}
+	ordering := p.HintOrdering()
+	if !ordering.IsKnown ||
+		len(ordering.Keys) != 1 ||
+		ordering.Keys[0] != pk ||
+		!ordering.DescendingAt(0) {
+		t.Fatalf("HintOrdering() = %#v, want reverse primary-key ordering", ordering)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // RecordQueryProjectionPlan
 // ---------------------------------------------------------------------------
 
@@ -1017,6 +1203,71 @@ func TestIntersectionPlan_CopiesSlices(t *testing.T) {
 	}
 	if values.ExplainValue(p.GetComparisonKeyValues()[0]) != values.ExplainValue(&values.FieldValue{Field: "pk", Typ: values.UnknownType}) {
 		t.Fatal("intersection should have an independent copy of comparison keys")
+	}
+}
+
+func TestIntersectionPlan_ReverseOrderingContractSurvivesCopies(t *testing.T) {
+	t.Parallel()
+
+	key := &values.FieldValue{Field: "pk", Typ: values.UnknownType}
+	parts := []properties.ProvidedOrderingPart{{
+		Value:     key,
+		SortOrder: properties.ProvidedSortOrderDescending,
+	}}
+	p := NewRecordQueryIntersectionPlanWithOrdering(
+		[]RecordQueryPlan{stub("A"), stub("B")},
+		parts,
+		true,
+	)
+	if p == nil {
+		t.Fatal("reverse descending intersection constructor declined a naturally executable key")
+	}
+	if !p.IsReverse() {
+		t.Fatal("reverse flag was not retained")
+	}
+	if !strings.Contains(p.Explain(), "REVERSE") {
+		t.Fatalf("Explain() = %q, want a reverse marker", p.Explain())
+	}
+	hint := p.HintOrdering()
+	if !hint.IsKnown || len(hint.Keys) != 1 || !hint.Descending[0] || hint.NullsFirstAt(0) {
+		t.Fatalf("HintOrdering() = %#v, want PK DESC NULLS LAST", hint)
+	}
+
+	relinkedExpr := p.WithQuantifiers(QuantifiersOverPlans([]RecordQueryPlan{stub("C"), stub("D")}))
+	relinked, ok := relinkedExpr.(*RecordQueryIntersectionPlan)
+	if !ok {
+		t.Fatalf("WithQuantifiers() = %T, want *RecordQueryIntersectionPlan", relinkedExpr)
+	}
+	if !relinked.IsReverse() ||
+		len(relinked.GetComparisonKeyOrderingParts()) != 1 ||
+		relinked.GetComparisonKeyOrderingParts()[0].SortOrder != properties.ProvidedSortOrderDescending {
+		t.Fatalf("WithQuantifiers() lost reverse ordering: %#v", relinked)
+	}
+	if relinked.GetInners()[0].Explain() != "C" {
+		t.Fatalf("WithQuantifiers() did not relink children: %s", relinked.GetInners()[0].Explain())
+	}
+
+	forward := NewRecordQueryIntersectionPlanWithOrdering(
+		nil,
+		[]properties.ProvidedOrderingPart{{
+			Value:     key,
+			SortOrder: properties.ProvidedSortOrderAscending,
+		}},
+		false,
+	)
+	if forward == nil {
+		t.Fatal("forward ascending intersection constructor declined a natural key")
+	}
+	if p.EqualsPlanWithoutChildren(forward) {
+		t.Fatal("opposite merge directions must not be structurally equal")
+	}
+	if p.HashCodeWithoutChildren() == forward.HashCodeWithoutChildren() {
+		t.Fatal("opposite merge directions should produce different structural hashes")
+	}
+
+	parts[0].Value = &values.FieldValue{Field: "mutated", Typ: values.UnknownType}
+	if values.ExplainValue(p.GetComparisonKeyOrderingParts()[0].Value) != "pk" {
+		t.Fatal("intersection should have an independent copy of semantic ordering parts")
 	}
 }
 

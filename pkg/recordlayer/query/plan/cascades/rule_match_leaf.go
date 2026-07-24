@@ -1,8 +1,11 @@
 package cascades
 
 import (
+	"sort"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // MatchLeafRule is the Cascades rule that seeds the partial-match
@@ -92,10 +95,11 @@ type leafMatchResult struct {
 }
 
 // matchLeafWithCandidate checks if queryExpr is subsumed by
-// candidateExpr. For leaf expressions (no quantifiers, no
-// correlations), the alias enumeration is trivial — only the empty
-// alias map needs to be tested. Subsumption is checked via structural
-// equality (EqualsWithoutChildren).
+// candidateExpr. Leaf expressions can still carry external correlations
+// (Explode(FieldValue(QOV(outer), array)) is the important case), so it
+// enumerates the same unbound-correlation bijections as Java's
+// RelationalExpression.enumerateUnboundCorrelatedTo. Subsumption is checked
+// via structural equality (EqualsWithoutChildren) under each map.
 //
 // This is Go's implementation of Java's
 // RelationalExpression.subsumedBy for leaf expressions. Java's is
@@ -107,49 +111,122 @@ func matchLeafWithCandidate(
 	queryExpr expressions.RelationalExpression,
 	candidateExpr expressions.RelationalExpression,
 ) []leafMatchResult {
-	// For leaf expressions with no correlations,
-	// enumerateUnboundCorrelatedTo yields exactly one entry: the
-	// empty alias map. This mirrors the Java flow where leaf
-	// expressions have empty correlatedTo sets.
-	boundAliasMap := EmptyAliasMap()
+	var results []leafMatchResult
+	for _, boundAliasMap := range enumerateLeafCorrelationAliasMaps(
+		queryExpr,
+		candidateExpr,
+	) {
+		exprAliasMap := expressions.EmptyAliasMap()
+		valid := true
+		for _, source := range boundAliasMap.Sources() {
+			exprAliasMap, valid = exprAliasMap.With(
+				source,
+				boundAliasMap.GetTarget(source),
+			)
+			if !valid {
+				break
+			}
+		}
+		if !valid ||
+			!queryExpr.EqualsWithoutChildren(candidateExpr, exprAliasMap) {
+			continue
+		}
 
-	// Subsumption check: structural equality under the empty alias map.
-	// Converts from cascades.AliasMap to expressions.AliasMap for the
-	// EqualsWithoutChildren call.
-	exprAliasMap := expressions.EmptyAliasMap()
-	if !queryExpr.EqualsWithoutChildren(candidateExpr, exprAliasMap) {
+		// Build a RegularMatchInfo with empty bindings — the leaf match
+		// carries no parameter bindings, no predicate mappings, and no
+		// ordering information. The MaxMatchMap, however, is mandatory:
+		// Java's RelationalExpression.exactlySubsumedBy always computes one.
+		candidateResult := candidateExpr.GetResultValue()
+		maxMatchMap := buildMatchMaxMatchMap(
+			candidateResult,
+			candidateResult,
+			boundAliasMap,
+		)
+		matchInfo := NewRegularMatchInfo(
+			nil,
+			boundAliasMap,
+			nil,
+			nil,
+			maxMatchMap,
+			EmptyGroupByMappings(),
+			nil,
+			nil,
+		)
+		results = append(results, leafMatchResult{
+			boundAliasMap: boundAliasMap,
+			matchInfo:     matchInfo,
+		})
+	}
+	return results
+}
+
+func enumerateLeafCorrelationAliasMaps(
+	queryExpr expressions.RelationalExpression,
+	candidateExpr expressions.RelationalExpression,
+) []*AliasMap {
+	queryCorrelations := expressions.GetCorrelatedToOfExpression(queryExpr)
+	candidateCorrelations := expressions.GetCorrelatedToOfExpression(candidateExpr)
+	if len(queryCorrelations) != len(candidateCorrelations) {
 		return nil
 	}
 
-	// Build a RegularMatchInfo with empty bindings — the leaf match
-	// carries no parameter bindings, no predicate mappings, and no
-	// ordering information. The MaxMatchMap, however, is mandatory:
-	// Java's RelationalExpression.exactlySubsumedBy always computes one
-	// (between the leaf's result value and the candidate leaf's result
-	// value). Without it PartialMatch.PullUp returns nil and compensation
-	// is impossible, so the data-access path never produces a scan.
-	// The leaf subsumption above proved EqualsWithoutChildren(query,
-	// candidate): the two leaves flow the identical row. Java relates them
-	// via the leaf translationMap (query scan alias → candidate scan
-	// alias), so translatedQueryResultValue == candidateResultValue — an
-	// identity MaxMatchMap. Go's leaves carry no stable result-value alias
-	// (FullUnorderedScanExpression.GetResultValue mints a fresh QOV each
-	// call), so model the identity directly: use the candidate's result
-	// value for both sides.
-	candResult := candidateExpr.GetResultValue()
-	mmm := buildMatchMaxMatchMap(candResult, candResult, boundAliasMap)
-	mi := NewRegularMatchInfo(
-		nil,                    // parameterBindingMap
-		boundAliasMap,          // bindingAliasMap
-		nil,                    // predicateMap
-		nil,                    // matchedOrderingParts
-		mmm,                    // maxMatchMap
-		EmptyGroupByMappings(), // groupByMappings
-		nil,                    // rollUpToGroupingValues
-		nil,                    // additionalPlanConstraint
-	)
+	builder := NewAliasMapBuilder()
+	for alias := range queryCorrelations {
+		if _, common := candidateCorrelations[alias]; common {
+			if !builder.PutChecked(alias, alias) {
+				return nil
+			}
+		}
+	}
+	base := builder.Build()
+	var queryUnbound []values.CorrelationIdentifier
+	var candidateUnbound []values.CorrelationIdentifier
+	for alias := range queryCorrelations {
+		if !base.ContainsSource(alias) {
+			queryUnbound = append(queryUnbound, alias)
+		}
+	}
+	for alias := range candidateCorrelations {
+		if !base.ContainsTarget(alias) {
+			candidateUnbound = append(candidateUnbound, alias)
+		}
+	}
+	if len(queryUnbound) != len(candidateUnbound) {
+		return nil
+	}
+	sort.Slice(queryUnbound, func(i, j int) bool {
+		return queryUnbound[i].Name() < queryUnbound[j].Name()
+	})
+	sort.Slice(candidateUnbound, func(i, j int) bool {
+		return candidateUnbound[i].Name() < candidateUnbound[j].Name()
+	})
 
-	return []leafMatchResult{{boundAliasMap: boundAliasMap, matchInfo: mi}}
+	var results []*AliasMap
+	used := make([]bool, len(candidateUnbound))
+	var enumerate func(int, *AliasMapBuilder)
+	enumerate = func(depth int, current *AliasMapBuilder) {
+		if depth == len(queryUnbound) {
+			results = append(results, current.Build())
+			return
+		}
+		for candidateIndex, candidateAlias := range candidateUnbound {
+			if used[candidateIndex] {
+				continue
+			}
+			next := NewAliasMapBuilder()
+			next.PutAll(current.Build())
+			if !next.PutChecked(queryUnbound[depth], candidateAlias) {
+				continue
+			}
+			used[candidateIndex] = true
+			enumerate(depth+1, next)
+			used[candidateIndex] = false
+		}
+	}
+	seed := NewAliasMapBuilder()
+	seed.PutAll(base)
+	enumerate(0, seed)
+	return results
 }
 
 var _ ExpressionRule = (*MatchLeafRule)(nil)

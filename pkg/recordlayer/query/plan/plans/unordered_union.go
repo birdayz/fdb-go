@@ -12,8 +12,10 @@ import (
 // concatenated without any ordering guarantee. Mirrors Java's
 // RecordQueryUnorderedUnionPlan.
 //
-// Distinct from RecordQueryUnionPlan which does merge-sorted output.
-// This plan simply concatenates children in implementation order.
+// Go's RecordQueryUnionPlan is another concatenating, no-dedup UNION ALL
+// implementation; it is not merge-sorted. Ordered behavior lives in
+// RecordQueryMergeSortUnionPlan. The two concat plans currently differ in
+// execution/continuation machinery and are tracked for taxonomy cleanup.
 //
 // The legs are stored ONCE, as Quantifiers over References — Java's shape
 // (`RecordQuerySetPlan`'s `List<Quantifier.Physical> quantifiers`). The raw

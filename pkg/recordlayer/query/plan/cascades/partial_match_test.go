@@ -180,18 +180,29 @@ func TestPartialMatch_CompensateCompleteMatch_SimpleMatch(t *testing.T) {
 	// The candidateAlias (output scope) must differ from the
 	// rangedOverAliases (inner candidate scope) — the PullUp translates
 	// inner-scope values to the output scope.
-	innerAlias := values.NamedCorrelationIdentifier("inner")
 	outputAlias := values.NamedCorrelationIdentifier("output")
-	innerQOV := values.NewQuantifiedObjectValue(innerAlias)
+
+	queryRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
+	)
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateRef := expressions.InitialOf(candidateScan)
+
+	// The match info must describe the expression the candidate reference
+	// actually holds — the pull-up rebuilds its chain from that reference, so a
+	// MaxMatchMap over some other value has nothing to bridge to. A leaf match
+	// is a pure passthrough: query value, candidate value and pull-through are
+	// all the candidate scan's (now stable) result value.
+	candResult := candidateScan.GetResultValue()
 
 	mmm := NewMaxMatchMap(
-		map[values.Value]values.Value{innerQOV: innerQOV},
-		innerQOV,
-		innerQOV,
+		map[values.Value]values.Value{candResult: candResult},
+		candResult,
+		candResult,
 	)
 	mi := NewRegularMatchInfo(
 		nil,
-		AliasMapOfAliases(innerAlias, innerAlias),
+		EmptyAliasMap(),
 		nil,
 		nil,
 		mmm,
@@ -200,12 +211,6 @@ func TestPartialMatch_CompensateCompleteMatch_SimpleMatch(t *testing.T) {
 		nil,
 	)
 	candidate := stubMatchCandidate{name: "idx_test"}
-	queryRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
-	candidateRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
 	pm := NewPartialMatch(EmptyAliasMap(), candidate, queryRef, queryRef.Get(), candidateRef, mi)
 
 	comp := pm.CompensateCompleteMatch(nil, outputAlias)

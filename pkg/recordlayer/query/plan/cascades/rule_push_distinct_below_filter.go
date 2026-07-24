@@ -78,7 +78,10 @@ func (r *PushDistinctBelowFilterRule) OnMatch(call *ImplementationRuleCall) {
 	// (the filter's inner): a filter preserves ordering, so a distinct that
 	// streamed above the filter is still streaming-eligible below it — but a
 	// constructor reset would drop a resume-clean streaming distinct to the
-	// cross-page-buggy hash-set as a competing memo alternative (TODO C5).
+	// memory-heavy hash-set as a competing memo alternative (TODO C5: cross-page
+	// correctness was fixed 2026-07-20; the hash-set's residual is a loud
+	// high-NDV memory-budget error, never wrong rows — so streaming is preferred
+	// for O(1) memory, not correctness).
 	streaming := distinctStreamingEligible(filterInnerExpr, filterInnerPlan)
 	// The distinct's edge ranges over the BAKED concrete inner frozen in a
 	// detached single-member final reference — the memo-canonical structure

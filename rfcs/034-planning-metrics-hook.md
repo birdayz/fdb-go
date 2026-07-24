@@ -59,7 +59,7 @@ it (error if exception, info if `LOG_QUERY` or duration exceeds
 
 Key observations:
 - Java does **not** log an absolute "estimated cost" scalar. The Cascades cost
-  model is a *comparator* (16 criteria), not a number. The plan identity Java
+  model is a *multi-criteria comparator*, not a number. The plan identity Java
   logs is `planHash` + `explain()`. **We match Java: no invented scalar cost.**
 - The logger is *always* called in the finally block; the options gate the log
   *level*, not whether the record is produced.

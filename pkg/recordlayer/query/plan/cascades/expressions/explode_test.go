@@ -60,7 +60,7 @@ func TestExplode_EqualsWithoutChildren(t *testing.T) {
 	t.Parallel()
 	arr := values.NewArrayConstructorValue(values.NotNullLong, nil)
 	e1 := NewExplodeExpression(arr)
-	e2 := NewExplodeExpression(arr) // same pointer
+	e2 := NewExplodeExpression(arr)
 	if !e1.EqualsWithoutChildren(e2, nil) {
 		t.Fatal("two Explodes over same Value should be EqualsWithoutChildren")
 	}
@@ -68,6 +68,67 @@ func TestExplode_EqualsWithoutChildren(t *testing.T) {
 	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	if e1.EqualsWithoutChildren(scan, nil) {
 		t.Fatal("Explode should NOT equal Scan")
+	}
+}
+
+func TestExplode_EqualsWithoutChildren_CorrelatedFieldUnderAliasMap(t *testing.T) {
+	t.Parallel()
+
+	queryAlias := values.UniqueCorrelationIdentifier()
+	candidateAlias := values.UniqueCorrelationIdentifier()
+	queryCollection := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(queryAlias),
+		"TAGS",
+		values.NewArrayType(true, values.NotNullString),
+	)
+	candidateCollection := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(candidateAlias),
+		"TAGS",
+		values.NewArrayType(true, values.NotNullString),
+	)
+	queryExplode := NewExplodeExpression(queryCollection)
+	candidateExplode := NewExplodeExpression(candidateCollection)
+
+	if queryExplode.EqualsWithoutChildren(candidateExplode, EmptyAliasMap()) {
+		t.Fatal("correlated Explodes with different unmapped aliases must not compare equal")
+	}
+	aliases := AliasMapOf(queryAlias, candidateAlias)
+	if !queryExplode.EqualsWithoutChildren(candidateExplode, aliases) {
+		t.Fatal("same correlated field under a query-to-candidate alias map must compare equal")
+	}
+}
+
+func TestExplode_EqualsWithoutChildren_RejectsDifferentFieldAndOrdinality(t *testing.T) {
+	t.Parallel()
+
+	queryAlias := values.UniqueCorrelationIdentifier()
+	candidateAlias := values.UniqueCorrelationIdentifier()
+	queryCollection := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(queryAlias),
+		"TAGS",
+		values.NewArrayType(true, values.NotNullString),
+	)
+	differentField := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(candidateAlias),
+		"CATEGORIES",
+		values.NewArrayType(true, values.NotNullString),
+	)
+	aliases := AliasMapOf(queryAlias, candidateAlias)
+
+	queryExplode := NewExplodeExpression(queryCollection)
+	if queryExplode.EqualsWithoutChildren(NewExplodeExpression(differentField), aliases) {
+		t.Fatal("alias mapping must not make Explodes over different fields equal")
+	}
+	sameField := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(candidateAlias),
+		"TAGS",
+		values.NewArrayType(true, values.NotNullString),
+	)
+	if queryExplode.EqualsWithoutChildren(
+		NewExplodeExpressionWithOrdinality(sameField, true),
+		aliases,
+	) {
+		t.Fatal("alias mapping must not conflate ordinal and non-ordinal Explodes")
 	}
 }
 

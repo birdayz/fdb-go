@@ -210,6 +210,12 @@ func (f *FieldKeyExpression) EvaluateInt64(record *FDBStoredRecord[proto.Message
 	if err != nil {
 		return 0, false, err
 	}
+	if fd.IsList() {
+		// Repeated integer fields must use Evaluate so FanOut and Concatenate
+		// preserve their list semantics. Calling Int or Uint on a list value
+		// panics in protoreflect.
+		return 0, false, nil
+	}
 	if fd.HasPresence() && !m.Has(fd) {
 		return 0, false, nil
 	}

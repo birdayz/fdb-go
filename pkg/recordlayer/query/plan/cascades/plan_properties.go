@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"math"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -98,6 +100,7 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		*plans.RecordQueryInJoinPlan:
 		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
 		*plans.RecordQueryMultiIntersectionOnValuesPlan,
@@ -175,8 +178,15 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryProjectionPlan,
-		*plans.RecordQueryMapPlan:
+		*plans.RecordQueryMapPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
 		return storedRecordFromChildren(plan.GetChildren())
+	case *plans.RecordQueryFlatMapPlan:
+		if p, ok := plan.(*plans.RecordQueryFlatMapPlan); ok &&
+			p.InheritOuterRecordProperties() {
+			return computeStoredRecord(p.GetOuter())
+		}
+		return false
 	case *plans.RecordQueryFirstOrDefaultPlan,
 		*plans.RecordQueryDefaultOnEmptyPlan:
 		return false
@@ -241,6 +251,7 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
 		*plans.RecordQueryInJoinPlan,
 		*plans.RecordQueryInUnionPlan,
 		*plans.RecordQueryFirstOrDefaultPlan,
@@ -249,6 +260,11 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		// single child, so the M5 index common-PK survives above the fetch.
 		*plans.RecordQueryFetchFromPartialRecordPlan:
 		return pkFromChildren(plan.GetChildren())
+	case *plans.RecordQueryFlatMapPlan:
+		if p.InheritOuterRecordProperties() {
+			return computePrimaryKey(p.GetOuter())
+		}
+		return nil
 	case *plans.RecordQueryUnionPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
@@ -295,6 +311,9 @@ func commonPKFromChildren(children []plans.RecordQueryPlan) any {
 }
 
 func computeWrapperOrdering(w physicalPlanExpression) properties.Ordering {
+	if rich, isJoin := computeJoinRichOrdering(w); isJoin {
+		return plainOrderingFromRich(rich)
+	}
 	if hinter, ok := w.(properties.OrderingHinter); ok {
 		return hinter.HintOrdering()
 	}
@@ -302,6 +321,9 @@ func computeWrapperOrdering(w physicalPlanExpression) properties.Ordering {
 }
 
 func computeWrapperRichOrdering(w physicalPlanExpression) *properties.RichOrdering {
+	if rich, isJoin := computeJoinRichOrdering(w); isJoin {
+		return rich
+	}
 	if rh, ok := w.(properties.RichOrderingHinter); ok {
 		return rh.HintRichOrdering()
 	}
@@ -333,6 +355,176 @@ func computeWrapperRichOrdering(w physicalPlanExpression) *properties.RichOrderi
 		bm[k] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 	}
 	return properties.NewRichOrdering(bm, o.Keys, false)
+}
+
+// computeJoinRichOrdering ports Java OrderingProperty.visitFlatMapPlan for
+// Go's correlated FlatMap implementation. An ordered claim is made only
+// when both child edges are exact final singletons. That qualification is
+// essential in Go: a normal join ranges over shared memo groups and extraction
+// is free to relink those edges to their cheaper winners. The ordering-aware
+// NLJ variants freeze both selected children in private final references before
+// they reach this property.
+//
+// Java's cases are:
+//   - outer max cardinality == 1: the result follows the inner;
+//   - otherwise, a non-distinct outer determines the whole result ordering;
+//   - a distinct outer permits the inner ordering to be appended.
+func computeJoinRichOrdering(w physicalPlanExpression) (*properties.RichOrdering, bool) {
+	if w == nil {
+		return nil, false
+	}
+	plan := w.GetRecordQueryPlan()
+	if plan == nil {
+		return nil, false
+	}
+
+	var flatMap *plans.RecordQueryFlatMapPlan
+	switch p := plan.(type) {
+	case *plans.RecordQueryFlatMapPlan:
+		flatMap = p
+	default:
+		return nil, false
+	}
+	result := flatMap.GetResultValue()
+
+	quantifiers := plan.GetQuantifiers()
+	if len(quantifiers) != 2 || result == nil {
+		return properties.EmptyOrdering(), true
+	}
+	outerAlias := quantifiers[0].GetAlias()
+	innerAlias := quantifiers[1].GetAlias()
+	outerExpr, ok := exactFinalPhysicalMember(quantifiers[0].GetRangesOver())
+	if !ok {
+		return properties.EmptyOrdering(), true
+	}
+	innerExpr, ok := exactFinalPhysicalMember(quantifiers[1].GetRangesOver())
+	if !ok {
+		return properties.EmptyOrdering(), true
+	}
+
+	outerOrdering := computeWrapperRichOrdering(outerExpr)
+	innerOrdering := computeWrapperRichOrdering(innerExpr)
+	if outerOrdering == nil || innerOrdering == nil {
+		return properties.EmptyOrdering(), true
+	}
+	outerOrdering = outerOrdering.PullUpThroughValue(
+		flatMapOrderingResultForChild(flatMap, outerAlias, true), outerAlias)
+	innerOrdering = innerOrdering.PullUpThroughValue(result, innerAlias)
+	if outerOrdering == nil || innerOrdering == nil {
+		return properties.EmptyOrdering(), true
+	}
+
+	outerCardinalities := computeCardinalities(outerExpr, outerExpr.GetRecordQueryPlan())
+	outerMax := outerCardinalities.GetMaxCardinality()
+	if !outerMax.IsUnknown() && outerMax.Value() == 1 {
+		return innerOrdering, true
+	}
+	if !outerOrdering.IsDistinct() {
+		return outerOrdering, true
+	}
+	return properties.ConcatOrderings(outerOrdering, innerOrdering), true
+}
+
+// flatMapOrderingResultForChild returns the semantic result-value lens used to
+// translate an individual child's ordering. Projected EXISTS FlatMaps mark
+// inheritOuterRecordProperties and can carry the outer projection's field
+// accesses in source-local form (ID#0) after SQL lowering. That representation
+// has no correlation with which to distinguish the two FlatMap children, even
+// though the inherit flag is explicit authority that those ordinary fields
+// come from the outer row.
+//
+// For ordering translation only, root source-local FieldValues in that result
+// constructor on the outer alias. The executable result value is untouched.
+// This lets the normal pull-up/push-down and safe root-bridge checks prove
+// ID#0 <-> T1.ID#0 while constants and the existential boolean remain
+// unowned. Ordinary joins (inherit=false) keep the original, conservative
+// multi-child ambiguity behavior.
+func flatMapOrderingResultForChild(
+	flatMap *plans.RecordQueryFlatMapPlan,
+	childAlias values.CorrelationIdentifier,
+	outer bool,
+) values.Value {
+	if flatMap == nil {
+		return nil
+	}
+	result := flatMap.GetResultValue()
+	if !outer || !flatMap.InheritOuterRecordProperties() {
+		return result
+	}
+	rc, ok := result.(*values.RecordConstructorValue)
+	if !ok {
+		return result
+	}
+	fields := make([]values.RecordConstructorField, len(rc.Fields))
+	copy(fields, rc.Fields)
+	changed := false
+	for i := range fields {
+		fieldValue, ok := fields[i].Value.(*values.FieldValue)
+		if !ok || fieldValue == nil || fieldValue.Child != nil ||
+			len(values.GetCorrelatedToOfValue(fieldValue)) != 0 {
+			continue
+		}
+		qualified := *fieldValue
+		qualified.Child = values.NewQuantifiedObjectValue(childAlias)
+		fields[i].Value = &qualified
+		changed = true
+	}
+	if !changed {
+		return result
+	}
+	return values.NewRawRecordConstructorValue(fields...)
+}
+
+// exactFinalPhysicalMember resolves the private-reference shape used by an
+// ordering-aware join leg. A shared or exploratory group is deliberately
+// rejected even when it currently has one apparent winner: it can still grow
+// or be relinked, invalidating a sort-elision proof made against that member.
+func exactFinalPhysicalMember(ref *expressions.Reference) (physicalPlanExpression, bool) {
+	if ref == nil || len(ref.Members()) != 0 {
+		return nil, false
+	}
+	finals := ref.FinalMembers()
+	if len(finals) != 1 {
+		return nil, false
+	}
+	ph, ok := finals[0].(physicalPlanExpression)
+	return ph, ok && ph.GetRecordQueryPlan() != nil
+}
+
+// plainOrderingFromRich is the partition-key projection of a rich ordering.
+// Fixed keys do not consume a sort position; directional bindings retain both
+// direction and counterflow NULL placement. Sort satisfaction itself still
+// uses the full RichOrdering.
+func plainOrderingFromRich(rich *properties.RichOrdering) properties.Ordering {
+	if rich == nil {
+		return properties.Ordering{}
+	}
+	var (
+		keys       []values.Value
+		descending []bool
+		nullsFirst []bool
+	)
+	for _, key := range rich.GetKeys() {
+		sortOrder := properties.SortOrderOf(rich.GetBindingMap()[key])
+		if !sortOrder.IsDirectional() {
+			continue
+		}
+		keys = append(keys, key)
+		desc := sortOrder.IsAnyDescending()
+		descending = append(descending, desc)
+		nullsFirst = append(nullsFirst,
+			sortOrder == properties.ProvidedSortOrderAscending ||
+				sortOrder == properties.ProvidedSortOrderDescendingNullsFirst)
+	}
+	if len(keys) == 0 {
+		return properties.Ordering{}
+	}
+	return properties.Ordering{
+		IsKnown:    true,
+		Keys:       keys,
+		Descending: descending,
+		NullsFirst: nullsFirst,
+	}
 }
 
 // computeRefPlanProperties computes and stores plan properties for all
@@ -410,14 +602,11 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 		// the M3 whole-plan-cardinality outer guard (RFC-188) so a
 		// bounded-primary-scan-vs-unbounded comparison is no longer reported
 		// unknown (over-abstaining criterion #2). A range / partial / prefix
-		// bind stays unknown. scanProvableMaxCard proves all-equality + all
-		// present comparisons bound; the len == PK-column-count check
-		// (mirroring the index arm's len(comps)==len(GetColumnNames)) proves the
-		// bind covers the FULL primary key, not just a prefix.
+		// bind stays unknown. scanProvableMaxCard consults the PK arity stamped
+		// on the scan and proves full coverage, not merely that every comparison
+		// in the (possibly partial) prefix is an equality.
 		if _, known := scanProvableMaxCard(p); known {
-			if pkVals := p.GetPrimaryKeyValues(); pkVals != nil && len(p.GetScanComparisons()) == len(pkVals) {
-				return properties.AtMostOne()
-			}
+			return properties.AtMostOne()
 		}
 		return properties.UnknownMaxCardinality()
 
@@ -453,9 +642,22 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
 		return properties.IntersectCardinalities(cardinalitiesFromChildRefs(w))
 
-	// --- Distinct: same as child (distinct doesn't change bounds) ---
+	// --- Full-row distinct: current model conservatively preserves child bounds ---
 	case *plans.RecordQueryDistinctPlan:
 		return cardinalitiesFromChildRef(w)
+
+	// --- Primary-key distinct: max is unchanged; any known non-empty input
+	// produces at least one unique key. ---
+	case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+		child := cardinalitiesFromChildRef(w)
+		minCard := child.GetMinCardinality()
+		if !minCard.IsUnknown() && minCard.Value() > 0 {
+			minCard = properties.OfCardinality(1)
+		}
+		return properties.Cardinalities{
+			Min: minCard,
+			Max: child.GetMaxCardinality(),
+		}
 
 	// --- Limit: cap max at limit value ---
 	case *plans.RecordQueryLimitPlan:
@@ -507,9 +709,27 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 			Max: inSize.Times(child.GetMaxCardinality()),
 		}
 
-	// --- InUnion: child × unknown (binding sizes not available) ---
+	// --- InUnion: child × Cartesian product of literal source sizes ---
 	case *plans.RecordQueryInUnionPlan:
-		return properties.UnknownMaxCardinality()
+		fanout, known := p.LiteralFanout()
+		if !known {
+			return properties.UnknownMaxCardinality()
+		}
+		if fanout == 0 {
+			// Go precision extension: a known-empty dimension makes the
+			// executor return an empty cursor even when another dimension is
+			// runtime-unknown. Java's generic unknown multiplication keeps
+			// that mixed maximum unknown; exact zero is stronger but sound.
+			return properties.Cardinalities{
+				Min: properties.OfCardinality(0),
+				Max: properties.OfCardinality(0),
+			}
+		}
+		child := cardinalitiesFromChildRefOrInner(w, plan)
+		return properties.Cardinalities{
+			Min: multiplyCardinalityBound(fanout, child.GetMinCardinality()),
+			Max: multiplyCardinalityBound(fanout, child.GetMaxCardinality()),
+		}
 
 	// --- DML: same as child ---
 	case *plans.RecordQueryInsertPlan,
@@ -532,8 +752,9 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 	case *plans.RecordQueryInMemorySortPlan:
 		return cardinalitiesFromChildRef(w)
 
-	// --- Nested loop join: outer × inner ---
-	case *plans.RecordQueryNestedLoopJoinPlan:
+	// --- Nested loop joins: outer × inner ---
+	case *plans.RecordQueryNestedLoopJoinPlan,
+		*plans.RecordQueryFlatMapPlan:
 		children := cardinalitiesFromChildRefs(w)
 		if len(children) < 2 {
 			return properties.UnknownCardinalities()
@@ -568,6 +789,23 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 	default:
 		return properties.UnknownCardinalities()
 	}
+}
+
+// multiplyCardinalityBound multiplies an exact non-negative factor by one
+// cardinality bound without allowing int64 wraparound to reach OfCardinality.
+// An unrepresentable product conservatively becomes unknown.
+func multiplyCardinalityBound(factor int64, bound properties.Cardinality) properties.Cardinality {
+	if bound.IsUnknown() {
+		return properties.UnknownCardinality()
+	}
+	value := bound.Value()
+	if factor == 0 || value == 0 {
+		return properties.OfCardinality(0)
+	}
+	if factor > math.MaxInt64/value {
+		return properties.UnknownCardinality()
+	}
+	return properties.OfCardinality(factor * value)
 }
 
 // cardinalitiesFromChildRef returns the Cardinalities from the first

@@ -8,13 +8,15 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// RecordQueryUnionPlan emits the rows of all input plans
-// concatenated. Mirrors Java's `RecordQueryUnionPlan` (the simple
-// UNION ALL variant).
+// RecordQueryUnionPlan emits the rows of all input plans concatenated, with
+// neither ordering nor deduplication. It is a Go-specific second physical
+// implementation of a bare UNION ALL.
 //
-// Java has multiple union-plan flavors keyed on dedup vs no-dedup
-// and on key-expression vs values comparison. The seed ports the
-// simplest: UNION ALL with no dedup.
+// Despite the class name, this does NOT mirror Java's
+// `RecordQueryUnionPlan`, whose variants require comparison keys and merge
+// ordered streams. Java implements a bare logical UNION ALL as
+// `RecordQueryUnorderedUnionPlan`; Go also has that Java-aligned plan, and
+// retains this overlapping concat plan pending taxonomy cleanup (RFC-190).
 //
 // Result type matches the first inner's result type. All inners
 // must produce row-compatible streams (the planner's responsibility).

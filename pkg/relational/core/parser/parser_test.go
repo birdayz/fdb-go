@@ -3,12 +3,313 @@ package parser
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"github.com/antlr4-go/antlr/v4"
 )
+
+func TestNewParser_IsolatesCheckedOutPredictionState(t *testing.T) {
+	t.Parallel()
+
+	first, _, releaseFirst := newParser(`SELECT id FROM orders WHERE id = 1`, nil)
+	defer releaseFirst()
+	second, _, releaseSecond := newParser(`SELECT id FROM orders WHERE id = 2`, nil)
+	defer releaseSecond()
+
+	if first.Interpreter.SharedContextCache() == second.Interpreter.SharedContextCache() {
+		t.Fatal("parser instances share a prediction-context cache")
+	}
+	firstParserDFA := first.Interpreter.DecisionToDFA()
+	secondParserDFA := second.Interpreter.DecisionToDFA()
+	if len(firstParserDFA) != len(secondParserDFA) {
+		t.Fatalf("parser DFA counts differ: %d != %d", len(firstParserDFA), len(secondParserDFA))
+	}
+	for i := range firstParserDFA {
+		if firstParserDFA[i] == secondParserDFA[i] {
+			t.Fatalf("parser instances share DFA %d", i)
+		}
+	}
+
+	firstLexer, ok := first.GetTokenStream().GetTokenSource().(*antlrgen.RelationalLexer)
+	if !ok {
+		t.Fatalf("first token source is %T, want *RelationalLexer", first.GetTokenStream().GetTokenSource())
+	}
+	secondLexer, ok := second.GetTokenStream().GetTokenSource().(*antlrgen.RelationalLexer)
+	if !ok {
+		t.Fatalf("second token source is %T, want *RelationalLexer", second.GetTokenStream().GetTokenSource())
+	}
+	if firstLexer.Interpreter.SharedContextCache() == secondLexer.Interpreter.SharedContextCache() {
+		t.Fatal("lexer instances share a prediction-context cache")
+	}
+	firstLexerDFA := firstLexer.Interpreter.DecisionToDFA()
+	secondLexerDFA := secondLexer.Interpreter.DecisionToDFA()
+	if len(firstLexerDFA) != len(secondLexerDFA) {
+		t.Fatalf("lexer DFA counts differ: %d != %d", len(firstLexerDFA), len(secondLexerDFA))
+	}
+	for i := range firstLexerDFA {
+		if firstLexerDFA[i] == secondLexerDFA[i] {
+			t.Fatalf("lexer instances share DFA %d", i)
+		}
+	}
+}
+
+func TestNewParser_ReleaseDetachesPredictionState(t *testing.T) {
+	t.Parallel()
+
+	p, _, releasePredictionState := newParser(`SELECT id FROM orders WHERE id = 1`, nil)
+	lexer, ok := p.GetTokenStream().GetTokenSource().(*antlrgen.RelationalLexer)
+	if !ok {
+		t.Fatalf("token source is %T, want *RelationalLexer", p.GetTokenStream().GetTokenSource())
+	}
+	checkedOutParserCache := p.Interpreter.SharedContextCache()
+	checkedOutLexerCache := lexer.Interpreter.SharedContextCache()
+
+	releasePredictionState()
+
+	if p.Interpreter.SharedContextCache() == checkedOutParserCache {
+		t.Fatal("released parser still references the pooled prediction-context cache")
+	}
+	if lexer.Interpreter.SharedContextCache() == checkedOutLexerCache {
+		t.Fatal("released lexer still references the pooled prediction-context cache")
+	}
+	if p.Interpreter.ATN() == nil || lexer.Interpreter.ATN() == nil {
+		t.Fatal("detached interpreter lost grammar ATN metadata")
+	}
+	if len(p.Interpreter.DecisionToDFA()) != 0 || len(lexer.Interpreter.DecisionToDFA()) != 0 {
+		t.Fatal("detached interpreter retained mutable DFA prediction state")
+	}
+}
+
+func TestPredictionStatePool_BoundsRetainedStates(t *testing.T) {
+	t.Parallel()
+
+	lexer := antlrgen.NewRelationalLexer(newCaseInsensitiveCharStream("SELECT 1"))
+	var pool predictionStatePool
+	states := make([]*predictionState, maxRetainedPredictionStates+1)
+	for i := range states {
+		states[i] = pool.acquire(lexer.Interpreter.ATN())
+	}
+	for _, state := range states {
+		pool.release(state)
+	}
+
+	pool.mu.Lock()
+	retained := len(pool.available)
+	pool.mu.Unlock()
+	if retained != maxRetainedPredictionStates {
+		t.Fatalf("retained prediction states = %d, want cap %d", retained, maxRetainedPredictionStates)
+	}
+}
+
+func TestParse_Concurrent(t *testing.T) {
+	t.Parallel()
+
+	statements := []string{
+		`SELECT id, name FROM orders WHERE id = 42`,
+		`SELECT DISTINCT status FROM orders ORDER BY status`,
+		`SELECT o.id, i.sku FROM orders AS o JOIN items AS i ON i.order_id = o.id`,
+		`SELECT id FROM orders WHERE status IN ('open', 'pending') AND total BETWEEN 10 AND 100`,
+		`SELECT customer_id, SUM(total) FROM orders GROUP BY customer_id HAVING COUNT(*) > 1`,
+		`SELECT id FROM current_orders UNION ALL SELECT id FROM archived_orders`,
+		`WITH recent AS (SELECT id FROM orders WHERE created_at > '2025-01-01') SELECT id FROM recent`,
+		`INSERT INTO orders (id, status, total) VALUES (1, 'open', 42)`,
+		`UPDATE orders SET status = 'closed', total = total + 1 WHERE id = 1`,
+		`DELETE FROM orders WHERE id = 1`,
+		`CREATE DATABASE /test/concurrent`,
+		`CREATE SCHEMA TEMPLATE concurrent_template CREATE TABLE orders (id BIGINT NOT NULL, status STRING, PRIMARY KEY (id))`,
+	}
+
+	const (
+		workers = 48
+		rounds  = 8
+	)
+	parseCalls := []func(int) error{
+		func(worker int) error {
+			_, err := Parse(statements[worker%len(statements)])
+			return err
+		},
+		func(_ int) error {
+			_, err := ParseFunction("CREATE FUNCTION self(IN x bigint) RETURNS bigint AS x")
+			return err
+		},
+		func(_ int) error {
+			_, err := ParseView("SELECT id, name FROM orders WHERE id > 10")
+			return err
+		},
+		func(_ int) error {
+			_, err := ParseExpression("left_id = right_id AND total > 10")
+			return err
+		},
+	}
+
+	ready := make(chan struct{}, workers)
+	start := make(chan struct{})
+	errs := make(chan error, workers*rounds)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func(worker int) {
+			defer wg.Done()
+			ready <- struct{}{}
+			<-start
+			for round := 0; round < rounds; round++ {
+				errs <- parseCalls[(worker+round)%len(parseCalls)](worker + round)
+			}
+		}(i)
+	}
+	for i := 0; i < workers; i++ {
+		<-ready
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Parse returned error: %v", err)
+		}
+	}
+}
+
+func TestParseErrors_Concurrent(t *testing.T) {
+	t.Parallel()
+
+	parseCalls := []func() error{
+		func() error {
+			_, err := Parse("SELECT FROM WHERE")
+			return expectSyntaxError(err)
+		},
+		func() error {
+			_, err := ParseFunction("CREATE FUNCTION @@@")
+			return expectSyntaxError(err)
+		},
+		func() error {
+			_, err := ParseView("not a valid query")
+			return expectSyntaxError(err)
+		},
+		func() error {
+			_, err := ParseExpression("id = )")
+			return expectSyntaxError(err)
+		},
+	}
+
+	const (
+		workers = 32
+		rounds  = 8
+	)
+	start := make(chan struct{})
+	errs := make(chan error, workers*rounds)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for worker := range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+			for round := range rounds {
+				errs <- parseCalls[(worker+round)%len(parseCalls)]()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent invalid parse returned unexpected result: %v", err)
+		}
+	}
+}
+
+func expectSyntaxError(err error) error {
+	if err == nil {
+		return errors.New("parse returned nil, want syntax error")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		return errors.New("parse returned a non-api error")
+	}
+	if apiErr.Code != api.ErrCodeSyntaxError {
+		return errors.New("parse returned a non-syntax API error")
+	}
+	return nil
+}
+
+func TestParse_ReturnedTreeSafeDuringPoolReuse(t *testing.T) {
+	t.Parallel()
+
+	root, err := Parse(`SELECT o.id, i.sku
+		FROM orders AS o
+		JOIN items AS i ON i.order_id = o.id
+		WHERE o.status IN ('open', 'pending')`)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	retainedParser, ok := root.GetParser().(*antlrgen.RelationalParser)
+	if !ok {
+		t.Fatalf("root parser is %T, want *RelationalParser", root.GetParser())
+	}
+	retainedLexer, ok := retainedParser.GetTokenStream().GetTokenSource().(*antlrgen.RelationalLexer)
+	if !ok {
+		t.Fatalf("token source is %T, want *RelationalLexer", retainedParser.GetTokenStream().GetTokenSource())
+	}
+	retainedParserCache := retainedParser.Interpreter.SharedContextCache()
+	retainedLexerCache := retainedLexer.Interpreter.SharedContextCache()
+
+	const iterations = 100
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		listener := &antlr.BaseParseTreeListener{}
+		for range iterations {
+			antlr.ParseTreeWalkerDefault.Walk(listener, root)
+			if rendered := root.ToStringTree(retainedParser.GetRuleNames(), retainedParser); rendered == "" {
+				errs <- errors.New("ToStringTree returned an empty tree")
+				return
+			}
+		}
+		errs <- nil
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := range iterations {
+			if _, parseErr := Parse(`SELECT id, name FROM orders WHERE id = 42 AND status = 'open'`); parseErr != nil {
+				errs <- parseErr
+				return
+			}
+			if i%4 == 0 {
+				if _, parseErr := ParseExpression(`left_id = right_id AND total > 10`); parseErr != nil {
+					errs <- parseErr
+					return
+				}
+			}
+		}
+		errs <- nil
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for raceErr := range errs {
+		if raceErr != nil {
+			t.Fatalf("concurrent tree access failed: %v", raceErr)
+		}
+	}
+	if retainedParser.Interpreter.SharedContextCache() != retainedParserCache {
+		t.Fatal("returned parser prediction state changed during later parses")
+	}
+	if retainedLexer.Interpreter.SharedContextCache() != retainedLexerCache {
+		t.Fatal("returned lexer prediction state changed during later parses")
+	}
+}
 
 func TestParse_ValidStatements(t *testing.T) {
 	t.Parallel()

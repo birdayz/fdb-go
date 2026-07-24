@@ -38,8 +38,8 @@ func TestFullUnorderedScan_NilFlowedType(t *testing.T) {
 // hard-coded NewQuantifiedObjectValue → UnknownType, silently DISCARDING the
 // scan's own flowedType. That forced every single-table scan onto name
 // resolution because FieldValue.resolveOrdinal's `f.Child.Type().(*RecordType)`
-// assertion failed on the UnknownType QOV → (0,false). Java's scan quantifier
-// always flows the record type; ordinal resolution can only fire once the QOV
+// assertion failed on the UnknownType value → (0,false). Java's scan always
+// flows the record type; ordinal resolution can only fire once the value
 // carries it.
 func TestFullUnorderedScan_GetResultValueFlowsType(t *testing.T) {
 	t.Parallel()
@@ -52,13 +52,9 @@ func TestFullUnorderedScan_GetResultValueFlowsType(t *testing.T) {
 	scan := NewFullUnorderedScanExpression([]string{"T"}, mkType())
 
 	rv := scan.GetResultValue()
-	qov, ok := rv.(*values.QuantifiedObjectValue)
+	got, ok := rv.Type().(*values.RecordType)
 	if !ok {
-		t.Fatalf("GetResultValue=%T, want *QuantifiedObjectValue", rv)
-	}
-	got, ok := qov.Type().(*values.RecordType)
-	if !ok {
-		t.Fatalf("scan result value Type=%T, want *RecordType (flowedType was discarded — the latent bug)", qov.Type())
+		t.Fatalf("scan result value Type=%T, want *RecordType (flowedType was discarded — the latent bug)", rv.Type())
 	}
 	if len(got.Fields) != 2 || got.Fields[0].Name != "ID" || got.Fields[1].Name != "V" {
 		t.Fatalf("flowed record type fields=%v, want [ID V] in order", got.Fields)
@@ -77,6 +73,42 @@ func TestFullUnorderedScan_GetResultValueFlowsType(t *testing.T) {
 	scanTwin := NewFullUnorderedScanExpression([]string{"T"}, mkType())
 	if !scan.EqualsWithoutChildren(scanTwin, EmptyAliasMap()) {
 		t.Fatal("two scans of one table with structurally-equal flowedType must dedup (EqualsWithoutChildren)")
+	}
+}
+
+// TestFullUnorderedScan_ResultValueIsStableAndUncorrelated pins the invariant
+// that a scan's result value is an IDENTITY, not a fresh object per read.
+//
+// Java returns `new QueriedValue(flowedType)` per call and gets away with it
+// because QueriedValue is uncorrelated and compares structurally. Go returned
+// a QuantifiedObjectValue over a freshly minted correlation identifier, so two
+// reads of the SAME scan produced unequal values. That broke matching in a way
+// no plan-level test caught: a leaf match recorded a MaxMatchMap over one read,
+// the pull-up re-read the value later, and the two could not be bridged — the
+// match's compensation went impossible and every index match built on a scan
+// leaf was silently discarded.
+func TestFullUnorderedScan_ResultValueIsStableAndUncorrelated(t *testing.T) {
+	t.Parallel()
+
+	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+
+	first, second := scan.GetResultValue(), scan.GetResultValue()
+	if !values.ValuesStructurallyEqual(first, second) {
+		t.Fatalf("two reads of one scan's result value must be equal; got %s vs %s",
+			values.ExplainValue(first), values.ExplainValue(second))
+	}
+
+	// A source is correlated to nothing. A correlated result value would name a
+	// quantifier that does not exist.
+	if corr := values.GetCorrelatedToOfValue(first); len(corr) != 0 {
+		t.Fatalf("scan result value must be uncorrelated, got correlations %v", corr)
+	}
+
+	// Two structurally-identical scans agree as well — the memo dedups them, so
+	// their result values must not disagree.
+	twin := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	if !values.ValuesStructurallyEqual(first, twin.GetResultValue()) {
+		t.Fatal("result values of two structurally-equal scans must be equal")
 	}
 }
 

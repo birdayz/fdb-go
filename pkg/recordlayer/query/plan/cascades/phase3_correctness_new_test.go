@@ -33,11 +33,16 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 	)
 	rootRef := expressions.InitialOf(unique)
 
-	planWithImplRules(t, rootRef, DefaultImplementationRules())
+	planWithImplRulesAndContext(
+		t,
+		rootRef,
+		DefaultImplementationRules(),
+		uniqueAbsorptionPlanContext{recordType: "T"},
+	)
 
-	// ImplementUniqueRule absorbs the Unique operator when its input
-	// is distinct. The scan is always distinct, and Distinct over a
-	// distinct source should also be treated as distinct. The net
+	// ImplementUniqueRule absorbs the Unique operator when the exact input is
+	// distinct and carries a PK proof. This fixture supplies the scan's PK,
+	// and Distinct over that source preserves both facts. The net
 	// effect: the root's final members should contain a bare
 	// *plans.RecordQueryScanPlan — the Unique and Distinct wrappers are both
 	// absorbed because the inner chain is inherently distinct.
@@ -197,18 +202,15 @@ func TestPhase3_DistinctOverUnion(t *testing.T) {
 		t.Fatal("expected *plans.RecordQueryUnionPlan or *plans.RecordQueryUnorderedUnionPlan in explored graph")
 	}
 
-	// Distinct should yield either a *plans.RecordQueryDistinctPlan (wrapping
-	// a non-distinct inner) or the inner plan directly (if the union
-	// provides distinct semantics — RecordQueryUnionPlan deduplicates).
+	// Distinct must yield either a RecordQueryDistinctPlan or a merge-sort
+	// union whose removeDuplicates flag is set. Neither concat UNION ALL plan
+	// provides distinct semantics.
 	foundDistinctResult := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
 		if _, ok := expr.(*plans.RecordQueryDistinctPlan); ok {
 			return true
 		}
-		if _, ok := expr.(*plans.RecordQueryUnionPlan); ok {
-			return true
-		}
-		if _, ok := expr.(*plans.RecordQueryUnorderedUnionPlan); ok {
-			return true
+		if union, ok := expr.(*plans.RecordQueryMergeSortUnionPlan); ok {
+			return union.RemovesDuplicates()
 		}
 		return false
 	})

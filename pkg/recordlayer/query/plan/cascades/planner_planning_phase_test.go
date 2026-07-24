@@ -16,7 +16,17 @@ import (
 // Returns the planner for further inspection (Members, properties).
 func planWithImplRules(t *testing.T, rootRef *expressions.Reference, implRules []ImplementationRule) *Planner {
 	t.Helper()
-	p := NewPlanner(allRules(), nil).
+	return planWithImplRulesAndContext(t, rootRef, implRules, nil)
+}
+
+func planWithImplRulesAndContext(
+	t *testing.T,
+	rootRef *expressions.Reference,
+	implRules []ImplementationRule,
+	ctx PlanContext,
+) *Planner {
+	t.Helper()
+	p := NewPlanner(allRules(), ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(implRules)
 	_, _, err := p.Plan(rootRef)
@@ -26,8 +36,28 @@ func planWithImplRules(t *testing.T, rootRef *expressions.Reference, implRules [
 	return p
 }
 
+type uniqueAbsorptionPlanContext struct {
+	recordType string
+}
+
+func (c uniqueAbsorptionPlanContext) GetPlannerConfiguration() PlannerConfiguration {
+	return DefaultPlannerConfiguration()
+}
+
+func (uniqueAbsorptionPlanContext) GetMatchCandidates() []MatchCandidate {
+	return nil
+}
+
+func (c uniqueAbsorptionPlanContext) GetPrimaryKeyColumns(recordType string) []string {
+	if recordType != c.recordType {
+		return nil
+	}
+	return []string{"ID"}
+}
+
 // ---------------------------------------------------------------------------
-// 1. UniqueOverScan: Unique is absorbed because scans are always distinct.
+// 1. UniqueOverScan: Unique is absorbed because the exact scan is distinct
+// and the fixture supplies its structural primary key.
 // ---------------------------------------------------------------------------
 
 func TestPlanner_PlanningPhase_UniqueOverScan(t *testing.T) {
@@ -40,10 +70,15 @@ func TestPlanner_PlanningPhase_UniqueOverScan(t *testing.T) {
 	)
 	rootRef := expressions.InitialOf(unique)
 
-	planWithImplRules(t, rootRef, DefaultImplementationRules())
+	planWithImplRulesAndContext(
+		t,
+		rootRef,
+		DefaultImplementationRules(),
+		uniqueAbsorptionPlanContext{recordType: "T"},
+	)
 
-	// ImplementUniqueRule fires during the PLANNING phase. Because the
-	// inner scan is always distinct, the Unique operator is absorbed:
+	// ImplementUniqueRule fires during the PLANNING phase. Because the exact
+	// inner scan is distinct and has a PK proof, the Unique is absorbed:
 	// the root Reference's members should contain the inner scan
 	// wrapper directly (promoted from the inner ref), NOT a Unique
 	// wrapper around it.
@@ -81,7 +116,7 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 	// below can no longer pin per-implementation visibility — physical
 	// yields land ONLY in FinalMembers and OptimizeGroup prunes finals to
 	// the winner (Java's prune-to-1), so the unordered wrapper may lose
-	// to the sibling ordered-union implementation and vanish from
+	// to Go's sibling concat-union implementation and vanish from
 	// AllMembers(). Fire the rule directly to pin that it FORMS.
 	{
 		wA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
@@ -116,7 +151,7 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 	}
 
 	// WINNER SHAPE: after the full planner run, SOME physical union
-	// implementation (unordered or ordered — whichever the cost model
+	// implementation (either concat variant — whichever the cost model
 	// keeps) must survive in the root's members with a valid 2-child plan.
 	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
 	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
@@ -150,7 +185,7 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 		for i, f := range finals {
 			types[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected a physical union wrapper (unordered or ordered) in members, got types: %v", types)
+		t.Fatalf("expected a physical concat-union wrapper in members, got types: %v", types)
 	}
 	kids, ok := unionPlan.(interface {
 		GetChildren() []plans.RecordQueryPlan
@@ -357,7 +392,12 @@ func TestPlanner_PlanningPhase_MembersPopulated(t *testing.T) {
 	)
 	rootRef := expressions.InitialOf(unique)
 
-	planWithImplRules(t, rootRef, DefaultImplementationRules())
+	planWithImplRulesAndContext(
+		t,
+		rootRef,
+		DefaultImplementationRules(),
+		uniqueAbsorptionPlanContext{recordType: "T"},
+	)
 
 	// After PLANNING, the root Reference should have members inserted by
 	// implementation rules (physical wrappers go into Members).
@@ -390,4 +430,57 @@ func TestPlanner_PlanningPhase_MembersPopulated(t *testing.T) {
 	if !foundInnerPhysical {
 		t.Fatal("inner scanRef has no physical members after PLANNING phase")
 	}
+}
+
+func TestCompensationSafeForYieldRequiredUniqueOverPhysicalPlan(t *testing.T) {
+	t.Parallel()
+
+	pk := []values.Value{
+		values.NewFlatFieldValue("ID", values.NotNullLong),
+	}
+	scan := plans.NewRecordQueryScanPlan(
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithPrimaryKey(pk)
+	childRef := expressions.FinalOf(scan)
+	required := expressions.NewRequiredLogicalUniqueExpression(
+		expressions.ForEachQuantifier(childRef),
+	)
+	if !compensationSafeForYield(required) {
+		t.Fatal("required PK-distinct compensation over a physical plan was stranded as a logical final")
+	}
+
+	ordinary := expressions.NewLogicalUniqueExpression(
+		expressions.ForEachQuantifier(childRef),
+	)
+	if compensationSafeForYield(ordinary) {
+		t.Fatal("ordinary query Unique unexpectedly entered the data-access compensation exception")
+	}
+}
+
+func TestPlanner_PlanningPhase_ImplementsRequiredUniqueOverPinnedPlan(t *testing.T) {
+	t.Parallel()
+
+	pk := []values.Value{
+		values.NewFlatFieldValue("ID", values.NotNullLong),
+	}
+	scan := plans.NewRecordQueryScanPlan(
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithPrimaryKey(pk)
+	required := expressions.NewRequiredLogicalUniqueExpression(
+		expressions.ForEachQuantifier(expressions.FinalOf(scan)),
+	)
+	rootRef := expressions.InitialOf(required)
+
+	planWithImplRules(t, rootRef, DefaultImplementationRules())
+
+	for _, member := range rootRef.AllMembers() {
+		if _, ok := member.(*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan); ok {
+			return
+		}
+	}
+	t.Fatal("required Unique over an exact physical child did not produce a PK-distinct plan")
 }

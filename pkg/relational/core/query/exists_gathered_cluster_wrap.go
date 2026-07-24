@@ -4,15 +4,18 @@ package query
 // (arity >= 3) INNER join under a correlated WHERE EXISTS ORDINALIZES while
 // preserving the index SARG.
 //
-// WHY A WRAP: a flat [ForEach×N, Existential] select is unimplementable
-// except MATERIALIZED — PartitionSelectRule refuses any select carrying an
-// existential quantifier (rule_partition_select.go ForEach-only guard), so
-// the only physical implementer is implementNWayJoinWithExistential, which
-// builds a predicate-free left-deep cross-product and applies ALL join
-// predicates as one post-filter (SARG lost by construction). And Go's
-// single-pass Cascades cannot re-plan a sub-select minted at OnMatch, so the
-// join can only be enumerated separately if it is a SEPARATE REFERENCE at
-// translation. Hence: translate the join + the WHERE's non-EXISTS conjuncts
+// WHY A WRAP: RFC-190 190.1 retired the ordinal N-way arm that built a
+// predicate-free left-deep cross-product and applied all join predicates as one
+// post-filter, losing the SARG. A general flat [ForEach×N, Existential] select
+// now decomposes through PartitionSelectRule into ordinary binary NLJs,
+// including the correlated form emitted by buildExistentialJoinSelect. This
+// wrap serves a different contract: for a folded, non-projected WHERE EXISTS
+// over a fresh gathered cluster, the join must remain separately enumerable so
+// its index probes survive and the folded projection/correlation can be rebased
+// onto one positional output. Go's single-pass Cascades cannot re-plan a
+// sub-select minted at OnMatch, so the join can only be enumerated separately
+// when translation creates a SEPARATE REFERENCE. Hence:
+// translate the join + the WHERE's non-EXISTS conjuncts
 // as its OWN gathered ordinal cluster (SARG-preserving,
 // PartitionSelectRule-enumerable, zero name-model producers), and wrap it
 // with a 2-quantifier [ForEach(box), Existential...] select

@@ -19,11 +19,13 @@ import (
 // — partial physical-implementation produces an invalid mixed-
 // hierarchy plan tree.
 //
-// Java has multiple Union variants (key-expression vs values, dedup
-// vs no-dedup); this rule always emits RecordQueryUnionPlan
-// (UNION ALL, no dedup) — the dedup / ordered variants come from
-// their own rules (ImplementDistinctUnionRule,
-// ImplementUnorderedUnionRule, ImplementInUnionRule).
+// This is a Go-specific second implementation of bare UNION ALL. Java's
+// ImplementUnorderedUnionRule emits RecordQueryUnorderedUnionPlan for this
+// logical shape; Java's RecordQueryUnionPlan variants require compatible
+// comparison keys and arise from ordered/distinct-union planning. Go's
+// deduplicating ordered bare-union alternative comes from
+// ImplementDistinctUnionRule. The duplicate concat taxonomy is tracked by
+// RFC-190 rather than disguised as Java parity.
 type ImplementUnionRule struct {
 	matcher matching.BindingMatcher
 }

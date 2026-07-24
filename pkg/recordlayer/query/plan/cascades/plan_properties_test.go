@@ -327,6 +327,152 @@ func TestComputeDistinctRecords_InUnionIsTrue(t *testing.T) {
 	}
 }
 
+func TestComputeCardinalities_InUnionLiteralFanout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		bindings []string
+		sources  [][]any
+		want     properties.Cardinalities
+	}{
+		{
+			name:     "Cartesian product",
+			bindings: []string{"a", "b"},
+			sources:  [][]any{{1, 2}, {"x", "y", "z"}},
+			want: properties.Cardinalities{
+				Min: properties.OfCardinality(6),
+				Max: properties.OfCardinality(6),
+			},
+		},
+		{
+			name:     "known empty",
+			bindings: []string{"a"},
+			sources:  [][]any{{}},
+			want: properties.Cardinalities{
+				Min: properties.OfCardinality(0),
+				Max: properties.OfCardinality(0),
+			},
+		},
+		{
+			name:     "unknown then known empty",
+			bindings: []string{"a", "b"},
+			sources:  [][]any{nil, {}},
+			want: properties.Cardinalities{
+				Min: properties.OfCardinality(0),
+				Max: properties.OfCardinality(0),
+			},
+		},
+		{
+			name:     "known empty then unknown",
+			bindings: []string{"a", "b"},
+			sources:  [][]any{{}, nil},
+			want: properties.Cardinalities{
+				Min: properties.OfCardinality(0),
+				Max: properties.OfCardinality(0),
+			},
+		},
+		{
+			name:     "unknown runtime source",
+			bindings: []string{"a"},
+			sources:  [][]any{nil},
+			want:     properties.UnknownMaxCardinality(),
+		},
+		{
+			name:     "single combination bypass",
+			bindings: []string{"a"},
+			sources:  [][]any{{1}},
+			want:     properties.ExactlyOne(),
+		},
+		{
+			name:     "absent outer sources with binding bypass",
+			bindings: []string{"a"},
+			sources:  nil,
+			want:     properties.ExactlyOne(),
+		},
+		{
+			name:     "empty outer sources with binding bypass",
+			bindings: []string{"a"},
+			sources:  [][]any{},
+			want:     properties.ExactlyOne(),
+		},
+		{
+			name: "zero dimensions bypass",
+			want: properties.ExactlyOne(),
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			inUnion := plans.NewRecordQueryInUnionPlan(
+				plans.NewRecordQueryValuesPlan(nil),
+				test.bindings,
+				nil,
+				false,
+			)
+			inUnion.SetInSources(test.sources)
+			got := computeCardinalities(inUnion, inUnion)
+			if !got.Equal(test.want) {
+				t.Fatalf("computeCardinalities() = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestComputeCardinalities_InUnionMultipliesChildAndDegradesOverflow(t *testing.T) {
+	t.Parallel()
+
+	child := plans.NewRecordQueryValuesPlan(nil)
+	newInUnion := func(bindings []string, sources [][]any, childCardinality int64) *plans.RecordQueryInUnionPlan {
+		inUnion := plans.NewRecordQueryInUnionPlan(child, bindings, nil, false)
+		inUnion.SetInSources(sources)
+		childRef := inUnion.GetInnerQuantifier().GetRangesOver()
+		pm := NewPlanPropertiesMap()
+		pm.props[child] = properties.PropertyMap{
+			properties.PropCardinalities: properties.Cardinalities{
+				Min: properties.OfCardinality(childCardinality),
+				Max: properties.OfCardinality(childCardinality),
+			},
+		}
+		childRef.SetPlanProperties(pm)
+		return inUnion
+	}
+
+	t.Run("child times fanout", func(t *testing.T) {
+		t.Parallel()
+		inUnion := newInUnion(
+			[]string{"a"},
+			[][]any{{1, 2}},
+			3,
+		)
+		want := properties.Cardinalities{
+			Min: properties.OfCardinality(6),
+			Max: properties.OfCardinality(6),
+		}
+		if got := computeCardinalities(inUnion, inUnion); !got.Equal(want) {
+			t.Fatalf("computeCardinalities() = %+v, want child×fanout %+v", got, want)
+		}
+	})
+
+	t.Run("child multiplication overflow", func(t *testing.T) {
+		t.Parallel()
+		const dimensions = 18 // 10^18 fits in int64; 10^18 * child(10) does not.
+		bindings := make([]string, dimensions)
+		sources := make([][]any, dimensions)
+		for i := range bindings {
+			bindings[i] = "binding"
+			sources[i] = []any{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+		}
+		inUnion := newInUnion(bindings, sources, 10)
+		got := computeCardinalities(inUnion, inUnion)
+		if !got.GetMinCardinality().IsUnknown() || !got.GetMaxCardinality().IsUnknown() {
+			t.Fatalf("overflow cardinalities = %+v, want unknown bounds", got)
+		}
+	})
+}
+
 func TestComputeDistinctRecords_FirstOrDefaultIsTrue(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)

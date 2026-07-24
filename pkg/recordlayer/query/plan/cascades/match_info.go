@@ -117,15 +117,16 @@ func NewAdjustedBuilder(mi MatchInfo) *AdjustedBuilder {
 //
 // Ports Java's MatchInfo.RegularMatchInfo.
 type RegularMatchInfo struct {
-	parameterBindingMap      map[values.CorrelationIdentifier]*predicates.ComparisonRange
-	bindingAliasMap          *AliasMap
-	predicateMap             *PredicateMultiMap
-	matchedOrderingParts     []*MatchedOrderingPart
-	maxMatchMap              *MaxMatchMap
-	groupByMappings          *GroupByMappings
-	rollUpToGroupingValues   []values.Value // nil when not applicable
-	additionalPlanConstraint *QueryPlanConstraint
-	childPartialMatchMap     map[values.CorrelationIdentifier]PartialMatch
+	parameterBindingMap        map[values.CorrelationIdentifier]*predicates.ComparisonRange
+	bindingAliasMap            *AliasMap
+	predicateMap               *PredicateMultiMap
+	matchedOrderingParts       []*MatchedOrderingPart
+	maxMatchMap                *MaxMatchMap
+	groupByMappings            *GroupByMappings
+	rollUpToGroupingValues     []values.Value // nil when not applicable
+	additionalPlanConstraint   *QueryPlanConstraint
+	requiresPrimaryKeyDistinct bool
+	childPartialMatchMap       map[values.CorrelationIdentifier]PartialMatch
 }
 
 // NewRegularMatchInfo constructs a RegularMatchInfo. All collection
@@ -139,6 +140,33 @@ func NewRegularMatchInfo(
 	groupByMappings *GroupByMappings,
 	rollUpToGroupingValues []values.Value,
 	additionalPlanConstraint *QueryPlanConstraint,
+) *RegularMatchInfo {
+	return newRegularMatchInfo(
+		parameterBindingMap,
+		bindingAliasMap,
+		predicateMap,
+		matchedOrderingParts,
+		maxMatchMap,
+		groupByMappings,
+		rollUpToGroupingValues,
+		additionalPlanConstraint,
+		false,
+	)
+}
+
+// newRegularMatchInfo is the node-local constructor used by semantic matching
+// routes that carry additional obligations. Child obligations are deliberately
+// not inferred here: a parent must opt in for its own semantic mapping.
+func newRegularMatchInfo(
+	parameterBindingMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	bindingAliasMap *AliasMap,
+	predicateMap *PredicateMultiMap,
+	matchedOrderingParts []*MatchedOrderingPart,
+	maxMatchMap *MaxMatchMap,
+	groupByMappings *GroupByMappings,
+	rollUpToGroupingValues []values.Value,
+	additionalPlanConstraint *QueryPlanConstraint,
+	requiresPrimaryKeyDistinct bool,
 ) *RegularMatchInfo {
 	// Defensive copy of parameterBindingMap.
 	pbm := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange, len(parameterBindingMap))
@@ -158,14 +186,15 @@ func NewRegularMatchInfo(
 	}
 
 	return &RegularMatchInfo{
-		parameterBindingMap:      pbm,
-		bindingAliasMap:          bindingAliasMap,
-		predicateMap:             predicateMap,
-		matchedOrderingParts:     mop,
-		maxMatchMap:              maxMatchMap,
-		groupByMappings:          groupByMappings,
-		rollUpToGroupingValues:   rug,
-		additionalPlanConstraint: additionalPlanConstraint,
+		parameterBindingMap:        pbm,
+		bindingAliasMap:            bindingAliasMap,
+		predicateMap:               predicateMap,
+		matchedOrderingParts:       mop,
+		maxMatchMap:                maxMatchMap,
+		groupByMappings:            groupByMappings,
+		rollUpToGroupingValues:     rug,
+		additionalPlanConstraint:   additionalPlanConstraint,
+		requiresPrimaryKeyDistinct: requiresPrimaryKeyDistinct,
 	}
 }
 
@@ -210,6 +239,35 @@ func (r *RegularMatchInfo) GetAdditionalPlanConstraint() *QueryPlanConstraint {
 	return r.additionalPlanConstraint
 }
 
+// RequiresPrimaryKeyDistinct reports whether this expression's semantic
+// mapping can multiply one logical record and therefore requires a
+// primary-key distinct repair after its local filtering is applied.
+func (r *RegularMatchInfo) RequiresPrimaryKeyDistinct() bool {
+	return r.requiresPrimaryKeyDistinct
+}
+
+// GetConstraint composes the current expression's constraint with predicate
+// and child-match constraints. Mirrors Java RegularMatchInfo.getConstraint().
+func (r *RegularMatchInfo) GetConstraint() *QueryPlanConstraint {
+	constraints := make([]*QueryPlanConstraint, 0, 1+len(r.childPartialMatchMap))
+	if r.predicateMap != nil {
+		for _, mapping := range r.predicateMap.Values() {
+			constraints = append(constraints, mapping.GetConstraint())
+		}
+	}
+	for _, alias := range sortedChildAliases(r.childPartialMatchMap) {
+		child := r.childPartialMatchMap[alias]
+		if child != nil && child.GetRegularMatchInfo() != nil {
+			constraints = append(
+				constraints,
+				child.GetRegularMatchInfo().GetConstraint(),
+			)
+		}
+	}
+	constraints = append(constraints, r.additionalPlanConstraint)
+	return composeQueryPlanConstraints(constraints...)
+}
+
 // IsAdjusted returns false -- RegularMatchInfo is not adjusted.
 // GetChildPartialMatchMaybe returns the child PartialMatch for the
 // given quantifier alias, or nil if no child match exists for that
@@ -228,6 +286,19 @@ func (r *RegularMatchInfo) SetChildPartialMatch(alias values.CorrelationIdentifi
 		r.childPartialMatchMap = make(map[values.CorrelationIdentifier]PartialMatch)
 	}
 	r.childPartialMatchMap[alias] = pm
+}
+
+// GetChildPartialMatchMap returns a defensive copy of the selected child
+// branch keyed by query-quantifier alias.
+func (r *RegularMatchInfo) GetChildPartialMatchMap() map[values.CorrelationIdentifier]PartialMatch {
+	result := make(
+		map[values.CorrelationIdentifier]PartialMatch,
+		len(r.childPartialMatchMap),
+	)
+	for alias, partialMatch := range r.childPartialMatchMap {
+		result[alias] = partialMatch
+	}
+	return result
 }
 
 func (r *RegularMatchInfo) IsAdjusted() bool { return false }
@@ -348,27 +419,89 @@ func (b *AdjustedBuilder) SetMaxMatchMap(m *MaxMatchMap) *AdjustedBuilder {
 func AdjustGroupByMappings(
 	gbm *GroupByMappings,
 	candidateAlias values.CorrelationIdentifier,
-	candidateResultValue values.Value,
-) *GroupByMappings {
-	adjustedGroupings := adjustMatchedValueMap(gbm.MatchedGroupingsMap(), candidateAlias, candidateResultValue)
-	adjustedAggregates := adjustMatchedValueMap(gbm.MatchedAggregatesMap(), candidateAlias, candidateResultValue)
-	return NewGroupByMappings(adjustedGroupings, adjustedAggregates, gbm.UnmatchedAggregatesMap())
+	candidateExpression expressions.RelationalExpression,
+) (*GroupByMappings, bool) {
+	if gbm == nil || candidateExpression == nil {
+		return nil, false
+	}
+	candidateCorrelations := expressions.GetCorrelatedToOfExpression(candidateExpression)
+	adjustedGroupings, ok := adjustMatchedValueMap(
+		gbm.MatchedGroupingsMap(),
+		candidateAlias,
+		candidateExpression.GetResultValue(),
+		candidateCorrelations,
+	)
+	if !ok {
+		return nil, false
+	}
+	adjustedAggregates, ok := adjustMatchedValueMap(
+		gbm.MatchedAggregatesMap(),
+		candidateAlias,
+		candidateExpression.GetResultValue(),
+		candidateCorrelations,
+	)
+	if !ok {
+		return nil, false
+	}
+	return NewGroupByMappings(
+		adjustedGroupings,
+		adjustedAggregates,
+		gbm.UnmatchedAggregatesMap(),
+	), true
+}
+
+// onlyReferenceMember is the fail-closed counterpart of Java Reference.get(),
+// which requires exactly one member. Go Reference.Get() is intentionally a
+// first-member convenience and must not be used where result-value metadata
+// would depend on which explored alternative happened to be inserted first.
+func onlyReferenceMember(
+	ref *expressions.Reference,
+) (expressions.RelationalExpression, bool) {
+	if ref == nil {
+		return nil, false
+	}
+	members := ref.AllMembers()
+	if len(members) != 1 || members[0] == nil {
+		return nil, false
+	}
+	return members[0], true
 }
 
 func adjustMatchedValueMap(
 	matchedMap *BiMap[values.Value, values.Value],
 	candidateAlias values.CorrelationIdentifier,
 	candidateResultValue values.Value,
-) *BiMap[values.Value, values.Value] {
+	candidateExpressionCorrelations map[values.CorrelationIdentifier]struct{},
+) (*BiMap[values.Value, values.Value], bool) {
+	if matchedMap == nil {
+		return nil, false
+	}
 	result := NewValueBiMap()
+	ok := true
 	matchedMap.Range(func(queryValue, candidateValue values.Value) bool {
-		pulledUp := values.PullUpValue(candidateValue, candidateResultValue, candidateAlias)
-		if pulledUp != nil {
-			result.Put(queryValue, pulledUp)
+		constantAliases := differenceCorrelationSets(
+			values.GetCorrelatedToWithoutChildrenOfValue(candidateValue),
+			candidateExpressionCorrelations,
+		)
+		pulledUp, pullOK := pullUpGroupByValue(
+			candidateValue,
+			candidateResultValue,
+			candidateAlias,
+			constantAliases,
+		)
+		if !pullOK {
+			ok = false
+			return false
 		}
-		return true
+		if pulledUp != nil {
+			ok = putValueBiMapChecked(result, queryValue, pulledUp)
+		}
+		return ok
 	})
-	return result
+	if !ok {
+		return nil, false
+	}
+	return result, true
 }
 
 // GetGroupByMappings returns the builder's current group-by mappings.

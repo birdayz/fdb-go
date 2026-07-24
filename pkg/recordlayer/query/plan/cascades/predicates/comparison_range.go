@@ -103,6 +103,28 @@ type MergeResult struct {
 	Residual *Comparison
 }
 
+// GetComparisons returns every Comparison this range carries, whichever shape
+// it has: the single equality, or all the inequalities. It returns an empty
+// slice for an empty or nil range. The returned slice is read-only. Callers
+// that need to inspect the range as a whole should use this rather than
+// branching on the range type and risking one of the shapes going unhandled.
+func (r *ComparisonRange) GetComparisons() []*Comparison {
+	if r == nil {
+		return nil
+	}
+	switch r.rangeType {
+	case ComparisonRangeEquality:
+		if r.equality == nil {
+			return nil
+		}
+		return []*Comparison{r.equality}
+	case ComparisonRangeInequality:
+		return r.inequalities
+	default:
+		return nil
+	}
+}
+
 // Merge attempts to add a comparison to the range. Returns a
 // MergeResult capturing success / failure.
 //

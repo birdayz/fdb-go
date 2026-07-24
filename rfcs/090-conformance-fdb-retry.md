@@ -54,6 +54,12 @@ retry retryable FDB errors is buggy** — it manufactures false negatives under 
   `getCause()` to the root and reaches the `FDBException`, and the record layer's
   `FDBExceptions.getFDBCause` does the same — proving the cause chain is intact,
   so the predicate sees the FDB error.
+- A later CI recurrence exposed a carrier hole in the first implementation:
+  `FDBException` extends `RuntimeException`, and live result-set iteration can
+  throw it directly. `withFdbRetry` caught only `SQLException`, while the
+  deterministic injection test always wrapped its genuine `FDBException` in
+  `SQLException`. The classifier was correct, but the raw exception never
+  reached it.
 
 ## Fix
 
@@ -63,7 +69,10 @@ retries on a fresh transaction with jittered exponential backoff (base 50→800m
 additive jitter, 6 attempts / 5 sleeps, up to ~3s total). Predicate: the FDB cause's
 `isRetryableNotCommitted()` (falling back to `FDBExceptions.isRetriable` only for
 record-core retriable *wrappers* — conflict / lock-taken — which carry no raw
-`FDBException` and are not-committed by construction).
+`FDBException` and are not-committed by construction). The retry boundary catches
+both checked `SQLException` and unchecked `RuntimeException` carriers, then
+rethrows the original type unchanged when it is non-retryable or exhausts the
+budget; JVM `Error`s remain outside the catch.
 
 Wrap each statement execution **individually** (not the whole op — a 1007 on
 setup INSERT #3 must not replay #1–#2): the three `CREATE TEMPLATE/DATABASE/SCHEMA`
@@ -92,20 +101,22 @@ a transient infra error is absorbed vs surfaced; it never changes a query result
 ## Test plan
 
 A real 1007 needs CI saturation, which isn't reproducible on demand, so we pin
-the contract **deterministically** with a test-only conformance step,
-`runWithSetupInjectingFaults` (`sql_plan_steps.java`): it runs setup + query
-through the production `withFdbRetry`, but injects N genuine `FDBException`s of a
-chosen code before the SELECT executes (genuine → the native predicate
-classifies them exactly as live errors; the countdown is a method-local
-`AtomicInteger`, so it's isolated per request). `fault_inject_retry_conformance_test.go`
-asserts the full contract:
+the contract **deterministically** with two test-only conformance steps:
+`runWithSetupInjectingFaults` wraps a genuine `FDBException` in `SQLException`,
+while `runWithSetupInjectingRawFaults` throws that same genuine exception
+directly. Both run setup + query through the production `withFdbRetry`; the
+countdown is a method-local `AtomicInteger`, so it's isolated per request.
+`fault_inject_retry_conformance_test.go` asserts the full contract:
 
 - 1007 ×2 (within budget) → query **recovers**, returns the correct row.
+- raw-runtime 1007 ×2 → also recovers (the carrier that recurred in CI).
 - 1020 ×3 → recovers (the other not-committed code).
 - 1007 ×7 (> `MAX_FDB_RETRIES`) → **surfaces** a typed `FDBException` (fails loud,
   doesn't spin forever).
 - **1021 ×1 → surfaces immediately, NOT retried** (the maybe-committed write
   must never be replayed — the reviewer-caught hole).
+- raw-runtime 1021 ×1 → also surfaces immediately (catching the carrier does
+  not broaden the retry class).
 - 1000 ×1 → surfaces immediately (non-retryable).
 
 Plus: rebuild the Java server, run `//conformance:conformance_test` green

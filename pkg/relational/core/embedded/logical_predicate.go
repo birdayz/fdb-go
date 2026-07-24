@@ -2102,6 +2102,9 @@ func normalizeSchemaQualifiedSelectSources(sq *selectQuery, schemaName string, m
 				sq.tableAlias = bare
 			}
 			sq.tableName = bare
+			if len(sq.sourceSegments) == 2 && strings.EqualFold(sq.sourceSegments[0], schemaName) {
+				sq.sourceSegments = sq.sourceSegments[1:]
+			}
 		}
 	}
 	for i := range sq.joins {
@@ -6642,11 +6645,192 @@ func (p *existsSubqueryPlanner) mintSubqueryAlias() values.CorrelationIdentifier
 	return mintDistinctIdentifier(p.visibleScopeNames(), values.UniqueCorrelationIdentifier)
 }
 
+// tryBuildCorrelatedPrimaryUnnest recognizes Java's correlated-array primary
+// source inside EXISTS:
+//
+//	EXISTS (SELECT E FROM R.TAGS AS E WHERE E = 9)
+//
+// The generic SELECT builder cannot classify this source because a primary
+// FROM item normally has no source to its left. Here, however, R belongs to the
+// enclosing query. Resolve the collection through the outer semantic scope and
+// build a standalone LogicalUnnest carrying that resolved Value. The path is
+// deliberately narrow: one direct array field, one explicit element alias,
+// and no query-shaping clauses. Wider recognized shapes fail loudly rather
+// than being rebuilt as a phantom table scan.
+func (p *existsSubqueryPlanner) tryBuildCorrelatedPrimaryUnnest(
+	q antlrgen.IQueryContext,
+) (logical.LogicalOperator, bool, error) {
+	if q == nil || len(p.outerScopes) == 0 || p.md == nil {
+		return nil, false, nil
+	}
+	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return nil, false, nil
+	}
+	sq, err := extractFromQueryTerm(body)
+	if err != nil || sq == nil || sq.derivedQuery != nil || len(sq.sourceSegments) < 2 {
+		return nil, false, nil
+	}
+	// Java resolves a real table before falling through to correlated-field
+	// access. Preserve that precedence for an active-schema-qualified table.
+	if newUnnestTableResolver(p.md, p.effectiveSchemaName())(sq.sourceSegments) {
+		return nil, false, nil
+	}
+
+	ownerID := semantic.FromNormalized(sq.sourceSegments[0])
+	fieldID := semantic.FromNormalized(sq.sourceSegments[1])
+	var owner *semantic.ScopeSource
+	var col semantic.Column
+	aliasSeen := false
+	for i := range p.outerScopes {
+		src := &p.outerScopes[i]
+		if !src.Alias.EqualsIgnoreQuoting(ownerID) {
+			continue
+		}
+		aliasSeen = true
+		if src.Table == nil {
+			continue
+		}
+		candidateColumn, found := src.Table.LookupColumn(fieldID)
+		if !found {
+			continue
+		}
+		if owner != nil {
+			return nil, true, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+				"correlated array source %q is ambiguous", strings.Join(sq.sourceSegments, "."))
+		}
+		owner = src
+		col = candidateColumn
+	}
+	if owner == nil {
+		if aliasSeen {
+			return nil, true, api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column %q does not exist on source %q", sq.sourceSegments[1], sq.sourceSegments[0])
+		}
+		return nil, false, nil
+	}
+	if len(sq.sourceSegments) != 2 {
+		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
+			"nested correlated array sources in an EXISTS primary FROM clause are not yet supported")
+	}
+	if owner.Table == nil {
+		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
+			"a correlated array primary source requires a resolved outer table")
+	}
+
+	if !col.IsArray {
+		return nil, true, api.NewError(api.ErrCodeInvalidColumnReference,
+			"join correlation can occur only on a column of repeated (array) type")
+	}
+
+	innerAlias := sq.tableAlias
+	if innerAlias == "" || strings.EqualFold(innerAlias, sq.tableName) {
+		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
+			"a correlated array primary source in EXISTS requires an explicit element alias")
+	}
+	for _, src := range p.outerScopes {
+		if src.Alias.EqualsIgnoreQuoting(semantic.FromNormalized(innerAlias)) ||
+			(src.CorrelationName != "" && strings.EqualFold(src.CorrelationName, innerAlias)) {
+			return nil, true, api.NewError(api.ErrCodeDuplicateAlias,
+				"correlated array element alias collides with an outer source alias")
+		}
+	}
+	if len(sq.joins) != 0 || sq.distinct || len(sq.orderBy) != 0 ||
+		len(sq.groupBy) != 0 || len(sq.aggCols) != 0 || sq.countStar ||
+		sq.havingExpr != nil || sq.qualifyExpr != nil || sq.limit >= 0 || sq.offset != 0 {
+		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
+			"query-shaping clauses over a correlated array primary source in EXISTS are not yet supported")
+	}
+	// Validate the ignored EXISTS projection rather than silently accepting an
+	// invalid SELECT list. This first production slice admits exactly the
+	// element binding (`SELECT E`); EXISTS does not otherwise consume it.
+	if len(sq.projCols) != 1 || len(sq.projExprs) != 1 || sq.projExprs[0] != nil ||
+		sq.projCols[0].qualified {
+		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated array EXISTS currently requires projecting its element alias")
+	}
+	if sq.projCols[0].bare != innerAlias {
+		return nil, true, api.NewErrorf(api.ErrCodeUndefinedColumn,
+			"column %q does not exist", sq.projCols[0].bare)
+	}
+
+	cat := rlcatalog.Wrap(p.md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	outerScope := semantic.NewScope(nil)
+	for _, src := range p.outerScopes {
+		if addErr := outerScope.AddSource(src); addErr != nil {
+			return nil, true, addErr
+		}
+	}
+	aliasID := semantic.FromNormalized(innerAlias)
+	innerScope := semantic.NewScope(outerScope)
+	virtual := &semantic.StaticTable{
+		TableName: semantic.FromSegments([]string{innerAlias}, false),
+		TableColumns: []semantic.Column{{
+			Id:       aliasID,
+			Type:     col.Type,
+			Nullable: true,
+		}},
+	}
+	if addErr := innerScope.AddSource(semantic.ScopeSource{
+		Table:           virtual,
+		Alias:           aliasID,
+		CorrelationName: aliasID.Name(),
+		Shadowing:       true,
+	}); addErr != nil {
+		return nil, true, addErr
+	}
+	// Resolve the collection FROM THE INNER SCOPE so R is a parent-scope hit.
+	// ResolveIdentifier then emits FieldValue(QOV(R), TAGS), preserving the
+	// external correlation. Resolving against outerScope directly would treat
+	// R as local and produce a childless baked FieldValue: executable only by
+	// ambient-row accident and impossible to match to the candidate Explode.
+	resolver := expr.New(analyzer, innerScope)
+	collection, resolveErr := resolver.ResolveIdentifier(ownerID, fieldID)
+	if resolveErr != nil {
+		if mapped := mapPredicateWalkError(resolveErr); mapped != nil {
+			return nil, true, mapped
+		}
+		return nil, true, resolveErr
+	}
+
+	unnest := &logical.LogicalUnnest{
+		Segments:             append([]string(nil), sq.sourceSegments...),
+		Alias:                innerAlias,
+		CorrelatedCollection: collection,
+	}
+	if sq.whereExpr == nil || sq.whereExpr.Expression() == nil {
+		return unnest, true, nil
+	}
+	if expr.ContainsSubqueryAtom(sq.whereExpr.Expression()) ||
+		expr.ContainsExistsAtom(sq.whereExpr.Expression()) {
+		return nil, true, api.NewError(api.ErrCodeUnsupportedQuery,
+			"nested subqueries inside a correlated array EXISTS predicate are not yet supported")
+	}
+	pred, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
+	if walkErr != nil {
+		if mapped := mapPredicateWalkError(walkErr); mapped != nil {
+			return nil, true, mapped
+		}
+		return nil, true, walkErr
+	}
+	return &logical.LogicalFilter{
+		Input:     unnest,
+		Predicate: predicates.SimplifyPredicateValues(pred),
+	}, true, nil
+}
+
 func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: nil query context")
 	}
-	innerOp, err := buildLogicalPlanForQueryWithCTECatalog(q, p.md, p.schemaName, p.cteScopes, p.cteOnScopes)
+	innerOp, correlatedPrimaryUnnest, err := p.tryBuildCorrelatedPrimaryUnnest(q)
+	if err != nil {
+		return values.CorrelationIdentifier{}, err
+	}
+	if !correlatedPrimaryUnnest {
+		innerOp, err = buildLogicalPlanForQueryWithCTECatalog(q, p.md, p.schemaName, p.cteScopes, p.cteOnScopes)
+	}
 	isUndefinedCol := false
 	if err != nil {
 		var apiErr *api.Error
@@ -6657,7 +6841,7 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 	if err != nil && (!isUndefinedCol || len(p.outerScopes) == 0) {
 		return values.CorrelationIdentifier{}, err
 	}
-	if isUndefinedCol {
+	if isUndefinedCol && !correlatedPrimaryUnnest {
 		p.lastJoinPredicate = nil
 		p.lastJoinPredicateOuterOnly = false
 		innerOp, err = p.buildCorrelatedExists(q)
@@ -6673,7 +6857,7 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 	// silently filtering); flag it so a positive WHERE-EXISTS consumer folds it
 	// to TRUE. Only the correlated (isUndefinedCol) case — the non-correlated
 	// path keeps the aggregate in the inner plan and already answers correctly.
-	alwaysTrue := isUndefinedCol && queryInnerIsUnconditionalOneRow(q)
+	alwaysTrue := isUndefinedCol && !correlatedPrimaryUnnest && queryInnerIsUnconditionalOneRow(q)
 	alias := p.mintSubqueryAlias()
 	p.subqueries = append(p.subqueries, logical.ExistsSubquery{
 		Alias:                  alias,

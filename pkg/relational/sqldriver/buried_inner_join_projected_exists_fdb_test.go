@@ -4,15 +4,15 @@ package sqldriver_test
 // `p JOIN q ... JOIN r ...` associates left, so the fold's left leg is the
 // `(p JOIN q)` INNER cluster — a buried gated box.
 //
-// An INNER box is merge-transparent (SelectMergeRule flattens INNER/CROSS but
-// never OUTER), so under AXIS 1 the box dissolves into the fold and the fold
-// becomes a flat `[ForEach(p), ForEach(q), ForEach(r), Existential]` select —
-// the N-WAY FLAT EXISTENTIAL shape. The N-way arm of implementJoinWithExistential
-// plans it: a left-deep INNER cross-product NLJ chain (each level seeded so it
-// builds a positional merged row the next level reads through its buried-leaf
-// windows), all join predicates as ONE merged-row filter, then the existential
-// FlatMap fold. Java 4.12.11.0 folds `(p JOIN q) JOIN r` under projected EXISTS
-// and answers [[10 true]]; the N-way arm matches.
+// RFC-190's direct-emit path gathers the INNER cluster's legs and ON predicates
+// before the older AXIS-1 enclosure path, producing a flat
+// `[ForEach(p), ForEach(q), ForEach(r), Existential]` select — the N-WAY FLAT
+// EXISTENTIAL shape. PartitionSelectRule decomposes that
+// name-model select into ordinary binary NLJs while its live-existential guard
+// prevents an invalid partition; the surviving existential is implemented as
+// the FlatMap/FirstOrDefault fold. Java 4.12.11.0 folds `(p JOIN q) JOIN r`
+// under projected EXISTS and answers [[10 true]]; this test pins the same
+// partitioned route.
 //
 // The DISCRIMINATING probe below (dup-named `k` columns across p/q/r, a p.k
 // projection AND a p.k EXISTS correlation, data where binding to q.k or r.k
@@ -182,10 +182,10 @@ func TestFDB_BuriedInnerJoinProjectedExists_Discriminating(t *testing.T) {
 }
 
 // TestFDB_NWayWhereExists pins the WHERE-EXISTS sibling of the projected-fold
-// case above: `[ForEach×3, Existential]` reaches the N-way arm with a
-// NON-projected result value (a plain WHERE EXISTS filter, not a fold). A single
-// fix closes both residuals — the projected fold AND the WHERE-EXISTS flatten.
-// Java 4.12.11.0: only p.id=1 has a matching e → [10].
+// case above. The arity-3 INNER cluster remains a separately enumerable,
+// SARG-preserving gathered reference, and translateExistsOverGatheredCluster
+// wraps it with the non-projected WHERE existential. Java 4.12.11.0: only
+// p.id=1 has a matching e → [10].
 func TestFDB_NWayWhereExists(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -332,12 +332,12 @@ func TestFDB_NWayExistsInnerJoin(t *testing.T) {
 	}
 }
 
-// TestFDB_NWayNotExists pins the N-way arm's NEGATED existential branch
-// (`negated → ComparisonIsNull`): a `WHERE NOT EXISTS` over a 3-way
-// fold. Polarity discriminator: id=1 has a matching e (EXISTS true → NOT EXISTS
-// false → EXCLUDED); id=2 has no match (EXISTS false → NOT EXISTS true → KEPT).
-// Correct → [20]. An inverted polarity (NOT EXISTS treated as EXISTS) → [10] —
-// a loud, distinguishable silent-wrong. Java 4.12.11.0: [20].
+// TestFDB_NWayNotExists pins the gathered existential wrap's NEGATED branch
+// (`negated → ComparisonIsNull`) over a 3-way fold. Polarity discriminator:
+// id=1 has a matching e (EXISTS true → NOT EXISTS false → EXCLUDED); id=2 has
+// no match (EXISTS false → NOT EXISTS true → KEPT). Correct → [20]. An inverted
+// polarity (NOT EXISTS treated as EXISTS) → [10] — a loud, distinguishable
+// silent-wrong. Java 4.12.11.0: [20].
 func TestFDB_NWayNotExists(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

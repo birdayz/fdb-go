@@ -17,11 +17,13 @@ import (
 // dataAccessTestCandidate is a minimal MatchCandidate for unit tests. It
 // returns a fixed plan from ToScanPlan and uses simple sargable aliases.
 type dataAccessTestCandidate struct {
-	name            string
-	sargableAliases []values.CorrelationIdentifier
-	columnNames     []string
-	recordTypes     []string
-	fixedPlan       plans.RecordQueryPlan
+	name              string
+	sargableAliases   []values.CorrelationIdentifier
+	columnNames       []string
+	recordTypes       []string
+	fixedPlan         plans.RecordQueryPlan
+	unique            bool
+	createsDuplicates bool
 }
 
 func (c *dataAccessTestCandidate) CandidateName() string    { return c.name }
@@ -31,7 +33,10 @@ func (c *dataAccessTestCandidate) GetSargableAliases() []values.CorrelationIdent
 	return c.sargableAliases
 }
 func (c *dataAccessTestCandidate) GetRecordTypes() []string { return c.recordTypes }
-func (c *dataAccessTestCandidate) IsUnique() bool           { return false }
+func (c *dataAccessTestCandidate) IsUnique() bool           { return c.unique }
+func (c *dataAccessTestCandidate) CreatesDuplicates() bool {
+	return c.createsDuplicates
+}
 
 func (c *dataAccessTestCandidate) ComputeBoundParameterPrefixMap(
 	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
@@ -84,14 +89,30 @@ var _ plans.RecordQueryPlan = (*testPlan)(nil)
 type testMatchInfo struct {
 	orderingParts []*MatchedOrderingPart
 	paramBindings map[values.CorrelationIdentifier]*predicates.ComparisonRange
+	maxMatchMap   *MaxMatchMap
 }
 
 func (m *testMatchInfo) GetMatchedOrderingParts() []*MatchedOrderingPart {
 	return m.orderingParts
 }
-func (m *testMatchInfo) GetMaxMatchMap() *MaxMatchMap { return nil }
-func (m *testMatchInfo) IsAdjusted() bool             { return false }
-func (m *testMatchInfo) IsRegular() bool              { return true }
+
+func (m *testMatchInfo) GetMaxMatchMap() *MaxMatchMap {
+	if m.maxMatchMap != nil {
+		return m.maxMatchMap
+	}
+	// AbstractDataAccessRule requires every real match to carry a pullable
+	// MaxMatchMap. Give the shared lightweight fixture the corresponding
+	// identity map so tests exercise that production gate instead of relying on
+	// the old hard-coded empty translation.
+	current := values.LiteralValue("identity")
+	return NewMaxMatchMap(
+		map[values.Value]values.Value{current: current},
+		current,
+		current,
+	)
+}
+func (m *testMatchInfo) IsAdjusted() bool { return false }
+func (m *testMatchInfo) IsRegular() bool  { return true }
 func (m *testMatchInfo) GetGroupByMappings() *GroupByMappings {
 	return EmptyGroupByMappings()
 }
@@ -102,7 +123,7 @@ func (m *testMatchInfo) GetRegularMatchInfo() *RegularMatchInfo {
 		nil, // bindingAliasMap
 		nil, // predicateMap
 		m.orderingParts,
-		nil, // maxMatchMap
+		m.GetMaxMatchMap(),
 		EmptyGroupByMappings(),
 		nil, // rollUpToGroupingValues
 		nil, // additionalPlanConstraint
@@ -166,9 +187,8 @@ func makeDataAccessTestPartialMatchWithPK(name string, numParts int, plan plans.
 
 	// Real candidates continue the matched ordering into the trimmed
 	// primary-key suffix (ComputeMatchedOrderingParts) — the fixture must
-	// model that, or the pk-monotonicity gate (accessCompatibleWithPKMerge)
-	// would see an index with no pk continuation and decline every
-	// intersection the tests build.
+	// model that, or common-ordering derivation would see an index with no
+	// primary-key continuation and decline every intersection the tests build.
 	for _, pkField := range pkFields {
 		parts = append(parts, NewMatchedOrderingPart(
 			values.UniqueCorrelationIdentifier(),
@@ -278,6 +298,104 @@ func TestPrepareMatchesAndCompensations_SingleMatch(t *testing.T) {
 	}
 	if accesses[0].GetPartialMatch() != pm {
 		t.Fatal("access should reference the original PartialMatch")
+	}
+}
+
+func TestPrepareMatchesAndCompensations_TranslatesRequestedOrderingAtTop(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	queryResult := values.LiteralValue("query_scalar")
+	candidateField := &values.FieldValue{
+		Field: "SORT_KEY",
+		Typ:   values.NullableLong,
+	}
+	candidateResult := values.NewRecordConstructorValue(
+		values.RecordConstructorField{
+			Name:  "SORT_KEY",
+			Value: candidateField,
+		},
+	)
+	maxMatchMap := NewMaxMatchMap(
+		map[values.Value]values.Value{queryResult: candidateField},
+		queryResult,
+		candidateResult,
+	)
+	topMap, ok := maxMatchMap.PullUpMaybe(
+		values.CurrentAlias,
+		values.CurrentAlias,
+	)
+	if !ok {
+		t.Fatal("fixture MaxMatchMap did not produce a top-to-top translation")
+	}
+	requestedValue := values.NewQuantifiedObjectValue(values.CurrentAlias)
+	translatedRequest := translateIntersectionRequestedOrdering(
+		properties.NewRequestedOrdering(
+			[]properties.RequestedOrderingPart{{
+				Value:     requestedValue,
+				SortOrder: properties.RequestedSortOrderAscending,
+			}},
+			properties.DistinctnessNotDistinct,
+			false,
+		),
+		topMap,
+	)
+	translatedValue := translatedRequest.GetParts()[0].Value
+	if values.ValuesStructurallyEqual(translatedValue, requestedValue) {
+		t.Fatal("fixture top-to-top translation is unexpectedly an identity")
+	}
+
+	pm := &testPartialMatch{
+		candidate: &dataAccessTestCandidate{
+			name:        "idx_sort",
+			recordTypes: []string{"TestRecord"},
+			fixedPlan:   &testPlan{name: "idx_sort"},
+		},
+		matchInfo: &testMatchInfo{
+			orderingParts: []*MatchedOrderingPart{
+				NewMatchedOrderingPart(
+					values.UniqueCorrelationIdentifier(),
+					translatedValue,
+					nil,
+					MatchedSortOrderAscending,
+				),
+			},
+			maxMatchMap: maxMatchMap,
+		},
+	}
+	requested := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     requestedValue,
+			SortOrder: properties.RequestedSortOrderAscending,
+		}},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+
+	accesses := PrepareMatchesAndCompensations(
+		[]PartialMatch{pm},
+		[]*properties.RequestedOrdering{requested},
+		EmptyPlanContext(),
+	)
+	if len(accesses) != 1 {
+		t.Fatalf("translated ordered access count = %d, want 1", len(accesses))
+	}
+	access := accesses[0]
+	if access.GetTopToTopTranslationMap() == nil ||
+		access.GetTopToTopTranslationMap().DefinesOnlyIdentities() {
+		t.Fatal("prepared access lost its non-identity top-to-top map")
+	}
+	satisfying := access.GetSatisfyingRequestedOrderings()
+	if len(satisfying) != 1 ||
+		!values.ValuesStructurallyEqual(
+			satisfying[0].GetParts()[0].Value,
+			translatedValue,
+		) {
+		t.Fatalf(
+			"prepared satisfying ordering = %#v, want translated candidate-top value",
+			satisfying,
+		)
 	}
 }
 
@@ -691,6 +809,99 @@ func TestSatisfiesRequestedOrdering_NoMatch(t *testing.T) {
 	dir := SatisfiesRequestedOrdering(pm, ro)
 	if dir != nil {
 		t.Fatal("ordering on unmatched field should return nil")
+	}
+}
+
+func TestSatisfiesRequestedOrdering_DoesNotCollapseBakedOrdinals(t *testing.T) {
+	t.Parallel()
+
+	matched := values.NewFieldValueWithResolvedOrdinal("DUP", 0, values.UnknownType)
+	requestedOtherSlot := values.NewFieldValueWithResolvedOrdinal("DUP", 1, values.UnknownType)
+	pm := makeOrderingTestPartialMatch([]*MatchedOrderingPart{
+		NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			matched,
+			predicates.EmptyComparisonRange(),
+			MatchedSortOrderAscending,
+		),
+	})
+	requested := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     requestedOtherSlot,
+			SortOrder: properties.RequestedSortOrderAscending,
+		}},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+
+	if dir := SatisfiesRequestedOrdering(pm, requested); dir != nil {
+		t.Fatalf("different baked ordinal was accepted with direction %v", *dir)
+	}
+}
+
+func TestSatisfiesRequestedOrdering_BridgesLazyAndBakedFlatField(t *testing.T) {
+	t.Parallel()
+
+	matched := &values.FieldValue{Field: "sort_key", Typ: values.UnknownType}
+	requestedBaked := values.NewFieldValueWithResolvedOrdinal(
+		"SORT_KEY",
+		3,
+		values.UnknownType,
+	)
+	pm := makeOrderingTestPartialMatch([]*MatchedOrderingPart{
+		NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			matched,
+			predicates.EmptyComparisonRange(),
+			MatchedSortOrderAscending,
+		),
+	})
+	requested := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     requestedBaked,
+			SortOrder: properties.RequestedSortOrderAscending,
+		}},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+
+	dir := SatisfiesRequestedOrdering(pm, requested)
+	if dir == nil || *dir != ScanDirectionForward {
+		t.Fatalf("lazy/baked flat-field bridge direction = %v, want forward", dir)
+	}
+}
+
+func TestSatisfiesRequestedOrdering_BridgesQualifiedChildToLocalCandidate(t *testing.T) {
+	t.Parallel()
+
+	matched := values.NewFlatFieldValue("name", values.UnknownType)
+	alias := values.NamedCorrelationIdentifier("C")
+	requestedQualified := values.NewCorrelatedFieldValueWithResolvedOrdinal(
+		values.NewQuantifiedObjectValue(alias),
+		"NAME",
+		1,
+		values.UnknownType,
+	)
+	pm := makeOrderingTestPartialMatch([]*MatchedOrderingPart{
+		NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			matched,
+			predicates.EmptyComparisonRange(),
+			MatchedSortOrderAscending,
+		),
+	})
+	requested := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     requestedQualified,
+			SortOrder: properties.RequestedSortOrderAscending,
+		}},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+
+	dir := SatisfiesRequestedOrdering(pm, requested)
+	if dir == nil || *dir != ScanDirectionForward {
+		t.Fatalf("qualified/local ordering bridge direction = %v, want forward", dir)
 	}
 }
 

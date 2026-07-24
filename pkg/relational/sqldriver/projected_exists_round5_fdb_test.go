@@ -189,6 +189,25 @@ func TestFDB_ProjectedExists_Round5(t *testing.T) {
 			t.Errorf("expected a Sort node above the existential FlatMap for %q, got:\n%s", q, plan)
 		}
 	}
+	requireReverseFlatMapWithoutSort := func(t *testing.T, q string) {
+		t.Helper()
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN %q: %v", q, err)
+		}
+		if !strings.Contains(plan, "FlatMap") {
+			t.Errorf("expected FlatMap (existential probe) in plan for %q, got:\n%s", q, plan)
+		}
+		if !strings.Contains(plan, "FirstOrDefault") {
+			t.Errorf("expected FirstOrDefault in plan for %q, got:\n%s", q, plan)
+		}
+		if strings.Contains(plan, "Sort") {
+			t.Errorf("expected the reverse outer scan to satisfy ORDER BY without a Sort for %q, got:\n%s", q, plan)
+		}
+		if !strings.Contains(plan, "REVERSE") {
+			t.Errorf("expected a reverse outer scan for descending ORDER BY in %q, got:\n%s", q, plan)
+		}
+	}
 
 	// idsInOrder returns the first-column (id) values in row order for a
 	// `SELECT id, EXISTS(...) ...` query, plus the boolean column for sanity.
@@ -233,14 +252,14 @@ func TestFDB_ProjectedExists_Round5(t *testing.T) {
 	// ── SINGLE-TABLE × selected × unqualified × DESC ─────────────────────────
 	t.Run("single_selected_unqualified_desc", func(t *testing.T) {
 		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 FROM t1 ORDER BY id DESC"
-		requireSortOverFlatMap(t, q)
+		requireReverseFlatMapWithoutSort(t, q)
 		assertIDOrder(t, q, []int64{5, 4, 3, 2, 1})
 	})
 
 	// ── SINGLE-TABLE × selected × qualified × DESC ───────────────────────────
 	t.Run("single_selected_qualified_desc", func(t *testing.T) {
 		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 FROM t1 ORDER BY t1.id DESC"
-		requireSortOverFlatMap(t, q)
+		requireReverseFlatMapWithoutSort(t, q)
 		assertIDOrder(t, q, []int64{5, 4, 3, 2, 1})
 	})
 

@@ -100,7 +100,7 @@ func TestUnorderedUnionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	}
 }
 
-func TestUnorderedUnionPlan_EqualsWithoutChildren_NotEqualToOrderedUnion(t *testing.T) {
+func TestUnorderedUnionPlan_EqualsWithoutChildren_NotEqualToGoConcatUnion(t *testing.T) {
 	t.Parallel()
 	uu := NewRecordQueryUnorderedUnionPlan(nil)
 	ou := NewRecordQueryUnionPlan(nil)
@@ -129,7 +129,7 @@ func TestUnorderedUnionPlan_HashCodeWithoutChildren_SameAcrossInstances(t *testi
 	}
 }
 
-func TestUnorderedUnionPlan_HashDistinctFromOrderedUnion(t *testing.T) {
+func TestUnorderedUnionPlan_HashDistinctFromGoConcatUnion(t *testing.T) {
 	t.Parallel()
 	uu := NewRecordQueryUnorderedUnionPlan(nil)
 	ou := NewRecordQueryUnionPlan(nil)

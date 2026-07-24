@@ -3,16 +3,18 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestValueIndexScanMatchCandidate_PrefixMap_AllEquality(t *testing.T) {
 	t.Parallel()
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
-	c := NewValueIndexScanMatchCandidate(
+	c := newKnownDistinctValueIndexCandidate(
 		"Order$status_date",
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
@@ -41,7 +43,7 @@ func TestValueIndexScanMatchCandidate_PrefixMap_StopsAtEmpty(t *testing.T) {
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
 	a3 := values.UniqueCorrelationIdentifier()
-	c := NewValueIndexScanMatchCandidate(
+	c := newKnownDistinctValueIndexCandidate(
 		"idx",
 		[]string{"T"},
 		[]string{"A", "B", "C"},
@@ -68,7 +70,7 @@ func TestValueIndexScanMatchCandidate_PrefixMap_StopsAfterInequality(t *testing.
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
 	a3 := values.UniqueCorrelationIdentifier()
-	c := NewValueIndexScanMatchCandidate(
+	c := newKnownDistinctValueIndexCandidate(
 		"idx",
 		[]string{"T"},
 		[]string{"A", "B", "C"},
@@ -102,7 +104,7 @@ func TestValueIndexScanMatchCandidate_ToScanPlan(t *testing.T) {
 	t.Parallel()
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
-	c := NewValueIndexScanMatchCandidate(
+	c := newKnownDistinctValueIndexCandidate(
 		"Order$status",
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
@@ -162,7 +164,7 @@ func TestValueIndexScanMatchCandidate_PushValueThroughFetch_ChainedFieldDeclines
 	src := values.NamedCorrelationIdentifier("SRC")
 	tgt := values.NamedCorrelationIdentifier("TGT")
 	sarg := values.UniqueCorrelationIdentifier()
-	c := NewValueIndexScanMatchCandidate(
+	c := newKnownDistinctValueIndexCandidate(
 		"idx_city",
 		[]string{"T"},
 		[]string{"CITY"},
@@ -219,4 +221,470 @@ func TestValueIndexScanMatchCandidate_PushValueThroughFetch_ChainedFieldDeclines
 	if got2, ok2 := c.PushValueThroughFetch(overConst, src, tgt); ok2 {
 		t.Fatalf("FieldValue over a non-QOV composite must NOT push through fetch, got ok=true value=%v", got2)
 	}
+}
+
+func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testing.T) {
+	t.Parallel()
+
+	tagAlias := values.UniqueCorrelationIdentifier()
+	scoreAlias := values.UniqueCorrelationIdentifier()
+	reportedNoDuplicates := false
+	fanOutCandidate := NewValueIndexScanMatchCandidateWithFunctions(
+		"item_tags_score",
+		[]string{"Item"},
+		[]string{"TAGS", "SCORE"},
+		nil,
+		[]values.CorrelationIdentifier{tagAlias, scoreAlias},
+		values.UnknownType,
+		false,
+		[]string{"ID"},
+		&reportedNoDuplicates,
+	).WithRootKeyExpression(&gen.KeyExpression{
+		Then: &gen.Then{Child: []*gen.KeyExpression{
+			candidateTestKeyField("TAGS", gen.Field_FAN_OUT),
+			candidateTestKeyField("SCORE", gen.Field_SCALAR),
+		}},
+	})
+	if !fanOutCandidate.CreatesDuplicates() {
+		t.Fatal("structured FAN_OUT must override a stale false duplicate signal")
+	}
+	if signal := fanOutCandidate.DistinctRecordsSignal(); signal == nil || !*signal {
+		t.Fatalf("structured FAN_OUT distinct signal = %v, want true", signal)
+	}
+
+	missingSignalCandidate := NewValueIndexScanMatchCandidateWithFunctions(
+		"item_tags",
+		[]string{"Item"},
+		[]string{"TAGS"},
+		nil,
+		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+		values.UnknownType,
+		false,
+		nil,
+		nil,
+	).WithRootKeyExpression(candidateTestKeyField("TAGS", gen.Field_FAN_OUT))
+	if !missingSignalCandidate.CreatesDuplicates() {
+		t.Fatal("structured FAN_OUT must establish duplicates when the optional signal is missing")
+	}
+	if signal := missingSignalCandidate.DistinctRecordsSignal(); signal == nil || !*signal {
+		t.Fatalf("missing external distinct signal with FAN_OUT root = %v, want true", signal)
+	}
+
+	sourceAlias := values.NamedCorrelationIdentifier("source")
+	targetAlias := values.NamedCorrelationIdentifier("target")
+	field := func(name string) values.Value {
+		return values.NewFieldValue(
+			values.NewQuantifiedObjectValue(sourceAlias),
+			name,
+			values.UnknownType,
+		)
+	}
+
+	if translated, ok := fanOutCandidate.PushValueThroughFetch(
+		field("TAGS"),
+		sourceAlias,
+		targetAlias,
+	); ok {
+		t.Fatalf(
+			"fan-out element must not cover the original TAGS array, got %v",
+			translated,
+		)
+	}
+	if translated, ok := fanOutCandidate.PushValueThroughFetch(
+		values.NewFieldValue(nil, "TAGS", values.UnknownType),
+		sourceAlias,
+		targetAlias,
+	); ok {
+		t.Fatalf(
+			"baked TAGS array must not be translated from one exploded element, got %v",
+			translated,
+		)
+	}
+
+	for _, coveredColumn := range []string{"SCORE", "ID"} {
+		translated, ok := fanOutCandidate.PushValueThroughFetch(
+			field(coveredColumn),
+			sourceAlias,
+			targetAlias,
+		)
+		if !ok {
+			t.Fatalf(
+				"ordinary covered column %s was rejected on a fan-out index",
+				coveredColumn,
+			)
+		}
+		translatedField, ok := translated.(*values.FieldValue)
+		if !ok || translatedField.Field != coveredColumn {
+			t.Fatalf(
+				"translated %s = %#v, want the same field over target",
+				coveredColumn,
+				translated,
+			)
+		}
+	}
+
+	// Predicate binding is intentionally independent of covering. An exact
+	// exploded-element comparison must still form the scan prefix.
+	equality := predicates.NewLiteralComparison(
+		predicates.ComparisonEquals,
+		"blue",
+	)
+	equalityRange := predicates.EmptyComparisonRange().Merge(&equality).Range
+	prefix := fanOutCandidate.ComputeBoundParameterPrefixMap(
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+			tagAlias: equalityRange,
+		},
+	)
+	if got := prefix[tagAlias]; got != equalityRange {
+		t.Fatalf("exact fan-out element binding was not retained in scan prefix: %v", prefix)
+	}
+
+	fetch, ok := fanOutCandidate.ToScanPlan(prefix, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if !ok {
+		t.Fatalf("fan-out scan = %T, want Fetch(IndexScan)", fetch)
+	}
+	indexPlan, ok := fetch.GetInner().(*plans.RecordQueryIndexPlan)
+	if !ok {
+		t.Fatalf("fan-out fetch child = %T, want IndexPlan", fetch.GetInner())
+	}
+	if ordering := indexPlan.HintOrdering(); ordering.IsKnown ||
+		len(ordering.Keys) != 0 {
+		t.Fatalf(
+			"candidate fan-out signal did not suppress physical ordering: %#v",
+			ordering,
+		)
+	}
+	if rich := indexPlan.HintRichOrdering(); len(rich.GetKeys()) != 0 {
+		t.Fatalf(
+			"candidate fan-out signal did not suppress rich ordering: %#v",
+			rich.GetKeys(),
+		)
+	}
+
+	// A non-fan-out scalar index with the same translation machinery retains
+	// its historical covering behavior.
+	scalarAlias := values.UniqueCorrelationIdentifier()
+	noDuplicates := false
+	scalarCandidate := NewValueIndexScanMatchCandidateWithFunctions(
+		"item_score",
+		[]string{"Item"},
+		[]string{"SCORE"},
+		nil,
+		[]values.CorrelationIdentifier{scalarAlias},
+		values.UnknownType,
+		false,
+		nil,
+		&noDuplicates,
+	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR))
+	if _, ok := scalarCandidate.PushValueThroughFetch(
+		field("SCORE"),
+		sourceAlias,
+		targetAlias,
+	); !ok {
+		t.Fatal("scalar index column must remain pushable through fetch")
+	}
+}
+
+func TestValueIndexScanMatchCandidate_WholeRecordIsNotCovered(t *testing.T) {
+	t.Parallel()
+
+	columnAlias := values.UniqueCorrelationIdentifier()
+	candidate := newKnownDistinctValueIndexCandidate(
+		"item_score",
+		[]string{"Item"},
+		[]string{"SCORE"},
+		[]values.CorrelationIdentifier{columnAlias},
+		values.UnknownType,
+		false,
+		nil,
+	)
+	sourceAlias := values.NamedCorrelationIdentifier("source")
+	targetAlias := values.NamedCorrelationIdentifier("target")
+
+	if translated, ok := candidate.PushValueThroughFetch(
+		values.NewQuantifiedObjectValue(sourceAlias),
+		sourceAlias,
+		targetAlias,
+	); ok {
+		t.Fatalf(
+			"whole source record must retain Fetch, got translated value %v",
+			translated,
+		)
+	}
+
+	uncorrelatedAlias := values.NamedCorrelationIdentifier("uncorrelated")
+	uncorrelated := values.NewQuantifiedObjectValue(uncorrelatedAlias)
+	translated, ok := candidate.PushValueThroughFetch(
+		uncorrelated,
+		sourceAlias,
+		targetAlias,
+	)
+	if !ok || translated != uncorrelated {
+		t.Fatalf(
+			"uncorrelated value = (%v, %v), want unchanged success",
+			translated,
+			ok,
+		)
+	}
+}
+
+func TestValueIndexScanMatchCandidate_FunctionKeyCoversOnlyPKAndAbstainsOrdering(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	createsDuplicates := false
+	alias := values.UniqueCorrelationIdentifier()
+	candidate := NewValueIndexScanMatchCandidateWithFunctions(
+		"item_cardinality_tags",
+		[]string{"Item"},
+		[]string{"TAGS", "B"},
+		[]string{FunctionKindCardinality, ""},
+		[]values.CorrelationIdentifier{
+			alias,
+			values.UniqueCorrelationIdentifier(),
+		},
+		values.UnknownType,
+		false,
+		[]string{"ID", "TAGS"},
+		&createsDuplicates,
+	).WithRootKeyExpression(&gen.KeyExpression{Then: &gen.Then{
+		Child: []*gen.KeyExpression{
+			{Function: &gen.Function{
+				Name: proto.String(FunctionKindCardinality),
+				Arguments: candidateTestKeyField(
+					"TAGS",
+					gen.Field_CONCATENATE,
+				),
+			}},
+			candidateTestKeyField("B", gen.Field_SCALAR),
+		},
+	}})
+
+	source := values.UniqueCorrelationIdentifier()
+	target := values.UniqueCorrelationIdentifier()
+	translated, ok := candidate.PushValueThroughFetch(
+		values.NewFieldValue(
+			values.NewQuantifiedObjectValue(source),
+			"TAGS",
+			values.UnknownType,
+		),
+		source,
+		target,
+	)
+	if ok || translated != nil {
+		t.Fatalf(
+			"function-key candidate translated its bare argument through Fetch: %v, %t",
+			translated,
+			ok,
+		)
+	}
+	translated, ok = candidate.PushValueThroughFetch(
+		values.NewFieldValue(
+			values.NewQuantifiedObjectValue(source),
+			"B",
+			values.UnknownType,
+		),
+		source,
+		target,
+	)
+	if ok || translated != nil {
+		t.Fatalf(
+			"mixed function-key candidate translated sibling index field through Fetch: %v, %t",
+			translated,
+			ok,
+		)
+	}
+	translated, ok = candidate.PushValueThroughFetch(
+		values.NewFieldValue(
+			values.NewQuantifiedObjectValue(source),
+			"ID",
+			values.UnknownType,
+		),
+		source,
+		target,
+	)
+	if !ok || translated == nil {
+		t.Fatalf(
+			"function-key candidate did not translate index-resident PK through Fetch: %v, %t",
+			translated,
+			ok,
+		)
+	}
+
+	scan := candidate.ToScanPlan(
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{},
+		false,
+	)
+	indexPlan := extractIndexPlan(scan)
+	if indexPlan == nil {
+		t.Fatal("function-key candidate did not produce its non-covering scan")
+	}
+	if ordering := indexPlan.HintOrdering(); ordering.IsKnown ||
+		len(ordering.Keys) != 0 {
+		t.Fatalf(
+			"function-key physical ordering = %#v, want abstain",
+			ordering,
+		)
+	}
+	if rich := indexPlan.HintRichOrdering(); len(rich.GetKeys()) != 0 {
+		t.Fatalf(
+			"function-key rich ordering = %#v, want abstain",
+			rich.GetKeys(),
+		)
+	}
+}
+
+func TestValueIndexScanMatchCandidate_FanOutOrderingMatchesJava(t *testing.T) {
+	t.Parallel()
+
+	tagAlias := values.UniqueCorrelationIdentifier()
+	scoreAlias := values.UniqueCorrelationIdentifier()
+	duplicates := true
+	candidate := NewValueIndexScanMatchCandidateWithFunctions(
+		"item_tags_score",
+		[]string{"Item"},
+		[]string{"TAGS", "SCORE"},
+		nil,
+		[]values.CorrelationIdentifier{tagAlias, scoreAlias},
+		values.UnknownType,
+		false,
+		nil,
+		&duplicates,
+	).WithRootKeyExpression(&gen.KeyExpression{
+		Then: &gen.Then{Child: []*gen.KeyExpression{
+			candidateTestKeyField("TAGS", gen.Field_FAN_OUT),
+			candidateTestKeyField("SCORE", gen.Field_SCALAR),
+		}},
+	})
+
+	equality := predicates.NewLiteralComparison(
+		predicates.ComparisonEquals,
+		"blue",
+	)
+	equalityRange := predicates.EmptyComparisonRange().Merge(&equality).Range
+	equalityInfo := NewRegularMatchInfo(
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+			tagAlias: equalityRange,
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	parts := candidate.ComputeMatchedOrderingParts(
+		equalityInfo,
+		[]values.CorrelationIdentifier{tagAlias, scoreAlias},
+		false,
+	)
+	if len(parts) != 1 {
+		t.Fatalf(
+			"equality-bound fan-out ordering parts = %d, want only trailing SCORE",
+			len(parts),
+		)
+	}
+	if parts[0].GetParameterId() != scoreAlias {
+		t.Fatalf(
+			"ordering parameter = %s, want trailing SCORE %s",
+			parts[0].GetParameterId(),
+			scoreAlias,
+		)
+	}
+	scoreValue, ok := parts[0].GetValue().(*values.FieldValue)
+	if !ok || scoreValue.Field != "SCORE" {
+		t.Fatalf(
+			"ordering value = %#v, want scalar SCORE (never TAGS array)",
+			parts[0].GetValue(),
+		)
+	}
+
+	reverseParts := candidate.ComputeMatchedOrderingParts(
+		equalityInfo,
+		[]values.CorrelationIdentifier{tagAlias, scoreAlias},
+		true,
+	)
+	if len(reverseParts) != 1 ||
+		reverseParts[0].GetMatchedSortOrder() != MatchedSortOrderDescending {
+		t.Fatalf("reverse trailing ordering = %#v, want one descending SCORE", reverseParts)
+	}
+
+	inequality := predicates.NewLiteralComparison(
+		predicates.ComparisonGreaterThan,
+		"blue",
+	)
+	inequalityRange := predicates.EmptyComparisonRange().Merge(&inequality).Range
+	for _, tc := range []struct {
+		name     string
+		bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange
+	}{
+		{name: "unbound"},
+		{
+			name: "range-bound",
+			bindings: map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+				tagAlias: inequalityRange,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			info := NewRegularMatchInfo(
+				tc.bindings,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+			)
+			got := candidate.ComputeMatchedOrderingParts(
+				info,
+				[]values.CorrelationIdentifier{tagAlias, scoreAlias},
+				false,
+			)
+			if len(got) != 0 {
+				t.Fatalf(
+					"fan-out %s ordering = %#v, want no claim past TAGS",
+					tc.name,
+					got,
+				)
+			}
+		})
+	}
+
+	scalarAlias := values.UniqueCorrelationIdentifier()
+	noDuplicates := false
+	scalarCandidate := NewValueIndexScanMatchCandidateWithFunctions(
+		"item_score",
+		[]string{"Item"},
+		[]string{"SCORE"},
+		nil,
+		[]values.CorrelationIdentifier{scalarAlias},
+		values.UnknownType,
+		false,
+		nil,
+		&noDuplicates,
+	).WithRootKeyExpression(candidateTestKeyField("SCORE", gen.Field_SCALAR))
+	scalarParts := scalarCandidate.ComputeMatchedOrderingParts(
+		NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil),
+		[]values.CorrelationIdentifier{scalarAlias},
+		false,
+	)
+	if len(scalarParts) != 1 ||
+		scalarParts[0].GetParameterId() != scalarAlias {
+		t.Fatalf("scalar ordering regression: got %#v, want one SCORE part", scalarParts)
+	}
+}
+
+func candidateTestKeyField(
+	name string,
+	fanType gen.Field_FanType,
+) *gen.KeyExpression {
+	return &gen.KeyExpression{Field: &gen.Field{
+		FieldName: proto.String(name),
+		FanType:   &fanType,
+	}}
 }

@@ -47,6 +47,30 @@ func TestExistentialValuePredicate_CorrelatedTo(t *testing.T) {
 	}
 }
 
+func TestExistentialValuePredicate_CorrelatedToIncludesComparison(t *testing.T) {
+	t.Parallel()
+
+	existsAlias := values.NamedCorrelationIdentifier("subq")
+	comparandAlias := values.NamedCorrelationIdentifier("outer")
+	predicate := MustNewExistentialValuePredicate(
+		values.NewQuantifiedObjectValue(existsAlias),
+		Comparison{
+			Type:    ComparisonEquals,
+			Operand: values.NewQuantifiedObjectValue(comparandAlias),
+		},
+	)
+
+	correlations := predicate.GetCorrelatedTo()
+	for _, want := range []values.CorrelationIdentifier{existsAlias, comparandAlias} {
+		if _, ok := correlations[want]; !ok {
+			t.Fatalf("correlations missing %q", want.Name())
+		}
+	}
+	if len(correlations) != 2 {
+		t.Fatalf("correlations = %v, want exactly the existential and comparand aliases", correlations)
+	}
+}
+
 func TestExistentialValuePredicate_ComparisonIsNotNull(t *testing.T) {
 	t.Parallel()
 	p := NewExistentialAlias(values.NamedCorrelationIdentifier("x"))

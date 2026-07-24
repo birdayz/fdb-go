@@ -6,8 +6,12 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -204,6 +208,316 @@ func TestRuleTypes_EveryExportedRuleTypeInAProductionSet(t *testing.T) {
 		if _, ok := constructed[tn]; !ok {
 			t.Errorf("exported rule type %s (%s) is not constructed by any production rule set — dead machinery or a missing set entry", tn, file)
 		}
+	}
+}
+
+// TestRuleTypes_EveryProductionRuleHasDirectBehavioralTest closes RFC-190.10's
+// other half of rule completeness. Membership tests above prove that every
+// exported rule is reachable; this test proves that every reachable rule's
+// canonical constructor is called directly inside a runnable Test function. A
+// rule reached only because an e2e planner test installs the entire default set
+// does not count.
+//
+// The source scan deliberately ignores comments, identifier-only mentions,
+// locally shadowed constructor names, and non-Test helpers. That keeps an
+// inventory entry such as productionRuleSets() or a prose mention from
+// satisfying the gate. The named test remains responsible for seeding the
+// matching expression and asserting the rule's transformation; this mechanical
+// check makes a newly registered rule fail until such a test is added.
+func TestRuleTypes_EveryProductionRuleHasDirectBehavioralTest(t *testing.T) {
+	t.Parallel()
+
+	productionTypes := map[string]struct{}{}
+	for _, rules := range productionRuleSets() {
+		for _, rule := range rules {
+			productionTypes[shortNameOf(rule)] = struct{}{}
+		}
+	}
+	testConstructors := make(map[string]string, len(productionTypes))
+	for ruleType := range productionTypes {
+		testConstructors["New"+ruleType] = ruleType
+	}
+
+	covered := map[string][]string{}
+	entries, err := cascadesSourceFS.ReadDir(".")
+	if err != nil {
+		t.Fatalf("reading embedded sources: %v", err)
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, readErr := cascadesSourceFS.ReadFile(name)
+		if readErr != nil {
+			t.Fatalf("reading embedded %s: %v", name, readErr)
+		}
+		// Keep object resolution enabled: unresolved package-level constructor
+		// calls have Obj == nil, while a local variable shadowing NewFooRule has
+		// a non-nil Obj and must not satisfy the coverage gate.
+		file, parseErr := parser.ParseFile(fset, name, src, 0)
+		if parseErr != nil {
+			t.Fatalf("parsing %s: %v", name, parseErr)
+		}
+		testingAliases := map[string]struct{}{}
+		cascadesAliases := map[string]struct{}{}
+		dotTestingImport := false
+		for _, imported := range file.Imports {
+			path, unquoteErr := strconv.Unquote(imported.Path.Value)
+			if unquoteErr != nil {
+				continue
+			}
+			switch path {
+			case "testing":
+				if imported.Name == nil {
+					testingAliases["testing"] = struct{}{}
+					continue
+				}
+				if imported.Name.Name == "." {
+					dotTestingImport = true
+					continue
+				}
+				testingAliases[imported.Name.Name] = struct{}{}
+			case "fdb.dev/pkg/recordlayer/query/plan/cascades":
+				if imported.Name == nil {
+					cascadesAliases["cascades"] = struct{}{}
+				} else if imported.Name.Name != "." && imported.Name.Name != "_" {
+					cascadesAliases[imported.Name.Name] = struct{}{}
+				}
+			}
+		}
+		for _, decl := range file.Decls {
+			testFn, ok := decl.(*ast.FuncDecl)
+			if !ok || !isRunnableGoTest(testFn, testingAliases, dotTestingImport) {
+				continue
+			}
+			for ruleType := range directlyCalledRuleConstructors(
+				testFn,
+				testConstructors,
+				cascadesAliases,
+			) {
+				covered[ruleType] = append(
+					covered[ruleType],
+					name+":"+testFn.Name.Name,
+				)
+			}
+		}
+	}
+
+	var missing []string
+	for ruleType := range productionTypes {
+		if len(covered[ruleType]) == 0 {
+			missing = append(missing, ruleType)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) != 0 {
+		t.Fatalf(
+			"%d production rules have no direct behavioral test reference: %s",
+			len(missing),
+			strings.Join(missing, ", "),
+		)
+	}
+}
+
+func isRunnableGoTest(
+	fn *ast.FuncDecl,
+	testingAliases map[string]struct{},
+	dotTestingImport bool,
+) bool {
+	if fn == nil || fn.Body == nil || fn.Recv != nil || !isGoTestName(fn.Name.Name) {
+		return false
+	}
+	if fn.Type.TypeParams != nil && len(fn.Type.TypeParams.List) != 0 {
+		return false
+	}
+	if fn.Type.Results != nil && len(fn.Type.Results.List) != 0 {
+		return false
+	}
+	if fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
+		return false
+	}
+	parameter := fn.Type.Params.List[0]
+	if len(parameter.Names) > 1 {
+		return false
+	}
+	pointer, ok := parameter.Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	if selector, ok := pointer.X.(*ast.SelectorExpr); ok {
+		pkg, ok := selector.X.(*ast.Ident)
+		if !ok || selector.Sel.Name != "T" {
+			return false
+		}
+		_, ok = testingAliases[pkg.Name]
+		return ok
+	}
+	identifier, ok := pointer.X.(*ast.Ident)
+	return ok && dotTestingImport && identifier.Name == "T"
+}
+
+func directlyCalledRuleConstructors(
+	fn *ast.FuncDecl,
+	constructors map[string]string,
+	cascadesAliases map[string]struct{},
+) map[string]struct{} {
+	called := map[string]struct{}{}
+	if fn == nil || fn.Body == nil {
+		return called
+	}
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch constructor := call.Fun.(type) {
+		case *ast.Ident:
+			if constructor.Obj != nil {
+				return true
+			}
+			if ruleType, found := constructors[constructor.Name]; found {
+				called[ruleType] = struct{}{}
+			}
+		case *ast.SelectorExpr:
+			qualifier, ok := constructor.X.(*ast.Ident)
+			if !ok || qualifier.Obj != nil {
+				return true
+			}
+			if _, imported := cascadesAliases[qualifier.Name]; !imported {
+				return true
+			}
+			if ruleType, found := constructors[constructor.Sel.Name]; found {
+				called[ruleType] = struct{}{}
+			}
+		}
+		return true
+	})
+	return called
+}
+
+func isGoTestName(name string) bool {
+	const prefix = "Test"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	if len(name) == len(prefix) {
+		return true
+	}
+	first, _ := utf8.DecodeRuneInString(name[len(prefix):])
+	return !unicode.IsLower(first)
+}
+
+func TestIsRunnableGoTest_MatchesGoDiscovery(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		decl string
+		want bool
+	}{
+		{name: "ordinary test", decl: "func TestRule(t *testing.T) {}", want: true},
+		{name: "bare prefix", decl: "func Test(t *testing.T) {}", want: true},
+		{name: "underscore suffix", decl: "func Test_rule(t *testing.T) {}", want: true},
+		{name: "lowercase suffix", decl: "func Testhelper(t *testing.T) {}", want: false},
+		{name: "method", decl: "func (fixture) TestRule(t *testing.T) {}", want: false},
+		{name: "wrong argument", decl: "func TestRule(t int) {}", want: false},
+		{name: "two arguments", decl: "func TestRule(t, other *testing.T) {}", want: false},
+		{name: "result", decl: "func TestRule(t *testing.T) error { return nil }", want: false},
+		{name: "generic", decl: "func TestRule[T any](t *testing.T) {}", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source := "package coverage\nimport \"testing\"\ntype fixture struct{}\n" + tc.decl
+			file, err := parser.ParseFile(
+				token.NewFileSet(),
+				tc.name+".go",
+				source,
+				parser.SkipObjectResolution,
+			)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var fn *ast.FuncDecl
+			for _, decl := range file.Decls {
+				candidate, ok := decl.(*ast.FuncDecl)
+				if ok {
+					fn = candidate
+				}
+			}
+			if fn == nil {
+				t.Fatal("synthetic source has no function declaration")
+			}
+			got := isRunnableGoTest(
+				fn,
+				map[string]struct{}{"testing": {}},
+				false,
+			)
+			if got != tc.want {
+				t.Fatalf("isRunnableGoTest(%q) = %v, want %v", tc.decl, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDirectlyCalledRuleConstructors_RejectsMentionsAndShadows(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		body    string
+		aliases map[string]struct{}
+		want    bool
+	}{
+		{name: "canonical call", body: "NewExampleRule()", want: true},
+		{
+			name:    "external package selector",
+			body:    "cascades.NewExampleRule()",
+			aliases: map[string]struct{}{"cascades": {}},
+			want:    true,
+		},
+		{
+			name: "unrelated selector",
+			body: "other.NewExampleRule()",
+			want: false,
+		},
+		{
+			name:    "shadowed package selector",
+			body:    "cascades := struct{ NewExampleRule func() }{func() {}}; cascades.NewExampleRule()",
+			aliases: map[string]struct{}{"cascades": {}},
+			want:    false,
+		},
+		{name: "identifier mention", body: "_ = NewExampleRule", want: false},
+		{name: "type mention", body: "var _ *ExampleRule", want: false},
+		{
+			name: "local shadow call",
+			body: "NewExampleRule := func() {}; NewExampleRule()",
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source := "package coverage\nfunc TestRule() {\n" + tc.body + "\n}"
+			file, err := parser.ParseFile(token.NewFileSet(), tc.name+".go", source, 0)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			fn := file.Decls[0].(*ast.FuncDecl)
+			called := directlyCalledRuleConstructors(
+				fn,
+				map[string]string{"NewExampleRule": "ExampleRule"},
+				tc.aliases,
+			)
+			_, got := called["ExampleRule"]
+			if got != tc.want {
+				t.Fatalf("constructor call detection for %q = %v, want %v", tc.body, got, tc.want)
+			}
+		})
 	}
 }
 

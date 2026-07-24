@@ -7,8 +7,9 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// PushUnionThroughFetchRule handles the Union case.
-// Java: PushSetOperationThroughFetchRule<RecordQueryUnionOnValuesPlan>.
+// PushUnionThroughFetchRule handles Go's extra concat Union case. It has no
+// direct Java counterpart: Java's ordered RecordQueryUnionOnValuesPlan maps
+// to PushMergeSortUnionThroughFetchRule below.
 type PushUnionThroughFetchRule struct {
 	matcher matching.BindingMatcher
 }
@@ -56,6 +57,8 @@ func (r *PushIntersectionThroughFetchRule) Matcher() matching.BindingMatcher { r
 func (r *PushIntersectionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	intW := matching.Get[*plans.RecordQueryIntersectionPlan](call.Bindings, r.matcher)
 	compKeys := intW.GetComparisonKeyValues()
+	compParts := intW.GetComparisonKeyOrderingParts()
+	reverse := intW.IsReverse()
 	pushSetOpThroughFetch(call, setOpPush{
 		quants:     intW.GetQuantifiers(),
 		resultType: intW.GetResultType(),
@@ -65,11 +68,12 @@ func (r *PushIntersectionThroughFetchRule) OnMatch(call *ImplementationRuleCall)
 		requiredValues: compKeys,
 		rebuildPlan: func(inners []plans.RecordQueryPlan) plans.RecordQueryPlan {
 			// Java's withChildrenReferences mirrors every attribute except
-			// the children — comparison keys carry over verbatim.
-			return plans.NewRecordQueryIntersectionPlan(inners, compKeys)
+			// the children — semantic comparison parts and direction carry
+			// over, and the physical keys are deterministically re-derived.
+			return plans.NewRecordQueryIntersectionPlanWithOrdering(inners, compParts, reverse)
 		},
 		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) expressions.RelationalExpression {
-			return plans.NewRecordQueryIntersectionPlanFromQuantifiers(qs, compKeys)
+			return plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(qs, compParts, reverse)
 		},
 	})
 }

@@ -52,7 +52,13 @@ func TestConstraintPropagation_DistinctUnionPushesToLegs(t *testing.T) {
 func TestConstraintPropagation_NilConstraintMap(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := plans.NewRecordQueryScanPlan(
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithPrimaryKey([]values.Value{
+		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+	})
 	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()

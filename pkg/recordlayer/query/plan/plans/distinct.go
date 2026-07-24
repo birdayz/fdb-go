@@ -169,8 +169,10 @@ var (
 // interface). The distinct carries its child as a single memo edge, so the
 // relink is a quantifier swap: WithQuantifiers copies the receiver (preserving
 // the Streaming mode — the flag a constructor rebuild would reset and thereby
-// downgrade a resume-clean streaming distinct to the cross-page-buggy hash-set,
-// TODO C5) and re-resolves GetInner through the new singleton reference. This
+// downgrade a resume-clean streaming distinct to the memory-heavy hash-set,
+// TODO C5: cross-page correctness was fixed 2026-07-20 — the hash-set is no
+// longer wrong across pages; streaming is preferred for O(1) memory) and
+// re-resolves GetInner through the new singleton reference. This
 // replaces physicalDistinctWrapper.WithChildren (RFC-184 W2), whose separate
 // snapshot plan field forced a WithInner rebuild gated on isLeafReplaceable — a
 // gate that DECLINED to relink onto a non-leaf-replaceable (e.g. projection)

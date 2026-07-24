@@ -88,7 +88,13 @@ type selectQuery struct {
 
 	tableName  string
 	tableAlias string // alias or tableName if no alias given
-	whereExpr  antlrgen.IWhereExprContext
+	// sourceSegments preserves the primary FROM source's identifier segments.
+	// Most primary sources are catalog tables, but an EXISTS subquery may use a
+	// correlated array field (`FROM R.TAGS AS E`). Keeping the parse-tree
+	// segments lets the catalog-aware planner distinguish that field access
+	// from a schema-qualified table without re-splitting display text.
+	sourceSegments []string
+	whereExpr      antlrgen.IWhereExprContext
 	// limit < 0 means no limit.
 	limit int64
 	// offset >= 0 means skip that many rows after sort/group (OFFSET n).
@@ -684,6 +690,7 @@ func selectQueryFromClassification(cls *selectClassification, fs *fromSource) *s
 	if fs != nil {
 		sq.tableName = fs.tableName
 		sq.tableAlias = fs.tableAlias
+		sq.sourceSegments = fs.sourceSegments
 		sq.joins = fs.joins
 		sq.derivedQuery = fs.derivedQuery
 		sq.whereExpr = fs.whereExpr
@@ -1910,11 +1917,12 @@ func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol
 // builds the operator tree directly from ANTLR) share a single parsing
 // path.
 type fromSource struct {
-	tableName    string
-	tableAlias   string
-	derivedQuery antlrgen.IQueryContext
-	joins        []joinClause
-	whereExpr    antlrgen.IWhereExprContext
+	tableName      string
+	tableAlias     string
+	sourceSegments []string
+	derivedQuery   antlrgen.IQueryContext
+	joins          []joinClause
+	whereExpr      antlrgen.IWhereExprContext
 }
 
 // rejectAtOrdinality rejects an `AT atAlias` ordinality clause on a table
@@ -2337,11 +2345,12 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 			return nil, jErr
 		}
 		fs := &fromSource{
-			tableName:    alias,
-			tableAlias:   alias,
-			joins:        joins,
-			whereExpr:    fromClause.WhereExpr(),
-			derivedQuery: subItem.Query(),
+			tableName:      alias,
+			tableAlias:     alias,
+			sourceSegments: []string{alias},
+			joins:          joins,
+			whereExpr:      fromClause.WhereExpr(),
+			derivedQuery:   subItem.Query(),
 		}
 		assignFromLegBindingIDs(fs)
 		return fs, nil
@@ -2413,10 +2422,11 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 	}
 
 	fs := &fromSource{
-		tableName:  strings.Join(parts, "."),
-		tableAlias: leftAlias,
-		joins:      joins,
-		whereExpr:  fromClause.WhereExpr(),
+		tableName:      strings.Join(parts, "."),
+		tableAlias:     leftAlias,
+		sourceSegments: parts,
+		joins:          joins,
+		whereExpr:      fromClause.WhereExpr(),
 	}
 	assignFromLegBindingIDs(fs)
 	return fs, nil

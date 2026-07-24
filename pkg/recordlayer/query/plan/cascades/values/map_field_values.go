@@ -251,20 +251,21 @@ func constantValuesEqual(a, b any) bool {
 		}
 		return true
 	}
-	// Scalar float bitwise compare, same defect class as the []floatNN arms
-	// above (RFC-176 §2): `==` calls +0.0 equal to -0.0 while writeSemanticHash's
-	// %v renders "0" vs "-0" — an equal-but-different-hash memo violation. Java's
-	// LiteralValue.equalsWithoutChildren is Double.equals (doubleToLongBits), so
-	// this bitwise compare is Java-ALIGNED, not a Go-only refinement: signed
-	// zeros are UNEQUAL, identical-bit NaNs EQUAL and hash-coherent, differing-bit
-	// NaNs unequal sharing a hash bucket (an allowed collision).
+	// Scalar floats compare by Java's canonical Float.floatToIntBits /
+	// Double.doubleToLongBits identity. Native `==` calls +0.0 equal to -0.0
+	// while writeSemanticHash's %v renders "0" vs "-0" — an
+	// equal-but-different-hash memo violation. Raw math.FloatNNbits fixes signed
+	// zero but is still finer than Java for NaNs; the canonical helpers preserve
+	// the zero sign bit while collapsing every NaN encoding. Thus signed zeros
+	// are UNEQUAL and all NaNs are EQUAL and hash-coherent, matching Java's
+	// boxed Float/Double equality used by LiteralValue.
 	if af, ok := a.(float64); ok {
 		bf, ok := b.(float64)
-		return ok && math.Float64bits(af) == math.Float64bits(bf)
+		return ok && canonicalFloat64Bits(af) == canonicalFloat64Bits(bf)
 	}
 	if af, ok := a.(float32); ok {
 		bf, ok := b.(float32)
-		return ok && math.Float32bits(af) == math.Float32bits(bf)
+		return ok && canonicalFloat32Bits(af) == canonicalFloat32Bits(bf)
 	}
 	return a == b
 }

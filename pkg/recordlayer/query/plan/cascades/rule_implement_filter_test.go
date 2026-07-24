@@ -165,8 +165,19 @@ func TestImplementFilterRule_FiresOnFilterOverDistinct(t *testing.T) {
 // wrappers as physical inners.
 func TestImplementFilterRule_FiresOverPhysicalIntersection(t *testing.T) {
 	t.Parallel()
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	rt := &values.RecordType{
+		RecordName: "T",
+		Fields: []values.Field{{
+			Name:      "ID",
+			FieldType: values.NotNullLong,
+			Ordinal:   0,
+		}},
+	}
+	comparisonKey := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
+	scanA := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
+		WithPrimaryKey([]values.Value{comparisonKey})
+	scanB := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false).
+		WithPrimaryKey([]values.Value{comparisonKey})
 	refA := expressions.InitialOf(scanA)
 	refB := expressions.InitialOf(scanB)
 	intr := expressions.NewLogicalIntersectionExpression(
@@ -174,7 +185,7 @@ func TestImplementFilterRule_FiresOverPhysicalIntersection(t *testing.T) {
 			expressions.ForEachQuantifier(refA),
 			expressions.ForEachQuantifier(refB),
 		},
-		nil,
+		[]values.Value{comparisonKey},
 	)
 	intrRef := expressions.InitialOf(intr)
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
@@ -184,8 +195,6 @@ func TestImplementFilterRule_FiresOverPhysicalIntersection(t *testing.T) {
 	)
 	topRef := expressions.InitialOf(filter)
 
-	FireExpressionRule(NewPrimaryScanRule(), refA)
-	FireExpressionRule(NewPrimaryScanRule(), refB)
 	FireExpressionRule(NewImplementIntersectionRule(), intrRef)
 
 	yielded := FireExpressionRule(NewImplementFilterRule(), topRef)

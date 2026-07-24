@@ -153,7 +153,16 @@ func distinctEliminatedByUniqueKey(
 		if !cand.IsUnique() {
 			continue
 		}
-		cols := cand.GetColumnNames()
+		cols, plainFields := candidatePlainFieldColumnsForShortcut(cand)
+		if !plainFields {
+			continue
+		}
+		// UNIQUE on a fan-out index constrains index entries, not one value
+		// per base record. Empty repeated fields produce no entry at all, so
+		// the index key cannot prove the projected base rows are distinct.
+		if !candidatePreservesBaseRecordCardinality(cand) {
+			continue
+		}
 		if len(cols) > 0 && uniqueKeysCovered(cols, projectedCols) {
 			return true
 		}
@@ -314,7 +323,7 @@ func newPhysicalDistinctFor(call *ImplementationRuleCall, member expressions.Rel
 // RecordQueryDistinctPlan.Streaming and MUST be re-evaluated at every site that
 // (re)builds a distinct over a different inner — the push-through-filter/fetch
 // rules included — so a rebuild never silently downgrades a streaming distinct
-// to the cross-page-buggy hash-set, nor promotes an unordered inner to
+// to the memory-heavy hash-set, nor promotes an unordered inner to
 // streaming. (A push preserves the inner ordering but changes WHICH inner the
 // distinct sits over, so the decision genuinely has to be recomputed, not
 // copied.)

@@ -114,15 +114,28 @@ func (s *SingleMatchedAccess) computePulledUpGroupByMappings() *GroupByMappings 
 	if candidateRef == nil {
 		return gbm
 	}
-	candidateExpr := candidateRef.Get()
-	if candidateExpr == nil {
+	candidateExpr, single := onlyReferenceMember(candidateRef)
+	if !single {
+		// Java Reference.get() requires a singleton. Picking Go's first
+		// member would make aggregate ordering depend on insertion order
+		// when alternatives expose different result values.
+		return EmptyGroupByMappings()
+	}
+	if candidateExpr.GetResultValue() == nil {
 		return gbm
 	}
-	resultValue := candidateExpr.GetResultValue()
-	if resultValue == nil {
-		return gbm
+	adjusted, ok := AdjustGroupByMappings(
+		gbm,
+		values.CurrentAlias,
+		candidateExpr,
+	)
+	if !ok {
+		// Ambiguous group metadata cannot safely contribute aggregate
+		// ordering. Returning empty mappings is the bounded optimization
+		// miss for this derived property.
+		return EmptyGroupByMappings()
 	}
-	return AdjustGroupByMappings(gbm, values.CurrentAlias, resultValue)
+	return adjusted
 }
 
 // String returns a human-readable representation mirroring Java's

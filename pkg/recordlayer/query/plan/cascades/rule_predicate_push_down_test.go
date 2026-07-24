@@ -574,6 +574,72 @@ func TestPredicatePushDown_ThroughUnique(t *testing.T) {
 	}
 }
 
+func TestPredicatePushDown_ThroughRequiredUniquePreservesMode(t *testing.T) {
+	t.Parallel()
+
+	scanRef := expressions.InitialOf(
+		&expressions.FullUnorderedScanExpression{},
+	)
+	requiredUnique := expressions.NewRequiredLogicalUniqueExpression(
+		expressions.ForEachQuantifier(scanRef),
+	)
+	uniqueRef := expressions.InitialOf(requiredUnique)
+	uniqueQ := expressions.ForEachQuantifier(uniqueRef)
+	pred := &predicates.ComparisonPredicate{
+		Operand: values.NewQuantifiedObjectValue(uniqueQ.GetAlias()),
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(1)},
+		},
+	}
+	outerSel := expressions.NewSelectExpression(
+		uniqueQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{uniqueQ},
+		[]predicates.QueryPredicate{pred},
+	)
+
+	yielded := FireExpressionRule(
+		NewPredicatePushDownRule(),
+		expressions.InitialOf(outerSel),
+	)
+	if len(yielded) != 1 {
+		t.Fatalf("expected 1 predicate-pushdown result, got %d", len(yielded))
+	}
+	result, ok := yielded[0].(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("pushdown result type = %T, want *SelectExpression", yielded[0])
+	}
+	if len(result.GetPredicates()) != 0 {
+		t.Fatalf(
+			"outer predicates after required-Unique pushdown = %d, want 0",
+			len(result.GetPredicates()),
+		)
+	}
+
+	resultQuantifiers := result.GetQuantifiers()
+	if len(resultQuantifiers) != 1 {
+		t.Fatalf("result quantifier count = %d, want 1", len(resultQuantifiers))
+	}
+	rewrittenRef := resultQuantifiers[0].GetRangesOver()
+	if rewrittenRef == nil {
+		t.Fatal("rewritten outer quantifier has nil child reference")
+	}
+	rewrittenMembers := rewrittenRef.AllMembers()
+	if len(rewrittenMembers) != 1 {
+		t.Fatalf("rewritten child member count = %d, want 1", len(rewrittenMembers))
+	}
+	rewrittenUnique, ok := rewrittenMembers[0].(*expressions.LogicalUniqueExpression)
+	if !ok {
+		t.Fatalf(
+			"rewritten child type = %T, want *LogicalUniqueExpression",
+			rewrittenMembers[0],
+		)
+	}
+	if !rewrittenUnique.IsRequired() {
+		t.Fatal("predicate pushdown dropped required LogicalUnique mode")
+	}
+}
+
 // TestPredicatePushDown_UnsupportedChild verifies that pushing into an
 // unsupported expression type (e.g., FullUnorderedScanExpression
 // directly) yields nothing.

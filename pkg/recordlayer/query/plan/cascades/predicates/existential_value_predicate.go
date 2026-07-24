@@ -85,11 +85,20 @@ func (*ExistentialValuePredicate) Children() []QueryPredicate { return []QueryPr
 func (*ExistentialValuePredicate) Eval(any) (TriBool, error) { return TriUnknown, nil }
 
 // GetCorrelatedTo returns the correlations of the operand Value — the
-// existential alias.
+// existential alias — together with those its Comparison carries.
+//
+// The comparison is IS NOT NULL in every construction the planner performs,
+// which correlates to nothing, but the struct permits any comparison. Reading
+// only the operand would silently under-report the moment one appears, and an
+// under-reported correlation is invisible: it does not fail, it produces an
+// expression referencing an alias nothing supplies.
 func (p *ExistentialValuePredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
-	out := values.GetCorrelatedToOfValue(p.Value)
-	if out == nil {
-		return map[values.CorrelationIdentifier]struct{}{}
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for k := range values.GetCorrelatedToOfValue(p.Value) {
+		out[k] = struct{}{}
+	}
+	for k := range p.Comparison.GetCorrelatedTo() {
+		out[k] = struct{}{}
 	}
 	return out
 }

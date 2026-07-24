@@ -133,23 +133,25 @@ func (d *distinctStreamContinuation) IsEnd() bool { return false }
 
 var _ recordlayer.RecordCursor[QueryResult] = (*distinctStreamCursor)(nil)
 
-// distinctHashCursor is the resume-clean hash-based DISTINCT executor for
-// UNORDERED input (the non-streaming path): it dedups by the packed dedup key
-// via a memory-budget-charged set AND carries that whole seen-set through the
-// continuation (gen.DistinctHashContinuation), so a duplicate whose run
-// straddles a scanned-rows page boundary is not re-admitted on resume. This is
-// the fix for the unordered / DISTINCT+ORDER-BY-non-output cases of TODO C5. It
-// does NOT require ordered input — it fixes the fresh-per-page
-// hash-set purely by persisting the set across pages.
+// distinctHashCursor is the shared resume-clean hash executor for unordered
+// value DISTINCT and unordered primary-key DISTINCT. Its injected keyer picks
+// the identity; the cursor charges the packed keys to a bounded set and carries
+// the whole set through gen.DistinctHashContinuation, so a duplicate spanning
+// a page boundary is not re-admitted. It does not require ordered input.
 //
 // The set is bounded by the statement memory budget it charges against, so a
 // high-cardinality DISTINCT that would blow the continuation instead fails
-// LOUDLY on the budget (never silent wrong rows) — the signal that a cost-based
-// sort-distinct (the follow-up) should have been chosen. SELECT DISTINCT is a
-// Go-only extension, so this continuation is Go-internal (no Java wire format).
+// LOUDLY on the budget (never silent wrong rows). This continuation is
+// Go-internal; there is no Java wire format to match.
+type queryResultDistinctKeyer func(QueryResult) (string, error)
+
 type distinctHashCursor struct {
 	inner recordlayer.RecordCursor[QueryResult]
 	seen  *boundedSet[string]
+	// keyer selects the identity being deduplicated. Value DISTINCT uses the
+	// packed positional row; unordered primary-key DISTINCT uses the packed
+	// QueryResult.PrimaryKey. Continuation and memory behavior are shared.
+	keyer queryResultDistinctKeyer
 	// order is the distinct keys in INSERTION order (append-only). seen (a map)
 	// answers Contains in O(1); order gives each continuation an O(1),
 	// reallocation-safe SNAPSHOT: it captures len(order), and order[:n] is an
@@ -190,7 +192,12 @@ func (c *distinctHashCursor) OnNext(ctx context.Context) (recordlayer.RecordCurs
 			return res, nil
 		}
 		row := result.GetValue()
-		key, err := distinctKey(row)
+		if c.keyer == nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf(
+				"distinct-hash cursor: nil key function",
+			)
+		}
+		key, err := c.keyer(row)
 		if err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}

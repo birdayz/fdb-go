@@ -1,9 +1,12 @@
 package executor
 
 import (
+	"bytes"
+	"context"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -67,6 +70,39 @@ func TestBuildCoveringLogicalRow(t *testing.T) {
 	// plan-time bake against it lands on the same slot.
 	if idx, ok := row.Type.FieldIndex("B"); !ok || idx != 2 {
 		t.Fatalf("FieldIndex(B) = (%d, %v), want (2, true)", idx, ok)
+	}
+}
+
+func TestCoveringIndexCursor_PropagatesFullPrimaryKey(t *testing.T) {
+	t.Parallel()
+	index := recordlayer.NewIndex("covering_pk", recordlayer.Field("a"))
+	entry := &recordlayer.IndexEntry{
+		Index: index,
+		Key:   tuple.Tuple{"covered", "record_type", int64(42)},
+	}
+	expectedPrimaryKey := tuple.Tuple{"record_type", int64(42)}
+	logicalType := positionalTypeFromNames([]string{"ID", "A"})
+	cursor := &coveringIndexCursor{
+		inner:       recordlayer.FromList([]*recordlayer.IndexEntry{entry}),
+		columns:     []string{"A"},
+		pkColumns:   []string{"ID"},
+		logicalType: logicalType,
+		logicalOrds: coveringLogicalOrdinals(
+			[]string{"A", "ID"},
+			logicalType,
+		),
+	}
+	defer cursor.Close()
+
+	result, err := cursor.OnNext(context.Background())
+	if err != nil || !result.HasNext() {
+		t.Fatalf("covering cursor result = %#v, err = %v", result, err)
+	}
+	if got := result.GetValue().PrimaryKey; !bytes.Equal(
+		got.Pack(),
+		expectedPrimaryKey.Pack(),
+	) {
+		t.Fatalf("covering primary key = %v, want full key %v", got, expectedPrimaryKey)
 	}
 }
 

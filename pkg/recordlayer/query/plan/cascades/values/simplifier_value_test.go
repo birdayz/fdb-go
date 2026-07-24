@@ -196,7 +196,7 @@ func TestSimplifyValue_NULLPropagatesThroughArith(t *testing.T) {
 
 func TestSimplifyValue_PromoteFold(t *testing.T) {
 	t.Parallel()
-	// PROMOTE(1+2, TypeFloat) → ConstantValue(3) with Typ=TypeFloat.
+	// PROMOTE(1+2, TypeFloat) → row-carrier float64(3) with Typ=TypeFloat.
 	// Mirrors TestSimplifyValue_CastFold for the PromoteValue arm of
 	// isFoldableComposite / simplifyChildren — keeps both cast-like
 	// shapes covered before either grows real wire-up.
@@ -213,12 +213,10 @@ func TestSimplifyValue_PromoteFold(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", got)
 	}
-	// PromoteValue.Evaluate returns the child's value verbatim at
-	// the seed (no type coercion yet — that lands with the Type
-	// hierarchy port). The folded ConstantValue inherits its Typ
-	// from the PromoteValue.Target.
-	if cv.Value != int64(3) {
-		t.Fatalf("Value: got %v, want 3", cv.Value)
+	// FLOAT uses a float32 computation widened into the row-domain float64
+	// carrier. The folded ConstantValue inherits the PromoteValue target.
+	if cv.Value != float64(3) {
+		t.Fatalf("Value: got %v (%T), want float64(3)", cv.Value, cv.Value)
 	}
 	if cv.Typ != TypeFloat {
 		t.Fatalf("Typ: got %v, want TypeFloat (preserved from PROMOTE target)", cv.Typ)

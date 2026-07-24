@@ -69,7 +69,7 @@ func TestImplementStreamingAgg_IndexOrderedInput(t *testing.T) {
 	// OrderedIndexScanRule produces an index scan ordered by customer_id.
 	// GroupBy(customer_id) should then get a streaming aggregation.
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"idx_orders_cid",
 		[]string{"Orders"},
 		[]string{"customer_id"},
@@ -142,6 +142,68 @@ func TestImplementStreamingAgg_EmptyGroupingKeys(t *testing.T) {
 	results := FireExpressionRule(NewImplementStreamingAggregationRule(), gbRef)
 	if len(results) == 0 {
 		t.Fatal("ImplementStreamingAggregationRule should fire with empty grouping keys (global aggregate)")
+	}
+}
+
+// TestImplementStreamingAgg_CountCoveringRequiresDistinctIndexRecords pins the
+// zero-column covering shortcut for COUNT(*). Covering a raw fan-out index
+// would count index entries rather than records; an index whose distinctness
+// signal is unknown must also decline. A known scalar index can still become a
+// zero-column covering scan.
+func TestImplementStreamingAgg_CountCoveringRequiresDistinctIndexRecords(t *testing.T) {
+	t.Parallel()
+
+	fanOut := true
+	scalar := false
+	tests := []struct {
+		name         string
+		signal       *bool
+		wantCovering bool
+	}{
+		{name: "fanout", signal: &fanOut, wantCovering: false},
+		{name: "unknown", signal: nil, wantCovering: false},
+		{name: "scalar", signal: &scalar, wantCovering: true},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			indexPlan := plans.NewRecordQueryIndexPlan(
+				"T$v",
+				nil,
+				[]string{"T"},
+				values.UnknownType,
+				false,
+			)
+			if tc.signal != nil {
+				indexPlan = indexPlan.WithDistinctRecordsSignal(*tc.signal)
+			}
+			innerRef := expressions.InitialOf(indexPlan)
+			groupBy := expressions.NewGroupByExpression(
+				nil,
+				[]expressions.AggregateSpec{{Function: expressions.AggCount}},
+				expressions.ForEachQuantifier(innerRef),
+			)
+			results := FireExpressionRule(
+				NewImplementStreamingAggregationRule(),
+				expressions.InitialOf(groupBy),
+			)
+
+			foundCovering := false
+			for _, result := range results {
+				agg, ok := result.(*plans.RecordQueryStreamingAggregationPlan)
+				if !ok {
+					continue
+				}
+				if idx, ok := agg.GetInner().(*plans.RecordQueryIndexPlan); ok && idx.IsCovering() {
+					foundCovering = true
+				}
+			}
+			if foundCovering != tc.wantCovering {
+				t.Fatalf("covering COUNT(*) index path = %v, want %v (signal %v)", foundCovering, tc.wantCovering, tc.signal)
+			}
+		})
 	}
 }
 
@@ -218,7 +280,7 @@ func TestStreamingAgg_OrderedChildPinned(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"T$g", []string{"T"}, []string{"G"},
 		[]values.CorrelationIdentifier{a1}, values.UnknownType, false, nil)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}

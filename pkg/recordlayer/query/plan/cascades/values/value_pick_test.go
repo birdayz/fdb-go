@@ -77,6 +77,22 @@ func TestPickValue_TypePreserved(t *testing.T) {
 	}
 }
 
+func TestPickValue_NumericCarrierMatchesCommonType(t *testing.T) {
+	t.Parallel()
+
+	pick := NewPickValue(
+		LiteralValue(int64(0)),
+		[]Value{
+			&ConstantValue{Value: int64(3), Typ: NotNullInt},
+			&ConstantValue{Value: float64(9.5), Typ: NotNullDouble},
+		},
+		NullableDouble,
+	)
+	got, err := pick.Evaluate(nil)
+	require.NoError(t, err)
+	require.Equal(t, float64(3), got)
+}
+
 func TestPickValue_Children(t *testing.T) {
 	t.Parallel()
 	sel := LiteralValue(int64(0))

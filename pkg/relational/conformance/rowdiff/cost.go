@@ -25,11 +25,11 @@ func checkPlanCost(p plans.RecordQueryPlan, q Query) []string {
 	// correlated subquery) has nothing that could demand a sorted stream, so
 	// an in-memory sort in its plan is spurious: a redundant operator, or the
 	// symptom of a mis-derived ordering property — the class the
-	// ordinal-binding bugs belonged to. Set operations are the one legitimate
-	// source of a sort in such a query: an ordered UNION / distinct-union /
-	// intersection sorts its index-scan inputs into a common primary-key merge
-	// order even absent a query ORDER BY (an OR predicate lowers to exactly
-	// this), so a plan carrying one is excluded rather than flagged.
+	// ordinal-binding bugs belonged to. Ordered set operations — merge-sort /
+	// distinct union and intersections — may legitimately sort index-scan
+	// inputs into a common merge order even absent a query ORDER BY (an OR
+	// predicate lowers to exactly this), so a plan carrying a set-op is
+	// conservatively excluded rather than flagged.
 	if singleTableNoOrderingReq(q) && !planHasSetOp(p) && planHasInMemorySort(p) {
 		out = append(out,
 			"spurious in-memory sort: single-table query states no ordering requirement and the plan has no set-operation to merge")
@@ -55,9 +55,9 @@ func planHasInMemorySort(p plans.RecordQueryPlan) bool {
 	})
 }
 
-// planHasSetOp reports whether the plan tree contains a set operation
-// (intersection or any union flavour), the one node kind that may legitimately
-// sort its inputs into a common merge order without a query ORDER BY.
+// planHasSetOp is a conservative family check for any intersection or union.
+// Only keyed merge variants require sorted inputs, but keeping every set-op out
+// of this coarse invariant avoids misclassifying a mixed-family plan.
 func planHasSetOp(p plans.RecordQueryPlan) bool {
 	return planAny(p, func(n plans.RecordQueryPlan) bool {
 		switch n.(type) {

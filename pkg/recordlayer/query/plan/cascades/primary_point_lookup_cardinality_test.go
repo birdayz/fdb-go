@@ -40,8 +40,9 @@ func TestComputeCardinalities_PrimaryPointLookupBounded(t *testing.T) {
 	t.Run("prefix_bind_stays_unknown", func(t *testing.T) {
 		t.Parallel()
 		// One equality comparison against a 2-column PK → a prefix scan that can
-		// match many rows. scanProvableMaxCard alone would over-bound it
-		// (numBound == len(comps)); the len(comps) == len(PK) cross-check rejects.
+		// match many rows. scanProvableMaxCard owns the stamped-PK arity check,
+		// so the cardinality property cannot mistake the bound prefix for the
+		// complete key.
 		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 			WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
 			WithPrimaryKey(pk2)

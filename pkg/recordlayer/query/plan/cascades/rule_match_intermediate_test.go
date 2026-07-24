@@ -254,6 +254,339 @@ func TestMatchIntermediateRule_MultipleQuantifiers(t *testing.T) {
 	if am == nil || am.IsEmpty() {
 		t.Fatal("expected non-empty alias map for intermediate match with quantifiers")
 	}
+
+	// The composite match must retain the exact child-match branch for every
+	// matched query quantifier. Without this metadata the parent appears to
+	// have two unmatched ForEach legs, making compensation impossible even
+	// though the structural match itself succeeded.
+	matchedQs := pmi.GetMatchedQuantifiers()
+	if len(matchedQs) != 2 {
+		t.Fatalf("matched quantifiers = %d, want 2", len(matchedQs))
+	}
+	if unmatchedQs := pmi.GetUnmatchedQuantifiers(); len(unmatchedQs) != 0 {
+		t.Fatalf("unmatched quantifiers = %v, want none", unmatchedQs)
+	}
+	rmi := pmi.GetRegularMatchInfo()
+	if child := rmi.GetChildPartialMatchMaybe(queryQA.GetAlias()); child == nil ||
+		child.(*PartialMatchImpl).GetCandidateRef() != candidateScanRefA {
+		t.Fatal("query A quantifier did not retain its candidate-A child match")
+	}
+	if child := rmi.GetChildPartialMatchMaybe(queryQB.GetAlias()); child == nil ||
+		child.(*PartialMatchImpl).GetCandidateRef() != candidateScanRefB {
+		t.Fatal("query B quantifier did not retain its candidate-B child match")
+	}
+}
+
+// TestMatchIntermediateRule_RetainsDistinctExactBijections pins the RFC-190.4b
+// match-identity contract. Both children on both sides are structurally
+// identical, and the Select result is independent of their aliases, so both
+// q0→c0/q1→c1 and q0→c1/q1→c0 are valid exact matches. They share the same
+// query expression and candidate reference but carry distinct alias maps and
+// child selections; both must survive. Re-firing the rule must then collapse
+// exact semantic repeats rather than growing the reference indefinitely.
+func TestMatchIntermediateRule_RetainsDistinctExactBijections(t *testing.T) {
+	t.Parallel()
+
+	newScanRef := func() *expressions.Reference {
+		return expressions.InitialOf(
+			expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
+		)
+	}
+
+	queryScanRefs := []*expressions.Reference{newScanRef(), newScanRef()}
+	queryQs := []expressions.Quantifier{
+		expressions.ForEachQuantifier(queryScanRefs[0]),
+		expressions.ForEachQuantifier(queryScanRefs[1]),
+	}
+	querySelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		queryQs,
+		nil,
+	)
+	querySelectRef := expressions.InitialOf(querySelect)
+
+	candidateScanRefs := []*expressions.Reference{newScanRef(), newScanRef()}
+	candidateQs := []expressions.Quantifier{
+		expressions.ForEachQuantifier(candidateScanRefs[0]),
+		expressions.ForEachQuantifier(candidateScanRefs[1]),
+	}
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		candidateQs,
+		nil,
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+	mc := &testMatchCandidate{
+		name:      "idx_symmetric_join",
+		traversal: NewTraversal(candidateSelectRef),
+	}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	leafRule := NewMatchLeafRule()
+	for _, queryScanRef := range queryScanRefs {
+		FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+		if got := len(GetPartialMatchesForCandidate(queryScanRef, mc)); got != 2 {
+			t.Fatalf("symmetric query child has %d leaf matches, want 2", got)
+		}
+	}
+
+	rule := NewMatchIntermediateRule()
+	FireExpressionRuleWithMemo(rule, querySelectRef, ctx, nil)
+
+	pms := GetPartialMatchesForExpression(querySelectRef, querySelect)
+	if len(pms) != 2 {
+		t.Fatalf("distinct exact bijections for the original expression retained = %d, want 2", len(pms))
+	}
+
+	seenFirstTargets := map[values.CorrelationIdentifier]bool{}
+	for _, pm := range pms {
+		pmi := pm.(*PartialMatchImpl)
+		seenFirstTargets[pmi.GetBoundAliasMap().GetTarget(queryQs[0].GetAlias())] = true
+		if got := len(pmi.GetMatchedQuantifiers()); got != 2 {
+			t.Fatalf("matched quantifiers = %d, want 2", got)
+		}
+		if got := len(pmi.GetUnmatchedQuantifiers()); got != 0 {
+			t.Fatalf("unmatched quantifiers = %d, want 0", got)
+		}
+	}
+	if !seenFirstTargets[candidateQs[0].GetAlias()] ||
+		!seenFirstTargets[candidateQs[1].GetAlias()] {
+		t.Fatalf("first query alias targets = %v, want both candidate aliases", seenFirstTargets)
+	}
+
+	FireExpressionRuleWithMemo(rule, querySelectRef, ctx, nil)
+	if got := len(GetPartialMatchesForExpression(querySelectRef, querySelect)); got != 2 {
+		t.Fatalf("exact refire grew matches to %d, want stable count 2", got)
+	}
+}
+
+// TestMatchIntermediateRule_SelectSubsetSubsumesMultiQuantifierCandidate pins
+// RFC-190.4's non-exact MatchIntermediate path. The query has one ForEach leg,
+// while the index-like candidate has the matching ForEach leg plus an
+// unreferenced Existential leg. Java's matcher enumerates equal-sized subsets
+// of both quantifier sets; SelectExpression.subsumedBy then permits the
+// candidate-only existential (but not an unmatched candidate ForEach).
+//
+// The candidate also carries a Placeholder so this proves the useful
+// index-matching route, not merely a structural subset: the query comparison
+// must bind the placeholder and the composite PartialMatch must point at the
+// multi-quantifier candidate Select.
+func TestMatchIntermediateRule_SelectSubsetSubsumesMultiQuantifierCandidate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                    string
+		extraKind               expressions.QuantifierKind
+		extraFirst              bool
+		extraPredicate          bool
+		candidateFalsePredicate bool
+		resultUsesExtra         bool
+		selectedDependsOnExtra  bool
+		queryJoinType           expressions.JoinType
+		candidateJoinType       expressions.JoinType
+		expectPartialMatch      bool
+	}{
+		{
+			name:               "dead trailing candidate existential is safely skipped",
+			extraKind:          expressions.QuantifierExistential,
+			expectPartialMatch: true,
+		},
+		{
+			name:               "dead leading candidate existential is safely skipped",
+			extraKind:          expressions.QuantifierExistential,
+			extraFirst:         true,
+			expectPartialMatch: true,
+		},
+		{
+			name:               "candidate ForEach cannot be skipped",
+			extraKind:          expressions.QuantifierForEach,
+			extraFirst:         true,
+			expectPartialMatch: false,
+		},
+		{
+			name:               "candidate physical leg cannot be skipped",
+			extraKind:          expressions.QuantifierPhysical,
+			expectPartialMatch: false,
+		},
+		{
+			name:               "filtering candidate existential cannot be skipped",
+			extraKind:          expressions.QuantifierExistential,
+			extraPredicate:     true,
+			expectPartialMatch: false,
+		},
+		{
+			name:                    "unmapped candidate filter cannot be ignored",
+			extraKind:               expressions.QuantifierExistential,
+			candidateFalsePredicate: true,
+			expectPartialMatch:      false,
+		},
+		{
+			name:               "result-producing candidate existential cannot be skipped",
+			extraKind:          expressions.QuantifierExistential,
+			resultUsesExtra:    true,
+			expectPartialMatch: false,
+		},
+		{
+			name:                   "selected candidate leg cannot depend on skipped existential",
+			extraKind:              expressions.QuantifierExistential,
+			selectedDependsOnExtra: true,
+			expectPartialMatch:     false,
+		},
+		{
+			name:               "outer query Select cannot use subset path",
+			extraKind:          expressions.QuantifierExistential,
+			queryJoinType:      expressions.JoinLeftOuter,
+			expectPartialMatch: false,
+		},
+		{
+			name:               "outer candidate Select cannot use subset path",
+			extraKind:          expressions.QuantifierExistential,
+			candidateJoinType:  expressions.JoinLeftOuter,
+			expectPartialMatch: false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			// Query: SELECT q FROM T q WHERE q.col0 = 5.
+			queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+			queryScanRef := expressions.InitialOf(queryScan)
+			queryQ := expressions.ForEachQuantifier(queryScanRef)
+			queryPred := predicates.NewComparisonPredicate(
+				values.NewFieldValue(queryQ.GetFlowedObjectValue(), "col0", values.UnknownType),
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
+			)
+			querySelect := expressions.NewSelectExpressionWithJoinType(
+				queryQ.GetFlowedObjectValue(),
+				[]expressions.Quantifier{queryQ},
+				[]predicates.QueryPredicate{queryPred},
+				nil,
+				test.queryJoinType,
+			)
+			querySelectRef := expressions.InitialOf(querySelect)
+
+			// Candidate: SELECT c FROM T c, <extra U> WHERE c.col0 = $p.
+			extraRef := expressions.InitialOf(
+				expressions.NewFullUnorderedScanExpression([]string{"U"}, values.UnknownType),
+			)
+			var extraQ expressions.Quantifier
+			switch test.extraKind {
+			case expressions.QuantifierExistential:
+				extraQ = expressions.ExistentialQuantifier(extraRef)
+			case expressions.QuantifierForEach:
+				extraQ = expressions.ForEachQuantifier(extraRef)
+			case expressions.QuantifierPhysical:
+				extraQ = expressions.NewPhysicalQuantifier(extraRef)
+			default:
+				t.Fatalf("unsupported test quantifier kind %v", test.extraKind)
+			}
+			candidateScanRef := expressions.InitialOf(
+				expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
+			)
+			if test.selectedDependsOnExtra {
+				dependentFilter := expressions.NewLogicalFilterExpression(
+					[]predicates.QueryPredicate{predicates.NewExistentialAlias(extraQ.GetAlias())},
+					expressions.ForEachQuantifier(candidateScanRef),
+				)
+				candidateScanRef = expressions.InitialOf(dependentFilter)
+			}
+			candidateQ := expressions.ForEachQuantifier(candidateScanRef)
+
+			parameterAlias := values.UniqueCorrelationIdentifier()
+			placeholder := predicates.NewPlaceholder(
+				parameterAlias,
+				values.NewFieldValue(candidateQ.GetFlowedObjectValue(), "col0", values.UnknownType),
+			)
+			candidatePreds := []predicates.QueryPredicate{placeholder}
+			if test.extraPredicate {
+				candidatePreds = append(candidatePreds, predicates.NewExistentialAlias(extraQ.GetAlias()))
+			}
+			if test.candidateFalsePredicate {
+				candidatePreds = append(candidatePreds, predicates.NewConstantPredicate(predicates.TriFalse))
+			}
+			candidateResult := candidateQ.GetFlowedObjectValue()
+			if test.resultUsesExtra {
+				candidateResult = extraQ.GetFlowedObjectValue()
+			}
+			candidateQs := []expressions.Quantifier{candidateQ, extraQ}
+			if test.extraFirst {
+				candidateQs[0], candidateQs[1] = candidateQs[1], candidateQs[0]
+			}
+			candidateSelect := expressions.NewSelectExpressionWithJoinType(
+				candidateResult,
+				candidateQs,
+				candidatePreds,
+				nil,
+				test.candidateJoinType,
+			)
+			candidateSelectRef := expressions.InitialOf(candidateSelect)
+
+			mc := &testMatchCandidate{
+				name:      "idx_col0_with_extra_leg",
+				traversal: NewTraversal(candidateSelectRef),
+			}
+			ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+			if test.selectedDependsOnExtra {
+				// Seed the exact candidate child ref directly so the root subset
+				// matcher is reached; MatchLeafRule would otherwise stop at the
+				// FullScan below the dependency-carrying filter.
+				childMI := NewRegularMatchInfo(
+					nil, EmptyAliasMap(), nil, nil, nil, EmptyGroupByMappings(), nil, nil,
+				)
+				childPM := NewPartialMatch(
+					EmptyAliasMap(), mc, queryScanRef, queryScan, candidateScanRef, childMI,
+				)
+				AddPartialMatchForCandidate(queryScanRef, mc, childPM)
+			} else {
+				FireExpressionRuleWithMemo(NewMatchLeafRule(), queryScanRef, ctx, nil)
+			}
+			if got := len(GetPartialMatchesForCandidate(queryScanRef, mc)); got == 0 {
+				t.Fatal("leaf PartialMatch not seeded on query scan")
+			}
+
+			FireExpressionRuleWithMemo(NewMatchIntermediateRule(), querySelectRef, ctx, nil)
+
+			pms := GetPartialMatchesForCandidate(querySelectRef, mc)
+			if !test.expectPartialMatch {
+				if len(pms) != 0 {
+					t.Fatalf("unsafe candidate subset produced %d PartialMatches", len(pms))
+				}
+				return
+			}
+			if len(pms) == 0 {
+				t.Fatal("expected subset-subsumption PartialMatch against the multi-quantifier candidate")
+			}
+			pmi := pms[0].(*PartialMatchImpl)
+			if pmi.GetCandidateRef() != candidateSelectRef {
+				t.Fatal("subset PartialMatch does not point at the candidate Select")
+			}
+			if got := pmi.GetBoundAliasMap().GetTarget(queryQ.GetAlias()); got != candidateQ.GetAlias() {
+				t.Fatalf("query ForEach alias mapped to %v, want %v", got, candidateQ.GetAlias())
+			}
+			boundRange := pmi.GetRegularMatchInfo().GetParameterBindingMap()[parameterAlias]
+			if boundRange == nil || !boundRange.IsEquality() {
+				t.Fatalf("candidate placeholder binding = %v, want equality", boundRange)
+			}
+			matchedQs := pmi.GetMatchedQuantifiers()
+			if len(matchedQs) != 1 || matchedQs[0].GetAlias() != queryQ.GetAlias() {
+				t.Fatalf("matched query quantifiers = %v, want only %v", matchedQs, queryQ.GetAlias())
+			}
+			if unmatchedQs := pmi.GetUnmatchedQuantifiers(); len(unmatchedQs) != 0 {
+				t.Fatalf("unmatched query quantifiers = %v, want none", unmatchedQs)
+			}
+			candidateTopAlias := values.UniqueCorrelationIdentifier()
+			comp := pmi.CompensateCompleteMatch(nil, candidateTopAlias)
+			if comp.IsImpossible() {
+				t.Fatalf("subset match produced unusable compensation: %v", comp)
+			}
+			if comp.IsNeeded() {
+				t.Fatalf("dead candidate-only existential introduced compensation: %v", comp)
+			}
+		})
+	}
 }
 
 // TestMatchIntermediateRule_CyclicQuantifierPermutation pins RFC-189's
@@ -637,6 +970,250 @@ func TestMatchIntermediate_SubsumptionChildMatchOrderIndependent(t *testing.T) {
 
 	if n := len(GetPartialMatchesForCandidate(queryFilterRef, mc)); n == 0 {
 		t.Fatal("expected a match via the compatible (second) child match; committing to the conflicting first suppresses it")
+	}
+}
+
+type matchIntermediateSingleSourceBranchFixture struct {
+	queryScan        *expressions.FullUnorderedScanExpression
+	queryScanRef     *expressions.Reference
+	queryScanQ       expressions.Quantifier
+	queryFilter      *expressions.LogicalFilterExpression
+	queryFilterRef   *expressions.Reference
+	candidateScan    *expressions.FullUnorderedScanExpression
+	candidateScanRef *expressions.Reference
+	localParameter   values.CorrelationIdentifier
+	candidate        *testMatchCandidate
+	context          testPlanContextForMatching
+}
+
+func newMatchIntermediateSingleSourceBranchFixture(
+	candidateName string,
+	localValue int64,
+) *matchIntermediateSingleSourceBranchFixture {
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
+	queryFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "col0"},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, localValue),
+			),
+		},
+		queryScanQ,
+	)
+	queryFilterRef := expressions.InitialOf(queryFilter)
+
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
+	localParameter := values.UniqueCorrelationIdentifier()
+	placeholder := predicates.NewPlaceholder(
+		localParameter,
+		&values.FieldValue{Field: "col0"},
+	)
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{candidateScanQ},
+		[]predicates.QueryPredicate{placeholder},
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidate := &testMatchCandidate{
+		name:      candidateName,
+		traversal: NewTraversal(candidateSelectRef),
+	}
+
+	return &matchIntermediateSingleSourceBranchFixture{
+		queryScan:        queryScan,
+		queryScanRef:     queryScanRef,
+		queryScanQ:       queryScanQ,
+		queryFilter:      queryFilter,
+		queryFilterRef:   queryFilterRef,
+		candidateScan:    candidateScan,
+		candidateScanRef: candidateScanRef,
+		localParameter:   localParameter,
+		candidate:        candidate,
+		context: testPlanContextForMatching{
+			candidates: []MatchCandidate{candidate},
+		},
+	}
+}
+
+func matchIntermediateSingleSourceEqualityRange(
+	t *testing.T,
+	literal int64,
+) *predicates.ComparisonRange {
+	t.Helper()
+	comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
+	merged := predicates.EmptyComparisonRange().Merge(&comparison)
+	if !merged.Ok {
+		t.Fatalf("failed to build equality range for %d", literal)
+	}
+	return merged.Range
+}
+
+func (f *matchIntermediateSingleSourceBranchFixture) seedChild(
+	t *testing.T,
+	parameterBindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+) *PartialMatchImpl {
+	t.Helper()
+	boundAliasMap := EmptyAliasMap()
+	matchInfo := NewRegularMatchInfo(
+		parameterBindings,
+		boundAliasMap,
+		nil,
+		nil,
+		nil,
+		EmptyGroupByMappings(),
+		nil,
+		nil,
+	)
+	child := NewPartialMatch(
+		boundAliasMap,
+		f.candidate,
+		f.queryScanRef,
+		f.queryScan,
+		f.candidateScanRef,
+		matchInfo,
+	)
+	if !f.queryScanRef.AddPartialMatch(f.candidate, child) {
+		t.Fatal("failed to seed child PartialMatch")
+	}
+	return child
+}
+
+// TestMatchIntermediate_SingleSourceRejectsOnlyConflictingChildBranch pins
+// branch-local metadata merging in the single-source subsumption path. Both
+// child matches compose with the quantifier alias mapping, but the first says
+// p=7 while the current Filter-to-Placeholder match says p=9. That conflict
+// must reject only the first branch; the later p=9 child must still produce the
+// parent and be retained as its selected child.
+func TestMatchIntermediate_SingleSourceRejectsOnlyConflictingChildBranch(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMatchIntermediateSingleSourceBranchFixture(
+		"idx_single_source_conflicting_child",
+		int64(9),
+	)
+	conflictingChild := fixture.seedChild(
+		t,
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+			fixture.localParameter: matchIntermediateSingleSourceEqualityRange(t, int64(7)),
+		},
+	)
+	compatibleRange := matchIntermediateSingleSourceEqualityRange(t, int64(9))
+	compatibleChild := fixture.seedChild(
+		t,
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+			fixture.localParameter: compatibleRange,
+		},
+	)
+
+	FireExpressionRuleWithMemo(
+		NewMatchIntermediateRule(),
+		fixture.queryFilterRef,
+		fixture.context,
+		nil,
+	)
+
+	parents := GetPartialMatchesForExpression(fixture.queryFilterRef, fixture.queryFilter)
+	if len(parents) != 1 {
+		t.Fatalf("single-source parent matches = %d, want 1 from only the compatible child branch", len(parents))
+	}
+	parent := parents[0].(*PartialMatchImpl)
+	retainedChild := parent.GetRegularMatchInfo().
+		GetChildPartialMatchMaybe(fixture.queryScanQ.GetAlias())
+	if retainedChild != compatibleChild {
+		t.Fatalf("retained child = %p, want compatible second child %p", retainedChild, compatibleChild)
+	}
+	if retainedChild == conflictingChild {
+		t.Fatal("parent retained the conflicting first child")
+	}
+	gotRange := parent.GetRegularMatchInfo().
+		GetParameterBindingMap()[fixture.localParameter]
+	if !partialMatchComparisonRangesEqual(gotRange, compatibleRange) {
+		t.Fatalf("merged local parameter range = %v, want p=9", gotRange)
+	}
+}
+
+// TestMatchIntermediate_SingleSourceRetainsDistinctChildMetadata pins both
+// branch enumeration and semantic parent identity. The two alias-compatible
+// children carry different bindings for a child-only parameter, neither of
+// which conflicts with the local p=9 binding. Both parents must survive, each
+// retaining its selected child, while a rule refire must deduplicate the exact
+// semantic repeats.
+func TestMatchIntermediate_SingleSourceRetainsDistinctChildMetadata(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMatchIntermediateSingleSourceBranchFixture(
+		"idx_single_source_distinct_child_metadata",
+		int64(9),
+	)
+	childParameter := values.UniqueCorrelationIdentifier()
+	firstRange := matchIntermediateSingleSourceEqualityRange(t, int64(7))
+	secondRange := matchIntermediateSingleSourceEqualityRange(t, int64(11))
+	firstChild := fixture.seedChild(
+		t,
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+			childParameter: firstRange,
+		},
+	)
+	secondChild := fixture.seedChild(
+		t,
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+			childParameter: secondRange,
+		},
+	)
+
+	rule := NewMatchIntermediateRule()
+	FireExpressionRuleWithMemo(
+		rule,
+		fixture.queryFilterRef,
+		fixture.context,
+		nil,
+	)
+
+	parents := GetPartialMatchesForExpression(fixture.queryFilterRef, fixture.queryFilter)
+	if len(parents) != 2 {
+		t.Fatalf("single-source parents for distinct child metadata = %d, want 2", len(parents))
+	}
+	expectedChildren := map[PartialMatch]*predicates.ComparisonRange{
+		firstChild:  firstRange,
+		secondChild: secondRange,
+	}
+	seenChildren := make(map[PartialMatch]bool, len(expectedChildren))
+	localRange := matchIntermediateSingleSourceEqualityRange(t, int64(9))
+	for _, rawParent := range parents {
+		parent := rawParent.(*PartialMatchImpl)
+		matchInfo := parent.GetRegularMatchInfo()
+		retainedChild := matchInfo.GetChildPartialMatchMaybe(fixture.queryScanQ.GetAlias())
+		expectedChildRange, ok := expectedChildren[retainedChild]
+		if !ok {
+			t.Fatalf("parent retained unexpected child %p", retainedChild)
+		}
+		if seenChildren[retainedChild] {
+			t.Fatalf("child %p produced more than one parent", retainedChild)
+		}
+		seenChildren[retainedChild] = true
+		if got := matchInfo.GetParameterBindingMap()[childParameter]; !partialMatchComparisonRangesEqual(got, expectedChildRange) {
+			t.Fatalf("merged child parameter range = %v, want metadata from child %p", got, retainedChild)
+		}
+		if got := matchInfo.GetParameterBindingMap()[fixture.localParameter]; !partialMatchComparisonRangesEqual(got, localRange) {
+			t.Fatalf("merged local parameter range = %v, want p=9", got)
+		}
+	}
+	if len(seenChildren) != 2 {
+		t.Fatalf("retained distinct child branches = %d, want 2", len(seenChildren))
+	}
+
+	FireExpressionRuleWithMemo(
+		rule,
+		fixture.queryFilterRef,
+		fixture.context,
+		nil,
+	)
+	if got := len(GetPartialMatchesForExpression(fixture.queryFilterRef, fixture.queryFilter)); got != 2 {
+		t.Fatalf("single-source refire grew matches to %d, want stable count 2", got)
 	}
 }
 

@@ -1320,6 +1320,40 @@ func ExplainValue(v Value) string { return explainValueOrdinals(v, true) }
 // EXPLAIN/debug output, where collapsing two different reads is itself a bug.
 func ColumnNameValue(v Value) string { return explainValueOrdinals(v, false) }
 
+// CanBridgeOrderingFieldValues reports whether two non-structurally-equal
+// ordering Values may safely be reconciled by their ordinal-free column name.
+//
+// The bridge is deliberately narrow. SQL requested orderings are often
+// plan-time-baked (COL#ordinal), while candidate orderings are rebuilt as lazy
+// flat fields (COL); those two representations need to meet. Two baked fields
+// never meet through this helper: different ordinals are different reads, even
+// when their display names match. Childful/nested paths are also excluded
+// because a leaf name does not identify their source slot.
+//
+// Callers must test structural equality first. This helper handles only the
+// representation bridge, including the harmless case-only difference between
+// two lazy flat field names.
+func CanBridgeOrderingFieldValues(left, right Value) bool {
+	leftField, leftOK := left.(*FieldValue)
+	rightField, rightOK := right.(*FieldValue)
+	if !leftOK || !rightOK ||
+		leftField.Child != nil || rightField.Child != nil {
+		return false
+	}
+	if leftField.Resolved != nil && rightField.Resolved != nil {
+		return false
+	}
+	if leftField.Resolved != nil && len(leftField.Resolved.Accessors) != 1 {
+		return false
+	}
+	if rightField.Resolved != nil && len(rightField.Resolved.Accessors) != 1 {
+		return false
+	}
+	leftName := ColumnNameValue(left)
+	rightName := ColumnNameValue(right)
+	return leftName != "" && strings.EqualFold(leftName, rightName)
+}
+
 func explainValueOrdinals(v Value, withOrdinals bool) string {
 	if v == nil {
 		return ""
@@ -1735,51 +1769,13 @@ func (p *ParameterValue) Evaluate(evalCtx any) (any, error) {
 // via EvaluateConstant; `UPPER(name)` is non-constant because the
 // FieldValue arg is non-constant.
 //
-// The supported family is the one gated by IsCascadesSafeScalarFunction
-// (string, math, date-part, bit, and null/comparison helpers); the
-// runtime semantics live in evalScalarFunction, the single dispatch seam
-// a future production registry can replace without touching the Value
-// contract.
+// The supported family is registered in scalarFunctionCatalog (string,
+// math, date-part, bit, and null/comparison helpers). The same definition
+// selects evaluator dispatch, result typing, and Cascades admission.
 type ScalarFunctionValue struct {
 	FuncName string
 	Args     []Value
 	Typ      Type
-}
-
-// IsCascadesSafeScalarFunction reports whether the named scalar function
-// is supported by the Cascades planner. Single authoritative list — all
-// callers (translator, predicate upgrade, unsupported-function detection)
-// must use this.
-func IsCascadesSafeScalarFunction(name string) bool {
-	switch name {
-	// String functions.
-	case "UPPER", "LOWER",
-		"LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH",
-		"SUBSTRING", "SUBSTR",
-		"TRIM", "LTRIM", "RTRIM",
-		"CONCAT", "CONCAT_WS",
-		"REPLACE",
-		"LEFT", "RIGHT",
-		"POSITION", "REVERSE":
-		return true
-	// Math functions.
-	case "ABS", "MOD",
-		"FLOOR", "CEIL", "CEILING", "ROUND",
-		"SQRT", "POWER", "POW",
-		"SIGN", "PI",
-		"EXP", "LN", "LOG":
-		return true
-	// Null/comparison helpers, bit ops, and date-part extraction.
-	case "COALESCE", "IFNULL",
-		"GREATEST", "LEAST",
-		"BITAND", "BITOR", "BITXOR",
-		"YEAR", "MONTH", "DAY", "DAYOFMONTH",
-		"HOUR", "MINUTE", "SECOND",
-		"DAYOFWEEK", "DAYOFYEAR",
-		"CURRENT_DATE", "CURRENT_TIMESTAMP", "CURRENT_TIME", "LOCALTIME":
-		return true
-	}
-	return false
 }
 
 // NewScalarFunctionValue builds a ScalarFunctionValue. The function
@@ -1807,50 +1803,64 @@ func (s *ScalarFunctionValue) Type() Type {
 }
 
 func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
+	result, err := s.evaluateUncoerced(evalCtx)
+	if err != nil || result == nil {
+		return result, err
+	}
+	return coerceNumericResult(result, s.Type()), nil
+}
+
+// evaluateUncoerced applies the function's semantic operator. Evaluate wraps
+// its result with the declared-type carrier conversion so a statically DOUBLE
+// scalar cannot feed an int64 into downstream arithmetic.
+func (s *ScalarFunctionValue) evaluateUncoerced(evalCtx any) (any, error) {
 	// SHORT-CIRCUITING forms evaluate arguments lazily — SQL requires
 	// that COALESCE stop at the first non-NULL argument and that IF
 	// evaluate only the taken branch, so `COALESCE(1, 1/0)` is 1 and
 	// `IF(true, x, 1/0)` is x, never a 22012. The eager loop below
 	// evaluated every argument first and turned these legal
 	// expressions into runtime errors.
-	switch s.FuncName {
-	case "COALESCE", "IFNULL":
-		// IFNULL is the strictly 2-arg COALESCE spelling — the lazy arm
-		// must keep the strict arm's arity decline (nil, nil), not
-		// degrade IFNULL(1) / IFNULL(a,b,c) into variadic COALESCE.
-		if s.FuncName == "IFNULL" && len(s.Args) != 2 {
-			return nil, nil
-		}
-		for _, a := range s.Args {
-			if a == nil {
+	definition, knownFunction := scalarFunctionDefinitionFor(s.FuncName)
+	if knownFunction {
+		switch definition.operator {
+		case scalarFunctionCoalesce, scalarFunctionIfNull:
+			// IFNULL is the strictly 2-arg COALESCE spelling — the lazy arm
+			// must keep the strict arm's arity decline (nil, nil), not
+			// degrade IFNULL(1) / IFNULL(a,b,c) into variadic COALESCE.
+			if definition.operator == scalarFunctionIfNull && len(s.Args) != 2 {
 				return nil, nil
 			}
-			av, err := a.Evaluate(evalCtx)
+			for _, a := range s.Args {
+				if a == nil {
+					return nil, nil
+				}
+				av, err := a.Evaluate(evalCtx)
+				if err != nil {
+					return nil, err
+				}
+				if av != nil {
+					return av, nil
+				}
+			}
+			return nil, nil
+		case scalarFunctionIf:
+			if len(s.Args) != 3 || s.Args[0] == nil {
+				return nil, nil
+			}
+			cond, err := s.Args[0].Evaluate(evalCtx)
 			if err != nil {
 				return nil, err
 			}
-			if av != nil {
-				return av, nil
+			branch, ok := scalarIfBranch(cond)
+			if !ok {
+				// Unsupported condition type — decline like the strict arm.
+				return nil, nil
 			}
+			if s.Args[branch] == nil {
+				return nil, nil
+			}
+			return s.Args[branch].Evaluate(evalCtx)
 		}
-		return nil, nil
-	case "IF", "IIF":
-		if len(s.Args) != 3 || s.Args[0] == nil {
-			return nil, nil
-		}
-		cond, err := s.Args[0].Evaluate(evalCtx)
-		if err != nil {
-			return nil, err
-		}
-		branch, ok := scalarIfBranch(cond)
-		if !ok {
-			// Unsupported condition type — decline like the strict arm.
-			return nil, nil
-		}
-		if s.Args[branch] == nil {
-			return nil, nil
-		}
-		return s.Args[branch].Evaluate(evalCtx)
 	}
 	args := make([]any, len(s.Args))
 	for i, a := range s.Args {
@@ -1863,7 +1873,32 @@ func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
 		}
 		args[i] = av
 	}
+	if knownFunction && definition.argumentStrategy == scalarFunctionCommonNumericArguments {
+		for i := range args {
+			args[i] = coerceNumericResult(args[i], s.Type())
+		}
+	}
 	return evalScalarFunctionCtx(s.FuncName, args, evalCtx)
+}
+
+// coerceNumericResult keeps a Go carrier aligned with its static numeric type.
+// FLOAT computes at float32 precision but uses the row domain's float64
+// carrier; DOUBLE widens every integral carrier.
+func coerceNumericResult(result any, resultType Type) any {
+	if resultType == nil {
+		return result
+	}
+	switch resultType.Code() {
+	case TypeCodeDouble:
+		if numeric, _, ok := ToFloat64(result); ok {
+			return numeric
+		}
+	case TypeCodeFloat:
+		if numeric, ok := toFloat32Operand(result); ok {
+			return float64(numeric)
+		}
+	}
+	return result
 }
 
 // scalarIfBranch maps an evaluated IF/IIF condition to the argument
@@ -1909,13 +1944,14 @@ type StatementClock interface {
 	StatementNow() time.Time
 }
 
-// evalScalarFunction dispatches the gated scalar function family
-// (IsCascadesSafeScalarFunction). NULL argument propagates to NULL result
-// (SQL standard), returned as (nil, nil). Genuine decline edges — unknown
-// function, wrong arity, a non-coercible arg type, or an out-of-domain math
-// input that SQL degrades to NULL — also return (nil, nil): the value
-// becomes SQL NULL rather than erroring. The data-dependent error edges
-// return a typed error so the executor maps it to a SQLSTATE:
+// evalScalarFunction dispatches catalogued scalar operators, including the
+// internal IF/NULLIF forms that are deliberately excluded from Cascades SQL
+// admission. NULL argument propagates to NULL result (SQL standard), returned
+// as (nil, nil). Genuine decline edges — unknown function, wrong arity, a
+// non-coercible arg type, or an out-of-domain math input that SQL degrades to
+// NULL — also return (nil, nil): the value becomes SQL NULL rather than
+// erroring. The data-dependent error edges return a typed error so the
+// executor maps it to a SQLSTATE:
 //
 //   - ABS(MinInt64)             → *ArithmeticOverflowError       (22003)
 //   - MOD(x, 0)                 → *ArithmeticDivisionByZeroError (22012)
@@ -1948,10 +1984,14 @@ var timestampParseLayouts = []string{timestampLayout, "2006-01-02T15:04:05Z07:00
 // for the statement-clock arms (CURRENT_TIMESTAMP family); every other
 // function ignores the context.
 func evalScalarFunctionCtx(name string, args []any, evalCtx any) (any, error) {
-	switch name {
-	case "CURRENT_TIMESTAMP", "CURRENT_TIME", "LOCALTIME":
+	definition, ok := scalarFunctionDefinitionFor(name)
+	if !ok {
+		return nil, nil
+	}
+	switch definition.operator {
+	case scalarFunctionStatementTimestamp:
 		return statementTime(evalCtx).Format(timestampLayout), nil
-	case "CURRENT_DATE":
+	case scalarFunctionStatementDate:
 		return statementTime(evalCtx).Format(dateLayout), nil
 	}
 	return evalScalarFunction(name, args)
@@ -1969,8 +2009,13 @@ func statementTime(evalCtx any) time.Time {
 }
 
 func evalScalarFunction(name string, args []any) (any, error) {
-	switch name {
-	case "UPPER":
+	definition, ok := scalarFunctionDefinitionFor(name)
+	if !ok {
+		return nil, nil
+	}
+
+	switch definition.operator {
+	case scalarFunctionUpper:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -1979,7 +2024,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, nil
 		}
 		return strings.ToUpper(s), nil
-	case "LOWER":
+	case scalarFunctionLower:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -1988,11 +2033,9 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, nil
 		}
 		return strings.ToLower(s), nil
-	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH":
-		// Rune count — matches embedded.scalar_functions.go's LENGTH
-		// (utf8.RuneCountInString) so plan-time fold and runtime eval
-		// agree. Go coerces []byte the same way for symmetry
-		// with OCTET_LENGTH (byte count there, rune count here).
+	case scalarFunctionLength:
+		// Rune count. Go accepts []byte for symmetry with OCTET_LENGTH
+		// (byte count there, rune count here).
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2003,7 +2046,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return int64(utf8.RuneCount(v)), nil
 		}
 		return nil, nil
-	case "OCTET_LENGTH":
+	case scalarFunctionOctetLength:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2014,7 +2057,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return int64(len(v)), nil
 		}
 		return nil, nil
-	case "ABS":
+	case scalarFunctionAbs:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2033,57 +2076,72 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return math.Abs(n), nil
 		}
 		return nil, nil
-	case "FLOOR", "CEIL", "CEILING", "ROUND":
+	case scalarFunctionFloor, scalarFunctionCeil, scalarFunctionRound:
 		if len(args) < 1 || args[0] == nil {
 			return nil, nil
+		}
+		if definition.operator == scalarFunctionRound {
+			if len(args) > 2 {
+				return nil, nil
+			}
+		} else if len(args) != 1 {
+			return nil, nil
+		}
+		decimals := int64(0)
+		if len(args) == 2 {
+			if args[1] == nil {
+				return nil, nil
+			}
+			d, ok := scalarFnInt64Arg(args[1])
+			if !ok {
+				return nil, nil
+			}
+			decimals = d
 		}
 		var f float64
 		switch n := args[0].(type) {
 		case int64:
-			// Already an integer — short-circuit to mirror embedded.
-			return n, nil
+			if definition.operator != scalarFunctionRound || decimals >= 0 {
+				// FLOOR, CEIL, and non-negative-precision ROUND are identities
+				// on integers.
+				return n, nil
+			}
+			rounded, ok := roundInt64DecimalPlaces(n, decimals)
+			if !ok {
+				return nil, &ArithmeticOverflowError{}
+			}
+			return rounded, nil
 		case float64:
 			f = n
 		default:
 			return nil, nil
 		}
 		var result float64
-		switch name {
-		case "FLOOR":
+		switch definition.operator {
+		case scalarFunctionFloor:
 			result = math.Floor(f)
-		case "CEIL", "CEILING":
+		case scalarFunctionCeil:
 			result = math.Ceil(f)
-		case "ROUND":
-			decimals := int64(0)
-			if len(args) >= 2 {
-				if args[1] == nil {
-					return nil, nil
-				}
-				d, ok := scalarFnInt64Arg(args[1])
-				if !ok {
-					return nil, nil
-				}
-				decimals = d
-			}
+		case scalarFunctionRound:
 			if decimals == 0 {
 				result = math.Round(f)
 			} else {
-				factor := math.Pow(10, float64(decimals))
-				result = math.Round(f*factor) / factor
+				result = roundFloat64DecimalPlaces(f, decimals)
 			}
 		}
-		// Match embedded's "return int64 if no fractional part" rule.
+		// Preserve the compact direct-evaluator carrier. ScalarFunctionValue
+		// converts it to the declared FLOAT/DOUBLE carrier at its boundary.
 		if result == math.Trunc(result) && float64FitsInt64(result) {
 			return int64(result), nil
 		}
 		return result, nil
-	case "PI":
-		// Zero-arg constant. Mirrors embedded.scalar_functions.go's PI.
+	case scalarFunctionPi:
+		// Zero-argument constant.
 		if len(args) != 0 {
 			return nil, nil
 		}
 		return math.Pi, nil
-	case "SQRT":
+	case scalarFunctionSqrt:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2093,14 +2151,13 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		}
 		if f < 0 {
 			// SQL §6.27: SQRT of a negative argument raises 22023
-			// INVALID_PARAMETER_VALUE (Go-only divergence from the old
-			// embedded path, which returned NULL — RFC-087 step 3).
+			// INVALID_PARAMETER_VALUE.
 			return nil, &InvalidArgumentError{
 				Message: fmt.Sprintf("SQRT of negative number: %v", f),
 			}
 		}
 		return math.Sqrt(f), nil
-	case "POWER", "POW":
+	case scalarFunctionPower:
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
 			return nil, nil
 		}
@@ -2117,7 +2174,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return int64(result), nil
 		}
 		return result, nil
-	case "COALESCE":
+	case scalarFunctionCoalesce:
 		// First non-nil argument wins; all nil → nil. Empty argument
 		// list also folds to nil so a degenerate `COALESCE()` doesn't
 		// error at plan time (the parser rejects zero-arg COALESCE
@@ -2128,9 +2185,9 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			}
 		}
 		return nil, nil
-	case "NULLIF":
+	case scalarFunctionNullIf:
 		// NULLIF(a, b) → NULL when a == b; otherwise a. Compare via
-		// nullifEqual so int/float promotion mirrors embedded.
+		// nullifEqual so int/float values compare after numeric promotion.
 		if len(args) != 2 {
 			return nil, nil
 		}
@@ -2141,7 +2198,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, nil
 		}
 		return args[0], nil
-	case "TRIM":
+	case scalarFunctionTrim:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2150,7 +2207,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, nil
 		}
 		return strings.TrimSpace(s), nil
-	case "LTRIM":
+	case scalarFunctionLTrim:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2159,7 +2216,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, nil
 		}
 		return strings.TrimLeft(s, " \t\n\r"), nil
-	case "RTRIM":
+	case scalarFunctionRTrim:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2168,11 +2225,10 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, nil
 		}
 		return strings.TrimRight(s, " \t\n\r"), nil
-	case "CONCAT":
+	case scalarFunctionConcat:
 		// Postgres CONCAT semantics — NULL skips, doesn't poison (unlike
 		// MySQL CONCAT, which returns NULL if any arg is NULL).
-		// Pinned by trim_concat.yaml; the embedded path uses the
-		// same rule.
+		// Pinned by trim_concat.yaml.
 		var b strings.Builder
 		for _, a := range args {
 			if a == nil {
@@ -2181,12 +2237,11 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			b.WriteString(scalarArgString(a))
 		}
 		return b.String(), nil
-	case "CONCAT_WS":
+	case scalarFunctionConcatWS:
 		// CONCAT With Separator — MySQL semantics: first arg is the
 		// separator (NULL → result is NULL); remaining args are
 		// concatenated with the separator between non-NULL values.
-		// NULL elements are skipped (different from CONCAT in
-		// Postgres, which poisons; matches embedded.scalar_functions.go).
+		// NULL elements are skipped.
 		if len(args) < 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2207,9 +2262,9 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			first = false
 		}
 		return b.String(), nil
-	case "SUBSTRING", "SUBSTR":
+	case scalarFunctionSubstring:
 		// SUBSTRING(s, pos[, len]) — 1-based position per SQL standard.
-		// pos < 1 normalises to 1 (matches embedded, MySQL).
+		// pos < 1 normalises to 1.
 		if len(args) < 2 || args[0] == nil || args[1] == nil {
 			return nil, nil
 		}
@@ -2244,10 +2299,9 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return string(runes[start:end]), nil
 		}
 		return string(runes[start:]), nil
-	case "REPLACE":
-		// REPLACE(s, from, to). NULL `to` is treated as empty (matches
-		// embedded). Pure-string semantics — non-string args coerce
-		// via fmt.Sprintf("%v", v) for parity with the embedded path.
+	case scalarFunctionReplace:
+		// REPLACE(s, from, to). NULL `to` is treated as empty.
+		// Non-string args coerce via fmt.Sprintf("%v", v).
 		if len(args) != 3 || args[0] == nil || args[1] == nil {
 			return nil, nil
 		}
@@ -2256,11 +2310,9 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			toStr = scalarArgString(args[2])
 		}
 		return strings.ReplaceAll(scalarArgString(args[0]), scalarArgString(args[1]), toStr), nil
-	case "SIGN":
-		// SIGN(numeric) — -1 / 0 / 1 in the input's numeric type. Mirrors
-		// embedded.scalar_functions.go's SIGN: int64 input → int64 sign,
-		// float64 input → float64 sign. Non-numeric input declines so
-		// the runtime evaluator surfaces 22018.
+	case scalarFunctionSign:
+		// SIGN(numeric) — -1 / 0 / 1 in the input's numeric type.
+		// Non-numeric input declines so the runtime evaluator surfaces 22018.
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2283,10 +2335,10 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return float64(0), nil
 		}
 		return nil, nil
-	case "MOD":
+	case scalarFunctionMod:
 		// MOD(a, b) — int64%int64 stays int64, mixed promotes to float64
 		// via math.Mod. Division-by-zero errors with 22012
-		// DIVISION_BY_ZERO. Mirrors embedded's MOD semantics.
+		// DIVISION_BY_ZERO.
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
 			return nil, nil
 		}
@@ -2307,9 +2359,9 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, &ArithmeticDivisionByZeroError{}
 		}
 		return math.Mod(af, bf), nil
-	case "IFNULL":
+	case scalarFunctionIfNull:
 		// IFNULL(a, b) — `a` if non-null, else `b`. 2-arg COALESCE alias
-		// (MySQL/SQLite spelling). Type-uniform like embedded.
+		// (MySQL/SQLite spelling).
 		if len(args) != 2 {
 			return nil, nil
 		}
@@ -2317,10 +2369,10 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return args[0], nil
 		}
 		return args[1], nil
-	case "IF", "IIF":
+	case scalarFunctionIf:
 		// IF(cond, then, else) — evaluates condition first; returns
 		// `then` if truthy, `else` otherwise. Truthy: non-zero numeric,
-		// non-empty string, true bool. Mirrors embedded's IF.
+		// non-empty string, true bool.
 		if len(args) != 3 {
 			return nil, nil
 		}
@@ -2329,15 +2381,14 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		}
 		// Unsupported condition type — decline so runtime can error.
 		return nil, nil
-	case "GREATEST", "LEAST":
+	case scalarFunctionGreatest, scalarFunctionLeast:
 		// GREATEST/LEAST — Java conformance: any NULL arg → NULL result
-		// (Postgres skips, Oracle propagates; Java propagates). Mirror
-		// Java per embedded's behaviour. Cross-type comparisons error
-		// with 22000 CANNOT_CONVERT_TYPE.
+		// (Postgres skips, Oracle and Java propagate). Cross-type comparisons
+		// error with 22000 CANNOT_CONVERT_TYPE.
 		if len(args) == 0 {
 			return nil, nil
 		}
-		isGreatest := name == "GREATEST"
+		isGreatest := definition.operator == scalarFunctionGreatest
 		best := args[0]
 		if best == nil {
 			return nil, nil
@@ -2357,7 +2408,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			}
 		}
 		return best, nil
-	case "EXP":
+	case scalarFunctionExp:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2367,16 +2418,14 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		}
 		result := math.Exp(f)
 		// Overflow (e.g. EXP(1000) → +Inf) and NaN degrade to SQL NULL,
-		// matching the POWER/SQRT out-of-domain convention above and the
-		// pre-RFC embedded EXP semantics this ports verbatim.
+		// matching the POWER/SQRT out-of-domain convention above.
 		if math.IsInf(result, 0) || math.IsNaN(result) {
 			return nil, nil
 		}
 		return result, nil
-	case "LN":
+	case scalarFunctionLn:
 		// Natural log. Domain: x > 0. Out-of-domain (≤ 0) declines to
-		// SQL NULL (matches the old embedded path; SQRT<0 is the only
-		// math-domain edge RFC-087 promotes to a runtime error).
+		// SQL NULL; SQRT<0 is the typed-error math-domain edge.
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2385,9 +2434,9 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, nil
 		}
 		return math.Log(f), nil
-	case "LOG":
+	case scalarFunctionLog:
 		// 1-arg LOG(x) = log10(x). 2-arg LOG(base, x) = ln(x)/ln(base).
-		// Mirrors embedded; out-of-domain declines to SQL NULL.
+		// Out-of-domain inputs decline to SQL NULL.
 		switch len(args) {
 		case 1:
 			if args[0] == nil {
@@ -2410,7 +2459,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return math.Log(x) / math.Log(base), nil
 		}
 		return nil, nil
-	case "REVERSE":
+	case scalarFunctionReverse:
 		// String reverse — rune-aware so multibyte UTF-8 stays valid.
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
@@ -2421,10 +2470,10 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			runes[i], runes[j] = runes[j], runes[i]
 		}
 		return string(runes), nil
-	case "POSITION":
+	case scalarFunctionPosition:
 		// POSITION(substr, str) — 1-based rune index of first match,
-		// 0 if not found. Mirrors embedded POSITION (note: not the
-		// `POSITION(substr IN str)` SQL-standard grammar shape).
+		// 0 if not found (not the `POSITION(substr IN str)` SQL-standard
+		// grammar shape).
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
 			return nil, nil
 		}
@@ -2435,7 +2484,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return int64(0), nil
 		}
 		return int64(utf8.RuneCountInString(haystack[:byteIdx]) + 1), nil
-	case "LEFT":
+	case scalarFunctionLeft:
 		// LEFT(str, n) — first n runes; whole string if n ≥ length.
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
 			return nil, nil
@@ -2453,7 +2502,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return s, nil
 		}
 		return string(runes[:n]), nil
-	case "RIGHT":
+	case scalarFunctionRight:
 		// RIGHT(str, n) — last n runes; whole string if n ≥ length.
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
 			return nil, nil
@@ -2471,7 +2520,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return s, nil
 		}
 		return string(runes[len(runes)-int(n):]), nil
-	case "BITAND":
+	case scalarFunctionBitAnd:
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
 			return nil, nil
 		}
@@ -2481,7 +2530,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, nil
 		}
 		return a & b, nil
-	case "BITOR":
+	case scalarFunctionBitOr:
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
 			return nil, nil
 		}
@@ -2491,7 +2540,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, nil
 		}
 		return a | b, nil
-	case "BITXOR":
+	case scalarFunctionBitXor:
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
 			return nil, nil
 		}
@@ -2501,9 +2550,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			return nil, nil
 		}
 		return a ^ b, nil
-	case "YEAR", "MONTH", "DAY", "DAYOFMONTH",
-		"HOUR", "MINUTE", "SECOND",
-		"DAYOFWEEK", "DAYOFYEAR":
+	case scalarFunctionDatePart:
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
 		}
@@ -2638,12 +2685,84 @@ func compareScalar(a, b any) (int, bool) {
 	return 0, false
 }
 
+// roundInt64DecimalPlaces rounds an integer at a negative decimal precision
+// without converting through float64. Ties round away from zero, matching the
+// exact-numeric SQL/MySQL ROUND contract. ok=false means the rounded magnitude
+// no longer fits int64.
+func roundInt64DecimalPlaces(value, decimals int64) (int64, bool) {
+	if decimals >= 0 || value == 0 {
+		return value, true
+	}
+	if decimals < -19 {
+		return 0, true
+	}
+
+	places := -decimals // safe after the -19 bound above
+	factor := uint64(1)
+	for range places {
+		factor *= 10
+	}
+
+	negative := value < 0
+	magnitude := uint64(value)
+	if negative {
+		magnitude = -magnitude
+	}
+	quotient, remainder := magnitude/factor, magnitude%factor
+	if remainder >= factor/2 {
+		quotient++
+	}
+	roundedMagnitude := quotient * factor
+	if negative {
+		const minInt64Magnitude = uint64(1) << 63
+		if roundedMagnitude > minInt64Magnitude {
+			return 0, false
+		}
+		if roundedMagnitude == minInt64Magnitude {
+			return math.MinInt64, true
+		}
+		return -int64(roundedMagnitude), true
+	}
+	if roundedMagnitude > math.MaxInt64 {
+		return 0, false
+	}
+	return int64(roundedMagnitude), true
+}
+
+// roundFloat64DecimalPlaces applies MySQL's supported precision window and
+// avoids turning a finite value into NaN/Inf solely because the temporary
+// decimal scaling overflowed. A scale finer than the value's representable ULP
+// is an identity at float64 precision.
+func roundFloat64DecimalPlaces(value float64, decimals int64) float64 {
+	const maxDecimalPlaces int64 = 30
+	if decimals > maxDecimalPlaces {
+		decimals = maxDecimalPlaces
+	} else if decimals < -maxDecimalPlaces {
+		decimals = -maxDecimalPlaces
+	}
+
+	if decimals > 0 {
+		factor := math.Pow10(int(decimals))
+		scaled := value * factor
+		if math.IsInf(scaled, 0) && !math.IsInf(value, 0) {
+			return value
+		}
+		return math.Round(scaled) / factor
+	}
+
+	factor := math.Pow10(int(-decimals))
+	rounded := math.Round(value/factor) * factor
+	if math.IsInf(rounded, 0) && !math.IsInf(value, 0) {
+		return value
+	}
+	return rounded
+}
+
 // scalarFnInt64Arg coerces a numeric scalar-fn argument to int64.
 // Float coercion only succeeds for whole-valued floats — non-integer
 // floats decline so the fold path returns nil and the runtime
 // evaluator (which can surface 22018 INVALID_CHARACTER_VALUE) handles
-// the conversion error. Mirrors the strictness of
-// embedded.functions.ToIntegerArg.
+// the conversion error.
 func scalarFnInt64Arg(v any) (int64, bool) {
 	if i, ok := ToInt64(v); ok {
 		return i, true
@@ -2668,10 +2787,9 @@ func float64FitsInt64(f float64) bool {
 	return f >= math.MinInt64 && f < twoPow63
 }
 
-// nullifEqual is the equality test used by NULLIF's plan-time fold.
-// Mirrors embedded.functions.CompareValues for the int/float promotion
-// case while staying conservative (declines on mixed-type comparisons
-// the Type hierarchy can't model).
+// nullifEqual is the equality test used by NULLIF's plan-time fold. It handles
+// int/float promotion while staying conservative on mixed-type comparisons
+// the Type hierarchy cannot model.
 func nullifEqual(a, b any) bool {
 	switch av := a.(type) {
 	case int64:
@@ -2791,6 +2909,21 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) (any, error) {
 	if a.Op == OpAdd && (lc == TypeCodeString || rc == TypeCodeString) {
 		if out, handled := a.evalStringConcat(l, r, lc, rc); handled {
 			return out, nil
+		}
+	}
+	if lc == TypeCodeDouble || rc == TypeCodeDouble {
+		otherOK := func(code TypeCode) bool {
+			return code == TypeCodeDouble || code == TypeCodeFloat ||
+				code == TypeCodeInt || code == TypeCodeLong
+		}
+		if otherOK(lc) && otherOK(rc) {
+			// Java chooses its arithmetic physical operator from the static
+			// TypeCodes. A common-typed CASE/COALESCE or a PromoteValue can
+			// therefore declare DOUBLE while its selected Go carrier is still
+			// int64; force the DOUBLE lane from the type, not the carrier.
+			if out := a.evalFloat(l, r); out != nil {
+				return out, nil
+			}
 		}
 	}
 	if lc == TypeCodeFloat || rc == TypeCodeFloat {
@@ -3696,11 +3829,9 @@ func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
 // the user wrote; Promote is machine-inserted and cost-modelled
 // separately. Mirrors Java's `PromoteValue`.
 //
-// Evaluate currently delegates to Child.Evaluate —
-// cmpAny already promotes numerics at runtime, so an explicit
-// Promote in the tree is a no-op evaluation-wise. The value is in
-// having the coercion visible at plan time so rule matchers can
-// simplify `Promote(x, x.Type)` → `x`.
+// Evaluate converts numeric carriers to the target width and handles the
+// STRING→UUID representation change. Other promotion families remain
+// representation-preserving.
 type PromoteValue struct {
 	Child  Value
 	Target Type
@@ -3739,12 +3870,7 @@ func (p *PromoteValue) Type() Type {
 // Name returns the debug-print kind.
 func (*PromoteValue) Name() string { return "promote" }
 
-// Evaluate delegates to the child for the numeric/cross-width case —
-// Go treats Promote as a no-op there since cmpAny already
-// handles cross-width promotion, and plan-time inspection (explain,
-// rewrite rules) is where those Promotes earn their keep.
-//
-// The ONE runtime-active arm is STRING → UUID (Java's
+// Evaluate applies numeric width conversion and STRING → UUID (Java's
 // PromoteValue.STRING_TO_UUID, `UUID.fromString`): a UUID column has
 // no native proto/SQL primitive, so `uuid_col = '<uuid>'` arrives as
 // a STRING comparand. Promoting it to UUID here parses the canonical
@@ -3759,7 +3885,7 @@ func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
 		return nil, err
 	}
 	if !IsUuid(p.Target) {
-		return childResult, nil
+		return coerceNumericResult(childResult, p.Target), nil
 	}
 	switch v := childResult.(type) {
 	case nil:

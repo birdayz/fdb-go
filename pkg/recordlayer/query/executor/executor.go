@@ -109,6 +109,15 @@ func ExecutePlan(
 		return executeLimit(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryDistinctPlan:
 		return executeDistinct(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+		return executeUnorderedPrimaryKeyDistinct(
+			ctx,
+			p,
+			store,
+			evalCtx,
+			continuation,
+			props,
+		)
 	case *plans.RecordQueryProjectionPlan:
 		return executeProjection(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryUnionPlan:
@@ -1041,8 +1050,15 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	entry := result.GetValue()
 	// logicalOrds is guaranteed non-nil (executeIndexScan refuses a non-conforming
 	// covering scan LOUD at construction), so the row is always LOGICAL-shaped.
-	pos := buildCoveringLogicalRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.logicalType, c.logicalOrds)
-	return recordlayer.NewResultWithValue(QueryResult{Positional: pos}, result.GetContinuation()), nil
+	primaryKey := entry.PrimaryKey()
+	pos := buildCoveringLogicalRow(c.columns, c.pkColumns, entry.IndexValues(), primaryKey, c.logicalType, c.logicalOrds)
+	return recordlayer.NewResultWithValue(
+		QueryResult{
+			Positional: pos,
+			PrimaryKey: primaryKey,
+		},
+		result.GetContinuation(),
+	), nil
 }
 
 // coveringLogicalOrdinals maps each covering-row column name to its slot in
@@ -1585,6 +1601,52 @@ func executeDistinct(
 	// that would blow the continuation fails LOUDLY on the budget (never silent
 	// wrong rows), the signal that the cost-based sort-distinct follow-up should
 	// have been chosen.
+	return executeHashDistinct(
+		ctx,
+		p.GetInner(),
+		store,
+		evalCtx,
+		continuation,
+		props,
+		distinctKey,
+	)
+}
+
+// executeUnorderedPrimaryKeyDistinct removes duplicate records by primary key.
+// The input need not be ordered; executeHashDistinct therefore persists the
+// complete seen-key set in each continuation.
+func executeUnorderedPrimaryKeyDistinct(
+	ctx context.Context,
+	p *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	return executeHashDistinct(
+		ctx,
+		p.GetInner(),
+		store,
+		evalCtx,
+		continuation,
+		props,
+		primaryKeyDistinctKey,
+	)
+}
+
+// executeHashDistinct is the common resume-clean unordered-distinct path. Its
+// continuation contains the inner position and every key seen so far in
+// deterministic insertion order. Rebuilding a page re-charges the set against
+// the statement budget; cursor teardown releases the page's live charge.
+func executeHashDistinct(
+	ctx context.Context,
+	inner plans.RecordQueryPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+	keyer queryResultDistinctKeyer,
+) (recordlayer.RecordCursor[QueryResult], error) {
 	seen := newBoundedSet[string](props.State)
 	var order []string
 	innerCont := continuation
@@ -1594,30 +1656,41 @@ func executeDistinct(
 			return nil, fmt.Errorf("invalid distinct-hash continuation: %w", uerr)
 		}
 		innerCont = dc.GetInnerContinuation()
-		// Rebuild (and re-charge) the seen-set and its insertion order.
-		for _, k := range dc.GetSeenKeys() {
-			ks := string(k)
-			added, aerr := seen.Add(ks, int64(len(k)))
-			if aerr != nil {
-				// No cursor is built on this path, so no close hook will run —
-				// release the partial charge here to stay live-bytes-neutral.
+		for _, key := range dc.GetSeenKeys() {
+			packedKey := string(key)
+			added, addErr := seen.Add(packedKey, int64(len(key)))
+			if addErr != nil {
+				// No cursor exists yet, so release the partially rebuilt set
+				// directly instead of relying on a close hook.
 				props.State.ReleaseMemory(seen.Charged())
-				return nil, aerr
+				return nil, addErr
 			}
 			if added {
-				order = append(order, ks)
+				order = append(order, packedKey)
 			}
 		}
 	}
-	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerCont, props.ClearSkipAndLimit())
+
+	innerCursor, err := ExecutePlan(
+		ctx,
+		inner,
+		store,
+		evalCtx,
+		innerCont,
+		props.ClearSkipAndLimit(),
+	)
 	if err != nil {
 		props.State.ReleaseMemory(seen.Charged())
 		return nil, err
 	}
-	// Live-bytes model: the set is charged as it grows (and on resume rebuild);
-	// release its tally at page teardown.
+	cursor := &distinctHashCursor{
+		inner: innerCursor,
+		seen:  seen,
+		order: order,
+		keyer: keyer,
+	}
 	return newCloseHookCursor(
-		applySkipLimit(&distinctHashCursor{inner: innerCursor, seen: seen, order: order}, props.Skip, props.ReturnedRowLimit),
+		applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit),
 		func() { props.State.ReleaseMemory(seen.Charged()) },
 	), nil
 }
@@ -1638,6 +1711,18 @@ func distinctKey(qr QueryResult) (string, error) {
 		return "", nil
 	}
 	return packedDedupKey(qr.Positional.Slots)
+}
+
+// primaryKeyDistinctKey packs exactly the physical primary key carried by a
+// QueryResult. A missing key is a plan/executor contract violation: treating
+// nil as the empty tuple would collapse unrelated computed rows silently.
+func primaryKeyDistinctKey(qr QueryResult) (string, error) {
+	if qr.PrimaryKey == nil {
+		return "", fmt.Errorf(
+			"unordered primary-key distinct: input row has no primary key",
+		)
+	}
+	return string(qr.PrimaryKey.Pack()), nil
 }
 
 // packedDedupKey encodes a row's slot values into an unambiguous FDB-tuple key
@@ -2098,7 +2183,7 @@ func executeIntersection(
 	keyVals := p.GetComparisonKeyValues()
 	compKeyFunc := intersectionCompKeyFunc(keyVals)
 	return applySkipLimit(
-		recordlayer.IntersectionResume(cursors, compKeyFunc, false, resume),
+		recordlayer.IntersectionResume(cursors, compKeyFunc, p.IsReverse(), resume),
 		props.Skip, props.ReturnedRowLimit,
 	), nil
 }
@@ -2260,11 +2345,12 @@ func executeFlatMap(
 		return nil, err
 	}
 
-	cursor, err := newFlatMapCursor(
+	cursor, err := newFlatMapCursorWithOuterProperties(
 		outerCursor, p.GetOuter(), p.GetInner(), store, evalCtx,
 		p.GetOuterAlias(), p.GetInnerAlias(),
 		p.GetResultValue(),
 		nestedProps,
+		p.InheritOuterRecordProperties(),
 	)
 	if err != nil {
 		outerCursor.Close()

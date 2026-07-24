@@ -306,8 +306,7 @@ func TestScalarFnInt64Arg_AcceptsWholeFloat(t *testing.T) {
 
 // TestScalarFnInt64Arg_RejectsNonIntegerFloat pins the strictness:
 // non-whole floats decline (return nil from the scalar fn so the
-// runtime can surface the conversion error). Mirrors
-// embedded.functions.ToIntegerArg's strictness.
+// runtime can surface the conversion error).
 func TestScalarFnInt64Arg_RejectsNonIntegerFloat(t *testing.T) {
 	t.Parallel()
 	got, errEv0 := evalScalarFunction("SUBSTRING", []any{"hello", float64(2.5), int64(3)})
@@ -333,9 +332,8 @@ func TestScalarFnInt64Arg_RejectsString(t *testing.T) {
 	}
 }
 
-// TestEvalScalarFunction_PI pins the math.Pi constant. Mirrors
-// embedded.scalar_functions.go's PI: zero-arg, returns float64
-// math.Pi. Wrong arity (1+ args) declines with nil.
+// TestEvalScalarFunction_PI pins the zero-argument math.Pi constant.
+// Wrong arity (1+ args) declines with nil.
 func TestEvalScalarFunction_PI(t *testing.T) {
 	t.Parallel()
 	got, errEv0 := evalScalarFunction("PI", []any{})
@@ -351,9 +349,8 @@ func TestEvalScalarFunction_PI(t *testing.T) {
 	}
 }
 
-// TestEvalScalarFunction_LEN pins LEN as an alias for LENGTH —
-// matches embedded.scalar_functions.go's "LENGTH" / "LEN" /
-// "CHAR_LENGTH" / "CHARACTER_LENGTH" group. Both return rune count.
+// TestEvalScalarFunction_LEN pins the catalogued LEN / LENGTH /
+// CHAR_LENGTH / CHARACTER_LENGTH alias family. All return rune count.
 func TestEvalScalarFunction_LEN(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -435,7 +432,7 @@ func TestEvalScalarFunction_EXP(t *testing.T) {
 		t.Errorf("EXP(NULL): got %v, want nil", got)
 	}
 	// Overflow (EXP(1000) → +Inf) degrades to SQL NULL, matching the
-	// POWER/SQRT out-of-domain convention and the pre-RFC embedded EXP.
+	// established POWER/SQRT out-of-domain convention.
 	got, errEv4 := evalScalarFunction("EXP", []any{float64(1000)})
 	require.NoError(t, errEv4)
 	if got != nil {

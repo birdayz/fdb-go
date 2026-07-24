@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -13,10 +14,10 @@ import (
 // the comparison-key columns. Mirrors Java's
 // `RecordQueryIntersectionPlan`.
 //
-// Java has multiple intersection-plan flavors (ordered, unordered,
-// primary-key-based, value-based). The seed ports the simplest:
-// generic N-way intersection over a comparison-key column list.
-// Specialised flavors land when their consumers do.
+// Go's physical form is an ordered N-way intersection. Semantic,
+// directional comparison-key parts determine the merge direction, while
+// executable comparison values determine row equality. Unsupported
+// ordered-bytes key shapes fail closed at construction time.
 //
 // All inners must produce row-compatible streams (planner's
 // responsibility); the comparison-key columns are matched against
@@ -28,20 +29,41 @@ import (
 // for the same edges. RFC-183 P5 step 2.
 type RecordQueryIntersectionPlan struct {
 	PlanExprBase
-	childQs             []expressions.Quantifier
-	comparisonKeyValues []values.Value
+	childQs                    []expressions.Quantifier
+	comparisonKeyOrderingParts []properties.ProvidedOrderingPart
+	comparisonKeyValues        []values.Value
+	reverse                    bool
 }
 
 // NewRecordQueryIntersectionPlan constructs an N-way intersection.
 // `comparisonKeyValues` defines the row-equality key (typically the
-// primary-key columns of the result type).
+// primary-key columns of the result type). This compatibility constructor
+// builds the historical forward, naturally-ascending contract; directional
+// producers use NewRecordQueryIntersectionPlanWithOrdering.
 func NewRecordQueryIntersectionPlan(inners []RecordQueryPlan, comparisonKeyValues []values.Value) *RecordQueryIntersectionPlan {
-	cpKeys := make([]values.Value, len(comparisonKeyValues))
-	copy(cpKeys, comparisonKeyValues)
-	return &RecordQueryIntersectionPlan{
-		childQs:             QuantifiersOverPlans(inners),
-		comparisonKeyValues: cpKeys,
+	parts := ascendingIntersectionParts(comparisonKeyValues)
+	return newRecordQueryIntersectionPlan(
+		QuantifiersOverPlans(inners), parts, comparisonKeyValues, false,
+	)
+}
+
+// NewRecordQueryIntersectionPlanWithOrdering constructs an intersection from
+// its semantic comparison ordering. The executable comparison Values are
+// derived from those parts so the two contracts cannot disagree. A nil result
+// means at least one part requires ToOrderedBytesValue evaluation, which Go
+// does not support yet; callers must treat that as an optimization miss.
+func NewRecordQueryIntersectionPlanWithOrdering(
+	inners []RecordQueryPlan,
+	comparisonKeyOrderingParts []properties.ProvidedOrderingPart,
+	reverse bool,
+) *RecordQueryIntersectionPlan {
+	comparisonKeyValues, ok := properties.NaturalComparisonKeyValues(comparisonKeyOrderingParts, reverse)
+	if !ok {
+		return nil
 	}
+	return newRecordQueryIntersectionPlan(
+		QuantifiersOverPlans(inners), comparisonKeyOrderingParts, comparisonKeyValues, reverse,
+	)
 }
 
 // NewRecordQueryIntersectionPlanFromQuantifiers builds an N-way intersection
@@ -51,12 +73,50 @@ func NewRecordQueryIntersectionPlan(inners []RecordQueryPlan, comparisonKeyValue
 // carrying its leg edges directly — the memo holds it without a physical wrapper
 // (RFC-184 W2). comparisonKeyValues carries over verbatim.
 func NewRecordQueryIntersectionPlanFromQuantifiers(qs []expressions.Quantifier, comparisonKeyValues []values.Value) *RecordQueryIntersectionPlan {
-	cpKeys := make([]values.Value, len(comparisonKeyValues))
-	copy(cpKeys, comparisonKeyValues)
-	return &RecordQueryIntersectionPlan{
-		childQs:             append([]expressions.Quantifier(nil), qs...),
-		comparisonKeyValues: cpKeys,
+	parts := ascendingIntersectionParts(comparisonKeyValues)
+	return newRecordQueryIntersectionPlan(qs, parts, comparisonKeyValues, false)
+}
+
+// NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering is the live-memo
+// counterpart of NewRecordQueryIntersectionPlanWithOrdering. A nil result is
+// the same fail-closed ordered-byte optimization miss.
+func NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(
+	qs []expressions.Quantifier,
+	comparisonKeyOrderingParts []properties.ProvidedOrderingPart,
+	reverse bool,
+) *RecordQueryIntersectionPlan {
+	comparisonKeyValues, ok := properties.NaturalComparisonKeyValues(comparisonKeyOrderingParts, reverse)
+	if !ok {
+		return nil
 	}
+	return newRecordQueryIntersectionPlan(
+		qs, comparisonKeyOrderingParts, comparisonKeyValues, reverse,
+	)
+}
+
+func newRecordQueryIntersectionPlan(
+	qs []expressions.Quantifier,
+	comparisonKeyOrderingParts []properties.ProvidedOrderingPart,
+	comparisonKeyValues []values.Value,
+	reverse bool,
+) *RecordQueryIntersectionPlan {
+	return &RecordQueryIntersectionPlan{
+		childQs:                    append([]expressions.Quantifier(nil), qs...),
+		comparisonKeyOrderingParts: append([]properties.ProvidedOrderingPart(nil), comparisonKeyOrderingParts...),
+		comparisonKeyValues:        append([]values.Value(nil), comparisonKeyValues...),
+		reverse:                    reverse,
+	}
+}
+
+func ascendingIntersectionParts(comparisonKeyValues []values.Value) []properties.ProvidedOrderingPart {
+	parts := make([]properties.ProvidedOrderingPart, len(comparisonKeyValues))
+	for i, value := range comparisonKeyValues {
+		parts[i] = properties.ProvidedOrderingPart{
+			Value:     value,
+			SortOrder: properties.ProvidedSortOrderAscending,
+		}
+	}
+	return parts
 }
 
 // GetInners returns the intersection's inner plans, dereferenced through the
@@ -69,6 +129,15 @@ func (p *RecordQueryIntersectionPlan) GetInners() []RecordQueryPlan {
 func (p *RecordQueryIntersectionPlan) GetComparisonKeyValues() []values.Value {
 	return p.comparisonKeyValues
 }
+
+// GetComparisonKeyOrderingParts returns the semantic output ordering used to
+// derive the executable comparison key (read-only).
+func (p *RecordQueryIntersectionPlan) GetComparisonKeyOrderingParts() []properties.ProvidedOrderingPart {
+	return p.comparisonKeyOrderingParts
+}
+
+// IsReverse reports whether the merge compares descending physical keys.
+func (p *RecordQueryIntersectionPlan) IsReverse() bool { return p.reverse }
 
 // GetResultType returns the first inner's result type, or
 // UnknownType if there are no inners.
@@ -84,14 +153,12 @@ func (p *RecordQueryIntersectionPlan) GetChildren() []RecordQueryPlan { return p
 
 // structuralKey lists the fields that distinguish this intersection in the
 // memo: the comparison-key Value list (semantic Value identity, per Java
-// RecordQueryIntersectionPlan.equalsWithoutChildren — comparisonKeyFunction.
-// equals). Children are excluded. Java also compares `reverse`; Go's
-// intersection has no reverse field because the implement rules only emit
-// forward intersections — when reverse intersections land, the field joins the
-// key here. The same key drives both EqualsPlanWithoutChildren and
-// HashCodeWithoutChildren.
+// RecordQueryIntersectionPlan.equalsWithoutChildren — comparisonKeyFunction
+// plus reverse). Children and the transient semantic ordering parts are
+// excluded, matching Java RecordQueryIntersectionOnValuesPlan: physical
+// comparison Values + reverse define executable identity.
 func (p *RecordQueryIntersectionPlan) structuralKey() *structuralKey {
-	return newStructuralKey().Values(p.comparisonKeyValues)
+	return newStructuralKey().Values(p.comparisonKeyValues).Bool(p.reverse)
 }
 
 func (p *RecordQueryIntersectionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
@@ -106,7 +173,8 @@ func (p *RecordQueryIntersectionPlan) HashCodeWithoutChildren() uint64 {
 	return p.structuralKey().Hash("intersectionplan")
 }
 
-// Explain renders Intersection(inner1, inner2, ...).
+// Explain renders Intersection(inner1, inner2, ...), appending REVERSE only
+// for descending plans so the existing forward corpus remains byte-identical.
 func (p *RecordQueryIntersectionPlan) Explain() string {
 	inners := p.GetInners()
 	parts := make([]string, len(inners))
@@ -117,7 +185,11 @@ func (p *RecordQueryIntersectionPlan) Explain() string {
 			parts[i] = inner.Explain()
 		}
 	}
-	return fmt.Sprintf("Intersection(%s)", strings.Join(parts, ", "))
+	explain := fmt.Sprintf("Intersection(%s)", strings.Join(parts, ", "))
+	if p.reverse {
+		explain += " REVERSE"
+	}
+	return explain
 }
 
 var (

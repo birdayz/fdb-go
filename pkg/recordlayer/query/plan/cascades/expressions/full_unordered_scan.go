@@ -46,26 +46,35 @@ func (e *FullUnorderedScanExpression) GetFlowedType() values.Type {
 	return e.flowedType
 }
 
-// GetResultValue is a fresh QuantifiedObjectValue carrying the scan's
-// flowed record Type. The scan is a source — it allocates its own
-// CorrelationIdentifier-equivalent. We approximate by re-using a unique
-// CorrelationIdentifier per call, which means every read of
-// GetResultValue produces a distinct Value (Java caches in a
-// Suppliers.memoize). That is fine — callers that need stable
-// identity should bind via a Quantifier (which ranges over the
-// Reference holding this expression).
+// GetResultValue is a QueriedValue carrying the scan's flowed record Type,
+// matching Java's `new QueriedValue(flowedType)`.
 //
-// The QOV flows e.flowedType: Java's scan quantifier
-// result type is always the record type, and FieldValue.resolveOrdinal
-// resolves a column name to its ordinal against this child Type. Passing
-// UnknownType here would silently discard the flowed
-// type (resolveOrdinal's *RecordType assertion fails → (0,false)); with no
-// name fallback, that failure is a loud unbaked-ref error, so carrying
-// the real flowedType is load-bearing. A nil/UnknownType flowedType still
-// degrades cleanly (NewQuantifiedObjectValueOfType falls back to UnknownType)
-// rather than panicking.
+// A scan is a source: what it flows is "the queried record", which is not
+// correlated to anything. QueriedValue says exactly that, and because it
+// compares structurally, building a fresh one per call is free of
+// consequence — two reads of the same scan are equal values.
+//
+// A QuantifiedObjectValue over a freshly minted correlation identifier, which
+// is what this used to return, says something different and false: that the
+// scan's output is correlated to a quantifier nobody introduced. Two reads
+// then produce unequal values, which silently breaks every consumer that
+// reads the result value more than once. It did: a leaf match stored
+// MaxMatchMap(candidateResultValue) at match time, the pull-up later re-read
+// GetResultValue for the same expression and got a different alias, and the
+// two could no longer be bridged — compensation went impossible and the match
+// was discarded. That is why the leaf matcher had to model the identity by
+// hand instead of nesting the pull-up the way Java does.
+//
+// The value flows e.flowedType: Java's scan quantifier result type is always
+// the record type, and FieldValue.resolveOrdinal resolves a column name to
+// its ordinal against this child Type. Passing UnknownType here would
+// silently discard the flowed type (resolveOrdinal's *RecordType assertion
+// fails → (0,false)); with no name fallback, that failure is a loud
+// unbaked-ref error, so carrying the real flowedType is load-bearing. A
+// nil/UnknownType flowedType still degrades cleanly (NewQueriedValue falls
+// back to UnknownType) rather than panicking.
 func (e *FullUnorderedScanExpression) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValueOfType(values.UniqueCorrelationIdentifier(), e.flowedType)
+	return values.NewQueriedValue(e.recordTypes, e.flowedType)
 }
 
 // GetQuantifiers returns the empty list — leaf.

@@ -56,7 +56,7 @@ func TestInExplode_MultiColumnIndex(t *testing.T) {
 
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status_amount",
 		[]string{"Order"},
 		[]string{"STATUS", "AMOUNT"},
@@ -116,6 +116,81 @@ func TestInExplode_MultiColumnIndex(t *testing.T) {
 	}
 }
 
+func TestUnknownValueIndexCandidateDoesNotReachDataAccess(t *testing.T) {
+	t.Parallel()
+
+	buildQuery := func() *expressions.Reference {
+		scan := expressions.NewFullUnorderedScanExpression(
+			[]string{"Order"},
+			values.UnknownType,
+		)
+		predicate := predicates.NewComparisonPredicate(
+			values.NewFieldValue(nil, "STATUS", values.TypeString),
+			predicates.NewLiteralComparison(
+				predicates.ComparisonEquals,
+				"active",
+			),
+		)
+		filter := expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{predicate},
+			expressions.ForEachQuantifier(expressions.InitialOf(scan)),
+		)
+		return expressions.InitialOf(filter)
+	}
+
+	unknownAlias := values.UniqueCorrelationIdentifier()
+	unknown := NewValueIndexScanMatchCandidate(
+		"Order$status_unknown",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		[]values.CorrelationIdentifier{unknownAlias},
+		values.UnknownType,
+		false,
+		[]string{"ID"},
+	)
+	known := newKnownDistinctValueIndexCandidate(
+		"Order$status_known",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+		values.UnknownType,
+		false,
+		[]string{"ID"},
+	)
+
+	for _, tc := range []struct {
+		name      string
+		candidate MatchCandidate
+		wantIndex bool
+	}{
+		{name: "unknown", candidate: unknown, wantIndex: false},
+		{name: "known_scalar", candidate: known, wantIndex: true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			context := &indexTestPlanContext{
+				candidates: []MatchCandidate{tc.candidate},
+			}
+			planner := NewPlanner(DefaultExpressionRules(), context).
+				WithPlanningExpressionRules(BatchAExpressionRules()).
+				WithImplementationRules(DefaultImplementationRules())
+			plan, _, err := planner.Plan(buildQuery())
+			if err != nil {
+				t.Fatalf("Plan: %v", err)
+			}
+			if got := subtreeContainsIndexScan(plan); got != tc.wantIndex {
+				t.Fatalf(
+					"subtreeContainsIndexScan() = %t, want %t; plan type = %T",
+					got,
+					tc.wantIndex,
+					plan,
+				)
+			}
+		})
+	}
+}
+
 // TestPlanContext_FromIndexDefs_UpperCaseColumnNames verifies that the
 // PlanContextBuilder uppercases column names for SQL-standard matching.
 func TestPlanContext_FromIndexDefs_UpperCaseColumnNames(t *testing.T) {
@@ -143,6 +218,7 @@ func (d stubDef) IndexColumnNames() []string       { return d.cols }
 func (d stubDef) IndexRecordTypes() []string       { return d.types }
 func (d stubDef) IndexIsUnique() bool              { return d.unique }
 func (d stubDef) IndexPrimaryKeyColumns() []string { return nil }
+func (d stubDef) IndexCreatesDuplicates() bool     { return false }
 
 type stubDef struct {
 	name   string

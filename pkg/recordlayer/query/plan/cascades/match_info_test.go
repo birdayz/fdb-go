@@ -56,6 +56,24 @@ func TestRegularMatchInfo_Construction(t *testing.T) {
 	if rmi.GetAdditionalPlanConstraint() != constraint {
 		t.Fatal("additionalPlanConstraint mismatch")
 	}
+	if rmi.RequiresPrimaryKeyDistinct() {
+		t.Fatal("public constructor must default PK-distinct obligation to false")
+	}
+
+	requiresDistinct := newRegularMatchInfo(
+		pbm,
+		aliasMap,
+		predMap,
+		mop,
+		mmm,
+		gbm,
+		nil,
+		constraint,
+		true,
+	)
+	if !requiresDistinct.RequiresPrimaryKeyDistinct() {
+		t.Fatal("internal constructor lost the PK-distinct obligation")
+	}
 }
 
 func TestRegularMatchInfo_IsAdjusted_IsRegular(t *testing.T) {

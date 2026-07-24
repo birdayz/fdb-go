@@ -1,13 +1,11 @@
 package sqldriver_test
 
-// Pins MIN/MAX over an unpromoted mixed-type CASE operand (the F48 follow-up):
-// `MIN(CASE WHEN flag = 1 THEN d ELSE 0 END)` yields float64 on THEN rows and
-// int64 on ELSE rows (PickValue branches are not PromoteValue-wrapped, unlike
-// Java's encapsulation), so the streaming MIN/MAX accumulator sees a MIXED
-// int64/float64 operand stream. Pre-fix, aggMinMax assumed type-homogeneous
-// operands: the ELSE-first arrival order PANICKED on the acc.(float64) type
-// assertion, and the THEN-first order SILENTLY DROPPED the integer value
-// (wrong extremum). Both orders are exercised here via primary-key scan order.
+// Pins MIN/MAX over a mixed-source CASE operand (the F48 follow-up):
+// `MIN(CASE WHEN flag = 1 THEN d ELSE 0 END)`. PickValue now converts either
+// branch to the common DOUBLE carrier, matching Java; the accumulator also
+// retains its per-pair numeric promotion defense for older/malformed plans.
+// Historically the ELSE-first order panicked and the THEN-first order silently
+// dropped the integer value, so both scan orders remain exercised here.
 
 import (
 	"context"

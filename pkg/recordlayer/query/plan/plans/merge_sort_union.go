@@ -13,9 +13,10 @@ import (
 // the plan merges them maintaining that order. Optionally deduplicates
 // rows that have equal comparison keys.
 //
-// Mirrors Java's RecordQueryUnionOnValuesPlan (which extends
-// RecordQueryUnionPlan with comparison key values + reverse flag +
-// distinct flag).
+// Mirrors Java's RecordQueryUnionOnValuesPlan for comparison-key values,
+// reverse direction, and the deduplicating mode. Go additionally supports
+// removeDuplicates=false for ordered UNION ALL; Java's RecordQueryUnionPlan
+// always uses the deduplicating UnionCursor.
 //
 // The legs are stored ONCE, as Quantifiers over References — Java's shape
 // (`RecordQuerySetPlan`'s `List<Quantifier.Physical> quantifiers`). The raw

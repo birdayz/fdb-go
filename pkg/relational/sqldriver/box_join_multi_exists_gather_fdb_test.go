@@ -198,7 +198,7 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 	const from = `FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`
 	// pin asserts the gathered path answers the admitted LEFT-box+EXISTS
 	// shape correctly. The plan must NOT flatten to an N-way existential wrap
-	// (R1: that would be the SARG-losing implementNWayJoinWithExistential).
+	// (R1: that would be the retired SARG-losing N-way arm (RFC-190)).
 	pin := func(name, sql string, want ...string) {
 		t.Run(name, func(t *testing.T) {
 			rows, plan, err := runQ(t, sql)

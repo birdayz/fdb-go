@@ -4,13 +4,9 @@ package values
 //
 // These ports take the parameterized-table style of Java's
 // fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/
-// query/plan/cascades/{ArithmeticValueTest,BooleanValueTest}.java but
-// keep within our seed's surface — int64-only ArithmeticValue
-// evaluation, no Type hierarchy promotion yet, no Bindings /
-// EvaluationContext machinery. Cross-type coercion cases (Java
-// promotes long↔int, float↔double, etc.) are deliberately omitted
-// until Phase 4.0 ports the Type hierarchy. The tests will then
-// extend naturally to the broader surface — same pattern, more rows.
+// query/plan/cascades/{ArithmeticValueTest,BooleanValueTest}.java and cover the
+// Go port's static INT/LONG/FLOAT/DOUBLE lanes, checked arithmetic, promotion,
+// and null semantics without requiring Bindings/EvaluationContext machinery.
 //
 // Test discipline goal (per RFC-025): each Value subtype gets parameterised
 // coverage that runs in <100ms with no FDB / no testcontainer / no
@@ -557,6 +553,19 @@ func TestArithmeticValue_FloatLaneSingleRounding(t *testing.T) {
 	if got != want {
 		t.Fatalf("LF add: got %v, want %v (single-rounded (float)long)", got, want)
 	}
+}
+
+func TestArithmeticValue_StaticDoubleLaneIgnoresIntegralCarrier(t *testing.T) {
+	t.Parallel()
+
+	// A folded/promoted value may already carry the common DOUBLE type while
+	// retaining an integral Go carrier. Java selects DIV_DI from the static
+	// TypeCodes; Go must not fall back to integer division based on int64.
+	left := &ConstantValue{Value: int64(3), Typ: NotNullDouble}
+	right := &ConstantValue{Value: int64(2), Typ: NotNullInt}
+	got, err := (&ArithmeticValue{Op: OpDiv, Left: left, Right: right}).Evaluate(nil)
+	require.NoError(t, err)
+	require.Equal(t, float64(1.5), got)
 }
 
 // TestArithmeticValue_AddStringConcatenates pins Java's ADD string

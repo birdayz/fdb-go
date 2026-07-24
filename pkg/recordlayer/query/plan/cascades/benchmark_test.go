@@ -467,7 +467,7 @@ func BenchmarkPlanner_ExploreWithMemo(b *testing.B) {
 func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"T$a_b",
 		[]string{"T"},
 		[]string{"A", "B"},
@@ -514,7 +514,7 @@ func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
 
 func BenchmarkPlanner_PlanAggregation(b *testing.B) {
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"T$region",
 		[]string{"T"},
 		[]string{"region"},
@@ -555,7 +555,7 @@ func BenchmarkPlanner_PlanAggregation(b *testing.B) {
 
 func BenchmarkPlanner_PlanAggregationFromIndex(b *testing.B) {
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"T$region",
 		[]string{"T"},
 		[]string{"region"},

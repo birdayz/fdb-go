@@ -161,6 +161,17 @@ func (p *RecordQueryDistinctPlan) HintOrdering() properties.Ordering {
 }
 
 // OrderingSourceRef reports the child group this plan's ordering flows from.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) OrderingSourceRef() *expressions.Reference {
+	return orderingSourceOf(p)
+}
+
+// HintOrdering: primary-key duplicate elimination drops rows without
+// reordering the survivors.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) HintOrdering() properties.Ordering {
+	return inheritOrdering(p.OrderingSourceRef())
+}
+
+// OrderingSourceRef reports the child group this plan's ordering flows from.
 func (p *RecordQueryProjectionPlan) OrderingSourceRef() *expressions.Reference {
 	return orderingSourceOf(p)
 }
@@ -247,6 +258,18 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	if p == nil || len(p.GetColumnNames()) == 0 {
 		return properties.Ordering{}
 	}
+	if !p.orderingKeyNamesKnown || !p.orderingKeyNamesSafe {
+		return properties.Ordering{}
+	}
+	// A fan-out index key contains exploded elements, while columnNames names
+	// the logical record fields. Synthesizing an ordering from those names
+	// would advertise the original array (and any later flat columns) as
+	// ordered Values. The candidate-level match path can reason positionally
+	// about an equality-fixed fan-out element; this plan-level hint lacks that
+	// structural key-expression information, so it must abstain.
+	if p.distinctRecordsKnown && p.createsDuplicates {
+		return properties.Ordering{}
+	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
 	firstNonEq := 0
@@ -316,6 +339,38 @@ func (p *RecordQueryInMemorySortPlan) HintOrdering() properties.Ordering {
 // HintOrdering: a merge-sort union emits rows in its comparison-key order.
 func (p *RecordQueryMergeSortUnionPlan) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: true, Keys: p.GetComparisonKeys()}
+}
+
+// HintOrdering: an intersection emits rows in its semantic comparison-key
+// order. Use the ordering parts rather than the executable comparison Values:
+// a future mixed/counterflow key may be physically encoded as ordered bytes,
+// but the SQL-visible ordering remains over the original columns.
+func (p *RecordQueryIntersectionPlan) HintOrdering() properties.Ordering {
+	if p == nil {
+		return properties.Ordering{}
+	}
+	parts := p.GetComparisonKeyOrderingParts()
+	if len(parts) == 0 {
+		return properties.Ordering{}
+	}
+	keys := make([]values.Value, len(parts))
+	descending := make([]bool, len(parts))
+	nullsFirst := make([]bool, len(parts))
+	for i, part := range parts {
+		if !part.SortOrder.IsDirectional() {
+			return properties.Ordering{}
+		}
+		keys[i] = part.Value
+		descending[i] = part.SortOrder.IsAnyDescending()
+		nullsFirst[i] = part.SortOrder == properties.ProvidedSortOrderAscending ||
+			part.SortOrder == properties.ProvidedSortOrderDescendingNullsFirst
+	}
+	return properties.Ordering{
+		IsKnown:    true,
+		Keys:       keys,
+		Descending: descending,
+		NullsFirst: nullsFirst,
+	}
 }
 
 // HintOrdering: an InUnion emits rows in its comparison-key order.
@@ -503,6 +558,12 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	if p == nil || len(p.GetColumnNames()) == 0 {
 		return properties.EmptyOrdering()
 	}
+	if !p.orderingKeyNamesKnown || !p.orderingKeyNamesSafe {
+		return properties.EmptyOrdering()
+	}
+	if p.distinctRecordsKnown && p.createsDuplicates {
+		return properties.EmptyOrdering()
+	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
 	bm := make(map[values.Value][]properties.OrderingBinding)
@@ -526,7 +587,11 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		keys = append(keys, key)
 		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 	}
-	return properties.NewRichOrdering(bm, keys, p.IsUnique())
+	// Java passes RecordQueryIndexPlan.isStrictlySorted(), not the index
+	// metadata's UNIQUE bit. A unique index is only a distinct ordering once
+	// the chosen ordering keys cover that uniqueness proof; RemoveSort marks
+	// that exact plan strictly sorted after checking the coverage.
+	return properties.NewRichOrdering(bm, keys, p.IsStrictlySorted())
 }
 
 // HintRichOrdering: an HNSW probe returns its neighbours in distance order,

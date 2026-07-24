@@ -113,9 +113,9 @@ func TestForMatchCompensation_IsNeeded_WithPredicates(t *testing.T) {
 		false,
 		NoCompensation,
 		StubPredicateCompensationMap(1),
+		baseMatched(),
 		nil,
-		nil,
-		nil,
+		baseCompensated(),
 		NoResultCompensation(),
 		EmptyGroupByMappings(),
 	)
@@ -131,9 +131,9 @@ func TestForMatchCompensation_IsNeeded_ChildNeeded(t *testing.T) {
 		false,
 		NoCompensation,
 		StubPredicateCompensationMap(1),
+		baseMatched(),
 		nil,
-		nil,
-		nil,
+		baseCompensated(),
 		NoResultCompensation(),
 		EmptyGroupByMappings(),
 	)
@@ -421,9 +421,9 @@ func TestForMatchCompensation_String(t *testing.T) {
 		false,
 		NoCompensation,
 		StubPredicateCompensationMap(1),
+		baseMatched(),
 		nil,
-		nil,
-		nil,
+		baseCompensated(),
 		NoResultCompensation(),
 		EmptyGroupByMappings(),
 	)
@@ -436,9 +436,9 @@ func TestForMatchCompensation_String(t *testing.T) {
 		true,
 		NoCompensation,
 		StubPredicateCompensationMap(1),
+		baseMatched(),
 		nil,
-		nil,
-		nil,
+		baseCompensated(),
 		NoResultCompensation(),
 		EmptyGroupByMappings(),
 	)
@@ -475,7 +475,7 @@ func TestForMatchCompensation_Derived(t *testing.T) {
 		StubPredicateCompensationMap(1),
 		[]expressions.Quantifier{q1},
 		nil,
-		nil,
+		aliasesOf(q1),
 		NoResultCompensation(),
 		EmptyGroupByMappings(),
 	)
@@ -485,7 +485,7 @@ func TestForMatchCompensation_Derived(t *testing.T) {
 		StubPredicateCompensationMap(2),
 		[]expressions.Quantifier{q2},
 		nil,
-		nil,
+		aliasesOf(q2),
 		NewResultCompensationFunction(true),
 		EmptyGroupByMappings(),
 	)
@@ -675,7 +675,7 @@ func TestCompensationInterfaceSatisfaction(t *testing.T) {
 
 	c = NewForMatchCompensation(
 		false, NoCompensation, EmptyPredicateCompensationMap(),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	// Verify it satisfies Compensation — the assignment above is the check.
 	_ = c
@@ -931,9 +931,12 @@ func TestForMatchCompensation_Apply_NoCompensation(t *testing.T) {
 	scan := &expressions.FullUnorderedScanExpression{}
 	c := NewForMatchCompensation(
 		false, NoCompensation, EmptyPredicateCompensationMap(),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
-	result := c.Apply(scan, TranslationMapFunc(nil))
+	result, applied := c.Apply(scan, TranslationMapFunc(nil))
+	if !applied {
+		t.Fatal("Apply unexpectedly failed")
+	}
 	if result != scan {
 		t.Fatal("no compensation should return original expression")
 	}
@@ -955,16 +958,222 @@ func TestForMatchCompensation_Apply_WithPredicates(t *testing.T) {
 	)
 	c := NewForMatchCompensation(
 		false, NoCompensation, predMap,
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
-	result := c.Apply(scan, TranslationMapFunc(nil))
+	result, applied := c.Apply(scan, TranslationMapFunc(nil))
+	if !applied {
+		t.Fatal("Apply unexpectedly failed")
+	}
 	filter, ok := result.(*expressions.LogicalFilterExpression)
 	if !ok {
 		t.Fatalf("expected LogicalFilterExpression, got %T", result)
 	}
 	if len(filter.GetPredicates()) != 1 {
 		t.Fatalf("expected 1 predicate, got %d", len(filter.GetPredicates()))
+	}
+}
+
+func TestForMatchCompensation_NeededBaseInvariant(t *testing.T) {
+	t.Parallel()
+
+	predicate := predicates.NewConstantPredicate(predicates.TriTrue)
+	predicateMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{predicate},
+		[]PredicateCompensationFunc{OfPredicateCompensation(predicate, false)},
+	)
+	forEach1 := namedForEachQuantifier("q1")
+	forEach2 := namedForEachQuantifier("q2")
+	exists := namedExistentialQuantifier("qe")
+	ref := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
+	)
+	zeroAliasForEach := expressions.NamedForEachQuantifier(values.CorrelationIdentifier{}, ref)
+	duplicateAliasExists := expressions.NamedExistentialQuantifier(forEach1.GetAlias(), ref)
+
+	for _, tc := range []struct {
+		name        string
+		matched     []expressions.Quantifier
+		compensated map[values.CorrelationIdentifier]struct{}
+		predicates  *PredicateCompensationMap
+		result      *ResultCompensationFunction
+		wantBad     bool
+	}{
+		{
+			name:        "valid_filtering_base",
+			matched:     []expressions.Quantifier{forEach1, exists},
+			compensated: aliasesOf(forEach1, exists),
+			predicates:  predicateMap,
+			result:      NoResultCompensation(),
+		},
+		{
+			name:        "filtering_with_zero_forEach",
+			matched:     []expressions.Quantifier{exists},
+			compensated: aliasesOf(exists),
+			predicates:  predicateMap,
+			result:      NoResultCompensation(),
+			wantBad:     true,
+		},
+		{
+			name:        "filtering_with_two_forEach",
+			matched:     []expressions.Quantifier{forEach1, forEach2},
+			compensated: aliasesOf(forEach1, forEach2),
+			predicates:  predicateMap,
+			result:      NoResultCompensation(),
+			wantBad:     true,
+		},
+		{
+			name:        "filtering_with_alias_mismatch",
+			matched:     []expressions.Quantifier{forEach1},
+			compensated: aliasesOf(forEach1, exists),
+			predicates:  predicateMap,
+			result:      NoResultCompensation(),
+			wantBad:     true,
+		},
+		{
+			name:        "filtering_with_zero_base_alias",
+			matched:     []expressions.Quantifier{zeroAliasForEach},
+			compensated: aliasesOf(zeroAliasForEach),
+			predicates:  predicateMap,
+			result:      NoResultCompensation(),
+			wantBad:     true,
+		},
+		{
+			name:        "filtering_with_duplicate_matched_alias",
+			matched:     []expressions.Quantifier{forEach1, duplicateAliasExists},
+			compensated: aliasesOf(forEach1, duplicateAliasExists),
+			predicates:  predicateMap,
+			result:      NoResultCompensation(),
+			wantBad:     true,
+		},
+		{
+			name:        "final_with_zero_forEach",
+			matched:     []expressions.Quantifier{exists},
+			compensated: aliasesOf(exists),
+			predicates:  EmptyPredicateCompensationMap(),
+			result:      ResultCompensationOfValue(values.LiteralValue(int64(1))),
+			wantBad:     true,
+		},
+		{
+			name:        "nothing_needed_without_base",
+			predicates:  EmptyPredicateCompensationMap(),
+			result:      NoResultCompensation(),
+			compensated: map[values.CorrelationIdentifier]struct{}{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			compensation := NewForMatchCompensation(
+				false,
+				NoCompensation,
+				tc.predicates,
+				tc.matched,
+				nil,
+				tc.compensated,
+				tc.result,
+				EmptyGroupByMappings(),
+			)
+			if got := compensation.IsImpossible(); got != tc.wantBad {
+				t.Fatalf("IsImpossible() = %v, want %v", got, tc.wantBad)
+			}
+		})
+	}
+
+	child := NewForMatchCompensation(
+		false,
+		NoCompensation,
+		EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{forEach1},
+		nil,
+		aliasesOf(forEach1),
+		ResultCompensationOfValue(values.NewQuantifiedObjectValue(forEach1.GetAlias())),
+		EmptyGroupByMappings(),
+	)
+	parent := NewForMatchCompensation(
+		false,
+		child,
+		EmptyPredicateCompensationMap(),
+		nil,
+		nil,
+		map[values.CorrelationIdentifier]struct{}{},
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+	)
+	if parent.IsImpossible() {
+		t.Fatal("a parent needed only for its child's final shape does not need a local base alias")
+	}
+}
+
+func TestForMatchCompensation_ApplyFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	predicate := predicates.NewConstantPredicate(predicates.TriTrue)
+	predicateMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{predicate},
+		[]PredicateCompensationFunc{OfPredicateCompensation(predicate, false)},
+	)
+	childBase := namedForEachQuantifier("child_base")
+	child := NewForMatchCompensation(
+		false,
+		NoCompensation,
+		predicateMap,
+		[]expressions.Quantifier{childBase},
+		nil,
+		aliasesOf(childBase),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+	)
+	outerExists := namedExistentialQuantifier("only_exists")
+	invalidOuter := NewForMatchCompensation(
+		false,
+		child,
+		EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{outerExists},
+		nil,
+		aliasesOf(outerExists),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+	)
+	if !invalidOuter.IsImpossible() {
+		t.Fatal("setup: invalid outer compensation was not marked impossible")
+	}
+
+	translationCalls := 0
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	applied, ok := invalidOuter.Apply(scan, func(values.CorrelationIdentifier) TranslationMap {
+		translationCalls++
+		return EmptyTranslationMap()
+	})
+	if ok || applied != nil {
+		t.Fatalf("invalid Apply returned (%T, %v), want (nil, false)", applied, ok)
+	}
+	if translationCalls != 0 {
+		t.Fatalf("translation callback called %d times; outer validation must happen before child application", translationCalls)
+	}
+}
+
+func TestForMatchCompensation_ApplyFinalFailsOnMissingResult(t *testing.T) {
+	t.Parallel()
+
+	base := namedForEachQuantifier("q_base")
+	compensation := NewForMatchCompensation(
+		false,
+		NoCompensation,
+		EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{base},
+		nil,
+		aliasesOf(base),
+		NewResultCompensationFunction(true),
+		EmptyGroupByMappings(),
+	)
+	if compensation.IsImpossible() {
+		t.Fatal("setup: valid base compensation was marked impossible")
+	}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	applied, ok := compensation.ApplyFinal(scan, nil)
+	if ok || applied != nil {
+		t.Fatalf("ApplyFinal with a missing result returned (%T, %v), want (nil, false)", applied, ok)
 	}
 }
 
@@ -1047,11 +1256,11 @@ func TestForMatchCompensation_Intersect_BothEmpty(t *testing.T) {
 	t.Parallel()
 	c1 := NewForMatchCompensation(
 		false, NoCompensation, EmptyPredicateCompensationMap(),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, EmptyPredicateCompensationMap(),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	result := c1.Intersect(c2)
 	if result.IsNeeded() {
@@ -1059,19 +1268,19 @@ func TestForMatchCompensation_Intersect_BothEmpty(t *testing.T) {
 	}
 }
 
-func TestForMatchCompensation_Intersect_OneImpossible(t *testing.T) {
+func TestForMatchCompensation_Intersect_NotNeededAbsorbsImpossibleFlag(t *testing.T) {
 	t.Parallel()
 	c1 := NewForMatchCompensation(
 		true, NoCompensation, EmptyPredicateCompensationMap(),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, StubPredicateCompensationMap(1),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	result := c1.Intersect(c2)
-	if !result.IsImpossible() {
-		t.Fatal("intersection with impossible should be impossible")
+	if result != NoCompensation {
+		t.Fatalf("a side with no residual must absorb the intersection, got %T", result)
 	}
 }
 
@@ -1081,23 +1290,17 @@ func TestForMatchCompensation_Intersect_OneNotNeeded(t *testing.T) {
 	// c1 is not needed (empty everything), c2 is needed (has predicates).
 	c1 := NewForMatchCompensation(
 		false, NoCompensation, EmptyPredicateCompensationMap(),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, StubPredicateCompensationMap(1),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	result := c1.Intersect(c2)
-	// When c1 is not needed, intersection returns c2.
-	if !result.IsNeeded() {
-		t.Fatal("result should be needed since c2 is needed")
-	}
-	fmc, ok := result.(*ForMatchCompensation)
-	if !ok {
-		t.Fatalf("expected *ForMatchCompensation, got %T", result)
-	}
-	if fmc != c2 {
-		t.Fatal("result should be c2 itself (identity)")
+	// NoCompensation is the absorbing element for intersection: there is no
+	// residual common to both sides.
+	if result != NoCompensation {
+		t.Fatalf("intersection with a not-needed side = %T, want NoCompensation", result)
 	}
 }
 
@@ -1125,12 +1328,12 @@ func TestForMatchCompensation_Intersect_PredicateMapIntersection(t *testing.T) {
 
 	c1 := NewForMatchCompensation(
 		false, NoCompensation, predMap1,
-		[]expressions.Quantifier{q}, nil, nil,
+		[]expressions.Quantifier{q}, nil, aliasesOf(q),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, predMap2,
-		[]expressions.Quantifier{q}, nil, nil,
+		[]expressions.Quantifier{q}, nil, aliasesOf(q),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
@@ -1142,6 +1345,75 @@ func TestForMatchCompensation_Intersect_PredicateMapIntersection(t *testing.T) {
 	// Only predB is common; the intersection predicate map should have 1 entry.
 	if fmc.GetPredicateCompensationMap().Len() != 1 {
 		t.Fatalf("expected 1 predicate in intersection, got %d", fmc.GetPredicateCompensationMap().Len())
+	}
+}
+
+func TestForMatchCompensation_Intersect_DiscardsLegLocalImpossibleResidual(t *testing.T) {
+	t.Parallel()
+
+	shared := predicates.NewConstantPredicate(predicates.TriTrue)
+	leftOnly := predicates.NewConstantPredicate(predicates.TriFalse)
+	leftMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{shared, leftOnly},
+		[]PredicateCompensationFunc{
+			NoPredicateCompensationNeeded(),
+			ImpossiblePredicateCompensation(),
+		},
+	)
+	rightMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{shared},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+
+	left := NewForMatchCompensation(
+		true, NoCompensation, leftMap,
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	right := NewForMatchCompensation(
+		false, NoCompensation, rightMap,
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	raw := left.Intersect(right)
+	result, ok := raw.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("intersection = %T, want a possible ForMatchCompensation", raw)
+	}
+	if result.IsImpossible() {
+		t.Fatal("a leg-local impossible residual must not poison an intersection that discards it")
+	}
+	if got := result.GetPredicateCompensationMap().Len(); got != 1 {
+		t.Fatalf("intersection retained %d residuals, want only the shared residual", got)
+	}
+}
+
+func TestForMatchCompensation_Intersect_RejectsDifferentAliasResponsibility(t *testing.T) {
+	t.Parallel()
+
+	base := namedForEachQuantifier("q_base")
+	leftExists := namedExistentialQuantifier("q_left_exists")
+	rightExists := namedExistentialQuantifier("q_right_exists")
+	shared := predicates.NewConstantPredicate(predicates.TriTrue)
+	sharedMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{shared},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+
+	left := NewForMatchCompensation(
+		false, NoCompensation, sharedMap,
+		[]expressions.Quantifier{base, leftExists}, nil,
+		aliasesOf(base, leftExists),
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	right := NewForMatchCompensation(
+		false, NoCompensation, sharedMap,
+		[]expressions.Quantifier{base, rightExists}, nil,
+		aliasesOf(base, rightExists),
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	if result := left.Intersect(right); !result.IsImpossible() {
+		t.Fatalf("intersection with different compensated-alias responsibility = %T, want impossible", result)
 	}
 }
 
@@ -1163,11 +1435,11 @@ func TestForMatchCompensation_Intersect_EmptyPredicateIntersection(t *testing.T)
 
 	c1 := NewForMatchCompensation(
 		false, NoCompensation, predMap1,
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, predMap2,
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
 	result := c1.Intersect(c2)
@@ -1223,11 +1495,11 @@ func TestForMatchCompensation_Intersect_GroupByMappingsMerge(t *testing.T) {
 
 	c1 := NewForMatchCompensation(
 		false, NoCompensation, predMap,
-		[]expressions.Quantifier{q}, nil, nil, NoResultCompensation(), gbm1,
+		[]expressions.Quantifier{q}, nil, aliasesOf(q), NoResultCompensation(), gbm1,
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, predMap,
-		[]expressions.Quantifier{q}, nil, nil, NoResultCompensation(), gbm2,
+		[]expressions.Quantifier{q}, nil, aliasesOf(q), NoResultCompensation(), gbm2,
 	)
 
 	result := c1.Intersect(c2)
@@ -1256,14 +1528,17 @@ func TestForMatchCompensation_Intersect_QuantifierSets(t *testing.T) {
 	aliasB := values.NamedCorrelationIdentifier("qB")
 	aliasC := values.NamedCorrelationIdentifier("qC")
 	aliasD := values.NamedCorrelationIdentifier("qD")
-	aliasE := values.NamedCorrelationIdentifier("qE")
 	aliasF := values.NamedCorrelationIdentifier("qF")
 
-	qA := expressions.NamedForEachQuantifier(aliasA, ref)
+	// Exactly one of the matched quantifiers on each side is a ForEach — the
+	// base an applied compensation rebuilds itself on — and it is the SHARED
+	// one, so the intersection still has exactly one. The rest are
+	// existentials, which do not supply rows and so do not compete to be the
+	// base.
+	qA := expressions.NamedExistentialQuantifier(aliasA, ref)
 	qB := expressions.NamedForEachQuantifier(aliasB, ref)
 	qC := expressions.NamedForEachQuantifier(aliasC, ref)
 	qD := expressions.NamedForEachQuantifier(aliasD, ref)
-	qE := expressions.NamedForEachQuantifier(aliasE, ref)
 	qF := expressions.NamedForEachQuantifier(aliasF, ref)
 
 	// Use a shared predicate so the intersection doesn't short-circuit
@@ -1278,13 +1553,15 @@ func TestForMatchCompensation_Intersect_QuantifierSets(t *testing.T) {
 	c1 := NewForMatchCompensation(
 		false, NoCompensation, predMap,
 		[]expressions.Quantifier{qA, qB}, []expressions.Quantifier{qC, qD},
-		nil, NoResultCompensation(), EmptyGroupByMappings(),
+		aliasesOf(qA, qB), NoResultCompensation(), EmptyGroupByMappings(),
 	)
-	// c2: matched {B, E}, unmatched {C, F}
+	// c2 has the same matched/compensated alias responsibility and different
+	// unmatched quantifiers. Intersect requires the responsibility sets to be
+	// identical; only the unmatched sets are intersected.
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, predMap,
-		[]expressions.Quantifier{qB, qE}, []expressions.Quantifier{qC, qF},
-		nil, NoResultCompensation(), EmptyGroupByMappings(),
+		[]expressions.Quantifier{qA, qB}, []expressions.Quantifier{qC, qF},
+		aliasesOf(qA, qB), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
 	result := c1.Intersect(c2)
@@ -1293,15 +1570,15 @@ func TestForMatchCompensation_Intersect_QuantifierSets(t *testing.T) {
 		t.Fatalf("expected *ForMatchCompensation, got %T", result)
 	}
 
-	// Matched = union of {A, B} ∪ {B, E} = {A, B, E}
+	// Matched remains {A, B}.
 	matchedAliases := make(map[values.CorrelationIdentifier]struct{})
 	for _, q := range fmc.GetMatchedQuantifiers() {
 		matchedAliases[q.GetAlias()] = struct{}{}
 	}
-	if len(matchedAliases) != 3 {
-		t.Fatalf("expected 3 matched quantifiers, got %d", len(matchedAliases))
+	if len(matchedAliases) != 2 {
+		t.Fatalf("expected 2 matched quantifiers, got %d", len(matchedAliases))
 	}
-	for _, expected := range []values.CorrelationIdentifier{aliasA, aliasB, aliasE} {
+	for _, expected := range []values.CorrelationIdentifier{aliasA, aliasB} {
 		if _, ok := matchedAliases[expected]; !ok {
 			t.Fatalf("matched set missing alias %s", expected.Name())
 		}
@@ -1338,7 +1615,7 @@ func TestForMatchCompensation_Intersect_ChildCompensationRecursive(t *testing.T)
 	childQ := expressions.ForEachQuantifier(ref)
 	child1 := NewForMatchCompensation(
 		false, NoCompensation, childPredMap1,
-		[]expressions.Quantifier{childQ}, nil, nil,
+		[]expressions.Quantifier{childQ}, nil, aliasesOf(childQ),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
@@ -1349,7 +1626,7 @@ func TestForMatchCompensation_Intersect_ChildCompensationRecursive(t *testing.T)
 	)
 	child2 := NewForMatchCompensation(
 		false, NoCompensation, childPredMap2,
-		[]expressions.Quantifier{childQ}, nil, nil,
+		[]expressions.Quantifier{childQ}, nil, aliasesOf(childQ),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
@@ -1363,12 +1640,12 @@ func TestForMatchCompensation_Intersect_ChildCompensationRecursive(t *testing.T)
 
 	c1 := NewForMatchCompensation(
 		false, child1, outerPredMap,
-		[]expressions.Quantifier{outerQ}, nil, nil,
+		[]expressions.Quantifier{outerQ}, nil, aliasesOf(outerQ),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, child2, outerPredMap,
-		[]expressions.Quantifier{outerQ}, nil, nil,
+		[]expressions.Quantifier{outerQ}, nil, aliasesOf(outerQ),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
@@ -1400,14 +1677,20 @@ func TestForMatchCompensation_Intersect_ChildCompensationRecursive(t *testing.T)
 func TestForMatchCompensation_Intersect_ChildImpossible(t *testing.T) {
 	t.Parallel()
 
-	// child1 is impossible, child2 has predicates.
+	// The shared child residual is itself impossible, so it survives the
+	// intersection and makes the intersected child impossible.
+	childPred := predicates.NewConstantPredicate(predicates.TriTrue)
+	childPredMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{childPred},
+		[]PredicateCompensationFunc{ImpossiblePredicateCompensation()},
+	)
 	child1 := NewForMatchCompensation(
-		true, NoCompensation, EmptyPredicateCompensationMap(),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		true, NoCompensation, childPredMap,
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	child2 := NewForMatchCompensation(
-		false, NoCompensation, StubPredicateCompensationMap(1),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		false, NoCompensation, childPredMap,
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
 	// Outer compensations need to be "needed" to avoid the short-circuit.
@@ -1422,12 +1705,12 @@ func TestForMatchCompensation_Intersect_ChildImpossible(t *testing.T) {
 
 	c1 := NewForMatchCompensation(
 		false, child1, outerPredMap,
-		[]expressions.Quantifier{q}, nil, nil,
+		[]expressions.Quantifier{q}, nil, aliasesOf(q),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, child2, outerPredMap,
-		[]expressions.Quantifier{q}, nil, nil,
+		[]expressions.Quantifier{q}, nil, aliasesOf(q),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
@@ -1537,11 +1820,11 @@ func TestForMatchCompensation_Union_BothNotNeeded(t *testing.T) {
 
 	c1 := NewForMatchCompensation(
 		false, NoCompensation, EmptyPredicateCompensationMap(),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, EmptyPredicateCompensationMap(),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	result := c1.Union(c2)
 	if result.IsNeeded() {
@@ -1557,11 +1840,11 @@ func TestForMatchCompensation_Union_OneNotNeeded(t *testing.T) {
 
 	c1 := NewForMatchCompensation(
 		false, NoCompensation, EmptyPredicateCompensationMap(),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, StubPredicateCompensationMap(1),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
 	// c1 not needed, c2 needed → returns c2.
@@ -1617,12 +1900,12 @@ func TestForMatchCompensation_Union_PredicateMapMerge(t *testing.T) {
 
 	c1 := NewForMatchCompensation(
 		false, NoCompensation, predMap1,
-		[]expressions.Quantifier{q}, nil, nil,
+		[]expressions.Quantifier{q}, nil, aliasesOf(q),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, predMap2,
-		[]expressions.Quantifier{q}, nil, nil,
+		[]expressions.Quantifier{q}, nil, aliasesOf(q),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
@@ -1664,12 +1947,12 @@ func TestForMatchCompensation_Union_DuplicateKeyImpossible(t *testing.T) {
 
 	c1 := NewForMatchCompensation(
 		false, NoCompensation, predMap1,
-		[]expressions.Quantifier{q}, nil, nil,
+		[]expressions.Quantifier{q}, nil, aliasesOf(q),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, predMap2,
-		[]expressions.Quantifier{q}, nil, nil,
+		[]expressions.Quantifier{q}, nil, aliasesOf(q),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
@@ -1693,12 +1976,12 @@ func TestForMatchCompensation_Union_MultiForEachImpossible(t *testing.T) {
 	// Union of matched quantifiers has 2 ForEach → impossible.
 	c1 := NewForMatchCompensation(
 		false, NoCompensation, StubPredicateCompensationMap(1),
-		[]expressions.Quantifier{q1}, nil, nil,
+		[]expressions.Quantifier{q1}, nil, aliasesOf(q1),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation, StubPredicateCompensationMap(1),
-		[]expressions.Quantifier{q2}, nil, nil,
+		[]expressions.Quantifier{q2}, nil, aliasesOf(q2),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
@@ -1769,7 +2052,7 @@ func TestForMatchCompensation_Union_ChildRecursive(t *testing.T) {
 	)
 	child1 := NewForMatchCompensation(
 		false, NoCompensation, childPredMap1,
-		[]expressions.Quantifier{childQ}, nil, nil,
+		[]expressions.Quantifier{childQ}, nil, aliasesOf(childQ),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
@@ -1780,7 +2063,7 @@ func TestForMatchCompensation_Union_ChildRecursive(t *testing.T) {
 	)
 	child2 := NewForMatchCompensation(
 		false, NoCompensation, childPredMap2,
-		[]expressions.Quantifier{childQ}, nil, nil,
+		[]expressions.Quantifier{childQ}, nil, aliasesOf(childQ),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
@@ -1801,12 +2084,12 @@ func TestForMatchCompensation_Union_ChildRecursive(t *testing.T) {
 
 	c1 := NewForMatchCompensation(
 		false, child1, outerPredMap1,
-		[]expressions.Quantifier{outerQ}, nil, nil,
+		[]expressions.Quantifier{outerQ}, nil, aliasesOf(outerQ),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, child2, outerPredMap2,
-		[]expressions.Quantifier{outerQ}, nil, nil,
+		[]expressions.Quantifier{outerQ}, nil, aliasesOf(outerQ),
 		NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
@@ -1861,7 +2144,7 @@ func TestIntersectCompensations_SingleElement(t *testing.T) {
 	t.Parallel()
 	c := NewForMatchCompensation(
 		false, NoCompensation, StubPredicateCompensationMap(1),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	result := IntersectCompensations([]Compensation{c})
 	if result != c {
@@ -1873,7 +2156,7 @@ func TestIntersectCompensations_WithNoCompensation(t *testing.T) {
 	t.Parallel()
 	c := NewForMatchCompensation(
 		false, NoCompensation, StubPredicateCompensationMap(1),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	result := IntersectCompensations([]Compensation{NoCompensation, c})
 	if result.IsNeeded() {
@@ -1899,7 +2182,7 @@ func TestUnionCompensations_TwoForMatch(t *testing.T) {
 			[]predicates.QueryPredicate{predA},
 			[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
 		),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	c2 := NewForMatchCompensation(
 		false, NoCompensation,
@@ -1907,7 +2190,7 @@ func TestUnionCompensations_TwoForMatch(t *testing.T) {
 			[]predicates.QueryPredicate{predB},
 			[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
 		),
-		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+		baseMatched(), nil, baseCompensated(), NoResultCompensation(), EmptyGroupByMappings(),
 	)
 	result := UnionCompensations([]Compensation{c1, c2})
 	if !result.IsNeeded() {
@@ -1945,4 +2228,316 @@ func TestUnionResultCompensation(t *testing.T) {
 	if _, ok := unionResultCompensation(notNeeded, needed); ok {
 		t.Fatal("only other's rcf needed → must decline (ok=false)")
 	}
+}
+
+func TestForMatchCompensation_PrimaryKeyDistinctOnly(t *testing.T) {
+	t.Parallel()
+
+	base := namedForEachQuantifier("distinct_base")
+	compensation := NewForMatchCompensationWithPrimaryKeyDistinct(
+		false,
+		NoCompensation,
+		EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{base},
+		nil,
+		aliasesOf(base),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+		true,
+	)
+
+	if !compensation.IsNeeded() {
+		t.Fatal("primary-key distinct must make compensation needed")
+	}
+	if compensation.IsNeededForFiltering() {
+		t.Fatal("primary-key distinct changes multiplicity, not filtering")
+	}
+	if compensation.IsFinalNeeded() {
+		t.Fatal("primary-key distinct is pre-final work")
+	}
+	if !compensation.RequiresPrimaryKeyDistinct() {
+		t.Fatal("primary-key distinct obligation was not retained")
+	}
+
+	scan := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	translationCalls := 0
+	applied, ok := compensation.ApplyAllNeeded(
+		scan,
+		func(values.CorrelationIdentifier) TranslationMap {
+			translationCalls++
+			return EmptyTranslationMap()
+		},
+	)
+	if !ok {
+		t.Fatal("distinct-only compensation failed to apply")
+	}
+	if translationCalls != 0 {
+		t.Fatalf("distinct-only compensation translated %d times, want 0", translationCalls)
+	}
+	unique, ok := applied.(*expressions.LogicalUniqueExpression)
+	if !ok {
+		t.Fatalf("distinct-only compensation produced %T, want LogicalUniqueExpression", applied)
+	}
+	if !unique.IsRequired() {
+		t.Fatal("cardinality compensation must emit required, not absorbable, Unique")
+	}
+	if got := unique.GetInner().GetAlias(); got != base.GetAlias() {
+		t.Fatalf("Unique alias = %q, want matched alias %q", got.Name(), base.GetAlias().Name())
+	}
+	if got := unique.GetInner().GetRangesOver().Get(); got != scan {
+		t.Fatalf("Unique child = %T, want original scan", got)
+	}
+}
+
+func TestForMatchCompensation_PrimaryKeyDistinctOrdering(t *testing.T) {
+	t.Parallel()
+
+	base := namedForEachQuantifier("ordered_distinct_base")
+	residual := predicates.NewConstantPredicate(predicates.TriTrue)
+	predicateMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{residual},
+		[]PredicateCompensationFunc{OfPredicateCompensation(residual, false)},
+	)
+	compensation := NewForMatchCompensationWithPrimaryKeyDistinct(
+		false,
+		NoCompensation,
+		predicateMap,
+		[]expressions.Quantifier{base},
+		nil,
+		aliasesOf(base),
+		ResultCompensationOfValue(
+			values.NewQuantifiedObjectValue(base.GetAlias()),
+		),
+		EmptyGroupByMappings(),
+		true,
+	)
+
+	scan := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	var translatedAliases []values.CorrelationIdentifier
+	applied, ok := compensation.ApplyAllNeeded(
+		scan,
+		func(alias values.CorrelationIdentifier) TranslationMap {
+			translatedAliases = append(translatedAliases, alias)
+			return EmptyTranslationMap()
+		},
+	)
+	if !ok {
+		t.Fatal("filter + distinct + final compensation failed to apply")
+	}
+
+	final, ok := applied.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("outer expression = %T, want final SelectExpression", applied)
+	}
+	if len(final.GetQuantifiers()) != 1 {
+		t.Fatalf("final quantifier count = %d, want 1", len(final.GetQuantifiers()))
+	}
+	finalQ := final.GetQuantifiers()[0]
+	if finalQ.GetAlias() != base.GetAlias() {
+		t.Fatalf("final alias = %q, want %q", finalQ.GetAlias().Name(), base.GetAlias().Name())
+	}
+
+	unique, ok := finalQ.GetRangesOver().Get().(*expressions.LogicalUniqueExpression)
+	if !ok {
+		t.Fatalf("final child = %T, want required Unique", finalQ.GetRangesOver().Get())
+	}
+	if !unique.IsRequired() {
+		t.Fatal("compensation emitted an absorbable Unique")
+	}
+	if unique.GetInner().GetAlias() != base.GetAlias() {
+		t.Fatalf("Unique alias = %q, want %q", unique.GetInner().GetAlias().Name(), base.GetAlias().Name())
+	}
+
+	filter, ok := unique.GetInner().GetRangesOver().Get().(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("Unique child = %T, want residual LogicalFilterExpression", unique.GetInner().GetRangesOver().Get())
+	}
+	if filter.GetInner().GetAlias() != base.GetAlias() {
+		t.Fatalf("filter alias = %q, want %q", filter.GetInner().GetAlias().Name(), base.GetAlias().Name())
+	}
+	if got := filter.GetInner().GetRangesOver().Get(); got != scan {
+		t.Fatalf("filter child = %T, want original scan", got)
+	}
+
+	if len(translatedAliases) != 2 {
+		t.Fatalf("translation callback calls = %d, want filter and final", len(translatedAliases))
+	}
+	for _, alias := range translatedAliases {
+		if alias != base.GetAlias() {
+			t.Fatalf("translated alias = %q, want %q", alias.Name(), base.GetAlias().Name())
+		}
+	}
+}
+
+func TestForMatchCompensation_NestedPrimaryKeyDistinct(t *testing.T) {
+	t.Parallel()
+
+	childBase := namedForEachQuantifier("nested_distinct_base")
+	child := NewForMatchCompensationWithPrimaryKeyDistinct(
+		false,
+		NoCompensation,
+		EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{childBase},
+		nil,
+		aliasesOf(childBase),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+		true,
+	)
+	parent := NewForMatchCompensation(
+		false,
+		child,
+		EmptyPredicateCompensationMap(),
+		nil,
+		nil,
+		nil,
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+	)
+
+	if parent.IsImpossible() {
+		t.Fatal("cardinality-only child must not require a local parent alias")
+	}
+	if !parent.IsNeeded() {
+		t.Fatal("parent must report its cardinality-only child as needed")
+	}
+	if parent.IsNeededForFiltering() {
+		t.Fatal("cardinality-only child must not make an existential owner filter")
+	}
+
+	scan := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	applied, ok := parent.ApplyAllNeeded(scan, nil)
+	if !ok {
+		t.Fatal("nested cardinality-only compensation was skipped or failed")
+	}
+	unique, ok := applied.(*expressions.LogicalUniqueExpression)
+	if !ok || !unique.IsRequired() {
+		t.Fatalf("nested compensation produced %T, want required Unique", applied)
+	}
+	if unique.GetInner().GetAlias() != childBase.GetAlias() {
+		t.Fatalf(
+			"nested Unique alias = %q, want child alias %q",
+			unique.GetInner().GetAlias().Name(),
+			childBase.GetAlias().Name(),
+		)
+	}
+}
+
+func TestForMatchCompensation_PrimaryKeyDistinctCompositionUsesOR(t *testing.T) {
+	t.Parallel()
+
+	base := namedForEachQuantifier("composed_distinct_base")
+	distinct := NewForMatchCompensationWithPrimaryKeyDistinct(
+		false,
+		NoCompensation,
+		EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{base},
+		nil,
+		aliasesOf(base),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+		true,
+	)
+	residual := predicates.NewConstantPredicate(predicates.TriTrue)
+	filtering := NewForMatchCompensation(
+		false,
+		NoCompensation,
+		NewPredicateCompensationMap(
+			[]predicates.QueryPredicate{residual},
+			[]PredicateCompensationFunc{OfPredicateCompensation(residual, false)},
+		),
+		[]expressions.Quantifier{base},
+		nil,
+		aliasesOf(base),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+	)
+
+	for _, tc := range []struct {
+		name         string
+		compensation Compensation
+	}{
+		{name: "union", compensation: unionTwo(distinct, filtering)},
+		{name: "intersection", compensation: intersectTwo(distinct, filtering)},
+		{name: "union_with_no_compensation", compensation: unionTwo(NoCompensation, distinct)},
+		{name: "intersection_with_no_compensation", compensation: intersectTwo(NoCompensation, distinct)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			forMatch, ok := tc.compensation.(*ForMatchCompensation)
+			if !ok {
+				t.Fatalf("composition = %T, want ForMatchCompensation", tc.compensation)
+			}
+			if !forMatch.RequiresPrimaryKeyDistinct() {
+				t.Fatal("composition dropped the OR-ed primary-key distinct obligation")
+			}
+			if !forMatch.IsNeeded() {
+				t.Fatal("distinct-bearing composition must remain needed")
+			}
+		})
+	}
+
+	ordinaryIntersection := intersectTwo(NoCompensation, filtering)
+	if ordinaryIntersection.IsNeeded() {
+		t.Fatal("NoCompensation must remain absorbing for filtering-only intersection")
+	}
+
+	derived := DerivedCompensationWithPrimaryKeyDistinct(
+		NoCompensation,
+		false,
+		EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{base},
+		nil,
+		aliasesOf(base),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+		true,
+	)
+	if derived.IsImpossible() || !derived.IsNeeded() {
+		t.Fatal("distinct-only DerivedCompensation must satisfy the needed invariant")
+	}
+}
+
+// baseForEachQ is the single matched ForEach quantifier that algebra fixtures
+// below build their compensations on.
+//
+// A compensation that has to be applied rebuilds the expression on exactly one
+// matched ForEach alias (see ForMatchCompensation.MatchedForEachAliasMaybe).
+// Fixtures used to pass no quantifiers at all, which is not a shape the
+// planner can produce for an appliable compensation — it left Apply with no
+// alias to rebuild on. These helpers give the intersect/union algebra tests a
+// well-formed subject so they exercise the algebra, not an invalid state.
+var baseForEachQ = namedForEachQuantifier("qBase")
+
+func baseMatched() []expressions.Quantifier {
+	return []expressions.Quantifier{baseForEachQ}
+}
+
+func baseCompensated() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{baseForEachQ.GetAlias(): {}}
+}
+
+// aliasesOf is the compensated-alias set matching a fixture's matched
+// quantifiers.
+//
+// A compensation's matched quantifiers and compensated aliases must name the
+// same set — that pair is what it claims responsibility for, and
+// MatchedForEachAliasMaybe refuses to pick a base alias when they disagree.
+// Fixtures that passed matched quantifiers with a nil alias set were malformed
+// in exactly that way; this keeps them honest without restating the set.
+func aliasesOf(qs ...expressions.Quantifier) map[values.CorrelationIdentifier]struct{} {
+	out := make(map[values.CorrelationIdentifier]struct{}, len(qs))
+	for _, q := range qs {
+		out[q.GetAlias()] = struct{}{}
+	}
+	return out
 }

@@ -191,6 +191,188 @@ func TestExecuteDistinct_DedupsValues(t *testing.T) {
 	}
 }
 
+func TestExecuteUnorderedPrimaryKeyDistinct_PrimaryKeySemantics(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	alias := values.NamedCorrelationIdentifier("pk_distinct_semantics")
+	evalCtx := EmptyEvaluationContext()
+	table := evalCtx.GetOrCreateTempTable(alias, nil)
+	pk1 := tuple.Tuple{"type", int64(1)}
+	pk2 := tuple.Tuple{"type", int64(2)}
+	for _, row := range []QueryResult{
+		dmapPK(pk1, map[string]any{"V": "same projected row"}),
+		dmapPK(pk2, map[string]any{"V": "same projected row"}),
+		dmapPK(pk1, map[string]any{"V": "different fanout value"}),
+	} {
+		if err := table.Add(row); err != nil {
+			t.Fatalf("seed temp table: %v", err)
+		}
+	}
+	plan := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
+		plans.NewRecordQueryTempTableScanPlan(alias),
+	)
+	cursor, err := ExecutePlan(
+		ctx,
+		plan,
+		nil,
+		evalCtx,
+		nil,
+		recordlayer.DefaultExecuteProperties(),
+	)
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+	rows, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want one row per primary key", len(rows))
+	}
+	if !bytes.Equal(rows[0].PrimaryKey.Pack(), pk1.Pack()) ||
+		!bytes.Equal(rows[1].PrimaryKey.Pack(), pk2.Pack()) {
+		t.Fatalf(
+			"surviving primary keys = [%v, %v], want [%v, %v]",
+			rows[0].PrimaryKey,
+			rows[1].PrimaryKey,
+			pk1,
+			pk2,
+		)
+	}
+	for i, row := range rows {
+		valuesByName, ok := rowMapOK(row)
+		if !ok || valuesByName["V"] != "same projected row" {
+			t.Fatalf("row %d = %#v, want first value seen for its PK", i, row)
+		}
+	}
+}
+
+func TestExecuteUnorderedPrimaryKeyDistinct_ContinuationCarriesSeenSet(
+	t *testing.T,
+) {
+	t.Parallel()
+	ctx := context.Background()
+	alias := values.NamedCorrelationIdentifier("pk_distinct_resume")
+	evalCtx := EmptyEvaluationContext()
+	table := evalCtx.GetOrCreateTempTable(alias, nil)
+	pk1 := tuple.Tuple{int64(1)}
+	pk2 := tuple.Tuple{int64(2)}
+	for _, row := range []QueryResult{
+		dmapPK(pk1, map[string]any{"V": "first"}),
+		dmapPK(pk1, map[string]any{"V": "duplicate after boundary"}),
+		dmapPK(pk2, map[string]any{"V": "second"}),
+	} {
+		if err := table.Add(row); err != nil {
+			t.Fatalf("seed temp table: %v", err)
+		}
+	}
+	plan := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
+		plans.NewRecordQueryTempTableScanPlan(alias),
+	)
+	state := recordlayer.NewExecuteState(1 << 20)
+	props := recordlayer.DefaultExecuteProperties()
+	props.State = state
+
+	firstPage, err := ExecutePlan(ctx, plan, nil, evalCtx, nil, props)
+	if err != nil {
+		t.Fatalf("first ExecutePlan: %v", err)
+	}
+	first, err := firstPage.OnNext(ctx)
+	if err != nil || !first.HasNext() {
+		t.Fatalf("first row = %#v, err = %v", first, err)
+	}
+	if state.MemUsed() == 0 {
+		t.Fatal("seen primary-key set did not charge statement memory")
+	}
+	continuation, err := first.GetContinuation().ToBytes()
+	if err != nil {
+		t.Fatalf("encode continuation: %v", err)
+	}
+	var hashContinuation gen.DistinctHashContinuation
+	if err := hashContinuation.UnmarshalVT(continuation); err != nil {
+		t.Fatalf("decode hash continuation: %v", err)
+	}
+	seenKeys := hashContinuation.GetSeenKeys()
+	if len(seenKeys) != 1 || !bytes.Equal(seenKeys[0], pk1.Pack()) {
+		t.Fatalf(
+			"continuation seen keys = %q, want exact packed PK %q",
+			seenKeys,
+			pk1.Pack(),
+		)
+	}
+	if err := firstPage.Close(); err != nil {
+		t.Fatalf("close first page: %v", err)
+	}
+	if used := state.MemUsed(); used != 0 {
+		t.Fatalf("first-page teardown retained %d seen-set bytes", used)
+	}
+
+	resumed, err := ExecutePlan(
+		ctx,
+		plan,
+		nil,
+		evalCtx,
+		continuation,
+		props,
+	)
+	if err != nil {
+		t.Fatalf("resumed ExecutePlan: %v", err)
+	}
+	if state.MemUsed() == 0 {
+		t.Fatal("resumed seen set was not rebuilt and re-charged")
+	}
+	rows, err := CollectAll(ctx, resumed)
+	if err != nil {
+		t.Fatalf("resumed CollectAll: %v", err)
+	}
+	if len(rows) != 1 || !bytes.Equal(rows[0].PrimaryKey.Pack(), pk2.Pack()) {
+		t.Fatalf(
+			"resumed rows = %#v, want only PK %v (duplicate PK1 must stay suppressed)",
+			rows,
+			pk2,
+		)
+	}
+	if err := resumed.Close(); err != nil {
+		t.Fatalf("close resumed page: %v", err)
+	}
+	if used := state.MemUsed(); used != 0 {
+		t.Fatalf("resumed-page teardown retained %d seen-set bytes", used)
+	}
+}
+
+func TestExecuteUnorderedPrimaryKeyDistinct_NilPrimaryKeyFailsLoudly(
+	t *testing.T,
+) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("pk_distinct_nil")
+	evalCtx := EmptyEvaluationContext()
+	if err := evalCtx.GetOrCreateTempTable(alias, nil).Add(
+		dmap(map[string]any{"V": "computed row"}),
+	); err != nil {
+		t.Fatalf("seed temp table: %v", err)
+	}
+	plan := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
+		plans.NewRecordQueryTempTableScanPlan(alias),
+	)
+	cursor, err := ExecutePlan(
+		context.Background(),
+		plan,
+		nil,
+		evalCtx,
+		nil,
+		recordlayer.DefaultExecuteProperties(),
+	)
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+	_, err = cursor.OnNext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "no primary key") {
+		t.Fatalf("nil primary key error = %v, want loud missing-PK error", err)
+	}
+}
+
 func TestExecuteProjection_FieldExtraction(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

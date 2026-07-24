@@ -93,13 +93,14 @@ PruneToSet keeps exactly `{bestFinal}`). Any violation is a task-ordering bug to
 the invariant is Java's, not an aspiration.
 
 **B.** Thread the PK-length gate into the scan arm at `:1153` and pass it as
-`fullBindUnique`. No change to `scanLikeCost` itself. **Precision (Graefe change 2):** this is
-NOT the same policy as `scanPlanProvableMaxCard` — that helper with nil ctx falls through and
-ALLOWS the 1-row bound (:1545); part B is deliberately STRICTER for join ordering
-(ctx-absent → false, never a point probe on unprovable uniqueness). Extract ONE shared
-PK-coverage predicate (`pkFullyEqualityBound(pl, ctx) (bool, provable bool)`) used by both
-sites with their differing nil-ctx policies explicit at each call site — two subtly different
-inline gates in one file is how this bug was born.
+`fullBindUnique`. No change to `scanLikeCost` itself. **Historical precision (Graefe change
+2):** RFC-186 originally gave the join-ordering arm a stricter nil-context policy than
+`scanPlanProvableMaxCard`, with both sites sharing
+`pkFullyEqualityBound(pl, ctx) (bool, provable bool)`. RFC-190.3 later removed that advisory
+exception: the PK arity stamped on the plan is now authoritative, a single-record-type
+context is only a fallback, and unknown coverage fails closed at every call site. This keeps
+the single shared predicate while eliminating the policy split that let a composite-key
+prefix survive through adapter/cardinality paths.
 
 **C (re-specified after plannability review).** The fallback yield is LOAD-BEARING and stays:
 under a sort, the filter group's only requested ordering is the sort's
@@ -187,8 +188,9 @@ follow-up list).
 ## 6. Review log
 
 - Graefe: ACK-WITH-CHANGES — (1) scope the ==1 invariant to REWRITING + PLANNING no-fire
-  test; (2) extract one shared PK-coverage predicate, state B's stricter nil-ctx policy
-  explicitly; (3) part D dispatches to HintCost instead of copying formulas. All folded
+  test; (2) extract one shared PK-coverage predicate and state the then-current nil-ctx
+  policy explicitly (the policy split was superseded by RFC-190.3 as noted above);
+  (3) part D dispatches to HintCost instead of copying formulas. All folded
   above. Also endorsed: assert-not-decline for invariant violations (Q2), caller-side gate
   layering (Q3), keeping the concrete walk (Q5 — group-winner derivation would reintroduce
   the shared-winner defect).

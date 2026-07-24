@@ -50,7 +50,8 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	groupingKeys := gb.GetGroupingKeys()
 	if len(groupingKeys) == 0 {
 		if isCountOnlyAggregation(gb.GetAggregates()) {
-			if idxPlan := findIndexScanPlan(innerRef); idxPlan != nil && !idxPlan.IsCovering() {
+			if idxPlan := findIndexScanPlan(innerRef); idxPlan != nil &&
+				idxPlan.ProducesDistinctRecords() && !idxPlan.IsCovering() {
 				// The covering index scan is its own cascades expression (RFC-184 W2);
 				// WithCovering preserves the metadata already on the plan (struct copy).
 				coveringPlan := idxPlan.WithCovering(nil)

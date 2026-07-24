@@ -13,10 +13,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/antlr4-go/antlr/v4"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -37,6 +39,7 @@ import (
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/session"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -1908,14 +1911,29 @@ func buildCascadesPlanContext(md *recordlayer.RecordMetaData) cascades.PlanConte
 }
 
 type metadataPlanContext struct {
-	md *recordlayer.RecordMetaData
+	md             *recordlayer.RecordMetaData
+	candidatesOnce sync.Once
+	candidates     []cascades.MatchCandidate
 }
 
 func (c *metadataPlanContext) GetPlannerConfiguration() cascades.PlannerConfiguration {
 	return cascades.DefaultPlannerConfiguration()
 }
 
+// GetMatchCandidates returns stable candidate identities for the lifetime of
+// the plan context. Partial matches are keyed by MatchCandidate identity on
+// memo References; rebuilding pointer-backed candidates on every call makes a
+// leaf match invisible to the parent MatchIntermediateRule. That used to be
+// masked by direct index rules, but Java-shaped fanout matching necessarily
+// climbs several candidate graph levels and therefore requires one identity.
 func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
+	c.candidatesOnce.Do(func() {
+		c.candidates = c.buildMatchCandidates()
+	})
+	return append([]cascades.MatchCandidate(nil), c.candidates...)
+}
+
+func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 	if c.md == nil {
 		return nil
 	}
@@ -2027,15 +2045,41 @@ type metadataIndexDef struct {
 	md  *recordlayer.RecordMetaData
 }
 
-func (d *metadataIndexDef) IndexName() string          { return d.idx.Name }
-func (d *metadataIndexDef) IndexColumnNames() []string { return d.idx.RootExpression.FieldNames() }
-func (d *metadataIndexDef) IndexIsUnique() bool        { return d.idx.IsUnique() }
+func (d *metadataIndexDef) IndexName() string { return d.idx.Name }
+
+// IndexColumnNames returns one name per physical key column. A nesting parent
+// is a path segment, not a tuple component: recordlayer.KeyExpression.FieldNames
+// intentionally includes that parent for metadata introspection, while
+// Cascades' sargable alias list must stay parallel to ColumnSize. Walking the
+// proto topology preserves Then order and drops nesting parents.
+func (d *metadataIndexDef) IndexColumnNames() []string {
+	if root := d.idx.RootExpression.ToKeyExpression(); root != nil {
+		if names, ok := indexKeyColumnNames(root); ok &&
+			len(names) == d.idx.RootExpression.ColumnSize() {
+			return names
+		}
+	}
+	return d.idx.RootExpression.FieldNames()
+}
+
+func (d *metadataIndexDef) IndexIsUnique() bool { return d.idx.IsUnique() }
 
 // IndexCreatesDuplicates reports whether the index's root key expression fans
 // out (Java index.getRootExpression().createsDuplicates()) — satisfies
 // cascades.IndexDefWithCreatesDuplicates so the DistinctRecordsProperty is
 // correct for fan-out indexes (RFC-188 M4).
 func (d *metadataIndexDef) IndexCreatesDuplicates() bool { return d.idx.CreatesDuplicates() }
+
+// IndexRootKeyExpression exposes a caller-owned KeyExpression AST to the
+// Cascades adapter. The candidate clones it again on attachment, so neither
+// metadata nor a caller can mutate an already-built match candidate.
+func (d *metadataIndexDef) IndexRootKeyExpression() *gen.KeyExpression {
+	root := d.idx.RootExpression.ToKeyExpression()
+	if root == nil {
+		return nil
+	}
+	return proto.Clone(root).(*gen.KeyExpression)
+}
 
 // IndexColumnFunctions returns the per-column function tags parallel to
 // IndexColumnNames: "" for a plain field, cascades.FunctionKindCardinality for
@@ -2064,10 +2108,7 @@ func (d *metadataIndexDef) IndexColumnFunctions() []string {
 func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
 	switch e := expr.(type) {
 	case *recordlayer.CardinalityFunctionKeyExpression:
-		// One key column; its FieldNames() may yield >1 name only for the
-		// Java wrapper shape (arr.values), which Go never writes — so a single
-		// cardinality tag suffices and stays aligned with FieldNames().
-		n := len(e.FieldNames())
+		n := e.ColumnSize()
 		if n == 0 {
 			n = 1
 		}
@@ -2081,13 +2122,47 @@ func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
 		}
 		return tags
 	default:
-		// Plain field / nesting / everything else: one "" tag per produced
-		// field name, keeping the slice aligned with FieldNames().
-		names := expr.FieldNames()
-		if len(names) == 0 {
+		// A nesting parent contributes a path segment but no tuple column,
+		// so ColumnSize — not FieldNames length — is the parallel-list
+		// authority.
+		columnSize := expr.ColumnSize()
+		if columnSize == 0 {
 			return []string{""}
 		}
-		return make([]string, len(names))
+		return make([]string, columnSize)
+	}
+}
+
+func indexKeyColumnNames(expression *gen.KeyExpression) ([]string, bool) {
+	if expression == nil {
+		return nil, false
+	}
+	switch {
+	case expression.Field != nil:
+		if expression.Field.FieldName == nil {
+			return nil, false
+		}
+		return []string{expression.Field.GetFieldName()}, true
+	case expression.Then != nil:
+		var names []string
+		for _, child := range expression.Then.GetChild() {
+			childNames, ok := indexKeyColumnNames(child)
+			if !ok {
+				return nil, false
+			}
+			names = append(names, childNames...)
+		}
+		return names, true
+	case expression.Nesting != nil:
+		return indexKeyColumnNames(expression.Nesting.GetChild())
+	case expression.Function != nil:
+		return indexKeyColumnNames(expression.Function.GetArguments())
+	case expression.Grouping != nil:
+		return indexKeyColumnNames(expression.Grouping.GetWholeKey())
+	case expression.KeyWithValue != nil:
+		return indexKeyColumnNames(expression.KeyWithValue.GetInnerKey())
+	default:
+		return nil, false
 	}
 }
 

@@ -1,10 +1,11 @@
 package executor
 
 // RFC-184 W2 — FDB rows-read validation of the InMemorySort finale: the
-// cost==extraction fix (findBestPhysicalPlan for the sort's inner) PLUS the
-// depth-rung gate (a redundant InMemorySort no longer wins the type-filter /
-// fetch / distinct DEPTH tiebreaks — those abstain when a sort is present, so
-// criterion #12 "fewer in-memory sorts" restores elimination).
+// cost==extraction fix (findBestPhysicalPlan for the sort's inner) plus the
+// cost-model sort fix. RFC-184 initially gated the structural depth rungs;
+// RFC-190 superseded that non-transitive workaround with sort-transparent
+// depth, unconditional Java rungs, and a promoted "fewer in-memory sorts"
+// comparison before the structural block.
 //
 // Two things are proven on real FDB, measured at the leaf cursor via the
 // ScannedRecordsLimit tripwire (NOT the cost model's estimate):

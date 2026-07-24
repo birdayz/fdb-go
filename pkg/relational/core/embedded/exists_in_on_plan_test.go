@@ -45,7 +45,7 @@ func TestExistsInOn_INNER_LowersToSemiJoin(t *testing.T) {
 		t.Fatalf("plan: %v", err)
 	}
 	// The EXISTS semi-join is a FlatMap whose inner is a FirstOrDefault (the
-	// one-row existential inner) — implementJoinWithExistential / buildExistsFlatMap.
+	// one-row existential inner) — implementJoinWithExistential / yieldExistsFlatMap.
 	if !planHasType[*plans.RecordQueryFlatMapPlan](plan) {
 		t.Errorf("INNER EXISTS-in-ON must lower to a FlatMap semi-join, got: %s", plan.Explain())
 	}

@@ -312,7 +312,7 @@ Java's `getOnlyElementAsPlan()` (Reference.java:237) verifies: `exploratoryMembe
 
 4. **Continuation tokens unaffected.** Plan selection changes which plan gets built, but the continuation format (cursor state serialization) is plan-type-specific. Same plan type → same continuation format.
 
-5. **Cost model is phase-specific.** REWRITING uses `RewritingCostModelLess` (few criteria, favors canonical forms). PLANNING uses `PlanningCostModelLess` (17 criteria including EstimateCost). Each `OptimizeGroup` uses the phase-appropriate model.
+5. **Cost model is phase-specific.** REWRITING uses `RewritingCostModelLess` (few criteria, favors canonical forms). PLANNING uses the multi-criteria `PlanningCostModelLess`, including Go's statistics fallback. Each `OptimizeGroup` uses the phase-appropriate model.
 
 ## Execution Plan
 

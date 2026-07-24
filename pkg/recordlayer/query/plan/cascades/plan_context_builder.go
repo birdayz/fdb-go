@@ -3,6 +3,7 @@ package cascades
 import (
 	"strings"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -42,11 +43,23 @@ type IndexDefWithColumnFunctions interface {
 // that can state whether their root key expression FANS OUT (a repeated/collection
 // field produces multiple entries per record). Ports Java's
 // index.getRootExpression().createsDuplicates(). A fan-out index does NOT produce
-// distinct records; defs that don't implement this interface are treated as
-// non-fan-out (the safe under-report — see DistinctRecordsProperty / RFC-188 M4).
+// distinct records; defs that don't implement this interface remain UNKNOWN,
+// so cardinality-sensitive properties and shortcuts abstain.
 type IndexDefWithCreatesDuplicates interface {
 	IndexDef
 	IndexCreatesDuplicates() bool
+}
+
+// IndexDefWithRootKeyExpression is an optional extension of IndexDef for defs
+// that can expose the record-layer key-expression AST. The value-index
+// expansion uses this structure to reproduce Java's fan-out candidate graph
+// (a correlated Explode under an inner Select) instead of flattening a
+// repeated field into an ordinary scalar placeholder. Implementations must
+// return a caller-owned message; NewPlanContextFromIndexDefs defensively
+// clones it again when attaching it to the candidate.
+type IndexDefWithRootKeyExpression interface {
+	IndexDef
+	IndexRootKeyExpression() *gen.KeyExpression
 }
 
 // IndexDefWithCommonPrimaryKey is an optional extension of IndexDef exposing the
@@ -66,6 +79,19 @@ type IndexDefWithCommonPrimaryKey interface {
 func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 	candidates := make([]MatchCandidate, 0, len(defs))
 	for _, def := range defs {
+		var rootKeyExpression *gen.KeyExpression
+		if withRoot, ok := def.(IndexDefWithRootKeyExpression); ok {
+			rootKeyExpression = withRoot.IndexRootKeyExpression()
+		}
+		if keyExpressionContainsNonFanOutNestedLeaf(rootKeyExpression) {
+			// The candidate's column/coverage bridge cannot yet preserve the
+			// path identity of a scalar nested leaf: ADDR.CITY could bind a
+			// top-level CITY. Reject the whole root even when another branch
+			// fans out. Leaves below a fan-out parent, and nested leaves that
+			// fan out themselves, are structurally represented by the
+			// Explode-based expansion and remain supported.
+			continue
+		}
 		cols := def.IndexColumnNames()
 		if len(cols) == 0 {
 			continue
@@ -115,7 +141,7 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 		if pkDef, ok := def.(IndexDefWithCommonPrimaryKey); ok {
 			commonPK = pkDef.IndexCommonPrimaryKeyValues()
 		}
-		candidates = append(candidates, NewValueIndexScanMatchCandidateWithFunctions(
+		candidate := NewValueIndexScanMatchCandidateWithFunctions(
 			def.IndexName(),
 			def.IndexRecordTypes(),
 			upperCols,
@@ -125,7 +151,11 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 			def.IndexIsUnique(),
 			upperPK,
 			createsDuplicatesSignal,
-		).WithCommonPrimaryKey(commonPK))
+		).WithCommonPrimaryKey(commonPK)
+		if rootKeyExpression != nil {
+			candidate.WithRootKeyExpression(rootKeyExpression)
+		}
+		candidates = append(candidates, candidate)
 	}
 	return &builtPlanContext{candidates: candidates}
 }

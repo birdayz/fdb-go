@@ -1,12 +1,14 @@
 package cascades
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"hash"
 	"hash/fnv"
 	"io"
-	"os"
+	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -17,29 +19,34 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// PlanningCostModelLess is the Java-aligned multi-criteria plan comparator.
-// Mirrors Java's PlanningCostModel.compare() from fdb-record-layer-core.
+// PlanningCostModelLess is the Java-aligned multi-criteria plan comparator,
+// with the documented Go-specific criteria called out below.
 //
 // Returns true if a is strictly preferred over b. The comparison uses
-// ordered tie-breaking criteria matching Java's priority:
+// these ordered tie-breaking criteria. Parenthetical numbers are the stable
+// Java-aligned labels used by focused tests and design docs; Go extensions do
+// not renumber those labels:
 //
-//  1. Physical plan beats non-physical
-//  2. Max cardinality of all data accesses (lower wins)
-//  3. Fewer normalized residual predicates
-//  4. Fewer data access operators (scan + index + covering)
-//  5. Recursive CTE tie-breaker (DFS > level-based)
-//  6. IN-plan penalty (penalize if IN-values aren't SARGs)
-//  7. Primary scan vs index-scan-with-fetch (prefer primary)
-//  8. Type filter count (fewer = better)
-//  9. Type filter depth (deeper = better)
-//  10. Index fetch metrics (fewer non-covering + fetch = better)
-//  11. Distinct depth (deeper = better)
-//  12. Unmatched index field count (fewer = better)
-//  13. IN-join source count (more = better)
-//  14. MAP + PredicatesFilter count (fewer = better)
-//  15. Streaming aggregation beats hash aggregation
-//  16. Scalar cost fallback (EstimateCost)
-//  17. Plan hash deterministic tie-break
+//   - Physical plan beats non-physical (#1)
+//   - Max cardinality of all data accesses, lower wins (#2)
+//   - Fewer normalized residual predicates (#3)
+//   - Fewer data access operators: scan + index + covering (#4)
+//   - Recursive CTE tie-breaker: DFS beats level-based (#5)
+//   - Join-order cost (#15, broadened and hoisted in Go)
+//   - IN-plan penalty when IN-values are not SARGs (#6)
+//   - Primary scan vs index-scan-with-fetch preference (#7)
+//   - In-memory sort count, fewer wins (Go sort-elimination analogue)
+//   - Type filter count, fewer wins (#8)
+//   - Type filter depth, deeper wins (#9)
+//   - Index fetch metrics, fewer non-covering scans/fetches win (#10)
+//   - Distinct depth, deeper wins (#11)
+//   - Unmatched primary-scan/index key field count, fewer wins (#12)
+//   - IN-join source count, more wins (#13)
+//   - MAP + PredicatesFilter count, fewer wins (#14)
+//   - Nested-loop-join predicate count, more wins (Go extension)
+//   - ON EMPTY NULL operation count, fewer wins (#16)
+//   - Scalar cost fallback (Go statistics extension)
+//   - Plan hash deterministic tie-break (#17)
 func PlanningCostModelLess(a, b expressions.RelationalExpression) bool {
 	cmp := planningCostModelCompareWith(a, b, nil, nil)
 	return cmp < 0
@@ -56,7 +63,7 @@ func NewPlanningCostModelLess(stats properties.StatisticsProvider) func(a, b exp
 // comparator. The returned function uses real record counts (via stats)
 // for cardinality estimation and resolves index/primary-key metadata via
 // ctx so the criterion-#2 (provable max cardinality) and criterion-#12
-// (unmatched index fields) properties are computed faithfully from the
+// (unmatched primary-scan/index key fields) properties are computed faithfully from the
 // CONCRETE plan tree (RFC-069). Pass nil stats for default
 // (LeafScanCardinality); pass nil ctx to resolve index metadata
 // conservatively (treat indexes as non-unique).
@@ -215,8 +222,8 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		}
 	}
 
-	residualA := countResidualPredicates(a)
-	residualB := countResidualPredicates(b)
+	residualA := countResidualPredicatesWithContext(a, ctx)
+	residualB := countResidualPredicatesWithContext(b, ctx)
 	if residualA != residualB {
 		return intCompare(residualA, residualB)
 	}
@@ -263,28 +270,51 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return cmp
 	}
 
+	// Reject a redundant in-memory sort HERE — before every sort-blind
+	// structural rung below (typeFilterCount/Depth, fetch metrics,
+	// distinctDepth, unmatchedFieldCount, inJoinCount, mapFilter). Go's
+	// RecordQueryInMemorySortPlan is a read-side extension Java has no cost
+	// rung for at all: Java eliminates a redundant sort STRUCTURALLY
+	// (RemoveSortRule), before its PlanningCostModel ever runs, so a
+	// "Sort(X)" candidate never competes against a sort-free "X" sibling in
+	// Java's memo in the first place. Promoting this rung to fire as soon as
+	// cardinality/residuals/data-access-count/join-ordering/IN-plan/
+	// primary-vs-index all TIE is the cost-time analog of that structural
+	// elimination: once two candidates have done provably the same amount of
+	// "real" work, the one carrying an extra full materializing sort is
+	// strictly worse, full stop — no structural rung below should ever get a
+	// chance to prefer the sorted candidate on some unrelated axis. This is a
+	// pure lexicographic REORDER (the rung's own comparison is unchanged,
+	// only its position moves earlier), so it cannot introduce a
+	// transitivity violation: an ordinal comparator built by lexicographic
+	// composition of total-preorder criteria is transitive regardless of
+	// criterion order.
+	if opsA.inMemorySortCount != opsB.inMemorySortCount {
+		return intCompare(opsA.inMemorySortCount, opsB.inMemorySortCount)
+	}
+
 	if opsA.typeFilterCount != opsB.typeFilterCount {
 		return intCompare(opsA.typeFilterCount, opsB.typeFilterCount)
 	}
 
-	// Structural tiebreaks abstain when either side carries an in-memory sort. A
-	// redundant InMemorySort is an extra TOP node: it inflates every descendant's
-	// structural depth by +1 (so a depth comparison between a sorted and a
-	// sort-elided plan measures depths from DIFFERENT roots, always favouring the
-	// taller sorted plan), AND it lets a sorted plan over a clean inner win a
-	// node-count tiebreak (map/filter count) against a differently-shaped
-	// sort-elided sibling (e.g. one whose residual filter got pushdown-split into
-	// two nodes). Either way the sorted plan wins a structural rung before the
-	// sort-vs-elision decision — which belongs to criterion #12 (fewer in-memory
-	// sorts). So every structural tiebreak below abstains when either side has a
-	// sort, matching the unmatched-field gate. The type-filter-COUNT and fetch-COUNT
-	// rungs stay ungated (a sort adds neither a type filter nor a fetch, so those
-	// counts are sort-invariant across an elided/sorted pair); the map/filter count
-	// is gated because pushdown makes the elided sibling's filter count diverge.
+	// Structural depth tiebreaks (typeFilterDepth/fetchDepth/distinctDepth) are
+	// SORT-INVARIANT (RFC-190 190.2): concretePlanDepth treats an in-memory sort
+	// as transparent, so a redundant InMemorySort no longer inflates a
+	// descendant's measured depth relative to a sort-elided sibling — the two
+	// plans' depths are measured from the SAME effective root regardless of
+	// which one happens to carry a sort. That, plus the promoted
+	// inMemorySortCount rung above (which now guarantees every rung from here
+	// down only ever compares candidates with an EQUAL sort count), was the
+	// fix for the non-transitive 3-cycle a per-rung sort gate used to paper
+	// over (a gated rung decided a sort-free pair outright but was skipped
+	// whenever one side carried a sort, handing the decision to a later
+	// ungated rung — two different rungs governing "the same slot" for
+	// different pairs of the same plans). These three depth rungs, the
+	// fetch/unmatchedFieldCount rungs, and the map/filter node-count rung
+	// below are therefore all UNGATED.
 	typeFilterDepthA := costExprDepth(a, matchTypeFilter)
 	typeFilterDepthB := costExprDepth(b, matchTypeFilter)
-	if typeFilterDepthA >= 0 && typeFilterDepthB >= 0 && typeFilterDepthA != typeFilterDepthB &&
-		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
+	if typeFilterDepthA >= 0 && typeFilterDepthB >= 0 && typeFilterDepthA != typeFilterDepthB {
 		return intCompare(typeFilterDepthB, typeFilterDepthA)
 	}
 
@@ -295,12 +325,11 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		if fetchA != fetchB {
 			return intCompare(fetchA, fetchB)
 		}
-		// Depth rung — abstains when either side carries a sort (see the
-		// type-filter-depth gate above); the fetch-COUNT rungs stay ungated.
+		// Depth rung — sort-invariant, ungated (see the type-filter-depth
+		// comment above); the fetch-COUNT rungs are also ungated.
 		fetchDepthA := costExprDepth(a, matchFetch)
 		fetchDepthB := costExprDepth(b, matchFetch)
-		if fetchDepthA >= 0 && fetchDepthB >= 0 && fetchDepthA != fetchDepthB &&
-			opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
+		if fetchDepthA >= 0 && fetchDepthB >= 0 && fetchDepthA != fetchDepthB {
 			return intCompare(fetchDepthA, fetchDepthB)
 		}
 		if opsA.fetchCount != opsB.fetchCount {
@@ -308,17 +337,17 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		}
 	}
 
-	// Depth rung — abstains when either side carries a sort (see the
-	// type-filter-depth gate above).
+	// Depth rung — sort-invariant, ungated (see the type-filter-depth comment
+	// above).
 	distinctDepthA := costExprDepth(a, matchDistinct)
 	distinctDepthB := costExprDepth(b, matchDistinct)
-	if distinctDepthA >= 0 && distinctDepthB >= 0 && distinctDepthA != distinctDepthB &&
-		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
+	if distinctDepthA >= 0 && distinctDepthB >= 0 && distinctDepthA != distinctDepthB {
 		return intCompare(distinctDepthB, distinctDepthA)
 	}
 
-	if opsA.unmatchedFieldCount != opsB.unmatchedFieldCount &&
-		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
+	// A sort adds no unmatched index fields, so this count is already
+	// sort-invariant across an elided/sorted pair — ungated.
+	if opsA.unmatchedFieldCount != opsB.unmatchedFieldCount {
 		return intCompare(opsA.unmatchedFieldCount, opsB.unmatchedFieldCount)
 	}
 
@@ -326,16 +355,18 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(opsB.inJoinCount, opsA.inJoinCount)
 	}
 
-	// Structural node-count tiebreak — abstains when either side carries a sort
-	// (see the type-filter-depth gate above). A redundant sort keeps its own
-	// map/filter count unchanged, but the sort-elided sibling it is compared
-	// against can carry a pushdown-SPLIT residual (one filter node → two), so
-	// this rung would otherwise prefer the sorted plan on "fewer filters" before
-	// criterion #12 can drop the sort.
+	// Structural node-count tiebreak (RFC-190 190.2: ungated, matching Java's
+	// unconditional countSimpleOps). Any concern about a sort-elided sibling
+	// carrying a pushdown-SPLIT residual (one filter node → two) winning
+	// against a sorted-but-unsplit plan is moot here: by this point
+	// opsA.inMemorySortCount == opsB.inMemorySortCount is GUARANTEED (the
+	// promoted inMemorySortCount rung above already returned if they
+	// differed), so this rung only ever compares two candidates with the
+	// SAME sort count — the split-vs-sort interaction the old gate worried
+	// about cannot arise here anymore.
 	mapFilterA := opsA.mapCount + opsA.predicatesFilterCount
 	mapFilterB := opsB.mapCount + opsB.predicatesFilterCount
-	if mapFilterA != mapFilterB &&
-		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
+	if mapFilterA != mapFilterB {
 		return intCompare(mapFilterA, mapFilterB)
 	}
 
@@ -348,23 +379,12 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 	// (see D-4 wiring investigation). The scalar model's per-operator
 	// cost formulas discriminate between plans that look identical to
 	// the ordinal criteria.
-	// Reject a redundant in-memory sort BEFORE the scalar-cost fallback. When two
-	// plans tie on every ordinal criterion above (same data access, residuals,
-	// joins, fetches, …) and differ only in how many in-memory sorts they carry,
-	// the one with fewer sorts does strictly less work — a sort over identical
-	// data access is pure overhead. Java eliminates such sorts structurally
-	// (RemoveSortRule); Go's ImplementInMemorySortRule yields the sort
-	// unconditionally and would otherwise rely on the scalar cost to discard it.
-	// But the scalar fallback (EstimateCostWith) descends the Memo by best-member,
-	// which costs a wrapper's child group at its CHEAPEST member rather than the
-	// child actually embedded — so an InMemorySort over a StreamingAgg can look as
-	// cheap as the aggregate group's cheapest member (an aggregate-index scan),
-	// and a redundant ORDER BY sort over an already-grouping-ordered aggregate
-	// wins at scale (RFC-069 group_by_status). Discriminating on sort count here,
-	// before that phantom-prone fallback, restores the sort-eliminated plan.
-	if opsA.inMemorySortCount != opsB.inMemorySortCount {
-		return intCompare(opsA.inMemorySortCount, opsB.inMemorySortCount)
-	}
+	//
+	// The redundant-in-memory-sort rejection that used to sit HERE (just
+	// before this scalar fallback) is now promoted — see the
+	// inMemorySortCount rung right after comparePrimaryScanVsIndexScan,
+	// above — so it runs before the sort-blind structural rungs instead of
+	// after them (RFC-190 190.2).
 
 	// Fewer ON EMPTY NULL operations wins (Java PlanningCostModel: the last
 	// ordinal rung before the planHash tiebreak). This is a structural count
@@ -460,28 +480,18 @@ func scanProvableMaxCard(plan *plans.RecordQueryScanPlan) (float64, bool) {
 	if plan == nil {
 		return 0, false
 	}
-	comps := plan.GetScanComparisons()
-	if len(comps) == 0 {
-		return 0, false
-	}
-	numBound := 0
-	allEquality := true
-	for _, cr := range comps {
-		if !cr.IsEmpty() {
-			numBound++
-			if !cr.IsEquality() {
-				allEquality = false
-			}
-		}
-	}
-	if numBound > 0 && allEquality && numBound == len(comps) {
+	fullBind, provable := pkFullyEqualityBound(plan, nil)
+	if fullBind && provable {
 		return 1, true
 	}
 	return 0, false
 }
 
-// indexProvableMaxCard returns an index scan's PROVABLE max cardinality and whether it is known:
-// 1 ONLY when the index is UNIQUE and every index column is equality-bound; otherwise unknown.
+// indexProvableMaxCard is the logical-memo walk's plan-local cardinality
+// policy: a stamped unique index with every key column equality-bound is at
+// most one row. The concrete walk additionally resolves metadata from its
+// PlanContext; keeping this plan-local form here preserves the established
+// logical-fallback comparison when no concrete root exists.
 func indexProvableMaxCard(p *plans.RecordQueryIndexPlan) (float64, bool) {
 	if p == nil || !p.IsUnique() {
 		return 0, false
@@ -527,7 +537,7 @@ func findExpressionsByType(e expressions.RelationalExpression, stats properties.
 	}
 	counts := expressionCounts{maxDataAccessCardinality: -1}
 	visited := make(map[*expressions.Reference]bool)
-	walkExpressionTree(e, &counts, stats, visited)
+	walkExpressionTree(e, &counts, stats, ctx, visited)
 	// Java's max-of-max-cardinalities is unknown if ANY data access is unbounded.
 	if counts.unboundedDataAccess {
 		counts.maxDataAccessCardinality = -1
@@ -556,90 +566,12 @@ func bestPhysicalChild(ref *expressions.Reference, stats properties.StatisticsPr
 	return firstPhysicalChild(ref)
 }
 
-func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCounts, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) {
+func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCounts, stats properties.StatisticsProvider, ctx PlanContext, visited map[*expressions.Reference]bool) {
 	if e == nil {
 		return
 	}
-	switch w := e.(type) {
-	// A bare primary scan is its own physical expression now (RFC-184 W2) — the
-	// memo-descent cost walk over a LOGICAL parent counts the scan here (the
-	// physical top path already routes bare scans via concretePlanCounts).
-	case *plans.RecordQueryScanPlan:
-		counts.scanCount++
-		if card, known := scanProvableMaxCard(w); known {
-			if card > counts.maxDataAccessCardinality {
-				counts.maxDataAccessCardinality = card
-			}
-		} else {
-			counts.unboundedDataAccess = true
-		}
-	// The aggregate-index plan is its own physical expression now (RFC-184 W2).
-	case *plans.RecordQueryAggregateIndexPlan:
-		counts.coveringIndexCount++
-		// Aggregate access groups rows — no provable ≤1 bound (Java: unknown).
-		counts.unboundedDataAccess = true
-	// The vector scan is its own Cascades expression now (RFC-184 W2).
-	case *plans.RecordQueryVectorIndexPlan:
-		counts.indexScanCount++
-		// Top-K vector scan — no provable ≤1 bound (Java: unknown).
-		counts.unboundedDataAccess = true
-	// An index scan is its own physical expression now (RFC-184 W2) — counted
-	// exactly like the physicalIndexScanWrapper that used to carry it, reading its
-	// covering flag and column metadata from the plan.
-	case *plans.RecordQueryIndexPlan:
-		if w.IsCovering() {
-			counts.coveringIndexCount++
-		} else {
-			counts.indexScanCount++
-		}
-		if card, known := indexProvableMaxCard(w); known {
-			if card > counts.maxDataAccessCardinality {
-				counts.maxDataAccessCardinality = card
-			}
-		} else {
-			counts.unboundedDataAccess = true
-		}
-		totalCols := len(w.GetColumnNames())
-		boundCols := 0
-		for _, cr := range w.GetScanComparisons() {
-			if !cr.IsEmpty() {
-				boundCols++
-			}
-		}
-		counts.unmatchedFieldCount += totalCols - boundCols
-	// A type filter is its own physical expression now (RFC-184 W2).
-	case *plans.RecordQueryTypeFilterPlan:
-		counts.typeFilterCount += len(w.GetRecordTypes())
-	// The PredicatesFilter is its own physical expression now (RFC-184 W2).
-	case *plans.RecordQueryPredicatesFilterPlan:
-		counts.predicatesFilterCount++
-	// A map/projection is its own physical expression now (RFC-184 W2).
-	case *plans.RecordQueryMapPlan:
-		counts.mapCount++
-	// The InJoin is its own physical expression now (RFC-184 W2).
-	case *plans.RecordQueryInJoinPlan:
-		counts.inJoinCount++
-	// The InUnion is its own physical expression now (RFC-184 W2).
-	case *plans.RecordQueryInUnionPlan:
-		counts.inUnionCount++
-	// The FlatMap is its own physical expression now (RFC-184 W2).
-	case *plans.RecordQueryFlatMapPlan:
-		counts.flatMapCount++
-	// The NestedLoopJoin is its own physical expression now (RFC-184 W2).
-	case *plans.RecordQueryNestedLoopJoinPlan:
-		counts.nestedLoopJoinCount++
-		counts.nljPredicateCount += len(w.GetPredicates())
-	// A fetch is its own physical expression now (RFC-184 W2).
-	case *plans.RecordQueryFetchFromPartialRecordPlan:
-		counts.fetchCount++
-	// The ON EMPTY NULL default is its own physical expression now (RFC-184 W2).
-	case *plans.RecordQueryDefaultOnEmptyPlan:
-		counts.numDefaultOnEmpty++
-	// The InMemorySort is its own physical expression now (RFC-184 W2) — the
-	// memo-descent cost walk over a LOGICAL parent counts the sort here (the
-	// physical top path already routes bare sorts via concretePlanCounts).
-	case *plans.RecordQueryInMemorySortPlan:
-		counts.inMemorySortCount++
+	if plan, ok := e.(plans.RecordQueryPlan); ok {
+		countLogicalPlanNode(plan, counts, ctx)
 	}
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
@@ -651,23 +583,128 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		}
 		visited[ref] = true
 		if child := bestPhysicalChild(ref, stats); child != nil {
-			walkExpressionTree(child, counts, stats, visited)
+			walkExpressionTree(child, counts, stats, ctx, visited)
 		}
+	}
+}
+
+// countLogicalPlanNode applies the logical memo-descent policy for a physical
+// member selected beneath a logical root. Classification is shared with the
+// concrete walk so a future type cannot silently fall through, while the
+// contribution formulas remain deliberately separate: replacing them with the
+// concrete policy would activate context metadata, point-probe folding, and
+// multi-intersection folding on a path where those criteria historically did
+// not apply, changing winners merely because diagnostics were enabled.
+func countLogicalPlanNode(plan plans.RecordQueryPlan, counts *expressionCounts, ctx PlanContext) {
+	classification, known := classifyConcretePlan(plan)
+	if !known {
+		warnUnclassifiedPlanType(
+			ctx,
+			costModelDiagnosticCounts,
+			plan,
+			"counted as operator-neutral in the logical memo walk; classify its cost-model counts",
+		)
+		return
+	}
+
+	switch classification.count {
+	case concreteCountNeutral:
+		// Deliberately contributes no logical structural count.
+	case concreteCountScan:
+		scan := plan.(*plans.RecordQueryScanPlan)
+		counts.scanCount++
+		if card, bounded := scanPlanProvableMaxCard(scan, ctx); bounded {
+			if card > counts.maxDataAccessCardinality {
+				counts.maxDataAccessCardinality = card
+			}
+		} else {
+			counts.unboundedDataAccess = true
+		}
+		counts.unmatchedFieldCount += unmatchedFieldsForScan(scan, ctx)
+	case concreteCountIndex:
+		index := plan.(*plans.RecordQueryIndexPlan)
+		if index.IsCovering() {
+			counts.coveringIndexCount++
+		} else {
+			counts.indexScanCount++
+		}
+		if card, bounded := indexProvableMaxCard(index); bounded {
+			if card > counts.maxDataAccessCardinality {
+				counts.maxDataAccessCardinality = card
+			}
+		} else {
+			counts.unboundedDataAccess = true
+		}
+		totalCols := len(index.GetColumnNames())
+		boundCols := 0
+		for _, comparison := range index.GetScanComparisons() {
+			if !comparison.IsEmpty() {
+				boundCols++
+			}
+		}
+		counts.unmatchedFieldCount += totalCols - boundCols
+	case concreteCountAggregateIndex:
+		counts.coveringIndexCount++
+		counts.unboundedDataAccess = true
+	case concreteCountMultiIntersection:
+		// Historical logical policy: contribute only through the aggregate
+		// children. Concrete candidates fold those legs into one access.
+	case concreteCountVectorIndex:
+		counts.indexScanCount++
+		counts.unboundedDataAccess = true
+	case concreteCountTextIndex:
+		// Historical logical policy: text access is count-neutral here.
+		// Concrete candidates count it as an unbounded index access.
+	case concreteCountTypeFilter:
+		counts.typeFilterCount += len(plan.(*plans.RecordQueryTypeFilterPlan).GetRecordTypes())
+	case concreteCountPredicatesFilter:
+		counts.predicatesFilterCount++
+	case concreteCountMap:
+		counts.mapCount++
+	case concreteCountInJoin:
+		counts.inJoinCount++
+	case concreteCountInUnion:
+		counts.inUnionCount++
+	case concreteCountFlatMap:
+		counts.flatMapCount++
+	case concreteCountNestedLoopJoin:
+		join := plan.(*plans.RecordQueryNestedLoopJoinPlan)
+		counts.nestedLoopJoinCount++
+		counts.nljPredicateCount += len(join.GetPredicates())
+	case concreteCountFetch:
+		counts.fetchCount++
+	case concreteCountInMemorySort:
+		counts.inMemorySortCount++
+	case concreteCountDefaultOnEmpty:
+		counts.numDefaultOnEmpty++
+	default:
+		// A newly-added count kind without a logical policy is a classifier
+		// bug, not an intentionally neutral type.
+		warnUnclassifiedPlanType(
+			ctx,
+			costModelDiagnosticCounts,
+			plan,
+			"classified count kind has no logical memo-walk policy",
+		)
 	}
 }
 
 func countResidualPredicates(e expressions.RelationalExpression) int {
+	return countResidualPredicatesWithContext(e, nil)
+}
+
+func countResidualPredicatesWithContext(e expressions.RelationalExpression, ctx PlanContext) int {
 	if ph, ok := e.(physicalPlanExpression); ok {
 		if plan := ph.GetRecordQueryPlan(); plan != nil {
-			return concreteResidualPredicates(plan)
+			return concreteResidualPredicatesWithContext(plan, ctx)
 		}
 	}
 	count := 0
-	countResidualPredicatesRec(e, &count)
+	countResidualPredicatesRec(e, &count, ctx)
 	return count
 }
 
-func countResidualPredicatesRec(e expressions.RelationalExpression, count *int) {
+func countResidualPredicatesRec(e expressions.RelationalExpression, count *int, ctx PlanContext) {
 	if e == nil {
 		return
 	}
@@ -676,18 +713,17 @@ func countResidualPredicatesRec(e expressions.RelationalExpression, count *int) 
 	// fallback only runs when the compared expression is not itself a physical
 	// plan (the physical path takes concreteResidualPredicates), so the counters
 	// must agree on what a residual is.
-	switch n := e.(type) {
-	case *plans.RecordQueryPredicatesFilterPlan:
-		for _, p := range n.GetPredicates() {
-			*count += int(cnfSize(p))
-		}
-	case *plans.RecordQueryFilterPlan:
-		for _, p := range n.GetPredicates() {
-			*count += int(cnfSize(p))
-		}
-	case *plans.RecordQueryNestedLoopJoinPlan:
-		for _, p := range n.GetPredicates() {
-			*count += int(cnfSize(p))
+	if plan, ok := e.(plans.RecordQueryPlan); ok {
+		classification, known := classifyConcretePlan(plan)
+		if !known {
+			warnUnclassifiedPlanType(
+				ctx,
+				costModelDiagnosticResidual,
+				plan,
+				"counted as having zero residual predicates in the logical memo walk; classify its predicate payload",
+			)
+		} else {
+			*count += countClassifiedResidualPredicates(plan, classification, ctx)
 		}
 	}
 	for _, q := range e.GetQuantifiers() {
@@ -696,8 +732,43 @@ func countResidualPredicatesRec(e expressions.RelationalExpression, count *int) 
 			continue
 		}
 		if child := firstPhysicalChild(ref); child != nil {
-			countResidualPredicatesRec(child, count)
+			countResidualPredicatesRec(child, count, ctx)
 		}
+	}
+}
+
+func countClassifiedResidualPredicates(
+	plan plans.RecordQueryPlan,
+	classification concretePlanClassification,
+	ctx PlanContext,
+) int {
+	switch classification.residual {
+	case concreteResidualNeutral:
+		return 0
+	case concreteResidualPredicateCNF:
+		carrier, ok := plan.(expressions.RelationalExpressionWithPredicates)
+		if !ok {
+			warnUnclassifiedPlanType(
+				ctx,
+				costModelDiagnosticResidual,
+				plan,
+				"classified as residual-bearing but does not expose RelationalExpressionWithPredicates",
+			)
+			return 0
+		}
+		total := 0
+		for _, predicate := range carrier.GetPredicates() {
+			total += int(cnfSize(predicate))
+		}
+		return total
+	default:
+		warnUnclassifiedPlanType(
+			ctx,
+			costModelDiagnosticResidual,
+			plan,
+			"classified residual kind has no predicate-count policy",
+		)
+		return 0
 	}
 }
 
@@ -888,6 +959,16 @@ func expressionDepthRec(e expressions.RelationalExpression, match func(expressio
 	if match(e) {
 		return depth
 	}
+	// Sort-invariant depth, in parity with concretePlanDepth (RFC-190 190.2): an
+	// InMemorySort is transparent — it contributes no depth level — so this
+	// logical-fallback path measures depth the same way the physical path does
+	// (and the same way Java's sort-node-free tree would). Reachable because the
+	// recursion descends into physical children (firstPhysicalChild below), which
+	// can be an InMemorySort.
+	inc := 1
+	if _, isSort := e.(*plans.RecordQueryInMemorySortPlan); isSort {
+		inc = 0
+	}
 	best := -1
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
@@ -895,7 +976,7 @@ func expressionDepthRec(e expressions.RelationalExpression, match func(expressio
 			continue
 		}
 		if child := firstPhysicalChild(ref); child != nil {
-			d := expressionDepthRec(child, match, depth+1)
+			d := expressionDepthRec(child, match, depth+inc)
 			if d >= 0 && (best < 0 || d < best) {
 				best = d
 			}
@@ -910,10 +991,16 @@ func isTypeFilterExpression(e expressions.RelationalExpression) bool {
 }
 
 func isDistinctExpression(e expressions.RelationalExpression) bool {
-	// Since RFC-184 W2 the memo holds *plans.RecordQueryDistinctPlan directly
-	// (no physicalDistinctWrapper), so this is a bare type check.
-	_, ok := e.(*plans.RecordQueryDistinctPlan)
-	return ok
+	// Since RFC-184 W2 the memo holds distinct plans directly (no
+	// physicalDistinctWrapper), so both full-row and primary-key variants are
+	// bare type checks.
+	switch e.(type) {
+	case *plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+		return true
+	default:
+		return false
+	}
 }
 
 func isFetchExpression(e expressions.RelationalExpression) bool {
@@ -1211,8 +1298,8 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 	if stats == nil {
 		stats = properties.DefaultStatistics{}
 	}
-	costA := concretePlanCostStrict(planA, stats, ctx, true)
-	costB := concretePlanCostStrict(planB, stats, ctx, true)
+	costA := concretePlanCost(planA, stats, ctx)
+	costB := concretePlanCost(planB, stats, ctx)
 
 	// A materialized NLJ vs a correlated FlatMap (DIFFERENT root join shapes) is a
 	// Go-ONLY comparison — Java keeps no materialized NLJ (RewriteOuterJoinRule
@@ -1297,28 +1384,15 @@ func joinShapesDiffer(planA, planB plans.RecordQueryPlan) bool {
 // and CPU roll up from children exactly as the wrapper cost does, so a join's total
 // cost reflects each sub-product's real (embedded) plan, not a shared-group winner.
 func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
-	return concretePlanCostStrict(p, stats, ctx, false)
-}
-
-// concretePlanCostStrict is concretePlanCost with the RFC-186 §2B
-// point-probe policy selectable: strictPKGate=true (the JOIN-ORDERING
-// entry, compareJoinOrdering) requires PROVABLE full-PK coverage for the
-// 1-row shortcut — an unprovable bind is never a point probe there,
-// because a composite-PK prefix priced as 1 row drives catastrophic join
-// orders. strictPKGate=false (the data-access HintCost adapter, which has
-// no PlanContext) keeps the ADVISORY policy: a full-equality bind prices
-// as a point lookup — imposing strictness there re-broke the documented
-// id-IN-(...) full-scan mis-cost the adapter exists to fix.
-func concretePlanCostStrict(p plans.RecordQueryPlan, stats properties.StatisticsProvider, ctx PlanContext, strictPKGate bool) properties.Cost {
 	if p == nil {
 		return properties.Cost{}
 	}
 	kids := p.GetChildren()
 	child := make([]properties.Cost, len(kids))
 	for i, c := range kids {
-		child[i] = concretePlanCostStrict(c, stats, ctx, strictPKGate)
+		child[i] = concretePlanCost(c, stats, ctx)
 	}
-	return combineConcreteCost(p, child, stats, ctx, strictPKGate)
+	return combineConcreteCost(p, child, stats, ctx)
 }
 
 // combineConcreteCost applies a plan node's per-operator cost formula to its
@@ -1326,7 +1400,7 @@ func concretePlanCostStrict(p plans.RecordQueryPlan, stats properties.Statistics
 // children is expressible independently of the recursion. The per-operator
 // formulas (cost_formulas.go) are the single source of truth shared with the
 // physical-wrapper HintCost methods.
-func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext, strictPKGate bool) properties.Cost {
+func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
 	c0 := func() properties.Cost {
 		if len(child) > 0 {
 			return child[0]
@@ -1336,15 +1410,12 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 	switch pl := p.(type) {
 	case *plans.RecordQueryScanPlan:
 		// Primary-key scan: 1 row ONLY on a PROVABLE full-PK equality bind
-		// (RFC-186 §2B). nil-ctx/unprovable policy at THIS site — STRICTER
-		// than scanPlanProvableMaxCard's: never a point probe. The old
-		// unconditional `true` let `numBound == len(comps)` pass for a
-		// correlated composite-PK PREFIX bind (only tenant_id of
-		// (tenant_id, order_id) present as a comparison): a potentially
-		// million-row prefix scan priced as a repeatable 1-row inner probe —
-		// catastrophic join orders.
+		// (RFC-186 §2B, RFC-190.3). The plan's stamped PK arity is
+		// authoritative; a single-record-type PlanContext is only a fallback
+		// for older/hand-built plans. Unknown coverage fails closed instead of
+		// treating an all-equality prefix as a point probe.
 		fullBind, provable := pkFullyEqualityBound(pl, ctx)
-		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, fullBind && (provable || !strictPKGate))
+		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, fullBind && provable)
 	case *plans.RecordQueryIndexPlan:
 		// Secondary index: a full-equality bind is a single row only if the index is
 		// UNIQUE. Resolve uniqueness from PlanContext when available;
@@ -1394,7 +1465,8 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 			return properties.Cost{}
 		}
 		return properties.InMemorySortCost(c0())
-	case *plans.RecordQueryDistinctPlan:
+	case *plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
@@ -1427,7 +1499,12 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		// No HintCost either: first-child-transparent, but LOUDLY (once per
 		// concrete type) — silent transparency is how the class went
 		// unpriced. Every new plan type must take a position.
-		warnUnpricedPlanType(p)
+		warnUnclassifiedPlanType(
+			ctx,
+			costModelDiagnosticCost,
+			p,
+			"priced first-child-transparent; add HintCost or an explicit cost arm",
+		)
 		sumCPU := 0.0
 		for _, c := range child {
 			sumCPU += c.CPU
@@ -1439,19 +1516,109 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 	}
 }
 
-// warnedUnpricedPlanTypes tracks which plan types have already produced the
-// §2D transparency warning, so a hot planning loop emits each diagnosis
-// exactly once per process.
-var warnedUnpricedPlanTypes sync.Map
+type costModelDiagnosticWalk string
 
-func warnUnpricedPlanType(p plans.RecordQueryPlan) {
-	name := fmt.Sprintf("%T", p)
-	if _, loaded := warnedUnpricedPlanTypes.LoadOrStore(name, struct{}{}); loaded {
+const (
+	costModelDiagnosticCost     costModelDiagnosticWalk = "join_ordering_cost"
+	costModelDiagnosticCounts   costModelDiagnosticWalk = "operator_counts"
+	costModelDiagnosticResidual costModelDiagnosticWalk = "residual_predicates"
+)
+
+type costModelDiagnosticKey struct {
+	walk     costModelDiagnosticWalk
+	planType reflect.Type
+}
+
+type costModelDiagnostics struct {
+	logger *slog.Logger
+	warned sync.Map
+}
+
+type costModelDiagnosticContext struct {
+	PlanContext
+	diagnostics *costModelDiagnostics
+}
+
+func (c *costModelDiagnosticContext) costModelDiagnostics() *costModelDiagnostics {
+	return c.diagnostics
+}
+
+type costModelDiagnosticsProvider interface {
+	costModelDiagnostics() *costModelDiagnostics
+}
+
+// WithCostModelDiagnostics returns a PlanContext that routes cost-model
+// classification warnings to logger. Warnings are deduplicated once per
+// (walk, concrete plan type) within the returned context, so concurrent and
+// repeated comparisons stay quiet without one diagnostic wrapper suppressing a
+// separately constructed wrapper. Reusing a wrapper intentionally reuses its
+// dedupe scope. A nil logger explicitly disables diagnostics, including any
+// sink carried by an already-wrapped context. A nil context is treated as
+// EmptyPlanContext. Apply this after any other PlanContext decorators so the
+// diagnostic wrapper remains outermost; the private sink is intentionally not
+// added to the public PlanContext interface.
+func WithCostModelDiagnostics(ctx PlanContext, logger *slog.Logger) PlanContext {
+	if ctx == nil {
+		ctx = EmptyPlanContext()
+	}
+	var diagnostics *costModelDiagnostics
+	if logger != nil {
+		diagnostics = &costModelDiagnostics{logger: logger}
+	}
+	return &costModelDiagnosticContext{
+		PlanContext: ctx,
+		diagnostics: diagnostics,
+	}
+}
+
+func costModelDiagnosticsFrom(ctx PlanContext) *costModelDiagnostics {
+	provider, ok := ctx.(costModelDiagnosticsProvider)
+	if !ok {
+		return nil
+	}
+	return provider.costModelDiagnostics()
+}
+
+// costModelDiagnosticsOnlyContext strips metadata and configuration from ctx
+// while retaining its diagnostic sink. Nil-statistics planner/rule comparators
+// historically ran with no PlanContext; logging must not activate new winner
+// criteria as a side effect.
+func costModelDiagnosticsOnlyContext(ctx PlanContext) PlanContext {
+	diagnostics := costModelDiagnosticsFrom(ctx)
+	if diagnostics == nil {
+		return nil
+	}
+	return &costModelDiagnosticContext{
+		PlanContext: EmptyPlanContext(),
+		diagnostics: diagnostics,
+	}
+}
+
+func warnUnclassifiedPlanType(
+	ctx PlanContext,
+	walk costModelDiagnosticWalk,
+	p plans.RecordQueryPlan,
+	fallback string,
+) {
+	diagnostics := costModelDiagnosticsFrom(ctx)
+	if diagnostics == nil || diagnostics.logger == nil || p == nil {
 		return
 	}
-	fmt.Fprintf(os.Stderr,
-		"cascades: join-ordering cost walk found plan type %s with neither an explicit arm nor a HintCost — priced first-child-transparent (add a HintCost; RFC-186 §2D)\n",
-		name)
+	if !diagnostics.logger.Enabled(context.Background(), slog.LevelWarn) {
+		return
+	}
+	planType := reflect.TypeOf(p)
+	name := planType.String()
+	key := costModelDiagnosticKey{walk: walk, planType: planType}
+	if _, loaded := diagnostics.warned.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	diagnostics.logger.Warn(
+		"cascades cost model found an unclassified plan type",
+		"walk", string(walk),
+		"plan_type", name,
+		"fallback", fallback,
+	)
 }
 
 // scanLikeCost is the metadata-independent leaf cost for the concrete join-ordering
@@ -1569,7 +1736,7 @@ func walkConcretePlan(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pla
 		return
 	}
 	if countConcreteNode(p, counts, ctx) {
-		return // PK point-probe already accounted for its scan; do not recurse.
+		return // Node already accounted for the intentionally folded child access.
 	}
 	for _, c := range p.GetChildren() {
 		walkConcretePlan(c, counts, ctx)
@@ -1578,12 +1745,144 @@ func walkConcretePlan(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pla
 
 // countConcreteNode adds plan node p's OWN operator contribution to counts (no
 // recursion) and returns skipChildren=true when the caller must NOT descend into p's
-// children — the full-PK point-probe case, which already accounts for its scan and
-// would otherwise be re-counted as unbounded. Split out of walkConcretePlan so a
-// node's own contribution is expressible independently of the descent.
-func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx PlanContext) (skipChildren bool) {
-	switch pl := p.(type) {
+// children — either a full-PK point probe, which already accounts for its scan, or a
+// multi-intersection, whose aggregate legs are deliberately folded into one logical
+// access. Split out of walkConcretePlan so a node's own contribution is expressible
+// independently of the descent.
+type concreteCountKind uint8
+
+const (
+	concreteCountNeutral concreteCountKind = iota
+	concreteCountScan
+	concreteCountIndex
+	concreteCountAggregateIndex
+	concreteCountMultiIntersection
+	concreteCountVectorIndex
+	concreteCountTextIndex
+	concreteCountTypeFilter
+	concreteCountPredicatesFilter
+	concreteCountMap
+	concreteCountInJoin
+	concreteCountInUnion
+	concreteCountFlatMap
+	concreteCountNestedLoopJoin
+	concreteCountFetch
+	concreteCountInMemorySort
+	concreteCountDefaultOnEmpty
+)
+
+type concreteResidualKind uint8
+
+const (
+	concreteResidualNeutral concreteResidualKind = iota
+	concreteResidualPredicateCNF
+)
+
+type concretePlanClassification struct {
+	count    concreteCountKind
+	residual concreteResidualKind
+}
+
+// classifyConcretePlan is the single exhaustive cost-model taxonomy for all
+// concrete plan types. A known zero contribution is explicit, while ok=false
+// means a future plan type reached a walk without taking a position.
+func classifyConcretePlan(p plans.RecordQueryPlan) (classification concretePlanClassification, ok bool) {
+	switch p.(type) {
 	case *plans.RecordQueryScanPlan:
+		return concretePlanClassification{count: concreteCountScan}, true
+	case *plans.RecordQueryIndexPlan:
+		return concretePlanClassification{count: concreteCountIndex}, true
+	case *plans.RecordQueryAggregateIndexPlan:
+		return concretePlanClassification{count: concreteCountAggregateIndex}, true
+	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
+		return concretePlanClassification{count: concreteCountMultiIntersection}, true
+	case *plans.RecordQueryVectorIndexPlan:
+		return concretePlanClassification{count: concreteCountVectorIndex}, true
+	case *plans.RecordQueryTextIndexPlan:
+		return concretePlanClassification{count: concreteCountTextIndex}, true
+	case *plans.RecordQueryTypeFilterPlan:
+		return concretePlanClassification{count: concreteCountTypeFilter}, true
+	case *plans.RecordQueryPredicatesFilterPlan:
+		return concretePlanClassification{
+			count:    concreteCountPredicatesFilter,
+			residual: concreteResidualPredicateCNF,
+		}, true
+	case *plans.RecordQueryMapPlan:
+		return concretePlanClassification{count: concreteCountMap}, true
+	case *plans.RecordQueryInJoinPlan:
+		return concretePlanClassification{count: concreteCountInJoin}, true
+	case *plans.RecordQueryInUnionPlan:
+		return concretePlanClassification{count: concreteCountInUnion}, true
+	case *plans.RecordQueryFlatMapPlan:
+		return concretePlanClassification{count: concreteCountFlatMap}, true
+	case *plans.RecordQueryNestedLoopJoinPlan:
+		return concretePlanClassification{
+			count:    concreteCountNestedLoopJoin,
+			residual: concreteResidualPredicateCNF,
+		}, true
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
+		return concretePlanClassification{count: concreteCountFetch}, true
+	case *plans.RecordQueryInMemorySortPlan:
+		return concretePlanClassification{count: concreteCountInMemorySort}, true
+	case *plans.RecordQueryDefaultOnEmptyPlan:
+		return concretePlanClassification{count: concreteCountDefaultOnEmpty}, true
+	case *plans.RecordQueryFilterPlan:
+		return concretePlanClassification{residual: concreteResidualPredicateCNF}, true
+	case *plans.RecordQueryComparatorPlan,
+		*plans.RecordQueryDeletePlan,
+		*plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryExplodePlan,
+		*plans.RecordQueryFirstOrDefaultPlan,
+		*plans.RecordQueryInsertPlan,
+		*plans.RecordQueryIntersectionPlan,
+		*plans.RecordQueryLimitPlan,
+		*plans.RecordQueryLoadByKeysPlan,
+		*plans.RecordQueryMergeSortUnionPlan,
+		*plans.RecordQueryProjectionPlan,
+		*plans.RecordQueryRecursiveDfsJoinPlan,
+		*plans.RecordQueryRecursiveLevelUnionPlan,
+		*plans.RecordQueryScoreForRankPlan,
+		*plans.RecordQuerySelectorPlan,
+		*plans.RecordQueryStreamingAggregationPlan,
+		*plans.RecordQueryTableFunctionPlan,
+		*plans.RecordQueryTempTableInsertPlan,
+		*plans.RecordQueryTempTableScanPlan,
+		*plans.RecordQueryUnionPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
+		*plans.RecordQueryUnorderedUnionPlan,
+		*plans.RecordQueryUpdatePlan,
+		*plans.RecordQueryValuesPlan:
+		return concretePlanClassification{}, true
+	default:
+		return concretePlanClassification{}, false
+	}
+}
+
+func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx PlanContext) (skipChildren bool) {
+	classification, known := classifyConcretePlan(p)
+	if !known {
+		warnUnclassifiedPlanType(
+			ctx,
+			costModelDiagnosticCounts,
+			p,
+			"counted as operator-neutral; classify its cost-model counts",
+		)
+		return false
+	}
+	return countClassifiedConcreteNode(p, classification, counts, ctx)
+}
+
+func countClassifiedConcreteNode(
+	p plans.RecordQueryPlan,
+	classification concretePlanClassification,
+	counts *expressionCounts,
+	ctx PlanContext,
+) (skipChildren bool) {
+	switch classification.count {
+	case concreteCountNeutral:
+		// Deliberately contributes no structural count.
+	case concreteCountScan:
+		pl := p.(*plans.RecordQueryScanPlan)
 		counts.scanCount++
 		if card, known := scanPlanProvableMaxCard(pl, ctx); known {
 			if card > counts.maxDataAccessCardinality {
@@ -1592,7 +1891,9 @@ func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pl
 		} else {
 			counts.unboundedDataAccess = true
 		}
-	case *plans.RecordQueryIndexPlan:
+		counts.unmatchedFieldCount += unmatchedFieldsForScan(pl, ctx)
+	case concreteCountIndex:
+		pl := p.(*plans.RecordQueryIndexPlan)
 		cols, unique := indexMetadata(pl, ctx)
 		if pl.IsCovering() {
 			counts.coveringIndexCount++
@@ -1607,15 +1908,13 @@ func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pl
 			counts.unboundedDataAccess = true
 		}
 		counts.unmatchedFieldCount += unmatchedFieldsForIndex(pl, cols)
-	case *plans.RecordQueryAggregateIndexPlan:
+	case concreteCountAggregateIndex:
 		counts.coveringIndexCount++
 		// Aggregate access groups rows — no provable ≤1 bound (Java: unknown).
 		counts.unboundedDataAccess = true
-	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
+	case concreteCountMultiIntersection:
 		// A multi-aggregate intersection's children are aggregate-index scans
-		// baked into this plan, and it reports no children to the walk, so
-		// without this case they go uncounted and the node ranks as a
-		// no-data-access node. Count it as ONE logical grouped data access — read
+		// baked into this plan. Count it as ONE logical grouped data access — read
 		// the pre-aggregated groups, comparable to a single aggregate-index scan,
 		// NOT N independent accesses. Counting it as N made criterion #3 (fewer
 		// data accesses) prefer a single full Scan (count 1) over the intersection
@@ -1625,17 +1924,20 @@ func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pl
 		// walk so the per-child scans aren't also counted.
 		counts.coveringIndexCount++
 		counts.unboundedDataAccess = true
+		validateSkippedConcreteCountSubtrees(p.GetChildren(), ctx)
 		return true
-	case *plans.RecordQueryVectorIndexPlan:
+	case concreteCountVectorIndex:
 		counts.indexScanCount++
 		// Top-K vector scan — no provable ≤1 bound (Java: unknown).
 		counts.unboundedDataAccess = true
-	case *plans.RecordQueryTextIndexPlan:
+	case concreteCountTextIndex:
 		counts.indexScanCount++
 		counts.unboundedDataAccess = true
-	case *plans.RecordQueryTypeFilterPlan:
+	case concreteCountTypeFilter:
+		pl := p.(*plans.RecordQueryTypeFilterPlan)
 		counts.typeFilterCount += len(pl.GetRecordTypes())
-	case *plans.RecordQueryPredicatesFilterPlan:
+	case concreteCountPredicatesFilter:
+		pl := p.(*plans.RecordQueryPredicatesFilterPlan)
 		counts.predicatesFilterCount++
 		// A PredicatesFilter whose equality conjuncts cover the FULL primary key of
 		// the inner full Scan is a point probe — it accesses at most one record, so
@@ -1654,11 +1956,10 @@ func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pl
 			if 1 > counts.maxDataAccessCardinality {
 				counts.maxDataAccessCardinality = 1
 			}
+			validateSkippedConcreteCountSubtrees(p.GetChildren(), ctx)
 			return true // already accounted for the scan; do not recurse (would mark unbounded)
 		}
-	case *plans.RecordQueryFilterPlan:
-		// Legacy filter — not counted as a predicates filter (matches the wrapper walk).
-	case *plans.RecordQueryMapPlan:
+	case concreteCountMap:
 		// Map only — NOT RecordQueryProjectionPlan. The map-count criterion (#14)
 		// is a structural tiebreak; a near-ubiquitous top-of-query projection is
 		// not a discriminating operator, and counting it makes #14 fire on almost
@@ -1668,23 +1969,63 @@ func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pl
 		// latent-buggy CTE plan that mis-projects an aliased column to NULL —
 		// caught by TestFDB_{CTEChainedColumnAliases,CascadesCTEColumnAliases}.
 		counts.mapCount++
-	case *plans.RecordQueryInJoinPlan:
+	case concreteCountInJoin:
 		counts.inJoinCount++
-	case *plans.RecordQueryInUnionPlan:
+	case concreteCountInUnion:
 		counts.inUnionCount++
-	case *plans.RecordQueryFlatMapPlan:
+	case concreteCountFlatMap:
 		counts.flatMapCount++
-	case *plans.RecordQueryNestedLoopJoinPlan:
+	case concreteCountNestedLoopJoin:
+		pl := p.(*plans.RecordQueryNestedLoopJoinPlan)
 		counts.nestedLoopJoinCount++
 		counts.nljPredicateCount += len(pl.GetPredicates())
-	case *plans.RecordQueryFetchFromPartialRecordPlan:
+	case concreteCountFetch:
 		counts.fetchCount++
-	case *plans.RecordQueryInMemorySortPlan:
+	case concreteCountInMemorySort:
 		counts.inMemorySortCount++
-	case *plans.RecordQueryDefaultOnEmptyPlan:
+	case concreteCountDefaultOnEmpty:
 		counts.numDefaultOnEmpty++
+	default:
+		warnUnclassifiedPlanType(
+			ctx,
+			costModelDiagnosticCounts,
+			p,
+			"classified count kind has no concrete count policy",
+		)
 	}
 	return false
+}
+
+// validateSkippedConcreteCountSubtrees preserves the unclassified-type detector
+// beneath operators whose children are intentionally folded into the parent's
+// count. It is diagnostics-only and cannot mutate the comparison's counts.
+func validateSkippedConcreteCountSubtrees(children []plans.RecordQueryPlan, ctx PlanContext) {
+	diagnostics := costModelDiagnosticsFrom(ctx)
+	if diagnostics == nil ||
+		diagnostics.logger == nil ||
+		!diagnostics.logger.Enabled(context.Background(), slog.LevelWarn) {
+		return
+	}
+	var validate func(plans.RecordQueryPlan)
+	validate = func(plan plans.RecordQueryPlan) {
+		if plan == nil {
+			return
+		}
+		if _, known := classifyConcretePlan(plan); !known {
+			warnUnclassifiedPlanType(
+				ctx,
+				costModelDiagnosticCounts,
+				plan,
+				"hidden beneath a folded count subtree; classify its cost-model counts",
+			)
+		}
+		for _, child := range plan.GetChildren() {
+			validate(child)
+		}
+	}
+	for _, child := range children {
+		validate(child)
+	}
 }
 
 // predicatesFilterIsFullPKPointProbe reports whether a PredicatesFilter over a full
@@ -1758,45 +2099,37 @@ func indexMetadata(pl *plans.RecordQueryIndexPlan, ctx PlanContext) ([]string, b
 // columns to cover the FULL primary key (a partial equality prefix of a composite PK is
 // still a range, hence unbounded).
 func scanPlanProvableMaxCard(pl *plans.RecordQueryScanPlan, ctx PlanContext) (float64, bool) {
-	fullBind, _ := pkFullyEqualityBound(pl, ctx)
-	if !fullBind {
+	fullBind, provable := pkFullyEqualityBound(pl, ctx)
+	if !fullBind || !provable {
 		return 0, false
 	}
-	// nil-ctx policy at THIS site: unprovable full-PK coverage still ALLOWS
-	// the 1-row bound (the bound is advisory; legacy behavior). The
-	// join-ordering leaf cost applies the STRICTER policy — see the
-	// RecordQueryScanPlan arm of the concrete join-cost switch.
 	return 1, true
 }
 
 // pkFullyEqualityBound is RFC-186 §2B's ONE shared full-PK-equality
 // predicate — two subtly different inline gates in one file is how the
-// composite-PK point-probe bug was born. fullBind reports that every
-// present comparison is an equality with none absent AND, when coverage is
-// provable, that the bound columns cover the FULL primary key (a partial
-// equality prefix of a composite PK is still a range). provable reports
-// whether ctx resolved the PK column count. Each call site states its own
-// nil-ctx/unprovable policy explicitly.
+// composite-PK point-probe bug was born. fullBind reports that equality
+// comparisons cover the FULL primary key (a partial equality prefix of a
+// composite PK is still a range). provable reports whether the PK arity is
+// known, independently of whether the scan is fully bound. Plan-stamped
+// metadata is authoritative; a single-record-type ctx is the fallback.
 func pkFullyEqualityBound(pl *plans.RecordQueryScanPlan, ctx PlanContext) (fullBind, provable bool) {
-	comps := pl.GetScanComparisons()
-	if len(comps) == 0 {
+	if pl == nil {
 		return false, false
 	}
-	numBound := 0
-	for _, cr := range comps {
-		if cr.IsEmpty() || !cr.IsEquality() {
-			return false, false
-		}
-		numBound++
+	pkLen := len(pl.GetPrimaryKeyValues())
+	if pkLen > 0 {
+		return properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), pkLen), true
 	}
-	if ctx == nil || len(pl.GetRecordTypes()) == 0 {
-		return true, false
+	recordTypes := pl.GetRecordTypes()
+	if ctx == nil || len(recordTypes) != 1 {
+		return false, false
 	}
-	pkLen := len(ctx.GetPrimaryKeyColumns(pl.GetRecordTypes()[0]))
+	pkLen = len(ctx.GetPrimaryKeyColumns(recordTypes[0]))
 	if pkLen == 0 {
-		return true, false
+		return false, false
 	}
-	return numBound >= pkLen, true
+	return properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), pkLen), true
 }
 
 // indexPlanProvableMaxCard returns an index scan's PROVABLE max cardinality (1) and
@@ -1868,33 +2201,85 @@ func unmatchedFieldsForIndex(pl *plans.RecordQueryIndexPlan, cols []string) int 
 	return columnSize - numComparisons
 }
 
+// unmatchedFieldsForScan computes the UnmatchedFieldsCount contribution of a
+// PRIMARY scan: PK-column-count minus numComparisons. Ports Java's
+// UnmatchedFieldsCountProperty, which counts a RecordQueryScanPlan via
+// commonPrimaryKey.getColumnSize() exactly like it counts an index plan via
+// the index's key-column count — Go's port had ONLY the index-plan branch
+// (this function did not exist), so a bare full scan (e.g. one driving an
+// explicit in-memory sort to satisfy an ORDER BY that no index provides for
+// free) silently scored 0 "unmatched fields" regardless of how few of its PK
+// columns were bound, while a covering index scan used PURELY for ordering
+// (every comparison empty — the index is walked only for the free sort
+// order it provides, not for any WHERE-clause SARG) scored columnSize > 0.
+// That is an apples-to-oranges comparison (only one side of the pair ever
+// accrues a nonzero count), and once criterion #12 stopped being gated
+// behind the in-memory-sort check (RFC-190 190.2 Part A/B), it let this
+// asymmetry spuriously prefer the full-scan-plus-sort candidate over a
+// well-targeted covering index scan the index already sorts for free — a
+// real regression the golden diff caught (bytes.yaml `ORDER BY b` and
+// siblings), traced to this missing branch by reading
+// UnmatchedFieldsCountProperty.java line-for-line.
+//
+// Returns 0 (conservative, matching indexMetadata's not-found convention)
+// when ctx is nil, the scan carries no record type, or ctx has no PK
+// metadata for the type — the same "unknown metadata ⇒ no contribution"
+// fallback the rest of this file uses (pkFullyEqualityBound,
+// scanPlanProvableMaxCard).
+func unmatchedFieldsForScan(pl *plans.RecordQueryScanPlan, ctx PlanContext) int {
+	if ctx == nil || len(pl.GetRecordTypes()) == 0 {
+		return 0
+	}
+	pkCols := ctx.GetPrimaryKeyColumns(pl.GetRecordTypes()[0])
+	if len(pkCols) == 0 {
+		return 0
+	}
+	equalitySize := 0
+	hasInequality := false
+	for _, cr := range pl.GetScanComparisons() {
+		if cr.IsEmpty() {
+			continue
+		}
+		if cr.IsEquality() {
+			equalitySize++
+		} else {
+			hasInequality = true
+		}
+	}
+	numComparisons := equalitySize
+	if hasInequality {
+		numComparisons++
+	}
+	columnSize := len(pkCols)
+	if columnSize < numComparisons {
+		columnSize = numComparisons
+	}
+	return columnSize - numComparisons
+}
+
 // concreteResidualPredicates sums the CNF size of every residual predicate
 // (PredicatesFilter + legacy Filter) in a concrete plan tree (criterion #3).
 func concreteResidualPredicates(p plans.RecordQueryPlan) int {
+	return concreteResidualPredicatesWithContext(p, nil)
+}
+
+func concreteResidualPredicatesWithContext(p plans.RecordQueryPlan, ctx PlanContext) int {
 	total := 0
 	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
-		switch pf := n.(type) {
-		case *plans.RecordQueryPredicatesFilterPlan:
-			for _, pr := range pf.GetPredicates() {
-				total += int(cnfSize(pr))
-			}
-		case *plans.RecordQueryFilterPlan:
-			for _, pr := range pf.GetPredicates() {
-				total += int(cnfSize(pr))
-			}
-		case *plans.RecordQueryNestedLoopJoinPlan:
-			// A materialized NLJ evaluates its join predicate per (outer,inner)
-			// pair — it is NOT satisfied by a SARG, so it is a residual conjunct,
-			// exactly like a PredicatesFilter. Counting it is essential for the
-			// residual criterion (#3) to prefer a correlated FlatMap (which SARGs
-			// the join key into an index/PK probe, leaving fewer residuals) over a
-			// materialized NLJ that re-evaluates the same predicate per pair — Go
-			// has no Java counterpart for a join-predicate-bearing NLJ, so this
-			// keeps #3 from spuriously preferring the materialized join (RFC-069).
-			for _, pr := range pf.GetPredicates() {
-				total += int(cnfSize(pr))
-			}
+		classification, known := classifyConcretePlan(n)
+		if !known {
+			warnUnclassifiedPlanType(
+				ctx,
+				costModelDiagnosticResidual,
+				n,
+				"counted as having zero residual predicates; classify its predicate payload",
+			)
+			return true
 		}
+		// A materialized NLJ evaluates its join predicate per (outer, inner)
+		// pair. It is residual just like PredicatesFilter and legacy Filter;
+		// the shared taxonomy above keeps the logical and concrete walks aligned.
+		total += countClassifiedResidualPredicates(n, classification, ctx)
 		return true
 	})
 	return total
@@ -1923,8 +2308,13 @@ func concretePlanMatches(p plans.RecordQueryPlan, kind planMatchKind) bool {
 		_, ok := p.(*plans.RecordQueryIndexPlan)
 		return ok
 	case matchDistinct:
-		_, ok := p.(*plans.RecordQueryDistinctPlan)
-		return ok
+		switch p.(type) {
+		case *plans.RecordQueryDistinctPlan,
+			*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+			return true
+		default:
+			return false
+		}
 	}
 	return false
 }
@@ -1932,12 +2322,32 @@ func concretePlanMatches(p plans.RecordQueryPlan, kind planMatchKind) bool {
 // concretePlanDepth returns the minimum depth (root = 0) at which a node matching
 // kind appears in the concrete plan tree, or -1 if none. Mirrors Java's
 // ExpressionDepthProperty over the concrete plan.
+//
+// SORT-INVARIANT (RFC-190 190.2): an in-memory sort is TRANSPARENT for
+// structural depth — it does not increment the count. Java has no in-memory
+// sort node at all (RemoveSortRule eliminates it before planning), so Java's
+// structural depths never see one; a redundant Go RecordQueryInMemorySortPlan
+// sitting on top of an otherwise-identical plan must not inflate every
+// descendant's depth by +1 relative to a sort-elided sibling — that inflation
+// made a depth comparison between a sorted and a sort-free plan measure from
+// DIFFERENT roots, which is what produced the non-transitive 3-cycle this
+// function's gate used to paper over (see cost_transitivity_test.go).
 func concretePlanDepth(p plans.RecordQueryPlan, kind planMatchKind) int {
 	if p == nil {
 		return -1
 	}
 	if concretePlanMatches(p, kind) {
 		return 0
+	}
+	if _, ok := p.(*plans.RecordQueryInMemorySortPlan); ok {
+		best := -1
+		for _, c := range p.GetChildren() {
+			d := concretePlanDepth(c, kind)
+			if d >= 0 && (best < 0 || d < best) {
+				best = d
+			}
+		}
+		return best
 	}
 	best := -1
 	for _, c := range p.GetChildren() {

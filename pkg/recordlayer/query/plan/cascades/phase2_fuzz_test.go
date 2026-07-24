@@ -39,7 +39,7 @@ func FuzzDataAccessScan_NoPanic(f *testing.F) {
 			candCols[i] = colPool[int(colSeed+byte(i))%len(colPool)]
 			aliases[i] = values.UniqueCorrelationIdentifier()
 		}
-		cand := NewValueIndexScanMatchCandidate(
+		cand := newKnownDistinctValueIndexCandidate(
 			"fuzz_index",
 			[]string{"T"},
 			candCols,
@@ -145,7 +145,7 @@ func FuzzOrderedIndexScan_NoPanic(f *testing.F) {
 			candCols[i] = colPool[(int(seed)+i)%len(colPool)]
 			aliases[i] = values.UniqueCorrelationIdentifier()
 		}
-		cand := NewValueIndexScanMatchCandidate(
+		cand := newKnownDistinctValueIndexCandidate(
 			"fuzz_ordered_idx",
 			[]string{"T"},
 			candCols,

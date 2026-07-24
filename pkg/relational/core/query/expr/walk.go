@@ -386,20 +386,26 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 // zero-arg ScalarFunctionValue whose Evaluate dispatches in
 // evalScalarFunction.
 func (r *Resolver) walkSimpleFunctionCall(ctx *antlrgen.SimpleFunctionCallContext) (values.Value, error) {
+	name := ""
 	switch {
 	case ctx.CURRENT_TIMESTAMP() != nil:
-		return values.NewScalarFunctionValue("CURRENT_TIMESTAMP", values.NullableTimestamp), nil
+		name = "CURRENT_TIMESTAMP"
 	case ctx.CURRENT_DATE() != nil:
-		return values.NewScalarFunctionValue("CURRENT_DATE", values.NullableDate), nil
+		name = "CURRENT_DATE"
 	case ctx.CURRENT_TIME() != nil:
-		return values.NewScalarFunctionValue("CURRENT_TIME", values.NullableTimestamp), nil
+		name = "CURRENT_TIME"
 	case ctx.LOCALTIME() != nil:
-		return values.NewScalarFunctionValue("LOCALTIME", values.NullableTimestamp), nil
+		name = "LOCALTIME"
 	case ctx.CURRENT_USER() != nil:
 		return &values.ConstantValue{Value: "", Typ: values.NullableString}, nil
 	default:
 		return nil, &UnsupportedExpressionShapeError{Shape: "unsupported SimpleFunctionCall"}
 	}
+	typ, ok := values.ScalarFunctionDeclaredResultType(name)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: "uncatalogued SimpleFunctionCall " + name}
+	}
+	return values.NewScalarFunctionValue(name, typ), nil
 }
 
 // walkCaseFunctionCall handles searched CASE expressions:
@@ -479,49 +485,7 @@ func (r *Resolver) walkCaseFunctionCall(ctx *antlrgen.CaseFunctionCallContext) (
 // guessing. Without this the result-set column metadata reports UNKNOWN for
 // every CASE (Java reports the branch type).
 func caseResultType(alternatives []values.Value) values.Type {
-	return commonBranchType(alternatives)
-}
-
-// commonBranchType computes the common supertype (Java's Type.maximumType) of a
-// set of branch/argument values, made nullable. NULL and UNKNOWN branches carry
-// no type constraint and are skipped — a `CASE WHEN ... THEN NULL ELSE v END`
-// is typed by v, matching Java. Returns UnknownType only when no branch has a
-// concrete type or the concrete branches cannot be unified (preserving the
-// prior conservative behaviour rather than guessing).
-func commonBranchType(branches []values.Value) values.Type {
-	types := make([]values.Type, 0, len(branches))
-	for _, b := range branches {
-		if b == nil {
-			continue
-		}
-		// A literal NULL carries no type constraint — skip it so the concrete
-		// branches type the result (`CASE WHEN c THEN NULL ELSE v END` is v's
-		// type). NULL is built as NewNullValue(TypeUnknown), so its type code
-		// is TypeCodeUnknown — it must be detected by value KIND, not type
-		// code, or it gets confused with a genuine unknown.
-		if _, isNull := b.(*values.NullValue); isNull {
-			continue
-		}
-		t := b.Type()
-		if t == nil || t.Code() == values.TypeCodeNull {
-			continue
-		}
-		if t.Code() == values.TypeCodeUnknown {
-			// A non-NULL branch of genuinely unknown type (scalar subquery,
-			// parameter) could yield any type, so we cannot let the concrete
-			// branches dictate the result — keep it unknown (P2).
-			return values.UnknownType
-		}
-		types = append(types, t)
-	}
-	if len(types) == 0 {
-		return values.UnknownType
-	}
-	mt := values.MaximumTypeOfMany(types...)
-	if mt == nil {
-		return values.UnknownType
-	}
-	return values.WithNullability(mt, true)
+	return values.CommonValueType(alternatives)
 }
 
 // walkSimpleCaseFunctionCall handles simple CASE expressions:
@@ -832,9 +796,8 @@ func (pv *predicateValue) Evaluate(evalCtx any) (any, error) {
 	}
 }
 
-// walkScalarFunction handles every scalar function name registered
-// in scalarFunctionResultType() (the source of truth — see that
-// function for the live list). Unknown function names decline with
+// walkScalarFunction handles every generic scalar-call name registered in the
+// values-owned scalar-function catalog. Unknown function names decline with
 // UnsupportedExpressionShapeError so the logical-builder text
 // fallback catches them; this keeps the walker conservative until
 // the full scalar function catalogue ports.
@@ -882,17 +845,9 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 		}
 		return values.NewDistanceValue(op, args[0], args[1]), nil
 	}
-	typ, ok := scalarFunctionResultType(name)
+	typ, ok := values.ScalarFunctionResultType(name, args)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("scalar function %q (not in seed catalogue)", name)}
-	}
-	// Polymorphic value-preserving functions (COALESCE, GREATEST, LEAST, ...)
-	// carry UnknownType by name; infer the concrete result type from the
-	// argument types so result-set metadata reports the real type (Java does).
-	if typ == nil || typ.Code() == values.TypeCodeUnknown {
-		if inferred := polymorphicResultType(name, args); inferred != nil {
-			typ = inferred
-		}
 	}
 	return values.NewScalarFunctionValue(name, typ, args...), nil
 }
@@ -986,45 +941,6 @@ func (r *Resolver) walkFunctionArgs(fa antlrgen.IFunctionArgsContext) ([]values.
 		args = append(args, v)
 	}
 	return args, nil
-}
-
-// polymorphicResultType infers the result type of a value-preserving
-// polymorphic scalar function from its argument types, mirroring Java. Returns
-// nil (keep UnknownType) when the type can't be determined from concrete args.
-func polymorphicResultType(name string, args []values.Value) values.Type {
-	concrete := func(t values.Type) values.Type {
-		if t == nil || t.Code() == values.TypeCodeUnknown {
-			return nil
-		}
-		return t
-	}
-	switch name {
-	case "COALESCE", "IFNULL", "GREATEST", "LEAST":
-		// Result is the common supertype of all branches.
-		return concrete(commonBranchType(args))
-	case "IF", "IIF":
-		// IF(cond, then, else): common supertype of the value branches.
-		if len(args) >= 2 {
-			return concrete(commonBranchType(args[1:]))
-		}
-	case "NULLIF":
-		// NULLIF(a, b) is a (possibly NULL) so it has a's type.
-		if len(args) >= 1 && args[0] != nil {
-			if t := concrete(args[0].Type()); t != nil {
-				return values.WithNullability(t, true)
-			}
-		}
-	case "MOD":
-		// MOD(a, b) promotes both operands (MOD(id, 2.5) yields a DOUBLE at
-		// runtime), same as arithmetic — P2.
-		return concrete(commonBranchType(args))
-	case "ABS", "FLOOR", "CEIL", "CEILING", "ROUND", "SIGN":
-		// Numeric, type-preserving in the first operand.
-		if len(args) >= 1 && args[0] != nil {
-			return concrete(args[0].Type())
-		}
-	}
-	return nil
 }
 
 // distanceOperatorForFunc maps a SQL distance-function name to its
@@ -1133,36 +1049,6 @@ func (r *Resolver) walkNonAggregateWindowedFunction(fc *antlrgen.NonAggregateFun
 	}
 
 	return values.NewRowNumberValue(partitions, args, efSearch, nil), nil
-}
-
-// scalarFunctionResultType returns the result type of a seed scalar
-// function. Unknown name → (_, false) so the walker declines.
-//
-// Polymorphic returns (ABS / CEILING / FLOOR / ROUND / COALESCE /
-// NULLIF) carry UnknownType because the result type depends on the
-// input — int input stays int, float input stays float. Real
-// per-arg inference is future work.
-func scalarFunctionResultType(name string) (values.Type, bool) {
-	switch name {
-	case "UPPER", "LOWER", "TRIM", "LTRIM", "RTRIM",
-		"CONCAT", "CONCAT_WS", "SUBSTRING", "SUBSTR", "REPLACE",
-		"REVERSE", "LEFT", "RIGHT":
-		return values.TypeString, true
-	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH",
-		"POSITION",
-		"YEAR", "MONTH", "DAY", "DAYOFMONTH",
-		"HOUR", "MINUTE", "SECOND",
-		"DAYOFWEEK", "DAYOFYEAR":
-		return values.TypeInt, true
-	case "SQRT", "POWER", "POW", "EXP", "LN", "LOG", "PI":
-		return values.TypeFloat, true
-	case "ABS", "FLOOR", "CEIL", "CEILING", "ROUND",
-		"SIGN", "MOD",
-		"COALESCE", "NULLIF", "IFNULL",
-		"IF", "IIF", "GREATEST", "LEAST":
-		return values.TypeUnknown, true
-	}
-	return values.TypeUnknown, false
 }
 
 // primitiveTypeToValueType maps the PrimitiveType terminal to a
@@ -1314,7 +1200,13 @@ func (r *Resolver) walkBitExpression(b *antlrgen.BitExpressionAtomContext) (valu
 	default:
 		return nil, &UnsupportedExpressionShapeError{Shape: "BitOperator: " + opText}
 	}
-	return values.NewScalarFunctionValue(name, values.TypeInt, left, right), nil
+	typ, ok := values.ScalarFunctionDeclaredResultType(name)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{
+			Shape: "uncatalogued BitExpressionAtom function " + name,
+		}
+	}
+	return values.NewScalarFunctionValue(name, typ, left, right), nil
 }
 
 // walkArrayConstructor builds a numeric array / vector literal `[a, b, c]`

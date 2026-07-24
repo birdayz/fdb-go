@@ -12,6 +12,11 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+type intersectionConsumption struct {
+	requestedOrderings []*properties.RequestedOrdering
+	matches            []PartialMatch
+}
+
 // Planner is the task-stack driven cascades planner.
 //
 // The Java equivalent is `CascadesPlanner` — a task-stack driver over
@@ -146,6 +151,14 @@ type Planner struct {
 	// only when the match set grows. Reset per Plan() run.
 	dataAccessConsumed map[*expressions.Reference]int
 
+	// intersectionConsumed is the corresponding growth guard for the
+	// cross-candidate intersection path. It is keyed additionally by the
+	// requested-ordering set: an ordering can arrive after an unordered
+	// consumption at the same match count and unlock a different merge
+	// direction. The old "any intersection final exists" guard permanently
+	// hid later 3/4-way combinations when matches arrived incrementally.
+	intersectionConsumed map[*expressions.Reference][]intersectionConsumption
+
 	// exprRuleIdx / implRuleIdx bucket each phase's rules by their
 	// matcher's typed root operator (ruleIndex), so ExploreExprTask only
 	// pushes transform tasks for rules that can possibly match an
@@ -163,14 +176,18 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 	if ctx == nil {
 		ctx = EmptyPlanContext()
 	}
-	return &Planner{
+	p := &Planner{
 		rules:              rules,
 		rewritingImplRules: []ImplementationRule{NewFinalizeExpressionsRule()},
 		ctx:                ctx,
 		memo:               nil,
-		costModel:          PlanningCostModelLess,
 		MaxTasks:           100_000,
 	}
+	// Preserve the historical nil-context cost semantics until
+	// WithStatistics is called, while still carrying an injected RFC-190.14
+	// diagnostic sink. Merely adding a logger must never change a winner.
+	p.costModel = NewPlanningCostModelLessWithContext(nil, costModelDiagnosticsOnlyContext(ctx))
+	return p
 }
 
 // Memo returns the planner's Memo structure. Available after Plan
@@ -321,6 +338,7 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	})
 	p.constraintMap = NewConstraintMap()
 	p.dataAccessConsumed = make(map[*expressions.Reference]int)
+	p.intersectionConsumed = make(map[*expressions.Reference][]intersectionConsumption)
 	p.exprRuleIdx = nil
 	p.implRuleIdx = nil
 	p.capErr = nil
@@ -606,6 +624,98 @@ func (p *Planner) shouldConsumeMatches(ref *expressions.Reference, candidates []
 	return !(seen && totalMatches <= last)
 }
 
+// shouldConsumeIntersection admits each exact maximum-coverage input once for
+// each requested-ordering set. Requested orderings are part of the key because
+// they can be propagated after the first unordered pass and determine
+// scan/comparison direction. Match identity — not merely count — is part of the
+// key because an adjusted match can replace a raw match at the same cardinality
+// and unlock a previously unavailable merge ordering.
+func (p *Planner) shouldConsumeIntersection(
+	ref *expressions.Reference,
+	accesses []Vectored[*SingleMatchedAccess],
+	requestedOrderings []*properties.RequestedOrdering,
+) bool {
+	if p.intersectionConsumed == nil {
+		p.intersectionConsumed = make(map[*expressions.Reference][]intersectionConsumption)
+	}
+	key := ref.Canonical()
+	entries := p.intersectionConsumed[key]
+	for _, entry := range entries {
+		if requestedOrderingSetsEqual(entry.requestedOrderings, requestedOrderings) &&
+			intersectionMatchSetsEqual(entry.matches, accesses) {
+			return false
+		}
+	}
+	matches := make([]PartialMatch, 0, len(accesses))
+	for _, access := range accesses {
+		matches = append(matches, access.Value.GetPartialMatch())
+	}
+	p.intersectionConsumed[key] = append(entries, intersectionConsumption{
+		requestedOrderings: append([]*properties.RequestedOrdering(nil), requestedOrderings...),
+		matches:            matches,
+	})
+	return true
+}
+
+func intersectionMatchSetsEqual(
+	seen []PartialMatch,
+	current []Vectored[*SingleMatchedAccess],
+) bool {
+	if len(seen) != len(current) {
+		return false
+	}
+	used := make([]bool, len(current))
+	for _, left := range seen {
+		found := false
+		for i, right := range current {
+			if !used[i] && left == right.Value.GetPartialMatch() {
+				used[i] = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func requestedOrderingSetsEqual(a, b []*properties.RequestedOrdering) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	used := make([]bool, len(b))
+	for _, left := range a {
+		found := false
+		for i, right := range b {
+			if used[i] {
+				continue
+			}
+			if left == nil || right == nil {
+				if left == right {
+					used[i] = true
+					found = true
+					break
+				}
+				continue
+			}
+			if left.GetDistinctness() != right.GetDistinctness() ||
+				left.IsExhaustive() != right.IsExhaustive() ||
+				!properties.PartsEqual(left.GetParts(), right.GetParts()) {
+				continue
+			}
+			used[i] = true
+			found = true
+			break
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 // consumeMatchPartitions realizes each candidate's match partition
 // into data-access expressions and routes every result by safety:
 // physical plans and SAFE logical compensations go through
@@ -654,12 +764,15 @@ func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates 
 // hash intersection is added, this should yield LogicalIntersectionExpression
 // and let ImplementIntersectionRule choose the strategy.
 //
-// Guards: candidate cap (4) and match cap (8) prevent combinatorial
-// explosion in MaximumCoverageMatches for queries with many indexes
-// (e.g., InList with 5+ candidates). hasIntersectionFinal prevents
-// re-creation when pushDataAccessTasks fires multiple times per ref.
+// The restricted candidate/match caps (4/8) bound MaximumCoverageMatches and
+// ChooseK enumeration for queries with many indexes. Do not cap the raw
+// candidate list: it includes an unrestricted primary candidate, so a four-
+// secondary-index query naturally presents five candidates before the useless
+// full-scan match is filtered out. shouldConsumeIntersection prevents
+// re-creation at an unchanged match/ordering input while still allowing
+// incrementally discovered or adjusted matches to unlock larger intersections.
 func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*properties.RequestedOrdering) {
-	if len(candidates) < 2 || len(candidates) > 4 || hasIntersectionFinal(ref) {
+	if len(candidates) < 2 {
 		return
 	}
 	sort.Slice(candidates, func(i, j int) bool {
@@ -681,6 +794,7 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 	// folding it in produces a plan whose correlated binding the
 	// intersection cursor cannot evaluate, yielding 0 rows (RFC-069).
 	var restrictedMatches []PartialMatch
+	restrictedCandidates := make(map[string]struct{})
 	for _, m := range allMatches {
 		// A vector scan must NEVER be a primary-key intersection arm — in
 		// EITHER of its two forms:
@@ -704,9 +818,13 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 		}
 		if hasRestrictedScan(m) && !matchBoundPrefixIsCorrelated(m) {
 			restrictedMatches = append(restrictedMatches, m)
+			restrictedCandidates[m.GetMatchCandidate().CandidateName()] = struct{}{}
+			if len(restrictedCandidates) > 4 {
+				return
+			}
 		}
 	}
-	if len(restrictedMatches) < 2 || len(restrictedMatches) > 8 {
+	if len(restrictedMatches) < 2 {
 		return
 	}
 	// INTERSECTION-LOCAL duplicate resolution: a raw seeded match and
@@ -722,11 +840,14 @@ func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, can
 	// intersection path — MaximumCoverageMatches stays untouched for the
 	// scan-building consumers.
 	restrictedMatches = collapseAdjustedTwins(restrictedMatches)
-	if len(restrictedMatches) < 2 {
+	if len(restrictedMatches) < 2 || len(restrictedMatches) > 8 {
 		return
 	}
 	bestMatches := MaximumCoverageMatches(restrictedMatches, requestedOrderings, p.ctx)
 	if len(bestMatches) < 2 {
+		return
+	}
+	if !p.shouldConsumeIntersection(ref, bestMatches, requestedOrderings) {
 		return
 	}
 	result := WithPrimaryKeyIntersector(p.ctx)(bestMatches, requestedOrderings)
@@ -825,6 +946,37 @@ func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.Rela
 // TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual (must stay
 // unplannable, via the inner-scan guard).
 func compensationSafeForYield(expr expressions.RelationalExpression) bool {
+	if unique, ok := expr.(*expressions.LogicalUniqueExpression); ok {
+		// Required Unique is an enforcer emitted by cardinality compensation,
+		// not an optional query rewrite. Routing it to the logical-final
+		// fail-to-plan sentinel strands it forever: ImplementUniqueRule never
+		// gets to freeze the exact PK-carrying physical child. It is safe to
+		// explore when every current child alternative is either already
+		// physical or itself a compensation shape this guard authorizes.
+		// Ordinary query Unique does not enter through data-access
+		// compensation and remains outside this exception.
+		if !unique.IsRequired() {
+			return false
+		}
+		innerRef := unique.GetInner().GetRangesOver()
+		if innerRef == nil {
+			return false
+		}
+		innerMembers := innerRef.AllMembers()
+		if len(innerMembers) == 0 {
+			return false
+		}
+		for _, member := range innerMembers {
+			if isPhysical(member) {
+				continue
+			}
+			if !compensationSafeForYield(member) {
+				return false
+			}
+		}
+		return true
+	}
+
 	// Only a plain residual FILTER is a yield candidate. A non-filter compensation
 	// (a SelectExpression with result compensation / pulled-up quantifiers from
 	// ForMatchCompensation.ApplyAllNeeded, a projection over a vector scan, …)
@@ -1056,44 +1208,6 @@ func deletePredicateConstantObjectAliases(pred predicates.QueryPredicate, corr m
 		}
 		return true
 	})
-}
-
-func hasIntersectionFinal(ref *expressions.Reference) bool {
-	for _, m := range ref.FinalMembers() {
-		if hasIntersectionWithin(m, 3) {
-			return true
-		}
-	}
-	return false
-}
-
-// hasIntersectionWithin reports whether expr IS a physical intersection or
-// wraps one within the given depth. A compensated intersection (the
-// createIntersectionAndCompensation port) is a LogicalFilterExpression or
-// SelectExpression OVER the intersection wrapper — up to two wrapper levels
-// (filter compensation + result compensation), hence the callers' depth of 3
-// counting the intersection itself — so the naked-physical check alone would
-// miss it and pushCrossCandidateIntersection would rebuild the same
-// intersection on every pushDataAccessTasks pass.
-func hasIntersectionWithin(expr expressions.RelationalExpression, depth int) bool {
-	if IsPhysicalIntersection(expr) {
-		return true
-	}
-	if depth == 0 {
-		return false
-	}
-	for _, q := range expr.GetQuantifiers() {
-		child := q.GetRangesOver()
-		if child == nil {
-			continue
-		}
-		for _, m := range child.AllMembers() {
-			if hasIntersectionWithin(m, depth-1) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // Task is the task-stack driver's unit of work. Tasks are Run

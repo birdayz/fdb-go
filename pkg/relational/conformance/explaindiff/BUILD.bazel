@@ -18,14 +18,19 @@ go_test(
     srcs = [
         "explaindiff_internal_test.go",
         "explaindiff_test.go",
+        "plan_shape_golden_test.go",
         "reachability_test.go",
     ],
     # keep: the tests plan every scenario in the yamsql corpus, which lives in
     # a SIBLING package — so it is staged via that package's exported filegroup
     # (a local glob cannot reach it) and read at ../yamsql/testdata, the same
     # path `go test` sees. Without this the tests fail on a missing corpus
-    # under Bazel while passing under `go test`.
-    data = ["//pkg/relational/conformance/yamsql:testdata"],
+    # under Bazel while passing under `go test`. The committed plan-shape golden
+    # (RFC-190 190.12) is read at testdata/plan_shape.golden by TestPlanShapeGolden.
+    data = [
+        "testdata/plan_shape.golden",
+        "//pkg/relational/conformance/yamsql:testdata",
+    ],
     embed = [":explaindiff"],
     deps = ["//pkg/recordlayer/query/plan/cascades"],
 )

@@ -60,6 +60,14 @@ type RecordQueryIndexPlan struct {
 	// unique reports whether the index is declared UNIQUE — an all-equality
 	// scan over a unique index's full key yields at most one row.
 	unique bool
+	// orderingKeyNamesKnown/orderingKeyNamesSafe state whether columnNames are
+	// semantic bare-field ordering keys. Function indexes retain leaf names for
+	// row layout, but CARDINALITY(TAGS) must not advertise ordering on TAGS.
+	// WithIndexMetadata establishes the ordinary bare-field default; candidate
+	// stamping can explicitly mark it unsafe. The state is tri-valued so later
+	// metadata-preserving copies cannot accidentally turn an unsafe plan safe.
+	orderingKeyNamesKnown bool
+	orderingKeyNamesSafe  bool
 	// createsDuplicates and distinctRecordsKnown carry the match candidate's
 	// fan-out signal onto the plan for the DistinctRecords property. Java's
 	// DistinctRecordsProperty.visitIndexPlan returns !matchCandidate.createsDuplicates()
@@ -152,6 +160,8 @@ func (p *RecordQueryIndexPlan) WithScanComparisons(comps []*predicates.Compariso
 		columnNames:            p.columnNames,
 		pkColumnNames:          p.pkColumnNames,
 		unique:                 p.unique,
+		orderingKeyNamesKnown:  p.orderingKeyNamesKnown,
+		orderingKeyNamesSafe:   p.orderingKeyNamesSafe,
 		createsDuplicates:      p.createsDuplicates,
 		distinctRecordsKnown:   p.distinctRecordsKnown,
 		commonPrimaryKeyValues: p.commonPrimaryKeyValues,
@@ -227,6 +237,21 @@ func (p *RecordQueryIndexPlan) WithIndexMetadata(columnNames, pkColumnNames []st
 	cp.columnNames = columnNames
 	cp.pkColumnNames = pkColumnNames
 	cp.unique = unique
+	if !cp.orderingKeyNamesKnown {
+		cp.orderingKeyNamesKnown = true
+		cp.orderingKeyNamesSafe = true
+	}
+	return &cp
+}
+
+// WithOrderingKeyNamesUnavailable returns a copy that retains the physical
+// column names for row layout/costing but forbids plan-level ordering synthesis
+// from them. Use for expression-key indexes whose semantic ordering Values are
+// not carried on RecordQueryIndexPlan.
+func (p *RecordQueryIndexPlan) WithOrderingKeyNamesUnavailable() *RecordQueryIndexPlan {
+	cp := *p
+	cp.orderingKeyNamesKnown = true
+	cp.orderingKeyNamesSafe = false
 	return &cp
 }
 

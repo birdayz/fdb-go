@@ -4,9 +4,11 @@ import (
 	"strings"
 	"sync"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"google.golang.org/protobuf/proto"
 )
 
 // ValueIndexScanMatchCandidate represents a secondary index as a
@@ -45,8 +47,8 @@ type ValueIndexScanMatchCandidate struct {
 	// createsDuplicates is true when the index's root expression can
 	// produce multiple entries per record (fan-out / repeated-field
 	// indexes). Ports Java's index.getRootExpression().createsDuplicates().
-	// Meaningful only when createsDuplicatesKnown is true; false otherwise
-	// (the ordering-suffix logic treats unknown as non-fan-out, unchanged).
+	// When the optional signal is missing or stale, a structured FAN_OUT root
+	// remains authoritative through CreatesDuplicates.
 	createsDuplicates bool
 	// createsDuplicatesKnown reports whether the fan-out status was supplied
 	// by the IndexDef. When false (no signal), the DistinctRecords property
@@ -63,6 +65,13 @@ type ValueIndexScanMatchCandidate struct {
 	// def supplies no structural PK (the property then abstains).
 	commonPrimaryKeyValues []values.Value
 
+	// rootKeyExpression is the record-layer key-expression AST when metadata
+	// exposes it. Fan-out expansion needs the tree topology (Then/Nesting and
+	// the exact FAN_OUT node); the historical flat columnNames slice cannot
+	// distinguish a scalar field from a repeated field or preserve a shared
+	// fan-out parent. It is always stored as a defensive clone.
+	rootKeyExpression *gen.KeyExpression
+
 	traversalOnce sync.Once
 	traversal     *Traversal
 }
@@ -72,6 +81,28 @@ type ValueIndexScanMatchCandidate struct {
 func (c *ValueIndexScanMatchCandidate) WithCommonPrimaryKey(pk []values.Value) *ValueIndexScanMatchCandidate {
 	c.commonPrimaryKeyValues = pk
 	return c
+}
+
+// WithRootKeyExpression attaches a caller-owned copy of the record-layer key
+// expression to a freshly constructed candidate. A nil root clears the
+// optional structure. Call this before GetTraversal; traversal construction is
+// deliberately stable under sync.Once.
+func (c *ValueIndexScanMatchCandidate) WithRootKeyExpression(root *gen.KeyExpression) *ValueIndexScanMatchCandidate {
+	if root == nil {
+		c.rootKeyExpression = nil
+		return c
+	}
+	c.rootKeyExpression = proto.Clone(root).(*gen.KeyExpression)
+	return c
+}
+
+// GetRootKeyExpression returns a defensive copy of the record-layer
+// key-expression AST, or nil when the candidate was built from flat metadata.
+func (c *ValueIndexScanMatchCandidate) GetRootKeyExpression() *gen.KeyExpression {
+	if c.rootKeyExpression == nil {
+		return nil
+	}
+	return proto.Clone(c.rootKeyExpression).(*gen.KeyExpression)
 }
 
 // GetCommonPrimaryKeyValues returns the index's structural common primary key
@@ -89,7 +120,12 @@ const FunctionKindCardinality = "cardinality"
 // secondary index. columnNames and sargableAliases must be parallel
 // slices in index key column order (left-to-right): columnNames[i] is
 // the field name for the i-th key column, sargableAliases[i] is the
-// correlation identifier used for predicate binding.
+// correlation identifier used for predicate binding. This compatibility
+// constructor has no duplicate/cardinality metadata, so the candidate
+// deliberately remains UNKNOWN and cannot plan until a root key expression
+// with FAN_OUT structure is attached. Metadata-backed scalar callers should
+// use NewValueIndexScanMatchCandidateWithFunctions with an explicit false
+// createsDuplicatesSignal.
 func NewValueIndexScanMatchCandidate(
 	indexName string,
 	recordTypes []string,
@@ -163,6 +199,89 @@ func (c *ValueIndexScanMatchCandidate) ColumnValue(i int, base values.Value) val
 	return fv
 }
 
+// duplicateProducingColumns returns the per-index-column analogue of Java's
+// normalizedKeyExpression.createsDuplicates(). A direct FAN_OUT field marks
+// its one position; every child position underneath a fan-out nesting parent
+// is duplicate-producing. If metadata says the index duplicates but does not
+// provide a classifiable key tree, every position is conservatively marked.
+func (c *ValueIndexScanMatchCandidate) duplicateProducingColumns() []bool {
+	result := make([]bool, len(c.columnNames))
+	if c.rootKeyExpression != nil {
+		if classified, ok := classifyDuplicateProducingColumns(
+			c.rootKeyExpression,
+			false,
+		); ok && len(classified) == len(result) {
+			hasDuplicate := false
+			for _, duplicate := range classified {
+				hasDuplicate = hasDuplicate || duplicate
+			}
+			if hasDuplicate || !c.createsDuplicates {
+				return classified
+			}
+		}
+	}
+	if c.CreatesDuplicates() {
+		for i := range result {
+			result[i] = true
+		}
+	}
+	return result
+}
+
+func classifyDuplicateProducingColumns(
+	expression *gen.KeyExpression,
+	inheritedFanOut bool,
+) ([]bool, bool) {
+	if expression == nil || keyExpressionShapeCount(expression) != 1 {
+		return nil, false
+	}
+	switch {
+	case expression.Field != nil:
+		if expression.Field.FanType == nil {
+			return nil, false
+		}
+		return []bool{
+			inheritedFanOut ||
+				expression.Field.GetFanType() == gen.Field_FAN_OUT,
+		}, true
+
+	case expression.Then != nil:
+		var result []bool
+		for _, child := range expression.Then.GetChild() {
+			childColumns, ok := classifyDuplicateProducingColumns(
+				child,
+				inheritedFanOut,
+			)
+			if !ok {
+				return nil, false
+			}
+			result = append(result, childColumns...)
+		}
+		return result, true
+
+	case expression.Nesting != nil:
+		nesting := expression.Nesting
+		if nesting.Parent == nil || nesting.Parent.FanType == nil ||
+			nesting.Child == nil {
+			return nil, false
+		}
+		switch nesting.Parent.GetFanType() {
+		case gen.Field_SCALAR:
+			return classifyDuplicateProducingColumns(
+				nesting.Child,
+				inheritedFanOut,
+			)
+		case gen.Field_FAN_OUT:
+			return classifyDuplicateProducingColumns(nesting.Child, true)
+		default:
+			return nil, false
+		}
+
+	default:
+		return nil, false
+	}
+}
+
 // CandidateName returns the index name.
 func (c *ValueIndexScanMatchCandidate) CandidateName() string { return c.indexName }
 
@@ -190,7 +309,12 @@ func (c *ValueIndexScanMatchCandidate) GetColumnNames() []string { return c.colu
 // part of the sargable surface (see unmatchedFieldsForIndex in
 // planning_cost_model.go): unlike Java, Go's candidate never folds the
 // PK into sargableAliases, and that invariant must hold.
-func (c *ValueIndexScanMatchCandidate) GetPKColumnNames() []string { return c.pkColumnNames }
+func (c *ValueIndexScanMatchCandidate) GetPKColumnNames() []string {
+	if !c.canProduceScanPlan() {
+		return nil
+	}
+	return c.pkColumnNames
+}
 
 // GetSargableAliases returns the ordered parameter list (one per
 // index key column).
@@ -212,8 +336,12 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	sortParameterIDs []values.CorrelationIdentifier,
 	isReverse bool,
 ) []*MatchedOrderingPart {
+	if !c.canProduceScanPlan() {
+		return nil
+	}
 	regularInfo := matchInfo.GetRegularMatchInfo()
 	bindings := regularInfo.GetParameterBindingMap()
+	duplicateProducingColumns := c.duplicateProducingColumns()
 
 	var parts []*MatchedOrderingPart
 	for _, paramID := range sortParameterIDs {
@@ -229,6 +357,18 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		}
 
 		cr := bindings[paramID]
+		// Java does not expose a duplicate-producing normalized key as an
+		// ordering Value. An equality bound fixes the exploded element and
+		// lets ordering continue at the next position; an unbound/range-bound
+		// fan-out position terminates the usable ordering prefix.
+		if duplicateProducingColumns[idx] {
+			if cr != nil &&
+				cr.GetRangeType() == predicates.ComparisonRangeEquality {
+				continue
+			}
+			break
+		}
+
 		// Use the candidate's column Value (FieldValue, or
 		// CardinalityValue(FieldValue) for a function-keyed column) so the
 		// ordering part carries the SAME Value the query's sort key does.
@@ -258,14 +398,17 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// direction, exactly like Java's satisfiesRequestedOrdering over
 	// full-key ordering parts.
 	//
-	// Gates: (1) fan-out indexes get no suffix — positions past a
-	// duplicating key part are not sort-ordered (Java breaks its loop
-	// there); (2) the suffix only continues a FULLY emitted index key —
+	// Gates: (1) Go conservatively synthesizes no suffix for a fan-out
+	// candidate. Java can skip an equality-bound duplicate-producing position
+	// and continue through later full-key aliases, including the PK; Go keeps
+	// PK aliases outside sortParameterIDs and cannot prove that continuation
+	// positionally here. This is a conservative Go limitation, not exact Java
+	// parity. (2) The suffix only continues a FULLY emitted index key —
 	// if the loop above stopped early the positions would not be
 	// contiguous and the suffix would claim an order the entries don't
 	// have. PK columns already in the index key are trimmed
 	// (Index.trimPrimaryKey), matching fullKey construction.
-	if !c.createsDuplicates && len(parts) == len(c.columnNames) {
+	if !c.CreatesDuplicates() && len(parts) == len(c.columnNames) {
 		for _, col := range plans.TrimmedPKSuffix(c.columnNames, c.pkColumnNames) {
 			colValue := values.NewFieldValue(nil, col, values.UnknownType)
 			sortOrder := MatchedSortOrderAscending
@@ -294,6 +437,9 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 func (c *ValueIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 ) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
+	if !c.canProduceScanPlan() {
+		return nil
+	}
 	prefix := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
 	for _, alias := range c.sargableAliases {
 		cr, ok := bindings[alias]
@@ -327,6 +473,9 @@ func (c *ValueIndexScanMatchCandidate) ToScanPlan(
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	reverse bool,
 ) plans.RecordQueryPlan {
+	if !c.canProduceScanPlan() {
+		return nil
+	}
 	comps := make([]*predicates.ComparisonRange, len(c.sargableAliases))
 	for i, alias := range c.sargableAliases {
 		if cr, ok := prefixMap[alias]; ok {
@@ -364,21 +513,139 @@ func (c *ValueIndexScanMatchCandidate) GetBaseType() values.Type { return c.flow
 // Implements ValueIndexLikeMatchCandidate.
 func (c *ValueIndexScanMatchCandidate) GetColumnSize() int { return len(c.columnNames) }
 
-// CreatesDuplicates reports whether the index can produce duplicate
-// entries per record (fan-out / repeated-field indexes).
+// CreatesDuplicates reports whether the index may produce duplicate entries
+// per record. A structured FAN_OUT root is authoritative even when an optional
+// external signal is missing or incorrectly false. UNKNOWN is represented by
+// the conservative true value because this bool-shaped compatibility contract
+// has no abstain state; DistinctRecordsSignal retains the tri-state form.
 // Implements ValueIndexLikeMatchCandidate.
-func (c *ValueIndexScanMatchCandidate) CreatesDuplicates() bool { return c.createsDuplicates }
+func (c *ValueIndexScanMatchCandidate) CreatesDuplicates() bool {
+	return keyExpressionContainsFanOut(c.rootKeyExpression) ||
+		!c.createsDuplicatesKnown ||
+		c.createsDuplicates
+}
 
 // DistinctRecordsSignal returns the fan-out signal for the DistinctRecords
-// property, or nil when the IndexDef supplied none (unknown → the property
-// abstains to distinct=false, the safe under-report). A non-nil result carries
-// the known createsDuplicates value.
+// property. A structured FAN_OUT root establishes true even when the optional
+// IndexDef signal is missing or stale. Without structural evidence, a missing
+// signal remains nil (unknown, so the property safely abstains).
 func (c *ValueIndexScanMatchCandidate) DistinctRecordsSignal() *bool {
+	if keyExpressionContainsFanOut(c.rootKeyExpression) {
+		v := true
+		return &v
+	}
 	if !c.createsDuplicatesKnown {
 		return nil
 	}
 	v := c.createsDuplicates
 	return &v
+}
+
+// metadataSufficientForPlanning is the single admission authority for a value
+// candidate's flat scan, coverage, ordering, and PK-suffix surfaces.
+//
+// A structural FAN_OUT root is sufficient because ExpandValueIndex must build
+// and successfully match through an Explode graph before a scan can exist.
+// Without FAN_OUT structure, only an affirmative createsDuplicates=false
+// signal permits the historical flat compatibility path. UNKNOWN metadata may
+// hide a sparse/multiplying fan-out index, and createsDuplicates=true without
+// a FAN_OUT AST lacks the topology needed for cardinality compensation.
+// Scalar nested leaves are rejected regardless: their full accessor path is
+// not represented by the flat candidate column bridge.
+func (c *ValueIndexScanMatchCandidate) metadataSufficientForPlanning() bool {
+	if c == nil ||
+		keyExpressionContainsNonFanOutNestedLeaf(c.rootKeyExpression) {
+		return false
+	}
+	if keyExpressionContainsFanOut(c.rootKeyExpression) {
+		// The structural fan-out expansion models Field/Then/Nesting, not
+		// function-tagged columns. Any such combination is inconsistent
+		// metadata and must decline.
+		for _, function := range c.columnFunctions {
+			if function != "" {
+				return false
+			}
+		}
+		return true
+	}
+	if !c.createsDuplicatesKnown || c.createsDuplicates {
+		return false
+	}
+	for _, function := range c.columnFunctions {
+		if function != "" && function != FunctionKindCardinality {
+			return false
+		}
+	}
+	if c.rootKeyExpression == nil {
+		// Legacy flat metadata: the explicit false signal and supported
+		// function tags are the caller's semantic authority.
+		return true
+	}
+	descriptors, ok := keyExpressionFlatColumnDescriptors(
+		c.rootKeyExpression,
+	)
+	if !ok || len(descriptors) != len(c.columnNames) {
+		return false
+	}
+	for i, descriptor := range descriptors {
+		function := ""
+		if i < len(c.columnFunctions) {
+			function = c.columnFunctions[i]
+		}
+		if !strings.EqualFold(descriptor.name, c.columnNames[i]) ||
+			descriptor.function != function {
+			return false
+		}
+	}
+	return true
+}
+
+// canProduceScanPlan additionally proves that a structural fan-out root was
+// successfully expanded. This keeps the individual planning/coverage/ordering
+// methods fail-closed even for a prebuilt candidate whose FAN_OUT appears under
+// an unsupported key-expression wrapper or disagrees with its column metadata.
+func (c *ValueIndexScanMatchCandidate) canProduceScanPlan() bool {
+	if !c.metadataSufficientForPlanning() {
+		return false
+	}
+	if keyExpressionContainsFanOut(c.rootKeyExpression) {
+		return c.GetTraversal() != nil
+	}
+	return true
+}
+
+// plainFieldColumnsForShortcut returns the candidate key only when it is
+// semantically a sequence of bare top-level scalar fields. A handful of
+// direct rules predate traversal matching and compare column names; they must
+// not mistake CARDINALITY(TAGS), ADDR.CITY, or another expression key for a
+// plain TAGS/CITY index merely because the metadata leaf name is the same.
+//
+// With no root AST, an explicit createsDuplicates=false signal plus empty
+// columnFunctions is the legacy caller's authority that the supplied columns
+// are flat scalar fields. Production metadata supplies the root as well.
+func (c *ValueIndexScanMatchCandidate) plainFieldColumnsForShortcut() ([]string, bool) {
+	if !c.canProduceScanPlan() {
+		return nil, false
+	}
+	for _, function := range c.columnFunctions {
+		if function != "" {
+			return nil, false
+		}
+	}
+	if c.rootKeyExpression != nil {
+		rootNames, ok := keyExpressionTopLevelScalarFieldNames(
+			c.rootKeyExpression,
+		)
+		if !ok || len(rootNames) != len(c.columnNames) {
+			return nil, false
+		}
+		for i, rootName := range rootNames {
+			if !strings.EqualFold(rootName, c.columnNames[i]) {
+				return nil, false
+			}
+		}
+	}
+	return c.columnNames, true
 }
 
 // HasAndOrderedByRecordTypeKey reports whether the index key starts
@@ -404,6 +671,9 @@ func (c *ValueIndexScanMatchCandidate) PushValueThroughFetch(
 	sourceAlias values.CorrelationIdentifier,
 	targetAlias values.CorrelationIdentifier,
 ) (values.Value, bool) {
+	if !c.canProduceScanPlan() {
+		return nil, false
+	}
 	fn := c.buildTranslateValueFunction()
 	return fn(value, sourceAlias, targetAlias)
 }
@@ -411,17 +681,59 @@ func (c *ValueIndexScanMatchCandidate) PushValueThroughFetch(
 // buildTranslateValueFunction creates a TranslateValueFunction that
 // can translate values from the full-record domain to the index-entry
 // domain. A FieldValue is translatable if its field name matches one
-// of the index's column names (case-insensitive).
+// of the non-fan-out index columns or primary-key columns (case-insensitive).
+// An exploded element cannot cover the original repeated field.
 //
 // Ports the conceptual equivalent of Java's
 // ScanWithFetchMatchCandidate.createTranslateValueFunction.
 func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.TranslateValueFunction {
+	if !c.canProduceScanPlan() {
+		return func(
+			values.Value,
+			values.CorrelationIdentifier,
+			values.CorrelationIdentifier,
+		) (values.Value, bool) {
+			return nil, false
+		}
+	}
+	hasFunctionKey := false
+	for _, function := range c.columnFunctions {
+		if function != "" {
+			hasFunctionKey = true
+			break
+		}
+	}
+	duplicateProducingColumns := c.duplicateProducingColumns()
+	blockedColumns := make(map[string]struct{})
+	for i, col := range c.columnNames {
+		functionKey := i < len(c.columnFunctions) &&
+			c.columnFunctions[i] != ""
+		if duplicateProducingColumns[i] || functionKey {
+			blockedColumns[strings.ToUpper(col)] = struct{}{}
+		}
+	}
+
 	coveredColumns := make(map[string]struct{}, len(c.columnNames)+len(c.pkColumnNames))
-	for _, col := range c.columnNames {
-		coveredColumns[strings.ToUpper(col)] = struct{}{}
+	// A function-key covering row retains every key position for tuple/logical
+	// row alignment, but those positions are semantic expressions rather than
+	// their raw leaf fields. Until physical plans carry semantic key Values,
+	// expose none of the index-key fields through Fetch translation. The PK
+	// suffix remains independently safe and index-resident (the real FDB
+	// CARDINALITY test pins SELECT ID as covering); function-name collisions
+	// are blocked below.
+	if !hasFunctionKey {
+		for i, col := range c.columnNames {
+			if duplicateProducingColumns[i] {
+				continue
+			}
+			coveredColumns[strings.ToUpper(col)] = struct{}{}
+		}
 	}
 	for _, col := range c.pkColumnNames {
-		coveredColumns[strings.ToUpper(col)] = struct{}{}
+		upperColumn := strings.ToUpper(col)
+		if _, blocked := blockedColumns[upperColumn]; !blocked {
+			coveredColumns[upperColumn] = struct{}{}
+		}
 	}
 
 	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
@@ -494,7 +806,12 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 			return nil, false
 		case *values.QuantifiedObjectValue:
 			if v.Correlation == sourceAlias {
-				return values.NewQuantifiedObjectValue(targetAlias), true
+				// The index entry provides individual covered fields, not the
+				// complete logical record. Java's pushability gate accepts a
+				// source-correlated FieldValue or record constructor, but never
+				// a whole QuantifiedObjectValue; accepting it would let SELECT
+				// * eliminate the Fetch and return a partial index row.
+				return nil, false
 			}
 			return value, true
 		case *values.ConstantValue:

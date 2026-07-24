@@ -346,7 +346,7 @@ func TestTraversal_MatchCandidate_GetTraversal_NonNil(t *testing.T) {
 	// Both match candidate types now build traversals lazily via
 	// ExpandValueIndex. Verify they return non-nil with correct root.
 	alias := values.UniqueCorrelationIdentifier()
-	vc := NewValueIndexScanMatchCandidate("idx", []string{"T"}, []string{"a"},
+	vc := newKnownDistinctValueIndexCandidate("idx", []string{"T"}, []string{"a"},
 		[]values.CorrelationIdentifier{alias}, nil, false, nil)
 	trav := vc.GetTraversal()
 	if trav == nil {

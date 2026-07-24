@@ -8,10 +8,12 @@ package sqldriver_test
 // semi-join, and every leg reference (the folded projection + each EXISTS
 // correlation) is rebased at translation onto the box's positional output
 // (ofOrdinal over the box QOV via the seed's leg-window layout,
-// values.OrdinalSeedLegWindows). A flat [ForEach×N, Existential] select would
-// instead be implementable only MATERIALIZED (PartitionSelectRule is
-// ForEach-only), which is why the wrap + the SelectMergeRule
-// existential-wrap guard exist.
+// values.OrdinalSeedLegWindows). Flat name-model
+// [ForEach×N, Existential] selects are also partitionable after RFC-190,
+// including correlated direct-emits; this test specifically pins the gathered
+// wrapper because keeping the cluster in its own reference preserves the index
+// SARG and gives the folded projection one positional rebase target. The
+// SelectMergeRule guard keeps that deliberate wrapper boundary intact.
 //
 // SCOPE: queries with an intervening ORDER BY/LIMIT keep a leg-qualified plan
 // (the fold's chain re-application emits leg-qualified reads above the wrap),
