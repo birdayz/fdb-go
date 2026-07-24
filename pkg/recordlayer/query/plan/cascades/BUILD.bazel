@@ -304,6 +304,7 @@ go_test(
         "planner_e2e_fuzz_test.go",
         "planner_e2e_test.go",
         "planner_fuzz_test.go",
+        "planner_lifecycle_test.go",
         "planner_limit_fuzz_test.go",
         "planner_pipeline_stress_test.go",
         "planner_pipeline_test.go",
@@ -904,6 +905,7 @@ go_test(
         "in_union_cost_regression_test.go",
         "planning_cost_model_diagnostics_test.go",
         "tie_break_hash.go",
+        "planner_lifecycle_test.go",
     ],
     deps = [
         "//gen",

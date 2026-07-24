@@ -88,9 +88,17 @@ closed rather than silently alter rows or output schema.
   SELECT order, pagination placement, and fail-closed edges.
 
 **Planner lifecycle and operations:**
-- [ ] **CQ-6 (MED) — make the Planner lifecycle explicit and safe.**
-  Either fully reset every per-run field or reject a second `Plan` call; cover
-  success-after-success and retry-after-cap/error.
+- [x] **CQ-6 (MED) — make the Planner lifecycle explicit and safe.**
+  A planner now owns exactly one non-nil planning attempt: an atomic one-way
+  claim rejects every later non-nil `Plan` with `ErrPlannerAlreadyUsed` before
+  touching the root, memo, task stack, counters, or diagnostics. `Plan(nil)`
+  remains a zero-work no-op. This fail-closed contract is structural because a
+  run mutates the whole caller-owned Reference DAG, which planner-field resets
+  cannot restore; retries must construct a fresh planner. The memo's
+  re-exploration callback is detached on every exit so its observable
+  post-run state cannot enqueue orphaned tasks. Regressions pin reuse after
+  success, a partial-stack task-cap failure, and a fully-drained extraction
+  error, including exact zero-work rejection and unchanged memo/root state.
 - [ ] **CQ-7 (MED) — make planning cancelable.** Thread `context.Context` through
   production planning entry points and task execution, returning cancellation
   without leaving reusable stale state.

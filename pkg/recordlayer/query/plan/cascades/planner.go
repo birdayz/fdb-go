@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -32,8 +33,24 @@ type intersectionConsumption struct {
 // A hard cap (MaxTasks) prevents pathological non-termination from
 // rule-yielding-fresh-members loops; default 100_000.
 //
-// The planner is single-threaded (Java's is too).
+// A Planner is single-use for non-nil planning runs. Plan(nil) remains a
+// zero-work no-op; the first non-nil Plan claims the Planner and every later
+// non-nil call fails with ErrPlannerAlreadyUsed, including a retry after an
+// error. Planning mutates both Planner-owned state and the entire Reference
+// DAG, so a fresh Planner is required for every attempt.
+// Configuration methods must therefore be called before the non-nil Plan.
+//
+// The planning run itself is single-threaded (Java's is too). The one-way
+// claim is atomic so two accidental concurrent callers cannot both enter the
+// stateful task driver.
 type Planner struct {
+	// planStarted is a one-way lifecycle latch. It is deliberately never reset:
+	// every non-nil Plan exit (success, cap, task error, or extraction error)
+	// leaves this Planner consumed. Plan(nil) does no work and does not claim the
+	// latch. Resetting Planner fields alone cannot make retry safe because
+	// planning also mutates the caller-owned Reference DAG.
+	planStarted atomic.Bool
+
 	// stack MUST be LIFO: Plan() pushes InitiatePlannerPhaseTask →
 	// ExploreGroupTask/OptimizeGroupTask → ExploreExprTask/
 	// TransformExprTask/TransformImplTask/OptimizeInputsTask, and
@@ -322,10 +339,14 @@ func (p *Planner) WithMaxTasks(n int) *Planner {
 //   - plan: the extracted RelationalExpression; nil if rootRef is empty.
 //   - tasks: total tasks executed across both phases.
 //   - err: nil on success; ErrPlannerCapHit if EXPLORE hit MaxTasks
-//     (no OPTIMIZE attempted); extraction error otherwise.
+//     (no OPTIMIZE attempted); ErrPlannerAlreadyUsed on a later non-nil call;
+//     extraction error otherwise.
 func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalExpression, int, error) {
 	if rootRef == nil {
 		return nil, 0, nil
+	}
+	if !p.planStarted.CompareAndSwap(false, true) {
+		return nil, 0, ErrPlannerAlreadyUsed
 	}
 	if p.memo == nil {
 		p.memo = NewMemo(rootRef)
@@ -336,6 +357,11 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	p.memo.SetReExploreScheduler(func(ref *expressions.Reference) {
 		p.push(&ExploreGroupTask{Phase: p.activePhase, Ref: ref})
 	})
+	// The scheduler closes over this Planner's mutable task stack and is useful
+	// only while Plan is actively draining it. Memo is observable after Plan;
+	// detach the hook on every exit so later Memo operations cannot enqueue
+	// orphaned work into a consumed Planner.
+	defer p.memo.SetReExploreScheduler(nil)
 	p.constraintMap = NewConstraintMap()
 	p.dataAccessConsumed = make(map[*expressions.Reference]int)
 	p.intersectionConsumed = make(map[*expressions.Reference][]intersectionConsumption)
@@ -400,6 +426,11 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	}
 	return plan, p.tasksRun, nil
 }
+
+// ErrPlannerAlreadyUsed signals that Plan was called more than once on the
+// same Planner. A Planner owns one planning attempt; callers must construct a
+// fresh Planner to retry after either success or failure.
+var ErrPlannerAlreadyUsed = plannerErr("planner: Plan may be called only once; construct a new Planner for each planning attempt")
 
 // ErrPlannerCapHit signals that Plan exited via the MaxTasks
 // cap rather than convergence. Callers should treat this as a
