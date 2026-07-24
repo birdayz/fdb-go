@@ -10,13 +10,13 @@ package conformance_test
 // so a write is never silently replayed.
 //
 // The behaviour is otherwise only reachable under real load, so we drive it
-// deterministically through the test-only `runWithSetupInjectingFaults` step
-// (SqlPlanSteps): it runs the setup + query through the production
-// `withFdbRetry`, but injects N genuine FDBExceptions (of a chosen code) before
-// the SELECT executes. Genuine FDBExceptions mean the production predicate
-// (FDBException#isRetryableNotCommitted, native) classifies them exactly as it
-// would a live error. The injection countdown is a method-local AtomicInteger,
-// so it is isolated per request even on the shared/pooled server.
+// deterministically through test-only wrapped- and raw-fault steps
+// (SqlPlanSteps). Both run setup + query through the production withFdbRetry
+// path, but inject N genuine FDBExceptions before the SELECT executes. The two
+// carriers are load-bearing: JDBC operations can wrap the fault in SQLException,
+// while result-set iteration can surface FDBException directly as a
+// RuntimeException. The injection countdown is method-local, so concurrent
+// requests on a pooled server cannot see each other's faults.
 
 import (
 	"context"
@@ -77,8 +77,8 @@ var _ = Describe("Conformance server FDB retry (RFC-090)", func() {
 		}
 	})
 
-	invoke := func(faultCount, faultCode int) (rowSetJSON, error) {
-		raw, err := java.Invoke(ctx, "runWithSetupInjectingFaults", map[string]any{
+	invokeStep := func(step string, faultCount, faultCode int) (rowSetJSON, error) {
+		raw, err := java.Invoke(ctx, step, map[string]any{
 			"clusterFile":    env.ClusterFile,
 			"schemaTemplate": fiSchema,
 			"setupSqls":      fiSetup,
@@ -93,6 +93,12 @@ var _ = Describe("Conformance server FDB retry (RFC-090)", func() {
 		Expect(json.Unmarshal(raw, &rs)).To(Succeed())
 		return rs, nil
 	}
+	invoke := func(faultCount, faultCode int) (rowSetJSON, error) {
+		return invokeStep("runWithSetupInjectingFaults", faultCount, faultCode)
+	}
+	invokeRaw := func(faultCount, faultCode int) (rowSetJSON, error) {
+		return invokeStep("runWithSetupInjectingRawFaults", faultCount, faultCode)
+	}
 
 	It("recovers from a burst of transaction_too_old (1007) and returns the correct row", func() {
 		// Two injected 1007s are within the attempt budget (MAX_FDB_RETRIES=6),
@@ -106,6 +112,17 @@ var _ = Describe("Conformance server FDB retry (RFC-090)", func() {
 	It("recovers from not_committed (1020) — the other not-committed retryable code", func() {
 		rs, err := invoke(3, fdbNotCommitted)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(rs.Rows).To(HaveLen(1))
+		Expect(rs.Rows[0][0].(float64)).To(Equal(float64(2)))
+	})
+
+	It("recovers when transaction_too_old escapes JDBC as a raw FDBException", func() {
+		// FDBException extends RuntimeException. This is the carrier observed
+		// when live result-set iteration surfaced 1007 directly in CI; the old
+		// SQLException-only catch bypassed retry even though the classifier
+		// itself correctly recognized the error.
+		rs, err := invokeRaw(2, fdbTransactionTooOld)
+		Expect(err).NotTo(HaveOccurred(), "raw retryable not-committed error must be absorbed")
 		Expect(rs.Rows).To(HaveLen(1))
 		Expect(rs.Rows[0][0].(float64)).To(Equal(float64(2)))
 	})
@@ -150,6 +167,16 @@ var _ = Describe("Conformance server FDB retry (RFC-090)", func() {
 		Expect(err).To(HaveOccurred(), "1021 commit_unknown_result must NOT be retried")
 		var je *JavaError
 		Expect(errors.As(err, &je)).To(BeTrue(), "expected the injected FDBException to surface, got %v", err)
+		Expect(je.ExceptionClass).To(Equal("FDBException"))
+	})
+
+	It("does NOT retry a raw commit_unknown_result RuntimeException", func() {
+		// Catching the raw runtime carrier must not broaden the retry class.
+		// A single 1021 would succeed on the second attempt if replayed.
+		_, err := invokeRaw(1, fdbCommitUnknownResult)
+		Expect(err).To(HaveOccurred(), "raw 1021 commit_unknown_result must NOT be retried")
+		var je *JavaError
+		Expect(errors.As(err, &je)).To(BeTrue(), "expected the raw FDBException to surface, got %v", err)
 		Expect(je.ExceptionClass).To(Equal("FDBException"))
 	})
 
