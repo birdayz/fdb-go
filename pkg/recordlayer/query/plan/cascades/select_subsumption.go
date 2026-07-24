@@ -136,6 +136,9 @@ func validateSelectSubsumptionMapping(
 		candidateQuantifiers,
 		selectedQuery,
 		selectedCandidate,
+	) || !selectSubsumptionSelectedCandidateDependenciesCovered(
+		selectedCandidate,
+		candidateOrder.transitive,
 	) || !selectSubsumptionMatchedExistentialsOwned(
 		queryPredicates,
 		queryQuantifiers,
@@ -203,6 +206,30 @@ func selectSubsumptionCoversForEach(
 		}
 		if _, selected := selectedCandidate[index]; !selected {
 			return false
+		}
+	}
+	return true
+}
+
+// selectSubsumptionSelectedCandidateDependenciesCovered enforces the
+// candidate-side half of Select subsumption's dependency contract. A selected
+// candidate quantifier cannot be evaluated independently when any of its local
+// transitive dependencies was omitted from the mapping. The generic matcher
+// checks only mapped query dependencies against candidate dependencies, so
+// this asymmetric candidate-only gate belongs to Select semantics.
+func selectSubsumptionSelectedCandidateDependenciesCovered(
+	selectedCandidate map[int]struct{},
+	candidateTransitiveDependencies []map[int]struct{},
+) bool {
+	for candidateIndex := range selectedCandidate {
+		if candidateIndex < 0 ||
+			candidateIndex >= len(candidateTransitiveDependencies) {
+			return false
+		}
+		for dependencyIndex := range candidateTransitiveDependencies[candidateIndex] {
+			if _, selected := selectedCandidate[dependencyIndex]; !selected {
+				return false
+			}
 		}
 	}
 	return true

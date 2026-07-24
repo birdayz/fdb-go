@@ -368,6 +368,7 @@ go_test(
         "rule_match_intermediate_budget_test.go",
         "rule_match_intermediate_column_identity_test.go",
         "rule_match_intermediate_determinism_test.go",
+        "rule_match_intermediate_select_semantic_test.go",
         "rule_match_intermediate_test.go",
         "rule_match_leaf_test.go",
         "rule_noop_filter_test.go",
@@ -866,6 +867,7 @@ go_test(
         "select_subsumption_predicates_test.go",
         "select_subsumption_translation.go",
         "select_subsumption_translation_test.go",
+        "rule_match_intermediate_select_semantic_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

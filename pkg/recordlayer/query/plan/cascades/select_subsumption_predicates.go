@@ -63,10 +63,19 @@ func enumerateSelectSubsumptionPredicateAlternatives(
 		[]predicates.QueryPredicate(nil),
 		translatedQueryPredicates...,
 	)
-	candidatePredicates := append(
-		[]predicates.QueryPredicate(nil),
-		candidateSelect.GetPredicates()...,
+	// Select construction can retain a top-level AndPredicate even though
+	// predicate implication is conjunct-based. Flatten after construction so
+	// candidate Placeholder leaves participate directly, while preserving
+	// their pointer identities for candidate-group coverage.
+	candidatePredicates, candidatePredicatesOK := selectSubsumptionFlattenConjunctsMaybe(
+		append(
+			[]predicates.QueryPredicate(nil),
+			candidateSelect.GetPredicates()...,
+		),
 	)
+	if !candidatePredicatesOK {
+		return true
+	}
 	candidateQuantifiers := append(
 		[]expressions.Quantifier(nil),
 		candidateSelect.GetQuantifiers()...,

@@ -289,20 +289,17 @@ func (p *PartialMatchImpl) compensate(
 		}
 
 		for _, topLevelPredicate := range pp.GetPredicates() {
-			// General Select subsumption maps the original top-level predicate
-			// node, including an AndPredicate, exactly as Java does. Prefer that
-			// identity before consulting the legacy flattened representation.
-			// Otherwise a mapped top-level AND has no entry under its children
-			// and its residual compensation silently disappears.
+			// Prefer the original predicate identity when it is mapped
+			// directly. Select subsumption and the legacy Filter-to-Select
+			// adapter both flatten ANDs into leaf mappings, so fall back to
+			// those conjunct identities below.
 			if mappings := predicateMap.Get(topLevelPredicate); len(mappings) > 0 {
 				compensatePredicate(topLevelPredicate, mappings)
 				continue
 			}
 
-			// The older single-source Filter-to-Select matcher keys its map by
-			// flattened conjuncts. Retain that representation as a fallback so
-			// existing index matches continue to compensate every residual
-			// conjunct.
+			// A mapped top-level AND has no entry under the parent node. Visit
+			// its leaves so every residual conjunct reaches compensation.
 			for _, conjunct := range flattenConjuncts(
 				[]predicates.QueryPredicate{topLevelPredicate},
 			) {
