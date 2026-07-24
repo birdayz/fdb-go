@@ -99,9 +99,19 @@ closed rather than silently alter rows or output schema.
   post-run state cannot enqueue orphaned tasks. Regressions pin reuse after
   success, a partial-stack task-cap failure, and a fully-drained extraction
   error, including exact zero-work rejection and unchanged memo/root state.
-- [ ] **CQ-7 (MED) — make planning cancelable.** Thread `context.Context` through
-  production planning entry points and task execution, returning cancellation
-  without leaving reusable stale state.
+- [x] **CQ-7 (MED) — make planning cancelable.** `PlanWithContext` is the only
+  entry point production code can reach, because the context-less `Plan` is
+  declared test-only — the compiler, not a source scan, enforces it; the
+  run-scoped context reaches the task driver, rule calls, exponential rule
+  seams, and recursive plan extraction, and is never retained on the Planner.
+  Cancellation preserves both the standard `Canceled`/`DeadlineExceeded`
+  classification and custom cause, consumes the CQ-6 single-use planner, and
+  always detaches the memo scheduler. SELECT, DML, scalar-subquery, and EXPLAIN
+  paths propagate cancellation directly, and both entry points share one
+  lifecycle authority. Deterministic regressions pin zero-work
+  pre-cancellation, deadline causes, exact mid-task progress/residual work,
+  extraction cancellation, error precedence, retry rejection, and public
+  embedded boundaries.
 - [ ] **CQ-8 (MED) — preserve planner failure diagnostics.** Stop collapsing cap,
   cancellation, invariant, and genuinely unsupported failures into one generic
   `0AF00` message; retain safe user-facing error classes and wrapped causes.

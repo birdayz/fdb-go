@@ -33,7 +33,7 @@ type designationEntry struct {
 }
 
 // designationScope is one designation cache + the designated five-tier
-// REWRITING comparator. The planner owns one per Plan() call (OptimizeGroup
+// REWRITING comparator. The planner owns one per planning run (OptimizeGroup
 // coherence: winner and designation come from the SAME comparator); the
 // package-level RewritingCostModelLess mints a fresh scope per call —
 // identical semantics, merely uncached.

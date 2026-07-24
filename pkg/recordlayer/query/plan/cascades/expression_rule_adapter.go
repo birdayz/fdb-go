@@ -27,23 +27,30 @@ func (a *expressionRuleAdapter) Matcher() matching.BindingMatcher {
 }
 
 func (a *expressionRuleAdapter) OnMatch(implCall *ImplementationRuleCall) {
-	if implCall.constraintOnly {
+	if implCall.constraintOnly || implCall.CancellationErr() != nil {
 		return
 	}
 	call := &ExpressionRuleCall{
 		Bindings:    implCall.Bindings,
 		Reference:   implCall.Reference,
 		Context:     implCall.Context,
+		RunContext:  implCall.RunContext,
 		Constraints: implCall.Constraints,
 		memo:        implCall.memo,
 		yieldFn: func(expr expressions.RelationalExpression) bool {
+			if implCall.CancellationErr() != nil {
+				return false
+			}
 			implCall.Yield(expr)
 			return true
 		},
 	}
 	a.rule.OnMatch(call)
-	if implCall.memo != nil {
+	if implCall.memo != nil && implCall.CancellationErr() == nil {
 		for _, y := range call.yieldedExps {
+			if implCall.CancellationErr() != nil {
+				return
+			}
 			implCall.memo.AddExpression(implCall.Reference, y)
 		}
 	}

@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -24,8 +25,8 @@ type intersectionConsumption struct {
 // two phases (REWRITING → PLANNING) that explores the expression DAG
 // bottom-up (leaves fire rules first, ancestors after), tracks
 // per-Reference exploration rounds for convergence, and fires rules at
-// per-(group, expression, rule) task granularity. Plan() drives both
-// phases and extracts the cost-cheapest plan via
+// per-(group, expression, rule) task granularity. PlanWithContext drives
+// both phases and extracts the cost-cheapest plan via
 // ExtractBestPlanFromSelector.
 //
 // Convergence: a Reference whose member set stops growing is committed
@@ -33,25 +34,27 @@ type intersectionConsumption struct {
 // A hard cap (MaxTasks) prevents pathological non-termination from
 // rule-yielding-fresh-members loops; default 100_000.
 //
-// A Planner is single-use for non-nil planning runs. Plan(nil) remains a
-// zero-work no-op; the first non-nil Plan claims the Planner and every later
-// non-nil call fails with ErrPlannerAlreadyUsed, including a retry after an
-// error. Planning mutates both Planner-owned state and the entire Reference
-// DAG, so a fresh Planner is required for every attempt.
-// Configuration methods must therefore be called before the non-nil Plan.
+// A Planner is single-use for non-nil planning runs.
+// PlanWithContext(ctx, nil) remains a zero-work no-op; the first non-nil call
+// claims the Planner and every later non-nil call fails with
+// ErrPlannerAlreadyUsed, including a retry after an error or cancellation.
+// Planning mutates both Planner-owned state and the entire Reference DAG, so a
+// fresh Planner is required for every attempt. Configuration methods must
+// therefore be called before the non-nil planning call.
 //
 // The planning run itself is single-threaded (Java's is too). The one-way
 // claim is atomic so two accidental concurrent callers cannot both enter the
 // stateful task driver.
 type Planner struct {
 	// planStarted is a one-way lifecycle latch. It is deliberately never reset:
-	// every non-nil Plan exit (success, cap, task error, or extraction error)
-	// leaves this Planner consumed. Plan(nil) does no work and does not claim the
+	// every non-nil planning exit (success, cap, task error, cancellation, or
+	// extraction error, or a rejected nil context) leaves this Planner
+	// consumed. PlanWithContext(ctx, nil) does no work and does not claim the
 	// latch. Resetting Planner fields alone cannot make retry safe because
 	// planning also mutates the caller-owned Reference DAG.
 	planStarted atomic.Bool
 
-	// stack MUST be LIFO: Plan() pushes InitiatePlannerPhaseTask →
+	// stack MUST be LIFO: PlanWithContext pushes InitiatePlannerPhaseTask →
 	// ExploreGroupTask/OptimizeGroupTask → ExploreExprTask/
 	// TransformExprTask/TransformImplTask/OptimizeInputsTask, and
 	// depends on LIFO pop order for bottom-up exploration (children
@@ -80,8 +83,8 @@ type Planner struct {
 	planningExpressionRules []ExpressionRule
 
 	// MaxTasks caps the total tasks executed before the planner
-	// gives up: Plan returns nil and ErrPlannerCapHit (no partial
-	// result — matching Java's throw). Defaults to 100_000. Hitting
+	// gives up: PlanWithContext returns nil and ErrPlannerCapHit (no
+	// partial result — matching Java's throw). Defaults to 100_000. Hitting
 	// the cap is a strong signal of a non-terminating rule — callers
 	// should report.
 	MaxTasks int
@@ -104,14 +107,14 @@ type Planner struct {
 
 	// capErr carries a complexity-guard trip or a violated planner invariant
 	// raised inside a task (tasks have no error channel — Java throws
-	// instead); the Plan loop checks it after every task. One channel, not
+	// instead); the planning loop checks it after every task. One channel, not
 	// two: both are "a task decided planning cannot legitimately continue",
 	// and Java surfaces them the same way.
 	capErr error
 
 	// dscope is the planner-owned RFC-186 designation scope (virtual
-	// prune): one cache per Plan() call, shared by the REWRITING cost
-	// model and the coherence instrument. Lazily created, reset per Plan.
+	// prune): one cache per planning run, shared by the REWRITING cost
+	// model and the coherence instrument. Lazily created, reset per run.
 	dscope *designationScope
 
 	// verifyRewritingCoherence turns on RFC-186's REWRITING coherence
@@ -147,7 +150,7 @@ type Planner struct {
 	stats properties.StatisticsProvider
 
 	// maxObservedExplRounds records the maximum exploration rounds any
-	// Reference started this Plan() — the WS-P round-cap retirement
+	// Reference started this planning run — the WS-P round-cap retirement
 	// evidence (exported via MaxObservedExplorationRounds; the epoch
 	// model makes maxRoundsPerRef obsolete at stage (d)).
 	maxObservedExplRounds int
@@ -165,7 +168,7 @@ type Planner struct {
 	// dataAccessConsumed tracks, per canonical reference, the partial-match
 	// count last consumed by pushDataAccessTasks's standalone (yieldUnknown)
 	// path — the RFC-148 §3c re-entry/termination guard. Re-consumption runs
-	// only when the match set grows. Reset per Plan() run.
+	// only when the match set grows. Reset per planning run.
 	dataAccessConsumed map[*expressions.Reference]int
 
 	// intersectionConsumed is the corresponding growth guard for the
@@ -179,7 +182,7 @@ type Planner struct {
 	// exprRuleIdx / implRuleIdx bucket each phase's rules by their
 	// matcher's typed root operator (ruleIndex), so ExploreExprTask only
 	// pushes transform tasks for rules that can possibly match an
-	// expression. Built lazily per phase; reset per Plan() run so a
+	// expression. Built lazily per phase; reset per planning run so a
 	// reconfigured planner (DisabledRules, With*Rules) re-indexes.
 	exprRuleIdx map[PlannerPhase]*ruleIndex[ExpressionRule]
 	implRuleIdx map[PlannerPhase]*ruleIndex[ImplementationRule]
@@ -207,8 +210,8 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 	return p
 }
 
-// Memo returns the planner's Memo structure. Available after Plan
-// has been called (returns nil before that).
+// Memo returns the planner's Memo structure. Available after
+// PlanWithContext has been called (returns nil before that).
 func (p *Planner) Memo() *Memo {
 	return p.memo
 }
@@ -316,7 +319,7 @@ func (p *Planner) WithStatistics(stats properties.StatisticsProvider) *Planner {
 func (p *Planner) Statistics() properties.StatisticsProvider { return p.stats }
 
 // MaxObservedExplorationRounds reports the maximum exploration rounds
-// any Reference started during Plan() — round-cap retirement evidence
+// any Reference started during planning — round-cap retirement evidence
 // (RFC-181 WS-P).
 func (p *Planner) MaxObservedExplorationRounds() int { return p.maxObservedExplRounds }
 
@@ -326,8 +329,21 @@ func (p *Planner) WithMaxTasks(n int) *Planner {
 	return p
 }
 
-// Plan runs the unified two-phase REWRITING → PLANNING pipeline and
-// returns the cost-cheapest extracted plan tree.
+// PlanWithContext runs the unified two-phase REWRITING → PLANNING pipeline
+// under ctx and returns the cost-cheapest extracted plan tree. It is the only
+// planning entry point production code can reach; the context-less variant is
+// declared in a test file so cancellation and deadlines always have a
+// caller-scoped context to travel on.
+func (p *Planner) PlanWithContext(ctx context.Context, rootRef *expressions.Reference) (expressions.RelationalExpression, int, error) {
+	return p.plan(ctx, rootRef)
+}
+
+// plan is the single lifecycle authority behind PlanWithContext. Keeping the
+// claim, initialization, task loop, and cleanup in one function means every
+// entry point — including the test-only background-context one — observes the
+// identical lifecycle and cannot drift from it.
+//
+// It returns the cost-cheapest extracted plan tree.
 //
 // Pushes InitiatePlannerPhaseTask{PhaseRewriting} which chains to
 // PhasePlanning via the unified task types (ExploreGroupTask,
@@ -338,15 +354,28 @@ func (p *Planner) WithMaxTasks(n int) *Planner {
 // Returns:
 //   - plan: the extracted RelationalExpression; nil if rootRef is empty.
 //   - tasks: total tasks executed across both phases.
-//   - err: nil on success; ErrPlannerCapHit if EXPLORE hit MaxTasks
-//     (no OPTIMIZE attempted); ErrPlannerAlreadyUsed on a later non-nil call;
-//     extraction error otherwise.
-func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalExpression, int, error) {
+//   - err: nil on success; ctx.Err() when planning is canceled;
+//     ErrPlannerCapHit if EXPLORE hit MaxTasks (no OPTIMIZE attempted);
+//     ErrPlannerAlreadyUsed on a later non-nil call; extraction error otherwise.
+//
+// ctx must be non-nil. The context is passed down the task driver and
+// extraction recursion; it is never retained on Planner after this call.
+func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (expressions.RelationalExpression, int, error) {
 	if rootRef == nil {
 		return nil, 0, nil
 	}
 	if !p.planStarted.CompareAndSwap(false, true) {
 		return nil, 0, ErrPlannerAlreadyUsed
+	}
+	// The latch is claimed BEFORE the context is validated, so a nil-context or
+	// already-canceled call consumes the Planner. That is deliberate: those are
+	// planning attempts, and letting them leave the Planner reusable would make
+	// the single-use contract depend on how an attempt failed.
+	if ctx == nil {
+		return nil, 0, ErrPlannerNilContext
+	}
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, 0, err
 	}
 	if p.memo == nil {
 		p.memo = NewMemo(rootRef)
@@ -358,8 +387,8 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 		p.push(&ExploreGroupTask{Phase: p.activePhase, Ref: ref})
 	})
 	// The scheduler closes over this Planner's mutable task stack and is useful
-	// only while Plan is actively draining it. Memo is observable after Plan;
-	// detach the hook on every exit so later Memo operations cannot enqueue
+	// only while the run is actively draining it. Memo is observable after the
+	// run; detach the hook on every exit so later Memo operations cannot enqueue
 	// orphaned work into a consumed Planner.
 	defer p.memo.SetReExploreScheduler(nil)
 	p.constraintMap = NewConstraintMap()
@@ -376,7 +405,18 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// for REWRITING, then chains to InitiatePlannerPhase(PLANNING).
 	p.push(&InitiatePlannerPhaseTask{Phase: PhaseRewriting, RootRef: rootRef})
 
+	// Cancellation and the caps sit on deliberately opposite sides of a task:
+	// before Run, ctx wins over the caps, because tripping a cap is a decision
+	// to do no further work and there is no point minting that diagnosis for a
+	// run the caller has already abandoned. After Run, capErr wins over ctx,
+	// because a task that actually executed and concluded planning cannot
+	// legitimately continue carries strictly more diagnostic value than
+	// "someone canceled" — losing it to a concurrent cancel would hide a real
+	// invariant violation. Do not "harmonize" the two orderings.
 	for len(p.stack) > 0 {
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, p.tasksRun, err
+		}
 		if p.tasksRun >= p.MaxTasks {
 			return nil, p.tasksRun, ErrPlannerCapHit
 		}
@@ -384,10 +424,13 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 			return nil, p.tasksRun, ErrPlannerQueueCapHit
 		}
 		task := p.pop()
-		task.Run(p)
+		task.Run(ctx, p)
 		p.tasksRun++
 		if p.capErr != nil {
 			return nil, p.tasksRun, p.capErr
+		}
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, p.tasksRun, err
 		}
 	}
 
@@ -400,11 +443,20 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// Quantifier instead of a raw child pointer (Java's getRangesOverPlan
 	// is getOnlyElement over the final expressions).
 	if p.verifyOneFinal {
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, p.tasksRun, err
+		}
 		p.oneFinalViolations = VerifyOneFinalPlanPerReference(rootRef)
 	}
-	plan, err := ExtractBestPlanFromSelector(rootRef, p, p.stats)
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, p.tasksRun, err
+	}
+	plan, err := ExtractBestPlanFromSelectorContext(ctx, rootRef, p, p.stats)
 	if err != nil {
 		return plan, p.tasksRun, err
+	}
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, p.tasksRun, err
 	}
 	// Catch-all backstop: reject any PHYSICAL plan that carries an index-only
 	// predicate as a residual filter (a vector K-NN DistanceRank that no index
@@ -415,6 +467,9 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	if perr := validateNoIndexOnlyResidual(plan); perr != nil {
 		return nil, p.tasksRun, perr
 	}
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, p.tasksRun, err
+	}
 	// When the Java !isIndexOnly() ImplementFilterRule gate instead left the best
 	// plan NON-physical (no producer realized the index-only LogicalFilter), the
 	// physical walk above sees nothing — surface the same clean error from the
@@ -424,15 +479,42 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 			return nil, p.tasksRun, &UnplannableIndexOnlyResidualError{Predicate: bad.Explain()}
 		}
 	}
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, p.tasksRun, err
+	}
 	return plan, p.tasksRun, nil
 }
 
-// ErrPlannerAlreadyUsed signals that Plan was called more than once on the
-// same Planner. A Planner owns one planning attempt; callers must construct a
-// fresh Planner to retry after either success or failure.
-var ErrPlannerAlreadyUsed = plannerErr("planner: Plan may be called only once; construct a new Planner for each planning attempt")
+// ErrPlannerAlreadyUsed signals that PlanWithContext was called more than once
+// on the same Planner. A Planner owns one planning attempt; callers must
+// construct a fresh Planner to retry after either success or failure.
+var ErrPlannerAlreadyUsed = plannerErr("planner: PlanWithContext may be called only once; construct a new Planner for each planning attempt")
 
-// ErrPlannerCapHit signals that Plan exited via the MaxTasks
+// ErrPlannerNilContext signals a programmer error at the planning API
+// boundary. Callers that intentionally have no deadline should pass
+// context.Background rather than nil.
+var ErrPlannerNilContext = plannerErr("planner: nil context; use context.Background when no cancellation is required")
+
+// plannerContextErr preserves the standard context classification and, for
+// WithCancelCause callers, the underlying cause. Go permits multiple wrapped
+// errors, so errors.Is matches both context.Canceled/DeadlineExceeded and the
+// custom cause.
+func plannerContextErr(ctx context.Context) error {
+	if ctx == nil {
+		return ErrPlannerNilContext
+	}
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+	cause := context.Cause(ctx)
+	if cause == nil || cause == err {
+		return err
+	}
+	return fmt.Errorf("%w: %w", err, cause)
+}
+
+// ErrPlannerCapHit signals that PlanWithContext exited via the MaxTasks
 // cap rather than convergence. Callers should treat this as a
 // non-termination indicator and report.
 var ErrPlannerCapHit = plannerErr("planner: MaxTasks cap hit before convergence")
@@ -506,7 +588,7 @@ func (p *Planner) rulesForPhase(phase PlannerPhase) ([]ExpressionRule, []Impleme
 }
 
 // ruleIndexesForPhase returns the phase's rule indexes, building them from
-// rulesForPhase on first use (per Plan() run — Plan resets the maps).
+// rulesForPhase on first use (per planning run — the run resets the maps).
 func (p *Planner) ruleIndexesForPhase(phase PlannerPhase) (*ruleIndex[ExpressionRule], *ruleIndex[ImplementationRule]) {
 	if p.exprRuleIdx == nil {
 		p.exprRuleIdx = make(map[PlannerPhase]*ruleIndex[ExpressionRule])
@@ -766,7 +848,8 @@ func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates 
 			// when no physical alternative exists rather than being re-optimized
 			// into a wrong plan. Index-only residuals are handled elsewhere — the
 			// ImplementFilterRule !isIndexOnly() gate plus the
-			// validateNoIndexOnlyResidual backstop in Plan() (RFC-151 §5).
+			// validateNoIndexOnlyResidual backstop in the planning run
+			// (RFC-151 §5).
 			if !isPhysical(expr) && !compensationSafeForYield(expr) {
 				// NO exploration task: an unsafe final exists only so the
 				// query FAILS to plan when no alternative lands — running
@@ -968,7 +1051,8 @@ func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.Rela
 // partial-match re-trigger in TransformExprTask (the Java getNewPartialMatches()
 // reaction). But Go has OTHER physical-filter builders the gate does not cover
 // (ImplementSimpleSelectRule, the NLJ residual builder, ImplementIndexScanRule),
-// so the catch-all validateNoIndexOnlyResidual backstop in Plan() is RETAINED —
+// so the catch-all validateNoIndexOnlyResidual backstop in the planning run is
+// RETAINED —
 // it, not this function, is the authority that rejects an index-only physical
 // residual (pinned by TestVectorPlan_MetricMismatchInJoinDoesNotLeak). Do NOT
 // remove that net until every such builder is gated/retired (RFC-151 §5;
@@ -1241,10 +1325,11 @@ func deletePredicateConstantObjectAliases(pred predicates.QueryPredicate, corr m
 	})
 }
 
-// Task is the task-stack driver's unit of work. Tasks are Run
-// against the planner; they may push more tasks.
+// Task is the task-stack driver's unit of work. Tasks receive the run-scoped
+// context and may push more tasks. Implementations must stop at their bounded
+// cancellation seams; the driver also checks before and after every task.
 type Task interface {
-	Run(p *Planner)
+	Run(ctx context.Context, p *Planner)
 }
 
 // compensationProbeCorrelations returns the outer aliases that the bound prefix of

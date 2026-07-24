@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"context"
 	"strconv"
 	"testing"
 
@@ -166,7 +167,7 @@ func planParsedForBench(b *testing.B, q antlrgen.IQueryContext, md *recordlayer.
 		WithStatistics(nil).
 		WithMaxTasks(100_000)
 
-	bestExpr, _, err := planner.Plan(ref)
+	bestExpr, _, err := planner.PlanWithContext(context.Background(), ref)
 	if err != nil {
 		b.Fatalf("plan: %v", err)
 	}

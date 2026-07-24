@@ -41,6 +41,9 @@ func NewPartitionSelectRule() *PartitionSelectRule {
 func (r *PartitionSelectRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
+	if call.CancellationErr() != nil {
+		return
+	}
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
 	quantifiers := sel.GetQuantifiers()
 
@@ -230,6 +233,11 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 	n := len(allAliases)
 	total := 1 << n
 	for mask := 1; mask < total-1; mask++ {
+		// This is the rule's exponential seam (2^N bipartitions). A task-loop
+		// check alone cannot interrupt one large invocation.
+		if call.CancellationErr() != nil {
+			return
+		}
 		lowerAliases := make(map[values.CorrelationIdentifier]struct{})
 		for bit := 0; bit < n; bit++ {
 			if mask&(1<<bit) != 0 {

@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -236,7 +237,7 @@ func planReferenceToPhysical(
 	// yield and accumulates nothing.
 	planner.SetReachabilityCollector(reach)
 
-	bestExpr, _, planErr := planner.Plan(ref)
+	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	var oneFinalViolations []string
 	if verifyOneFinal {
 		oneFinalViolations = planner.OneFinalViolations()
@@ -431,7 +432,7 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 		WithStatistics(stats).
 		WithMaxTasks(100_000)
 
-	bestExpr, _, planErr := planner.Plan(ref)
+	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {
 		return "", fmt.Errorf("planning failed: %w", planErr)
 	}
@@ -579,7 +580,7 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 		WithStatistics(stats).
 		WithMaxTasks(100_000)
 
-	bestExpr, _, planErr := planner.Plan(ref)
+	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {
 		return nil, nil, fmt.Errorf("planning failed: %w", planErr)
 	}
@@ -605,7 +606,7 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 	// the production generator uses; PlanRecordQueryWithSubqueries surfaces
 	// them, the plan-only entry points drop them (execution without the
 	// bindings is loud — values.UnboundScalarSubqueryError).
-	subs, subErr := planScalarSubqueryPlans(scalarSubqueryPlans, md, stats)
+	subs, subErr := planScalarSubqueryPlans(context.Background(), scalarSubqueryPlans, md, stats)
 	if subErr != nil {
 		return nil, nil, subErr
 	}

@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -10,6 +11,8 @@ import (
 )
 
 var errPlannerLifecycleExtraction = errors.New("planner lifecycle extraction failure")
+
+func plannerTestContext() context.Context { return context.Background() }
 
 // plannerLifecycleExtractionErrorExpr is a physical leaf whose extraction
 // rebuilder fails. It exercises a post-task error exit, distinct from the

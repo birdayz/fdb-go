@@ -38,7 +38,7 @@ func exploreRewriting(p *Planner, rootRef *expressions.Reference) (int, bool) {
 		if p.tasksRun >= p.MaxTasks {
 			return p.tasksRun, false
 		}
-		p.pop().Run(p)
+		p.pop().Run(plannerTestContext(), p)
 		p.tasksRun++
 	}
 	return p.tasksRun, true

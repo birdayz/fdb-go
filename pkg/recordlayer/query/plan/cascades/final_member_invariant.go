@@ -71,7 +71,7 @@ func VerifyOneFinalPlanPerReference(root *expressions.Reference) []string {
 // SetVerifyOneFinal turns the P5 precondition check on for this planner.
 func (p *Planner) SetVerifyOneFinal(on bool) { p.verifyOneFinal = on }
 
-// OneFinalViolations returns what the last Plan() call found, when the check
+// OneFinalViolations returns what the last planning run found, when the check
 // was enabled. Empty means every reference reachable from the root held at
 // most one physical final — i.e. Java's getRangesOverPlan would be safe.
 func (p *Planner) OneFinalViolations() []string { return p.oneFinalViolations }

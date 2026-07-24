@@ -54,7 +54,7 @@ func TestOptimizeGroup_RetainsRequestedOrderingWinners(t *testing.T) {
 	}
 
 	task := &OptimizeGroupTask{Phase: PhasePlanning, Ref: ref}
-	task.Run(p)
+	task.Run(plannerTestContext(), p)
 
 	if got := ref.Winner(); got != cheap {
 		t.Fatalf("overall winner must stay the cost-cheapest member, got %T", got)
@@ -88,7 +88,7 @@ func TestOptimizeGroup_UnrequestedOrderingStillPruned(t *testing.T) {
 	// No requested-ordering constraint on ref.
 
 	task := &OptimizeGroupTask{Phase: PhasePlanning, Ref: ref}
-	task.Run(p)
+	task.Run(plannerTestContext(), p)
 
 	if n := len(ref.FinalMembers()); n != 1 {
 		t.Fatalf("with no requested ordering, the group must prune to the single winner; got %d finals", n)
@@ -147,14 +147,14 @@ func TestOptimizeInputs_SkipsPrunedExpression(t *testing.T) {
 	p := NewPlanner(nil, nil)
 	p.constraintMap = NewConstraintMap()
 	task := &OptimizeInputsTask{Phase: PhasePlanning, Ref: parentRef, Expr: parent}
-	task.Run(p)
+	task.Run(plannerTestContext(), p)
 	// Drain whatever the task pushed; a correctly-guarded task pushes
 	// nothing, so the child group's finals stay intact.
 	for len(p.stack) > 0 {
 		n := len(p.stack) - 1
 		tk := p.stack[n]
 		p.stack = p.stack[:n]
-		tk.Run(p)
+		tk.Run(plannerTestContext(), p)
 	}
 
 	if got := len(childRef.FinalMembers()); got != childFinals {

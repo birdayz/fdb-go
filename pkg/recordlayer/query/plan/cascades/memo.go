@@ -78,7 +78,7 @@ type Memo struct {
 
 	// mergeAliasCounter hands out per-plan deterministic merge-quantifier
 	// aliases for PartitionSelectRule's N-way join re-enumeration (RFC-077
-	// 7.5). It is per-Memo (one Memo per Plan call), so the SAME query planned
+	// 7.5). It is per-Memo (one Memo per planning run), so the SAME query planned
 	// twice mints the SAME alias sequence in the SAME deterministic exploration
 	// order → a STABLE plan hash across plannings (the process-global
 	// UniqueCorrelationIdentifier counter would leak its absolute value into the

@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"fmt"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -16,7 +17,10 @@ type InitiatePlannerPhaseTask struct {
 	RootRef *expressions.Reference
 }
 
-func (t *InitiatePlannerPhaseTask) Run(p *Planner) {
+func (t *InitiatePlannerPhaseTask) Run(ctx context.Context, p *Planner) {
+	if ctx.Err() != nil {
+		return
+	}
 	p.activePhase = t.Phase
 	if t.Phase.HasNextPhase() {
 		p.push(&InitiatePlannerPhaseTask{Phase: t.Phase.NextPhase(), RootRef: t.RootRef})
@@ -43,8 +47,8 @@ type ExploreGroupTask struct {
 	Ref   *expressions.Reference
 }
 
-func (t *ExploreGroupTask) Run(p *Planner) {
-	if t.Ref == nil {
+func (t *ExploreGroupTask) Run(ctx context.Context, p *Planner) {
+	if ctx.Err() != nil || t.Ref == nil {
 		return
 	}
 
@@ -127,6 +131,9 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 	// members (FinalizeExpressionsRule promotes the same pointer),
 	// which the member loop below owns.
 	for _, expr := range t.Ref.FinalMembers() {
+		if ctx.Err() != nil {
+			return
+		}
 		if isExploratoryMember(t.Ref, expr) {
 			continue // also an exploratory member — the member loop owns it
 		}
@@ -168,6 +175,9 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 	// memo dedup, so re-exploration is idempotent. The former
 	// only-new-members slice was the member-count model's optimization.
 	for _, expr := range t.Ref.Members() {
+		if ctx.Err() != nil {
+			return
+		}
 		// OptimizeInputs only for PHYSICAL (plan) members — the 1:1 port of Java's
 		// CascadesPlanner. Java constructs OptimizeInputs in exactly one place
 		// (CascadesPlanner.java:524), and its only callers push it ONLY for final/plan
@@ -209,8 +219,8 @@ type ExploreExprTask struct {
 	Expr  expressions.RelationalExpression
 }
 
-func (t *ExploreExprTask) Run(p *Planner) {
-	if t.Ref == nil || t.Expr == nil {
+func (t *ExploreExprTask) Run(ctx context.Context, p *Planner) {
+	if ctx.Err() != nil || t.Ref == nil || t.Expr == nil {
 		return
 	}
 
@@ -230,6 +240,9 @@ func (t *ExploreExprTask) Run(p *Planner) {
 	// 2. Push non-preorder implementation rules.
 	// Skip FinalizeExpressionsRule for expressions already in finals.
 	for i := len(implRules) - 1; i >= 0; i-- {
+		if ctx.Err() != nil {
+			return
+		}
 		rule := implRules[i]
 		if isPreOrderRule(rule) {
 			continue
@@ -244,11 +257,17 @@ func (t *ExploreExprTask) Run(p *Planner) {
 
 	// 3. Push non-preorder expression rules.
 	for i := len(exprRules) - 1; i >= 0; i-- {
+		if ctx.Err() != nil {
+			return
+		}
 		p.push(&TransformExprTask{Phase: t.Phase, Ref: t.Ref, Expr: t.Expr, Rule: exprRules[i]})
 	}
 
 	// 4. Push ExploreGroup for each child quantifier's Reference.
 	for _, q := range t.Expr.GetQuantifiers() {
+		if ctx.Err() != nil {
+			return
+		}
 		if childRef := q.GetRangesOver(); childRef != nil {
 			p.push(&ExploreGroupTask{Phase: t.Phase, Ref: childRef})
 		}
@@ -256,6 +275,9 @@ func (t *ExploreExprTask) Run(p *Planner) {
 
 	// 5. Push preorder implementation rules (fire FIRST — topmost on LIFO).
 	for i := len(implRules) - 1; i >= 0; i-- {
+		if ctx.Err() != nil {
+			return
+		}
 		rule := implRules[i]
 		if !isPreOrderRule(rule) {
 			continue
@@ -274,8 +296,8 @@ type TransformExprTask struct {
 	Rule  ExpressionRule
 }
 
-func (t *TransformExprTask) Run(p *Planner) {
-	if t.Ref == nil || t.Expr == nil || t.Rule == nil {
+func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
+	if ctx.Err() != nil || t.Ref == nil || t.Expr == nil || t.Rule == nil {
 		return
 	}
 	if !t.Ref.ContainsExactly(t.Expr) {
@@ -291,6 +313,9 @@ func (t *TransformExprTask) Run(p *Planner) {
 	var yieldFn func(expressions.RelationalExpression) bool
 	if t.Phase == PhasePlanning {
 		yieldFn = func(expr expressions.RelationalExpression) bool {
+			if ctx.Err() != nil {
+				return false
+			}
 			// Same unconditional verifyChildrenMemoized as the two
 			// ImplementationRuleCall yield sites. This one carries most of
 			// the surface: as the comment above says, expression rules
@@ -300,6 +325,9 @@ func (t *TransformExprTask) Run(p *Planner) {
 			// physical yields unchecked and make the invariant decorative.
 			if err := verifyChildrenMemoized(expr, p.reach); err != nil {
 				p.capErr = err
+				return false
+			}
+			if ctx.Err() != nil {
 				return false
 			}
 			return t.Ref.InsertFinal(expr)
@@ -312,17 +340,27 @@ func (t *TransformExprTask) Run(p *Planner) {
 	// bind below is part of THIS rule call, so it shares the counter.
 	numMatches := 0
 	fireExprRule := func(expr expressions.RelationalExpression) {
+		if ctx.Err() != nil {
+			return
+		}
 		bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), expr)
+		if ctx.Err() != nil {
+			return
+		}
 		numMatches += len(bindings)
 		if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
 			p.capErr = ErrPlannerRuleMatchCapHit
 			return
 		}
 		for _, b := range bindings {
+			if ctx.Err() != nil {
+				return
+			}
 			call := &ExpressionRuleCall{
 				Bindings:    b,
 				Reference:   t.Ref,
 				Context:     p.ctx,
+				RunContext:  ctx,
 				Constraints: p.constraintMap,
 				Stats:       p.stats,
 				memo:        p.memo,
@@ -349,11 +387,17 @@ func (t *TransformExprTask) Run(p *Planner) {
 				matchesBefore = len(t.Ref.GetAllPartialMatches())
 			}
 			t.Rule.OnMatch(call)
+			if ctx.Err() != nil {
+				return
+			}
 			if t.Phase == PhasePlanning && len(t.Ref.GetAllPartialMatches()) > matchesBefore {
 				p.pushDataAccessTasks(t.Ref, t.Expr)
 			}
 
 			for _, newExpr := range call.Yielded() {
+				if ctx.Err() != nil {
+					return
+				}
 				// OptimizeInputs only for PHYSICAL yields — the other half of the B1
 				// task-graph invariant (the executeRuleCall analog). Java's
 				// CascadesPlanner.executeRuleCall (:1064-1070) splits ruleCall yields:
@@ -397,14 +441,17 @@ type TransformImplTask struct {
 	Rule  ImplementationRule
 }
 
-func (t *TransformImplTask) Run(p *Planner) {
-	if t.Ref == nil || t.Expr == nil || t.Rule == nil {
+func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
+	if ctx.Err() != nil || t.Ref == nil || t.Expr == nil || t.Rule == nil {
 		return
 	}
 	if !t.Ref.ContainsExactly(t.Expr) {
 		return
 	}
 	bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), t.Expr)
+	if ctx.Err() != nil {
+		return
+	}
 	// Java CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded: one rule
 	// invocation producing more matches than the bound is a complexity
 	// blow-up; throw (here: capErr — tasks have no error channel). The
@@ -416,10 +463,14 @@ func (t *TransformImplTask) Run(p *Planner) {
 		return
 	}
 	for _, b := range bindings {
+		if ctx.Err() != nil {
+			return
+		}
 		call := &ImplementationRuleCall{
 			Bindings:    b,
 			Reference:   t.Ref,
 			Context:     p.ctx,
+			RunContext:  ctx,
 			Constraints: p.constraintMap,
 			Stats:       p.stats,
 			memo:        p.memo,
@@ -432,12 +483,18 @@ func (t *TransformImplTask) Run(p *Planner) {
 			constraintOnly: isPreOrderRule(t.Rule),
 		}
 		t.Rule.OnMatch(call)
+		if ctx.Err() != nil {
+			return
+		}
 
 		// Handle yields: insert into FinalMembers and push explore+optimize
 		// for genuinely new expressions. Skip re-exploration for
 		// FinalizeExpressionsRule yields (they're already-explored
 		// exploratory members promoted to final).
 		for _, y := range call.yielded {
+			if ctx.Err() != nil {
+				return
+			}
 			// Java's unconditional verifyChildrenMemoized, at the same point:
 			// before the yielded expression enters the memo.
 			if err := verifyChildrenMemoized(y, p.reach); err != nil {
@@ -474,6 +531,9 @@ func (t *TransformImplTask) Run(p *Planner) {
 		// Handle constraint pushes: re-explore affected child References.
 		if call.Constraints != nil {
 			for _, childRef := range call.constraintPushedRefs {
+				if ctx.Err() != nil {
+					return
+				}
 				p.push(&ExploreGroupTask{Phase: t.Phase, Ref: childRef})
 			}
 		}
@@ -483,55 +543,70 @@ func (t *TransformImplTask) Run(p *Planner) {
 	// The swapped expression is NOT a member of the Reference, so
 	// it must bypass the ContainsExactly guard. Fire the rule
 	// directly on the swapped expression.
-	if sel, ok := t.Expr.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
-		qs := sel.GetQuantifiers()
-		if len(qs) >= 2 && sel.GetJoinType() != expressions.JoinLeftOuter &&
-			qs[0].Kind() == expressions.QuantifierForEach &&
-			qs[1].Kind() == expressions.QuantifierForEach {
-			swapped := sel.WithSwappedQuantifiers()
-			swapBindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), swapped)
-			// Same rule call as the primary bind site above: the match cap
-			// counts cumulatively across both binding streams.
-			numMatches += len(swapBindings)
-			if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
-				p.capErr = ErrPlannerRuleMatchCapHit
-				return
-			}
-			for _, b := range swapBindings {
-				call := &ImplementationRuleCall{
-					Bindings:    b,
-					Reference:   t.Ref,
-					Context:     p.ctx,
-					Constraints: p.constraintMap,
-					Stats:       p.stats,
-					memo:        p.memo,
+	if ctx.Err() == nil {
+		if sel, ok := t.Expr.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
+			qs := sel.GetQuantifiers()
+			if len(qs) >= 2 && sel.GetJoinType() != expressions.JoinLeftOuter &&
+				qs[0].Kind() == expressions.QuantifierForEach &&
+				qs[1].Kind() == expressions.QuantifierForEach {
+				swapped := sel.WithSwappedQuantifiers()
+				swapBindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), swapped)
+				if ctx.Err() != nil {
+					return
 				}
-				t.Rule.OnMatch(call)
-				for _, y := range call.yielded {
-					if err := verifyChildrenMemoized(y, p.reach); err != nil {
-						p.capErr = err
+				// Same rule call as the primary bind site above: the match cap
+				// counts cumulatively across both binding streams.
+				numMatches += len(swapBindings)
+				if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
+					p.capErr = ErrPlannerRuleMatchCapHit
+					return
+				}
+				for _, b := range swapBindings {
+					if ctx.Err() != nil {
 						return
 					}
-					t.Ref.InsertFinal(y)
-					if !isExploratoryMember(t.Ref, y) {
-						// NOTE: this 4th OptimizeInputs site — the
-						// swapped-quantifier impl yield — is INTENTIONALLY NOT gated to
-						// isPhysical. Unlike the other three, it is load-bearing, not a
-						// no-op: gating it defers finalization in a way that breaks
-						// TestFDB_ArrayUnnestOrdinality (HAVING on a shadowed grouped
-						// unnest key). The B1 correlated-leg invariant doesn't need it —
-						// the swapped path is join-commutativity over already-explored
-						// members, not the correlated-SUBSEL yield path —
-						// so the three gated sites are the complete set for the invariant.
-						// A correlated INNER leg CAN reach this swap (ChildrenAsSet is true
-						// for JoinInner, no correlation gate on the swap), but that is
-						// HARMLESS: residual 0-row safety for any correlated leg is held
-						// DOWNSTREAM and independently of which site drives the optimize —
-						// by compensationSafeForYield's outer-correlation guard — not by B1's
-						// gating. B1 only removes a premature standalone prune (the
-						// :248 path above); it was never the sole 0-row guarantee.
-						p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
-						p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+					call := &ImplementationRuleCall{
+						Bindings:    b,
+						Reference:   t.Ref,
+						Context:     p.ctx,
+						RunContext:  ctx,
+						Constraints: p.constraintMap,
+						Stats:       p.stats,
+						memo:        p.memo,
+					}
+					t.Rule.OnMatch(call)
+					if ctx.Err() != nil {
+						return
+					}
+					for _, y := range call.yielded {
+						if ctx.Err() != nil {
+							return
+						}
+						if err := verifyChildrenMemoized(y, p.reach); err != nil {
+							p.capErr = err
+							return
+						}
+						t.Ref.InsertFinal(y)
+						if !isExploratoryMember(t.Ref, y) {
+							// NOTE: this 4th OptimizeInputs site — the
+							// swapped-quantifier impl yield — is INTENTIONALLY NOT gated to
+							// isPhysical. Unlike the other three, it is load-bearing, not a
+							// no-op: gating it defers finalization in a way that breaks
+							// TestFDB_ArrayUnnestOrdinality (HAVING on a shadowed grouped
+							// unnest key). The B1 correlated-leg invariant doesn't need it —
+							// the swapped path is join-commutativity over already-explored
+							// members, not the correlated-SUBSEL yield path —
+							// so the three gated sites are the complete set for the invariant.
+							// A correlated INNER leg CAN reach this swap (ChildrenAsSet is true
+							// for JoinInner, no correlation gate on the swap), but that is
+							// HARMLESS: residual 0-row safety for any correlated leg is held
+							// DOWNSTREAM and independently of which site drives the optimize —
+							// by compensationSafeForYield's outer-correlation guard — not by B1's
+							// gating. B1 only removes a premature standalone prune (the
+							// :248 path above); it was never the sole 0-row guarantee.
+							p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+							p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+						}
 					}
 				}
 			}
@@ -546,8 +621,8 @@ type OptimizeGroupTask struct {
 	Ref   *expressions.Reference
 }
 
-func (t *OptimizeGroupTask) Run(p *Planner) {
-	if t.Ref == nil {
+func (t *OptimizeGroupTask) Run(ctx context.Context, p *Planner) {
+	if ctx.Err() != nil || t.Ref == nil {
 		return
 	}
 
@@ -561,6 +636,9 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 
 	var bestFinal expressions.RelationalExpression
 	for _, m := range t.Ref.FinalMembers() {
+		if ctx.Err() != nil {
+			return
+		}
 		if bestFinal == nil || costModel(m, bestFinal) {
 			bestFinal = m
 		}
@@ -586,11 +664,17 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 		if ros, ok := Get(p.constraintMap, t.Ref, RequestedOrderingConstraintKey); ok {
 			tieBrokenLess := lessWithHashTieBreak(costModel)
 			for _, ro := range ros {
+				if ctx.Err() != nil {
+					return
+				}
 				if ro == nil || ro.IsPreserve() {
 					continue
 				}
 				var best expressions.RelationalExpression
 				for _, m := range t.Ref.FinalMembers() {
+					if ctx.Err() != nil {
+						return
+					}
 					if !memberSatisfiesOrdering(m, ro) {
 						continue
 					}
@@ -644,8 +728,8 @@ type OptimizeInputsTask struct {
 	Expr  expressions.RelationalExpression
 }
 
-func (t *OptimizeInputsTask) Run(p *Planner) {
-	if t.Expr == nil {
+func (t *OptimizeInputsTask) Run(ctx context.Context, p *Planner) {
+	if ctx.Err() != nil || t.Expr == nil {
 		return
 	}
 	// Identity guard (Java CascadesPlanner.OptimizeInputs:
@@ -659,6 +743,9 @@ func (t *OptimizeInputsTask) Run(p *Planner) {
 		return
 	}
 	for _, q := range t.Expr.GetQuantifiers() {
+		if ctx.Err() != nil {
+			return
+		}
 		childRef := q.GetRangesOver()
 		if childRef == nil {
 			continue

@@ -1,6 +1,8 @@
 package embedded
 
 import (
+	"context"
+
 	"fdb.dev/pkg/recordlayer"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -25,7 +27,15 @@ type PlannedScalarSubquery struct {
 // through its own Cascades pipeline — the ONE planning path for scalar
 // subqueries, shared by the production generator (cascades_generator) and the
 // plan harness (PlanRecordQueryWithSubqueries) so the two can never diverge.
-func planScalarSubqueryPlans(scalarSubqueryPlans []query.ScalarSubqueryPlan, md *recordlayer.RecordMetaData, stats properties.StatisticsProvider) ([]PlannedScalarSubquery, error) {
+func planScalarSubqueryPlans(
+	ctx context.Context,
+	scalarSubqueryPlans []query.ScalarSubqueryPlan,
+	md *recordlayer.RecordMetaData,
+	stats properties.StatisticsProvider,
+) ([]PlannedScalarSubquery, error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return nil, err
+	}
 	if len(scalarSubqueryPlans) == 0 {
 		return nil, nil
 	}
@@ -37,6 +47,9 @@ func planScalarSubqueryPlans(scalarSubqueryPlans []query.ScalarSubqueryPlan, md 
 	}
 	out := make([]PlannedScalarSubquery, 0, len(scalarSubqueryPlans))
 	for _, ssq := range scalarSubqueryPlans {
+		if err := contextCancellationError(ctx); err != nil {
+			return nil, err
+		}
 		// Pass md so the scalar subquery's own join legs can anchor (RFC-077 7.6);
 		// nested scalar subqueries are not collected here, so any they contain are
 		// dropped — matching the previous behavior (TranslateToCascades discards
@@ -58,8 +71,15 @@ func planScalarSubqueryPlans(scalarSubqueryPlans []query.ScalarSubqueryPlan, md 
 			WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
 			WithStatistics(stats).
 			WithMaxTasks(100_000)
-		subBest, _, subErr := subPlanner.Plan(subRef)
-		if subErr != nil || subBest == nil {
+		subBest, _, subErr := subPlanner.PlanWithContext(ctx, subRef)
+		if subErr != nil {
+			if isContextCancellation(subErr) {
+				return nil, subErr
+			}
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"Cascades planner could not plan scalar subquery")
+		}
+		if subBest == nil {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"Cascades planner could not plan scalar subquery")
 		}

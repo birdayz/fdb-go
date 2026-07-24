@@ -63,7 +63,40 @@ func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
 	}
 }
 
+func contextCancellationError(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("embedded planner: nil context")
+	}
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+	cause := context.Cause(ctx)
+	if cause == nil || cause == err {
+		return err
+	}
+	return fmt.Errorf("%w: %w", err, cause)
+}
+
+func isContextCancellation(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func explainWithContext(ctx context.Context, explain func() string) (string, error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return "", err
+	}
+	text := explain()
+	if err := contextCancellationError(ctx); err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
 func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return nil, err
+	}
 	root, err := parser.Parse(sql)
 	if err != nil {
 		return nil, err
@@ -89,6 +122,9 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	// (DDL/DML only). Refuse a mixed batch containing SELECT/SHOW.
 	children := make([]query.Plan, 0, len(all))
 	for _, s := range all {
+		if err := contextCancellationError(ctx); err != nil {
+			return nil, err
+		}
 		p, pErr := g.planOne(ctx, s)
 		if pErr != nil {
 			return nil, pErr
@@ -254,6 +290,9 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 // false so EXPLAIN does not emit a phantom planning event (Java's getPlan
 // funnel does not fire for EXPLAIN-internal planning).
 func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData, logMetrics bool) (plan query.Plan, err error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return nil, err
+	}
 	// Plan-cache key parts: a VERBATIM schema+version scope (case-sensitive,
 	// never normalized) and the injective canonical query text. NOT q.GetText()
 	// — that concatenated tokens with no separator, colliding `SELECT AB` with
@@ -417,8 +456,15 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		WithStatistics(stats).
 		WithMaxTasks(100_000)
 
-	bestExpr, _, planErr := planner.Plan(ref)
-	if planErr != nil || bestExpr == nil {
+	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
+	if planErr != nil {
+		if isContextCancellation(planErr) {
+			return nil, planErr
+		}
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"Cascades planner could not plan query")
+	}
+	if bestExpr == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")
 	}
@@ -445,7 +491,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// Plan scalar subqueries independently through the Cascades pipeline
 	// (planScalarSubqueryPlans — the one planning path, shared with the
 	// plan harness).
-	scalarSubs, subErr := planScalarSubqueryPlans(scalarSubqueryPlans, md, stats)
+	scalarSubs, subErr := planScalarSubqueryPlans(ctx, scalarSubqueryPlans, md, stats)
 	if subErr != nil {
 		return nil, subErr
 	}
@@ -484,7 +530,10 @@ func (g *cascadesGenerator) planExplain(ctx context.Context, full antlrgen.IFull
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"EXPLAIN form not supported (only EXPLAIN <query|insert|update|delete>)")
 	}
-	planText := g.computeExplainText(ctx, descStmts)
+	planText, explainErr := g.computeExplainText(ctx, descStmts)
+	if explainErr != nil {
+		return nil, explainErr
+	}
 	if planText == "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"EXPLAIN inner statement produced no plan text")
@@ -506,7 +555,10 @@ func (g *cascadesGenerator) planExplain(ctx context.Context, full antlrgen.IFull
 // the full Cascades pipeline to produce a physical plan explain.
 // Falls back to logical plan text for DML and when Cascades can't
 // plan the query (e.g. no metadata, INFORMATION_SCHEMA).
-func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.DescribeStatementsContext) string {
+func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.DescribeStatementsContext) (string, error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return "", err
+	}
 	c := g.c
 	md := c.cachedMetaData()
 
@@ -517,52 +569,62 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 			if err := c.ensureMetaData(ctx); err == nil {
 				if freshMd := c.cachedMetaData(); freshMd != nil {
 					if plan, planErr := g.planSelectCascades(ctx, q, freshMd, false); planErr == nil {
-						return plan.Explain()
+						return explainWithContext(ctx, plan.Explain)
+					} else if isContextCancellation(planErr) {
+						return "", planErr
 					}
 				}
+			} else if isContextCancellation(err) {
+				return "", err
 			}
+		}
+		if err := contextCancellationError(ctx); err != nil {
+			return "", err
 		}
 		// Fallback to logical plan text.
 		if md != nil {
 			if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
-				return op.Explain("")
+				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
 		if op := buildLogicalPlanForQuery(q); op != nil {
-			return op.Explain("")
+			return explainWithContext(ctx, func() string { return op.Explain("") })
 		}
 	}
 	if del := d.DeleteStatement(); del != nil {
 		if md != nil {
 			if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionSchema()); op != nil {
-				return op.Explain("")
+				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
 		if op := buildLogicalPlanForDelete(del); op != nil {
-			return op.Explain("")
+			return explainWithContext(ctx, func() string { return op.Explain("") })
 		}
 	}
 	if ins := d.InsertStatement(); ins != nil {
 		if md != nil {
 			if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionSchema()); op != nil {
-				return op.Explain("")
+				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
 		if op := buildLogicalPlanForInsert(ins); op != nil {
-			return op.Explain("")
+			return explainWithContext(ctx, func() string { return op.Explain("") })
 		}
 	}
 	if upd := d.UpdateStatement(); upd != nil {
 		if md != nil {
 			if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionSchema()); op != nil {
-				return op.Explain("")
+				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
 		if op := buildLogicalPlanForUpdate(upd); op != nil {
-			return op.Explain("")
+			return explainWithContext(ctx, func() string { return op.Explain("") })
 		}
 	}
-	return ""
+	if err := contextCancellationError(ctx); err != nil {
+		return "", err
+	}
+	return "", nil
 }
 
 // planDDL wraps a DDL or transaction statement in a PlanFunc that
@@ -712,6 +774,9 @@ func updateHasSubqueryAssignment(upd antlrgen.IUpdateStatementContext) bool {
 }
 
 func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (plan query.Plan, err error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return nil, err
+	}
 	c := g.c
 
 	// Keep DML on the same pre-lowering correctness boundary as SELECT.
@@ -949,9 +1014,16 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		WithStatistics(dmlStats).
 		WithMaxTasks(100_000)
 
-	bestExpr, _, planErr := planner.Plan(ref)
-	if planErr != nil || bestExpr == nil {
+	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
+	if planErr != nil {
+		if isContextCancellation(planErr) {
+			return nil, planErr
+		}
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "DML Cascades planning failed: %v", planErr)
+	}
+	if bestExpr == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"DML Cascades planning returned no expression")
 	}
 
 	type planExtractor interface {
@@ -977,7 +1049,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// NULL — the DELETE compared v > NULL (UNKNOWN) and removed NOTHING, with
 	// both differential models identically wrong; the loud
 	// values.UnboundScalarSubqueryError is what surfaced it.
-	dmlScalarSubs, dmlSubErr := planScalarSubqueryPlans(dmlScalarSubqueryPlans, md, dmlStats)
+	dmlScalarSubs, dmlSubErr := planScalarSubqueryPlans(ctx, dmlScalarSubqueryPlans, md, dmlStats)
 	if dmlSubErr != nil {
 		return nil, dmlSubErr
 	}

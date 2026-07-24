@@ -325,7 +325,7 @@ func TestPlannerCapTrips(t *testing.T) {
 		p := NewPlanner(nil, nil)
 		p.MaxNumMatchesPerRuleCall = 1
 		task := &TransformExprTask{Phase: PhaseRewriting, Ref: ref, Expr: scan, Rule: &tripStubRule{}}
-		task.Run(p)
+		task.Run(plannerTestContext(), p)
 		if !errors.Is(p.capErr, ErrPlannerRuleMatchCapHit) {
 			t.Fatalf("two bindings over cap 1 must trip ErrPlannerRuleMatchCapHit, got %v", p.capErr)
 		}
@@ -343,7 +343,7 @@ func TestPlannerCapTrips(t *testing.T) {
 		p := NewPlanner(nil, nil)
 		p.MaxNumMatchesPerRuleCall = 3
 		task := &TransformExprTask{Phase: PhasePlanning, Ref: ref, Expr: sel, Rule: &tripStubRule{}}
-		task.Run(p)
+		task.Run(plannerTestContext(), p)
 		if !errors.Is(p.capErr, ErrPlannerRuleMatchCapHit) {
 			t.Fatalf("2 primary + 2 swapped bindings over cap 3 must trip cumulatively, got %v", p.capErr)
 		}
@@ -375,7 +375,7 @@ func TestPlannerCapTrips(t *testing.T) {
 		}
 		p := NewPlanner(nil, nil)
 		task := &ExploreGroupTask{Phase: PhaseRewriting, Ref: ref}
-		task.Run(p)
+		task.Run(plannerTestContext(), p)
 		if !errors.Is(p.capErr, ErrPlannerRoundCapHit) {
 			t.Fatalf("100 epoch-re-armed rounds must trip ErrPlannerRoundCapHit, got %v", p.capErr)
 		}

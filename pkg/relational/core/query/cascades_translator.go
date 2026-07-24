@@ -28,7 +28,7 @@ type ScalarSubqueryPlan struct {
 // the bridge between the SQL parser's logical plan and the Cascades
 // optimizer.
 //
-// Returns the root Reference suitable for passing to Planner.Plan().
+// Returns the root Reference suitable for passing to Planner.PlanWithContext().
 // Returns nil if the operator tree contains shapes that can't be
 // translated (unsupported operators fall through to nil).
 func TranslateToCascades(op logical.LogicalOperator) *expressions.Reference {
