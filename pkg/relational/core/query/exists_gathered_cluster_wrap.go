@@ -4,19 +4,17 @@ package query
 // (arity >= 3) INNER join under a correlated WHERE EXISTS ORDINALIZES while
 // preserving the index SARG.
 //
-// WHY A WRAP: a flat [ForEach×N, Existential] select carrying a CORRELATED
-// existential is unimplementable except MATERIALIZED. RFC-190 190.1 retired
-// the ordinal N-way arm this comment used to cite as the only physical
-// implementer (implementNWayJoinWithExistential built a predicate-free
-// left-deep cross-product and applied ALL join predicates as one post-filter,
-// losing the SARG) — the general >=3-way flat existential now decomposes via
-// PartitionSelectRule into ordinary 2-quantifier pairs instead. That
-// decomposition covers the UNCORRELATED case (buildExistentialJoinSelect's
-// direct-emit translation); a CORRELATED existential still has no such route
-// (PartitionSelectRule cannot represent a live existential positionally), so
-// this wrap remains the mechanism for it. And Go's single-pass Cascades
-// cannot re-plan a sub-select minted at OnMatch, so the join can only be
-// enumerated separately if it is a SEPARATE REFERENCE at translation. Hence:
+// WHY A WRAP: RFC-190 190.1 retired the ordinal N-way arm that built a
+// predicate-free left-deep cross-product and applied all join predicates as one
+// post-filter, losing the SARG. A general flat [ForEach×N, Existential] select
+// now decomposes through PartitionSelectRule into ordinary binary NLJs,
+// including the correlated form emitted by buildExistentialJoinSelect. This
+// wrap serves a different contract: for a folded, non-projected WHERE EXISTS
+// over a fresh gathered cluster, the join must remain separately enumerable so
+// its index probes survive and the folded projection/correlation can be rebased
+// onto one positional output. Go's single-pass Cascades cannot re-plan a
+// sub-select minted at OnMatch, so the join can only be enumerated separately
+// when translation creates a SEPARATE REFERENCE. Hence:
 // translate the join + the WHERE's non-EXISTS conjuncts
 // as its OWN gathered ordinal cluster (SARG-preserving,
 // PartitionSelectRule-enumerable, zero name-model producers), and wrap it

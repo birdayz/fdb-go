@@ -20,7 +20,7 @@ Current RFC state: **implemented; final whole-PR Graefe/Torvalds delta review an
 `@claude` review pending.**
 
 **Correctness:**
-- [x] **190.1 (HIGH) — DONE; original delete premise INVALIDATED (do not delete the arm).**
+- [x] **190.1 (HIGH) — DONE; naive delete premise INVALIDATED, redesigned N-way path safely retired the arm.**
   The RFC-190 delete plan (Graefe-ACKed) rested on the arm's own gravestone: *"HAS NEVER PRODUCED
   AN EXECUTABLE PLAN."* **That gravestone is FALSE.** Attempting the delete broke two FDB tests:
   `TestFDB_BuriedInnerJoinProjectedExists` and `_Discriminating` (`0AF00: could not plan query`) —
@@ -28,8 +28,9 @@ Current RFC state: **implemented; final whole-PR Graefe/Torvalds delta review an
   explicit-`JOIN…ON` projected-EXISTS-over-3-way shape (`SELECT p.v, EXISTS(…) FROM p JOIN q ON…
   JOIN r ON…`). The crash is specific to the **comma-join** shape (`FROM a,b,c WHERE a.id=b.id…`)
   the gravestone author tested and over-generalized from. Both are flat `[ForEach×3, Existential]`
-  selects that reach the arm; the comma-join's seed trips the RFC-173 ordinal tripwire, the
-  explicit-join's does not. **Deleting the arm is a net regression — forbidden.** Corpus checks
+  selects that reached the arm before the redesign; the comma-join's seed tripped the RFC-173 ordinal
+  tripwire, while the explicit-join's did not. **Deleting the arm without its replacement path was a
+  net regression — forbidden.** Corpus checks
   (golden byte-identical, "zero firings") missed this because these are hand-written FDB tests, not
   corpus queries — a reminder that FDB is the gold standard, not the corpus.
   Real fix options (both DEEP, Graefe-gated, need a corrected RFC + re-review since the premise
@@ -49,10 +50,13 @@ Current RFC state: **implemented; final whole-PR Graefe/Torvalds delta review an
   `positionalMergeCase`/Case-2 can't represent a projected existential as a positional ordinal, a real
   Go constraint Java lacks). This decomposes the flat `[ForEach×N, Existential]` select into binary
   sub-selects Go's existing `implementExistentialSelect` already handles, SARG-preserving, retiring
-  BOTH the N-way arm AND the gathered-cluster wrap. Round-1 NAK (Graefe's `{a,δ}` counterexample
+  the N-way arm while retaining the separately useful gathered-cluster wrap (its retirement is
+  post-RFC FU-4). Round-1 NAK (Graefe's `{a,δ}` counterexample
   reached the merge case → wrong rows) closed by the guard; round-2 ACK verified airtight (all lower-
-  flow sites `:537`/`:550`/`:559` covered, no plan lost, `{a,δ}` now rejected before `:550`). 5-step
-  migration, **Step 2 (guard) BEFORE Step 3 (retire arm)** — the invariant the naive delete violated.
+  flow sites `:537`/`:550`/`:559` covered, no plan lost, `{a,δ}` now rejected before `:550`). The
+  original five-step migration order was superseded by the atomic direct-emit + guard + retirement
+  below; its invariant still held inside that commit: the replacement and guard accompanied the arm
+  deletion, unlike the naive delete.
   Cell 7 (multi projected EXISTS) = honest conservative decline (0AF00, never wrong rows), NOT claimed
   fixed. Full design in `rfcs/190-cascades-quality-audit.md` §190.1. **Both gates PASS: Graefe ACK
   (2-round dialogue) + Torvalds ACK.**
@@ -70,7 +74,7 @@ Current RFC state: **implemented; final whole-PR Graefe/Torvalds delta review an
     FlatMap result value that passes the INNER quantifier's row through unchanged (which Case-2 flowing
     + a cost-chosen inner-flowed join direction produces) got scalar-wrapped → whole row nested in slot
     0 → PK-column SARG read the record (panic) / non-PK got lucky. Fixed with the symmetric inner branch.
-  - **Scoped bail (deviation from the pure design — Graefe to rule in the review lap):** removing the
+  - **Scoped bail (reviewed deviation from the pure design — Graefe accepted it for this milestone):** removing the
     `existentialCount==1` bail ENTIRELY raced the working Go-only 2-way arm → malformed plans on 7
     tests; scoped to `existentialCount==1 && foreachCount<=2` (2-way stays on the arm; N-way partitions).
     Guard proof unaffected. Full 2-way convergence = separable follow-on.
@@ -316,8 +320,9 @@ Current RFC state: **implemented; final whole-PR Graefe/Torvalds delta review an
   (4 source + 1 test, no `distinct.go:38` — it was `:172`) corrected to "memory-heavy hash-set" with
   a C5 note (cross-page correctness fixed 2026-07-20; streaming preferred for O(1) memory, not
   correctness). Final audit removed the accidentally tracked `screenlog.0`, ignored future GNU
-  Screen logs, narrowed the retired N-way dead dispatch, and corrected the two remaining comments
-  that still claimed existential selects were never partitioned. Zero plan behavior change.
+  Screen logs, narrowed the retired N-way dead dispatch, and corrected every surviving production
+  and regression comment that still described that arm as live or denied PartitionSelectRule's
+  correlated-existential route. Zero plan behavior change.
 - [x] **190.14 (LOW)** — DONE. A shared exhaustive taxonomy assigns all 41 production
   `RecordQueryPlan` types an explicit count and residual policy; unknown types and future
   unhandled policy kinds warn on the concrete/logical count and residual walks, while a type
@@ -1122,8 +1127,9 @@ suites are the correctness authority (the §5 dual-window is already retired —
     correlation, rebaseLegRefsToBox) to ofOrdinal(QOV(box), window.Offset+idx) via values.OrdinalSeedLegWindows,
     with a post-walk declining any surviving leg-QOV ref (correct-or-decline). Plus the SelectMergeRule
     existential-wrap guard (>2-window positional-seed box under a single-ForEach existential parent stays nested —
-    the flat form is only implementable MATERIALIZED since PartitionSelectRule is ForEach-only; 2-window seeds and
-    ≥2-ForEach parents keep merging, so the LEFT-residual + :2908/:3033 flatten stay byte-identical). VERIFIED:
+    at this B1 checkpoint the flat form was only implementable MATERIALIZED because PartitionSelectRule was
+    ForEach-only. RFC-190 later added guarded existential partitioning and retired the N-way arm; the guard remains
+    to preserve the gathered wrapper's deliberate SARG boundary). VERIFIED:
     census 0 producers on the shape (was 2 — U-1 retired); correlated-index SARG green; B1 cert
     (TestFDB_RFC173S4_B1_NwayExists) — EXISTS→1st/3rd/4th-leg falsification, comma-join, NOT EXISTS, conjunct,
     ORDER-BY fail-open, SARG+not-cross-product plan shape; FULL suite 55/55 incl. the dualwindow differential.

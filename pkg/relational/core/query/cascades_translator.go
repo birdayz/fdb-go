@@ -4096,12 +4096,12 @@ func isScanFamilyLeg(op logical.LogicalOperator) bool {
 // existsLegBuildsPositional reports whether a projected-EXISTS fold leg is a
 // bare all-INNER cluster of scan-family leaves. Such a leg is translated
 // UN-ENCLOSED (AXIS 1) so its INNER box is born as a mergeable ordinal select;
-// SelectMergeRule then FLATTENS it into the fold, making the fold an N-way
-// `[ForEach×N, Existential]` select the generalized implementJoinWithExistential
-// plans (N-way flat existential). A scan leg is already
-// positional regardless of enclosure (returns false — no box to un-enclose); an
-// OUTER box or a wrapped join returns false (non-mergeable / out of INNER-first
-// scope).
+// SelectMergeRule can then expose the flat `[ForEach×N, Existential]` form.
+// RFC-190 routes that form through PartitionSelectRule's alias-aware
+// decomposition and ordinary binary NLJ implementation; the former generalized
+// implementJoinWithExistential arm is retired. A scan leg is already positional
+// regardless of enclosure (returns false — no box to un-enclose); an OUTER box
+// or a wrapped join returns false (non-mergeable / out of INNER-first scope).
 func existsLegBuildsPositional(op logical.LogicalOperator) bool {
 	j, isJoin := op.(*logical.LogicalJoin)
 	if !isJoin || j.Kind != logical.JoinInner {
@@ -4234,9 +4234,9 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	// AXIS 1: a bare INNER gated-box fold leg is translated
 	// UN-ENCLOSED so its box is born as a mergeable ordinal select; SelectMergeRule
 	// flattens it into the fold, making the fold an N-way [ForEach×N, Existential]
-	// select the generalized implementJoinWithExistential plans. Coupled to the
-	// executor's N-leg dispatch/seed. A non-bare-INNER-box leg
-	// (scan, OUTER box, wrapped) stays enclosed.
+	// select that PartitionSelectRule decomposes into ordinary binary NLJs while
+	// preserving the live existential. A non-bare-INNER-box leg (scan, OUTER box,
+	// wrapped) stays enclosed.
 	prevEnclosure := t.inInnerCluster
 	t.inInnerCluster = !existsLegBuildsPositional(j.Left)
 	leftRef := t.translateRef(j.Left)

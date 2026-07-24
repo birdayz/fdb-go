@@ -178,7 +178,7 @@ name correlation and the wrong-rows mis-wire is gone; the dup-column discriminat
   cross-product) + **1M stress before/after (Torvalds condition C)** — the arm's cross-product was
   O(N³); the SARG'd decomposition must not resurface as a regression (point-lookup <5ms, index-equality
   <10ms thresholds hold) + full-corpus explain-diff against the committed golden (all flips Java-verified).
-- **Step 3 (separable follow-on, same PR or later)** — retire `translateExistsOverGatheredCluster`
+- **Post-RFC FU-4 (separate follow-on, not part of RFC-190 completion)** — retire `translateExistsOverGatheredCluster`
   (477 lines, the WHERE-EXISTS wrap) once cells 3/4/8 are demonstrably served by the partitioned
   name-model WHERE-EXISTS select. NOT urgent — WHERE rides the wrap, untouched by the arm-retirement.
   Gated by full-corpus explain-diff + preservation of scalar-subquery pre-eval registration.
@@ -196,15 +196,17 @@ rule matching ≥3 quantifiers that builds a SARG-destroying cross-product Java 
 the wrap to correlate projected EXISTS reinvents the FlatMap existential path over a positional box
 (already tried → wrong rows, correlation dropped). Only (A) restores logical/physical separation (the
 join is *explored* as logical sub-selects, SARG/join-order emergent), rides EXISTS as the emergent
-`FirstOrDefault`+flag property rather than bolted-on positional plumbing, and deletes the ~388-line arm
-(+ the 477-line wrap in Step 4) to converge Go onto Java's exact two-rule architecture.
+`FirstOrDefault`+flag property rather than bolted-on positional plumbing, and deletes the ~388-line
+N-way arm. The 477-line gathered-cluster wrap remains deliberately live; retiring it is the explicit
+post-RFC FU-4 convergence step.
 
 **Test plan:** the full form×projection×correlation matrix as FDB rows tests (Java-4.12.11.0 semantics),
 the buried-leg discriminators (all legs share column `k`; a mis-bind flips value AND boolean), an
 explicit hazard-bipartition probe on Graefe's `{a,δ}` shape (correct rows + plan shape shows
 `FlatMap`/`FirstOrDefault`, not a merged-row δ projection), a NOT-EXISTS/below-FOD-filtered variant
 that proves the *guard* (not the coincidental positive-case fallback) carries correctness, SARG
-plan-shape assertions, and full-corpus explain-diff gating Steps 3-4.
+plan-shape assertions, and the full-corpus explain-diff gate for the atomic migration. Any FU-4
+wrapper retirement must pass its separately stated gate.
 
 ### 190.2 (MED) — cost-comparator transitivity
 
@@ -837,7 +839,8 @@ via `findContainingAccess`); `plans/distinct.go:38` + 3 sites "cross-page-buggy"
 TODO C5). No code change — comments only; but they send the next reader down phantom paths.
 
 **190.13 is complete.** Final whole-RFC audit also removed the accidentally tracked terminal log
-and corrected the two surviving pre-190.1 comments that still described the retired N-way arm.
+and corrected every surviving production and regression comment that still described the retired
+N-way arm or incorrectly denied PartitionSelectRule's correlated-existential route.
 
 ### 190.14 (LOW) — cost-model diagnostics + library stderr
 
