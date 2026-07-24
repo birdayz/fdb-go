@@ -43,14 +43,11 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 
 	quants := sel.GetQuantifiers()
 
-	// N ForEach (N≥2) + 1 trailing Existential = join with a projected/WHERE
-	// EXISTS. Build the N-way inner join first, then wrap with the EXISTS
-	// semi-join. The 2-leg case (N==2, len==3) is the working projected-EXISTS
-	// fold; N>2 is the N-WAY FLAT EXISTENTIAL GENERALIZATION: a buried INNER
-	// box under a projected EXISTS flattens (an INNER box is
-	// merge-transparent) to `[ForEach×N, Existential]`, which
-	// implementJoinWithExistential dispatches to its N-way arm.
-	if len(quants) >= 3 &&
+	// Two ForEach quantifiers plus one trailing Existential use the retained
+	// projected/WHERE-EXISTS fold. Flat selects with more than two ForEach legs
+	// are decomposed by PartitionSelectRule; RFC-190 retired this rule's N-way
+	// implementation arm.
+	if len(quants) == 3 &&
 		quants[len(quants)-1].Kind() == expressions.QuantifierExistential &&
 		allForEach(quants[:len(quants)-1]) {
 		r.implementJoinWithExistential(call, sel, quants)
@@ -2683,15 +2680,9 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	sel *expressions.SelectExpression,
 	quants []expressions.Quantifier,
 ) {
-	// N>2 ForEach legs + a trailing Existential is the N-WAY FLAT EXISTENTIAL
-	// GENERALIZATION: a projected/WHERE EXISTS over a
-	// flat ≥3-way inner join (a buried INNER box flattens into the fold). It
-	// builds a left-deep ORDINAL cross-product NLJ chain, applies the join
-	// predicates as one merged-row filter, and wraps the existential — a
-	// separate arm so the working 2-leg fold below stays byte-identical.
-	if len(quants)-1 > 2 {
-		// RFC-190 190.1: PartitionSelectRule decomposes the flat ≥3-way existential
-		// select; the arm is retired.
+	// The helper owns exactly the retained two-ForEach fold. Flat N-way
+	// existential selects are partitioned before implementation.
+	if len(quants) != 3 {
 		return
 	}
 

@@ -16,6 +16,9 @@ Wire-compat hard line is CLEAN — every item below is read/optimization-path. *
 Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, regression test each)
 → milestone review lap → @claude LGTM. Grind order = severity (correctness first).
 
+Current RFC state: **implemented; final whole-PR Graefe/Torvalds delta review and current-head
+`@claude` review pending.**
+
 **Correctness:**
 - [x] **190.1 (HIGH) — DONE; original delete premise INVALIDATED (do not delete the arm).**
   The RFC-190 delete plan (Graefe-ACKed) rested on the arm's own gravestone: *"HAS NEVER PRODUCED
@@ -53,7 +56,7 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   Cell 7 (multi projected EXISTS) = honest conservative decline (0AF00, never wrong rows), NOT claimed
   fixed. Full design in `rfcs/190-cascades-quality-audit.md` §190.1. **Both gates PASS: Graefe ACK
   (2-round dialogue) + Torvalds ACK.**
-  **IMPLEMENTED (Step 1 core + arm retirement) — awaiting the milestone review lap.** The RFC's
+  **IMPLEMENTATION CHECKPOINT (before the completed milestone review lap).** The RFC's
   original "Step 1 = flag-flip" estimate was WRONG (Go ordinalizes N-way clusters at TRANSLATION time,
   `cluster_gate.go:399-419`); the correct Step 1 is DIRECT-EMIT (a `QueryVisitor.java:429-434` port —
   dissolve the ≥3-way cluster into a flat NAME-model `[ForEach×N, Existential]` select, bypassing the
@@ -75,12 +78,12 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   (scoped bail + live-existential guard), `rule_implement_nested_loop_join.go` (arm retired, −444 LOC),
   `flat_map_cursor.go` (`isIdentityInnerRV`), memo-shape test strengthened, comma-join FDB regression
   added. Committed `95598761f`; 1M stress green.
-  **MILESTONE DONE — Graefe ACK + Torvalds ACK on `95598761f`** (codex+@claude at PR). Graefe ruled the
-  scoped bail ACK-as-intermediate (correct-or-decline; the follow-on to retire the 2-way arm once
-  `positionalMergeCase` decomposes a 2-alias existential correlation is booked). Torvalds ACK, follow-up
-  notes booked. See RFC §190.1 FU-1..FU-4: (FU-1) fix positionalMergeCase 2-alias existential correlation
-  then retire the 2-way arm (full convergence); (FU-2) rename `qualifyOuterPositional`→`qualifyPositional`;
-  (FU-3) extract direct-emit/AXIS-1 shared ~12 lines; (FU-4) retire the WHERE-EXISTS gathered-cluster wrap.
+  **MILESTONE DONE — Graefe ACK + Torvalds ACK on `95598761f`.** Graefe accepted the scoped bail as
+  RFC-190's correct N-way endpoint (correct-or-decline); it does not claim the separately scoped
+  two-way convergence is finished. Post-RFC follow-ups remain explicit in RFC §190.1 FU-1..FU-4:
+  (FU-1) fix the 2-alias existential correlation then retire the 2-way arm; (FU-2) rename
+  `qualifyOuterPositional`→`qualifyPositional`; (FU-3) extract the direct-emit/AXIS-1 shared tail;
+  (FU-4) retire the WHERE-EXISTS gathered-cluster wrap.
 - [x] **190.2 (MED) — DONE (implementation + review findings folded).** Cost-comparator
   transitivity. The 5 sort-count-gated rungs made the relation non-transitive (verified: real
   3-cycles → arbitrary/nondeterministic winner). Fixed per Graefe's 3-round ruling (root cause: Go's
@@ -312,7 +315,9 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   pruning IS implemented via `findContainingAccess`); all "cross-page-buggy hash-set" occurrences
   (4 source + 1 test, no `distinct.go:38` — it was `:172`) corrected to "memory-heavy hash-set" with
   a C5 note (cross-page correctness fixed 2026-07-20; streaming preferred for O(1) memory, not
-  correctness). Comment/string-only, zero logic change.
+  correctness). Final audit removed the accidentally tracked `screenlog.0`, ignored future GNU
+  Screen logs, narrowed the retired N-way dead dispatch, and corrected the two remaining comments
+  that still claimed existential selects were never partitioned. Zero plan behavior change.
 - [x] **190.14 (LOW)** — DONE. A shared exhaustive taxonomy assigns all 41 production
   `RecordQueryPlan` types an explicit count and residual policy; unknown types and future
   unhandled policy kinds warn on the concrete/logical count and residual walks, while a type

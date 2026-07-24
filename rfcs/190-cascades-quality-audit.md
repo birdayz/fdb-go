@@ -1,14 +1,11 @@
 # RFC-190 — Cascades quality audit v2
 
-Status: **Implementing** (Graefe ACK + Torvalds ACK on the RFC; **190.1 milestone Graefe+Torvalds ACK
-on `95598761f`** — codex + @claude at PR). Landed: 190.12 golden, 190.13 docs, 190.1 (N-way EXISTS),
-190.2 (cost-comparator transitivity), 190.3 (point-scan PK proof), the bundled scalar-NaN ledger
-closure, 190.4a (guarded dead candidate existentials), and 190.4b (matcher metadata/enumeration).
-190.4c (Select semantics plus production correlated-UNNEST fan-out reach) is complete, closing the
-Graefe-reruled 190.4 umbrella. 190.5 (intersection reach), 190.6 (NLJ ordering), 190.7 (EXISTS
-compensation de-duplication), 190.8 (scalar catalog/type-carrier coherence), and 190.9 (NLJ
-candidate-loop de-duplication) are also complete. 190.10 replaces the stale rule-reference census
-with direct behavioral coverage and an executable completeness gate over all 125 production rules.
+Status: **Implemented — final whole-RFC review pending.** Graefe and Torvalds ACKed the RFC design,
+and every numbered implementation item (190.1–190.14, including 190.11-FU and the bundled latent
+closures) is complete with its regression, golden, and validation evidence below. The final
+whole-PR Graefe/Torvalds delta review and current-head `@claude` review remain the release gate.
+The accepted 190.1 deliverable is the N-way-path convergence; its separately scoped two-way and
+gathered-cluster follow-ons are recorded below and are not silently claimed as part of this RFC.
 190.1 was **materially re-designed** after its original delete premise proved false (the arm's
 "never produced an executable plan" gravestone is a lie — deleting it regresses working FDB tests).
 The new 190.1 (converge on Java's two-rule architecture via a guarded `PartitionSelectRule`) carries
@@ -30,23 +27,24 @@ design did NOT anticipate, both folded and flagged for the review lap:
   E-scan's PK-column SARG (`P.ID#0`) read that wrapper's slot 0 and got the nested record (unencodable
   → panic; the non-PK `P.K#2` case got lucky). Fixed by adding the symmetric inner-identity branch —
   a principled completion of a missing case, benefits any Case-2 select the cost model flips inner.
-- **Scoped bail, not full removal (deviation from the pure design — needs a Graefe ruling).** Removing
+- **Scoped bail, not full removal (reviewed deviation from the pure design).** Removing
   the `existentialCount==1` bail ENTIRELY raced the working Go-only 2-way arm (2 ForEach + 1 Existential)
   and yielded malformed plans on 7 existing tests. Scoped to `existentialCount==1 && foreachCount<=2`
   (keep the working 2-way case on the arm; partition only the genuine N-way, `foreachCount>2`). The
   guard's correctness proof is unaffected (the 2-way case never reaches it). Full 2-way convergence
   (retire the 2-way arm too) is a tracked follow-on; the milestone review accepted the scoped bail
-  as the correct intermediate state.
+  as RFC-190's correct scoped endpoint.
 
 **190.1 MILESTONE REVIEW LAP: Graefe ACK + Torvalds ACK on HEAD `95598761f`** (1M stress green =
 Torvalds condition C satisfied). Graefe: direct-emit faithful to `QueryVisitor.java:429-434`, guard
 airtight, executor fix principled (cost-based join direction is rightly free to place the flowed
 alias inner; the outer-only `computeResultLegs` was a genuine gap), arm retirement correct. Graefe
-ruled the SCOPED BAIL an **ACK-as-intermediate** (not done): keeping the Go-only 2-way arm is
-"correct-or-decline beats convergence-at-any-cost" — dropping it ships malformed plans because Go's
-`positionalMergeCase` can't yet decompose a 2-alias existential correlation — conditioned on the
-follow-on staying tracked (booked below). Torvalds ACK, all-follow-up notes (booked below).
-codex + @claude run on the whole PR at PR time. **Booked follow-ons (§190.1-FU):**
+ACKed the SCOPED BAIL as the correct endpoint for RFC-190's N-way milestone: keeping the Go-only
+2-way arm follows "correct-or-decline beats convergence-at-any-cost" because dropping it ships
+malformed plans while Go's `positionalMergeCase` cannot yet decompose a 2-alias existential
+correlation. That ACK does not claim the separate full two-way convergence work is finished.
+Torvalds ACKed the milestone and required the same follow-ups to remain explicit.
+**Post-RFC follow-ons (§190.1-FU; tracked, not RFC-190 completion blockers):**
 - **FU-1 (Graefe's condition):** fix `positionalMergeCase` to faithfully decompose a 2-alias
   existential correlation, THEN retire the Go-only 2-way existential arm too (`implementJoinWithExistential`'s
   2-leg fold) so `PartitionSelectRule`+binary-NLJ is the single path for ALL existential-join arities
@@ -71,7 +69,7 @@ each lands its own commit(s) + regression test. Grouped for one review lap + one
 
 ## Items
 
-### 190.1 (HIGH) — EXISTS over an N-way join: converge on Java's two-rule architecture
+### 190.1 (HIGH) — EXISTS over an N-way join: converge the N-way path on Java's two-rule architecture
 
 **Premise correction (the original delete plan was WRONG).** The first RFC-190 draft (Graefe+Torvalds
 ACK) rested on the arm's gravestone comment: *"HAS NEVER PRODUCED AN EXECUTABLE PLAN."* **That comment
@@ -828,12 +826,18 @@ Focused affected-package tests, race validation, and 20× repeated regressions p
 fails on any un-blessed plan change (re-bless intentionally, like a snapshot test). This is the
 standing net that would have caught every silent plan-quality regression this audit found.
 
+**190.12 is complete.** The golden landed as the first implementation commit and remained the
+per-commit drift gate for every subsequent RFC-190 change.
+
 ### 190.13 (LOW) — doc rot
 
 Fix stale comments that actively mislead: `plandiff.go:10`/`runsql.go:84` "Java engine is stubbed"
 (it's LIVE in CI); `abstract_data_access_rule.go:~29` "no containment pruning yet" (it DOES prune
 via `findContainingAccess`); `plans/distinct.go:38` + 3 sites "cross-page-buggy" (fixed 2026-07-20,
 TODO C5). No code change — comments only; but they send the next reader down phantom paths.
+
+**190.13 is complete.** Final whole-RFC audit also removed the accidentally tracked terminal log
+and corrected the two surviving pre-190.1 comments that still described the retired N-way arm.
 
 ### 190.14 (LOW) — cost-model diagnostics + library stderr
 
