@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=338 queries=2421 dml=158 non_query=97 plan_errors=261 unexpected_errors=4
+# files=338 queries=2423 dml=158 non_query=97 plan_errors=261 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -866,13 +866,12 @@ shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryScanPlan
 === ambiguous_column.yaml#0
 sql:   SELECT a.name FROM a, b WHERE a.id = b.id ORDER BY a.id
-plan:  Project([A.NAME#1], InMemorySort([A.ID#0 ASC], FlatMap(outer=Scan(B), inner=TypeFilter([A], Scan(A, [=])))))
+plan:  Project([A.NAME#1], FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === ambiguous_column.yaml#1 expect-error=42702
 sql:   SELECT name FROM a, b WHERE a.id = b.id ORDER BY a.id
 plan:  <PLAN-ERROR: 42702: Ambiguous reference NAME>
@@ -890,21 +889,19 @@ sql:   SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE id > 0
 plan:  <PLAN-ERROR: 42702: Ambiguous reference ID>
 === ambiguous_column.yaml#6
 sql:   SELECT a.id, a.name, b.name FROM a, b WHERE a.id = b.id ORDER BY a.id
-plan:  Project([A.ID#0, A.NAME#1, B.NAME#1], InMemorySort([A.ID#0 ASC], FlatMap(outer=Scan(B), inner=TypeFilter([A], Scan(A, [=])))))
+plan:  Project([A.ID#0, A.NAME#1, B.NAME#1], FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
-=== ambiguous_column.yaml#7
-sql:   SELECT * FROM a, b WHERE a.id = b.id ORDER BY a.id
-plan:  InMemorySort([A.ID#0 ASC], FlatMap(outer=Scan(B), inner=TypeFilter([A], Scan(A, [=]))))
-shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
 shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
+=== ambiguous_column.yaml#7
+sql:   SELECT * FROM a, b WHERE a.id = b.id ORDER BY a.id
+plan:  FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=])))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryScanPlan
+shape:   RecordQueryTypeFilterPlan
+shape:     RecordQueryScanPlan
 === ambiguous_column.yaml#8 expect-error=42702
 sql:   SELECT COUNT(*) FROM a, b WHERE a.id = b.id GROUP BY name
 plan:  <PLAN-ERROR: 42702: Ambiguous reference NAME>
@@ -913,13 +910,12 @@ sql:   SELECT COUNT(name) FROM a, b WHERE a.id = b.id
 plan:  <PLAN-ERROR: 42702: Ambiguous reference NAME>
 === ambiguous_column.yaml#10
 sql:   WITH cx AS (SELECT id, name FROM a) SELECT * FROM cx, b WHERE cx.id = b.id ORDER BY cx.id
-plan:  InMemorySort([CX.ID#0 ASC], FlatMap(outer=Project([ID#0, NAME#1], Scan(A)), inner=TypeFilter([B], Scan(B, [=]))))
-shape: RecordQueryInMemorySortPlan
-shape:   RecordQueryFlatMapPlan
-shape:     RecordQueryProjectionPlan
-shape:       RecordQueryScanPlan
-shape:     RecordQueryTypeFilterPlan
-shape:       RecordQueryScanPlan
+plan:  FlatMap(outer=Project([ID#0, NAME#1], Scan(A)), inner=TypeFilter([B], Scan(B, [=])))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+shape:   RecordQueryTypeFilterPlan
+shape:     RecordQueryScanPlan
 === ambiguous_column.yaml#11
 sql:   SELECT * FROM a WHERE id = 1 ORDER BY id
 plan:  TypeFilter([A], Scan(A, [=]))
@@ -1883,15 +1879,14 @@ shape:         RecordQueryInMemorySortPlan
 shape:           RecordQueryScanPlan
 === cascades_plan_shapes.yaml#6
 sql:   SELECT id FROM orders o WHERE EXISTS (SELECT 1 FROM orders o2 WHERE o2.customer_id = o.customer_id AND o2.id != o.id) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(IndexScan(IDX_CUSTOMER, [=]), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(IndexScan(IDX_CUSTOMER, [=]), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryIndexPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryIndexPlan
 === cascades_plan_shapes.yaml#7
 sql:   SELECT DISTINCT status FROM orders ORDER BY status
 plan:  Distinct(Project([STATUS#3], IndexScan(IDX_STATUS, [*])))
@@ -2565,10 +2560,9 @@ shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === composite_pk.yaml#0
 sql:   SELECT b, label FROM t WHERE a = 1 ORDER BY b
-plan:  Project([B#1, LABEL#2], InMemorySort([B ASC], Scan(T, [=])))
+plan:  Project([B#1, LABEL#2], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === composite_pk.yaml#1
 sql:   SELECT label FROM t WHERE a = 2 AND b = 10
 plan:  Project([LABEL#2], Scan(T, [=, =]))
@@ -2586,16 +2580,14 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === composite_pk_java.yaml#1
 sql:   SELECT month, day, description FROM events WHERE year = 2025 ORDER BY month, day
-plan:  Project([MONTH#1, DAY#2, DESCRIPTION#3], InMemorySort([MONTH ASC, DAY ASC], Scan(EVENTS, [=])))
+plan:  Project([MONTH#1, DAY#2, DESCRIPTION#3], Scan(EVENTS, [=]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === composite_pk_java.yaml#2
 sql:   SELECT day, description FROM events WHERE year = 2024 AND month = 1 ORDER BY day
-plan:  Project([DAY#2, DESCRIPTION#3], InMemorySort([DAY ASC], Scan(EVENTS, [=, =])))
+plan:  Project([DAY#2, DESCRIPTION#3], Scan(EVENTS, [=, =]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === composite_pk_java.yaml#3
 sql:   SELECT year, month, day FROM events WHERE year >= 2024 AND year <= 2024 AND month >= 2 ORDER BY year, month, day
 plan:  Project([YEAR#0, MONTH#1, DAY#2], PredicatesFilter(Scan(EVENTS, [<>]), [2 preds]))
@@ -2873,26 +2865,24 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === correlated_subquery_probes.yaml#0
 sql:   SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id
-plan:  Project([FNAME#1], InMemorySort([ID ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]))))
+plan:  Project([FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === correlated_subquery_probes.yaml#1
 sql:   SELECT fname FROM emp WHERE NOT EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id
-plan:  Project([FNAME#1], InMemorySort([ID ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]))))
+plan:  Project([FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === correlated_subquery_probes.yaml#2 expect-error=0AF00
 sql:   SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project WHERE emp_id = emp.id) ORDER BY id
 plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
@@ -2908,41 +2898,38 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === correlated_subquery_probes.yaml#4
 sql:   SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project) ORDER BY id
-plan:  Project([FNAME#1], InMemorySort([ID ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(Project([1], Scan(PROJECT))), [1 preds]))))
+plan:  Project([FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(Project([1], Scan(PROJECT))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
 === correlated_subquery_probes.yaml#5 expect-error=0AF00
 sql:   SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project) ORDER BY id
 plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
 === correlated_subquery_probes.yaml#6
 sql:   SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project ORDER BY id LIMIT 1) ORDER BY id
-plan:  Project([FNAME#1], InMemorySort([ID ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(Project([1], Limit(1, Scan(PROJECT)))), [1 preds]))))
+plan:  Project([FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(Project([1], Limit(1, Scan(PROJECT)))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryLimitPlan
-shape:               RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryLimitPlan
+shape:             RecordQueryScanPlan
 === correlated_subquery_probes.yaml#7
 sql:   SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id AND id >= 100) ORDER BY id
-plan:  Project([FNAME#1], InMemorySort([ID ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]))))
+plan:  Project([FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === correlated_subquery_probes.yaml#8 expect-error=0AF00
 sql:   SELECT fname FROM emp WHERE id NOT IN (SELECT emp_id FROM project WHERE emp_id = emp.id) ORDER BY id
 plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
@@ -2986,38 +2973,35 @@ shape:             RecordQueryPredicatesFilterPlan
 shape:               RecordQueryScanPlan
 === correlated_subquery_probes.yaml#13
 sql:   SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM emp WHERE id = 1) ORDER BY id
-plan:  Project([FNAME#1], InMemorySort([ID ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(Project([1], TypeFilter([EMP], Scan(EMP, [=])))), [1 preds]))))
+plan:  Project([FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(Project([1], TypeFilter([EMP], Scan(EMP, [=])))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryTypeFilterPlan
-shape:               RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryTypeFilterPlan
+shape:             RecordQueryScanPlan
 === correlated_subquery_probes.yaml#14
 sql:   SELECT fname FROM emp AS e WHERE EXISTS (SELECT 1 FROM emp WHERE id = e.id AND id > 1) ORDER BY id
-plan:  Project([FNAME#1], InMemorySort([ID ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(EMP, [=]), [1 preds])), [1 preds]))))
+plan:  Project([FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(EMP, [=]), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === correlated_subquery_probes.yaml#15
 sql:   SELECT fname FROM emp AS e WHERE EXISTS (SELECT 1 FROM project AS p WHERE p.emp_id = e.id) ORDER BY id
-plan:  Project([FNAME#1], InMemorySort([ID ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]))))
+plan:  Project([FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === correlated_subquery_probes.yaml#16
 sql:   SELECT DISTINCT e.fname FROM emp AS e, project AS p WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = e.id) ORDER BY e.fname
 plan:  Distinct(Project([E.FNAME#1], InMemorySort([E.FNAME#1 ASC], FlatMap(outer=NestedLoopJoin(INNER, Scan(EMP), Scan(PROJECT)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds])))))
@@ -3064,15 +3048,14 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === correlated_subquery_probes.yaml#21
 sql:   SELECT fname FROM emp WHERE EXISTS ( SELECT 1 FROM project WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ) ORDER BY id
-plan:  Project([FNAME#1], InMemorySort([ID ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]))))
+plan:  Project([FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === count_distinct.yaml#0 expect-error=0AF00
 sql:   SELECT COUNT(DISTINCT n) FROM t
 plan:  <PLAN-ERROR: 0AF00: DISTINCT aggregates are not supported>
@@ -3297,15 +3280,14 @@ shape:       RecordQueryFetchFromPartialRecordPlan
 shape:         RecordQueryIndexPlan
 === covering_index_pushdown.yaml#23
 sql:   SELECT id FROM t AS o WHERE EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active') ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === cross_join.yaml#0 expect-error=0A000
 sql:   SELECT a.id, b.id FROM a CROSS JOIN b ORDER BY a.id, b.id
 plan:  <PLAN-ERROR: 0A000: explicit CROSS JOIN syntax is not supported; use comma-join `FROM a, b` for cartesian products>
@@ -3335,13 +3317,12 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryScanPlan
 === cross_join.yaml#4
 sql:   SELECT a.v, b.w FROM a, b WHERE a.id = b.id ORDER BY a.id
-plan:  Project([A.V#1, B.W#1], InMemorySort([A.ID#0 ASC], FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=])))))
+plan:  Project([A.V#1, B.W#1], FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === cross_join_filter.yaml#0
 sql:   SELECT s.label, c.name FROM sizes s, colors c ORDER BY s.label, c.name
 plan:  Project([S.LABEL#1, C.NAME#1], InMemorySort([S.LABEL#1 ASC, C.NAME#1 ASC], NestedLoopJoin(INNER, Scan(COLORS), Scan(SIZES))))
@@ -4521,16 +4502,17 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === derived_table_patterns_java.yaml#5
 sql:   SELECT o.id, s.shipped_count FROM orders o, (SELECT customer_id, COUNT(*) AS shipped_count FROM orders WHERE status = 'shipped' GROUP BY customer_id) AS s WHERE o.customer_id = s.customer_id AND o.status = 'pending' ORDER BY o.id
-plan:  Project([O.ID#0, S.SHIPPED_COUNT#1], InMemorySort([O.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Project([CUSTOMER_ID#0, COUNT(*)#1], StreamingAgg(keys=[CUSTOMER_ID#1], InMemorySort([CUSTOMER_ID#1 ASC], PredicatesFilter(Scan(ORDERS), [1 preds])))), Scan(ORDERS))))
+plan:  Project([O.ID#0, S.SHIPPED_COUNT#1], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=PredicatesFilter(Project([CUSTOMER_ID#0, COUNT(*)#1], StreamingAgg(keys=[CUSTOMER_ID#1], InMemorySort([CUSTOMER_ID#1 ASC], PredicatesFilter(Scan(ORDERS), [1 preds])))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryStreamingAggregationPlan
 shape:           RecordQueryInMemorySortPlan
 shape:             RecordQueryPredicatesFilterPlan
 shape:               RecordQueryScanPlan
-shape:       RecordQueryScanPlan
 === derived_table_patterns_java.yaml#6
 sql:   SELECT * FROM (SELECT id, amount * 2 AS double_amt FROM orders WHERE id <= 3) AS d ORDER BY id
 plan:  Project([ID#0, (AMOUNT#2 * 2)], Scan(ORDERS, [<>]))
@@ -4859,16 +4841,15 @@ shape: RecordQueryStreamingAggregationPlan
 shape:   RecordQueryScanPlan
 === dml_not_exists.yaml#0
 sql:   SELECT t.id FROM tasks t WHERE t.status = 'open' AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = t.id) ORDER BY t.id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=PredicatesFilter(Scan(TASKS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(COMPLETIONS), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=PredicatesFilter(Scan(TASKS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(COMPLETIONS), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === dml_not_exists.yaml#1
 sql:   UPDATE tasks SET status = 'stale' WHERE status = 'open' AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = tasks.id)
 plan:  Update(TASKS, [1 transforms], FlatMap(outer=PredicatesFilter(Scan(TASKS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(COMPLETIONS), [1 preds])), [1 preds])))
@@ -5377,15 +5358,14 @@ shape:         RecordQueryProjectionPlan
 shape:           RecordQueryScanPlan
 === empty_result_edge_cases_java.yaml#5
 sql:   SELECT id FROM t WHERE NOT EXISTS (SELECT 1 FROM t WHERE id = 999) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(Project([1], Scan(T, [=]))), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(Project([1], Scan(T, [=]))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
 === empty_result_edge_cases_java.yaml#6
 sql:   SELECT id FROM t WHERE val IN (100, 200, 300)
 plan:  Project([ID#0], InJoin(PredicatesFilter(Scan(T), [1 preds]), binding))
@@ -5437,14 +5417,13 @@ shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
 === empty_table_operations.yaml#3
 sql:   SELECT o.id, e.val FROM other_t o LEFT JOIN empty_t e ON e.id = o.ref_id ORDER BY o.id
-plan:  Project([O.ID#0, E.VAL#1], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(OTHER_T), inner=DefaultOnEmpty(TypeFilter([EMPTY_T], Scan(EMPTY_T, [=]))))))
+plan:  Project([O.ID#0, E.VAL#1], FlatMap(outer=Scan(OTHER_T), inner=DefaultOnEmpty(TypeFilter([EMPTY_T], Scan(EMPTY_T, [=])))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryDefaultOnEmptyPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryTypeFilterPlan
+shape:         RecordQueryScanPlan
 === empty_table_operations.yaml#4
 sql:   SELECT id FROM other_t WHERE EXISTS (SELECT 1 FROM empty_t)
 plan:  Project([ID#0], FlatMap(outer=Scan(OTHER_T), inner=PredicatesFilter(FirstOrDefault(Project([1], Scan(EMPTY_T))), [1 preds])))
@@ -5457,15 +5436,14 @@ shape:         RecordQueryProjectionPlan
 shape:           RecordQueryScanPlan
 === empty_table_operations.yaml#5
 sql:   SELECT id FROM other_t WHERE NOT EXISTS (SELECT 1 FROM empty_t) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(OTHER_T), inner=PredicatesFilter(FirstOrDefault(Project([1], Scan(EMPTY_T))), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(OTHER_T), inner=PredicatesFilter(FirstOrDefault(Project([1], Scan(EMPTY_T))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
 === empty_table_operations.yaml#6
 sql:   DELETE FROM empty_t WHERE id > 0
 plan:  Delete(EMPTY_T, TypeFilter([EMPTY_T], Scan(EMPTY_T, [<>])))
@@ -5560,37 +5538,34 @@ sql:   SELECT SUM(MAX(val)) FROM t
 plan:  <PLAN-ERROR: 0A000: unsupported nested aggregate(s)>
 === exists.yaml#0
 sql:   SELECT id FROM orders WHERE EXISTS (SELECT k FROM flags) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(Project([K#0], Scan(FLAGS))), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(Project([K#0], Scan(FLAGS))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
 === exists.yaml#1
 sql:   SELECT id FROM orders WHERE NOT EXISTS (SELECT k FROM flags) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(Project([K#0], Scan(FLAGS))), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(Project([K#0], Scan(FLAGS))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
 === exists.yaml#3
 sql:   SELECT id FROM orders WHERE EXISTS (SELECT k FROM flags) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(Project([K#0], Scan(FLAGS))), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(Project([K#0], Scan(FLAGS))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
 === exists.yaml#4
 sql:   SELECT id FROM orders WHERE NOT EXISTS (SELECT k FROM flags)
 plan:  Project([ID#0], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(Project([K#0], Scan(FLAGS))), [1 preds])))
@@ -5603,16 +5578,15 @@ shape:         RecordQueryProjectionPlan
 shape:           RecordQueryScanPlan
 === exists.yaml#5
 sql:   SELECT id FROM orders WHERE EXISTS (SELECT id FROM orders WHERE id > 100) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(Project([ID#0], TypeFilter([ORDERS], Scan(ORDERS, [<>])))), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(Project([ID#0], TypeFilter([ORDERS], Scan(ORDERS, [<>])))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryTypeFilterPlan
-shape:               RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryTypeFilterPlan
+shape:             RecordQueryScanPlan
 === exists.yaml#6 expect-error=0AF00
 sql:   SELECT COUNT(*) FROM orders HAVING EXISTS (SELECT k FROM flags)
 plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
@@ -5754,15 +5728,14 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === exists_with_or.yaml#0
 sql:   SELECT id FROM items WHERE EXISTS ( SELECT 1 FROM tags WHERE tags.item_id = items.id AND (tags.label = 'hot' OR tags.label = 'new') ) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TAGS), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TAGS), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === exists_with_or.yaml#1 expect-error=0A000
 sql:   SELECT id FROM items WHERE id > 2 OR EXISTS (SELECT 1 FROM tags WHERE tags.item_id = items.id) ORDER BY id
 plan:  <PLAN-ERROR: 0A000: EXISTS within an OR (disjunction) is not supported>
@@ -5869,26 +5842,24 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === flatmap_join_pagination.yaml#3
 sql:   SELECT p.id FROM parents p WHERE EXISTS (SELECT 1 FROM children c WHERE c.parent_id = p.id AND c.label = 'child_1') ORDER BY p.id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(PARENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(CHILDREN), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(PARENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(CHILDREN), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === flatmap_join_pagination.yaml#4
 sql:   SELECT p.id FROM parents p WHERE NOT EXISTS (SELECT 1 FROM children c WHERE c.parent_id = p.id) ORDER BY p.id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(PARENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(CHILDREN), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(PARENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(CHILDREN), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === flatmap_join_pagination.yaml#5
 sql:   SELECT p.id, c.label FROM parents p, children c WHERE c.parent_id = p.id ORDER BY p.id, c.id LIMIT 10
 plan:  Project([P.ID#0, C.LABEL#2], Limit(10, InMemorySort([P.ID#0 ASC, C.ID#0 ASC], FlatMap(outer=Scan(CHILDREN), inner=TypeFilter([PARENTS], Scan(PARENTS, [=]))))))
@@ -5901,14 +5872,13 @@ shape:         RecordQueryTypeFilterPlan
 shape:           RecordQueryScanPlan
 === flatmap_left_outer_coverage.yaml#0
 sql:   SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id ORDER BY o.id
-plan:  Project([O.ID#0, C.NAME#1], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=]))))))
+plan:  Project([O.ID#0, C.NAME#1], FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=])))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryDefaultOnEmptyPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryTypeFilterPlan
+shape:         RecordQueryScanPlan
 === flatmap_left_outer_coverage.yaml#1
 sql:   SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE o.amount > 60 ORDER BY o.id
 plan:  Project([O.ID#0, C.NAME#1], InMemorySort([O.ID#0 ASC], PredicatesFilter(FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=])))), [1 preds])))
@@ -5922,15 +5892,14 @@ shape:           RecordQueryTypeFilterPlan
 shape:             RecordQueryScanPlan
 === flatmap_left_outer_coverage.yaml#2
 sql:   SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id ORDER BY o.id LIMIT 2
-plan:  Limit(2, Project([O.ID#0, C.NAME#1], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=])))))))
+plan:  Limit(2, Project([O.ID#0, C.NAME#1], FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=]))))))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryScanPlan
-shape:         RecordQueryDefaultOnEmptyPlan
-shape:           RecordQueryTypeFilterPlan
-shape:             RecordQueryScanPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryDefaultOnEmptyPlan
+shape:         RecordQueryTypeFilterPlan
+shape:           RecordQueryScanPlan
 === flatmap_multicolumn_pk.yaml#0
 sql:   SELECT d.name, e.name FROM departments d, employees e WHERE d.id = e.dept_id ORDER BY d.name, e.name
 plan:  Project([D.NAME#1, E.NAME#2], InMemorySort([D.NAME#1 ASC, E.NAME#2 ASC], FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([DEPARTMENTS], Scan(DEPARTMENTS, [=])))))
@@ -5942,23 +5911,21 @@ shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
 === flatmap_null_fk.yaml#0
 sql:   SELECT c.id, p.name FROM children c, parents p WHERE c.parent_id = p.id ORDER BY c.id
-plan:  Project([C.ID#0, P.NAME#1], InMemorySort([C.ID#0 ASC], FlatMap(outer=Scan(CHILDREN), inner=TypeFilter([PARENTS], Scan(PARENTS, [=])))))
+plan:  Project([C.ID#0, P.NAME#1], FlatMap(outer=Scan(CHILDREN), inner=TypeFilter([PARENTS], Scan(PARENTS, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === flatmap_null_fk.yaml#1
 sql:   SELECT c.id, p.name FROM children c LEFT JOIN parents p ON c.parent_id = p.id ORDER BY c.id
-plan:  Project([C.ID#0, P.NAME#1], InMemorySort([C.ID#0 ASC], FlatMap(outer=Scan(CHILDREN), inner=DefaultOnEmpty(TypeFilter([PARENTS], Scan(PARENTS, [=]))))))
+plan:  Project([C.ID#0, P.NAME#1], FlatMap(outer=Scan(CHILDREN), inner=DefaultOnEmpty(TypeFilter([PARENTS], Scan(PARENTS, [=])))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryDefaultOnEmptyPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryTypeFilterPlan
+shape:         RecordQueryScanPlan
 === flatmap_one_to_many.yaml#0
 sql:   SELECT a.name, b.title FROM authors a, books b WHERE b.author_id = a.id ORDER BY a.name, b.title
 plan:  Project([A.NAME#1, B.TITLE#2], InMemorySort([A.NAME#1 ASC, B.TITLE#2 ASC], FlatMap(outer=Scan(BOOKS), inner=TypeFilter([AUTHORS], Scan(AUTHORS, [=])))))
@@ -6058,14 +6025,32 @@ shape:         RecordQueryFetchFromPartialRecordPlan
 shape:           RecordQueryIndexPlan
 === flatmap_secondary_index.yaml#2
 sql:   SELECT c.name, i.title FROM categories c, items i WHERE c.id = i.cat_id AND c.name = 'Electronics' ORDER BY i.title
-plan:  Project([C.NAME#1, I.TITLE#2], InMemorySort([I.TITLE#2 ASC], FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(TypeFilter([CATEGORIES], Scan(CATEGORIES, [=])), [1 preds]))))
+plan:  Project([C.NAME#1, I.TITLE#2], InMemorySort([I.TITLE#2 ASC], FlatMap(outer=Fetch(IndexScan(IDX_CATEGORIES_NAME, [=])), inner=Fetch(IndexScan(IDX_ITEMS_CAT, [=])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryFetchFromPartialRecordPlan
+shape:         RecordQueryIndexPlan
+shape:       RecordQueryFetchFromPartialRecordPlan
+shape:         RecordQueryIndexPlan
+=== flatmap_secondary_index.yaml#3
+sql:   SELECT c.name, i.title FROM categories c, items i WHERE c.id = i.cat_id ORDER BY c.name
+plan:  Project([C.NAME#1, I.TITLE#2], InMemorySort([C.NAME#1 ASC], FlatMap(outer=Scan(ITEMS), inner=TypeFilter([CATEGORIES], Scan(CATEGORIES, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
+shape:       RecordQueryTypeFilterPlan
+shape:         RecordQueryScanPlan
+=== flatmap_secondary_index.yaml#4
+sql:   SELECT c.priority, c.name, i.title FROM categories c, items i WHERE c.id = i.cat_id ORDER BY c.priority
+plan:  Project([C.PRIORITY#2, C.NAME#1, I.TITLE#2], InMemorySort([C.PRIORITY#2 ASC], FlatMap(outer=Scan(ITEMS), inner=TypeFilter([CATEGORIES], Scan(CATEGORIES, [=])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryTypeFilterPlan
+shape:         RecordQueryScanPlan
 === flatmap_three_way.yaml#0
 sql:   SELECT r.name, s.name, p.name FROM regions r, stores s, products p WHERE s.region_id = r.id AND p.store_id = s.id ORDER BY r.name, s.name, p.name
 plan:  Project([R.NAME#1, S.NAME#2, P.NAME#2], InMemorySort([R.NAME#1 ASC, S.NAME#2 ASC, P.NAME#2 ASC], FlatMap(outer=FlatMap(outer=Scan(PRODUCTS), inner=TypeFilter([STORES], Scan(STORES, [=]))), inner=TypeFilter([REGIONS], Scan(REGIONS, [=])))))
@@ -7531,15 +7516,14 @@ sql:   SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label = 'dup') 
 plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
 === in_subquery_decomposition.yaml#9
 sql:   SELECT id FROM t WHERE EXISTS (SELECT 1 FROM tags WHERE tags.t_id = t.id) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TAGS), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TAGS), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === in_subquery_decomposition.yaml#10
 sql:   SELECT id, v FROM t WHERE EXISTS (SELECT 1 FROM tags WHERE label = 'red' AND tags.t_id * 10 = t.v) ORDER BY v
 plan:  Project([ID#0, V#1], InMemorySort([V ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TAGS), [1 preds])), [1 preds]))))
@@ -8374,56 +8358,52 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
 === java_alignment_probes.yaml#5
 sql:   SELECT t1.col1, t2.y FROM t1, t2 WHERE t1.col1 = t2.x ORDER BY t1.id
-plan:  Project([T1.COL1#1, T2.Y#2], InMemorySort([T1.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(T2), Scan(T1))))
+plan:  Project([T1.COL1#1, T2.Y#2], FlatMap(outer=Scan(T1), inner=PredicatesFilter(Scan(T2), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === java_alignment_probes.yaml#6
 sql:   SELECT t1.id, t2.y FROM t1 INNER JOIN t2 ON t1.col1 = t2.x WHERE t1.id <= 3 ORDER BY t1.id
-plan:  Project([T1.ID#0, T2.Y#2], InMemorySort([T1.ID#0 ASC], FlatMap(outer=TypeFilter([T1], Scan(T1, [<>])), inner=PredicatesFilter(Scan(T2), [1 preds]))))
+plan:  Project([T1.ID#0, T2.Y#2], FlatMap(outer=TypeFilter([T1], Scan(T1, [<>])), inner=PredicatesFilter(Scan(T2), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
 === java_alignment_probes.yaml#7
 sql:   SELECT id FROM t1 WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.x = 10) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(T1), inner=PredicatesFilter(FirstOrDefault(Project([1], PredicatesFilter(Scan(T2), [1 preds]))), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(T1), inner=PredicatesFilter(FirstOrDefault(Project([1], PredicatesFilter(Scan(T2), [1 preds]))), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryPredicatesFilterPlan
-shape:               RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryScanPlan
 === java_alignment_probes.yaml#8
 sql:   SELECT t1.id FROM t1 WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.x = t1.col1) ORDER BY t1.id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(T1), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(T1), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === java_alignment_probes.yaml#9
 sql:   SELECT t1.id FROM t1 WHERE NOT EXISTS (SELECT 1 FROM t2 WHERE t2.x = t1.col1) ORDER BY t1.id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(T1), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(T1), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === java_alignment_probes.yaml#10
 sql:   SELECT COUNT(*) FROM t1 WHERE id > 999
 plan:  StreamingAgg(keys=[], TypeFilter([T1], Scan(T1, [<>])))
@@ -8635,26 +8615,24 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === join_complex_patterns.yaml#1
 sql:   SELECT i.id FROM items i WHERE NOT EXISTS (SELECT 1 FROM items c WHERE c.parent_id = i.id) ORDER BY i.id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ITEMS), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ITEMS), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === join_complex_patterns.yaml#2
 sql:   SELECT i.id FROM items i WHERE EXISTS (SELECT 1 FROM items c WHERE c.parent_id = i.id) ORDER BY i.id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ITEMS), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ITEMS), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === join_complex_patterns.yaml#3
 sql:   SELECT p.id, c.id FROM items p, items c WHERE c.parent_id = p.id AND c.price > 100 ORDER BY p.id, c.id
 plan:  Project([P.ID#0, C.ID#0], InMemorySort([P.ID#0 ASC, C.ID#0 ASC], FlatMap(outer=PredicatesFilter(Scan(ITEMS), [1 preds]), inner=Scan(ITEMS, [=]))))
@@ -8691,22 +8669,20 @@ sql:   SELECT emp.name FROM emp, dept WHERE x.id = dept.id
 plan:  <PLAN-ERROR: 42703: no FROM source aliased as X>
 === join_error_codes.yaml#3
 sql:   SELECT emp.name, dept.name FROM emp, dept WHERE emp.dept_id = dept.id ORDER BY emp.id
-plan:  Project([EMP.NAME#1, DEPT.NAME#1], InMemorySort([EMP.ID#0 ASC], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=])))))
+plan:  Project([EMP.NAME#1, DEPT.NAME#1], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === join_error_codes.yaml#4
 sql:   SELECT e.name, d.name FROM emp AS e, dept AS d WHERE e.dept_id = d.id ORDER BY e.id
-plan:  Project([E.NAME#1, D.NAME#1], InMemorySort([E.ID#0 ASC], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=])))))
+plan:  Project([E.NAME#1, D.NAME#1], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === join_error_codes.yaml#5
 sql:   SELECT a.name, b.name FROM emp AS a, emp AS b WHERE a.dept_id = b.dept_id AND a.id < b.id ORDER BY a.id, b.id
 plan:  Project([A.NAME#1, B.NAME#1], InMemorySort([A.ID#0 ASC, B.ID#0 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(TypeFilter([EMP], Scan(EMP, [<>])), [1 preds]))))
@@ -8719,38 +8695,35 @@ shape:         RecordQueryTypeFilterPlan
 shape:           RecordQueryScanPlan
 === join_exists_self.yaml#0
 sql:   SELECT id FROM t AS o WHERE EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active') ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === join_exists_self.yaml#1
 sql:   SELECT id FROM t AS o WHERE NOT EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active') ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === join_exists_self.yaml#2
 sql:   SELECT id FROM t AS o WHERE o.val > 15 AND EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active') ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=PredicatesFilter(Scan(T), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=PredicatesFilter(Scan(T), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === join_exists_self.yaml#3
 sql:   SELECT COUNT(*) FROM t AS o WHERE EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active')
 plan:  StreamingAgg(keys=[], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds])))
@@ -8890,13 +8863,12 @@ shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
 === join_index_correlation.yaml#3
 sql:   SELECT e1.name, e2.name FROM employees e1, employees e2 WHERE e1.id = e2.id ORDER BY e1.id
-plan:  Project([E1.NAME#2, E2.NAME#2], InMemorySort([E1.ID#0 ASC], FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([EMPLOYEES], Scan(EMPLOYEES, [=])))))
+plan:  Project([E1.NAME#2, E2.NAME#2], FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([EMPLOYEES], Scan(EMPLOYEES, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === join_index_correlation.yaml#4
 sql:   SELECT d.name, e.name FROM departments d LEFT JOIN employees e ON e.dept_id = d.id AND e.salary > 200 ORDER BY d.name
 plan:  Project([D.NAME#1, E.NAME#2], InMemorySort([D.NAME#1 ASC], FlatMap(outer=Scan(DEPARTMENTS), inner=DefaultOnEmpty(PredicatesFilter(Fetch(IndexScan(IDX_DEPT, [=])), [1 preds])))))
@@ -9134,53 +9106,48 @@ shape:         RecordQueryTypeFilterPlan
 shape:           RecordQueryScanPlan
 === join_pagination.yaml#0
 sql:   SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id
-plan:  Project([E.NAME#2, D.NAME#1], InMemorySort([E.ID#0 ASC], FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([DEPARTMENTS], Scan(DEPARTMENTS, [=])))))
+plan:  Project([E.NAME#2, D.NAME#1], FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([DEPARTMENTS], Scan(DEPARTMENTS, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
+=== join_pagination.yaml#1
+sql:   SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2
+plan:  Project([E.NAME#2, D.NAME#1], Limit(2, FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([DEPARTMENTS], Scan(DEPARTMENTS, [=])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryLimitPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
-=== join_pagination.yaml#1
-sql:   SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2
-plan:  Project([E.NAME#2, D.NAME#1], Limit(2, InMemorySort([E.ID#0 ASC], FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([DEPARTMENTS], Scan(DEPARTMENTS, [=]))))))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryLimitPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryScanPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
 === join_pagination.yaml#2
 sql:   SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2 OFFSET 2
-plan:  Limit(2, offset=2, Project([E.NAME#2, D.NAME#1], InMemorySort([E.ID#0 ASC], FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([DEPARTMENTS], Scan(DEPARTMENTS, [=]))))))
+plan:  Limit(2, offset=2, Project([E.NAME#2, D.NAME#1], FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([DEPARTMENTS], Scan(DEPARTMENTS, [=])))))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFlatMapPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
 === join_pagination.yaml#3
 sql:   SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2 OFFSET 4
-plan:  Project([E.NAME#2, D.NAME#1], Limit(2, offset=4, InMemorySort([E.ID#0 ASC], FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([DEPARTMENTS], Scan(DEPARTMENTS, [=]))))))
+plan:  Project([E.NAME#2, D.NAME#1], Limit(2, offset=4, FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([DEPARTMENTS], Scan(DEPARTMENTS, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryLimitPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFlatMapPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
 === join_pagination.yaml#4
 sql:   SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2 OFFSET 6
-plan:  Limit(2, offset=6, Project([E.NAME#2, D.NAME#1], InMemorySort([E.ID#0 ASC], FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([DEPARTMENTS], Scan(DEPARTMENTS, [=]))))))
+plan:  Limit(2, offset=6, Project([E.NAME#2, D.NAME#1], FlatMap(outer=Scan(EMPLOYEES), inner=TypeFilter([DEPARTMENTS], Scan(DEPARTMENTS, [=])))))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFlatMapPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
 === join_pagination.yaml#5
 sql:   SELECT d.name, e.name FROM departments d LEFT JOIN employees e ON e.dept_id = d.id ORDER BY d.name, e.name LIMIT 3
 plan:  Project([D.NAME#1, E.NAME#2], Limit(3, InMemorySort([D.NAME#1 ASC, E.NAME#2 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(DEPARTMENTS), Scan(EMPLOYEES)))))
@@ -9406,14 +9373,13 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === left_join_null_fk_comprehensive.yaml#3
 sql:   SELECT c.id, p.name FROM child c LEFT JOIN parent p ON p.id = c.parent_id ORDER BY c.id
-plan:  Project([C.ID#0, P.NAME#1], InMemorySort([C.ID#0 ASC], FlatMap(outer=Scan(CHILD), inner=DefaultOnEmpty(TypeFilter([PARENT], Scan(PARENT, [=]))))))
+plan:  Project([C.ID#0, P.NAME#1], FlatMap(outer=Scan(CHILD), inner=DefaultOnEmpty(TypeFilter([PARENT], Scan(PARENT, [=])))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryDefaultOnEmptyPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryTypeFilterPlan
+shape:         RecordQueryScanPlan
 === left_join_star_null.yaml#0
 sql:   SELECT p.id, p.pname, c.cname, c.extra FROM parent p LEFT JOIN child c ON c.parent_id = p.id ORDER BY p.id, c.id
 plan:  Project([P.ID#0, P.PNAME#1, C.CNAME#2, C.EXTRA#3], InMemorySort([P.ID#0 ASC, C.ID#0 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(PARENT), Scan(CHILD))))
@@ -9915,35 +9881,32 @@ shape:             RecordQueryPredicatesFilterPlan
 shape:               RecordQueryScanPlan
 === limit_join.yaml#0
 sql:   SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id LIMIT 3
-plan:  Project([O.ID#0, C.NAME#1], Limit(3, InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(ORDERS), inner=TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=]))))))
+plan:  Project([O.ID#0, C.NAME#1], Limit(3, FlatMap(outer=Scan(ORDERS), inner=TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryLimitPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFlatMapPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
 === limit_join.yaml#1
 sql:   SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id LIMIT 2 OFFSET 2
-plan:  Limit(2, offset=2, Project([O.ID#0, C.NAME#1], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(ORDERS), inner=TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=]))))))
+plan:  Limit(2, offset=2, Project([O.ID#0, C.NAME#1], FlatMap(outer=Scan(ORDERS), inner=TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=])))))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFlatMapPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
 === limit_join.yaml#2
 sql:   SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.amount > 100 ORDER BY o.id LIMIT 1
-plan:  Project([O.ID#0, C.NAME#1], Limit(1, InMemorySort([O.ID#0 ASC], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=]))))))
+plan:  Project([O.ID#0, C.NAME#1], Limit(1, FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryLimitPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryTypeFilterPlan
+shape:         RecordQueryScanPlan
 === limit_offset_java.yaml#0
 sql:   SELECT id FROM items ORDER BY id LIMIT 3
 plan:  Project([ID#0], Limit(3, Scan(ITEMS)))
@@ -10036,24 +9999,22 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === map_path_predicate_kleene.yaml#0
 sql:   SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE a.v NOT BETWEEN 1 AND NULL ORDER BY a.id
-plan:  Project([A.ID#0], InMemorySort([A.ID#0 ASC], FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=TypeFilter([B], Scan(B, [=])))))
+plan:  Project([A.ID#0], FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=TypeFilter([B], Scan(B, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
 === map_path_predicate_kleene.yaml#1
 sql:   SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE a.v NOT BETWEEN NULL AND 50 ORDER BY a.id
-plan:  Project([A.ID#0], InMemorySort([A.ID#0 ASC], FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=TypeFilter([B], Scan(B, [=])))))
+plan:  Project([A.ID#0], FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=TypeFilter([B], Scan(B, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
 === map_path_predicate_kleene.yaml#2
 sql:   SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE a.v BETWEEN NULL AND NULL
 plan:  Project([A.ID#0], FlatMap(outer=PredicatesFilter(Scan(A), [2 preds]), inner=TypeFilter([B], Scan(B, [=]))))
@@ -10781,22 +10742,20 @@ shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#0
 sql:   SELECT e.name, d.name FROM emp e, dept d WHERE e.dept_id = d.id ORDER BY e.id
-plan:  Project([E.NAME#1, D.NAME#1], InMemorySort([E.ID#0 ASC], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=])))))
+plan:  Project([E.NAME#1, D.NAME#1], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#1
 sql:   SELECT e.id, d.id FROM emp e, dept d WHERE e.dept_id = d.id ORDER BY e.id
-plan:  Project([E.ID#0, D.ID#0], InMemorySort([E.ID#0 ASC], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=])))))
+plan:  Project([E.ID#0, D.ID#0], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#2
 sql:   SELECT a.id, a.name, b.id, b.name FROM emp a, emp b WHERE a.dept_id = b.dept_id AND a.id < b.id ORDER BY a.id, b.id
 plan:  Project([A.ID#0, A.NAME#1, B.ID#0, B.NAME#1], InMemorySort([A.ID#0 ASC, B.ID#0 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(TypeFilter([EMP], Scan(EMP, [<>])), [1 preds]))))
@@ -10841,12 +10800,11 @@ shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#6
 sql:   SELECT * FROM emp e, dept d WHERE e.dept_id = d.id ORDER BY e.id
-plan:  InMemorySort([E.ID#0 ASC], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=]))))
-shape: RecordQueryInMemorySortPlan
-shape:   RecordQueryFlatMapPlan
+plan:  FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=])))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryScanPlan
+shape:   RecordQueryTypeFilterPlan
 shape:     RecordQueryScanPlan
-shape:     RecordQueryTypeFilterPlan
-shape:       RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#7
 sql:   SELECT e.id, d.name FROM emp e, dept d WHERE e.dept_id = d.id AND e.name = 'Alice'
 plan:  Project([E.ID#0, D.NAME#1], FlatMap(outer=PredicatesFilter(Scan(EMP), [1 preds]), inner=TypeFilter([DEPT], Scan(DEPT, [=]))))
@@ -10903,47 +10861,46 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#13
 sql:   SELECT e.name, CASE WHEN d.name = 'Engineering' THEN 'tech' WHEN d.name = 'Sales' THEN 'biz' ELSE 'other' END FROM emp e, dept d WHERE e.dept_id = d.id ORDER BY e.id
-plan:  Project([E.NAME#1, CASE(WHEN(predicate, predicate, TRUE), ['tech', 'biz', 'other'])], InMemorySort([E.ID#0 ASC], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=])))))
+plan:  Project([E.NAME#1, CASE(WHEN(predicate, predicate, TRUE), ['tech', 'biz', 'other'])], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#14
 sql:   SELECT e.id, CASE WHEN e.salary > 75 THEN e.name ELSE d.name END FROM emp e, dept d WHERE e.dept_id = d.id ORDER BY e.id
-plan:  Project([E.ID#0, CASE(WHEN(predicate, TRUE), [E.NAME#1, D.NAME#1])], InMemorySort([E.ID#0 ASC], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=])))))
+plan:  Project([E.ID#0, CASE(WHEN(predicate, TRUE), [E.NAME#1, D.NAME#1])], FlatMap(outer=Scan(EMP), inner=TypeFilter([DEPT], Scan(DEPT, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#15
 sql:   SELECT e.name, COALESCE(p.name, 'no-project') FROM emp e LEFT JOIN project p ON p.lead_id = e.id ORDER BY e.id
-plan:  Project([E.NAME#1, COALESCE(P.NAME#1, 'no-project')], InMemorySort([E.ID#0 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(EMP), Scan(PROJECT))))
+plan:  Project([E.NAME#1, COALESCE(P.NAME#1, 'no-project')], FlatMap(outer=Scan(EMP), inner=DefaultOnEmpty(PredicatesFilter(Scan(PROJECT), [1 preds]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 === nlj_column_ambiguity.yaml#16
 sql:   SELECT COALESCE(p.name, e.name) FROM emp e LEFT JOIN project p ON p.lead_id = e.id ORDER BY e.id
-plan:  Project([COALESCE(P.NAME#1, E.NAME#1)], InMemorySort([E.ID#0 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(EMP), Scan(PROJECT))))
+plan:  Project([COALESCE(P.NAME#1, E.NAME#1)], FlatMap(outer=Scan(EMP), inner=DefaultOnEmpty(PredicatesFilter(Scan(PROJECT), [1 preds]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 === nlj_null_edge_cases.yaml#0
 sql:   SELECT o.name, c.name FROM orders o INNER JOIN customers c ON o.customer_id = c.id ORDER BY o.id
-plan:  Project([O.NAME#2, C.NAME#1], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(ORDERS), inner=TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=])))))
+plan:  Project([O.NAME#2, C.NAME#1], FlatMap(outer=Scan(ORDERS), inner=TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === nlj_null_edge_cases.yaml#1
 sql:   SELECT o.id, s.id FROM orders o INNER JOIN shipments s ON o.id = s.order_id ORDER BY o.id
 plan:  Project([O.ID#0, S.ID#0], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(SHIPMENTS), inner=TypeFilter([ORDERS], Scan(ORDERS, [=])))))
@@ -10964,14 +10921,13 @@ shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
 === nlj_null_edge_cases.yaml#3
 sql:   SELECT o.id, o.name, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id ORDER BY o.id
-plan:  Project([O.ID#0, O.NAME#2, C.NAME#1], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=]))))))
+plan:  Project([O.ID#0, O.NAME#2, C.NAME#1], FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=])))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryDefaultOnEmptyPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryTypeFilterPlan
+shape:         RecordQueryScanPlan
 === nlj_null_edge_cases.yaml#4
 sql:   SELECT c.name, o.name FROM customers c LEFT JOIN orders o ON o.customer_id = c.id ORDER BY c.id, o.id
 plan:  Project([C.NAME#1, O.NAME#2], InMemorySort([C.ID#0 ASC, O.ID#0 ASC], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(CUSTOMERS), Scan(ORDERS))))
@@ -10982,23 +10938,21 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === nlj_null_edge_cases.yaml#5
 sql:   SELECT o.name, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id ORDER BY o.id
-plan:  Project([O.NAME#2, C.NAME#1], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=]))))))
+plan:  Project([O.NAME#2, C.NAME#1], FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=])))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryDefaultOnEmptyPlan
-shape:         RecordQueryTypeFilterPlan
-shape:           RecordQueryScanPlan
-=== nlj_null_edge_cases.yaml#6
-sql:   SELECT o.id, o.amount, c.region FROM orders o INNER JOIN customers c ON o.customer_id = c.id ORDER BY o.id
-plan:  Project([O.ID#0, O.AMOUNT#3, C.REGION#2], InMemorySort([O.ID#0 ASC], FlatMap(outer=Scan(ORDERS), inner=TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=])))))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
 shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
+=== nlj_null_edge_cases.yaml#6
+sql:   SELECT o.id, o.amount, c.region FROM orders o INNER JOIN customers c ON o.customer_id = c.id ORDER BY o.id
+plan:  Project([O.ID#0, O.AMOUNT#3, C.REGION#2], FlatMap(outer=Scan(ORDERS), inner=TypeFilter([CUSTOMERS], Scan(CUSTOMERS, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
+shape:       RecordQueryScanPlan
 === nlj_null_edge_cases.yaml#7
 sql:   SELECT o.id, s.id FROM orders o INNER JOIN shipments s ON o.customer_id = s.order_id WHERE o.customer_id IS NULL AND s.order_id IS NULL
 plan:  Project([O.ID#0, S.ID#0], FlatMap(outer=PredicatesFilter(Scan(SHIPMENTS), [1 preds]), inner=PredicatesFilter(Scan(ORDERS), [2 preds])))
@@ -11278,27 +11232,25 @@ shape:         RecordQueryTypeFilterPlan
 shape:           RecordQueryScanPlan
 === normalized_exists_predicates.yaml#0
 sql:   SELECT id FROM products WHERE EXISTS ( SELECT 1 FROM reviews WHERE reviews.product_id = products.id AND (reviews.rating >= 4 OR reviews.rating = 1) ) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(REVIEWS), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(REVIEWS), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === normalized_exists_predicates.yaml#1
 sql:   SELECT id FROM products WHERE NOT EXISTS ( SELECT 1 FROM reviews WHERE reviews.product_id = products.id ) AND (products.category = 'electronics' OR products.price > 50) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=PredicatesFilter(Scan(PRODUCTS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(REVIEWS), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=PredicatesFilter(Scan(PRODUCTS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(REVIEWS), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === normalized_exists_predicates.yaml#2 expect-error=0A000
 sql:   SELECT id FROM products WHERE products.price < 30 OR EXISTS ( SELECT 1 FROM reviews WHERE reviews.product_id = products.id AND reviews.rating = 5 ) ORDER BY id
 plan:  <PLAN-ERROR: 0A000: EXISTS within an OR (disjunction) is not supported>
@@ -11319,51 +11271,47 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === not_exists_predicates.yaml#0
 sql:   SELECT o.id FROM orders o WHERE NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(SHIPMENTS), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(SHIPMENTS), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === not_exists_predicates.yaml#1
 sql:   SELECT o.id FROM orders o WHERE o.status = 'pending' AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(SHIPMENTS), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(SHIPMENTS), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === not_exists_predicates.yaml#2
 sql:   SELECT o.id FROM orders o WHERE o.status = 'pending' AND EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(SHIPMENTS), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(SHIPMENTS), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === not_exists_predicates.yaml#3
 sql:   SELECT o.id FROM orders o WHERE o.customer_id = 300 AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(SHIPMENTS), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(SHIPMENTS), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === not_exists_predicates.yaml#4
 sql:   SELECT o.id FROM orders o WHERE o.id IN (2, 3) AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id)
 plan:  Project([ID#0], FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(SHIPMENTS), [1 preds])), [1 preds])))
@@ -13189,13 +13137,12 @@ shape:       RecordQueryTypeFilterPlan
 shape:         RecordQueryScanPlan
 === qualified_star.yaml#4
 sql:   SELECT a.* FROM a INNER JOIN b ON a.id * 10 = b.id ORDER BY a.id
-plan:  Project([A.ID#0, A.NAME#1], InMemorySort([A.ID#0 ASC], FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=])))))
+plan:  Project([A.ID#0, A.NAME#1], FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === qualified_star.yaml#5 expect-error=42F01
 sql:   SELECT wrong.* FROM a
 plan:  <PLAN-ERROR: 42F01: table "WRONG" does not exist>
@@ -13240,13 +13187,12 @@ sql:   SELECT c.*, b.label FROM a, b
 plan:  <PLAN-ERROR: 42F01: table "C" does not exist>
 === qualified_star.yaml#12
 sql:   SELECT a.*, b.label FROM a INNER JOIN b ON a.id * 10 = b.id ORDER BY a.id
-plan:  Project([A.ID#0, A.NAME#1, B.LABEL#1], InMemorySort([A.ID#0 ASC], FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=])))))
+plan:  Project([A.ID#0, A.NAME#1, B.LABEL#1], FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === qualified_star_more.yaml#0
 sql:   SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 ORDER BY a.a1
 plan:  Project([A.A1#0, A.A2#1, B.B1#0, B.B2#1], InMemorySort([A.A1#0 ASC], FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=])))))
@@ -14811,12 +14757,11 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === self_join.yaml#0
 sql:   SELECT c.id, p.v FROM t AS c INNER JOIN t AS p ON c.parent = p.id ORDER BY c.id
-plan:  Project([C.ID#0, P.V#2], InMemorySort([C.ID#0 ASC], FlatMap(outer=Scan(T), inner=Scan(T, [=]))))
+plan:  Project([C.ID#0, P.V#2], FlatMap(outer=Scan(T), inner=Scan(T, [=])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 === self_join.yaml#1
 sql:   SELECT x.id, y.id FROM t AS x JOIN t AS y ON x.v < y.v ORDER BY x.id, y.id
 plan:  Project([X.ID#0, Y.ID#0], InMemorySort([X.ID#0 ASC, Y.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(T), Scan(T))))
@@ -14827,23 +14772,21 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === self_join.yaml#2
 sql:   SELECT c.id AS child, p.id AS parent_id FROM t AS c JOIN t AS p ON c.parent = p.id WHERE c.v > 20 AND p.v <= 20 ORDER BY c.id
-plan:  Project([C.ID#0, P.ID#0], InMemorySort([C.ID#0 ASC], FlatMap(outer=PredicatesFilter(Scan(T), [1 preds]), inner=PredicatesFilter(Scan(T, [=]), [1 preds]))))
+plan:  Project([C.ID#0, P.ID#0], FlatMap(outer=PredicatesFilter(Scan(T), [1 preds]), inner=PredicatesFilter(Scan(T, [=]), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
 === self_join.yaml#3
 sql:   SELECT c.id, p.v FROM t AS c LEFT OUTER JOIN t AS p ON c.parent = p.id ORDER BY c.id
-plan:  Project([C.ID#0, P.V#2], InMemorySort([C.ID#0 ASC], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(Scan(T, [=])))))
+plan:  Project([C.ID#0, P.V#2], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(Scan(T, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryDefaultOnEmptyPlan
-shape:         RecordQueryScanPlan
 === self_join.yaml#4
 sql:   SELECT c.id FROM t AS c JOIN t AS p ON c.parent = p.id ORDER BY p.v DESC, c.id
 plan:  Project([C.ID#0], InMemorySort([P.V#2 DESC, C.ID#0 ASC], FlatMap(outer=Scan(T), inner=Scan(T, [=]))))
@@ -15188,34 +15131,32 @@ sql:   WITH s AS (SELECT 'x' AS label FROM a WHERE id = 1) SELECT id FROM a WHER
 plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
 === subquery_in.yaml#8
 sql:   SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b AS sub WHERE sub.v = a.v) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(A), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(A), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
 === subquery_in.yaml#9
 sql:   SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.v = a.v) ORDER BY id
-plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=Scan(A), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [1 preds])), [1 preds]))))
+plan:  Project([ID#0], FlatMap(outer=Scan(A), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+=== subquery_in.yaml#10
+sql:   SELECT DISTINCT a.id FROM a, b WHERE a.v = b.v ORDER BY a.id
+plan:  Distinct(Project([A.ID#0], FlatMap(outer=Scan(A), inner=PredicatesFilter(Scan(B), [1 preds]))))
+shape: RecordQueryDistinctPlan
+shape:   RecordQueryProjectionPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
-=== subquery_in.yaml#10
-sql:   SELECT DISTINCT a.id FROM a, b WHERE a.v = b.v ORDER BY a.id
-plan:  Distinct(Project([A.ID#0], InMemorySort([A.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(A), Scan(B)))))
-shape: RecordQueryDistinctPlan
-shape:   RecordQueryProjectionPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryNestedLoopJoinPlan
-shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === subquery_in_from.yaml#0
 sql:   SELECT sq.id FROM (SELECT id FROM t WHERE val > 15) sq ORDER BY sq.id
@@ -16459,13 +16400,12 @@ sql:   SELECT id, DENSE_RANK() OVER (PARTITION BY g ORDER BY v) FROM t ORDER BY 
 plan:  <PLAN-ERROR: 0AF00: Unsupported operator DENSE_RANK>
 === wrong_qualifier.yaml#0
 sql:   SELECT a.name, b.label FROM a, b WHERE a.id = b.id ORDER BY a.id
-plan:  Project([A.NAME#1, B.LABEL#1], InMemorySort([A.ID#0 ASC], FlatMap(outer=Scan(B), inner=TypeFilter([A], Scan(A, [=])))))
+plan:  Project([A.NAME#1, B.LABEL#1], FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === wrong_qualifier.yaml#1 expect-error=42703
 sql:   SELECT a.id, c.label FROM a, b WHERE a.id = b.id
 plan:  <PLAN-ERROR: 42703: column reference with qualifier "C" cannot be resolved>
@@ -16480,13 +16420,12 @@ sql:   SELECT x.id, a.name FROM a AS x, b WHERE x.id = b.id
 plan:  <PLAN-ERROR: 42703: column reference with qualifier "A" cannot be resolved>
 === wrong_qualifier.yaml#5
 sql:   SELECT x.id, x.name FROM a AS x, b WHERE x.id = b.id ORDER BY x.id
-plan:  Project([X.ID#0, X.NAME#1], InMemorySort([X.ID#0 ASC], FlatMap(outer=Scan(B), inner=TypeFilter([A], Scan(A, [=])))))
+plan:  Project([X.ID#0, X.NAME#1], FlatMap(outer=Scan(A), inner=TypeFilter([B], Scan(B, [=]))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
-shape:       RecordQueryTypeFilterPlan
-shape:         RecordQueryScanPlan
 === wrong_qualifier.yaml#6 expect-error=42703
 sql:   SELECT a.id FROM a, b WHERE c.label = 'one'
 plan:  <PLAN-ERROR: 42703: no FROM source aliased as C>

@@ -60,76 +60,91 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 	for _, part := range requestedParts {
 		sortValueNames[values.ExplainValue(part.Value)] = struct{}{}
 	}
+	preserveDistinctReq := properties.NewRequestedOrdering(
+		requestedParts,
+		properties.DistinctnessPreserveDistinctness,
+		requestedOrdering.IsExhaustive(),
+	)
 
 	partitions := ToPlanPartitions(innerRef)
 	for _, partition := range partitions {
-		ordering := computePartitionOrdering(partition)
-		if ordering == nil {
-			continue
-		}
-
-		eqBound := ordering.GetEqualityBoundValues()
-		eqBoundNames := make(map[string]struct{}, len(eqBound))
-		for v := range eqBound {
-			eqBoundNames[values.ExplainValue(v)] = struct{}{}
-		}
-		equalityBoundUnsorted := len(eqBound)
-		seenEqBound := make(map[string]bool, len(requestedParts))
-		for _, part := range requestedParts {
-			name := values.ExplainValue(part.Value)
-			if _, ok := eqBoundNames[name]; ok && !seenEqBound[name] {
-				seenEqBound[name] = true
-				equalityBoundUnsorted--
+		// Ordering is validated per expression, not once from the partition's
+		// representative. Most producers are partitioned by their plain
+		// Ordering, but a frozen FlatMap/NLJ carries a richer order derived
+		// from its exact two child plans. Treating the first join as
+		// representative of every otherwise-identical join in the bucket could
+		// drop a sort over an unordered sibling.
+		for _, expr := range partition.GetExpressions() {
+			ph, ok := expr.(physicalPlanExpression)
+			if !ok {
+				continue
 			}
-		}
-
-		preserveDistinctReq := properties.NewRequestedOrdering(
-			requestedParts,
-			properties.DistinctnessPreserveDistinctness,
-			requestedOrdering.IsExhaustive(),
-		)
-		if !ordering.Satisfies(preserveDistinctReq) {
-			continue
-		}
-
-		// Java RemoveSortRule lines 112-125: when the partition is
-		// distinct and all ordering values are covered by sort keys
-		// or equality-bound keys, yield strictlySorted copies.
-		if partition.IsDistinct() {
-			allCovered := true
-			for _, v := range ordering.GetOrderingKeys() {
-				name := values.ExplainValue(v)
-				_, inSort := sortValueNames[name]
-				// inEq can be true for mixed-binding keys (one fixed +
-				// one sorted) — GetOrderingKeys excludes all-fixed but
-				// GetEqualityBoundValues includes any-fixed.
-				_, inEq := eqBoundNames[name]
-				if !inSort && !inEq {
-					allCovered = false
-					break
-				}
-			}
-			if allCovered {
-				for _, expr := range partition.GetExpressions() {
-					if pinned := pinOrderedSpine(expr, preserveDistinctReq, call.CostModel()); pinned != nil {
-						call.YieldFinalExpression(makeStrictlySorted(pinned))
-					}
+			ordering := computeWrapperRichOrdering(ph)
+			if ordering == nil || !ordering.Satisfies(preserveDistinctReq) {
+				// A FlatMap's Java ordering cases depend on the concrete pair
+				// of child plans. Its initial implementation is built before
+				// child data-access re-exploration has produced requested-order
+				// index alternatives, so form the exact-child variants here,
+				// at the bottom-up sort boundary where both child groups are
+				// complete. Each candidate is verified through the same rich
+				// property before the enforcer is removed.
+				for _, candidate := range orderedFlatMapCandidatesAtSort(
+					call, expr, preserveDistinctReq) {
+					call.YieldFinalExpression(candidate)
 				}
 				continue
 			}
-		}
 
-		// Java RemoveSortRule lines 127-141: check each plan for
-		// unique-index coverage → strictlySorted.
-		//
-		// Every yield here DROPS the sort on the strength of expr's claimed
-		// ordering — an order-preserving wrapper must therefore have its
-		// delegation spine pinned (pinOrderedSpine): otherwise extraction's
-		// generic rebuild can relink its child group to a cheaper UNORDERED
-		// sibling after the sort is gone. Unpinnable expressions are simply
-		// not yielded — the in-memory sort alternative still competes.
-		numKeys := len(requestedParts) + equalityBoundUnsorted
-		for _, expr := range partition.GetExpressions() {
+			eqBound := ordering.GetEqualityBoundValues()
+			eqBoundNames := make(map[string]struct{}, len(eqBound))
+			for v := range eqBound {
+				eqBoundNames[values.ExplainValue(v)] = struct{}{}
+			}
+			equalityBoundUnsorted := len(eqBound)
+			seenEqBound := make(map[string]bool, len(requestedParts))
+			for _, part := range requestedParts {
+				name := values.ExplainValue(part.Value)
+				if _, ok := eqBoundNames[name]; ok && !seenEqBound[name] {
+					seenEqBound[name] = true
+					equalityBoundUnsorted--
+				}
+			}
+
+			// Java RemoveSortRule lines 112-125: when the partition is
+			// distinct and all ordering values are covered by sort keys
+			// or equality-bound keys, yield a strictlySorted copy.
+			if partition.IsDistinct() {
+				allCovered := true
+				for _, v := range ordering.GetOrderingKeys() {
+					name := values.ExplainValue(v)
+					_, inSort := sortValueNames[name]
+					// inEq can be true for mixed-binding keys (one fixed +
+					// one sorted) — GetOrderingKeys excludes all-fixed but
+					// GetEqualityBoundValues includes any-fixed.
+					_, inEq := eqBoundNames[name]
+					if !inSort && !inEq {
+						allCovered = false
+						break
+					}
+				}
+				if allCovered {
+					if pinned := pinOrderedSpine(expr, preserveDistinctReq, call.CostModel()); pinned != nil {
+						call.YieldFinalExpression(makeStrictlySorted(pinned))
+					}
+					continue
+				}
+			}
+
+			// Java RemoveSortRule lines 127-141: check this plan for
+			// unique-index coverage → strictlySorted.
+			//
+			// Every yield here DROPS the sort on the strength of expr's claimed
+			// ordering — an order-preserving wrapper must therefore have its
+			// delegation spine pinned (pinOrderedSpine): otherwise extraction's
+			// generic rebuild can relink its child group to a cheaper UNORDERED
+			// sibling after the sort is gone. Unpinnable expressions are simply
+			// not yielded — the in-memory sort alternative still competes.
+			numKeys := len(requestedParts) + equalityBoundUnsorted
 			pinned := pinOrderedSpine(expr, preserveDistinctReq, call.CostModel())
 			if pinned == nil {
 				continue
@@ -141,6 +156,98 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			}
 		}
 	}
+}
+
+func orderedFlatMapCandidatesAtSort(
+	call *ImplementationRuleCall,
+	base expressions.RelationalExpression,
+	requested *properties.RequestedOrdering,
+) []expressions.RelationalExpression {
+	flatMap, ok := base.(*plans.RecordQueryFlatMapPlan)
+	if !ok || requested == nil || requested.IsPreserve() {
+		return nil
+	}
+	quantifiers := flatMap.GetQuantifiers()
+	if len(quantifiers) != 2 {
+		return nil
+	}
+	outerRef := quantifiers[0].GetRangesOver()
+	innerRef := quantifiers[1].GetRangesOver()
+	resultValue := flatMap.GetResultValue()
+	if outerRef == nil || innerRef == nil || resultValue == nil {
+		return nil
+	}
+	outerOrderingResultValue := flatMapOrderingResultForChild(
+		flatMap, quantifiers[0].GetAlias(), true)
+
+	localAliases := map[values.CorrelationIdentifier]struct{}{
+		quantifiers[0].GetAlias(): {},
+		quantifiers[1].GetAlias(): {},
+	}
+	outerRequested := pushRequestedOrderingToSelectChild(
+		requested, outerOrderingResultValue,
+		quantifiers[0].GetAlias(), localAliases)
+	innerRequested := pushRequestedOrderingToSelectChild(
+		requested, resultValue, quantifiers[1].GetAlias(), localAliases)
+	less := lessWithHashTieBreak(call.CostModel())
+
+	rawOuters := collectJoinLegOrderingVariants(
+		outerRef, properties.PreserveOrdering(), outerOrderingResultValue,
+		quantifiers[0].GetAlias(), less, false, call.Context)
+	rawInners := collectJoinLegOrderingVariants(
+		innerRef, properties.PreserveOrdering(), resultValue,
+		quantifiers[1].GetAlias(), less, false, call.Context)
+	orderedOuters := collectJoinLegOrderingVariants(
+		outerRef, outerRequested, outerOrderingResultValue,
+		quantifiers[0].GetAlias(), less, true, call.Context)
+	orderedInners := collectJoinLegOrderingVariants(
+		innerRef, innerRequested, resultValue,
+		quantifiers[1].GetAlias(), less, true, call.Context)
+	rebuild := func(
+		outer, inner expressions.RelationalExpression,
+	) expressions.RelationalExpression {
+		if outer == nil || inner == nil {
+			return nil
+		}
+		exactQuantifiers := []expressions.Quantifier{
+			expressions.RebuildQuantifier(
+				quantifiers[0], call.MemoizeFinalExpression(outer)),
+			expressions.RebuildQuantifier(
+				quantifiers[1], call.MemoizeFinalExpression(inner)),
+		}
+		return flatMap.WithQuantifiers(exactQuantifiers)
+	}
+
+	var result []expressions.RelationalExpression
+	add := func(outer, inner expressions.RelationalExpression) {
+		candidate := rebuild(outer, inner)
+		ph, ok := candidate.(physicalPlanExpression)
+		if !ok {
+			return
+		}
+		ordering := computeWrapperRichOrdering(ph)
+		if ordering == nil || !ordering.Satisfies(requested) {
+			return
+		}
+		for _, existing := range result {
+			existingPhysical, ok := existing.(physicalPlanExpression)
+			if ok && plans.Equals(
+				existingPhysical.GetRecordQueryPlan(),
+				ph.GetRecordQueryPlan(),
+			) {
+				return
+			}
+		}
+		result = append(result, candidate)
+	}
+
+	for _, pair := range orderedJoinLegPairs(
+		rawOuters, rawInners, orderedOuters, orderedInners,
+		requested, less,
+	) {
+		add(pair.outer, pair.inner)
+	}
+	return result
 }
 
 func (r *ImplementSortRule) GetRequestedOrderings(
@@ -237,18 +344,6 @@ func makeStrictlySorted(expr expressions.RelationalExpression) expressions.Relat
 		}
 	}
 	return expr
-}
-
-// computePartitionOrdering returns the ordering of the first physical
-// plan in the partition. All members share the same ordering by
-// construction (partitions are keyed on ordering properties).
-func computePartitionOrdering(partition *PlanPartition) *properties.RichOrdering {
-	for _, expr := range partition.GetExpressions() {
-		if ph, ok := expr.(physicalPlanExpression); ok {
-			return computeWrapperRichOrdering(ph)
-		}
-	}
-	return nil
 }
 
 var _ ImplementationRule = (*ImplementSortRule)(nil)

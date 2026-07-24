@@ -114,10 +114,53 @@ Pinned by `TestQuantifier_GetCorrelatedTo_Transitive` (a quantifier ranging over
 
 ### Go has an explicit in-memory sort physical operator
 
-**Java:** Relies on `RemoveSortRule` to eliminate sorts; no in-memory sort plan exists.
+**Java:** `RecordQuerySortPlan` exists, but only the legacy `RecordQueryPlanner` constructs it.
+Java's Cascades planner relies on `RemoveSortRule` to eliminate every logical sort; if no child
+ordering satisfies the request, Cascades fails to plan rather than constructing a physical sort.
 **Go:** Has `RecordQueryInMemorySortPlan` (produced by `ImplementInMemorySortRule`). The Java-ported `ImplementSortRule` still eliminates the sort via index ordering where possible; `RecordQueryInMemorySortPlan` is the fallback when no index satisfies the requested ordering. (A legacy `RecordQuerySortPlan` — an orphaned port of Java's legacy-planner sort plan — was removed as producer-less dead code: Go has no legacy planner, so nothing ever constructed it.)
 
-Correctness improvement — ensures ORDER BY works even when no index satisfies it.
+This is a sanctioned read-side extension: it ensures `ORDER BY` works even when no access path
+satisfies it. It is not a substitute for the Java ordered-variant enumeration described below.
+
+### FlatMap/NLJ requested-order enumeration — RESOLVED (RFC-190.6 implementation)
+
+**Java 4.12.11:** `ImplementNestedLoopJoinRule` partitions child alternatives by their source
+ordering and applies three cases. Case 1 rolls max-one outers together and lets the inner determine
+the result order, retaining every satisfying inner source-order partition only for an exhaustive
+request. Case 2a uses an outer that satisfies the request by itself, retaining each satisfying
+outer source-order partition only for a `DISTINCT` request (exhaustiveness does not widen this
+case). Case 2b retains every viable distinct-outer source-order partition whose order does not
+satisfy alone, appends a satisfying inner ordering, and retains every such inner partition only
+for an exhaustive request. Each retained partition contributes its cheapest expression.
+
+**Go:** The NLJ/FlatMap implementation and the bottom-up sort boundary now use that same Case
+1/2a/2b source-order partition matrix while retaining the ordinary cost-best join. Ordered variants
+freeze both selected children in private exact-final singleton references, so extraction cannot
+replace an ordered leg with the shared group's cheaper unordered winner after the enclosing sort
+is removed. The join ordering property is correspondingly conservative: it reports Case 1/2a/2b
+ordering only for exact-final child edges.
+
+Translation across Go's mixed value representations is deliberately fail-closed. A safe ordering
+root bridge equates a source-local flat/baked `FieldValue` with a field under exactly one
+`QuantifiedObjectValue` only when the complete accessor path is identical; different baked
+ordinals, nested paths, and ambiguous roots do not collapse. Projected-EXISTS FlatMaps that declare
+`inheritOuterRecordProperties` use an ordering-only record-constructor lens that qualifies direct,
+correlation-free outer fields; it does not change the executable result value or claim inner,
+literal, or ordinary-FlatMap fields for the outer.
+
+If pruning has already hidden the needed child access, ordered-leg recovery reuses the existing
+ordered primary/index-scan rules and retained partial matches in private candidate space. It can
+recover a reverse unbounded primary scan from a retained forward final, but deliberately declines
+bounded-scan synthesis and re-verifies the completed join through the rich ordering property.
+Ambiguous/untranslatable requests and genuinely index-less `ORDER BY` queries still fall back to
+`RecordQueryInMemorySortPlan`.
+
+Final parent-to-worktree EXPLAIN census: 2,579 old entries and 2,581 new entries (the two
+additional entries are the new regression queries), with 2,491 identical and 90 differing. Of the 88
+comparable shape flips, 87 eliminate outer/unary sort enforcers; the remaining already-sorted
+fixture changes shape because its fixture now declares the new index. The plan-error classification
+contains zero regressions and zero recoveries. The release-gate results are recorded in
+RFC-190/TODO rather than being inferred from this census.
 
 ### FieldValue: string-qualified names vs CorrelationIdentifier-based resolution (PARTIALLY CLOSED)
 
@@ -163,7 +206,7 @@ explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-crit
 | 5. Recursive CTE DFS > level | flipFlop(compareRecursiveCte) | `compareRecursiveCTE` | Aligned |
 | 6. IN-plan SARG penalty | flipFlop(compareInOperator) | `compareInPlan` with `(int, bool)` flipFlop | Aligned |
 | 7. Primary vs index scan | comparison-set analysis + PREFER_INDEX | `comparePrimaryScanVsIndexScan` + `isSingularIndexScanWithFetch` | Aligned (PREFER_INDEX default; comparison-set analysis redundant for default config) |
-| Go sort extension | `RemoveSortRule` eliminates redundant sorts before costing; no in-memory-sort plan or cost rung | `inMemorySortCount`, fewer wins, promoted before the structural block | Go read-side extension / cost-time analogue (RFC-190) |
+| Go sort extension | Cascades `RemoveSortRule` eliminates redundant sorts before costing and has no physical-sort cost rung (`RecordQuerySortPlan` is legacy-planner-only) | `inMemorySortCount`, fewer wins, promoted before the structural block | Go read-side extension / cost-time analogue (RFC-190) |
 | 8. Type filter count | TypeFilterCountProperty | `len(GetRecordTypes())` per filter | Aligned |
 | 9. Type filter depth | ExpressionDepthProperty | Concrete depth plus logical fallback, with `InMemorySort` transparent | Aligned after RFC-190; unconditional with respect to sort |
 | 10. Index scan fetches | count(PlanWithIndex, Fetch) | `indexScanCount + fetchCount` plus sort-transparent fetch depth | Aligned after RFC-190; ungated with respect to sort (the Java both-index applicability gate remains) |
@@ -295,7 +338,7 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | `GROUP BY` | Rejects ALL forms (`UnableToPlanException`) | Full support (streaming + hash aggregation) |
 | `LIMIT` / `OFFSET` | Rejects at parse time (uses JDBC `setMaxRows`) | `RecordQueryLimitPlan` |
 | `SELECT DISTINCT` (complex shapes) | Rejects most via Cascades | Broad support via `RecordQueryDistinctPlan` + hash distinct |
-| In-memory sort | No physical sort operator; `RemoveSortRule` eliminates or fails | `RecordQueryInMemorySortPlan` |
+| In-memory sort | Cascades eliminates or fails; legacy `RecordQueryPlanner` alone can construct `RecordQuerySortPlan` | `RecordQueryInMemorySortPlan` fallback |
 | Hash aggregation | Only streaming aggregation (requires ordered input) | `RecordQueryHashAggregationPlan` |
 | `INFORMATION_SCHEMA` | Rejects (`Unknown reference INFORMATION_SCHEMA.TABLES`) | Working system tables |
 | `NOT NULL` on scalar columns | Rejects (`NOT NULL is only allowed for ARRAY column type`) | SQL-standard behavior |

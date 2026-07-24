@@ -871,6 +871,40 @@ func TestSatisfiesRequestedOrdering_BridgesLazyAndBakedFlatField(t *testing.T) {
 	}
 }
 
+func TestSatisfiesRequestedOrdering_BridgesQualifiedChildToLocalCandidate(t *testing.T) {
+	t.Parallel()
+
+	matched := values.NewFlatFieldValue("name", values.UnknownType)
+	alias := values.NamedCorrelationIdentifier("C")
+	requestedQualified := values.NewCorrelatedFieldValueWithResolvedOrdinal(
+		values.NewQuantifiedObjectValue(alias),
+		"NAME",
+		1,
+		values.UnknownType,
+	)
+	pm := makeOrderingTestPartialMatch([]*MatchedOrderingPart{
+		NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			matched,
+			predicates.EmptyComparisonRange(),
+			MatchedSortOrderAscending,
+		),
+	})
+	requested := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     requestedQualified,
+			SortOrder: properties.RequestedSortOrderAscending,
+		}},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+
+	dir := SatisfiesRequestedOrdering(pm, requested)
+	if dir == nil || *dir != ScanDirectionForward {
+		t.Fatalf("qualified/local ordering bridge direction = %v, want forward", dir)
+	}
+}
+
 func TestSatisfiesAnyRequestedOrderings_MixedResults(t *testing.T) {
 	t.Parallel()
 

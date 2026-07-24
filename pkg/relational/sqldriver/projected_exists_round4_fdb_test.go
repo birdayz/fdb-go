@@ -68,6 +68,25 @@ func TestFDB_ProjectedExists_Round4(t *testing.T) {
 			t.Errorf("expected a Sort node above the existential FlatMap for %q, got:\n%s", q, plan)
 		}
 	}
+	requireReverseFlatMapWithoutSort := func(t *testing.T, q string) {
+		t.Helper()
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN %q: %v", q, err)
+		}
+		if !strings.Contains(plan, "FlatMap") {
+			t.Errorf("expected FlatMap (existential probe) in plan for %q, got:\n%s", q, plan)
+		}
+		if !strings.Contains(plan, "FirstOrDefault") {
+			t.Errorf("expected FirstOrDefault (existential one-row inner) in plan for %q, got:\n%s", q, plan)
+		}
+		if strings.Contains(plan, "Sort") {
+			t.Errorf("expected the reverse outer scan to satisfy ORDER BY without a Sort for %q, got:\n%s", q, plan)
+		}
+		if !strings.Contains(plan, "REVERSE") {
+			t.Errorf("expected a reverse outer scan for descending ORDER BY in %q, got:\n%s", q, plan)
+		}
+	}
 
 	type idBool struct {
 		id int64
@@ -142,7 +161,7 @@ func TestFDB_ProjectedExists_Round4(t *testing.T) {
 	// match the bare ID output field → NULL key → scan order.
 	t.Run("qualified_orderby_selected_col_desc", func(t *testing.T) {
 		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 FROM t1 ORDER BY t1.id DESC"
-		requireSortOverFlatMap(t, q)
+		requireReverseFlatMapWithoutSort(t, q)
 		got := queryIDBoolOrdered(t, q)
 		want := []idBool{{5, true}, {4, false}, {3, true}, {2, false}, {1, true}}
 		if len(got) != len(want) {

@@ -996,7 +996,7 @@ func orderingValuesEqual(left, right values.Value) bool {
 	if values.ValuesStructurallyEqual(left, right) {
 		return true
 	}
-	return values.CanBridgeOrderingFieldValues(left, right)
+	return values.CanBridgeOrderingValueRoots(left, right)
 }
 
 func orderingValueListContains(haystack []values.Value, needle values.Value) bool {

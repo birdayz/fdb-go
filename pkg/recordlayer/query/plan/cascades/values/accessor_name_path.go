@@ -119,6 +119,67 @@ func ColumnNamePathsEqual(a, b Value) bool {
 	return true
 }
 
+// CanBridgeOrderingValueRoots reconciles the two safe representation seams an
+// ordering request crosses on its way to a scan candidate:
+//   - a lazy flat field and the same baked flat field;
+//   - a field rooted at its owning SELECT quantifier and the same source-local
+//     candidate field.
+//
+// The second bridge requires exactly one QOV-rooted side and compares the
+// complete accessor name path. When both values carry baked paths, their
+// ordinal paths must also agree; this prevents a QOV-rooted NAME#1 from
+// collapsing with source-local NAME#2. A baked value may still bridge to a
+// lazy value with the same complete name path. Callers must scope a request to
+// its owning quantifier before using this bridge.
+func CanBridgeOrderingValueRoots(left, right Value) bool {
+	if CanBridgeOrderingFieldValues(left, right) {
+		return true
+	}
+	leftQOV, leftOK := orderingValueHasQOVRoot(left)
+	rightQOV, rightOK := orderingValueHasQOVRoot(right)
+	if !leftOK || !rightOK || leftQOV == rightQOV ||
+		!ColumnNamePathsEqual(left, right) {
+		return false
+	}
+	leftResolved := orderingValueResolvedPath(left)
+	rightResolved := orderingValueResolvedPath(right)
+	return leftResolved == nil || rightResolved == nil ||
+		leftResolved.Equals(rightResolved)
+}
+
+func orderingValueResolvedPath(value Value) *FieldPath {
+	if cardinality, ok := value.(*CardinalityValue); ok {
+		value = cardinality.Child
+	}
+	field, ok := value.(*FieldValue)
+	if !ok {
+		return nil
+	}
+	return field.Resolved
+}
+
+func orderingValueHasQOVRoot(value Value) (bool, bool) {
+	if cardinality, ok := value.(*CardinalityValue); ok {
+		value = cardinality.Child
+	}
+	for {
+		field, ok := value.(*FieldValue)
+		if !ok {
+			return false, false
+		}
+		switch child := field.Child.(type) {
+		case nil:
+			return false, true
+		case *QuantifiedObjectValue:
+			return child != nil, child != nil
+		case *FieldValue:
+			value = child
+		default:
+			return false, false
+		}
+	}
+}
+
 // AccessorNamePathKey returns a canonical map key for a column reference's
 // accessor path (the path segments joined with a NUL separator), or ok=false
 // when the path cannot be established (AccessorNamePath !ok). It is the

@@ -11,12 +11,12 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**338 scenarios · 2676 query/assertion cases** across 18 feature areas.
+**338 scenarios · 2678 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
 | Aggregates & GROUP BY | 50 | 322 |
-| Joins | 62 | 271 |
+| Joins | 62 | 273 |
 | Subqueries (EXISTS / IN / scalar) | 44 | 295 |
 | CTEs | 12 | 105 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 |
@@ -112,7 +112,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `flatmap_null_fk` | 2 | FlatMap with NULL foreign key values |
 | `flatmap_one_to_many` | 3 | FlatMap with 1:N relationship (high fan-out) |
 | `flatmap_regression` | 5 | FlatMap regression tests |
-| `flatmap_secondary_index` | 3 | FlatMap via secondary index |
+| `flatmap_secondary_index` | 5 | FlatMap via secondary index |
 | `flatmap_three_way` | 1 | Three-way join (chained FlatMap) |
 | `gr1_join` | 4 | SQL §7.10 GR1 with JOIN queries: the bare-col-with-aggregate without |
 | `group_by_null_join` | 3 | GROUP BY on nullable JOIN column |

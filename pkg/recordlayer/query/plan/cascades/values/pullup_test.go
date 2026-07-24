@@ -100,6 +100,26 @@ func TestPullUpValue_ThroughRecordConstructor(t *testing.T) {
 	}
 }
 
+func TestPullUpValue_SourceLocalOrderingKeyThroughOwnedJoinField(t *testing.T) {
+	t.Parallel()
+	alias := NamedCorrelationIdentifier("C")
+	qualifiedName := NewCorrelatedFieldValueWithResolvedOrdinal(
+		NewQuantifiedObjectValue(alias), "NAME", 1, UnknownType)
+	resultValue := NewRecordConstructorValue(
+		RecordConstructorField{Name: "NAME", Value: qualifiedName},
+	)
+
+	pulled := PullUpValue(
+		NewFlatFieldValue("name", UnknownType),
+		resultValue,
+		alias,
+	)
+	field := requireCandidateAnchoredField(t, pulled, alias)
+	if field.Field != "NAME" {
+		t.Fatalf("pulled field = %q, want NAME", field.Field)
+	}
+}
+
 func TestPullUpValue_ThroughRecordConstructor_NotFound(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("q1")

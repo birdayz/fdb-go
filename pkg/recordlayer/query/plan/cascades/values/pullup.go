@@ -70,7 +70,9 @@ func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias C
 		inPinned = fv.Resolved.FrontierPinned
 	}
 	for i, field := range rc.Fields {
-		if semanticEqual(v, field.Value) {
+		_, fieldOwnedByAlias := GetCorrelatedToOfValue(field.Value)[alias]
+		if semanticEqual(v, field.Value) ||
+			(fieldOwnedByAlias && CanBridgeOrderingValueRoots(v, field.Value)) {
 			out := &FieldValue{
 				Field: field.Name,
 				Typ:   field.Value.Type(),
@@ -171,6 +173,19 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 	// FieldValue → resolve the field to its input expression.
 	if rc, ok := resultValue.(*RecordConstructorValue); ok {
 		if fv, ok := v.(*FieldValue); ok {
+			// A select/join sort key can already be expressed in one of the
+			// constructor's input scopes (for example C.NAME#1 rooted at
+			// QOV(C)). Match that exact value before interpreting its baked
+			// ordinal as an OUTPUT ordinal. The latter is a different
+			// coordinate system: #1 on C is leg-local, while rc.Fields[1] is
+			// constructor-global. Treating them as interchangeable maps an
+			// I.TITLE#2 request onto the third column of C in a joined result.
+			for _, field := range rc.Fields {
+				if semanticEqual(v, field.Value) {
+					return field.Value
+				}
+			}
+
 			// A BAKED node resolves by ORDINAL — same rationale
 			// as composeFieldOverConstructor: a name lookup would pick the FIRST
 			// of two duplicate same-named output columns regardless of which the

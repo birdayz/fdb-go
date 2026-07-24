@@ -190,12 +190,25 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
     independent Codex audits ACK.** Safe residual: Go's separate cross-candidate pass retains
     already-yielded singleton alternatives that Java's shared partition map evicts; tracked in
     `DIVERGENCES.md` as plan-space widening, not a row-safety gap.
-- [ ] **190.6 (architectural — Graefe ruling)** — Go strips requested-ordering enumeration OUT of
-  the join/set-op rules and recovers it via a centralized physical sort (`ImplementInMemorySortRule`
-  RFC-001 + `winner_lookup.go:103` `pinOrderedSpine`), vs Java folding ordered-variant enumeration
-  into each rule. Misses some sort-free ordered joins Java finds AND contradicts CLAUDE.md ("Java
-  has no physical sort operator … Go doesn't have one either"). Resolve on the record: sanctioned
-  extension (update CLAUDE.md + DIVERGENCES.md) or port the in-rule enumeration.
+- [x] **190.6 (architectural — Graefe ruling)** —
+  port Java 4.12.11's NLJ/FlatMap Case 1/2a/2b source-order partition matrix while retaining Go's
+  sanctioned `RecordQueryInMemorySortPlan` fallback. Ordered variants keep the cheapest exact
+  expression per Java-retained source-order partition and freeze both legs in private final
+  singleton references. Rich ordering now pulls through result values with fixed-binding/
+  dependency preservation, a fail-closed value-root bridge, and a projected-EXISTS ordering lens;
+  ordered primary/index recovery reuses the existing scan rules and retained partial matches,
+  including safe reverse-unbounded-primary recovery while bounded synthesis declines. The paired
+  indexed/index-less regressions pin sort elimination versus fallback.
+  Final EXPLAIN census: old=2,579/new=2,581, identical=2,491, differing=90; the 88 comparable
+  shape flips are 87 eliminated outer/unary sort enforcers plus one already-sorted fixture changed
+  by its new index, with zero plan-error regressions/recoveries; the other two entries are the new
+  queries. Focused tests pass 20×; affected Cascades, yamsql, and real-FDB tests are race-clean.
+  Yamsql passes 5/5, and real FDB pins exact ASC/DESC/LIMIT/NOT-EXISTS rows plus the index-less
+  fallback. Generated ledgers/golden, lint, and the full `just test` suite pass (56/56). The uncached
+  1M FDB stress gate passes all 23 subtests with exact row counts; its four planner-query timings
+  remain within 1–4% of the prior checkpoint. **FINAL REVIEW: two independent Codex audits ACK**
+  after closing the cross-root baked-ordinal safety finding and three enumeration-control/key-map
+  collision coverage findings.
 
 **Maintainability:**
 - [ ] **190.7 (MED-HIGH)** — extract the 4×-duplicated existential compensation chain

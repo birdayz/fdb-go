@@ -21,10 +21,13 @@ import (
 //
 // Fix: the fold sees THROUGH the intervening sort/limit, folds the projection
 // into the existential SelectExpression (boolean computed with the binding
-// live), and re-applies the sort/limit on top — matching Java's
-// generateSort(generateSimpleSelect(output...), orderBys). The plan must put
-// the sort ABOVE the existential FlatMap, and the boolean must be correct per
-// row in the requested order. Before the fix: false for matching rows.
+// live), and re-applies the ordering/limit on top — matching Java's
+// generateSort(generateSimpleSelect(output...), orderBys). RFC-190.6 then lets
+// the physical sort disappear when the outer scan already supplies that order:
+// the existential FirstOrDefault emits exactly one row per outer, so the
+// outer-major FlatMap preserves the outer id ordering. An unindexed ordering
+// still requires InMemorySort. In every case the boolean must be correct per
+// row in the requested order. Before the fold fix: false for matching rows.
 func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -75,11 +78,10 @@ func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 		}
 		return out
 	}
-	// requireSortOverFlatMap asserts the plan keeps the sort ABOVE the
-	// existential FlatMap (the fixed shape: fold the projection, sort on top).
-	// A FlatMap must be present (the existential probe fired) and a sort node
-	// must wrap it.
-	requireSortOverFlatMap := func(t *testing.T, q string) {
+	// requireFlatMapPlan asserts that the existential probe fired and pins
+	// whether the requested ordering needs Go's physical sort enforcer. PK id
+	// ASC/DESC flows through FlatMap; the unindexed col1 control does not.
+	requireFlatMapPlan := func(t *testing.T, q string, wantInMemorySort bool) {
 		t.Helper()
 		var plan string
 		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
@@ -91,8 +93,12 @@ func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 		if !strings.Contains(plan, "FirstOrDefault") {
 			t.Errorf("expected FirstOrDefault (existential one-row inner) in plan for %q, got:\n%s", q, plan)
 		}
-		if !strings.Contains(plan, "Sort") {
-			t.Errorf("expected a Sort node above the existential FlatMap for %q, got:\n%s", q, plan)
+		hasInMemorySort := strings.Contains(plan, "InMemorySort")
+		if wantInMemorySort && !hasInMemorySort {
+			t.Errorf("expected InMemorySort above the existential FlatMap for %q, got:\n%s", q, plan)
+		}
+		if !wantInMemorySort && hasInMemorySort {
+			t.Errorf("expected FlatMap to preserve the outer ordering without InMemorySort for %q, got:\n%s", q, plan)
 		}
 	}
 
@@ -100,7 +106,7 @@ func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 	// id order with the correct boolean per row.
 	t.Run("orderby_asc", func(t *testing.T) {
 		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 FROM t1 ORDER BY id"
-		requireSortOverFlatMap(t, q)
+		requireFlatMapPlan(t, q, false)
 		got := queryIDBoolOrdered(t, q)
 		want := []idBool{{1, true}, {2, false}, {3, true}, {4, false}, {5, true}}
 		if len(got) != len(want) {
@@ -116,7 +122,7 @@ func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 	// Case 2: projected EXISTS + ORDER BY id DESC. Same booleans, reverse order.
 	t.Run("orderby_desc", func(t *testing.T) {
 		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 FROM t1 ORDER BY id DESC"
-		requireSortOverFlatMap(t, q)
+		requireFlatMapPlan(t, q, false)
 		got := queryIDBoolOrdered(t, q)
 		want := []idBool{{5, true}, {4, false}, {3, true}, {2, false}, {1, true}}
 		if len(got) != len(want) {
@@ -134,9 +140,9 @@ func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 	// {1,false},{2,false},{3,false} here; the fix yields {1,true},{2,false},{3,true}.
 	t.Run("orderby_asc_limit", func(t *testing.T) {
 		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 FROM t1 ORDER BY id LIMIT 3"
-		// LIMIT is hoisted above the project; the existential FlatMap + sort
-		// still fire below it.
-		requireSortOverFlatMap(t, q)
+		// LIMIT is hoisted above the project; the existential FlatMap still
+		// fires below it, while the ordered outer scan makes the sort redundant.
+		requireFlatMapPlan(t, q, false)
 		got := queryIDBoolOrdered(t, q)
 		want := []idBool{{1, true}, {2, false}, {3, true}}
 		if len(got) != len(want) {
@@ -150,10 +156,11 @@ func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 	})
 
 	// Case 4: NOT EXISTS + ORDER BY — the complement, to pin that the boolean
-	// computed under the live binding negates correctly with the sort on top.
+	// computed under the live binding negates correctly while the outer order
+	// flows through the FlatMap.
 	t.Run("not_exists_orderby_asc", func(t *testing.T) {
 		q := "SELECT id, NOT EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS no_t2 FROM t1 ORDER BY id"
-		requireSortOverFlatMap(t, q)
+		requireFlatMapPlan(t, q, false)
 		got := queryIDBoolOrdered(t, q)
 		want := []idBool{{1, false}, {2, true}, {3, false}, {4, true}, {5, false}}
 		if len(got) != len(want) {
@@ -179,7 +186,7 @@ func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 	// expose exactly the two SELECT columns (col1 must not leak).
 	t.Run("orderby_col_not_in_select_desc", func(t *testing.T) {
 		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 FROM t1 ORDER BY col1 DESC"
-		requireSortOverFlatMap(t, q)
+		requireFlatMapPlan(t, q, true)
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
 			t.Fatalf("query %q: %v", q, err)

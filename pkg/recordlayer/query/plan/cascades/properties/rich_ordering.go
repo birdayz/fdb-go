@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/combinatorics"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -36,7 +37,7 @@ func NewRichOrdering(
 	keys []values.Value,
 	distinct bool,
 ) *RichOrdering {
-	return NewRichOrderingWithDeps(bindingMap, keys, combinatorics.NewSetMultimap[string](), distinct)
+	return NewRichOrderingWithDeps(bindingMap, keys, nil, distinct)
 }
 
 // NewRichOrderingWithDeps creates an ordering with explicit dependency edges
@@ -87,7 +88,7 @@ func NewRichOrderingWithDeps(
 	}
 
 	var oset *combinatorics.PartiallyOrderedSet[string]
-	if deps.Size() > 0 {
+	if deps != nil {
 		oset = combinatorics.NewPartiallyOrderedSet(keyStrings, deps)
 	} else {
 		bd := combinatorics.NewBuilder[string]()
@@ -254,6 +255,9 @@ func (o *RichOrdering) IsSingularNonFixedValue(v values.Value) bool {
 // requested ordering. Uses the partial order to enumerate valid
 // permutations that match the request prefix.
 func (o *RichOrdering) Satisfies(requested *RequestedOrdering) bool {
+	if requested.IsDistinct() && !o.distinct {
+		return false
+	}
 	if requested.IsPreserve() {
 		return true
 	}
@@ -325,6 +329,24 @@ func (o *RichOrdering) orderingKeyFor(v values.Value) (string, bool) {
 		if provided := o.keyLookup[pk]; values.CanBridgeOrderingFieldValues(v, provided) {
 			return pk, true
 		}
+	}
+
+	// A requested key scoped to one SELECT child remains rooted at that
+	// quantifier (C.NAME), while a scan/index ordering is source-local (NAME).
+	// The normalized rendering cannot bridge those strings, so use the narrow
+	// full-accessor-path bridge and reject an ambiguous multi-key match.
+	var bridged string
+	for key, provided := range o.keyLookup {
+		if !values.CanBridgeOrderingValueRoots(v, provided) {
+			continue
+		}
+		if bridged != "" && bridged != key {
+			return "", false
+		}
+		bridged = key
+	}
+	if bridged != "" {
+		return bridged, true
 	}
 	return "", false
 }
@@ -670,6 +692,13 @@ const (
 // semantics. The maximum elements of the left ordering become dependencies
 // of the minimum elements of the right ordering (for non-fixed keys).
 func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
+	if outer == nil || inner == nil {
+		panic("ConcatOrderings: both orderings are required")
+	}
+	if !outer.distinct {
+		panic("ConcatOrderings: outer ordering must be distinct")
+	}
+
 	bm := make(map[values.Value][]OrderingBinding, len(outer.bindingMap)+len(inner.bindingMap))
 	for k, v := range outer.bindingMap {
 		bm[k] = append([]OrderingBinding{}, v...)
@@ -718,7 +747,12 @@ func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
 		}
 	}
 
-	return NewRichOrderingWithDeps(bm, keys, deps, outer.distinct || inner.distinct)
+	// Java Ordering.concatOrderings requires the left ordering to be
+	// distinct: only then does one complete inner run precede the next
+	// without interleaving. The concatenated rows themselves are distinct
+	// exactly when the RIGHT ordering is distinct; outer distinctness alone
+	// does not prevent duplicate rows within one inner run.
+	return NewRichOrderingWithDeps(bm, keys, deps, inner.distinct)
 }
 
 // PullUp translates this ordering through a string-keyed value mapping.
@@ -744,19 +778,7 @@ func (o *RichOrdering) PullUp(mapping map[string]values.Value) *RichOrdering {
 	if o == nil {
 		return nil
 	}
-	newBM := make(map[values.Value][]OrderingBinding, len(o.bindingMap))
-	var newKeys []values.Value
-	for _, key := range o.keys {
-		keyStr := values.ExplainValue(key)
-		if mapped, ok := mapping[keyStr]; ok {
-			newBM[mapped] = o.bindingMap[key]
-			newKeys = append(newKeys, mapped)
-		}
-	}
-	if len(newKeys) == 0 {
-		return NewRichOrdering(nil, nil, o.distinct)
-	}
-	return NewRichOrdering(newBM, newKeys, o.distinct)
+	return o.translateKeys(mapping)
 }
 
 // PushDown is the inverse of PullUp — translates ordering keys
@@ -766,9 +788,12 @@ func (o *RichOrdering) PushDown(mapping map[string]values.Value) *RichOrdering {
 }
 
 // PullUpThroughValue translates this ordering through a result value.
-// For each ordering key, uses Value.PullUpValue to compute the
-// pulled-up key. Bindings are preserved. Keys that cannot be pulled
-// up are dropped.
+// For each ordering key, uses Value.PullUpValue to compute the pulled-up key.
+// Value-backed fixed comparison operands are translated through the same
+// result value; literal, parameter, and opaque fixed bindings are unchanged.
+// A dynamic fixed binding that cannot be translated is dropped, and a key
+// whose last binding is dropped cannot contribute an ordering above the
+// projection.
 //
 // Ports Java's Ordering.pullUp(Value, EvaluationContext, AliasMap,
 // Set<CorrelationIdentifier>) using the direct algorithmic pullUp
@@ -783,24 +808,24 @@ func (o *RichOrdering) PullUpThroughValue(resultValue values.Value, alias values
 		return NewRichOrdering(nil, nil, o.distinct)
 	}
 
-	newBM := make(map[values.Value][]OrderingBinding, len(pulledUpMap))
-	var newKeys []values.Value
+	translated := make(map[string]values.Value, len(pulledUpMap))
 	for _, key := range o.keys {
 		if pulledUp, ok := pulledUpMap[key]; ok {
-			newBM[pulledUp] = o.bindingMap[key]
-			newKeys = append(newKeys, pulledUp)
+			translated[values.ExplainValue(key)] = pulledUp
 		}
 	}
-	if len(newKeys) == 0 {
-		return NewRichOrdering(nil, nil, o.distinct)
-	}
-	return NewRichOrdering(newBM, newKeys, o.distinct)
+	return o.translateKeysAndBindings(translated, func(value values.Value) values.Value {
+		return values.PullUpValue(value, resultValue, alias)
+	})
 }
 
 // PushDownThroughValue translates this ordering's keys from output
 // space back to input space through a result value. For each ordering
-// key, uses Value.PushDownValue to compute the pushed-down key.
-// Bindings are preserved. Keys that cannot be pushed down are dropped.
+// key, uses Value.PushDownValue to compute the pushed-down key. Value-backed
+// fixed comparison operands are pushed down through the same result value;
+// literal, parameter, and opaque fixed bindings are unchanged. Keys that
+// cannot be pushed down, or whose last dynamic fixed binding cannot be pushed
+// down, are dropped.
 //
 // Ports Java's Ordering.pushDown(Value, EvaluationContext, AliasMap,
 // Set<CorrelationIdentifier>).
@@ -811,18 +836,210 @@ func (o *RichOrdering) PushDownThroughValue(resultValue values.Value, upperAlias
 
 	pushed := values.PushDownValues(o.keys, resultValue, upperAlias)
 
-	newBM := make(map[values.Value][]OrderingBinding, len(o.bindingMap))
-	var newKeys []values.Value
+	translated := make(map[string]values.Value, len(o.keys))
 	for i, key := range o.keys {
 		if pushed[i] != nil {
-			newBM[pushed[i]] = o.bindingMap[key]
-			newKeys = append(newKeys, pushed[i])
+			translated[values.ExplainValue(key)] = pushed[i]
 		}
 	}
-	if len(newKeys) == 0 {
+	return o.translateKeysAndBindings(translated, func(value values.Value) values.Value {
+		return values.PushDownValue(value, resultValue, upperAlias)
+	})
+}
+
+// translateKeys maps the ordering-set domain without inventing dependencies.
+// Rebuilding the surviving keys through NewRichOrdering would create a total
+// order and could turn independent keys into a false lexicographic guarantee.
+// MapAll also removes a key whose last prerequisite was not translatable; that
+// conservative loss is necessary because the dependent key can reset whenever
+// the omitted prerequisite changes.
+func (o *RichOrdering) translateKeys(mapping map[string]values.Value) *RichOrdering {
+	return o.translateKeysWithOverrides(mapping, nil)
+}
+
+// translateKeysAndBindings applies the same value translation to fixed
+// comparison operands before remapping the ordering-set domain. Java's
+// Ordering.translateBindings translates only ValueComparison bindings:
+// literal/simple and parameter comparisons stay unchanged, while an
+// untranslatable value comparison disappears. Go represents scan equality
+// bindings as *predicates.ComparisonRange, so the equivalent operation rebuilds
+// its equality comparison with the translated Operand.
+func (o *RichOrdering) translateKeysAndBindings(
+	mapping map[string]values.Value,
+	translateValue func(values.Value) values.Value,
+) *RichOrdering {
+	filteredMapping := make(map[string]values.Value, len(mapping))
+	bindingOverrides := make(map[string][]OrderingBinding, len(mapping))
+	for oldKey, mappedValue := range mapping {
+		oldValue := o.keyLookup[oldKey]
+		if oldValue == nil || mappedValue == nil {
+			continue
+		}
+		translatedBindings := translateOrderingBindings(
+			o.bindingMap[oldValue], translateValue)
+		if len(translatedBindings) == 0 {
+			continue
+		}
+		filteredMapping[oldKey] = mappedValue
+		bindingOverrides[oldKey] = translatedBindings
+	}
+	return o.translateKeysWithOverrides(filteredMapping, bindingOverrides)
+}
+
+func (o *RichOrdering) translateKeysWithOverrides(
+	mapping map[string]values.Value,
+	bindingOverrides map[string][]OrderingBinding,
+) *RichOrdering {
+	if len(mapping) == 0 {
 		return NewRichOrdering(nil, nil, o.distinct)
 	}
-	return NewRichOrdering(newBM, newKeys, o.distinct)
+
+	stringMapping := make(map[string]string, len(mapping))
+	valueByMappedKey := make(map[string]values.Value, len(mapping))
+	oldKeyByMappedKey := make(map[string]string, len(mapping))
+	for oldKey, mappedValue := range mapping {
+		if mappedValue == nil {
+			continue
+		}
+		mappedKey := values.ExplainValue(mappedValue)
+		if previous, collision := oldKeyByMappedKey[mappedKey]; collision && previous != oldKey {
+			// Two source keys collapsing onto one output key require binding
+			// and dependency coalescing. Decline rather than guess.
+			return NewRichOrdering(nil, nil, o.distinct)
+		}
+		stringMapping[oldKey] = mappedKey
+		valueByMappedKey[mappedKey] = mappedValue
+		oldKeyByMappedKey[mappedKey] = oldKey
+	}
+
+	mappedSet := combinatorics.MapAll(o.orderingSet, stringMapping)
+	if mappedSet.IsEmpty() {
+		return NewRichOrdering(nil, nil, o.distinct)
+	}
+
+	newBM := make(map[values.Value][]OrderingBinding, mappedSet.Size())
+	newKeys := make([]values.Value, 0, mappedSet.Size())
+	for _, mappedKey := range mappedSet.Set() {
+		mappedValue := valueByMappedKey[mappedKey]
+		oldValue := o.keyLookup[oldKeyByMappedKey[mappedKey]]
+		if mappedValue == nil || oldValue == nil {
+			// Malformed translations fail closed.
+			return NewRichOrdering(nil, nil, o.distinct)
+		}
+		newKeys = append(newKeys, mappedValue)
+		if translatedBindings, ok := bindingOverrides[oldKeyByMappedKey[mappedKey]]; ok {
+			newBM[mappedValue] = translatedBindings
+		} else {
+			newBM[mappedValue] = o.bindingMap[oldValue]
+		}
+	}
+	return NewRichOrderingWithDeps(
+		newBM, newKeys, mappedSet.DependencyMap(), o.distinct)
+}
+
+// translateOrderingBindings mirrors Java Ordering.translateBindings for Go's
+// binding representation. Non-fixed bindings need no comparand translation.
+// Unknown fixed payloads remain opaque, matching Java's treatment of
+// non-ValueComparison comparison subclasses.
+func translateOrderingBindings(
+	bindings []OrderingBinding,
+	translateValue func(values.Value) values.Value,
+) []OrderingBinding {
+	if !AreAllBindingsFixed(bindings) {
+		// Java deliberately discards any comparison detail once a value is
+		// directional: a valid non-fixed binding set is represented by one
+		// sorted binding. Go accepts a few broader intermediate shapes, so
+		// collapse every consistently directional one and fail closed for an
+		// inconsistent mix. CHOOSE is already a single, comparison-free
+		// binding and can pass through unchanged.
+		if len(bindings) == 1 && bindings[0].IsChoose() {
+			return []OrderingBinding{bindings[0]}
+		}
+		sortOrder := SortOrderOf(bindings)
+		if !sortOrder.IsDirectional() {
+			return nil
+		}
+		return []OrderingBinding{SortedBinding(sortOrder)}
+	}
+
+	translated := make([]OrderingBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		comparison, ok := translateFixedOrderingComparison(
+			binding.GetComparison(), translateValue)
+		if ok {
+			translated = append(translated, FixedBinding(comparison))
+		}
+	}
+	return translated
+}
+
+func translateFixedOrderingComparison(
+	comparison any,
+	translateValue func(values.Value) values.Value,
+) (any, bool) {
+	if comparison == nil {
+		return nil, true
+	}
+
+	switch comparison := comparison.(type) {
+	case *predicates.ComparisonRange:
+		if comparison == nil || !comparison.IsEquality() {
+			// A non-equality range cannot soundly be a FIXED binding.
+			return nil, false
+		}
+		translatedComparison, ok := translateOrderingComparison(
+			comparison.GetEqualityComparison(), translateValue)
+		if !ok {
+			return nil, false
+		}
+		if translatedComparison == comparison.GetEqualityComparison() {
+			return comparison, true
+		}
+		merged := predicates.EmptyComparisonRange().Merge(translatedComparison)
+		if !merged.Ok {
+			return nil, false
+		}
+		return merged.Range, true
+
+	case *predicates.Comparison:
+		return translateOrderingComparison(comparison, translateValue)
+
+	case predicates.Comparison:
+		translatedComparison, ok := translateOrderingComparison(
+			&comparison, translateValue)
+		if !ok {
+			return nil, false
+		}
+		return *translatedComparison, true
+
+	default:
+		return comparison, true
+	}
+}
+
+func translateOrderingComparison(
+	comparison *predicates.Comparison,
+	translateValue func(values.Value) values.Value,
+) (*predicates.Comparison, bool) {
+	if comparison == nil {
+		return nil, false
+	}
+	if comparison.Operand == nil ||
+		comparison.ParameterName != "" ||
+		values.IsConstantValue(comparison.Operand) {
+		return comparison, true
+	}
+	if _, isParameterValue := comparison.Operand.(*values.ParameterValue); isParameterValue {
+		return comparison, true
+	}
+
+	translatedOperand := translateValue(comparison.Operand)
+	if translatedOperand == nil {
+		return nil, false
+	}
+	translatedComparison := *comparison
+	translatedComparison.Operand = translatedOperand
+	return &translatedComparison, true
 }
 
 // CreateUnionOrdering creates a RichOrdering from a single provided

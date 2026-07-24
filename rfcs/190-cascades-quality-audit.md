@@ -520,8 +520,9 @@ Two disjoint input sets, two conclusions:
   yields nothing → `UnableToPlan`; `RecordQuerySortPlan` exists but is **legacy-planner-only**,
   `RecordQueryPlanner.java:315` — the *only* construction site). Go's `ImplementInMemorySortRule`
   (RFC-001) produces correct sorted rows. This is a clean sanctioned read-side SUPERSET — keep it.
-  **Doc fix:** CLAUDE.md's "Java has no physical sort operator" is imprecise — Java's *Cascades*
-  never emits one; the class is legacy-only. Correct the wording (CLAUDE.md + DIVERGENCES.md).
+  **Documentation corrected:** Java has a physical sort class, but its *Cascades* planner never
+  constructs it; Go's in-memory sort remains a sanctioned fallback, not a replacement for
+  Java-faithful ordered enumeration in rules that can satisfy the request without a sort.
 - **(B) `JOIN … ORDER BY <outer-indexed-col>` where the ordered index is not the cheapest outer scan**
   — BOTH engines handle it. Java Case 2a picks the outer partition that *satisfies* the ordering
   (even if pricier) → sort-free streamed `FlatMap`. Go picks the cheapest outer → `ImplementSortRule`
@@ -529,15 +530,72 @@ Two disjoint input sets, two conclusions:
   sort. Same rows, strictly worse plan. The physical sort **masks** this (correct rows ship green) —
   the exact latent-quality failure mode.
 
-**Fix (Graefe-gated, additive):** make the Go NLJ rule `RequestedOrdering`-sensitive and port Java's
-Case 1/2a/2b — for each requested ordering, also yield an ordered `FlatMap` variant whose outer/inner
-leg *satisfies* the order (Java `partitionOuterBySatisfyingAndDistinct`/`rollUpIfSatisfyOrdering`),
-alongside the cost-best variant. `ImplementSortRule` then drops the sort against the ordered join and
-the in-memory sort prunes on cost. Does NOT remove the physical sort (still the sole survivor for set
-A). Book the (B) divergence into DIVERGENCES.md immediately as the regression sentinel.
-Regression: a yamsql `JOIN … ORDER BY <outer-indexed-col>` with `plan_not_contains: InMemorySort`
-(sort-free), PLUS the paired index-less `ORDER BY` asserting `plan_contains: InMemorySort` — the
-unprobed dimension that let (B) ship green.
+**Implementation:** the NLJ rule is now
+`RequestedOrdering`-sensitive and the bottom-up sort boundary can construct the same variants after
+both child groups finish. Both sites use Java 4.12.11's **source-order partition** matrix, not a
+single global best-child shortcut:
+
+- **Case 1 (max-one outer):** roll all qualifying outers together; retain the cheapest satisfying
+  inner overall, or the cheapest inner in every satisfying source-order partition for an
+  exhaustive request.
+- **Case 2a (outer satisfies alone):** roll satisfying outers together unless the request is
+  `DISTINCT`, in which case retain the cheapest outer from every satisfying source-order
+  partition. Exhaustiveness deliberately does not widen this case. Pair with the cheapest eligible
+  inner.
+- **Case 2b (distinct outer + inner):** retain every distinct-outer source-order partition that
+  does not satisfy alone and whose concatenation with the inner can satisfy. Pair each outer with
+  the cheapest satisfying inner overall, or every satisfying inner source-order partition for an
+  exhaustive request.
+
+The ordinary cost-best FlatMap remains available. Each ordered variant freezes **both** chosen legs
+in private exact-final singleton references; the FlatMap rich-ordering property reports Case
+1/2a/2b order only for those exact edges, preventing extraction from silently relinking an ordered
+leg to the shared group's cheaper unordered winner after the sort disappears. Compensation,
+FirstOrDefault, and DefaultOnEmpty chains are rebuilt around the selected source legs instead of
+swapping a buried leaf.
+
+The value translation needed to make the property sound is also in this slice. Ordering pull-up/
+push-down preserves partial-order dependencies and translatable fixed-comparison bindings. The
+safe value-root bridge accepts only source-local flat/baked fields versus a single QOV root with the
+same complete accessor path; it refuses ordinal collisions, nested-path ambiguity, and unrelated
+roots. For projected EXISTS only, `inheritOuterRecordProperties` enables an ordering-only
+record-constructor lens that qualifies direct correlation-free outer fields. It neither changes the
+executable result value nor attributes inner/literal fields (or fields of an ordinary FlatMap) to
+the outer.
+
+Ordered-leg discovery first uses retained physical alternatives, then reuses the existing ordered
+primary/index-scan rules and data-access partial matches in private candidate space. A pruned
+unbounded forward primary scan may safely recover its reverse alternative; bounded scans decline
+rather than synthesize changed scan semantics. Every assembled candidate is checked again against
+the final rich ordering. If no legal access path exists—or value ownership cannot be proved—Go's
+sanctioned `RecordQueryInMemorySortPlan` remains the correct fallback.
+
+The paired yamsql regression adds an indexed `JOIN … ORDER BY <outer-indexed-col>` that must not
+contain `InMemorySort` and an index-less twin that must contain it. Projected-EXISTS ASC/DESC/LIMIT/
+NOT-EXISTS row tests exercise the same translation and recovery seam against real FDB.
+
+**Final parent-to-worktree EXPLAIN census:** old=2,579, new=2,581, identical=2,491,
+differing=90. The two extra entries are the new queries. Among the 88 comparable shape flips, 87
+remove outer/unary sort enforcers; one already-sorted fixture changes shape because its fixture now
+declares the new index. There are no plan-error regressions or recoveries. The checked-in golden is
+byte-identical to the reviewed after-corpus.
+
+Focused ordering/property/enumeration tests pass 20×. The Cascades subtree, yamsql scenario, and
+projected-EXISTS/round4/round5 real-FDB targets are race-clean. Yamsql passes 5/5; real FDB pins
+exact ASC, DESC, LIMIT, and NOT-EXISTS rows, reverse scans, and the unindexed in-memory-sort
+fallback. `just generate`, generated feature/SQL ledgers, `just lint`, and the full `just test`
+suite pass (56/56).
+
+The uncached 1M FDB stress gate passes all 23 subtests with exact row counts. Its planner-query
+timings are 3.393s (`order_by_pk_full`), 3.300s (`scan_all_narrow`), 3.480s
+(`scan_all_wide`), and 3.060s (`sparse`), versus 3.36s/3.22s/3.36s/2.93s at the prior checkpoint
+(about 1–4%, within observed run noise); the join query is 17ms. Total runtime is 162.58s versus
+150.95s, with the delta dominated by bulk insertion rather than the planner queries.
+
+**190.6 is complete. FINAL REVIEW: two independent Codex audits ACK.** Their actionable findings
+were closed before the final gates: mismatched baked ordinals now fail closed across the QOV/
+source-local root bridge, and regressions pin all complementary Case 1/2a/2b modes, key-map
+collision, ordinal mismatch, and ambiguous two-QOV roots.
 
 ### 190.7 (MED-HIGH) — de-duplicate the existential-join family
 
@@ -634,9 +692,12 @@ No item regresses steady-state planning. 190.2/190.3 change cost *ordering* (not
 computing it) — validated by explain-diff + the 1M stress test (row counts + latencies unchanged
 except where a flip is Java-verified). 190.7/190.9 are behavior-preserving refactors. 190.12 adds a
 CI test, no runtime cost. 190.5 enlarges intersection enumeration under the existing candidate cap.
+190.6 retains one cheapest exact expression per Java-required source-order partition instead of
+forming the child cross-product; its final EXPLAIN census shows only the intended sort
+eliminations, and the 1M stress gate passes all 23 subtests with exact row counts.
 
 ## Test plan
 
 Every item lands with a regression test that is RED before the fix (correctness items) or pins the
 new behavior (fidelity/refactor items). Milestone gate: full 56-target suite green on every commit,
-1M stress no-regression for 190.2/190.3/190.5, explain-diff reviewed for every plan flip.
+1M stress no-regression for 190.2/190.3/190.5/190.6, explain-diff reviewed for every plan flip.

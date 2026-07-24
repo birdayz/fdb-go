@@ -4,7 +4,9 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // OrderedIndexScanRule matches a LogicalSort over a FullUnorderedScan
@@ -144,6 +146,80 @@ func sortKeyMatchesColumn(skValue values.Value, provider columnValueProvider, i 
 		colValue = values.NewFieldValue(base, colName, values.UnknownType)
 	}
 	return valuesMatchColumn(skValue, colValue)
+}
+
+// orderedFullScanAlternatives applies the existing ordered-secondary-index and
+// ordered-primary-scan rules to a requested ordering that has been propagated
+// to a bare scan group. A FlatMap child receives an ordering constraint rather
+// than a synthetic LogicalSortExpression, while both ordered scan rules match
+// the latter. Building that expression in a private reference lets the join
+// boundary reuse the exact same eligibility checks (record types, fan-out,
+// function keys, direction, and NULL placement) without mutating the shared
+// scan group.
+func orderedFullScanAlternatives(
+	ref *expressions.Reference,
+	requested *properties.RequestedOrdering,
+	ctx PlanContext,
+) []expressions.RelationalExpression {
+	if ref == nil || requested == nil || requested.IsPreserve() || ctx == nil {
+		return nil
+	}
+	scanRef := ref
+	if findFullScan(scanRef) == nil {
+		// An existential FlatMap can be assembled after its bare source group
+		// has been reduced to the physical forward primary scan. Recreate only
+		// the equivalent unbounded logical scan as a private rule input so a
+		// DESC request can obtain the reverse primary alternative. A bounded
+		// scan is not a full-scan equivalent and must decline here.
+		var physicalScan *plans.RecordQueryScanPlan
+		for _, member := range ref.AllMembers() {
+			scan, ok := member.(*plans.RecordQueryScanPlan)
+			if !ok || len(scan.GetScanComparisons()) != 0 {
+				continue
+			}
+			physicalScan = scan
+			break
+		}
+		if physicalScan == nil {
+			return nil
+		}
+		scanRef = expressions.InitialOf(
+			expressions.NewFullUnorderedScanExpression(
+				physicalScan.GetRecordTypes(),
+				physicalScan.GetFlowedType(),
+			),
+		)
+	}
+
+	parts := requested.GetParts()
+	sortKeys := make([]expressions.SortKey, len(parts))
+	for i, part := range parts {
+		if !part.SortOrder.IsDirectional() {
+			return nil
+		}
+		sortKeys[i] = expressions.SortKey{
+			Value:   part.Value,
+			Reverse: part.SortOrder.IsAnyDescending(),
+		}
+		if part.SortOrder.IsCounterflowNulls() {
+			nullsFirst := part.SortOrder ==
+				properties.RequestedSortOrderDescendingNullsFirst
+			sortKeys[i].NullsFirst = &nullsFirst
+		}
+	}
+
+	privateSortRef := expressions.InitialOf(
+		expressions.NewLogicalSortExpression(
+			sortKeys,
+			expressions.ForEachQuantifier(scanRef),
+		),
+	)
+	var result []expressions.RelationalExpression
+	result = append(result, FireExpressionRuleWithMemo(
+		NewOrderedIndexScanRule(), privateSortRef, ctx, nil)...)
+	result = append(result, FireExpressionRuleWithMemo(
+		NewOrderedPrimaryScanRule(), privateSortRef, ctx, nil)...)
+	return result
 }
 
 var _ ExpressionRule = (*OrderedIndexScanRule)(nil)

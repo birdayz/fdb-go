@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -254,13 +255,13 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	if leftDepsRight && !rightDepsLeft && canSwap {
 		r.yieldGeneralFlatMap(call, sel,
 			rightPlan, leftPlan, rightCorr, leftCorr,
-			rightExpr, leftExpr, joinType,
+			rightExpr, leftExpr, rightRef, leftRef, joinType,
 			selQuantifierIsNullOnEmpty(sel, leftCorr),
 			selQuantifierIsStrictSingle(sel, leftCorr))
 	} else if rightDepsLeft && !leftDepsRight {
 		r.yieldGeneralFlatMap(call, sel,
 			leftPlan, rightPlan, leftCorr, rightCorr,
-			leftExpr, rightExpr, joinType,
+			leftExpr, rightExpr, leftRef, rightRef, joinType,
 			selQuantifierIsNullOnEmpty(sel, rightCorr),
 			selQuantifierIsStrictSingle(sel, rightCorr))
 	}
@@ -372,6 +373,7 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	outerPlan, innerPlan plans.RecordQueryPlan,
 	outerCorr, innerCorr values.CorrelationIdentifier,
 	outerExpr, innerExpr expressions.RelationalExpression,
+	outerSourceRef, innerSourceRef *expressions.Reference,
 	joinType plans.JoinType,
 	innerNullOnEmpty bool,
 	innerStrictSingle bool,
@@ -380,14 +382,625 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 		call,
 		flattenAndPredicates(sel.GetPredicates()), sel.GetResultValue(),
 		outerPlan, innerPlan, outerCorr, innerCorr, outerExpr, innerExpr,
-		joinType, innerNullOnEmpty, innerStrictSingle,
+		joinType, innerNullOnEmpty, innerStrictSingle, false,
 	)
 	if !ok {
 		return
 	}
 	// The FlatMap plan already carries its outer/inner memo quantifiers (RFC-184
 	// W2, no physicalFlatMapWrapper) — yield it directly.
-	call.Yield(flatMapPlan)
+	rebuild := func(
+		orderedOuter, orderedInner expressions.RelationalExpression,
+	) expressions.RelationalExpression {
+		outerPhysical, outerOK := orderedOuter.(physicalPlanExpression)
+		innerPhysical, innerOK := orderedInner.(physicalPlanExpression)
+		if !outerOK || !innerOK {
+			return nil
+		}
+		rebuilt, _, _, rebuiltOK := buildCorrelatedFlatMapPlan(
+			call,
+			flattenAndPredicates(sel.GetPredicates()), sel.GetResultValue(),
+			outerPhysical.GetRecordQueryPlan(), innerPhysical.GetRecordQueryPlan(),
+			outerCorr, innerCorr, orderedOuter, orderedInner,
+			joinType, innerNullOnEmpty, innerStrictSingle, true,
+		)
+		if !rebuiltOK {
+			return nil
+		}
+		return rebuilt
+	}
+	r.yieldBinaryJoinWithSourceOrderingVariants(
+		call, flatMapPlan, outerSourceRef, innerSourceRef, rebuild)
+}
+
+// joinLegOrderingVariant is one concrete physical child candidate together
+// with the ordering it exposes after being pulled through the join's result
+// value. maxCardinalityOne is a per-expression proof: equivalent plans can
+// differ in how strongly that semantic bound is proven.
+type joinLegOrderingVariant struct {
+	expr              expressions.RelationalExpression
+	sourceOrdering    *properties.RichOrdering
+	pulledOrdering    *properties.RichOrdering
+	maxCardinalityOne bool
+}
+
+type joinLegOrderingPair struct {
+	outer expressions.RelationalExpression
+	inner expressions.RelationalExpression
+}
+
+// yieldBinaryJoinWithOrderingVariants keeps the existing cost-best join as
+// Go's plannability/fallback alternative, then ports Java's requested-order
+// sensitive FlatMap cases as additive, exact-child variants:
+//
+//  1. a max-one outer lets the inner determine the result ordering;
+//     2a. otherwise the outer alone may satisfy the request;
+//     2b. a distinct outer ordering may be concatenated with the inner.
+//
+// Each ordered variant freezes BOTH selected legs in private final references.
+// A join is a two-child, non-delegating operator, so pinOrderedSpine cannot pin
+// it after the fact; freezing at construction is what prevents extraction from
+// swapping an ordered child for the shared group's cheaper unordered winner
+// after an enclosing sort has been removed.
+func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithOrderingVariants(
+	call *ExpressionRuleCall,
+	base expressions.RelationalExpression,
+) {
+	quantifiers := base.GetQuantifiers()
+	if len(quantifiers) != 2 {
+		call.Yield(base)
+		return
+	}
+	r.yieldBinaryJoinWithSourceOrderingVariants(
+		call, base,
+		quantifiers[0].GetRangesOver(),
+		quantifiers[1].GetRangesOver(),
+		nil,
+	)
+}
+
+// yieldBinaryJoinWithSourceOrderingVariants is the source-aware core. The
+// default path rebuilds a FlatMap by replacing its two child quantifiers. A
+// caller that added compensation wrappers supplies the original source groups
+// plus rebuild, which recreates the complete filter/FOD/DOE chain around each
+// selected pair instead of trying to swap a leaf that the frozen chain no
+// longer exposes.
+func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
+	call *ExpressionRuleCall,
+	base expressions.RelationalExpression,
+	outerRef, innerRef *expressions.Reference,
+	rebuild func(outer, inner expressions.RelationalExpression) expressions.RelationalExpression,
+) {
+	call.Yield(base)
+
+	requestedOrderings := call.GetRequestedOrderings()
+	if len(requestedOrderings) == 0 {
+		return
+	}
+	basePhysical, ok := base.(physicalPlanExpression)
+	if !ok || basePhysical.GetRecordQueryPlan() == nil {
+		return
+	}
+	if materialized, ok := base.(*plans.RecordQueryNestedLoopJoinPlan); ok &&
+		materialized.GetJoinType() == plans.JoinFullOuter {
+		return
+	}
+
+	quantifiers := base.GetQuantifiers()
+	if len(quantifiers) != 2 {
+		return
+	}
+	if outerRef == nil || innerRef == nil {
+		return
+	}
+	resultValue := base.GetResultValue()
+	if resultValue == nil {
+		return
+	}
+	outerOrderingResultValue := resultValue
+	if flatMap, ok := base.(*plans.RecordQueryFlatMapPlan); ok {
+		outerOrderingResultValue = flatMapOrderingResultForChild(
+			flatMap, quantifiers[0].GetAlias(), true)
+	}
+	localAliases := map[values.CorrelationIdentifier]struct{}{
+		quantifiers[0].GetAlias(): {},
+		quantifiers[1].GetAlias(): {},
+	}
+
+	less := lessWithHashTieBreak(call.CostModel())
+	for _, requested := range requestedOrderings {
+		if requested == nil || requested.IsPreserve() {
+			continue
+		}
+
+		outerRequested := pushRequestedOrderingToSelectChild(
+			requested, outerOrderingResultValue,
+			quantifiers[0].GetAlias(), localAliases)
+		innerRequested := pushRequestedOrderingToSelectChild(
+			requested, resultValue, quantifiers[1].GetAlias(), localAliases)
+
+		// The raw sets supply the leg whose ordering is irrelevant in a case.
+		// The ordered sets pin each unary delegation spine against the
+		// child-space request before the join freezes the selected top member.
+		rawOuters := collectJoinLegOrderingVariants(
+			outerRef, properties.PreserveOrdering(), outerOrderingResultValue,
+			quantifiers[0].GetAlias(), less, false, call.Context)
+		rawInners := collectJoinLegOrderingVariants(
+			innerRef, properties.PreserveOrdering(), resultValue,
+			quantifiers[1].GetAlias(), less, false, call.Context)
+		orderedOuters := collectJoinLegOrderingVariants(
+			outerRef, outerRequested, outerOrderingResultValue,
+			quantifiers[0].GetAlias(), less, true, call.Context)
+		orderedInners := collectJoinLegOrderingVariants(
+			innerRef, innerRequested, resultValue,
+			quantifiers[1].GetAlias(), less, true, call.Context)
+		for _, pair := range orderedJoinLegPairs(
+			rawOuters, rawInners, orderedOuters, orderedInners,
+			requested, less,
+		) {
+			r.yieldVerifiedOrderedJoin(
+				call, base, pair.outer, pair.inner, requested, rebuild)
+		}
+	}
+}
+
+// collectJoinLegOrderingVariants returns physical members in deterministic
+// final-then-exploratory order. When pinOrdering is true, each member's unary
+// order-preserving spine is pinned against requestedInChildSpace. A preserve
+// request means no top-level key mapped to this child; in that unusual case we
+// pin against the member's own directional ordering before using it as an
+// ordering contributor.
+func collectJoinLegOrderingVariants(
+	ref *expressions.Reference,
+	requestedInChildSpace *properties.RequestedOrdering,
+	resultValue values.Value,
+	childAlias values.CorrelationIdentifier,
+	less func(a, b expressions.RelationalExpression) bool,
+	pinOrdering bool,
+	ctx PlanContext,
+) []joinLegOrderingVariant {
+	if ref == nil {
+		return nil
+	}
+	members := make([]expressions.RelationalExpression, 0, len(ref.AllMembers()))
+	members = append(members, ref.FinalMembers()...)
+	members = append(members, ref.Members()...)
+	if pinOrdering && requestedInChildSpace != nil &&
+		!requestedInChildSpace.IsPreserve() && ctx != nil {
+		members = append(members, orderedFullScanAlternatives(
+			ref, requestedInChildSpace, ctx)...)
+		// A requested-order data-access alternative can be discovered after
+		// this join leg's ordinary winner has already been pruned. The
+		// Reference retains its PartialMatches, though, so realize the same
+		// candidate-local scans the planner's data-access boundary would have
+		// produced and consider physical results directly. This mirrors Java's
+		// event-driven re-fire without mutating the shared child group's member
+		// set or reviving unrelated pruned members.
+		for _, candidate := range dataAccessCandidates(ref) {
+			matches := GetPartialMatchesForCandidate(ref, candidate)
+			for _, expr := range DataAccessForMatchPartition(
+				[]*properties.RequestedOrdering{requestedInChildSpace},
+				matches,
+				ctx,
+				nil,
+			) {
+				if isPhysical(expr) {
+					members = append(members, expr)
+				}
+			}
+		}
+	}
+
+	var result []joinLegOrderingVariant
+	for _, member := range members {
+		ph, ok := member.(physicalPlanExpression)
+		if !ok || ph.GetRecordQueryPlan() == nil {
+			continue
+		}
+		// Classify max-one on the original member, while its child reference
+		// still carries the populated property map. pinOrderedSpine rebuilds
+		// wrappers over private singleton refs (intentionally property-map-free);
+		// recomputing a Filter's cardinality there would weaken a valid max-one
+		// proof to unknown.
+		cardinalities := computeCardinalities(ph, ph.GetRecordQueryPlan())
+		maxCardinality := cardinalities.GetMaxCardinality()
+		maxCardinalityOne := !maxCardinality.IsUnknown() &&
+			maxCardinality.Value() == 1
+
+		selected := member
+		if pinOrdering {
+			pinRequest := requestedInChildSpace
+			if pinRequest == nil || pinRequest.IsPreserve() {
+				pinRequest = requestedOrderingForProvided(
+					computeWrapperRichOrdering(ph))
+			}
+			if pinRequest != nil && !pinRequest.IsPreserve() {
+				selected = pinOrderedSpine(member, pinRequest, less)
+				if selected == nil || !memberSatisfiesOrdering(selected, pinRequest) {
+					continue
+				}
+				ph = selected.(physicalPlanExpression)
+			}
+		}
+
+		provided := computeWrapperRichOrdering(ph)
+		if provided == nil {
+			continue
+		}
+		pulled := provided.PullUpThroughValue(resultValue, childAlias)
+		if pulled == nil {
+			pulled = properties.EmptyOrdering()
+		}
+		result = append(result, joinLegOrderingVariant{
+			expr:              selected,
+			sourceOrdering:    provided,
+			pulledOrdering:    pulled,
+			maxCardinalityOne: maxCardinalityOne,
+		})
+	}
+	return result
+}
+
+// requestedOrderingForProvided produces one concrete child-space request that
+// pins the directional sequence already exposed by a member. Fixed bindings
+// are omitted because they consume no sort position.
+func requestedOrderingForProvided(
+	ordering *properties.RichOrdering,
+) *properties.RequestedOrdering {
+	if ordering == nil {
+		return properties.PreserveOrdering()
+	}
+	var parts []properties.RequestedOrderingPart
+	for _, key := range ordering.GetKeys() {
+		sortOrder := properties.SortOrderOf(ordering.GetBindingMap()[key])
+		if !sortOrder.IsDirectional() {
+			continue
+		}
+		parts = append(parts, properties.RequestedOrderingPart{
+			Value:     key,
+			SortOrder: sortOrder.ToRequestedSortOrder(),
+		})
+	}
+	if len(parts) == 0 {
+		return properties.PreserveOrdering()
+	}
+	return properties.NewRequestedOrdering(
+		parts, properties.DistinctnessPreserveDistinctness, false)
+}
+
+func bestJoinLegVariant(
+	variants []joinLegOrderingVariant,
+	eligible func(joinLegOrderingVariant) bool,
+	less func(a, b expressions.RelationalExpression) bool,
+) *joinLegOrderingVariant {
+	var best *joinLegOrderingVariant
+	for i := range variants {
+		candidate := &variants[i]
+		if !eligible(*candidate) {
+			continue
+		}
+		if best == nil || less(candidate.expr, best.expr) {
+			best = candidate
+		}
+	}
+	return best
+}
+
+// orderedJoinLegPairs mirrors Java ImplementNestedLoopJoinRule's ordering
+// partition matrix while freezing one cheapest exact expression per retained
+// source-ordering partition:
+//
+//   - Case 1 rolls all max-one outers together; exhaustive requests retain
+//     every satisfying inner ordering partition.
+//   - Case 2a rolls satisfying outers together unless DISTINCT was requested
+//     (exhaustiveness deliberately does not affect this case).
+//   - Case 2b always retains every viable distinct-outer ordering partition;
+//     exhaustive requests additionally retain every satisfying inner ordering
+//     partition for each outer.
+//
+// Java partitions by the child's source Ordering property before pulling that
+// ordering through the join result. sourceOrdering therefore drives grouping;
+// pulledOrdering only decides which case and whether the top request is met.
+func orderedJoinLegPairs(
+	rawOuters, rawInners []joinLegOrderingVariant,
+	orderedOuters, orderedInners []joinLegOrderingVariant,
+	requested *properties.RequestedOrdering,
+	less func(a, b expressions.RelationalExpression) bool,
+) []joinLegOrderingPair {
+	if requested == nil || requested.IsPreserve() {
+		return nil
+	}
+
+	var result []joinLegOrderingPair
+	add := func(outer, inner expressions.RelationalExpression) {
+		if outer == nil || inner == nil {
+			return
+		}
+		for _, existing := range result {
+			if physicalExpressionsEqual(existing.outer, outer) &&
+				physicalExpressionsEqual(existing.inner, inner) {
+				return
+			}
+		}
+		result = append(result, joinLegOrderingPair{outer: outer, inner: inner})
+	}
+
+	// Case 1: one rolled-up max-one outer combined with either one rolled-up
+	// satisfying inner (non-exhaustive) or one cheapest inner per source
+	// ordering partition (exhaustive).
+	caseOneOuter := bestJoinLegVariant(rawOuters,
+		func(v joinLegOrderingVariant) bool { return v.maxCardinalityOne }, less)
+	caseOneInners := selectJoinLegOrderingVariants(
+		orderedInners,
+		func(v joinLegOrderingVariant) bool {
+			return v.pulledOrdering != nil &&
+				v.pulledOrdering.Satisfies(requested)
+		},
+		requested.IsExhaustive(),
+		less,
+	)
+	if caseOneOuter != nil {
+		for _, inner := range caseOneInners {
+			add(caseOneOuter.expr, inner.expr)
+		}
+	}
+
+	// Case 2a: the outer alone satisfies. Java retains one source-ordering
+	// partition per satisfying outer only for a DISTINCT request; otherwise
+	// all satisfying outers are rolled together, irrespective of exhaustive.
+	caseTwoAOuters := selectJoinLegOrderingVariants(
+		orderedOuters,
+		func(v joinLegOrderingVariant) bool {
+			return !v.maxCardinalityOne &&
+				v.pulledOrdering != nil &&
+				v.pulledOrdering.Satisfies(requested)
+		},
+		requested.IsDistinct(),
+		less,
+	)
+	caseTwoAInner := bestJoinLegVariant(rawInners,
+		func(v joinLegOrderingVariant) bool {
+			// ConcatOrderings takes distinctness from the right ordering. Java
+			// enumerates the rolled-up inner partition here; selecting a
+			// concrete exact child must retain a distinct member when the top
+			// request requires distinctness, or final verification would
+			// discard a valid partition merely because its cheapest member was
+			// non-distinct.
+			return !requested.IsDistinct() ||
+				(v.pulledOrdering != nil && v.pulledOrdering.IsDistinct())
+		},
+		less,
+	)
+	if caseTwoAInner != nil {
+		for _, outer := range caseTwoAOuters {
+			add(outer.expr, caseTwoAInner.expr)
+		}
+	}
+
+	// Case 2b: every distinct outer ordering that fails alone remains a
+	// separate alternative. For each outer, retain one rolled-up satisfying
+	// inner or every satisfying inner ordering partition when exhaustive.
+	caseTwoBOuters := selectJoinLegOrderingVariants(
+		orderedOuters,
+		func(v joinLegOrderingVariant) bool {
+			return !v.maxCardinalityOne &&
+				v.pulledOrdering != nil &&
+				!v.pulledOrdering.Satisfies(requested) &&
+				v.pulledOrdering.IsDistinct()
+		},
+		true,
+		less,
+	)
+	for _, outer := range caseTwoBOuters {
+		caseTwoBInners := selectJoinLegOrderingVariants(
+			orderedInners,
+			func(inner joinLegOrderingVariant) bool {
+				if inner.pulledOrdering == nil {
+					return false
+				}
+				return properties.ConcatOrderings(
+					outer.pulledOrdering, inner.pulledOrdering,
+				).Satisfies(requested)
+			},
+			requested.IsExhaustive(),
+			less,
+		)
+		for _, inner := range caseTwoBInners {
+			add(outer.expr, inner.expr)
+		}
+	}
+	return result
+}
+
+// selectJoinLegOrderingVariants returns either the single cheapest eligible
+// expression or, when retainPartitions is true, the cheapest expression from
+// each structurally-equal source-ordering partition. It preserves first-seen
+// partition order and replaces only the representative within that partition.
+func selectJoinLegOrderingVariants(
+	variants []joinLegOrderingVariant,
+	eligible func(joinLegOrderingVariant) bool,
+	retainPartitions bool,
+	less func(a, b expressions.RelationalExpression) bool,
+) []joinLegOrderingVariant {
+	if !retainPartitions {
+		best := bestJoinLegVariant(variants, eligible, less)
+		if best == nil {
+			return nil
+		}
+		return []joinLegOrderingVariant{*best}
+	}
+
+	var result []joinLegOrderingVariant
+	for _, candidate := range variants {
+		if !eligible(candidate) {
+			continue
+		}
+		found := -1
+		for i := range result {
+			if richOrderingsStructurallyEqual(
+				result[i].sourceOrdering, candidate.sourceOrdering,
+			) {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
+			result = append(result, candidate)
+		} else if less(candidate.expr, result[found].expr) {
+			result[found] = candidate
+		}
+	}
+	return result
+}
+
+func richOrderingsStructurallyEqual(
+	left, right *properties.RichOrdering,
+) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	if left.IsDistinct() != right.IsDistinct() ||
+		!left.OrderingSet().Equal(right.OrderingSet()) ||
+		len(left.GetBindingMap()) != len(right.GetBindingMap()) {
+		return false
+	}
+	for _, key := range left.OrderingSet().Set() {
+		leftValue := left.ValueForKey(key)
+		rightValue := right.ValueForKey(key)
+		if leftValue == nil || rightValue == nil ||
+			!values.SemanticEqualsUnderAliasMap(leftValue, rightValue, nil) ||
+			!orderingBindingsStructurallyEqual(
+				left.GetBindingMap()[leftValue],
+				right.GetBindingMap()[rightValue],
+			) {
+			return false
+		}
+	}
+	return true
+}
+
+func orderingBindingsStructurallyEqual(
+	left, right []properties.OrderingBinding,
+) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	used := make([]bool, len(right))
+	for _, leftBinding := range left {
+		found := false
+		for i, rightBinding := range right {
+			if used[i] ||
+				!orderingBindingStructurallyEqual(leftBinding, rightBinding) {
+				continue
+			}
+			used[i] = true
+			found = true
+			break
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func orderingBindingStructurallyEqual(
+	left, right properties.OrderingBinding,
+) bool {
+	if left.IsSorted() != right.IsSorted() ||
+		left.IsFixed() != right.IsFixed() ||
+		left.IsChoose() != right.IsChoose() ||
+		left.GetSortOrder() != right.GetSortOrder() {
+		return false
+	}
+	leftComparison := left.GetComparison()
+	rightComparison := right.GetComparison()
+	switch typedLeft := leftComparison.(type) {
+	case *predicates.Comparison:
+		typedRight, ok := rightComparison.(*predicates.Comparison)
+		return ok && comparisonsEqual(typedLeft, typedRight)
+	case *predicates.ComparisonRange:
+		typedRight, ok := rightComparison.(*predicates.ComparisonRange)
+		return ok && partialMatchComparisonRangesEqual(typedLeft, typedRight)
+	case values.Value:
+		typedRight, ok := rightComparison.(values.Value)
+		return ok && values.SemanticEqualsUnderAliasMap(
+			typedLeft, typedRight, nil)
+	default:
+		return reflect.DeepEqual(leftComparison, rightComparison)
+	}
+}
+
+func physicalExpressionsEqual(
+	left, right expressions.RelationalExpression,
+) bool {
+	leftPhysical, leftOK := left.(physicalPlanExpression)
+	rightPhysical, rightOK := right.(physicalPlanExpression)
+	return leftOK && rightOK &&
+		plans.Equals(
+			leftPhysical.GetRecordQueryPlan(),
+			rightPhysical.GetRecordQueryPlan(),
+		)
+}
+
+func rebuildJoinWithExactLegs(
+	call *ExpressionRuleCall,
+	base expressions.RelationalExpression,
+	outer, inner expressions.RelationalExpression,
+) expressions.RelationalExpression {
+	quantifiers := base.GetQuantifiers()
+	if len(quantifiers) != 2 || outer == nil || inner == nil {
+		return nil
+	}
+	exactQuantifiers := []expressions.Quantifier{
+		expressions.RebuildQuantifier(
+			quantifiers[0], call.MemoizeFinalExpression(outer)),
+		expressions.RebuildQuantifier(
+			quantifiers[1], call.MemoizeFinalExpression(inner)),
+	}
+	switch plan := base.(type) {
+	case *plans.RecordQueryFlatMapPlan:
+		return plan.WithQuantifiers(exactQuantifiers)
+	default:
+		return nil
+	}
+}
+
+func rebuildOrderedJoin(
+	call *ExpressionRuleCall,
+	base expressions.RelationalExpression,
+	outer, inner expressions.RelationalExpression,
+	rebuild func(outer, inner expressions.RelationalExpression) expressions.RelationalExpression,
+) expressions.RelationalExpression {
+	if rebuild != nil {
+		return rebuild(outer, inner)
+	}
+	return rebuildJoinWithExactLegs(call, base, outer, inner)
+}
+
+func orderedJoinSatisfies(
+	candidate expressions.RelationalExpression,
+	requested *properties.RequestedOrdering,
+) bool {
+	ph, ok := candidate.(physicalPlanExpression)
+	if !ok {
+		return false
+	}
+	ordering := computeWrapperRichOrdering(ph)
+	return ordering != nil && ordering.Satisfies(requested)
+}
+
+func (r *ImplementNestedLoopJoinRule) yieldVerifiedOrderedJoin(
+	call *ExpressionRuleCall,
+	base expressions.RelationalExpression,
+	outer, inner expressions.RelationalExpression,
+	requested *properties.RequestedOrdering,
+	rebuild func(outer, inner expressions.RelationalExpression) expressions.RelationalExpression,
+) {
+	candidate := rebuildOrderedJoin(call, base, outer, inner, rebuild)
+	if candidate != nil && orderedJoinSatisfies(candidate, requested) {
+		call.Yield(candidate)
+	}
 }
 
 // buildCorrelatedFlatMapPlan constructs the correlated-FlatMap join plan —
@@ -422,6 +1035,7 @@ func buildCorrelatedFlatMapPlan(
 	joinType plans.JoinType,
 	innerNullOnEmpty bool,
 	innerStrictSingle bool,
+	freezeLegs bool,
 ) (*plans.RecordQueryFlatMapPlan, expressions.Quantifier, expressions.Quantifier, bool) {
 	var outerPreds, joinPreds []predicates.QueryPredicate
 	for _, pred := range preds {
@@ -528,8 +1142,12 @@ func buildCorrelatedFlatMapPlan(
 	// The inner base ranges over innerExprForMemo, never innerExpr: when the
 	// buried-leg rebase above rewrote the inner, the memoized expression must
 	// report the REBASED correlations (see the block comment at that rebase).
-	outerQ := expressions.NamedForEachQuantifier(outerCorr, call.MemoizeExpression(outerExpr))
-	innerQ := expressions.NamedForEachQuantifier(innerCorr, call.MemoizeExpression(innerExprForMemo))
+	memoizeLeg := call.MemoizeExpression
+	if freezeLegs {
+		memoizeLeg = call.MemoizeFinalExpression
+	}
+	outerQ := expressions.NamedForEachQuantifier(outerCorr, memoizeLeg(outerExpr))
+	innerQ := expressions.NamedForEachQuantifier(innerCorr, memoizeLeg(innerExprForMemo))
 
 	// LEFT-OUTER null-extension, the Java way (ImplementNestedLoopJoinRule.java:310-330
 	// / ImplementSimpleSelectRule:100-109): wrap the inner in DefaultOnEmpty so a
@@ -1054,7 +1672,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// terminal step feared cannot happen once the edges coincide.
 	//
 	// rule_implement_simple_select.go:97-117 always had this shape.
-	call.Yield(flatMapPlan)
+	r.yieldBinaryJoinWithOrderingVariants(call, flatMapPlan)
 }
 
 // remapExistentialResultValue rebases an existential SelectExpression's result
@@ -2285,7 +2903,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			call,
 			joinPreds, sel.GetResultValue(),
 			leftPlan, rightPlan, leftCorrID, rightCorrID, leftExpr, rightExpr,
-			joinType, q1.IsNullOnEmpty(), false,
+			joinType, q1.IsNullOnEmpty(), false, false,
 		)
 		if !ok {
 			return
@@ -2813,7 +3431,7 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 		outerCorrelation, innerCorrelation,
 		resultValue, true,
 	)
-	call.Yield(flatMapPlan)
+	r.yieldBinaryJoinWithOrderingVariants(call, flatMapPlan)
 }
 
 // scalarSubqueryAliasesOfPredicate collects the correlation aliases a

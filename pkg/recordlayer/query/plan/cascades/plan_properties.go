@@ -309,6 +309,9 @@ func commonPKFromChildren(children []plans.RecordQueryPlan) any {
 }
 
 func computeWrapperOrdering(w physicalPlanExpression) properties.Ordering {
+	if rich, isJoin := computeJoinRichOrdering(w); isJoin {
+		return plainOrderingFromRich(rich)
+	}
 	if hinter, ok := w.(properties.OrderingHinter); ok {
 		return hinter.HintOrdering()
 	}
@@ -316,6 +319,9 @@ func computeWrapperOrdering(w physicalPlanExpression) properties.Ordering {
 }
 
 func computeWrapperRichOrdering(w physicalPlanExpression) *properties.RichOrdering {
+	if rich, isJoin := computeJoinRichOrdering(w); isJoin {
+		return rich
+	}
 	if rh, ok := w.(properties.RichOrderingHinter); ok {
 		return rh.HintRichOrdering()
 	}
@@ -347,6 +353,176 @@ func computeWrapperRichOrdering(w physicalPlanExpression) *properties.RichOrderi
 		bm[k] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 	}
 	return properties.NewRichOrdering(bm, o.Keys, false)
+}
+
+// computeJoinRichOrdering ports Java OrderingProperty.visitFlatMapPlan for
+// Go's correlated FlatMap implementation. An ordered claim is made only
+// when both child edges are exact final singletons. That qualification is
+// essential in Go: a normal join ranges over shared memo groups and extraction
+// is free to relink those edges to their cheaper winners. The ordering-aware
+// NLJ variants freeze both selected children in private final references before
+// they reach this property.
+//
+// Java's cases are:
+//   - outer max cardinality == 1: the result follows the inner;
+//   - otherwise, a non-distinct outer determines the whole result ordering;
+//   - a distinct outer permits the inner ordering to be appended.
+func computeJoinRichOrdering(w physicalPlanExpression) (*properties.RichOrdering, bool) {
+	if w == nil {
+		return nil, false
+	}
+	plan := w.GetRecordQueryPlan()
+	if plan == nil {
+		return nil, false
+	}
+
+	var flatMap *plans.RecordQueryFlatMapPlan
+	switch p := plan.(type) {
+	case *plans.RecordQueryFlatMapPlan:
+		flatMap = p
+	default:
+		return nil, false
+	}
+	result := flatMap.GetResultValue()
+
+	quantifiers := plan.GetQuantifiers()
+	if len(quantifiers) != 2 || result == nil {
+		return properties.EmptyOrdering(), true
+	}
+	outerAlias := quantifiers[0].GetAlias()
+	innerAlias := quantifiers[1].GetAlias()
+	outerExpr, ok := exactFinalPhysicalMember(quantifiers[0].GetRangesOver())
+	if !ok {
+		return properties.EmptyOrdering(), true
+	}
+	innerExpr, ok := exactFinalPhysicalMember(quantifiers[1].GetRangesOver())
+	if !ok {
+		return properties.EmptyOrdering(), true
+	}
+
+	outerOrdering := computeWrapperRichOrdering(outerExpr)
+	innerOrdering := computeWrapperRichOrdering(innerExpr)
+	if outerOrdering == nil || innerOrdering == nil {
+		return properties.EmptyOrdering(), true
+	}
+	outerOrdering = outerOrdering.PullUpThroughValue(
+		flatMapOrderingResultForChild(flatMap, outerAlias, true), outerAlias)
+	innerOrdering = innerOrdering.PullUpThroughValue(result, innerAlias)
+	if outerOrdering == nil || innerOrdering == nil {
+		return properties.EmptyOrdering(), true
+	}
+
+	outerCardinalities := computeCardinalities(outerExpr, outerExpr.GetRecordQueryPlan())
+	outerMax := outerCardinalities.GetMaxCardinality()
+	if !outerMax.IsUnknown() && outerMax.Value() == 1 {
+		return innerOrdering, true
+	}
+	if !outerOrdering.IsDistinct() {
+		return outerOrdering, true
+	}
+	return properties.ConcatOrderings(outerOrdering, innerOrdering), true
+}
+
+// flatMapOrderingResultForChild returns the semantic result-value lens used to
+// translate an individual child's ordering. Projected EXISTS FlatMaps mark
+// inheritOuterRecordProperties and can carry the outer projection's field
+// accesses in source-local form (ID#0) after SQL lowering. That representation
+// has no correlation with which to distinguish the two FlatMap children, even
+// though the inherit flag is explicit authority that those ordinary fields
+// come from the outer row.
+//
+// For ordering translation only, root source-local FieldValues in that result
+// constructor on the outer alias. The executable result value is untouched.
+// This lets the normal pull-up/push-down and safe root-bridge checks prove
+// ID#0 <-> T1.ID#0 while constants and the existential boolean remain
+// unowned. Ordinary joins (inherit=false) keep the original, conservative
+// multi-child ambiguity behavior.
+func flatMapOrderingResultForChild(
+	flatMap *plans.RecordQueryFlatMapPlan,
+	childAlias values.CorrelationIdentifier,
+	outer bool,
+) values.Value {
+	if flatMap == nil {
+		return nil
+	}
+	result := flatMap.GetResultValue()
+	if !outer || !flatMap.InheritOuterRecordProperties() {
+		return result
+	}
+	rc, ok := result.(*values.RecordConstructorValue)
+	if !ok {
+		return result
+	}
+	fields := make([]values.RecordConstructorField, len(rc.Fields))
+	copy(fields, rc.Fields)
+	changed := false
+	for i := range fields {
+		fieldValue, ok := fields[i].Value.(*values.FieldValue)
+		if !ok || fieldValue == nil || fieldValue.Child != nil ||
+			len(values.GetCorrelatedToOfValue(fieldValue)) != 0 {
+			continue
+		}
+		qualified := *fieldValue
+		qualified.Child = values.NewQuantifiedObjectValue(childAlias)
+		fields[i].Value = &qualified
+		changed = true
+	}
+	if !changed {
+		return result
+	}
+	return values.NewRawRecordConstructorValue(fields...)
+}
+
+// exactFinalPhysicalMember resolves the private-reference shape used by an
+// ordering-aware join leg. A shared or exploratory group is deliberately
+// rejected even when it currently has one apparent winner: it can still grow
+// or be relinked, invalidating a sort-elision proof made against that member.
+func exactFinalPhysicalMember(ref *expressions.Reference) (physicalPlanExpression, bool) {
+	if ref == nil || len(ref.Members()) != 0 {
+		return nil, false
+	}
+	finals := ref.FinalMembers()
+	if len(finals) != 1 {
+		return nil, false
+	}
+	ph, ok := finals[0].(physicalPlanExpression)
+	return ph, ok && ph.GetRecordQueryPlan() != nil
+}
+
+// plainOrderingFromRich is the partition-key projection of a rich ordering.
+// Fixed keys do not consume a sort position; directional bindings retain both
+// direction and counterflow NULL placement. Sort satisfaction itself still
+// uses the full RichOrdering.
+func plainOrderingFromRich(rich *properties.RichOrdering) properties.Ordering {
+	if rich == nil {
+		return properties.Ordering{}
+	}
+	var (
+		keys       []values.Value
+		descending []bool
+		nullsFirst []bool
+	)
+	for _, key := range rich.GetKeys() {
+		sortOrder := properties.SortOrderOf(rich.GetBindingMap()[key])
+		if !sortOrder.IsDirectional() {
+			continue
+		}
+		keys = append(keys, key)
+		desc := sortOrder.IsAnyDescending()
+		descending = append(descending, desc)
+		nullsFirst = append(nullsFirst,
+			sortOrder == properties.ProvidedSortOrderAscending ||
+				sortOrder == properties.ProvidedSortOrderDescendingNullsFirst)
+	}
+	if len(keys) == 0 {
+		return properties.Ordering{}
+	}
+	return properties.Ordering{
+		IsKnown:    true,
+		Keys:       keys,
+		Descending: descending,
+		NullsFirst: nullsFirst,
+	}
 }
 
 // computeRefPlanProperties computes and stores plan properties for all
@@ -556,8 +732,9 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 	case *plans.RecordQueryInMemorySortPlan:
 		return cardinalitiesFromChildRef(w)
 
-	// --- Nested loop join: outer × inner ---
-	case *plans.RecordQueryNestedLoopJoinPlan:
+	// --- Nested loop joins: outer × inner ---
+	case *plans.RecordQueryNestedLoopJoinPlan,
+		*plans.RecordQueryFlatMapPlan:
 		children := cardinalitiesFromChildRefs(w)
 		if len(children) < 2 {
 			return properties.UnknownCardinalities()

@@ -81,3 +81,45 @@ func TestCanBridgeOrderingFieldValues_PreservesOrdinalIdentity(t *testing.T) {
 		t.Fatal("a nested baked path must not bridge to a flat lazy field")
 	}
 }
+
+func TestCanBridgeOrderingValueRoots_QualifiedToSourceLocal(t *testing.T) {
+	t.Parallel()
+	alias := NamedCorrelationIdentifier("C")
+	otherAlias := NamedCorrelationIdentifier("D")
+	qualified := NewCorrelatedFieldValueWithResolvedOrdinal(
+		NewQuantifiedObjectValue(alias), "NAME", 1, UnknownType)
+	local := NewFlatFieldValue("name", UnknownType)
+	otherOrdinal := NewFieldValueWithResolvedOrdinal("NAME", 2, UnknownType)
+	nested := &FieldValue{
+		Field: "CITY",
+		Typ:   UnknownType,
+		Child: &FieldValue{
+			Field: "ADDR",
+			Typ:   UnknownType,
+			Child: NewQuantifiedObjectValue(alias),
+		},
+	}
+	topLevelCity := NewFlatFieldValue("CITY", UnknownType)
+
+	if !CanBridgeOrderingValueRoots(qualified, local) {
+		t.Fatal("a child-scoped qualified key should bridge to its source-local candidate key")
+	}
+	if CanBridgeOrderingValueRoots(qualified, otherOrdinal) {
+		t.Fatal("cross-root values with different baked ordinals must not bridge")
+	}
+	if CanBridgeOrderingValueRoots(
+		NewFieldValueWithResolvedOrdinal("NAME", 1, UnknownType),
+		otherOrdinal,
+	) {
+		t.Fatal("two source-local baked ordinals must not bridge")
+	}
+	if CanBridgeOrderingValueRoots(
+		NewFieldValue(NewQuantifiedObjectValue(alias), "NAME", UnknownType),
+		NewFieldValue(NewQuantifiedObjectValue(otherAlias), "NAME", UnknownType),
+	) {
+		t.Fatal("two QOV-rooted values are ambiguous and must not bridge")
+	}
+	if CanBridgeOrderingValueRoots(nested, topLevelCity) {
+		t.Fatal("a nested path must not bridge to a same-leaf top-level key")
+	}
+}

@@ -587,7 +587,11 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		keys = append(keys, key)
 		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 	}
-	return properties.NewRichOrdering(bm, keys, p.IsUnique())
+	// Java passes RecordQueryIndexPlan.isStrictlySorted(), not the index
+	// metadata's UNIQUE bit. A unique index is only a distinct ordering once
+	// the chosen ordering keys cover that uniqueness proof; RemoveSort marks
+	// that exact plan strictly sorted after checking the coverage.
+	return properties.NewRichOrdering(bm, keys, p.IsStrictlySorted())
 }
 
 // HintRichOrdering: an HNSW probe returns its neighbours in distance order,
