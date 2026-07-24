@@ -26,7 +26,36 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func TestAggregateInputIsFlatFrontier_UnorderedPrimaryKeyDistinct(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan(
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	)
+	if !aggregateInputIsFlatFrontier(
+		plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan),
+	) {
+		t.Fatal("primary-key distinct must transparently preserve a flat scan frontier")
+	}
+	join := plans.NewRecordQueryNestedLoopJoinPlan(
+		nil,
+		nil,
+		nil,
+		plans.JoinInner,
+		"outer",
+		"inner",
+		nil,
+	)
+	if aggregateInputIsFlatFrontier(
+		plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(join),
+	) {
+		t.Fatal("primary-key distinct must not turn a multi-source join into a flat frontier")
+	}
+}
 
 // listPosContinuation is recordlayer.FromList's per-row continuation for
 // "resume after the row at index pos-1": a 4-byte big-endian position

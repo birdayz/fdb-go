@@ -17,19 +17,9 @@ import (
 // single-child plan: it wraps an inner plan and filters its output
 // stream.
 //
-// This is a STRUCTURE-ONLY port — no execution logic. The hash-set
-// dedup belongs in the execution layer.
-//
-// WHEN WIRING THE EXECUTOR: a "hash set of PKs already seen" over unordered
-// input is the exact cross-page re-admission hazard fixed for value-DISTINCT
-// (TODO C5). Go auto-pages internally (a scan hitting the scanned-rows limit
-// returns a client-facing continuation and a NEW Execute runs the next page),
-// so a fresh-per-Execute seen-set re-admits a PK whose duplicate straddles a
-// page boundary → wrong rows. The executor MUST either carry the seen-set
-// through the continuation (mirror distinctHashCursor / gen.DistinctHashContinuation
-// in executor/distinct_stream.go) or require PK-ordered input and stream. Do
-// NOT build a fresh-per-page HashSet like Java's — Java only pages on explicit
-// client resume; Go's internal paging makes that shape wrong.
+// Execution uses the same continuation-carried hash set as unordered
+// value-DISTINCT, keyed by the packed QueryResult primary key. It deliberately
+// has no streaming mode: the child is not required to be primary-key ordered.
 type RecordQueryUnorderedPrimaryKeyDistinctPlan struct {
 	PlanExprBase
 	innerQ expressions.Quantifier
@@ -41,9 +31,27 @@ func NewRecordQueryUnorderedPrimaryKeyDistinctPlan(inner RecordQueryPlan) *Recor
 	return &RecordQueryUnorderedPrimaryKeyDistinctPlan{innerQ: QuantifierOverPlan(inner)}
 }
 
+// NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier constructs a
+// primary-key distinct plan over the supplied live memo edge.
+func NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
+	innerQ expressions.Quantifier,
+) *RecordQueryUnorderedPrimaryKeyDistinctPlan {
+	return &RecordQueryUnorderedPrimaryKeyDistinctPlan{innerQ: innerQ}
+}
+
 // GetInner returns the wrapped inner plan, dereferenced through the quantifier.
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetInner() RecordQueryPlan {
 	return planFromQuantifier(p.innerQ)
+}
+
+// GetInnerQuantifier returns the plan's single child edge.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetInnerQuantifier() expressions.Quantifier {
+	return p.innerQ
+}
+
+// GetResultValue returns the child row unchanged.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetResultValue() values.Value {
+	return p.innerQ.GetFlowedObjectValue()
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -129,6 +137,29 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) WithQuantifiers(qs []expres
 	}
 	cp := *p
 	cp.innerQ = qs[0]
+	return &cp
+}
+
+// WithChildren is the extraction/relink hook. Relinking swaps only the child
+// quantifier and preserves all node-local state.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) WithChildren(
+	qs []expressions.Quantifier,
+) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf(
+			"RecordQueryUnorderedPrimaryKeyDistinctPlan.WithChildren: expected 1 child, got %d",
+			len(qs),
+		)
+	}
+	return p.WithQuantifiers(qs), nil
+}
+
+// WithInner returns a copy with a replacement singleton child.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) WithInner(
+	inner RecordQueryPlan,
+) *RecordQueryUnorderedPrimaryKeyDistinctPlan {
+	cp := *p
+	cp.innerQ = QuantifierOverPlan(inner)
 	return &cp
 }
 

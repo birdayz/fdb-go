@@ -435,6 +435,7 @@ go_test(
         "translate_value_function_ordinal_test.go",
         "translation_map_test.go",
         "traversal_test.go",
+        "unordered_pk_distinct_properties_test.go",
         "value_equivalence_test.go",
         "value_semantic_equals_test.go",
         "value_semantic_hash_fuzz_test.go",
@@ -870,6 +871,7 @@ go_test(
         "select_subsumption_translation_test.go",
         "rule_match_intermediate_select_semantic_test.go",
         "select_subsumption_existential_compensation_test.go",
+        "unordered_pk_distinct_properties_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

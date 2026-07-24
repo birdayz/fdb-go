@@ -6,6 +6,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -625,6 +626,92 @@ func TestDistinctPlan_HashCodeWithoutChildren_SameAcrossInstances(t *testing.T) 
 	// Distinct has no node-info params, so all instances hash the same.
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
 		t.Fatal("all DistinctPlan instances should have the same hash (no params)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RecordQueryUnorderedPrimaryKeyDistinctPlan
+// ---------------------------------------------------------------------------
+
+func TestUnorderedPrimaryKeyDistinctPlan_QuantifierAndRelink(t *testing.T) {
+	t.Parallel()
+	inner := stub("Inner")
+	alias := values.NamedCorrelationIdentifier("pk_distinct_inner")
+	innerRef := expressions.FinalOfAtStage(inner, expressions.StageCanonical)
+	innerQ := expressions.NamedPhysicalQuantifier(alias, innerRef)
+	p := NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(innerQ)
+
+	if p.GetInner() != inner {
+		t.Fatal("GetInner() did not resolve the supplied quantifier")
+	}
+	if got := p.GetInnerQuantifier(); got.GetRangesOver() != innerRef ||
+		got.Kind() != expressions.QuantifierPhysical ||
+		got.GetAlias() != alias {
+		t.Fatalf("inner quantifier = %#v, want supplied physical quantifier", got)
+	}
+	resultQOV, ok := p.GetResultValue().(*values.QuantifiedObjectValue)
+	if !ok || resultQOV.Correlation != alias {
+		t.Fatalf("GetResultValue() = %#v, want QOV(%s)", p.GetResultValue(), alias)
+	}
+
+	replacement := stub("Replacement")
+	replacementQ := QuantifierOverPlan(replacement)
+	relinkedExpr, err := p.WithChildren([]expressions.Quantifier{replacementQ})
+	if err != nil {
+		t.Fatalf("WithChildren: %v", err)
+	}
+	relinked, ok := relinkedExpr.(*RecordQueryUnorderedPrimaryKeyDistinctPlan)
+	if !ok || relinked == p || relinked.GetInner() != replacement {
+		t.Fatalf("relinked plan = %#v, want fresh plan over replacement", relinkedExpr)
+	}
+	if p.GetInner() != inner {
+		t.Fatal("WithChildren mutated the receiver")
+	}
+	for _, invalid := range [][]expressions.Quantifier{
+		nil,
+		{innerQ, replacementQ},
+	} {
+		if _, err := p.WithChildren(invalid); err == nil {
+			t.Fatalf("WithChildren accepted %d children", len(invalid))
+		}
+	}
+
+	withInner := p.WithInner(replacement)
+	if withInner == p || withInner.GetInner() != replacement || p.GetInner() != inner {
+		t.Fatal("WithInner did not copy-preservingly relink the child")
+	}
+}
+
+func TestUnorderedPrimaryKeyDistinctPlan_Hints(t *testing.T) {
+	t.Parallel()
+	pk := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
+	inner := NewRecordQueryScanPlan(
+		[]string{"T"},
+		values.UnknownType,
+		true,
+	).WithPrimaryKey([]values.Value{pk})
+	p := NewRecordQueryUnorderedPrimaryKeyDistinctPlan(inner)
+
+	childCost := properties.Cost{Cardinality: 100, CPU: 7}
+	if got, want := p.HintCost(
+		[]properties.Cost{childCost},
+		nil,
+	), properties.DistinctCost(childCost); got != want {
+		t.Fatalf("HintCost() = %#v, want %#v", got, want)
+	}
+	if got := p.HintCost(nil, nil); got != (properties.Cost{}) {
+		t.Fatalf("HintCost(nil) = %#v, want zero", got)
+	}
+
+	if p.OrderingSourceRef() != p.GetInnerQuantifier().GetRangesOver() {
+		t.Fatal("ordering source is not the child reference")
+	}
+	ordering := p.HintOrdering()
+	if !ordering.IsKnown ||
+		len(ordering.Keys) != 1 ||
+		ordering.Keys[0] != pk ||
+		!ordering.DescendingAt(0) {
+		t.Fatalf("HintOrdering() = %#v, want reverse primary-key ordering", ordering)
 	}
 }
 

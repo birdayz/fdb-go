@@ -1525,6 +1525,8 @@ func unwrapToJoinPlan(input plans.RecordQueryPlan) plans.RecordQueryPlan {
 			input = p.GetInner()
 		case *plans.RecordQueryDistinctPlan:
 			input = p.GetInner()
+		case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+			input = p.GetInner()
 		case *plans.RecordQueryTypeFilterPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryFilterPlan:

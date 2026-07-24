@@ -37,6 +37,9 @@ type flatMapCursor struct {
 	innerAlias  values.CorrelationIdentifier
 	resultValue values.Value
 	props       recordlayer.ExecuteProperties
+	// inheritOuterRecordProperties keeps the outer stored-record and primary-key
+	// identity when the FlatMap computes a reshaped positional payload.
+	inheritOuterRecordProperties bool
 
 	innerCursor    recordlayer.RecordCursor[QueryResult]
 	currentOuter   *QueryResult
@@ -119,6 +122,34 @@ func newFlatMapCursor(
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 	props recordlayer.ExecuteProperties,
+) (*flatMapCursor, error) {
+	return newFlatMapCursorWithOuterProperties(
+		outerCursor,
+		outerPlan,
+		innerPlan,
+		store,
+		evalCtx,
+		outerAlias,
+		innerAlias,
+		resultValue,
+		props,
+		false,
+	)
+}
+
+// newFlatMapCursorWithOuterProperties is the production constructor for a
+// RecordQueryFlatMapPlan. newFlatMapCursor remains the default-false helper so
+// existing non-inheriting shapes cannot silently change semantics.
+func newFlatMapCursorWithOuterProperties(
+	outerCursor recordlayer.RecordCursor[QueryResult],
+	outerPlan plans.RecordQueryPlan,
+	innerPlan plans.RecordQueryPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	outerAlias, innerAlias values.CorrelationIdentifier,
+	resultValue values.Value,
+	props recordlayer.ExecuteProperties,
+	inheritOuterRecordProperties bool,
 ) (*flatMapCursor, error) {
 	build, err := newOrdinalJoinBuild(resultValue, nil)
 	if err != nil {
@@ -203,20 +234,21 @@ func newFlatMapCursor(
 			isIdentityOuterRV(resultValue, outerAlias)
 	}
 	return &flatMapCursor{
-		outerCursor:              outerCursor,
-		innerPlan:                innerPlan,
-		store:                    store,
-		evalCtx:                  evalCtx,
-		outerAlias:               outerAlias,
-		innerAlias:               innerAlias,
-		resultValue:              resultValue,
-		props:                    props,
-		build:                    build,
-		outerBakedType:           outerBakedType,
-		foldLegSpans:             foldLegSpans,
-		foldWindowsOK:            foldWindowsOK,
-		outerMergedType:          outerMergedType,
-		outerIdentityPassthrough: outerIdentityPassthrough,
+		outerCursor:                  outerCursor,
+		innerPlan:                    innerPlan,
+		store:                        store,
+		evalCtx:                      evalCtx,
+		outerAlias:                   outerAlias,
+		innerAlias:                   innerAlias,
+		resultValue:                  resultValue,
+		props:                        props,
+		inheritOuterRecordProperties: inheritOuterRecordProperties,
+		build:                        build,
+		outerBakedType:               outerBakedType,
+		foldLegSpans:                 foldLegSpans,
+		foldWindowsOK:                foldWindowsOK,
+		outerMergedType:              outerMergedType,
+		outerIdentityPassthrough:     outerIdentityPassthrough,
 	}, nil
 }
 
@@ -446,7 +478,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			return QueryResult{}, err
 		}
 		// The ordinal-build FlatMap row IS its PositionalRow.
-		return QueryResult{Positional: pos}, nil
+		return c.withInheritedOuterProperties(outerRow, QueryResult{Positional: pos}), nil
 	}
 	innerRow := QueryResult{}
 	if inner != nil {
@@ -598,9 +630,21 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	if isIdentityInnerRV(c.resultValue, c.innerAlias) {
 		out := QueryResult{Record: innerRow.Record, PrimaryKey: innerRow.PrimaryKey}
 		out.Positional = qualifyOuterPositional(innerRow.Positional, c.innerAlias.Name())
-		return out, nil
+		return c.withInheritedOuterProperties(outerRow, out), nil
 	}
-	return QueryResult{Positional: foldPos}, nil
+	return c.withInheritedOuterProperties(outerRow, QueryResult{Positional: foldPos}), nil
+}
+
+// withInheritedOuterProperties applies the FlatMap's record-identity contract
+// after computing its payload. The positional result remains the value selected
+// by the FlatMap; only stored-record and primary-key identity flow from outer.
+func (c *flatMapCursor) withInheritedOuterProperties(outerRow, result QueryResult) QueryResult {
+	if !c.inheritOuterRecordProperties {
+		return result
+	}
+	result.Record = outerRow.Record
+	result.PrimaryKey = outerRow.PrimaryKey
+	return result
 }
 
 // buildContinuation creates a FlatMapContinuation proto. The decision is purely

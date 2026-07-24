@@ -211,6 +211,8 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 			input = p.GetInner()
 		case *plans.RecordQueryDistinctPlan:
 			input = p.GetInner()
+		case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+			input = p.GetInner()
 		case *plans.RecordQueryProjectionPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryMapPlan:

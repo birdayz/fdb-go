@@ -98,6 +98,7 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		*plans.RecordQueryInJoinPlan:
 		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
 		*plans.RecordQueryMultiIntersectionOnValuesPlan,
@@ -175,8 +176,15 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryProjectionPlan,
-		*plans.RecordQueryMapPlan:
+		*plans.RecordQueryMapPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
 		return storedRecordFromChildren(plan.GetChildren())
+	case *plans.RecordQueryFlatMapPlan:
+		if p, ok := plan.(*plans.RecordQueryFlatMapPlan); ok &&
+			p.InheritOuterRecordProperties() {
+			return computeStoredRecord(p.GetOuter())
+		}
+		return false
 	case *plans.RecordQueryFirstOrDefaultPlan,
 		*plans.RecordQueryDefaultOnEmptyPlan:
 		return false
@@ -241,6 +249,7 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
 		*plans.RecordQueryInJoinPlan,
 		*plans.RecordQueryInUnionPlan,
 		*plans.RecordQueryFirstOrDefaultPlan,
@@ -249,6 +258,11 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		// single child, so the M5 index common-PK survives above the fetch.
 		*plans.RecordQueryFetchFromPartialRecordPlan:
 		return pkFromChildren(plan.GetChildren())
+	case *plans.RecordQueryFlatMapPlan:
+		if p.InheritOuterRecordProperties() {
+			return computePrimaryKey(p.GetOuter())
+		}
+		return nil
 	case *plans.RecordQueryUnionPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
@@ -450,9 +464,22 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
 		return properties.IntersectCardinalities(cardinalitiesFromChildRefs(w))
 
-	// --- Distinct: same as child (distinct doesn't change bounds) ---
+	// --- Full-row distinct: current model conservatively preserves child bounds ---
 	case *plans.RecordQueryDistinctPlan:
 		return cardinalitiesFromChildRef(w)
+
+	// --- Primary-key distinct: max is unchanged; any known non-empty input
+	// produces at least one unique key. ---
+	case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+		child := cardinalitiesFromChildRef(w)
+		minCard := child.GetMinCardinality()
+		if !minCard.IsUnknown() && minCard.Value() > 0 {
+			minCard = properties.OfCardinality(1)
+		}
+		return properties.Cardinalities{
+			Min: minCard,
+			Max: child.GetMaxCardinality(),
+		}
 
 	// --- Limit: cap max at limit value ---
 	case *plans.RecordQueryLimitPlan:

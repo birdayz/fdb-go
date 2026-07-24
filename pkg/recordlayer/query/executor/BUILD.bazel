@@ -55,6 +55,7 @@ go_test(
         "executor_test.go",
         "explode_element_row_test.go",
         "flat_map_continuation_test.go",
+        "flat_map_inherit_outer_properties_test.go",
         "flat_map_resume_safety_test.go",
         "flatmap_fold_leg_window_test.go",
         "flatmap_kept_armed_test.go",
@@ -166,6 +167,7 @@ go_test(
         "distinct_stream.go",
         "in_memory_sort_over_ordered_scan_rowsread_test.go",
         "intersection_compkey_error_test.go",
+        "flat_map_inherit_outer_properties_test.go",
     ],
     deps = [
         "//gen",

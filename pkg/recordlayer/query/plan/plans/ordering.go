@@ -161,6 +161,17 @@ func (p *RecordQueryDistinctPlan) HintOrdering() properties.Ordering {
 }
 
 // OrderingSourceRef reports the child group this plan's ordering flows from.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) OrderingSourceRef() *expressions.Reference {
+	return orderingSourceOf(p)
+}
+
+// HintOrdering: primary-key duplicate elimination drops rows without
+// reordering the survivors.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) HintOrdering() properties.Ordering {
+	return inheritOrdering(p.OrderingSourceRef())
+}
+
+// OrderingSourceRef reports the child group this plan's ordering flows from.
 func (p *RecordQueryProjectionPlan) OrderingSourceRef() *expressions.Reference {
 	return orderingSourceOf(p)
 }

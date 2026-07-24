@@ -602,6 +602,7 @@ func TestDownstreamLegWindows(t *testing.T) {
 			"in-memory sort":    plans.NewRecordQueryInMemorySortPlan(nlj, nil),
 			"limit":             plans.NewRecordQueryLimitPlan(nlj, 10, 0),
 			"distinct":          plans.NewRecordQueryDistinctPlan(nlj),
+			"PK distinct":       plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(nlj),
 			"type filter":       plans.NewRecordQueryTypeFilterPlan(nil, nlj),
 			"filter":            plans.NewRecordQueryFilterPlan(nil, nlj),
 			"predicates filter": plans.NewRecordQueryPredicatesFilterPlan(nlj, nil),

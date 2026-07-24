@@ -926,10 +926,16 @@ func isTypeFilterExpression(e expressions.RelationalExpression) bool {
 }
 
 func isDistinctExpression(e expressions.RelationalExpression) bool {
-	// Since RFC-184 W2 the memo holds *plans.RecordQueryDistinctPlan directly
-	// (no physicalDistinctWrapper), so this is a bare type check.
-	_, ok := e.(*plans.RecordQueryDistinctPlan)
-	return ok
+	// Since RFC-184 W2 the memo holds distinct plans directly (no
+	// physicalDistinctWrapper), so both full-row and primary-key variants are
+	// bare type checks.
+	switch e.(type) {
+	case *plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+		return true
+	default:
+		return false
+	}
 }
 
 func isFetchExpression(e expressions.RelationalExpression) bool {
@@ -1394,7 +1400,8 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 			return properties.Cost{}
 		}
 		return properties.InMemorySortCost(c0())
-	case *plans.RecordQueryDistinctPlan:
+	case *plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
@@ -1972,8 +1979,13 @@ func concretePlanMatches(p plans.RecordQueryPlan, kind planMatchKind) bool {
 		_, ok := p.(*plans.RecordQueryIndexPlan)
 		return ok
 	case matchDistinct:
-		_, ok := p.(*plans.RecordQueryDistinctPlan)
-		return ok
+		switch p.(type) {
+		case *plans.RecordQueryDistinctPlan,
+			*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+			return true
+		default:
+			return false
+		}
 	}
 	return false
 }

@@ -1039,7 +1039,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ,
 		outerCorr, innerCorr,
-		resultValue, false,
+		resultValue, true,
 	)
 
 	// The quantifiers range over the SAME compensated expressions the plan holds
@@ -2543,7 +2543,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
 		innerQ,
 		mergedOuterCorr, existCorr,
-		flatMapResult, false,
+		flatMapResult, true,
 	)
 	call.Yield(flatMapPlan)
 }
@@ -2800,7 +2800,7 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		leftQ, rightQ,
 		outerCorrelation, innerCorrelation,
-		resultValue, false,
+		resultValue, true,
 	)
 	call.Yield(flatMapPlan)
 }

@@ -214,6 +214,18 @@ func (p *RecordQueryDistinctPlan) HintCost(child []properties.Cost, _ properties
 	return properties.DistinctCost(child[0])
 }
 
+// HintCost: primary-key duplicate elimination has the same hash-set work shape
+// as unordered value duplicate elimination.
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) HintCost(
+	child []properties.Cost,
+	_ properties.StatisticsProvider,
+) properties.Cost {
+	if len(child) == 0 {
+		return properties.Cost{}
+	}
+	return properties.DistinctCost(child[0])
+}
+
 // HintCost: per-row projection, cardinality-preserving.
 func (p *RecordQueryMapPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
