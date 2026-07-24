@@ -80,6 +80,68 @@ func TestEvalScalarFunction_FloorCeilRound(t *testing.T) {
 	}
 }
 
+func TestEvalScalarFunction_RoundIntegerPrecision(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		function string
+		args     []any
+		want     any
+	}{
+		{name: "hundreds", function: "ROUND", args: []any{int64(1234), int64(-2)}, want: int64(1200)},
+		{name: "negative tie", function: "ROUND", args: []any{int64(-150), int64(-2)}, want: int64(-200)},
+		{name: "positive tie", function: "ROUND", args: []any{int64(5), int64(-1)}, want: int64(10)},
+		{name: "negative places beyond width", function: "ROUND", args: []any{int64(1234), int64(-20)}, want: int64(0)},
+		{name: "null precision", function: "ROUND", args: []any{int64(1), nil}, want: nil},
+		{name: "surplus round arg", function: "ROUND", args: []any{int64(1), int64(0), int64(9)}, want: nil},
+		{name: "surplus floor arg", function: "FLOOR", args: []any{int64(1), int64(0)}, want: nil},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := evalScalarFunction(test.function, test.args)
+			require.NoError(t, err)
+			require.Equal(t, test.want, got)
+		})
+	}
+
+	for _, value := range []int64{math.MinInt64, math.MaxInt64} {
+		got, err := evalScalarFunction("ROUND", []any{value, int64(-1)})
+		require.Nil(t, got)
+		var overflow *ArithmeticOverflowError
+		require.ErrorAs(t, err, &overflow)
+	}
+}
+
+func TestRoundFloat64DecimalPlaces(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		value    float64
+		decimals int64
+		want     float64
+	}{
+		{name: "positive precision clamps", value: 1.25, decimals: math.MaxInt64, want: 1.25},
+		{name: "negative precision clamps", value: 1.25, decimals: math.MinInt64, want: 0},
+		{name: "positive scale cannot overflow finite input", value: 1e308, decimals: 1, want: 1e308},
+		{name: "negative scale cannot overflow finite input", value: math.MaxFloat64, decimals: -30, want: math.MaxFloat64},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, test.want, roundFloat64DecimalPlaces(test.value, test.decimals))
+		})
+	}
+
+	got, err := evalScalarFunction("ROUND", []any{float64(-2.5)})
+	require.NoError(t, err)
+	require.Equal(t, int64(-3), got)
+}
+
 func TestEvalScalarFunction_SqrtPower(t *testing.T) {
 	t.Parallel()
 	got, errEv0 := evalScalarFunction("SQRT", []any{float64(16)})
@@ -148,7 +210,7 @@ func TestEvalScalarFunction_CoalesceNullif(t *testing.T) {
 	if got != int64(5) {
 		t.Fatalf("NULLIF(5,6): got %v", got)
 	}
-	// Cross-numeric promotion mirrors embedded.
+	// Cross-numeric equality compares after promotion.
 	got, errEv5 := evalScalarFunction("NULLIF", []any{int64(5), float64(5)})
 	require.NoError(t, errEv5)
 	if got != nil {
@@ -204,7 +266,7 @@ func TestEvalScalarFunction_Concat(t *testing.T) {
 	if got != "abc" {
 		t.Fatalf("CONCAT abc: got %v", got)
 	}
-	// NULL skip — MySQL/Postgres semantics, mirrors embedded.
+	// NULL elements are skipped.
 	got, errEv1 := evalScalarFunction("CONCAT", []any{"a", nil, "c"})
 	require.NoError(t, errEv1)
 	if got != "ac" {
@@ -275,7 +337,7 @@ func TestEvalScalarFunction_Replace(t *testing.T) {
 	if got != "bbbbbb" {
 		t.Fatalf("REPLACE repeat: got %v", got)
 	}
-	// NULL `to` → empty (drop matches), mirrors embedded.
+	// NULL `to` → empty (drop matches).
 	got, errEv2 := evalScalarFunction("REPLACE", []any{"abc", "b", nil})
 	require.NoError(t, errEv2)
 	if got != "ac" {

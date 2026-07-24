@@ -112,18 +112,11 @@ func simplifyChildren(v Value) Value {
 	case *PromoteValue:
 		c := SimplifyValue(x.Child)
 		if cv, ok := c.(*ConstantValue); ok {
-			// Fold a promoted constant to a constant of the target type. Most
-			// promotions are representation-preserving at the Go level (an int
-			// stays int64; cmpAny widens numerics at compare time), so keeping
-			// cv.Value and just re-tagging the type is correct there. But
-			// STRING→UUID actually reshapes the value (canonical string →
-			// neutral [16]byte); re-tagging alone would leave a string
-			// mislabeled UUID, and the index-scan packer would then seek a 0x02
-			// string that never matches the 0x30 UUID entry. Apply the promotion
-			// via Evaluate so the folded constant carries the right runtime
-			// representation. On a promotion error (e.g. an invalid UUID
-			// literal) keep the Promote node so the error surfaces at execution,
-			// exactly as Java's PromoteValue does.
+			// Apply the promotion through Evaluate before re-tagging. Numeric
+			// promotions align the carrier width (including direct LONG→FLOAT
+			// rounding), while STRING→UUID reshapes the canonical string into a
+			// neutral [16]byte. On an error, keep the Promote node so it surfaces
+			// at execution, exactly as Java's PromoteValue does.
 			if folded, err := (&PromoteValue{Child: cv, Target: x.Target}).Evaluate(nil); err == nil {
 				return &ConstantValue{Value: folded, Typ: x.Target}
 			}
@@ -344,6 +337,17 @@ func simplifyCoalesce(v Value) Value {
 		} else {
 			onlyNulls = false
 			if seenOnlyConstantsSoFar {
+				// Java inserts PromoteValue children before building
+				// COALESCE, so returning the winning constant preserves the
+				// common result carrier. Go records the common type on the
+				// ScalarFunctionValue instead; apply its carrier conversion
+				// here before this rule removes the function wrapper.
+				if constant, isConstant := child.(*ConstantValue); isConstant {
+					return &ConstantValue{
+						Value: coerceNumericResult(constant.Value, sf.Type()),
+						Typ:   sf.Typ,
+					}
+				}
 				return child
 			}
 		}

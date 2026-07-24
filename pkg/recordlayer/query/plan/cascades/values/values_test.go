@@ -740,16 +740,57 @@ func TestPromoteValue_Shape(t *testing.T) {
 	}
 }
 
-func TestPromoteValue_EvaluateDelegatesToChild(t *testing.T) {
+func TestPromoteValue_EvaluateRepresentationPreserving(t *testing.T) {
 	t.Parallel()
 	child := &ConstantValue{Value: int64(42), Typ: TypeInt}
 	p := NewPromoteValue(child, TypeString)
 	tmpEv0,
-		// Seed: Promote is a runtime no-op — child's evaluation shines through.
+		// Non-numeric, non-UUID promotion remains representation-preserving.
 		errEv0 := p.Evaluate(nil)
 	require.NoError(t, errEv0)
 	if got, want := tmpEv0, int64(42); got != want {
 		t.Fatalf("Evaluate: got %v, want %v", got, want)
+	}
+}
+
+func TestPromoteValue_EvaluateNumericCarrier(t *testing.T) {
+	t.Parallel()
+
+	const floatWitness = int64(1<<62 | 1<<38 | 1)
+	tests := []struct {
+		name   string
+		value  any
+		source Type
+		target Type
+		want   any
+	}{
+		{
+			name:   "int to double",
+			value:  int64(3),
+			source: NotNullInt,
+			target: NotNullDouble,
+			want:   float64(3),
+		},
+		{
+			name:   "long to float single rounding",
+			value:  floatWitness,
+			source: NotNullLong,
+			target: NotNullFloat,
+			want:   float64(float32(floatWitness)),
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			promoted := NewPromoteValue(
+				&ConstantValue{Value: test.value, Typ: test.source},
+				test.target,
+			)
+			got, err := promoted.Evaluate(nil)
+			require.NoError(t, err)
+			require.Equal(t, test.want, got)
+		})
 	}
 }
 

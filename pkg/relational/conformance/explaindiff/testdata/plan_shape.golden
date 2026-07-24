@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=338 queries=2423 dml=158 non_query=97 plan_errors=261 unexpected_errors=4
+# files=338 queries=2442 dml=158 non_query=97 plan_errors=261 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -11673,6 +11673,101 @@ shape:   RecordQueryScanPlan
 === numeric_functions.yaml#27
 sql:   SELECT n % 3 FROM t WHERE id = 2
 plan:  Project([(N#2 % 3)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#28
+sql:   SELECT COALESCE(3, 1.5) / 2 FROM t WHERE id = 1
+plan:  Project([(COALESCE(3, 1.5) / 2)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#29
+sql:   SELECT GREATEST(3, 1.5) / 2 FROM t WHERE id = 1
+plan:  Project([(GREATEST(3, 1.5) / 2)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#30
+sql:   SELECT FLOOR(3.7) / 2 FROM t WHERE id = 1
+plan:  Project([(FLOOR(3.7) / 2)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#31
+sql:   SELECT POWER(2, 3) / 3 FROM t WHERE id = 1
+plan:  Project([(POWER(2, 3) / 3)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#32
+sql:   SELECT COALESCE(n, v) / 4 FROM t WHERE id = 1
+plan:  Project([(COALESCE(N#2, V#1) / 4)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#33
+sql:   SELECT GREATEST(n, v) / 4 FROM t WHERE id = 1
+plan:  Project([(GREATEST(N#2, V#1) / 4)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#34
+sql:   SELECT LEAST(n, v) / 2 FROM t WHERE id = 2
+plan:  Project([(LEAST(N#2, V#1) / 2)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#35
+sql:   SELECT FLOOR(v) / 3 FROM t WHERE id = 1
+plan:  Project([(FLOOR(V#1) / 3)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#36
+sql:   SELECT POWER(n, 2) / 3 FROM t WHERE id = 1
+plan:  Project([(POWER(N#2, 2) / 3)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#37
+sql:   SELECT (CASE WHEN id = 1 THEN 3 ELSE v END) / 2 FROM t WHERE id = 1
+plan:  Project([(CASE(WHEN(predicate, TRUE), [3, V#1]) / 2)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#38
+sql:   SELECT MOD(16777217, f) FROM t WHERE id = 1
+plan:  Project([MOD(16777217, F#3)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#39
+sql:   SELECT MOD(n + 16777207, f) FROM t WHERE id = 1
+plan:  Project([MOD((N#2 + 16777207), F#3)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#40
+sql:   SELECT ROUND(1234, -2) FROM t WHERE id = 1
+plan:  Project([ROUND(1234, -2)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#41
+sql:   SELECT ROUND(-150, -2) FROM t WHERE id = 1
+plan:  Project([ROUND(-150, -2)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#42
+sql:   SELECT ROUND(n, -1) FROM t WHERE id = 2
+plan:  Project([ROUND(N#2, -1)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#43
+sql:   SELECT ROUND(1, null) FROM t WHERE id = 1
+plan:  Project([ROUND(1, NULL)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#44
+sql:   SELECT ROUND(1.25, 9223372036854775807) FROM t WHERE id = 1
+plan:  Project([ROUND(1.25, 9223372036854775807)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#45
+sql:   SELECT ROUND(1.25, -31) FROM t WHERE id = 1
+plan:  Project([ROUND(1.25, -31)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== numeric_functions.yaml#46
+sql:   SELECT ROUND(-2.5) FROM t WHERE id = 1
+plan:  Project([ROUND(-2.5)], Scan(T, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === numeric_overflow_detection.yaml#0 expect-error=22003

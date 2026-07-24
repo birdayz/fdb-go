@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	cascadesvalues "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -21,14 +22,13 @@ import (
 // every sub-expression through these (makeMapExprEvaluator supplies
 // the map-path evaluator) and the cores stay path-agnostic.
 //
-// evalScalarFunctionCallCore is the switch over scalar function
-// names that fdb-relational 4.11.1.0 has in its registry: MOD /
-// COALESCE / IFNULL / GREATEST / LEAST / IF / IIF / date-part fns
-// (YEAR / MONTH / DAY / HOUR / MINUTE / SECOND / DAYOFMONTH /
-// DAYOFWEEK / DAYOFYEAR). Names not in this list fall through to
-// the default arm and emit "Unsupported operator <name>" — byte-
-// equal to Java's RelationalException for the same registry-miss.
-// Phase 2 Cascades replaces this with a registry-driven dispatch.
+// evalScalarFunctionCallCore uses the values-owned catalog to admit the
+// deliberately small scalar-function subset that fdb-relational 4.11.1.0 has
+// in its registry: COALESCE / GREATEST / LEAST / date-part functions. The
+// semantic bodies remain local because this compatibility evaluator has
+// distinct carrier, arity, parsing, and SQLSTATE contracts. Names outside that
+// route emit "Unsupported operator <name>" — byte-equal to Java's
+// RelationalException for the same registry miss.
 //
 // evalSpecificFunctionCore handles SpecificFunctionCall nodes
 // (CASE WHEN ... END, simple CASE).
@@ -48,7 +48,7 @@ type predicateEvaluator func(expr antlrgen.IExpressionContext) (bool, error)
 
 // evalScalarFunctionCallCore is the map-path scalar-function dispatch
 // (driven via evalScalarFunctionCallOnMap).
-// that variation is captured in the eval / predicateEval adapters.
+// Expression evaluation is captured in the eval / predicateEval adapters.
 func evalScalarFunctionCallCore(
 	now time.Time,
 	eval exprEvaluator,
@@ -82,11 +82,14 @@ func evalScalarFunctionCallCore(
 	if args != nil {
 		fArgs = args.AllFunctionArg()
 	}
-	// Names intentionally NOT handled — fall through to the default
-	// "Unsupported operator <name>" arm. Java's fdb-relational
-	// 4.11.1.0 has no entries for these in its function registry; Go
-	// matches by absence of a case here, producing the byte-equal
-	// rejection. Doesn't work in Java → doesn't work in Go.
+	operator, supported := cascadesvalues.LookupLegacyMapScalarFunction(name)
+	if !supported {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "Unsupported operator %s", name)
+	}
+	// Names intentionally NOT handled are absent from the legacy-map
+	// capability set above. Java's fdb-relational 4.11.1.0 has no entries for
+	// these in its function registry; Go produces the byte-equal rejection.
+	// Doesn't work in Java → doesn't work in Go.
 	//
 	//   STRING:    UPPER, LOWER, LENGTH, CHAR_LENGTH,
 	//              CHARACTER_LENGTH, LEN, OCTET_LENGTH, TRIM, LTRIM,
@@ -103,8 +106,8 @@ func evalScalarFunctionCallCore(
 	//              visitChildren no-op — the Go-only working impl
 	//              is a correctness improvement, not a divergence).
 	//   OTHER:     NULLIF (use `CASE WHEN a = b THEN NULL ELSE a END`).
-	switch name {
-	case "COALESCE":
+	switch operator {
+	case cascadesvalues.LegacyMapScalarFunctionCoalesce:
 		for _, fa := range fArgs {
 			v, err := eval(fa.Expression())
 			if err != nil {
@@ -122,7 +125,8 @@ func evalScalarFunctionCallCore(
 	// synonym map binds the `%` operator to "mod" but rejects the
 	// function-call form `MOD(a, b)` with "Unsupported operator MOD".
 	// Use `a % b` instead.
-	case "GREATEST", "LEAST":
+	case cascadesvalues.LegacyMapScalarFunctionGreatest,
+		cascadesvalues.LegacyMapScalarFunctionLeast:
 		// Java conformance: GREATEST/LEAST return NULL if any argument
 		// is NULL. VariadicFunctionValue.PhysicalOperator's per-typecode
 		// lambdas (GREATEST_INT/LONG/FLOAT/DOUBLE/STRING/BOOLEAN, and
@@ -139,7 +143,7 @@ func evalScalarFunctionCallCore(
 		if best == nil {
 			return nil, nil
 		}
-		isGreatest := name == "GREATEST"
+		isGreatest := operator == cascadesvalues.LegacyMapScalarFunctionGreatest
 		for _, fa := range fArgs[1:] {
 			v, verr := eval(fa.Expression())
 			if verr != nil {
@@ -163,8 +167,15 @@ func evalScalarFunctionCallCore(
 	// IF / IIF intentionally NOT handled — Java rejects with
 	// "Unsupported operator IF". Use `CASE WHEN cond THEN x ELSE y
 	// END` (searched-CASE is implemented in both engines).
-	case "YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND",
-		"DAYOFMONTH", "DAYOFWEEK", "DAYOFYEAR":
+	case cascadesvalues.LegacyMapScalarFunctionYear,
+		cascadesvalues.LegacyMapScalarFunctionMonth,
+		cascadesvalues.LegacyMapScalarFunctionDay,
+		cascadesvalues.LegacyMapScalarFunctionHour,
+		cascadesvalues.LegacyMapScalarFunctionMinute,
+		cascadesvalues.LegacyMapScalarFunctionSecond,
+		cascadesvalues.LegacyMapScalarFunctionDayOfMonth,
+		cascadesvalues.LegacyMapScalarFunctionDayOfWeek,
+		cascadesvalues.LegacyMapScalarFunctionDayOfYear:
 		// Date-part functions taking a single time.Time argument.
 		// SQL standard returns an integer (1-based for month/day/dow,
 		// 0-based for hour/minute/second). Mostly aligns with Go's
@@ -189,23 +200,24 @@ func evalScalarFunctionCallCore(
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be a date/time, got %T", name, v)
 		}
-		switch name {
-		case "YEAR":
+		switch operator {
+		case cascadesvalues.LegacyMapScalarFunctionYear:
 			return int64(t.Year()), nil
-		case "MONTH":
+		case cascadesvalues.LegacyMapScalarFunctionMonth:
 			return int64(t.Month()), nil
-		case "DAY", "DAYOFMONTH":
+		case cascadesvalues.LegacyMapScalarFunctionDay,
+			cascadesvalues.LegacyMapScalarFunctionDayOfMonth:
 			return int64(t.Day()), nil
-		case "HOUR":
+		case cascadesvalues.LegacyMapScalarFunctionHour:
 			return int64(t.Hour()), nil
-		case "MINUTE":
+		case cascadesvalues.LegacyMapScalarFunctionMinute:
 			return int64(t.Minute()), nil
-		case "SECOND":
+		case cascadesvalues.LegacyMapScalarFunctionSecond:
 			return int64(t.Second()), nil
-		case "DAYOFWEEK":
+		case cascadesvalues.LegacyMapScalarFunctionDayOfWeek:
 			// MySQL convention: Sunday=1, Saturday=7.
 			return int64(t.Weekday()) + 1, nil
-		case "DAYOFYEAR":
+		case cascadesvalues.LegacyMapScalarFunctionDayOfYear:
 			return int64(t.YearDay()), nil
 		}
 		return nil, nil // unreachable

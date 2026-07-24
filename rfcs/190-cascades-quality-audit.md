@@ -5,7 +5,8 @@ on `95598761f`** — codex + @claude at PR). Landed: 190.12 golden, 190.13 docs,
 190.2 (cost-comparator transitivity), 190.3 (point-scan PK proof), the bundled scalar-NaN ledger
 closure, 190.4a (guarded dead candidate existentials), and 190.4b (matcher metadata/enumeration).
 190.4c (Select semantics plus production correlated-UNNEST fan-out reach) is complete, closing the
-Graefe-reruled 190.4 umbrella.
+Graefe-reruled 190.4 umbrella. 190.5 (intersection reach), 190.6 (NLJ ordering), 190.7 (EXISTS
+compensation de-duplication), and 190.8 (scalar catalog/type-carrier coherence) are also complete.
 190.1 was **materially re-designed** after its original delete premise proved false (the arm's
 "never produced an executable plan" gravestone is a lie — deleting it regresses working FDB tests).
 The new 190.1 (converge on Java's two-rule architecture via a guarded `PartitionSelectRule`) carries
@@ -631,12 +632,59 @@ the final gates.
 
 ### 190.8 (LOW) — scalar-function semantics: one source of truth
 
-`values/values.go:1971` `evalScalarFunction` (36 fns) overlaps `embedded/scalar_functions.go` and
-`query/expr/walk.go`, synced by prose comments ("matches embedded…"). A missed edge (rounding,
-`ABS(MinInt64)`, LENGTH-on-bytes) makes plan-time constant-fold silently disagree with runtime
-eval — a wrong-results class. **Fix:** a shared function table both layers dispatch through, or a
-cross-layer equivalence test that fails on divergence. Start with the test (cheaper, proves
-current agreement); table extraction is the durable fix. Torvalds-gated.
+The original tri-layer diagnosis was stale after RFC-181 deleted the INSERT evaluator. Plan-time
+constant folding (`EvaluateConstant`), INSERT VALUES, and ordinary SELECT runtime all already call
+`ScalarFunctionValue.Evaluate`, so rounding, `ABS(MinInt64)`, and LENGTH-on-bytes cannot diverge by
+phase. `embedded/scalar_functions.go` is now only the INFORMATION_SCHEMA map interpreter and must
+remain semantically separate: its Java-compatibility surface, time carriers/parsing, arity handling,
+comparison domain, and SQLSTATE mapping intentionally differ.
+
+The live drift risk was three independent name switches: values evaluator dispatch and Cascades
+admission, the expression walker's result typing, and the map interpreter's smaller name gate. A
+values-owned catalog now binds each of the 56 spellings to a canonical operator, result-type
+strategy, and independent route capabilities:
+
+- 53 Cascades-safe spellings;
+- 49 generic `ScalarFunctionCall` spellings (including internal NULLIF/IF/IIF, which remain unsafe);
+- 12 generic legacy-map spellings (COALESCE, GREATEST/LEAST, and nine date parts);
+- dedicated BIT* and CURRENT_* entries that remain outside the generic-call grammar route.
+
+Aliases share operator and result strategy. `evalScalarFunction`, lazy `ScalarFunctionValue`
+dispatch, generic result inference, dedicated BIT*/CURRENT_* typing, and the legacy-map admission
+switch all consult the catalog. The map path switches on a catalogued compatibility operator but
+keeps its local bodies, avoiding a semantic widening.
+
+The consolidation exposed a real P1 carrier/type contradiction. `COALESCE(3, 1.5)` and
+`GREATEST(3, 1.5)` were statically DOUBLE but returned `int64(3)`; FLOOR/POWER could do the same.
+Downstream arithmetic then used runtime-carrier dispatch, making `/ 2` silently return integer `1`
+instead of `1.5`. The same invariant affected mixed CASE (`PickValue`) and `PromoteValue`. Numeric
+results now conform to the declared FLOAT/DOUBLE carrier, LONG→FLOAT converts directly (no
+int64→float64→float32 double rounding), constant COALESCE simplification preserves the common
+carrier, and `ArithmeticValue` selects its DOUBLE lane from static types as Java does.
+
+The same audit found an independent ROUND fast-path error: integral inputs returned before reading
+negative or NULL precision. Exact integer rounding now works without conversion through float64,
+including negative ties and overflow detection at the int64 boundaries. Floating ROUND clamps
+precision to the supported SQL window and preserves a large finite value when temporary decimal
+scaling would otherwise overflow.
+
+The catalog tests snapshot all four capability sets, every operator's evaluator reachability,
+aliases, result strategies, route boundaries, and legacy-map membership. Unit regressions cover
+lazy/runtime/constant-fold carrier agreement, FLOAT single rounding, Pick/Promote, and static DOUBLE
+arithmetic. `numeric_functions.yaml` passes 47/47 with constant and row-dependent COALESCE,
+GREATEST/LEAST, FLOOR, POWER, MOD, mixed CASE division, and ROUND edge witnesses. The existing plan
+corpus is byte-identical (2,581/2,581); the golden adds only the nineteen new queries.
+
+Race validation exposed an adjacent pre-existing parser defect: ANTLR's generated lexer/parser
+constructors shared mutable package-global DFA and prediction-context state. Each public parse route
+now leases an exclusive warmed state bundle from a bounded pool, then detaches the returned read-only
+tree before returning the lease. Concurrent valid/error parsing and retained-tree traversal are
+race-pinned; the full plan corpus remains byte-identical with no measurable steady-state parse
+regression.
+
+`just generate`, `just lint`, and full `just test` pass (56/56).
+
+**190.8 is complete. FINAL REVIEW: two independent Codex audits ACK.**
 
 ### 190.9 (LOW) — NLJ cursor twin inner-loops
 
@@ -712,8 +760,13 @@ owner; proceed with one PR unless they direct otherwise.)
 
 No item regresses steady-state planning. 190.2/190.3 change cost *ordering* (not cost of
 computing it) — validated by explain-diff + the 1M stress test (row counts + latencies unchanged
-except where a flip is Java-verified). 190.7/190.9 are behavior-preserving refactors. 190.12 adds a
-CI test, no runtime cost. 190.5 enlarges intersection enumeration under the existing candidate cap.
+except where a flip is Java-verified). 190.7/190.9 are behavior-preserving refactors. 190.8 replaces
+name switches with constant-time catalog lookups and corrects numeric carrier selection without a
+plan-shape change. Its bounded parser-state free lists retain at most eight warmed lexer/parser
+bundles; checkout/return alone takes the mutex, parsing remains parallel, retained heap under the
+48-worker probe fell from 67.5 MB to 18.9 MB, and the full corpus time stayed at the shared-global
+baseline. 190.12 adds a CI test, no runtime cost. 190.5 enlarges intersection enumeration under the
+existing candidate cap.
 190.6 retains one cheapest exact expression per Java-required source-order partition instead of
 forming the child cross-product; its final EXPLAIN census shows only the intended sort
 eliminations, and the 1M stress gate passes all 23 subtests with exact row counts.

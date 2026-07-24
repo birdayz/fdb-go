@@ -225,9 +225,28 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   is byte-identical (2,581/2,581), and generate, lint, and full `just test` pass (56/56).
   **FINAL REVIEW: two independent Codex audits ACK** after the zero-below-FOD and predicate/QOV
   identity coverage was added.
-- [ ] **190.8 (LOW)** — tri-layer scalar-function duplication synced by comment only
-  (`values/values.go:1971` `evalScalarFunction` ↔ `embedded/scalar_functions.go` ↔
-  `query/expr/walk.go`) → plan-time constant-fold can silently disagree with runtime eval. Shared table.
+- [x] **190.8 (LOW)** — DONE. The original tri-layer/fold-v-runtime premise was stale after RFC-181:
+  constant folding, INSERT VALUES, and ordinary SELECT execution already shared
+  `ScalarFunctionValue.Evaluate`; `embedded/scalar_functions.go` is only the intentionally different
+  INFORMATION_SCHEMA map interpreter. The residual three-way duplication—name/operator dispatch,
+  generic-call result inference, and route admission—is now one values-owned catalog with separately
+  pinned capabilities (56 evaluator spellings, 53 Cascades-safe, 49 generic scalar calls, 12 legacy
+  map calls). Aliases share operators/result strategies; the expression walker and dedicated BIT*/
+  CURRENT_* routes obtain their types from the catalog; the map interpreter shares admission/operator
+  identity but retains its Java-aligned carrier, arity, parsing, and SQLSTATE bodies.
+  The audit also found and fixed a real wrong-result seam: common-typed scalars, CASE/PickValue, and
+  PromoteValue could declare DOUBLE/FLOAT while returning an integer carrier, so downstream division
+  took the integer lane (`COALESCE(3,1.5)/2 = 1`). Numeric results/promotions now honor the declared
+  carrier (including direct LONG→FLOAT single rounding), and arithmetic selects the DOUBLE lane from
+  static types. Integer ROUND now honors negative precision without float conversion, floating ROUND
+  clamps SQL precision and avoids temporary-scale overflow, and NULL precision propagates before the
+  integral fast path. Exhaustive catalog/operator/alias tests, constant-fold/runtime carrier
+  regressions, the 47/47 numeric yamsql scenario, and the generated ledgers pass. The required race
+  audit also exposed ANTLR's generated constructors sharing mutable DFA/context caches; all public
+  parse routes now lease bounded exclusive warmed state and detach returned read-only trees, with
+  concurrent valid/error/tree-reuse regressions. Existing plan shapes are unchanged (2,581/2,581
+  identical); the golden adds only the nineteen new regression queries. `just generate`, `just lint`,
+  and full `just test` pass (56/56). **FINAL REVIEW: two independent Codex audits ACK.**
 - [ ] **190.9 (LOW)** — NLJ cursor twin inner-loop bodies (`executor/streaming_cursors.go:1561`
   hash-probe ≈ :1609 linear-scan) — unify via candidate-index slice.
 
@@ -3656,13 +3675,10 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
        wrapper, so a Go-written NULL array can't be distinguished from an empty one. Closing this lets
        `CARDINALITY([])` be 0 (not NULL) for a non-null empty array, matching Java. Latent divergence
        (read path already unwraps Java-written wrappers via `unwrapWrappedArray`); separate from R6.
-   - **[ ] R6 follow-up — BITAND/BITOR/BITXOR unreachable through the walker (pre-existing drift).** The 3
-     scalar-function keyword lists drift: `BITAND/BITOR/BITXOR` are in `IsCascadesSafeScalarFunction` (so
-     the satellite gate admits them) but the `expr` walker's `walkBitExpression` builds a
-     `ScalarFunctionValue("BITAND"/...)` that is then rejected by `isCascadesSafeValue`/the catalog — they
-     never reach a working Cascades plan today. Surfaced while wiring CARDINALITY's by-name gate; NOT fixed
-     here (the by-name collapse only routed CARDINALITY). The clean fix is to finish collapsing the 3 lists
-     onto one by-name table; verify against Java first. Gate: **Graefe** + Torvalds.
+   - **[x] R6 follow-up — BITAND/BITOR/BITXOR registry drift.** The "unreachable" diagnosis became stale:
+     all three dedicated bit-expression routes execute and are covered by `bitwise.yaml`. RFC-190.8 closes
+     the real maintainability gap by moving their admission, evaluator operator, and declared result type
+     into the shared scalar-function catalog; the dedicated grammar lowering remains intentional.
    - **[x] R7** — LEFT/RIGHT OUTER JOIN reclassification + 4.12 null/boolean fixes (RFC-144). The parity
      sweep (53 ported `join-tests-outer.yamsql` cases) found + fixed **6 real outer-join divergences**
      (JOIN USING → cartesian; chained outer joins + INNER-then-LEFT dropped NULL-padding; derived-table-

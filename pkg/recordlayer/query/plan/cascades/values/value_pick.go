@@ -109,5 +109,9 @@ func (v *PickValue) Evaluate(evalCtx any) (any, error) {
 	if alt == nil {
 		return nil, nil
 	}
-	return alt.Evaluate(evalCtx)
+	result, err := alt.Evaluate(evalCtx)
+	if err != nil || result == nil {
+		return result, err
+	}
+	return coerceNumericResult(result, v.Type()), nil
 }

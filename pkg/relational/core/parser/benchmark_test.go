@@ -49,6 +49,19 @@ func BenchmarkParseShort(b *testing.B)  { benchmarkParse(b, benchShortSQL) }
 func BenchmarkParseMedium(b *testing.B) { benchmarkParse(b, benchMediumSQL) }
 func BenchmarkParseLong(b *testing.B)   { benchmarkParse(b, benchLongSQL) }
 
+func BenchmarkParseParallel(b *testing.B) {
+	b.ReportAllocs()
+	b.SetBytes(int64(len(benchShortSQL)))
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, err := Parse(benchShortSQL); err != nil {
+				b.Errorf("Parse failed: %v", err)
+				return
+			}
+		}
+	})
+}
+
 func BenchmarkCaseInsensitiveCharStream_LA(b *testing.B) {
 	// Cost of the LA() case-fold hot path on its own.
 	s := newCaseInsensitiveCharStream("SELECT Foo FROM Bar WHERE Baz = 1")
