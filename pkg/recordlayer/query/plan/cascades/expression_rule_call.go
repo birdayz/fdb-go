@@ -61,10 +61,13 @@ type ExpressionRuleCall struct {
 // selection: stats-aware when the planner threaded statistics, else the
 // default-stats comparator.
 func (c *ExpressionRuleCall) CostModel() func(a, b expressions.RelationalExpression) bool {
-	if c.Stats != nil {
-		return NewPlanningCostModelLessWithContext(c.Stats, c.Context)
+	ctx := c.Context
+	if c.Stats == nil {
+		// Preserve the historical nil-context comparison while retaining only
+		// an injected diagnostic sink.
+		ctx = costModelDiagnosticsOnlyContext(ctx)
 	}
-	return PlanningCostModelLess
+	return NewPlanningCostModelLessWithContext(c.Stats, ctx)
 }
 
 // NewExpressionRuleCall builds a rule-call against a Reference + an

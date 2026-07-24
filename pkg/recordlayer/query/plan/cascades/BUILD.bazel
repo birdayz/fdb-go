@@ -308,6 +308,7 @@ go_test(
         "planner_pipeline_test.go",
         "planner_planning_phase_test.go",
         "planner_test.go",
+        "planning_cost_model_diagnostics_test.go",
         "planning_cost_model_hash_test.go",
         "planning_cost_model_rungs_test.go",
         "planning_cost_model_test.go",
@@ -900,6 +901,7 @@ go_test(
         "rule_split_select_extract_independent_test.go",
         "planning_cost_model_rungs_test.go",
         "in_union_cost_regression_test.go",
+        "planning_cost_model_diagnostics_test.go",
     ],
     deps = [
         "//gen",

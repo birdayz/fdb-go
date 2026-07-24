@@ -313,9 +313,20 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   (4 source + 1 test, no `distinct.go:38` — it was `:172`) corrected to "memory-heavy hash-set" with
   a C5 note (cross-page correctness fixed 2026-07-20; streaming preferred for O(1) memory, not
   correctness). Comment/string-only, zero logic change.
-- [ ] **190.14 (LOW)** — cost model: no unpriced-type detector on the counts/residual walks
-  (`countConcreteNode`/`concreteResidualPredicates` fall through silently, unlike the cost path's
-  `warnUnpricedPlanType`); and `warnUnpricedPlanType` writes to `os.Stderr` from library code.
+- [x] **190.14 (LOW)** — DONE. A shared exhaustive taxonomy assigns all 41 production
+  `RecordQueryPlan` types an explicit count and residual policy; unknown types and future
+  unhandled policy kinds warn on the concrete/logical count and residual walks, while a type
+  missing `HintCost` warns on the join-cost walk instead of silently becoming free. Diagnostics
+  are opt-in through the outermost
+  `WithCostModelDiagnostics(PlanContext, *slog.Logger)` wrapper, use structured stable walk tokens,
+  deduplicate concurrently per `(wrapper, walk, concrete type)`, and never call `Explain` or write
+  to `os.Stderr`; nil loggers mask an inner sink and disabled WARN levels do not consume a dedupe
+  key. Planner and both rule-call comparator paths retain the sink while preserving their
+  historical nil-context winner semantics. Twelve parallel regressions pin the 41-type inventory,
+  logical/concrete compatibility boundaries, folded children, future enum arms, logger scope and
+  concurrency, and end-to-end plumbing. Focused/race/20× tests pass; the 2,600-query plan golden is
+  byte-identical; `just generate`, `just lint`, `just build`, and full `just test` pass (56/56).
+  **FINAL REVIEW: adversarial Codex audit ACK; second independent audit ACK.**
 
 ---
 

@@ -843,6 +843,44 @@ for criterion #3 with zero diagnostic. And `warnUnpricedPlanType` writes to `os.
 library code (`planning_cost_model.go:1452`). **Fix:** add an unpriced-type fallthrough warning to
 both walks; route the warning through an injected logger, not `os.Stderr`.
 
+The completed fix uses one exhaustive `classifyConcretePlan` taxonomy for all 41 production plan
+types. Every type takes an explicit position on both operator-count contribution and residual-CNF
+contribution. The concrete and logical count walks dispatch from that taxonomy but retain their
+pre-existing policy differences: the logical fallback still uses plan-local index metadata,
+descends through a PK filter, counts each multi-intersection aggregate leg, and treats text access
+as neutral. This separation is deliberate—reusing the concrete contribution wholesale would have
+activated new metadata and folding criteria on logical candidates and changed winners in a
+diagnostics milestone. Unknown types warn in both paths. Explicit default arms also warn if a future
+taxonomy enum is added without either a concrete/logical count policy or residual policy, closing
+the subtler “classified but still silently neutral” failure mode. Folded concrete count subtrees
+receive a diagnostics-only classification pass so a future child beneath MultiIntersection cannot
+hide behind its intentional one-access fold.
+
+`WithCostModelDiagnostics(ctx, logger)` is the opt-in injection point. It returns an outermost
+`PlanContext` decorator carrying the logger and a wrapper-scoped `sync.Map`; warnings deduplicate
+once per stable `(walk, reflect.Type)` key under concurrent comparisons. Walk values are structured
+snake-case tokens (`operator_counts`, `residual_predicates`, `join_ordering_cost`). The logger's
+WARN gate is checked before the dedupe key is consumed, nil explicitly masks an inner sink, and
+messages contain only walk, type, and fallback metadata—never `Explain`, query literals, or schema
+text. There is no default logger and no `os.Stderr` write. Reusing a wrapper shares its dedupe
+scope; constructing another wrapper creates an independent scope.
+
+Planner plumbing preserves behavior as well as observability. `NewPlanner`,
+`ExpressionRuleCall.CostModel`, and `ImplementationRuleCall.CostModel` retain only the diagnostic
+sink over `EmptyPlanContext` while statistics are nil, exactly matching their historical
+no-context comparator. Once statistics are supplied, the real wrapped context is used as before.
+Tests prove both the unchanged primary-vs-index verdict and actual unknown-plan warning delivery
+through all three paths.
+
+Twelve parallel regressions cover concurrent once-only emission across all three walks, independent
+wrapper scopes, nil masking, dynamically disabled WARN levels, known-neutral silence, concrete and
+logical fallback detection, folded children, invalid future count/residual kinds, comparator
+plumbing, the logical-policy compatibility boundaries, and the exact 41-type taxonomy. Focused,
+race, and 20× repeated tests pass. The checked-in 2,600-query plan-shape golden is byte-identical;
+`just generate`, `just lint`, `just build`, and full `just test` pass (56/56).
+
+**190.14 is complete. FINAL REVIEW: adversarial Codex audit ACK; second independent audit ACK.**
+
 ## Commit sequencing & the one-PR decision
 
 Owner directive: **one branch, one PR** for the whole audit. Torvalds's NAK concern — "one

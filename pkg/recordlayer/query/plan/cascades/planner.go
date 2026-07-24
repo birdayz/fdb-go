@@ -176,14 +176,18 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 	if ctx == nil {
 		ctx = EmptyPlanContext()
 	}
-	return &Planner{
+	p := &Planner{
 		rules:              rules,
 		rewritingImplRules: []ImplementationRule{NewFinalizeExpressionsRule()},
 		ctx:                ctx,
 		memo:               nil,
-		costModel:          PlanningCostModelLess,
 		MaxTasks:           100_000,
 	}
+	// Preserve the historical nil-context cost semantics until
+	// WithStatistics is called, while still carrying an injected RFC-190.14
+	// diagnostic sink. Merely adding a logger must never change a winner.
+	p.costModel = NewPlanningCostModelLessWithContext(nil, costModelDiagnosticsOnlyContext(ctx))
+	return p
 }
 
 // Memo returns the planner's Memo structure. Available after Plan
