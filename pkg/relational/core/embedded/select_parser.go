@@ -1824,15 +1824,17 @@ func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
 	return out
 }
 
-// queryInnerIsUnconditionalOneRow reports whether an EXISTS subquery body is a
-// NON-GROUPED aggregate that ALWAYS produces EXACTLY ONE row — so EXISTS over it
-// is unconditionally TRUE. A non-grouped COUNT(*)/MAX/SUM yields one row even
-// over an empty (post-WHERE) input (COUNT->0, MAX/SUM->NULL). Excluded because
-// they can change that cardinality: GROUP BY (zero rows over an empty group),
-// HAVING (empties the group), QUALIFY (a window filter over the single row),
-// LIMIT 0 / positive OFFSET (eliminates the row), and a WINDOWED aggregate
-// (COUNT(*) OVER (...) is row-preserving, one per input row — not one-row).
-func queryInnerIsUnconditionalOneRow(q antlrgen.IQueryContext) bool {
+// queryInnerIsExactlyOneRowBeforePagination reports whether an EXISTS subquery
+// body is a NON-GROUPED aggregate that produces EXACTLY ONE row before its
+// LIMIT/OFFSET is applied. A non-grouped COUNT(*)/MAX/SUM yields one row even
+// over an empty (post-WHERE) input (COUNT->0, MAX/SUM->NULL). GROUP BY and
+// HAVING/QUALIFY can change that cardinality, while a WINDOWED aggregate is
+// row-preserving (one output per input row), so those shapes are excluded.
+//
+// Pagination is deliberately not inspected here. The caller first establishes
+// this one-row cardinality and only then applies LIMIT/OFFSET, matching SQL's
+// operator order.
+func queryInnerIsExactlyOneRowBeforePagination(q antlrgen.IQueryContext) bool {
 	if q == nil {
 		return false
 	}
@@ -1840,8 +1842,7 @@ func queryInnerIsUnconditionalOneRow(q antlrgen.IQueryContext) bool {
 	if !ok {
 		return false
 	}
-	simpleTable, stOk := body.QueryTerm().(*antlrgen.SimpleTableContext)
-	if !stOk {
+	if _, stOk := body.QueryTerm().(*antlrgen.SimpleTableContext); !stOk {
 		return false
 	}
 	sq, err := extractFromQueryTerm(body)
@@ -1851,16 +1852,14 @@ func queryInnerIsUnconditionalOneRow(q antlrgen.IQueryContext) bool {
 	if len(sq.groupBy) > 0 || sq.havingExpr != nil || sq.qualifyExpr != nil {
 		return false
 	}
-	// A LIMIT/OFFSET clause can eliminate the single aggregate row. Only fold
-	// when the clause PROVABLY preserves it: limit >= 1, offset == 0, and every
-	// atom parses cleanly. Reading sq.limit/sq.offset alone is unsafe — an
-	// unparseable atom (`LIMIT 0.0`, `LIMIT 1 OFFSET 1.0`) silently defaults to
-	// the -1/0 sentinels, hiding a row-eliminating clause. See
-	// limitClauseKeepsSingleRow.
-	if !limitClauseKeepsSingleRow(simpleTable) {
-		return false
+	hasRealAggregate := sq.countStar
+	for i := range sq.aggCols {
+		if sq.aggCols[i].aggFunc != "" {
+			hasRealAggregate = true
+			break
+		}
 	}
-	if !(sq.countStar || len(sq.aggCols) > 0) {
+	if !hasRealAggregate {
 		return false
 	}
 	return !queryScopeHasWindowedAggregate(body)

@@ -1911,33 +1911,6 @@ func parseLimitClause(simpleTable *antlrgen.SimpleTableContext) (limit, offset i
 	return limit, offset, nil
 }
 
-// limitClauseKeepsSingleRow reports whether simpleTable's LIMIT/OFFSET clause
-// (if any) provably preserves a single input row. It is STRICTER than reading
-// the (limit, offset) ints parseLimitClause returns: those sentinels conflate an
-// ABSENT clause with a syntactically-accepted-but-unparseable atom. Both `LIMIT
-// 0.0` and `LIMIT 1 OFFSET 1.0` parse (REAL_LITERAL is a decimalLiteral) yet
-// ParseInt fails, silently leaving limit=-1 / offset=0 — so a nonzero OFFSET
-// that failed to parse is indistinguishable from no offset via sq.offset alone.
-// A `LIMIT ?` parameter is likewise unknown at plan time. For the always-true
-// aggregate fold an unverifiable clause must DECLINE, never silently fold to
-// every row. So require EVERY atom to parse cleanly (no parameter, no non-integer
-// literal), then trust the resolved values: limit >= 1 keeps the row, offset == 0
-// does not skip it.
-func limitClauseKeepsSingleRow(simpleTable *antlrgen.SimpleTableContext) bool {
-	lc := simpleTable.LimitClause()
-	if lc == nil {
-		return true
-	}
-	for _, atom := range lc.AllLimitClauseAtom() {
-		if _, err := strconv.ParseInt(atom.GetText(), 10, 64); err != nil {
-			return false
-		}
-	}
-	// Every atom parsed cleanly above, so parseLimitClause cannot error here.
-	limit, offset, _ := parseLimitClause(simpleTable)
-	return limit >= 1 && offset == 0
-}
-
 // visitLimit checks the ANTLR parse tree for a LIMIT clause. Go
 // extension: LIMIT/OFFSET are supported (most-requested feature).
 // Builds a LogicalLimit node; the Cascades translator turns it into a

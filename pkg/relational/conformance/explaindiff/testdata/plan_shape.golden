@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=338 queries=2442 dml=158 non_query=97 plan_errors=261 unexpected_errors=4
+# files=338 queries=2446 dml=158 non_query=97 plan_errors=261 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -5726,6 +5726,32 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
 shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
+=== exists_with_aggregate.yaml#2
+sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id LIMIT 1 OFFSET 1 ) ORDER BY c.name
+plan:  Project([NAME#1], InMemorySort([NAME ASC], PredicatesFilter(Scan(CUSTOMERS), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== exists_with_aggregate.yaml#3
+sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT MAX(o.amount) FROM orders o WHERE o.customer_id = c.id LIMIT 0 ) ORDER BY c.name
+plan:  Project([NAME#1], InMemorySort([NAME ASC], PredicatesFilter(Scan(CUSTOMERS), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== exists_with_aggregate.yaml#4
+sql:   SELECT c.name FROM customers c WHERE NOT EXISTS ( SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id LIMIT 1 OFFSET 1 ) ORDER BY c.name
+plan:  Project([NAME#1], InMemorySort([NAME ASC], Scan(CUSTOMERS)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryScanPlan
+=== exists_with_aggregate.yaml#5
+sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id LIMIT 1 OFFSET 0 ) ORDER BY c.name
+plan:  Project([NAME#1], InMemorySort([NAME ASC], Scan(CUSTOMERS)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryScanPlan
 === exists_with_or.yaml#0
 sql:   SELECT id FROM items WHERE EXISTS ( SELECT 1 FROM tags WHERE tags.item_id = items.id AND (tags.label = 'hot' OR tags.label = 'new') ) ORDER BY id
 plan:  Project([ID#0], FlatMap(outer=Scan(ITEMS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TAGS), [1 preds])), [1 preds])))

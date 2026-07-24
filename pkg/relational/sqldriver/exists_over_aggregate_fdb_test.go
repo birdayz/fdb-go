@@ -1,16 +1,18 @@
 package sqldriver_test
 
-// TestFDB_ExistsOverNonGroupedAggregate pins the CONSTANT-FOLD fix for a
-// PRE-EXISTING silent-wrong: a correlated positive WHERE-EXISTS whose inner is a
-// NON-GROUPED aggregate (COUNT(*)/MAX/SUM, no GROUP BY / HAVING / QUALIFY /
-// LIMIT 0 / OFFSET / windowed) is UNCONDITIONALLY TRUE. The fold drops the
-// existential quantifier (EXISTS -> TRUE) rather than wrapping/semi-joining, so
-// a JOINED OUTER source works too (the wrap approach regressed it to 0AF00).
+// TestFDB_ExistsOverNonGroupedAggregate pins the cardinality fold for a
+// correlated WHERE-EXISTS whose inner is a NON-GROUPED aggregate. COUNT/MAX/SUM
+// produce exactly one row before pagination; a literal LIMIT/OFFSET then either
+// preserves or removes that row. The fold substitutes the resulting boolean
+// instead of wrapping/semi-joining, so joined outer sources and both
+// EXISTS/NOT-EXISTS polarities keep exact SQL semantics.
 
 import (
 	"context"
 	"database/sql"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
@@ -27,7 +29,8 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE eagf_tmpl"+
 		" CREATE TABLE p (id BIGINT, PRIMARY KEY (id))"+
 		" CREATE TABLE e (eid BIGINT, eref BIGINT, PRIMARY KEY (eid))"+
-		" CREATE TABLE g (gid BIGINT, PRIMARY KEY (gid))"); err != nil {
+		" CREATE TABLE g (gid BIGINT, PRIMARY KEY (gid))"+
+		" CREATE TABLE d (id BIGINT, x BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE eagf_tmpl"); err != nil {
@@ -40,8 +43,13 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	for _, s := range []string{
 		"INSERT INTO p VALUES (1), (2), (3)",
-		"INSERT INTO e VALUES (301, 1)", // only p.id=1 has a correlated e row
+		// Only p.id=1 has correlated rows. Two matches are load-bearing for the
+		// OFFSET 1 regression below: applying OFFSET to raw rows would leave one
+		// and answer TRUE, while SQL aggregates those rows to one result first
+		// and then skips that single aggregate row (FALSE).
+		"INSERT INTO e VALUES (301, 1), (302, 1)",
 		"INSERT INTO g VALUES (901)",
+		"INSERT INTO d VALUES (1, 0), (2, 0), (3, 0)",
 	} {
 		if _, err := db.ExecContext(ctx, s); err != nil {
 			t.Fatalf("seed %q: %v", s, err)
@@ -114,7 +122,7 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 
 	// GUARD: a WINDOWED aggregate (COUNT(*) OVER ()) is
 	// row-preserving, NOT unconditionally-one-row, so queryScopeHasWindowedAggregate
-	// keeps it from being flagged AlwaysTrue — it is NOT folded. Folding it would
+	// keeps KnownTruth unset — it is NOT folded. Folding it would
 	// wrongly yield all-p; instead the engine cleanly REJECTS the unsupported
 	// windowed aggregate (0AF00), never a silent-wrong.
 	t.Run("windowed_not_folded", func(t *testing.T) {
@@ -124,42 +132,20 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 		}
 	})
 
-	// RESIDUAL (booked): NOT EXISTS(always-true) is FALSE (empty), but the fold
-	// only handles POSITIVE consumers, so a negated one keeps the pre-existing
-	// behavior — [2 3] here (row-existence semantics: p 2,3 have no e), where the
-	// strictly-correct answer is []. Flip-sentinel: when NOT-EXISTS folding lands
-	// this flips to []. Pinned so the residual is explicit, not silent.
-	t.Run("not_exists_residual", func(t *testing.T) {
-		eq(t, "not_exists_residual", ids(t, "SELECT p.id FROM p WHERE NOT EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id) ORDER BY p.id"), []int64{2, 3})
+	// The same known cardinality naturally inverts under NOT EXISTS: the
+	// non-grouped aggregate always emits one row, so NOT EXISTS is FALSE.
+	t.Run("not_exists_known_false", func(t *testing.T) {
+		eq(t, "not_exists_known_false", ids(t, "SELECT p.id FROM p WHERE NOT EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id) ORDER BY p.id"), nil)
 	})
 
-	// P1 (mixed polarity): a positive AlwaysTrue esq beside a NEGATED one must
-	// NOT partial-fold (that left the broken negated residual [2 3] where the
-	// truth is empty). The fold DECLINES the whole filter, preserving the base
-	// behavior (this two-quantifier shape is rejected upstream) — never the
-	// silent-wrong [2 3].
-	t.Run("mixed_polarity_declines", func(t *testing.T) {
-		got, qErr := db.QueryContext(ctx, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id) AND NOT EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id) ORDER BY p.id")
-		if qErr != nil {
-			return // rejected (base behavior) — acceptable, NOT silent-wrong
-		}
-		var v []int64
-		for got.Next() {
-			var x int64
-			if sErr := got.Scan(&x); sErr != nil {
-				t.Fatalf("scan: %v", sErr)
-			}
-			v = append(v, x)
-		}
-		got.Close()
-		if len(v) == 2 && v[0] == 2 && v[1] == 3 {
-			t.Fatalf("mixed_polarity: partial-folded to the broken negated residual [2 3] (must decline)")
-		}
+	// Mixed polarity is now exact rather than partially folded:
+	// TRUE AND NOT(TRUE) is FALSE.
+	t.Run("mixed_polarity_folds_false", func(t *testing.T) {
+		eq(t, "mixed_polarity_folds_false", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id) AND NOT EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id) ORDER BY p.id"), nil)
 	})
 
 	// A positive literal LIMIT n>=1 keeps the single aggregate row, so it MUST
-	// still fold to always-true (the finer guard folds sq.limit>=1). A blanket
-	// LIMIT-clause decline would wrongly drop it to [1].
+	// still fold to TRUE (the cardinality classifier proves the row survives).
 	t.Run("limit_1_folds", func(t *testing.T) {
 		eq(t, "limit_1_folds", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1) ORDER BY p.id"), []int64{1, 2, 3})
 	})
@@ -171,7 +157,7 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 	// valid integer is now REJECTED with a loud 42601 syntax error, never
 	// silently dropped. Before the parseLimitClause-reject, `... LIMIT 0.0`
 	// left the -1 no-limit sentinel and returned ALL rows (standalone) / the
-	// [1] correlated-drop residual (this EXISTS shape). The reject lands at
+	// raw correlated-row path (this EXISTS shape). The reject lands at
 	// plan time, so QueryContext returns the error directly.
 	t.Run("limit_invalid_literal_rejected", func(t *testing.T) {
 		for _, lim := range []string{"LIMIT 0.0", "LIMIT 0L"} {
@@ -180,37 +166,67 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 				rows.Close()
 				t.Fatalf("%s: expected a 42601 syntax error (LIMIT must be an integer literal), got a successful query", lim)
 			}
+			requireSQLSTATE(t, qErr, api.ErrCodeSyntaxError)
 		}
 	})
 
-	// A cleanly-parsed positive OFFSET (`OFFSET 2`) skips the single aggregate
-	// row, AND a syntactically-accepted-but-unparseable OFFSET (`OFFSET 1.0` /
-	// `OFFSET 1L`, both valid decimalLiterals that ParseInt rejects) leaves
-	// sq.offset silently 0 — so reading sq.offset alone would wrongly FOLD these
-	// to always-true [1 2 3] (the bug: a positive LIMIT paired with an
-	// unverifiable OFFSET). limitClauseKeepsSingleRow declines on either — a
-	// present-but-unparseable atom OR a nonzero offset. All fall to the
-	// pre-existing residual [1], which is itself wrong (strictly []: an aggregate
-	// collapses to one row, any positive OFFSET skips it, so EXISTS is FALSE). The
-	// [1] is the un-folded correlated row-existence path — pinned, not blessed. It
-	// has TWO DISTINCT flip causes, one per case: `OFFSET 1.0`/`1L` flip when the
-	// booked parseLimitClause-reject lands (then the unparseable atom errors);
-	// `OFFSET 2` parses fine, so it flips only when the SEPARATE general
-	// aggregate-EXISTS execution residual (the declined path actually applying
-	// LIMIT/OFFSET to the collapsed one-row aggregate) is fixed.
-	t.Run("offset_declines_not_always_true", func(t *testing.T) {
-		// OFFSET 2 parses cleanly: the fold declines (a row-skipping offset is
-		// unverifiable) and the un-folded correlated path answers [1]. This is
-		// the pre-existing residual (strictly []); it flips only when the
-		// SEPARATE aggregate-EXISTS execution residual is fixed, NOT by the
-		// parseLimitClause-reject (which does not touch a valid integer).
-		v := ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 2) ORDER BY p.id")
-		if len(v) == 3 {
-			t.Fatalf("OFFSET 2: wrongly FOLDED to always-true [1 2 3] (a row-skipping OFFSET must decline)")
-		}
-		if len(v) != 1 || v[0] != 1 {
-			t.Fatalf("OFFSET 2: pre-existing residual changed from [1] to %v — assert corrected rows if the execution residual was fixed", v)
-		}
+	// SQL operator order is aggregate first, pagination second. Every query
+	// below has exactly one aggregate row before pagination, regardless of the
+	// two raw matches for p.id=1; LIMIT 0 or any positive OFFSET removes that
+	// aggregate row, so EXISTS is FALSE for every p.
+	t.Run("limit_zero_after_aggregate", func(t *testing.T) {
+		eq(t, "limit_zero_after_aggregate", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 0) ORDER BY p.id"), nil)
+	})
+	t.Run("offset_one_after_aggregate", func(t *testing.T) {
+		eq(t, "offset_one_after_aggregate", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) ORDER BY p.id"), nil)
+	})
+	t.Run("max_offset_one_after_aggregate", func(t *testing.T) {
+		eq(t, "max_offset_one_after_aggregate", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT MAX(e.eid) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) ORDER BY p.id"), nil)
+	})
+	t.Run("sum_offset_one_after_aggregate", func(t *testing.T) {
+		eq(t, "sum_offset_one_after_aggregate", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT SUM(e.eid) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) ORDER BY p.id"), nil)
+	})
+	t.Run("offset_one_with_larger_limit", func(t *testing.T) {
+		eq(t, "offset_one_with_larger_limit", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 5 OFFSET 1) ORDER BY p.id"), nil)
+	})
+	t.Run("offset_two_after_aggregate", func(t *testing.T) {
+		eq(t, "offset_two_after_aggregate", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 2) ORDER BY p.id"), nil)
+	})
+	t.Run("not_exists_inverts_empty_page", func(t *testing.T) {
+		eq(t, "not_exists_inverts_empty_page", ids(t, "SELECT p.id FROM p WHERE NOT EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) ORDER BY p.id"), []int64{1, 2, 3})
+	})
+	t.Run("max_not_exists_inverts_empty_page", func(t *testing.T) {
+		eq(t, "max_not_exists_inverts_empty_page", ids(t, "SELECT p.id FROM p WHERE NOT EXISTS (SELECT MAX(e.eid) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) ORDER BY p.id"), []int64{1, 2, 3})
+	})
+	t.Run("sum_not_exists_inverts_empty_page", func(t *testing.T) {
+		eq(t, "sum_not_exists_inverts_empty_page", ids(t, "SELECT p.id FROM p WHERE NOT EXISTS (SELECT SUM(e.eid) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) ORDER BY p.id"), []int64{1, 2, 3})
+	})
+	t.Run("other_conjunct_and_known_false", func(t *testing.T) {
+		eq(t, "other_conjunct_and_known_false", ids(t, "SELECT p.id FROM p WHERE p.id > 1 AND EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) ORDER BY p.id"), nil)
+	})
+	t.Run("known_true_and_ordinary_exists", func(t *testing.T) {
+		eq(t, "known_true_and_ordinary_exists", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id) AND EXISTS (SELECT 1 FROM e WHERE e.eref = p.id) ORDER BY p.id"), []int64{1})
+	})
+	t.Run("joined_outer_empty_page", func(t *testing.T) {
+		eq(t, "joined_outer_empty_page", ids(t, "SELECT p.id FROM p, g WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) ORDER BY p.id"), nil)
+	})
+
+	// The arity>=3 gathered-cluster projection fold is a distinct early-return
+	// path. It must perform the same known-truth substitution before building
+	// the gathered EXISTS wrap. The two raw rows for p.id=1 make the false case
+	// discriminate aggregate-before-OFFSET from raw-row pagination; the no-page
+	// twin proves known TRUE does not degrade to raw existence either.
+	t.Run("arity_three_gathered_known_false", func(t *testing.T) {
+		eq(t, "arity_three_gathered_known_false", ids(t,
+			"SELECT p.id FROM p, g AS g1, g AS g2 WHERE EXISTS ("+
+				"SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1"+
+				") ORDER BY p.id"), nil)
+	})
+	t.Run("arity_three_gathered_known_true", func(t *testing.T) {
+		eq(t, "arity_three_gathered_known_true", ids(t,
+			"SELECT p.id FROM p, g AS g1, g AS g2 WHERE EXISTS ("+
+				"SELECT COUNT(*) FROM e WHERE e.eref = p.id"+
+				") ORDER BY p.id"), []int64{1, 2, 3})
 	})
 
 	// Invalid OFFSET literal (OFFSET 1.0 / 1L): same reject as an invalid LIMIT
@@ -224,6 +240,7 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 				rows.Close()
 				t.Fatalf("%s: expected a 42601 syntax error (OFFSET must be an integer literal), got a successful query", off)
 			}
+			requireSQLSTATE(t, qErr, api.ErrCodeSyntaxError)
 		}
 	})
 
@@ -234,4 +251,130 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 	t.Run("offset_0_folds", func(t *testing.T) {
 		eq(t, "offset_0_folds", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 0) ORDER BY p.id"), []int64{1, 2, 3})
 	})
+
+	// UNCORRELATED controls already carry the real Aggregate -> Limit pipeline;
+	// they must agree with the correlated cardinality fold.
+	t.Run("uncorrelated_offset_false", func(t *testing.T) {
+		eq(t, "uncorrelated_offset_false", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e LIMIT 1 OFFSET 1) ORDER BY p.id"), nil)
+	})
+	t.Run("uncorrelated_not_exists_true", func(t *testing.T) {
+		eq(t, "uncorrelated_not_exists_true", ids(t, "SELECT p.id FROM p WHERE NOT EXISTS (SELECT COUNT(*) FROM e LIMIT 1 OFFSET 1) ORDER BY p.id"), []int64{1, 2, 3})
+	})
+
+	// GROUP BY + positive OFFSET has data-dependent post-group cardinality. The
+	// correlated fallback cannot carry that pagination yet, so it must reject
+	// typed-loud instead of applying OFFSET to raw rows or ignoring it.
+	t.Run("grouped_offset_rejected", func(t *testing.T) {
+		rows, qErr := db.QueryContext(ctx, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id GROUP BY e.eid LIMIT 1 OFFSET 1) ORDER BY p.id")
+		if qErr == nil {
+			rows.Close()
+			t.Fatal("grouped correlated EXISTS with OFFSET planned; expected typed unsupported rejection")
+		}
+		requireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
+	})
+
+	// The SQL driver substitutes bound parameters before parsing, so production
+	// sees a literal and classifies its exact post-pagination cardinality.
+	t.Run("bound_limit_semantics", func(t *testing.T) {
+		eq(t, "bound_limit_zero", idsWithArg(t, db, ctx,
+			"SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT ?) ORDER BY p.id", 0), nil)
+		eq(t, "bound_limit_one", idsWithArg(t, db, ctx,
+			"SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT ?) ORDER BY p.id", 1), []int64{1, 2, 3})
+		eq(t, "bound_offset_zero", idsWithArg(t, db, ctx,
+			"SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET ?) ORDER BY p.id", 0), []int64{1, 2, 3})
+		eq(t, "bound_offset_one", idsWithArg(t, db, ctx,
+			"SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET ?) ORDER BY p.id", 1), nil)
+	})
+
+	// Projected and JOIN-ON consumers do not yet have constant Value/ON-marker
+	// substitution. KnownTruth must therefore reject them typed-loud; neither is
+	// allowed to fall through to the raw-row semi-join.
+	t.Run("projected_known_truth_rejected", func(t *testing.T) {
+		rows, qErr := db.QueryContext(ctx, "SELECT p.id, EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) FROM p")
+		if qErr == nil {
+			rows.Close()
+			t.Fatal("projected cardinality-known EXISTS planned; expected typed unsupported rejection")
+		}
+		requireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
+	})
+	t.Run("join_on_known_truth_rejected", func(t *testing.T) {
+		rows, qErr := db.QueryContext(ctx, "SELECT p.id FROM p JOIN g ON g.gid = 901 AND EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1)")
+		if qErr == nil {
+			rows.Close()
+			t.Fatal("JOIN ON cardinality-known EXISTS planned; expected typed unsupported rejection")
+		}
+		requireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
+	})
+
+	// DML must share SELECT's parse-tree window-aggregate guard. The mixed
+	// global/window projection is deliberately correlated to d: ids 2 and 3
+	// have empty raw input, so letting DML lower it through the raw EXISTS
+	// fallback would silently target a different row set.
+	t.Run("dml_windowed_aggregate_exists_rejected", func(t *testing.T) {
+		res, execErr := db.ExecContext(ctx,
+			"UPDATE d SET x = 9 WHERE EXISTS ("+
+				"SELECT COUNT(*), COUNT(*) OVER () FROM e "+
+				"WHERE e.eref = d.id LIMIT 1 OFFSET 0)")
+		if execErr == nil {
+			affected, rowsErr := res.RowsAffected()
+			t.Fatalf("windowed aggregate DML EXISTS planned: affected=%d rowsErr=%v; want SQLSTATE %s",
+				affected, rowsErr, api.ErrCodeUnsupportedQuery)
+		}
+		requireSQLSTATE(t, execErr, api.ErrCodeUnsupportedQuery)
+	})
+
+	// DML WHERE routes through the same filter consumer. Pin FALSE, negated
+	// FALSE, and TRUE so UPDATE/DELETE cannot bypass the cardinality fold.
+	t.Run("dml_where_known_truth", func(t *testing.T) {
+		res, execErr := db.ExecContext(ctx,
+			"UPDATE d SET x = 1 WHERE EXISTS ("+
+				"SELECT COUNT(*) FROM e WHERE e.eref = d.id LIMIT 1 OFFSET 1)")
+		if execErr != nil {
+			t.Fatalf("UPDATE known FALSE: %v", execErr)
+		}
+		if affected, err := res.RowsAffected(); err != nil || affected != 0 {
+			t.Fatalf("UPDATE known FALSE affected = %d, err=%v; want 0", affected, err)
+		}
+
+		res, execErr = db.ExecContext(ctx,
+			"UPDATE d SET x = 2 WHERE NOT EXISTS ("+
+				"SELECT COUNT(*) FROM e WHERE e.eref = d.id LIMIT 1 OFFSET 1)")
+		if execErr != nil {
+			t.Fatalf("UPDATE NOT known FALSE: %v", execErr)
+		}
+		if affected, err := res.RowsAffected(); err != nil || affected != 3 {
+			t.Fatalf("UPDATE NOT known FALSE affected = %d, err=%v; want 3", affected, err)
+		}
+
+		res, execErr = db.ExecContext(ctx,
+			"DELETE FROM d WHERE EXISTS ("+
+				"SELECT COUNT(*) FROM e WHERE e.eref = d.id)")
+		if execErr != nil {
+			t.Fatalf("DELETE known TRUE: %v", execErr)
+		}
+		if affected, err := res.RowsAffected(); err != nil || affected != 3 {
+			t.Fatalf("DELETE known TRUE affected = %d, err=%v; want 3", affected, err)
+		}
+	})
+}
+
+func idsWithArg(t *testing.T, db *sql.DB, ctx context.Context, query string, arg any) []int64 {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, query, arg)
+	if err != nil {
+		t.Fatalf("query %q: %v", query, err)
+	}
+	defer rows.Close()
+	var got []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	return got
 }

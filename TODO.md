@@ -38,9 +38,24 @@ closed rather than silently alter rows or output schema.
   cost/designation/extraction tie-break hash, so this correctness refinement
   does not churn otherwise-equivalent chosen plan shapes. Focused memo, rule,
   plan-identity, and full-pipeline regressions pin all paths.
-- [ ] **CQ-3 (HIGH) — fix correlated EXISTS over non-grouped aggregates with
-  LIMIT/OFFSET.** Materialize aggregate cardinality before applying pagination;
-  flip the existing wrong-row sentinel to the SQL-correct result.
+- [x] **CQ-3 (HIGH) — fix correlated EXISTS over non-grouped aggregates with
+  LIMIT/OFFSET.** The front end now proves the non-grouped aggregate's exact
+  one-row cardinality *before* applying literal pagination and carries the
+  resulting known EXISTS truth into the translator. Direct/top-level-AND WHERE
+  consumers substitute TRUE/FALSE in both polarities, so `LIMIT 0` and every
+  positive OFFSET are empty even when the correlated raw input has multiple
+  matches; positive LIMIT with zero OFFSET stays true. Pagination atoms still
+  unresolved at planning time and data-dependent positive OFFSET for
+  non-global shapes (including GROUP BY) reject typed-loud instead of falling
+  into raw row-existence. Public bound LIMIT/OFFSET arguments are substituted
+  before parsing and retain their exact literal semantics. Projected,
+  nested-boolean, and JOIN-ON known-truth
+  consumers also reject typed-loud until their distinct substitution paths are
+  implemented; HAVING remains blanket-rejected. The arity>=3 gathered-cluster
+  projection bypass performs the same fold before existential lowering, and
+  DML shares SELECT's parse-tree window-aggregate rejection. Focused
+  classifier/fold/planner tests, live COUNT/MAX/SUM + joined-outer/gathered +
+  DML FDB regressions, and yamsql controls pin the result.
 - [ ] **CQ-4 (HIGH) — finish correlated scalar-subquery cardinality enforcement.**
   Enforce SQLSTATE 21000 for grouped correlated scalars returning multiple groups
   and for the separate WHERE-comparison lowering, while preserving explicit user
@@ -4012,21 +4027,22 @@ do NOT need name binding (independent-legs materialized joins).** Pinned: TestFD
 (EXPLAIN asserts the SARG'd `[=]` index scan, not the cross-product; + correct rows) — trips if a future
 producer-retirement re-ordinalizes this shape and drops the index (the reverted commit-A wall).
 
-### [x] query-engine (PRE-EXISTING): correlated `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE — FIXED 2026-07-10 via CONSTANT-FOLD (after the wrap approach was reverted twice)
-**FIXED (positive WHERE-EXISTS) via the constant-fold, which succeeded where the wrap approach was reverted
-twice.** A correlated positive WHERE-EXISTS over a NON-GROUPED aggregate (COUNT(*)/MAX/SUM, no GROUP BY /
-HAVING / QUALIFY / LIMIT 0 / positive OFFSET / windowed OVER) is unconditionally TRUE. Fix: front-end
-BuildExists sets `ExistsSubquery.AlwaysTrue` (via `queryInnerIsUnconditionalOneRow` +
-`queryOuterHasWindowedAggregate` guard) for the correlated case; the translator's `foldAlwaysTrueExists`
-(run at the TOP of translateFilter, before any routing) drops the AlwaysTrue esq and replaces its EXISTS
-marker with TRUE in the predicate (`stripFoldedExistsMarkers`, `P AND TRUE == P`). Because the existential
-quantifier is never built, the correlated-aggregate semi-join is never built — so the JOINED-OUTER
-regression (P1#5) and the windowed-DML silent-wrong (P1#4) that killed the wrap CANNOT arise. Pinned:
-`exists_over_aggregate_fdb_test.go` — count/max/sum, JOINED-OUTER (cross + with-conjunct), controls
-(grouped/plain/uncorrelated), P AND TRUE survives, windowed-guard rejects (0AF00), NOT-EXISTS residual
-sentinel. Full suite 55/55. **RESIDUALS (booked): NOT EXISTS(always-true)=FALSE and PROJECTED EXISTS(agg)
-are NOT folded (only positive WHERE) — they keep pre-existing behavior; pinned as sentinels.** Query-engine
-change → four-gate (in flight).
+### [x] query-engine (PRE-EXISTING): correlated `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of using aggregate cardinality — FIXED 2026-07-10, completed for WHERE pagination/polarity by CQ-3 2026-07-24
+**FIXED via the cardinality constant-fold, which succeeded where the wrap approach was reverted twice.**
+A correlated WHERE-EXISTS over a NON-GROUPED aggregate (COUNT(*)/MAX/SUM, no GROUP BY / HAVING / QUALIFY /
+windowed OVER) produces exactly one row before pagination. BuildExists now records a tri-state
+`ExistsSubquery.KnownTruth`: the pre-pagination one-row proof is followed by the literal LIMIT/OFFSET
+cardinality calculation, so no pagination / LIMIT>=1 OFFSET 0 is TRUE while LIMIT 0 / OFFSET>0 is FALSE.
+`foldKnownExists` substitutes that truth in direct/top-level-AND positive and negated WHERE markers before
+routing, dropping the existential quantifier entirely. This keeps the correlated-aggregate semi-join — and
+therefore the JOINED-OUTER correlation-placement hazard that killed the wrap — out of the plan. Pagination
+atoms still unresolved at planning time (public bound arguments are substituted before parsing) and
+data-dependent positive OFFSET for non-global shapes (including GROUP BY) are 0AF00 typed declines.
+Projected, nested-boolean, and JOIN-ON known-truth consumers are also typed declines until their separate
+substitution paths exist; HAVING stays blanket-rejected. The gathered arity>=3 projection fast path folds
+before bypassing `translateFilter`, and DML now shares SELECT's parse-tree window-aggregate rejection.
+Pinned by classifier/fold/planner unit tests, live COUNT/MAX/SUM + joined-outer/gathered + DML FDB coverage,
+yamsql aggregate-pagination cases, and uncorrelated controls.
 
 <details><summary>original characterization + the two reverted wrap attempts (audit trail)</summary>
 
@@ -4138,25 +4154,23 @@ SILENTLY DROPPED: `SELECT p.id FROM p LIMIT 0.0` returned ALL rows (correct is 0
 helper rejects a `decimalLiteral` atom that fails ParseInt with a loud 42601 syntax error, while a
 `preparedStatementParameter` (`LIMIT ?`) still returns unresolved (parameter binding unchanged — separate
 concern). `parseLimitClause` now returns `(limit, offset, err)`, threaded through all callers (visitLimit +
-its call site, the qualified-star rebuild re-read, extractFromSimpleTable; limitClauseKeepsSingleRow ignores
-the error since it pre-checks every atom). Applies to BOTH the limit and offset atom, so `LIMIT 1 OFFSET 1.0`
+its call site, the qualified-star rebuild re-read, and extractFromSimpleTable). Applies to BOTH the limit
+and offset atom, so `LIMIT 1 OFFSET 1.0`
 / `OFFSET 1L` reject too. Also dropped the dead positional-`LIMIT a,b` fallback (the grammar is
 `LIMIT limit=... (OFFSET offset=...)?` — both atoms are labeled, no positional form). Pinned:
 `TestFDB_InvalidLimitLiteralRejected_RFC128` (standalone: bad literals → 42601, plus `LIMIT 0`→0 rows and
-`LIMIT 2 OFFSET 3` positive controls) + the rewritten flip-sentinels in `exists_over_aggregate_fdb_test.go`
-(`limit_invalid_literal_rejected`, `offset_invalid_literal_rejected`; `offset_declines_not_always_true`'s
-`OFFSET 2` case stays [1] — it parses fine, its flip belongs to the SEPARATE execution residual below). Full
+`LIMIT 2 OFFSET 3` positive controls) + the 42601 pins in
+`exists_over_aggregate_fdb_test.go` (`limit_invalid_literal_rejected`,
+`offset_invalid_literal_rejected`). CQ-3 separately fixed the valid positive-OFFSET execution path. Full
 suite green.
 
-### [ ] query-engine (PRE-EXISTING residual, booked; strictly wrong but honestly pinned): the DECLINED correlated `EXISTS`-over-non-grouped-aggregate path ignores LIMIT/OFFSET and uses plain row-existence
-When the always-true fold correctly DECLINES (a row-eliminating/unverifiable LIMIT/OFFSET, e.g. `LIMIT 1
-OFFSET 2`), the fallback is the un-folded correlated `EXISTS` path, which answers by plain row-existence over
-the correlated inner — ignoring that a non-grouped aggregate COLLAPSES to exactly one row and ignoring the
-OFFSET. So `... WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref=p.id LIMIT 1 OFFSET 2)` returns [1] (the
-correlated match) when the strictly-correct answer is [] (COUNT(*)→1 row, OFFSET 2 skips it, EXISTS FALSE).
-This is the general aggregate-`EXISTS` EXECUTION-path fix (the declined path materializing the one-row
-aggregate and applying its LIMIT/OFFSET), a sizable change distinct from the front-end fold and from the
-parseLimitClause-reject above. Flip-sentinel: `offset_declines_not_always_true`'s `OFFSET 2` case [1]→[].
+### [x] query-engine (PRE-EXISTING residual): correlated `EXISTS` over a non-grouped aggregate ignored LIMIT/OFFSET and used plain row-existence — FIXED CQ-3 2026-07-24
+The fallback no longer applies pagination to raw correlated rows. It proves the aggregate's exact one-row
+output first and then evaluates literal pagination cardinality: `LIMIT 0` or any positive OFFSET yields a
+known-empty subquery, while LIMIT>=1/OFFSET 0 preserves the row. The translator substitutes the resulting
+EXISTS truth (including NOT inversion) and never builds the raw-row semi-join. The live discriminator seeds
+two matching raw rows and checks OFFSET 1 — a bogus raw-row pagination fix would leave one row and fail.
+Unknown runtime atoms and grouped positive OFFSET decline 0AF00; invalid literals remain 42601.
 
 ### [x] query-engine (PRE-EXISTING; KEYSTONE): aggregate-detection SCOPE LEAK via harvestAggregates — FIXED 2026-07-10 (`befc32a8e` → `3e51a55e6` → interface-arm fix), scalar + EXISTS + IN all closed
 **FIXED.** `harvestAggregates` (select_parser.go) walked a projected expression's tree promoting aggregates

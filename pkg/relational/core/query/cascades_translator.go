@@ -2539,15 +2539,23 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
-	// Fold a POSITIVE WHERE-EXISTS over an unconditional-one-row
-	// aggregate (esq.AlwaysTrue) to TRUE — drop its existential quantifier AND
-	// rewrite its EXISTS marker in the predicate to TRUE (foldAlwaysTrueExists),
-	// before any routing. EXISTS(unconditional-one-row) is always satisfied, so
-	// `P AND EXISTS(...)` collapses to `P`. Running here — ahead of the
-	// join-flatten — means the correlated-aggregate semi-join is never built, so
-	// the joined-outer / windowed-DML hazards of the semi-join approach cannot
-	// arise. NOT EXISTS (negated) and projected consumers do NOT fold.
-	f = t.foldAlwaysTrueExists(f)
+	// Fold a WHERE-EXISTS whose post-pagination cardinality is known before any
+	// routing. The front-end proves the inner either empty or non-empty (notably:
+	// a non-grouped aggregate emits one row before LIMIT/OFFSET), so both EXISTS
+	// and NOT EXISTS can be substituted with their exact boolean result. Running
+	// here means the correlated-aggregate semi-join is never built, avoiding the
+	// joined-outer correlation-placement hazard entirely.
+	f = t.foldKnownExists(f)
+	// Every successfully substituted alias was removed from ExistsSubqueries.
+	// Any KnownTruth that remains is an unsupported consumer/boolean shape (for
+	// example a synthetic projected-EXISTS carrier or an EXISTS below OR).
+	// Raw-semi-joining it would reintroduce the aggregate/pagination cardinality
+	// bug, so decline typed-loud.
+	if hasKnownExistsTruth(f.ExistsSubqueries) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a cardinality-known EXISTS in this boolean position is not yet supported"))
+		return nil
+	}
 	// Narrowed correct-or-loud decline: a SCALAR SUBQUERY in a filter over a chained
 	// unnest (`FROM t, t.a AS x, x.b AS y WHERE t.id = (SELECT …)`) rides the wedgeGate
 	// POSITIONAL bake (rebaseUnnestOuterLegPredicateOrdinal), NOT the per-conjunct
@@ -4335,6 +4343,41 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	f *logical.LogicalFilter,
 	chain []logical.LogicalOperator,
 ) expressions.RelationalExpression {
+	// A projected ExistsValue is a distinct consumer whose alias must stay bound
+	// by the existential quantifier. Do not let the WHERE-marker fold below
+	// remove that subquery and then fall back to an ordinary projection with an
+	// unbound ExistsValue. Value substitution is not implemented yet, so retain
+	// the explicit correct-or-loud guard before rewriting f.
+	if projectionReferencesExistsSubquery(p.ProjectedValues) &&
+		hasKnownExistsTruth(f.ExistsSubqueries) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a projected cardinality-known EXISTS is not yet supported"))
+		return nil
+	}
+
+	// This fold is an early-return path that bypasses translateFilter, so perform
+	// the same cardinality-known WHERE substitution here before building any
+	// existential quantifier. This is load-bearing for the widened arity>=3
+	// gathered-cluster path: a plain projection over that shape reaches this
+	// method even when the SELECT list does not contain an ExistsValue.
+	//
+	// Top-level WHERE markers are removed (or absorb the predicate as FALSE).
+	// A known truth that remains is a distinct, unsupported consumer/boolean
+	// position (projected ExistsValue, nested OR, ...); raw-semi-joining its
+	// fallback plan would ignore aggregate/pagination cardinality, so reject
+	// typed-loud. If every existential was folded, return nil and let the
+	// ordinary project path translate p.Input: translateFilter will perform the
+	// identical fold on the original logical tree.
+	f = t.foldKnownExists(f)
+	if hasKnownExistsTruth(f.ExistsSubqueries) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a cardinality-known EXISTS in this projection-fold position is not yet supported"))
+		return nil
+	}
+	if len(f.ExistsSubqueries) == 0 {
+		return nil
+	}
+
 	// Collect the FILTER's (uncorrelated) scalar subqueries. The fold's early
 	// return in translateProject bypasses translateFilter — which is where
 	// f.ScalarSubqueries would otherwise be registered — so a scalar subquery in
@@ -6097,6 +6140,17 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		})
 	}
 
+	// ON-clause EXISTS is translated through a separate existential-join path,
+	// not translateFilter's known-truth substitution. Until that consumer can
+	// replace its ON marker with the constant, reject rather than raw-semi-join
+	// the fallback plan and lose aggregate/pagination cardinality.
+	if join, ok := p.Input.(*logical.LogicalJoin); ok &&
+		hasKnownExistsTruth(join.OnExistsSubqueries) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a cardinality-known EXISTS in a JOIN ON clause is not yet supported"))
+		return nil
+	}
+
 	// An INNER join carrying an ON-clause EXISTS is
 	// SEMANTICALLY IDENTICAL to WHERE-EXISTS — Java folds every inner-join ON
 	// predicate into the WHERE of one SelectExpression (QueryVisitor.visitSimpleTable
@@ -6994,6 +7048,11 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	if onPred, ok := j.OnPredicate.(predicates.QueryPredicate); ok && t.declineNegatedOuterOnlyEsq(onPred, j.OnExistsSubqueries) {
 		return nil
 	}
+	if hasKnownExistsTruth(j.OnExistsSubqueries) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a cardinality-known EXISTS in a JOIN ON clause is not yet supported"))
+		return nil
+	}
 	for _, esq := range j.OnExistsSubqueries {
 		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
@@ -7246,105 +7305,148 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	)
 }
 
-// foldAlwaysTrueExists removes POSITIVE WHERE-EXISTS subqueries flagged
-// AlwaysTrue (an unconditional-one-row aggregate inner) from a filter, folding
-// `EXISTS(inner)` to TRUE: with no existential quantifier built and the EXISTS
-// marker already stripped from the predicate by splitNonExistsPredicates, the
-// conjunct simply disappears (`P AND TRUE == P`). ONLY positive consumers fold:
-// a negated one (`NOT EXISTS`) would be FALSE, not TRUE, so it is kept
-// (pre-existing behavior). f.ExistsSubqueries are AND-conjunct EXISTS by the
-// same invariant the existential-quantifier lowering relies on. Returns f
-// unchanged when nothing folds (no allocation on the common path).
-func (t *cascadesTranslator) foldAlwaysTrueExists(f *logical.LogicalFilter) *logical.LogicalFilter {
-	if f == nil || len(f.ExistsSubqueries) == 0 {
+// foldKnownExists substitutes exact cardinality-derived EXISTS results in a
+// filter's top-level AND conjuncts. KnownTruth describes EXISTS itself; a
+// NOT-EXISTS marker receives the boolean inverse. TRUE conjuncts disappear and
+// FALSE absorbs the entire AND. The corresponding subquery plan is removed, so
+// neither correlation routing nor execution can perturb the constant result.
+//
+// The existential lowering supports these markers as top-level AND conjuncts.
+// For robustness, an alias is folded only when every occurrence in the whole
+// predicate is one of those direct conjuncts. An occurrence nested under OR or
+// another unsupported boolean shape leaves the filter unchanged for that alias
+// rather than orphaning a marker by dropping its quantifier.
+func (t *cascadesTranslator) foldKnownExists(f *logical.LogicalFilter) *logical.LogicalFilter {
+	if f == nil || f.Predicate == nil || len(f.ExistsSubqueries) == 0 {
 		return f
 	}
-	anyAlwaysTrue := false
+	known := make(map[values.CorrelationIdentifier]predicates.TriBool)
 	for _, esq := range f.ExistsSubqueries {
-		if esq.AlwaysTrue {
-			anyAlwaysTrue = true
-			break
+		if esq.KnownTruth != nil {
+			known[esq.Alias] = esq.KnownTruth
 		}
 	}
-	if !anyAlwaysTrue {
+	if len(known) == 0 {
 		return f
 	}
-	negated := map[values.CorrelationIdentifier]struct{}{}
-	if f.Predicate != nil {
-		predicates.WalkPredicate(f.Predicate, func(p predicates.QueryPredicate) bool {
-			if a, ok := predicates.IsNotExistentialPredicate(p); ok {
-				negated[a] = struct{}{}
+
+	// Count every marker occurrence, stopping at a recognized NOT-EXISTS so its
+	// existential child is not counted a second time.
+	allOccurrences := make(map[values.CorrelationIdentifier]int)
+	predicates.WalkPredicate(f.Predicate, func(p predicates.QueryPredicate) bool {
+		if alias, ok := predicates.IsExistentialPredicate(p); ok {
+			allOccurrences[alias]++
+			return false
+		}
+		if alias, ok := predicates.IsNotExistentialPredicate(p); ok {
+			allOccurrences[alias]++
+			return false
+		}
+		return true
+	})
+
+	var conjuncts []predicates.QueryPredicate
+	var flattenAnd func(predicates.QueryPredicate)
+	flattenAnd = func(p predicates.QueryPredicate) {
+		if and, ok := p.(*predicates.AndPredicate); ok {
+			for _, sub := range and.SubPredicates {
+				flattenAnd(sub)
 			}
-			return true
-		})
-	}
-	// If ANY AlwaysTrue esq is consumed under NOT EXISTS, DECLINE the whole
-	// fold. `NOT EXISTS(one-row)` is FALSE, which this positive-only fold does
-	// not implement; folding just the sibling positive alias and leaving the
-	// (unfixed) negated one would silently change a formerly-rejected /
-	// pre-existing shape (e.g. `EXISTS(agg) AND NOT EXISTS(agg)` must be empty,
-	// not the broken negated residual). Preserve the base behavior for the whole
-	// filter — negated always-true folding is a booked follow-on.
-	for _, esq := range f.ExistsSubqueries {
-		if _, isNeg := negated[esq.Alias]; esq.AlwaysTrue && isNeg {
-			return f
+			return
 		}
+		conjuncts = append(conjuncts, p)
 	}
-	kept := make([]logical.ExistsSubquery, 0, len(f.ExistsSubqueries))
-	foldedAliases := map[values.CorrelationIdentifier]struct{}{}
-	for _, esq := range f.ExistsSubqueries {
-		if _, isNeg := negated[esq.Alias]; esq.AlwaysTrue && !isNeg {
-			foldedAliases[esq.Alias] = struct{}{}
+	flattenAnd(f.Predicate)
+
+	type marker struct {
+		alias   values.CorrelationIdentifier
+		negated bool
+		ok      bool
+	}
+	markers := make([]marker, len(conjuncts))
+	directOccurrences := make(map[values.CorrelationIdentifier]int)
+	for i, conjunct := range conjuncts {
+		if alias, ok := predicates.IsExistentialPredicate(conjunct); ok {
+			if _, isKnown := known[alias]; isKnown {
+				markers[i] = marker{alias: alias, ok: true}
+				directOccurrences[alias]++
+			}
 			continue
 		}
-		kept = append(kept, esq)
+		if alias, ok := predicates.IsNotExistentialPredicate(conjunct); ok {
+			if _, isKnown := known[alias]; isKnown {
+				markers[i] = marker{alias: alias, negated: true, ok: true}
+				directOccurrences[alias]++
+			}
+		}
 	}
-	if len(foldedAliases) == 0 {
+
+	eligible := make(map[values.CorrelationIdentifier]struct{})
+	for alias, direct := range directOccurrences {
+		if direct > 0 && direct == allOccurrences[alias] {
+			eligible[alias] = struct{}{}
+		}
+	}
+	if len(eligible) == 0 {
 		return f
 	}
+
+	keptPredicates := make([]predicates.QueryPredicate, 0, len(conjuncts))
+	foldedAliases := make(map[values.CorrelationIdentifier]struct{})
+	for i, conjunct := range conjuncts {
+		m := markers[i]
+		if !m.ok {
+			keptPredicates = append(keptPredicates, conjunct)
+			continue
+		}
+		if _, canFold := eligible[m.alias]; !canFold {
+			keptPredicates = append(keptPredicates, conjunct)
+			continue
+		}
+		foldedAliases[m.alias] = struct{}{}
+		truth := *known[m.alias]
+		if m.negated {
+			truth = !truth
+		}
+		if !truth {
+			f2 := *f
+			// FALSE absorbs every EXISTS conjunct, so none of their quantifiers
+			// need to be built. EXISTS has no side effects.
+			f2.ExistsSubqueries = nil
+			f2.Predicate = predicates.NewConstantPredicate(predicates.TriFalse)
+			return &f2
+		}
+		// TRUE disappears from an AND.
+	}
+
+	keptSubqueries := make([]logical.ExistsSubquery, 0, len(f.ExistsSubqueries))
+	for _, esq := range f.ExistsSubqueries {
+		if _, folded := foldedAliases[esq.Alias]; !folded {
+			keptSubqueries = append(keptSubqueries, esq)
+		}
+	}
+	var rewritten predicates.QueryPredicate
+	switch len(keptPredicates) {
+	case 0:
+		rewritten = predicates.NewConstantPredicate(predicates.TriTrue)
+	case 1:
+		rewritten = keptPredicates[0]
+	default:
+		rewritten = predicates.NewAnd(keptPredicates...)
+	}
 	f2 := *f
-	f2.ExistsSubqueries = kept
-	// Replace each folded esq's positive EXISTS marker with TRUE in the
-	// predicate (and collapse `P AND TRUE` -> P). The generic filter path would
-	// otherwise choke on a marker whose quantifier was dropped.
-	f2.Predicate = stripFoldedExistsMarkers(f.Predicate, foldedAliases)
+	f2.ExistsSubqueries = keptSubqueries
+	f2.Predicate = rewritten
 	return &f2
 }
 
-// stripFoldedExistsMarkers rewrites a predicate, replacing each POSITIVE
-// ExistentialValuePredicate whose alias was folded (EXISTS -> unconditionally
-// TRUE) with a TRUE constant, and dropping `AND TRUE` conjuncts. Only descends
-// through AND (folded esqs are AND-conjunct EXISTS).
-func stripFoldedExistsMarkers(pred predicates.QueryPredicate, folded map[values.CorrelationIdentifier]struct{}) predicates.QueryPredicate {
-	if pred == nil {
-		return nil
-	}
-	if a, ok := predicates.IsExistentialPredicate(pred); ok {
-		if _, isFolded := folded[a]; isFolded {
-			return predicates.NewConstantPredicate(predicates.TriTrue)
+func hasKnownExistsTruth(subqueries []logical.ExistsSubquery) bool {
+	for _, esq := range subqueries {
+		if esq.KnownTruth != nil {
+			return true
 		}
-		return pred
 	}
-	and, ok := pred.(*predicates.AndPredicate)
-	if !ok {
-		return pred
-	}
-	newSubs := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
-	for _, sub := range and.SubPredicates {
-		ns := stripFoldedExistsMarkers(sub, folded)
-		if c, isConst := ns.(*predicates.ConstantPredicate); isConst && c.Value == predicates.TriTrue {
-			continue // P AND TRUE == P
-		}
-		newSubs = append(newSubs, ns)
-	}
-	switch len(newSubs) {
-	case 0:
-		return predicates.NewConstantPredicate(predicates.TriTrue)
-	case 1:
-		return newSubs[0]
-	default:
-		return &predicates.AndPredicate{SubPredicates: newSubs}
-	}
+	return false
 }
 
 // declineNegatedOuterOnlyEsq records a LOUD decline (and reports true) when

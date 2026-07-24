@@ -11,11 +11,13 @@ package embedded
 // reaches FDB.
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
 )
 
 const dmlHarnessSchema = `
@@ -72,6 +74,30 @@ func TestPlanPhysicalDMLForTest_Update(t *testing.T) {
 	}
 	if _, ok := plan.(*plans.RecordQueryUpdatePlan); !ok {
 		t.Fatalf("root must be RecordQueryUpdatePlan, got %T: %s", plan, plan.Explain())
+	}
+}
+
+// TestPlanPhysicalDMLForTest_RejectsWindowedAggregateInExists pins the DML
+// parse-tree guard shared with SELECT. Aggregate lowering cannot represent
+// OVER; without the guard this mixed global/window aggregate loses its SELECT
+// cardinality and the correlated fallback tests raw-row existence, which
+// differs for an outer row with no keep_set match.
+func TestPlanPhysicalDMLForTest_RejectsWindowedAggregateInExists(t *testing.T) {
+	t.Parallel()
+	_, err := PlanPhysicalDMLForTest(
+		"DELETE FROM t WHERE EXISTS ("+
+			"SELECT COUNT(*), COUNT(*) OVER () FROM keep_set "+
+			"WHERE keep_set.k = t.id LIMIT 1 OFFSET 0)",
+		dmlHarnessSchema, nil)
+	if err == nil {
+		t.Fatal("expected windowed aggregate in DML EXISTS to reject")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
+		t.Fatalf("error = %v, want SQLSTATE %s", err, api.ErrCodeUnsupportedQuery)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "windowed aggregate") {
+		t.Fatalf("error = %v, want the parse-tree windowed-aggregate guard", err)
 	}
 }
 

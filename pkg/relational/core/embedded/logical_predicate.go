@@ -6889,23 +6889,106 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 	if innerOp == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: inner query could not be planned")
 	}
-	// A CORRELATED non-grouped aggregate inner is unconditionally one row (the
-	// correlated fallback drops the aggregate, which is why this shape was
-	// silently filtering); flag it so a positive WHERE-EXISTS consumer folds it
-	// to TRUE. Only the correlated (isUndefinedCol) case — the non-correlated
-	// path keeps the aggregate in the inner plan and already answers correctly.
-	alwaysTrue := isUndefinedCol && !correlatedPrimaryUnnest && queryInnerIsUnconditionalOneRow(q)
+	// The correlated fallback deliberately ignores the SELECT values (EXISTS
+	// observes only cardinality), but that is not enough when an aggregate or
+	// pagination changes cardinality. Classify those operators in SQL order:
+	// first establish the non-grouped aggregate's exact one-row output, then
+	// apply LIMIT/OFFSET. A known result is folded by the translator, avoiding
+	// the semi-join entirely while preserving correlation semantics. A
+	// data-dependent OFFSET or a pagination atom still unresolved at planning
+	// time cannot ride the fallback
+	// safely and is rejected typed-loud rather than reverting to raw row
+	// existence. The uncorrelated path keeps its real Aggregate/Limit operators.
+	var knownTruth predicates.TriBool
+	if isUndefinedCol && !correlatedPrimaryUnnest {
+		knownTruth, err = correlatedExistsTruthAfterPagination(q)
+		if err != nil {
+			return values.CorrelationIdentifier{}, err
+		}
+	}
 	alias := p.mintSubqueryAlias()
 	p.subqueries = append(p.subqueries, logical.ExistsSubquery{
 		Alias:                  alias,
 		Plan:                   innerOp,
 		JoinPredicate:          p.lastJoinPredicate,
 		OuterOnlyJoinConjuncts: p.lastJoinPredicateOuterOnly,
-		AlwaysTrue:             alwaysTrue,
+		KnownTruth:             knownTruth,
 	})
 	p.lastJoinPredicate = nil
 	p.lastJoinPredicateOuterOnly = false
 	return alias, nil
+}
+
+// correlatedExistsTruthAfterPagination classifies the cardinality effects that
+// buildCorrelatedExists otherwise drops with the ignored SELECT list.
+//
+// A non-grouped, non-windowed aggregate produces exactly one row before
+// pagination. Applying a literal LIMIT/OFFSET to that one row therefore yields
+// a compile-time EXISTS truth value. For every other supported inner shape,
+// LIMIT n>=1 OFFSET 0 preserves row existence and LIMIT 0 is always empty, so
+// those cases are also safe. A positive OFFSET is data-dependent (notably after
+// GROUP BY), and a pagination atom still unresolved at planning time is unsafe;
+// both are rejected typed-loud instead of falling through to the raw-row
+// semi-join. Public SQL-driver arguments are substituted before parsing and
+// therefore reach this classifier as ordinary literal values.
+//
+// A nil truth with nil error means the fallback may proceed because the dropped
+// shaping operators provably preserve existence.
+func correlatedExistsTruthAfterPagination(q antlrgen.IQueryContext) (predicates.TriBool, error) {
+	if q == nil {
+		return nil, nil
+	}
+	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return nil, nil
+	}
+	simpleTable, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok {
+		return nil, nil
+	}
+
+	exactlyOneBeforePagination := queryInnerIsExactlyOneRowBeforePagination(q)
+	limitClause := simpleTable.LimitClause()
+	if limitClause == nil {
+		if exactlyOneBeforePagination {
+			return predicates.TriTrue, nil
+		}
+		return nil, nil
+	}
+
+	// parseLimitClause intentionally leaves a sentinel for an atom that is still
+	// unresolved in this planner invocation. Here that sentinel is unsafe:
+	// treating `LIMIT ?` as absent can change EXISTS. (The public driver
+	// substitutes bound arguments before parsing, so those arrive as literals.)
+	for _, atom := range limitClause.AllLimitClauseAtom() {
+		if _, resolved, atomErr := resolveLimitAtom(atom); atomErr != nil {
+			return nil, atomErr
+		} else if !resolved {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"a correlated EXISTS with a planning-time unresolved LIMIT/OFFSET is not supported")
+		}
+	}
+	limit, offset, limitErr := parseLimitClause(simpleTable)
+	if limitErr != nil {
+		return nil, limitErr
+	}
+
+	if exactlyOneBeforePagination {
+		if limit == 0 || offset > 0 {
+			return predicates.TriFalse, nil
+		}
+		return predicates.TriTrue, nil
+	}
+	if limit == 0 {
+		return predicates.TriFalse, nil
+	}
+	if offset > 0 {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"a correlated EXISTS with data-dependent OFFSET is not supported")
+	}
+	// LIMIT n>=1 with no OFFSET preserves whether a non-aggregate/grouped inner
+	// is empty, so dropping that cap from an EXISTS plan is semantics-neutral.
+	return nil, nil
 }
 
 // correlatedSubqueryJoinRight builds the right child for a comma/JOIN FROM leg of
@@ -7069,9 +7152,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// A HAVING-less GROUP BY is deliberately NOT declined: for EXISTS the
 	// drop is semantics-preserving — grouping a non-empty row set yields ≥1
 	// group and grouping an empty set yields none, so EXISTS(GROUP BY over S)
-	// ⇔ EXISTS(S). A NON-grouped aggregate inner likewise continues: it is
-	// unconditionally one row, which BuildExists flags (AlwaysTrue) and the
-	// translator folds to TRUE — or declines loudly under NOT EXISTS.
+	// ⇔ EXISTS(S) when pagination preserves existence. BuildExists separately
+	// rejects a data-dependent grouped OFFSET. A NON-grouped aggregate inner
+	// continues because its exact pre-pagination cardinality is one row;
+	// BuildExists applies LIMIT/OFFSET to that cardinality and the translator
+	// folds the resulting TRUE/FALSE in either polarity.
 	if sq.havingExpr != nil || sq.qualifyExpr != nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"correlated EXISTS over a GROUP BY / HAVING subquery is not supported")

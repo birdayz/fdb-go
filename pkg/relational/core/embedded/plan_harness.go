@@ -275,8 +275,9 @@ func planReferenceToPhysical(
 // planPhysicalDMLForTest is the no-FDB DML twin of planPhysicalForTest. It
 // mirrors the plan-shape-determining core of cascadesGenerator.planDML: the
 // WithCatalog logical build, qualified-name resolution, the DML EXISTS
-// correctness guards (CheckProjectedExistsFolded / CheckBuriedExistentialPredicate
-// — the guards that gate the DELETE-WHERE-EXISTS case this harness targets),
+// correctness guards (the pre-lowering window-aggregate reject plus
+// CheckProjectedExistsFolded / CheckBuriedExistentialPredicate — the guards
+// that gate the DELETE-WHERE-EXISTS case this harness targets),
 // and the DML planning rule set (Batch-A + DMLImplementationRules). The
 // production-only steps that need a live connection (statistics fetch, plan
 // logging, dry-run/OPTIONS handling) are dropped, exactly as the SELECT harness
@@ -303,6 +304,13 @@ func planPhysicalDMLForTest(
 	dml := stmts.AllStatement()[0].DmlStatement()
 	if dml == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "not a DML statement")
+	}
+	// Mirror planDML's parse-tree guard. OVER is lost during aggregate lowering,
+	// so the metadata-only harness must reject it before building the logical
+	// plan just like production does.
+	if windowedAggregateInTree(dml) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"windowed aggregate (aggregate function with an OVER clause) is not supported")
 	}
 
 	// Route DELETE→delete-build, UPDATE→update-build against the schema catalog,

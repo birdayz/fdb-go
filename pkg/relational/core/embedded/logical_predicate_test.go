@@ -46,6 +46,125 @@ func buildTestMetaData(t *testing.T) *recordlayer.RecordMetaData {
 	return md
 }
 
+func TestCorrelatedExistsTruthAfterPagination(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		sql       string
+		wantTruth predicates.TriBool
+		wantErr   bool
+	}{
+		{
+			name:      "non_grouped_aggregate_without_pagination",
+			sql:       "SELECT COUNT(*) FROM Order",
+			wantTruth: predicates.TriTrue,
+		},
+		{
+			name:      "non_grouped_aggregate_positive_limit",
+			sql:       "SELECT MAX(price) FROM Order LIMIT 5",
+			wantTruth: predicates.TriTrue,
+		},
+		{
+			name:      "non_grouped_aggregate_limit_zero",
+			sql:       "SELECT COUNT(*) FROM Order LIMIT 0",
+			wantTruth: predicates.TriFalse,
+		},
+		{
+			name:      "non_grouped_aggregate_offset_one",
+			sql:       "SELECT COUNT(*) FROM Order LIMIT 1 OFFSET 1",
+			wantTruth: predicates.TriFalse,
+		},
+		{
+			name:      "non_grouped_aggregate_offset_past_one",
+			sql:       "SELECT SUM(price) FROM Order LIMIT 5 OFFSET 2",
+			wantTruth: predicates.TriFalse,
+		},
+		{
+			name: "plain_limit_preserves_existence",
+			sql:  "SELECT order_id FROM Order LIMIT 1",
+		},
+		{
+			name:      "plain_limit_zero_is_empty",
+			sql:       "SELECT order_id FROM Order LIMIT 0",
+			wantTruth: predicates.TriFalse,
+		},
+		{
+			name:    "plain_offset_is_data_dependent",
+			sql:     "SELECT order_id FROM Order LIMIT 1 OFFSET 1",
+			wantErr: true,
+		},
+		{
+			name: "grouped_limit_preserves_existence",
+			sql:  "SELECT COUNT(*) FROM Order GROUP BY customer_id LIMIT 1",
+		},
+		{
+			name: "group_key_only_is_not_exactly_one",
+			sql:  "SELECT customer_id FROM Order GROUP BY customer_id",
+		},
+		{
+			name: "windowed_aggregate_is_not_exactly_one",
+			sql:  "SELECT COUNT(*) OVER () FROM Order",
+		},
+		{
+			name: "having_can_remove_the_global_group",
+			sql:  "SELECT COUNT(*) FROM Order HAVING COUNT(*) > 0",
+		},
+		{
+			name: "qualify_can_remove_the_global_group",
+			sql:  "SELECT COUNT(*) FROM Order QUALIFY 1 = 1",
+		},
+		{
+			name:      "grouped_limit_zero_is_empty",
+			sql:       "SELECT COUNT(*) FROM Order GROUP BY customer_id LIMIT 0",
+			wantTruth: predicates.TriFalse,
+		},
+		{
+			name:    "grouped_offset_is_data_dependent",
+			sql:     "SELECT COUNT(*) FROM Order GROUP BY customer_id LIMIT 1 OFFSET 1",
+			wantErr: true,
+		},
+		{
+			name:    "planning_time_unresolved_limit_is_unknown",
+			sql:     "SELECT COUNT(*) FROM Order LIMIT ?",
+			wantErr: true,
+		},
+		{
+			name:    "planning_time_unresolved_offset_is_unknown",
+			sql:     "SELECT COUNT(*) FROM Order LIMIT 1 OFFSET ?",
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			query, err := parseQueryFromSelect(t, test.sql)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			got, err := correlatedExistsTruthAfterPagination(query)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("expected typed unsupported error, got truth %v", got)
+				}
+				var apiErr *api.Error
+				if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
+					t.Fatalf("error = %v, want unsupported-query API error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("classify: %v", err)
+			}
+			if got != test.wantTruth {
+				t.Fatalf("truth = %v, want %v", got, test.wantTruth)
+			}
+		})
+	}
+}
+
 // TestBuildLogicalPlanWithCatalog_WhereWalked pins the happy path:
 // a WHERE shape the walker supports becomes a QueryPredicate tree on
 // LogicalFilter, and Explain renders from the tree.

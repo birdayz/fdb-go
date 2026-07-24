@@ -714,6 +714,18 @@ func updateHasSubqueryAssignment(upd antlrgen.IUpdateStatementContext) bool {
 func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (plan query.Plan, err error) {
 	c := g.c
 
+	// Keep DML on the same pre-lowering correctness boundary as SELECT.
+	// Aggregate lowering discards OVER, so allowing a windowed aggregate through
+	// an EXISTS in DELETE/UPDATE would make the correlated fallback test raw-row
+	// existence instead of the query's aggregate/window cardinality. Reject the
+	// unsupported construct while its parse-tree distinction is still present.
+	// This runs before the explain-only split so every DML planning surface has
+	// identical correct-or-loud semantics.
+	if windowedAggregateInTree(dml) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"windowed aggregate (aggregate function with an OVER clause) is not supported")
+	}
+
 	// Explain-only mode: no FDB available, produce logical plan text only.
 	// No planning happens here, so it is outside the metrics funnel.
 	if c.sess == nil || c.sess.DB == nil {
