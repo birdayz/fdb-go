@@ -1320,6 +1320,40 @@ func ExplainValue(v Value) string { return explainValueOrdinals(v, true) }
 // EXPLAIN/debug output, where collapsing two different reads is itself a bug.
 func ColumnNameValue(v Value) string { return explainValueOrdinals(v, false) }
 
+// CanBridgeOrderingFieldValues reports whether two non-structurally-equal
+// ordering Values may safely be reconciled by their ordinal-free column name.
+//
+// The bridge is deliberately narrow. SQL requested orderings are often
+// plan-time-baked (COL#ordinal), while candidate orderings are rebuilt as lazy
+// flat fields (COL); those two representations need to meet. Two baked fields
+// never meet through this helper: different ordinals are different reads, even
+// when their display names match. Childful/nested paths are also excluded
+// because a leaf name does not identify their source slot.
+//
+// Callers must test structural equality first. This helper handles only the
+// representation bridge, including the harmless case-only difference between
+// two lazy flat field names.
+func CanBridgeOrderingFieldValues(left, right Value) bool {
+	leftField, leftOK := left.(*FieldValue)
+	rightField, rightOK := right.(*FieldValue)
+	if !leftOK || !rightOK ||
+		leftField.Child != nil || rightField.Child != nil {
+		return false
+	}
+	if leftField.Resolved != nil && rightField.Resolved != nil {
+		return false
+	}
+	if leftField.Resolved != nil && len(leftField.Resolved.Accessors) != 1 {
+		return false
+	}
+	if rightField.Resolved != nil && len(rightField.Resolved.Accessors) != 1 {
+		return false
+	}
+	leftName := ColumnNameValue(left)
+	rightName := ColumnNameValue(right)
+	return leftName != "" && strings.EqualFold(leftName, rightName)
+}
+
 func explainValueOrdinals(v Value, withOrdinals bool) string {
 	if v == nil {
 		return ""

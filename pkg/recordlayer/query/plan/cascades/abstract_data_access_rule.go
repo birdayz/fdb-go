@@ -17,8 +17,9 @@ import (
 //
 // This file ports the non-abstract helper methods from Java's
 // AbstractDataAccessRule as package-level functions. Concrete rules
-// (AggregateDataAccessRule, future WithPrimaryKeyDataAccessRule) call
-// these directly -- the Go equivalent of extending the abstract class.
+// (AggregateDataAccessRule and the WithPrimaryKeyIntersector-backed data-access
+// pass) call these directly -- the Go equivalent of extending the abstract
+// class.
 //
 // Ports Java's:
 //   - prepareMatchesAndCompensations
@@ -45,8 +46,10 @@ type IntersectorFunc func(
 // PartialMatch:
 //   - assigns a unique candidateTopAlias
 //   - computes compensation via CompensateCompleteMatch
+//   - derives the query-top to candidate-top translation from the MaxMatchMap
+//   - translates requested orderings into the candidate's top scope
 //   - computes satisfying orderings via SatisfiesAnyRequestedOrderings
-//   - creates a forward-scan SingleMatchedAccess with empty translation
+//   - creates a forward- or reverse-scan SingleMatchedAccess
 //
 // Returns the accesses sorted by coverage (highest first).
 //
@@ -62,6 +65,29 @@ func PrepareMatchesAndCompensations(
 
 	result := make([]*SingleMatchedAccess, 0, len(partialMatches))
 	for _, pm := range partialMatches {
+		topToTopTranslationMap, ok := computeTopToTopTranslationMapMaybe(pm)
+		if !ok {
+			// Java skips a match whose result cannot be expressed at the
+			// candidate top. Keeping it with an identity map would compare
+			// requested ordering Values from different correlation frames.
+			continue
+		}
+
+		translatedRequestedOrderings := make(
+			[]*properties.RequestedOrdering,
+			0,
+			len(requestedOrderings),
+		)
+		for _, requestedOrdering := range requestedOrderings {
+			translatedRequestedOrderings = append(
+				translatedRequestedOrderings,
+				translateIntersectionRequestedOrdering(
+					requestedOrdering,
+					topToTopTranslationMap,
+				),
+			)
+		}
+
 		candidateTopAlias := values.UniqueCorrelationIdentifier()
 
 		var comp Compensation
@@ -71,7 +97,10 @@ func PrepareMatchesAndCompensations(
 			comp = NoCompensation
 		}
 
-		satisfying, scanDir := SatisfiesAnyRequestedOrderings(pm, requestedOrderings)
+		satisfying, scanDir := SatisfiesAnyRequestedOrderings(
+			pm,
+			translatedRequestedOrderings,
+		)
 		// Skip a zero-prefix match (empty bound parameter prefix → a full
 		// index scan) UNLESS it provides a requested ordering. A full index
 		// scan with neither selectivity nor an ordering benefit is strictly
@@ -120,7 +149,7 @@ func PrepareMatchesAndCompensations(
 			comp,
 			candidateTopAlias,
 			reverseScan,
-			EmptyTranslationMap(),
+			topToTopTranslationMap,
 			satisfying,
 		)
 		result = append(result, access)
@@ -135,6 +164,28 @@ func PrepareMatchesAndCompensations(
 	})
 
 	return result
+}
+
+// computeTopToTopTranslationMapMaybe expresses the query result at
+// Quantifier.current() through the candidate result at Quantifier.current().
+// This is Java AbstractDataAccessRule.computeTopToTopTranslationMapMaybe:
+//
+//	matchInfo.getMaxMatchMap().pullUpMaybe(current, current)
+//
+// The aliases are intentionally the same canonical name. The translation can
+// still be non-identity when the candidate projects or reshapes the matched
+// query result.
+func computeTopToTopTranslationMapMaybe(
+	pm PartialMatch,
+) (TranslationMap, bool) {
+	if pm == nil || pm.GetMatchInfo() == nil {
+		return nil, false
+	}
+	maxMatchMap := pm.GetMatchInfo().GetMaxMatchMap()
+	if maxMatchMap == nil {
+		return nil, false
+	}
+	return maxMatchMap.PullUpMaybe(values.CurrentAlias, values.CurrentAlias)
 }
 
 // MaximumCoverageMatches eliminates PartialMatches whose coverage is
@@ -871,19 +922,18 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 	mi := pm.GetMatchInfo()
 	orderingParts := mi.GetMatchedOrderingParts()
 
-	equalityBound := make(map[string]struct{})
+	var equalityBound []values.Value
 	for _, op := range orderingParts {
 		if op.GetComparisonRange().IsEquality() {
-			equalityBound[values.ExplainValue(op.GetValue())] = struct{}{}
+			equalityBound = append(equalityBound, op.GetValue())
 		}
 	}
 
 	opIdx := 0
 	for _, reqPart := range ro.GetParts() {
 		reqValue := reqPart.Value
-		reqKey := values.ExplainValue(reqValue)
 
-		if _, eq := equalityBound[reqKey]; eq {
+		if orderingValueListContains(equalityBound, reqValue) {
 			continue
 		}
 
@@ -895,8 +945,7 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 				continue
 			}
 
-			opKey := values.ExplainValue(op.GetValue())
-			if reqKey == opKey {
+			if orderingValuesEqual(reqValue, op.GetValue()) {
 				reqSort := reqPart.SortOrder
 				if reqSort != properties.RequestedSortOrderAny {
 					matchedSort := op.GetMatchedSortOrder()
@@ -935,6 +984,28 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *properties.RequestedOrderin
 	}
 
 	return &resolved
+}
+
+// orderingValuesEqual bridges independently rebuilt ordering Values. SQL sort
+// requests are bound to positional row accessors (FIELD#ordinal), while match
+// candidates carry the same columns before row-layout baking. Structural
+// equality remains authoritative. The fallback is restricted to the safe flat
+// lazy-vs-baked (or case-only lazy) bridge; two baked values with different
+// ordinals are different reads and must never satisfy each other.
+func orderingValuesEqual(left, right values.Value) bool {
+	if values.ValuesStructurallyEqual(left, right) {
+		return true
+	}
+	return values.CanBridgeOrderingFieldValues(left, right)
+}
+
+func orderingValueListContains(haystack []values.Value, needle values.Value) bool {
+	for _, value := range haystack {
+		if orderingValuesEqual(value, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // SatisfiesAnyRequestedOrderings filters requestedOrderings to those

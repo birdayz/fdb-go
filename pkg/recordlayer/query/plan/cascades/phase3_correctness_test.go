@@ -307,17 +307,28 @@ func TestPlanner_UnionOverTwoScansProducesPhysicalUnion(t *testing.T) {
 func TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection(t *testing.T) {
 	t.Parallel()
 
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	rt := &values.RecordType{
+		RecordName: "Order",
+		Fields: []values.Field{{
+			Name:      "ID",
+			FieldType: values.TypeInt,
+			Ordinal:   0,
+		}},
+	}
+	comparisonKey := &values.FieldValue{Field: "ID", Typ: values.TypeInt}
+	scan1 := plans.NewRecordQueryScanPlan([]string{"Order"}, rt, false).
+		WithPrimaryKey([]values.Value{comparisonKey})
 	scan1Ref := expressions.InitialOf(scan1)
 	q1 := expressions.ForEachQuantifier(scan1Ref)
 
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan2 := plans.NewRecordQueryScanPlan([]string{"Order"}, rt, false).
+		WithPrimaryKey([]values.Value{comparisonKey})
 	scan2Ref := expressions.InitialOf(scan2)
 	q2 := expressions.ForEachQuantifier(scan2Ref)
 
 	intersection := expressions.NewLogicalIntersectionExpression(
 		[]expressions.Quantifier{q1, q2},
-		[]values.Value{&values.FieldValue{Field: "ID", Typ: values.TypeInt}},
+		[]values.Value{comparisonKey},
 	)
 	ref := expressions.InitialOf(intersection)
 

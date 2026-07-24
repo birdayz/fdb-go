@@ -7710,11 +7710,9 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryIndexPlan
 === index_scan_direction.yaml#1
 sql:   SELECT id, ts FROM events WHERE ts >= 150 ORDER BY ts DESC
-plan:  Project([ID#0, TS#1], InMemorySort([TS DESC], Fetch(IndexScan(IDX_TS, [<>]))))
+plan:  Project([ID#0, TS#1], IndexScan(IDX_TS, [<>] COVERING) REVERSE)
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryIndexPlan
+shape:   RecordQueryIndexPlan
 === index_scan_direction.yaml#2
 sql:   SELECT id, ts FROM events WHERE id > 3 ORDER BY id
 plan:  Project([ID#0, TS#1], Scan(EVENTS, [<>]))
@@ -10199,11 +10197,11 @@ shape:     RecordQueryFetchFromPartialRecordPlan
 shape:       RecordQueryIndexPlan
 === multi_column_index_java.yaml#5
 sql:   SELECT customer_id, COUNT(*) FROM orders WHERE status = 'shipped' GROUP BY customer_id ORDER BY customer_id
-plan:  StreamingAgg(keys=[CUSTOMER_ID#1], InMemorySort([CUSTOMER_ID#1 ASC], PredicatesFilter(Scan(ORDERS), [1 preds])))
+plan:  StreamingAgg(keys=[CUSTOMER_ID#1], Fetch(PredicatesFilter(IndexScan(IDX_CUST_STATUS, [*, *]), [1 preds])))
 shape: RecordQueryStreamingAggregationPlan
-shape:   RecordQueryInMemorySortPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
 shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 === multi_column_index_java.yaml#6
 sql:   SELECT id, customer_id, status FROM orders ORDER BY customer_id, status, id
 plan:  Project([ID#0, CUSTOMER_ID#1, STATUS#2], InMemorySort([CUSTOMER_ID ASC, STATUS ASC, ID ASC], Scan(ORDERS)))
@@ -12120,34 +12118,28 @@ shape:     RecordQueryTypeFilterPlan
 shape:       RecordQueryScanPlan
 === order_by_elimination.yaml#39
 sql:   SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC
-plan:  Project([ID#0, V#1], InMemorySort([V DESC], Fetch(IndexScan(IDX_V, [<>]))))
+plan:  Project([ID#0, V#1], IndexScan(IDX_V, [<>] COVERING) REVERSE)
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryIndexPlan
+shape:   RecordQueryIndexPlan
 === order_by_elimination.yaml#40
 sql:   SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC LIMIT 2
-plan:  Project([ID#0, V#1], Limit(2, InMemorySort([V DESC], Fetch(IndexScan(IDX_V, [<>])))))
+plan:  Project([ID#0, V#1], Limit(2, Fetch(IndexScan(IDX_V, [<>]) REVERSE)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryLimitPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFetchFromPartialRecordPlan
-shape:         RecordQueryIndexPlan
-=== order_by_elimination.yaml#41
-sql:   SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC
-plan:  Project([ID#0, REGION#1, PLAN#2], InMemorySort([PLAN DESC], Fetch(IndexScan(IDX_REGION_PLAN, [=, *]))))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFetchFromPartialRecordPlan
 shape:       RecordQueryIndexPlan
+=== order_by_elimination.yaml#41
+sql:   SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC
+plan:  Project([ID#0, REGION#1, PLAN#2], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE)
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryIndexPlan
 === order_by_elimination.yaml#42
 sql:   SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
-plan:  Project([ID#0], Limit(1, InMemorySort([PLAN DESC], Fetch(IndexScan(IDX_REGION_PLAN, [=, *])))))
+plan:  Project([ID#0], Limit(1, Fetch(IndexScan(IDX_REGION_PLAN, [=, *]) REVERSE)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryLimitPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFetchFromPartialRecordPlan
-shape:         RecordQueryIndexPlan
+shape:     RecordQueryFetchFromPartialRecordPlan
+shape:       RecordQueryIndexPlan
 === order_by_expression.yaml#0
 sql:   SELECT id FROM t ORDER BY a + b
 plan:  Project([ID#0], InMemorySort([(A#1 + B#2) ASC], Scan(T)))

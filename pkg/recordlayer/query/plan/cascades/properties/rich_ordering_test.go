@@ -455,6 +455,209 @@ func TestDirectionalOrderingParts_Basic(t *testing.T) {
 	}
 }
 
+func TestNaturalComparisonKeyValues_OnlyRawTupleDirections(t *testing.T) {
+	t.Parallel()
+
+	key := fieldVal("key")
+	tests := []struct {
+		name    string
+		order   ProvidedSortOrder
+		reverse bool
+		ok      bool
+	}{
+		{name: "forward ascending", order: ProvidedSortOrderAscending, ok: true},
+		{name: "reverse descending", order: ProvidedSortOrderDescending, reverse: true, ok: true},
+		{name: "forward descending needs ordered bytes", order: ProvidedSortOrderDescending},
+		{name: "reverse ascending needs ordered bytes", order: ProvidedSortOrderAscending, reverse: true},
+		{name: "ascending counterflow needs ordered bytes", order: ProvidedSortOrderAscendingNullsLast},
+		{name: "descending counterflow needs ordered bytes", order: ProvidedSortOrderDescendingNullsFirst, reverse: true},
+		{name: "fixed is not a physical comparison key", order: ProvidedSortOrderFixed},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := NaturalComparisonKeyValues(
+				[]ProvidedOrderingPart{{Value: key, SortOrder: test.order}},
+				test.reverse,
+			)
+			if ok != test.ok {
+				t.Fatalf("NaturalComparisonKeyValues() ok = %v, want %v", ok, test.ok)
+			}
+			if test.ok {
+				if len(got) != 1 || !values.ValuesStructurallyEqual(got[0], key) {
+					t.Fatalf("NaturalComparisonKeyValues() = %#v, want the raw key", got)
+				}
+			} else if got != nil {
+				t.Fatalf("unsupported direction returned comparison keys: %#v", got)
+			}
+		})
+	}
+}
+
+func TestIntersectionOrdering_ExcludesFixedKeysAndPreservesDescendingRequest(t *testing.T) {
+	t.Parallel()
+
+	leftFixed := fieldVal("a")
+	rightFixed := fieldVal("b")
+	sortKey := fieldVal("sort_key")
+	id := fieldVal("id")
+
+	left := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			leftFixed: {FixedBinding("a = ?")},
+			sortKey:   {SortedBinding(ProvidedSortOrderDescending)},
+			id:        {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{leftFixed, sortKey, id},
+		false,
+	)
+	right := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			rightFixed: {FixedBinding("b = ?")},
+			sortKey:    {SortedBinding(ProvidedSortOrderDescending)},
+			id:         {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{rightFixed, sortKey, id},
+		false,
+	)
+
+	merged := MergeOrderingsForIntersection(left, right)
+	if !merged.IsDistinct() {
+		t.Fatal("intersection ordering must be distinct")
+	}
+	counts := make(map[string]int)
+	for _, key := range merged.GetKeys() {
+		counts[values.ColumnNameValue(key)]++
+	}
+	for _, name := range []string{"a", "b", "sort_key", "id"} {
+		if counts[name] != 1 {
+			t.Fatalf("merged key %q occurs %d times, want exactly once; all counts = %v", name, counts[name], counts)
+		}
+	}
+
+	// The request is deliberately rebuilt with a different case and Value
+	// identity. Direction lookup must use semantic/normalized key identity.
+	requestedSort := fieldVal("SORT_KEY")
+	requested := NewRequestedOrdering(
+		[]RequestedOrderingPart{{
+			Value:     requestedSort,
+			SortOrder: RequestedSortOrderDescending,
+		}},
+		DistinctnessNotDistinct,
+		false,
+	)
+	keys := merged.EnumerateSatisfyingIntersectionComparisonKeyValues(requested)
+	if len(keys) != 1 || len(keys[0]) != 2 {
+		t.Fatalf("intersection comparison keys = %#v, want exactly [sort_key, id]", keys)
+	}
+	if !values.ValuesStructurallyEqual(keys[0][0], sortKey) ||
+		!values.ValuesStructurallyEqual(keys[0][1], id) {
+		t.Fatalf("intersection comparison keys = [%s, %s], want [sort_key, id]",
+			values.ExplainValue(keys[0][0]), values.ExplainValue(keys[0][1]))
+	}
+
+	parts := merged.DirectionalOrderingParts(keys[0], requested, ProvidedSortOrderFixed)
+	if len(parts) != 2 ||
+		parts[0].SortOrder != ProvidedSortOrderDescending ||
+		parts[1].SortOrder != ProvidedSortOrderDescending {
+		t.Fatalf("directional parts = %#v, want two descending parts", parts)
+	}
+}
+
+func TestIntersectionOrdering_FixedPrefixFreesPrimaryKey(t *testing.T) {
+	t.Parallel()
+
+	prefix := fieldVal("a")
+	primaryKey := fieldVal("pk")
+	left := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			prefix:     {SortedBinding(ProvidedSortOrderAscending)},
+			primaryKey: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{prefix, primaryKey},
+		false,
+	)
+	right := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			prefix:     {FixedBinding("a = ?")},
+			primaryKey: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{prefix, primaryKey},
+		false,
+	)
+
+	merged := MergeOrderingsForIntersection(left, right)
+	prefixKey := values.ExplainValue(prefix)
+	primaryKeyKey := values.ExplainValue(primaryKey)
+	if merged.OrderingSet().DependencyMap().Contains(primaryKeyKey, prefixKey) {
+		t.Fatalf("fixed prefix retained stale dependency %s <- %s", primaryKeyKey, prefixKey)
+	}
+
+	requested := NewRequestedOrdering(
+		[]RequestedOrderingPart{{
+			Value:     primaryKey,
+			SortOrder: RequestedSortOrderAscending,
+		}},
+		DistinctnessNotDistinct,
+		false,
+	)
+	keys := merged.EnumerateSatisfyingIntersectionComparisonKeyValues(requested)
+	if len(keys) != 1 || len(keys[0]) != 1 ||
+		!values.ValuesStructurallyEqual(keys[0][0], primaryKey) {
+		t.Fatalf("comparison keys = %#v, want exactly [pk]", keys)
+	}
+}
+
+func TestRichOrdering_DoesNotCollapseDifferentBakedOrdinals(t *testing.T) {
+	t.Parallel()
+
+	provided := values.NewFieldValueWithResolvedOrdinal(
+		"DUP",
+		0,
+		values.UnknownType,
+	)
+	requestedOtherSlot := values.NewFieldValueWithResolvedOrdinal(
+		"DUP",
+		1,
+		values.UnknownType,
+	)
+	ordering := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			provided: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{provided},
+		false,
+	)
+	requested := NewRequestedOrdering(
+		[]RequestedOrderingPart{{
+			Value:     requestedOtherSlot,
+			SortOrder: RequestedSortOrderAscending,
+		}},
+		DistinctnessNotDistinct,
+		false,
+	)
+
+	if ordering.Satisfies(requested) {
+		t.Fatal("ordering on ordinal 0 must not satisfy the same display name at ordinal 1")
+	}
+	if got := ordering.EnumerateSatisfyingIntersectionComparisonKeyValues(requested); got != nil {
+		t.Fatalf("different baked ordinal produced intersection comparison keys: %#v", got)
+	}
+
+	lazyRequest := NewRequestedOrdering(
+		[]RequestedOrderingPart{{
+			Value:     fieldVal("dup"),
+			SortOrder: RequestedSortOrderAscending,
+		}},
+		DistinctnessNotDistinct,
+		false,
+	)
+	if !ordering.Satisfies(lazyRequest) {
+		t.Fatal("a lazy flat request should still bridge to its uniquely baked provider")
+	}
+}
+
 func TestConcatOrderings_DistinctnessPropagates(t *testing.T) {
 	t.Parallel()
 	a := fieldVal("a")

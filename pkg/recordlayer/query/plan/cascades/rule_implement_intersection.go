@@ -10,17 +10,20 @@ import (
 // ImplementIntersectionRule implements a logical
 // LogicalIntersectionExpression as a physical
 // RecordQueryIntersectionPlan, gated on EVERY child Reference
-// having at least one physical-plan member.
+// having an ascending physical-plan member for the comparison key.
 //
-//	Intersection(child0-with-physical, child1-with-physical, ...)
-//	  →  IntersectionPlan(child0-physical, child1-physical, ...)
+//	Intersection(child0-ordered-by-key, child1-ordered-by-key, ...)
+//	  →  IntersectionPlan(child0-ordered-by-key, child1-ordered-by-key, ...)
 //
-// Per-child gating: same as ImplementUnionRule — partial physical-
-// implementation produces an invalid mixed-hierarchy plan tree.
+// RecordQueryIntersectionPlan is a sorted merge: merely finding an arbitrary
+// physical member for each leg is not sufficient. A leg that does not emit the
+// comparison key monotonically can make the merge permanently advance past a
+// real match. This rule therefore pins one ordering-satisfying physical spine
+// per child and declines when any leg cannot provide it.
 //
-// The comparisonKeyValues from the logical Intersection carry
-// through unchanged into the physical plan — the row-equality key
-// is independent of which physical operator emits the rows.
+// LogicalIntersectionExpression currently carries comparison values but no
+// direction, so this implementation is the natural forward/ascending variant.
+// The data-access intersector builds directional/reverse variants directly.
 //
 // Java has multiple Intersection variants (ordered, unordered,
 // primary-key-based, value-based); this rule always emits the
@@ -42,37 +45,81 @@ func NewImplementIntersectionRule() *ImplementIntersectionRule {
 func (r *ImplementIntersectionRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 // OnMatch fires when EVERY child Quantifier ranges over a Reference
-// with at least one physical-plan member.
+// with an ascending physical-plan member for the comparison key.
 func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 	intr := matching.Get[*expressions.LogicalIntersectionExpression](call.Bindings, r.matcher)
 	children := intr.GetQuantifiers()
-	if len(children) == 0 {
+	comparisonKeyValues := intr.GetComparisonKeyValues()
+	if len(children) == 0 || len(comparisonKeyValues) == 0 {
 		return
 	}
+
+	requestedParts := make([]properties.RequestedOrderingPart, len(comparisonKeyValues))
+	for i, value := range comparisonKeyValues {
+		requestedParts[i] = properties.RequestedOrderingPart{
+			Value:     value,
+			SortOrder: properties.RequestedSortOrderAscending,
+		}
+	}
+	requested := properties.NewRequestedOrdering(
+		requestedParts,
+		properties.DistinctnessPreserveDistinctness,
+		false,
+	)
+
 	winners := make([]expressions.RelationalExpression, 0, len(children))
+	childPlans := make([]plans.RecordQueryPlan, 0, len(children))
 	for _, q := range children {
 		innerRef := q.GetRangesOver()
 		if innerRef == nil {
 			return
 		}
-		winner, _ := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
-		if winner == nil {
-			return // any child not physical → skip the whole rule fire
-		}
-		if _, ok := winner.(physicalPlanExpression); !ok {
+		winner, satisfied := getWinnerForOrdering(innerRef, requested, call.CostModel())
+		if winner == nil || !satisfied {
 			return
 		}
-		winners = append(winners, winner)
+		pinned := pinOrderedSpine(winner, requested, call.CostModel())
+		if pinned == nil {
+			return
+		}
+		physical, ok := pinned.(physicalPlanExpression)
+		if !ok || physical.GetRecordQueryPlan() == nil {
+			return
+		}
+		winners = append(winners, pinned)
+		childPlans = append(childPlans, physical.GetRecordQueryPlan())
 	}
 
-	// The intersection plan carries its leg edges directly — one live quantifier
-	// per winner, no separate physical wrapper (RFC-184 W2).
+	bakedComparisonKeys := bakedIntersectionKeys(comparisonKeyValues, childPlans)
+	if len(bakedComparisonKeys) != len(comparisonKeyValues) {
+		return
+	}
+	comparisonParts := make([]properties.ProvidedOrderingPart, len(bakedComparisonKeys))
+	for i, value := range bakedComparisonKeys {
+		comparisonParts[i] = properties.ProvidedOrderingPart{
+			Value:     value,
+			SortOrder: properties.ProvidedSortOrderAscending,
+		}
+	}
+
+	// Each ordering proof is tied to the exact executable spine selected above.
+	// A final singleton reference prevents a later generic child relink from
+	// swapping in an unordered sibling after the merge has dropped its sort.
 	childQs := make([]expressions.Quantifier, 0, len(winners))
 	for _, winner := range winners {
-		childQs = append(childQs, expressions.ForEachQuantifier(call.MemoizeExpression(winner)))
+		childQs = append(childQs, expressions.NewPhysicalQuantifier(
+			call.MemoizeFinalExpression(winner),
+		))
 	}
 
-	call.Yield(plans.NewRecordQueryIntersectionPlanFromQuantifiers(childQs, intr.GetComparisonKeyValues()))
+	intersection := plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(
+		childQs,
+		comparisonParts,
+		false,
+	)
+	if intersection != nil {
+		call.Yield(intersection)
+	}
 }
 
 var _ ExpressionRule = (*ImplementIntersectionRule)(nil)

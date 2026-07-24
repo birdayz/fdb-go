@@ -308,28 +308,23 @@ func (o *RichOrdering) bindingMapForExplain(explain string) []OrderingBinding {
 
 // orderingKeyFor resolves a requested-ordering part's Value to the ordering
 // set's key for it: the exact ExplainValue rendering first, then the
-// ordinal-FREE ColumnNameValue rendering (a plan-time BAKED
-// reference renders "COL#2" while a provider's ordering key for the same
-// column is the lazy "COL"; the ordering match is a same-COLUMN question, so
-// the ordinal-free rendering makes it name-level). ok=false when neither
-// rendering is a known
-// ordering key.
+// ordinal-FREE ColumnNameValue rendering when the two Values pass the narrow
+// flat-field representation bridge (a plan-time BAKED "COL#2" may meet a lazy
+// provider "COL"; two differently baked ordinals may not). ok=false when
+// neither representation identifies a known ordering key.
 func (o *RichOrdering) orderingKeyFor(v values.Value) (string, bool) {
 	k := values.ExplainValue(v)
 	if _, ok := o.keyLookup[k]; ok {
 		return k, true
-	}
-	if nk := values.ColumnNameValue(v); nk != k {
-		if _, ok := o.keyLookup[nk]; ok {
-			return nk, true
-		}
 	}
 	// The normalized same-column bridge: resolve through the upper-cased,
 	// ordinal-free rendering to the PRIMARY key (so the returned key is a
 	// member of the ordering set — the permutation enumeration and binding
 	// lookups all key on primaries).
 	if pk, ok := o.normLookup[strings.ToUpper(values.ColumnNameValue(v))]; ok {
-		return pk, true
+		if provided := o.keyLookup[pk]; values.CanBridgeOrderingFieldValues(v, provided) {
+			return pk, true
+		}
 	}
 	return "", false
 }
@@ -423,6 +418,74 @@ func (o *RichOrdering) EnumerateSatisfyingComparisonKeyValues(
 	}
 	if len(results) == 0 {
 		return nil
+	}
+	return results
+}
+
+// EnumerateSatisfyingIntersectionComparisonKeyValues enumerates comparison
+// keys with Java's intersection semantics. Equality-bound values remain in
+// the merged ordering's binding metadata, but they do not participate in the
+// physical merge key: every surviving row has one constant value there.
+//
+// This intentionally differs from EnumerateSatisfyingComparisonKeyValues,
+// whose older Go callers treat o.keys as the physical key wholesale. Java's
+// SetOperationsOrdering filters to singular non-fixed values, removes fixed
+// values from the requested prefix, and then enumerates full topological
+// permutations of that reduced set.
+func (o *RichOrdering) EnumerateSatisfyingIntersectionComparisonKeyValues(
+	requested *RequestedOrdering,
+) [][]values.Value {
+	if o == nil || requested == nil {
+		return nil
+	}
+	if requested.IsDistinct() && !o.distinct {
+		return nil
+	}
+
+	var reducedRequestedKeys []string
+	for _, part := range requested.GetParts() {
+		key, ok := o.orderingKeyFor(part.Value)
+		if !ok {
+			return nil
+		}
+		bindings := o.bindingMapForExplain(key)
+		if bindings == nil {
+			return nil
+		}
+		sortOrder := SortOrderOf(bindings)
+		if !sortOrder.IsCompatibleWithRequestedSortOrder(part.SortOrder) {
+			return nil
+		}
+		if sortOrder != ProvidedSortOrderFixed {
+			reducedRequestedKeys = append(reducedRequestedKeys, key)
+		}
+	}
+
+	filtered := o.orderingSet.FilterElements(func(key string) bool {
+		value := o.keyLookup[key]
+		return value != nil && o.IsSingularNonFixedValue(value)
+	})
+	if filtered.Size() == 0 {
+		// Java's topological iterator yields the one empty permutation.
+		return [][]values.Value{{}}
+	}
+
+	iter := combinatorics.SatisfyingPermutations(
+		filtered,
+		reducedRequestedKeys,
+		func(_ []string) int { return len(reducedRequestedKeys) },
+	)
+	var results [][]values.Value
+	for {
+		permutation := iter.Next()
+		if permutation == nil {
+			break
+		}
+		keyValues := make([]values.Value, len(permutation))
+		for i, key := range permutation {
+			keyValues[i] = o.keyLookup[key]
+		}
+		results = append(results, keyValues)
 	}
 	return results
 }
@@ -531,14 +594,13 @@ func (o *RichOrdering) DirectionalOrderingParts(
 	requested *RequestedOrdering,
 	fixedOrder ProvidedSortOrder,
 ) []ProvidedOrderingPart {
-	reqMap := requested.GetValueRequestedSortOrderMap()
 	parts := make([]ProvidedOrderingPart, 0, len(keyValues))
 	for _, key := range keyValues {
 		bindings := o.bindingMap[key]
 		sortOrder := SortOrderOf(bindings)
 
 		if !sortOrder.IsDirectional() {
-			if reqSort, ok := reqMap[key]; ok && reqSort.IsDirectional() {
+			if reqSort, ok := o.requestedSortOrderForKey(requested, key); ok && reqSort.IsDirectional() {
 				// Map to the natural provided value for the direction. We
 				// never stamp a counterflow provided order here: a counterflow
 				// request is refused at the satisfaction gate
@@ -561,6 +623,39 @@ func (o *RichOrdering) DirectionalOrderingParts(
 		})
 	}
 	return parts
+}
+
+// requestedSortOrderForKey resolves a requested part through the ordering's
+// semantic/normalized key bridge. Requested and provided FieldValues are
+// routinely rebuilt independently (and may differ in case or bake state), so
+// interface-key identity is not a valid lookup. Ambiguous conflicting requests
+// collapse to ANY, matching RequestedOrdering's map semantics.
+func (o *RichOrdering) requestedSortOrderForKey(
+	requested *RequestedOrdering,
+	value values.Value,
+) (RequestedSortOrder, bool) {
+	if requested == nil {
+		return RequestedSortOrderAny, false
+	}
+	target, ok := o.orderingKeyFor(value)
+	if !ok {
+		return RequestedSortOrderAny, false
+	}
+	var result RequestedSortOrder
+	found := false
+	for _, part := range requested.GetParts() {
+		key, partOK := o.orderingKeyFor(part.Value)
+		if !partOK || key != target {
+			continue
+		}
+		if !found {
+			result = part.SortOrder
+			found = true
+		} else if result != part.SortOrder {
+			return RequestedSortOrderAny, true
+		}
+	}
+	return result, found
 }
 
 // OrderingMergeKind determines the semantics of merging two orderings.
@@ -746,12 +841,15 @@ func CreateUnionOrdering(o *RichOrdering) *RichOrdering {
 // MergeOrderingsForUnion merges two orderings with union semantics.
 // Uses the full EligibleSet-based merge algorithm from Java.
 func MergeOrderingsForUnion(a, b *RichOrdering) *RichOrdering {
-	return mergeOrderings(a, b, combineBindingsForUnion, a.distinct && b.distinct)
+	return mergeOrderings(a, b, combineBindingsForUnion, a.distinct && b.distinct, false)
 }
 
 // MergeOrderingsForIntersection merges two orderings with intersection semantics.
 func MergeOrderingsForIntersection(a, b *RichOrdering) *RichOrdering {
-	return mergeOrderings(a, b, combineBindingsForIntersection, a.distinct && b.distinct)
+	// Java passes (left, right) -> true for intersection: rows surviving
+	// every leg are distinct under the comparison contract even when an
+	// individual input ordering does not advertise distinctness.
+	return mergeOrderings(a, b, combineBindingsForIntersection, true, true)
 }
 
 // MergeOrderings merges two orderings (union semantics, backward-compat alias).
@@ -761,7 +859,12 @@ func MergeOrderings(a, b *RichOrdering) *RichOrdering {
 
 type bindingCombiner func(left, right []OrderingBinding) []OrderingBinding
 
-func mergeOrderings(a, b *RichOrdering, combine bindingCombiner, distinct bool) *RichOrdering {
+func mergeOrderings(
+	a, b *RichOrdering,
+	combine bindingCombiner,
+	distinct bool,
+	normalizeFixedDependencies bool,
+) *RichOrdering {
 	leftES := a.orderingSet.EligibleSet()
 	rightES := b.orderingSet.EligibleSet()
 
@@ -769,8 +872,21 @@ func mergeOrderings(a, b *RichOrdering, combine bindingCombiner, distinct bool) 
 	deps := combinatorics.NewSetMultimap[string]()
 	bm := make(map[values.Value][]OrderingBinding)
 	lookup := make(map[string]values.Value)
+	seenElements := make(map[string]struct{})
 
 	var lastElements []string
+
+	addElement := func(element string, value values.Value, bindings []OrderingBinding) {
+		if value == nil || len(bindings) == 0 {
+			return
+		}
+		if _, seen := seenElements[element]; !seen {
+			elements = append(elements, element)
+			seenElements[element] = struct{}{}
+		}
+		lookup[element] = value
+		bm[value] = bindings
+	}
 
 	for !leftES.IsEmpty() && !rightES.IsEmpty() {
 		leftElems := leftES.EligibleElements()
@@ -785,13 +901,10 @@ func mergeOrderings(a, b *RichOrdering, combine bindingCombiner, distinct bool) 
 					combined := combine(a.bindingMap[lv], b.bindingMap[rv])
 					if len(combined) > 0 {
 						intersected = append(intersected, le)
-						elements = append(elements, le)
 						if lv != nil {
-							lookup[le] = lv
-							bm[lv] = combined
+							addElement(le, lv, combined)
 						} else if rv != nil {
-							lookup[le] = rv
-							bm[rv] = combined
+							addElement(le, rv, combined)
 						}
 					}
 				}
@@ -803,9 +916,7 @@ func mergeOrderings(a, b *RichOrdering, combine bindingCombiner, distinct bool) 
 				lv := a.keyLookup[le]
 				combined := combine(a.bindingMap[lv], nil)
 				if len(combined) > 0 {
-					elements = append(elements, le)
-					lookup[le] = lv
-					bm[lv] = combined
+					addElement(le, lv, combined)
 				}
 			}
 		}
@@ -814,9 +925,7 @@ func mergeOrderings(a, b *RichOrdering, combine bindingCombiner, distinct bool) 
 				rv := b.keyLookup[re]
 				combined := combine(nil, b.bindingMap[rv])
 				if len(combined) > 0 {
-					elements = append(elements, re)
-					lookup[re] = rv
-					bm[rv] = combined
+					addElement(re, rv, combined)
 				}
 			}
 		}
@@ -851,7 +960,55 @@ func mergeOrderings(a, b *RichOrdering, combine bindingCombiner, distinct bool) 
 		}
 	}
 
+	if normalizeFixedDependencies {
+		deps = normalizeOrderingDependencies(bm, lookup, deps)
+	}
 	return NewRichOrderingWithDeps(bm, vals, deps, distinct)
+}
+
+// normalizeOrderingDependencies mirrors Java Ordering.normalizeOrderingSet.
+// A value that becomes fixed while two orderings are merged is independent of
+// every other value. Remove dependencies from that value, and bypass it when a
+// non-fixed value depended on it, retaining any transitive non-fixed
+// dependencies beyond the fixed value.
+func normalizeOrderingDependencies(
+	bindingMap map[values.Value][]OrderingBinding,
+	keyLookup map[string]values.Value,
+	dependencyMap combinatorics.SetMultimap[string],
+) combinatorics.SetMultimap[string] {
+	normalized := combinatorics.NewSetMultimap[string]()
+	isFixed := func(key string) bool {
+		return AreAllBindingsFixed(bindingMap[keyLookup[key]])
+	}
+
+	for key, dependencies := range dependencyMap {
+		if isFixed(key) {
+			continue
+		}
+
+		queue := make([]string, 0, len(dependencies))
+		for dependency := range dependencies {
+			queue = append(queue, dependency)
+		}
+		visitedFixed := make(map[string]struct{})
+		for len(queue) > 0 {
+			dependency := queue[0]
+			queue = queue[1:]
+			if !isFixed(dependency) {
+				normalized.Put(key, dependency)
+				continue
+			}
+			if _, seen := visitedFixed[dependency]; seen {
+				continue
+			}
+			visitedFixed[dependency] = struct{}{}
+			for transitiveDependency := range dependencyMap.Get(dependency) {
+				queue = append(queue, transitiveDependency)
+			}
+		}
+	}
+
+	return normalized
 }
 
 func combineBindingsForUnion(left, right []OrderingBinding) []OrderingBinding {

@@ -79,6 +79,47 @@ type ProvidedOrderingPart struct {
 	SortOrder ProvidedSortOrder
 }
 
+// NaturalComparisonKeyValue returns the executable comparison-key Value for
+// this ordering part when the set operation can compare the raw Value in its
+// chosen direction.
+//
+// Java's ProvidedOrderingPart.comparisonKeyValue(reverse) returns the raw
+// Value only when the resulting tuple direction is ASC_NULLS_FIRST:
+//
+//   - a forward merge over ASC_NULLS_FIRST parts; or
+//   - a reverse merge over DESC_NULLS_LAST parts.
+//
+// Every other combination needs ToOrderedBytesValue to encode direction
+// and/or counterflow NULL placement into the physical key. Go carries that
+// Value shape, but its evaluator is not implemented yet. Returning ok=false
+// keeps set-operation construction fail-closed instead of comparing nil or
+// raw values with the wrong physical ordering.
+func (p ProvidedOrderingPart) NaturalComparisonKeyValue(reverse bool) (values.Value, bool) {
+	if p.Value == nil {
+		return nil, false
+	}
+	if (!reverse && p.SortOrder == ProvidedSortOrderAscending) ||
+		(reverse && p.SortOrder == ProvidedSortOrderDescending) {
+		return p.Value, true
+	}
+	return nil, false
+}
+
+// NaturalComparisonKeyValues maps ordering parts to executable raw comparison
+// Values. ok=false means at least one part requires ordered-byte encoding and
+// the caller must decline the plan until that evaluator exists.
+func NaturalComparisonKeyValues(parts []ProvidedOrderingPart, reverse bool) ([]values.Value, bool) {
+	result := make([]values.Value, len(parts))
+	for i, part := range parts {
+		value, ok := part.NaturalComparisonKeyValue(reverse)
+		if !ok {
+			return nil, false
+		}
+		result[i] = value
+	}
+	return result, true
+}
+
 // OrderingBinding represents a binding in the ordering: either a fixed
 // comparison binding or a directional sort binding. Mirrors Java's
 // Ordering.Binding.

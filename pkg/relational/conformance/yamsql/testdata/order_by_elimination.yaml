@@ -406,9 +406,8 @@ tests:
   # Secondary-index path: region is equated, ORDER BY plan ASC. The
   # idx_region_plan natural order is (region, plan, id). With region
   # equated, effective naturalOrder is (plan, id). ORDER BY plan
-  # matches → sort eliminated. Note: reverse scan on secondary
-  # indexes is not yet plumbed through, so DESC variants would still
-  # sort — that's a separate follow-up.
+  # matches → sort eliminated. The DESC twin below uses the same
+  # equality-prefix relaxation with a reverse secondary-index scan.
   - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan
     rows:
       - [2, 'us', 'free']

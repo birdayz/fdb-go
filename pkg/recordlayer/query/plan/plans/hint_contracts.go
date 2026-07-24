@@ -89,6 +89,7 @@ var (
 	_ properties.OrderingHinter = (*RecordQueryIndexPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryInMemorySortPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryMergeSortUnionPlan)(nil)
+	_ properties.OrderingHinter = (*RecordQueryIntersectionPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryInUnionPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryMultiIntersectionOnValuesPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryStreamingAggregationPlan)(nil)

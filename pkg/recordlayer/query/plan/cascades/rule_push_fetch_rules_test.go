@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -873,10 +874,17 @@ func TestPushIntersectionThroughFetch_RequiredValuesGate(t *testing.T) {
 	}
 
 	// Both legs answer → fires, comparison keys preserved on the rebuilt plan.
-	firing := plans.NewRecordQueryIntersectionPlanFromQuantifiers(
+	firing := plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(
 		[]expressions.Quantifier{makeChild("idx_a", okFn), makeChild("idx_b", okFn)},
-		[]values.Value{key},
+		[]properties.ProvidedOrderingPart{{
+			Value:     key,
+			SortOrder: properties.ProvidedSortOrderDescending,
+		}},
+		true,
 	)
+	if firing == nil {
+		t.Fatal("reverse descending intersection constructor declined a natural comparison key")
+	}
 	yielded := FireImplementationRule(NewPushIntersectionThroughFetchRule(), expressions.InitialOf(firing))
 	if len(yielded) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(yielded))
@@ -891,6 +899,13 @@ func TestPushIntersectionThroughFetch_RequiredValuesGate(t *testing.T) {
 	}
 	if got := ipn.GetComparisonKeyValues(); len(got) != 1 {
 		t.Fatalf("comparison keys not preserved: %v", got)
+	}
+	if !ipn.IsReverse() {
+		t.Fatal("push-through-fetch dropped the intersection's reverse flag")
+	}
+	if parts := ipn.GetComparisonKeyOrderingParts(); len(parts) != 1 ||
+		parts[0].SortOrder != properties.ProvidedSortOrderDescending {
+		t.Fatalf("push-through-fetch dropped semantic ordering parts: %#v", parts)
 	}
 }
 

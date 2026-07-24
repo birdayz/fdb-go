@@ -168,18 +168,28 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
     affected Go/Bazel targets green; parent-vs-current explain corpus 2,579/2,579 identical; full
     `just test` 56/56. **FINAL REVIEW: three independent Codex audits ACK** (candidate parity,
     shortcut/cardinality safety, SQL/FDB semantics).
-- [ ] **190.5 (MED)** — index-intersection reach: bounded generic k-way now lands, but the
-  comparison key remains forward-only PK and `RecordQueryIntersectionPlan` still carries no
-  reverse flag. Java: bounded-at-call-site `ChooseK` + any common ordering + `isReversed`.
+- [x] **190.5 (MED)** — index-intersection reach: bounded generic k-way plus Java-faithful rich
+  common-ordering, redundancy, directional comparison-key, and reverse execution now land.
   - [x] **190.5a** — enumerate every 2..4 restricted-candidate subset under the existing
     eight-match budget; pair sieve + early-out; exact-input re-entry guard; cap after adjusted-twin
     collapse; retain subsets until Java's redundancy proof exists. Production SQL + real FDB prove
     one selected four-way intersection and exclude every three-of-four decoy. Focused race/repeat,
     affected Bazel 3/3, parent EXPLAIN 2,579/2,579, 1M stress 23/23, and full suite 56/56 green.
-  - [ ] **190.5b** — port rich common-ordering/comparison-key derivation and
+  - [x] **190.5b** — port rich common-ordering/comparison-key derivation and
     `isPartitionRedundant`; require every free PK component; atomically carry comparison direction
     and reverse through plan identity, execution, ordering properties, and fetch/set-op rewrites;
-    add the `DESC` SQL/FDB regression.
+    add the `DESC` SQL/FDB regression. The current Java target's top-to-top requested-order translation,
+    fixed-binding dependency normalization, fan-out-leg PK distinct wrapping, and non-empty-only
+    subpartition eviction are included. Natural forward-ASC/reverse-DESC flat field keys execute;
+    mixed/counterflow, ordered-bytes, ambiguous baked-layout, and non-flat shapes decline safely.
+    Focused race/repeat and affected Go/Bazel targets pass; real FDB pins exact DESC rows,
+    continuation, and low scan budget. Parent-vs-current EXPLAIN is 2,573/2,579 identical with six
+    Java-verified sort-elimination/ordered-index winners, zero regressions; their three row corpora
+    pass 58/58. The checked-in golden records those six flips. The 1M gate passes all 23 subtests in
+    150.95s vs the 190.5a checkpoint's 151.71s; full `just test` is 56/56. **FINAL REVIEW: two
+    independent Codex audits ACK.** Safe residual: Go's separate cross-candidate pass retains
+    already-yielded singleton alternatives that Java's shared partition map evicts; tracked in
+    `DIVERGENCES.md` as plan-space widening, not a row-safety gap.
 - [ ] **190.6 (architectural — Graefe ruling)** — Go strips requested-ordering enumeration OUT of
   the join/set-op rules and recovers it via a centralized physical sort (`ImplementInMemorySortRule`
   RFC-001 + `winner_lookup.go:103` `pinOrderedSpine`), vs Java folding ordered-variant enumeration
@@ -608,8 +618,9 @@ so there is no ref child-selection left in the SARG walk.)
 
 ### [ ] Finding 13 (LOW) — dead code / missed matches / maintainability
 - Dead rules: `rule_implement_intersection.go:46`, `rule_intersection_merge.go:37`,
-  `rule_set_op_singleton.go:49` (no query seeds `LogicalIntersectionExpression`) — + latent unsound if
-  reached (grabs unordered winner for a merge that requires ordered legs).
+  `rule_set_op_singleton.go:49` (no query seeds `LogicalIntersectionExpression`). RFC-190.5b resolves
+  the intersection rule's latent unordered-child bug with an explicit ASC request and ordered-winner
+  selection; the rule remains dead/maintainability-only.
 - `rule_merge_fetch_into_covering_index.go` unreachable (`wrapScanPlanWithCoverage` strips the Fetch) —
   unported Java optimization.
 - `rule_match_intermediate.go:227` MatchIntermediateRule pairs quantifiers POSITIONALLY; Java enumerates
@@ -5198,6 +5209,15 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 ## Stress test 1M baseline (2026-05-27)
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
+
+**2026-07-24 (RFC-190.5b — directional rich-order intersection parity):** the
+recorded 190.5a checkpoint vs the current uncached run on the same host. All 23
+subtests PASS with identical row counts. Total runtime is 151.71s checkpoint vs
+150.95s current (-0.50%); comparable million-row scans are
+3.38/3.29/3.40/2.99s vs 3.36/3.22/3.36/2.93s, respectively. Bulk loads remain
+noise-level equal (customers 6.219s vs 6.240s; orders 127.736s vs 127.634s).
+Point lookups are 4.76-5.17ms, index equality 6.19ms, and no throughput,
+row-count, continuation, or plan-shape performance regression appears.
 
 **2026-07-24 (RFC-190.5a — bounded generic k-way intersection reach):** exact
 parent `bde66debe` vs working tree, same quiet box, sequential fresh FDB

@@ -341,6 +341,38 @@ func (p *RecordQueryMergeSortUnionPlan) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: true, Keys: p.GetComparisonKeys()}
 }
 
+// HintOrdering: an intersection emits rows in its semantic comparison-key
+// order. Use the ordering parts rather than the executable comparison Values:
+// a future mixed/counterflow key may be physically encoded as ordered bytes,
+// but the SQL-visible ordering remains over the original columns.
+func (p *RecordQueryIntersectionPlan) HintOrdering() properties.Ordering {
+	if p == nil {
+		return properties.Ordering{}
+	}
+	parts := p.GetComparisonKeyOrderingParts()
+	if len(parts) == 0 {
+		return properties.Ordering{}
+	}
+	keys := make([]values.Value, len(parts))
+	descending := make([]bool, len(parts))
+	nullsFirst := make([]bool, len(parts))
+	for i, part := range parts {
+		if !part.SortOrder.IsDirectional() {
+			return properties.Ordering{}
+		}
+		keys[i] = part.Value
+		descending[i] = part.SortOrder.IsAnyDescending()
+		nullsFirst[i] = part.SortOrder == properties.ProvidedSortOrderAscending ||
+			part.SortOrder == properties.ProvidedSortOrderDescendingNullsFirst
+	}
+	return properties.Ordering{
+		IsKnown:    true,
+		Keys:       keys,
+		Descending: descending,
+		NullsFirst: nullsFirst,
+	}
+}
+
 // HintOrdering: an InUnion emits rows in its comparison-key order.
 func (p *RecordQueryInUnionPlan) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: true, Keys: p.GetComparisonKeys()}

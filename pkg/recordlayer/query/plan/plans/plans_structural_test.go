@@ -1206,6 +1206,71 @@ func TestIntersectionPlan_CopiesSlices(t *testing.T) {
 	}
 }
 
+func TestIntersectionPlan_ReverseOrderingContractSurvivesCopies(t *testing.T) {
+	t.Parallel()
+
+	key := &values.FieldValue{Field: "pk", Typ: values.UnknownType}
+	parts := []properties.ProvidedOrderingPart{{
+		Value:     key,
+		SortOrder: properties.ProvidedSortOrderDescending,
+	}}
+	p := NewRecordQueryIntersectionPlanWithOrdering(
+		[]RecordQueryPlan{stub("A"), stub("B")},
+		parts,
+		true,
+	)
+	if p == nil {
+		t.Fatal("reverse descending intersection constructor declined a naturally executable key")
+	}
+	if !p.IsReverse() {
+		t.Fatal("reverse flag was not retained")
+	}
+	if !strings.Contains(p.Explain(), "REVERSE") {
+		t.Fatalf("Explain() = %q, want a reverse marker", p.Explain())
+	}
+	hint := p.HintOrdering()
+	if !hint.IsKnown || len(hint.Keys) != 1 || !hint.Descending[0] || hint.NullsFirstAt(0) {
+		t.Fatalf("HintOrdering() = %#v, want PK DESC NULLS LAST", hint)
+	}
+
+	relinkedExpr := p.WithQuantifiers(QuantifiersOverPlans([]RecordQueryPlan{stub("C"), stub("D")}))
+	relinked, ok := relinkedExpr.(*RecordQueryIntersectionPlan)
+	if !ok {
+		t.Fatalf("WithQuantifiers() = %T, want *RecordQueryIntersectionPlan", relinkedExpr)
+	}
+	if !relinked.IsReverse() ||
+		len(relinked.GetComparisonKeyOrderingParts()) != 1 ||
+		relinked.GetComparisonKeyOrderingParts()[0].SortOrder != properties.ProvidedSortOrderDescending {
+		t.Fatalf("WithQuantifiers() lost reverse ordering: %#v", relinked)
+	}
+	if relinked.GetInners()[0].Explain() != "C" {
+		t.Fatalf("WithQuantifiers() did not relink children: %s", relinked.GetInners()[0].Explain())
+	}
+
+	forward := NewRecordQueryIntersectionPlanWithOrdering(
+		nil,
+		[]properties.ProvidedOrderingPart{{
+			Value:     key,
+			SortOrder: properties.ProvidedSortOrderAscending,
+		}},
+		false,
+	)
+	if forward == nil {
+		t.Fatal("forward ascending intersection constructor declined a natural key")
+	}
+	if p.EqualsPlanWithoutChildren(forward) {
+		t.Fatal("opposite merge directions must not be structurally equal")
+	}
+	if p.HashCodeWithoutChildren() == forward.HashCodeWithoutChildren() {
+		t.Fatal("opposite merge directions should produce different structural hashes")
+	}
+
+	parts[0].Value = &values.FieldValue{Field: "mutated", Typ: values.UnknownType}
+	if values.ExplainValue(p.GetComparisonKeyOrderingParts()[0].Value) != "pk" {
+		t.Fatal("intersection should have an independent copy of semantic ordering parts")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // RecordQueryValuesPlan
 // ---------------------------------------------------------------------------

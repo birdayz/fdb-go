@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -18,6 +19,15 @@ import (
 type testPlanContextForIntersection struct {
 	emptyPlanContext
 	pkColumns map[string][]string
+}
+
+type structuralPKTestCandidate struct {
+	*dataAccessTestCandidate
+	commonPrimaryKey []values.Value
+}
+
+func (c *structuralPKTestCandidate) GetCommonPrimaryKeyValues() []values.Value {
+	return append([]values.Value(nil), c.commonPrimaryKey...)
 }
 
 func (c *testPlanContextForIntersection) GetPrimaryKeyColumns(recordType string) []string {
@@ -160,11 +170,11 @@ func TestIntersector_ThreeWay(t *testing.T) {
 		t.Fatal("expected viable intersection from 3 different candidates")
 	}
 
-	// Until Java's isPartitionRedundant proof is ported, keep the useful
-	// subpartitions alongside the larger intersection.
+	// Each leg contributes a different fixed predicate, so the larger
+	// partition is useful and evicts its immediate pair subpartitions.
 	exprs := result.GetExpressions()
-	if len(exprs) != 4 {
-		t.Fatalf("expected 3 pairs and 1 three-way intersection, got %d expressions", len(exprs))
+	if len(exprs) != 1 {
+		t.Fatalf("expected only the useful three-way intersection, got %d expressions", len(exprs))
 	}
 
 	byArity := map[int]int{}
@@ -175,8 +185,108 @@ func TestIntersector_ThreeWay(t *testing.T) {
 		}
 		byArity[len(plan.GetChildren())]++
 	}
-	if byArity[2] != 3 || byArity[3] != 1 {
-		t.Fatalf("intersection arities = %v, want map[2:3 3:1]", byArity)
+	if byArity[2] != 0 || byArity[3] != 1 {
+		t.Fatalf("intersection arities = %v, want map[3:1]", byArity)
+	}
+}
+
+func TestIntersector_ImpossibleLargerCompensationKeepsUsefulPair(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	baseRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression(
+			[]string{"TestRecord"},
+			testIntersectorRowType,
+		),
+	)
+	leftBaseQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("left_scope"),
+		baseRef,
+	)
+	rightBaseQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("right_scope"),
+		baseRef,
+	)
+	sharedPredicate := predicates.NewConstantPredicate(predicates.TriTrue)
+	makeCompensation := func(
+		baseQ expressions.Quantifier,
+	) Compensation {
+		return NewForMatchCompensation(
+			false,
+			NoCompensation,
+			NewPredicateCompensationMap(
+				[]predicates.QueryPredicate{sharedPredicate},
+				[]PredicateCompensationFunc{
+					NoPredicateCompensationNeeded(),
+				},
+			),
+			[]expressions.Quantifier{baseQ},
+			nil,
+			map[values.CorrelationIdentifier]struct{}{
+				baseQ.GetAlias(): {},
+			},
+			NoResultCompensation(),
+			EmptyGroupByMappings(),
+		)
+	}
+
+	makeAccess := func(
+		name string,
+		compensation Compensation,
+		position int,
+	) Vectored[*SingleMatchedAccess] {
+		pm := makeDataAccessTestPartialMatch(
+			name,
+			1,
+			&testPlan{name: name, resultType: testIntersectorRowType},
+		)
+		return NewVectored(
+			NewSingleMatchedAccess(
+				pm,
+				compensation,
+				values.UniqueCorrelationIdentifier(),
+				false,
+				EmptyTranslationMap(),
+				nil,
+			),
+			position,
+		)
+	}
+
+	result := WithPrimaryKeyIntersector(
+		newTestPKContext("TestRecord", []string{"id"}),
+	)([]Vectored[*SingleMatchedAccess]{
+		makeAccess("scan_a", makeCompensation(leftBaseQ), 0),
+		makeAccess("scan_b", makeCompensation(leftBaseQ), 1),
+		makeAccess("scan_c", makeCompensation(rightBaseQ), 2),
+	}, nil)
+
+	if !result.IsViable() || len(result.GetExpressions()) != 1 {
+		t.Fatalf(
+			"zero-expression larger replacement left %d expressions, want useful A/B pair",
+			len(result.GetExpressions()),
+		)
+	}
+	intersection, ok := result.GetExpressions()[0].(*plans.RecordQueryIntersectionPlan)
+	if !ok {
+		t.Fatalf(
+			"survivor = %T, want *RecordQueryIntersectionPlan",
+			result.GetExpressions()[0],
+		)
+	}
+	if len(intersection.GetChildren()) != 2 {
+		t.Fatalf(
+			"survivor arity = %d, want 2",
+			len(intersection.GetChildren()),
+		)
+	}
+	explain := intersection.Explain()
+	if !strings.Contains(explain, "scan_a") ||
+		!strings.Contains(explain, "scan_b") ||
+		strings.Contains(explain, "scan_c") {
+		t.Fatalf("survivor = %s, want the viable A/B pair", explain)
 	}
 }
 
@@ -210,11 +320,248 @@ func TestIntersector_FourWay(t *testing.T) {
 	if got := byArity[4]; got != 1 {
 		t.Fatalf("four-way intersections = %d, want C(4,4)=1", got)
 	}
-	if byArity[2] != 6 || byArity[3] != 4 {
-		t.Fatalf("intersection arities = %v, want map[2:6 3:4 4:1]", byArity)
+	if byArity[2] != 0 || byArity[3] != 0 {
+		t.Fatalf("intersection arities = %v, want only map[4:1]", byArity)
 	}
-	if got := len(result.GetExpressions()); got != 11 {
-		t.Fatalf("bounded intersection alternatives = %d, want 6+4+1=11", got)
+	if got := len(result.GetExpressions()); got != 1 {
+		t.Fatalf("bounded intersection alternatives = %d, want only the maximal useful plan", got)
+	}
+}
+
+func TestIntersector_JavaRedundancyExampleKeepsUsefulPair(t *testing.T) {
+	t.Parallel()
+
+	equality := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))
+	equalityRange := predicates.EmptyComparisonRange().Merge(&equality).Range
+	makeMatch := func(name string, fixedColumns ...string) *testPartialMatch {
+		aliases := make([]values.CorrelationIdentifier, len(fixedColumns))
+		parts := make([]*MatchedOrderingPart, 0, len(fixedColumns)+1)
+		bindings := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
+		for i, column := range fixedColumns {
+			alias := values.UniqueCorrelationIdentifier()
+			aliases[i] = alias
+			bindings[alias] = equalityRange
+			parts = append(parts, NewMatchedOrderingPart(
+				alias,
+				&values.FieldValue{Field: column, Typ: values.UnknownType},
+				equalityRange,
+				MatchedSortOrderAscending,
+			))
+		}
+		parts = append(parts, NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+			nil,
+			MatchedSortOrderAscending,
+		))
+		return &testPartialMatch{
+			candidate: &dataAccessTestCandidate{
+				name:            name,
+				sargableAliases: aliases,
+				columnNames:     fixedColumns,
+				recordTypes:     []string{"TestRecord"},
+				fixedPlan:       &testPlan{name: name, resultType: testIntersectorRowType},
+			},
+			matchInfo: &testMatchInfo{
+				orderingParts: parts,
+				paramBindings: bindings,
+			},
+		}
+	}
+
+	result := WithPrimaryKeyIntersector(
+		newTestPKContext("TestRecord", []string{"id"}),
+	)([]Vectored[*SingleMatchedAccess]{
+		makeVectoredAccess(makeMatch("i1", "A"), 0),
+		makeVectoredAccess(makeMatch("i2", "B"), 1),
+		makeVectoredAccess(makeMatch("i3", "A", "B"), 2),
+	}, nil)
+	if !result.IsViable() || len(result.GetExpressions()) != 1 {
+		t.Fatalf("Java redundancy example produced %d expressions, want only I1∩I2",
+			len(result.GetExpressions()))
+	}
+	intersection, ok := result.GetExpressions()[0].(*plans.RecordQueryIntersectionPlan)
+	if !ok {
+		t.Fatalf("survivor = %T, want *RecordQueryIntersectionPlan",
+			result.GetExpressions()[0])
+	}
+	if len(intersection.GetChildren()) != 2 {
+		t.Fatalf("survivor has %d children, want one two-leg intersection",
+			len(intersection.GetChildren()))
+	}
+	explain := intersection.Explain()
+	if !strings.Contains(explain, "TestPlan(i1)") ||
+		!strings.Contains(explain, "TestPlan(i2)") ||
+		strings.Contains(explain, "TestPlan(i3)") {
+		t.Fatalf("redundancy survivor = %s, want I1∩I2", explain)
+	}
+}
+
+func TestIntersector_MaxOneSingletonSuppressesIntersection(t *testing.T) {
+	t.Parallel()
+
+	equality := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))
+	equalityRange := predicates.EmptyComparisonRange().Merge(&equality).Range
+	makeMatch := func(name, column string, unique bool) *testPartialMatch {
+		alias := values.UniqueCorrelationIdentifier()
+		var scan plans.RecordQueryPlan = &testPlan{
+			name:       name,
+			resultType: testIntersectorRowType,
+		}
+		if unique {
+			scan = plans.NewRecordQueryIndexPlan(
+				name,
+				[]*predicates.ComparisonRange{equalityRange},
+				[]string{"TestRecord"},
+				testIntersectorRowType,
+				false,
+			)
+		}
+		return &testPartialMatch{
+			candidate: &dataAccessTestCandidate{
+				name:            name,
+				sargableAliases: []values.CorrelationIdentifier{alias},
+				columnNames:     []string{column},
+				recordTypes:     []string{"TestRecord"},
+				fixedPlan:       scan,
+				unique:          unique,
+			},
+			matchInfo: &testMatchInfo{
+				orderingParts: []*MatchedOrderingPart{
+					NewMatchedOrderingPart(
+						alias,
+						&values.FieldValue{Field: column, Typ: values.UnknownType},
+						equalityRange,
+						MatchedSortOrderAscending,
+					),
+					NewMatchedOrderingPart(
+						values.UniqueCorrelationIdentifier(),
+						&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+						nil,
+						MatchedSortOrderAscending,
+					),
+				},
+				paramBindings: map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+					alias: equalityRange,
+				},
+			},
+		}
+	}
+
+	result := WithPrimaryKeyIntersector(
+		newTestPKContext("TestRecord", []string{"id"}),
+	)([]Vectored[*SingleMatchedAccess]{
+		makeVectoredAccess(makeMatch("unique_a", "A", true), 0),
+		makeVectoredAccess(makeMatch("idx_b", "B", false), 1),
+	}, nil)
+	if result.IsViable() || len(result.GetExpressions()) != 0 {
+		t.Fatal("a singleton access with proven max cardinality one makes every containing intersection redundant")
+	}
+}
+
+func TestPartitionRedundancy_UnmatchedMetadata(t *testing.T) {
+	t.Parallel()
+
+	makeCompensation := func(ids ...values.CorrelationIdentifier) Compensation {
+		unmatched := NewCorrValueBiMap()
+		for i, id := range ids {
+			unmatched.Put(id, values.LiteralValue(int64(i+1)))
+		}
+		groupByMappings := NewGroupByMappings(
+			NewValueBiMap(),
+			NewValueBiMap(),
+			unmatched,
+		)
+		baseAlias := values.UniqueCorrelationIdentifier()
+		baseQ := expressions.NamedForEachQuantifier(
+			baseAlias,
+			expressions.InitialOf(
+				expressions.NewFullUnorderedScanExpression(
+					[]string{"TestRecord"},
+					values.UnknownType,
+				),
+			),
+		)
+		return NewForMatchCompensation(
+			false,
+			NoCompensation,
+			StubPredicateCompensationMap(1),
+			[]expressions.Quantifier{baseQ},
+			nil,
+			map[values.CorrelationIdentifier]struct{}{baseAlias: {}},
+			NoResultCompensation(),
+			groupByMappings,
+		)
+	}
+	fixedOrdering := func(fixed ...values.Value) *properties.RichOrdering {
+		bindings := make(map[values.Value][]properties.OrderingBinding, len(fixed))
+		for _, value := range fixed {
+			bindings[value] = []properties.OrderingBinding{
+				properties.FixedBinding(nil),
+			}
+		}
+		return properties.NewRichOrdering(bindings, fixed, false)
+	}
+
+	x := values.UniqueCorrelationIdentifier()
+	y := values.UniqueCorrelationIdentifier()
+	aProvided := &values.FieldValue{Field: "A", Typ: values.UnknownType}
+	bProvided := &values.FieldValue{Field: "B", Typ: values.UnknownType}
+	// Separately allocated required Values pin structural, not pointer,
+	// equality in the proof.
+	required := []values.Value{
+		&values.FieldValue{Field: "A", Typ: values.UnknownType},
+		&values.FieldValue{Field: "B", Typ: values.UnknownType},
+	}
+	partition := []Vectored[*SingleMatchedAccess]{
+		{Position: 0},
+		{Position: 1},
+	}
+	dummy := expressions.NewFullUnorderedScanExpression(
+		[]string{"TestRecord"},
+		values.UnknownType,
+	)
+	makeInfos := func(
+		leftCompensation, rightCompensation Compensation,
+	) map[intersectionInfoKey]*IntersectionInfo {
+		left := []Vectored[*SingleMatchedAccess]{{Position: 0}}
+		right := []Vectored[*SingleMatchedAccess]{{Position: 1}}
+		return map[intersectionInfoKey]*IntersectionInfo{
+			intersectionInfoKeyForPartition(left): IntersectionInfoOfSingleAccess(
+				fixedOrdering(aProvided, bProvided),
+				leftCompensation,
+				dummy,
+				CardinalityUnknown,
+			),
+			intersectionInfoKeyForPartition(right): IntersectionInfoOfSingleAccess(
+				properties.EmptyOrdering(),
+				rightCompensation,
+				dummy,
+				CardinalityUnknown,
+			),
+		}
+	}
+
+	if !isPrimaryKeyPartitionRedundant(
+		partition,
+		required,
+		makeInfos(makeCompensation(x), makeCompensation(x)),
+	) {
+		t.Fatal("equal unmatched-ID sets and a fixed-value superset should prove redundancy")
+	}
+	if isPrimaryKeyPartitionRedundant(
+		partition,
+		required,
+		makeInfos(makeCompensation(x, y), makeCompensation(x)),
+	) {
+		t.Fatal("different unmatched-ID sets must fail the redundancy proof open")
+	}
+	if isPrimaryKeyPartitionRedundant(
+		partition,
+		required,
+		makeInfos(ImpossibleCompensation, makeCompensation(x)),
+	) {
+		t.Fatal("unknown unmatched metadata must fail the redundancy proof open")
 	}
 }
 
@@ -349,6 +696,106 @@ func TestCommonPrimaryKeyValues_EmptyRecordTypes(t *testing.T) {
 	}
 }
 
+func TestCommonPrimaryKeyValuesForPartition_StructuralCandidateContract(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	makeAccess := func(
+		name string,
+		position int,
+		commonPrimaryKey []values.Value,
+		exposeStructural bool,
+	) Vectored[*SingleMatchedAccess] {
+		pm := makeDataAccessTestPartialMatch(
+			name,
+			1,
+			&testPlan{name: name, resultType: testIntersectorRowType},
+		)
+		if exposeStructural {
+			pm.candidate = &structuralPKTestCandidate{
+				dataAccessTestCandidate: pm.candidate.(*dataAccessTestCandidate),
+				commonPrimaryKey:        commonPrimaryKey,
+			}
+		}
+		return makeVectoredAccess(pm, position)
+	}
+	structuralPK := func(lastField string) []values.Value {
+		return []values.Value{
+			values.NewRecordTypeValue(nil),
+			&values.FieldValue{
+				Field: lastField,
+				Typ:   values.NullableLong,
+			},
+		}
+	}
+
+	t.Run("separately_allocated_equal_values", func(t *testing.T) {
+		t.Parallel()
+		got := commonPrimaryKeyValuesForPartition(
+			[]Vectored[*SingleMatchedAccess]{
+				makeAccess("idx_a", 0, structuralPK("ID"), true),
+				makeAccess("idx_b", 1, structuralPK("ID"), true),
+			},
+			EmptyPlanContext(),
+		)
+		if len(got) != 2 {
+			t.Fatalf("structural common PK length = %d, want 2", len(got))
+		}
+		if _, ok := got[0].(*values.RecordTypeValue); !ok {
+			t.Fatalf(
+				"structural common PK prefix = %T, want *RecordTypeValue",
+				got[0],
+			)
+		}
+		if values.ColumnNameValue(got[1]) != "ID" {
+			t.Fatalf("structural common PK suffix = %v, want ID", got[1])
+		}
+	})
+
+	t.Run("different_structure_declines", func(t *testing.T) {
+		t.Parallel()
+		got := commonPrimaryKeyValuesForPartition(
+			[]Vectored[*SingleMatchedAccess]{
+				makeAccess("idx_a", 0, structuralPK("ID"), true),
+				makeAccess("idx_b", 1, structuralPK("VERSION"), true),
+			},
+			EmptyPlanContext(),
+		)
+		if got != nil {
+			t.Fatalf("different structural PKs = %#v, want nil", got)
+		}
+	})
+
+	t.Run("mixed_provider_declines", func(t *testing.T) {
+		t.Parallel()
+		got := commonPrimaryKeyValuesForPartition(
+			[]Vectored[*SingleMatchedAccess]{
+				makeAccess("idx_a", 0, structuralPK("ID"), true),
+				makeAccess("idx_b", 1, nil, false),
+			},
+			newTestPKContext("TestRecord", []string{"id"}),
+		)
+		if got != nil {
+			t.Fatalf("mixed structural/name-only PKs = %#v, want nil", got)
+		}
+	})
+
+	t.Run("empty_structural_provider_declines", func(t *testing.T) {
+		t.Parallel()
+		got := commonPrimaryKeyValuesForPartition(
+			[]Vectored[*SingleMatchedAccess]{
+				makeAccess("idx_a", 0, nil, true),
+				makeAccess("idx_b", 1, nil, true),
+			},
+			newTestPKContext("TestRecord", []string{"id"}),
+		)
+		if got != nil {
+			t.Fatalf("empty structural PKs = %#v, want nil", got)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Tests: slices.Equal (replaces removed stringSliceEqual)
 // ---------------------------------------------------------------------------
@@ -434,8 +881,7 @@ func TestCreateScanForAccess_NilPlan(t *testing.T) {
 // not PK-monotonic — an INEQUALITY-bound index column is a free non-pk
 // ordering part at the front (`a > 5` emits (a, pk) order, pk interleaved).
 // Such an access must disqualify itself; with fewer than two compatible
-// legs the intersection is not viable. A reverse-scan access declines too
-// (the executor merge compares forward only).
+// legs the intersection is not viable.
 func TestIntersector_DeclinesNonPKMonotoneLeg(t *testing.T) {
 	t.Parallel()
 
@@ -525,6 +971,352 @@ func TestIntersector_LowercasePKStillViable(t *testing.T) {
 	}, nil)
 	if !result.IsViable() {
 		t.Fatal("a lowercase pk-suffix field name must not over-decline the intersection (case-fold the comparison)")
+	}
+}
+
+func TestIntersector_DescendingCommonSecondaryOrdering(t *testing.T) {
+	t.Parallel()
+
+	rowType := values.NewRecordType("TestRecord", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong},
+		{Name: "A", FieldType: values.NullableLong},
+		{Name: "B", FieldType: values.NullableLong},
+		{Name: "SORT_KEY", FieldType: values.NullableLong},
+	})
+	equality := func(literal int64) *predicates.ComparisonRange {
+		comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
+		return predicates.EmptyComparisonRange().Merge(&comparison).Range
+	}
+	makeAccess := func(
+		name, fixedColumn string,
+		literal int64,
+		position int,
+	) Vectored[*SingleMatchedAccess] {
+		fixedAlias := values.UniqueCorrelationIdentifier()
+		fixedRange := equality(literal)
+		pm := &testPartialMatch{
+			candidate: &dataAccessTestCandidate{
+				name:            name,
+				sargableAliases: []values.CorrelationIdentifier{fixedAlias},
+				columnNames:     []string{fixedColumn, "SORT_KEY"},
+				recordTypes:     []string{"TestRecord"},
+				fixedPlan:       &testPlan{name: name, resultType: rowType},
+			},
+			matchInfo: &testMatchInfo{
+				orderingParts: []*MatchedOrderingPart{
+					NewMatchedOrderingPart(
+						fixedAlias,
+						&values.FieldValue{Field: fixedColumn, Typ: values.UnknownType},
+						fixedRange,
+						MatchedSortOrderAscending,
+					),
+					NewMatchedOrderingPart(
+						values.UniqueCorrelationIdentifier(),
+						&values.FieldValue{Field: "SORT_KEY", Typ: values.UnknownType},
+						nil,
+						MatchedSortOrderAscending,
+					),
+					NewMatchedOrderingPart(
+						values.UniqueCorrelationIdentifier(),
+						&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+						nil,
+						MatchedSortOrderAscending,
+					),
+				},
+				paramBindings: map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+					fixedAlias: fixedRange,
+				},
+			},
+		}
+		access := NewSingleMatchedAccess(
+			pm,
+			NoCompensation,
+			values.UniqueCorrelationIdentifier(),
+			true,
+			EmptyTranslationMap(),
+			nil,
+		)
+		return NewVectored(access, position)
+	}
+
+	requested := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{
+				Value:     &values.FieldValue{Field: "SORT_KEY", Typ: values.UnknownType},
+				SortOrder: properties.RequestedSortOrderDescending,
+			},
+			{
+				Value:     &values.FieldValue{Field: "ID", Typ: values.UnknownType},
+				SortOrder: properties.RequestedSortOrderDescending,
+			},
+		},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+	result := WithPrimaryKeyIntersector(
+		newTestPKContext("TestRecord", []string{"id"}),
+	)([]Vectored[*SingleMatchedAccess]{
+		makeAccess("idx_a_sort", "A", 7, 0),
+		makeAccess("idx_b_sort", "B", 9, 1),
+	}, []*properties.RequestedOrdering{requested})
+	if !result.IsViable() || len(result.GetExpressions()) != 1 {
+		t.Fatalf("descending common-secondary intersection = %#v, want one viable expression", result)
+	}
+	intersection, ok := result.GetExpressions()[0].(*plans.RecordQueryIntersectionPlan)
+	if !ok {
+		t.Fatalf("intersection expression = %T, want *RecordQueryIntersectionPlan", result.GetExpressions()[0])
+	}
+	if !intersection.IsReverse() {
+		t.Fatal("descending common-secondary intersection is not reverse")
+	}
+	parts := intersection.GetComparisonKeyOrderingParts()
+	if len(parts) != 2 ||
+		values.ColumnNameValue(parts[0].Value) != "SORT_KEY" ||
+		values.ColumnNameValue(parts[1].Value) != "ID" ||
+		parts[0].SortOrder != properties.ProvidedSortOrderDescending ||
+		parts[1].SortOrder != properties.ProvidedSortOrderDescending {
+		t.Fatalf("comparison ordering parts = %#v, want [SORT_KEY DESC, ID DESC]", parts)
+	}
+}
+
+func TestTranslateIntersectionRequestedOrderingThroughTopMap(t *testing.T) {
+	t.Parallel()
+
+	queryTop := values.NamedCorrelationIdentifier("query_top")
+	candidateTop := values.NamedCorrelationIdentifier("candidate_top")
+	requestedValue := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(queryTop),
+		"SORT_KEY",
+		values.UnknownType,
+	)
+	requested := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     requestedValue,
+			SortOrder: properties.RequestedSortOrderDescending,
+		}},
+		properties.DistinctnessNotDistinct,
+		true,
+	)
+
+	translated := translateIntersectionRequestedOrdering(
+		requested,
+		TranslationMapOfAliases(queryTop, candidateTop),
+	)
+	if translated == requested {
+		t.Fatal("non-identity top map should produce a translated ordering")
+	}
+	if !translated.IsExhaustive() ||
+		translated.GetDistinctness() != requested.GetDistinctness() {
+		t.Fatal("translation lost requested-ordering metadata")
+	}
+	translatedField, ok := translated.GetParts()[0].Value.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("translated value = %T, want *FieldValue", translated.GetParts()[0].Value)
+	}
+	translatedRoot, ok := translatedField.Child.(*values.QuantifiedObjectValue)
+	if !ok || translatedRoot.Correlation != candidateTop {
+		t.Fatalf("translated root = %#v, want candidate_top", translatedField.Child)
+	}
+	if translated.GetParts()[0].SortOrder != properties.RequestedSortOrderDescending {
+		t.Fatal("translation lost requested direction")
+	}
+}
+
+func TestIntersector_UsesTranslatedRequestedOrdering(t *testing.T) {
+	t.Parallel()
+
+	queryTop := values.NamedCorrelationIdentifier("query_top")
+	requested := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     values.NewQuantifiedObjectValue(queryTop),
+			SortOrder: properties.RequestedSortOrderAscending,
+		}},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+	topMapBuilder := NewTranslationMapBuilder()
+	topMapBuilder.When(queryTop).Then(
+		func(
+			_ values.CorrelationIdentifier,
+			_ values.LeafValue,
+		) values.Value {
+			return &values.FieldValue{
+				Field: "ID",
+				Typ:   values.NullableLong,
+			}
+		},
+	)
+	topMap := topMapBuilder.Build()
+
+	makeAccess := func(
+		name string,
+		position int,
+		translation TranslationMap,
+	) Vectored[*SingleMatchedAccess] {
+		pm := makeDataAccessTestPartialMatch(
+			name,
+			1,
+			&testPlan{name: name, resultType: testIntersectorRowType},
+		)
+		return NewVectored(
+			NewSingleMatchedAccess(
+				pm,
+				NoCompensation,
+				values.UniqueCorrelationIdentifier(),
+				false,
+				translation,
+				nil,
+			),
+			position,
+		)
+	}
+
+	result := WithPrimaryKeyIntersector(
+		newTestPKContext("TestRecord", []string{"id"}),
+	)([]Vectored[*SingleMatchedAccess]{
+		makeAccess("idx_a", 0, topMap),
+		makeAccess("idx_b", 1, EmptyTranslationMap()),
+	}, []*properties.RequestedOrdering{requested})
+
+	if !result.IsViable() || len(result.GetExpressions()) != 1 {
+		t.Fatalf(
+			"translated requested ordering produced %d expressions, want 1",
+			len(result.GetExpressions()),
+		)
+	}
+	intersection, ok := result.GetExpressions()[0].(*plans.RecordQueryIntersectionPlan)
+	if !ok {
+		t.Fatalf(
+			"translated result = %T, want *RecordQueryIntersectionPlan",
+			result.GetExpressions()[0],
+		)
+	}
+	keys := intersection.GetComparisonKeyValues()
+	if len(keys) != 1 || values.ColumnNameValue(keys[0]) != "ID" {
+		t.Fatalf("translated comparison keys = %#v, want [ID]", keys)
+	}
+}
+
+func TestIntersector_FanoutLegIsPrimaryKeyDistinct(t *testing.T) {
+	t.Parallel()
+
+	fanout := makeDataAccessTestPartialMatch(
+		"idx_fanout",
+		1,
+		&testPlan{name: "fanout", resultType: testIntersectorRowType},
+	)
+	fanout.candidate.(*dataAccessTestCandidate).createsDuplicates = true
+	plain := makeDataAccessTestPartialMatch(
+		"idx_plain",
+		1,
+		&testPlan{name: "plain", resultType: testIntersectorRowType},
+	)
+
+	result := WithPrimaryKeyIntersector(
+		newTestPKContext("TestRecord", []string{"id"}),
+	)([]Vectored[*SingleMatchedAccess]{
+		makeVectoredAccess(fanout, 0),
+		makeVectoredAccess(plain, 1),
+	}, nil)
+	if !result.IsViable() || len(result.GetExpressions()) != 1 {
+		t.Fatalf(
+			"fanout intersection produced %d expressions, want 1",
+			len(result.GetExpressions()),
+		)
+	}
+	intersection, ok := result.GetExpressions()[0].(*plans.RecordQueryIntersectionPlan)
+	if !ok {
+		t.Fatalf(
+			"fanout result = %T, want *RecordQueryIntersectionPlan",
+			result.GetExpressions()[0],
+		)
+	}
+	distinctLegs := 0
+	for _, child := range intersection.GetChildren() {
+		if _, ok := child.(*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan); ok {
+			distinctLegs++
+		}
+	}
+	if distinctLegs != 1 {
+		t.Fatalf(
+			"fanout intersection has %d PK-distinct legs, want exactly 1",
+			distinctLegs,
+		)
+	}
+}
+
+func TestIntersector_DeclinesNonNaturalComparisonDirections(t *testing.T) {
+	t.Parallel()
+
+	makeAccess := func(
+		name string,
+		orders []MatchedSortOrder,
+		position int,
+	) Vectored[*SingleMatchedAccess] {
+		fields := []string{"ID", "VERSION"}
+		parts := make([]*MatchedOrderingPart, len(orders))
+		for i, order := range orders {
+			parts[i] = NewMatchedOrderingPart(
+				values.UniqueCorrelationIdentifier(),
+				&values.FieldValue{
+					Field: fields[i],
+					Typ:   values.NullableLong,
+				},
+				nil,
+				order,
+			)
+		}
+		pm := &testPartialMatch{
+			candidate: &dataAccessTestCandidate{
+				name:        name,
+				recordTypes: []string{"TestRecord"},
+				fixedPlan: &testPlan{
+					name:       name,
+					resultType: testIntersectorRowType,
+				},
+			},
+			matchInfo: &testMatchInfo{orderingParts: parts},
+		}
+		return makeVectoredAccess(pm, position)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		orders   []MatchedSortOrder
+		pkFields []string
+	}{
+		{
+			name: "mixed_asc_desc",
+			orders: []MatchedSortOrder{
+				MatchedSortOrderAscending,
+				MatchedSortOrderDescending,
+			},
+			pkFields: []string{"id", "version"},
+		},
+		{
+			name: "counterflow_nulls",
+			orders: []MatchedSortOrder{
+				MatchedSortOrderAscendingNullsLast,
+			},
+			pkFields: []string{"id"},
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := WithPrimaryKeyIntersector(
+				newTestPKContext("TestRecord", tc.pkFields),
+			)([]Vectored[*SingleMatchedAccess]{
+				makeAccess("idx_a", tc.orders, 0),
+				makeAccess("idx_b", tc.orders, 1),
+			}, nil)
+			if result.IsViable() {
+				t.Fatalf(
+					"%s comparison direction must fail closed",
+					tc.name,
+				)
+			}
+		})
 	}
 }
 
@@ -844,7 +1636,7 @@ func TestIntersector_FourWay_BadPairSieve(t *testing.T) {
 		}
 		byArity[len(plan.GetChildren())]++
 	}
-	if byArity[2] != 5 || byArity[3] != 2 || byArity[4] != 0 {
-		t.Fatalf("sieved intersection arities = %v, want map[2:5 3:2] and no four-way plan", byArity)
+	if byArity[2] != 0 || byArity[3] != 2 || byArity[4] != 0 {
+		t.Fatalf("sieved intersection arities = %v, want map[3:2] and no four-way plan", byArity)
 	}
 }

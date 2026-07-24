@@ -10,42 +10,41 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// WithPrimaryKeyIntersector returns an IntersectorFunc that creates
-// physical intersection plans from pairs of compatible partial matches
-// using the primary key as the comparison key.
+// WithPrimaryKeyIntersector returns an IntersectorFunc that creates physical
+// intersection plans from compatible partial-match subsets. Every subset must
+// share a structural primary key and a rich directional ordering whose
+// comparison key contains every non-fixed primary-key component.
 //
-// Creates RecordQueryIntersectionPlan directly (physical, not logical)
-// wrapped in PhysicalIntersectionWrapper. This avoids the task cascade
-// that would occur if LogicalIntersectionExpression were inserted and
-// then explored — fresh child References trigger re-exploration loops.
+// It creates RecordQueryIntersectionPlan directly (physical, not logical).
+// This avoids the task cascade that would occur if a logical intersection were
+// inserted and then explored — fresh child References trigger re-exploration
+// loops.
 func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 	return func(
 		accesses []Vectored[*SingleMatchedAccess],
-		_ []*properties.RequestedOrdering,
+		requestedOrderings []*properties.RequestedOrdering,
 	) *IntersectionResult {
 		if len(accesses) < 2 {
 			return NoViableIntersection()
 		}
 
-		pkValues := commonPrimaryKeyValues(accesses, ctx)
-		if len(pkValues) == 0 {
-			return NoViableIntersection()
-		}
-		// RFC-181 P0.1: only PK-monotone legs may feed the strict pk-sorted
-		// merge; a single incompatible access disqualifies itself (the
-		// remaining pairs still form below).
-		compatible := accesses[:0:0]
-		for _, a := range accesses {
-			if accessCompatibleWithPKMerge(a.Value, pkValues) {
-				compatible = append(compatible, a)
+		if len(requestedOrderings) == 0 {
+			requestedOrderings = []*properties.RequestedOrdering{properties.PreserveOrdering()}
+		} else {
+			nonNil := requestedOrderings[:0:0]
+			for _, requested := range requestedOrderings {
+				if requested != nil {
+					nonNil = append(nonNil, requested)
+				}
+			}
+			requestedOrderings = nonNil
+			if len(requestedOrderings) == 0 {
+				requestedOrderings = []*properties.RequestedOrdering{properties.PreserveOrdering()}
 			}
 		}
-		accesses = compatible
-		if len(accesses) < 2 {
-			return NoViableIntersection()
-		}
 
-		var resultExprs []expressions.RelationalExpression
+		intersectionInfos := initializeSingletonIntersectionInfos(accesses, ctx)
+		var intersectionInfoOrder []intersectionInfoKey
 
 		// Java's AbstractDataAccessRule enumerates ChooseK(accesses, k) for
 		// every k from 2 through the candidate count. Record the structurally
@@ -56,45 +55,86 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 		// get its own fold.
 		badPairs := make(map[[2]int]struct{})
 		for size := 2; size <= len(accesses); size++ {
-			hasStructurallyCompatiblePartition := false
+			hasViablePartition := false
 			forEachAccessCombination(accesses, size, func(partition []Vectored[*SingleMatchedAccess]) {
 				if partitionContainsBadPair(partition, badPairs) {
 					return
 				}
 
-				expr, structurallyCompatible := createPrimaryKeyIntersection(partition, pkValues)
-				if !structurallyCompatible {
+				built := createPrimaryKeyIntersection(partition, requestedOrderings, ctx)
+				if !built.structurallyCompatible {
 					if size == 2 {
 						badPairs[orderedPositionPair(partition[0].Position, partition[1].Position)] = struct{}{}
 					}
 					return
 				}
-				hasStructurallyCompatiblePartition = true
-				if expr != nil {
-					// Java evicts subpartitions only after
-					// isPartitionRedundant proves the larger partition adds
-					// useful filtering. Go does not carry that proof yet, so
-					// retain every viable bounded subset; blindly evicting a
-					// useful pair for a redundant fourth scan is a regression.
-					resultExprs = append(resultExprs, expr)
+				if isPrimaryKeyPartitionRedundant(
+					partition,
+					built.equalityBoundValues,
+					intersectionInfos,
+				) {
+					// Java treats a redundant binary partition exactly like
+					// one without a common ordering for sieve purposes: every
+					// superset containing that useless pair is useless too.
+					if size == 2 {
+						badPairs[orderedPositionPair(partition[0].Position, partition[1].Position)] = struct{}{}
+					}
+					return
+				}
+				// A common ordering is viable even when compensation is
+				// impossible and therefore yields zero expressions. Java
+				// stores that proof metadata and keeps the k-level alive.
+				hasViablePartition = true
+
+				key := intersectionInfoKeyForPartition(partition)
+				intersectionInfos[key] = IntersectionInfoOfIntersection(
+					built.commonOrdering,
+					built.compensation,
+					built.expressions,
+				)
+				intersectionInfoOrder = append(intersectionInfoOrder, key)
+
+				// A useful larger partition supersedes its immediate
+				// subpartitions only after the Java redundancy proof above
+				// says the extra access adds filtering. An impossible
+				// compensation produces no replacement expression and must
+				// never evict a usable smaller plan.
+				if len(built.expressions) > 0 {
+					for _, subpartition := range immediateSubpartitions(partition) {
+						subpartitionKey := intersectionInfoKeyForPartition(subpartition)
+						if subInfo := intersectionInfos[subpartitionKey]; subInfo != nil {
+							subInfo.EvictExpressions()
+						}
+					}
 				}
 			})
-			if !hasStructurallyCompatiblePartition {
+			if !hasViablePartition {
 				// Java's early-out: if no size-k partition can share the
-				// comparison contract, no size-(k+1) partition can either.
+				// useful comparison contract, no size-(k+1) partition can
+				// either.
 				break
 			}
 		}
 
+		var resultExprs []expressions.RelationalExpression
+		var resultOrdering *properties.RichOrdering
+		resultCompensation := Compensation(NoCompensation)
+		for _, key := range intersectionInfoOrder {
+			info := intersectionInfos[key]
+			if info == nil || len(info.GetExpressions()) == 0 {
+				continue
+			}
+			if resultOrdering == nil {
+				resultOrdering = info.GetOrdering()
+				resultCompensation = info.GetCompensation()
+			}
+			resultExprs = append(resultExprs, info.GetExpressions()...)
+		}
 		if len(resultExprs) == 0 {
 			return NoViableIntersection()
 		}
 
-		return NewIntersectionResult(
-			properties.NewRichOrdering(nil, nil, false),
-			NoCompensation,
-			resultExprs,
-		)
+		return NewIntersectionResult(resultOrdering, resultCompensation, resultExprs)
 	}
 }
 
@@ -145,16 +185,398 @@ func partitionContainsBadPair(
 	return false
 }
 
-// createPrimaryKeyIntersection builds one arbitrary-arity partition. The bool
-// reports whether the partition has a coherent structural merge contract
-// (distinct candidate names, realizable scans, and comparison keys that bake
-// against every child layout). A nil expression with true means only that the
-// compensation fold could not be realized; callers must not use that as an
-// ordering-sieve failure.
+type intersectionInfoKey string
+
+func intersectionInfoKeyForPartition(
+	partition []Vectored[*SingleMatchedAccess],
+) intersectionInfoKey {
+	bits := NewBitSet()
+	for _, vectored := range partition {
+		bits.Set(vectored.Position)
+	}
+	return intersectionInfoKey(bits.String())
+}
+
+func immediateSubpartitions(
+	partition []Vectored[*SingleMatchedAccess],
+) [][]Vectored[*SingleMatchedAccess] {
+	if len(partition) <= 1 {
+		return nil
+	}
+	result := make([][]Vectored[*SingleMatchedAccess], 0, len(partition))
+	for omitted := range partition {
+		subpartition := make([]Vectored[*SingleMatchedAccess], 0, len(partition)-1)
+		subpartition = append(subpartition, partition[:omitted]...)
+		subpartition = append(subpartition, partition[omitted+1:]...)
+		result = append(result, subpartition)
+	}
+	return result
+}
+
+func initializeSingletonIntersectionInfos(
+	accesses []Vectored[*SingleMatchedAccess],
+	ctx PlanContext,
+) map[intersectionInfoKey]*IntersectionInfo {
+	infos := make(map[intersectionInfoKey]*IntersectionInfo, len(accesses))
+	for _, vectored := range accesses {
+		partition := []Vectored[*SingleMatchedAccess]{vectored}
+		access := vectored.Value
+		pkValues := commonPrimaryKeyValuesForPartition(partition, ctx)
+		ordering := adjustedIntersectionOrdering(
+			access,
+			implicitFixedPrimaryKeyValues(partition, pkValues),
+		)
+		if ordering == nil {
+			ordering = properties.EmptyOrdering()
+		}
+
+		compensation := access.GetCompensation()
+		scan := createScanForAccess(access)
+		expr, ok := compensatedSingleAccessExpression(access, scan)
+		if !ok {
+			infos[intersectionInfoKeyForPartition(partition)] = IntersectionInfoOfImpossibleAccess(ordering, compensation)
+			continue
+		}
+		infos[intersectionInfoKeyForPartition(partition)] = IntersectionInfoOfSingleAccess(
+			ordering,
+			compensation,
+			expr,
+			maxCardinalityForRedundancy(expr),
+		)
+	}
+	return infos
+}
+
+func compensatedSingleAccessExpression(
+	access *SingleMatchedAccess,
+	scan plans.RecordQueryPlan,
+) (expressions.RelationalExpression, bool) {
+	if access == nil || scan == nil {
+		return nil, false
+	}
+	var expr expressions.RelationalExpression = wrapAccessScan(access, scan)
+	compensation := access.GetCompensation()
+	if compensation == nil || compensation.IsImpossible() {
+		return nil, false
+	}
+	if !compensation.IsNeeded() {
+		return expr, true
+	}
+	forMatch, ok := compensation.(*ForMatchCompensation)
+	if !ok || forMatch == nil {
+		return nil, false
+	}
+	return forMatch.ApplyAllNeeded(
+		expr,
+		func(realizedAlias values.CorrelationIdentifier) TranslationMap {
+			return TranslationMapOfAliases(
+				access.GetCandidateTopAlias(),
+				realizedAlias,
+			)
+		},
+	)
+}
+
+// maxCardinalityForRedundancy computes only proof-grade upper bounds. Unknown
+// remains unknown; the heuristic EstimateCardinality is intentionally not
+// consulted because an underestimate would make redundancy pruning unsound.
+func maxCardinalityForRedundancy(
+	expr expressions.RelationalExpression,
+) int64 {
+	if expr == nil {
+		return CardinalityUnknown
+	}
+	if physical, ok := expr.(physicalPlanExpression); ok {
+		plan := physical.GetRecordQueryPlan()
+		if plan == nil {
+			return CardinalityUnknown
+		}
+		maxCardinality := computeCardinalities(
+			physical,
+			plan,
+		).GetMaxCardinality()
+		if maxCardinality.IsUnknown() {
+			return CardinalityUnknown
+		}
+		return maxCardinality.Value()
+	}
+
+	switch expr.(type) {
+	case *expressions.LogicalFilterExpression,
+		*expressions.LogicalProjectionExpression,
+		*expressions.LogicalTypeFilterExpression,
+		*expressions.LogicalDistinctExpression,
+		*expressions.LogicalUniqueExpression,
+		*expressions.LogicalSortExpression:
+		quantifiers := expr.GetQuantifiers()
+		if len(quantifiers) != 1 {
+			return CardinalityUnknown
+		}
+		return maxCardinalityForRedundancyQuantifier(quantifiers[0])
+
+	case *expressions.SelectExpression:
+		const maxInt64 = int64(^uint64(0) >> 1)
+		result := int64(1)
+		for _, quantifier := range expr.GetQuantifiers() {
+			if quantifier.Kind() == expressions.QuantifierExistential {
+				continue
+			}
+			child := maxCardinalityForRedundancyQuantifier(quantifier)
+			if child == CardinalityUnknown {
+				return CardinalityUnknown
+			}
+			if quantifier.IsNullOnEmpty() && child == 0 {
+				child = 1
+			}
+			if result != 0 && child > maxInt64/result {
+				return CardinalityUnknown
+			}
+			result *= child
+		}
+		return result
+	}
+	return CardinalityUnknown
+}
+
+func maxCardinalityForRedundancyQuantifier(
+	quantifier expressions.Quantifier,
+) int64 {
+	ref := quantifier.GetRangesOver()
+	if ref == nil {
+		return CardinalityUnknown
+	}
+	member, single := onlyReferenceMember(ref)
+	if !single {
+		return CardinalityUnknown
+	}
+	return maxCardinalityForRedundancy(member)
+}
+
+func isPrimaryKeyPartitionRedundant(
+	partition []Vectored[*SingleMatchedAccess],
+	equalityBoundValues []values.Value,
+	infos map[intersectionInfoKey]*IntersectionInfo,
+) bool {
+	var partitionUnmatched map[values.CorrelationIdentifier]struct{}
+	for i, vectored := range partition {
+		singleton := []Vectored[*SingleMatchedAccess]{vectored}
+		info := infos[intersectionInfoKeyForPartition(singleton)]
+		if info == nil {
+			return false
+		}
+		maxCardinality := info.GetMaxCardinality()
+		if maxCardinality != CardinalityUnknown && maxCardinality <= 1 {
+			return true
+		}
+		unmatched, known := compensationUnmatchedIDs(info.GetCompensation())
+		if !known {
+			return false
+		}
+		if i == 0 {
+			partitionUnmatched = cloneCorrelationSet(unmatched)
+		} else {
+			partitionUnmatched = intersectUnmatchedIDSets(
+				partitionUnmatched,
+				unmatched,
+			)
+		}
+	}
+
+	for _, subpartition := range immediateSubpartitions(partition) {
+		info := infos[intersectionInfoKeyForPartition(subpartition)]
+		if info == nil ||
+			!orderingContainsEqualityValues(
+				info.GetOrdering(),
+				equalityBoundValues,
+			) {
+			continue
+		}
+		subpartitionUnmatched, known := compensationUnmatchedIDs(
+			info.GetCompensation(),
+		)
+		// Java fails this proof open as soon as a qualifying
+		// subpartition's compensation metadata is unknown.
+		if !known {
+			return false
+		}
+		if correlationSetsEqual(partitionUnmatched, subpartitionUnmatched) {
+			return true
+		}
+	}
+	return false
+}
+
+func orderingContainsEqualityValues(
+	ordering *properties.RichOrdering,
+	required []values.Value,
+) bool {
+	if ordering == nil {
+		return len(required) == 0
+	}
+	var provided []values.Value
+	for value := range ordering.GetEqualityBoundValues() {
+		provided = append(provided, value)
+	}
+	for _, requiredValue := range required {
+		found := false
+		for _, providedValue := range provided {
+			if values.ValuesStructurallyEqual(requiredValue, providedValue) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func compensationUnmatchedIDs(
+	compensation Compensation,
+) (map[values.CorrelationIdentifier]struct{}, bool) {
+	if compensation == nil {
+		return nil, false
+	}
+	if !compensation.IsNeeded() {
+		return map[values.CorrelationIdentifier]struct{}{}, true
+	}
+	forMatch, ok := compensation.(*ForMatchCompensation)
+	if !ok || forMatch == nil || forMatch.GetGroupByMappings() == nil {
+		return nil, false
+	}
+	result := make(map[values.CorrelationIdentifier]struct{})
+	forMatch.GetGroupByMappings().UnmatchedAggregatesMap().Range(
+		func(id values.CorrelationIdentifier, _ values.Value) bool {
+			result[id] = struct{}{}
+			return true
+		},
+	)
+	return result, true
+}
+
+func cloneCorrelationSet(
+	source map[values.CorrelationIdentifier]struct{},
+) map[values.CorrelationIdentifier]struct{} {
+	result := make(map[values.CorrelationIdentifier]struct{}, len(source))
+	for id := range source {
+		result[id] = struct{}{}
+	}
+	return result
+}
+
+func intersectUnmatchedIDSets(
+	left, right map[values.CorrelationIdentifier]struct{},
+) map[values.CorrelationIdentifier]struct{} {
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for id := range left {
+		if _, ok := right[id]; ok {
+			result[id] = struct{}{}
+		}
+	}
+	return result
+}
+
+func correlationSetsEqual(
+	left, right map[values.CorrelationIdentifier]struct{},
+) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for id := range left {
+		if _, ok := right[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+type primaryKeyIntersectionBuild struct {
+	expressions            []expressions.RelationalExpression
+	commonOrdering         *properties.RichOrdering
+	compensation           Compensation
+	equalityBoundValues    []values.Value
+	structurallyCompatible bool
+}
+
+type primaryKeyComparisonAlternative struct {
+	parts   []properties.ProvidedOrderingPart
+	reverse bool
+}
+
+// requestedOrderingTranslationAdapter exposes the planner-level TranslationMap
+// through the Value package's equivalent leaf-translation interface. The two
+// interfaces differ only because values is the dependency-leaf package and
+// cannot import cascades.
+type requestedOrderingTranslationAdapter struct {
+	translation TranslationMap
+}
+
+func (a requestedOrderingTranslationAdapter) ContainsSourceAlias(
+	alias values.CorrelationIdentifier,
+) bool {
+	return a.translation != nil && a.translation.ContainsSourceAlias(alias)
+}
+
+func (a requestedOrderingTranslationAdapter) ApplyTranslationFunction(
+	sourceAlias values.CorrelationIdentifier,
+	leaf values.Value,
+) values.Value {
+	leafValue, ok := leaf.(values.LeafValue)
+	if !ok || a.translation == nil {
+		return leaf
+	}
+	return a.translation.ApplyTranslationFunction(sourceAlias, leafValue)
+}
+
+func (a requestedOrderingTranslationAdapter) DefinesOnlyIdentities() bool {
+	return a.translation == nil || a.translation.DefinesOnlyIdentities()
+}
+
+// translateIntersectionRequestedOrdering expresses a query-top requested
+// ordering in the first access candidate's top scope. Java performs this
+// translation before enumerating the common comparison keys; omitting it makes
+// an adjusted/non-identity match either over-decline or compare aliases from
+// different frames.
+func translateIntersectionRequestedOrdering(
+	requested *properties.RequestedOrdering,
+	translation TranslationMap,
+) *properties.RequestedOrdering {
+	if requested == nil || translation == nil ||
+		translation.DefinesOnlyIdentities() {
+		return requested
+	}
+	parts := requested.GetParts()
+	translated := make([]properties.RequestedOrderingPart, len(parts))
+	adapter := requestedOrderingTranslationAdapter{translation: translation}
+	for i, part := range parts {
+		translated[i] = properties.RequestedOrderingPart{
+			Value: values.TranslateCorrelations(
+				part.Value,
+				adapter,
+			),
+			SortOrder: part.SortOrder,
+		}
+	}
+	return properties.NewRequestedOrdering(
+		translated,
+		requested.GetDistinctness(),
+		requested.IsExhaustive(),
+	)
+}
+
+// createPrimaryKeyIntersection builds one arbitrary-arity partition. A
+// structurally-compatible result has distinct candidate names, a common
+// structural primary key, realizable scans, and at least one rich common
+// comparison ordering that includes every non-fixed primary-key component and
+// bakes against every child layout. It may still carry no expression when the
+// compensation fold cannot be realized; callers must not turn that semantic
+// miss into an ordering-sieve failure.
 func createPrimaryKeyIntersection(
 	partition []Vectored[*SingleMatchedAccess],
-	pkValues []values.Value,
-) (expressions.RelationalExpression, bool) {
+	requestedOrderings []*properties.RequestedOrdering,
+	ctx PlanContext,
+) primaryKeyIntersectionBuild {
 	accesses := make([]*SingleMatchedAccess, 0, len(partition))
 	scans := make([]plans.RecordQueryPlan, 0, len(partition))
 	seenCandidates := make(map[string]struct{}, len(partition))
@@ -162,34 +584,348 @@ func createPrimaryKeyIntersection(
 		access := vectored.Value
 		name := access.GetPartialMatch().GetMatchCandidate().CandidateName()
 		if _, duplicate := seenCandidates[name]; duplicate {
-			return nil, false
+			return primaryKeyIntersectionBuild{}
 		}
 		seenCandidates[name] = struct{}{}
 
 		scan := createScanForAccess(access)
 		if scan == nil {
-			return nil, false
+			return primaryKeyIntersectionBuild{}
 		}
 		accesses = append(accesses, access)
 		scans = append(scans, scan)
 	}
 
-	bakedKeys := bakedIntersectionKeys(pkValues, scans)
-	if bakedKeys == nil {
-		return nil, false
+	pkValues := commonPrimaryKeyValuesForPartition(partition, ctx)
+	if len(pkValues) == 0 {
+		return primaryKeyIntersectionBuild{}
+	}
+	implicitFixedValues := implicitFixedPrimaryKeyValues(partition, pkValues)
+
+	var commonOrdering *properties.RichOrdering
+	var equalityBoundValues []values.Value
+	for _, access := range accesses {
+		ordering := adjustedIntersectionOrdering(access, implicitFixedValues)
+		if ordering == nil {
+			return primaryKeyIntersectionBuild{}
+		}
+		if commonOrdering == nil {
+			commonOrdering = ordering
+		} else {
+			commonOrdering = properties.MergeOrderingsForIntersection(commonOrdering, ordering)
+		}
+		for value := range ordering.GetEqualityBoundValues() {
+			if !containsIntersectionValue(equalityBoundValues, value) {
+				equalityBoundValues = append(equalityBoundValues, value)
+			}
+		}
+	}
+	if commonOrdering == nil {
+		return primaryKeyIntersectionBuild{}
+	}
+
+	compensations := make([]Compensation, 0, len(accesses))
+	for _, access := range accesses {
+		compensations = append(compensations, access.GetCompensation())
+	}
+	intersectionCompensation := IntersectCompensations(compensations)
+
+	var alternatives []primaryKeyComparisonAlternative
+	topToTopTranslation := accesses[0].GetTopToTopTranslationMap()
+	for _, requested := range requestedOrderings {
+		requested = translateIntersectionRequestedOrdering(
+			requested,
+			topToTopTranslation,
+		)
+		if requested == nil {
+			continue
+		}
+		for _, comparisonValues := range commonOrdering.
+			EnumerateSatisfyingIntersectionComparisonKeyValues(requested) {
+			// An empty physical merge key cannot establish cursor progress.
+			// Java can represent more Value shapes than Go's executor today;
+			// declining here is the bounded, safe optimization miss.
+			if len(comparisonValues) == 0 ||
+				!comparisonKeyContainsFreePrimaryKey(
+					comparisonValues, pkValues, equalityBoundValues,
+				) {
+				continue
+			}
+
+			parts := commonOrdering.DirectionalOrderingParts(
+				comparisonValues,
+				requested,
+				properties.ProvidedSortOrderFixed,
+			)
+			reverse := ResolveComparisonDirection(parts)
+			parts = AdjustFixedBindings(parts, reverse)
+			if _, ok := properties.NaturalComparisonKeyValues(parts, reverse); !ok {
+				continue
+			}
+			if !plainFieldComparisonParts(parts) {
+				continue
+			}
+
+			bakedParts := bakeIntersectionOrderingParts(parts, scans)
+			if bakedParts == nil {
+				continue
+			}
+			if containsComparisonAlternative(alternatives, bakedParts, reverse) {
+				continue
+			}
+			alternatives = append(alternatives, primaryKeyComparisonAlternative{
+				parts:   bakedParts,
+				reverse: reverse,
+			})
+		}
+	}
+	if len(alternatives) == 0 {
+		return primaryKeyIntersectionBuild{}
 	}
 
 	childQs := make([]expressions.Quantifier, 0, len(partition))
 	for i, access := range accesses {
-		expr := wrapAccessScan(access, scans[i])
-		childQs = append(childQs, expressions.ForEachQuantifier(expressions.InitialOf(expr)))
+		var expr expressions.RelationalExpression = wrapAccessScan(
+			access,
+			scans[i],
+		)
+		if candidateCreatesDuplicates(
+			access.GetPartialMatch().GetMatchCandidate(),
+		) {
+			// Java's distinctMatchToScanMap inserts an unordered primary-key
+			// distinct on every fan-out leg before it participates in a merge
+			// intersection. The merge executor has set semantics and the
+			// intersection property advertises distinct records; allowing
+			// duplicate PKs into a leg would violate both contracts.
+			expr = plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
+				expressions.NewPhysicalQuantifier(
+					expressions.FinalOfAtStage(
+						expr,
+						expressions.StageCanonical,
+					),
+				),
+			)
+		}
+		childQs = append(childQs, expressions.NewPhysicalQuantifier(
+			expressions.FinalOfAtStage(expr, expressions.StageCanonical),
+		))
 	}
-	intersectionPlan := plans.NewRecordQueryIntersectionPlanFromQuantifiers(childQs, bakedKeys)
-	expr, viable := compensateIntersection(accesses, intersectionPlan)
-	if !viable {
-		return nil, true
+
+	built := primaryKeyIntersectionBuild{
+		commonOrdering:         commonOrdering,
+		compensation:           intersectionCompensation,
+		equalityBoundValues:    equalityBoundValues,
+		structurallyCompatible: true,
 	}
-	return expr, true
+	for _, alternative := range alternatives {
+		intersectionPlan := plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(
+			childQs,
+			alternative.parts,
+			alternative.reverse,
+		)
+		if intersectionPlan == nil {
+			continue
+		}
+		expr, viable := compensateIntersection(accesses, intersectionPlan)
+		if viable {
+			built.expressions = append(built.expressions, expr)
+		}
+	}
+	return built
+}
+
+func candidateCreatesDuplicates(candidate MatchCandidate) bool {
+	duplicateCandidate, ok := candidate.(interface {
+		CreatesDuplicates() bool
+	})
+	return ok && duplicateCandidate.CreatesDuplicates()
+}
+
+func adjustedIntersectionOrdering(
+	access *SingleMatchedAccess,
+	implicitFixedValues []values.Value,
+) *properties.RichOrdering {
+	if access == nil || access.GetPartialMatch() == nil {
+		return nil
+	}
+	pm := access.GetPartialMatch()
+	matchInfo := pm.GetMatchInfo()
+	if matchInfo == nil || matchInfo.GetRegularMatchInfo() == nil {
+		return nil
+	}
+	candidate := pm.GetMatchCandidate()
+	if candidate == nil {
+		return nil
+	}
+	prefix := candidate.ComputeBoundParameterPrefixMap(
+		matchInfo.GetRegularMatchInfo().GetParameterBindingMap(),
+	)
+
+	bindings := make(map[values.Value][]properties.OrderingBinding)
+	var keys []values.Value
+	var seen []values.Value
+	for _, value := range implicitFixedValues {
+		if value == nil || containsIntersectionValue(seen, value) {
+			continue
+		}
+		seen = append(seen, value)
+		keys = append(keys, value)
+		bindings[value] = []properties.OrderingBinding{
+			properties.FixedBinding(nil),
+		}
+	}
+	for _, part := range matchInfo.GetMatchedOrderingParts() {
+		if part == nil || part.GetValue() == nil ||
+			containsIntersectionValue(seen, part.GetValue()) {
+			continue
+		}
+		value := part.GetValue()
+		seen = append(seen, value)
+		keys = append(keys, value)
+
+		// Only an equality that the physical scan's ACTUAL consumed prefix
+		// contains is fixed. A matched equality after a prefix gap is not
+		// enforced by the scan and must remain directional.
+		actualRange := prefix[part.GetParameterId()]
+		if actualRange != nil && actualRange.IsEquality() {
+			bindings[value] = []properties.OrderingBinding{
+				properties.FixedBinding(actualRange.GetEqualityComparison()),
+			}
+		} else {
+			bindings[value] = []properties.OrderingBinding{
+				properties.SortedBinding(
+					part.GetMatchedSortOrder().ToProvidedSortOrder(
+						access.IsReverseScanOrder(),
+					),
+				),
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return properties.NewRichOrdering(bindings, keys, false)
+}
+
+// implicitFixedPrimaryKeyValues returns structural PK components that every
+// leg fixes without an explicit scan comparison. A record-type discriminator
+// is constant for a candidate over exactly one common record type; Java
+// prepends the candidate's implicit equality parts before intersecting
+// orderings. Go currently models only this implicit component.
+func implicitFixedPrimaryKeyValues(
+	partition []Vectored[*SingleMatchedAccess],
+	pkValues []values.Value,
+) []values.Value {
+	var commonRecordType string
+	for i, vectored := range partition {
+		recordTypes := vectored.Value.GetPartialMatch().GetMatchCandidate().GetRecordTypes()
+		if len(recordTypes) != 1 {
+			return nil
+		}
+		if i == 0 {
+			commonRecordType = recordTypes[0]
+		} else if recordTypes[0] != commonRecordType {
+			return nil
+		}
+	}
+	var result []values.Value
+	for _, pkValue := range pkValues {
+		if _, ok := pkValue.(*values.RecordTypeValue); ok {
+			result = append(result, pkValue)
+		}
+	}
+	return result
+}
+
+func comparisonKeyContainsFreePrimaryKey(
+	comparisonValues []values.Value,
+	pkValues []values.Value,
+	equalityBoundValues []values.Value,
+) bool {
+	for _, pkValue := range pkValues {
+		if containsIntersectionValue(equalityBoundValues, pkValue) {
+			continue
+		}
+		if !containsIntersectionValue(comparisonValues, pkValue) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsIntersectionValue(haystack []values.Value, needle values.Value) bool {
+	for _, value := range haystack {
+		if intersectionValuesEqual(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func intersectionValuesEqual(left, right values.Value) bool {
+	if values.ValuesStructurallyEqual(left, right) {
+		return true
+	}
+	return values.CanBridgeOrderingFieldValues(left, right)
+}
+
+func plainFieldComparisonParts(parts []properties.ProvidedOrderingPart) bool {
+	for _, part := range parts {
+		field, ok := part.Value.(*values.FieldValue)
+		if !ok || field.Child != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func bakeIntersectionOrderingParts(
+	parts []properties.ProvidedOrderingPart,
+	scans []plans.RecordQueryPlan,
+) []properties.ProvidedOrderingPart {
+	valuesToBake := make([]values.Value, len(parts))
+	for i, part := range parts {
+		valuesToBake[i] = part.Value
+	}
+	baked := bakedIntersectionKeys(valuesToBake, scans)
+	if baked == nil {
+		return nil
+	}
+	result := make([]properties.ProvidedOrderingPart, len(parts))
+	for i, part := range parts {
+		result[i] = properties.ProvidedOrderingPart{
+			Value:     baked[i],
+			SortOrder: part.SortOrder,
+		}
+	}
+	return result
+}
+
+func containsComparisonAlternative(
+	alternatives []primaryKeyComparisonAlternative,
+	parts []properties.ProvidedOrderingPart,
+	reverse bool,
+) bool {
+	for _, alternative := range alternatives {
+		if alternative.reverse != reverse || len(alternative.parts) != len(parts) {
+			continue
+		}
+		equal := true
+		for i := range parts {
+			if alternative.parts[i].SortOrder != parts[i].SortOrder ||
+				!values.ValuesStructurallyEqual(
+					alternative.parts[i].Value,
+					parts[i].Value,
+				) {
+				equal = false
+				break
+			}
+		}
+		if equal {
+			return true
+		}
+	}
+	return false
 }
 
 // compensateIntersection ports the compensation clause of Java's
@@ -240,6 +976,56 @@ func compensateIntersection(
 		}
 		return b.Build()
 	})
+}
+
+// commonPrimaryKeyValuesForPartition prefers the candidate-carried
+// STRUCTURAL primary key used by PrimaryKeyProperty. If any candidate exposes
+// that contract, every leg must expose the same non-nil Value list; mixing it
+// with the legacy name-only metadata would erase record-type prefixes or
+// nesting. Test doubles and older specialized candidates that expose no
+// structural contract at all retain the single-record-type PlanContext
+// fallback below.
+func commonPrimaryKeyValuesForPartition(
+	accesses []Vectored[*SingleMatchedAccess],
+	ctx PlanContext,
+) []values.Value {
+	var common []values.Value
+	exposedStructural := false
+	missingStructural := false
+	for _, vectored := range accesses {
+		candidate := vectored.Value.GetPartialMatch().GetMatchCandidate()
+		provider, exposed := candidate.(interface {
+			GetCommonPrimaryKeyValues() []values.Value
+		})
+		if !exposed {
+			missingStructural = true
+			continue
+		}
+		exposedStructural = true
+		pk := provider.GetCommonPrimaryKeyValues()
+		if len(pk) == 0 {
+			return nil
+		}
+		if common == nil {
+			common = append([]values.Value(nil), pk...)
+			continue
+		}
+		if len(common) != len(pk) {
+			return nil
+		}
+		for i := range common {
+			if !values.ValuesStructurallyEqual(common[i], pk[i]) {
+				return nil
+			}
+		}
+	}
+	if exposedStructural {
+		if missingStructural {
+			return nil
+		}
+		return common
+	}
+	return commonPrimaryKeyValues(accesses, ctx)
 }
 
 func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanContext) []values.Value {
@@ -306,71 +1092,16 @@ func bakedIntersectionKeys(pkValues []values.Value, legs []plans.RecordQueryPlan
 	baked := bakeMergeComparisonKeys(pkValues, nil, rowType)
 	for _, k := range baked {
 		fv, isFV := k.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil {
+		if !isFV || fv.Child != nil || fv.Resolved == nil ||
+			len(fv.Resolved.Accessors) != 1 {
+			return nil
+		}
+		ordinal, unique := uniqueUpperFieldIndex(rowType, fv.Field)
+		if !unique || fv.Resolved.Root().Ordinal != ordinal {
 			return nil
 		}
 	}
 	return baked
-}
-
-// accessCompatibleWithPKMerge reports whether an access's scan emission is
-// PK-MONOTONIC — the precondition of the strict pk-sorted intersection
-// merge (merge_cursor.go advances non-maximal legs past rows forever, so a
-// non-monotone leg silently DROPS intersection rows). Ports the substance
-// of Java's isCompatibleComparisonKey gate
-// (AbstractDataAccessRule.java:1145-1152 with comparison keys fixed to the
-// common primary key, the only comparison key this intersector builds):
-// walking the leg's matched ordering parts, the FREE (non-equality-bound)
-// sequence must BEGIN with exactly the primary-key values that are not
-// equality-bound in this leg, in pk order, each ascending — an
-// inequality-bound index column (`a > 5`) is a free NON-pk part at the
-// front, exactly the emission (`a, pk`) whose pk sequence interleaves.
-// Trailing free parts beyond the pk are harmless: the pk is a unique key,
-// so once the full free-pk prefix is present the order is already total.
-// Reverse legs decline outright — the executor's merge compares forward
-// (executeIntersection hardcodes reverse=false).
-func accessCompatibleWithPKMerge(access *SingleMatchedAccess, pkValues []values.Value) bool {
-	if access.IsReverseScanOrder() {
-		return false
-	}
-	// Case-FOLDED comparison keys: commonPrimaryKeyValues upper-cases the
-	// pk columns while the candidate's pk-suffix parts carry FieldNames()
-	// verbatim — comparing un-normalized renderings made a lowercase pk
-	// name miss and silently over-decline EVERY intersection. (Rendering-
-	// string identity here is the bridge pattern WS-N Phase C retires;
-	// tolerable now because both sides are same-frame flat FieldValues.)
-	key := func(v values.Value) string { return strings.ToUpper(values.ExplainValue(v)) }
-	parts := access.GetPartialMatch().GetMatchInfo().GetMatchedOrderingParts()
-	equalityBound := make(map[string]struct{})
-	for _, op := range parts {
-		if op.GetComparisonRange().IsEquality() {
-			equalityBound[key(op.GetValue())] = struct{}{}
-		}
-	}
-	var expect []string
-	for _, pv := range pkValues {
-		k := key(pv)
-		if _, bound := equalityBound[k]; !bound {
-			expect = append(expect, k)
-		}
-	}
-	freeIdx := 0
-	for _, op := range parts {
-		if op.GetComparisonRange().IsEquality() {
-			continue
-		}
-		if freeIdx >= len(expect) {
-			break // trailing free parts after the full pk prefix: harmless
-		}
-		if op.GetMatchedSortOrder().IsAnyDescending() {
-			return false
-		}
-		if key(op.GetValue()) != expect[freeIdx] {
-			return false
-		}
-		freeIdx++
-	}
-	return freeIdx == len(expect)
 }
 
 func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {

@@ -460,10 +460,49 @@ three affected Bazel targets pass; parent-vs-current EXPLAIN is 2,579/2,579 byte
 1M FDB stress comparison passes all 23 subtests with identical row counts and 151.32s vs 151.71s
 total runtime; full `just test` is 56/56.
 
-**190.5 remains open.** The next atomic slice must port common rich-ordering derivation and
-redundancy proof, require every non-equality-bound PK component, and thread directional comparison
-parts plus `reverse` through plan identity, executor, ordering properties, and rewrites before
-admitting `DESC` legs.
+#### 190.5b — rich directional comparison-key parity
+
+The intersector now follows Java 4.12.11's common-ordering path instead of requiring a hard-coded
+forward primary-key sequence. Each match carries its real top-to-top translation map and translated
+requested orderings. Intersection merge combines equality bindings, normalizes dependencies through
+newly fixed values, enumerates comparison keys from the resulting partial order, and requires every
+non-fixed common-primary-key component. Structural-PK and baked-layout checks fail closed before a
+plan is admitted.
+
+The semantic comparison ordering is preserved through plan construction, copies, and provided
+ordering; its executable comparison values plus `reverse` participate in identity/hash and executor
+cursor creation, while hint contracts and fetch/set-operation rewrites retain the same contract.
+Fan-out candidates receive Java's per-leg unordered primary-key distinct wrapper before the ordered
+intersection. Redundancy uses proof-grade maximum cardinality and unmatched-ID metadata; useful
+larger intersections evict immediate subpartitions only when they produce a replacement expression,
+while impossible compensation retains the usable smaller plan. The logical
+`ImplementIntersectionRule` uses the corresponding forward/ascending ordering gate.
+
+The executable boundary is deliberate: Go currently evaluates only natural flat field keys, so an
+all-ASC key runs forward and an all-DESC key runs in reverse. Mixed/counterflow null directions,
+`ToOrderedBytesValue`, non-flat keys, ambiguous same-name layouts, and stale baked ordinals decline
+as optimization misses. If any leg exposes structural common-primary-key Values, every leg must;
+mixed structural/name-only providers conservatively decline rather than equate uncertain layouts.
+Multi-record-type legs remain the separately documented layout gap. `PartialMatch.prepareForUnification`
+parity is also outside this ordering slice.
+
+Production SQL and real FDB pin exact descending rows, tie order, decoys, serialized continuation,
+and a low scan budget for the reverse intersection. Focused tests are race-clean and repeat-green;
+all affected Go and Bazel targets pass. The 2,579-entry parent-vs-current EXPLAIN census has 2,573
+identical plans and six reviewed Java-faithful winners: five reverse-index sort eliminations and one
+ordered composite-index streaming aggregation, with zero plan regressions or recoveries. Their
+three row corpora pass all 58 cases, and the checked-in plan-shape golden records the six changes.
+The uncached 1M FDB gate passes all 23 subtests in 150.95s vs the 190.5a checkpoint's 151.71s; full
+`just test` is 56/56.
+
+One safe architectural residue remains: Go's explicit cross-candidate pass runs after candidate-local
+single accesses have already been yielded, so its private intersection-info map cannot evict those
+singleton alternatives as Java's shared map does. This only widens the legal plan space; a future
+partition-level assembler must build singles and intersections once, share the eviction map, and
+flatten survivors before yielding. Post-hoc memo deletion is not safe. This is recorded in
+`DIVERGENCES.md` and does not hold 190.5 open.
+
+**190.5 is complete. FINAL REVIEW: two independent Codex audits ACK.**
 
 ### 190.6 (architectural — Graefe ruling) — NLJ ordering-obliviousness (localized, not systemic)
 

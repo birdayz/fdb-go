@@ -2183,7 +2183,7 @@ func executeIntersection(
 	keyVals := p.GetComparisonKeyValues()
 	compKeyFunc := intersectionCompKeyFunc(keyVals)
 	return applySkipLimit(
-		recordlayer.IntersectionResume(cursors, compKeyFunc, false, resume),
+		recordlayer.IntersectionResume(cursors, compKeyFunc, p.IsReverse(), resume),
 		props.Skip, props.ReturnedRowLimit,
 	), nil
 }

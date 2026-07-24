@@ -55,3 +55,29 @@ func TestColumnNameValue_IgnoresBakedOrdinals(t *testing.T) {
 		t.Fatalf("ExplainValue(multi) = %q, want ADDR#1.CITY#0", got)
 	}
 }
+
+func TestCanBridgeOrderingFieldValues_PreservesOrdinalIdentity(t *testing.T) {
+	t.Parallel()
+
+	lazy := NewFlatFieldValue("sort_key", UnknownType)
+	baked3 := NewFieldValueWithResolvedOrdinal("SORT_KEY", 3, UnknownType)
+	baked4 := NewFieldValueWithResolvedOrdinal("SORT_KEY", 4, UnknownType)
+	nested := &FieldValue{
+		Field: "SORT_KEY",
+		Typ:   UnknownType,
+		Resolved: &FieldPath{Accessors: []ResolvedAccessor{
+			{Field: "ROW", Ordinal: 0},
+			{Field: "SORT_KEY", Ordinal: 3},
+		}},
+	}
+
+	if !CanBridgeOrderingFieldValues(lazy, baked3) {
+		t.Fatal("lazy and single-accessor baked forms of one flat column should bridge")
+	}
+	if CanBridgeOrderingFieldValues(baked3, baked4) {
+		t.Fatal("two differently baked ordinals must never bridge by display name")
+	}
+	if CanBridgeOrderingFieldValues(lazy, nested) {
+		t.Fatal("a nested baked path must not bridge to a flat lazy field")
+	}
+}
