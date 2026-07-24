@@ -1,9 +1,9 @@
 # RFC-190 — Cascades quality audit v2
 
-Status: **Implemented — final whole-RFC review pending.** Graefe and Torvalds ACKed the RFC design,
-and every numbered implementation item (190.1–190.14, including 190.11-FU and the bundled latent
-closures) is complete with its regression, golden, and validation evidence below. The final
-whole-PR Graefe/Torvalds delta review and current-head `@claude` review remain the release gate.
+Status: **Complete.** Graefe and Torvalds ACKed the RFC design, and every numbered implementation
+item (190.1–190.14, including 190.11-FU and the bundled latent closures) is complete with its
+regression, golden, and validation evidence below. Whole-PR Graefe/Torvalds review, current-head
+`@claude` review, and CI are enforced as PR merge gates.
 The accepted 190.1 deliverable is the N-way-path convergence; its separately scoped two-way and
 gathered-cluster follow-ons are recorded below and are not silently claimed as part of this RFC.
 190.1 was **materially re-designed** after its original delete premise proved false (the arm's

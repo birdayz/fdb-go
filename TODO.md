@@ -16,8 +16,8 @@ Wire-compat hard line is CLEAN — every item below is read/optimization-path. *
 Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, regression test each)
 → milestone review lap → @claude LGTM. Grind order = severity (correctness first).
 
-Current RFC state: **implemented; final whole-PR Graefe/Torvalds delta review and current-head
-`@claude` review pending.**
+Current RFC state: **complete.** Whole-PR Graefe/Torvalds review, current-head `@claude` review,
+and CI are enforced as PR merge gates.
 
 **Correctness:**
 - [x] **190.1 (HIGH) — DONE; naive delete premise INVALIDATED, redesigned N-way path safely retired the arm.**
@@ -6597,7 +6597,7 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       Make the merged-row keys carry the qualified names the projection
       mints, or decline the shape at plan time.
 
-### [x] N-way projected-EXISTS emits plans that cannot execute — RESOLVED by RFC-190.1 (RFC-183 §15 finding)
+### [x] N-way comma-join projected-EXISTS emitted a plan that could not execute — RESOLVED by RFC-190.1 (RFC-183 §15 finding)
 
 **Resolution:** RFC-190.1 direct-emits the flat name-model
 `[ForEach×N, Existential]` shape, uses a live-existential guard while
@@ -6606,28 +6606,29 @@ PartitionSelectRule decomposes it into ordinary binary NLJs, and retired
 comma-join, explicit/buried-join, discriminating duplicate-column, four-leg,
 WHERE/NOT-EXISTS, and SARG/stress regressions pin the replacement path.
 
-**Historical RFC-183 diagnosis below (present tense in the original record
-referred to that checkpoint, not current code).** At the RFC-183 checkpoint,
-`ImplementNestedLoopJoinRule.implementNWayJoinWithExistential` — the N-WAY FLAT
-EXISTENTIAL arm — produced plans that died at execution. Every query that
-reached it failed with:
+**Historical RFC-183 comma-join diagnosis below (present tense in the original
+record referred to that checkpoint, not current code).** At the RFC-183
+checkpoint, `ImplementNestedLoopJoinRule.implementNWayJoinWithExistential` —
+the N-WAY FLAT EXISTENTIAL arm — produced a plan for the comma-join reproducer
+below that died at execution with:
 
     correlated FieldValue "V" (correlation "A") evaluated against an
     unbound/unrecognized context (*RowEvalContext (multi-leg row cannot serve a
     source-relative ordinal)) — no frontier row resolved (planner/executor bug)
 
-Reproducer (a PROJECTED exists over >2 ForEach legs; a WHERE-EXISTS does NOT
-reach this arm — it needs N>2 ForEach quantifiers plus a trailing Existential in
-one flattened Select):
+Comma-join reproducer (a PROJECTED exists over >2 ForEach legs; a WHERE-EXISTS
+does NOT reach this arm — it needs N>2 ForEach quantifiers plus a trailing
+Existential in one flattened Select):
 
     SELECT a.v, EXISTS (SELECT 1 FROM d WHERE d.id = a.id)
     FROM a, b, c WHERE a.id = b.id AND b.id = c.id
 
 PRE-EXISTING, not introduced by RFC-183: confirmed by reverting that RFC's memo
-fix and re-running — identical failure. It was also why no corpus query reached
-the arm (instrumenting the yield over all 2407 queries counted ZERO firings):
-the feature had never worked at that checkpoint, so nobody could pin a
-scenario for it.
+fix and re-running — identical failure. Instrumenting all 2407 corpus queries
+counted ZERO arm firings, so that corpus neither exposed this comma-join crash
+nor covered the distinct explicit-`JOIN…ON` path that already executed
+correctly. The zero count did not establish that the arm as a whole had never
+worked.
 
 RFC-183 SHIPS NO REGRESSION HERE — proven by plan parity, recorded because the
 commit titled "the N-way EXISTS local fix converts a crash into WRONG ROWS —
@@ -6648,7 +6649,8 @@ change that produces wrong rows.
 Related but SEPARATE, already fixed on the RFC-183 branch: the same arm was
 costing the whole N-way chain as `Scan(A)` — a memo-linkage bug. Pinned by
 `TestNWayProjectedExists_OuterQuantifierMatchesExecutedPlan`
-(pkg/relational/core/embedded). That fix does NOT make these plans executable.
+(pkg/relational/core/embedded). That fix does NOT make this comma-join plan
+executable.
 
 ALREADY TRIED AND REVERTED — TWICE, and the second attempt proved the fix is
 ACTIVELY HARMFUL, not merely insufficient:
