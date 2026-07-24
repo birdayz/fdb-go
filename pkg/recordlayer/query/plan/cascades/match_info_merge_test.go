@@ -290,7 +290,7 @@ func TestTryMergeRegularMatchInfo_MetadataAndChildInvariants(t *testing.T) {
 		MatchedSortOrderAscending,
 	)}
 	childConstraintPredicate := predicates.NewConstantPredicate(predicates.TriFalse)
-	childInfoA := NewRegularMatchInfo(
+	childInfoA := newRegularMatchInfo(
 		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 			values.NamedCorrelationIdentifier("child_p"): mergeTestRange(
 				t,
@@ -304,6 +304,7 @@ func TestTryMergeRegularMatchInfo_MetadataAndChildInvariants(t *testing.T) {
 		EmptyGroupByMappings(),
 		[]values.Value{values.LiteralValue(int64(11))},
 		NewQueryPlanConstraint(childConstraintPredicate),
+		true,
 	)
 	childInfoB := NewRegularMatchInfo(
 		nil,
@@ -382,6 +383,9 @@ func TestTryMergeRegularMatchInfo_MetadataAndChildInvariants(t *testing.T) {
 	}
 	if got := merged.GetChildPartialMatchMaybe(queryQA.GetAlias()); got != childA {
 		t.Fatal("selected child PartialMatch was not retained")
+	}
+	if merged.RequiresPrimaryKeyDistinct() {
+		t.Fatal("child PK-distinct obligation leaked into a cardinality-safe parent")
 	}
 	if got := len(merged.GetParameterBindingMap()); got != 2 {
 		t.Fatalf("merged parameter bindings = %d, want child+local = 2", got)

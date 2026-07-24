@@ -2230,6 +2230,283 @@ func TestUnionResultCompensation(t *testing.T) {
 	}
 }
 
+func TestForMatchCompensation_PrimaryKeyDistinctOnly(t *testing.T) {
+	t.Parallel()
+
+	base := namedForEachQuantifier("distinct_base")
+	compensation := NewForMatchCompensationWithPrimaryKeyDistinct(
+		false,
+		NoCompensation,
+		EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{base},
+		nil,
+		aliasesOf(base),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+		true,
+	)
+
+	if !compensation.IsNeeded() {
+		t.Fatal("primary-key distinct must make compensation needed")
+	}
+	if compensation.IsNeededForFiltering() {
+		t.Fatal("primary-key distinct changes multiplicity, not filtering")
+	}
+	if compensation.IsFinalNeeded() {
+		t.Fatal("primary-key distinct is pre-final work")
+	}
+	if !compensation.RequiresPrimaryKeyDistinct() {
+		t.Fatal("primary-key distinct obligation was not retained")
+	}
+
+	scan := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	translationCalls := 0
+	applied, ok := compensation.ApplyAllNeeded(
+		scan,
+		func(values.CorrelationIdentifier) TranslationMap {
+			translationCalls++
+			return EmptyTranslationMap()
+		},
+	)
+	if !ok {
+		t.Fatal("distinct-only compensation failed to apply")
+	}
+	if translationCalls != 0 {
+		t.Fatalf("distinct-only compensation translated %d times, want 0", translationCalls)
+	}
+	unique, ok := applied.(*expressions.LogicalUniqueExpression)
+	if !ok {
+		t.Fatalf("distinct-only compensation produced %T, want LogicalUniqueExpression", applied)
+	}
+	if !unique.IsRequired() {
+		t.Fatal("cardinality compensation must emit required, not absorbable, Unique")
+	}
+	if got := unique.GetInner().GetAlias(); got != base.GetAlias() {
+		t.Fatalf("Unique alias = %q, want matched alias %q", got.Name(), base.GetAlias().Name())
+	}
+	if got := unique.GetInner().GetRangesOver().Get(); got != scan {
+		t.Fatalf("Unique child = %T, want original scan", got)
+	}
+}
+
+func TestForMatchCompensation_PrimaryKeyDistinctOrdering(t *testing.T) {
+	t.Parallel()
+
+	base := namedForEachQuantifier("ordered_distinct_base")
+	residual := predicates.NewConstantPredicate(predicates.TriTrue)
+	predicateMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{residual},
+		[]PredicateCompensationFunc{OfPredicateCompensation(residual, false)},
+	)
+	compensation := NewForMatchCompensationWithPrimaryKeyDistinct(
+		false,
+		NoCompensation,
+		predicateMap,
+		[]expressions.Quantifier{base},
+		nil,
+		aliasesOf(base),
+		ResultCompensationOfValue(
+			values.NewQuantifiedObjectValue(base.GetAlias()),
+		),
+		EmptyGroupByMappings(),
+		true,
+	)
+
+	scan := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	var translatedAliases []values.CorrelationIdentifier
+	applied, ok := compensation.ApplyAllNeeded(
+		scan,
+		func(alias values.CorrelationIdentifier) TranslationMap {
+			translatedAliases = append(translatedAliases, alias)
+			return EmptyTranslationMap()
+		},
+	)
+	if !ok {
+		t.Fatal("filter + distinct + final compensation failed to apply")
+	}
+
+	final, ok := applied.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("outer expression = %T, want final SelectExpression", applied)
+	}
+	if len(final.GetQuantifiers()) != 1 {
+		t.Fatalf("final quantifier count = %d, want 1", len(final.GetQuantifiers()))
+	}
+	finalQ := final.GetQuantifiers()[0]
+	if finalQ.GetAlias() != base.GetAlias() {
+		t.Fatalf("final alias = %q, want %q", finalQ.GetAlias().Name(), base.GetAlias().Name())
+	}
+
+	unique, ok := finalQ.GetRangesOver().Get().(*expressions.LogicalUniqueExpression)
+	if !ok {
+		t.Fatalf("final child = %T, want required Unique", finalQ.GetRangesOver().Get())
+	}
+	if !unique.IsRequired() {
+		t.Fatal("compensation emitted an absorbable Unique")
+	}
+	if unique.GetInner().GetAlias() != base.GetAlias() {
+		t.Fatalf("Unique alias = %q, want %q", unique.GetInner().GetAlias().Name(), base.GetAlias().Name())
+	}
+
+	filter, ok := unique.GetInner().GetRangesOver().Get().(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("Unique child = %T, want residual LogicalFilterExpression", unique.GetInner().GetRangesOver().Get())
+	}
+	if filter.GetInner().GetAlias() != base.GetAlias() {
+		t.Fatalf("filter alias = %q, want %q", filter.GetInner().GetAlias().Name(), base.GetAlias().Name())
+	}
+	if got := filter.GetInner().GetRangesOver().Get(); got != scan {
+		t.Fatalf("filter child = %T, want original scan", got)
+	}
+
+	if len(translatedAliases) != 2 {
+		t.Fatalf("translation callback calls = %d, want filter and final", len(translatedAliases))
+	}
+	for _, alias := range translatedAliases {
+		if alias != base.GetAlias() {
+			t.Fatalf("translated alias = %q, want %q", alias.Name(), base.GetAlias().Name())
+		}
+	}
+}
+
+func TestForMatchCompensation_NestedPrimaryKeyDistinct(t *testing.T) {
+	t.Parallel()
+
+	childBase := namedForEachQuantifier("nested_distinct_base")
+	child := NewForMatchCompensationWithPrimaryKeyDistinct(
+		false,
+		NoCompensation,
+		EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{childBase},
+		nil,
+		aliasesOf(childBase),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+		true,
+	)
+	parent := NewForMatchCompensation(
+		false,
+		child,
+		EmptyPredicateCompensationMap(),
+		nil,
+		nil,
+		nil,
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+	)
+
+	if parent.IsImpossible() {
+		t.Fatal("cardinality-only child must not require a local parent alias")
+	}
+	if !parent.IsNeeded() {
+		t.Fatal("parent must report its cardinality-only child as needed")
+	}
+	if parent.IsNeededForFiltering() {
+		t.Fatal("cardinality-only child must not make an existential owner filter")
+	}
+
+	scan := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	applied, ok := parent.ApplyAllNeeded(scan, nil)
+	if !ok {
+		t.Fatal("nested cardinality-only compensation was skipped or failed")
+	}
+	unique, ok := applied.(*expressions.LogicalUniqueExpression)
+	if !ok || !unique.IsRequired() {
+		t.Fatalf("nested compensation produced %T, want required Unique", applied)
+	}
+	if unique.GetInner().GetAlias() != childBase.GetAlias() {
+		t.Fatalf(
+			"nested Unique alias = %q, want child alias %q",
+			unique.GetInner().GetAlias().Name(),
+			childBase.GetAlias().Name(),
+		)
+	}
+}
+
+func TestForMatchCompensation_PrimaryKeyDistinctCompositionUsesOR(t *testing.T) {
+	t.Parallel()
+
+	base := namedForEachQuantifier("composed_distinct_base")
+	distinct := NewForMatchCompensationWithPrimaryKeyDistinct(
+		false,
+		NoCompensation,
+		EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{base},
+		nil,
+		aliasesOf(base),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+		true,
+	)
+	residual := predicates.NewConstantPredicate(predicates.TriTrue)
+	filtering := NewForMatchCompensation(
+		false,
+		NoCompensation,
+		NewPredicateCompensationMap(
+			[]predicates.QueryPredicate{residual},
+			[]PredicateCompensationFunc{OfPredicateCompensation(residual, false)},
+		),
+		[]expressions.Quantifier{base},
+		nil,
+		aliasesOf(base),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+	)
+
+	for _, tc := range []struct {
+		name         string
+		compensation Compensation
+	}{
+		{name: "union", compensation: unionTwo(distinct, filtering)},
+		{name: "intersection", compensation: intersectTwo(distinct, filtering)},
+		{name: "union_with_no_compensation", compensation: unionTwo(NoCompensation, distinct)},
+		{name: "intersection_with_no_compensation", compensation: intersectTwo(NoCompensation, distinct)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			forMatch, ok := tc.compensation.(*ForMatchCompensation)
+			if !ok {
+				t.Fatalf("composition = %T, want ForMatchCompensation", tc.compensation)
+			}
+			if !forMatch.RequiresPrimaryKeyDistinct() {
+				t.Fatal("composition dropped the OR-ed primary-key distinct obligation")
+			}
+			if !forMatch.IsNeeded() {
+				t.Fatal("distinct-bearing composition must remain needed")
+			}
+		})
+	}
+
+	ordinaryIntersection := intersectTwo(NoCompensation, filtering)
+	if ordinaryIntersection.IsNeeded() {
+		t.Fatal("NoCompensation must remain absorbing for filtering-only intersection")
+	}
+
+	derived := DerivedCompensationWithPrimaryKeyDistinct(
+		NoCompensation,
+		false,
+		EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{base},
+		nil,
+		aliasesOf(base),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+		true,
+	)
+	if derived.IsImpossible() || !derived.IsNeeded() {
+		t.Fatal("distinct-only DerivedCompensation must satisfy the needed invariant")
+	}
+}
+
 // baseForEachQ is the single matched ForEach quantifier that algebra fixtures
 // below build their compensations on.
 //

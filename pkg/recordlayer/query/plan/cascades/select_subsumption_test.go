@@ -63,7 +63,9 @@ func TestSelectSubsumptionQuantifierPairCompatibility(t *testing.T) {
 		{"strict-single mismatch", strictA, plainB, false},
 		{"strict-single to null-on-empty mismatch", strictA, nullB, false},
 		{"existential", existsA, existsB, true},
-		{"existential to foreach stays closed", existsA, plainB, false},
+		{"existential to plain foreach", existsA, plainB, true},
+		{"existential to null-on-empty foreach", existsA, nullB, false},
+		{"existential to strict-single foreach", existsA, strictB, false},
 		{"foreach to existential", plainA, existsB, false},
 		{"physical query", physical, plainB, false},
 		{"physical candidate", plainA, physical, false},
@@ -81,6 +83,254 @@ func TestSelectSubsumptionQuantifierPairCompatibility(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestValidateSelectSubsumptionMappingExistentialToForEachCardinalityGate(
+	t *testing.T,
+) {
+	ref := selectSubsumptionTestLeafRef()
+	plainForEach := func(name string) expressions.Quantifier {
+		return expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier(name),
+			ref,
+		)
+	}
+	nullForEach := func(name string) expressions.Quantifier {
+		return expressions.NamedForEachNullOnEmptyQuantifier(
+			values.NamedCorrelationIdentifier(name),
+			ref,
+		)
+	}
+	strictForEach := func(name string) expressions.Quantifier {
+		return expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier(name),
+			ref,
+		)
+	}
+	existential := func(name string) expressions.Quantifier {
+		return expressions.NamedExistentialQuantifier(
+			values.NamedCorrelationIdentifier(name),
+			ref,
+		)
+	}
+	selectWithOwnedExistentials := func(
+		quantifiers []expressions.Quantifier,
+	) *expressions.SelectExpression {
+		var queryPredicates []predicates.QueryPredicate
+		for _, quantifier := range quantifiers {
+			if quantifier.Kind() == expressions.QuantifierExistential {
+				queryPredicates = append(
+					queryPredicates,
+					predicates.NewExistentialAlias(quantifier.GetAlias()),
+				)
+			}
+		}
+		return selectSubsumptionTestSelect(
+			quantifiers,
+			queryPredicates,
+			expressions.JoinInner,
+		)
+	}
+
+	tests := []struct {
+		name                 string
+		queryQuantifiers     []expressions.Quantifier
+		candidateQuantifiers []expressions.Quantifier
+		mapping              []quantifierMapping
+		want                 bool
+	}{
+		{
+			name: "one plain query foreach",
+			queryQuantifiers: []expressions.Quantifier{
+				plainForEach("accepted_query_fe"),
+				existential("accepted_query_e"),
+			},
+			candidateQuantifiers: []expressions.Quantifier{
+				plainForEach("accepted_candidate_fe"),
+				plainForEach("accepted_candidate_fanout"),
+			},
+			mapping: []quantifierMapping{
+				{queryIndex: 0, candidateIndex: 0},
+				{queryIndex: 1, candidateIndex: 1},
+			},
+			want: true,
+		},
+		{
+			name: "zero query foreach",
+			queryQuantifiers: []expressions.Quantifier{
+				existential("zero_query_e"),
+			},
+			candidateQuantifiers: []expressions.Quantifier{
+				plainForEach("zero_candidate_fe"),
+			},
+			mapping: []quantifierMapping{
+				{queryIndex: 0, candidateIndex: 0},
+			},
+		},
+		{
+			name: "two query foreach",
+			queryQuantifiers: []expressions.Quantifier{
+				plainForEach("two_query_fe_a"),
+				plainForEach("two_query_fe_b"),
+				existential("two_query_e"),
+			},
+			candidateQuantifiers: []expressions.Quantifier{
+				plainForEach("two_candidate_fe_a"),
+				plainForEach("two_candidate_fe_b"),
+				plainForEach("two_candidate_fanout"),
+			},
+			mapping: []quantifierMapping{
+				{queryIndex: 0, candidateIndex: 0},
+				{queryIndex: 1, candidateIndex: 1},
+				{queryIndex: 2, candidateIndex: 2},
+			},
+		},
+		{
+			name: "null-on-empty query foreach",
+			queryQuantifiers: []expressions.Quantifier{
+				nullForEach("null_query_fe"),
+				existential("null_query_e"),
+			},
+			candidateQuantifiers: []expressions.Quantifier{
+				nullForEach("null_candidate_fe"),
+				plainForEach("null_candidate_fanout"),
+			},
+			mapping: []quantifierMapping{
+				{queryIndex: 0, candidateIndex: 0},
+				{queryIndex: 1, candidateIndex: 1},
+			},
+		},
+		{
+			name: "strict-single query foreach",
+			queryQuantifiers: []expressions.Quantifier{
+				strictForEach("strict_query_fe"),
+				existential("strict_query_e"),
+			},
+			candidateQuantifiers: []expressions.Quantifier{
+				strictForEach("strict_candidate_fe"),
+				plainForEach("strict_candidate_fanout"),
+			},
+			mapping: []quantifierMapping{
+				{queryIndex: 0, candidateIndex: 0},
+				{queryIndex: 1, candidateIndex: 1},
+			},
+		},
+		{
+			name: "null-on-empty candidate fanout",
+			queryQuantifiers: []expressions.Quantifier{
+				plainForEach("candidate_null_query_fe"),
+				existential("candidate_null_query_e"),
+			},
+			candidateQuantifiers: []expressions.Quantifier{
+				plainForEach("candidate_null_base"),
+				nullForEach("candidate_null_fanout"),
+			},
+			mapping: []quantifierMapping{
+				{queryIndex: 0, candidateIndex: 0},
+				{queryIndex: 1, candidateIndex: 1},
+			},
+		},
+		{
+			name: "strict-single candidate fanout",
+			queryQuantifiers: []expressions.Quantifier{
+				plainForEach("candidate_strict_query_fe"),
+				existential("candidate_strict_query_e"),
+			},
+			candidateQuantifiers: []expressions.Quantifier{
+				plainForEach("candidate_strict_base"),
+				strictForEach("candidate_strict_fanout"),
+			},
+			mapping: []quantifierMapping{
+				{queryIndex: 0, candidateIndex: 0},
+				{queryIndex: 1, candidateIndex: 1},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			query := selectWithOwnedExistentials(test.queryQuantifiers)
+			candidate := selectSubsumptionTestSelect(
+				test.candidateQuantifiers,
+				nil,
+				expressions.JoinInner,
+			)
+			if _, ok := validateSelectSubsumptionMapping(
+				query,
+				candidate,
+				test.mapping,
+			); ok != test.want {
+				t.Fatalf(
+					"validateSelectSubsumptionMapping() ok = %v, want %v",
+					ok,
+					test.want,
+				)
+			}
+			if got := selectSubsumptionMappingRequiresPrimaryKeyDistinct(
+				test.queryQuantifiers,
+				test.candidateQuantifiers,
+				test.mapping,
+			); !got {
+				t.Fatal("fixture mapping does not contain E-to-ForEach")
+			}
+		})
+	}
+}
+
+func TestSelectSubsumptionMappingExistentialToExistentialNeedsNoDistinct(
+	t *testing.T,
+) {
+	ref := selectSubsumptionTestLeafRef()
+	queryQuantifiers := []expressions.Quantifier{
+		expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("e_to_e_query_fe"),
+			ref,
+		),
+		expressions.NamedExistentialQuantifier(
+			values.NamedCorrelationIdentifier("e_to_e_query_e"),
+			ref,
+		),
+	}
+	candidateQuantifiers := []expressions.Quantifier{
+		expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("e_to_e_candidate_fe"),
+			ref,
+		),
+		expressions.NamedExistentialQuantifier(
+			values.NamedCorrelationIdentifier("e_to_e_candidate_e"),
+			ref,
+		),
+	}
+	mapping := []quantifierMapping{
+		{queryIndex: 0, candidateIndex: 0},
+		{queryIndex: 1, candidateIndex: 1},
+	}
+	query := selectSubsumptionTestSelect(
+		queryQuantifiers,
+		[]predicates.QueryPredicate{
+			predicates.NewExistentialAlias(queryQuantifiers[1].GetAlias()),
+		},
+		expressions.JoinInner,
+	)
+	candidate := selectSubsumptionTestSelect(
+		candidateQuantifiers,
+		nil,
+		expressions.JoinInner,
+	)
+	if _, ok := validateSelectSubsumptionMapping(
+		query,
+		candidate,
+		mapping,
+	); !ok {
+		t.Fatal("ordinary E-to-E mapping was rejected")
+	}
+	if selectSubsumptionMappingRequiresPrimaryKeyDistinct(
+		queryQuantifiers,
+		candidateQuantifiers,
+		mapping,
+	) {
+		t.Fatal("ordinary E-to-E mapping acquired a distinct obligation")
 	}
 }
 

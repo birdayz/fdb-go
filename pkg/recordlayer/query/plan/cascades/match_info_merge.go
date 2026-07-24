@@ -29,6 +29,34 @@ func tryMergeRegularMatchInfo(
 	rollUpToGroupingValues []values.Value,
 	additionalPlanConstraint *QueryPlanConstraint,
 ) (*RegularMatchInfo, bool) {
+	return tryMergeRegularMatchInfoWithPrimaryKeyDistinct(
+		bindingAliasMap,
+		children,
+		parameterBindingMap,
+		predicateMap,
+		maxMatchMap,
+		additionalGroupByMappings,
+		rollUpToGroupingValues,
+		additionalPlanConstraint,
+		false,
+	)
+}
+
+// tryMergeRegularMatchInfoWithPrimaryKeyDistinct is the node-local merge path
+// for semantic mappings that require a primary-key distinct repair. The flag
+// is supplied by the current expression only; child flags must not leak into a
+// parent whose own mapping preserves cardinality.
+func tryMergeRegularMatchInfoWithPrimaryKeyDistinct(
+	bindingAliasMap *AliasMap,
+	children []quantifierPartialMatch,
+	parameterBindingMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	predicateMap *PredicateMultiMap,
+	maxMatchMap *MaxMatchMap,
+	additionalGroupByMappings *GroupByMappings,
+	rollUpToGroupingValues []values.Value,
+	additionalPlanConstraint *QueryPlanConstraint,
+	requiresPrimaryKeyDistinct bool,
+) (*RegularMatchInfo, bool) {
 	if bindingAliasMap == nil {
 		bindingAliasMap = EmptyAliasMap()
 	}
@@ -120,7 +148,7 @@ func tryMergeRegularMatchInfo(
 		}
 	}
 
-	mi := NewRegularMatchInfo(
+	mi := newRegularMatchInfo(
 		mergedParameters,
 		bindingAliasMap,
 		predicateMap,
@@ -129,6 +157,7 @@ func tryMergeRegularMatchInfo(
 		groupByMappings,
 		resolvedRollUp,
 		additionalPlanConstraint,
+		requiresPrimaryKeyDistinct,
 	)
 	for _, child := range children {
 		mi.SetChildPartialMatch(

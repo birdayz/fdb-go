@@ -204,6 +204,83 @@ func TestAddPartialMatchForCandidate_ExactSemanticReAddCollapses(t *testing.T) {
 	}
 }
 
+func TestAddPartialMatchForCandidate_PrimaryKeyDistinctObligationIsSemanticIdentity(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	fixture := newRefTestSemanticFixture("idx_pk_distinct_identity")
+	newMatch := func(requiresPrimaryKeyDistinct bool) *PartialMatchImpl {
+		boundAliasMap := EmptyAliasMap()
+		var matchInfo *RegularMatchInfo
+		if requiresPrimaryKeyDistinct {
+			matchInfo = newRegularMatchInfo(
+				nil,
+				boundAliasMap,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				true,
+			)
+		} else {
+			matchInfo = NewRegularMatchInfo(
+				nil,
+				boundAliasMap,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+			)
+		}
+		return NewPartialMatch(
+			boundAliasMap,
+			fixture.candidate,
+			fixture.queryRef,
+			fixture.queryExpr,
+			fixture.candidateRef,
+			matchInfo,
+		)
+	}
+
+	requiresDistinct := newMatch(true)
+	exactReconstruction := newMatch(true)
+	noDistinct := newMatch(false)
+	if !AddPartialMatchForCandidate(
+		fixture.queryRef,
+		fixture.candidate,
+		requiresDistinct,
+	) {
+		t.Fatal("first required-distinct match should be retained")
+	}
+	if AddPartialMatchForCandidate(
+		fixture.queryRef,
+		fixture.candidate,
+		exactReconstruction,
+	) {
+		t.Fatal("identical required-distinct matches should deduplicate")
+	}
+	if !AddPartialMatchForCandidate(
+		fixture.queryRef,
+		fixture.candidate,
+		noDistinct,
+	) {
+		t.Fatal("false-vs-true distinct obligations must coexist")
+	}
+
+	got := GetPartialMatchesForCandidate(fixture.queryRef, fixture.candidate)
+	if len(got) != 2 || got[0] != requiresDistinct || got[1] != noDistinct {
+		t.Fatalf(
+			"stored obligation alternatives = %v, want [required, not-required]",
+			got,
+		)
+	}
+}
+
 func TestMultipleMatchesSameCandidate(t *testing.T) {
 	t.Parallel()
 

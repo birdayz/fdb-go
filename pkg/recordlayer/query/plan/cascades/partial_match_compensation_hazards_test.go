@@ -764,6 +764,84 @@ func TestCompensate_PrefersPossiblePredicateAlternative(t *testing.T) {
 	}
 }
 
+func TestCompensate_PropagatesPrimaryKeyDistinctObligation(t *testing.T) {
+	t.Parallel()
+
+	child := hazardScanPM(t, nil, nil)
+	candidateScan := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	candidateRef := expressions.InitialOf(candidateScan)
+	candidateResult := candidateScan.GetResultValue()
+
+	queryForEach := namedForEachQuantifier("query_for_each")
+	candidateChildAlias := values.NamedCorrelationIdentifier("candidate_child")
+	query := expressions.NewSelectExpression(
+		queryForEach.GetFlowedObjectValue(),
+		[]expressions.Quantifier{queryForEach},
+		nil,
+	)
+
+	matchInfo := newRegularMatchInfo(
+		nil,
+		AliasMapOfAliases(queryForEach.GetAlias(), candidateChildAlias),
+		nil,
+		nil,
+		NewMaxMatchMap(
+			map[values.Value]values.Value{
+				candidateResult: candidateResult,
+			},
+			candidateResult,
+			candidateResult,
+		),
+		EmptyGroupByMappings(),
+		nil,
+		nil,
+		true,
+	)
+	matchInfo.SetChildPartialMatch(queryForEach.GetAlias(), child)
+
+	partialMatch := NewPartialMatch(
+		EmptyAliasMap(),
+		stubMatchCandidate{name: "idx"},
+		expressions.InitialOf(query),
+		query,
+		candidateRef,
+		matchInfo,
+	)
+	compensation := partialMatch.CompensateCompleteMatch(
+		nil,
+		values.NamedCorrelationIdentifier("candidate_top"),
+	)
+
+	forMatch, ok := compensation.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("compensation = %T, want ForMatchCompensation", compensation)
+	}
+	if forMatch.IsImpossible() {
+		t.Fatal("primary-key distinct match compensation became impossible")
+	}
+	if !forMatch.RequiresPrimaryKeyDistinct() {
+		t.Fatal("RegularMatchInfo primary-key distinct obligation was dropped")
+	}
+	if !forMatch.IsNeeded() {
+		t.Fatal("primary-key distinct obligation must make partial-match compensation needed")
+	}
+	if forMatch.IsNeededForFiltering() {
+		t.Fatal("primary-key distinct obligation must not become existential filtering")
+	}
+	if alias, ok := forMatch.MatchedForEachAliasMaybe(); !ok ||
+		alias != queryForEach.GetAlias() {
+		t.Fatalf(
+			"matched alias = %q (ok=%v), want %q",
+			alias.Name(),
+			ok,
+			queryForEach.GetAlias().Name(),
+		)
+	}
+}
+
 // TestCompensate_PrefersTopLevelPredicateMappingBeforeLegacyFlatten pins the
 // representation seam between the general Select subsumption path and the
 // older single-source Filter adapter. General Select matching keys a mapping

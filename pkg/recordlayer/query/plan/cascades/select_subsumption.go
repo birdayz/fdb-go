@@ -131,6 +131,14 @@ func validateSelectSubsumptionMapping(
 		selectedCandidate[pair.candidateIndex] = struct{}{}
 	}
 
+	if selectSubsumptionMappingRequiresPrimaryKeyDistinct(
+		queryQuantifiers,
+		candidateQuantifiers,
+		mapping,
+	) && !selectSubsumptionExistentialToForEachAllowed(queryQuantifiers) {
+		return nil, false
+	}
+
 	if !selectSubsumptionCoversForEach(
 		queryQuantifiers,
 		candidateQuantifiers,
@@ -159,10 +167,10 @@ func selectSubsumptionJoinTypeAllowed(joinType expressions.JoinType) bool {
 	return joinType == expressions.JoinInner || joinType == expressions.JoinCross
 }
 
-// selectSubsumptionQuantifierPairCompatible implements only the pair kinds
-// whose cardinality is currently proved. Existential-to-ForEach is an
-// intentional closed gate: it needs the RFC-190.4c cardinality proof/repair
-// before it may be enabled.
+// selectSubsumptionQuantifierPairCompatible implements the node-local pair
+// kinds whose edge semantics are proved. Existential-to-ForEach is restricted
+// to a plain candidate edge; the whole-Select cardinality gate is enforced
+// separately once the complete mapping is known.
 func selectSubsumptionQuantifierPairCompatible(
 	queryQuantifier, candidateQuantifier expressions.Quantifier,
 ) bool {
@@ -178,14 +186,62 @@ func selectSubsumptionQuantifierPairCompatible(
 		case expressions.QuantifierExistential:
 			return true
 		case expressions.QuantifierForEach:
-			// Disabled until the E-to-FE cardinality gate is proved.
-			return false
+			return !candidateQuantifier.IsNullOnEmpty() &&
+				!candidateQuantifier.IsStrictSingle()
 		default:
 			return false
 		}
 	default:
 		return false
 	}
+}
+
+// selectSubsumptionMappingRequiresPrimaryKeyDistinct reports whether this
+// exact mapping contains an Existential-to-ForEach pair. It intentionally
+// inspects mappings, rather than merely the two Select shapes, so an ordinary
+// E-to-E alternative never inherits another mapping's repair obligation.
+func selectSubsumptionMappingRequiresPrimaryKeyDistinct(
+	queryQuantifiers, candidateQuantifiers []expressions.Quantifier,
+	mapping []quantifierMapping,
+) bool {
+	for _, pair := range mapping {
+		if pair.queryIndex < 0 || pair.queryIndex >= len(queryQuantifiers) ||
+			pair.candidateIndex < 0 ||
+			pair.candidateIndex >= len(candidateQuantifiers) {
+			continue
+		}
+		if queryQuantifiers[pair.queryIndex].Kind() ==
+			expressions.QuantifierExistential &&
+			candidateQuantifiers[pair.candidateIndex].Kind() ==
+				expressions.QuantifierForEach {
+			return true
+		}
+	}
+	return false
+}
+
+// selectSubsumptionExistentialToForEachAllowed is the cardinality safety gate
+// for an E-to-ForEach mapping. A single plain query ForEach identifies the
+// base-record stream whose primary key can repair fanout multiplicity. Zero or
+// multiple ForEach legs provide no such unambiguous record identity, while
+// null-on-empty and strict-single edges have additional cardinality semantics
+// that primary-key distinct alone does not preserve.
+func selectSubsumptionExistentialToForEachAllowed(
+	queryQuantifiers []expressions.Quantifier,
+) bool {
+	var queryForEach *expressions.Quantifier
+	for index := range queryQuantifiers {
+		if queryQuantifiers[index].Kind() != expressions.QuantifierForEach {
+			continue
+		}
+		if queryForEach != nil {
+			return false
+		}
+		queryForEach = &queryQuantifiers[index]
+	}
+	return queryForEach != nil &&
+		!queryForEach.IsNullOnEmpty() &&
+		!queryForEach.IsStrictSingle()
 }
 
 func selectSubsumptionCoversForEach(

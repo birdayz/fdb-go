@@ -107,6 +107,7 @@ func regularMatchInfosSemanticallyEqual(
 		!groupByMappingsEqual(a.groupByMappings, b.groupByMappings) ||
 		!valueSlicesEqual(a.rollUpToGroupingValues, b.rollUpToGroupingValues) ||
 		!queryPlanConstraintsEqual(a.additionalPlanConstraint, b.additionalPlanConstraint) ||
+		a.requiresPrimaryKeyDistinct != b.requiresPrimaryKeyDistinct ||
 		len(a.childPartialMatchMap) != len(b.childPartialMatchMap) {
 		return false
 	}

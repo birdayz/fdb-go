@@ -348,11 +348,13 @@ func (p *PartialMatchImpl) compensate(
 
 	// Phase 4: Determine whether compensation is needed at all.
 	matchedQs := p.GetMatchedQuantifiers()
+	requiresPrimaryKeyDistinct := mi.RequiresPrimaryKeyDistinct()
 
 	isCompensationNeeded := childCompensation.IsNeeded() ||
 		len(unmatchedQs) > 0 ||
 		isAnyCompensationFunctionNeeded ||
-		cr.ResultCompensationFn.IsNeeded()
+		cr.ResultCompensationFn.IsNeeded() ||
+		requiresPrimaryKeyDistinct
 
 	if !isCompensationNeeded {
 		return NoCompensation
@@ -374,7 +376,7 @@ func (p *PartialMatchImpl) compensate(
 
 	// NewForMatchCompensation enforces the base-ForEach invariant itself, so a
 	// compensation that comes back needed is one that can actually be applied.
-	return NewForMatchCompensation(
+	return NewForMatchCompensationWithPrimaryKeyDistinct(
 		isAnyCompensationFunctionImpossible,
 		childCompensation,
 		predicateCompensationMap,
@@ -383,6 +385,7 @@ func (p *PartialMatchImpl) compensate(
 		p.GetCompensatedAliases(),
 		cr.ResultCompensationFn,
 		cr.GroupByMappings,
+		requiresPrimaryKeyDistinct,
 	)
 }
 

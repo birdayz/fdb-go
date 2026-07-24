@@ -94,6 +94,7 @@ go_test(
         "streaming_row_continuation_integration_test.go",
         "streaming_row_continuation_test.go",
         "terminal_replay_exec_test.go",
+        "unordered_pk_distinct_cardinality_test.go",
         "vector_index_scan_integration_test.go",
     ],
     embed = [":executor"],
@@ -168,6 +169,7 @@ go_test(
         "in_memory_sort_over_ordered_scan_rowsread_test.go",
         "intersection_compkey_error_test.go",
         "flat_map_inherit_outer_properties_test.go",
+        "unordered_pk_distinct_cardinality_test.go",
     ],
     deps = [
         "//gen",

@@ -334,6 +334,11 @@ func matchSelectSubsumption(
 			if budget.shouldStop() {
 				return false
 			}
+			requiresPrimaryKeyDistinct := selectSubsumptionMappingRequiresPrimaryKeyDistinct(
+				queryQuantifiers,
+				candidateQuantifiers,
+				mapping,
+			)
 			if expandIntermediateChildPartialMatches(
 				call,
 				querySelect,
@@ -446,10 +451,11 @@ func matchSelectSubsumption(
 									predicateMap = nil
 								}
 								return intermediateMatchInfoInputs{
-									parameterBindingMap:       parameterBindingMap,
-									predicateMap:              predicateMap,
-									maxMatchMap:               maxMatchMap,
-									additionalGroupByMappings: EmptyGroupByMappings(),
+									parameterBindingMap:        parameterBindingMap,
+									predicateMap:               predicateMap,
+									maxMatchMap:                maxMatchMap,
+									additionalGroupByMappings:  EmptyGroupByMappings(),
+									requiresPrimaryKeyDistinct: requiresPrimaryKeyDistinct,
 								}, true
 							})
 						},
@@ -572,12 +578,13 @@ func quantifierEdgesCompatible(a, b expressions.Quantifier) bool {
 // intermediateMatchInfoInputs is the node-local metadata to merge with one
 // selected Cartesian product of child PartialMatches.
 type intermediateMatchInfoInputs struct {
-	parameterBindingMap       map[values.CorrelationIdentifier]*predicates.ComparisonRange
-	predicateMap              *PredicateMultiMap
-	maxMatchMap               *MaxMatchMap
-	additionalGroupByMappings *GroupByMappings
-	rollUpToGroupingValues    []values.Value
-	additionalPlanConstraint  *QueryPlanConstraint
+	parameterBindingMap        map[values.CorrelationIdentifier]*predicates.ComparisonRange
+	predicateMap               *PredicateMultiMap
+	maxMatchMap                *MaxMatchMap
+	additionalGroupByMappings  *GroupByMappings
+	rollUpToGroupingValues     []values.Value
+	additionalPlanConstraint   *QueryPlanConstraint
+	requiresPrimaryKeyDistinct bool
 }
 
 // intermediateMatchInfoBuilder computes one node-local metadata alternative
@@ -744,7 +751,7 @@ func expandIntermediateChildPartialMatches(
 					if !ok {
 						return !budget.shouldStop()
 					}
-					mi, ok := tryMergeRegularMatchInfo(
+					mi, ok := tryMergeRegularMatchInfoWithPrimaryKeyDistinct(
 						composed,
 						selected,
 						inputs.parameterBindingMap,
@@ -753,6 +760,7 @@ func expandIntermediateChildPartialMatches(
 						inputs.additionalGroupByMappings,
 						inputs.rollUpToGroupingValues,
 						inputs.additionalPlanConstraint,
+						inputs.requiresPrimaryKeyDistinct,
 					)
 					if !ok {
 						return !budget.shouldStop()

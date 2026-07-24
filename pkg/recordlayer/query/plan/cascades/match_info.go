@@ -117,15 +117,16 @@ func NewAdjustedBuilder(mi MatchInfo) *AdjustedBuilder {
 //
 // Ports Java's MatchInfo.RegularMatchInfo.
 type RegularMatchInfo struct {
-	parameterBindingMap      map[values.CorrelationIdentifier]*predicates.ComparisonRange
-	bindingAliasMap          *AliasMap
-	predicateMap             *PredicateMultiMap
-	matchedOrderingParts     []*MatchedOrderingPart
-	maxMatchMap              *MaxMatchMap
-	groupByMappings          *GroupByMappings
-	rollUpToGroupingValues   []values.Value // nil when not applicable
-	additionalPlanConstraint *QueryPlanConstraint
-	childPartialMatchMap     map[values.CorrelationIdentifier]PartialMatch
+	parameterBindingMap        map[values.CorrelationIdentifier]*predicates.ComparisonRange
+	bindingAliasMap            *AliasMap
+	predicateMap               *PredicateMultiMap
+	matchedOrderingParts       []*MatchedOrderingPart
+	maxMatchMap                *MaxMatchMap
+	groupByMappings            *GroupByMappings
+	rollUpToGroupingValues     []values.Value // nil when not applicable
+	additionalPlanConstraint   *QueryPlanConstraint
+	requiresPrimaryKeyDistinct bool
+	childPartialMatchMap       map[values.CorrelationIdentifier]PartialMatch
 }
 
 // NewRegularMatchInfo constructs a RegularMatchInfo. All collection
@@ -139,6 +140,33 @@ func NewRegularMatchInfo(
 	groupByMappings *GroupByMappings,
 	rollUpToGroupingValues []values.Value,
 	additionalPlanConstraint *QueryPlanConstraint,
+) *RegularMatchInfo {
+	return newRegularMatchInfo(
+		parameterBindingMap,
+		bindingAliasMap,
+		predicateMap,
+		matchedOrderingParts,
+		maxMatchMap,
+		groupByMappings,
+		rollUpToGroupingValues,
+		additionalPlanConstraint,
+		false,
+	)
+}
+
+// newRegularMatchInfo is the node-local constructor used by semantic matching
+// routes that carry additional obligations. Child obligations are deliberately
+// not inferred here: a parent must opt in for its own semantic mapping.
+func newRegularMatchInfo(
+	parameterBindingMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	bindingAliasMap *AliasMap,
+	predicateMap *PredicateMultiMap,
+	matchedOrderingParts []*MatchedOrderingPart,
+	maxMatchMap *MaxMatchMap,
+	groupByMappings *GroupByMappings,
+	rollUpToGroupingValues []values.Value,
+	additionalPlanConstraint *QueryPlanConstraint,
+	requiresPrimaryKeyDistinct bool,
 ) *RegularMatchInfo {
 	// Defensive copy of parameterBindingMap.
 	pbm := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange, len(parameterBindingMap))
@@ -158,14 +186,15 @@ func NewRegularMatchInfo(
 	}
 
 	return &RegularMatchInfo{
-		parameterBindingMap:      pbm,
-		bindingAliasMap:          bindingAliasMap,
-		predicateMap:             predicateMap,
-		matchedOrderingParts:     mop,
-		maxMatchMap:              maxMatchMap,
-		groupByMappings:          groupByMappings,
-		rollUpToGroupingValues:   rug,
-		additionalPlanConstraint: additionalPlanConstraint,
+		parameterBindingMap:        pbm,
+		bindingAliasMap:            bindingAliasMap,
+		predicateMap:               predicateMap,
+		matchedOrderingParts:       mop,
+		maxMatchMap:                maxMatchMap,
+		groupByMappings:            groupByMappings,
+		rollUpToGroupingValues:     rug,
+		additionalPlanConstraint:   additionalPlanConstraint,
+		requiresPrimaryKeyDistinct: requiresPrimaryKeyDistinct,
 	}
 }
 
@@ -208,6 +237,13 @@ func (r *RegularMatchInfo) GetRollUpToGroupingValues() []values.Value {
 // GetAdditionalPlanConstraint returns the additional plan constraint.
 func (r *RegularMatchInfo) GetAdditionalPlanConstraint() *QueryPlanConstraint {
 	return r.additionalPlanConstraint
+}
+
+// RequiresPrimaryKeyDistinct reports whether this expression's semantic
+// mapping can multiply one logical record and therefore requires a
+// primary-key distinct repair after its local filtering is applied.
+func (r *RegularMatchInfo) RequiresPrimaryKeyDistinct() bool {
+	return r.requiresPrimaryKeyDistinct
 }
 
 // GetConstraint composes the current expression's constraint with predicate

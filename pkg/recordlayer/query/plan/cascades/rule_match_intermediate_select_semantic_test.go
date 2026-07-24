@@ -5,8 +5,22 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+type selectSemanticFixedPlanCandidate struct {
+	*testMatchCandidate
+	plan plans.RecordQueryPlan
+}
+
+func (c *selectSemanticFixedPlanCandidate) ToScanPlan(
+	_ map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	_ bool,
+) plans.RecordQueryPlan {
+	return c.plan
+}
 
 type selectSemanticRouteExactSubsetFixture struct {
 	queryForEach        expressions.Quantifier
@@ -711,6 +725,270 @@ func TestMatchIntermediateSelectSemantic_EmitsResidualCardinalityAndResultState(
 	}
 	if _, stale := translatedCorrelations[queryForEach.GetAlias()]; stale {
 		t.Fatal("parent MaxMatchMap retained the pre-translation query FE alias")
+	}
+}
+
+func TestMatchIntermediateSelectSemantic_ExistentialToForEachMarksDistinctRepair(
+	t *testing.T,
+) {
+	queryBase := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	queryBaseRef := expressions.InitialOf(queryBase)
+	queryForEach := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("e_to_fe_route_query_fe"),
+		queryBaseRef,
+	)
+	queryFanout := expressions.NewFullUnorderedScanExpression(
+		[]string{"U"},
+		values.UnknownType,
+	)
+	queryFanoutRef := expressions.InitialOf(queryFanout)
+	queryExistential := expressions.NamedExistentialQuantifier(
+		values.NamedCorrelationIdentifier("e_to_fe_route_query_e"),
+		queryFanoutRef,
+	)
+	querySelect := expressions.NewSelectExpression(
+		queryForEach.GetFlowedObjectValue(),
+		[]expressions.Quantifier{queryForEach, queryExistential},
+		[]predicates.QueryPredicate{
+			predicates.NewExistentialAlias(queryExistential.GetAlias()),
+		},
+	)
+	querySelectRef := expressions.InitialOf(querySelect)
+
+	candidateBase := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	candidateBaseRef := expressions.InitialOf(candidateBase)
+	candidateForEach := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("e_to_fe_route_candidate_fe"),
+		candidateBaseRef,
+	)
+	candidateFanout := expressions.NewFullUnorderedScanExpression(
+		[]string{"U"},
+		values.UnknownType,
+	)
+	candidateFanoutRef := expressions.InitialOf(candidateFanout)
+	candidateFanoutForEach := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("e_to_fe_route_candidate_fanout"),
+		candidateFanoutRef,
+	)
+	candidateSelect := expressions.NewSelectExpression(
+		candidateForEach.GetFlowedObjectValue(),
+		[]expressions.Quantifier{candidateForEach, candidateFanoutForEach},
+		nil,
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	scanPlan := plans.NewRecordQueryScanPlan(
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithPrimaryKey([]values.Value{
+		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+	})
+	candidate := &selectSemanticFixedPlanCandidate{
+		testMatchCandidate: &testMatchCandidate{
+			name:      "idx_select_e_to_fe_distinct_repair",
+			traversal: NewTraversal(candidateSelectRef),
+		},
+		plan: scanPlan,
+	}
+	baseChild := selectSemanticRouteSeedChild(
+		t,
+		candidate,
+		queryBaseRef,
+		candidateBaseRef,
+		EmptyAliasMap(),
+		nil,
+	)
+	fanoutChild := selectSemanticRouteSeedChild(
+		t,
+		candidate,
+		queryFanoutRef,
+		candidateFanoutRef,
+		EmptyAliasMap(),
+		nil,
+	)
+
+	matchIntermediateWithCandidate(
+		NewExpressionRuleCall(querySelectRef, nil, nil),
+		querySelect,
+		candidate,
+		candidateSelectRef,
+		candidateSelect,
+	)
+	parents := GetPartialMatchesForExpression(querySelectRef, querySelect)
+	if len(parents) != 1 {
+		t.Fatalf("E-to-ForEach semantic parents = %d, want 1", len(parents))
+	}
+	matchInfo := parents[0].GetRegularMatchInfo()
+	if !matchInfo.RequiresPrimaryKeyDistinct() {
+		t.Fatal("E-to-ForEach semantic mapping lost its PK-distinct repair obligation")
+	}
+	if got := matchInfo.GetChildPartialMatchMaybe(
+		queryForEach.GetAlias(),
+	); got != baseChild {
+		t.Fatalf("base child = %p, want %p", got, baseChild)
+	}
+	if got := matchInfo.GetChildPartialMatchMaybe(
+		queryExistential.GetAlias(),
+	); got != fanoutChild {
+		t.Fatalf("fanout child = %p, want %p", got, fanoutChild)
+	}
+
+	// Carry the semantic match through the real single-data-access path. The
+	// compensation must survive as a required logical Unique, then lower to
+	// an executable primary-key distinct plan over the exact PK-proven scan.
+	dataAccesses := DataAccessForMatchPartition(
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
+		[]PartialMatch{parents[0]},
+		EmptyPlanContext(),
+		nil,
+	)
+	if len(dataAccesses) != 1 {
+		t.Fatalf("E-to-ForEach data accesses = %d, want 1", len(dataAccesses))
+	}
+	unique, ok := dataAccesses[0].(*expressions.LogicalUniqueExpression)
+	if !ok {
+		t.Fatalf("compensated data access = %T, want LogicalUniqueExpression", dataAccesses[0])
+	}
+	if !unique.IsRequired() {
+		t.Fatal("E-to-ForEach data access emitted an absorbable Unique")
+	}
+	if got := unique.GetInner().GetAlias(); got != queryForEach.GetAlias() {
+		t.Fatalf("compensated Unique alias = %q, want %q", got.Name(), queryForEach.GetAlias().Name())
+	}
+
+	innerRef := unique.GetInner().GetRangesOver()
+	planProperties := NewPlanPropertiesMap()
+	for _, member := range innerRef.AllMembers() {
+		physical, ok := member.(physicalPlanExpression)
+		if !ok {
+			t.Fatalf("required Unique input = %T, want physical plan", member)
+		}
+		planProperties.Add(physical)
+	}
+	innerRef.SetPlanProperties(planProperties)
+
+	implemented := FireImplementationRule(
+		NewImplementUniqueRule(),
+		expressions.InitialOf(unique),
+	)
+	if len(implemented) != 1 {
+		t.Fatalf("required Unique implementations = %d, want 1", len(implemented))
+	}
+	distinctPlan, ok := implemented[0].(*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan)
+	if !ok {
+		t.Fatalf("required Unique implementation = %T, want PK-distinct plan", implemented[0])
+	}
+	if got := distinctPlan.GetInner(); got != scanPlan {
+		t.Fatalf("PK-distinct child = %T, want exact semantic candidate scan", got)
+	}
+}
+
+func TestMatchIntermediateSelectSemantic_ExistentialToExistentialNeedsNoDistinctRepair(
+	t *testing.T,
+) {
+	queryBase := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	queryBaseRef := expressions.InitialOf(queryBase)
+	queryForEach := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("e_to_e_route_query_fe"),
+		queryBaseRef,
+	)
+	queryExists := expressions.NewFullUnorderedScanExpression(
+		[]string{"U"},
+		values.UnknownType,
+	)
+	queryExistsRef := expressions.InitialOf(queryExists)
+	queryExistential := expressions.NamedExistentialQuantifier(
+		values.NamedCorrelationIdentifier("e_to_e_route_query_e"),
+		queryExistsRef,
+	)
+	querySelect := expressions.NewSelectExpression(
+		queryForEach.GetFlowedObjectValue(),
+		[]expressions.Quantifier{queryForEach, queryExistential},
+		[]predicates.QueryPredicate{
+			predicates.NewExistentialAlias(queryExistential.GetAlias()),
+		},
+	)
+	querySelectRef := expressions.InitialOf(querySelect)
+
+	candidateBase := expressions.NewFullUnorderedScanExpression(
+		[]string{"T"},
+		values.UnknownType,
+	)
+	candidateBaseRef := expressions.InitialOf(candidateBase)
+	candidateForEach := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("e_to_e_route_candidate_fe"),
+		candidateBaseRef,
+	)
+	candidateExists := expressions.NewFullUnorderedScanExpression(
+		[]string{"U"},
+		values.UnknownType,
+	)
+	candidateExistsRef := expressions.InitialOf(candidateExists)
+	candidateExistential := expressions.NamedExistentialQuantifier(
+		values.NamedCorrelationIdentifier("e_to_e_route_candidate_e"),
+		candidateExistsRef,
+	)
+	candidateSelect := expressions.NewSelectExpression(
+		candidateForEach.GetFlowedObjectValue(),
+		[]expressions.Quantifier{candidateForEach, candidateExistential},
+		nil,
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidate := &testMatchCandidate{
+		name:      "idx_select_e_to_e_no_distinct_repair",
+		traversal: NewTraversal(candidateSelectRef),
+	}
+	selectSemanticRouteSeedChild(
+		t,
+		candidate,
+		queryBaseRef,
+		candidateBaseRef,
+		EmptyAliasMap(),
+		nil,
+	)
+	existentialChild := selectSemanticRouteSeedChild(
+		t,
+		candidate,
+		queryExistsRef,
+		candidateExistsRef,
+		EmptyAliasMap(),
+		nil,
+	)
+
+	matchIntermediateWithCandidate(
+		NewExpressionRuleCall(querySelectRef, nil, nil),
+		querySelect,
+		candidate,
+		candidateSelectRef,
+		candidateSelect,
+	)
+	parents := GetPartialMatchesForExpression(querySelectRef, querySelect)
+	if len(parents) == 0 {
+		t.Fatal("ordinary E-to-E semantic mapping produced no parent")
+	}
+	var eToEParent PartialMatch
+	for _, parent := range parents {
+		if parent.GetRegularMatchInfo().GetChildPartialMatchMaybe(
+			queryExistential.GetAlias(),
+		) == existentialChild {
+			eToEParent = parent
+			break
+		}
+	}
+	if eToEParent == nil {
+		t.Fatal("ordinary E-to-E child product was not retained")
+	}
+	if eToEParent.GetRegularMatchInfo().RequiresPrimaryKeyDistinct() {
+		t.Fatal("ordinary E-to-E mapping acquired a PK-distinct repair obligation")
 	}
 }
 
