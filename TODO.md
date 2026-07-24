@@ -247,8 +247,18 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   concurrent valid/error/tree-reuse regressions. Existing plan shapes are unchanged (2,581/2,581
   identical); the golden adds only the nineteen new regression queries. `just generate`, `just lint`,
   and full `just test` pass (56/56). **FINAL REVIEW: two independent Codex audits ACK.**
-- [ ] **190.9 (LOW)** — NLJ cursor twin inner-loop bodies (`executor/streaming_cursors.go:1561`
-  hash-probe ≈ :1609 linear-scan) — unify via candidate-index slice.
+- [x] **190.9 (LOW)** — DONE. The twin hash/linear NLJ inner loops now share one candidate-position
+  body. A literal identity-index slice was rejected because it would add unbudgeted O(inner rows)
+  memory to every linear join; the final candidate view uses `(nil, count)` for zero-allocation
+  linear/degraded scans and `(bucket, len(bucket))` for hash hits, while keeping hash misses distinct
+  as `(nil, 0)`. Predicate evaluation, ordinal binding, match tracking, positional emission, and all
+  join types now have one implementation. Continuation PK capture/reposition uses the same view, so
+  hash positions remain bucket-relative and linear/degraded positions remain row-relative.
+  Regressions pin sparse hash-bucket resumes at every split, shifted-bucket PK repositioning,
+  positive time/string degraded probes, hash misses, and FULL OUTER matched-inner/drain bookkeeping
+  over noncontiguous indices. The executor is race-clean and 20× repeat-green, the large-inner
+  real-FDB FULL OUTER route passes, and the 2,600-entry plan golden is byte-identical. `just generate`,
+  `just lint`, and full `just test` pass (56/56). **FINAL REVIEW: two independent Codex audits ACK.**
 
 **Test gaps (the plan-quality axis):**
 - [ ] **190.10 (MED)** — behavioral tests for the 12 untested rules (8 zero-reference: all

@@ -1011,14 +1011,14 @@ type nljCursor struct {
 	// detects a single-equality equijoin over two baked leg references.
 	hashIndex    map[any][]int // join-key → indices into innerRows
 	hashOuterVal values.Value  // outer-side baked operand, probes the index
-	allIdx       []int         // lazy 0..N-1 candidate list for a failed probe
 
-	currentOuter   *QueryResult
-	innerIdx       int
-	innerMatches   []int // hash-matched inner row indices for current outer
-	outerMatched   bool
-	outerExhausted bool
-	closed         bool
+	currentOuter          *QueryResult
+	innerIdx              int
+	innerCandidateIndices []int // nil means candidate position is the innerRows index
+	innerCandidateCount   int
+	outerMatched          bool
+	outerExhausted        bool
+	closed                bool
 	// chargedBytes: what this cursor holds against the statement budget
 	// (materialized inner rows + hash index), released once on Close —
 	// the inner side is rebuilt and re-charged each page (live-bytes model).
@@ -1222,16 +1222,14 @@ func (c *nljCursor) innerLegRow(i int) values.OrdinalRow {
 	return c.innerRows[i].Positional
 }
 
-// allInnerIndices is the degraded hash-probe candidate list: every inner row.
-// Built lazily, once.
-func (c *nljCursor) allInnerIndices() []int {
-	if c.allIdx == nil {
-		c.allIdx = make([]int, len(c.innerRows))
-		for i := range c.allIdx {
-			c.allIdx[i] = i
-		}
+// innerCandidateIndex maps the current candidate position to innerRows.
+// A nil index slice is an identity view used by ordinary linear scans and
+// degraded hash probes, avoiding an O(len(innerRows)) identity allocation.
+func (c *nljCursor) innerCandidateIndex(position int) int {
+	if c.innerCandidateIndices == nil {
+		return position
 	}
-	return c.allIdx
+	return c.innerCandidateIndices[position]
 }
 
 // oneLegBinder binds exactly one leg correlation to its leg-local row — the
@@ -1501,7 +1499,8 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			c.lastOuterCont = result.GetContinuation()
 			c.currentOuter = &outerRow
 			c.innerIdx = 0
-			c.innerMatches = nil
+			c.innerCandidateIndices = nil
+			c.innerCandidateCount = 0
 			c.outerMatched = false
 			// Adapt the new outer leg ONCE for all its candidate
 			// pairs (no-op for un-gated cursors).
@@ -1512,28 +1511,32 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			// Hash probe: resolve inner row candidates for this outer row by
 			// evaluating the OUTER operand against the outer leg row — the
 			// same resolution the predicate re-check performs per pair.
-			if c.hashIndex != nil && outerRow.Positional != nil {
+			if c.hashIndex == nil {
+				c.innerCandidateCount = len(c.innerRows)
+			} else if outerRow.Positional != nil {
 				outerLeg := c.outerAdapted
 				if outerLeg == nil {
 					outerLeg = outerRow.Positional
 				}
 				if key, ok := evalLegHashKey(c.hashOuterVal, c.outerCorr, outerLeg); ok {
-					c.innerMatches = c.hashIndex[key]
+					c.innerCandidateIndices = c.hashIndex[key]
+					c.innerCandidateCount = len(c.innerCandidateIndices)
 				} else {
 					// A probe that cannot resolve — or whose key has no
 					// hashable promotion-stable canonical form (time.Time,
 					// NaN, a cross-typed []byte) — degrades this outer row to
-					// the full candidate list: the per-pair predicate
-					// evaluation is the semantics of record and will surface
-					// any real failure (or match, e.g. string-typed inner
-					// keys against a time.Time probe via ParseTimestamp).
-					c.innerMatches = c.allInnerIndices()
+					// an identity view over every inner row: the per-pair
+					// predicate evaluation is the semantics of record and
+					// will surface any real failure (or match, e.g.
+					// string-typed inner keys against a time.Time probe via
+					// ParseTimestamp).
+					c.innerCandidateCount = len(c.innerRows)
 				}
 			}
 			// A decoded page continuation resumes THIS outer row mid-inner:
 			// verify the row is the one the continuation was taken over
 			// (Java's check value), then restore the inner position and the
-			// matched flag. innerMatches was recomputed above
+			// matched flag. The candidate view was recomputed above
 			// deterministically (same innerRows order, same probe), so the
 			// restored index addresses the same candidate list. The saved
 			// inner PK then verifies the ordinal or repositions it
@@ -1560,99 +1563,50 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			}
 		}
 
-		if c.hashIndex != nil {
-			// Hash join path: iterate only matching inner rows.
-			for c.innerIdx < len(c.innerMatches) {
-				if err := ctx.Err(); err != nil {
-					return recordlayer.RecordCursorResult[QueryResult]{}, err
-				}
-				idx := c.innerMatches[c.innerIdx]
-				innerRow := c.innerRows[idx]
-				c.innerIdx++
-				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				// For an ordinal-build cursor the predicate row
-				// context carries the per-leg bindings from the PRE-adapted
-				// legs (nil binder = today's path bit-identically); the same
-				// binder then builds the positional row on a pass.
-				var pair *twoLegBinder
-				if c.build.enabled() {
-					pair = c.pairBinder(c.outerAdapted, c.innerAdapted[idx])
-				}
-				passes, perr := passesJoinPredicatesLegs(combined, c.preds, c.evalCtx, pair)
-				if perr != nil {
-					return recordlayer.RecordCursorResult[QueryResult]{}, perr
-				}
-				if !passes {
-					continue
-				}
-				if c.matchedInner != nil {
-					c.matchedInner[idx] = true
-				}
-				c.outerMatched = true
-				switch c.joinType {
-				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
-					// A fused-top merge (a positional-merge RC) reshapes the merged legs into the
-					// RC's OUTPUT columns; the build RC produces that ordinal output
-					// directly (evaluateBound). A plain merge keeps mergeRows'
-					// leg-concat positional row.
-					if pair != nil {
-						pos, berr := c.build.evaluateBound(pair)
-						if berr != nil {
-							return recordlayer.RecordCursorResult[QueryResult]{}, berr
-						}
-						combined.Positional = pos
-					}
-					return recordlayer.NewResultWithValue(combined, c.midInnerContinuation()), nil
-				}
-				if c.currentOuter == nil {
-					break
-				}
+		for c.innerIdx < c.innerCandidateCount {
+			if err := ctx.Err(); err != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, err
 			}
-		} else {
-			// Linear scan path (fallback).
-			for c.innerIdx < len(c.innerRows) {
-				if err := ctx.Err(); err != nil {
-					return recordlayer.RecordCursorResult[QueryResult]{}, err
-				}
-				idx := c.innerIdx
-				innerRow := c.innerRows[idx]
-				c.innerIdx++
-
-				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				// Same ordinal-build dual emission as the hash
-				// path above (nil binder = today's path bit-identically).
-				var pair *twoLegBinder
-				if c.build.enabled() {
-					pair = c.pairBinder(c.outerAdapted, c.innerAdapted[idx])
-				}
-				passes, perr := passesJoinPredicatesLegs(combined, c.preds, c.evalCtx, pair)
-				if perr != nil {
-					return recordlayer.RecordCursorResult[QueryResult]{}, perr
-				}
-				if !passes {
-					continue
-				}
-				if c.matchedInner != nil {
-					c.matchedInner[idx] = true
-				}
-				c.outerMatched = true
-
-				switch c.joinType {
-				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
-					// See the hash path: a fused-top build reshapes to the RC's
-					// output; a plain merge keeps mergeRows' leg-concat row.
-					if pair != nil {
-						pos, berr := c.build.evaluateBound(pair)
-						if berr != nil {
-							return recordlayer.RecordCursorResult[QueryResult]{}, berr
-						}
-						combined.Positional = pos
+			idx := c.innerCandidateIndex(c.innerIdx)
+			innerRow := c.innerRows[idx]
+			c.innerIdx++
+			combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
+			// For an ordinal-build cursor the predicate row context carries
+			// the per-leg bindings from the PRE-adapted legs (nil binder =
+			// today's path bit-identically); the same binder builds the
+			// positional row on a pass.
+			var pair *twoLegBinder
+			if c.build.enabled() {
+				pair = c.pairBinder(c.outerAdapted, c.innerAdapted[idx])
+			}
+			passes, perr := passesJoinPredicatesLegs(combined, c.preds, c.evalCtx, pair)
+			if perr != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, perr
+			}
+			if !passes {
+				continue
+			}
+			if c.matchedInner != nil {
+				c.matchedInner[idx] = true
+			}
+			c.outerMatched = true
+			switch c.joinType {
+			case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
+				// A fused-top merge (a positional-merge RC) reshapes the
+				// merged legs into the RC's OUTPUT columns; the build RC
+				// produces that ordinal output directly (evaluateBound). A
+				// plain merge keeps mergeRows' leg-concat positional row.
+				if pair != nil {
+					pos, berr := c.build.evaluateBound(pair)
+					if berr != nil {
+						return recordlayer.RecordCursorResult[QueryResult]{}, berr
 					}
-					return recordlayer.NewResultWithValue(combined, c.midInnerContinuation()), nil
+					combined.Positional = pos
 				}
-				if c.currentOuter == nil {
-					break
-				}
+				return recordlayer.NewResultWithValue(combined, c.midInnerContinuation()), nil
+			}
+			if c.currentOuter == nil {
+				break
 			}
 		}
 
@@ -1793,48 +1747,33 @@ func (w *nljContinuation) ToBytes() ([]byte, error) {
 	return proto.Marshal(fmc)
 }
 
-// lastEmittedInnerIndex returns the innerRows index of the row the cursor
-// just emitted: hash path — innerMatches[innerIdx-1]; linear — innerIdx-1.
+// lastEmittedInnerIndex returns the innerRows index of the row the cursor just
+// emitted by mapping the already-advanced candidate position through the
+// current candidate view.
 func (c *nljCursor) lastEmittedInnerIndex() (int, bool) {
-	if c.innerIdx <= 0 {
+	position := c.innerIdx - 1
+	if position < 0 || position >= c.innerCandidateCount {
 		return 0, false
 	}
-	if c.hashIndex != nil {
-		if c.innerIdx-1 < len(c.innerMatches) {
-			return c.innerMatches[c.innerIdx-1], true
-		}
-		return 0, false
-	}
-	if c.innerIdx-1 < len(c.innerRows) {
-		return c.innerIdx - 1, true
-	}
-	return 0, false
+	return c.innerCandidateIndex(position), true
 }
 
 // repositionInner turns the saved inner position into an index over the
 // re-collected inner. Fast path: the ordinal still points just past the saved
 // PK — indices are stable. Otherwise the inner shifted between transactions;
-// search for the PK (over the recomputed match list on the hash path) and
-// resume AFTER it, exactly what Java's key-positional inner-cursor
-// continuation yields. A vanished PK (row deleted) keeps the ordinal — the
-// documented best-effort residue, no worse than the pure-ordinal model.
+// search for the PK over the recomputed candidate view and resume AFTER it,
+// exactly what Java's key-positional inner-cursor continuation yields. A
+// vanished PK (row deleted) keeps the ordinal — the documented best-effort
+// residue, no worse than the pure-ordinal model.
 func (c *nljCursor) repositionInner(savedIdx int, savedPK []byte) int {
 	if len(savedPK) == 0 || savedIdx <= 0 {
 		return savedIdx
 	}
 	rowPK := func(pos int) []byte {
-		var idx int
-		if c.hashIndex != nil {
-			if pos >= len(c.innerMatches) {
-				return nil
-			}
-			idx = c.innerMatches[pos]
-		} else {
-			if pos >= len(c.innerRows) {
-				return nil
-			}
-			idx = pos
+		if pos < 0 || pos >= c.innerCandidateCount {
+			return nil
 		}
+		idx := c.innerCandidateIndex(pos)
 		if c.innerRows[idx].PrimaryKey == nil {
 			return nil
 		}
@@ -1843,11 +1782,7 @@ func (c *nljCursor) repositionInner(savedIdx int, savedPK []byte) int {
 	if pk := rowPK(savedIdx - 1); pk != nil && bytes.Equal(pk, savedPK) {
 		return savedIdx
 	}
-	limit := len(c.innerRows)
-	if c.hashIndex != nil {
-		limit = len(c.innerMatches)
-	}
-	for pos := 0; pos < limit; pos++ {
+	for pos := 0; pos < c.innerCandidateCount; pos++ {
 		if pk := rowPK(pos); pk != nil && bytes.Equal(pk, savedPK) {
 			return pos + 1
 		}

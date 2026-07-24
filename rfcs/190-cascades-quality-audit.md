@@ -6,7 +6,8 @@ on `95598761f`** — codex + @claude at PR). Landed: 190.12 golden, 190.13 docs,
 closure, 190.4a (guarded dead candidate existentials), and 190.4b (matcher metadata/enumeration).
 190.4c (Select semantics plus production correlated-UNNEST fan-out reach) is complete, closing the
 Graefe-reruled 190.4 umbrella. 190.5 (intersection reach), 190.6 (NLJ ordering), 190.7 (EXISTS
-compensation de-duplication), and 190.8 (scalar catalog/type-carrier coherence) are also complete.
+compensation de-duplication), 190.8 (scalar catalog/type-carrier coherence), and 190.9 (NLJ
+candidate-loop de-duplication) are also complete.
 190.1 was **materially re-designed** after its original delete premise proved false (the arm's
 "never produced an executable plan" gravestone is a lie — deleting it regresses working FDB tests).
 The new 190.1 (converge on Java's two-rule architecture via a guarded `PartitionSelectRule`) carries
@@ -688,10 +689,34 @@ regression.
 
 ### 190.9 (LOW) — NLJ cursor twin inner-loops
 
-`executor/streaming_cursors.go:1561` (hash-probe) ≈ `:1609` (linear-scan) — near-identical 45-line
-bodies differing only in candidate source. A join-semantics fix in one misses the other, in the
-hot path. **Fix:** unify via a candidate-index slice (`allInnerIndices()` exists at `:1528`).
-Behavior-preserving; existing NLJ execution tests guard it.
+The hash-probe and linear-scan paths carried near-identical inner-loop bodies, so any future change
+to predicate evaluation, ordinal binding, match bookkeeping, positional output, or join-type
+handling could silently land in only one path.
+
+Both paths now feed one candidate-position loop through an explicit view:
+
+- ordinary linear scans and failed hash probes use `(nil, len(innerRows))`, where nil means identity
+  mapping from candidate position to physical inner index;
+- a successful hash probe uses `(bucket, len(bucket))`;
+- a hash miss and the pre-existing nil-outer-row decline remain `(nil, 0)`.
+
+This corrects the RFC's initial suggestion to reuse `allInnerIndices()`: materializing an identity
+slice would add unbudgeted O(inner rows) memory to every linear join. The nil-backed identity view
+adds no allocation and also deletes the old failed-probe-only identity allocation. The single loop
+retains the original operation order. `lastEmittedInnerIndex` and `repositionInner` now map through
+the same view, preserving bucket-relative hash continuations and row-relative linear/degraded
+continuations. FULL OUTER still marks the actual physical inner index before its unmatched-inner
+drain.
+
+New regressions pin sparse hash buckets and every continuation split, PK-based repositioning after a
+new earlier match shifts a bucket, a positive time.Time-to-string failed probe whose matches sit at
+dispersed physical indices, a hash miss with null padding, and FULL OUTER hash matches/drain
+ordering. The executor is race-clean and 20× repeat-green, the large-inner real-FDB FULL OUTER route
+passes, and the complete 2,600-entry plan golden is byte-identical.
+
+`just generate`, `just lint`, and full `just test` pass (56/56).
+
+**190.9 is complete. FINAL REVIEW: two independent Codex audits ACK.**
 
 ### 190.10 (MED) — behavioral tests for the 12 untested rules
 
@@ -765,8 +790,9 @@ name switches with constant-time catalog lookups and corrects numeric carrier se
 plan-shape change. Its bounded parser-state free lists retain at most eight warmed lexer/parser
 bundles; checkout/return alone takes the mutex, parsing remains parallel, retained heap under the
 48-worker probe fell from 67.5 MB to 18.9 MB, and the full corpus time stayed at the shared-global
-baseline. 190.12 adds a CI test, no runtime cost. 190.5 enlarges intersection enumeration under the
-existing candidate cap.
+baseline. 190.9 replaces two branches with one inlined nil-backed candidate view and removes the
+old degraded-probe identity-slice allocation. 190.12 adds a CI test, no runtime cost. 190.5 enlarges
+intersection enumeration under the existing candidate cap.
 190.6 retains one cheapest exact expression per Java-required source-order partition instead of
 forming the child cross-product; its final EXPLAIN census shows only the intended sort
 eliminations, and the 1M stress gate passes all 23 subtests with exact row counts.

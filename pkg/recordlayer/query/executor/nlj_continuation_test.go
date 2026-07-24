@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -153,6 +154,172 @@ func TestNLJContinuation_ResumeEverySplitPoint(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNLJContinuation_HashBucketUsesCandidatePositions(t *testing.T) {
+	t.Parallel()
+
+	const matchKey = int64(7)
+	matchPositions := []int{5, 41, 119}
+	inners := make([]QueryResult, 120)
+	for i := range inners {
+		key := int64(1_000 + i)
+		for _, matchPosition := range matchPositions {
+			if i == matchPosition {
+				key = matchKey
+			}
+		}
+		inners[i] = dmapPK(tuple.Tuple{"inner", int64(i)}, map[string]any{"J": key})
+	}
+	outers := []QueryResult{
+		dmapPK(tuple.Tuple{"outer", matchKey}, map[string]any{"K": matchKey}),
+	}
+
+	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nljEquiPreds())
+	defer full.Close()
+	if full.hashIndex == nil {
+		t.Fatal("fixture must build the hash index")
+	}
+	fullKeys, conts := drainNLJ(t, full)
+	if len(fullKeys) != len(matchPositions) {
+		t.Fatalf("hash bucket emitted %d rows, want %d", len(fullKeys), len(matchPositions))
+	}
+
+	for split := 1; split <= len(fullKeys); split++ {
+		outerCont, resumeState, err := decodeNLJContinuation(conts[split-1])
+		if err != nil {
+			t.Fatalf("split %d decode: %v", split, err)
+		}
+		if resumeState == nil || resumeState.innerIdx != split {
+			t.Fatalf("split %d saved inner position = %+v, want bucket-relative %d",
+				split, resumeState, split)
+		}
+		resumed := nljTestCursor(t,
+			recordlayer.FromListWithContinuation(outers, outerCont),
+			inners, plans.JoinInner, nljEquiPreds())
+		resumed.armResume(outerCont, resumeState)
+		got, _ := drainNLJ(t, resumed)
+		_ = resumed.Close()
+		requireStringSliceEqual(t, got, fullKeys[split:])
+	}
+}
+
+func TestNLJContinuation_HashBucketRepositionsByInnerPK(t *testing.T) {
+	t.Parallel()
+
+	const matchKey = int64(7)
+	inners := make([]QueryResult, 120)
+	for i := range inners {
+		key := int64(1_000 + i)
+		if i == 10 || i == 30 {
+			key = matchKey
+		}
+		inners[i] = dmapPK(
+			tuple.Tuple{"inner", int64(i)},
+			map[string]any{"J": key, "V": int64(i)},
+		)
+	}
+	outers := []QueryResult{
+		dmapPK(tuple.Tuple{"outer", matchKey}, map[string]any{"K": matchKey}),
+	}
+	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nljEquiPreds())
+	defer full.Close()
+	fullKeys, conts := drainNLJ(t, full)
+	if len(fullKeys) != 2 {
+		t.Fatalf("fixture emitted %d rows, want 2", len(fullKeys))
+	}
+
+	outerCont, resumeState, err := decodeNLJContinuation(conts[0])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resumeState == nil || resumeState.innerIdx != 1 || len(resumeState.innerPK) == 0 {
+		t.Fatalf("fixture must save bucket position 1 plus the emitted inner PK, got %+v", resumeState)
+	}
+
+	inserted := dmapPK(
+		tuple.Tuple{"inner", int64(-1)},
+		map[string]any{"J": matchKey, "V": int64(-1)},
+	)
+	mutated := make([]QueryResult, 0, len(inners)+1)
+	mutated = append(mutated, inners[:5]...)
+	mutated = append(mutated, inserted)
+	mutated = append(mutated, inners[5:]...)
+	resumed := nljTestCursor(t,
+		recordlayer.FromListWithContinuation(outers, outerCont),
+		mutated, plans.JoinInner, nljEquiPreds())
+	defer resumed.Close()
+	if resumed.hashIndex == nil {
+		t.Fatal("mutated fixture must rebuild the hash index and mapped candidate bucket")
+	}
+	resumed.armResume(outerCont, resumeState)
+	got, _ := drainNLJ(t, resumed)
+
+	// The inserted match sorts before the last-emitted inner row in the
+	// recomputed bucket. Resume searches for the saved PK and continues after
+	// it, skipping both the new earlier row and the already-emitted row.
+	requireStringSliceEqual(t, got, fullKeys[1:])
+}
+
+func TestNLJContinuation_DegradedHashProbeUsesIdentityView(t *testing.T) {
+	t.Parallel()
+
+	target := time.Date(2026, time.July, 23, 12, 30, 0, 0, time.UTC)
+	matchPositions := []int{4, 73, 118}
+	inners := make([]QueryResult, 120)
+	for i := range inners {
+		key := target.Add(time.Duration(i+1) * time.Hour).Format(time.RFC3339)
+		for _, matchPosition := range matchPositions {
+			if i == matchPosition {
+				key = target.Format(time.RFC3339)
+			}
+		}
+		inners[i] = dmapPK(tuple.Tuple{"inner", int64(i)}, map[string]any{"J": key})
+	}
+	outers := []QueryResult{
+		dmapPK(tuple.Tuple{"outer", int64(1)}, map[string]any{"K": target}),
+	}
+
+	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nljEquiPreds())
+	defer full.Close()
+	if full.hashIndex == nil {
+		t.Fatal("string inner keys must build the hash index")
+	}
+	fullKeys, conts := drainNLJ(t, full)
+	if len(fullKeys) != len(matchPositions) {
+		t.Fatalf("degraded probe emitted %d rows, want %d", len(fullKeys), len(matchPositions))
+	}
+
+	for split := 1; split <= len(fullKeys); split++ {
+		outerCont, resumeState, err := decodeNLJContinuation(conts[split-1])
+		if err != nil {
+			t.Fatalf("split %d decode: %v", split, err)
+		}
+		wantPosition := matchPositions[split-1] + 1
+		if resumeState == nil || resumeState.innerIdx != wantPosition {
+			t.Fatalf("split %d saved inner position = %+v, want identity-view %d",
+				split, resumeState, wantPosition)
+		}
+		resumed := nljTestCursor(t,
+			recordlayer.FromListWithContinuation(outers, outerCont),
+			inners, plans.JoinInner, nljEquiPreds())
+		resumed.armResume(outerCont, resumeState)
+		got, _ := drainNLJ(t, resumed)
+		_ = resumed.Close()
+		requireStringSliceEqual(t, got, fullKeys[split:])
+	}
+}
+
+func requireStringSliceEqual(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d rows, want %d\ngot: %v\nwant: %v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("row %d = %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 
