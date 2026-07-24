@@ -112,6 +112,20 @@ var _ = Describe("KeyExpression unit tests", func() {
 		})
 
 		Describe("Evaluate repeated fields", func() {
+			It("skips the scalar int64 fast path for repeated integer fields", func() {
+				expr := FanOut("ordinal_path")
+				msg := &gen.PIndexEntryObjectValue{OrdinalPath: []int32{9, 9, 8}}
+
+				value, ok, err := expr.(Int64Evaluator).EvaluateInt64(asStored(msg), msg)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeFalse())
+				Expect(value).To(BeZero())
+
+				result, err := expr.Evaluate(asStored(msg), msg)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal([][]any{{int64(9)}, {int64(9)}, {int64(8)}}))
+			})
+
 			It("FanOut returns one tuple per tag", func() {
 				expr := FanOut("tags")
 				order := newOrder(1, 10, "rose", "lily", "tulip")
