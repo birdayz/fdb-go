@@ -170,7 +170,8 @@ func TestEdge_PlanPartition_EmptyPartition(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // 5. ImplementUniqueRule with Unique(Unique(Scan)).
-//    Both Unique layers should be absorbed since the inner scan is distinct.
+//    Both Unique layers should be absorbed since the exact inner scan is
+//    distinct and carries a structural PK proof.
 // ---------------------------------------------------------------------------
 
 func TestEdge_ImplementUniqueRule_ChainedUnique(t *testing.T) {
@@ -189,11 +190,16 @@ func TestEdge_ImplementUniqueRule_ChainedUnique(t *testing.T) {
 	)
 	rootRef := expressions.InitialOf(outerUnique)
 
-	planWithImplRules(t, rootRef, DefaultImplementationRules())
+	planWithImplRulesAndContext(
+		t,
+		rootRef,
+		DefaultImplementationRules(),
+		uniqueAbsorptionPlanContext{recordType: "T"},
+	)
 
 	// After planning, the root should have the bare scan plan in its members
-	// — both Unique layers absorbed because scan is distinct (RFC-184 W2: a
-	// bare primary scan is its own physical expression).
+	// — both Unique layers absorbed because the exact scan is distinct and
+	// PK-proven (RFC-184 W2: a bare primary scan is its own physical expression).
 	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
 		t.Fatal("root Reference has no members — chained Unique not processed")

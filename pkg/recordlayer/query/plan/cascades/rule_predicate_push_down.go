@@ -351,7 +351,7 @@ func pushThroughUnique(
 		return nil
 	}
 	newChild := pushOverChild(call, originalPredicates, pushQuantifier, inner)
-	return expressions.NewLogicalUniqueExpression(newChild)
+	return unique.WithQuantifiers([]expressions.Quantifier{newChild})
 }
 
 var _ ExpressionRule = (*PredicatePushDownRule)(nil)

@@ -41,8 +41,14 @@ func TestImplementUniqueRule_SkipsNonMatching(t *testing.T) {
 func TestImplementUniqueRule_AbsorbsWhenInnerIsDistinct(t *testing.T) {
 	t.Parallel()
 	// Build: Unique(innerRef) where innerRef holds a bare scan plan
-	// with distinct=true (scan is always distinct).
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	// with distinct=true and a proven primary key.
+	scan := plans.NewRecordQueryScanPlan(
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithPrimaryKey([]values.Value{
+		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+	})
 	scanWrapper := scan
 
 	// Create inner reference with physical wrapper as final member.
@@ -74,6 +80,134 @@ func TestImplementUniqueRule_AbsorbsWhenInnerIsDistinct(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("yielded expressions should include the inner scan wrapper (Unique absorbed)")
+	}
+}
+
+func TestImplementUniqueRule_OrdinaryRequiresDistinctAndPrimaryKeyOnSameMember(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	pk := []values.Value{
+		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+	}
+	distinctWithPK := plans.NewRecordQueryScanPlan(
+		[]string{"DISTINCT_WITH_PK"},
+		values.UnknownType,
+		false,
+	).WithPrimaryKey(pk)
+	distinctWithoutPK := plans.NewRecordQueryScanPlan(
+		[]string{"DISTINCT_WITHOUT_PK"},
+		values.UnknownType,
+		false,
+	)
+	notDistinctWithPK := plans.NewRecordQueryProjectionPlan(
+		[]values.Value{&values.ConstantValue{Value: int64(1)}},
+		distinctWithPK,
+	)
+
+	innerRef := expressions.InitialOf(distinctWithPK)
+	innerRef.Insert(distinctWithoutPK)
+	innerRef.Insert(notDistinctWithPK)
+	pm := NewPlanPropertiesMap()
+	pm.Add(distinctWithPK)
+	pm.Add(distinctWithoutPK)
+	pm.Add(notDistinctWithPK)
+	innerRef.SetPlanProperties(pm)
+
+	unique := expressions.NewLogicalUniqueExpression(
+		expressions.ForEachQuantifier(innerRef),
+	)
+	results := FireImplementationRule(
+		NewImplementUniqueRule(),
+		expressions.InitialOf(unique),
+	)
+	if len(results) != 1 || results[0] != distinctWithPK {
+		t.Fatalf(
+			"ordinary Unique yielded %v, want only exact distinct+PK member",
+			results,
+		)
+	}
+}
+
+func TestImplementUniqueRule_RequiredWrapsEveryPKMemberAndFreezesExactInput(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	pk := []values.Value{
+		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+	}
+	distinctWithPK := plans.NewRecordQueryScanPlan(
+		[]string{"DISTINCT_WITH_PK"},
+		values.UnknownType,
+		false,
+	).WithPrimaryKey(pk)
+	distinctWithoutPK := plans.NewRecordQueryScanPlan(
+		[]string{"DISTINCT_WITHOUT_PK"},
+		values.UnknownType,
+		false,
+	)
+	notDistinctWithPK := plans.NewRecordQueryProjectionPlan(
+		[]values.Value{&values.ConstantValue{Value: int64(1)}},
+		distinctWithPK,
+	)
+
+	innerRef := expressions.InitialOf(distinctWithPK)
+	innerRef.Insert(distinctWithoutPK)
+	innerRef.Insert(notDistinctWithPK)
+	pm := NewPlanPropertiesMap()
+	pm.Add(distinctWithPK)
+	pm.Add(distinctWithoutPK)
+	pm.Add(notDistinctWithPK)
+	innerRef.SetPlanProperties(pm)
+
+	unique := expressions.NewRequiredLogicalUniqueExpression(
+		expressions.ForEachQuantifier(innerRef),
+	)
+	results := FireImplementationRule(
+		NewImplementUniqueRule(),
+		expressions.InitialOf(unique),
+	)
+	if len(results) != 2 {
+		t.Fatalf("required Unique yielded %d plans, want 2", len(results))
+	}
+
+	seen := map[plans.RecordQueryPlan]bool{}
+	for _, result := range results {
+		distinct, ok := result.(*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan)
+		if !ok {
+			t.Fatalf(
+				"required Unique yielded absorbed/raw %T, want PK-distinct wrapper",
+				result,
+			)
+		}
+		innerQ := distinct.GetInnerQuantifier()
+		pinnedRef := innerQ.GetRangesOver()
+		if pinnedRef == nil || pinnedRef == innerRef {
+			t.Fatal("required PK-distinct did not detach and freeze its exact input")
+		}
+		pinnedMembers := pinnedRef.FinalMembers()
+		if len(pinnedMembers) != 1 {
+			t.Fatalf(
+				"frozen input has %d final members, want exactly 1",
+				len(pinnedMembers),
+			)
+		}
+		if pinnedMembers[0] != distinct.GetInner() {
+			t.Fatal("PK-distinct resolves a different plan than its frozen member")
+		}
+		seen[distinct.GetInner()] = true
+	}
+
+	if !seen[distinctWithPK] || !seen[notDistinctWithPK] {
+		t.Fatalf(
+			"required Unique wrapped inputs %v, want exact two PK-proven members",
+			seen,
+		)
+	}
+	if seen[distinctWithoutPK] {
+		t.Fatal("required Unique wrapped a member without a primary-key proof")
 	}
 }
 

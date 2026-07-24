@@ -16,7 +16,17 @@ import (
 // Returns the planner for further inspection (Members, properties).
 func planWithImplRules(t *testing.T, rootRef *expressions.Reference, implRules []ImplementationRule) *Planner {
 	t.Helper()
-	p := NewPlanner(allRules(), nil).
+	return planWithImplRulesAndContext(t, rootRef, implRules, nil)
+}
+
+func planWithImplRulesAndContext(
+	t *testing.T,
+	rootRef *expressions.Reference,
+	implRules []ImplementationRule,
+	ctx PlanContext,
+) *Planner {
+	t.Helper()
+	p := NewPlanner(allRules(), ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(implRules)
 	_, _, err := p.Plan(rootRef)
@@ -26,8 +36,28 @@ func planWithImplRules(t *testing.T, rootRef *expressions.Reference, implRules [
 	return p
 }
 
+type uniqueAbsorptionPlanContext struct {
+	recordType string
+}
+
+func (c uniqueAbsorptionPlanContext) GetPlannerConfiguration() PlannerConfiguration {
+	return DefaultPlannerConfiguration()
+}
+
+func (uniqueAbsorptionPlanContext) GetMatchCandidates() []MatchCandidate {
+	return nil
+}
+
+func (c uniqueAbsorptionPlanContext) GetPrimaryKeyColumns(recordType string) []string {
+	if recordType != c.recordType {
+		return nil
+	}
+	return []string{"ID"}
+}
+
 // ---------------------------------------------------------------------------
-// 1. UniqueOverScan: Unique is absorbed because scans are always distinct.
+// 1. UniqueOverScan: Unique is absorbed because the exact scan is distinct
+// and the fixture supplies its structural primary key.
 // ---------------------------------------------------------------------------
 
 func TestPlanner_PlanningPhase_UniqueOverScan(t *testing.T) {
@@ -40,10 +70,15 @@ func TestPlanner_PlanningPhase_UniqueOverScan(t *testing.T) {
 	)
 	rootRef := expressions.InitialOf(unique)
 
-	planWithImplRules(t, rootRef, DefaultImplementationRules())
+	planWithImplRulesAndContext(
+		t,
+		rootRef,
+		DefaultImplementationRules(),
+		uniqueAbsorptionPlanContext{recordType: "T"},
+	)
 
-	// ImplementUniqueRule fires during the PLANNING phase. Because the
-	// inner scan is always distinct, the Unique operator is absorbed:
+	// ImplementUniqueRule fires during the PLANNING phase. Because the exact
+	// inner scan is distinct and has a PK proof, the Unique is absorbed:
 	// the root Reference's members should contain the inner scan
 	// wrapper directly (promoted from the inner ref), NOT a Unique
 	// wrapper around it.
@@ -357,7 +392,12 @@ func TestPlanner_PlanningPhase_MembersPopulated(t *testing.T) {
 	)
 	rootRef := expressions.InitialOf(unique)
 
-	planWithImplRules(t, rootRef, DefaultImplementationRules())
+	planWithImplRulesAndContext(
+		t,
+		rootRef,
+		DefaultImplementationRules(),
+		uniqueAbsorptionPlanContext{recordType: "T"},
+	)
 
 	// After PLANNING, the root Reference should have members inserted by
 	// implementation rules (physical wrappers go into Members).

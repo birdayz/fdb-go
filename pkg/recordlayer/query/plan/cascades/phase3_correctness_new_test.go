@@ -33,11 +33,16 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 	)
 	rootRef := expressions.InitialOf(unique)
 
-	planWithImplRules(t, rootRef, DefaultImplementationRules())
+	planWithImplRulesAndContext(
+		t,
+		rootRef,
+		DefaultImplementationRules(),
+		uniqueAbsorptionPlanContext{recordType: "T"},
+	)
 
-	// ImplementUniqueRule absorbs the Unique operator when its input
-	// is distinct. The scan is always distinct, and Distinct over a
-	// distinct source should also be treated as distinct. The net
+	// ImplementUniqueRule absorbs the Unique operator when the exact input is
+	// distinct and carries a PK proof. This fixture supplies the scan's PK,
+	// and Distinct over that source preserves both facts. The net
 	// effect: the root's final members should contain a bare
 	// *plans.RecordQueryScanPlan — the Unique and Distinct wrappers are both
 	// absorbed because the inner chain is inherently distinct.

@@ -3,12 +3,15 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// ImplementUniqueRule implements LogicalUniqueExpression by absorbing
-// it when the inner Reference's plans are already distinct (with a
-// primary key). If the inner plans produce distinct records, the
-// Unique operator is a no-op and we yield the inner plans directly.
+// ImplementUniqueRule implements LogicalUniqueExpression one exact physical
+// member at a time. Ordinary Unique is absorbed only when that same member is
+// proven both record-distinct and to carry a primary key. Required Unique is
+// never absorbed: every exact member with a primary key is frozen under a
+// physical PK-distinct plan.
 //
 // Ports Java's ImplementUniqueRule.
 type ImplementUniqueRule struct {
@@ -31,21 +34,40 @@ func (r *ImplementUniqueRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	partitions := ToPlanPartitions(innerRef)
-
-	var filtered []*PlanPartition
-	for _, p := range partitions {
-		if p.IsDistinct() {
-			filtered = append(filtered, p)
-		}
+	planProperties := GetRefPlanPropertiesMap(innerRef)
+	if planProperties == nil {
+		return
 	}
 
-	rolled := RollUpPlanPartitions(filtered)
-
-	for _, partition := range rolled {
-		for _, wrapperExpr := range partition.GetExpressions() {
-			call.YieldFinalExpression(wrapperExpr)
+	for _, member := range planProperties.Expressions() {
+		if _, ok := member.(physicalPlanExpression); !ok {
+			continue
 		}
+		memberProperties := planProperties.GetProperties(member)
+		if memberProperties[properties.PropPrimaryKey] == nil {
+			continue
+		}
+
+		if !expr.IsRequired() {
+			if memberProperties.GetBool(properties.PropDistinctRecords) {
+				call.YieldFinalExpression(member)
+			}
+			continue
+		}
+
+		// Required mode is an enforcer, even for an already-distinct member.
+		// Freeze the exact member whose PK property was inspected in a detached
+		// single-member final reference. A live edge could later float to a
+		// sibling without that proof and make the wrapper deduplicate against a
+		// different plan than the one verified above.
+		innerQ := expressions.ForEachQuantifier(
+			call.MemoizeFinalExpression(member),
+		)
+		call.YieldFinalExpression(
+			plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
+				innerQ,
+			),
+		)
 	}
 }
 
