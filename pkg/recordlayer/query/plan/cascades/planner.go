@@ -825,6 +825,37 @@ func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.Rela
 // TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual (must stay
 // unplannable, via the inner-scan guard).
 func compensationSafeForYield(expr expressions.RelationalExpression) bool {
+	if unique, ok := expr.(*expressions.LogicalUniqueExpression); ok {
+		// Required Unique is an enforcer emitted by cardinality compensation,
+		// not an optional query rewrite. Routing it to the logical-final
+		// fail-to-plan sentinel strands it forever: ImplementUniqueRule never
+		// gets to freeze the exact PK-carrying physical child. It is safe to
+		// explore when every current child alternative is either already
+		// physical or itself a compensation shape this guard authorizes.
+		// Ordinary query Unique does not enter through data-access
+		// compensation and remains outside this exception.
+		if !unique.IsRequired() {
+			return false
+		}
+		innerRef := unique.GetInner().GetRangesOver()
+		if innerRef == nil {
+			return false
+		}
+		innerMembers := innerRef.AllMembers()
+		if len(innerMembers) == 0 {
+			return false
+		}
+		for _, member := range innerMembers {
+			if isPhysical(member) {
+				continue
+			}
+			if !compensationSafeForYield(member) {
+				return false
+			}
+		}
+		return true
+	}
+
 	// Only a plain residual FILTER is a yield candidate. A non-filter compensation
 	// (a SelectExpression with result compensation / pulled-up quantifiers from
 	// ForMatchCompensation.ApplyAllNeeded, a projection over a vector scan, …)

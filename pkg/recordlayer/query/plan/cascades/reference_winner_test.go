@@ -57,7 +57,7 @@ func TestSortElimination_ViaChildOrderedMember(t *testing.T) {
 	// elide the sort by scanning the child's members' derived rich
 	// orderings (Planner.OrderedChildWinner).
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status",
 		[]string{"Order"},
 		[]string{"STATUS"},
@@ -118,7 +118,7 @@ func TestSortElimination_CounterflowNullsNotElidedAtExtraction(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status",
 		[]string{"Order"},
 		[]string{"STATUS"},
@@ -175,7 +175,7 @@ func TestSortElimination_PinsOrderedSpineThroughWrapper(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status",
 		[]string{"Order"},
 		[]string{"STATUS"},
@@ -305,7 +305,7 @@ func TestSortElimination_ViaDataAccessOrderingWinner(t *testing.T) {
 	// produces an ordered index scan, and ImplementSortRule eliminates
 	// the sort when it finds the ordered scan in the filter Reference.
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status",
 		[]string{"Order"},
 		[]string{"STATUS"},
@@ -361,7 +361,7 @@ func TestPlan_OrderedMemberSelectable(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status",
 		[]string{"Order"},
 		[]string{"STATUS"},

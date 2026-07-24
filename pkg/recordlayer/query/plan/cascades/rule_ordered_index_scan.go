@@ -61,6 +61,14 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 	scanTypes := scan.GetRecordTypes()
 
 	for _, cand := range candidates {
+		// This shortcut replaces the base-record scan with a raw full-range
+		// index scan and has no data-access compensation above it. A fan-out
+		// candidate can emit a base record multiple times (and omit records
+		// whose repeated field is empty), so it cannot preserve the Sort's
+		// input cardinality.
+		if !candidatePreservesBaseRecordCardinality(cand) {
+			continue
+		}
 		if !recordTypesOverlap(scanTypes, cand.GetRecordTypes()) {
 			continue
 		}
@@ -113,10 +121,7 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 
 		// The index scan is its own cascades expression now (RFC-184 W2) — a bare
 		// leaf carrying its index metadata (columns/pk/unique/fan-out) on the plan.
-		stamped := idxPlan.WithIndexMetadata(colNames, candidatePKColumns(cand), cand.IsUnique())
-		if sig := candidateDistinctSignal(cand); sig != nil {
-			stamped = stamped.WithDistinctRecordsSignal(*sig)
-		}
+		stamped := stampIndexMetadata(cand, idxPlan)
 		call.Yield(stamped)
 	}
 }

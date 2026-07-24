@@ -97,3 +97,4 @@ func (d *stubIndexDef) IndexColumnNames() []string       { return d.columns }
 func (d *stubIndexDef) IndexRecordTypes() []string       { return d.recordTypes }
 func (d *stubIndexDef) IndexIsUnique() bool              { return d.unique }
 func (d *stubIndexDef) IndexPrimaryKeyColumns() []string { return nil }
+func (d *stubIndexDef) IndexCreatesDuplicates() bool     { return false }

@@ -2,6 +2,9 @@ package cascades
 
 import (
 	"testing"
+
+	"fdb.dev/gen"
+	"google.golang.org/protobuf/proto"
 )
 
 type testIndexDef struct {
@@ -16,6 +19,7 @@ func (d testIndexDef) IndexColumnNames() []string       { return d.columns }
 func (d testIndexDef) IndexRecordTypes() []string       { return d.recordTypes }
 func (d testIndexDef) IndexIsUnique() bool              { return d.unique }
 func (d testIndexDef) IndexPrimaryKeyColumns() []string { return nil }
+func (d testIndexDef) IndexCreatesDuplicates() bool     { return false }
 
 func TestNewPlanContextFromIndexDefs_Basic(t *testing.T) {
 	t.Parallel()
@@ -93,5 +97,95 @@ func TestNewPlanContextFromIndexDefs_UpperCasesSargable(t *testing.T) {
 	cols := ctx.GetMatchCandidates()[0].GetColumnNames()
 	if cols[0] != "MYCOL" || cols[1] != "ANOTHER_COL" {
 		t.Fatalf("columns not uppercased: %v", cols)
+	}
+}
+
+type rootTestIndexDef struct {
+	testIndexDef
+	root *gen.KeyExpression
+}
+
+func (d rootTestIndexDef) IndexRootKeyExpression() *gen.KeyExpression {
+	return d.root
+}
+
+func TestNewPlanContextFromIndexDefs_ScalarNestingFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	scalar := gen.Field_SCALAR
+	fanOut := gen.Field_FAN_OUT
+	nested := func(parentFanType gen.Field_FanType) *gen.KeyExpression {
+		return &gen.KeyExpression{Nesting: &gen.Nesting{
+			Parent: &gen.Field{
+				FieldName: proto.String("ADDR"),
+				FanType:   &parentFanType,
+			},
+			Child: &gen.KeyExpression{Field: &gen.Field{
+				FieldName: proto.String("CITY"),
+				FanType:   &scalar,
+			}},
+		}}
+	}
+	nestedChildFanOut := &gen.KeyExpression{Nesting: &gen.Nesting{
+		Parent: &gen.Field{
+			FieldName: proto.String("ADDR"),
+			FanType:   &scalar,
+		},
+		Child: &gen.KeyExpression{Field: &gen.Field{
+			FieldName: proto.String("CITY"),
+			FanType:   &fanOut,
+		}},
+	}}
+	mixedScalarNestingAndFanOut := &gen.KeyExpression{
+		Then: &gen.Then{Child: []*gen.KeyExpression{
+			nested(scalar),
+			{Field: &gen.Field{
+				FieldName: proto.String("TAGS"),
+				FanType:   &fanOut,
+			}},
+		}},
+	}
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{
+		rootTestIndexDef{
+			testIndexDef: testIndexDef{
+				name:        "nested_scalar_city",
+				columns:     []string{"CITY"},
+				recordTypes: []string{"T"},
+			},
+			root: nested(scalar),
+		},
+		rootTestIndexDef{
+			testIndexDef: testIndexDef{
+				name:        "nested_fanout_city",
+				columns:     []string{"CITY"},
+				recordTypes: []string{"T"},
+			},
+			root: nested(fanOut),
+		},
+		rootTestIndexDef{
+			testIndexDef: testIndexDef{
+				name:        "nested_child_fanout_city",
+				columns:     []string{"CITY"},
+				recordTypes: []string{"T"},
+			},
+			root: nestedChildFanOut,
+		},
+		rootTestIndexDef{
+			testIndexDef: testIndexDef{
+				name:        "mixed_scalar_nesting_and_fanout",
+				columns:     []string{"CITY", "TAGS"},
+				recordTypes: []string{"T"},
+			},
+			root: mixedScalarNestingAndFanOut,
+		},
+	})
+	candidates := ctx.GetMatchCandidates()
+	if len(candidates) != 2 ||
+		candidates[0].CandidateName() != "nested_fanout_city" ||
+		candidates[1].CandidateName() != "nested_child_fanout_city" {
+		t.Fatalf(
+			"nested candidates = %#v, want only structurally expanded fanout; scalar ADDR.CITY must never bind top-level CITY, even beside fanout TAGS",
+			candidates,
+		)
 	}
 }

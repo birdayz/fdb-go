@@ -119,34 +119,28 @@ func (e *ExplodeExpression) GetCorrelatedToWithoutChildren() map[values.Correlat
 	return values.GetCorrelatedToOfValue(e.collectionValue)
 }
 
-// EqualsWithoutChildren is true iff `other` is an ExplodeExpression
-// AND its CollectionValue is pointer-equal to ours.
-//
-// Pointer equality on the CollectionValue is deliberately
-// conservative: Java's `collectionValue.semanticEquals(...)`
-// dispatches through a structural walker
-// (values.SemanticEqualsUnderAliasMap is the Go equivalent), but
-// loosening memo dedup to it changes which members merge and needs
-// its own review cycle.
-//
-// A previous version used a `Name()`-fallback which produced false
-// positives — `*FieldValue` (and several other concrete Values)
-// returns a constant `Name()` for all instances, so two
-// `Explode(FieldValue{"tags"})` and `Explode(FieldValue{"categories"})`
-// would compare equal and `Reference.Insert` would silently drop
-// one. Reverted to pointer equality only — strictly conservative,
-// produces no false positives.
+// EqualsWithoutChildren is true iff `other` is an ExplodeExpression,
+// its CollectionValue is semantically equal under the supplied correlation
+// mapping, and its ordinality mode is the same. This is Java's
+// collectionValue.semanticEquals(other.collectionValue, aliasMap) contract.
+// Structural Value equality keeps different fields distinct; alias-aware
+// recursion is required for a query Explode correlated to query alias q to
+// match a candidate Explode correlated to candidate alias c under q→c.
 //
 // withOrdinality is folded into the comparison: an ordinal and a
 // non-ordinal Explode over the SAME array are distinct expressions
 // (different result shape), so the memo must not conflate them. Java
 // hashes/equals `(collectionValue, withOrdinality)` for the same reason.
-func (e *ExplodeExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
+func (e *ExplodeExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
 	o, ok := other.(*ExplodeExpression)
 	if !ok {
 		return false
 	}
-	return e.collectionValue == o.collectionValue && e.withOrdinality == o.withOrdinality
+	return values.SemanticEqualsUnderAliasMap(
+		e.collectionValue,
+		o.collectionValue,
+		aliases.ToValuesAliasMap(),
+	) && e.withOrdinality == o.withOrdinality
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + the collection
@@ -155,9 +149,8 @@ func (e *ExplodeExpression) EqualsWithoutChildren(other RelationalExpression, _ 
 // collectionValue (its content), so a Name()-only mix was both
 // less faithful and too coarse: two explodes over DIFFERENT array
 // fields hashed identically ("field"), which left the extraction
-// tie-break blind and degraded memo bucketing. Equality here is
-// pointer-identity on collectionValue, so equal expressions trivially
-// keep equal hashes.
+// tie-break blind and degraded memo bucketing. SemanticHashCode excludes
+// correlation names, preserving equal-under-alias-map ⇒ equal hash.
 func (e *ExplodeExpression) HashCodeWithoutChildren() uint64 {
 	const classDisc uint64 = 0xE1730DE
 	var h uint64 = classDisc

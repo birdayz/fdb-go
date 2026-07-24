@@ -95,6 +95,77 @@ func TestMatchLeafRule_MatchingScan(t *testing.T) {
 	}
 }
 
+func TestMatchLeafRule_MatchingCorrelatedExplodeEnumeratesOuterAlias(t *testing.T) {
+	t.Parallel()
+
+	queryAlias := values.UniqueCorrelationIdentifier()
+	candidateAlias := values.UniqueCorrelationIdentifier()
+	queryExplode := expressions.NewExplodeExpression(values.NewFieldValue(
+		values.NewQuantifiedObjectValue(queryAlias),
+		"TAGS",
+		values.NewArrayType(true, values.NotNullString),
+	))
+	candidateExplode := expressions.NewExplodeExpression(values.NewFieldValue(
+		values.NewQuantifiedObjectValue(candidateAlias),
+		"TAGS",
+		values.NewArrayType(true, values.NotNullString),
+	))
+	queryRef := expressions.InitialOf(queryExplode)
+	candidateRef := expressions.InitialOf(candidateExplode)
+	matchCandidate := &testMatchCandidate{
+		name:      "tags",
+		traversal: NewTraversal(candidateRef),
+	}
+	context := testPlanContextForMatching{
+		candidates: []MatchCandidate{matchCandidate},
+	}
+
+	FireExpressionRuleWithMemo(NewMatchLeafRule(), queryRef, context, nil)
+
+	partialMatches := GetPartialMatchesForCandidate(queryRef, matchCandidate)
+	if len(partialMatches) != 1 {
+		t.Fatalf("correlated Explode partial matches = %d, want 1", len(partialMatches))
+	}
+	aliasMap := partialMatches[0].GetBoundAliasMap()
+	if !aliasMap.ContainsMapping(queryAlias, candidateAlias) {
+		t.Fatalf("bound alias map = %#v, want %s -> %s", aliasMap, queryAlias, candidateAlias)
+	}
+}
+
+func TestMatchLeafRule_CorrelatedExplodeDifferentFieldDoesNotMatch(t *testing.T) {
+	t.Parallel()
+
+	queryAlias := values.UniqueCorrelationIdentifier()
+	candidateAlias := values.UniqueCorrelationIdentifier()
+	queryRef := expressions.InitialOf(expressions.NewExplodeExpression(
+		values.NewFieldValue(
+			values.NewQuantifiedObjectValue(queryAlias),
+			"TAGS",
+			values.NewArrayType(true, values.NotNullString),
+		),
+	))
+	candidateRef := expressions.InitialOf(expressions.NewExplodeExpression(
+		values.NewFieldValue(
+			values.NewQuantifiedObjectValue(candidateAlias),
+			"CATEGORIES",
+			values.NewArrayType(true, values.NotNullString),
+		),
+	))
+	matchCandidate := &testMatchCandidate{
+		name:      "categories",
+		traversal: NewTraversal(candidateRef),
+	}
+	context := testPlanContextForMatching{
+		candidates: []MatchCandidate{matchCandidate},
+	}
+
+	FireExpressionRuleWithMemo(NewMatchLeafRule(), queryRef, context, nil)
+
+	if got := len(GetPartialMatchesForCandidate(queryRef, matchCandidate)); got != 0 {
+		t.Fatalf("different-field correlated Explode partial matches = %d, want 0", got)
+	}
+}
+
 func TestMatchLeafRule_DifferentRecordType_NoMatch(t *testing.T) {
 	t.Parallel()
 

@@ -17,7 +17,7 @@ import (
 func TestFetchTranslate_PreservesSingleAccessorOrdinal_DeclinesFused(t *testing.T) {
 	t.Parallel()
 
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"IDX_CITY",
 		[]string{"T"},
 		[]string{"CITY"}, // covered column

@@ -54,6 +54,10 @@ type indexSpec struct {
 	// root is a CardinalityFunctionKeyExpression.
 	cardinalityColumn string
 
+	// fanOutColumn, when non-empty, makes this a VALUE index with a direct
+	// FieldKeyExpression in FAN_OUT mode: one index entry per array element.
+	fanOutColumn string
+
 	// VECTOR (HNSW) index fields — set only when vector is true.
 	vector           bool
 	vectorMethod     string
@@ -234,6 +238,47 @@ func (b *Builder) AddCardinalityIndex(tableName, indexName, cardColumn string) *
 	return b
 }
 
+// AddFanOutIndex registers a VALUE index that emits one key per element of the
+// named direct array column. It is the programmatic metadata counterpart of
+// Java's `field(column, FAN_OUT)` index root. Nested and composite fanout
+// expressions continue to use the lower-level RecordMetaData API.
+func (b *Builder) AddFanOutIndex(tableName, indexName, column string) *Builder {
+	for i := range b.tables {
+		if b.tables[i].name != tableName {
+			continue
+		}
+		found := false
+		isArray := false
+		for _, c := range b.tables[i].columns {
+			if c.name == column {
+				found = true
+				isArray = c.dt != nil && c.dt.Code() == api.CodeArray
+				break
+			}
+		}
+		if !found {
+			b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"fanout index %q on table %q: column %q not defined",
+				indexName, tableName, column))
+			return b
+		}
+		if !isArray {
+			b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"fanout index %q on table %q: column %q is not an array",
+				indexName, tableName, column))
+			return b
+		}
+		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
+			name:         indexName,
+			fanOutColumn: column,
+		})
+		return b
+	}
+	b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+		"fanout index %q references unknown table %q", indexName, tableName))
+	return b
+}
+
 // AddVectorIndex registers a VECTOR (HNSW) index on the named table.
 // vectorColumn is the single indexed vector field; partitionColumns form
 // the HNSW partition prefix (each distinct partition value gets its own
@@ -391,6 +436,11 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 					rl.SetUnique()
 				}
 				mdBuilder.AddIndex(tbl.name, rl)
+				continue
+			}
+			if idx.fanOutColumn != "" {
+				mdBuilder.AddIndex(tbl.name,
+					recordlayer.NewIndex(idx.name, recordlayer.FanOut(idx.fanOutColumn)))
 				continue
 			}
 			keyExpr, idxErr := buildIndexKeyExpression(idx.columns)

@@ -17,7 +17,7 @@ func TestSortElim_IndexProvidesSortOrder(t *testing.T) {
 
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status_date",
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
@@ -74,7 +74,7 @@ func TestSortElim_MultiKeySortMatchesIndex(t *testing.T) {
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
 	a3 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status_date_amount",
 		[]string{"Order"},
 		[]string{"STATUS", "DATE", "AMOUNT"},
@@ -133,7 +133,7 @@ func TestSortElim_PartialSortKeyMatch(t *testing.T) {
 
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status_date",
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
@@ -195,7 +195,7 @@ func TestSortElim_RangeScanProvidesSortOrder(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status",
 		[]string{"Order"},
 		[]string{"STATUS"},
@@ -252,7 +252,7 @@ func TestSortElim_SortKeyNotProvidedByIndex(t *testing.T) {
 
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status_date",
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
@@ -311,7 +311,7 @@ func TestSortElim_DescSortEliminated(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status",
 		[]string{"Order"},
 		[]string{"STATUS"},
@@ -558,7 +558,7 @@ func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status_date",
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
@@ -612,7 +612,7 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 
 	a1 := values.UniqueCorrelationIdentifier()
 	a2 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status_date",
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},

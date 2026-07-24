@@ -167,6 +167,47 @@ type MatchCandidate interface {
 	) plans.RecordQueryPlan
 }
 
+// candidatePreservesBaseRecordCardinality reports an affirmative guarantee
+// that scanning candidate entries produces at most one entry per base record.
+// Value candidates expose a tri-state signal; nil is unknown and must decline
+// raw index shortcuts. Specialized candidates with a non-optional
+// CreatesDuplicates contract (for example vector/windowed candidates) can
+// make the same guarantee directly. A candidate exposing neither contract is
+// unknown and therefore unsafe for cardinality-sensitive shortcuts.
+func candidatePreservesBaseRecordCardinality(candidate MatchCandidate) bool {
+	if valueCandidate, ok := candidate.(*ValueIndexScanMatchCandidate); ok &&
+		!valueCandidate.canProduceScanPlan() {
+		// A false duplicate signal is not enough when the candidate's actual
+		// traversal was rejected (scalar nesting, unsupported FAN_OUT shape,
+		// or inconsistent metadata). Direct shortcuts bypass traversal-based
+		// matching, so they must honor the same admission authority.
+		return false
+	}
+	if signaler, ok := candidate.(interface{ DistinctRecordsSignal() *bool }); ok {
+		signal := signaler.DistinctRecordsSignal()
+		return signal != nil && !*signal
+	}
+	if duplicateCandidate, ok := candidate.(interface{ CreatesDuplicates() bool }); ok {
+		return !duplicateCandidate.CreatesDuplicates()
+	}
+	return false
+}
+
+// candidatePlainFieldColumnsForShortcut is the shared admission gate for
+// direct, name-based index shortcuts. Traversal-aware data access can match
+// expression keys by Value; these shortcuts cannot and therefore accept only
+// an ordinary ValueIndex candidate whose key is proven to be flat scalar
+// fields.
+func candidatePlainFieldColumnsForShortcut(
+	candidate MatchCandidate,
+) ([]string, bool) {
+	valueCandidate, ok := candidate.(*ValueIndexScanMatchCandidate)
+	if !ok {
+		return nil, false
+	}
+	return valueCandidate.plainFieldColumnsForShortcut()
+}
+
 // emptyPlanContext is the no-info PlanContext singleton — used by
 // rules that don't need the metadata (most simplification rules) and
 // by tests.

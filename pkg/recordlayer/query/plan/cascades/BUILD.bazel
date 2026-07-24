@@ -192,6 +192,7 @@ go_library(
     importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades",
     visibility = ["//visibility:public"],
     deps = [
+        "//gen",
         "//pkg/recordlayer/query/plan/cascades/combinatorics",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/matching",
@@ -199,6 +200,7 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -874,11 +876,13 @@ go_test(
         "unordered_pk_distinct_properties_test.go",
     ],
     deps = [
+        "//gen",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/matching",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
+        "@org_golang_google_protobuf//proto",
     ],
 )

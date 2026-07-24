@@ -431,3 +431,56 @@ func TestPlanner_PlanningPhase_MembersPopulated(t *testing.T) {
 		t.Fatal("inner scanRef has no physical members after PLANNING phase")
 	}
 }
+
+func TestCompensationSafeForYieldRequiredUniqueOverPhysicalPlan(t *testing.T) {
+	t.Parallel()
+
+	pk := []values.Value{
+		values.NewFlatFieldValue("ID", values.NotNullLong),
+	}
+	scan := plans.NewRecordQueryScanPlan(
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithPrimaryKey(pk)
+	childRef := expressions.FinalOf(scan)
+	required := expressions.NewRequiredLogicalUniqueExpression(
+		expressions.ForEachQuantifier(childRef),
+	)
+	if !compensationSafeForYield(required) {
+		t.Fatal("required PK-distinct compensation over a physical plan was stranded as a logical final")
+	}
+
+	ordinary := expressions.NewLogicalUniqueExpression(
+		expressions.ForEachQuantifier(childRef),
+	)
+	if compensationSafeForYield(ordinary) {
+		t.Fatal("ordinary query Unique unexpectedly entered the data-access compensation exception")
+	}
+}
+
+func TestPlanner_PlanningPhase_ImplementsRequiredUniqueOverPinnedPlan(t *testing.T) {
+	t.Parallel()
+
+	pk := []values.Value{
+		values.NewFlatFieldValue("ID", values.NotNullLong),
+	}
+	scan := plans.NewRecordQueryScanPlan(
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithPrimaryKey(pk)
+	required := expressions.NewRequiredLogicalUniqueExpression(
+		expressions.ForEachQuantifier(expressions.FinalOf(scan)),
+	)
+	rootRef := expressions.InitialOf(required)
+
+	planWithImplRules(t, rootRef, DefaultImplementationRules())
+
+	for _, member := range rootRef.AllMembers() {
+		if _, ok := member.(*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan); ok {
+			return
+		}
+	}
+	t.Fatal("required Unique over an exact physical child did not produce a PK-distinct plan")
+}

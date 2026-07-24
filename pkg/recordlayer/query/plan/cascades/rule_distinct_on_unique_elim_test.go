@@ -3,9 +3,11 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"google.golang.org/protobuf/proto"
 )
 
 // pkPlanContext provides PK column info for testing distinct
@@ -315,6 +317,106 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 			t.Fatal("expected elimination (no DistinctWrapper), but got DistinctWrapper")
 		}
 	}
+}
+
+// TestDistinctFinal_UniqueFanOutIndexDoesNotEliminate proves that UNIQUE on a
+// fan-out index is uniqueness of index entries, not a base-row uniqueness key.
+// In particular, multiple records may all have an empty repeated field and
+// produce no index entry, so projecting that field does not make DISTINCT
+// redundant. A normal unique scalar index remains a valid elimination proof.
+func TestDistinctFinal_UniqueFanOutIndexDoesNotEliminate(t *testing.T) {
+	t.Parallel()
+
+	fanOut := true
+	scalar := false
+	scalarFanType := gen.Field_SCALAR
+	newUniqueCandidate := func(name, column string, createsDuplicates *bool) MatchCandidate {
+		return NewValueIndexScanMatchCandidateWithFunctions(
+			name,
+			[]string{"T"},
+			[]string{column},
+			nil,
+			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+			values.UnknownType,
+			true,
+			nil,
+			createsDuplicates,
+		)
+	}
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
+		newUniqueCandidate("T$tags_unique_fanout", "TAGS", &fanOut),
+		NewValueIndexScanMatchCandidateWithFunctions(
+			"T$cardinality_score_unique",
+			[]string{"T"},
+			[]string{"SCORE"},
+			[]string{FunctionKindCardinality},
+			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+			values.UnknownType,
+			true,
+			nil,
+			&scalar,
+		),
+		NewValueIndexScanMatchCandidateWithFunctions(
+			"T$addr_city_unique",
+			[]string{"T"},
+			[]string{"CITY"},
+			nil,
+			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+			values.UnknownType,
+			true,
+			nil,
+			&scalar,
+		).WithRootKeyExpression(&gen.KeyExpression{Nesting: &gen.Nesting{
+			Parent: &gen.Field{
+				FieldName: proto.String("ADDR"),
+				FanType:   &scalarFanType,
+			},
+			Child: candidateTestKeyField("CITY", gen.Field_SCALAR),
+		}}),
+		newUniqueCandidate("T$email_unique", "EMAIL", &scalar),
+	}}
+
+	assertWrapped := func(projected string) {
+		t.Helper()
+		results := FireImplementationRuleWithContext(
+			NewImplementDistinctFinalRule(),
+			buildDistinctOverProjection("T", []values.Value{
+				&values.FieldValue{Field: projected, Typ: values.UnknownType},
+			}),
+			ctx,
+			nil,
+		)
+		for _, result := range results {
+			if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
+				return
+			}
+		}
+		t.Fatalf("DISTINCT(%s) was elided; the unique fan-out index is not a base-row uniqueness proof", projected)
+	}
+	assertEliminated := func(projected string) {
+		t.Helper()
+		results := FireImplementationRuleWithContext(
+			NewImplementDistinctFinalRule(),
+			buildDistinctOverProjection("T", []values.Value{
+				&values.FieldValue{Field: projected, Typ: values.UnknownType},
+			}),
+			ctx,
+			nil,
+		)
+		if len(results) == 0 {
+			t.Fatalf("DISTINCT(%s): rule did not fire", projected)
+		}
+		for _, result := range results {
+			if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
+				t.Fatalf("DISTINCT(%s) was retained; the unique scalar index should prove it redundant", projected)
+			}
+		}
+	}
+
+	assertWrapped("TAGS")
+	assertWrapped("SCORE")
+	assertWrapped("CITY")
+	assertEliminated("EMAIL")
 }
 
 // TestDistinctFinal_WrapsAllMembers verifies the wrapping path

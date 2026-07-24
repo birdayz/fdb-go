@@ -128,6 +128,13 @@ type LogicalUnnest struct {
 	// AtAlias is the AT ordinal alias (`ord` in `... AT ord`), empty when
 	// absent. Its presence makes the Explode WITH ORDINALITY.
 	AtAlias string
+	// CorrelatedCollection is set only when this unnest is the primary source
+	// of a correlated subquery (`EXISTS (SELECT ... FROM R.TAGS AS E)`). It is
+	// the already-resolved array FieldValue over the outer correlation. A
+	// regular lateral FROM leg gets that value from the LogicalJoin on its left
+	// and leaves this nil. Carrying the resolved Value preserves minted outer
+	// correlations and avoids resolving the owner a second time.
+	CorrelatedCollection values.Value
 }
 
 func (*LogicalUnnest) Children() []LogicalOperator { return []LogicalOperator{} }

@@ -56,3 +56,96 @@ func TestBindOrientedComparison_NestedFieldShadowsTopLevelIndex(t *testing.T) {
 		t.Fatalf("baked top-level `city` ref failed to bind the lazy candidate (baked/lazy bridge regressed)")
 	}
 }
+
+// A primitive Explode flows its element as a bare QOV. Query and candidate
+// correlations differ, but once bindOrientedComparison has established the
+// query operand belongs to the matched source, two bare QOVs denote the same
+// fanout element slot and must bind the candidate placeholder.
+func TestBindOrientedComparison_PrimitiveFanOutElementQOV(t *testing.T) {
+	t.Parallel()
+
+	queryElement := values.NamedCorrelationIdentifier("E")
+	candidateElement := values.NamedCorrelationIdentifier("CANDIDATE_E")
+	param := values.NamedCorrelationIdentifier("p0")
+	ph := predicates.NewPlaceholder(
+		param,
+		values.NewQuantifiedObjectValueOfType(candidateElement, values.NotNullLong),
+	)
+	cp := predicates.NewComparisonPredicate(
+		values.NewQuantifiedObjectValueOfType(queryElement, values.NotNullLong),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(9), Typ: values.NullableLong},
+		},
+	)
+	if got := bindOrientedComparison(cp, ph, queryElement); got == nil {
+		t.Fatal("primitive fanout element QOV failed to bind its candidate placeholder")
+	}
+
+	// A field below the element is a different semantic slot and must not be
+	// collapsed into the whole element merely because the other side is a QOV.
+	fieldBelowElement := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(queryElement),
+		"X",
+		values.NullableLong,
+	)
+	cp = predicates.NewComparisonPredicate(
+		fieldBelowElement,
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(9), Typ: values.NullableLong},
+		},
+	)
+	if got := bindOrientedComparison(cp, ph, queryElement); got != nil {
+		t.Fatalf("field-below-element matched whole primitive element: %v", got)
+	}
+
+	recordType := values.NewRecordType("ELEMENT", false, []values.Field{{
+		Name:      "X",
+		FieldType: values.NullableLong,
+		Ordinal:   0,
+	}})
+	structuredQuery := values.NewQuantifiedObjectValueOfType(queryElement, recordType)
+	structuredPlaceholder := predicates.NewPlaceholder(
+		param,
+		values.NewQuantifiedObjectValueOfType(candidateElement, recordType),
+	)
+	cp = predicates.NewComparisonPredicate(
+		structuredQuery,
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(9), Typ: values.NullableLong},
+		},
+	)
+	if got := bindOrientedComparison(cp, structuredPlaceholder, queryElement); got != nil {
+		t.Fatalf("structured whole-object QOV matched as a primitive fanout element: %v", got)
+	}
+
+	unknownQuery := values.NewQuantifiedObjectValue(queryElement)
+	unknownPlaceholder := predicates.NewPlaceholder(
+		param,
+		values.NewQuantifiedObjectValue(candidateElement),
+	)
+	typedQuery := values.NewQuantifiedObjectValueOfType(queryElement, values.NotNullLong)
+	cp = predicates.NewComparisonPredicate(
+		typedQuery,
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(9), Typ: values.NullableLong},
+		},
+	)
+	if got := bindOrientedComparison(cp, unknownPlaceholder, queryElement); got == nil {
+		t.Fatal("typed primitive query did not match the descriptor-UNKNOWN fanout candidate element")
+	}
+
+	cp = predicates.NewComparisonPredicate(
+		unknownQuery,
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(9), Typ: values.NullableLong},
+		},
+	)
+	if got := bindOrientedComparison(cp, unknownPlaceholder, queryElement); got != nil {
+		t.Fatalf("unresolved whole-object QOV matched as a proven primitive fanout element: %v", got)
+	}
+}

@@ -180,7 +180,7 @@ func TestComputeMatchedOrderingParts_PKSuffix(t *testing.T) {
 	t.Parallel()
 
 	alias := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"IDX_STATUS", []string{"T"},
 		[]string{"STATUS"},
 		[]values.CorrelationIdentifier{alias},
@@ -217,15 +217,17 @@ func TestComputeMatchedOrderingParts_PKSuffix(t *testing.T) {
 	}
 }
 
-// TestComputeMatchedOrderingParts_NoSuffixForFanOut: a fan-out
-// (createsDuplicates) index gets NO PK suffix — positions past a
-// duplicating key part are not sort-ordered (Java breaks its
-// ordering-parts loop at a duplicating key expression).
+// TestComputeMatchedOrderingParts_NoSuffixForFanOut pins Go's conservative
+// PK-suffix limitation: an equality-fixed fan-out position contributes no
+// ordering part, and Go synthesizes no PK suffix for any fan-out candidate.
+// Java can skip that equality-bound duplicate-producing position and continue
+// through its full-key PK alias; Go keeps PK aliases outside sortParameterIDs
+// and cannot prove the same positional continuation here.
 func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 	t.Parallel()
 
 	alias := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"IDX_TAGS", []string{"T"},
 		[]string{"TAGS"},
 		[]values.CorrelationIdentifier{alias},
@@ -238,8 +240,8 @@ func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 		nil, nil, nil, nil, nil, nil, nil)
 
 	parts := cand.ComputeMatchedOrderingParts(mi, []values.CorrelationIdentifier{alias}, false)
-	if len(parts) != 1 {
-		t.Fatalf("fan-out index must not gain a PK suffix ordering part: got %d parts", len(parts))
+	if len(parts) != 0 {
+		t.Fatalf("fan-out index must expose neither TAGS nor a PK suffix: got %d parts", len(parts))
 	}
 }
 
@@ -288,7 +290,7 @@ func TestSortElim_EqPrefixIndexScanSatisfiesOrderByPK(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"IDX_STATUS",
 		[]string{"T"},
 		[]string{"STATUS"},

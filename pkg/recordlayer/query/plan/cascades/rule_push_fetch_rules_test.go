@@ -415,6 +415,80 @@ func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
 	}
 }
 
+func TestMergeProjectionAndFetch_WholeRecordRetainsFetch(t *testing.T) {
+	t.Parallel()
+
+	newSubject := func(t *testing.T, wholeRecord bool) *expressions.Reference {
+		t.Helper()
+		parameterAlias := values.UniqueCorrelationIdentifier()
+		candidate := newKnownDistinctValueIndexCandidate(
+			"idx_a",
+			[]string{"T"},
+			[]string{"A"},
+			[]values.CorrelationIdentifier{parameterAlias},
+			values.UnknownType,
+			false,
+			nil,
+		)
+		template, ok := candidate.ToScanPlan(
+			map[values.CorrelationIdentifier]*predicates.ComparisonRange{},
+			false,
+		).(*plans.RecordQueryFetchFromPartialRecordPlan)
+		if !ok {
+			t.Fatalf("candidate scan = %T, want Fetch(IndexScan)", template)
+		}
+		indexPlan := template.GetInner()
+		if indexPlan == nil {
+			t.Fatal("candidate fetch has no index child")
+		}
+		fetch := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+			expressions.ForEachQuantifier(expressions.InitialOf(indexPlan)),
+			template.GetTranslateValueFunction(),
+			template.GetResultType(),
+			template.GetFetchIndexRecords(),
+		)
+		fetchRef := expressions.InitialOf(fetch)
+
+		projectionAlias := values.UniqueCorrelationIdentifier()
+		var projectedValue values.Value
+		if wholeRecord {
+			projectedValue = values.NewQuantifiedObjectValue(projectionAlias)
+		} else {
+			projectedValue = values.NewFieldValue(
+				values.NewQuantifiedObjectValue(projectionAlias),
+				"A",
+				values.UnknownType,
+			)
+		}
+		projection := plans.NewRecordQueryProjectionPlanFromQuantifier(
+			[]values.Value{projectedValue},
+			nil,
+			expressions.NamedForEachQuantifier(projectionAlias, fetchRef),
+		)
+		return expressions.InitialOf(projection)
+	}
+
+	if yielded := FireImplementationRule(
+		NewMergeProjectionAndFetchRule(),
+		newSubject(t, true),
+	); len(yielded) != 0 {
+		t.Fatalf(
+			"whole-record projection eliminated Fetch: yielded %#v",
+			yielded,
+		)
+	}
+
+	if yielded := FireImplementationRule(
+		NewMergeProjectionAndFetchRule(),
+		newSubject(t, false),
+	); len(yielded) != 1 {
+		t.Fatalf(
+			"covered scalar projection yielded %d plans, want 1 positive control",
+			len(yielded),
+		)
+	}
+}
+
 func TestPushUnionThroughFetch_AllChildrenHaveFetches(t *testing.T) {
 	t.Parallel()
 

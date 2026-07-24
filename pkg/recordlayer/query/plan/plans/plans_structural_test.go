@@ -35,6 +35,105 @@ func TestRecordQueryScanPlan_WithPrimaryKey_PreservesComparisons(t *testing.T) {
 	}
 }
 
+func TestRecordQueryIndexPlan_FanOutOrderingHintsAbstain(t *testing.T) {
+	t.Parallel()
+
+	empty := predicates.EmptyComparisonRange()
+	fanOut := NewRecordQueryIndexPlan(
+		"idx_tags",
+		[]*predicates.ComparisonRange{empty},
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithIndexMetadata(
+		[]string{"TAGS"},
+		[]string{"ID"},
+		false,
+	).WithDistinctRecordsSignal(true)
+
+	if ordering := fanOut.HintOrdering(); ordering.IsKnown ||
+		len(ordering.Keys) != 0 {
+		t.Fatalf(
+			"fan-out HintOrdering() = %#v, want conservative empty ordering",
+			ordering,
+		)
+	}
+	if rich := fanOut.HintRichOrdering(); len(rich.GetKeys()) != 0 {
+		t.Fatalf(
+			"fan-out HintRichOrdering() keys = %#v, want empty",
+			rich.GetKeys(),
+		)
+	}
+
+	scalar := NewRecordQueryIndexPlan(
+		"idx_score",
+		[]*predicates.ComparisonRange{empty},
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithIndexMetadata(
+		[]string{"SCORE"},
+		[]string{"ID"},
+		false,
+	).WithDistinctRecordsSignal(false)
+	if ordering := scalar.HintOrdering(); !ordering.IsKnown ||
+		len(ordering.Keys) != 2 {
+		t.Fatalf(
+			"scalar HintOrdering() = %#v, want SCORE + ID ordering",
+			ordering,
+		)
+	}
+	if rich := scalar.HintRichOrdering(); len(rich.GetKeys()) != 2 {
+		t.Fatalf(
+			"scalar HintRichOrdering() keys = %#v, want SCORE + ID",
+			rich.GetKeys(),
+		)
+	}
+}
+
+func TestRecordQueryIndexPlan_ExpressionKeyOrderingHintsAbstain(t *testing.T) {
+	t.Parallel()
+
+	expressionKey := NewRecordQueryIndexPlan(
+		"idx_cardinality_tags",
+		[]*predicates.ComparisonRange{predicates.EmptyComparisonRange()},
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	).WithIndexMetadata(
+		[]string{"TAGS"},
+		[]string{"ID"},
+		false,
+	).WithDistinctRecordsSignal(false).
+		WithOrderingKeyNamesUnavailable()
+
+	if ordering := expressionKey.HintOrdering(); ordering.IsKnown ||
+		len(ordering.Keys) != 0 {
+		t.Fatalf(
+			"expression-key HintOrdering() = %#v, want conservative empty ordering",
+			ordering,
+		)
+	}
+	if rich := expressionKey.HintRichOrdering(); len(rich.GetKeys()) != 0 {
+		t.Fatalf(
+			"expression-key HintRichOrdering() keys = %#v, want empty",
+			rich.GetKeys(),
+		)
+	}
+
+	// A later metadata-preserving stamp must not erase the explicit unsafe
+	// state and reintroduce TAGS/ID ordering.
+	restamped := expressionKey.WithIndexMetadata(
+		[]string{"TAGS"},
+		[]string{"ID"},
+		false,
+	)
+	if restamped.HintOrdering().IsKnown ||
+		len(restamped.HintRichOrdering().GetKeys()) != 0 {
+		t.Fatal("WithIndexMetadata re-enabled expression-key ordering")
+	}
+}
+
 // stubPlan is a minimal RecordQueryPlan for use as an inner child.
 type stubPlan struct {
 	PlanExprBase

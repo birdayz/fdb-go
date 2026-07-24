@@ -4,7 +4,8 @@ Status: **Implementing** (Graefe ACK + Torvalds ACK on the RFC; **190.1 mileston
 on `95598761f`** — codex + @claude at PR). Landed: 190.12 golden, 190.13 docs, 190.1 (N-way EXISTS),
 190.2 (cost-comparator transitivity), 190.3 (point-scan PK proof), the bundled scalar-NaN ledger
 closure, 190.4a (guarded dead candidate existentials), and 190.4b (matcher metadata/enumeration).
-The Graefe-reruled 190.4 umbrella stays open for 190.4c.
+190.4c (Select semantics plus production correlated-UNNEST fan-out reach) is complete, closing the
+Graefe-reruled 190.4 umbrella.
 190.1 was **materially re-designed** after its original delete premise proved false (the arm's
 "never produced an executable plan" gravestone is a lie — deleting it regresses working FDB tests).
 The new 190.1 (converge on Java's two-rule architecture via a guarded `PartitionSelectRule`) carries
@@ -394,7 +395,40 @@ implication/placeholder bindings and candidate-predicate coverage; composed chil
 result-value coverage; and correct possible/impossible compensation state. Close with
 multi-match-dedup, dependency, child-conflict, and end-to-end empty/duplicate cardinality tests.
 
-The umbrella 190.4 remains open until 190.4b and 190.4c land.
+**Implemented.** The staged Select port now requires complete `ForEach` coverage on both sides,
+checks unmatched existential dependencies and owning predicates (including existential-to-`ForEach`
+pairings), merges predicate/parameter/child metadata without conflicts, pulls result Values through
+the composed children, and distinguishes possible, impossible, and not-needed compensation.
+Existential-to-`ForEach` cardinality repair is a required primary-key `Unique` over the exact pinned
+physical access, and the executor carries its dedup state in continuations.
+
+The production reach proof is a correlated primary array source:
+`EXISTS (SELECT 1 FROM R.TAGS E WHERE E >= 8)`. Metadata carries the record-layer root AST into a
+Java-shaped Field/Then/Nesting fan-out candidate graph with `Explode`; leaf matching enumerates the
+outer correlation; the SQL scope preserves the explicit element alias and lowers its primitive
+element to the whole Explode QOV. The exact winning plan is
+`Project([ID#0], UnorderedPrimaryKeyDistinct(Fetch(IndexScan(T_TAGS, [<>]))))` — no base
+`Scan`, residual `Filter`, or execution-time `Explode` fallback.
+
+The review lap closed every fail-open boundary it found. Fan-out elements may bind scan ranges but
+cannot cover their source arrays; whole-record Fetch is retained; duplicate-producing positions do
+not claim flat/PK ordering; raw ordered-scan, streaming-aggregate, correlated-EXISTS, count-covering,
+and unique-DISTINCT shortcuts require the relevant cardinality/semantic proof. Unknown metadata,
+duplicate signals without a structural FAN_OUT root, unsupported or contradictory function roots,
+scalar nesting (including scalar nesting beside a fan-out sibling), and unsupported nullable-wrapper
+shapes all decline. Function keys cannot masquerade as bare fields for coverage or plan ordering;
+only their independently stored, non-colliding PK suffix remains coverable.
+
+The real FDB regression discriminates empty arrays, nonmatches, and two distinct matching fan-out
+keys for one primary key; unpaged and page-size-1 execution return IDs 2/3/4 exactly once. Every page
+uses a fresh FDB transaction and serialized continuation. A separate `COUNT(*)` proves the fan-out
+index is not used as a base-record cardinality substitute and returns all five records. Focused
+fan-out/function/continuation tests are race-clean and green 10×; all affected Go and Bazel targets
+are green; parent-vs-current explain corpus is 2,579/2,579 identical (zero flips/regressions); full
+`just test` is 56/56.
+
+**190.4c FINAL REVIEW: three independent Codex audits ACK** (candidate/Java-shape parity,
+shortcut/cardinality safety, and SQL→Cascades→real-FDB semantics). **190.4 is complete.**
 
 ### 190.5 (MED) — index-intersection reach
 

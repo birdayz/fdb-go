@@ -139,7 +139,7 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
   + Torvalds ACK + independent Codex ACK.** Full `just test`: 56/56 targets green.
 
 **Fidelity / optimization reach (Graefe-gated design):**
-- [ ] **190.4 (Graefe-reruled)** — the original “query fewer / compensate candidate extras” MED
+- [x] **190.4 (Graefe-reruled)** — the original “query fewer / compensate candidate extras” MED
   premise is NAK: executable Java enumerates dependency-sound partial bijections and then applies
   expression-specific subsumption; every Select `ForEach` on both sides must still be covered.
   Staged closure:
@@ -155,9 +155,19 @@ Full gate: RFC → Graefe+Torvalds ACK → implement (one item at a time, DFS, r
     constant-aware recursive group-value pull-up and fail-closed multi-member metadata adjustment.
     Focused regressions green 20×; affected uncached Bazel targets 3/3 green; full `just test`
     56/56. **FINAL REVIEW: Graefe ACK + Torvalds ACK + independent Codex ACK.**
-  - [ ] **190.4c** — current Java Select `ForEach` coverage, existential ownership/dependencies,
-    predicate implication/candidate coverage, child pull-up/result mapping, compensation state,
-    and end-to-end cardinality regressions.
+  - [x] **190.4c** — current Java Select `ForEach` coverage, existential ownership/dependencies,
+    predicate implication/candidate coverage, composed child pull-up/result mapping, and
+    possible/impossible compensation state. Existential-to-`ForEach` matches install a required
+    PK `Unique` over the pinned physical access. Production correlated primary `UNNEST` reaches a
+    structurally expanded FAN_OUT index and yields
+    `Project → UnorderedPrimaryKeyDistinct → Fetch → IndexScan`, with no base-scan/filter/explode
+    fallback. Real FDB rows pin empty/nonmatching/duplicate-element cardinality, fresh-transaction
+    serialized continuations, and a five-row base `COUNT(*)` that must avoid the fan-out index.
+    Unknown/contradictory metadata, scalar nesting, unsupported fan-out/function shapes, false
+    coverage/ordering, and every raw cardinality shortcut fail closed. Focused race + 10× green;
+    affected Go/Bazel targets green; parent-vs-current explain corpus 2,579/2,579 identical; full
+    `just test` 56/56. **FINAL REVIEW: three independent Codex audits ACK** (candidate parity,
+    shortcut/cardinality safety, SQL/FDB semantics).
 - [ ] **190.5 (MED)** — index-intersection reach: 3-way cap + ≤4 candidates/≤8 matches
   (`intersector_primary_key.go:94`, `planner.go:662,709`), PK-only comparison key, no reverse-
   ordered (`DESC`) intersections (`plans/intersection.go:90`). Java: unbounded k-way + any common

@@ -258,6 +258,18 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	if p == nil || len(p.GetColumnNames()) == 0 {
 		return properties.Ordering{}
 	}
+	if !p.orderingKeyNamesKnown || !p.orderingKeyNamesSafe {
+		return properties.Ordering{}
+	}
+	// A fan-out index key contains exploded elements, while columnNames names
+	// the logical record fields. Synthesizing an ordering from those names
+	// would advertise the original array (and any later flat columns) as
+	// ordered Values. The candidate-level match path can reason positionally
+	// about an equality-fixed fan-out element; this plan-level hint lacks that
+	// structural key-expression information, so it must abstain.
+	if p.distinctRecordsKnown && p.createsDuplicates {
+		return properties.Ordering{}
+	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
 	firstNonEq := 0
@@ -512,6 +524,12 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 // information.
 func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	if p == nil || len(p.GetColumnNames()) == 0 {
+		return properties.EmptyOrdering()
+	}
+	if !p.orderingKeyNamesKnown || !p.orderingKeyNamesSafe {
+		return properties.EmptyOrdering()
+	}
+	if p.distinctRecordsKnown && p.createsDuplicates {
 		return properties.EmptyOrdering()
 	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()

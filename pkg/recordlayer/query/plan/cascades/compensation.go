@@ -1016,7 +1016,18 @@ func (c *ForMatchCompensation) ApplyAllNeeded(
 // to reach these rows, so a substitute silently detaches them. Callers get the
 // alias from MatchedForEachAliasMaybe and bail when it is not well-defined.
 func newCompensationBaseQuantifier(matchedForEachAlias values.CorrelationIdentifier, expr expressions.RelationalExpression) expressions.Quantifier {
-	return expressions.NamedForEachQuantifier(matchedForEachAlias, expressions.InitialOf(expr))
+	ref := expressions.InitialOf(expr)
+	if isPhysical(expr) {
+		// Java's compensation memoizer receives a realized plan and memoizes it
+		// as a FINAL child. Keeping a physical scan in the exploratory set
+		// strands enforcers such as required LogicalUnique: its implementation
+		// rule reads physical child partitions/properties, sees none, and the
+		// fanout match loses to the fallback table scan. StagePlanned also
+		// freezes the exact realized access under the compensation; later
+		// exploration must not float the wrapper onto an unrelated sibling.
+		ref = expressions.FinalOf(expr)
+	}
+	return expressions.NamedForEachQuantifier(matchedForEachAlias, ref)
 }
 
 // Intersect combines this compensation with another by keeping only

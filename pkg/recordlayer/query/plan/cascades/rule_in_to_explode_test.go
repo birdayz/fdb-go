@@ -294,7 +294,7 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
-	cand := NewValueIndexScanMatchCandidate(
+	cand := newKnownDistinctValueIndexCandidate(
 		"Order$status",
 		[]string{"Order"},
 		[]string{"STATUS"},

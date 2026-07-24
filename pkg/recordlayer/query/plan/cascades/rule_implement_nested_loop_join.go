@@ -2600,7 +2600,18 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 
 	// Try secondary indexes.
 	for _, cand := range call.Context.GetMatchCandidates() {
-		candCols := cand.GetColumnNames()
+		candCols, plainFields := candidatePlainFieldColumnsForShortcut(cand)
+		if !plainFields {
+			continue
+		}
+		// This fast path builds a raw correlated index scan from the flat
+		// first-column metadata and bypasses the candidate traversal plus its
+		// cardinality compensation. For a composite (FK, repeated FAN_OUT)
+		// index, records with an empty repeated field have no index entry, so
+		// probing FK through this shortcut can turn a true EXISTS into false.
+		if !candidatePreservesBaseRecordCardinality(cand) {
+			continue
+		}
 		if len(candCols) == 0 {
 			continue
 		}

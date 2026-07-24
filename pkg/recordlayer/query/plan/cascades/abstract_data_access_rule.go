@@ -466,6 +466,15 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 		return idxPlan
 	}
 	stamped := idxPlan.WithIndexMetadata(cand.GetColumnNames(), candidatePKColumns(cand), candidateUnique(cand))
+	if valueCandidate, ok := cand.(*ValueIndexScanMatchCandidate); ok {
+		if _, safe := valueCandidate.plainFieldColumnsForShortcut(); !safe {
+			// RecordQueryIndexPlan currently carries only flat column names,
+			// not semantic key Values. Keep expression-key names for physical
+			// row layout/costing but do not synthesize false FieldValue
+			// ordering (CARDINALITY(TAGS) is not TAGS ordering).
+			stamped = stamped.WithOrderingKeyNamesUnavailable()
+		}
+	}
 	if sig := candidateDistinctSignal(cand); sig != nil {
 		stamped = stamped.WithDistinctRecordsSignal(*sig)
 	}

@@ -431,7 +431,7 @@ func TestPlanningCostModel_CoveringEqualityIndexPreferredOverPrimaryScan(t *test
 		WithCovering([]string{"A"})
 	index := idxPlan.WithIndexMetadata([]string{"A"}, nil, false)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
-		NewValueIndexScanMatchCandidate("idx_a", []string{"T"}, []string{"A"}, nil, values.UnknownType, false, nil),
+		newKnownDistinctValueIndexCandidate("idx_a", []string{"T"}, []string{"A"}, nil, values.UnknownType, false, nil),
 	}}
 	costLess := NewPlanningCostModelLessWithContext(nil, ctx)
 
@@ -473,7 +473,7 @@ func TestPlanningCostModel_EqualityIndexBeatsFullScan(t *testing.T) {
 	index := plans.NewRecordQueryIndexPlan("idx_a", []*predicates.ComparisonRange{mr.Range}, []string{"T"}, values.UnknownType, false).
 		WithIndexMetadata([]string{"A"}, nil, true)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
-		NewValueIndexScanMatchCandidate("idx_a", []string{"T"}, []string{"A"}, nil, values.UnknownType, true, nil),
+		newKnownDistinctValueIndexCandidate("idx_a", []string{"T"}, []string{"A"}, nil, values.UnknownType, true, nil),
 	}}
 	costLess := NewPlanningCostModelLessWithContext(nil, ctx)
 
@@ -587,8 +587,8 @@ func TestPlanningCostModelLess_Criterion10_IndexScanFetchCount(t *testing.T) {
 	planB := fetchPlan.WithQuantifiers([]expressions.Quantifier{indexBQ})
 
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
-		NewValueIndexScanMatchCandidate("idx_a", []string{"T"}, []string{"a"}, nil, values.UnknownType, false, nil),
-		NewValueIndexScanMatchCandidate("idx_b", []string{"T"}, []string{"b"}, nil, values.UnknownType, false, nil),
+		newKnownDistinctValueIndexCandidate("idx_a", []string{"T"}, []string{"a"}, nil, values.UnknownType, false, nil),
+		newKnownDistinctValueIndexCandidate("idx_b", []string{"T"}, []string{"b"}, nil, values.UnknownType, false, nil),
 	}}
 	costLess := NewPlanningCostModelLessWithContext(nil, ctx)
 
@@ -688,8 +688,8 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 		WithCovering(nil).WithIndexMetadata([]string{"a", "b", "c"}, nil, false)
 
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
-		NewValueIndexScanMatchCandidate("few", []string{"T"}, []string{"a"}, nil, values.UnknownType, false, nil),
-		NewValueIndexScanMatchCandidate("many", []string{"T"}, []string{"a", "b", "c"}, nil, values.UnknownType, false, nil),
+		newKnownDistinctValueIndexCandidate("few", []string{"T"}, []string{"a"}, nil, values.UnknownType, false, nil),
+		newKnownDistinctValueIndexCandidate("many", []string{"T"}, []string{"a", "b", "c"}, nil, values.UnknownType, false, nil),
 	}}
 	costLess := NewPlanningCostModelLessWithContext(nil, ctx)
 

@@ -119,7 +119,7 @@ func FuzzPlanner_Aggregation_NoPanic(f *testing.F) {
 				cols[i] = colPool[i%len(colPool)]
 				aliases[i] = values.UniqueCorrelationIdentifier()
 			}
-			cand := NewValueIndexScanMatchCandidate(
+			cand := newKnownDistinctValueIndexCandidate(
 				"idx_group",
 				[]string{"T"},
 				cols,

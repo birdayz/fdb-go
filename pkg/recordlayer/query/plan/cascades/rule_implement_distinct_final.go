@@ -153,7 +153,16 @@ func distinctEliminatedByUniqueKey(
 		if !cand.IsUnique() {
 			continue
 		}
-		cols := cand.GetColumnNames()
+		cols, plainFields := candidatePlainFieldColumnsForShortcut(cand)
+		if !plainFields {
+			continue
+		}
+		// UNIQUE on a fan-out index constrains index entries, not one value
+		// per base record. Empty repeated fields produce no entry at all, so
+		// the index key cannot prove the projected base rows are distinct.
+		if !candidatePreservesBaseRecordCardinality(cand) {
+			continue
+		}
 		if len(cols) > 0 && uniqueKeysCovered(cols, projectedCols) {
 			return true
 		}

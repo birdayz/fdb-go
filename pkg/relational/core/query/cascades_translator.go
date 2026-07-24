@@ -1084,6 +1084,27 @@ func (t *cascadesTranslator) translateSubqueryRef(op logical.LogicalOperator) *e
 
 // --- Lateral array UNNEST (RFC-142) --------------------------------------
 
+// translateCorrelatedPrimaryUnnest lowers the standalone unnest used by a
+// correlated EXISTS primary source. Its collection was resolved in the outer
+// semantic scope and therefore carries the exact external correlation that the
+// enclosing ForEach quantifier binds. Regular lateral FROM unnests leave
+// CorrelatedCollection nil and are translated only through translateUnnestJoin.
+func (t *cascadesTranslator) translateCorrelatedPrimaryUnnest(
+	u *logical.LogicalUnnest,
+) expressions.RelationalExpression {
+	if u == nil || u.CorrelatedCollection == nil {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a standalone array unnest requires a resolved outer collection"))
+		return nil
+	}
+	if u.Alias == "" || u.AtAlias != "" {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a correlated EXISTS array source requires one element alias without ordinality"))
+		return nil
+	}
+	return expressions.NewExplodeExpressionWithOrdinality(u.CorrelatedCollection, false)
+}
+
 // findOuterScanTable resolves a lateral unnest's outer source alias to its
 // scanned table name among the VISIBLE FROM-scope sources of the outer leg.
 // It is the shared logical.FindOuterScanTable walk (the embedded cascades
@@ -2051,7 +2072,30 @@ func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnes
 		}
 		return values.Replace(v, func(node values.Value) values.Value {
 			fv, ok := node.(*values.FieldValue)
-			if !ok || fv.Child == nil {
+			if !ok {
+				return node
+			}
+			// A correlated-primary unnest is resolved as a one-column LOCAL
+			// virtual source inside the EXISTS scope. Its element reference is
+			// therefore a source-relative baked leaf (E#0), not the correlated
+			// FieldValue(QOV(E), E) produced by an ordinary lateral join. The
+			// Explode still flows the primitive element as the whole QOV. Admit
+			// exactly that standalone shape here: correlated collection,
+			// no ordinality, the explicit element alias, and source ordinal 0.
+			// A field below a record element has a child or a longer path and
+			// remains a real field access.
+			if fv.Child == nil {
+				if u.CorrelatedCollection != nil &&
+					!withOrdinality &&
+					asAlias != "" &&
+					strings.EqualFold(fv.Field, asAlias) &&
+					fv.SourceRelativeBaked() &&
+					fv.Resolved.Accessors[0].Ordinal == 0 {
+					return values.NewQuantifiedObjectValueOfType(
+						unnestCorr,
+						fv.Type(),
+					)
+				}
 				return node
 			}
 			qov, ok := fv.Child.(*values.QuantifiedObjectValue)
@@ -2352,6 +2396,8 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 	switch o := op.(type) {
 	case *logical.LogicalScan:
 		return t.translateScan(o)
+	case *logical.LogicalUnnest:
+		return t.translateCorrelatedPrimaryUnnest(o)
 	case *logical.LogicalFilter:
 		return t.translateFilter(o)
 	case *logical.LogicalLimit:
@@ -3002,9 +3048,18 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		return t.buildExistentialSelect(f, innerRef, nil)
 	}
 
+	pred := f.Predicate
+	if u, ok := f.Input.(*logical.LogicalUnnest); ok && u.CorrelatedCollection != nil && pred != nil {
+		// The semantic scope exposes the scalar element as a one-column local
+		// virtual source, so E resolves as a source-relative baked E#0 leaf.
+		// Explode itself flows the scalar QOV(E); collapse that wrapper exactly
+		// as the lateral-join path does or every primitive predicate evaluates
+		// through a field read on a scalar and filters all rows.
+		pred = rewriteUnnestPredicate(pred, u)
+	}
 	var preds []predicates.QueryPredicate
-	if f.Predicate != nil {
-		preds = []predicates.QueryPredicate{f.Predicate}
+	if pred != nil {
+		preds = []predicates.QueryPredicate{pred}
 	}
 	return expressions.NewLogicalFilterExpression(
 		preds,

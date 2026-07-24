@@ -61,11 +61,20 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		if _, isAgg := cand.(*AggregateIndexMatchCandidate); isAgg {
 			continue
 		}
+		colNames, plainFields := candidatePlainFieldColumnsForShortcut(cand)
+		if !plainFields {
+			continue
+		}
+		// The direct GroupBy(Scan) shortcut aggregates raw index entries and
+		// bypasses data-access compensation. A fan-out candidate would count
+		// entries rather than base records and omit empty repeated fields.
+		if !candidatePreservesBaseRecordCardinality(cand) {
+			continue
+		}
 		if !recordTypesOverlap(scanTypes, cand.GetRecordTypes()) {
 			continue
 		}
 
-		colNames := cand.GetColumnNames()
 		if len(colNames) < len(groupingKeys) {
 			continue
 		}
@@ -97,10 +106,7 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		}
 		// The covering index scan is its own cascades expression now (RFC-184 W2) —
 		// covering lives on the plan (WithCovering), index metadata is threaded on.
-		idxPlan = idxPlan.WithCovering(colNames).WithIndexMetadata(colNames, candidatePKColumns(cand), cand.IsUnique())
-		if sig := candidateDistinctSignal(cand); sig != nil {
-			idxPlan = idxPlan.WithDistinctRecordsSignal(*sig)
-		}
+		idxPlan = stampIndexMetadata(cand, idxPlan.WithCovering(colNames))
 		// The inner is this covering index scan — a self-contained PRODUCER whose
 		// grouping-key order is intrinsic to the index (not a delegator floating to
 		// a winner), so carry the LIVE shared-group edge over it (RFC-184 W2, no

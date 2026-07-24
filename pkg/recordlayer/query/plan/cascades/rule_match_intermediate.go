@@ -1361,6 +1361,34 @@ func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 	if queryValue == nil || placeholderValue == nil {
 		return false
 	}
+	// A primitive fanout element is the whole flowed object of the Explode
+	// quantifier, not a FieldValue beneath it. The query and candidate use
+	// different correlation identities, so structural equality cannot prove
+	// the match and AccessorNamePath correctly has no field path to compare.
+	// At this call site bindOrientedComparison has already proved that the query
+	// QOV belongs to the matched source; the candidate QOV is the placeholder's
+	// own flowed element. Both-QOV is therefore the scalar-element analogue of
+	// equal accessor paths. Never broaden one-QOV/one-FieldValue.
+	if _, queryIsObject := queryValue.(*values.QuantifiedObjectValue); queryIsObject {
+		if _, placeholderIsObject := placeholderValue.(*values.QuantifiedObjectValue); !placeholderIsObject {
+			return false
+		}
+		// The whole-object equivalence is only valid for concrete primitive
+		// query elements. Stored-record candidate row types intentionally keep
+		// descriptor fields UNKNOWN, so the candidate Explode QOV can remain
+		// UNKNOWN even though the FAN_OUT AST proves that this whole-object
+		// placeholder is an element key. Do not accept an UNKNOWN query value:
+		// unlike the candidate shape, it carries no proof that the compared
+		// whole object is scalar.
+		if queryValue.Type() == nil ||
+			!queryValue.Type().Code().IsPrimitive() ||
+			placeholderValue.Type() == nil {
+			return false
+		}
+		placeholderCode := placeholderValue.Type().Code()
+		return placeholderCode.IsPrimitive() ||
+			placeholderCode == values.TypeCodeUnknown
+	}
 	// Fast path / complex-expression path: exact structural equality (same
 	// representation and aliases — arithmetic, casts, expression-index keys the
 	// name-path primitive does not model).

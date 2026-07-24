@@ -114,7 +114,7 @@ func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
 				cols[i] = colPool[(int(seed)+c*3+i)%len(colPool)]
 				aliases[i] = values.UniqueCorrelationIdentifier()
 			}
-			candidates = append(candidates, NewValueIndexScanMatchCandidate(
+			candidates = append(candidates, newKnownDistinctValueIndexCandidate(
 				"idx_"+cols[0],
 				[]string{"T"},
 				cols,
