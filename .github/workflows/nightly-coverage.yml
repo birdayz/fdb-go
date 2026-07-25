@@ -135,9 +135,71 @@ jobs:
           path: test-report.html
           retention-days: 30
 
+      - name: Fetch previous benchmark baseline
+        # MUST run BEFORE the bench step's results overwrite master-latest.txt
+        # below, so the comparison is last-nightly vs this-nightly.
+        if: steps.window.outputs.ok == 'true'
+        continue-on-error: true
+        env:
+          S3_ACCESS_KEY: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
+          S3_ENDPOINT: ${{ secrets.HETZNER_S3_ENDPOINT }}
+          S3_BUCKET: ${{ secrets.HETZNER_S3_BUCKET }}
+        run: |
+          # Never let a leftover file stand in for a fetch that did not happen —
+          # the comparison step keys on this file's existence.
+          rm -f bench-baseline.txt
+          if [ -z "$S3_ACCESS_KEY" ]; then
+            echo "S3 secrets not configured — no baseline to compare against"
+            exit 0
+          fi
+          if ! command -v mc &>/dev/null; then
+            mkdir -p "$HOME/.local/bin"
+            curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$HOME/.local/bin/mc"
+            chmod +x "$HOME/.local/bin/mc"
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          mc alias set hetzner "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
+          # First-ever run has no object yet — absent baseline is not an error.
+          mc cp "hetzner/$S3_BUCKET/bench/master-latest.txt" bench-baseline.txt \
+            || echo "no previous baseline in S3 (first run?)"
+
       - name: Run benchmarks
         if: steps.window.outputs.ok == 'true'
         run: just bench-ci
+
+      - name: Compare against previous baseline (non-gating)
+        # Closes the loop on a baseline that was previously WRITE-ONLY: every
+        # nightly published bench/master-latest.txt and nothing ever read it, so
+        # a drift had no consumer. This diffs last nightly against this one and
+        # reports the deltas in the job summary.
+        #
+        # Deliberately NOT a gate. These binaries share a self-hosted runner with
+        # FDB testcontainers and run at benchtime=1s; bench-report's own threshold
+        # note puts single-iteration CI variance at 10-30%. A hard threshold on
+        # that is a flake generator, and a flaky gate is worse than no gate. The
+        # DETERMINISTIC half of benchmark health — did the timed work actually
+        # succeed — is gated instead, inside the planner bench binaries
+        # themselves (see `bench-ci` in the justfile).
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() }}
+        continue-on-error: true
+        run: |
+          if [ ! -s bench-baseline.txt ]; then
+            echo "no baseline fetched — skipping comparison"
+            exit 0
+          fi
+          # bench-ci can now fail (the planner bench binaries gate); if it died
+          # before writing results there is nothing to compare.
+          if [ ! -s bench-results.txt ]; then
+            echo "no current results — skipping comparison"
+            exit 0
+          fi
+          bazelisk run //cmd/bench-report -- \
+            -old "$PWD/bench-baseline.txt" -new "$PWD/bench-results.txt" > bench-delta.md
+          {
+            echo "## Benchmark delta vs previous nightly master"
+            cat bench-delta.md
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark results as artifact
         if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.coverage.outcome != 'skipped' }}

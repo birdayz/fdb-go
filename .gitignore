@@ -56,6 +56,7 @@ binding-stress-out/
 binding-stress-report.txt
 bench-raw.txt
 bench-results.txt
+bench-baseline.txt
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json

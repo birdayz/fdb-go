@@ -658,6 +658,15 @@ func BenchmarkRecursiveUnion_HashCodeWithoutChildren(b *testing.B) {
 		values.NamedCorrelationIdentifier("insert"),
 		TraversalLevel,
 	)
+	// A hash has no success/failure signal to assert, so unlike the other
+	// benchmarks in this package these two can only pin DETERMINISM: repeated
+	// calls on one expression must agree, which is the property the memo
+	// depends on. Whether the value is the RIGHT hash is owned by the dedup
+	// tests; a benchmark cannot check it without reimplementing it.
+	if a, c := e.HashCodeWithoutChildren(), e.HashCodeWithoutChildren(); a != c {
+		b.Fatalf("HashCodeWithoutChildren is not deterministic: %d then %d", a, c)
+	}
+	b.ResetTimer()
 	for b.Loop() {
 		e.HashCodeWithoutChildren()
 	}
@@ -665,6 +674,11 @@ func BenchmarkRecursiveUnion_HashCodeWithoutChildren(b *testing.B) {
 
 func BenchmarkTempTableScan_HashCodeWithoutChildren(b *testing.B) {
 	e := NewTempTableScanExpression(values.NamedCorrelationIdentifier("tt"))
+	// Determinism only — see BenchmarkRecursiveUnion_HashCodeWithoutChildren.
+	if a, c := e.HashCodeWithoutChildren(), e.HashCodeWithoutChildren(); a != c {
+		b.Fatalf("HashCodeWithoutChildren is not deterministic: %d then %d", a, c)
+	}
+	b.ResetTimer()
 	for b.Loop() {
 		e.HashCodeWithoutChildren()
 	}

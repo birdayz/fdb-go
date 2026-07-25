@@ -176,7 +176,7 @@ jobs:
           go run golang.org/x/vuln/cmd/govulncheck@latest $PKGS
 
   race:
-    name: Race detector (SQL layer + client)
+    name: Race detector (SQL layer + client + cascades)
     runs-on: hetzner-fdb
     steps:
       - name: Checkout code
@@ -189,7 +189,7 @@ jobs:
         run: |
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — race tests would skip (exit 0) and the gate would silently pass"; exit 1; }
 
-      - name: -race tests (SQL layer + client) — isolated output_base
+      - name: -race tests (SQL layer + client + cascades) — isolated output_base
         # CACHE ISOLATION (the perf fix). -race builds with --@rules_go//go/config:race,
         # a DIFFERENT build config than the normal "Build, Lint & Test" job. On a SHARED
         # output_base (the default), alternating that flag makes Bazel DISCARD the
@@ -203,34 +203,53 @@ jobs:
         #     server starts (7.6 GB box; FDB testcontainers also run here);
         #   - --host_jvm_args=-Xmx3g caps the race server; --local_resources bounds
         #     test concurrency by RAM.
-        # relational + client run as ONE invocation (one analysis pass, one server).
+        # The three scopes share ONE bazel server and one warm output_base, but are
+        # THREE separate `bazel test` invocations — see the serialisation rationale
+        # down at the invocation itself. (An older line here claimed relational and
+        # client ran as one invocation; they have not since the serial split, and
+        # with cascades added that would now be wrong three ways.)
         # WHY these scopes: the relational/SQL layer is driven concurrently via
         # database/sql and once caught a real client race (tx.hadRead → atomic.Bool);
         # the client packages (pipelined reads / commit / transport) are that same
         # hadRead class. bench (cgo libfdb_c) + conformance (Docker) stay excluded —
         # race-instrumented they'd dominate PR latency (RFC-107 §3). A data race in
         # either corrupts a SHARED FDB cluster, so keep it gating.
+        #
+        # CASCADES is the third scope. Note precisely what it adds: the relational
+        # scope already LINKS AND DRIVES the Cascades planner, so planner code was
+        # never entirely un-raced — it was covered INDIRECTLY, through whatever
+        # paths the SQL tests happen to take. What was missing is the cascades
+        # package's OWN test binary under the detector, which matters because that
+        # package has explicitly concurrent tests (TestRuleRegistry_Concurrent
+        # spawns goroutines) that no relational test can reach. Cascades is
+        # CPU-only — no Docker, no FDB, no testcontainers — so unlike bench and
+        # conformance it costs a compile plus a few seconds of tests.
         run: |
           bazelisk shutdown
           RACE_BASE="$HOME/.cache/bazel/_race_output_base"
           REL_SCOPE="//pkg/relational/..."
           CLIENT_SCOPE="//pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/..."
+          CASCADES_SCOPE="//pkg/recordlayer/query/plan/cascades/..."
           # No-op guard PER SCOPE (codex): count each gate independently. Counting the
           # UNION would let one side silently drop to zero (e.g. the client packages stop
           # exposing test targets) while the other keeps the union > 0 — `bazel test`
-          # would still exit 0 and quietly lose that race coverage. Both must be non-empty.
+          # would still exit 0 and quietly lose that race coverage. All must be non-empty.
           q() { bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g query "tests($(echo "$1" | sed 's/ / + /g'))" 2>/dev/null | wc -l; }
-          NR=$(q "$REL_SCOPE"); NC=$(q "$CLIENT_SCOPE")
+          NR=$(q "$REL_SCOPE"); NC=$(q "$CLIENT_SCOPE"); NX=$(q "$CASCADES_SCOPE")
           if [ "$NR" -eq 0 ]; then echo "::error::relational race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
           if [ "$NC" -eq 0 ]; then echo "::error::client race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
-          echo "race scope: relational=$NR client=$NC test targets"
-          # Run the two heavy suites as SEPARATE, serial invocations (codex) — NOT one
+          if [ "$NX" -eq 0 ]; then echo "::error::cascades race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
+          echo "race scope: relational=$NR client=$NC cascades=$NX test targets"
+          # Run the heavy suites as SEPARATE, serial invocations (codex) — NOT one
           # combined `bazel test`. A combined invocation lets Bazel interleave relational
           # and client targets under --local_test_jobs=4, so the heavy client_test could
           # overlap the heavy relational FDB-testcontainer tests and reintroduce Docker/
           # container contention on the single runner. Serial keeps the heavy suites from
           # overlapping; the SHARED RACE_BASE keeps both warm + isolated from the normal
           # build. (set -e stops on the first scope that races — same as the old two steps.)
+          # Cascades runs FIRST: it is the cheap CPU-only scope, so a planner race is
+          # reported in seconds instead of behind two testcontainer suites.
           RACE="bazelisk --output_base=$RACE_BASE --host_jvm_args=-Xmx3g test --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors --local_resources=memory=HOST_RAM*0.6"
+          $RACE $CASCADES_SCOPE
           $RACE $REL_SCOPE
           $RACE $CLIENT_SCOPE

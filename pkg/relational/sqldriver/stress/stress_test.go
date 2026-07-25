@@ -1,14 +1,19 @@
 //go:build stress
 
-// Heavy million / ten-million-row stress benchmarks. They run only when the
-// `stress` build tag is set: Bazel's //pkg/relational/sqldriver/stress target
-// sets it via .bazelrc, and the nightly stress workflow invokes that (manual)
-// target. A plain `go test ./...` does NOT set the tag, so these are excluded —
-// keeping the default Go test run fast and clean. See README.md in this dir.
+// Heavy 10K / 100K / 1M-row stress benchmarks. They run only when the `stress`
+// build tag is set: Bazel's //pkg/relational/sqldriver/stress target sets it via
+// .bazelrc, and the nightly stress workflow invokes that (manual) target. A
+// plain `go test ./...` does NOT set the tag, so these are excluded — keeping
+// the default Go test run fast and clean. See README.md in this dir.
+//
+// The 10M scales need a second tag (`realcluster`) and live in
+// stress_10m_test.go: a single-node testcontainer cannot sustain them, so
+// registering them here would advertise coverage this file never delivers.
 
 package stress_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -25,7 +30,36 @@ import (
 
 var clusterFilePath string
 
+// clusterFileEnv points the suite at an EXISTING FoundationDB cluster instead
+// of a single-node testcontainer. It is what makes "run against a real cluster"
+// an instruction rather than an aspiration: the 10M scales in
+// stress_10m_test.go exceed what one Docker node sustains, and without this
+// there was no way to run them anywhere, because TestMain always started a
+// container. Unset (the normal case) keeps the testcontainer path unchanged.
+const clusterFileEnv = "FDB_STRESS_CLUSTER_FILE"
+
 func TestMain(m *testing.M) {
+	if external := os.Getenv(clusterFileEnv); external != "" {
+		// Fail loudly rather than falling back to a container: someone who set
+		// this variable asked for a specific cluster, and silently stressing a
+		// Docker node instead would produce numbers labelled as real-cluster.
+		//
+		// Actually READ it rather than os.Stat it. Stat answers "does this exist",
+		// which is a different question: a mode-000 file or a directory passes
+		// Stat and then fails deep inside connection setup, unlabelled. The FDB
+		// client is going to read this file, so read it here.
+		if content, err := os.ReadFile(external); err != nil {
+			fmt.Fprintf(os.Stderr, "stress: %s=%q is not readable: %v\n", clusterFileEnv, external, err)
+			os.Exit(1)
+		} else if len(bytes.TrimSpace(content)) == 0 {
+			fmt.Fprintf(os.Stderr, "stress: %s=%q is empty — not a cluster file\n", clusterFileEnv, external)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "stress: using external cluster file %s\n", external)
+		clusterFilePath = external
+		os.Exit(m.Run())
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -303,10 +337,9 @@ func TestFDB_Stress_1M(t *testing.T) {
 	runStressSuite(t, "1m", 1_000_000)
 }
 
-func TestFDB_Stress_10M(t *testing.T) {
-	t.Skip("10M exceeds Docker FDB single-node throughput; run against a real cluster")
-	runStressSuite(t, "10m", 10_000_000)
-}
+// The 10M scales (TestFDB_Stress_10M, TestFDB_Ingest_10M) live in
+// stress_10m_test.go behind the additional `realcluster` build tag, so this
+// package advertises exactly the scales it runs. See that file for why.
 
 func TestFDB_Ingest_Parallelism(t *testing.T) {
 	type config struct {
@@ -333,9 +366,10 @@ func TestFDB_Ingest_Parallelism(t *testing.T) {
 			// stopped responding, and the client (correctly, matching C++/Java: no default
 			// transaction timeout) retried the now-unreachable cluster forever, hanging the
 			// whole suite to the 1h test deadline (nightly-stress, every night). Same
-			// single-node-Docker ceiling that makes TestFDB_Ingest_10M / TestFDB_Stress_10M
-			// t.Skip with "run against a real cluster". 1M total keeps every parallelism
-			// config meaningful while staying inside what one Docker node sustains.
+			// single-node-Docker ceiling that keeps TestFDB_Ingest_10M / TestFDB_Stress_10M
+			// behind the `realcluster` build tag (stress_10m_test.go). 1M total keeps every
+			// parallelism config meaningful while staying inside what one Docker node
+			// sustains.
 			n := 200_000
 			h := newStressHarness(t, fmt.Sprintf("par_w%d_b%d_tx%d", cfg.workers, cfg.batchSize, cfg.batchesPerTx))
 			h.workers = cfg.workers
@@ -362,87 +396,6 @@ func TestFDB_Ingest_Parallelism(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestFDB_Ingest_10M(t *testing.T) {
-	// Same single-node-Docker throughput ceiling as TestFDB_Stress_10M: 10M serial
-	// inserts can't finish inside the test budget on one container (~55min at Docker
-	// rates) and degrade the node along the way. It runs AFTER TestFDB_Ingest_Parallelism
-	// in this file, so before the Parallelism right-sizing it was never even reached;
-	// unskipped, it would just move the nightly-stress red here. Run against a real cluster.
-	t.Skip("10M exceeds Docker FDB single-node throughput; run against a real cluster")
-	h := newStressHarness(t, "ingest10m")
-
-	// Minimal schema: single PK, no secondary indexes.
-	h.createSchema(`
-		CREATE TABLE items (
-			id BIGINT NOT NULL,
-			val BIGINT NOT NULL,
-			PRIMARY KEY (id)
-		)
-	`)
-
-	n := 10_000_000
-	start := time.Now()
-	inserted := 0
-	batchSize := 500
-	lastLog := time.Now()
-
-	for offset := 0; offset < n; offset += batchSize {
-		end := offset + batchSize
-		if end > n {
-			end = n
-		}
-		var rows []string
-		for i := offset; i < end; i++ {
-			rows = append(rows, fmt.Sprintf("(%d, %d)", i, i*7))
-		}
-		stmt := fmt.Sprintf("INSERT INTO items VALUES %s", strings.Join(rows, ", "))
-
-		var lastErr error
-		for attempt := range 5 {
-			batchStart := time.Now()
-			if _, lastErr = h.db.ExecContext(context.Background(), stmt); lastErr == nil {
-				batchDur := time.Since(batchStart)
-				if batchDur > 3*time.Second {
-					t.Logf("  SLOW batch [%d..%d): %v", offset, end, batchDur)
-				}
-				break
-			}
-			t.Logf("  RETRY %d batch [%d..%d): %v", attempt+1, offset, end, lastErr)
-			time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
-		}
-		if lastErr != nil {
-			t.Fatalf("INSERT batch [%d..%d) failed after retries: %v (inserted %d/%d so far)", offset, end, lastErr, inserted, n)
-		}
-		inserted += end - offset
-
-		if time.Since(lastLog) > 10*time.Second {
-			elapsed := time.Since(start)
-			rate := float64(inserted) / elapsed.Seconds()
-			t.Logf("  progress: %d/%d (%.1f%%) in %v (%.0f rows/s)", inserted, n, float64(inserted)*100/float64(n), elapsed, rate)
-			lastLog = time.Now()
-		}
-	}
-
-	elapsed := time.Since(start)
-	t.Logf("INSERT complete: %d rows in %v (%.0f rows/s)", inserted, elapsed, float64(inserted)/elapsed.Seconds())
-
-	// Verify count.
-	var count int64
-	if err := h.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM items").Scan(&count); err != nil {
-		t.Fatalf("COUNT(*): %v", err)
-	}
-	if count != int64(n) {
-		t.Fatalf("COUNT(*) = %d, want %d", count, n)
-	}
-	t.Logf("COUNT(*) verified: %d", count)
-
-	// Needle in haystack: unindexed filter on val column.
-	r := h.timeQuery("SELECT id FROM items WHERE val + 0 = 35 ORDER BY id")
-	r.mustSucceed(t, "sparse filter val+0=35")
-	r.expectRows(t, "sparse filter val+0=35", 1) // only id=5 has val=35
-	t.Logf("sparse filter at 10M: %v", r.Duration)
 }
 
 func runStressSuite(t *testing.T, suffix string, n int) {

@@ -505,6 +505,13 @@ func BenchmarkExtractBestPlan_DeepTree(b *testing.B) {
 		innerQ = expressions.ForEachQuantifier(expressions.InitialOf(f))
 	}
 	r := innerQ.GetRangesOver()
+	// Extraction that FAILS returns almost immediately, so an unchecked
+	// ExtractBestPlan turns a regression into a headline speedup. The
+	// Reference is loop-invariant, so one pre-loop check covers every
+	// iteration and the timed region stays untouched.
+	if best, err := ExtractBestPlan(r); err != nil || best == nil {
+		b.Fatalf("ExtractBestPlan = %v, err %v; want a plan", best, err)
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = ExtractBestPlan(r)
@@ -529,6 +536,9 @@ func BenchmarkExtractBestPlan_WideAlternatives(b *testing.B) {
 		r.Insert(expressions.NewLogicalFilterExpression(
 			preds, expressions.ForEachQuantifier(innerScan),
 		))
+	}
+	if best, err := ExtractBestPlan(r); err != nil || best == nil {
+		b.Fatalf("ExtractBestPlan = %v, err %v; want a plan", best, err)
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

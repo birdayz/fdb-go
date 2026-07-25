@@ -467,10 +467,164 @@ closed rather than silently alter rows or output schema.
   `default_rules.go`'s init. It is not — the helper is reached only through
   `shortTypeName`, which strips down to the simple name. Prose only; no behaviour
   change.
-- [ ] **CQ-13 (MED) — strengthen performance and concurrency gates.** Benchmarks
-  must validate planning success before recording time, compare against a
-  regression baseline, directly race-test Cascades in PR CI, and accurately
-  report which stress scales are actually exercised.
+- [x] **CQ-13 (MED) — strengthen performance and concurrency gates.** Four
+  sub-claims; three held as written, one did not.
+  **Benchmarks discarded planner results — held, and worse than filed.** The
+  named sites (`benchmark_test.go` `p.Plan(ref)` bare at three call sites,
+  `_, _, _ =` at a fourth) were real, and the sweep found the same defect in
+  `plan_extraction_test.go`'s two `ExtractBestPlan` benchmarks. It also found
+  the failure mode already *live*: five Value/predicate benchmarks
+  (`FieldValue_Evaluate`, `ArithmeticValue_Evaluate`, `ComparisonPredicate_Eval`,
+  `..._NonConstantRHS`, `KleeneAnd_Eval`) evaluated against a `map[string]any`
+  row, which stopped being a recognized eval context — every iteration returned
+  `*UnboundEvalContextError` and the recorded time was the error path, not
+  evaluation. They now evaluate against a `values.OrdinalRow` (the production
+  context) and assert the value. Every benchmark in both files now validates the
+  work it times. Placement is split by what a pre-loop check can honestly cover:
+  loop-invariant deterministic operations validate ONCE before
+  `b.ResetTimer()` so the timed region is untouched, while per-iteration work
+  (fresh Reference + fresh single-use Planner each iteration) validates inside
+  the loop, where a few comparisons against microsecond-scale planning cannot
+  move a delta both revisions pay. `b.StopTimer`/`StartTimer` is deliberately
+  not used — the pair costs more than what it would exclude. The three
+  index/aggregation benchmarks additionally assert the best expression `isPhysical`,
+  because `Plan` can return a logical expression with a nil error, which is
+  cheaper than real planning. The same audit was then extended to the OTHER
+  binary this item puts behind a gate, `expressions_test`, which had the
+  identical defect in all six of its benchmarks plus the two
+  `HashCodeWithoutChildren` ones: `SemanticEquals` and `Reference.Insert`
+  results were discarded, so a `SemanticEquals` regressed to always-false would
+  early-out of every comparison and post a headline speedup. All eight now
+  assert (match succeeded, permuted union still pairs, `Compose` merged to 3
+  rather than taking its empty-operand early-return, dedup rejected, distinct
+  accepted). The two hash benchmarks are the one honest exception — a hash has
+  no success/failure signal, so they pin determinism only, and both the
+  `bench-ci` comment and the benchmarks themselves say so rather than letting
+  the gate's justification overstate its reach.
+  **Expect a one-time baseline discontinuity, not a regression or a win.** The
+  five repaired Value/predicate benchmarks now measure real evaluation under the
+  same names they used while measuring an error return, so the first post-merge
+  nightly will diff them against an S3 baseline recorded from the broken shape
+  and report a large one-time move. It is an artefact of the fix, self-corrects
+  on the following nightly, and should not be read as a signal either way.
+  Scope caveat recorded at `benchRow`'s definition: it is a bare `[]any`
+  satisfying `values.OrdinalRow`, not `executor.PositionalRow`, so these measure
+  Value/predicate evaluation and interface dispatch rather than the production
+  row implementation — the right boundary for a Value-tree micro-benchmark, and
+  in any case cascades cannot import executor.
+  **Regression baseline — the filed premise was imprecise.** A baseline and a
+  comparison tool both already existed: nightly-coverage publishes
+  `bench-results.txt` to S3 as `bench/master-latest.txt`, and `cmd/bench-report`
+  diffs two files at a 10% threshold. What was missing is a *consumer* — nothing
+  ever read the object back, so the baseline was write-only. Closed by fetching
+  the previous baseline before the bench step and reporting the delta to the job
+  summary. Deliberately NOT a gate: these binaries share a self-hosted runner
+  with FDB testcontainers at `benchtime=1s`, and `bench-report`'s own note puts
+  single-iteration CI variance at 10-30% — a threshold gate on that is a flake
+  generator. The *deterministic* half of benchmark health is gated instead: the
+  two CPU-only planner bench binaries (cascades, expressions) now turn `bench-ci`
+  red on a non-zero exit, so the assertions above are acted on. The FDB-backed
+  bench binaries stay report-only for the load-flake reason already documented.
+  Timeouts on the two newly-gating binaries were raised 60s→300s so a busy
+  runner cannot trip the gate on time rather than on failure — measured at
+  `benchtime=1s` on an idle box, cascades takes 42s and expressions 11s, so the
+  old 60s cap gave cascades under a 1.5x margin.
+  The gate was verified to actually fire, not merely to exist: a deliberately
+  inverted assertion in `BenchmarkPlanner_FullPlan` made the binary exit 1
+  (`--- FAIL: BenchmarkPlanner_FullPlan`). The gating tail reads its verdict
+  back out of `bench-raw.txt` by grepping the `!!! <binary> bench binary exited`
+  sentinel it already writes. A first version instead carried a marker file,
+  which was self-inflicted: `{ ...; } | tee` forks a subshell so a variable
+  would not survive it. Grepping the existing sentinel needs no side channel at
+  all, and unlike the other obvious fix (`{ ...; } > bench-raw.txt`, no
+  subshell) it keeps `tee`, so the ~10-minute step still streams to the live CI
+  log instead of going silent until it finishes. Exercised in isolation for both
+  outcomes, including the one that matters most — an FDB bench binary failing
+  while the planner ones pass must NOT gate (exit 0); a planner binary failing
+  must (exit 1). A full `just bench-ci` exits 0 with 128 results, 0 failures.
+  **Cascades never race-tested in PR CI — held.** Stated precisely: the
+  relational scope already links and drives the planner, so planner code had
+  INDIRECT race coverage; what was missing is the cascades package's own test
+  binary under the detector, which is the only way to reach
+  `TestRuleRegistry_Concurrent`'s goroutines. Added
+  `//pkg/recordlayer/query/plan/cascades/...` as a third scope on the PR race
+  job, carrying the file's per-scope no-op guard (0 resolved targets fails
+  loudly) and the shared `_race_output_base`; it runs first, being the cheap
+  CPU-only scope, so a planner race reports in seconds instead of behind two
+  testcontainer suites. `just race-all` gained the same wildcard.
+  It does NOT, however, "make local and CI agree" — an earlier version of this
+  entry and of the recipe comment claimed that, and it was wrong. **Three race
+  sets exist and are not meant to be equal**, now documented as such at
+  `race-all`: the PR gate races relational + client + transport + fdb +
+  cascades; nightly-coverage races client + fdb + recordlayer + chaos +
+  conformance; `race-all` mirrors *nightly-coverage* (which it always has) plus
+  cascades. The consequence is stated plainly in the recipe rather than papered
+  over: `just race-all` does not race `relational/...`, so a green local run
+  does not predict a green PR race job. `just verify`'s "(5 targets)" label was
+  stale before this change and unfixable after it (the wildcard has no fixed
+  count), so it no longer claims a number. **Added wall-clock, measured on a 24-thread box across all three
+  regimes: 112s on a cold race cache (full instrumented rebuild — a one-time
+  cost, since the base is shared with nightly-coverage and stays warm), 44s on a
+  PR that edits the cascades package itself (recompiles that binary), and 22s
+  fully warm.** That is cheap relative to the two testcontainer scopes already
+  in this job, which is exactly why cascades qualifies where bench and
+  conformance do not. 7/7 targets pass; `TestRuleRegistry_Concurrent` confirmed
+  executing under `-race` (`--- PASS`, run explicitly by name). **No race was
+  found — neither in that test nor anywhere in the seven targets.**
+  **Stress scales misreported — held, with one correction.** The unconditional
+  `t.Skip` in `TestFDB_Stress_10M` was real, and the sweep found a second
+  identical one in `TestFDB_Ingest_10M`. Both are now in `stress_10m_test.go`
+  behind `//go:build stress && realcluster`, so they are *registered only where
+  they can run* rather than advertised-and-skipped; under the plain `stress` tag
+  the package is exactly 10K/100K/1M and runs all three. Deleting them was
+  rejected — the scale is legitimate on a real cluster and the reason is
+  environmental, not a hidden bug. To make "run against a real cluster" an
+  instruction rather than an aspiration, `TestMain` now honours
+  `FDB_STRESS_CLUSTER_FILE` (previously it always started a container, so the
+  10M tests could not have run anywhere); an unreadable value fails loudly rather
+  than falling back to Docker. Because `realcluster` is not in `.bazelrc`'s tag
+  list, gazelle leaves the file out of the `go_test` srcs and nothing in the
+  Bazel build compiles it, so nightly-stress gained a `go vet -tags 'stress
+  realcluster'` type-check — same pattern nightly-libfdbc uses for its
+  Bazel-invisible tagged backend. That step carries its own no-op guard, because
+  a vet over a package the file has dropped out of exits 0 having checked
+  nothing — exactly the rot it exists to catch, wearing a green check. It
+  asserts via `go list` that `stress_10m_test.go` is in the `stress realcluster`
+  build before vetting, verified against both ways it can fail: renaming the tag
+  and moving the file each produced the error and exit 1; restoring gave exit 0.
+  The env guard READS the cluster file rather than `os.Stat`-ing it. Stat
+  answers "does this exist", which is the wrong question, and it waved through
+  three distinct bad inputs — all three confirmed: a mode-000 file, an empty
+  file, and a directory, each of which would otherwise have failed unlabelled
+  deep inside connection setup.
+  The correction: **"nightly-stress runs 1M only" is false.** Its `bazelisk test`
+  passes no `--test.run`, so it executes the whole target — 10K, 100K, 1M, the
+  ingest-parallelism matrix and the SaveRecord comparisons. Only the job *name*
+  and comments said "1M"; those are now accurate, and the README carries an
+  explicit scale/tag/where-it-runs table.
+  **`t.Skip` sweep (`pkg/`, `conformance/`).** Two prime-directive violations
+  found — both the 10M ones above, both fixed. Everything else is one of:
+  Docker/FDB-availability (sanctioned); `f.Fuzz` corpus domain restriction
+  (rejecting oversized or invalid-UTF-8 inputs, not deferring a failure);
+  explicit env opt-in for dataset- or hardware-dependent workloads (SIFT,
+  SPFresh soaks, `tc netem`/NET_ADMIN, the Java submodule corpus); or an
+  inapplicable matrix cell. Two classes are worth naming as pre-existing risk
+  rather than violations, filed as CQ-15 below: skips on a *nondeterministic
+  runtime condition* (`multishard_test.go`'s "shard splits did not occur",
+  `connmon_test.go`'s "no proxy connections available"), which silently drop
+  coverage while staying green. `plandiff/go_runner_test.go`'s
+  `t.Skipf("Go-engine feature gap: ...")` is the same shape — it is built to turn
+  a future Go gap into a green skip — but it fires zero times today and sits
+  squarely in CQ-14's scope, so it is left for that item rather than duplicated.
+- [ ] **CQ-15 (LOW) — make condition-gated skips report lost coverage.** Two
+  tests skip on a nondeterministic runtime condition and stay green while
+  running nothing: `pkg/fdbgo/client/multishard_test.go` (twice — "shard splits
+  did not occur", so all cross-shard assertions vanish) and
+  `pkg/fdbgo/client/connmon_test.go` ("no proxy connections available"). Unlike
+  the sanctioned Docker probe, these conditions are *supposed* to hold in a
+  healthy environment, so a skip means the setup silently failed to produce the
+  state under test. Either force the condition (drive enough data/connections to
+  guarantee it) or fail rather than skip once the environment is known-capable.
 - [ ] **CQ-14 (LOW) — reconcile the advertised SQL surface with conformance.**
   Remove the README claim that `IN (SELECT ...)` is supported until the
   conformance corpus accepts it, and make generated rejection cases visibly

@@ -180,12 +180,26 @@ bench-one NAME:
 
 # Run benchmarks for CI — record layer + wire types, benchtime=1s, results to bench-results.txt.
 #
-# Individual BenchmarkXxx failures (FDB context-deadline timeouts etc.)
-# are surfaced via the GitHub step summary + bench-raw.txt, but don't
-# turn CI red — they're frequently FDB-load-dependent flakes and
-# blocking on them would make every PR a dice roll. A bench BINARY
-# crash (exit != 0 / timeout) IS reported in the run log via the
-# `!!! ...` sentinel so it's still visible.
+# Individual BenchmarkXxx failures in the FDB-BACKED binaries (context-deadline
+# timeouts etc.) are surfaced via the GitHub step summary + bench-raw.txt, but
+# don't turn CI red — they're frequently FDB-load-dependent flakes and blocking
+# on them would make every run a dice roll. A bench BINARY crash (exit != 0 /
+# timeout) IS reported in the run log via the `!!! ...` sentinel so it's still
+# visible.
+#
+# The two PLANNER binaries (cascades, expressions) are the exception and DO gate:
+# they spin no Docker container and touch no FDB, so a non-zero exit there is a
+# deterministic benchmark failure, not load. Every benchmark in both was audited
+# and now asserts the work it times actually happened — planning produced a
+# physical plan, the rule fired, the matcher bound, SemanticEquals matched,
+# dedup rejected the duplicate. The sole exception is the two
+# HashCodeWithoutChildren benchmarks, which have no success/failure signal to
+# assert and pin determinism instead; that is stated at their definition. An
+# assertion nothing acts on is a fake checkbox, so these two binaries turn the
+# run red. Their timeout was raised 60s -> 300s because a gating step must fail
+# on a FAILURE, never on a busy runner's clock: measured at benchtime=1s on an
+# idle 24-thread box, cascades takes 42s and expressions 11s, so the old 60s cap
+# left cascades under a 1.5x margin.
 bench-ci:
     #!/usr/bin/env bash
     # No -e: we WANT to keep running when a bench binary fails so all
@@ -220,25 +234,25 @@ bench-ci:
             fail_count=$((fail_count + 1))
         fi
         echo "=== Running benchmarks: //pkg/recordlayer/query/plan/cascades:cascades_test ==="
-        timeout 60 "$BAZEL_BIN/pkg/recordlayer/query/plan/cascades/cascades_test_/cascades_test" \
+        timeout 300 "$BAZEL_BIN/pkg/recordlayer/query/plan/cascades/cascades_test_/cascades_test" \
             -test.run='^$' \
             -test.bench=. \
             -test.benchmem \
             -test.benchtime=1s 2>&1
         rc=$?
         if [ "$rc" -ne 0 ]; then
-            echo "!!! cascades_test bench binary exited with $rc (124 = timeout)"
+            echo "!!! cascades_test bench binary exited with $rc (124 = timeout) — GATING (no FDB, so this is deterministic)"
             fail_count=$((fail_count + 1))
         fi
         echo "=== Running benchmarks: //pkg/recordlayer/query/plan/cascades/expressions:expressions_test ==="
-        timeout 60 "$BAZEL_BIN/pkg/recordlayer/query/plan/cascades/expressions/expressions_test_/expressions_test" \
+        timeout 300 "$BAZEL_BIN/pkg/recordlayer/query/plan/cascades/expressions/expressions_test_/expressions_test" \
             -test.run='^$' \
             -test.bench=. \
             -test.benchmem \
             -test.benchtime=1s 2>&1
         rc=$?
         if [ "$rc" -ne 0 ]; then
-            echo "!!! expressions_test bench binary exited with $rc (124 = timeout)"
+            echo "!!! expressions_test bench binary exited with $rc (124 = timeout) — GATING (no FDB, so this is deterministic)"
             fail_count=$((fail_count + 1))
         fi
         echo "=== Running benchmarks: //pkg/fdbgo/fdb:fdb_test ==="
@@ -297,6 +311,19 @@ bench-ci:
             grep -E '^--- FAIL: Benchmark' bench-raw.txt
             echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
+    fi
+    # GATE on the two Docker-free planner binaries. The `{ ...; } | tee` above
+    # runs in a subshell, so a variable set inside it would not survive — but no
+    # side-channel is needed, because the failure sentinel is already IN
+    # bench-raw.txt. Read it back rather than inventing a marker file. (The
+    # alternative, `{ ...; } > bench-raw.txt`, avoids the subshell but also
+    # avoids `tee`, so the whole ~10-minute step would emit nothing to the live
+    # CI log until it finished.)
+    PLANNER_FAIL=$(grep -cE '^!!! (cascades_test|expressions_test) bench binary exited' bench-raw.txt 2>/dev/null; true)
+    if [ "$PLANNER_FAIL" -gt 0 ]; then
+        echo "planner bench binaries failed (gating):" >&2
+        grep -E '^!!! (cascades_test|expressions_test) bench binary exited' bench-raw.txt >&2
+        exit 1
     fi
 
 # Compare benchmark results: just bench-report old.txt new.txt
@@ -387,8 +414,29 @@ race:
 
 # Run all tests with race detector. Dedicated output_base (see `race`). First run on a
 # cold race cache recompiles instrumented (~3 min); subsequent runs are warm.
+#
+# THREE DIFFERENT RACE SETS EXIST. They are not meant to be equal, so do not
+# "reconcile" them without reading why:
+#
+#   this recipe          client, fdb, recordlayer, chaos, conformance, cascades/...
+#   nightly-coverage.yml client, fdb, recordlayer, chaos, conformance
+#   ci.yml (PR gate)     relational/..., client, transport, fdb, cascades/...
+#
+# This recipe mirrors NIGHTLY-COVERAGE (not the PR gate) and always has: it is
+# the "everything heavy I can run locally" set — chaos and conformance are far
+# too slow to gate a PR, while the PR gate instead carries relational/..., whose
+# database/sql concurrency is the highest-yield race surface and which is too
+# expensive to belong in a recipe developers run repeatedly.
+#
+# CONSEQUENCE, stated plainly: `just race-all` is NOT a pre-flight for the PR
+# race gate. It does not race relational/..., so a green run here does not
+# predict a green race job on the PR.
+#
+# Cascades was added to BOTH this recipe and the PR gate, as a WILDCARD so new
+# planner subpackages are picked up instead of silently going unraced. It is
+# CPU-only (no Docker, no FDB), so it is the cheap part of both.
 race-all:
-    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test --@rules_go//go/config:race --test_timeout=900
+    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
 
 # Full pre-merge verification: build + test + race detector + fuzz smoke test.
 # Run this before requesting PR merge. Takes ~3 minutes on a warm cache.
@@ -397,7 +445,10 @@ verify:
     set -euo pipefail
     echo "=== Build + lint + test ==="
     just test
-    echo "=== Race detector (5 targets) ==="
+    # No target count in this label: race-all now ends in a wildcard, so any
+    # hardcoded number is wrong the moment a planner subpackage is added. It was
+    # already stale — "5" predated the cascades scope, which alone resolves to 7.
+    echo "=== Race detector (see race-all: does NOT cover relational/..., unlike the PR gate) ==="
     just race-all
     echo "=== Fuzz smoke (3 targets, 10s each) ==="
     # Routed through //cmd/fuzzrun for the same reason the nightly is: Go's fuzz

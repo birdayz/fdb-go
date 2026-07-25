@@ -1,9 +1,17 @@
 name: Nightly Stress
 
-# RFC-107: the 1M-row stress test (//pkg/relational/sqldriver/stress, tag `stress`+`manual`)
+# RFC-107: the stress suite (//pkg/relational/sqldriver/stress, tag `stress`+`manual`)
 # was excluded from every workflow (--test_tag_filters=-stress), so the planner/cost-model/
 # executor regression net ran in NO CI. This scheduled job runs it. It does NOT gate PRs
 # (too heavy); a red run here is a release blocker, surfaced like the nightly-fuzz failures.
+#
+# WHAT RUNS: the `bazelisk test` below passes NO --test.run filter, so it executes the
+# WHOLE stress target — every scale (10K, 100K, 1M), the ingest-parallelism matrix and
+# the SaveRecord comparisons — not just the 1M suite this job used to be named after.
+# The 10M scales are NOT here and are not skipped either: they carry an extra
+# `realcluster` build tag, so they are not compiled into this target at all (a single
+# Docker FDB node cannot sustain them — see stress_10m_test.go). The advertised scale
+# list and the executed scale list are therefore identical.
 on:
   schedule:
     # 4:23 AM UTC daily (off-minute, after the 3:17 fuzz job, to avoid fleet congestion)
@@ -12,7 +20,7 @@ on:
 
 jobs:
   stress:
-    name: 1M Stress (planner / cost-model / executor)
+    name: Stress suite 10K/100K/1M (planner / cost-model / executor)
     runs-on: hetzner-fdb
     timeout-minutes: 120
 
@@ -54,9 +62,40 @@ jobs:
         # the allowed `FDB not available (no Docker)` skip — so without Docker the
         # `bazelisk test` below reports SUCCESS while running ZERO stress coverage
         # (codex). Fail loudly here instead, so a green stress run always means the
-        # 1M scenario actually executed.
+        # scenarios actually executed.
         run: |
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the stress test would skip (exit 0) and the gate would silently pass with no coverage"; exit 1; }
+
+      - name: Type-check the realcluster-tagged scales
+        if: steps.window.outputs.ok == 'true'
+        # stress_10m_test.go carries `stress && realcluster`. `realcluster` is not in
+        # .bazelrc's tag list, so gazelle leaves the file out of the go_test srcs and
+        # NOTHING in the Bazel build ever compiles it — it would rot silently until
+        # someone next reached for a real cluster. `go vet` with both tags type-checks
+        # it without running it (no cluster, no Docker, seconds). Same pattern as
+        # nightly-libfdbc, which compiles the `libfdbc`-tagged backend the Bazel build
+        # also skips.
+        run: |
+          OUTPUT_BASE=$(bazelisk info output_base 2>/dev/null)
+          GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
+          if [ -z "$GO_BIN" ]; then
+            bazelisk run @rules_go//go -- version >/dev/null 2>&1 || true
+            GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
+          fi
+          [ -n "$GO_BIN" ] || GO_BIN=go
+          echo "Using Go: $GO_BIN ($($GO_BIN version))"
+          # NO-OP GUARD, same discipline as every other gate in this repo's CI:
+          # if the tag is renamed or the file moves, stress_10m_test.go simply
+          # drops out of the package and `go vet` exits 0 having checked
+          # NOTHING — the exact rot this step exists to catch, wearing a green
+          # check. Assert the file is actually in the realcluster build first.
+          FILES=$(GOWORK=off "$GO_BIN" list -tags 'stress realcluster' -f '{{.XTestGoFiles}}' ./pkg/relational/sqldriver/stress/)
+          echo "realcluster build files: $FILES"
+          case "$FILES" in
+            *stress_10m_test.go*) ;;
+            *) echo "::error::stress_10m_test.go is not in the 'stress realcluster' build — the type-check below would be a no-op"; exit 1 ;;
+          esac
+          GOWORK=off "$GO_BIN" vet -tags 'stress realcluster' ./pkg/relational/sqldriver/stress/
 
       - name: Resolve stress targets (no-op guard)
         if: steps.window.outputs.ok == 'true'
@@ -106,7 +145,7 @@ jobs:
         # equality <10ms.
         run: |
           {
-            echo "## 1M stress — latency trend ($(date -u +%FT%TZ))"
+            echo "## Stress suite (10K/100K/1M) — latency trend ($(date -u +%FT%TZ))"
             echo '```'
             # grep -m 40 (NOT `grep | head -40`): head closes the pipe early on >40
             # matches → grep SIGPIPEs → under GHA's default `bash -eo pipefail` the
