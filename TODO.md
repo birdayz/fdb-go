@@ -1234,6 +1234,84 @@ closed rather than silently alter rows or output schema.
   text and last-resort arms, `EXPLAIN q` must equal `Plan(q).Explain()`.
   Verified red on the old `("", nil)` — `union_distinct_last_resort` fails with
   exactly `0A000: EXPLAIN inner statement produced no plan text`.
+- [x] **CQ-17 (MED) — `computeDistinctRecords` claimed every
+  `RecordQueryMergeSortUnionPlan` was distinct, ignoring its own
+  `RemovesDuplicates()` flag.** `plan_properties.go`'s `computeDistinctRecords`
+  grouped `*plans.RecordQueryMergeSortUnionPlan` with the genuinely-always-
+  distinct plans (`RecordQueryDistinctPlan`, `RecordQueryIntersectionPlan`, …)
+  and returned `true` unconditionally, never reading
+  `RemovesDuplicates()`/`removeDuplicates` — but the plan's own doc comment
+  (`merge_sort_union.go:18`) and its executor (`executeMergeSortUnion` /
+  `mergeSortCursor`, `executor_new_plans.go:1203`) both support
+  `removeDuplicates=false` as an ordered UNION ALL, where tied rows from
+  non-leading children legitimately re-emit. **Verified against Java
+  4.12.11.0 first:** Java's counterpart
+  (`RecordQueryUnionPlanBase`/`RecordQueryUnionPlan`, no `removeDuplicates`
+  field at all — `UnionCursor` always dedups) has no non-dedup mode, so
+  `DistinctRecordsProperty.visitUnionOnValuesPlan`/`visitUnionOnKeyExpressionPlan`
+  (`DistinctRecordsProperty.java:312-314,366-368`) correctly return `true`
+  unconditionally — confirming the Go doc comment's claim that
+  `removeDuplicates=false` is a genuine Go-only extension, not a stale
+  divergence. Fixed by gating the arm on `p.RemovesDuplicates()` instead of
+  the blanket `true`. **Currently latent, not live:** every production
+  constructor (`rule_implement_distinct_union.go:269`,
+  `rule_push_set_operation_through_fetch.go:142-148`) passes `true` or
+  forwards an existing plan's flag — nothing mints `removeDuplicates=false`
+  today — so no plan shape moved; confirmed via
+  `pkg/relational/conformance/explaindiff`'s golden byte-identical (untouched
+  by `git status`) and the full `.../conformance/...` suite green. Had it gone
+  live, `ImplementDistinctFinalRule` (`rule_implement_distinct_final.go:91`,
+  trusting `partition.IsDistinct()` sourced from this property) would have
+  elided a needed dedup wrapper and let duplicate rows through a `SELECT
+  DISTINCT`. Verified RED: `TestComputeDistinctRecords_MergeSortUnionRemoveDuplicatesFalseIsFalse`
+  (`plan_properties_test.go`) fails on the pre-fix code
+  (`removeDuplicates=false` reported distinct) and passes after.
+  **No structural invariant added, deliberately** — unlike CQ-10g's InJoin
+  `sorted`/`GetInValues()` pair (two independently-settable pieces of DATA on
+  the SAME plan instance that a buggy call site can desync), `removeDuplicates`
+  is the SOLE source of truth for this property and the fix now reads it
+  directly: there is no second piece of per-instance data that could
+  legitimately drift out of sync from it. A regression back to unconditional
+  `true` is a code bug (caught by the unit test above), not a data-consistency
+  bug a per-instance runtime walk over `ValidatePlanInvariants` could catch.
+  **Sweep of the rest of `computeDistinctRecords`'s switch:** checked every
+  other plan type with a mode/direction-toggling field
+  (`RecordQueryIntersectionPlan.reverse`, `RecordQueryInUnionPlan.reverse`/
+  `maxSize`, `RecordQueryMultiIntersectionOnValuesPlan`'s fields,
+  `RecordQueryDistinctPlan.Streaming`) against what the property claims and
+  what the executor does. None are dedup-mode toggles: `reverse` is scan
+  direction only (orthogonal to distinctness — Java's Intersection/InUnion
+  visitors also return `true` unconditionally regardless of direction),
+  `RecordQueryInUnionPlan.maxSize` is the unrelated fanout-cap gap tracked
+  below as CQ-18, and `RecordQueryDistinctPlan.Streaming` picks an executor
+  strategy (adjacent-dedup vs hash-set) — both modes dedup, so it does not
+  affect distinctness. `RecordQueryMergeSortUnionPlan` was the only plan in
+  the switch whose ignored field actually changed whether duplicates survive.
+- [ ] **CQ-18 (LOW) — `RecordQueryInUnionPlan.maxSize`/`GetMaxSize()` is
+  stamped and preserved but never read by the executor.** Set at
+  `rule_implement_in_union.go:337` from
+  `PlannerConfiguration.AttemptFailedInJoinAsUnionMaxSize`, carried through
+  rebuilds, but `executeInUnion` (`executor_new_plans.go:1084`) never calls
+  `GetMaxSize()` — zero hits for `GetMaxSize` in the executor package. Java
+  re-checks this cap at **runtime**
+  (`RecordQueryInUnionPlan.java:151-154`, throws if actual fanout exceeds it)
+  because Java's IN sources can resolve from live parameters. The knob
+  defaults to 0 (disabled) with no production call site setting it today, so
+  both engines are inert on this axis right now — a missing safety guard, not
+  wrong rows. Found during the CQ-17 sweep; not implemented there (out of
+  scope — recording only, per the sweep's mandate not to grow scope beyond
+  the property bug it was chasing).
+- [ ] **CQ-19 (LOW) — `RecordQueryVectorIndexPlan.IsReturningVectors()` is
+  plumbed through but never read by the executor.** Set from
+  `comparisons.go` through `vector_index_match_candidate.go:276` into the
+  plan, but `executeVectorIndexScan` (`executor.go:404-536`) always does a
+  full base-record fetch by PK regardless of the flag. Results are not
+  wrong — a stored vector column is present in the base record either way —
+  but the "read the vector straight from the index entry, skip the fetch"
+  optimization the field requests is never delivered. No SQL surface
+  constructs the triggering comparison today, so this is inert, not a live
+  bug. Found during the CQ-17 sweep; not implemented there (out of scope —
+  recording only).
 
 **Exit gate:** focused tests for every item, Cascades unit + race suites,
 planner/translator tests, explain-plan golden, yamsql/FDB conformance, generated

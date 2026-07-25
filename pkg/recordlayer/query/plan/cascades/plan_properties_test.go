@@ -316,6 +316,24 @@ func TestComputeDistinctRecords_MergeSortUnionIsTrue(t *testing.T) {
 	}
 }
 
+// TestComputeDistinctRecords_MergeSortUnionRemoveDuplicatesFalseIsFalse pins
+// the ordered UNION ALL mode (removeDuplicates=false): mergeSortCursor
+// (executor_new_plans.go) lets tied rows from non-leading children re-emit
+// when the flag is false, so the property must report non-distinct. Before
+// this fix computeDistinctRecords claimed every RecordQueryMergeSortUnionPlan
+// was distinct regardless of the flag, which would have let
+// ImplementDistinctFinalRule elide a needed dedup wrapper.
+func TestComputeDistinctRecords_MergeSortUnionRemoveDuplicatesFalseIsFalse(t *testing.T) {
+	t.Parallel()
+	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
+	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
+	msu := plans.NewRecordQueryMergeSortUnionPlan(
+		[]plans.RecordQueryPlan{scanA, scanB}, nil, false, false)
+	if computeDistinctRecords(msu, msu) {
+		t.Fatal("MergeSortUnion with removeDuplicates=false should not claim distinct records")
+	}
+}
+
 func TestComputeDistinctRecords_InUnionIsTrue(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
