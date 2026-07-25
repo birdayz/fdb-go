@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -138,7 +139,7 @@ func FuzzPlanner_Aggregation_NoPanic(f *testing.F) {
 		p.MaxTasks = 50_000
 
 		plan, _, err := p.Plan(topRef)
-		if err != nil && err != ErrPlannerCapHit {
+		if err != nil && !errors.Is(err, ErrPlannerCapHit) {
 			t.Fatalf("Plan: unexpected err %v", err)
 		}
 		if err == nil && plan == nil {

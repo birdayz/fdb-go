@@ -112,9 +112,53 @@ closed rather than silently alter rows or output schema.
   pre-cancellation, deadline causes, exact mid-task progress/residual work,
   extraction cancellation, error precedence, retry rejection, and public
   embedded boundaries.
-- [ ] **CQ-8 (MED) — preserve planner failure diagnostics.** Stop collapsing cap,
-  cancellation, invariant, and genuinely unsupported failures into one generic
-  `0AF00` message; retain safe user-facing error classes and wrapped causes.
+- [x] **CQ-8 (MED) — preserve planner failure diagnostics.** One classifier,
+  `translatePlannerError`, now maps every `PlanWithContext` failure and is
+  called by all three user-facing planner callsites (SELECT, DML,
+  scalar-subquery), which previously discarded the error, interpolated it with
+  `%v`, and discarded it again respectively. Its default is INTERNAL ERROR with
+  genuinely-unplannable as the one explicit arm — the polarity of Java's
+  `ExceptionUtil.recordCoreToRelationalException`, whose default admits
+  ignorance while `UnableToPlanException` is the explicit arm. The inverse would
+  make every future planner failure mode assert something unproven about the
+  user's SQL. `UnplannableIndexOnlyResidualError` is the only planner error that
+  is a verdict on the query rather than evidence about the engine, so it alone
+  keeps `0AF00` and its verbatim wording (the scalar-subquery pipeline keeps its
+  own); the conformance corpus confirms no other shape needed naming. Memo
+  yield-invariant violations and structural extraction failures consequently
+  land on `XX000` instead of `0AF00`, and their text — which formats expressions
+  with `%T` — is withheld from the rendered message while staying reachable
+  through `Unwrap`, so Go type names no longer cross the SQL boundary. Since
+  nothing in the repo logs the withheld text (there is no production
+  `PlanGenerationLogger`), the rendered error still names the failure's
+  *family* — `planner invariant violation`, `plan rebuild failure`, or
+  unclassified — read from a type tagged at each minting chokepoint rather than
+  from the message text, so 39-plus distinct engine bugs stay triageable without
+  leaking anything. The three
+  complexity caps get a **Go-only** `54F02` (class 54, program limit exceeded):
+  Java's `PlannerConfiguration` never sets any of the three cap setters and all
+  are gated on a bound defaulting to 0 ("unbound"), so Java's SQL layer cannot
+  raise this at all — there is no shared surface to conform to, and `XXXXX`
+  would have ported an omission from a path Java never walks. `54F01` is
+  deliberately not reused (it means execution-time). Its user-facing message is
+  an actionable "query is too complex to plan" rather than the internal
+  sentinel's wording, which named a Go config field and rendered twice; the
+  sentinel stays in the cause for `errors.Is`, and the caps carry Java's
+  `addLogInfo` context (`max_task_count`/`task_count` and equivalents) via a
+  typed `PlannerBudgetExceededError`. Auditing that code turned up three
+  *pre-existing* Go-only codes (`21000`, `22003`, `22012`) that a doc comment
+  had implicitly denied, so the enum difference is now a checked artifact:
+  `goOnlyErrorCodes` lists all four with reasons, `DIVERGENCES.md` tabulates
+  them, and `TestErrorCodesMatchJava` diffs the Go enum against a captured
+  snapshot of Java's, failing on an unlisted Go-only code, a stale entry, or a
+  Java code missing from Go. Cancellation still propagates untouched.
+  Regressions drive every arm directly and pin the default polarity, cause
+  preservation, and the non-leak; a six-way self-join exhausts the real
+  100,000-task budget — no injected cap, no seam — through the production SELECT
+  path, and against real FDB through the driver for SELECT, DELETE, and UPDATE,
+  the last two reaching the DML callsite that needs a live connection to execute
+  at all. Also fixed the round-cap message, which said 10 rounds against an
+  actual cap of 100 and is now user-visible.
 
 **Optimizer quality and scalability:**
 - [ ] **CQ-9 (HIGH) — bound N-way join enumeration with a scalable search policy.**

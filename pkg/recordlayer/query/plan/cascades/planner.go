@@ -418,10 +418,10 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 			return nil, p.tasksRun, err
 		}
 		if p.tasksRun >= p.MaxTasks {
-			return nil, p.tasksRun, ErrPlannerCapHit
+			return nil, p.tasksRun, newTaskCapError(p.MaxTasks, p.tasksRun)
 		}
 		if p.MaxTaskQueueSize > 0 && len(p.stack) > p.MaxTaskQueueSize {
-			return nil, p.tasksRun, ErrPlannerQueueCapHit
+			return nil, p.tasksRun, newQueueCapError(p.MaxTaskQueueSize, len(p.stack))
 		}
 		task := p.pop()
 		task.Run(ctx, p)
@@ -526,7 +526,7 @@ var ErrPlannerQueueCapHit = plannerErr("planner: MaxTaskQueueSize cap hit — ta
 // ErrPlannerRoundCapHit signals a Reference still inserting new exploratory
 // members after the round cap — a rule-cycle divergence the memo dedup should
 // have collapsed (RFC-180 I2). A planner bug indicator, never load.
-var ErrPlannerRoundCapHit = plannerErr("planner: exploration round cap hit — a Reference kept producing new members after 10 rounds (rule-cycle divergence)")
+var ErrPlannerRoundCapHit = plannerErr("planner: exploration round cap hit — a Reference kept producing new members after 100 rounds (rule-cycle divergence)")
 
 // ErrPlannerRuleMatchCapHit mirrors Java's "Maximum number of matches per rule
 // call has been exceeded" (CascadesPlanner.isMaxNumMatchesPerRuleCallExceeded).
@@ -537,6 +537,54 @@ type plannerErr string
 
 // Error returns the message.
 func (e plannerErr) Error() string { return string(e) }
+
+// PlannerBudgetExceededError reports WHICH planning budget was exhausted and
+// how far the run got before it tripped. Java attaches the same pair to its
+// RecordQueryPlanComplexityException via addLogInfo (MAX_TASK_COUNT/TASK_COUNT
+// and the queue and rule-match equivalents), and the SQL layer propagates them
+// as error context; without the numbers a user cannot tell a near-miss from a
+// query that is orders of magnitude past the bound.
+//
+// Error and Unwrap both delegate to the cap sentinel, so every existing
+// errors.Is check and every message assertion keeps working unchanged — this
+// type only adds the numbers.
+type PlannerBudgetExceededError struct {
+	// Budget names the configured bound, matching the Planner field.
+	Budget string
+	// Limit is the configured bound.
+	Limit int
+	// Observed is the value that exceeded it.
+	Observed int
+
+	sentinel plannerErr
+}
+
+// Error returns the cap sentinel's message.
+func (e *PlannerBudgetExceededError) Error() string { return e.sentinel.Error() }
+
+// Unwrap returns the cap sentinel so errors.Is identifies which cap tripped.
+func (e *PlannerBudgetExceededError) Unwrap() error { return e.sentinel }
+
+// newTaskCapError reports the MaxTasks budget.
+func newTaskCapError(limit, observed int) *PlannerBudgetExceededError {
+	return &PlannerBudgetExceededError{
+		Budget: "MaxTasks", Limit: limit, Observed: observed, sentinel: ErrPlannerCapHit,
+	}
+}
+
+// newQueueCapError reports the MaxTaskQueueSize budget.
+func newQueueCapError(limit, observed int) *PlannerBudgetExceededError {
+	return &PlannerBudgetExceededError{
+		Budget: "MaxTaskQueueSize", Limit: limit, Observed: observed, sentinel: ErrPlannerQueueCapHit,
+	}
+}
+
+// newRuleMatchCapError reports the MaxNumMatchesPerRuleCall budget.
+func newRuleMatchCapError(limit, observed int) *PlannerBudgetExceededError {
+	return &PlannerBudgetExceededError{
+		Budget: "MaxNumMatchesPerRuleCall", Limit: limit, Observed: observed, sentinel: ErrPlannerRuleMatchCapHit,
+	}
+}
 
 // push appends a task to the stack (LIFO).
 func (p *Planner) push(t Task) {

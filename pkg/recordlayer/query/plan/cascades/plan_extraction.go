@@ -597,9 +597,33 @@ func rebuildExpressionVisited(e expressions.RelationalExpression, stats properti
 	return rebuildWithFreshChildren(e, freshChildren)
 }
 
+// PlanRebuildError marks a failure to rebuild an expression with fresh child
+// quantifiers during plan extraction — an arity mismatch between an expression
+// and the children the memo produced for it. Like a yield-invariant violation
+// it is memo corruption, never a statement about the user's query.
+//
+// It exists so a caller can identify the FAMILY without parsing the message,
+// which the SQL layer withholds because it names Go types.
+type PlanRebuildError struct{ Cause error }
+
+// Error returns the underlying rebuild message unchanged.
+func (e *PlanRebuildError) Error() string { return e.Cause.Error() }
+
+// Unwrap returns the underlying rebuild error.
+func (e *PlanRebuildError) Unwrap() error { return e.Cause }
+
 // rebuildWithFreshChildren is the switch-on-type rebuilder shared
 // by rebuildExpression and rebuildExpressionFromSelector.
-func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren []expressions.Quantifier) (expressions.RelationalExpression, error) {
+func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren []expressions.Quantifier) (rebuilt expressions.RelationalExpression, err error) {
+	// One deferred tag covers every arity failure in this function AND every
+	// error returned by a WithChildren implementer through the default arm —
+	// the family is "the rebuild failed", regardless of which of the 30-odd
+	// expression and plan types reported it.
+	defer func() {
+		if err != nil {
+			err = &PlanRebuildError{Cause: err}
+		}
+	}()
 	switch ex := e.(type) {
 
 	case *expressions.FullUnorderedScanExpression:

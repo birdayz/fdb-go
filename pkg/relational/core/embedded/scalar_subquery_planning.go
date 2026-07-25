@@ -63,8 +63,7 @@ func planScalarSubqueryPlans(
 			return nil, subTranslateErr
 		}
 		if subRef == nil {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"Cascades planner could not plan scalar subquery")
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery, unableToPlanScalarSubqueryMessage)
 		}
 		subPlanner := cascades.NewPlanner(rules, planCtx).
 			WithImplementationRules(cascades.DefaultImplementationRules()).
@@ -73,15 +72,10 @@ func planScalarSubqueryPlans(
 			WithMaxTasks(100_000)
 		subBest, _, subErr := subPlanner.PlanWithContext(ctx, subRef)
 		if subErr != nil {
-			if isContextCancellation(subErr) {
-				return nil, subErr
-			}
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"Cascades planner could not plan scalar subquery")
+			return nil, translatePlannerError(subErr, unableToPlanScalarSubqueryMessage)
 		}
 		if subBest == nil {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"Cascades planner could not plan scalar subquery")
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery, unableToPlanScalarSubqueryMessage)
 		}
 		subPh, ok := subBest.(planExtractor)
 		if !ok {

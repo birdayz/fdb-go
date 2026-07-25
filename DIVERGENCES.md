@@ -352,6 +352,31 @@ Go-only plan types: `RecordQueryHashAggregationPlan`, `RecordQueryInMemorySortPl
 
 Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
 
+### Go-only SQLSTATEs
+
+`pkg/relational/api/errcode.go` tracks Java's `ErrorCode` enum: **every one of Java's 74 codes exists in Go** — that direction has no gap. Go defines four codes Java has no member for:
+
+| Code | Go constant | Why it exists |
+|---|---|---|
+| `21000` | `ErrCodeCardinalityViolation` | SQL-standard class 21. Java's enum has no class-21 member at all, and its relational layer has no scalar-subquery cardinality check, so nothing there reports "subquery returned more than one row". Go enforces the cardinality and needed a code to name the violation. |
+| `22003` | `ErrCodeNumericValueOutOfRange` | SQL-standard code for arithmetic overflow. Java's enum has no member for it; overflow there escapes as a raw Java exception and reaches `ExceptionUtil`'s final fallthrough, reported as `UNKNOWN`. |
+| `22012` | `ErrCodeDivisionByZero` | SQL-standard code for division by zero. Java's enum has no member for it; the operation raises `java.lang.ArithmeticException`, which is not a `RecordCoreException`, so `ExceptionUtil.toRelationalException` reports `UNKNOWN`. |
+| `54F02` | `ErrCodePlanComplexityLimitReached` | Go bounds Cascades planning; Java's SQL layer never enables its planner caps, so the condition cannot arise there. Detailed below. |
+
+The first three predate this list; it was written when a claim that there was only one Go-only code turned out to be false. The list is not maintained by prose: `goOnlyErrorCodes` in `errcode.go` carries the same four with their reasons, and `TestErrorCodesMatchJava` diffs the Go enum against a captured snapshot of Java's, failing if the difference and the list disagree in either direction — a new unlisted Go-only code, a stale entry, or a Java code missing from Go. Regenerate the snapshot on a Java version bump using the command in its doc comment.
+
+#### `54F02` in detail
+
+Java's Cascades planner defines three complexity caps — `maxTotalTaskCount`, `maxTaskQueueSize`, `maxNumMatchesPerRuleCall` — and throws `RecordQueryPlanComplexityException` from `CascadesPlanner.java:448`, `:493`, and `:1026` when one trips. **Java's SQL layer never enables any of them.** `PlannerConfiguration.buildRecordQueryPlannerConfiguration` (`fdb-relational-core/.../query/PlannerConfiguration.java:150-161`) sets index scan preference, in-join union size, index fetch method, disabled rules and `setJoinRightDeep`, and none of the three cap setters. All three guards are gated on a positive bound (`CascadesPlanner.java:325-335`) and the default is `0`, documented as "unbound" (`RecordQueryPlannerConfiguration.java:236,244`). So no JDBC user of stock 4.12.11.0 can observe that exception.
+
+Go bounds planning at 100,000 tasks at every production callsite, because unbounded search on a pathological query is a liveness hazard. That makes budget exhaustion a **Go-only condition with no shared surface to conform to** — the cross-engine conformance principle governs inputs Java also attempts, and Java does not attempt this one.
+
+Porting Java's mapping would have been wrong twice over: `ExceptionUtil.recordCoreToRelationalException` matches `RecordQueryPlanComplexityException` against no `instanceof` arm, so it would land on `ErrorCode.UNKNOWN` (`XXXXX`) — a code Java's own javadoc says "shouldn't be used in general" (`ErrorCode.java:168-171`) — reached only through a path Java's SQL layer never walks.
+
+Class 54 ("program limit exceeded") is the honest class: the planner gave up because the query is too complex, and simplifying it is a real remedy. `54F01` (`EXECUTION_LIMIT_REACHED`) is deliberately NOT reused — it means an *execution*-time limit and is tied to a scan/row continuation reason, so conflating plan-time with it would corrupt a meaning Java owns. `54F02` is unused in Java's enum, leaving room for Java to adopt it should it ever enable the caps.
+
+The Go error carries the same context Java's `addLogInfo` attaches (`max_task_count`/`task_count` and the queue and rule-match equivalents) via `cascades.PlannerBudgetExceededError`.
+
 ## Java Upstream Bugs (Go is correct, Java is wrong)
 
 Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only positive tests; corpus entries omitted until Java upstream fixes.

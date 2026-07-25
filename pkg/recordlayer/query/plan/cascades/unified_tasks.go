@@ -349,7 +349,7 @@ func (t *TransformExprTask) Run(ctx context.Context, p *Planner) {
 		}
 		numMatches += len(bindings)
 		if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
-			p.capErr = ErrPlannerRuleMatchCapHit
+			p.capErr = newRuleMatchCapError(p.MaxNumMatchesPerRuleCall, numMatches)
 			return
 		}
 		for _, b := range bindings {
@@ -459,7 +459,7 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 	// included), so the swapped bind below adds to it rather than resetting.
 	numMatches := len(bindings)
 	if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
-		p.capErr = ErrPlannerRuleMatchCapHit
+		p.capErr = newRuleMatchCapError(p.MaxNumMatchesPerRuleCall, numMatches)
 		return
 	}
 	for _, b := range bindings {
@@ -558,7 +558,7 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 				// counts cumulatively across both binding streams.
 				numMatches += len(swapBindings)
 				if p.MaxNumMatchesPerRuleCall > 0 && numMatches > p.MaxNumMatchesPerRuleCall {
-					p.capErr = ErrPlannerRuleMatchCapHit
+					p.capErr = newRuleMatchCapError(p.MaxNumMatchesPerRuleCall, numMatches)
 					return
 				}
 				for _, b := range swapBindings {

@@ -342,8 +342,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, buildErr
 	}
 	if logicalOp == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"Cascades planner could not plan query")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, plannerUnableToPlanMessage)
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
@@ -420,8 +419,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, translateErr
 	}
 	if ref == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"Cascades planner could not plan query")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, plannerUnableToPlanMessage)
 	}
 
 	// RFC-141 §8 safety guard: a projected ExistsValue is correct ONLY when it is
@@ -458,15 +456,10 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
 	if planErr != nil {
-		if isContextCancellation(planErr) {
-			return nil, planErr
-		}
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"Cascades planner could not plan query")
+		return nil, translatePlannerError(planErr, plannerUnableToPlanMessage)
 	}
 	if bestExpr == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"Cascades planner could not plan query")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, plannerUnableToPlanMessage)
 	}
 
 	type planExtractor interface {
@@ -474,13 +467,11 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	}
 	ph, ok := bestExpr.(planExtractor)
 	if !ok {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"Cascades planner could not plan query")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, plannerUnableToPlanMessage)
 	}
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"Cascades planner could not plan query")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, plannerUnableToPlanMessage)
 	}
 	// RFC-164 WS-2: structural plan invariants on the PRODUCTION path — a relink
 	// that dropped a child fails loudly here rather than executing to wrong/zero
@@ -1016,10 +1007,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
 	if planErr != nil {
-		if isContextCancellation(planErr) {
-			return nil, planErr
-		}
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "DML Cascades planning failed: %v", planErr)
+		return nil, translatePlannerError(planErr, plannerUnableToPlanMessage)
 	}
 	if bestExpr == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,

@@ -10,31 +10,24 @@ package api
 // ErrorCode is a 5-character SQLSTATE-formatted error code.
 //
 // Codes follow SQLSTATE format: first 2 characters are the class,
-// remaining 3 describe the error. Matches Java's
-// com.apple.foundationdb.relational.api.exceptions.ErrorCode enum
-// 1:1 — new codes on either side must be added to both.
+// remaining 3 describe the error. Tracks Java's
+// com.apple.foundationdb.relational.api.exceptions.ErrorCode enum — every Java
+// code exists here, and a new code on either side must be added to both.
 //
-// Class codes:
+// Go additionally defines a small set of codes Java has no member for. They are
+// enumerated in goOnlyErrorCodes below, not described in prose: a prose claim
+// about how many there are rots silently, whereas that list is an artifact
+// anyone can diff against Java, and TestErrorCodesMatchJava does exactly that
+// on every build.
 //
-//	00 Success
-//	01 Warning
-//	02 No Data
-//	08 Connection Exception
-//	0A Unsupported Operation
-//	22 Data Exception
-//	23 Integrity Constraint Violation
-//	24 Invalid Cursor State
-//	25 Invalid Transaction State
-//	40 Transaction Rollback
-//	42 Syntax Error or Access Rule Violation
-//	53 Insufficient Resources
-//	54 Program Limit Exceeded
-//	55 Object Not in Prerequisite State
-//	58 System Error
-//	XX Internal Error
+// The first two characters are the SQLSTATE class; errorCodeClasses names each
+// one. That list is data rather than prose for the same reason as
+// goOnlyErrorCodes: as a doc comment it drifted in both directions at once,
+// naming a class with no code and omitting a class that had two.
 type ErrorCode string
 
-// SQLSTATE error codes, matching Java's ErrorCode enum exactly.
+// SQLSTATE error codes. These cover Java's ErrorCode enum in full, plus the
+// deliberate Go-only additions listed in goOnlyErrorCodes.
 const (
 	// Class 00 — Successful Completion
 	ErrCodeSuccess ErrorCode = "00000"
@@ -133,6 +126,12 @@ const (
 	// Class 54 — Program Limit Exceeded
 	ErrCodeTooManyColumns        ErrorCode = "54011"
 	ErrCodeExecutionLimitReached ErrorCode = "54F01"
+	// ErrCodePlanComplexityLimitReached reports that the Cascades planner
+	// exhausted a planning budget before the search converged. It is distinct
+	// from ErrCodeExecutionLimitReached, which means an EXECUTION-time limit and
+	// is tied to a scan/row continuation reason: conflating plan-time with it
+	// would corrupt a meaning Java owns. Go-only — see the note on ErrorCode.
+	ErrCodePlanComplexityLimitReached ErrorCode = "54F02"
 
 	// Class 55 — Object Not In Prerequisite State
 	ErrCodeStatementClosed ErrorCode = "55F00"
@@ -145,6 +144,61 @@ const (
 	ErrCodeInternalError          ErrorCode = "XX000"
 	ErrCodeDeserializationFailure ErrorCode = "XXF01"
 )
+
+// errorCodeClasses names every SQLSTATE class this package defines codes in,
+// keyed by the two-character class prefix.
+//
+// TestErrorCodeClassesMatchConstants keeps it exact in both directions: a class
+// with codes but no entry fails, and an entry with no codes fails. The doc
+// comment it replaced had both defects simultaneously — it listed "01 Warning",
+// for which neither Go nor Java has a single code, while omitting class 21,
+// which has been defined here all along.
+var errorCodeClasses = map[string]string{
+	"00": "Successful Completion",
+	"02": "No Data",
+	"08": "Connection Exception",
+	"0A": "Unsupported Operation",
+	"21": "Cardinality Violation",
+	"22": "Data Exception",
+	"23": "Integrity Constraint Violation",
+	"24": "Invalid Cursor State",
+	"25": "Invalid Transaction State",
+	"40": "Transaction Rollback",
+	"42": "Syntax Error or Access Rule Violation",
+	"53": "Insufficient Resources",
+	"54": "Program Limit Exceeded",
+	"55": "Object Not In Prerequisite State",
+	"58": "System Error",
+	"XX": "Internal Error",
+}
+
+// goOnlyErrorCodes enumerates every code Go defines that Java's ErrorCode enum
+// has no member for, with the reason each exists. It is the authoritative
+// answer to "how far has Go drifted from Java's enum" — TestErrorCodesMatchJava
+// fails if this list and the actual Go/Java difference disagree in either
+// direction, so it cannot quietly go stale the way a sentence in a doc comment
+// can.
+//
+// Adding an entry here is a deliberate divergence and belongs in
+// DIVERGENCES.md. Java-side codes missing from Go are NOT tracked here: that
+// set must stay empty, and the same test enforces it.
+var goOnlyErrorCodes = map[ErrorCode]string{
+	ErrCodeCardinalityViolation: "SQL-standard class 21. Java's enum has no class-21 member and its " +
+		"relational layer has no scalar-subquery cardinality check at all, so Go " +
+		"needed a code to report a subquery that returned more than one row.",
+	ErrCodeNumericValueOutOfRange: "SQL-standard 22003 for INTEGRAL arithmetic overflow (the " +
+		"floating-point lane is IEEE in both engines and raises nothing). Java's " +
+		"enum has no member for it; an overflow there escapes as a raw Java " +
+		"exception and ExceptionUtil's fallthrough reports UNKNOWN.",
+	ErrCodeDivisionByZero: "SQL-standard 22012 for INTEGRAL division by zero; the floating-point " +
+		"lane matches Java's IEEE DIV_DD, where 1.0/0.0 is Infinity and no error " +
+		"is raised. Java's enum has no member for the integral case; it raises " +
+		"java.lang.ArithmeticException, which ExceptionUtil maps to UNKNOWN via " +
+		"its final fallthrough.",
+	ErrCodePlanComplexityLimitReached: "Go bounds Cascades planning at 100,000 tasks; Java's SQL layer " +
+		"never enables its three planner caps, so the condition cannot arise " +
+		"there and no Java code names it. See DIVERGENCES.md.",
+}
 
 // allErrorCodes is the fast-lookup set for ErrorCodeFromString.
 // Built once at init() and never mutated.
@@ -176,7 +230,7 @@ func init() {
 		ErrCodeIncorrectMetadataTableVersion, ErrCodeInvalidSchemaTemplate, ErrCodeInvalidPreparedStatementParameter,
 		ErrCodeExecuteUpdateReturnedResultSet, ErrCodeDuplicateSchemaTemplate, ErrCodeUnknownDatabase,
 		ErrCodeUnionIncorrectColumnCount, ErrCodeUnionIncompatibleColumns, ErrCodeInvalidDatabase,
-		ErrCodeTransactionTimeout, ErrCodeTooManyColumns, ErrCodeExecutionLimitReached,
+		ErrCodeTransactionTimeout, ErrCodeTooManyColumns, ErrCodeExecutionLimitReached, ErrCodePlanComplexityLimitReached,
 		ErrCodeStatementClosed, ErrCodeUndefinedFile,
 		ErrCodeUnknown, ErrCodeInternalError, ErrCodeDeserializationFailure,
 	} {

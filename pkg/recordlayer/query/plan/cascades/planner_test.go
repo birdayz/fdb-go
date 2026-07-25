@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -180,11 +181,32 @@ func TestPlanner_Plan_MaxTasksHit(t *testing.T) {
 	p := NewPlanner(DefaultExpressionRules(), nil)
 	p.MaxTasks = 1
 	plan, _, err := p.Plan(ref)
-	if err != ErrPlannerCapHit {
+	// errors.Is, not identity: the cap error carries which budget was exhausted
+	// and how far the run got, so it is a typed value wrapping the sentinel.
+	if !errors.Is(err, ErrPlannerCapHit) {
 		t.Fatalf("Plan with MaxTasks=1 err=%v, want ErrPlannerCapHit", err)
 	}
 	if plan != nil {
 		t.Fatal("Plan should return nil on cap hit")
+	}
+	// The numbers are the diagnostic: without them a caller cannot tell a
+	// near-miss from a query orders of magnitude past the bound.
+	var budget *PlannerBudgetExceededError
+	if !errors.As(err, &budget) {
+		t.Fatalf("cap error carries no budget detail: %v", err)
+	}
+	if budget.Budget != "MaxTasks" {
+		t.Fatalf("Budget = %q, want MaxTasks", budget.Budget)
+	}
+	if budget.Limit != 1 {
+		t.Fatalf("Limit = %d, want the configured 1", budget.Limit)
+	}
+	if budget.Observed < budget.Limit {
+		t.Fatalf("Observed = %d, want at least the limit %d", budget.Observed, budget.Limit)
+	}
+	// The message stays the sentinel's, so existing diagnostics do not change.
+	if err.Error() != ErrPlannerCapHit.Error() {
+		t.Fatalf("message = %q, want the sentinel's %q", err.Error(), ErrPlannerCapHit.Error())
 	}
 }
 
