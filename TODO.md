@@ -619,6 +619,45 @@ closed rather than silently alter rows or output schema.
   (`pkg/recordlayer/query/plan/cascades/pk_scan_ordering_partition_test.go`)
   pins that a Fixed-bound and a Sorted-unbound PK scan land in different
   partitions, verified red without the fix.
+  **Update (RFC-191 revision 3 / Graefe milestone review) — parity gap
+  remains, now blocked on a Graefe ruling, not on more research.** With
+  CQ-20 shipped the full-scan regression is closed; what's left is defects
+  (a) and (b) (`HintOrdering` and the requested-ordering binding-lookup
+  bridge). A live Java planner was instrumented (`MemoTraceProbe` on the
+  `InsertIntoMemoPlannerEvent` bus, driven through the conformance server's
+  `planSql` with FDB via `WithDirectIP()`) to watch what Java memoizes, not
+  just what it wins. It refutes two prior hypotheses (Java DOES enumerate an
+  ordered comparand InJoin for the FETCH-required shape; the ASC tie is
+  decided one rung before `numSourcesInJoin`, at fetch-depth) and finds the
+  actual mechanism: `PushInJoinThroughFetchRule` is registered only for
+  `RecordQueryInValuesJoinPlan`/`RecordQueryInParameterJoinPlan`
+  (`PlanningRuleSet.java:152-153`), never for `RecordQueryInComparandJoinPlan`
+  — the class every sorted IN-source produces — so `Fetch(InJoin(Covering))`
+  is structurally never built in Java, `Fetch(InUnion(...))` wins ASC on a
+  depth-0-vs-depth-1 fetch-position tiebreak, and DESC reaches
+  `numSourcesInJoin` instead because no depth-0 InUnion is available there
+  (why the bounded-covering leg is unreachable for DESC is unresolved). This
+  looks like a Java oversight, not a deliberate design choice, so Go must
+  choose between reproducing the asymmetry faithfully or deliberately
+  diverging — a decision this RFC documents both sides of but does not make.
+  **Flagged for a Graefe ruling, full mechanism and file:line citations in
+  RFC-191.** 23 of 25 previously-prototyped (a)+(b) corpus flips are
+  Java-confirmed correct against the live trace; the 2 exceptions
+  (`in_over_primary_scan_sarg.yaml#14,#15`, FETCH-required secondary-index
+  shapes) already match Java as Go plans them today, so landing (a)+(b)
+  unguarded would regress them — that is the concrete stake behind the
+  ruling. Numbers corrected from earlier citations: defect (b)'s bail rate
+  is 238/238 (100%) before a fix and 40/238 (17%, uncharacterised) after a
+  prototyped bridge fix, not 196 or zero. The two false "InJoin gives no
+  cross-value order" corpus comments are traced to two commits now, not one:
+  `ec72b8e3f` originated the claim, `cebcbd94b` copied it into a second file
+  citing the first rather than re-deriving it; neither cites Java.
+  `ImplementInUnionRule` does not share defect (b) — its
+  `bakeMergeComparisonKeys` already routes through the same
+  `ColumnNameValue`/`orderingKeyFor` bridge defect (b) is about adding to
+  InJoin, which is why InUnion's flips are reachable without waiting on (b).
+  Status: still open, still its own milestone-sized workstream, but the
+  blocker is now a decision, not an investigation.
 - [x] **CQ-20 (MED) — `PKScanOrdering` reported every primary-key column as a
   sorted key even when a leading prefix was equality-bound, co-partitioning a
   Fixed-bound PK scan with a Sorted-unbound one and closing the CQ-10f
