@@ -1032,29 +1032,144 @@ func isFetchExpression(e expressions.RelationalExpression) bool {
 	return ok
 }
 
-// comparePrimaryScanVsIndexScan ports Java's comparePrimaryScanToIndexScan
-// (invoked via flipFlop). Only fires when one plan is a singular primary scan
-// and the other is a singular index scan WITH a fetch (non-covering or
-// covering+fetch); a covering index without fetch is strictly better and
-// doesn't enter this path. When it fires it runs the type-filter SARG sub-case
-// (prefer the index when it SARGs strictly more, needing no type filter) and
-// otherwise applies the PREFER_SCAN default — see primaryVsIndexVerdict.
+// comparePrimaryScanVsIndexScan ranks both sides on primaryVsIndexRank, so it
+// is antisymmetric AND transitive by construction — a legal rung of the
+// lexicographic chain.
+//
+// DELIBERATE DIVERGENCE from Java (PlanningCostModel.comparePrimaryScanToIndexScan
+// via flipFlop), whose applicability guard fires only for (lone primary scan)
+// versus (singular index-scan-with-fetch). A pair-restricted criterion is not a
+// total preorder, and the chain composes transitively only if every rung is one.
+// Java's verdicts cannot merely be extended to the abstained pairs, either:
+// restricted to the pairs it DOES adjudicate they already contain a cycle,
+// because the type-filter sub-case decides on the SUBSET relation between the
+// two sides' search-argument sets, and a subset relation is a partial order
+// that no total preorder can reproduce. Go therefore ranks the sets by SIZE,
+// which agrees with the subset test on every comparable pair and differs only
+// on incomparable ones — exactly the configuration that made Java cyclic.
+// Nothing here touches the wire; this is read-side plan choice only. Full
+// derivation, Java file:line evidence and the four-plan cycle are in
+// DIVERGENCES.md ("Criterion 7 — primary scan versus index scan with fetch").
 func comparePrimaryScanVsIndexScan(a, b expressions.RelationalExpression, opsA, opsB expressionCounts, pref IndexScanPreference) int {
-	aIsPrimaryScan := opsA.scanCount == 1 && opsA.indexScanCount == 0 && opsA.coveringIndexCount == 0 && opsA.inMemorySortCount == 0
-	bIsPrimaryScan := opsB.scanCount == 1 && opsB.indexScanCount == 0 && opsB.coveringIndexCount == 0 && opsB.inMemorySortCount == 0
-	aIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsA)
-	bIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsB)
+	return comparePrimaryVsIndexRank(
+		primaryVsIndexRankOf(a, opsA, pref),
+		primaryVsIndexRankOf(b, opsB, pref),
+	)
+}
 
-	if aIsPrimaryScan && bIsIndexScanWithFetch {
-		return primaryVsIndexVerdict(a, b, opsA, opsB, pref)
+// primaryVsIndexRank is criterion #7's per-plan rank. Lower is better.
+//
+// tier is the only component that is meaningful across the whole rank domain;
+// sargs and shape are zero outside the CONTESTED tier so every other tier is a
+// flat equivalence class that falls through to the rungs below, exactly as the
+// pair-restricted form's abstention did.
+type primaryVsIndexRank struct {
+	tier int
+	// sargs is the number of DISTINCT search-argument comparisons the plan's
+	// data access carries. Compared DESCENDING: more search arguments wins.
+	sargs int
+	// shape is 0 for the primary scan and 1 for the index scan. It breaks a
+	// contested-tier search-argument TIE in the primary scan's favour, which is
+	// what Java does when the index buys no comparison the primary lacks.
+	shape int
+}
+
+const (
+	// The plan has no stake in the primary-versus-index trade-off, or it is the
+	// configured preference's favoured shape unencumbered.
+	primaryVsIndexTierUnencumbered = iota
+	// The trade-off itself: a primary scan paying a type-filter discard against
+	// an index scan paying a fetch. Resolved by search-argument count.
+	primaryVsIndexTierContested
+	// An index scan that pays a fetch AND a type filter — it bought neither of
+	// the two things this criterion trades off.
+	primaryVsIndexTierEncumberedIndex
+	// A plan carrying an in-memory sort. Go's ImplementInMemorySortRule is a
+	// read-side extension whose plans Java's ordinal rungs never see, and an
+	// InMemorySort(Scan) is not a bare primary scan — it pays O(n log n) on top.
+	// Ranking every sort-bearing plan last hands the decision to the sort-count
+	// rung immediately below, which is the same verdict that rung would reach on
+	// its own; the pair-restricted form applied this guard to the primary side
+	// only, so an InMemorySort(IndexScan) could still win here and pre-empt it.
+	primaryVsIndexTierSorted
+)
+
+func comparePrimaryVsIndexRank(a, b primaryVsIndexRank) int {
+	if a.tier != b.tier {
+		return intCompare(a.tier, b.tier)
 	}
-	if bIsPrimaryScan && aIsIndexScanWithFetch {
-		// Roles swapped: b is the primary scan, a the index. The verdict is
-		// computed in the (primary, index) orientation, then negated — Java's
-		// flipFlop(compare(primary,index), compare(index,primary)) negation.
-		return -primaryVsIndexVerdict(b, a, opsB, opsA, pref)
+	if a.sargs != b.sargs {
+		return intCompare(b.sargs, a.sargs) // more search arguments wins
 	}
-	return 0
+	return intCompare(a.shape, b.shape)
+}
+
+// primaryVsIndexRankOf places one plan on criterion #7's ladder.
+//
+// Under PREFER_SCAN (the Cascades default) the penalised shape is the index
+// scan that must pay for a fetch; under the index-preferring configurations it
+// is the lone primary scan, and Java's type-filter sub-case is moot there
+// because both of its branches already return "prefer the index".
+func primaryVsIndexRankOf(e expressions.RelationalExpression, ops expressionCounts, pref IndexScanPreference) primaryVsIndexRank {
+	if ops.inMemorySortCount > 0 {
+		return primaryVsIndexRank{tier: primaryVsIndexTierSorted}
+	}
+	isPrimaryScan := ops.scanCount == 1 && ops.indexScanCount == 0 && ops.coveringIndexCount == 0
+	isIndexScanWithFetch := isSingularIndexScanWithFetch(ops)
+
+	if pref != PreferScan {
+		// Only the lone primary scan is penalised, unconditionally: there is no
+		// trade-off left to weigh once the configuration has said "prefer the
+		// index" for every branch.
+		if isPrimaryScan {
+			return primaryVsIndexRank{tier: primaryVsIndexTierContested}
+		}
+		return primaryVsIndexRank{tier: primaryVsIndexTierUnencumbered}
+	}
+
+	switch {
+	case isPrimaryScan && ops.typeFilterCount > 0:
+		return primaryVsIndexRank{
+			tier:  primaryVsIndexTierContested,
+			sargs: distinctSargCount(e),
+			shape: 0,
+		}
+	case isIndexScanWithFetch && ops.typeFilterCount == 0:
+		return primaryVsIndexRank{
+			tier:  primaryVsIndexTierContested,
+			sargs: distinctSargCount(e),
+			shape: 1,
+		}
+	case isIndexScanWithFetch:
+		return primaryVsIndexRank{tier: primaryVsIndexTierEncumberedIndex}
+	default:
+		// A lone primary scan that pays no type-filter discard, and every plan
+		// with no stake in the trade-off (a covering index that needs no fetch,
+		// a multi-access plan, …).
+		return primaryVsIndexRank{tier: primaryVsIndexTierUnencumbered}
+	}
+}
+
+// distinctSargCount is |ComparisonsProperty| for e's concrete plan tree — the
+// cardinality of the SET Java's comparePrimaryScanToIndexScan takes differences
+// of, so repeated comparisons on different columns count once, as they do in
+// Java's Set<Comparisons.Comparison>.
+func distinctSargCount(e expressions.RelationalExpression) int {
+	all := scanSargComparisons(e)
+	distinct := 0
+	for i, c := range all {
+		seen := false
+		for _, earlier := range all[:i] {
+			if sargComparisonEqual(c, earlier) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			distinct++
+		}
+	}
+	return distinct
 }
 
 // indexScanPreferenceOf reads the IndexScanPreference from the planner config,
@@ -1065,39 +1180,6 @@ func indexScanPreferenceOf(ctx PlanContext) IndexScanPreference {
 		return PreferScan
 	}
 	return ctx.GetPlannerConfiguration().IndexScanPreference
-}
-
-// primaryVsIndexVerdict ports the body of Java's comparePrimaryScanToIndexScan
-// in its native (primaryScan=first, indexScan=second) orientation. Returns +1
-// when the INDEX scan is preferred (the primary loses), -1 when the primary
-// scan is preferred. The caller negates when the roles are swapped (flipFlop).
-//
-// The SARG sub-case: if the primary side carries a type filter and the index
-// side none, and the two scans SARG the same comparisons EXCEPT the index has
-// extra comparisons the primary lacks (e.g. a record-type-key comparison the
-// index gets for free but the primary must pay for with a high-discard type
-// filter), prefer the index. Otherwise fall back to the IndexScanPreference
-// config branch (Java: PREFER_SCAN → prefer the primary; PREFER_INDEX /
-// PREFER_PRIMARY_KEY_INDEX → prefer the index).
-func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpression, opsPrimary, opsIndex expressionCounts, pref IndexScanPreference) int {
-	if opsPrimary.typeFilterCount > 0 && opsIndex.typeFilterCount == 0 {
-		primaryComparisons := scanSargComparisons(primaryScan)
-		indexComparisons := scanSargComparisons(indexScan)
-		// primary − index empty AND index − primary non-empty ⇒ the index
-		// SARGs everything the primary does plus more, without a type filter.
-		if sargSubset(primaryComparisons, indexComparisons) &&
-			!sargSubset(indexComparisons, primaryComparisons) {
-			return 1 // prefer the index scan
-		}
-	}
-	// Config branch (Java comparePrimaryScanToIndexScan): PREFER_SCAN prefers the
-	// primary scan (-1); the non-scan preferences prefer the index (+1). The
-	// Cascades default is PREFER_SCAN, so with no config surface setting a
-	// non-default this stays -1 (unchanged behavior).
-	if pref == PreferScan {
-		return -1
-	}
-	return 1
 }
 
 // scanSargComparisons collects the BARE SARG comparisons (compared by Comparison
@@ -1150,24 +1232,6 @@ func collectPlanSargComparisons(p plans.RecordQueryPlan, out *[]*predicates.Comp
 	for _, c := range p.GetChildren() {
 		collectPlanSargComparisons(c, out)
 	}
-}
-
-// sargSubset reports whether every comparison in sub also appears in super
-// (i.e. sub − super is empty), by full Comparison identity.
-func sargSubset(sub, super []*predicates.Comparison) bool {
-	for _, c := range sub {
-		found := false
-		for _, s := range super {
-			if sargComparisonEqual(c, s) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
 }
 
 // sargComparisonEqual is the FULL structural identity of a scan comparison, the

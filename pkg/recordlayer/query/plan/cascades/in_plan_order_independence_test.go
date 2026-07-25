@@ -103,7 +103,10 @@ func (s inCorpusSpec) build(t *testing.T) plans.RecordQueryPlan {
 
 	var cur plans.RecordQueryPlan
 	if s.kind == "primaryScan" {
-		cur = plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+		// The scan carries the same comparisons an index leaf would, so the
+		// primary-vs-index rung's search-argument component is probed too.
+		cur = plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			WithScanComparisons(ranges)
 	} else {
 		cur = plans.NewRecordQueryIndexPlan(s.indexName(), ranges, []string{"T"}, values.UnknownType, false)
 	}
@@ -190,9 +193,16 @@ func buildInPlanCorpus(t *testing.T) []namedPlan {
 		{name: "wrappedIn_fetch2", kind: "wrappedIn", sargedBindings: 0, fetches: 2},
 
 		// --- Primary scans, which additionally drive the primary-vs-index
-		// rung sitting immediately below the IN rung. ---
+		// rung sitting immediately below the IN rung. Both the unencumbered
+		// shape and the type-filtered one appear, with and without search
+		// arguments, so the rung's contested band is exercised in every
+		// combination against the index-rooted candidates above. ---
 		{name: "primaryScan_lean", kind: "primaryScan"},
 		{name: "primaryScan_tf", kind: "primaryScan", typeFilter: true},
+		{name: "primaryScan_sarged", kind: "primaryScan", sargedBindings: 1},
+		{name: "primaryScan_tf_sarged", kind: "primaryScan", sargedBindings: 1, typeFilter: true},
+		{name: "primaryScan_tf_sarged2", kind: "primaryScan", sargedBindings: 2, typeFilter: true},
+		{name: "primaryScan_tf_fetch1", kind: "primaryScan", typeFilter: true, fetches: 1},
 	}
 
 	out := make([]namedPlan, 0, len(specs))
@@ -224,16 +234,17 @@ func inPlanProfile(p plans.RecordQueryPlan) string {
 // unSARGed/unSARGed and SARGed/unSARGed IN pair, plus the permutation
 // violations they cause.
 //
-// SCOPE. Irreflexivity, antisymmetry and totality are asserted over the WHOLE
-// corpus, primary scans included. Transitivity and permutation-independence are
-// asserted over the INDEX-ROOTED subset only, because criterion #7
-// (comparePrimaryScanVsIndexScan) is a SEPARATE, PRE-EXISTING source of
-// intransitivity that this rung's repair neither causes nor cures, and that
-// scoping it away is the only way to keep this test's signal about criterion #6.
-// That rung is pair-restricted by construction — it fires only when one side is
-// a lone primary scan and the other a singular index-scan-with-fetch, and
-// abstains for index-versus-index — so it cannot be a total preorder, and a
-// pair-restricted criterion in a lexicographic chain admits cycles of the form
+// SCOPE. Every property — irreflexivity, antisymmetry, totality, transitivity
+// and permutation-independence — is asserted over the WHOLE corpus, primary
+// scans included.
+//
+// The transitivity and permutation sweeps used to be scoped to the index-rooted
+// subset, because criterion #7 (comparePrimaryScanVsIndexScan) was a second,
+// independent source of intransitivity: it was pair-restricted by construction,
+// firing only for (lone primary scan) versus (singular index-scan-with-fetch)
+// and abstaining for index-versus-index, so it could not be a total preorder.
+// Over this corpus that produced 69 transitivity violations, every one of them
+// involving a primary scan, of the form
 //
 //	sargedIndex+3fetches < primaryScan+typeFilter   (criterion #7's SARG sub-case:
 //	                                                 the index SARGs strictly more
@@ -244,11 +255,9 @@ func inPlanProfile(p plans.RecordQueryPlan) string {
 //	                                                 index/index pair; the fetch
 //	                                                 rung decides, 2 < 4)
 //
-// which contains no IN operator at all. It is inherited from Java
-// (PlanningCostModel.comparePrimaryScanToIndexScan, same applicability gate,
-// same flipFlop), and the pre-existing RFC-190 transitivity corpus is likewise
-// scoped away from it ("deliberately an all-index, sort-gate-scoped corpus").
-// Closing it is a distinct change with its own plan-shape consequences.
+// which contains no IN operator at all. Criterion #7 now ranks both sides
+// instead (primaryVsIndexRankOf), so the scoping is gone and the widened sweep
+// is the proof: it fails on the pre-fix rung and passes on the ranked one.
 func TestCostModel_InPlanComparisonIsOrderIndependent(t *testing.T) {
 	t.Parallel()
 
@@ -310,27 +319,31 @@ func TestCostModel_InPlanComparisonIsOrderIndependent(t *testing.T) {
 		}
 	}
 
-	// The index-rooted subset transitivity and permutation-independence run
-	// over — see the SCOPE paragraph on this test.
-	var indexRooted []int
+	// Transitivity and permutation-independence run over the WHOLE corpus,
+	// primary scans included — see the SCOPE paragraph on this test. The corpus
+	// must still contain primary scans for that widening to mean anything.
+	all := make([]int, n)
+	numPrimaryScans := 0
 	for i, c := range corpus {
-		if !strings.HasPrefix(c.name, "primaryScan") {
-			indexRooted = append(indexRooted, i)
+		all[i] = i
+		if strings.HasPrefix(c.name, "primaryScan") {
+			numPrimaryScans++
 		}
 	}
-	if len(indexRooted) == n {
-		t.Fatal("corpus lost its primary-scan candidates; the scoping comment no longer describes it")
+	if numPrimaryScans < 2 {
+		t.Fatalf("corpus has %d primary-scan candidates, want >= 2: the criterion-#7 "+
+			"dimension this sweep exists to cover is no longer probed", numPrimaryScans)
 	}
 
 	// --- Property 2: strict-order transitivity over every ordered triple. ---
 	transitivityViolations := 0
 	triples := 0
-	for _, i := range indexRooted {
-		for _, j := range indexRooted {
+	for _, i := range all {
+		for _, j := range all {
 			if i == j {
 				continue
 			}
-			for _, k := range indexRooted {
+			for _, k := range all {
 				if k == i || k == j {
 					continue
 				}
@@ -379,8 +392,8 @@ func TestCostModel_InPlanComparisonIsOrderIndependent(t *testing.T) {
 		}
 		return best
 	}
-	m := len(indexRooted)
-	baseline := minimum(indexRooted)
+	m := len(all)
+	baseline := minimum(all)
 	permutationViolations := 0
 	permutations := 0
 	for reverse := 0; reverse < 2; reverse++ {
@@ -391,7 +404,7 @@ func TestCostModel_InPlanComparisonIsOrderIndependent(t *testing.T) {
 				if reverse == 1 {
 					offset = m - 1 - position
 				}
-				order[position] = indexRooted[(shift+offset)%m]
+				order[position] = all[(shift+offset)%m]
 			}
 			permutations++
 			if winner := minimum(order); winner != baseline {
@@ -406,10 +419,10 @@ func TestCostModel_InPlanComparisonIsOrderIndependent(t *testing.T) {
 
 	if antisymViolations == 0 && transitivityViolations == 0 &&
 		totalityViolations == 0 && permutationViolations == 0 {
-		t.Logf("order properties hold: %d unordered pairs over all %d plans (irreflexivity, "+
-			"antisymmetry, totality); %d ordered triples and %d permutations over the %d "+
-			"index-rooted plans (transitivity, permutation-independence); winner=%s",
-			pairs, n, triples, permutations, m, corpus[baseline].name)
+		t.Logf("order properties hold over all %d plans (%d of them primary-scan-rooted): "+
+			"%d unordered pairs (irreflexivity, antisymmetry, totality); %d ordered triples "+
+			"and %d permutations (transitivity, permutation-independence); winner=%s",
+			n, numPrimaryScans, pairs, triples, permutations, corpus[baseline].name)
 	}
 }
 

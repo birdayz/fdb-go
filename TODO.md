@@ -297,19 +297,8 @@ closed rather than silently alter rows or output schema.
   byte-identical to the fixed rung's, which is byte-identical to the committed
   golden. No plan-shape change to any pre-existing query; the golden grows only
   by the new file's six entries.
-  **Out of scope, found by the sweep and NOT fixed here:** criterion #7
-  (`comparePrimaryScanVsIndexScan`) is a separate, pre-existing INTRANSITIVITY,
-  inherited from Java's `comparePrimaryScanToIndexScan`. It is pair-restricted
-  by construction — it fires only for (lone primary scan) versus (singular
-  index-scan-with-fetch) and abstains for index-versus-index — so it cannot be a
-  total preorder, and it admits cycles containing no IN operator at all
-  (`sargedIndex+3fetches < primaryScan+typeFilter` by its SARG-superset
-  sub-case, `primaryScan+typeFilter < plainIndex+1fetch` by its PREFER_SCAN
-  config branch, `plainIndex+1fetch < sargedIndex+3fetches` by the fetch rung
-  once #7 abstains). Antisymmetry is unaffected — its guard cannot hold in both
-  orientations. The property test therefore scopes transitivity and
-  permutation-independence to the index-rooted subset and says so, exactly as
-  the pre-existing RFC-190 corpus scopes itself away from the same rung.
+  **Found by the sweep and deferred to CQ-10b:** criterion #7
+  (`comparePrimaryScanVsIndexScan`) is a separate, pre-existing INTRANSITIVITY.
 - [ ] **CQ-10a (LOW) — `collectSargedAliases` intersects aliases where Java
   intersects comparisons.** Raised in review as "the Go comment's claim that it
   matches Java's `ComparisonsProperty` is probably false". **The claim is
@@ -330,6 +319,110 @@ closed rather than silently alter rows or output schema.
   Java's granularity (intersect comparisons, then extract), which changes which
   IN-plans count as SARGed and therefore needs its own stress run and golden
   review. Not touched here.
+- [x] **CQ-10b (MED) — make criterion #7 a total preorder.**
+  `comparePrimaryScanVsIndexScan` was PAIR-RESTRICTED, inherited from Java's
+  `comparePrimaryScanToIndexScan` (`PlanningCostModel.java:370-414`): it fired
+  only for (lone primary scan) versus (singular index-scan-with-fetch) and
+  abstained for index-versus-index. A criterion that adjudicates only some pair
+  shapes is not a total preorder, and a lexicographic chain is transitive only
+  if every rung is one. Over the property sweep's corpus the pre-fix rung
+  produced **69 transitivity violations at the 28-plan corpus CQ-10 left behind,
+  and 138 at the 32-plan corpus this item widens it to — 100% of them involving
+  a primary scan** in both cases, antisymmetry clean (0 violations either way);
+  cycles containing no IN operator at all
+  (`sargedIndex+3fetches < primaryScan+typeFilter` by the type-filter sub-case,
+  `primaryScan+typeFilter < plainIndex+1fetch` by the PREFER_SCAN config branch,
+  `plainIndex+1fetch < sargedIndex+3fetches` by the fetch rung once #7
+  abstains). Reproduced at `356ce2ab6`, at `4fae8f215`, and on `master`.
+  **The verdicts could not simply be extended to the abstained pairs**: on the
+  pairs the rung DOES adjudicate they are themselves cyclic, because the
+  sub-case decides on the SUBSET relation between the two sides' comparison
+  sets and a subset relation is a partial order. Four plans, every consecutive
+  comparison inside Java's own guard: `P1{a} < I2{b,c} < P2{b} < I3{c,a} <
+  P1{a}` (measured, `TestCriterion7_AdjudicatedCycleIsGone`). No total preorder
+  can reproduce a cyclic relation, so a repair necessarily changes verdicts.
+  The rung now ranks each plan independently (`primaryVsIndexRankOf`) on a
+  four-tier ladder whose contested band — a type-filtered lone primary scan
+  against a type-filter-free singular index-scan-with-fetch — orders by
+  comparison-set SIZE, agreeing with Java's subset test on every comparable
+  pair and differing only on incomparable ones, i.e. exactly the cyclic
+  configuration. **The price:** on incomparable sets the size test is blind to
+  WHICH comparisons they are, so an index MISSING a comparison the primary has
+  can win on count alone (`primary{a,b}` versus `index{c,d,e}` goes to the
+  index, where Java gives it to the primary). Java's guard is the more
+  informative test and the repair gives it up — it has to, because
+  `primaryMinusIndex.isEmpty()` is a subset test and the cycle is built from
+  nothing but subset tests. The in-memory-sort guard Go already applied to the primary
+  side becomes symmetric (a rank has no "abstain", and ranking sort-bearing
+  plans last reproduces the sort-count rung directly below).
+  **Deliberate divergence:** the derivation, Java file:line evidence, the tier
+  table and the four-plan cycle live in DIVERGENCES.md ("Criterion 7 — primary
+  scan versus index scan with fetch").
+  **The property sweep's scope actually widened.** `TestCostModel_InPlanComparisonIsOrderIndependent`
+  asserted transitivity and permutation-independence over the index-rooted
+  subset only, precisely because of this rung; it now asserts them over the
+  WHOLE corpus (496 pairs, 29,760 ordered triples, 64 permutations over 32
+  plans, 6 of them primary-scan-rooted, up from 28/2). The scoped version is
+  gone, not left passing alongside.
+  **New pins, and exactly which are RED on the pre-fix rung.** Red (they fail
+  when the pre-fix rung is forced back on, so they are genuine red-to-green
+  proofs): the widened `TestCostModel_InPlanComparisonIsOrderIndependent`,
+  `TestCriterion7_AbstentionCycleIsGone`, `TestCriterion7_AdjudicatedCycleIsGone`,
+  `TestCriterion7_RankIsATotalPreorder` (irreflexivity / antisymmetry /
+  strict-transitivity / INDIFFERENCE-transitivity over a 12-plan corpus covering
+  every tier, for all three `IndexScanPreference` values),
+  `TestPlanningCostModel_PrimaryVsIndexRungIgnoresSortBearingPlans`,
+  `TestCriterion7_FetchPayingIndexLosesToCoveringIndex`, and
+  `TestPlanningCostModel_SargRichIndexBeatsSargPoorIndex`. GREEN on the pre-fix
+  rung, and deliberately so — they pin behaviour this change PRESERVES, not
+  behaviour it introduces: `TestPlanningCostModel_PrimaryIndexSARGRichIndexWins`
+  (its comparison sets are comparable, so the size test and Java's subset test
+  agree — that is the whole point of the equivalence claim) and
+  `TestPrimaryVsIndexRank_HonorsIndexScanPreference`. `TestDistinctSargCount`
+  is neither: `distinctSargCount` does not exist pre-fix, so it cannot be
+  compiled against the old source at all.
+  **Reachability and impact, measured rather than assumed.** One instrumented
+  pass over the six SQL-level suites; totals are stable to ~0.1% across runs
+  (an independent reviewer measured 362,592 consultations against the 362,879
+  here) because memo exploration order is not bit-reproducible between
+  processes — the ZERO counts, however, reproduced exactly. The rung is
+  consulted **362,879** times; **197,807** are pairs the pre-fix rung
+  adjudicated, and **zero** of them change verdict (all 24 contested-band
+  consultations carry one comparison per side, so the size test and the subset
+  test agree). **26,083** previously-abstained pairs get a rung verdict: 10,786
+  primary-with-type-filter versus primary-without and 14,147 sort-bearing versus
+  sort-free are decided the SAME way by the rung immediately below (type-filter
+  count, sort count), leaving **1,150** genuinely new verdicts — all of them the
+  identical shape `I(tf=0,sarg=k,idx=1,fetch=1)` versus
+  `E(tf=0,sarg=k,cov=1,fetch=0)`, i.e. an index-scan-with-fetch losing to a
+  covering index that needs none, which the fetch rung below scores the same way
+  (2 against 0). The index-versus-index search-argument ordering — the one
+  dimension that could pre-empt the fetch-count and unmatched-field rungs — does
+  not fire anywhere in the SQL corpus (all 49,091 index/index consultations have
+  equal search-argument counts, unequal: 0), but it is NOT unreachable in
+  general: it fires in the unit corpus, which is why
+  `TestPlanningCostModel_ExplicitFetchCountBeforeUnmatchedFields` had to be
+  adjusted, and it is now pinned directionally by
+  `TestPlanningCostModel_SargRichIndexBeatsSargPoorIndex`.
+  **Net effect on the comparator, which is the decisive measurement.**
+  Evaluating every FULL-comparator comparison twice in the same process — once
+  with the pre-fix rung, once with the ranked rung — over **967,069**
+  comparisons yields **zero sign differences** (729,088 `+1`, 167,010 `-1`,
+  70,971 ties, identical both ways). Every one of the 26,083 rung-level changes
+  is absorbed by a rung below returning the same sign; that, not the rung's own
+  statistics, is why nothing observable moves. Independently, recording the
+  extracted plan of every planning across those suites (**42,560 plans**) and
+  diffing pre-fix against fixed, modulo run-to-run correlation-identifier
+  counters, yields **zero differences**.
+  Two pre-existing unit tests changed, both deliberately and both explained:
+  `TestPlanningCostModel_PrimaryIndexStrictSARGSuperset` used an
+  `InMemorySort(IndexScan)` as its adversary, which the symmetric sort guard now
+  ranks last — replaced by the differential
+  `TestPlanningCostModel_PrimaryIndexSARGRichIndexWins` plus an explicit
+  sort-guard pin; and `TestPlanningCostModel_ExplicitFetchCountBeforeUnmatchedFields`
+  had one candidate carrying a search argument the other lacked, which the
+  contested band now decides before the fetch rung — both candidates now carry
+  one, restoring the isolation the test was written for.
 - [ ] **CQ-11 (MED) — enrich and calibrate planner statistics.** Add at least
   distinct-count/selectivity hooks beyond table cardinality, keep safe defaults,
   and calibrate the model against representative indexed, skewed, and join
@@ -5662,6 +5755,20 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 ## Stress test 1M baseline (2026-05-27)
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
+
+**2026-07-25 (CQ-10b — total-preorder primary-vs-index cost rung):** baseline
+worktree at the pre-change commit `356ce2ab6` vs the working tree, same box,
+sequential fresh FDB containers. All 23 subtests PASS on both sides with
+**identical row counts** and a **byte-identical EXPLAIN set** (both diffs
+empty). Total runtime 158.64s baseline vs 158.39s branch (-0.16%). Million-row
+scans baseline 2.93/3.40/3.22/3.47/3.06s vs branch 2.90/3.28/3.16/3.38/2.95s.
+Bulk loads noise-level equal (customers 6.315s vs 6.341s; orders 130.06s vs
+130.15s). Point lookups 4.71-7.17ms baseline vs 4.73-7.34ms branch, index
+equality 5.64 vs 5.84ms. Sub-second rows move within single-run noise in both
+directions (full_scan_filter 0.63 vs 0.54s, group_by_customer_having 0.13 vs
+0.19s) with no order-of-magnitude shift and no plan-shape change. NOTE: the
+pre-existing point-lookup threshold caveat recorded under the RFC-176/P2 gate
+above still applies to this box; these numbers do not re-qualify it.
 
 **2026-07-25 (CQ-10 — antisymmetric IN-plan cost rung):** baseline worktree at
 the pre-change commit `4fae8f215` vs the working tree, same box, sequential

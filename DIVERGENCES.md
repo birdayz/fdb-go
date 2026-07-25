@@ -205,7 +205,7 @@ explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-crit
 | 4. Data access count | count(Scan, Index, Covering) | `scanCount + indexScanCount + coveringIndexCount` | Aligned |
 | 5. Recursive CTE DFS > level | flipFlop(compareRecursiveCte) | `compareRecursiveCTE` | Aligned |
 | 6. IN-plan SARG penalty | flipFlop(compareInOperator) — evaluates the LEFT argument only and returns a PRESENT tie for a SARGed in-plan | `compareInPlan` ranks BOTH sides on the penalty | **Deliberate divergence — Java's rung is not antisymmetric (see below)** |
-| 7. Primary vs index scan | comparison-set analysis + configured `IndexScanPreference` (Cascades default `PREFER_SCAN`) | `comparePrimaryScanVsIndexScan` + `isSingularIndexScanWithFetch` + mirrored configuration | Aligned; strict-SARG-superset and all three preference branches are behaviorally pinned |
+| 7. Primary vs index scan | `flipFlop(comparePrimaryScanToIndexScan)` — a pair-restricted guard, plus a comparison-SUBSET sub-case, plus the configured `IndexScanPreference` (Cascades default `PREFER_SCAN`) | `comparePrimaryScanVsIndexScan` ranks BOTH sides on `primaryVsIndexRankOf`, a tiered ladder whose contested band orders by comparison-set SIZE | **Deliberate divergence — Java's rung is not transitive, and its adjudicated verdicts are themselves cyclic (see below)** |
 | Go sort extension | Cascades `RemoveSortRule` eliminates redundant sorts before costing and has no physical-sort cost rung (`RecordQuerySortPlan` is legacy-planner-only) | `inMemorySortCount`, fewer wins, promoted before the structural block | Go read-side extension / cost-time analogue (RFC-190) |
 | 8. Type filter count | TypeFilterCountProperty | `len(GetRecordTypes())` per filter | Aligned |
 | 9. Type filter depth | ExpressionDepthProperty | Concrete depth plus logical fallback, with `InMemorySort` transparent | Aligned after RFC-190; unconditional with respect to sort |
@@ -320,6 +320,171 @@ assumed:
 The whole-corpus proof is independent of both explanations: regenerating the entire plan-shape
 baseline with the pre-fix rung forced back on yields output **byte-identical** to the fixed rung's,
 which is in turn byte-identical to the committed golden.
+
+#### Criterion 7 — primary scan versus index scan with fetch — DELIBERATE DIVERGENCE (Java upstream defect)
+
+**Java's rung is not transitive — not merely because it abstains on most pair shapes, but because its
+verdicts on the pairs it DOES adjudicate already contain a cycle. Go ranks both sides on a scale
+instead. Read-side plan choice only — nothing here touches the wire, so Java and Go still read and
+write byte-identical records.**
+
+Java (`PlanningCostModel.java`, tag 4.12.11.0):
+
+- `comparePrimaryScanToIndexScan(primaryScan, indexScan, …)` (`:370`) is guarded by an applicability
+  test (`:376-379`): the first side must be exactly one `RecordQueryScanPlan` with no
+  `RecordQueryPlanWithIndex`, the second must have no `RecordQueryScanPlan` and must satisfy
+  `isSingularIndexScanWithFetch` (`:474-478`). Outside that shape it returns `OptionalInt.empty()`
+  (`:414`) and the call site (`:190-195`) falls through to the remaining rungs.
+- Inside the guard there are two branches. The type-filter sub-case (`:381-406`): when the primary
+  side carries a type filter and the index side none, it takes `Sets.difference` both ways
+  (`:392`, `:394-395`) and returns `of(1)` — prefer the index — iff `primary − index` is empty AND
+  `index − primary` is non-empty, i.e. iff the primary's comparison set is a STRICT SUBSET of the
+  index's. Otherwise the config branch (`:408-412`): `PREFER_SCAN` returns `of(-1)`, the
+  index-preferring configurations `of(1)`.
+- `flipFlop` (`:511`) asks the reverse orientation when the first returns empty. The guard cannot hold
+  in both orientations at once (one side needs `scanCount == 1`, the other `scanCount == 0`), so
+  ANTISYMMETRY is fine here — unlike criterion 6. The defect is transitivity only.
+
+**Defect 1 — pair-restriction.** A criterion that adjudicates only some pair shapes is not a total
+preorder, and a lexicographic composition is transitive only if every rung is one. The failure is the
+indifference relation: the rung is indifferent between two index scans it ranks on OPPOSITE sides of
+the same primary scan, so a rung further down closes the ring. Writing `P` for a lone primary scan and
+`I` for a singular index-scan-with-fetch:
+
+	sargedIndex+3fetches   < primaryScan+typeFilter   the type-filter sub-case: the index SARGs
+	                                                  strictly more and pays no type filter
+	primaryScan+typeFilter < plainIndex+1fetch        the config branch, PREFER_SCAN (the default)
+	plainIndex+1fetch      < sargedIndex+3fetches     the rung ABSTAINS for an index/index pair;
+	                                                  the fetch rung decides, 2 < 4
+
+No IN operator is involved. Over the corpus of `TestCostModel_InPlanComparisonIsOrderIndependent` the
+pre-fix rung produces **69 transitivity violations at the 28 plans that corpus held when the scoping
+was introduced, and 138 at the 32 plans it holds now — 100% of them involving a primary scan** in both
+cases, with antisymmetry clean (0 violations) either way. That is why the sweep used to scope its
+transitivity and permutation properties to the index-rooted subset.
+
+**Defect 2 — the adjudicated verdicts are themselves cyclic**, so the repair could NOT simply extend
+Java's answers to the abstained pairs. The sub-case decides on the SUBSET relation between the two
+sides' comparison sets, and a subset relation is a partial order, not a total preorder. Four plans,
+every consecutive comparison a `(P, I)` pair inside Java's guard (`P` sides type-filtered, `I` sides
+not):
+
+| pair | Java | why |
+|---|---|---|
+| `P1{a}` vs `I2{b,c}` | primary wins | `primary − index = {a}` is non-empty: sub-case skipped, `PREFER_SCAN` |
+| `I2{b,c}` vs `P2{b}` | index wins | `{b} ⊊ {b,c}`: sub-case fires |
+| `P2{b}` vs `I3{c,a}` | primary wins | `primary − index = {b}` is non-empty: skipped again |
+| `I3{c,a}` vs `P1{a}` | index wins | `{a} ⊊ {c,a}`: sub-case fires |
+
+`P1 < I2 < P2 < I3 < P1`. Reproduced in Go on the pre-fix rung by
+`TestCriterion7_AdjudicatedCycleIsGone`. No total preorder can reproduce a cyclic relation, so any
+repair necessarily changes some verdicts; the only question is which.
+
+**Go's rung** (`comparePrimaryScanVsIndexScan` → `primaryVsIndexRankOf`) ranks each plan
+independently on a ladder, lower is better, and compares the ranks. Under `PREFER_SCAN` (the Cascades
+default):
+
+| tier | class | within-tier order |
+|---|---|---|
+| 0 | a lone primary scan with no type filter; and every plan with no stake in the trade-off (covering index needing no fetch, multi-access plan, …) | flat |
+| 1 | the contested band: a type-filtered lone primary scan, and a singular index-scan-with-fetch with no type filter | more search arguments wins; a tie goes to the primary scan |
+| 2 | a singular index-scan-with-fetch that also pays a type filter | flat |
+| 3 | any plan carrying an in-memory sort | flat |
+
+The index-preferring configurations penalise the lone primary scan instead (tier 1) and leave
+everything else at tier 0 — Java's sub-case is moot there because both of its branches already return
+"prefer the index".
+
+Two things change versus Java, and nothing else:
+
+1. **The subset test becomes a size test.** Inside the contested band the index wins iff it carries
+   strictly MORE distinct comparisons (`distinctSargCount`, the cardinality of the same set Java takes
+   differences of). That agrees with `primary ⊊ index` on every COMPARABLE pair — a strict subset has
+   strictly fewer members, equal sets have equal counts and the tie goes to the primary exactly as
+   Java's empty `indexMinusPrimary` does — and differs only on INCOMPARABLE sets, which is precisely
+   the configuration that makes Java cyclic.
+
+   **The price, stated plainly.** On incomparable sets the size test is BLIND TO WHICH comparisons
+   they are, so an index that is MISSING a comparison the primary scan has can still win, purely on
+   count: `primary{a,b}` versus `index{c,d,e}` goes to the index (3 > 2), where Java's
+   `primaryMinusIndex = {a,b}` is non-empty and it goes to the primary. Java's guard is the more
+   informative test — it will not hand the win to an index that dropped a search argument the primary
+   holds — and the repair gives that up. It has to: `primaryMinusIndex.isEmpty()` is a subset test,
+   and the four-plan cycle above is built from nothing but subset tests, so keeping it is keeping the
+   cycle. Size is the coarsest scale that reproduces Java wherever Java is self-consistent. The
+   exposure is bounded by the guard the rung keeps: this only ever arises when the primary side pays
+   a type-filter discard and the index side pays none. It does not arise on the corpus measured
+   below — all 24 contested-band consultations carry one comparison per side.
+2. **The in-memory-sort guard becomes symmetric.** Go's `ImplementInMemorySortRule` is a read-side
+   extension Java's ordinal rungs never see, and Go already refused to treat an `InMemorySort(Scan)`
+   as a bare primary scan. A rank has no "abstain", so a sort-bearing plan has to land somewhere;
+   ranking it last reproduces the verdict of the sort-count rung immediately below, and extends the
+   same guard to the index side, where an `InMemorySort(IndexScan)` could previously win here and
+   pre-empt that rung.
+
+Pinned by `TestCriterion7_AbstentionCycleIsGone` and `TestCriterion7_AdjudicatedCycleIsGone` (the two
+cycles above, red on the pre-fix rung), `TestCriterion7_RankIsATotalPreorder` (brute-force
+irreflexivity / antisymmetry / strict-transitivity / INDIFFERENCE-transitivity over a 12-plan corpus
+covering every tier, for all three `IndexScanPreference` values),
+`TestPlanningCostModel_PrimaryIndexSARGRichIndexWins` (the contested band end to end, isolated
+differentially: removing the index's extra comparison flips the winner back to the primary scan),
+`TestPlanningCostModel_PrimaryVsIndexRungIgnoresSortBearingPlans`, `TestDistinctSargCount`, and the
+widened `TestCostModel_InPlanComparisonIsOrderIndependent`, whose transitivity and
+permutation-independence sweeps now cover the WHOLE corpus, primary scans included (29,760 ordered
+triples, 64 permutations, 496 pairs over 32 plans).
+
+**Reachability and impact are measured, not assumed.**
+
+All figures below come from one instrumented pass over the six SQL-level suites (embedded,
+explaindiff, plandiff, memoinvariant, rowdiff, yamsql). They are stable to about a tenth of a percent
+across runs — an independent reviewer's pass measured 362,592 consultations against the 362,879 here
+(0.08%) — because memo exploration order is not bit-reproducible between processes. Treat the totals
+as ±0.1%; the ZERO counts below are exact and did reproduce exactly.
+
+*Reachability.* The rung is consulted **362,879** times. **197,807** of those are pairs the pre-fix
+rung ADJUDICATED — overwhelmingly primary-versus-index with no type filter (191,735 + 6,048), plus 24
+type-filtered-primary-versus-index pairs, the shape the sub-case exists for.
+
+*Impact on the adjudicated pairs.* **Zero** of the 197,807 change verdict. The size test never
+disagrees with the subset test on this corpus because the comparison sets are always comparable there
+— all 24 contested-band consultations carry one comparison on each side.
+
+*Impact on the abstained pairs.* **26,083** pairs get a rung verdict where the pre-fix rung had none:
+
+| pairs | shape | decided the same way by |
+|---|---|---|
+| 10,786 | primary-with-type-filter versus primary-without | the type-filter-count rung directly below (fewer wins) |
+| 14,147 | sort-bearing versus sort-free | the sort-count rung directly below (fewer wins) |
+| 1,150 | index-scan-with-fetch versus covering-index-needing-no-fetch | the fetch rung below (`indexScanCount + fetchCount`, 2 against 0) |
+
+The 1,150 are the only genuinely NEW class, and all 1,150 are the identical shape:
+`I(tf=0, sarg=k, idx=1, fetch=1)` against `E(tf=0, sarg=k, cov=1, fetch=0)` — equal search arguments,
+equal type filters, the covering side winning every time. Pinned by
+`TestCriterion7_FetchPayingIndexLosesToCoveringIndex`, which asserts BOTH this rung's verdict and the
+fetch rung's metric so the two cannot silently diverge.
+
+The index-versus-index search-argument ordering — the one dimension that could pre-empt the
+fetch-count and unmatched-field rungs below — **does not fire anywhere in the SQL corpus**: all 49,091
+index/index consultations have equal search-argument counts (unequal: 0). It is emphatically NOT
+unreachable in general, and is directly pinned by
+`TestPlanningCostModel_SargRichIndexBeatsSargPoorIndex`, whose shapes come from a pre-existing unit
+test that had to be adjusted for this change.
+
+*Net effect on the comparator.* The decisive measurement is not the rung but the CHAIN. Evaluating
+every full-comparator comparison twice in the same process — once with the pre-fix rung and once with
+the ranked rung — over **967,069** comparisons yields **zero sign differences** (729,088 `+1`,
+167,010 `-1`, 70,971 ties, identical both ways). Every one of the 26,083 rung-level changes is
+absorbed by a rung below returning the same sign. That, not the rung's own statistics, is why the
+elected plans and the stress numbers do not move.
+
+*Elected winners.* Independently: recording the extracted plan of every planning across those six
+suites — **42,560 plans** — and diffing the pre-fix run against the fixed run modulo run-to-run
+correlation-identifier counters yields **zero differences**. Byte-identical output is not on its own
+evidence of safety, which is why the 223,890 non-abstaining consultations and the 967,069 chain
+comparisons above were counted first.
+
+*Stress.* The 1M stress suite is unchanged: 23/23 subtests pass on both sides with identical row
+counts and a byte-identical EXPLAIN set (see TODO.md's stress table).
 
 ### Cost Model: RewritingCostModelLess
 
