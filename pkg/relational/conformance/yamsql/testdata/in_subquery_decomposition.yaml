@@ -1,14 +1,18 @@
 # in_subquery_decomposition.yaml
 #
-# `col IN (SELECT ...)` was previously decomposed via a pre-evaluator
-# into an IN-list pushdown, with a runtime fallback for correlated /
-# unsupported shapes. As of TODO #5 the entire IN-subquery feature is
-# rejected at predicate evaluation time (Java NPEs in
-# AstNormalizer.visitInPredicate; per CLAUDE.md principle #10 Go
-# aligns with that architectural reality and emits a clean error).
-# These tests pin the rejection across all the shapes the prior
-# decomposer used to handle (PK, secondary index, filtered, empty,
-# arithmetic projection, correlated, duplicates).
+# `col IN (SELECT ...)` is REJECTED (0AF00) in every shape — this file
+# pins the rejection, it does not pin support. Java rejects the same
+# grammar alternative: ExpressionVisitor.visitInPredicate asserts
+# `inList().queryExpressionBody() == null` with UNSUPPORTED_QUERY
+# ("IN predicate does not support nested SELECT"), and the earlier
+# AstNormalizer.visitInPredicate NPEs on it (ParseHelpers.isConstant
+# dereferences a null ExpressionsContext). Per CLAUDE.md principle #10
+# Go aligns with that architectural reality and emits a clean error.
+# An earlier Go pre-evaluator decomposed the form into an IN-list
+# pushdown; the shapes it used to handle (PK, secondary index,
+# filtered, empty, arithmetic projection, correlated, duplicates) are
+# each pinned as rejected below, followed by the supported EXISTS
+# rewrites.
 name: in_subquery_decomposition
 schema_template: |
   CREATE TABLE t (

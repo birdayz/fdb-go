@@ -625,10 +625,102 @@ closed rather than silently alter rows or output schema.
   healthy environment, so a skip means the setup silently failed to produce the
   state under test. Either force the condition (drive enough data/connections to
   guarantee it) or fail rather than skip once the environment is known-capable.
-- [ ] **CQ-14 (LOW) — reconcile the advertised SQL surface with conformance.**
-  Remove the README claim that `IN (SELECT ...)` is supported until the
-  conformance corpus accepts it, and make generated rejection cases visibly
-  distinguish unsupported features from supported positive cases.
+- [x] **CQ-14 (LOW) — reconcile the advertised SQL surface with conformance.**
+  Both halves of the item held. Three things it did not name also had to be
+  fixed: a live corpus entry that read as IN-subquery support, the upstream doc
+  that originated the README claim, and a wrong `NOT IN` migration remedy.
+  **Measured state of `IN (SELECT ...)`: no form plans, in either engine.** Every
+  `x IN (SELECT …)` / `x NOT IN (SELECT …)` shape in the corpus is a rejection pin
+  — `subquery_in` (8), `in_subquery_decomposition` (9), plus
+  `correlated_subquery_probes`, `in_list_pushdown` and the `sqldriver`
+  IN-subquery/DML/JOIN-ON probes — all `0AF00`, across SELECT WHERE, DML WHERE, a
+  JOIN ON conjunct and a projection, correlated and uncorrelated, filtered and
+  empty. The two `recursive_cte` occurrences return `0A000` only because the
+  every-CTE-must-self-reference rule fires first, and `update_dml_cte`'s two
+  `42601`s are grammar rejections of the `WITH …UPDATE` form and of a `WITH`
+  nested inside the `IN (…)` parens — neither reaches the IN predicate. So the
+  README's supported-list claim pointed users at a guaranteed error.
+  **One live artifact contradicted that sweep and is now gone.** `plandiff`'s
+  `SeedCorpus` carried `select_with_in_subquery`, and
+  `TestSeedCorpus_GoEngineSucceedsOnAll` — which calls each entry a "regression
+  sentinel" — was green on it, so the corpus read as "Go plans IN-subqueries".
+  Probed directly through `NewGoEngine().Plan`, it does succeed:
+  `Project(ID) / Filter(customer IN (SELECT id FROM users WHERE active = TRUE)) /
+  Scan(ORDERS)`, and likewise on the `NOT IN` and catalog-aware paths. That is
+  **not** evidence of support and does not weaken the README: `SeedCorpus` drives
+  `NewExplainOnlyGenerator`, whose `LogicalFilter` carries `PredicateText` — the
+  verbatim WHERE source text from `canonicalTextOf`, never a resolved predicate —
+  so the tree is the input SQL echoed back, and the generator never executes. Left
+  in place it would also have flipped to a spurious Go-only divergence the moment
+  `SeedCorpus` runs against live Java via `NewJavaEngineHTTP`. The entry is
+  deleted (no golden hash to update — `TestSeedCorpus_BaselineHash` was retired)
+  and a comment at the site records why a text echo is not support and why it must
+  not come back.
+  **Java rejects it too — this is a shared gap, not a divergence.**
+  `ExpressionVisitor.visitInPredicate` asserts `inList().queryExpressionBody() == null`
+  with `UNSUPPORTED_QUERY` ("IN predicate does not support nested SELECT"), and the
+  earlier `AstNormalizer.visitInPredicate` NPEs on the same shape
+  (`ParseHelpers.isConstant` dereferences a null `ExpressionsContext`; the grammar's
+  `inList` rule does parse `'(' queryExpressionBody ')'`). `DIVERGENCES.md` correctly
+  carries no entry — there is no divergence to record — and
+  `SQL_ANSI_CONFORMANCE.md` already scored E061-11 as a shared gap. Three stale
+  statements asserting the opposite were corrected: the `plandiff` corpus NOTE
+  claiming "Go's embedded engine implements it correctly … aligning Go to reject
+  would invalidate ~14 Go-side test files"; this file's own "(Java supports it)"
+  parenthetical on the IN-subquery reach-gap item further down; and
+  `TODO-production.md` P1.7, which is the **origin** of the README claim — its
+  sweep counted `IN (SELECT)` among the subquery forms it "verified against the
+  yamsql corpus" as implemented and framed the gap as DML-only.
+  **README made self-consistent.** The supported-SQL bullet no longer claims the
+  form; the gap entry was widened from "in DML WHERE" (which implied the SELECT
+  side worked) to every position, with the SQLSTATE, the Java citation and the
+  `EXISTS` rewrite. `x IN (a, b, c)` value lists are called out as unaffected.
+  The `NOT IN` caveat was **wrong** and is fixed: adding `IS NOT NULL` inside a
+  `NOT EXISTS` is a no-op, because a NULL row already fails the equality —
+  emulating `NOT IN` needs `x IS NOT NULL AND NOT EXISTS (… t.y = x) AND NOT
+  EXISTS (… t.y IS NULL)`. The same wrong remedy was in `subquery_in.yaml` and
+  `dml_subquery.yaml`; both fixed, and `subquery_in.yaml` now *pins* the
+  emulation (empty result over a NULL-bearing inner, matching true `NOT IN`,
+  plus a control restricted to the non-NULL row that returns `[1, 3]` — so the
+  NULL-probe leg is proven load-bearing rather than incidentally empty).
+  Pinned by a new `pkg/docscheck` guard that splits the README's supported list
+  from its gap list and checks the **claim**, not a literal string: a supported
+  block may name the feature only if the same block explicitly negates it. Mutation
+  results — restoring the old wording FAILS, deleting the gap entry FAILS,
+  rewording to "EXISTS / NOT EXISTS, IN-subqueries, and correlated scalar
+  subqueries" FAILS (an earlier substring-only version passed this), and a correct
+  negation passes (the earlier version false-positived on it).
+  **FEATURE_MATRIX.md now splits cases by outcome.** It described itself as the
+  "authoritative, exhaustive inventory" while counting a `0AF00` rejection
+  identically to a working query (`Subqueries (EXISTS / IN / scalar) | 44 | 299`
+  read as 299 cases of working subquery support). Both tables gained Supported /
+  Unsupported / Error-path columns, per feature area and per scenario, plus a
+  `**Total**` row and header prose saying what is being counted. That area now
+  reads `44 | 301 | 245 | 36 | 20`, `in_subquery_decomposition` reads
+  `11 | 2 | 9 | 0` and `subquery_in` reads `13 | 5 | 8 | 0` — the rejection pins
+  are visibly separate from the `EXISTS`/join rewrites. Corpus-wide: 2370
+  supported / 111 unsupported-feature / 230 error-path of 2711 (the corpus grew
+  by the two `NOT IN` emulation cases above). No second
+  classifier and no duplicated fold: both generators call one
+  `classifyTests([]Test) CoverageBucket` in `coverage.go`, and `FeatureScenario`
+  no longer carries a `Tests int` alongside `Outcomes` (it was equal to
+  `Outcomes.Total()` by construction, so the conservation check it needed was a
+  field compared against itself). What remains asserted is that the two
+  generators inventory the same corpus — totals and scenario count must match
+  `ParseCoverage`'s.
+  **`plandiff/go_runner_test.go`'s feature-gap skip: removed as inert, replaced by
+  a real gate.** The subtest body was `RunWithSetup` followed only by the
+  `isGoFeatureGap` check, so it already passed for *any* error — the skip could
+  never change pass/fail, only the reported status; it was cosmetic either way,
+  independent of whether it fires. It is now a `t.Fatalf`: an ordinary query error
+  stays tolerated (the corpus carries negative entries), but a Go-engine *type*
+  gap ("unsupported column type" / "unsupported DataType code") fails loudly. No
+  `SeedRunCorpus` entry hits it today, so the suite stays green.
+  **Plan-shape golden re-blessed.** `explaindiff` plans the yamsql corpus
+  positionally, so the two added `subquery_in` cases drifted it (reported as 1357
+  lines, which is the line-shift artifact of a 38-line insertion). Re-blessed via
+  `-update-golden`; the golden diff is a pure insertion — the two new plans plus
+  the header count `2454 → 2456` — with **no** existing plan shape changed.
 
 **Exit gate:** focused tests for every item, Cascades unit + race suites,
 planner/translator tests, explain-plan golden, yamsql/FDB conformance, generated
@@ -4718,13 +4810,19 @@ the 3e51a55e6 delta); codex found the dead concrete-arm bug on the delta → fix
 `exists_aggregate_scope_leak_fdb_test.go` (scalar/EXISTS/real-aggregate/IN). Note: an IN-subquery-of-aggregate
 no longer 42803s — it now surfaces the HONEST, SEPARATE reach gap below (IN-subquery unsupported → 0AF00).
 
-### [ ] query-engine (Java-parity REACH GAP, pre-existing, orthogonal to the scope leak): IN-subquery is unsupported → 0AF00
+### [ ] query-engine (SHARED gap with Java, pre-existing, orthogonal to the scope leak): IN-subquery is unsupported → 0AF00
 `x IN (SELECT …)` does not plan in this Cascades engine — `SELECT p.id, (p.id IN (SELECT eid FROM e)) FROM p`
 0AF00s ("Cascades planner could not plan query") with NO aggregate involved, and WHERE-position
-`… WHERE p.id IN (SELECT COUNT(*) FROM e)` 0AF00s too. So IN-subquery is a general unsupported feature (Java
-supports it), NOT a scope-leak residual — the scope leak is closed (the IN case went from a misleading 42803
-to this honest 0AF00). A net-new read-side feature (IN-subquery lowering to a semi-join), sizeable; NOT an
-RFC-173 blocker. Sentinel: `exists_aggregate_scope_leak_fdb_test.go` `in_subquery_scope_leak_closed` flips
+`… WHERE p.id IN (SELECT COUNT(*) FROM e)` 0AF00s too. So IN-subquery is a general unsupported feature,
+NOT a scope-leak residual — the scope leak is closed (the IN case went from a misleading 42803
+to this honest 0AF00). **Correction (measured against Java 4.12.11.0 source):** the earlier
+"(Java supports it)" parenthetical here was WRONG — Java rejects the same grammar alternative.
+`ExpressionVisitor.visitInPredicate` asserts `inList().queryExpressionBody() == null` with
+`UNSUPPORTED_QUERY` ("IN predicate does not support nested SELECT"), and the earlier
+`AstNormalizer.visitInPredicate` NPEs on it (`ParseHelpers.isConstant` dereferences a null
+`ExpressionsContext`). So this is a SHARED gap, not a Java-parity gap: closing it would be a
+net-new read-side extension (IN-subquery lowering to a semi-join), sizeable; NOT an RFC-173
+blocker. Sentinel: `exists_aggregate_scope_leak_fdb_test.go` `in_subquery_scope_leak_closed` flips
 when IN-subquery support lands (then assert the rows).
 
 <details><summary>original keystone characterization (kept for the audit trail)</summary>

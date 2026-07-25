@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=339 queries=2454 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
+# files=339 queries=2456 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -15724,6 +15724,43 @@ shape:       RecordQueryFirstOrDefaultPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === subquery_in.yaml#10
+sql:   SELECT id FROM a WHERE a.v IS NOT NULL AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.v = a.v) AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.v IS NULL) ORDER BY id
+plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [1 preds])), [1 preds])), inner=PredicatesFilter(FirstOrDefault(Project([1], PredicatesFilter(Scan(B), [1 preds]))), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryFirstOrDefaultPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryScanPlan
+=== subquery_in.yaml#11
+sql:   SELECT id FROM a WHERE a.v IS NOT NULL AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.id = 101 AND sub.v = a.v) AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.id = 101 AND sub.v IS NULL) ORDER BY id
+plan:  Project([ID#0], InMemorySort([ID ASC], FlatMap(outer=FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [2 preds])), [1 preds])), inner=PredicatesFilter(FirstOrDefault(Project([1], PredicatesFilter(TypeFilter([B], Scan(B, [=])), [1 preds]))), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryFirstOrDefaultPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryTypeFilterPlan
+shape:                 RecordQueryScanPlan
+=== subquery_in.yaml#12
 sql:   SELECT DISTINCT a.id FROM a, b WHERE a.v = b.v ORDER BY a.id
 plan:  Distinct(Project([A.ID#0], FlatMap(outer=Scan(A), inner=PredicatesFilter(Scan(B), [1 preds]))))
 shape: RecordQueryDistinctPlan

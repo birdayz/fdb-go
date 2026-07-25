@@ -21,12 +21,20 @@ import (
 // name, never on the SQL text — engine feature detection must use the parse tree,
 // but this is a doc grouping). Unmatched names fall to "Other", which stays
 // visible so a new feature area is never silently mislabelled.
+//
+// Every case count is split by declared outcome, tallied by coverage.go's
+// classifyTests — the single fold SQL_COVERAGE.md also uses. A raw case count
+// conflates "this query returns the right rows" with "this query is cleanly
+// rejected as an unsupported feature", so an inventory that only reported totals
+// would read as support for a feature the corpus actually pins as rejected.
 
 // FeatureScenario is one row of the generated matrix.
 type FeatureScenario struct {
-	Name        string
-	Category    string
-	Tests       int
+	Name     string
+	Category string
+	// Outcomes is the scenario's cases split into supported /
+	// unsupported-feature / error-path; Outcomes.Total() is the case count.
+	Outcomes    CoverageBucket
 	Description string
 }
 
@@ -190,7 +198,7 @@ func ParseFeatureScenarios(dir string) ([]FeatureScenario, error) {
 		out = append(out, FeatureScenario{
 			Name:        s.Name,
 			Category:    categoryFor(s.Name),
-			Tests:       len(s.Tests),
+			Outcomes:    classifyTests(s.Tests),
 			Description: extractDescription(raw, s.Name),
 		})
 	}
@@ -262,10 +270,10 @@ func cleanDescription(s string) string {
 // RenderFeatureMatrix renders the markdown document from parsed scenarios.
 func RenderFeatureMatrix(scenarios []FeatureScenario) string {
 	byCat := map[string][]FeatureScenario{}
-	totalTests := 0
+	var grand CoverageBucket
 	for _, s := range scenarios {
 		byCat[s.Category] = append(byCat[s.Category], s)
-		totalTests += s.Tests
+		grand.Add(s.Outcomes)
 	}
 
 	// Order categories: known order first, then any unexpected ones alphabetically,
@@ -306,19 +314,33 @@ func RenderFeatureMatrix(scenarios []FeatureScenario) string {
 	b.WriteString("yamsql conformance corpus — one row per scenario, generated directly from the corpus so\n")
 	b.WriteString("it never drifts. For the curated high-level summary see the SQL section of `README.md`;\n")
 	b.WriteString("for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.\n\n")
-	fmt.Fprintf(&b, "**%d scenarios · %d query/assertion cases** across %d feature areas.\n\n",
-		len(scenarios), totalTests, len(cats))
+	b.WriteString("**A case count is not a support count.** Every case is classified by its declared\n")
+	b.WriteString("outcome (typed fields only, never the SQL text) into one of three columns, so a pinned\n")
+	b.WriteString("rejection is never read as working support:\n")
+	b.WriteString("- **Supported** — a positive assertion: rows verified, empty result, or a DML step that must succeed.\n")
+	b.WriteString("- **Unsupported** — an explicitly-unsupported feature the corpus pins us cleanly REJECTING\n")
+	b.WriteString("  (SQLSTATE `0A000`/`0AF00`/`0AF01`/`42883`). E.g. every `x IN (SELECT ...)` case in the\n")
+	b.WriteString("  corpus is one of these — the feature is rejected, matching Java.\n")
+	b.WriteString("- **Error-path** — correct rejection/constraint semantics (unknown column, overflow, unique\n")
+	b.WriteString("  violation, type mismatch, …): supported behaviour, not a feature gap.\n\n")
+	b.WriteString("The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.\n\n")
+	fmt.Fprintf(&b, "**%d scenarios · %d query/assertion cases** across %d feature areas — "+
+		"%d supported, %d unsupported-feature pins, %d error-path pins.\n\n",
+		len(scenarios), grand.Total(), len(cats), grand.Supported, grand.Unsupported, grand.ErrorPath)
 
 	// Summary table.
-	b.WriteString("| Feature area | Scenarios | Cases |\n|---|--:|--:|\n")
+	b.WriteString("| Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |\n")
+	b.WriteString("|---|--:|--:|--:|--:|--:|\n")
 	for _, c := range cats {
-		ss := byCat[c]
-		t := 0
-		for _, s := range ss {
-			t += s.Tests
+		var cb CoverageBucket
+		for _, s := range byCat[c] {
+			cb.Add(s.Outcomes)
 		}
-		fmt.Fprintf(&b, "| %s | %d | %d |\n", c, len(ss), t)
+		fmt.Fprintf(&b, "| %s | %d | %d | %d | %d | %d |\n",
+			c, len(byCat[c]), cb.Total(), cb.Supported, cb.Unsupported, cb.ErrorPath)
 	}
+	fmt.Fprintf(&b, "| **Total** | **%d** | **%d** | **%d** | **%d** | **%d** |\n",
+		len(scenarios), grand.Total(), grand.Supported, grand.Unsupported, grand.ErrorPath)
 	b.WriteString("\n")
 
 	// Per-category detail.
@@ -326,13 +348,16 @@ func RenderFeatureMatrix(scenarios []FeatureScenario) string {
 		ss := byCat[c]
 		sort.Slice(ss, func(i, j int) bool { return ss[i].Name < ss[j].Name })
 		fmt.Fprintf(&b, "## %s\n\n", c)
-		b.WriteString("| Scenario | Cases | What it pins |\n|---|--:|---|\n")
+		b.WriteString("| Scenario | Cases | Supported | Unsupported | Error-path | What it pins |\n")
+		b.WriteString("|---|--:|--:|--:|--:|---|\n")
 		for _, s := range ss {
 			desc := s.Description
 			if desc == "" {
 				desc = "—"
 			}
-			fmt.Fprintf(&b, "| `%s` | %d | %s |\n", s.Name, s.Tests, desc)
+			fmt.Fprintf(&b, "| `%s` | %d | %d | %d | %d | %s |\n",
+				s.Name, s.Outcomes.Total(), s.Outcomes.Supported, s.Outcomes.Unsupported,
+				s.Outcomes.ErrorPath, desc)
 		}
 		b.WriteString("\n")
 	}

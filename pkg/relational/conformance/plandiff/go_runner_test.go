@@ -114,19 +114,19 @@ func TestGoSQLRunner_HappyPath(t *testing.T) {
 	}
 }
 
-// TestGoSQLRunner_SeedRunCorpus is a Go-side runner smoke test:
-// every SeedRunCorpus entry must execute through the embedded engine
-// without error. Cross-engine byte-equivalence with Java is asserted
-// in `conformance/run_sql_conformance_test.go` (the only place that
-// has both the Java conformance server AND the FDB testcontainer in
-// scope). Splitting the responsibilities keeps this package's tests
-// running without a Java dependency.
+// TestGoSQLRunner_SeedRunCorpus is a Go-side runner smoke test: every
+// SeedRunCorpus entry is driven through the embedded engine, and must not
+// panic or hit a Go-engine type gap. Cross-engine byte-equivalence with Java
+// is asserted in `conformance/run_sql_conformance_test.go` (the only place
+// that has both the Java conformance server AND the FDB testcontainer in
+// scope). Splitting the responsibilities keeps this package's tests running
+// without a Java dependency.
 //
-// Entries that hit feature gaps in the Go engine are classified via
-// isGoFeatureGap and t.Skipf'd with a note. Currently no
-// entries hit the gap path — UUID DDL / INSERT / SELECT all landed
-// — but the gate stays in place so future corpus additions surfacing
-// new gaps don't fail the build until the gap is closed.
+// Query errors are tolerated: the corpus carries negative entries that Java
+// rejects and Go rejects too, so a non-nil error is not by itself a failure.
+// What is NOT tolerated is a Go-engine TYPE gap (isGoFeatureGap) — a DDL or
+// metadata-builder rejection means the corpus declares a column type the Go
+// engine cannot represent, and that must fail loudly rather than pass quietly.
 func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
 	t.Parallel()
 	if goSQLClusterFilePath == "" {
@@ -138,31 +138,32 @@ func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
 		q := q
 		t.Run(q.Name, func(t *testing.T) {
 			t.Parallel()
-			// Go-runner-only smoke test: just confirms each entry
-			// runs through Go's embedded engine without panic. Whether
-			// Go's behaviour matches Java is asserted in the cross-
-			// engine conformance test (run_sql_conformance_test.go).
-			// Errors are tolerated — negative entries that Java rejects
-			// also error in Go after alignment work.
+			// Go-runner-only smoke test: confirms each entry runs
+			// through Go's embedded engine without panic. Whether Go's
+			// behaviour matches Java is asserted in the cross-engine
+			// conformance test (run_sql_conformance_test.go). Ordinary
+			// query errors are tolerated — negative entries that Java
+			// rejects also error in Go after alignment work.
 			got := r.RunWithSetup(context.Background(), q.SchemaTemplate, q.SetupSqls, q.Query)
 			if got.Err != nil && isGoFeatureGap(got.Err) {
-				t.Skipf("Go-engine feature gap: %v", got.Err)
+				t.Fatalf("Go-engine type gap: %v — the corpus declares a column type the Go "+
+					"engine cannot represent; close the gap rather than tolerating it", got.Err)
 			}
 		})
 	}
 }
 
-// isGoFeatureGap recognises errors that mean "the Go embedded engine
-// doesn't support this feature yet" (vs. an unexpected runtime error).
-// Patterns:
+// isGoFeatureGap recognises errors that mean "the Go embedded engine cannot
+// represent this column type" (vs. an ordinary query rejection). Patterns:
 //   - "unsupported column type": DDL parser-level rejection.
 //   - "unsupported DataType code": metadata-builder-level rejection
 //     for types whose DDL is accepted but proto-mapping isn't wired.
 //
-// Currently no SeedRunCorpus entries hit this path — UUID end-to-end
-// landed. Kept as a gate so adding a corpus entry that
-// exercises a not-yet-supported type produces a clear "feature gap"
-// skip instead of cascading into a noisy strict-equivalence failure.
+// No SeedRunCorpus entry hits this path today — every entry's schema uses a
+// type the engine models end-to-end. It is a gate, not a tolerance: a corpus
+// entry that introduces a not-yet-modelled type names the gap in the failure
+// message instead of surfacing as an opaque strict-equivalence mismatch
+// downstream.
 func isGoFeatureGap(err error) bool {
 	if err == nil {
 		return false

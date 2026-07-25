@@ -228,6 +228,121 @@ func TestREADMENoEscapeHatchContradiction(t *testing.T) {
 	}
 }
 
+// readmeSQLGapsHeading is the README's gap-list heading — the boundary between the
+// supported-SQL bullet list and the known-gap list. The full sentence (not the bare
+// "Not yet supported") is the delimiter so a cross-reference to the gap list from
+// inside the supported list cannot be mistaken for the heading itself.
+const readmeSQLGapsHeading = "Not yet supported in the SQL engine:"
+
+// readmeSQLSections splits the README's SQL summary into (supported list, gap list).
+// Both lists mention rejected features — one to point at the gap list, the other to
+// explain the gap — so a whole-file substring check cannot tell a claim of support
+// from a documented limitation; the section boundary can.
+func readmeSQLSections(t *testing.T, readme string) (supported, gaps string) {
+	t.Helper()
+	start := strings.Index(readme, "Supported SQL")
+	if start < 0 {
+		t.Fatalf("README.md has no `Supported SQL` section — the SQL surface summary was renamed or removed")
+	}
+	rest := readme[start:]
+	end := strings.Index(rest, readmeSQLGapsHeading)
+	if end < 0 {
+		t.Fatalf("README.md has no %q heading following `Supported SQL`", readmeSQLGapsHeading)
+	}
+	return rest[:end], rest[end:]
+}
+
+var (
+	// inSubqueryMention matches any way the README names the feature: the literal
+	// `IN (SELECT`/`NOT IN (SELECT` (case-insensitive, tolerating inner spaces) or
+	// the compound noun `IN-subquery` / `IN subqueries`. The compound arm is
+	// case-SENSITIVE on the SQL keyword so ordinary prose ("described in
+	// subqueries below") cannot trip it.
+	inSubqueryMention = regexp.MustCompile(`(?i)\bIN\s*\(\s*SELECT`)
+	inSubqueryNoun    = regexp.MustCompile(`\bIN[-\s]subquer`)
+	// negatedClaim is the explicit-negation vocabulary a supported-list bullet must
+	// use if it mentions the feature at all. Deliberately a small closed set: the
+	// contract is "say `not supported` / `unsupported` / `rejected`", not "write
+	// any sentence a parser might read as negative".
+	negatedClaim = regexp.MustCompile(`(?i)\b(?:not\s+supported|unsupported|rejected|no\s+support)\b`)
+	// markdownEmphasis is stripped before the negation check so `is **not**
+	// supported` reads as `is not supported`.
+	markdownEmphasis = regexp.MustCompile("[*`]")
+	// bulletStart marks a markdown list item; a bullet plus its continuation lines
+	// is the unit a claim is judged in.
+	bulletStart = regexp.MustCompile(`(?m)^\s*[-*]\s`)
+)
+
+// markdownBlocks splits a section into the units a claim is judged in: every
+// blank-line-separated paragraph, with a bullet list further split into one block
+// per list item (a `- ` line plus its continuation lines). Judging per block rather
+// than per sentence is what lets a mention and its negation be matched up —
+// sentence splitting is unusable here because `IN (SELECT ...)` contains literal
+// periods. Nothing in the section is dropped, so a claim cannot hide in surrounding
+// prose or ride along inside a neighbouring bullet's negation.
+func markdownBlocks(section string) []string {
+	var out []string
+	for _, para := range strings.Split(section, "\n\n") {
+		locs := bulletStart.FindAllStringIndex(para, -1)
+		if len(locs) == 0 {
+			out = append(out, para)
+			continue
+		}
+		if pre := para[:locs[0][0]]; strings.TrimSpace(pre) != "" {
+			out = append(out, pre)
+		}
+		for i, loc := range locs {
+			end := len(para)
+			if i+1 < len(locs) {
+				end = locs[i+1][0]
+			}
+			out = append(out, para[loc[0]:end])
+		}
+	}
+	return out
+}
+
+// mentionsInSubquery reports whether text names the IN-subquery feature in any form.
+func mentionsInSubquery(text string) bool {
+	return inSubqueryMention.MatchString(text) || inSubqueryNoun.MatchString(text)
+}
+
+// TestREADMEDoesNotAdvertiseInSubquery: `x IN (SELECT ...)` is rejected everywhere by
+// BOTH engines — Java's ExpressionVisitor.visitInPredicate asserts
+// `inList().queryExpressionBody() == null` (UNSUPPORTED_QUERY), and Go returns 0AF00;
+// the yamsql corpus pins the rejection in every shape. The README once listed it in
+// the supported-SQL bullet list while its own gap list documented the DML half as
+// rejected, so the document contradicted itself and sent users at a guaranteed 0AF00.
+//
+// The check is on the CLAIM, not a literal string: a supported-list bullet may name
+// the feature only if the same bullet explicitly negates it, so both re-advertising
+// it verbatim and rewording it ("EXISTS / NOT EXISTS, IN-subqueries, and correlated
+// scalar subqueries") are caught, while a correct negation passes. The negation
+// vocabulary is a small closed set (negatedClaim) — the gate is biased toward
+// catching a re-advertisement, so a bullet that negates the feature in words outside
+// that set fails and must be reworded rather than silently accepted.
+func TestREADMEDoesNotAdvertiseInSubquery(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	supported, gaps := readmeSQLSections(t, readDoc(t, root, "README.md"))
+
+	for _, block := range markdownBlocks(supported) {
+		plain := markdownEmphasis.ReplaceAllString(block, "")
+		if !mentionsInSubquery(plain) || negatedClaim.MatchString(plain) {
+			continue
+		}
+		t.Errorf("README's `Supported SQL` section names the IN-subquery without negating it, but "+
+			"both engines reject `x IN (SELECT ...)` (Go: 0AF00; Java: UNSUPPORTED_QUERY \"IN "+
+			"predicate does not support nested SELECT\") and the yamsql corpus pins the rejection in "+
+			"every shape. Offending block:\n%s", strings.TrimRight(block, "\n"))
+	}
+
+	if !mentionsInSubquery(gaps) {
+		t.Errorf("README's gap list no longer documents the `IN (SELECT ...)` limitation — it is " +
+			"still rejected by both engines, so dropping the entry hides a real gap")
+	}
+}
+
 // TestStaleReportsArchived: the six 2026-03-09 audit snapshots must live under
 // docs/archive/ (not reports/), with the archive's superseded-snapshot header present.
 func TestStaleReportsArchived(t *testing.T) {

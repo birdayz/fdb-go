@@ -593,13 +593,23 @@ Caveat (Torvalds): detection, not repair — see the won't-fix note.
 ### [x] P1.7 — Reconcile contradictory docs · S — DONE (README + docs guard + generated FEATURE_MATRIX.md)
 README's "Not yet supported" listed **6 features; 5 were already implemented** (verified
 against the yamsql corpus + DIVERGENCES.md): LEFT/RIGHT/FULL OUTER JOIN, LIMIT/OFFSET,
-subqueries-in-WHERE (EXISTS / IN (SELECT) / correlated scalar), mixed ASC/DESC, scalar
+subqueries-in-WHERE (EXISTS / correlated scalar), mixed ASC/DESC, scalar
 functions (UPPER/LOWER). The "no physical sort operator / ORDER BY needs an index" claim
 was also stale (Go has a Go-only `RecordQueryInMemorySortPlan`). Rewrote the README SQL
 section to the accurate surface + a dated pointer to the authoritative source (yamsql corpus
-+ DIVERGENCES.md), keeping only genuine gaps (CTE-in-UNION-branch, DML `IN (SELECT)`, general
++ DIVERGENCES.md), keeping only genuine gaps (CTE-in-UNION-branch, `IN (SELECT)`, general
 window functions, synthetic record types). **Remaining:** a generated/maintained
 `FEATURE_MATRIX.md` (deferred — the dated README pointer is the interim source of truth).
+
+**Correction (CQ-14):** this item's sweep wrongly counted `IN (SELECT ...)` among the
+subquery-in-WHERE forms it verified as implemented, and framed the remaining gap as
+DML-only. Both are wrong and this entry is the origin of the README claim CQ-14 had to
+retract: **no** `IN (SELECT ...)` form works, in any position, and the corpus pins the
+`0AF00` rejection in every shape. Java rejects it too
+(`ExpressionVisitor.visitInPredicate` asserts `inList().queryExpressionBody() == null`
+→ `UNSUPPORTED_QUERY`), so it is a shared gap, not a Go divergence. The strings above
+are corrected in place; a `pkg/docscheck` guard now fails the build if the README's
+supported list re-advertises the form.
 
 **Update (RFC-131, PR — 2026-06-20):** the earlier SQL-section rewrite missed a separate README
 contradiction — the client-maturity row (README:19) still claimed "no drop-in escape hatch to the C
