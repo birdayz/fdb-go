@@ -293,12 +293,13 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if err := contextCancellationError(ctx); err != nil {
 		return nil, err
 	}
-	// Plan-cache key parts: a VERBATIM schema+version scope (case-sensitive,
-	// never normalized) and the injective canonical query text. NOT q.GetText()
-	// — that concatenated tokens with no separator, colliding `SELECT AB` with
-	// `SELECT A B`. PlanCache normalizes only the query text (see planCacheScope
-	// / PlanCache.Get).
-	cacheScope := planCacheScope(g.c.sess.Schema, md.Version())
+	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
+	// (case-sensitive, never normalized) and the injective canonical query
+	// text. NOT q.GetText() — that concatenated tokens with no separator,
+	// colliding `SELECT AB` with `SELECT A B`. PlanCache normalizes only the
+	// query text (see planCacheScope / PlanCache.Get).
+	popts := plannerOptionsFrom(g.c.Options())
+	cacheScope := planCacheScope(g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
 	cacheSQL := canonicalTextOf(q)
 	var ls *planLogScope
 	if logMetrics {
@@ -444,15 +445,8 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
 	}
 
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
 	stats := g.fetchTableStatistics(ctx, md)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
-		WithStatistics(stats).
-		WithMaxTasks(100_000)
+	planner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
 	if planErr != nil {
@@ -482,7 +476,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// Plan scalar subqueries independently through the Cascades pipeline
 	// (planScalarSubqueryPlans — the one planning path, shared with the
 	// plan harness).
-	scalarSubs, subErr := planScalarSubqueryPlans(ctx, scalarSubqueryPlans, md, stats)
+	scalarSubs, subErr := planScalarSubqueryPlans(ctx, scalarSubqueryPlans, md, stats, popts)
 	if subErr != nil {
 		return nil, subErr
 	}
@@ -994,16 +988,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
 	}
 
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
 	dmlStats := g.fetchTableStatistics(ctx, md)
 	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(planningRules).
-		WithStatistics(dmlStats).
-		WithMaxTasks(100_000)
+	popts := plannerOptionsFrom(g.c.Options())
+	planner := newCascadesPlanner(md, popts, planningRules, dmlStats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
 	if planErr != nil {
@@ -1037,7 +1025,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// NULL — the DELETE compared v > NULL (UNKNOWN) and removed NOTHING, with
 	// both differential models identically wrong; the loud
 	// values.UnboundScalarSubqueryError is what surfaced it.
-	dmlScalarSubs, dmlSubErr := planScalarSubqueryPlans(ctx, dmlScalarSubqueryPlans, md, dmlStats)
+	dmlScalarSubs, dmlSubErr := planScalarSubqueryPlans(ctx, dmlScalarSubqueryPlans, md, dmlStats, popts)
 	if dmlSubErr != nil {
 		return nil, dmlSubErr
 	}
@@ -1975,21 +1963,28 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 	return properties.MapStatistics{PerType: counts}
 }
 
-func buildCascadesPlanContext(md *recordlayer.RecordMetaData) cascades.PlanContext {
-	if md == nil {
-		return cascades.EmptyPlanContext()
-	}
-	return &metadataPlanContext{md: md}
+// buildCascadesPlanContext builds the plan context for one planning run. cfg
+// carries the option-driven PlannerConfiguration (see plannerOptions); pass
+// cascades.DefaultPlannerConfiguration() where no options apply. It is a
+// parameter rather than a constant read inside the context so that
+// PLAN_RIGHT_DEEP reaches PartitionSelectRule, which consults the
+// configuration through PlanContext and has no other route to it.
+//
+// A nil md still yields a metadataPlanContext (every accessor handles nil
+// md): an EmptyPlanContext would silently discard cfg.
+func buildCascadesPlanContext(md *recordlayer.RecordMetaData, cfg cascades.PlannerConfiguration) cascades.PlanContext {
+	return &metadataPlanContext{md: md, cfg: cfg}
 }
 
 type metadataPlanContext struct {
 	md             *recordlayer.RecordMetaData
+	cfg            cascades.PlannerConfiguration
 	candidatesOnce sync.Once
 	candidates     []cascades.MatchCandidate
 }
 
 func (c *metadataPlanContext) GetPlannerConfiguration() cascades.PlannerConfiguration {
-	return cascades.DefaultPlannerConfiguration()
+	return c.cfg
 }
 
 // GetMatchCandidates returns stable candidate identities for the lifetime of

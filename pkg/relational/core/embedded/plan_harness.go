@@ -209,14 +209,11 @@ func planReferenceToPhysical(
 	verifyOneFinal bool,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, []string, error) {
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(planningRules).
-		WithStatistics(stats).
-		WithMaxTasks(100_000)
+	// The no-FDB harness has no connection and therefore no api.Options: it
+	// plans under the Java-default planner options, like any query that sets
+	// none. It still goes through newCascadesPlanner so the harness and the
+	// production paths cannot diverge in how a planner is built.
+	planner := newCascadesPlanner(md, plannerOptionsFrom(nil), planningRules, stats)
 
 	// RFC-183 P5 precondition: does every reference reachable at extraction
 	// hold at most ONE physical final? That is what Java's getRangesOverPlan
@@ -423,14 +420,9 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
-		WithStatistics(stats).
-		WithMaxTasks(100_000)
+	// No connection here, so no api.Options: plan under the Java-default
+	// planner options via the shared construction site.
+	planner := newCascadesPlanner(md, plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), stats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {
@@ -571,14 +563,9 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
-		WithStatistics(stats).
-		WithMaxTasks(100_000)
+	// No connection here, so no api.Options: plan under the Java-default
+	// planner options via the shared construction site.
+	planner := newCascadesPlanner(md, plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), stats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {
@@ -606,7 +593,7 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 	// the production generator uses; PlanRecordQueryWithSubqueries surfaces
 	// them, the plan-only entry points drop them (execution without the
 	// bindings is loud — values.UnboundScalarSubqueryError).
-	subs, subErr := planScalarSubqueryPlans(context.Background(), scalarSubqueryPlans, md, stats)
+	subs, subErr := planScalarSubqueryPlans(context.Background(), scalarSubqueryPlans, md, stats, plannerOptionsFrom(nil))
 	if subErr != nil {
 		return nil, nil, subErr
 	}

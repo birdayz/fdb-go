@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -72,8 +73,9 @@ const starWallClockCeiling = 5 * time.Second
 // spokes, 4-way, every spoke live) four ways:
 //
 //   - CONVERGES (no MaxTasks cap) — a count-level interning regression that
-//     re-explodes shared sub-products blows past the 100k budget (measured: the
-//     5-way all-live star already caps; the 4-way is the largest that converges).
+//     re-explodes shared sub-products blows past the 100k budget (measured at
+//     HEAD: hub+4 is the widest all-live star that still converges, at ~67k
+//     tasks; hub+5 exhausts the budget — see TestOrdinalStarRightDeepBudget).
 //   - task-count == 42788 ±2% — the STAR-topology interning sentinel,
 //     complementing the CHAIN baseline (1554/6706): a different topology
 //     stresses sub-product sharing differently. IsOrdinalJoinRV admitting bare
@@ -143,4 +145,106 @@ func TestOrdinalStarPlanningBudget(t *testing.T) {
 			spokes, best, starWallClockCeiling)
 	}
 	t.Logf("ordinal %d-spoke star: tasks=%d, best wall-clock=%s (ceiling %s)", spokes, firstTasks, best, starWallClockCeiling)
+}
+
+// rightDeepPlanContext carries a PlannerConfiguration into the planner.
+// PartitionSelectRule reads ShouldJoinRightDeep off PlanContext and has no
+// other route to it, so the flag can only be exercised through a context.
+type rightDeepPlanContext struct{ cfg PlannerConfiguration }
+
+func (c rightDeepPlanContext) GetPlannerConfiguration() PlannerConfiguration { return c.cfg }
+func (c rightDeepPlanContext) GetMatchCandidates() []MatchCandidate          { return nil }
+func (c rightDeepPlanContext) GetPrimaryKeyColumns(string) []string          { return nil }
+
+// planStarWithRightDeep plans an n-spoke all-live ordinal star with
+// ShouldJoinRightDeep set to rightDeep, returning the winning expression, the
+// task count, and the planner error.
+func planStarWithRightDeep(n int, rightDeep bool) (expressions.RelationalExpression, int, error) {
+	cfg := DefaultPlannerConfiguration()
+	cfg.ShouldJoinRightDeep = rightDeep
+	p := NewPlanner(DefaultExpressionRules(), rightDeepPlanContext{cfg: cfg}).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
+	return p.Plan(expressions.InitialOf(buildOrdinalStar(n)))
+}
+
+// TestOrdinalStarRightDeepBudget pins what ShouldJoinRightDeep is FOR: it is
+// the lever that brings a wide all-live star inside the 100,000-task planning
+// budget, and it is Java's own opt-in lever
+// (RecordQueryPlannerConfiguration.setJoinRightDeep, reached from SQL through
+// the PLAN_RIGHT_DEEP option).
+//
+// It is deliberately NOT a default change. Java's default is right-deep OFF
+// (JOIN_RIGHT_DEEP_MASK unset ⇒ shouldJoinRightDeep() false) and Go's matches,
+// so a star this wide exhausts the budget in BOTH engines at default settings.
+// Turning it on excludes bushy join trees, which can be the cheaper shape —
+// that trade is the caller's to make, not the planner's.
+//
+// Two halves, because "converges" alone would also pass if the flag merely
+// broke planning into a different shape of the same size:
+//
+//   - hub+5 (six-way): the default CAPS and right-deep CONVERGES. This is the
+//     shape CQ-9 named; it is the narrowest all-live star that exceeds the
+//     budget at HEAD (hub+4 converges — see TestOrdinalStarPlanningBudget).
+//   - hub+3 (four-way): BOTH converge, and right-deep uses STRICTLY FEWER
+//     tasks. That is the direct evidence the flag prunes the search space
+//     rather than merely reshaping it.
+func TestOrdinalStarRightDeepBudget(t *testing.T) {
+	t.Parallel()
+
+	t.Run("wide_star_caps_by_default_converges_right_deep", func(t *testing.T) {
+		t.Parallel()
+		const spokes = 5
+
+		best, tasks, err := planStarWithRightDeep(spokes, false)
+		if !errors.Is(err, ErrPlannerCapHit) {
+			t.Fatalf("hub+%d star at DEFAULT settings: err=%v (tasks=%d), want ErrPlannerCapHit — "+
+				"Java caps on this shape too (right-deep defaults off in both engines); if the "+
+				"budget now covers it, widen the star rather than deleting this half",
+				spokes, err, tasks)
+		}
+		if best != nil {
+			t.Fatalf("a capped planning run must yield no plan, got %T", best)
+		}
+
+		rdBest, rdTasks, rdErr := planStarWithRightDeep(spokes, true)
+		if rdErr != nil {
+			t.Fatalf("hub+%d star with ShouldJoinRightDeep: %v (tasks=%d) — the option must bring "+
+				"the star inside the budget", spokes, rdErr, rdTasks)
+		}
+		if rdBest == nil {
+			t.Fatal("right-deep planning converged but produced no winner")
+		}
+		if rdTasks >= 100_000 {
+			t.Fatalf("right-deep tasks=%d is not under the 100,000 cap", rdTasks)
+		}
+		// Determinism: a right-deep run must be reproducible, or the count
+		// above is a coin flip rather than a budget.
+		if _, again, err2 := planStarWithRightDeep(spokes, true); err2 != nil || again != rdTasks {
+			t.Fatalf("right-deep task count is non-deterministic: %d then %d (err=%v)", rdTasks, again, err2)
+		}
+		t.Logf("hub+%d star: default CAPS at 100000 tasks; right-deep converges in %d", spokes, rdTasks)
+	})
+
+	t.Run("right_deep_prunes_the_search_space", func(t *testing.T) {
+		t.Parallel()
+		const spokes = 3
+
+		_, baseTasks, baseErr := planStarWithRightDeep(spokes, false)
+		if baseErr != nil {
+			t.Fatalf("hub+%d star at default settings: %v", spokes, baseErr)
+		}
+		rdBest, rdTasks, rdErr := planStarWithRightDeep(spokes, true)
+		if rdErr != nil {
+			t.Fatalf("hub+%d star with ShouldJoinRightDeep: %v", spokes, rdErr)
+		}
+		if rdBest == nil {
+			t.Fatal("right-deep planning converged but produced no winner")
+		}
+		if rdTasks >= baseTasks {
+			t.Fatalf("right-deep tasks=%d >= default tasks=%d — the flag must EXCLUDE bushy "+
+				"partitions, not merely reorder the same enumeration", rdTasks, baseTasks)
+		}
+		t.Logf("hub+%d star: default %d tasks, right-deep %d tasks", spokes, baseTasks, rdTasks)
+	})
 }

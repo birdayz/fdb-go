@@ -61,7 +61,7 @@ func TestPlanScalarSubqueryPlansPreservesPlannerCancellation(t *testing.T) {
 		Plan:  logical.NewScan("T", "t"),
 	}}
 
-	planned, err := planScalarSubqueryPlans(ctx, subqueries, nil, nil)
+	planned, err := planScalarSubqueryPlans(ctx, subqueries, nil, nil, plannerOptionsFrom(nil))
 	if planned != nil {
 		t.Fatalf("planScalarSubqueryPlans() plans = %v, want nil", planned)
 	}

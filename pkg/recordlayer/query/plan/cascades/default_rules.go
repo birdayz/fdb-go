@@ -338,6 +338,30 @@ func RewritingRules() []ExpressionRule {
 	}
 }
 
+// OptionalRewritingRuleNames returns the names of the rules Java's
+// `RecordQueryPlannerConfiguration.Builder.disableRewritingRules()` turns
+// off — `RewritingRuleSet.OPTIONAL_RULES`, i.e. every rule of the REWRITING
+// rule set EXCEPT `FinalizeExpressionsRule`, which stays on because it is
+// what stamps an expression FINAL and planning cannot proceed without it.
+//
+// Java's set is {QueryPredicateSimplificationRule, PredicatePushDownRule,
+// DecorrelateValuesRule, RewriteOuterJoinRule, SelectMergeRule}; all five
+// exist in Go under the same names, so the disabled set is name-identical.
+// SelectMergeRule is in Go's DefaultExpressionRules rather than
+// RewritingRules (Go's REWRITING phase runs the default expression rules),
+// so it is named explicitly instead of being derived from RewritingRules().
+//
+// The names are the Java simple-class-name spelling, which is exactly what
+// Planner.DisabledRules is keyed by.
+func OptionalRewritingRuleNames() []string {
+	rewriting := RewritingRules()
+	names := make([]string, 0, len(rewriting)+1)
+	for _, r := range rewriting {
+		names = append(names, shortTypeName(r))
+	}
+	return append(names, shortTypeName(NewSelectMergeRule()))
+}
+
 // MatchingRules returns the matching rules that seed the partial-match
 // infrastructure. These fire during the EXPLORE phase alongside
 // expression rules but serve a different purpose: they establish
@@ -416,8 +440,14 @@ func registerMatchingRules() {
 }
 
 // shortTypeName strips Go's package + pointer prefix from %T output.
-// "*cascades.FilterMergeRule" → "FilterMergeRule".
-func shortTypeName(r ExpressionRule) string {
+// "*cascades.FilterMergeRule" → "FilterMergeRule". This is the Go analog of
+// Java's `rule.getClass().getSimpleName()`, the spelling Java's
+// `RecordQueryPlannerConfiguration.isRuleEnabled` and
+// `setDisabledTransformationRuleNames` use — so a rule name is spelled the
+// same in Go and in Java, and a `DISABLED_PLANNER_RULES` value written for
+// one engine works unchanged on the other. Takes `any` because both
+// ExpressionRule and ImplementationRule are named this way.
+func shortTypeName(r any) string {
 	t := typeNameForRegistry(r)
 	for i := len(t) - 1; i >= 0; i-- {
 		if t[i] == '.' || t[i] == '*' {

@@ -100,9 +100,18 @@ type Planner struct {
 	// ErrPlannerRuleMatchCapHit via the task-level capErr channel.
 	MaxNumMatchesPerRuleCall int
 
-	// DisabledRules holds rule type names (fmt %T spelling) excluded from
-	// selection — Java's PlannerRuleSet filtering via
-	// configuration.isRuleEnabled(rule). nil/empty = all rules enabled.
+	// DisabledRules holds rule names excluded from selection — Java's
+	// PlannerRuleSet filtering via configuration.isRuleEnabled(rule).
+	// nil/empty = all rules enabled.
+	//
+	// Names are the SIMPLE type name ("PredicatePushDownRule"), not the %T
+	// spelling ("*cascades.PredicatePushDownRule"): Java keys the same set by
+	// `rule.getClass().getSimpleName()`, so this is the one spelling a
+	// DISABLED_PLANNER_RULES value can carry across both engines, and it is
+	// already the rule registry's key. An unrecognized name is ignored rather
+	// than rejected — also Java's behaviour
+	// (setDisabledTransformationRuleNames copies the strings verbatim and
+	// never resolves them against the rule set).
 	DisabledRules map[string]struct{}
 
 	// capErr carries a complexity-guard trip or a violated planner invariant
@@ -615,18 +624,18 @@ func (p *Planner) rulesForPhase(phase PlannerPhase) ([]ExpressionRule, []Impleme
 	}
 	// Java's configuration.isRuleEnabled filtering (PlannerRuleSet.getRules
 	// passes the predicate): a rule named in DisabledRules is never
-	// selected. Keyed by the concrete type's %T spelling — the Go analog of
-	// Java's rule class.
+	// selected. Keyed by the simple type name, matching Java's
+	// `rule.getClass().getSimpleName()`.
 	if len(p.DisabledRules) > 0 {
 		fe := er[:0:0]
 		for _, r := range er {
-			if _, off := p.DisabledRules[fmt.Sprintf("%T", r)]; !off {
+			if _, off := p.DisabledRules[shortTypeName(r)]; !off {
 				fe = append(fe, r)
 			}
 		}
 		fi := ir[:0:0]
 		for _, r := range ir {
-			if _, off := p.DisabledRules[fmt.Sprintf("%T", r)]; !off {
+			if _, off := p.DisabledRules[shortTypeName(r)]; !off {
 				fi = append(fi, r)
 			}
 		}

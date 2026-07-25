@@ -292,6 +292,7 @@ go_test(
         "plan_logging_fdb_test.go",
         "plan_shape_conformance_test.go",
         "planner_cap_hit_fdb_test.go",
+        "planner_options_fdb_test.go",
         "precedence_levels_probe_test.go",
         "prepared_stmt_probe_test.go",
         "projected_exists_enclosure_lift_fdb_test.go",

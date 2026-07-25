@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -232,7 +233,7 @@ func TestMetadataPlanContextMatchCandidateIdentityIsStable(t *testing.T) {
 		t.Fatalf("build schema: %v", err)
 	}
 
-	ctx := buildCascadesPlanContext(tmpl.Underlying())
+	ctx := buildCascadesPlanContext(tmpl.Underlying(), cascades.DefaultPlannerConfiguration())
 	first := ctx.GetMatchCandidates()
 	second := ctx.GetMatchCandidates()
 	if len(first) == 0 || len(first) != len(second) {

@@ -3,6 +3,7 @@ package cascades
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -214,23 +215,32 @@ func TestPlannerComplexityGuards(t *testing.T) {
 			WithImplementationRules(DefaultImplementationRules())
 		er, ir := p.rulesForPhase(PhaseRewriting)
 		if len(er) == 0 && len(ir) == 0 {
-			t.Skip("no rewriting rules registered")
+			t.Fatal("the REWRITING phase must select at least one rule")
 		}
+		// The disabled-rule key is the Java simple-class-name spelling
+		// ("PredicatePushDownRule"), not the Go %T spelling — Java keys
+		// isRuleEnabled by rule.getClass().getSimpleName(), so a
+		// DISABLED_PLANNER_RULES value is portable between the engines. Assert
+		// the name has no package/pointer prefix so a regression back to %T
+		// reds here rather than silently ignoring every user-supplied name.
 		var name string
 		if len(er) > 0 {
-			name = fmt.Sprintf("%T", er[0])
+			name = shortTypeName(er[0])
 		} else {
-			name = fmt.Sprintf("%T", ir[0])
+			name = shortTypeName(ir[0])
+		}
+		if strings.ContainsAny(name, ".*") {
+			t.Fatalf("rule name %q must be the simple class name, with no package or pointer prefix", name)
 		}
 		p.DisabledRules = map[string]struct{}{name: {}}
 		er2, ir2 := p.rulesForPhase(PhaseRewriting)
 		for _, r := range er2 {
-			if fmt.Sprintf("%T", r) == name {
+			if shortTypeName(r) == name {
 				t.Fatalf("disabled rule %s still selected", name)
 			}
 		}
 		for _, r := range ir2 {
-			if fmt.Sprintf("%T", r) == name {
+			if shortTypeName(r) == name {
 				t.Fatalf("disabled rule %s still selected", name)
 			}
 		}

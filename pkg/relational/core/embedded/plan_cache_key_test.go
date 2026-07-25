@@ -68,19 +68,19 @@ func TestPlanCacheKey_SchemaScoped(t *testing.T) {
 
 	sql := canonicalTextOf(parseQuery(t, "SELECT id FROM orders"))
 
-	if planCacheHitsSame(t, planCacheScope("SCHEMA_A", 0), sql, planCacheScope("SCHEMA_B", 0), sql) {
+	if planCacheHitsSame(t, planCacheScope("SCHEMA_A", 0, ""), sql, planCacheScope("SCHEMA_B", 0, ""), sql) {
 		t.Fatal("same SQL under different schemas shares a cache entry — SET SCHEMA staleness")
 	}
-	if planCacheHitsSame(t, planCacheScope("SCHEMA_A", 1), sql, planCacheScope("SCHEMA_A", 2), sql) {
+	if planCacheHitsSame(t, planCacheScope("SCHEMA_A", 1, ""), sql, planCacheScope("SCHEMA_A", 2, ""), sql) {
 		t.Fatal("same SQL under different metadata versions shares a cache entry")
 	}
 	// case-distinct schemas are DISTINCT (the scope is not folded).
-	if planCacheHitsSame(t, planCacheScope("s", 0), sql, planCacheScope("S", 0), sql) {
+	if planCacheHitsSame(t, planCacheScope("s", 0, ""), sql, planCacheScope("S", 0, ""), sql) {
 		t.Fatal("case-distinct schemas `s` and `S` collided — scope was normalized (wrong-schema plan)")
 	}
 	// Scope must not bleed into query text: schema "A" + query B... must not
 	// equal schema "" + query AB...
-	if planCacheHitsSame(t, planCacheScope("A", 0), sql, planCacheScope("", 0), "A"+sql) {
+	if planCacheHitsSame(t, planCacheScope("A", 0, ""), sql, planCacheScope("", 0, ""), "A"+sql) {
 		t.Fatal("schema scope bled into query text")
 	}
 }

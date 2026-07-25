@@ -32,6 +32,7 @@ func planScalarSubqueryPlans(
 	scalarSubqueryPlans []query.ScalarSubqueryPlan,
 	md *recordlayer.RecordMetaData,
 	stats properties.StatisticsProvider,
+	popts plannerOptions,
 ) ([]PlannedScalarSubquery, error) {
 	if err := contextCancellationError(ctx); err != nil {
 		return nil, err
@@ -39,9 +40,6 @@ func planScalarSubqueryPlans(
 	if len(scalarSubqueryPlans) == 0 {
 		return nil, nil
 	}
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
 	type planExtractor interface {
 		GetRecordQueryPlan() plans.RecordQueryPlan
 	}
@@ -65,11 +63,11 @@ func planScalarSubqueryPlans(
 		if subRef == nil {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery, unableToPlanScalarSubqueryMessage)
 		}
-		subPlanner := cascades.NewPlanner(rules, planCtx).
-			WithImplementationRules(cascades.DefaultImplementationRules()).
-			WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
-			WithStatistics(stats).
-			WithMaxTasks(100_000)
+		// A fresh planner per subquery: the Planner is single-use (RFC lifecycle
+		// gate), and the same connection options govern the subquery as govern
+		// the main statement — Java plans a scalar subquery under the statement's
+		// PlannerConfiguration too.
+		subPlanner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
 		subBest, _, subErr := subPlanner.PlanWithContext(ctx, subRef)
 		if subErr != nil {
 			return nil, translatePlannerError(subErr, unableToPlanScalarSubqueryMessage)

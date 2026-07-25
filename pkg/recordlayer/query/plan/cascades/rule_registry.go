@@ -9,8 +9,9 @@ import (
 // typeNameForRegistry returns the Go-formatted type name for a rule
 // (e.g. "*cascades.FilterMergeRule"). Used by default_rules.go's init
 // to derive registry keys; kept here so the helper lives next to the
-// registry it serves.
-func typeNameForRegistry(r ExpressionRule) string {
+// registry it serves. Accepts any rule kind — ExpressionRule and
+// ImplementationRule are both named this way.
+func typeNameForRegistry(r any) string {
 	return fmt.Sprintf("%T", r)
 }
 

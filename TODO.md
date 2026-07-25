@@ -161,10 +161,103 @@ closed rather than silently alter rows or output schema.
   actual cap of 100 and is now user-visible.
 
 **Optimizer quality and scalability:**
-- [ ] **CQ-9 (HIGH) — bound N-way join enumeration with a scalable search policy.**
-  Port or adapt cross-product/right-deep deferral, make the 5-way all-live star
-  converge within budget, and add larger chain/star planning gates without
-  weakening the 100,000-task safety cap.
+- [x] **CQ-9 (HIGH) — wire the planner options trio; give wide join enumeration
+  an opt-in bound.** The item's original framing — "make the 5-way all-live star
+  converge by default" — was wrong and is corrected here. Java caps on the same
+  shape at the same settings: `RecordQueryPlannerConfiguration` reads
+  `DONT_DEFER_CROSS_PRODUCTS_MASK` INVERTED (unset ⇒ defer, `:312`) and
+  `JOIN_RIGHT_DEEP_MASK` directly (unset ⇒ off, `:398`), which is exactly Go's
+  `DefaultPlannerConfiguration`. So an all-live star wide enough to exhaust the
+  budget exhausts it in both engines, and bounding enumeration by default would
+  have been Go EXCEEDING Java while changing the plan shape of every multi-way
+  join. No default moved. Measured at HEAD: hub+4 (five-way) converges at ~67k
+  tasks and hub+5 (six-way) is the narrowest all-live star that caps — the
+  existing star-budget comment claiming hub+4 already capped was stale and is
+  corrected.
+  The real defect the audit found is that Go's SQL surface accepted three planner
+  options and silently ignored two of them: `DISABLED_PLANNER_RULES` and
+  `DISABLE_PLANNER_REWRITING` were defined on the option enum with nothing in the
+  planner reading either, and `PLAN_RIGHT_DEEP` was not defined at all — while
+  both capabilities (`Planner.DisabledRules`, `PlannerConfiguration.
+  ShouldJoinRightDeep`) already existed and were honored. Java's
+  `PlannerConfiguration.of` + `buildRecordQueryPlannerConfiguration` read FOUR
+  option names, three of which Go can act on; all three are now resolved in ONE
+  place, `plannerOptionsFrom`, and turned into a planner in ONE place,
+  `newCascadesPlanner` — the only planner-construction site in the embedded
+  engine, so a query path cannot honor an option on SELECT and drop it on DML or
+  on a scalar subquery (a single-funnel convention, not a type-system guarantee:
+  `cascades.NewPlanner` stays exported). The FOURTH, `INDEX_FETCH_METHOD`, has
+  the same accepted-and-ignored defect but is NOT plumbing — Go has no
+  remote-fetch implementation at any layer — so it is documented at the option
+  and tracked as CQ-9a below rather than faked. `DISABLE_PLANNER_REWRITING` folds Java's
+  `RewritingRuleSet.OPTIONAL_RULES` into the same disabled-name set that
+  `DISABLED_PLANNER_RULES` populates, exactly as Java's `disableRewritingRules()`
+  does, and `FinalizeExpressionsRule` is excluded for Java's reason (it stamps
+  FINAL; planning cannot proceed without it). `PLAN_RIGHT_DEEP` is added with
+  Java's name, boolean type, and `false` default. Rule names are now the Java
+  simple-class-name spelling (`isRuleEnabled` keys on `getClass().getSimpleName()`)
+  instead of Go's `%T`, which no user-supplied value could ever have matched —
+  that was a second, silent way for the option to do nothing. The resolved
+  options also join the plan-cache key: the cache is per-connection and a plan
+  built under different planner options is a different plan, so without it
+  changing an option mid-connection would keep serving the previous plan. Java's
+  `QueryCacheKey` carries the whole `PlannerConfiguration` for the same reason;
+  the all-defaults case renders empty AND the delimiter is then omitted
+  entirely, so the default scope stays byte-identical to the pre-change form —
+  asserted against that literal form, not merely against the part being empty.
+  Each option is pinned by a test that fails if it is accepted and ignored, not
+  merely one that shows it does not crash: `PLAN_RIGHT_DEEP` brings the hub+5
+  star from a capped 100,000 tasks to 39,464 (Cascades) / 53,367 (SQL surface)
+  and still returns the right rows, while `false` and unset both still cap;
+  `DISABLED_PLANNER_RULES=[MatchLeafRule]` turns an index plan into a full scan
+  with identical rows, and neither an unknown name nor the Go `%T` spelling
+  changes anything; `DISABLE_PLANNER_REWRITING` disables exactly Java's optional
+  set — asserted against a LITERAL transcription of Java's
+  `RewritingRuleSet.OPTIONAL_RULES`, because comparing against the Go helper that
+  derives that set was circular and could not detect drift — and turns a
+  rewritten correlated outer join into a plain nested-loop outer join. A separate
+  differential pins the property that matters most for a search-space
+  RESTRICTION: on a hub+3 star, which converges both ways, right-deep yields a
+  demonstrably different plan and a byte-identical 9-row answer. All of it runs
+  end to end through the driver against real FDB, plus deterministic
+  Cascades-level and embedded-level gates. Bounding enumeration at
+  the SOURCE (the RFC-074 PR-C2 bipartition lattice) remains separate, larger,
+  and unstarted.
+- [ ] **CQ-9a (MED) — `INDEX_FETCH_METHOD` is accepted and silently ignored.**
+  Surfaced by CQ-9's audit. Java's `PlannerConfiguration.of` reads a FOURTH
+  planner option beyond the three CQ-9 wired: `INDEX_FETCH_METHOD`, via
+  `OptionsUtils.getIndexFetchMethod` (`OptionsUtils.java:59-60`) into
+  `RecordQueryPlannerConfiguration.setIndexFetchMethod`, which every
+  `MatchCandidate` (`ValueIndexScanMatchCandidate:241,268`,
+  `AggregateIndexMatchCandidate:417`, `WindowedIndexScanMatchCandidate:410,436`)
+  stamps onto the `RecordQueryIndexPlan` it builds. `api.OptIndexFetchMethod` is
+  read by nothing in Go.
+  Severity is narrower than "ignored" implies, and the distinction should not have
+  to be re-derived. `SCAN_AND_FETCH` asks for what Go always does, so it is honored
+  in effect. `USE_REMOTE_FETCH_WITH_FALLBACK` — Java's DEFAULT, hence what nearly
+  every caller gets — explicitly permits falling back to scan-and-fetch, which is
+  what Go does, so the DEFAULT PATH IS CORRECT rather than merely tolerated. The
+  single sharp edge is an explicit `USE_REMOTE_FETCH`, which demands remote fetch
+  with no fallback: Java issues a mapped-range scan, Go silently scan-and-fetches.
+  Same rows either way; a different round-trip profile than the caller asked for.
+  This is NOT option plumbing and must not be closed by adding a config field the
+  planner reads and no executor honors: the capability is absent end to end.
+  `SCAN_AND_FETCH` is what Go already does unconditionally; `USE_REMOTE_FETCH`
+  needs FDB's `Transaction.getMappedRange` (Java drives it through
+  `IndexPrefetchRangeKeyValueCursor`), which neither FDB client Go uses exposes —
+  `pkg/fdbgo/fdb.Transaction` has only `GetRange`, and Apple's Go binding has no
+  mapped-range call either. Go's index-scan plan has no fetch-method field to
+  carry the choice, and its wire form would need one for plan-serialization
+  parity.
+  Order of work: (1) add `GetMappedRange` to the pure-Go client against the C++
+  7.3.77 spec, under the client-engineer gate (C++ is the spec; wire compat is
+  the hard line); (2) add a remote-fetch index cursor in the record layer with
+  the fallback semantics `USE_REMOTE_FETCH_WITH_FALLBACK` names; (3) carry the
+  method on the index-scan plan and stamp it from `PlannerConfiguration` at the
+  match candidates, as Java does; (4) only then read the option in
+  `plannerOptionsFrom`. Until (1)-(3) exist the option's own doc comment says
+  plainly that it is not honored, and its default stays Java-identical so the
+  default option set does not diverge on the wire.
 - [ ] **CQ-10 (MED) — make winner comparison globally order-safe.** Define and
   property-test antisymmetry/transitivity for heterogeneous IN-plan comparisons
   so insertion order cannot select a different winner.
