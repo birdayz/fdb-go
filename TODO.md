@@ -429,8 +429,44 @@ closed rather than silently alter rows or output schema.
   workloads.
 
 **Verification, performance, and documentation:**
-- [ ] **CQ-12 (LOW) — make the rule-registry tests repeatable.** Remove permanent
-  global test mutations so `go test ... -count=2` and repeated in-process runs pass.
+- [x] **CQ-12 (LOW) — make the rule-registry tests repeatable.** The package-level
+  `defaultRuleRegistry` was the only global-state leak found: a `-count=2` run of
+  the whole `cascades` package panicked with
+  `RegisterRule: duplicate name "concurrent_TestRuleRegistry_Concurrent_7"`, and
+  the package passes at `-count=2` and `-count=3` with the registry fixed alone.
+  The sweep was widened past the one package — all nine `//pkg/recordlayer/query/...`
+  test targets pass at `-count=2` — and turned up no second leak; nothing is
+  claimed for packages outside that subtree, which were not swept.
+  The registry has no unregister and `RegisterRule` panics on a duplicate, so
+  `rule_registry_test.go`'s five registering tests left permanent residue; their
+  `t.Name()`-derived names are unique per test but identical across runs, so the
+  second in-process iteration collided with the first. Production `init` was
+  never exposed — every `register*Rules()` loop already skips a name `LookupRule`
+  resolves; only direct `RegisterRule` calls from tests could do it.
+  The fix removes the shared state rather than scheduling a cleanup a future test
+  can forget: `ruleRegistry` grew `newRuleRegistry()` plus `register`/`lookup`/
+  `names` methods, the exported trio became thin delegates to the one global
+  instance, and the mechanics tests now each take a private instance. Registry
+  behaviour is unchanged — in particular `RegisterRule`'s panic-on-duplicate is
+  untouched, since it is correct production behaviour for a programmer error.
+  The exported trio keeps direct coverage through a new read-only
+  `TestRuleRegistry_ExportedAccessorsAgree` (sorted, deduplicated, every reported
+  name resolves).
+  The regression guard is real and needs no CI support: a `TestMain` snapshots
+  `RegisteredRuleNames()` either side of `m.Run` and fails the binary if a test
+  mutated it, which was verified by temporarily reintroducing a global
+  `RegisterRule` call — it failed a **single** `-count=1` run naming the added
+  entry. That ordering determinism is why the check lives in `TestMain`: the same
+  probe left `TestRuleRegistry_ResolvesEveryRegisteredSetRule` green, because a
+  `t.Parallel` test can read the registry before another parallel test writes it.
+  With writes now excluded, that test's stale caveat ("registry contents are not
+  stable under `t.Parallel`") is gone and its subset check is an exact set
+  equality, so an unexpected extra name fails too.
+  Also folded in: `typeNameForRegistry`'s doc comment claimed its
+  `"*cascades.FilterMergeRule"` output was a registry key derived by
+  `default_rules.go`'s init. It is not — the helper is reached only through
+  `shortTypeName`, which strips down to the simple name. Prose only; no behaviour
+  change.
 - [ ] **CQ-13 (MED) — strengthen performance and concurrency gates.** Benchmarks
   must validate planning success before recording time, compare against a
   regression baseline, directly race-test Cascades in PR CI, and accurately

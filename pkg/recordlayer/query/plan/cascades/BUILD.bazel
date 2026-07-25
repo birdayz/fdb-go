@@ -253,6 +253,7 @@ go_test(
         "left_outer_existential_test.go",
         "leg_row_types_test.go",
         "limit_retained_over_multirow_filter_test.go",
+        "main_test.go",
         "match_candidate_index_test.go",
         "match_info_constant_pullup_test.go",
         "match_info_merge_test.go",
@@ -916,6 +917,7 @@ go_test(
         "planner_plan_test_api_test.go",
         "in_plan_order_independence_test.go",
         "primary_vs_index_transitivity_test.go",
+        "main_test.go",
     ],
     deps = [
         "//gen",
