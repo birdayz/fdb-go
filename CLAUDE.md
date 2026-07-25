@@ -32,6 +32,14 @@ Before treating a TODO "vs Java gap" as parity work, **verify Java actually supp
 
 **"For now" is a red flag.** If you're about to write "for now" or "pragmatic approach" or "we'll fix this later" — STOP. That means you're about to create technical debt. Either do it properly or document it as the FIRST priority in TODO.md so it gets done next. No deferred hacks.
 
+**DFS IS ABSOLUTELY CRITICAL. NEVER DEFER — FIX IT NOW.** This is the single most important working rule in this file. When a fix uncovers a second problem, fix that one too, in the same change. When a sweep surfaces something adjacent, chase it to ground. Take as long as it takes. The instinct to write it up and move on is always wrong, and it is strongest exactly when the finding is real — because a real finding looks like scope, and scope looks like something to schedule.
+
+Filing it feels responsible. It is not. A TODO entry ships nothing, deletes the regression sentinel that would have caught the bug, and hands the work to someone with none of the context you have right now — you have the reproducer, the measurement harness, and the Java source already open. That will never be true again as cheaply.
+
+Worse, deferred findings **rot into invisibility**. Write a live defect into the prose of an item you then mark `- [x]` and it is unreachable work: the execution rule is "pick the lowest-numbered UNCHECKED item", so nothing will ever pick it up. That has happened here — a redundant in-memory sort on `WHERE pk IN (...) ORDER BY pk`, fully diagnosed with a reproducer, was written into a completed item and would have sat there indefinitely. DFS'ing it instead removed the sort.
+
+The only deferrals that are legitimate: it needs a capability that does not exist yet (and you have named the dependency chain), or it is a genuine upstream bug. "It's a separate concern", "it deserves its own item", "it changes plans so it needs its own review" — none of those are reasons to stop. They are reasons to do the extra work now: run the stress comparison, review the goldens, get the review lap. If you defer, the successor MUST be a numbered UNCHECKED entry carrying the reproducer and the measurement — never a paragraph inside something already done.
+
 ## NO FAKE CHECKBOXES — E2E OR IT'S NOT DONE
 
 **A TODO item is done when a SQL query exercises it end-to-end and a test pins the behavior.** "Plan type exists" is not done. "Rule ported but can't fire" is not done. "Infrastructure exists but SQL can't trigger it" is not done. If a user can't write a SQL query that hits the code path and gets the right answer, the checkbox stays unchecked.
