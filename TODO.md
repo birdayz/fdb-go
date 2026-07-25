@@ -258,9 +258,78 @@ closed rather than silently alter rows or output schema.
   `plannerOptionsFrom`. Until (1)-(3) exist the option's own doc comment says
   plainly that it is not honored, and its default stays Java-identical so the
   default option set does not diverge on the wire.
-- [ ] **CQ-10 (MED) — make winner comparison globally order-safe.** Define and
-  property-test antisymmetry/transitivity for heterogeneous IN-plan comparisons
-  so insertion order cannot select a different winner.
+- [x] **CQ-10 (MED) — make winner comparison globally order-safe.** Cost-model
+  criterion #6 (`compareInPlan`) was not antisymmetric: two unSARGed IN-plans
+  had BOTH orientations answer "+1, the first argument is worse", and a SARGed
+  IN-plan against an unSARGed one had one orientation abstain while the swapped
+  one short-circuited. Either way `less` was false both ways, so the decision
+  skipped every later rung — fetch counts, type filters, sort count, the full
+  cost model — and fell to the plan-hash tie-break, or, in `OptimizeGroup`'s
+  fold (which compares without a tie-break), to member insertion order. The rung
+  now ranks both sides via `inPlanPenaltyRank`, a total preorder on `{0,1}`, so
+  antisymmetry and transitivity hold by construction. **Deliberate divergence:**
+  Java has the identical defect; the derivation, its file:line evidence and the
+  pair table live in DIVERGENCES.md ("Criterion 6 — IN-plan SARG penalty").
+  Pinned by a property sweep over a 28-plan IN-rooted corpus (378 pairs for
+  irreflexivity/antisymmetry/totality; 15,600 ordered triples and 52
+  permutations for transitivity and permutation-independent minimum), two
+  regressions on the concrete symptom, an end-to-end `OptimizeGroupTask` test
+  (all 24 insertion orders of a four-member group elect the same winner, and it
+  is the right one), and the SQL-level `in_plan_winner_stability` corpus file.
+  **Reachability and impact, measured rather than assumed.** Byte-identical
+  plans on their own prove neither reachability nor safety — an arm that is
+  never reached also changes nothing — so both were instrumented. The both-IN
+  arm fires 265 times across the six SQL-level suites, every one the
+  `pa=1, pb=1` case where Java answers `+1` and Go answers `0`. Over one
+  plan-shape corpus pass it fires 27 times (`in_list_pushdown` ×14,
+  `in_plan_winner_stability` ×7, `in_over_intersection` ×4, `e2e_inventory` ×2);
+  before the new file, 20. Reconstructing the pair's winner both ways over those
+  27: **21 agree** with the pre-fix hash tie-break and **6 flip** —
+  `in_over_intersection.yaml` ×4 and `e2e_inventory.yaml` ×2, both pre-existing
+  files; the new file contributes 0 flips. The plans still hold, for a reason
+  that differs per file and was checked, not assumed: in `in_over_intersection`
+  the elected plan contains no IN operator at all (a third candidate beats both
+  members of the flipped pair, the IN surviving as a residual), while in
+  `e2e_inventory#4` the elected plan IS one member of the flipped pair — an
+  `InUnion` chosen by the ordered-member retention path rather than by this
+  rung. Independent of both explanations: regenerating the whole 339-file /
+  2452-query plan-shape baseline with the pre-fix rung forced back on is
+  byte-identical to the fixed rung's, which is byte-identical to the committed
+  golden. No plan-shape change to any pre-existing query; the golden grows only
+  by the new file's six entries.
+  **Out of scope, found by the sweep and NOT fixed here:** criterion #7
+  (`comparePrimaryScanVsIndexScan`) is a separate, pre-existing INTRANSITIVITY,
+  inherited from Java's `comparePrimaryScanToIndexScan`. It is pair-restricted
+  by construction — it fires only for (lone primary scan) versus (singular
+  index-scan-with-fetch) and abstains for index-versus-index — so it cannot be a
+  total preorder, and it admits cycles containing no IN operator at all
+  (`sargedIndex+3fetches < primaryScan+typeFilter` by its SARG-superset
+  sub-case, `primaryScan+typeFilter < plainIndex+1fetch` by its PREFER_SCAN
+  config branch, `plainIndex+1fetch < sargedIndex+3fetches` by the fetch rung
+  once #7 abstains). Antisymmetry is unaffected — its guard cannot hold in both
+  orientations. The property test therefore scopes transitivity and
+  permutation-independence to the index-rooted subset and says so, exactly as
+  the pre-existing RFC-190 corpus scopes itself away from the same rung.
+- [ ] **CQ-10a (LOW) — `collectSargedAliases` intersects aliases where Java
+  intersects comparisons.** Raised in review as "the Go comment's claim that it
+  matches Java's `ComparisonsProperty` is probably false". **The claim is
+  TRUE and the comment stands:** Java's `comparisons().evaluate(...)` is not a
+  plain whole-subtree union — `ComparisonsProperty.ComparisonsVisitor` overrides
+  `visitRecordQueryIntersectionOnKeyExpressionPlan` /
+  `visitRecordQueryIntersectionOnValuesPlan`
+  (`ComparisonsProperty.java:115-140`) and folds the children with
+  `intersected.retainAll(...)` (`:138`), exactly the set intersection Go's
+  `intersectChildAliases` performs. What remains is a narrower GRANULARITY
+  difference nobody has probed: Java intersects the child `Comparison` SETS and
+  only then extracts correlated aliases from the equality `ValueComparison`s
+  (`PlanningCostModel.java:443-450`), whereas Go intersects the derived ALIAS
+  sets. The two disagree when two intersection legs SARG the SAME alias through
+  DIFFERENT comparison objects — Java's `retainAll` drops both (the comparisons
+  are not equal), Go keeps the alias — so Go can classify an IN-plan under an
+  intersection as SARGed where Java would penalise it. Closing it means matching
+  Java's granularity (intersect comparisons, then extract), which changes which
+  IN-plans count as SARGed and therefore needs its own stress run and golden
+  review. Not touched here.
 - [ ] **CQ-11 (MED) — enrich and calibrate planner statistics.** Add at least
   distinct-count/selectivity hooks beyond table cardinality, keep safe defaults,
   and calibrate the model against representative indexed, skewed, and join
@@ -5593,6 +5662,23 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 ## Stress test 1M baseline (2026-05-27)
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
+
+**2026-07-25 (CQ-10 — antisymmetric IN-plan cost rung):** baseline worktree at
+the pre-change commit `4fae8f215` vs the working tree, same box, sequential
+fresh FDB containers. All 23 subtests PASS on both sides with **identical row
+counts** and a **byte-identical EXPLAIN set** (verified by diffing the two runs'
+EXPLAIN lines and row-count lines; both diffs empty). Total runtime 153.72s
+baseline vs 152.39s branch (-0.87%). Million-row scans baseline
+3.39/3.24/3.40/2.98s vs branch 3.44/3.23/3.38/2.95s. Bulk loads noise-level
+equal (customers 6.356s vs 6.277s; orders 128.5-129.8s both sides). Point
+lookups 4.73-5.36ms, index equality 5.66 vs 6.28ms, in_list 16.88 vs 15.81ms.
+Sub-second rows move within single-run noise in both directions
+(group_by_status 14.5 vs 24.3ms, group_by_customer_having 187.6 vs 175.5ms) with
+no order-of-magnitude shift and no plan-shape change. The earlier
+same-day run of the same branch content totalled 153.13s, bracketing the
+baseline — consistent with noise rather than a directional effect. NOTE: the
+pre-existing point-lookup threshold caveat recorded under the RFC-176/P2 gate
+above still applies to this box; these numbers do not re-qualify it.
 
 **2026-07-24 (RFC-190.5b — directional rich-order intersection parity):** the
 recorded 190.5a checkpoint vs the current uncached run on the same host. All 23

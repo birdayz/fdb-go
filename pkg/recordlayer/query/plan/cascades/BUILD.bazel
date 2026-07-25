@@ -243,6 +243,7 @@ go_test(
         "graph_expansion_test.go",
         "group_by_mappings_test.go",
         "groupby_column_identity_test.go",
+        "in_plan_order_independence_test.go",
         "in_union_cost_regression_test.go",
         "index_expansion_test.go",
         "index_primary_key_property_test.go",
@@ -912,6 +913,7 @@ go_test(
         "planner_cancellation_test.go",
         "planner_plan_entry_point_test.go",
         "planner_plan_test_api_test.go",
+        "in_plan_order_independence_test.go",
     ],
     deps = [
         "//gen",

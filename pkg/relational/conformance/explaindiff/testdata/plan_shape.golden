@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=338 queries=2446 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
+# files=339 queries=2454 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -7787,6 +7787,58 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryIntersectionPlan
 shape:       RecordQueryIndexPlan
 shape:       RecordQueryIndexPlan
+=== in_plan_winner_stability.yaml#0
+sql:   SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id
+plan:  Project([ID#0, CAT#1], PredicatesFilter(Scan(T), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== in_plan_winner_stability.yaml#1
+sql:   SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id
+plan:  Project([ID#0, CAT#1], PredicatesFilter(Scan(T), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== in_plan_winner_stability.yaml#2
+sql:   SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id
+plan:  Project([ID#0, CAT#1], PredicatesFilter(Scan(T), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== in_plan_winner_stability.yaml#3
+sql:   SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id DESC
+plan:  Project([ID#0, CAT#1], InMemorySort([ID DESC], InJoin(PredicatesFilter(Scan(T), [1 preds]), binding)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryInJoinPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+=== in_plan_winner_stability.yaml#4
+sql:   SELECT id FROM t WHERE val IN (200, 400) ORDER BY val
+plan:  Project([ID#0], InUnion(IndexScan(IDX_VAL, [=]), bindings=1, ASC))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryIndexPlan
+=== in_plan_winner_stability.yaml#5
+sql:   SELECT id FROM t WHERE val IN (200, 400, 600) AND cat IN (20, 40) ORDER BY val
+plan:  Project([ID#0], PredicatesFilter(Fetch(PredicatesFilter(IndexScan(IDX_VAL, [*]), [1 preds])), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryFetchFromPartialRecordPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryIndexPlan
+=== in_plan_winner_stability.yaml#6
+sql:   SELECT id FROM t WHERE cat IN (999, 998) ORDER BY id
+plan:  Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== in_plan_winner_stability.yaml#7
+sql:   SELECT id FROM t WHERE cat IN (20, 20, 40) ORDER BY id
+plan:  Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === in_subquery_decomposition.yaml#0 expect-error=0AF00
 sql:   SELECT id FROM t WHERE id IN (SELECT t_id FROM tags) ORDER BY id
 plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>

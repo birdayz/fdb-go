@@ -824,16 +824,35 @@ func recursiveCTEKind(e expressions.RelationalExpression) (isDFS, isLevel bool) 
 	return false, false
 }
 
-// compareInPlan implements Java's flipFlop(compareInOperator(a,b), compareInOperator(b,a)).
-// If variant A is applicable (even if result is 0), variant B is never evaluated.
+// compareInPlan ranks both sides by inPlanPenaltyRank, so it is antisymmetric
+// by construction and is a total preorder on a rank in {0,1} — a legal rung of
+// the lexicographic chain.
+//
+// DELIBERATE DIVERGENCE from Java (PlanningCostModel.compareInOperator /
+// flipFlop), which evaluates the rung for the LEFT argument only and returns a
+// PRESENT 0 for a SARGed IN-plan that flipFlop hands back without asking the
+// reverse question. A present tie must not short-circuit the reverse question:
+// the two orientations then disagree, `less` is false both ways, and the winner
+// falls to a plan-hash coin flip — or, in a fold that compares without a
+// tie-break, to member insertion order — discarding every later rung including
+// the full cost model. Nothing here touches the wire; this is read-side plan
+// choice only. Full derivation, Java file:line evidence and the pair table are
+// in DIVERGENCES.md ("Criterion 6 — IN-plan SARG penalty").
 func compareInPlan(a, b expressions.RelationalExpression, _, _ expressionCounts) int {
-	if cmp, applicable := compareInOperator(a); applicable {
-		return cmp
+	return intCompare(inPlanPenaltyRank(a), inPlanPenaltyRank(b))
+}
+
+// inPlanPenaltyRank is criterion #6's rank: 1 for an IN-plan whose bindings
+// never became search arguments, 0 for everything else — a non-IN plan and a
+// SARGed IN-plan are equally unpenalised, and both fall through to the
+// remaining rungs, which is what Java's Javadoc means by a SARGed in-plan
+// causing "the remainder of the tie-breaking code to be used".
+func inPlanPenaltyRank(e expressions.RelationalExpression) int {
+	penalty, isInPlan := compareInOperator(e)
+	if !isInPlan {
+		return 0
 	}
-	if cmp, applicable := compareInOperator(b); applicable {
-		return -cmp
-	}
-	return 0
+	return penalty
 }
 
 // compareInOperator returns (penalty, applicable). applicable=false means the

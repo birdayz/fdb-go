@@ -253,11 +253,14 @@ func TestRewritingCostModelLess_AllTie_HashDeterministic(t *testing.T) {
 	}
 }
 
-// TestCompareInPlan_FlipFlop_SargedVsUnsarged verifies the flipFlop
-// semantics: when both a and b are IN-plans, and a is SARGed (returns
-// 0, true) and b is unsarged (returns 1, true), the result should be
-// 0 — Java's flipFlop returns present(0), stops there. NOT -1.
-func TestCompareInPlan_FlipFlop_SargedVsUnsarged(t *testing.T) {
+// TestCompareInPlan_SargedBeatsUnsarged pins the rung's ANTISYMMETRY across the
+// heterogeneous pair that used to break it. Java evaluates the rung for the left
+// argument only, so a SARGed left returned a present 0 that flipFlop handed back
+// without asking the reverse question, while the swapped call returned +1 — the
+// two directions disagreed and the winner fell to a hash coin flip. Go ranks both
+// sides: the SARGed IN-plan is strictly preferred, and the reverse orientation
+// says exactly the opposite.
+func TestCompareInPlan_SargedBeatsUnsarged(t *testing.T) {
 	t.Parallel()
 
 	// Build an InJoin plan with a SARGed binding: the inner index scan
@@ -292,9 +295,25 @@ func TestCompareInPlan_FlipFlop_SargedVsUnsarged(t *testing.T) {
 	opsA := findExpressionsByType(inJoinPlanA, nil, nil)
 	opsB := findExpressionsByType(inJoinPlanB, nil, nil)
 
-	cmp := compareInPlan(inJoinPlanA, inJoinPlanB, opsA, opsB)
-	if cmp != 0 {
-		t.Errorf("compareInPlan(sarged, unsarged) = %d, want 0 (flipFlop stops at first applicable, returns present(0))", cmp)
+	if cmp := compareInPlan(inJoinPlanA, inJoinPlanB, opsA, opsB); cmp != -1 {
+		t.Errorf("compareInPlan(sarged, unsarged) = %d, want -1 (the SARGed IN-plan is preferred)", cmp)
+	}
+	if cmp := compareInPlan(inJoinPlanB, inJoinPlanA, opsB, opsA); cmp != 1 {
+		t.Errorf("compareInPlan(unsarged, sarged) = %d, want +1 (antisymmetric reverse)", cmp)
+	}
+
+	// Two unSARGed IN-plans must TIE so the remaining rungs decide, instead of
+	// each orientation claiming its own left argument is worse.
+	innerPlanC := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	innerRefC := expressions.InitialOf(innerPlanC)
+	inJoinPlanC := plans.NewRecordQueryInJoinPlanFromQuantifier(
+		expressions.NewPhysicalQuantifier(innerRefC), "third_bind", false, false)
+	opsC := findExpressionsByType(inJoinPlanC, nil, nil)
+	if cmp := compareInPlan(inJoinPlanB, inJoinPlanC, opsB, opsC); cmp != 0 {
+		t.Errorf("compareInPlan(unsarged, unsarged) = %d, want 0 (fall through to the later rungs)", cmp)
+	}
+	if cmp := compareInPlan(inJoinPlanC, inJoinPlanB, opsC, opsB); cmp != 0 {
+		t.Errorf("compareInPlan(unsarged, unsarged) reversed = %d, want 0", cmp)
 	}
 }
 

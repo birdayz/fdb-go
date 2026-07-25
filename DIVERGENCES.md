@@ -204,7 +204,7 @@ explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-crit
 | 3. Residual predicate count | NormalizedResidualPredicateProperty (CNF size) | `countResidualPredicates` using `cnfSize()` | Aligned |
 | 4. Data access count | count(Scan, Index, Covering) | `scanCount + indexScanCount + coveringIndexCount` | Aligned |
 | 5. Recursive CTE DFS > level | flipFlop(compareRecursiveCte) | `compareRecursiveCTE` | Aligned |
-| 6. IN-plan SARG penalty | flipFlop(compareInOperator) | `compareInPlan` with `(int, bool)` flipFlop | Aligned |
+| 6. IN-plan SARG penalty | flipFlop(compareInOperator) — evaluates the LEFT argument only and returns a PRESENT tie for a SARGed in-plan | `compareInPlan` ranks BOTH sides on the penalty | **Deliberate divergence — Java's rung is not antisymmetric (see below)** |
 | 7. Primary vs index scan | comparison-set analysis + configured `IndexScanPreference` (Cascades default `PREFER_SCAN`) | `comparePrimaryScanVsIndexScan` + `isSingularIndexScanWithFetch` + mirrored configuration | Aligned; strict-SARG-superset and all three preference branches are behaviorally pinned |
 | Go sort extension | Cascades `RemoveSortRule` eliminates redundant sorts before costing and has no physical-sort cost rung (`RecordQuerySortPlan` is legacy-planner-only) | `inMemorySortCount`, fewer wins, promoted before the structural block | Go read-side extension / cost-time analogue (RFC-190) |
 | 8. Type filter count | TypeFilterCountProperty | `len(GetRecordTypes())` per filter | Aligned |
@@ -221,6 +221,105 @@ explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-crit
 | 17. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `costExprHash`→`concretePlanHash`/`exprConcreteHash` (FNV-flavored) | **Shape-aligned, NOT byte-aligned** (RFC-167 §5) — both break cost ties by a structural plan hash so each engine is *intra-engine* stable, but Go uses an FNV-flavored hash (RFC-024 cache key) ≠ Java's `planHash(CURRENT_FOR_CONTINUATION)`, so Go and Java may pick **different** tie-winner indexes for the same query (rows identical; EXPLAIN may differ). Convergence is deferred until cross-engine continuation re-planning is a requirement (RFC-167 OQ#5). |
 
 Criterion 15b (`compareFlatMapVsNLJ`) is RETIRED (RFC-181 WS-P stage (d)): under the epoch convergence with finals-only physical yields and prune-to-winner, its recorded JOIN regression no longer reproduces — deleted with its tests. 15c is RECLASSIFIED: Java's PlanningCostModel is self-described heuristic — its rungs end in a planHash tiebreak and no statistics rung exists — so 15c is a Go statistics EXTENSION occupying that role slot (cost discriminator before the hash tiebreak), not a literal Java rung; the stage-(d) retirement probe regressed equality-index preference and vector outer-limit folding, proving it load-bearing. The maxRoundsPerRef load cap (10) is obsolete under epoch convergence (both constraint lattices are finite chains, so rounds are structurally bounded); it remains only as a loud divergence tripwire at 100. RFC-190 removed the five Go-specific per-rung sort gates and promoted sort count. The GROUP BY/covering-index flip exposed the missing `RecordQueryScanPlan` unmatched-fields arm; porting Java's scan branch fixed the apples-to-oranges comparison, so it is not evidence for retaining the gate.
+
+#### Criterion 6 — IN-plan SARG penalty — DELIBERATE DIVERGENCE (Java upstream defect)
+
+**Java's rung is not antisymmetric, so it can make the winner depend on the order the memo's members
+arrived in rather than on what they are. Go ranks both sides instead. Read-side plan choice only —
+nothing here touches the wire, so Java and Go still read and write byte-identical records.**
+
+Java (`PlanningCostModel.java`, tag 4.12.11.0):
+
+- `compareInOperator(leftExpression, rightExpression)` (`:433`) declares its second parameter
+  `@SuppressWarnings("unused")` (`:434`) and never reads it. It returns `OptionalInt.empty()` when the
+  LEFT expression is not an in-plan (`:436`), `OptionalInt.of(1)` when the left in-plan's bindings
+  never became search arguments (`:456`, `:463`), and `OptionalInt.of(0)` — a PRESENT tie — otherwise
+  (`:467`).
+- `flipFlop` (`:511`) returns variant A's result directly whenever it is present (`:514-515`), so a
+  present 0 stops the evaluation and the `(b, a)` orientation is never asked.
+- The call site (`:177-181`) then guards with `getAsInt() != 0`, so a present 0 falls through to the
+  remaining rungs. Java's own Javadoc says as much — *"That in turn causes the remainder of the
+  tie-breaking code to be used"* (`:429-430`) — and contains a typo, writing `OptionalInt.of(1)` twice
+  where the second occurrence means `of(0)` (`:427-428`).
+
+Writing `X` for a SARGed in-plan, `Z` for an unSARGed one and `Y` for a non-in-plan, that yields two
+independent antisymmetry violations:
+
+| pair | Java | Java reversed | antisymmetric? |
+|---|---|---|---|
+| `X, Z` | `0` (abstains, chain continues) | `+1` (short-circuits) | **no** |
+| `Z, Z'` | `+1` (`Z` is worse) | `+1` (`Z'` is worse) | **no** |
+
+A comparator built by lexicographic composition of criteria is transitive only if every criterion is
+itself a total preorder, and criterion 6 is not one. The consequence is not a visible "both are less"
+contradiction — winner selection asks `less` in both directions — it is quieter: for two unSARGed
+in-plans `less` is false BOTH ways, so every later rung, including the fetch/type-filter/sort rungs
+and the full cost model, is short-circuited and the winner falls to the plan-hash tie-break, or, in
+`OptimizeGroup`'s fold (which compares without a tie-break), straight to member insertion order. A
+dramatically better unSARGed in-plan can lose to a worse one for no reason connected to its cost.
+`X` versus `Z` fails the same way whenever a later rung happens to prefer `Z`.
+
+The correct shape already exists elsewhere in the same Java class: `compareRecursiveCteOperator`
+(`:492`) returns `of(-1)` only for the exact `(DFS, LevelUnion)` pair and `empty()` otherwise — never
+a present tie — so `flipFlop` always gets to ask the reverse question. `comparePrimaryScanToIndexScan`
+is likewise safe on this axis: its applicability guard cannot hold in both orientations at once.
+
+Go's `compareInPlan` evaluates `compareInOperator` for both arguments and compares the penalties. It
+reduces to a total preorder on a rank in `{0, 1}` — non-in-plans and SARGed in-plans both rank 0,
+unSARGed in-plans rank 1 — so `cmp(a,b) == -cmp(b,a)` holds for every pair and the rung composes
+transitively with the rest of the chain:
+
+| pair | Go | Go reversed |
+|---|---|---|
+| `X, Z` | `-1` | `+1` |
+| `Z, Z'` | `0` (falls through) | `0` |
+| `X, X'` | `0` (falls through) | `0` |
+| `Z, Y` | `+1` | `-1` |
+| `X, Y` | `0` (falls through) | `0` |
+
+Behaviourally this changes exactly two things versus Java: a SARGed in-plan now beats an unSARGed one
+outright instead of deferring to the later rungs, and two equally-penalised in-plans now tie so those
+later rungs decide them. Java's SARGed-abstains intent (its Javadoc's "remainder of the tie-breaking
+code") is preserved for the `X`-versus-`Y` and `X`-versus-`X'` cases, where it was never ambiguous.
+
+Pinned by `TestCostModel_InPlanComparisonIsOrderIndependent` (brute-force antisymmetry / transitivity
+/ totality / permutation sweep over an in-plan-rooted corpus of IN-joins and IN-unions, SARGed and
+not, mixed with non-IN plans), `TestCostModel_UnsargedInPlansRankedByRealRungs`,
+`TestCostModel_SargedInPlanBeatsUnsargedThroughFullChain`, `TestCompareInPlan_SargedBeatsUnsarged`,
+and `TestOptimizeGroup_InPlanWinnerIsInsertionOrderIndependent` (all 24 insertion orders of a
+four-member group elect the same winner, through the real `OptimizeGroupTask`), plus the SQL-level
+corpus file `pkg/relational/conformance/yamsql/testdata/in_plan_winner_stability.yaml`, which reaches
+the both-IN arm from SQL deliberately rather than incidentally.
+
+**Reachability and impact are measured, not assumed.** Byte-identical plans on their own are evidence
+of neither reachability nor safety — an arm that is never reached also changes nothing — which is why
+both were instrumented.
+
+*Reachability.* The both-IN arm fires 265 times across the six SQL-level suites (embedded,
+explaindiff, plandiff, memoinvariant, rowdiff, yamsql), and every one is the `penaltyA=1,
+penaltyB=1` case where Java answers `+1` and Go answers `0`. Over one pass of the plan-shape corpus
+(339 files, 2452 queries) the arm fires 27 times: `in_list_pushdown.yaml` ×14,
+`in_plan_winner_stability.yaml` ×7, `in_over_intersection.yaml` ×4, `e2e_inventory.yaml` ×2.
+
+*Impact.* Reconstructing the pair's winner both ways over those 27: **21 agree** with the pre-fix
+hash tie-break and **6 flip** — `in_over_intersection.yaml` ×4 (two InJoin/InJoin, two
+InUnion/InJoin) and `e2e_inventory.yaml` ×2 (InUnion/InJoin). The new corpus file contributes 0
+flips. The plans nevertheless hold, for a reason that differs per file and was checked rather than
+assumed:
+
+- In `in_over_intersection` the elected plan contains **no IN operator at all** — a third candidate
+  beats both members of the flipped pair (`PredicatesFilter(Fetch(Intersection(IndexScan(IDX_B,
+  [=]), IndexScan(IDX_C, [=]))), [1 preds])`, with the IN left as a residual), so the pair's local
+  verdict never reaches the output.
+- In `e2e_inventory#4` the elected plan **is** one member of the flipped pair — the
+  `InUnion(TypeFilter([STOCK], Scan(STOCK, [=])), bindings=1, ASC)` — and it is elected despite this
+  rung's verdict now pointing at the InJoin. The query carries `ORDER BY product_id, warehouse_id`
+  and the winner is sort-free, so the ordered-member retention path, not criterion #6, is what
+  selects it.
+
+The whole-corpus proof is independent of both explanations: regenerating the entire plan-shape
+baseline with the pre-fix rung forced back on yields output **byte-identical** to the fixed rung's,
+which is in turn byte-identical to the committed golden.
 
 ### Cost Model: RewritingCostModelLess
 
