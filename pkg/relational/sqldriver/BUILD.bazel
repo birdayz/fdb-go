@@ -158,6 +158,7 @@ go_test(
         "exists_over_join_flatten_ordinal_fdb_test.go",
         "exists_scope_shadow_fdb_test.go",
         "exists_semantics_probe_test.go",
+        "explain_unplannable_fdb_test.go",
         "fanout_exists_index_fdb_test.go",
         "filtered_box_unnest_fdb_test.go",
         "flatmap_continuation_drop_fdb_test.go",

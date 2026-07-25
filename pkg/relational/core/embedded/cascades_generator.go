@@ -535,11 +535,54 @@ func (g *cascadesGenerator) planExplain(ctx context.Context, full antlrgen.IFull
 	}, nil
 }
 
+// explainLogicalQuery renders the logical-plan text for a query, preferring
+// the catalog-aware builder when metadata is available. It is the EXPLAIN half
+// of the ExplainFn that planSelect installs for the two query shapes that never
+// reach Cascades, and reproduces all three of its steps — including the
+// echo-the-statement last resort, which both logical builders can fall through
+// to (buildLogicalPlanForQuery returns nil on an out-of-scope query body or CTE
+// body). Returning "" there instead would make planExplain raise
+// "produced no plan text" for a query whose own plan renders that echo, which
+// is the same failure this file exists to remove, pointed the other way.
+//
+// planSelect echoes the SelectStatement node while EXPLAIN hands us the Query
+// node; the grammar is `selectStatement : query`, a single child, so the two
+// GetText() renderings are identical.
+func (g *cascadesGenerator) explainLogicalQuery(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData) (string, error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return "", err
+	}
+	if md != nil {
+		if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
+			return explainWithContext(ctx, func() string { return op.Explain("") })
+		}
+	}
+	if op := buildLogicalPlanForQuery(q); op != nil {
+		return explainWithContext(ctx, func() string { return op.Explain("") })
+	}
+	return explainWithContext(ctx, func() string { return explainStatement("SELECT", q) })
+}
+
 // computeExplainText builds the plan-tree text for the inner
-// statement of an EXPLAIN. For SELECT queries, attempts to run
-// the full Cascades pipeline to produce a physical plan explain.
-// Falls back to logical plan text for DML and when Cascades can't
-// plan the query (e.g. no metadata, INFORMATION_SCHEMA).
+// statement of an EXPLAIN.
+//
+// The SELECT branch holds this invariant: EXPLAIN renders the plan the engine
+// would actually run, or fails with the error running the query itself would
+// raise — it never renders a plan the engine cannot execute. It mirrors
+// planSelect's routing one-for-one, error returns included: once Cascades is
+// attempted, its failure IS the answer. Java behaves the same way — an
+// unplannable EXPLAIN lets UnableToPlanException propagate as 0AF00, and its
+// relational layer has no logical-plan renderer on the EXPLAIN path at all.
+// The logical-text arms that remain are the shapes where planSelect itself
+// yields no physical plan, so EXPLAIN and the executed query still agree on
+// what they describe; each is annotated at its branch.
+//
+// The DML branches do NOT hold it, and knowingly so. They render logical text
+// while planDML builds a real Cascades plan, so EXPLAIN describes a different
+// tree than the one that executes. That is a weaker defect than the SELECT one
+// — the statement does run — but it is a divergence from Java, which renders
+// the physical RecordQueryPlan for DML too. Tracked in TODO.md; see the note
+// above the DML arms.
 func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.DescribeStatementsContext) (string, error) {
 	if err := contextCancellationError(ctx); err != nil {
 		return "", err
@@ -547,35 +590,40 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 	c := g.c
 	md := c.cachedMetaData()
 
-	// SELECT: try Cascades pipeline for physical plan explain.
 	if q := d.Query(); q != nil {
-		// Try Cascades for a physical plan explain when FDB + metadata are available.
-		if c.sess != nil && c.sess.DB != nil && !referencesInformationSchema(q) {
-			if err := c.ensureMetaData(ctx); err == nil {
-				if freshMd := c.cachedMetaData(); freshMd != nil {
-					if plan, planErr := g.planSelectCascades(ctx, q, freshMd, false); planErr == nil {
-						return explainWithContext(ctx, plan.Explain)
-					} else if isContextCancellation(planErr) {
-						return "", planErr
-					}
-				}
-			} else if isContextCancellation(err) {
-				return "", err
-			}
+		// Explain-only mode (no FDB session): planSelect routes to
+		// planSelectExplainOnly, whose plan renders this same logical text and
+		// refuses to execute. There is no physical plan in this mode to hide,
+		// so matching it is the accurate answer, not a degrade.
+		if c.sess == nil || c.sess.DB == nil {
+			return g.explainLogicalQuery(ctx, q, md)
 		}
-		if err := contextCancellationError(ctx); err != nil {
+		// INFORMATION_SCHEMA is a Go-only extension served off the catalog by
+		// execSystemTableQuery, never by Cascades. planSelect's PlanFunc runs
+		// the same three-step rendering as its own Explain, so EXPLAIN reports
+		// the plan that really runs.
+		if referencesInformationSchema(q) {
+			return g.explainLogicalQuery(ctx, q, md)
+		}
+		// From here the Cascades plan IS the plan. Every failure below is the
+		// failure `SELECT ...` would raise, so it is surfaced verbatim.
+		if err := c.ensureMetaData(ctx); err != nil {
 			return "", err
 		}
-		// Fallback to logical plan text.
-		if md != nil {
-			if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
-				return explainWithContext(ctx, func() string { return op.Explain("") })
-			}
+		freshMd := c.cachedMetaData()
+		if freshMd == nil {
+			return "", api.NewError(api.ErrCodeUnsupportedQuery,
+				"no schema metadata available")
 		}
-		if op := buildLogicalPlanForQuery(q); op != nil {
-			return explainWithContext(ctx, func() string { return op.Explain("") })
+		plan, planErr := g.planSelectCascades(ctx, q, freshMd, false)
+		if planErr != nil {
+			return "", planErr
 		}
+		return explainWithContext(ctx, plan.Explain)
 	}
+	// DML renders logical text. Java's EXPLAIN of a DML statement produces the
+	// physical RecordQueryPlan instead (the mutation is not executed); closing
+	// that gap is tracked in TODO.md, not done here.
 	if del := d.DeleteStatement(); del != nil {
 		if md != nil {
 			if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionSchema()); op != nil {

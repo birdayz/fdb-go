@@ -722,6 +722,118 @@ closed rather than silently alter rows or output schema.
   `-update-golden`; the golden diff is a pure insertion — the two new plans plus
   the header count `2454 → 2456` — with **no** existing plan shape changed.
 
+- [x] **CQ-16 (MED) — stop EXPLAIN rendering a plan the engine cannot execute.**
+  `computeExplainText` swallowed a non-cancellation Cascades failure in its
+  SELECT branch and fell through to `buildLogicalPlanForQueryWithCatalog` /
+  `buildLogicalPlanForQuery`, so `SELECT q` raised `0AF00` while `EXPLAIN q`
+  returned a tidy logical plan tree. Its own doc comment advertised the degrade.
+  **Java has no such path — re-verified against 4.12.11.0.** EXPLAIN is not a
+  statement type there: `ParseTreeInfoImpl.QueryTypeVisitor.visitFullDescribe
+  Statement` (`fdb-relational-core/.../query/ParseTreeInfoImpl.java:133-136`)
+  re-roots the tree at the inner statement and only tags `DESCRIBE_QUERY`, so
+  planning is byte-for-byte the plain-statement path; the flag is read at
+  execution (`QueryPlan.java:268-269` → `executeExplain`, `:319-414`). The PLAN
+  text comes from `ExplainPlanVisitor.toStringForExternalExplain`, which takes a
+  `RecordQueryPlan` — physical by type signature. When Cascades fails,
+  `UnableToPlanException` (`CascadesPlanner.java:407`) is rethrown by the one
+  `catch (RecordCoreException)` on the planning path (`QueryPlan.java:645-653`),
+  mapped to `UNSUPPORTED_QUERY` at `ExceptionUtil.java:79-80` and surfaced as
+  SQLSTATE `0AF00` — before `executeExplain` is ever reached, because
+  `PhysicalQueryPlan` is never constructed. There are **zero** catches of
+  `UnableToPlanException` in the tree, and the one logical-text hook that exists
+  (`LogicalQueryPlan.explain()`, `QueryPlan.java:689-695`, returns the literal
+  `"Logical Query Plan"`) is reachable only from logging, never from the EXPLAIN
+  result set. `QueryLoggingTest.java:371-381` pins the throw.
+  **The split.** The SELECT branch now mirrors `planSelect`'s routing
+  one-for-one, error returns included. Three arms, each annotated at its site:
+  (a) **no FDB session** → `planSelect` routes to `planSelectExplainOnly`, whose
+  plan renders this same logical text and refuses to execute — there is no
+  physical plan being hidden, so EXPLAIN agreeing with it is accurate. Kept.
+  (b) **INFORMATION_SCHEMA** → a Go-only extension served off the catalog by
+  `execSystemTableQuery`, never by Cascades; `planSelect`'s `PlanFunc` runs the
+  same rendering as its own `Explain`, so EXPLAIN reports the plan
+  that really runs. Kept. (c) **everything else** → Cascades IS the plan;
+  `ensureMetaData` failure, nil metadata and `planSelectCascades` failure are
+  all returned verbatim, because each is the error `SELECT q` itself raises.
+  The shared logical-text rendering moved to one `explainLogicalQuery` helper.
+  Cancellation handling is untouched (it already returned rather than degrading).
+  **Blast radius: measured, not estimated.** The degrade path was instrumented
+  at HEAD and `//pkg/relational/... //cmd/...` was run against real FDB (25
+  targets, all green). Exactly **one** EXPLAIN in the entire suite took it:
+  `TestFDB_FourWayFlatteningEvasionStaysNameModel/translation_keeps_cross_
+  derived_predicate`, on the flattening-evasion shape, with
+  `err=0AF00: Cascades planner could not plan query` — i.e. case (c), the
+  violation. Zero hits on the no-metadata and not-attempted variants, and zero
+  across the yamsql corpus (no `plan_contains` case is unplannable) and the
+  `cmd/frl` `\explain` integration test. That one subtest **was pinning the
+  defect**: its sibling `comma_form_fails_cleanly` asserted the query is 0AF00
+  while it asserted EXPLAIN of the *same* query prints `Filter(t1.aid =
+  t2.cid)`. It is now `explain_form_fails_cleanly` (same 0AF00 as the
+  statement). The predicate-survives-translation property it was really after is
+  real and is **not** dropped — it moved to
+  `TestExplainOnlyMode_KeepsCrossDerivedPredicate`, the layer where logical text
+  is the honest answer. `assertUnsupported`'s diagnostic was fixed alongside: it
+  scanned two int columns unconditionally and printed `NULL|NULL` for an EXPLAIN
+  row; it now renders any arity.
+  **Pinned both directions.** Loud: `TestFDB_ExplainUnplannableQueryFailsLoudly`
+  (three unplannable shapes — comma/CTE over two join-bodied derived tables and
+  the solo derived join — each asserting the statement AND `EXPLAIN` of it are
+  the same 0AF00). Verified red→green: with the fix reverted all three subtests
+  fail with "expected clean rejection, but got a row back". Quiet:
+  `plannable_still_renders_physical_plan` (same test — a plannable query still
+  yields physical plan text), `TestFDB_ExplainInformationSchemaStillRenders`
+  (the query executes, so EXPLAIN owes a plan — and this is the **first**
+  coverage of the `referencesInformationSchema` guard on the EXPLAIN path; the
+  census confirms nothing exercised it before), plus
+  `TestExplainOnlyMode_StillRendersLogicalText`,
+  `TestExplainOnlyModeWithSchema_StillRendersLogicalText` and
+  `TestExplainDML_StillRendersLogicalText` in `core/embedded`.
+  **Not fixed here, recorded: `EXPLAIN <DML>` renders logical text in Go, a
+  physical plan in Java.** `describeObjectClause` admits
+  `insertStatement|updateStatement|deleteStatement`
+  (`RelationalParser.g4:738-744`) and they take the same
+  `LogicalQueryPlan.optimize` path; `PhysicalQueryPlan.isUpdatePlan()` returns
+  false under `isForExplain` (`QueryPlan.java:228-238`) so the mutation is not
+  executed and the EXPLAIN row is returned instead. Java's corpus shows the
+  rendered shape, e.g. `update-delete-returning.yamsql:44`
+  (`SCAN(...) | DISTINCT BY PK | UPDATE A | MAP (...)`). Go's DML branches call
+  `buildLogicalPlanFor{Delete,Insert,Update}WithCatalog` instead. Unlike the
+  SELECT defect this is not a plan-the-engine-cannot-run (the DML does execute,
+  through Cascades) — it is EXPLAIN describing a different tree than the one
+  that runs. Separate item; routing it through `planDML` changes the plan text
+  of every EXPLAIN-DML test and is out of CQ-16's scope. `README.md` and
+  `DIVERGENCES.md` were checked and document neither behaviour, so neither
+  needed an edit.
+  **Review lap — four findings, all landed, all measured.** (1) A test comment
+  claimed the catalog-vs-text builder swap was detectable when the assertion
+  could not detect it: `Contains("Scan(T)")` + `Contains("Filter(")` pass on
+  BOTH renderings (`"Filter(id > 5)\n  Scan(T)"` vs
+  `"Filter(ID#0 > 5)\n  Scan(T)"`, measured). Now an exact-equality assertion on
+  `ID#0`, the one token that separates them; verified red by disabling
+  `buildLogicalPlanForQueryWithCatalog` in `explainLogicalQuery`. Ironic
+  placement — an overstated comment inside the fix for overstated comments.
+  (2) The relocated cross-derived-predicate test rode `NewExplainOnlyGenerator`
+  (nil metadata → **text** builder), while the FDB subtest it replaced ran with
+  metadata cached by its sibling and therefore exercised the **catalog**
+  builder. Now `NewExplainOnlyGeneratorWithSchema` with the same four tables, so
+  the pinned path matches the deleted one. The predicate survives on both
+  builders, so no property was lost either way — the fix is about pinning the
+  right path. (3) `computeExplainText`'s header asserted the never-renders-an-
+  unrunnable-plan invariant for the whole function, but the DML arms do not hold
+  it; the header now scopes the invariant to the SELECT branch and states the
+  DML exception up front. (4) `explainLogicalQuery` returned `("", nil)` where
+  `planSelect`'s last resort is `explainStatement("SELECT", sel)`, so when both
+  logical builders decline, EXPLAIN raised `0A000 "produced no plan text"` while
+  the query's own plan rendered the statement echo — the same defect class,
+  pointed the other way. Reachable, not theoretical: `buildLogicalPlanForUnion`
+  bails when `ALL()` is nil, so any non-`ALL` `UNION` hits it. Now mirrors, using
+  the Query node (the grammar is `selectStatement : query`, a single child, so
+  the two `GetText()` renderings are identical). Pinned as a property rather
+  than a comment by `TestExplainMirrorsThePlansOwnExplain`: for the catalog,
+  text and last-resort arms, `EXPLAIN q` must equal `Plan(q).Explain()`.
+  Verified red on the old `("", nil)` — `union_distinct_last_resort` fails with
+  exactly `0A000: EXPLAIN inner statement produced no plan text`.
+
 **Exit gate:** focused tests for every item, Cascades unit + race suites,
 planner/translator tests, explain-plan golden, yamsql/FDB conformance, generated
 file drift checks, and the repository's full non-stress CI suite. Keep this
