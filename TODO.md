@@ -508,7 +508,9 @@ closed rather than silently alter rows or output schema.
   — the mixed-direction queries plan an in-memory sort with or without it, which
   an earlier revision of this entry and of DIVERGENCES.md wrongly claimed.
 - [ ] **CQ-10f (MED, full-scan regression CLOSED by CQ-20 — sort-elimination
-  parity still open) — `WHERE pk IN (...) ORDER BY pk DESC` planned a FULL
+  parity still open; Graefe ruling OBTAINED, option (ii)/diverge
+  deliberately, gated on conditions A–F with the FDB benchmark (E) able to
+  flip it) — `WHERE pk IN (...) ORDER BY pk DESC` planned a FULL
   TABLE SCAN where Java plans N bounded seeks.** Introduced by CQ-10d and left
   deliberately unpinned there rather than blessed.
   ```
@@ -658,6 +660,71 @@ closed rather than silently alter rows or output schema.
   InJoin, which is why InUnion's flips are reachable without waiting on (b).
   Status: still open, still its own milestone-sized workstream, but the
   blocker is now a decision, not an investigation.
+  **Update (RFC-191 revision 4 — Graefe ruling: option (ii), diverge
+  deliberately) — the ruling is IN, ACK on the design choice, NAK on
+  revision 3's RFC text.** For an IN-list over a non-covering secondary
+  index with an index-satisfiable requested ordering, Go elects
+  `Fetch(InJoin(Covering))` where Java elects `Fetch(InUnion(Covering))` for
+  ASC (DESC already agrees). Revision 3's text got three things wrong that
+  the ruling corrected: (1) sortedness does NOT select Java's Comparand
+  IN-join class — `SortedInValuesSource` never overrides `toInJoinPlan`;
+  the actual selector is `ImplementInJoinRule.computeInSource`'s
+  `isConstant()` fallback, which every SQL-originated IN-list hits
+  regardless of direction, so `PushInJoinThroughFetchRule`'s exclusion of
+  `RecordQueryInComparandJoinPlan` (`PlanningRuleSet.java:152-153`) excludes
+  ALL SQL-driven IN-joins, not just sorted ones; (2) Go already has an inert
+  guard for this at `rule_push_in_join_through_fetch.go:43-47`, with a
+  fabricated "comparand values depend on the outer record" rationale, and
+  it has plausibly never fired — Go **already plans**
+  `Fetch(InJoin(IndexScan(IA,[=]), binding ASC))` for the unordered
+  secondary-index shape today, so reproducing Java's asymmetry (option i)
+  would mean REMOVING already-shipped behavior, not adding machinery — the
+  RFC's cost accounting between the two options was backwards; (3) the two
+  cost-model pieces revision 3 said Go would need for option (i)
+  (implicit-fetch counting, fetch-depth-from-root) already exist
+  (`planning_cost_model.go:321-327`, `:330-334`) — only the accident (one
+  dead guard) was ever missing. The ruling's own supporting findings: an
+  archaeology showing the Java exclusion is incidental (generic rule class,
+  one registration site out of ~8 trio-aware sites, a 9-month gap between
+  the registrations and the Comparand class shipping for an unrelated
+  feature, zero comment/test/issue anywhere in Java); a reading of
+  `PlanningCostModel.java:251-262`'s own "bigger [InJoin] wins" comment as
+  contradicting the ASC outcome, which is instead decided by the one
+  uncommented rung in the file (fetch-position) acting as an accidental
+  proxy; a plan-quality argument (identical I/O, a provably degenerate
+  InUnion merge for this shape family — legs can't interleave when the
+  sort key's leading column IS the per-leg equality column — smaller
+  open-cursor footprint, no async execution edge in Go's actual sequential
+  executor). Gated on binding conditions A–F before implementation: (A)
+  delete the dead guard, any future withholding must be a correlation
+  predicate not a cost one; (B) `in_over_primary_scan_sarg.yaml#14,#15`
+  MUST move to `Fetch(InJoin(...))` (inverted from revision 3, which had
+  them as a negative test for the wrong default); (C) measure `#14`'s DESC
+  shape against Java before re-blessing — revision 3's "23/25 confirmed"
+  count treated it as confirmed when it was an ASC-measurement
+  extrapolation; (D) a `DIVERGENCES.md` entry as a behavioural plan-choice
+  divergence (not a cost-model criteria row, since no individual criterion
+  diverges), with an explicit wire-compat statement — verified, not
+  reasoned: continuations are decoded only by the same plan-tree shape
+  that produced them (`ExecutePlan`'s type-switch, `executor.go:88-120`,
+  rejects a mismatched shape loudly) and Go continuations are engine-private
+  by construction (a Java-minted token is rejected outright,
+  `cascades_generator.go:1205-1216`), so this plan-choice divergence is not
+  a cross-engine wire concern; (E) a real-FDB benchmark at N ∈ {3,10,100}
+  that can FLIP the ruling if InUnion measurably wins at any N, a permanent
+  EXPLAIN test at fetch-depth 0 both directions plus a non-monotonic
+  IN-list (`IN (30,10,20)`) FDB row-order test, a proof that leg
+  concatenation yields the requested order for the secondary-index shape
+  specifically (a correctness question that outranks the ruling if it
+  fails), root-causing the 40/238 residual defect-(b) bails, and a full
+  corpus/1M-stress/10x-determinism sweep at the final head; (F) (a)+(b) ship
+  together with the (smaller-than-projected) third piece — deletion plus
+  documentation, not new machinery — concentrating correctness risk in
+  (a)+(b), reviewed against `OrderingProperty.visitInJoinPlan:392-459` line
+  by line. Full text in `rfcs/191-in-join-descending-ordering.md` revision
+  4. Status: **ruling obtained, option (ii)**; implementation still gated
+  on conditions A–F, most consequentially the benchmark (E) which can still
+  reverse the outcome.
 - [x] **CQ-20 (MED) — `PKScanOrdering` reported every primary-key column as a
   sorted key even when a leading prefix was equality-bound, co-partitioning a
   Fixed-bound PK scan with a Sorted-unbound one and closing the CQ-10f
