@@ -64,10 +64,33 @@ tests:
       - [2, 20]
       - [4, 40]
       - [6, 20]
-  # Same both-IN group with the ordering reversed, where the IN-join DOES earn
-  # its place: the ordering can no longer be served by the scan alone.
+  # Same both-IN group with the ordering reversed. The scan serves this one too:
+  # `id` is the primary key, so a REVERSE primary scan is already in descending
+  # id order and both IN-plans stay unSARGed and unhelpful — an IN-join over an
+  # unindexed `cat` scans the whole table once per binding and then needs a sort
+  # on top of that.
+  #
+  # This used to plan as InMemorySort(InJoin(...)) purely because the
+  # primary-scan match candidate reported no key order, so no reverse primary
+  # scan was ever enumerated and the descending request had nothing to satisfy
+  # it. Two full scans plus a sort lost to one reverse full scan the moment the
+  # candidate started reporting its order.
   - query: SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id DESC
-    plan_contains: InJoin
+    plan_contains: "PredicatesFilter(Scan(T) REVERSE"
+    rows:
+      - [6, 20]
+      - [4, 40]
+      - [2, 20]
+  # ...and neither IN operator survives in it, named individually for the same
+  # reason as the ascending trio above.
+  - query: SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id DESC
+    plan_not_contains: InJoin
+    rows:
+      - [6, 20]
+      - [4, 40]
+      - [2, 20]
+  - query: SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id DESC
+    plan_not_contains: InUnion
     rows:
       - [6, 20]
       - [4, 40]

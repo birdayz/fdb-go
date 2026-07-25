@@ -405,25 +405,168 @@ closed rather than silently alter rows or output schema.
   `TestCollectSargedComparisons_PrimaryScanCountsAsSarg` /
   `TestCollectSargedComparisons_NodeComparisonsUnionWithChildren`, both verified
   red on the pre-fix collector.
-- [ ] **CQ-10d (LOW) — no DESCENDING IN-union variant is enumerated, so
+- [x] **CQ-10d (LOW) — no DESCENDING IN-union variant is enumerated, so
   `WHERE pk IN (...) ORDER BY pk DESC` materialises a sort the ascending form
-  does not.** Surfaced by CQ-10c and deliberately not fixed there. With the
-  primary-scan SARG accounting corrected, the ascending shape plans
-  `InUnion(Scan(TBL, [=]), bindings=1, ASC)`; its exact mirror still plans
-  `InMemorySort([ID DESC, K DESC], InJoin(Scan(TBL, [=]), binding))`, and that
-  is **identical before and after CQ-10c** — verified against both collectors,
-  so it is not a regression and not a leftover penalty. The sort is genuinely
-  required today because no descending IN-union candidate is enumerated for the
-  group at all, so there is no sort-free plan to elect. The fix is in
-  ordered-variant enumeration (`rule_implement_in_union.go`), not in the cost
-  model: an IN-union reading a descending scan with a descending merge would
-  satisfy the ordering directly. Java's `RemoveSortRule` must eliminate the
-  logical sort or planning fails, so Java cannot be sitting on this shape the
-  same way; check what its enumeration produces before porting anything.
-  Today's behaviour is PINNED (sort present, rows in descending order) by the
-  last scenario in
-  `pkg/relational/conformance/yamsql/testdata/in_over_primary_scan_sarg.yaml`,
-  so closing this goes red there and gets blessed rather than landing unseen.
+  does not.** Surfaced by CQ-10c and deliberately not fixed there. Both
+  directions now plan the same shape:
+  `InUnion(Scan(TBL, [=]) REVERSE, bindings=1, DESC)`.
+  **PARITY, not an extension** — Java has all three of the behaviours Go was
+  missing, so nothing here exceeds Java and DIVERGENCES.md needs no
+  extension entry (it gains one for a *limitation* the fix makes reachable, see
+  the last paragraph). The rule (`rule_implement_in_union.go`) was never the
+  problem; it enumerated a descending candidate the moment one could exist.
+  Three defects UNDER it, each of which alone suppressed the whole shape:
+  1. **`PrimaryScanMatchCandidate` reported no key order at all.** Java's
+     inherits `computeMatchedOrderingParts` from `ValueIndexLikeMatchCandidate`
+     (`ValueIndexLikeMatchCandidate.java:63-118`); Go's did not implement the
+     optional `OrderingPartsComputer`, so `adjustMatchForMatchableSort` fell
+     back to the child's empty parts, `SatisfiesRequestedOrdering` could never
+     match a requested value, and a primary-scan match never got a reverse
+     variant. Measured directly: `WHERE id = 1 ORDER BY k DESC` planned
+     `InMemorySort([K DESC], Scan(TBL, [=]))` where the index mirror planned
+     `Fetch(IndexScan(IA, [=]) REVERSE)`. Fixed by implementing it — a primary
+     key is flat scalars, so neither the duplicate-producing branch nor the
+     trimmed-PK suffix applies.
+  2. **The IN-like SELECT downgraded its parent's ordering request to
+     Preserve.** `pushRequestedOrderingToSelectChild` declines a
+     correlation-free ordering part in a multi-quantifier SELECT; Go's SQL
+     translator bakes sort keys as positional field reads with NO correlation,
+     so every part was declined. Java never faces it — its `pushDown` produces
+     values correlated to the child and keeps them (`RequestedOrdering.java:228`,
+     an empty correlation set passes `allMatch(current)` vacuously). The
+     Preserve then joined the concrete request in the base reference's
+     constraint set, `SatisfiesAnyRequestedOrderings` resolved BOTH, and Java's
+     `AbstractDataAccessRule.java:684-700` deliberately builds a FORWARD access
+     only for BOTH (the reverse arm is commented out on purpose: it would double
+     every data access). Fixed by recovering ownership from the result value —
+     when the SELECT's result IS one child's row, a correlation-free part has
+     exactly one possible owner. The composite-result case still declines.
+  3. **The merge plans advertised their comparison keys without a direction.**
+     `RecordQueryInUnionPlan.HintOrdering` (and `MergeSortUnionPlan`'s) ignored
+     `reverse`, so a descending merge looked ascending and `ImplementSortRule`
+     kept a sort over rows already in the requested order. Java derives the
+     direction from the comparison-key ordering parts
+     (`OrderingProperty.visitInUnionOnValuesPlan`).
+  **Measured.** Verdict flips on cost-model criterion #6, same corpus (the new
+  scenarios included) with the code change as the only delta, over four corpora
+  (explaindiff, memoinvariant, plandiff, embedded): **0 flips across the 5050
+  pairs present in both populations.** The population grows 90748→97348
+  evaluations / 5371→6553 distinct pairs, because reverse access paths and
+  descending IN-unions are new candidates to compare; 61 of the new pairs get a
+  non-tie verdict, every one of them an unSARGed IN-plan ranked against a plain
+  filtered scan. The rung itself is untouched.
+  **Plan-shape review — every diff, individually.** 32 of 2465 corpus queries
+  move, in three families. **10 lose an in-memory sort to a reverse scan**
+  (`order_by_elimination` ×7, `in_over_primary_scan_sarg` ×1 — the item's own
+  reproducer, `in_plan_winner_stability` ×1 where two full scans plus a sort
+  become one reverse full scan, and `in_subquery_decomposition` ×1 where the
+  ordering push restored by fix 2 lets a covering index scan serve `ORDER BY v`);
+  all strictly better. **21 change only the predicate GROUPING of an otherwise
+  identical `PredicatesFilter(Scan(T))`** (`[1 preds]`→`[2 preds]`), all of them
+  `ORDER BY <pk>` with no helpful index: the primary-scan match now satisfies
+  the ordering, so the zero-prefix access is kept rather than discarded, and its
+  compensation renders the conjuncts unflattened instead of as one AND. Same
+  shape (`shape:` lines identical), same work, same rows. The 32nd is the
+  descending IN-union itself. **1M stress: every EXPLAIN string and every row
+  count identical**, timings within noise; it contains no descending IN query,
+  so it bounds collateral damage rather than measuring the fix.
+  The `explaindiff` reachability ratchet moves 32→38 no-quantifier edges,
+  measured to be exactly 6, all in `order_by_elimination.yaml`, all the same
+  already-counted `TypeFilter(Scan)` adapter class, unreachable count still 0 —
+  more ordered primary-scan accesses through the same adapter.
+  Pinned by `in_over_primary_scan_sarg.yaml` against real FDB — the descending
+  scenarios that assert a ROW ORDER assert it exactly (`id=1` carries two `k`
+  values, so a leg scanned forward under a descending merge, or a merge run
+  ascending, both come back visibly wrong); the prefix-only `ORDER BY id DESC`
+  scenario is `unordered` and asserts rows ONLY, because SQL leaves the two
+  `id=1` rows mutually unordered there and this file does not pin an order SQL
+  does not promise. Also pinned by `descending_in_union_test.go`, whose
+  behavioural tests were each verified RED before the fix.
+  **The `ORDER BY <pk-prefix> DESC` shape is a REGRESSION, not parity** — an
+  earlier revision of this entry claimed Java elects the same full reverse scan.
+  It does not; that claim was reasoning, not measurement, and it was wrong. The
+  absence of the IN-UNION there IS Java-identical (the ordering check skips
+  equality-bound columns, reports BOTH directions, and BOTH deliberately yields
+  a forward access only — `AbstractDataAccessRule.java:684-700`), but Java then
+  plans a sorted IN-JOIN rather than a full scan. Tracked as CQ-10f with the
+  measurement; deliberately left unpinned here rather than blessed.
+  **One Go limitation is now REACHABLE** and recorded in DIVERGENCES.md: a
+  MIXED-direction ordering request cannot be merged, because Go has no
+  `ToOrderedBytesValue` evaluator. Both merge-union rules now fail closed on it
+  (`NaturalComparisonKeyValues`) instead of silently building a plan whose merge
+  runs one key the wrong way round — a latent wrong-row-order bug that only
+  descending merges could have triggered. **Measured:** the IN-union gate
+  declines exactly twice over the corpus, both times `parts=[ASC, DESC]` against
+  a forward merge; the merge-sort-union gate declines nothing, because the union
+  merge carries no equality-bound key a request could give a direction to. The
+  reachable half is pinned at RULE level by
+  `TestInUnionRuleRefusesMixedDirectionMerge` (drives `ImplementInUnionRule`
+  itself, verified red with the gate removed, with ascending AND descending
+  controls proving the fixture reaches the yield); the dormant half's premise is
+  pinned by `TestDistinctUnionMergedOrderingCarriesNoEqualityBoundKeys`, so the
+  fence going live would be noticed. The CORPUS scenarios do NOT pin either gate
+  — the mixed-direction queries plan an in-memory sort with or without it, which
+  an earlier revision of this entry and of DIVERGENCES.md wrongly claimed.
+- [ ] **CQ-10f (MED) — `WHERE pk IN (...) ORDER BY pk DESC` plans a FULL TABLE
+  SCAN where Java plans N bounded seeks.** Introduced by CQ-10d and left
+  deliberately unpinned there rather than blessed.
+  ```
+  SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id DESC
+    before CQ-10d:  InMemorySort([ID DESC], InJoin(Scan(TBL, [=]), binding))   -- 3 bounded seeks + sort
+    after  CQ-10d:  PredicatesFilter(Scan(TBL) REVERSE, [1 preds])             -- FULL TABLE SCAN
+    Java:           [IN arrayDistinct(...) SORTED DESC] | INJOIN q0 -> { SCAN([IS TBL, EQUALS q0]) }
+  ```
+  Schema `tbl(id, k, a, b, PRIMARY KEY (id, k))`, `INDEX ia ON tbl(a)`. Planner
+  default statistics, so the choice is SIZE-INDEPENDENT — the same full scan on
+  a billion-row table. The Java line is MEASURED against the live fdb-relational
+  planner through the conformance `SqlPlanSteps` harness, not reasoned: Java
+  plans the IN-join with its bindings sorted descending, i.e. the three seeks
+  with no sort at all. So this is a Go-vs-Java divergence, not the Java shape.
+  **The deciding rung, measured, is NOT the one it looks like.** Criterion #2
+  abstains (both whole-plan maxima unknown), residuals tie 1-1, and criterion #4
+  DATA-ACCESS COUNT ties 1-1 — an IN-join executing one bounded inner scan per
+  binding counts one data access, exactly like one unbounded full scan. Control
+  then reaches `comparePrimaryScanVsIndexScan`, whose FIRST line
+  (`primaryVsIndexRankOf`, `planning_cost_model.go`) ranks any plan carrying an
+  in-memory sort into its last tier — so criterion #7 returns, and the promoted
+  `inMemorySortCount` rung immediately below it never runs. The two rungs encode
+  the same premise and #7's own comment says so, so the substance of "the sort
+  rung breaks the tie" is right while the mechanism is not; a fix aimed at the
+  sort-count rung alone would miss.
+  **The premise that fails** is the one both rungs share: *once two candidates
+  have done provably the same amount of real work, the one carrying an extra
+  full materializing sort is strictly worse.* Three bounded seeks and one
+  unbounded full scan are not the same amount of real work, and neither the
+  cardinality rung (abstains) nor the data-access rung (counts NODES) can tell
+  them apart.
+  **Two further defects sit under it, both measured, and neither alone is
+  enough.** (a) `RecordQueryInJoinPlan.HintOrdering` returns the empty ordering
+  unconditionally, so a sorted IN-join can never satisfy an ORDER BY — Java
+  derives one (`OrderingProperty.visitInJoinPlan`, `OrderingProperty.java:392`):
+  when the inner's binding map holds the IN-bound value as a FIXED binding and
+  the source is sorted, that binding becomes directional in the source's
+  direction and the rest of the inner ordering is inherited. (b) The whole
+  requested-ordering arm of `ImplementInJoinRule` is DEAD: it looks the
+  requested part up in `richOrdering.GetBindingMap()` by Value IDENTITY, and the
+  request carries the translator's baked `ID#0` while the ordering advertises
+  the lazy `ID`, so it finds nothing and returns nil for every request. Every
+  IN-source therefore comes from `buildSourcesFromProvided`, which hardcodes
+  `sorted: true` with `reverse` left false — no descending IN-join is ever
+  built. The fix for (b) is the bridge that already exists for exactly this
+  (`RichOrdering.orderingKeyFor` / `CanBridgeOrderingValueRoots`).
+  **Prototyped and REVERTED, with the measurement that says why it is its own
+  workstream:** fixing (a)+(b) makes the descending IN-join real and eliminates
+  the sort on `ORDER BY id DESC, k` — but it moves 16 further corpus plans, 15
+  of them IN-union→IN-join flips on ASCENDING queries CQ-10d never touched, and
+  it STILL does not fix the query above (the full scan keeps winning on a later
+  structural rung). That is a milestone-sized planner behaviour change: it needs
+  its own RFC and a Graefe ACK before implementation, per the query-engine gate.
+  **Scope when it is picked up:** decide the rung question first (is criterion
+  #4 allowed to tie a bounded access against an unbounded one, or does the
+  bounded/unbounded distinction belong in the cost model?), because (a)+(b)
+  without it changes many plans and does not close this one. Then pin the plan
+  in `in_over_primary_scan_sarg.yaml`, whose last scenario carries the query
+  today with its ROWS asserted and its PLAN deliberately not.
 - [ ] **CQ-10e (LOW) — an aggregate index's comparisons are invisible to the
   comparisons property, from both directions.** Same axis as CQ-10c, currently
   unreachable. Java's `RecordQueryAggregateIndexPlan` implements
@@ -6318,6 +6461,23 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 ## Stress test 1M baseline (2026-05-27)
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
+
+**2026-07-25 (CQ-10d — descending IN-union enumeration):** baseline worktree at
+the pre-change commit `daad581f8` vs the working tree, same box, sequential
+fresh FDB containers, branch run `--nocache_test_results`, re-run on the final
+head. All 23 subtests PASS on both sides. **Every EXPLAIN string and every row
+count identical** — the diff over all 35 measured lines, timings stripped, is
+empty. Total runtime 153.13s baseline vs 155.55s branch. Million-row scans baseline
+3.40/3.23/3.39/3.00s vs branch 3.50/3.26/3.41/3.03s. Bulk loads noise-level
+equal (customers 6.296s vs 6.307s; orders 129.37s vs 129.39s). Point lookups
+4.99-5.04ms baseline vs 4.81-5.00ms branch, index equality 5.71 vs 5.53ms,
+`in_list` 16.33 vs 14.57ms. The largest single move is
+`group_by_customer_having` (144.6 → 196.7ms), whose plan and 47271-row result
+are byte-identical on both sides — a timing artefact, not a plan change. The
+stress corpus contains no descending `ORDER BY` over an IN, so this bounds
+collateral damage rather than measuring the fix; the fix itself is covered by
+the yamsql scenario against real FDB. The pre-existing point-lookup threshold
+caveat recorded under the RFC-176/P2 gate above still applies to this box.
 
 **2026-07-25 (CQ-10c — criterion #6 credits a SARGed primary scan):** baseline
 worktree at the pre-change commit `c8c32a1be` vs the working tree, same box,

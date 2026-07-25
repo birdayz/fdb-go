@@ -228,6 +228,7 @@ go_test(
         "default_on_empty_count_test.go",
         "default_rules_test.go",
         "depth_rung_sort_gate_test.go",
+        "descending_in_union_test.go",
         "edge_case_test.go",
         "eval_must_test.go",
         "exists_join_fold_seed_test.go",
@@ -918,6 +919,7 @@ go_test(
         "in_plan_order_independence_test.go",
         "primary_vs_index_transitivity_test.go",
         "main_test.go",
+        "descending_in_union_test.go",
     ],
     deps = [
         "//gen",

@@ -109,6 +109,25 @@ func pushRequestedOrderingToSelectChild(
 		return pushed
 	}
 
+	// When the SELECT's result value IS this child's row, every output column
+	// is that child's column, so a correlation-free ordering value has exactly
+	// one possible owner. Java never faces the question: its pushDown yields
+	// values correlated to the child and keeps them (an empty correlation set
+	// passes its `allMatch(current)` test vacuously). Go's SQL translator bakes
+	// sort keys as positional field reads carrying no correlation at all, so
+	// ownership has to be recovered from the result value instead.
+	//
+	// Without this, an IN-like SELECT (explode quantifiers plus the inner,
+	// result = the inner's row) downgraded its parent's concrete ordering
+	// request to Preserve. The Preserve then joined the concrete request in the
+	// base reference's constraint set, every data access there resolved to BOTH
+	// scan directions, and BOTH yields a forward scan only — so no descending
+	// access path below an IN was ever enumerated.
+	resultIsChildRow := false
+	if qov, isQOV := resultValue.(*values.QuantifiedObjectValue); isQOV {
+		resultIsChildRow = qov.Correlation == childAlias
+	}
+
 	parts := make([]properties.RequestedOrderingPart, 0, len(pushed.GetParts()))
 	for _, part := range pushed.GetParts() {
 		correlations := values.GetCorrelatedToOfValue(part.Value)
@@ -127,10 +146,11 @@ func pushRequestedOrderingToSelectChild(
 		if ownedBySibling {
 			continue
 		}
-		if len(localAliases) > 1 && !ownedByChild {
-			// A correlation-free field in a multi-child SELECT has no
-			// defensible owner. Decline it rather than ask every leg for a
-			// same-named index and risk proving order on the wrong source.
+		if len(localAliases) > 1 && !ownedByChild && !resultIsChildRow {
+			// A correlation-free field in a multi-child SELECT whose result
+			// composes several legs has no defensible owner. Decline it rather
+			// than ask every leg for a same-named index and risk proving order
+			// on the wrong source.
 			continue
 		}
 		parts = append(parts, part)

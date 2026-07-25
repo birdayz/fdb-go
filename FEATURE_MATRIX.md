@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**340 scenarios · 2720 query/assertion cases** across 18 feature areas — 2379 supported, 111 unsupported-feature pins, 230 error-path pins.
+**340 scenarios · 2730 query/assertion cases** across 18 feature areas — 2389 supported, 111 unsupported-feature pins, 230 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 132 | 127 | 0 | 5 |
 | Error codes & validation | 4 | 37 | 8 | 2 | 27 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 30 | 223 | 190 | 10 | 23 |
-| **Total** | **340** | **2720** | **2379** | **111** | **230** |
+| Other | 30 | 233 | 200 | 10 | 23 |
+| **Total** | **340** | **2730** | **2389** | **111** | **230** |
 
 ## Aggregates & GROUP BY
 
@@ -457,8 +457,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `empty_result_edge_cases_java` | 11 | 11 | 0 | 0 | Empty result handling in various |
 | `empty_table_operations` | 9 | 9 | 0 | 0 | Operations on empty tables |
 | `float_column` | 10 | 10 | 0 | 0 | FLOAT (32-bit) column type. |
-| `in_over_primary_scan_sarg` | 9 | 9 | 0 | 0 | An IN over a PRIMARY-KEY prefix, ordered by that key: `WHERE pk IN (...) |
-| `in_plan_winner_stability` | 8 | 8 | 0 | 0 | Exercises the cost model's IN-plan rung (criterion #6) at the SQL level, on |
+| `in_over_primary_scan_sarg` | 17 | 17 | 0 | 0 | An IN over a PRIMARY-KEY prefix, ordered by that key: `WHERE pk IN (...) |
+| `in_plan_winner_stability` | 10 | 10 | 0 | 0 | Exercises the cost model's IN-plan rung (criterion #6) at the SQL level, on |
 | `information_schema` | 5 | 4 | 0 | 1 | INFORMATION_SCHEMA.* system-table queries. |
 | `int_float_lanes` | 6 | 4 | 0 | 2 | 32-bit arithmetic lanes end-to-end |
 | `integer_range` | 12 | 5 | 0 | 7 | INTEGER (32-bit) column range enforcement. |

@@ -245,9 +245,22 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 			continue
 		}
 
-		comparisonKeys := make([]values.Value, len(comparisonParts))
-		for i, p := range comparisonParts {
-			comparisonKeys[i] = p.Value
+		// One merge direction, raw tuple-encoded comparison Values: every part
+		// must agree with the resolved direction or the merge front compares one
+		// key the wrong way round. Fail closed, as the intersection plans do.
+		//
+		// UNREACHABLE TODAY, and kept as a fence rather than because a corpus
+		// query needs it: the union merge does not carry equality-bound keys
+		// into the merged ordering (measured — see
+		// TestDistinctUnionMergedOrderingCarriesNoEqualityBoundKeys), so every
+		// part here takes a leg's own uniform scan direction and AdjustFixedBindings
+		// normalizes the rest. Over the 2475-query corpus this declines nothing,
+		// while its in-union twin declines twice. It stays because the two rules
+		// share one algebra and the day the union path starts carrying such a key
+		// is the day a silent mis-merge would appear.
+		comparisonKeys, natural := properties.NaturalComparisonKeyValues(comparisonParts, isReverse)
+		if !natural {
+			continue
 		}
 		comparisonKeys = bakeMergeComparisonKeys(comparisonKeys, requestedOrdering, childPlans[0].GetResultType())
 

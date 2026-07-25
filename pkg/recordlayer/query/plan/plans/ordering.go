@@ -336,9 +336,11 @@ func (p *RecordQueryInMemorySortPlan) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc, NullsFirst: nullsFirst}
 }
 
-// HintOrdering: a merge-sort union emits rows in its comparison-key order.
+// HintOrdering: a merge-sort union emits rows in its comparison-key order,
+// in the direction it merges. See RecordQueryInUnionPlan.HintOrdering for why
+// the single reverse flag is the whole truth about that direction.
 func (p *RecordQueryMergeSortUnionPlan) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: true, Keys: p.GetComparisonKeys()}
+	return mergeComparisonKeyOrdering(p.GetComparisonKeys(), p.IsReverse())
 }
 
 // HintOrdering: an intersection emits rows in its semantic comparison-key
@@ -373,9 +375,34 @@ func (p *RecordQueryIntersectionPlan) HintOrdering() properties.Ordering {
 	}
 }
 
-// HintOrdering: an InUnion emits rows in its comparison-key order.
+// HintOrdering: an InUnion emits rows in its comparison-key order, in the
+// direction it merges its per-binding legs.
+//
+// The reverse flag IS the direction of every comparison key: the rules that
+// build these merges refuse any candidate whose parts do not all agree with it
+// (properties.NaturalComparisonKeyValues), because the executable comparison
+// key is the raw Value and a key read forward cannot express a descending
+// component. Reporting the keys without their direction advertised a
+// descending merge as ascending, so a matching ORDER BY DESC saw its own
+// access path as unsatisfying and kept an in-memory sort over it.
 func (p *RecordQueryInUnionPlan) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: true, Keys: p.GetComparisonKeys()}
+	return mergeComparisonKeyOrdering(p.GetComparisonKeys(), p.IsReverse())
+}
+
+// mergeComparisonKeyOrdering builds the provided ordering of a merge set
+// operation: its comparison keys, every one of them in the merge direction.
+// NULL placement stays natural (ASC → nulls first, DESC → nulls last) — the
+// merge compares raw tuple-encoded values, which is exactly the natural
+// placement.
+func mergeComparisonKeyOrdering(keys []values.Value, reverse bool) properties.Ordering {
+	if !reverse {
+		return properties.Ordering{IsKnown: true, Keys: keys}
+	}
+	descending := make([]bool, len(keys))
+	for i := range descending {
+		descending[i] = true
+	}
+	return properties.Ordering{IsKnown: true, Keys: keys, Descending: descending}
 }
 
 // HintOrdering: a multi-way intersection emits rows in its comparison-key

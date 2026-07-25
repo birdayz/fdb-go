@@ -37,7 +37,9 @@ type WithBaseQuantifierMatchCandidate interface {
 // In Java, PrimaryScanMatchCandidate implements MatchCandidate,
 // ValueIndexLikeMatchCandidate, and WithPrimaryKeyMatchCandidate.
 // The Go port implements MatchCandidate, WithPrimaryKeyMatchCandidate,
-// and WithBaseQuantifierMatchCandidate.
+// WithBaseQuantifierMatchCandidate, and OrderingPartsComputer — the last of
+// these standing in for the ValueIndexLikeMatchCandidate default that gives a
+// Java primary scan its key order.
 //
 // Key distinction from ValueIndexScanMatchCandidate: the primary scan
 // has separate "available" vs "queried" record types. Available types
@@ -172,6 +174,65 @@ func (c *PrimaryScanMatchCandidate) GetPrimaryKeyValues() []values.Value {
 	return c.primaryKeyValues
 }
 
+// ComputeMatchedOrderingParts computes one ordering part per primary-key
+// column the sort requests, in key order, carrying whatever comparison range
+// the match bound for that column.
+//
+// Java's PrimaryScanMatchCandidate inherits this from
+// ValueIndexLikeMatchCandidate, so a primary-scan match reports its key order
+// exactly like an index-scan match. Without it a primary-scan match reports NO
+// ordering, so it can never satisfy a requested ordering and never gets a
+// reverse variant — `WHERE pk = ? ORDER BY pk2 DESC` fell back to an in-memory
+// sort over the forward scan, and no descending IN-union over a primary scan
+// could be enumerated at all.
+//
+// A primary key is a flat list of scalar columns (no fan-out), so the
+// duplicate-producing branch of Java's shared implementation has nothing to
+// act on here, and there is no trimmed-PK suffix to continue into: the primary
+// key IS the full key.
+func (c *PrimaryScanMatchCandidate) ComputeMatchedOrderingParts(
+	matchInfo MatchInfo,
+	sortParameterIDs []values.CorrelationIdentifier,
+	isReverse bool,
+) []*MatchedOrderingPart {
+	var bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange
+	if matchInfo != nil {
+		if regularInfo := matchInfo.GetRegularMatchInfo(); regularInfo != nil {
+			bindings = regularInfo.GetParameterBindingMap()
+		}
+	}
+
+	sortOrder := MatchedSortOrderAscending
+	if isReverse {
+		sortOrder = MatchedSortOrderDescending
+	}
+
+	var parts []*MatchedOrderingPart
+	for _, paramID := range sortParameterIDs {
+		idx := -1
+		for i, alias := range c.parameters {
+			if alias == paramID {
+				idx = i
+				break
+			}
+		}
+		// A parameter outside the key, or past the columns this candidate
+		// knows about, ends the usable ordering prefix — the positions after
+		// it are not contiguous and would claim an order the records do not
+		// have.
+		if idx < 0 || idx >= len(c.primaryKeyColumns) {
+			break
+		}
+		// Childless FieldValue, matching the index candidate: the ordering
+		// axis is the column NAME, resolved against the query's sort key
+		// through the same bridge.
+		colValue := values.NewFieldValue(nil, c.primaryKeyColumns[idx], values.UnknownType)
+		parts = append(parts, NewMatchedOrderingPart(
+			paramID, colValue, bindings[paramID], sortOrder))
+	}
+	return parts
+}
+
 // ComputeBoundParameterPrefixMap walks the sargable aliases in order
 // and collects the longest prefix satisfying index scan discipline:
 // N equalities + optional trailing inequality.
@@ -276,6 +337,7 @@ func stringSlicesEqual(a, b []string) bool {
 
 var (
 	_ MatchCandidate                   = (*PrimaryScanMatchCandidate)(nil)
+	_ OrderingPartsComputer            = (*PrimaryScanMatchCandidate)(nil)
 	_ WithPrimaryKeyMatchCandidate     = (*PrimaryScanMatchCandidate)(nil)
 	_ WithBaseQuantifierMatchCandidate = (*PrimaryScanMatchCandidate)(nil)
 )

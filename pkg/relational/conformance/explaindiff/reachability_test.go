@@ -99,18 +99,27 @@ func TestCorpusPlanReachability(t *testing.T) {
 	// bug, so leaving the class unasserted means the ratchet cannot catch
 	// that defect recurring.
 	//
-	// 32 is the current population. It must only ever fall — closing it needs
+	// 38 is the current population. It must only ever fall — closing it needs
 	// plans to carry the correlation and ordering properties the wrappers
 	// carry (RFC-183 §15, RFC-184 W2/W3).
 	//
-	// The report below labels all 32 as "TypeFilterPlan" while this is
+	// The report below labels all 38 as "TypeFilterPlan" while this is
 	// elsewhere described as a scanPlanExpression problem. Both are right and
 	// they are not the same axis: the EXPRESSION is scanPlanExpression (the
 	// adapter that reports no quantifiers, so the memo models no child), and
 	// the report groups by planTypeName of the WRAPPED PLAN, which for this
 	// adapter is the TypeFilter(Scan) it holds. Do not read the two as
 	// contradicting each other, and do not "correct" one to match the other.
-	const knownNoQuantifierEdges = 32
+	//
+	// The baseline was 32 until the primary-scan match candidate started
+	// reporting its key order. A primary-scan match that satisfies a requested
+	// ordering is now kept instead of discarded, so descending ORDER BYs yield
+	// reverse primary-scan accesses through the same adapter — measured as
+	// exactly 6 more edges, all of them in order_by_elimination.yaml, all of
+	// them the same TypeFilter(Scan) adapter class already counted here, and
+	// with the unreachable count still zero. That is the ratchet observing an
+	// access path becoming available, not a plan gaining an unmodelled child.
+	const knownNoQuantifierEdges = 38
 	if n := reach.NoQuantifierCount(); n > knownNoQuantifierEdges {
 		t.Errorf("no-quantifier edges rose to %d (known baseline %d) — a rule is "+
 			"constructing a plan whose children the memo does not model.\n\n"+
