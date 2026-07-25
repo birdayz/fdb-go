@@ -98,11 +98,18 @@ tests:
     plan_not_contains: InMemorySort
     rows:
       - [2, 1, 30, 300]
-  # Control: the same IN with NO ordering request. There is no sort to save, so
-  # this shape is unaffected by the SARG accounting — it stays the plain
-  # filtered scan it always was.
+  # Control: the same IN with NO ordering request. This used to plan the
+  # plain filtered full scan below, because PKScanOrdering reported every PK
+  # column for BOTH a per-binding equality scan (id Fixed) and a fully
+  # unbound scan (id Sorted) — the identical Ordering{Keys:[ID,K]} for two
+  # plans with very different costs. That made plan partitioning
+  # (expression_partition.go) co-partition them, so the bounded IN-join
+  # candidate could be shadowed by the unbound scan and never even compete.
+  # With PKScanOrdering trimming the equality-bound PK prefix (CQ-20), the
+  # two land in different partitions and the correctly-costed bounded InJoin
+  # wins outright: three point seeks beat one full scan.
   - query: SELECT * FROM tbl WHERE id IN (1, 2, 3)
-    plan_contains: "PredicatesFilter(Scan(TBL)"
+    plan_contains: "InJoin(Scan(TBL, [=])"
     unordered: true
     rows:
       - [1, 1, 10, 100]
@@ -207,23 +214,34 @@ tests:
       - [1, 1, 10, 100]
       - [1, 2, 20, 200]
       - [2, 1, 30, 300]
-  # ORDER BY the key PREFIX alone, descending. DELIBERATELY NO PLAN ASSERTION.
+  # ORDER BY the key PREFIX alone, descending. THE CQ-10f REGRESSION, CLOSED
+  # BUT NOT YET AT JAVA PARITY.
   #
-  # This query currently plans a FULL REVERSE TABLE SCAN where it used to plan
-  # three bounded primary-key seeks under a sort, and the real Java planner
-  # plans neither — it plans the IN-join with its bindings sorted descending,
-  # i.e. the three seeks with no sort at all. That is a regression and a Java
-  # divergence, tracked as CQ-10f in TODO.md with the measurement.
+  # This query used to plan a FULL REVERSE TABLE SCAN
+  # (`PredicatesFilter(Scan(TBL) REVERSE, ...)`), because the co-partitioning
+  # bug described above (CQ-20) shadowed the bounded IN-join/IN-union
+  # candidates behind an unbound scan at the SAME rung the sort-vs-full-scan
+  # decision is made. With CQ-20's PKScanOrdering fix, the bounded candidate
+  # survives partitioning and wins: three point seeks under a sort beat one
+  # full scan.
   #
-  # It is NOT pinned as expected, because a corpus entry asserting a regression
-  # is how a regression becomes permanent. What is asserted here is only that
-  # the rows are right, so the shape keeps its correctness coverage and stays
-  # visible; the day CQ-10f lands, add the plan assertion here.
+  # This is NOT yet Java parity: Java plans the IN-join with its bindings
+  # sorted descending and needs no sort at all
+  # (`INJOIN q0 -> { SCAN([IS TBL, EQUALS q0]) }, SORTED DESC`). Go still
+  # wraps the InJoin in an InMemorySort because `RecordQueryInJoinPlan`
+  # itself does not yet derive an ordering from its Fixed-bound inner
+  # scan (Java's `OrderingProperty.visitInJoinPlan`) and the requested-
+  # ordering enumeration cannot look a baked-vs-lazy Value up in the rich
+  # binding map — those are RFC-191 defects (a) and (b), deliberately NOT
+  # implemented here (a separate, milestone-sized change per the RFC). The
+  # regression (full scan on a billion-row table) is gone; the remaining gap
+  # is "one avoidable sort", tracked as the rest of CQ-10f.
   #
   # `unordered` because ORDER BY id alone leaves the two id=1 rows mutually
   # unordered, and this file does not pin an order SQL does not promise. The
   # descending ROW ORDER is proved by the full-key scenarios above.
   - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id DESC
+    plan_contains: "InMemorySort([ID DESC], InJoin(Scan(TBL, [=]), binding ASC))"
     unordered: true
     rows:
       - [1, 1, 10, 100]

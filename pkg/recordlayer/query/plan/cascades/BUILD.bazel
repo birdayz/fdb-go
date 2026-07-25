@@ -285,6 +285,7 @@ go_test(
         "phase2_fuzz_test.go",
         "phase3_correctness_new_test.go",
         "phase3_correctness_test.go",
+        "pk_scan_ordering_partition_test.go",
         "pk_suffix_ordering_test.go",
         "plan_choice_multicolumn_test.go",
         "plan_choice_test.go",
@@ -920,6 +921,7 @@ go_test(
         "primary_vs_index_transitivity_test.go",
         "main_test.go",
         "descending_in_union_test.go",
+        "pk_scan_ordering_partition_test.go",
     ],
     deps = [
         "//gen",

@@ -231,6 +231,20 @@ func (p *RecordQueryScanPlan) HintOrdering() properties.Ordering {
 
 // PKScanOrdering returns a primary scan's PK ordering. Shared with the
 // data-access path's plan-backed leaf, which memoizes a SARGed PK scan.
+//
+// PK positions bound by an equality comparison do not consume a sort
+// position: mirrors Java's
+// ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons, whose
+// equality-bound prefix (i < scanComparisons.getEqualitySize()) only
+// populates the binding map with Binding.fixed entries and is never
+// appended to orderingSequenceBuilder — the ordering sequence starts at the
+// first non-equality-bound key. Without this, a per-binding equality scan
+// (id Fixed) and an unbound scan over the same PK columns (id
+// Sorted-ascending) report the identical Keys, so plan partitioning
+// (expression_partition.go's orderingsEqual) cannot tell them apart and
+// co-partitions them. Compare RecordQueryScanPlan.HintRichOrdering below,
+// which already carries this distinction via FixedBinding/SortedBinding but
+// is not consulted by plain-ordering partitioning.
 func PKScanOrdering(plan *RecordQueryScanPlan) properties.Ordering {
 	if plan == nil {
 		return properties.Ordering{}
@@ -239,13 +253,26 @@ func PKScanOrdering(plan *RecordQueryScanPlan) properties.Ordering {
 	if len(pk) == 0 {
 		return properties.Ordering{}
 	}
-	desc := make([]bool, len(pk))
+	comps := plan.GetScanComparisons()
+	firstNonEq := 0
+	for i := range pk {
+		if i < len(comps) && comps[i].IsEquality() {
+			firstNonEq = i + 1
+		} else {
+			break
+		}
+	}
+	keys := pk[firstNonEq:]
+	if len(keys) == 0 {
+		return properties.Ordering{}
+	}
+	desc := make([]bool, len(keys))
 	if plan.IsReverse() {
 		for i := range desc {
 			desc[i] = true
 		}
 	}
-	return properties.Ordering{IsKnown: true, Keys: pk, Descending: desc}
+	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
 }
 
 // HintOrdering: an index scan produces rows in index-key order for the

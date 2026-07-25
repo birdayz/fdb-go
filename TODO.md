@@ -507,8 +507,9 @@ closed rather than silently alter rows or output schema.
   fence going live would be noticed. The CORPUS scenarios do NOT pin either gate
   — the mixed-direction queries plan an in-memory sort with or without it, which
   an earlier revision of this entry and of DIVERGENCES.md wrongly claimed.
-- [ ] **CQ-10f (MED) — `WHERE pk IN (...) ORDER BY pk DESC` plans a FULL TABLE
-  SCAN where Java plans N bounded seeks.** Introduced by CQ-10d and left
+- [ ] **CQ-10f (MED, full-scan regression CLOSED by CQ-20 — sort-elimination
+  parity still open) — `WHERE pk IN (...) ORDER BY pk DESC` planned a FULL
+  TABLE SCAN where Java plans N bounded seeks.** Introduced by CQ-10d and left
   deliberately unpinned there rather than blessed.
   ```
   SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id DESC
@@ -561,12 +562,101 @@ closed rather than silently alter rows or output schema.
   it STILL does not fix the query above (the full scan keeps winning on a later
   structural rung). That is a milestone-sized planner behaviour change: it needs
   its own RFC and a Graefe ACK before implementation, per the query-engine gate.
-  **Scope when it is picked up:** decide the rung question first (is criterion
-  #4 allowed to tie a bounded access against an unbounded one, or does the
-  bounded/unbounded distinction belong in the cost model?), because (a)+(b)
-  without it changes many plans and does not close this one. Then pin the plan
-  in `in_over_primary_scan_sarg.yaml`, whose last scenario carries the query
-  today with its ROWS asserted and its PLAN deliberately not.
+  **Scope when the REMAINING (a)+(b) work is picked up:** decide the rung
+  question first (is criterion #4 allowed to tie a bounded access against an
+  unbounded one, or does the bounded/unbounded distinction belong in the cost
+  model?), because (a)+(b) without it changes many plans and does not yet
+  reach Java's no-sort shape.
+  **Update (CQ-20) — the FULL-SCAN regression is CLOSED via a THIRD defect,
+  distinct from (a)/(b) and NOT a milestone-sized change, so it was fixed in
+  isolation while (a)/(b) stay open.** `PKScanOrdering`
+  (`pkg/recordlayer/query/plan/plans/ordering.go`) reported EVERY primary-key
+  column as a sorted key regardless of any equality comparison narrowing the
+  scan, so a per-binding equality PK scan (`Scan(TBL,[id=q0])`, `id` really
+  Fixed) and a fully unbound PK scan (`id` really Sorted-ascending) advertised
+  the IDENTICAL `Ordering{Keys:[ID,K]}`. Plan partitioning
+  (`expression_partition.go`'s `orderingsEqual`/`toPartitionsFromMap`) reads
+  exactly that `Ordering`, so the two co-partitioned, and whichever member
+  happened to be added to the `PlanPropertiesMap` first became the partition's
+  sole representative — silently shadowing the bounded InJoin/InUnion
+  candidate behind the unbound scan before the sort-vs-full-scan cost rungs
+  above ever got to compare them. Fixed by trimming the equality-bound PK
+  prefix out of `PKScanOrdering`'s `Keys`, mirroring the firstNonEq logic
+  `RecordQueryIndexPlan.HintOrdering` already used and matching Java's
+  `ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons`
+  (`ValueIndexLikeMatchCandidate.java:126-196`), whose equality-bound prefix
+  only populates the FIXED binding map and is never appended to
+  `orderingSequenceBuilder` — Java's `Ordering.equals`
+  (`Ordering.java:250-261`) always compares the binding map (Java has one
+  `Ordering` type; Go split it into `Ordering` for partitioning and
+  `RichOrdering` for richer reasoning, and the partitioning type was the one
+  that lost the distinction). The reproducer above now plans
+  `InMemorySort([ID DESC], InJoin(Scan(TBL, [=]), binding ASC))` — three
+  bounded seeks under a sort — instead of the full reverse scan. **This is
+  NOT yet Java parity**: Java needs no sort at all, because defects (a)
+  (`RecordQueryInJoinPlan.HintOrdering` returning the empty ordering
+  unconditionally) and (b) (the requested-ordering arm's dead Value-identity
+  binding lookup) are UNCHANGED by this fix and remain their own
+  milestone-sized workstream, deliberately not implemented here so the
+  partition-key fix could land isolated and reviewed on its own. Corpus:
+  2633 statements, **26 changed (0.99%), 13 shape flips, 0 regressions** — 5
+  full-scan→bounded-InJoin (improvement, 3 DML + this SELECT reproducer's
+  no-ORDER-BY control), 4 redundant `InMemorySort` eliminated (improvement),
+  12 InJoin ordering-tag `binding`→`binding ASC` (neutral, all already under a
+  sort), 2 InJoin→InUnion with sort eliminated (improvement), 1 REVERSE flag
+  dropped on an inner scan under an outer re-sort (neutral), 1 the reproducer
+  itself (full reverse scan → sorted bounded InJoin, the regression closure),
+  1 `NestedLoopJoin` operand flip on an `unordered: true` cross join
+  (neutral, pre-existing structural-hash tiebreak, `cte_error_codes.yaml#5`).
+  Every category individually golden-reviewed against the regenerated
+  `explaindiff` plan-shape baseline; zero planning-time delta. Now pinned in
+  `in_over_primary_scan_sarg.yaml`: the no-ORDER-BY control asserts
+  `InJoin(Scan(TBL, [=])`, and the `ORDER BY id DESC` prefix-only scenario
+  (previously deliberately unpinned) now asserts
+  `InMemorySort([ID DESC], InJoin(Scan(TBL, [=]), binding ASC))` with its
+  exact descending rows kept, run against real FDB. Regression test:
+  `TestToPlanPartitions_SeparatesFixedBoundScanFromSortedUnboundScan`
+  (`pkg/recordlayer/query/plan/cascades/pk_scan_ordering_partition_test.go`)
+  pins that a Fixed-bound and a Sorted-unbound PK scan land in different
+  partitions, verified red without the fix.
+- [x] **CQ-20 (MED) — `PKScanOrdering` reported every primary-key column as a
+  sorted key even when a leading prefix was equality-bound, co-partitioning a
+  Fixed-bound PK scan with a Sorted-unbound one and closing the CQ-10f
+  full-table-scan regression.** Full writeup and measurements live under the
+  CQ-10f "Update (CQ-20)" paragraph above — this entry exists only so CQ-20 has
+  its own checklist line. One-line summary: `PKScanOrdering`
+  (`pkg/recordlayer/query/plan/plans/ordering.go`) now trims the
+  equality-bound PK prefix out of its `Keys`, mirroring
+  `RecordQueryIndexPlan.HintOrdering`'s established firstNonEq logic and
+  Java's `ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons`
+  (`ValueIndexLikeMatchCandidate.java:126-196`). Deliberately does NOT touch
+  `expression_partition.go` — fixing the ordering at its source was the
+  narrower, Java-aligned change; the shared partition-comparison machinery
+  was already correct, it was being fed lossy input. Deliberately does NOT
+  implement RFC-191 defects (a) `RecordQueryInJoinPlan.HintOrdering` or (b)
+  the requested-ordering binding-lookup bridge — those remain their own
+  milestone-sized workstream under CQ-10f. Corpus: 2633 statements, 26
+  changed (0.99%), 13 shape flips, 0 regressions (full breakdown under
+  CQ-10f). 1M stress: all 23 subtests pass both sides, EXPLAIN + row counts
+  byte-identical (stress corpus has no Fixed-vs-Sorted PK-scan-partitioning
+  shape), runtime 153.67s baseline vs 153.69s branch — see the Stress test 1M
+  baseline table below.
+- [ ] **CQ-21 (LOW, found in CQ-20 review) — `PKScanOrdering` and
+  `RecordQueryIndexPlan.HintOrdering` disagree on the fully-equality-bound
+  degenerate case.** When every PK/index column is consumed by an equality
+  comparison, `PKScanOrdering` (`ordering.go`) now returns
+  `Ordering{}` (`IsKnown:false`), but `RecordQueryIndexPlan.HintOrdering`'s
+  analogous corner case (index key fully equality-bound AND the trimmed PK
+  suffix is empty — e.g. a composite unique index over exactly the PK
+  columns) falls through to `IsKnown:true` with an empty `Keys`. Flagged by
+  Graefe during the CQ-20 review as INERT today — every current consumer
+  (`expression_partition.go`, `plan_properties.go`'s RichOrdering synthesis,
+  the distinct-union/streaming-agg rules) branches on `len(Keys)==0`
+  regardless of `IsKnown`, so the two representations behave identically
+  everywhere they're read — but the two producers of the same logical
+  "nothing left to sort by" fact should converge on one representation
+  rather than carry a silent format difference a future `IsKnown`-branching
+  consumer could trip on.
 - [ ] **CQ-10e (LOW) — an aggregate index's comparisons are invisible to the
   comparisons property, from both directions.** Same axis as CQ-10c, currently
   unreachable. Java's `RecordQueryAggregateIndexPlan` implements
@@ -6634,6 +6724,24 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 ## Stress test 1M baseline (2026-05-27)
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
+
+**2026-07-25 (CQ-20 — PKScanOrdering drops the equality-bound PK prefix):**
+baseline worktree at the pre-change commit `473d0d0af` vs the working tree,
+same box, sequential fresh FDB containers, both runs `--nocache_test_results`.
+All 23 subtests PASS on both sides. **Every EXPLAIN string and every
+per-query row count identical** — diffed the stripped EXPLAIN/row lines (33
+lines excluding the two bulk-load timing lines), empty diff. Total runtime
+153.67s baseline vs 153.69s branch. Million-row scans baseline
+3.51/3.22/3.36s vs branch 3.52/3.27/3.40s. Bulk loads noise-level equal
+(customers 6.316s vs 6.368s; orders 129.68s vs 129.52s). Point lookups
+4.96-5.01ms baseline vs 4.88-5.40ms branch, index equality 5.94 vs 5.68ms,
+`in_list` 16.07 vs 14.97ms. The stress corpus contains no
+Fixed-vs-Sorted-PK-scan-partitioning shape (no `WHERE pk-prefix IN (...)`
+query mixed with an unbound scan of the same table in the same reference), so
+this bounds collateral damage rather than measuring the fix; the fix itself
+is covered by the yamsql `in_over_primary_scan_sarg` scenario against real
+FDB and the corpus-wide `explaindiff` plan-shape diff (26/2633 changed, 13
+shape flips, 0 regressions — see CQ-20/CQ-10f in the priority list above).
 
 **2026-07-25 (CQ-10d — descending IN-union enumeration):** baseline worktree at
 the pre-change commit `daad581f8` vs the working tree, same box, sequential
