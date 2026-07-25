@@ -1,0 +1,135 @@
+# in_over_primary_scan_sarg.yaml
+#
+# An IN over a PRIMARY-KEY prefix, ordered by that key: `WHERE pk IN (...)
+# ORDER BY pk`, whose ordering the primary scan already delivers.
+#
+# The IN-transformation turns `id IN (1, 2, 3)` into `id = $binding` and the
+# primary scan takes that equality as a search argument, so the binding IS a
+# SARG and the cost model's criterion #6 must not penalise the IN-plan. While
+# the cost model read scan comparisons off index plans only, the equality on
+# the PRIMARY scan went uncredited, the IN-plan was penalised, and the planner
+# elected a shape that then needed an in-memory sort to satisfy ORDER BY:
+#
+#   before:  InMemorySort([ID ASC, K ASC], InUnion(Scan(TBL, [=]), bindings=1, ASC))
+#   after:   InUnion(Scan(TBL, [=]), bindings=1, ASC)
+#
+# The sort was pure waste — its input was already in primary-key order. Nothing
+# in the suite caught it: the rows were right, so every row-level test passed,
+# and the corpus recorded the sorted plan as the expected one.
+#
+# WHY `SELECT *` AND NOT A COLUMN LIST. Criterion #6 inspects the ROOT
+# expression, so a projection over the IN-plan makes the rung abstain and the
+# sort never appears in the first place — `SELECT id, k FROM ... ORDER BY id`
+# plans identically before and after the fix. Only the shape that leaves the
+# IN-plan AT THE ROOT reaches the rung, which is why every assertion below that
+# names the sort uses `SELECT *`. Verified per query against both collectors,
+# not assumed.
+#
+# The plan assertions have to name the sort's absence rather than rely on the
+# rows: a redundant sort returns exactly the same rows in exactly the same
+# order, which is precisely why it hid.
+name: in_over_primary_scan_sarg
+schema_template: |
+  CREATE TABLE tbl (
+    id BIGINT NOT NULL,
+    k BIGINT NOT NULL,
+    a BIGINT,
+    b BIGINT,
+    PRIMARY KEY (id, k)
+  )
+  CREATE INDEX ia ON tbl (a)
+setup:
+  - INSERT INTO tbl VALUES
+      (1, 1, 10, 100),
+      (1, 2, 20, 200),
+      (2, 1, 30, 300),
+      (3, 5, 40, 400),
+      (4, 1, 50, 500)
+tests:
+  # The reproducer. ORDER BY the full primary key, so the expected row order is
+  # a total order and cannot depend on how ties are broken.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id, k
+    plan_not_contains: InMemorySort
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]
+  # Same query, naming the plan that must be elected instead: the IN-union
+  # reading the primary scan directly, with the equality bound.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id, k
+    plan_contains: "InUnion(Scan(TBL, [=])"
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]
+  # ORDER BY the key PREFIX only — the literal `WHERE pk IN (...) ORDER BY pk`
+  # shape. The rows are asserted as a set because ORDER BY id alone leaves the
+  # two id=1 rows mutually unordered, and this file must not pin an ordering
+  # SQL does not promise; the sort's absence is asserted regardless.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id
+    plan_not_contains: InMemorySort
+    unordered: true
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]
+  # An IN list given out of order still comes back in key order without a sort:
+  # the IN-union sorts its bindings, not its output.
+  - query: SELECT * FROM tbl WHERE id IN (3, 1, 2) ORDER BY id, k
+    plan_not_contains: InMemorySort
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]
+  # Bindings that match nothing must contribute no rows, not the whole scan.
+  - query: SELECT * FROM tbl WHERE id IN (404) ORDER BY id, k
+    rows: []
+  # Mixed present/absent bindings, still unsorted.
+  - query: SELECT * FROM tbl WHERE id IN (2, 404) ORDER BY id, k
+    plan_not_contains: InMemorySort
+    rows:
+      - [2, 1, 30, 300]
+  # Control: the same IN with NO ordering request. There is no sort to save, so
+  # this shape is unaffected by the SARG accounting — it stays the plain
+  # filtered scan it always was.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3)
+    plan_contains: "PredicatesFilter(Scan(TBL)"
+    unordered: true
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]
+  # An IN on a NON-key, NON-indexed column, ordered by the primary key. The
+  # binding cannot become a search argument on any access path here, so the
+  # IN-plan stays correctly penalised — this file covers the negative side of
+  # the criterion too, not only the case the fix improves.
+  - query: SELECT * FROM tbl WHERE b IN (100, 300) ORDER BY id, k
+    plan_contains: "PredicatesFilter(Scan(TBL)"
+    rows:
+      - [1, 1, 10, 100]
+      - [2, 1, 30, 300]
+  # THE DESCENDING MIRROR, PINNING TODAY'S BEHAVIOUR — the sort STAYS.
+  #
+  # This is the same shape as the first query with the ordering reversed, and it
+  # plans identically before and after the SARG accounting was fixed (checked
+  # against both collectors). The sort is not a leftover penalty: no descending
+  # IN-union candidate is enumerated for this ordering at all, so there is no
+  # sort-free plan to elect and the sort is genuinely required.
+  #
+  # The asymmetry is the point of pinning it. ASC gets the sort-free plan and
+  # DESC does not, so if ordered-variant enumeration ever grows a descending
+  # IN-union, this assertion goes red and the improvement gets noticed and
+  # blessed rather than landing unseen. Closing that enumeration gap is its own
+  # item (TODO.md CQ-10d); this file only records where the line sits today.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id DESC, k DESC
+    plan_contains: InMemorySort
+    rows:
+      - [3, 5, 40, 400]
+      - [2, 1, 30, 300]
+      - [1, 2, 20, 200]
+      - [1, 1, 10, 100]

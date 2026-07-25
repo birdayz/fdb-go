@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=339 queries=2456 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
+# files=340 queries=2465 dml=158 non_query=97 plan_errors=260 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -7787,6 +7787,51 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryIntersectionPlan
 shape:       RecordQueryIndexPlan
 shape:       RecordQueryIndexPlan
+=== in_over_primary_scan_sarg.yaml#0
+sql:   SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id, k
+plan:  InUnion(Scan(TBL, [=]), bindings=1, ASC)
+shape: RecordQueryInUnionPlan
+shape:   RecordQueryScanPlan
+=== in_over_primary_scan_sarg.yaml#1
+sql:   SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id, k
+plan:  InUnion(Scan(TBL, [=]), bindings=1, ASC)
+shape: RecordQueryInUnionPlan
+shape:   RecordQueryScanPlan
+=== in_over_primary_scan_sarg.yaml#2
+sql:   SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id
+plan:  InUnion(Scan(TBL, [=]), bindings=1, ASC)
+shape: RecordQueryInUnionPlan
+shape:   RecordQueryScanPlan
+=== in_over_primary_scan_sarg.yaml#3
+sql:   SELECT * FROM tbl WHERE id IN (3, 1, 2) ORDER BY id, k
+plan:  InUnion(Scan(TBL, [=]), bindings=1, ASC)
+shape: RecordQueryInUnionPlan
+shape:   RecordQueryScanPlan
+=== in_over_primary_scan_sarg.yaml#4
+sql:   SELECT * FROM tbl WHERE id IN (404) ORDER BY id, k
+plan:  Scan(TBL, [=])
+shape: RecordQueryScanPlan
+=== in_over_primary_scan_sarg.yaml#5
+sql:   SELECT * FROM tbl WHERE id IN (2, 404) ORDER BY id, k
+plan:  InUnion(Scan(TBL, [=]), bindings=1, ASC)
+shape: RecordQueryInUnionPlan
+shape:   RecordQueryScanPlan
+=== in_over_primary_scan_sarg.yaml#6
+sql:   SELECT * FROM tbl WHERE id IN (1, 2, 3)
+plan:  PredicatesFilter(Scan(TBL), [1 preds])
+shape: RecordQueryPredicatesFilterPlan
+shape:   RecordQueryScanPlan
+=== in_over_primary_scan_sarg.yaml#7
+sql:   SELECT * FROM tbl WHERE b IN (100, 300) ORDER BY id, k
+plan:  PredicatesFilter(Scan(TBL), [1 preds])
+shape: RecordQueryPredicatesFilterPlan
+shape:   RecordQueryScanPlan
+=== in_over_primary_scan_sarg.yaml#8
+sql:   SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id DESC, k DESC
+plan:  InMemorySort([ID DESC, K DESC], InJoin(Scan(TBL, [=]), binding))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryInJoinPlan
+shape:     RecordQueryScanPlan
 === in_plan_winner_stability.yaml#0
 sql:   SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id
 plan:  Project([ID#0, CAT#1], PredicatesFilter(Scan(T), [1 preds]))

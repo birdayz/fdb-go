@@ -885,86 +885,165 @@ func compareInOperator(expr expressions.RelationalExpression) (int, bool) {
 	return 1, true
 }
 
-// collectSargedAliases walks the physical plan tree and collects all
-// CorrelationIdentifiers that appear in equality comparisons of index
-// scans. For intersection plans, takes the set intersection of children's
-// aliases (only aliases SARGed by ALL legs count). For all other nodes,
-// takes the union. Matches Java's ComparisonsProperty semantics.
+// collectSargedAliases returns the CorrelationIdentifiers that criterion #6
+// counts as search arguments under e: the correlations of the SARGing
+// comparisons the plan tree contributes, in Java's two-stage order — collect
+// the Comparisons first (collectSargedComparisons, mirroring
+// ComparisonsProperty), then derive aliases from the equality ones
+// (PlanningCostModel.compareInOperator's ValueComparison/EQUALS filter).
 func collectSargedAliases(e expressions.RelationalExpression) map[values.CorrelationIdentifier]struct{} {
+	return equalityComparisonAliases(collectSargedComparisons(e))
+}
+
+// collectSargedComparisons walks the physical plan tree and collects the
+// Comparisons bounding its scans. It is Go's only port of
+// ComparisonsProperty.ComparisonsVisitor, and it reproduces two of that
+// visitor's behaviours:
+//
+//   - evaluateAtExpression unions the child results with the node's OWN
+//     comparisons, which it reads off any RecordQueryPlanWithComparisons — every
+//     plan carrying scan comparisons, an index scan and a PRIMARY scan alike.
+//     ScanComparisonProvider is that interface here, so a binding that became a
+//     search argument on a primary-key range scan counts exactly as one on an
+//     index scan does.
+//   - visitRecordQueryIntersectionPlan replaces that union with a retainAll
+//     fold over the legs, so only comparisons carried by ALL legs survive, and
+//     the intersection node contributes none of its own. Dispatched off the
+//     IntersectionExpression marker, as Java dispatches off the visit override.
+//
+// The visitor's remaining behaviours are deliberately NOT reproduced, and the
+// list is open rather than closed — it is what the Java class holds today:
+//
+//   - Unwrapping RecordQueryCoveringIndexPlan has no Go analogue at all:
+//     covering is a flag on the index plan, not a wrapper around it.
+//   - visitRecordQueryScoreForRankPlan REPLACES the child result with the
+//     ranks' comparisons, and visitRecordQueryTextIndexPlan contributes the
+//     text scan's grouping and text comparisons. Go's score-for-rank plan is a
+//     pass-through union here and its text-index plan contributes nothing. Both
+//     are unreachable rather than agreed: neither plan is constructed outside
+//     tests, so no query can reach either arm.
+//   - evaluateAtRef unions ALL members of a Reference; this descends
+//     firstPhysicalChild only. That narrowing is the cost model's convention
+//     for walking a concrete candidate (see concretePlanCounts) and predates
+//     this property.
+//
+// The fold is over COMPARISON OBJECTS, not over the correlation aliases derived
+// from them, and that granularity is load-bearing rather than incidental. The
+// two differ exactly when an intersection's legs bind the same alias through
+// DIFFERENT comparands — a record-typed IN splits `(a, b) IN ((1, 2), ...)`
+// into `a = $x.0` and `b = $x.1`, so a leg on `a` and a leg on `b` share the
+// alias $x while sharing no comparison. Comparison granularity is the one
+// criterion #6 means: it asks whether "the rewritten equality" — one
+// comparison, not one alias — became an index search argument, and under an
+// intersection that equality only bounds the scan if every leg carries it.
+// Alias granularity would answer yes for the record-typed IN above even though
+// neither leg is bounded by the equality the other leg matched.
+func collectSargedComparisons(e expressions.RelationalExpression) []*predicates.Comparison {
 	if e == nil {
 		return nil
 	}
-	if p, ok := e.(*plans.RecordQueryIndexPlan); ok {
-		return equalityAliasesFromRanges(p.GetScanComparisons())
+	if _, isIntersection := e.(properties.IntersectionExpression); isIntersection {
+		return intersectChildComparisons(e)
 	}
-	_, isIntersection := e.(*plans.RecordQueryIntersectionPlan)
-	_, isMultiIntersection := e.(*plans.RecordQueryMultiIntersectionOnValuesPlan)
-	if isIntersection || isMultiIntersection {
-		return intersectChildAliases(e)
-	}
-	out := map[values.CorrelationIdentifier]struct{}{}
+	var out []*predicates.Comparison
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
 		if ref == nil {
 			continue
 		}
 		if child := firstPhysicalChild(ref); child != nil {
-			for alias := range collectSargedAliases(child) {
-				out[alias] = struct{}{}
+			for _, c := range collectSargedComparisons(child) {
+				out = addComparisonToSet(out, c)
 			}
+		}
+	}
+	if p, ok := e.(properties.ScanComparisonProvider); ok {
+		for _, c := range comparisonsFromRanges(p.GetScanComparisons()) {
+			out = addComparisonToSet(out, c)
 		}
 	}
 	return out
 }
 
-func intersectChildAliases(e expressions.RelationalExpression) map[values.CorrelationIdentifier]struct{} {
-	var childSets []map[values.CorrelationIdentifier]struct{}
+func intersectChildComparisons(e expressions.RelationalExpression) []*predicates.Comparison {
+	var childSets [][]*predicates.Comparison
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
 		if ref == nil {
 			continue
 		}
 		if child := firstPhysicalChild(ref); child != nil {
-			childSets = append(childSets, collectSargedAliases(child))
+			childSets = append(childSets, collectSargedComparisons(child))
 		}
 	}
 	if len(childSets) == 0 {
 		return nil
 	}
-	result := make(map[values.CorrelationIdentifier]struct{})
-	for alias := range childSets[0] {
-		inAll := true
-		for _, s := range childSets[1:] {
-			if _, found := s[alias]; !found {
-				inAll = false
-				break
+	result := childSets[0]
+	for _, other := range childSets[1:] {
+		var kept []*predicates.Comparison
+		for _, c := range result {
+			if containsComparison(other, c) {
+				kept = append(kept, c)
 			}
 		}
-		if inAll {
-			result[alias] = struct{}{}
-		}
+		result = kept
 	}
 	return result
 }
 
-func equalityAliasesFromRanges(ranges []*predicates.ComparisonRange) map[values.CorrelationIdentifier]struct{} {
-	out := map[values.CorrelationIdentifier]struct{}{}
+// comparisonsFromRanges is Java's RecordQueryPlanWithComparisons.getComparisons:
+// every Comparison the ranges carry, equalities and inequalities alike. The
+// EQUALS filter belongs at extraction, not here — filtering elementwise before
+// or after the intersection gives the same set, and collecting everything keeps
+// this the plan's comparison property rather than a criterion-#6 special case.
+func comparisonsFromRanges(ranges []*predicates.ComparisonRange) []*predicates.Comparison {
+	var out []*predicates.Comparison
 	for _, cr := range ranges {
-		if cr == nil || !cr.IsEquality() {
+		for _, c := range cr.GetComparisons() {
+			if c == nil {
+				continue
+			}
+			out = addComparisonToSet(out, c)
+		}
+	}
+	return out
+}
+
+// equalityComparisonAliases is compareInOperator's extraction step: keep the
+// equality comparisons, flat-map their correlations.
+func equalityComparisonAliases(comps []*predicates.Comparison) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, c := range comps {
+		if c == nil || c.Type != predicates.ComparisonEquals {
 			continue
 		}
-		eq := cr.GetEqualityComparison()
-		if eq == nil {
-			continue
-		}
-		if eq.Type != predicates.ComparisonEquals {
-			continue
-		}
-		for alias := range eq.GetCorrelatedTo() {
+		for alias := range c.GetCorrelatedTo() {
 			out[alias] = struct{}{}
 		}
 	}
 	return out
+}
+
+// addComparisonToSet appends c unless the slice already holds a comparison
+// equal to it, giving the slice the membership semantics of Java's
+// ImmutableSet<Comparison> — Comparison equality there is semantic
+// (Comparisons.ValueComparison.equals is semanticEquals under the empty alias
+// map), which is what comparisonsEqual implements.
+func addComparisonToSet(set []*predicates.Comparison, c *predicates.Comparison) []*predicates.Comparison {
+	if containsComparison(set, c) {
+		return set
+	}
+	return append(set, c)
+}
+
+func containsComparison(set []*predicates.Comparison, c *predicates.Comparison) bool {
+	for _, e := range set {
+		if comparisonsEqual(e, c) {
+			return true
+		}
+	}
+	return false
 }
 
 func expressionDepth(e expressions.RelationalExpression, match func(expressions.RelationalExpression) bool) int {

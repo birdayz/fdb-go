@@ -299,26 +299,146 @@ closed rather than silently alter rows or output schema.
   by the new file's six entries.
   **Found by the sweep and deferred to CQ-10b:** criterion #7
   (`comparePrimaryScanVsIndexScan`) is a separate, pre-existing INTRANSITIVITY.
-- [ ] **CQ-10a (LOW) — `collectSargedAliases` intersects aliases where Java
-  intersects comparisons.** Raised in review as "the Go comment's claim that it
-  matches Java's `ComparisonsProperty` is probably false". **The claim is
-  TRUE and the comment stands:** Java's `comparisons().evaluate(...)` is not a
-  plain whole-subtree union — `ComparisonsProperty.ComparisonsVisitor` overrides
-  `visitRecordQueryIntersectionOnKeyExpressionPlan` /
-  `visitRecordQueryIntersectionOnValuesPlan`
-  (`ComparisonsProperty.java:115-140`) and folds the children with
-  `intersected.retainAll(...)` (`:138`), exactly the set intersection Go's
-  `intersectChildAliases` performs. What remains is a narrower GRANULARITY
-  difference nobody has probed: Java intersects the child `Comparison` SETS and
-  only then extracts correlated aliases from the equality `ValueComparison`s
-  (`PlanningCostModel.java:443-450`), whereas Go intersects the derived ALIAS
-  sets. The two disagree when two intersection legs SARG the SAME alias through
-  DIFFERENT comparison objects — Java's `retainAll` drops both (the comparisons
-  are not equal), Go keeps the alias — so Go can classify an IN-plan under an
-  intersection as SARGed where Java would penalise it. Closing it means matching
-  Java's granularity (intersect comparisons, then extract), which changes which
-  IN-plans count as SARGed and therefore needs its own stress run and golden
-  review. Not touched here.
+- [x] **CQ-10a (LOW) — SARG detection now folds comparisons, not aliases.**
+  Outcome: **ported Java's granularity**, measured behaviour-neutral. Java's
+  `ComparisonsProperty.ComparisonsVisitor` folds the intersection legs' child
+  `Comparison` SETS with `intersected.retainAll(...)`
+  (`ComparisonsProperty.java:126-141`) and only then filters to equality
+  `ValueComparison`s and flat-maps their correlations
+  (`PlanningCostModel.java:441-450`); Go folded the derived ALIAS sets.
+  `collectSargedComparisons` / `intersectChildComparisons` /
+  `comparisonsFromRanges` / `equalityComparisonAliases` now reproduce Java's two
+  stages, with set membership by `comparisonsEqual` (the semantic equality
+  Java's `Comparisons.ValueComparison.equals` = `semanticEquals(o,
+  AliasMap.emptyMap())` implements, `Comparisons.java:1694-1696`, `:1651-1657`).
+  **The divergence shape this item was filed with was WRONG and the correction
+  matters:** the indexed field is NOT part of a `Comparison` — it is positional
+  in `ScanComparisons`, and `getComparisons()`
+  (`RecordQueryPlanWithComparisons.java:44-67`) yields only the RHS comparisons
+  — so two legs carrying `f1 = $x` and `f2 = $x` hold EQUAL comparison objects,
+  `retainAll` keeps them, and Java agrees with the alias fold. The real
+  disagreeing shape is two legs binding one alias through DIFFERENT COMPARANDS,
+  which Java reaches via record-typed IN:
+  `InComparisonToExplodeRule.createSimpleEqualitiesForRecordTypeValue`
+  (`:205-221`) splits `(a, b) IN ((1, 2), ...)` into `a = $x.0` / `b = $x.1`.
+  **Measured, not assumed.** Instrumenting `compareInOperator` to compute both
+  granularities with coverage and recursion held identical — so the intersection
+  fold is the only variable — over the **five SQL corpora** (explaindiff,
+  memoinvariant, plandiff, rowdiff, embedded) gives **48919 rung-6 evaluations,
+  112 of them with an intersection under the IN-plan, and 0 disagreements** —
+  because all **295** equality comparisons correlated to an IN binding carried a
+  BARE `QuantifiedObjectValue` operand (Go's `rule_in_to_explode.go:159-161`
+  emits exactly that and has no record-element branch; `(b, c) IN ((7, 5),
+  (2, 6))` fails Cascades translation outright). So the port is a no-op on every
+  currently reachable shape — golden byte-identical, no plan-shape change, no
+  stress run warranted — and the equivalence stops depending on a missing
+  feature staying missing.
+  **The `cascades` unit-test suite is deliberately EXCLUDED from those figures,
+  and must stay excluded.** It contains fixtures built expressly to disagree —
+  `TestCollectSargedComparisons_IntersectionFoldsComparisonsNotAliases` uses
+  `FieldValue` comparands precisely because no reachable query produces them —
+  so counting it yields `disagreements >= 1` and `operands != all-QOV` and
+  measures the test suite rather than the language. An earlier revision of this
+  entry quoted 50478/116/930 over a suite list that named seven suites while
+  saying six and included `cascades`; those numbers are withdrawn. Synthetic
+  plans are never evidence about which shapes are reachable.
+  Pinned by
+  `TestCollectSargedComparisons_IntersectionFoldsComparisonsNotAliases`, which
+  builds the distinguishing shape directly (verified red under the alias fold)
+  and carries a same-comparand positive control so it cannot pass by returning
+  nothing.
+  **Found by the sweep, fixed alongside it as CQ-10c:** the same collector's
+  COVERAGE — which plans it reads comparisons off at all — was a second, larger
+  divergence, and a live plan-quality defect. See below.
+- [x] **CQ-10c (MED) — criterion #6 now credits a SARGed PRIMARY scan.**
+  Found by CQ-10a's sweep, in the same collector, and it was not cosmetic: it
+  made Go plan a REDUNDANT IN-MEMORY SORT on `WHERE pk IN (...) ORDER BY pk`.
+  Java's `ComparisonsProperty.ComparisonsVisitor.evaluateAtExpression` reads
+  comparisons off every `RecordQueryPlanWithComparisons`, and
+  `RecordQueryScanPlan` is one (`RecordQueryScanPlan.java:84-88`;
+  `hasScanComparisons()` defaults true at
+  `RecordQueryPlanWithComparisons.java:71-73`). Go read them off
+  `RecordQueryIndexPlan` only, so an IN binding that HAD become a search
+  argument on a primary-key range scan went uncredited, criterion #6 penalised
+  the IN-plan, and the planner elected a shape needing a sort it did not need:
+
+      schema: tbl(id BIGINT NOT NULL, k BIGINT NOT NULL, a, b, PRIMARY KEY (id, k)), INDEX ia ON tbl (a)
+      SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id, k
+      before: InMemorySort([ID ASC, K ASC], InUnion(Scan(TBL, [=]), bindings=1, ASC))
+      after:  InUnion(Scan(TBL, [=]), bindings=1, ASC)
+
+  The sort's input was already in primary-key order. Nothing was red: the rows
+  were correct, so every row-level test passed, and the corpus had the sorted
+  plan recorded as expected. **The shape has to keep the IN-plan at the ROOT to
+  reach the rung at all** — criterion #6 inspects the root expression, so
+  `SELECT id, k FROM ... ORDER BY id` plans identically before and after
+  (checked per query against both collectors, not assumed), which is why the
+  new corpus file uses `SELECT *`.
+  Fixed by matching the visitor's structure rather than adding one case: the
+  collector now takes its own comparisons off any `ScanComparisonProvider` (the
+  Go analogue of `RecordQueryPlanWithComparisons`) and UNIONS them with its
+  children's, where before a node either returned its own and stopped or
+  returned its children's and ignored its own. Java's third arm, unwrapping
+  `RecordQueryCoveringIndexPlan`, has no Go analogue — covering is a flag on the
+  index plan, not a wrapper.
+  **Measured.** Over the five SQL corpora (explaindiff, memoinvariant, plandiff,
+  rowdiff, embedded — the `cascades` unit suite is excluded, see CQ-10a on why
+  synthetic fixtures must never enter a reachability count) **110 of 48919
+  rung-6 evaluations flip verdict**, every one of them 0→SARGed with a SARGed
+  primary scan in the tree, and none involving an intersection. Re-measured on
+  the final corpus, the DESC scenario included: it adds 5 evaluations and no
+  flips. (An earlier sweep counted 36 on the PRE-FIX plan population; the
+  populations differ because changed verdicts change which candidates get
+  compared, so the two are not the same measurement.)
+  **Plan-shape review — every diff, individually.** Regenerating the baseline
+  with the new corpus file but the OLD collector isolates the file's own
+  entries; diffing that against the NEW collector isolates the fix. The fix's
+  entire effect on the 340-file / 2464-query corpus is **5 queries, all in the
+  new file, each losing exactly one `RecordQueryInMemorySortPlan` over an
+  unchanged `InUnion(Scan(TBL, [=]))`** — same justification for all five, the
+  sort's input was already in the requested order. **Zero pre-existing corpus
+  queries changed**; the committed golden diff is purely additive.
+  Pinned by `pkg/relational/conformance/yamsql/testdata/in_over_primary_scan_sarg.yaml`
+  (8 scenarios against real FDB — plan assertions AND exact ordered rows, since
+  a redundant sort returns the same rows in the same order and only a plan
+  assertion can see it; 4 of the 8 go red on the pre-fix collector) and by
+  `TestCollectSargedComparisons_PrimaryScanCountsAsSarg` /
+  `TestCollectSargedComparisons_NodeComparisonsUnionWithChildren`, both verified
+  red on the pre-fix collector.
+- [ ] **CQ-10d (LOW) — no DESCENDING IN-union variant is enumerated, so
+  `WHERE pk IN (...) ORDER BY pk DESC` materialises a sort the ascending form
+  does not.** Surfaced by CQ-10c and deliberately not fixed there. With the
+  primary-scan SARG accounting corrected, the ascending shape plans
+  `InUnion(Scan(TBL, [=]), bindings=1, ASC)`; its exact mirror still plans
+  `InMemorySort([ID DESC, K DESC], InJoin(Scan(TBL, [=]), binding))`, and that
+  is **identical before and after CQ-10c** — verified against both collectors,
+  so it is not a regression and not a leftover penalty. The sort is genuinely
+  required today because no descending IN-union candidate is enumerated for the
+  group at all, so there is no sort-free plan to elect. The fix is in
+  ordered-variant enumeration (`rule_implement_in_union.go`), not in the cost
+  model: an IN-union reading a descending scan with a descending merge would
+  satisfy the ordering directly. Java's `RemoveSortRule` must eliminate the
+  logical sort or planning fails, so Java cannot be sitting on this shape the
+  same way; check what its enumeration produces before porting anything.
+  Today's behaviour is PINNED (sort present, rows in descending order) by the
+  last scenario in
+  `pkg/relational/conformance/yamsql/testdata/in_over_primary_scan_sarg.yaml`,
+  so closing this goes red there and gets blessed rather than landing unseen.
+- [ ] **CQ-10e (LOW) — an aggregate index's comparisons are invisible to the
+  comparisons property, from both directions.** Same axis as CQ-10c, currently
+  unreachable. Java's `RecordQueryAggregateIndexPlan` implements
+  `RecordQueryPlanWithComparisons`, so `ComparisonsProperty` reads its scan
+  comparisons. Go's (`pkg/recordlayer/query/plan/plans/aggregate_index.go:22-38`)
+  neither implements `GetScanComparisons` — so it is not a
+  `ScanComparisonProvider` and contributes nothing of its own — nor exposes its
+  wrapped index plan as a quantifier, so the collector cannot reach that plan's
+  comparisons either. **No verdict can flip today**: the planner never places an
+  IN-plan over an aggregate index, so criterion #6 never walks one. Recorded so
+  the gap is closed deliberately if aggregate indexes ever appear under an
+  IN-plan, rather than discovered as a wrong cost then. Closing it means making
+  the aggregate-index plan a `ScanComparisonProvider` that delegates to its
+  wrapped index scan; it changes verdicts only once the shape is reachable, but
+  it is still a cost-model change and needs the usual stress + golden review.
 - [x] **CQ-10b (MED) — make criterion #7 a total preorder.**
   `comparePrimaryScanVsIndexScan` was PAIR-RESTRICTED, inherited from Java's
   `comparePrimaryScanToIndexScan` (`PlanningCostModel.java:370-414`): it fired
@@ -6155,6 +6275,34 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 ## Stress test 1M baseline (2026-05-27)
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
+
+**2026-07-25 (CQ-10c — criterion #6 credits a SARGed primary scan):** baseline
+worktree at the pre-change commit `c8c32a1be` vs the working tree, same box,
+sequential fresh FDB containers, both runs `--nocache_test_results`. All 23
+subtests PASS on both sides with **identical row counts on all 22 measured
+queries** and a **byte-identical EXPLAIN set** (10/10 lines; both diffs empty).
+Total runtime 152.38s baseline vs 152.85s branch (+0.31%). Million-row scans
+baseline 3.41/3.25/3.36/2.97s vs branch 3.31/3.27/3.37/2.96s. Bulk loads
+noise-level equal (customers 6.262s vs 6.350s; orders 128.51s vs 128.95s).
+Point lookups 4.83-5.51ms baseline vs 4.90-5.23ms branch, index equality 5.89
+vs 5.59ms, `in_list` — the row this change is closest to — 16.27 vs 16.32ms.
+Sub-second rows move within single-run noise in both directions
+(order_by_pk_index_filter 10.59 vs 6.99ms, full_scan_filter 0.50 vs 0.57s) with
+no order-of-magnitude shift. The stress corpus contains no
+`WHERE pk IN (...) ORDER BY pk` query, so the plan change this item makes is
+not exercised here; that shape is covered by the yamsql scenario instead, and
+these numbers say only that nothing else regressed. NOTE: the pre-existing
+point-lookup threshold caveat recorded under the RFC-176/P2 gate above still
+applies to this box; these numbers do not re-qualify it.
+
+**2026-07-25 (CQ-10a — comparison-granularity SARG fold):** no stress run.
+Behaviour-neutral by measurement — 0 verdict changes in 48914 rung-6
+evaluations across the SQL corpora, 112 of them with an intersection — and by
+construction, since the comparison fold is a SUBSET of the alias fold, so it can
+only move a verdict 0→1, and the one shape where it would (a record-typed IN,
+which splits one binding across two comparands) does not exist in Go: the SQL
+front end rejects multi-column IN outright. A run measuring a change that cannot
+occur would report only box noise.
 
 **2026-07-25 (CQ-10b — total-preorder primary-vs-index cost rung):** baseline
 worktree at the pre-change commit `356ce2ab6` vs the working tree, same box,
