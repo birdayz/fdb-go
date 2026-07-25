@@ -736,15 +736,58 @@ closed rather than silently alter rows or output schema.
   `t.Skipf("Go-engine feature gap: ...")` is the same shape — it is built to turn
   a future Go gap into a green skip — but it fires zero times today and sits
   squarely in CQ-14's scope, so it is left for that item rather than duplicated.
-- [ ] **CQ-15 (LOW) — make condition-gated skips report lost coverage.** Two
-  tests skip on a nondeterministic runtime condition and stay green while
-  running nothing: `pkg/fdbgo/client/multishard_test.go` (twice — "shard splits
-  did not occur", so all cross-shard assertions vanish) and
-  `pkg/fdbgo/client/connmon_test.go` ("no proxy connections available"). Unlike
-  the sanctioned Docker probe, these conditions are *supposed* to hold in a
-  healthy environment, so a skip means the setup silently failed to produce the
-  state under test. Either force the condition (drive enough data/connections to
-  guarantee it) or fail rather than skip once the environment is known-capable.
+- [x] **CQ-15 (LOW) — condition-gated skips replaced by loud preconditions.**
+  All three sites were verified before being touched. None is an
+  environment-availability check in disguise, and none was observed to fire in
+  any run made for this item.
+  **`multishard_test.go` (both sites) — the condition is already forced, and the
+  skip was unreachable.** `setupMultiShardEnvWithConfig` seeds 1MB (100 keys ×
+  10KB) under `min_shard_bytes`/`max_shard_bytes` knobs and then polls
+  `locateRange` with `g.Eventually(…).Should(BeNumerically(">", 1))` for 60s.
+  `gomega.NewWithT(t)` installs `t.Fatalf` as the fail handler (gomega 1.39.1
+  `internal/gomega.go:35-38`), so a range that never split already aborted the
+  test *inside the helper* — the `if env.numShards <= 1 { t.Skip(…) }` after it
+  could not be reached. Measured over ten consecutive runs: 51 shards ×9 and 48
+  ×1 (default knobs), 18 ×9 and 19 ×1 (larger-shards knobs); the "~5 shards"
+  the file claimed for the larger-shards regime was wrong and is now expressed
+  as a ratio, not a count. Both sites now fail through `crossShardPrecondition`,
+  a pure function pinned by `TestCrossShardPrecondition` (0, 1 → error; 2, 51 →
+  nil). The loud path was checked by suppression rather than by inspection:
+  forcing `env.numShards = 1` after setup gave `--- FAIL: TestMultiShard …
+  cross-shard precondition: locateRange reported 1 shard(s); cross-shard
+  coverage needs > 1`, and making the `Eventually` threshold unsatisfiable gave
+  the setup-side failure carrying its new lazily-built diagnostic (`range "ms_"
+  never split (min_shard_bytes=40000 max_shard_bytes=200000); last locateRange
+  error: <nil>`) — that message is new, because the previous matcher reported
+  only "Expected 0 to be > 1" and dropped the polling error entirely. Both
+  mutations were reverted.
+  **`connmon_test.go` — also not an availability check.** `openTestDB` returns
+  only after `database.bootstrap` stored the topology (`database.go:609`), so
+  the `info == nil` half cannot occur; the `len(GRVProxies) == 0` half is
+  reachable only if a coordinator answers bootstrap with no proxies, and in that
+  state the test's own `Transact` further down would fail anyway. Skipping there
+  suppressed exactly the failure worth reporting. It is now a `t.Fatalf` through
+  `proxyTopologyPrecondition`, whose three branches are pinned by
+  `TestProxyTopologyPrecondition`; suppression (passing `nil`) produced `--- FAIL:
+  TestConnectionMonitor_BytesReceived … precondition: GetDBInfo returned nil:
+  bootstrap stored no cluster topology`. The `bytesReceived == 0` message now
+  carries the pooled-connection count, since an empty pool is how that assertion
+  would fail vacuously.
+  **The wider `if !condition { return }` sweep** — the shape a `t.Skip` grep
+  cannot match — found three more in the same package, two fixed here.
+  `testMultiShard_GetRangeSplitPoints` gated its internal-shard-boundary
+  assertion on `env.numShards > 1`, so the one assertion that distinguishes
+  multi-shard assembly from a single-shard locate could vanish silently; it is
+  now unconditional, which the entry precondition already guarantees.
+  `testMultiShard_ConcurrentWritesDuringDD` swallowed a `locateRange` error into
+  a "0 shards" log line; the error is now asserted. The third is reported, not
+  fixed: `coordinator_test.go`'s `TestCoordinatorBootstrap` gates roughly a
+  hundred lines of assertions (Go-write/C-read interop, `Transact`, MVCC
+  conflict detection) behind `if len(dbInfo.CommitProxies) > 0 && cErr == nil`,
+  and logs-without-asserting on `locate`, GRV and C-binding-open failures — the
+  same defect, but reworking a smoke-shaped test is wider than this item.
+  Flakiness: the five affected tests at `--runs_per_test=10 --local_test_jobs=1`
+  passed 10/10 with zero skips.
 - [x] **CQ-14 (LOW) — reconcile the advertised SQL surface with conformance.**
   Both halves of the item held. Three things it did not name also had to be
   fixed: a live corpus entry that read as IN-subquery support, the upstream doc

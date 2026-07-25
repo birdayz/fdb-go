@@ -27,8 +27,9 @@ type multiShardEnv struct {
 
 // shardSizeConfig parameterises FDB shard knobs so the multi-shard
 // suite can run against multiple shard-count regimes from the same
-// helper. Default (50KB max) yields ~20 shards from 1MB of data;
-// LargerShards (200KB max) yields ~5 shards.
+// helper. From the same 1MB of seed data the default (50KB max) splits
+// into roughly three times as many shards as LargerShards (200KB max);
+// both regimes are required to exceed one shard, never assumed to.
 type shardSizeConfig struct {
 	minShardBytes string
 	maxShardBytes string
@@ -88,21 +89,32 @@ func setupMultiShardEnvWithConfig(t *testing.T, ctx context.Context, cfg shardSi
 	}
 	t.Logf("seeded %d keys × %dKB", numKeys, valueSize/1000)
 
-	// Poll for shard splits.
+	// Poll for shard splits. Data Distribution needs a moment to react to the
+	// seeded 1MB, so the split is polled for — but never merely hoped for: the
+	// matcher below turns "still one shard after 60s" into a failure, because a
+	// cross-shard suite that runs on a single shard silently exercises the
+	// single-shard path while reporting green.
 	var numShards int
+	var lastLocateErr error
 	g.Eventually(func() int {
 		result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 			begin := []byte(prefix)
 			end := append([]byte(prefix), 0xFF)
 			return tx.db.locCache.locateRange(tx.db, ctx, begin, end, 100, false, tx.tenantId, tx.currentSpan())
 		})
-		if err == nil {
+		if err != nil {
+			lastLocateErr = err
+		} else {
 			locs := result.([]LocationResult)
 			numShards = len(locs)
 		}
 		db.db.locCache.invalidateRange([]byte(prefix), append([]byte(prefix), 0xFF), NoTenantID)
 		return numShards
-	}).WithTimeout(60 * time.Second).WithPolling(2 * time.Second).Should(gomega.BeNumerically(">", 1))
+	}).WithTimeout(60*time.Second).WithPolling(2*time.Second).Should(gomega.BeNumerically(">", 1),
+		func() string {
+			return fmt.Sprintf("range %q never split (min_shard_bytes=%s max_shard_bytes=%s); last locateRange error: %v",
+				prefix, cfg.minShardBytes, cfg.maxShardBytes, lastLocateErr)
+		})
 	t.Logf("shard splits: %d shards", numShards)
 
 	return &multiShardEnv{
@@ -113,8 +125,42 @@ func setupMultiShardEnvWithConfig(t *testing.T, ctx context.Context, cfg shardSi
 	}
 }
 
+// crossShardPrecondition reports why an environment holding numShards shards
+// cannot carry cross-shard coverage, or nil when it can.
+//
+// Callers turn a non-nil result into a test failure rather than a skip: every
+// cross-shard sub-test still passes on a single shard, because it then simply
+// exercises the ordinary single-shard path. A run that could not establish the
+// precondition has therefore proved nothing about shard boundaries and must
+// say so out loud instead of reporting green.
+func crossShardPrecondition(numShards int) error {
+	if numShards <= 1 {
+		return fmt.Errorf("locateRange reported %d shard(s); cross-shard coverage needs > 1", numShards)
+	}
+	return nil
+}
+
+// TestCrossShardPrecondition pins both branches of the guard the cross-shard
+// suites run through, so the failing path is known to fire rather than merely
+// assumed to.
+func TestCrossShardPrecondition(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range []int{0, 1} {
+		if err := crossShardPrecondition(n); err == nil {
+			t.Errorf("%d shards: want error, got nil", n)
+		}
+	}
+	for _, n := range []int{2, 51} {
+		if err := crossShardPrecondition(n); err != nil {
+			t.Errorf("%d shards: want nil, got %v", n, err)
+		}
+	}
+}
+
 // TestMultiShard runs all cross-shard tests against a shared 3-process
-// FDB cluster with small shards (~35 shards for 1MB data).
+// FDB cluster with small shards (tens of shards for 1MB of data; the exact
+// count is Data-Distribution-dependent and only required to exceed one).
 //
 // Sub-tests run sequentially (no t.Parallel()) because they share env state:
 // ClearRange mutates the dataset, BatchedWrites adds keys, and
@@ -129,8 +175,8 @@ func TestMultiShard(t *testing.T) {
 	env := setupMultiShardEnv(t, ctx)
 	// Cleanup via t.Cleanup registered in setupMultiShardEnv.
 
-	if env.numShards <= 1 {
-		t.Skip("shard splits did not occur — cannot test cross-shard behavior")
+	if err := crossShardPrecondition(env.numShards); err != nil {
+		t.Fatalf("cross-shard precondition: %v", err)
 	}
 	t.Logf("running cross-shard tests across %d shards", env.numShards)
 
@@ -551,10 +597,11 @@ func testMultiShard_GetRangeSplitPoints(t *testing.T, ctx context.Context, env *
 	g.Expect(len(points)).To(gomega.BeNumerically(">=", 2), "result must be framed by [begin,end]")
 	g.Expect([]byte(points[0])).To(gomega.Equal(begin), "first split point must be begin")
 	g.Expect([]byte(points[len(points)-1])).To(gomega.Equal(end), "last split point must be end")
-	if env.numShards > 1 {
-		g.Expect(len(points)).To(gomega.BeNumerically(">", 2),
-			"a %d-shard range must yield internal shard boundaries, not just [begin,end]", env.numShards)
-	}
+	// Unconditional: the suite's entry precondition already established that the
+	// range holds more than one shard, so gating this on the shard count would
+	// only let the boundary assertion disappear silently.
+	g.Expect(len(points)).To(gomega.BeNumerically(">", 2),
+		"a %d-shard range must yield internal shard boundaries, not just [begin,end]", env.numShards)
 	// Ascending (NON-STRICT) and in range. Equal adjacent split points are VALID
 	// C++ output, so this asserts non-decreasing, NOT strictly-ascending. The C++
 	// assembly pushes each internal shard boundary AND then appends that shard's
@@ -1123,16 +1170,16 @@ func testMultiShard_ConcurrentWritesDuringDD(t *testing.T, ctx context.Context, 
 	wg.Wait()
 
 	// Count shards after — new data should trigger further splits.
-	var shardsAfter int
 	env.db.db.locCache.invalidateRange(
 		[]byte(env.prefix), append([]byte(env.prefix), 0xFF), NoTenantID)
 	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.db.locCache.locateRange(tx.db, ctx,
 			[]byte(env.prefix), append([]byte(env.prefix), 0xFF), 500, false, tx.tenantId, tx.currentSpan())
 	})
-	if err == nil {
-		shardsAfter = len(result.([]LocationResult))
-	}
+	// The count only feeds the log line below, but a locateRange failure here
+	// is a client bug and must surface rather than silently report 0 shards.
+	g.Expect(err).ToNot(gomega.HaveOccurred(), "re-locate range after concurrent writes")
+	shardsAfter := len(result.([]LocationResult))
 	t.Logf("shards: %d before → %d after (%d writers × %d ops × %dB values = %dKB injected)",
 		shardsBefore, shardsAfter, writers, opsPerWriter, bigValueSize,
 		writers*opsPerWriter*bigValueSize/1024)
@@ -1399,8 +1446,8 @@ func TestMultiShard_LargerShards(t *testing.T) {
 	defer cancel()
 
 	env := setupMultiShardEnvWithConfig(t, ctx, largerShardSize)
-	if env.numShards <= 1 {
-		t.Skip("shard splits did not occur with larger-shards config")
+	if err := crossShardPrecondition(env.numShards); err != nil {
+		t.Fatalf("cross-shard precondition (larger-shards config): %v", err)
 	}
 	t.Logf("running cross-shard tests across %d shards (large-shards config)", env.numShards)
 

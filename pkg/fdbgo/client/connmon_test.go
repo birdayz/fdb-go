@@ -2,9 +2,42 @@ package client
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
+
+// proxyTopologyPrecondition reports why a cluster topology cannot carry
+// connection-level assertions, or nil when it can. Split out from its call
+// site so the failing branches stay directly testable.
+func proxyTopologyPrecondition(info *DBInfo) error {
+	if info == nil {
+		return errors.New("GetDBInfo returned nil: bootstrap stored no cluster topology")
+	}
+	if len(info.GRVProxies) == 0 {
+		return errors.New("cluster topology carries no GRV proxies")
+	}
+	return nil
+}
+
+// TestProxyTopologyPrecondition pins the failing branches of the precondition
+// guarding TestConnectionMonitor_BytesReceived, so the loud path is known to
+// fire rather than merely assumed to.
+func TestProxyTopologyPrecondition(t *testing.T) {
+	t.Parallel()
+
+	if err := proxyTopologyPrecondition(nil); err == nil {
+		t.Error("nil topology: want error, got nil")
+	}
+	if err := proxyTopologyPrecondition(&DBInfo{}); err == nil {
+		t.Error("no GRV proxies: want error, got nil")
+	}
+	if err := proxyTopologyPrecondition(&DBInfo{
+		GRVProxies: []ProxyInfo{{Address: "127.0.0.1:4500"}},
+	}); err != nil {
+		t.Errorf("one GRV proxy: want nil, got %v", err)
+	}
+}
 
 // TestConnectionMonitor_BytesReceived verifies that the bytesReceived counter
 // is incremented by real FDB traffic, proving the connection monitor's
@@ -17,15 +50,18 @@ func TestConnectionMonitor_BytesReceived(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	// Get a connection from the pool.
-	info := db.GetDBInfo()
-	if info == nil || len(info.GRVProxies) == 0 {
-		t.Skip("no proxy connections available")
+	// openTestDB returns only once bootstrap has stored the cluster topology,
+	// so an absent proxy list is a client bug, not an environment condition.
+	// Fail on it: without proxies there is nothing to have received bytes
+	// from, and the assertions below would be vacuous.
+	if err := proxyTopologyPrecondition(db.GetDBInfo()); err != nil {
+		t.Fatalf("precondition: %v", err)
 	}
 
 	// Find a connection in the pool.
 	db.db.connMu.RLock()
 	var totalBytes int64
+	connCount := len(db.db.connPool)
 	for addr, conn := range db.db.connPool {
 		b := conn.BytesReceived()
 		if b > 0 {
@@ -37,7 +73,7 @@ func TestConnectionMonitor_BytesReceived(t *testing.T) {
 
 	// After bootstrap + initial GRV, we should have received some bytes.
 	if totalBytes == 0 {
-		t.Error("expected bytesReceived > 0 after bootstrap")
+		t.Errorf("expected bytesReceived > 0 after bootstrap (%d pooled connections)", connCount)
 	}
 
 	// Do a transaction to generate more traffic.
