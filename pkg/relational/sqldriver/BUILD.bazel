@@ -196,6 +196,7 @@ go_test(
         "index_sarg_probe_test.go",
         "indexable_types_probe_test.go",
         "indexed_float_sarg_probe_test.go",
+        "injoin_sorted_claim_fdb_test.go",
         "inlist_index_probe_test.go",
         "inmemory_sort_row_domain_fdb_test.go",
         "insert_atomicity_probe_test.go",

@@ -3,6 +3,7 @@ package cascades
 import (
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -45,6 +46,11 @@ func validatePlanNode(plan plans.RecordQueryPlan, seen map[plans.RecordQueryPlan
 		// impls dereference a nil inner), and the type pinpoints the node.
 		return fmt.Errorf("plan-invariant: non-leaf plan %T has no children — a relink dropped its inner (a nil child masked by GetChildren)", plan)
 	}
+	if inJoin, ok := plan.(*plans.RecordQueryInJoinPlan); ok {
+		if err := validateInJoinSortedClaim(inJoin); err != nil {
+			return err
+		}
+	}
 	for _, c := range children {
 		if c == nil {
 			return fmt.Errorf("plan-invariant: %T has a nil child", plan)
@@ -82,6 +88,45 @@ func isGenuineLeafPlan(plan plans.RecordQueryPlan) bool {
 		return true
 	}
 	return false
+}
+
+// validateInJoinSortedClaim checks that a RecordQueryInJoinPlan claiming
+// IsSorted() actually carries values in that order — the invariant that
+// keeps sortInJoinValues (in_source.go) from rotting back into a landmine:
+// a future construction site that sets sorted=true without sorting the
+// values it hands to SetInValues would trip this the moment the plan is
+// extracted, in the SAME always-on paths that already gate every other
+// structural invariant (the no-FDB plan harness, the production generator,
+// and FuzzPlanner_Invariants).
+//
+// Only checked when the plan carries 2+ concrete values: an unsorted claim
+// over 0 or 1 values, or over a runtime source with no plan-time value list
+// (GetInValues() empty), is vacuously satisfiable and not this invariant's
+// concern — see in_source.go's sortInJoinValues doc for why the
+// InSourceParameter/InSourceComparand case has no plan-time list to check
+// today.
+func validateInJoinSortedClaim(p *plans.RecordQueryInJoinPlan) error {
+	if !p.IsSorted() {
+		return nil
+	}
+	vals := p.GetInValues()
+	if len(vals) < 2 {
+		return nil
+	}
+	reverse := p.IsReverse()
+	for i := 1; i < len(vals); i++ {
+		c, err := values.CompareOrdered(vals[i-1], vals[i])
+		if err != nil {
+			return fmt.Errorf("plan-invariant: InJoin claims sorted but its values are not comparable at index %d: %w (values=%#v)", i, err, vals)
+		}
+		if reverse {
+			c = -c
+		}
+		if c > 0 {
+			return fmt.Errorf("plan-invariant: InJoin claims sorted(reverse=%v) but values are not in that order at index %d (values=%#v)", reverse, i, vals)
+		}
+	}
+	return nil
 }
 
 // NOTE: n-ary set ops (Union/Intersection/MergeSortUnion/MultiIntersection/…)

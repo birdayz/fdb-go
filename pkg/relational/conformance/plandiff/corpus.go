@@ -13100,9 +13100,12 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT count(val), count(*) FROM T_DSN_11",
 		},
 		{
-			// IN-list with a NULL element. The NULL is silently ignored
-			// for matching purposes — rows match iff val equals one of
-			// the non-NULL list members.
+			// IN-list with a NULL element. BOTH engines reject this — the
+			// NULL is not silently ignored. Go raises 42809 "NULL values
+			// are not allowed in the IN list" from the seed walker, and
+			// Java asserts the same code in SemanticAnalyzer before a
+			// logical plan exists. The entry is kept as a both-reject
+			// parity shape, matching the two sibling NULL-in-IN entries.
 			Name:           "null_in_list_with_null_element",
 			SchemaTemplate: "CREATE TABLE T_DSN_12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{

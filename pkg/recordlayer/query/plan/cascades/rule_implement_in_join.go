@@ -173,14 +173,30 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 							return
 						}
 						source := orderedSources[i]
+						inValues := extractInValues(source.quantifier)
+						sorted := source.sorted
+						if sorted && len(inValues) > 1 {
+							// Back the "sorted" claim with actually-sorted values —
+							// Java's SortedInValuesSource sorts in its constructor
+							// (InSource.sortValues); this is the Go analog at the
+							// point the claim is made. If the values genuinely can't
+							// be totally ordered (an incomparable pair the planner's
+							// type checking should have excluded), fall back to NOT
+							// claiming an ordering rather than shipping a false one.
+							if sv, ok := sortInJoinValues(inValues, source.reverse); ok {
+								inValues = sv
+							} else {
+								sorted = false
+							}
+						}
 						// The InJoin is its own cascades expression carrying the live
 						// currentRef inner edge (RFC-184 W2); its per-ordering winner
 						// resolves at extraction via ref.Winner(). No plan snapshot —
 						// the deferred-winner case.
 						inJoinPlan := plans.NewRecordQueryInJoinPlanFromQuantifier(
 							expressions.NewPhysicalQuantifier(currentRef),
-							source.bindingName, source.sorted, source.reverse)
-						if inValues := extractInValues(source.quantifier); inValues != nil {
+							source.bindingName, sorted, source.reverse)
+						if inValues != nil {
 							inJoinPlan.SetInValues(inValues)
 						}
 						inJoinPlan.SetSourceKind(classifyInSourceKind(source.quantifier))

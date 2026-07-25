@@ -1651,103 +1651,15 @@ func (m *mergeSortCursor) Close() error {
 	return firstErr
 }
 
+// compareValues delegates to values.CompareOrdered, the single Java-faithful
+// natural order this codebase uses for sort/merge/dedup ranking of runtime
+// scalar values (see that function's doc for the exact semantics: NaN
+// greatest, -0.0 < 0.0, FDB tuple byte order for []byte/UUID, nil least, a
+// loud error on a cross-type pair). Kept as a thin package-local alias so the
+// merge-sort cursor call sites and the differential fuzz test below don't
+// need the values. qualifier at every use.
 func compareValues(a, b any) (int, error) {
-	if a == nil && b == nil {
-		return 0, nil
-	}
-	if a == nil {
-		return -1, nil
-	}
-	if b == nil {
-		return 1, nil
-	}
-	// Integer domain first, EXACTLY (values.CompareExactInts): tuple
-	// decoding admits the full signed range as int64 AND positive values
-	// above math.MaxInt64 as uint64, so integer pairs compare by true
-	// numeric value without a float round-trip. A mixed integer/float
-	// pair falls through to the float arms' total order.
-	if c, ok := values.CompareExactInts(a, b); ok {
-		return c, nil
-	}
-	switch av := a.(type) {
-	case int64, int32, int, uint64, uint:
-		// Integer vs a floating operand (the integer/integer case returned
-		// above): promote and use the Java-faithful float total order (NaN
-		// greatest, -0.0 < 0.0). A non-numeric b is the loud cross-type arm
-		// below.
-		if bf, ok := toFloat64Scalar(b); ok {
-			af, _ := toFloat64Scalar(av)
-			return values.CompareFloat64(af, bf), nil
-		}
-	case float64:
-		// Java-faithful float total order (values.CompareFloat64):
-		// NaN sorts greatest and NaN==NaN, -0.0 < 0.0 — matching the
-		// FDB tuple order an indexed FLOAT column uses, so an in-memory
-		// sort/merge/dedup agrees with an ordered index scan on both
-		// edge values. A non-numeric b is a cross-type mismatch the
-		// planner's type checking excludes — the loud arm below.
-		if bf, ok := toFloat64Scalar(b); ok {
-			return values.CompareFloat64(av, bf), nil
-		}
-	case float32:
-		// Defense in depth: covering-index reads normalize float32 → float64 at
-		// the row boundary (tupleElementToRowValue), so this arm should not be
-		// reachable from production rows — but a float32 that slips through any
-		// other path must still compare numerically (the retired fmt fallback
-		// ordered decimal strings — "10.5" < "2.5"). Same Java-faithful float
-		// total order as the float64 arm (NaN greatest, -0.0 < 0.0).
-		if bf, ok := toFloat64Scalar(b); ok {
-			return values.CompareFloat64(float64(av), bf), nil
-		}
-	case bool:
-		// false < true — FDB tuple order (0x26 < 0x27), same as Java's
-		// Boolean.compare. (The retired fmt fallback got this right only by
-		// lexical accident; the typed arm is the contract.)
-		if bv, ok := b.(bool); ok {
-			if av == bv {
-				return 0, nil
-			}
-			if !av {
-				return -1, nil
-			}
-			return 1, nil
-		}
-	case string:
-		if bv, ok := b.(string); ok {
-			if av < bv {
-				return -1, nil
-			}
-			if av > bv {
-				return 1, nil
-			}
-			return 0, nil
-		}
-	case []byte:
-		// BYTES sorts by unsigned lexicographic byte order — the same order the
-		// FDB tuple byte-string encoding gives an indexed BYTES column, so an
-		// in-memory sort / merge / dedup of a non-indexed BYTES column agrees
-		// with an ordered index scan of the same data. (The retired fmt
-		// fallback compared decimal-list strings — "[0 1]" < "[0]" — putting
-		// {0x02} after {0x0A}; the typed arm is the contract.)
-		if bv, ok := b.([]byte); ok {
-			return bytes.Compare(av, bv), nil
-		}
-	case [16]byte:
-		// UUID sorts by unsigned big-endian bytes — the same order the tuple.UUID
-		// wire encoding and the filter-path predicates.cmpAny use, so an
-		// in-memory sort of a non-indexed UUID column agrees with an ordered
-		// index scan. (The retired fmt fallback compared decimal-list strings
-		// in lexical, not byte, order.)
-		if bv, ok := b.([16]byte); ok {
-			return bytes.Compare(av[:], bv[:]), nil
-		}
-	}
-	// A pair with no typed arm is a cross-type mismatch the planner's type
-	// checking excludes (every row-domain type has an arm above; the float
-	// arms totally order NaN). The retired fmt.Sprintf fallback compared
-	// LEXICALLY — silently wrong order for anything numeric or binary — so
-	// this is loud now: correct-or-loud, never a quietly misordered result.
-	return 0, fmt.Errorf("executor: no ordering defined between %T and %T (cross-type comparison the planner should have excluded)", a, b)
+	return values.CompareOrdered(a, b)
 }
 
 func newEmptyCursor[T any]() recordlayer.RecordCursor[T] {

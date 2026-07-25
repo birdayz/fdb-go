@@ -686,6 +686,101 @@ closed rather than silently alter rows or output schema.
   had one candidate carrying a search argument the other lacked, which the
   contested band now decides before the fetch rung — both candidates now carry
   one, restoring the isolation the test was written for.
+- [x] **CQ-10g (LOW) — a SORTED IN-join's `sorted`/`reverse` flags claimed an
+  ordering the values were never actually put in.** `RecordQueryInJoinPlan`
+  carries `sorted`/`reverse` (`rule_implement_in_join.go`'s
+  `buildSourcesFromProvided` sets `sorted:true` unconditionally whenever an
+  explode alias correlates to a fixed equality binding — the only reachable
+  arm today per CQ-10f), but `extractInValues` stored the RAW literal list
+  and `executeInJoin` (`executor_new_plans.go:1023`) never consulted
+  `IsSorted()`/`IsReverse()` — `WHERE a IN (3, 1, 2)` produced a plan that
+  said SORTED ASC and executed 3, 1, 2. Latent, not live: `HintOrdering`
+  (`ordering.go:471`) returns the empty ordering unconditionally and InJoin
+  is absent from `RichOrderingHinter`, so nothing currently trusts the
+  claim — but CQ-10f's planned next step is teaching `HintOrdering` to
+  derive a real ordering from these flags (matching Java's
+  `OrderingProperty.visitInJoinPlan`), and a prototype of exactly that
+  produced wrong rows (`WHERE a IN (3,1,2) ORDER BY a` came back in literal
+  order). **This item makes the claim true so CQ-10f's `HintOrdering` step
+  is safe to take — it does NOT implement `HintOrdering` itself.**
+  Java backs the claim by construction: `SortedInValuesSource`
+  (`SortedInValuesSource.java:58-61`) sorts in its constructor via
+  `InSource.sortValues(values, isReverse)` (`InSource.java:142-149` —
+  `Comparator.comparing(Comparable.class::cast)`, reversed when
+  `isReversed`, a no-op copy below size 2). Go's parallel
+  `SortedInValuesSource`/`SortedInParameterSource` types
+  (`pkg/recordlayer/query/plan/cascades/in_source.go`) mirrored the class
+  names but COPIED WITHOUT SORTING, and had zero call sites anywhere
+  (including tests) — dead code posing as the mechanism. Deleted; the
+  live plan representation is the flat `sourceKind` + `[]any` fields on
+  `RecordQueryInJoinPlan` (DIVERGENCES.md "InJoinPlan: InSourceKind +
+  PushInJoinThroughFetch"), not a class hierarchy, so wiring the dead types
+  through would have meant a parallel representation, not a fix.
+  `in_source.go` now holds `sortInJoinValues(vals, reverse) (sorted []any,
+  ok bool)`, the actual Java port, called from `OnMatch` right before
+  `SetInValues` — sorts a copy with `sort.SliceStable` (Java's `List.sort`
+  is stable too) over `values.CompareOrdered` (new,
+  `values/compare_ordered.go` — moved out of the executor's
+  `compareValues`, which is now a one-line delegate, so the sort and the
+  merge-cursor/in-memory-sort ordering share ONE comparator instead of two
+  that could drift). `CompareOrdered` matches Java's natural order for the
+  types Java's `Comparable` cast covers (numbers, strings) and additionally
+  gives `[]byte`/`[16]byte`/`bool`/`nil` the SAME total order the executor's
+  merge/sort paths already use (FDB tuple order) rather than Java's
+  `ClassCastException`/`NullPointerException` on those — library code here
+  never panics, so an incomparable pair returns an error instead of
+  crashing planning; `sortInJoinValues` responds by leaving `sorted=false`
+  rather than shipping an unbacked claim.
+  **Structural invariant, pinned always-on, not just in a test:**
+  `plan_invariants.go`'s `ValidatePlanInvariants` — already wired into the
+  no-FDB plan harness, the production `cascades_generator.go`, and
+  `FuzzPlanner_Invariants` — now also rejects any `RecordQueryInJoinPlan`
+  claiming `sorted` whose 2+ concrete values (`GetInValues()`) aren't
+  actually in that order. Verified RED by reverting the `sortInJoinValues`
+  call: `TestInJoinRule_SortedClaimIsBackedByActuallySortedValues`
+  (rule-level) fails with a literal mismatch, and — unprompted —
+  `TestFDB_InJoin_SortedClaimMatchesExecutionOrder` fails at the SQL layer
+  with `malformed query plan: plan-invariant: InJoin claims
+  sorted(reverse=false) but values are not in that order`, because the
+  invariant is wired into the production planning path the embedded driver
+  actually calls; both pass after restoring the fix.
+  **Plan shape unchanged, measured not assumed:** `TestPlanShapeGolden`
+  (byte-identical, no `-update-golden` needed) plus the full
+  `pkg/relational/conformance/{explaindiff,plandiff,rowdiff,memoinvariant,yamsql}`
+  suite green — sorting the literal list moved no plan and no row across
+  the corpus.
+  **End-to-end FDB proof, a genuine bare InJoin (not InUnion):**
+  `TestFDB_InJoin_SortedClaimMatchesExecutionOrder`
+  (`pkg/relational/sqldriver/injoin_sorted_claim_fdb_test.go`) — `WHERE a
+  IN (3, 1, 2)` over an indexed column, no `ORDER BY` (so no
+  `InMemorySort` sits downstream to mask the InJoin's own iteration order),
+  asserts the plan contains `InJoin`/`ASC` and not `InUnion`, and asserts
+  the actual row sequence against real FDB is `1, 2, 3` — not the literal
+  `3, 1, 2` order.
+  **`InParameterSource`/prepared-statement IN-lists, checked, not
+  skipped:** confirmed by reading both producer sites that can reach
+  `ImplementInJoinRule`'s match shape (`resultValue == QOV(the single
+  non-explode inner quantifier)`) — `InComparisonToExplodeRule` (`col IN
+  (v1,...,vn)`) always wraps the list as a `ConstantValue`, and SQL
+  `UNNEST(...)` (`unnest_gather.go`/`chained_unnest.go`) routes through
+  `ImplementExplodeRule` + `ImplementNestedLoopJoinRule` instead, since its
+  result must expose the exploded value itself. **No SQL-facing rule
+  today builds the QuantifiedObjectValue-collection shape
+  `ImplementInJoinRule` would classify `InSourceParameter`,** and
+  `executeInJoin` only ever loops over a plan-time literal list (`GetInValues`)
+  — there is no execution-time value-fetch machinery for a runtime-bound
+  IN-source at all, sorted or not. So "sort at the right point" is moot
+  for now: there is no reachable point yet. This is a real, deeper gap
+  (an `InSourceParameter`-kind InJoin would silently execute its inner
+  ONCE instead of once per bound value) but it is unreachable from SQL
+  today and building the runtime array-fetch + iteration path is its own
+  multi-shift workstream with its own RFC, not a sorting fix — left
+  explicitly open rather than touched here.
+  **CQ-10f is now safe to take the `HintOrdering` step**: the ordering it
+  would start advertising is backed by data, and the always-on invariant
+  means any future construction site that sets `sorted=true` without
+  sorting fails loud (a rejected plan / a fuzz failure) instead of shipping
+  wrong rows.
 - [ ] **CQ-11 (MED) — enrich and calibrate planner statistics.** Add at least
   distinct-count/selectivity hooks beyond table cardinality, keep safe defaults,
   and calibrate the model against representative indexed, skewed, and join

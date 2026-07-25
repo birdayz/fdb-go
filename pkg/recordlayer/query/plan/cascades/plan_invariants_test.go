@@ -61,6 +61,160 @@ func TestPlanInvariants_ChildlessClassification(t *testing.T) {
 	}
 }
 
+// TestValidatePlanInvariants_InJoinSortedClaim is the red/green proof for the
+// sorted-IN-join invariant (plan_invariants.go's validateInJoinSortedClaim):
+// a RecordQueryInJoinPlan claiming IsSorted() must actually carry its values
+// in that order. This is the landmine CQ-10f's HintOrdering step would have
+// re-armed silently — before this invariant, a plan could claim sorted=true
+// over an arbitrarily-ordered list and nothing would catch it until a reader
+// of the claim (like HintOrdering) shipped visibly wrong rows.
+//
+// RED PROOF: reverting the sortInJoinValues call in
+// rule_implement_in_join.go's OnMatch (so SetInValues gets the raw unsorted
+// extractInValues() result while sorted stays true) makes this test fail —
+// verified by hand while writing this fix, not asserted here as a tautology.
+func TestValidatePlanInvariants_InJoinSortedClaim(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+
+	mk := func(sorted, reverse bool, vals []any) *plans.RecordQueryInJoinPlan {
+		p := plans.NewRecordQueryInJoinPlan(scan, "__in_value", sorted, reverse)
+		p.SetInValues(vals)
+		return p
+	}
+
+	// Ascending claim, ascending values: passes.
+	if err := ValidatePlanInvariants(mk(true, false, []any{int64(1), int64(2), int64(3)})); err != nil {
+		t.Errorf("ascending values under an ascending claim must pass: %v", err)
+	}
+	// Descending claim, descending values: passes.
+	if err := ValidatePlanInvariants(mk(true, true, []any{int64(3), int64(2), int64(1)})); err != nil {
+		t.Errorf("descending values under a descending claim must pass: %v", err)
+	}
+	// Unsorted claim: never checked, any order passes.
+	if err := ValidatePlanInvariants(mk(false, false, []any{int64(3), int64(1), int64(2)})); err != nil {
+		t.Errorf("an unsorted claim must never be checked: %v", err)
+	}
+	// Fewer than 2 values: vacuously satisfiable regardless of claim.
+	if err := ValidatePlanInvariants(mk(true, false, []any{int64(1)})); err != nil {
+		t.Errorf("a single value must pass under any claim: %v", err)
+	}
+	if err := ValidatePlanInvariants(mk(true, false, nil)); err != nil {
+		t.Errorf("no values (runtime source) must pass under any claim: %v", err)
+	}
+
+	// THE LANDMINE: sorted=true but the values are NOT ascending. This is
+	// exactly the shape the pre-fix rule_implement_in_join.go produced for
+	// every literal IN-list that wasn't already given in sorted order.
+	if err := ValidatePlanInvariants(mk(true, false, []any{int64(3), int64(1), int64(2)})); err == nil {
+		t.Fatal("an InJoin claiming sorted=true over out-of-order values must be rejected")
+	}
+	// Same landmine, descending claim.
+	if err := ValidatePlanInvariants(mk(true, true, []any{int64(1), int64(3), int64(2)})); err == nil {
+		t.Fatal("an InJoin claiming sorted(reverse)=true over out-of-order values must be rejected")
+	}
+	// Ties are fine (non-strict): repeated values don't violate either
+	// direction.
+	if err := ValidatePlanInvariants(mk(true, false, []any{int64(1), int64(1), int64(2)})); err != nil {
+		t.Errorf("a tie must not violate the sorted claim: %v", err)
+	}
+}
+
+// TestSortInJoinValues pins sortInJoinValues (in_source.go) against Java's
+// InSource.sortValues (InSource.java:142-149): size<2 returns the input
+// unchanged, size>=2 returns a freshly sorted copy (stable, ascending unless
+// reverse), and an incomparable pair declines (ok=false) rather than
+// picking an arbitrary order.
+func TestSortInJoinValues(t *testing.T) {
+	t.Parallel()
+
+	t.Run("size under two returns input unchanged", func(t *testing.T) {
+		t.Parallel()
+		in := []any{int64(5)}
+		got, ok := sortInJoinValues(in, false)
+		if !ok {
+			t.Fatal("single element must always be sortable")
+		}
+		if len(got) != 1 || got[0] != int64(5) {
+			t.Fatalf("got %#v, want unchanged %#v", got, in)
+		}
+		empty, ok := sortInJoinValues(nil, false)
+		if !ok || len(empty) != 0 {
+			t.Fatalf("empty input: got %#v ok=%v", empty, ok)
+		}
+	})
+
+	t.Run("ascending", func(t *testing.T) {
+		t.Parallel()
+		got, ok := sortInJoinValues([]any{int64(3), int64(1), int64(2)}, false)
+		if !ok {
+			t.Fatal("integers must be sortable")
+		}
+		want := []any{int64(1), int64(2), int64(3)}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("got %#v, want %#v", got, want)
+			}
+		}
+	})
+
+	t.Run("descending", func(t *testing.T) {
+		t.Parallel()
+		got, ok := sortInJoinValues([]any{int64(1), int64(3), int64(2)}, true)
+		if !ok {
+			t.Fatal("integers must be sortable")
+		}
+		want := []any{int64(3), int64(2), int64(1)}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("got %#v, want %#v", got, want)
+			}
+		}
+	})
+
+	t.Run("original slice is not mutated", func(t *testing.T) {
+		t.Parallel()
+		in := []any{int64(3), int64(1), int64(2)}
+		_, ok := sortInJoinValues(in, false)
+		if !ok {
+			t.Fatal("integers must be sortable")
+		}
+		want := []any{int64(3), int64(1), int64(2)}
+		for i := range want {
+			if in[i] != want[i] {
+				t.Fatalf("input slice was mutated: %#v, want %#v", in, want)
+			}
+		}
+	})
+
+	t.Run("incomparable pair declines rather than picking an order", func(t *testing.T) {
+		t.Parallel()
+		in := []any{int64(1), "not-an-int"}
+		got, ok := sortInJoinValues(in, false)
+		if ok {
+			t.Fatalf("cross-type pair must decline sorting, got ok=true values=%#v", got)
+		}
+		// Declining returns the ORIGINAL slice unchanged.
+		if got[0] != in[0] || got[1] != in[1] {
+			t.Fatalf("declined sort must return the original slice, got %#v", got)
+		}
+	})
+
+	t.Run("ties are preserved in count and position", func(t *testing.T) {
+		t.Parallel()
+		got, ok := sortInJoinValues([]any{int64(2), int64(1), int64(1), int64(3)}, false)
+		if !ok {
+			t.Fatal("integers must be sortable")
+		}
+		want := []any{int64(1), int64(1), int64(2), int64(3)}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("got %#v, want %#v", got, want)
+			}
+		}
+	})
+}
+
 // FuzzPlanner_Invariants asserts that EVERY successfully-planned random query
 // satisfies the WS-2 structural invariants — a relink that drops a child on any
 // input shape is caught here, always-on, with no Java/FDB dependency.
