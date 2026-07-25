@@ -93,9 +93,13 @@ func decodeRecursiveRow(b []byte, resolve protoDescriptorResolver) (QueryResult,
 	return QueryResult{Positional: &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}}, nil
 }
 
-// encodeTempTableProto snapshots a temp table into the PTempTable shape.
-func encodeTempTableProto(tt *TempTable) (*gen.PTempTable, error) {
-	rows := tt.GetList()
+// encodeTempTableProto encodes an already-captured row snapshot into the
+// PTempTable shape. Takes rows, not a *TempTable: the caller must capture the
+// snapshot (TempTable.Snapshot) at the point that needs to be resumable —
+// typically well before this runs, since both call sites reach it from a
+// LAZY continuation's ToBytes (see tempTableInsertContinuation /
+// recursiveUnionContinuation) that may run long after the table has moved on.
+func encodeTempTableProto(rows []QueryResult) (*gen.PTempTable, error) {
 	out := &gen.PTempTable{BufferItems: make([]*gen.PQueryResult, 0, len(rows))}
 	for _, qr := range rows {
 		b, err := encodeRecursiveRow(qr)
@@ -199,15 +203,21 @@ func newTempTableInsertCursor(
 }
 
 // tempTableInsertContinuation is LAZY, like Java's
-// TempTableInsertCursor.Continuation: it holds the live table and the
-// child continuation and serializes only in ToBytes. Eager per-row
-// marshaling would be O(table) work per emitted row — thrown away for
-// every row whose continuation the caller never serializes (the pager
-// serializes once per page). Safe under the same consume-then-serialize
-// discipline as Java: ToBytes runs before any further OnNext mutates
-// the table.
+// TempTableInsertCursor.Continuation: encoding the captured row snapshot into
+// bytes happens only in ToBytes (thrown away for every row whose
+// continuation the caller never serializes — the pager serializes once per
+// page). What is NOT lazy, and must not be, is the SNAPSHOT itself: rows is
+// captured (via TempTable.Snapshot, O(1) — see its doc comment) at wrap time,
+// the moment this continuation object is constructed, not at ToBytes time.
+// A live *TempTable pointer captured here instead would let an arbitrary
+// number of intervening Add calls (this cursor's OWN inner keeps inserting
+// into the same table for every later row of this same leg) change what a
+// stale, not-yet-serialized continuation would encode — this is exactly the
+// bug: "the pager serializes once per page" is caller DISCIPLINE, not a
+// structural guarantee, and it breaks the moment any consumer peeks, retries,
+// or holds a row's continuation across more than one OnNext call.
 type tempTableInsertContinuation struct {
-	table     *TempTable
+	rows      []QueryResult
 	childCont recordlayer.RecordCursorContinuation
 }
 
@@ -216,7 +226,7 @@ func (c *tempTableInsertContinuation) ToBytes() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := encodeTempTableProto(c.table)
+	snapshot, err := encodeTempTableProto(c.rows)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +237,7 @@ func (c *tempTableInsertContinuation) ToBytes() ([]byte, error) {
 func (c *tempTableInsertContinuation) IsEnd() bool { return false }
 
 func (c *tempTableInsertCursor) wrapContinuation(childCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
-	return &tempTableInsertContinuation{table: c.table, childCont: childCont}
+	return &tempTableInsertContinuation{rows: c.table.Snapshot(), childCont: childCont}
 }
 
 func (c *tempTableInsertCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -353,12 +363,20 @@ func (c *recursiveUnionCursor) legCursor(ctx context.Context, legPlan plans.Reco
 }
 
 // recursiveUnionContinuation is LAZY like Java's
-// RecursiveUnionCursor.Continuation (toBytes serializes on demand): it
-// captures the phase, the live scan frontier, and the child
-// continuation. See tempTableInsertContinuation for the discipline.
+// RecursiveUnionCursor.Continuation: encoding to bytes happens only in
+// ToBytes. The scan FRONTIER (scanRows) is captured (TempTable.Snapshot, O(1))
+// at wrap time, not at ToBytes time — see tempTableInsertContinuation's doc
+// comment for why a live *TempTable pointer is unsafe here. It matters even
+// more for this cursor: c.scanTable and c.insertTable are SWAPPED at every
+// level transition (OnNext, the ping-pong), and the table object that used to
+// BE scanTable is then Cleared and refilled as the new insertTable — so a
+// continuation issued mid-level that still held the live *scanTable pointer
+// would, once that object got recycled into next level's insert buffer,
+// serialize whatever the NEXT level happened to insert instead of the
+// frontier the row was actually resumable against.
 type recursiveUnionContinuation struct {
 	isInitialState bool
-	scanTable      *TempTable
+	scanRows       []QueryResult
 	childCont      recordlayer.RecordCursorContinuation
 }
 
@@ -367,7 +385,7 @@ func (c *recursiveUnionContinuation) ToBytes() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := encodeTempTableProto(c.scanTable)
+	snapshot, err := encodeTempTableProto(c.scanRows)
 	if err != nil {
 		return nil, err
 	}
@@ -385,7 +403,7 @@ func (c *recursiveUnionContinuation) IsEnd() bool { return false }
 func (c *recursiveUnionCursor) wrapContinuation(childCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
 	return &recursiveUnionContinuation{
 		isInitialState: c.isInitialState,
-		scanTable:      c.scanTable,
+		scanRows:       c.scanTable.Snapshot(),
 		childCont:      childCont,
 	}
 }

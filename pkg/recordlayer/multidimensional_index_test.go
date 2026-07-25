@@ -2258,6 +2258,202 @@ var _ = Describe("MultidimensionalIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("prefix skip-scan paginates across prefixes without duplicating or replaying rows", func() {
+		// Regression test for the cross-prefix continuation bug: a
+		// ReturnLimitReached page boundary used to hand back an empty
+		// placeholder continuation the reconstruction gate reads as "no
+		// continuation" (multidimensionalIndexMaintainer.Scan parses
+		// len(continuation) > 0), silently restarting prefix enumeration from
+		// scratch every page — replaying prefix #1 forever instead of
+		// advancing. 6 partitions x 2 rows, paginated 2 rows at a time,
+		// forces the row limit to land mid-skip-scan on every page.
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		mdIdx := NewMultidimensionalIndex("md_prefix_paginate", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// 6 distinct quantity prefixes (10..60), 2 orders each = 12 rows.
+			const numPrefixes = 6
+			const perPrefix = 2
+			type coordKey struct{ qty, price int64 }
+			expected := make(map[coordKey]bool)
+			id := int64(1)
+			for p := 1; p <= numPrefixes; p++ {
+				qty := int32(p * 10)
+				for j := 1; j <= perPrefix; j++ {
+					price := int32(p*1000 + j)
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId:  proto.Int64(id),
+						Price:    proto.Int32(price),
+						Quantity: proto.Int32(qty),
+					})
+					Expect(err).NotTo(HaveOccurred())
+					expected[coordKey{int64(qty), int64(price)}] = true
+					id++
+				}
+			}
+			total := numPrefixes * perPrefix
+
+			props := ScanProperties{
+				ExecuteProperties: DefaultExecuteProperties().WithReturnedRowLimit(2),
+			}
+
+			seen := make(map[coordKey]int)
+			var cont []byte
+			pages := 0
+			// Bounded loop: a real fix terminates in exactly total/limit pages;
+			// a duplicate-replay bug never terminates, so cap generously above
+			// that and fail loudly instead of hanging forever.
+			const maxPages = 50
+			for {
+				pages++
+				Expect(pages).To(BeNumerically("<=", maxPages),
+					"scan did not terminate after %d pages — replaying a prefix instead of advancing", maxPages)
+
+				page, nextCont, err := AsListWithContinuation(ctx, store.ScanIndex(
+					mdIdx, TupleRangeAll, cont, props))
+				Expect(err).NotTo(HaveOccurred())
+
+				for _, e := range page {
+					qty := e.Key[0].(int64)
+					price := e.Key[1].(int64)
+					k := coordKey{qty, price}
+					seen[k]++
+					Expect(seen[k]).To(Equal(1),
+						"row (qty=%d, price=%d) delivered more than once — cross-prefix continuation replayed a page", qty, price)
+				}
+
+				if nextCont == nil {
+					break
+				}
+				cont = nextCont
+			}
+
+			Expect(seen).To(HaveLen(total), "every row must be delivered exactly once")
+			for k := range expected {
+				Expect(seen).To(HaveKey(k), "missing row (qty=%d, price=%d)", k.qty, k.price)
+			}
+			Expect(pages).To(BeNumerically(">", 1), "the row limit must force real multi-page pagination")
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("prefix skip-scan pagination is byte-identical to the unpaginated scan across row limits 1..7 over uneven prefix sizes", func() {
+		// Fold-in from review: the prior pagination regression test used 6
+		// equal-size (2-row) prefixes with ReturnedRowLimit=2, so EVERY page
+		// boundary was ALSO a prefix boundary — it only proved the `outer`
+		// (which prefix) half of the fix advances. The novel, previously-buggy
+		// half is the (priorPrefixBytes, inner) PAIRING: a wrong prior-prefix
+		// value silently drops or duplicates a prefix's tail the moment a page
+		// boundary lands MID-prefix rather than exactly at one.
+		//
+		// Uneven prefix sizes {1,4,2,5,1,3} swept against row limits 1..7
+		// force every kind of boundary at least once: mid-prefix (most
+		// combinations), exactly-at-a-prefix-boundary (e.g. limit=1 against
+		// the size-1 prefixes), a single-row prefix consumed in one page
+		// (limit>=1 on prefixes of size 1), and a limit that spans multiple
+		// prefixes in one page (limit=7 crosses at least two). Comparing the
+		// full paginated sequence — not just membership — against the
+		// unpaginated scan at every limit catches a wrong `outer` producing
+		// either a dropped tail (missing rows) or a replayed tail (duplicate
+		// rows out of place), not just a wrong total count.
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		mdIdx := NewMultidimensionalIndex("md_prefix_sweep", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			prefixCounts := []int{1, 4, 2, 5, 1, 3}
+			total := 0
+			id := int64(1)
+			for p, n := range prefixCounts {
+				qty := int32((p + 1) * 10)
+				for j := 0; j < n; j++ {
+					price := int32((p+1)*1000 + j)
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId:  proto.Int64(id),
+						Price:    proto.Int32(price),
+						Quantity: proto.Int32(qty),
+					})
+					Expect(err).NotTo(HaveOccurred())
+					id++
+					total++
+				}
+			}
+
+			keyOf := func(e *IndexEntry) [2]int64 {
+				return [2]int64{e.Key[0].(int64), e.Key[1].(int64)}
+			}
+
+			// Unpaginated baseline: the canonical order the skip-scan produces
+			// with no row limit at all — the sequence every limited run below
+			// must reproduce exactly.
+			baseline, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(baseline).To(HaveLen(total))
+
+			for limit := 1; limit <= 7; limit++ {
+				props := ScanProperties{
+					ExecuteProperties: DefaultExecuteProperties().WithReturnedRowLimit(limit),
+				}
+				var got []*IndexEntry
+				var cont []byte
+				pages := 0
+				// Bounded loop: a wrong outer/inner pairing can replay or skip
+				// prefixes forever; fail loudly instead of hanging.
+				const maxPages = 50
+				for {
+					pages++
+					Expect(pages).To(BeNumerically("<=", maxPages),
+						"limit=%d: scan did not terminate after %d pages", limit, maxPages)
+
+					page, nextCont, perr := AsListWithContinuation(ctx, store.ScanIndex(
+						mdIdx, TupleRangeAll, cont, props))
+					Expect(perr).NotTo(HaveOccurred())
+					Expect(len(page)).To(BeNumerically("<=", limit),
+						"limit=%d: page delivered %d rows, exceeding the row limit", limit, len(page))
+
+					got = append(got, page...)
+					if nextCont == nil {
+						break
+					}
+					cont = nextCont
+				}
+
+				Expect(got).To(HaveLen(len(baseline)),
+					"limit=%d: total row count diverges from the unpaginated scan", limit)
+				for i := range baseline {
+					Expect(keyOf(got[i])).To(Equal(keyOf(baseline[i])),
+						"limit=%d: row %d diverges from the unpaginated sequence (got %v, want %v) — "+
+							"a wrong prior-prefix pairing dropped or replayed a prefix's tail",
+						limit, i, keyOf(got[i]), keyOf(baseline[i]))
+				}
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("prefix skip-scan with empty index returns empty", func() {
 		ks := specSubspace()
 

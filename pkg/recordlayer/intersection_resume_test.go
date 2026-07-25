@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -484,5 +485,100 @@ func TestIntersectionMultiResume_DiscardedRowsConsumed(t *testing.T) {
 	}
 	if !first.HasNext() || first.GetValue() != int64(3) {
 		t.Fatalf("resumed child A must start AFTER the discarded row: got %v (HasNext=%v), want 3", first.GetValue(), first.HasNext())
+	}
+}
+
+// errReadAhead is returned by errorAfterOneCursor's second call — distinct from
+// any sentinel the production code might match on, so a test failure clearly
+// names its source.
+var errReadAhead = errors.New("errorAfterOneCursor: simulated read-ahead failure")
+
+// errorAfterOneCursor emits a single value, then errors on every subsequent
+// call — modeling a child whose NEXT pull (a statement-timeout tick, a
+// cancelled context, a transient FDB error) fails right after a row was
+// loaded. It never errors on the call that loads its only value, so a bug
+// that folds the read-ahead pull into the SAME OnNext call as a delivered
+// match will observe the error before ever returning that match.
+type errorAfterOneCursor struct {
+	value   int64
+	emitted bool
+	closed  bool
+}
+
+func (c *errorAfterOneCursor) OnNext(_ context.Context) (RecordCursorResult[int64], error) {
+	if !c.emitted {
+		c.emitted = true
+		return NewResultWithValue[int64](c.value, NewBytesContinuation([]byte{1})), nil
+	}
+	return RecordCursorResult[int64]{}, errReadAhead
+}
+
+func (c *errorAfterOneCursor) Close() error   { c.closed = true; return nil }
+func (c *errorAfterOneCursor) IsClosed() bool { return c.closed }
+
+// TestIntersectionCursor_MatchDeliveredBeforeReadAheadError is the required
+// regression for the read-ahead bug: both children yield 42 exactly once and
+// then error on their NEXT pull. A match on 42 is fully decided (both
+// children's comparison keys agree) before either child is asked again, so
+// intersectionCursor.OnNext must return that match — HasNext=true, value=42,
+// err=nil — on the FIRST call. The read-ahead pull (and its error) may only
+// surface on a SECOND, later call to OnNext, exactly as Java's
+// MergeCursor.onNext (MergeCursor.java:294-304) returns immediately after
+// resultStates.forEach(consume) with no further pull; the next child fetch
+// happens lazily at the top of the NEXT call (MergeCursorState.java:66-74,
+// getOnNextFuture's null-check memoization).
+//
+// The pre-fix code called child.advance(ctx) on every child INSIDE the
+// allMatch branch, before returning — so this test reds without the fix: the
+// first OnNext call itself returns errReadAhead and the match is never
+// delivered.
+func TestIntersectionCursor_MatchDeliveredBeforeReadAheadError(t *testing.T) {
+	t.Parallel()
+	cursors := []RecordCursor[int64]{
+		&errorAfterOneCursor{value: 42},
+		&errorAfterOneCursor{value: 42},
+	}
+	cur := Intersection(cursors, intResumeKey, false)
+	defer cur.Close()
+
+	res, err := cur.OnNext(context.Background())
+	if err != nil {
+		t.Fatalf("the already-decided match must be delivered before the read-ahead error surfaces, got error: %v", err)
+	}
+	if !res.HasNext() || res.GetValue() != int64(42) {
+		t.Fatalf("want match 42, got HasNext=%v value=%v", res.HasNext(), res.GetValue())
+	}
+
+	// The read-ahead pull is deferred to this second call.
+	_, err = cur.OnNext(context.Background())
+	if !errors.Is(err, errReadAhead) {
+		t.Fatalf("want the deferred read-ahead error on the second call, got: %v", err)
+	}
+}
+
+// TestIntersectionMultiCursor_MatchDeliveredBeforeReadAheadError is the
+// intersectionMultiCursor analog — identical shape
+// (intersectionMultiCursor.OnNext had the same inline advance-after-consume
+// bug as intersectionCursor.OnNext).
+func TestIntersectionMultiCursor_MatchDeliveredBeforeReadAheadError(t *testing.T) {
+	t.Parallel()
+	cursors := []RecordCursor[int64]{
+		&errorAfterOneCursor{value: 42},
+		&errorAfterOneCursor{value: 42},
+	}
+	cur := IntersectionMulti(cursors, intResumeKey, false)
+	defer cur.Close()
+
+	res, err := cur.OnNext(context.Background())
+	if err != nil {
+		t.Fatalf("the already-decided match must be delivered before the read-ahead error surfaces, got error: %v", err)
+	}
+	if !res.HasNext() || len(res.GetValue()) != 2 || res.GetValue()[0] != 42 || res.GetValue()[1] != 42 {
+		t.Fatalf("want match [42 42], got HasNext=%v value=%v", res.HasNext(), res.GetValue())
+	}
+
+	_, err = cur.OnNext(context.Background())
+	if !errors.Is(err, errReadAhead) {
+		t.Fatalf("want the deferred read-ahead error on the second call, got: %v", err)
 	}
 }

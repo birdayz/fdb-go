@@ -258,14 +258,37 @@ func (m *multidimensionalIndexMaintainer) Scan(
 
 	// 1. Check if prefix skip-scan is needed: PrefixSize > 0 but no prefix provided in scanRange.
 	if dimExpr.PrefixSize > 0 && (scanRange.Low == nil || len(scanRange.Low) < dimExpr.PrefixSize) {
-		return &prefixSkipScanCursor{
-			m:               m,
-			dimExpr:         dimExpr,
-			scanRange:       scanRange,
-			continuation:    continuation,
-			scanProperties:  scanProperties,
-			nextPrefixStart: fdb.Key(m.indexSubspace.Bytes()),
+		// The skip-scan's own continuation is a FlatMapContinuation pairing the
+		// prefix position (outer) with the per-prefix R-tree position (inner) —
+		// see prefixSkipScanCursor's doc comment. Parse it once, up front.
+		var resumePrefixBytes, resumeInnerBytes []byte
+		if len(continuation) > 0 {
+			var flatMapCont gen.FlatMapContinuation
+			if err := flatMapCont.UnmarshalVT(continuation); err != nil {
+				return &errorCursor[*IndexEntry]{
+					err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid prefix skip-scan continuation: %w", m.index.Name, err),
+				}
+			}
+			resumePrefixBytes = flatMapCont.OuterContinuation
+			resumeInnerBytes = flatMapCont.InnerContinuation
 		}
+		cursor := &prefixSkipScanCursor{
+			m:                 m,
+			dimExpr:           dimExpr,
+			scanRange:         scanRange,
+			scanProperties:    scanProperties,
+			resumePrefixBytes: resumePrefixBytes,
+			resumeInnerBytes:  resumeInnerBytes,
+		}
+		// Row limiting happens exactly once, OUTSIDE the cross-prefix cursor —
+		// matching Java's innerScanProperties = scanProperties.with(clearSkipAndLimit)
+		// (:124) plus the .skipThenLimit() applied to the whole flattened result
+		// (:179). LimitRowsCursor stops pulling once N rows are delivered and
+		// reuses THIS cursor's own (already prefix-aware) continuation for the
+		// Nth row as the ReturnLimitReached continuation — the row-limit
+		// boundary needs no encoding of its own, so it can never regress to an
+		// unresumable placeholder.
+		return LimitRowsCursor[*IndexEntry](cursor, scanProperties.ExecuteProperties.ReturnedRowLimit)
 	}
 
 	// 2. Extract prefix from scanRange to scope the R-tree subspace.
@@ -514,7 +537,10 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 		// index_scan so a satisfied row cap isn't turned into 54F01 by an equal
 		// scan-record cap — RFC-106a).
 		if c.limit > 0 && c.delivered >= c.limit {
-			cont := c.buildContinuation()
+			cont, cerr := c.buildContinuation()
+			if cerr != nil {
+				return RecordCursorResult[*IndexEntry]{}, cerr
+			}
 			return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: cont}), nil
 		}
 
@@ -522,13 +548,25 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 		// time / bytes, counting EVERY item read below (incl. point-filtered ones —
 		// reading them is the scan cost). noNextOrFail → 54F01 in fail mode.
 		if c.props.ScannedRecordsLimit > 0 && c.scanned >= c.props.ScannedRecordsLimit {
-			return noNextOrFail[*IndexEntry](c.props, ScanLimitReached, &BytesContinuation{bytes: c.buildContinuation()})
+			cont, cerr := c.buildContinuation()
+			if cerr != nil {
+				return RecordCursorResult[*IndexEntry]{}, cerr
+			}
+			return noNextOrFail[*IndexEntry](c.props, ScanLimitReached, &BytesContinuation{bytes: cont})
 		}
 		if c.props.TimeLimit > 0 && c.scanned > 0 && time.Since(c.startTime) >= c.props.TimeLimit {
-			return NewResultNoNext[*IndexEntry](TimeLimitReached, &BytesContinuation{bytes: c.buildContinuation()}), nil
+			cont, cerr := c.buildContinuation()
+			if cerr != nil {
+				return RecordCursorResult[*IndexEntry]{}, cerr
+			}
+			return NewResultNoNext[*IndexEntry](TimeLimitReached, &BytesContinuation{bytes: cont}), nil
 		}
 		if c.props.ScannedBytesLimit > 0 && c.scanned > 0 && c.bytesScanned >= c.props.ScannedBytesLimit {
-			return noNextOrFail[*IndexEntry](c.props, ByteLimitReached, &BytesContinuation{bytes: c.buildContinuation()})
+			cont, cerr := c.buildContinuation()
+			if cerr != nil {
+				return RecordCursorResult[*IndexEntry]{}, cerr
+			}
+			return noNextOrFail[*IndexEntry](c.props, ByteLimitReached, &BytesContinuation{bytes: cont})
 		}
 
 		// Get next item from iterator.
@@ -568,16 +606,28 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 			Key:   key,
 			Value: item.Value,
 		}
-		cont := c.buildContinuation()
+		cont, cerr := c.buildContinuation()
+		if cerr != nil {
+			return RecordCursorResult[*IndexEntry]{}, cerr
+		}
 		return NewResultWithValue(entry, &BytesContinuation{bytes: cont}), nil
 	}
 }
 
 // buildContinuation serializes the current position into a FlatMapContinuation proto
 // wrapping a MultidimensionalIndexScanContinuation, matching Java's flatMapPipelined cursor.
-func (c *rtreeScanCursor) buildContinuation() []byte {
+//
+// Returns an error rather than nil bytes on either failure path (no item has
+// EVER been read yet, or MarshalVT fails). nil bytes would be indistinguishable
+// from "no continuation" once wrapped by prefixSkipScanCursor's outer
+// FlatMapContinuation — exactly the empty-placeholder shape Bug 1 was: a
+// continuation that cannot resume must never be handed back as if it can.
+// Unreachable today (every call site only reaches this after c.lastHV has been
+// set by at least one scanned item — see the call sites' comments), but making
+// the failure loud rather than silently degrading is what keeps that true.
+func (c *rtreeScanCursor) buildContinuation() ([]byte, error) {
 	if c.lastHV == nil {
-		return nil
+		return nil, fmt.Errorf("MULTIDIMENSIONAL index %q: buildContinuation called before any item was read", c.index.Name)
 	}
 	hvBytes := c.lastHV.Bytes()
 	if len(hvBytes) == 0 {
@@ -594,7 +644,7 @@ func (c *rtreeScanCursor) buildContinuation() []byte {
 	}
 	innerBytes, err := inner.MarshalVT()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("MULTIDIMENSIONAL index %q: marshal inner continuation: %w", c.index.Name, err)
 	}
 
 	// Wrap in FlatMapContinuation (matching Java's flatMapPipelined cursor).
@@ -606,9 +656,9 @@ func (c *rtreeScanCursor) buildContinuation() []byte {
 	}
 	data, err := outer.MarshalVT()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("MULTIDIMENSIONAL index %q: marshal outer continuation: %w", c.index.Name, err)
 	}
-	return data
+	return data, nil
 }
 
 func (c *rtreeScanCursor) Close() error {
@@ -622,43 +672,96 @@ func (c *rtreeScanCursor) IsClosed() bool { return c.closed }
 // and scans each prefix's R-tree in sequence. Used when PrefixSize > 0 but the
 // scanRange does not specify a prefix.
 //
-// Limitation: continuation tokens work within a single prefix but cross-prefix
-// resume is not supported (the MultidimensionalIndexScanContinuation proto does
-// not encode the prefix). When a prefix is exhausted, the cursor moves to the
-// next prefix and resets the continuation.
+// Ported from Java's MultidimensionalIndexMaintainer.scan()
+// (MultidimensionalIndexMaintainer.java:130-179), which always drives this
+// shape through RecordCursor.flatMapPipelined: the outer cursor is a
+// ChainedCursor of distinct prefix Tuples (prefixSkipScan/nextPrefixTuple,
+// :189-246 — Go's findNextPrefix below) and the inner is one R-tree scan per
+// prefix. FlatMapPipelinedCursor's own continuation
+// (FlatMapPipelinedCursor.java:372-434) pairs the position AT the current
+// prefix with the inner R-tree position:
+//   - inner not exhausted (mid-prefix stop): outer = the prefix BEFORE the one
+//     being resumed, inner = the R-tree position. Resuming re-derives the SAME
+//     prefix (nextPrefixTuple is a deterministic "first distinct prefix after
+//     this Tuple" query, ChainedCursor.java:224-234) and continues its R-tree
+//     scan from the saved position.
+//   - inner exhausted (moving to the next prefix): outer = the prefix just
+//     fully consumed, no inner. Resuming finds the NEXT prefix after it.
+//
+// Row limiting is NOT done here — matching Java's innerScanProperties =
+// scanProperties.with(ExecuteProperties::clearSkipAndLimit) (:124) and the
+// .skipThenLimit() applied to the whole flattened cursor exactly once (:179).
+// Scan() wraps this cursor in LimitRowsCursor instead: whichever row
+// LimitRowsCursor stops after, its ReturnLimitReached continuation is simply
+// THIS cursor's own (already prefix-aware) continuation for that row — the
+// row-limit boundary needs no separate encoding, which is what the previous
+// empty-placeholder continuation got wrong (it could never resume, so
+// cross-prefix pagination silently replayed prefix #1 forever).
 type prefixSkipScanCursor struct {
 	m              *multidimensionalIndexMaintainer
 	dimExpr        *DimensionsKeyExpression
 	scanRange      TupleRange
-	continuation   []byte
 	scanProperties ScanProperties
+
+	// Parsed from the incoming continuation once, at construction (Scan()):
+	// the outer_continuation / inner_continuation fields of the
+	// FlatMapContinuation the previous page's last row returned.
+	resumePrefixBytes []byte // Tuple-packed prefix to resume from/after; nil = start
+	resumeInnerBytes  []byte // raw MultidimensionalIndexScanContinuation for the
+	// first (resumed) prefix; nil = start that prefix fresh. Consumed once.
 
 	// Current per-prefix cursor being drained.
 	currentCursor RecordCursor[*IndexEntry]
 	// FDB key position for finding the next prefix.
 	nextPrefixStart fdb.Key
-	// Total entries delivered across all prefixes.
-	totalDelivered int
+
+	// Cross-prefix continuation state — Java's priorOuterContinuation /
+	// outerContinuation fields (FlatMapPipelinedCursor.java:70,207,222), kept as
+	// Tuple-packed prefix bytes (ChainedCursor's own continuation encoding,
+	// ChainedCursor.java:78,224-234).
+	priorPrefixBytes   []byte // Tuple-packed bytes of the prefix BEFORE currentPrefix; nil = start
+	currentPrefixBytes []byte // Tuple-packed bytes of currentPrefix
+
 	// Shared RFC-106a scan budget across all prefixes (per-prefix cursor scans +
 	// findNextPrefix enumeration reads) so a many-small-prefix skip-scan can't
 	// bypass the cap by resetting a fresh per-prefix counter each prefix.
 	totalScanned      int       // records: ScannedRecordsLimit
 	totalBytesScanned int64     // bytes:   ScannedBytesLimit
 	startTime         time.Time // wall-clock origin for TimeLimit (set on first OnNext)
-	// Row limit (0 = unlimited).
-	limit int
-	// Whether we've computed the limit yet.
-	limitComputed bool
-	exhausted     bool
-	closed        bool
+
+	initialized bool
+	exhausted   bool
+	closed      bool
 }
 
 func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
-	if !c.limitComputed {
-		c.limitComputed = true
+	// Checked before the lazy init below (which dereferences c.m): a cancelled
+	// context must short-circuit even a zero-valued cursor (RFC-106a; pinned by
+	// index_scan_unit_test.go's "honor ctx cancellation" sweep, which
+	// constructs a bare &prefixSkipScanCursor{} with m left nil).
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[*IndexEntry]{}, err
+	}
+
+	if !c.initialized {
+		c.initialized = true
 		c.startTime = time.Now() // shared time-budget origin (RFC-106a)
-		if c.scanProperties.ExecuteProperties.ReturnedRowLimit > 0 {
-			c.limit = c.scanProperties.ExecuteProperties.ReturnedRowLimit
+		if c.resumePrefixBytes != nil {
+			lastPrefix, err := fastUnpack(c.resumePrefixBytes)
+			if err != nil {
+				return RecordCursorResult[*IndexEntry]{}, fmt.Errorf(
+					"MULTIDIMENSIONAL prefix skip-scan: invalid continuation prefix: %w", err)
+			}
+			prefixSubspace := c.m.indexSubspace.Sub(tupleToElements(lastPrefix)...)
+			end, err := fdb.Strinc(prefixSubspace.Bytes())
+			if err != nil {
+				return RecordCursorResult[*IndexEntry]{}, fmt.Errorf(
+					"MULTIDIMENSIONAL prefix skip-scan: strinc resume prefix subspace: %w", err)
+			}
+			c.nextPrefixStart = fdb.Key(end)
+			c.priorPrefixBytes = c.resumePrefixBytes
+		} else {
+			c.nextPrefixStart = fdb.Key(c.m.indexSubspace.Bytes())
 		}
 	}
 
@@ -666,27 +769,14 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 		if err := ctx.Err(); err != nil {
 			return RecordCursorResult[*IndexEntry]{}, err
 		}
-		// Check row limit before proceeding.
-		if c.limit > 0 && c.totalDelivered >= c.limit {
-			// We've hit the global row limit. Return limit-reached.
-			// Cross-prefix continuation is not supported, so we use an opaque
-			// non-end continuation (empty bytes) to satisfy the cursor invariant
-			// that ReturnLimitReached must not carry an end continuation.
-			return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: []byte{}}), nil
-		}
 
 		// Aggregate scan budgets across all prefixes (RFC-106a). Without these a
 		// skip-scan over many small prefixes — each under the per-prefix limit —
 		// would never trip the cap because each per-prefix cursor resets its own
-		// counter.
-		//
-		// These stops are ALWAYS a terminal error, even when FailOnScanLimitReached
-		// is off: cross-prefix resume is unsupported (see the type comment),
-		// so the skip-scan cannot hand back a valid continuation — a paginating
-		// no-next here carries empty bytes, which a resuming caller reads as "no
-		// continuation" and restarts from the first prefix (an infinite re-scan).
-		// Erroring is the only honest option; a bound-prefix scan (single
-		// rtreeScanCursor) still paginates these limits normally.
+		// counter. These remain a terminal error regardless of
+		// FailOnScanLimitReached: unlike the row limit above (now resumable via
+		// the prefix-aware continuation), this is deliberately unpaginated —
+		// tracked in TODO.md if that changes.
 		scanLimit := c.scanProperties.ExecuteProperties.ScannedRecordsLimit
 		if scanLimit > 0 && c.totalScanned >= scanLimit {
 			return RecordCursorResult[*IndexEntry]{}, &ScanLimitReachedError{Reason: ScanLimitReached}
@@ -707,8 +797,11 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 				return RecordCursorResult[*IndexEntry]{}, err
 			}
 			if result.HasNext() {
-				c.totalDelivered++
-				return result, nil
+				cont, cerr := c.buildValueContinuation(result.GetContinuation())
+				if cerr != nil {
+					return RecordCursorResult[*IndexEntry]{}, cerr
+				}
+				return NewResultWithValue(result.GetValue(), cont), nil
 			}
 			// Per-prefix cursor done — fold its scan counts into the shared budget
 			// before closing, then close. (A non-rtree cursor — only *errorCursor,
@@ -721,20 +814,14 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			_ = c.currentCursor.Close()
 			c.currentCursor = nil
 			reason := result.GetNoNextReason()
-			if reason == ReturnLimitReached {
-				// The per-prefix cursor hit the (shared) row limit. Propagate.
-				return result, nil
-			}
 			if reason.IsOutOfBand() {
 				// The per-prefix cursor consumed the (remaining) shared scan/byte/time
-				// budget mid-prefix. Like the aggregate checks above, this is a TERMINAL
-				// error even in non-fail mode: the per-prefix continuation has no
-				// cross-prefix state, so propagating it as a paginating no-next would
-				// resume from the first prefix (infinite re-scan). FailOnScanLimitReached
-				// is moot here — the per-prefix cursor would have errored upstream if set.
+				// budget mid-prefix. Terminal, same as the aggregate checks above.
 				return RecordCursorResult[*IndexEntry]{}, &ScanLimitReachedError{Reason: reason}
 			}
-			// SourceExhausted → genuinely move to the next prefix.
+			// SourceExhausted → genuinely move to the next prefix. The prefix that
+			// was just fully consumed becomes the "prior" the next one resumes from.
+			c.priorPrefixBytes = c.currentPrefixBytes
 		}
 
 		if c.exhausted {
@@ -751,6 +838,7 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
 		}
 		c.totalScanned++ // the prefix-enumeration read counts against the scan budget
+		c.currentPrefixBytes = prefix.Pack()
 
 		// Build a per-prefix scanRange with this prefix in the Low/High bounds.
 		prefixScanRange := c.scanRange
@@ -763,15 +851,13 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			copy(prefixScanRange.High, prefix)
 		}
 
-		// Compute remaining row limit for this prefix's cursor.
+		// clearSkipAndLimit (Java :124): the per-prefix cursor is never row
+		// limited — LimitRowsCursor (Scan()) is the only layer that stops
+		// delivery, exactly like Java's outer .skipThenLimit(). A per-prefix
+		// ReturnLimitReached would carry no prefix identity, so it must never
+		// happen here.
 		perPrefixProps := c.scanProperties
-		if c.limit > 0 {
-			remaining := c.limit - c.totalDelivered
-			if remaining <= 0 {
-				continue // will be caught by limit check at top
-			}
-			perPrefixProps.ExecuteProperties = perPrefixProps.ExecuteProperties.WithReturnedRowLimit(remaining)
-		}
+		perPrefixProps.ExecuteProperties = perPrefixProps.ExecuteProperties.WithReturnedRowLimit(0)
 		// Decrement the shared scan budgets so this prefix's cursor can only consume
 		// what's left of each aggregate cap (RFC-106a) — records, bytes, and time.
 		if scanLimit > 0 {
@@ -796,16 +882,76 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			perPrefixProps.ExecuteProperties = perPrefixProps.ExecuteProperties.WithTimeLimit(remainingTime)
 		}
 
-		// Use the continuation only for the first prefix (subsequent prefixes
-		// start from the beginning since cross-prefix continuation is not supported).
-		var cont []byte
-		if c.continuation != nil {
-			cont = c.continuation
-			c.continuation = nil // only use once
+		// Use the saved inner continuation only for the first (resumed) prefix;
+		// every later prefix starts its R-tree scan fresh. Re-wrap it in a
+		// FlatMapContinuation so m.Scan()'s bound-prefix parser (which always
+		// tries that shape first) decodes it unambiguously, rather than handing
+		// it raw MultidimensionalIndexScanContinuation bytes that could
+		// coincidentally parse as a (wrong) FlatMapContinuation — both messages
+		// share field numbers 1/2 as bytes.
+		var innerCont []byte
+		if c.resumeInnerBytes != nil {
+			wrapped := &gen.FlatMapContinuation{InnerContinuation: c.resumeInnerBytes}
+			b, werr := wrapped.MarshalVT()
+			if werr != nil {
+				return RecordCursorResult[*IndexEntry]{}, fmt.Errorf(
+					"MULTIDIMENSIONAL prefix skip-scan: rewrap resume continuation: %w", werr)
+			}
+			innerCont = b
+			c.resumeInnerBytes = nil // only the first (resumed) prefix gets this
 		}
 
-		c.currentCursor = c.m.Scan(prefixScanRange, cont, perPrefixProps)
+		c.currentCursor = c.m.Scan(prefixScanRange, innerCont, perPrefixProps)
 	}
+}
+
+// buildValueContinuation wraps the current per-prefix cursor's own
+// continuation with this cursor's prefix-tracking layer, producing exactly
+// the ONE-LEVEL FlatMapContinuation nesting Java's flatMapPipelined produces
+// (FlatMapPipelinedCursor.java:409-434): outer = the position needed to
+// re-derive (or move past) the current prefix, inner = the raw R-tree
+// position within it. m.Scan()'s bound-prefix path always self-wraps its own
+// continuation in a FlatMapContinuation too (matching Java's trivial
+// single-prefix flatMapPipelined case, MultidimensionalIndexMaintainer.java:135-178)
+// — unwrapMultidimensionalInner strips that layer back off so the two never
+// nest.
+func (c *prefixSkipScanCursor) buildValueContinuation(innerResultCont RecordCursorContinuation) (RecordCursorContinuation, error) {
+	rawInner, err := unwrapMultidimensionalInner(innerResultCont)
+	if err != nil {
+		return nil, fmt.Errorf("MULTIDIMENSIONAL prefix skip-scan: %w", err)
+	}
+	fmc := &gen.FlatMapContinuation{
+		OuterContinuation: c.priorPrefixBytes,
+		InnerContinuation: rawInner,
+	}
+	b, err := fmc.MarshalVT()
+	if err != nil {
+		return nil, fmt.Errorf("MULTIDIMENSIONAL prefix skip-scan: marshal continuation: %w", err)
+	}
+	return &BytesContinuation{bytes: b}, nil
+}
+
+// unwrapMultidimensionalInner extracts the raw MultidimensionalIndexScanContinuation
+// bytes from a bound-prefix scan's own continuation. m.Scan()'s single/bound-prefix
+// path (case 2, used here for each per-prefix cursor) always wraps its position in
+// exactly one FlatMapContinuation layer — the same wrapping Java applies to every
+// multidimensional scan, skip-scan or not (MultidimensionalIndexMaintainer.java:135-178).
+func unwrapMultidimensionalInner(cont RecordCursorContinuation) ([]byte, error) {
+	if cont == nil || cont.IsEnd() {
+		return nil, nil
+	}
+	b, err := cont.ToBytes()
+	if err != nil {
+		return nil, err
+	}
+	if len(b) == 0 {
+		return nil, nil
+	}
+	var fmc gen.FlatMapContinuation
+	if err := fmc.UnmarshalVT(b); err != nil {
+		return nil, fmt.Errorf("invalid per-prefix continuation: %w", err)
+	}
+	return fmc.InnerContinuation, nil
 }
 
 // findNextPrefix discovers the next distinct prefix by reading one key from the
