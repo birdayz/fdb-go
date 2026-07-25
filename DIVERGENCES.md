@@ -933,6 +933,47 @@ intersection non-max `consume()` advance). What remains is classified below.
 - **ListCursor unsigned position decode**: a corrupt high-bit 4-byte token
   exhausts cleanly instead of Java's IndexOutOfBounds; unreachable from valid
   tokens.
+- **mergeSortCursor leg selection: binary heap vs Java's per-row linear scan**:
+  **Ordering-neutral by construction — this extension cannot diverge from
+  Java observably at all.** The heap and the replaced linear scan select the
+  exact same leg every round (same comparison key, same first-leg-wins tie
+  rule), consume the exact same legs, and produce the exact same emitted row
+  sequence and continuation bytes; a caller of `mergeSortCursor` cannot tell
+  which selection algorithm ran underneath. Java's `UnionCursor.chooseStates`
+  (`provider/foundationdb/cursors/UnionCursor.java:101-131`) rescans every leg
+  on every emitted row to find the minimum comparison key — no heap, no
+  tournament tree; `computeNextResultStates` (:74-98) is the same O(N) shape
+  for the exhaustion/limit check. This is not a Go bug relative to Java: Java
+  simply never needed better than O(N), since its N is bounded by query shape
+  (a two-cursor UNION, a handful of OR branches). Go's InUnion plan turns a
+  SQL IN list into one leg per value, so N can run into the hundreds or
+  thousands, and the O(N)-per-row rescan dominates at that scale. Go replaces
+  the scan with a `container/heap` binary min-heap
+  (`pkg/recordlayer/query/executor/executor_new_plans.go`,
+  `mergeSortCursor`/`mergeSortHeap`), giving O(log N) selection after an
+  unavoidable O(N) initial build, while reproducing Java's tie-break exactly
+  (the heap orders by comparison key, then by original leg index — the same
+  first-leg-wins rule `chooseStates`'s single forward pass produces).
+  Differential-tested against the replaced linear scan (kept only as a test
+  oracle) across randomized leg counts/keys/reverse/dedup/resumption,
+  including a fuzz target (1.04M executions, 0 divergences under Bazel); a
+  dedicated error-injection suite additionally proves a leg's transient pull
+  error mid-admit-batch is retried, not orphaned — no row lost, no panic
+  (`merge_sort_heap_error_test.go`). One caveat the differential harness
+  cannot see: the heap can surface a cross-type comparison-key invariant
+  violation on a leg pair the linear scan never happened to compare directly
+  (`chooseStates` only ever compares each leg against the running minimum,
+  not every pair) — not a new bug, since the keys were already
+  invariant-violating, just an earlier, heap-shape-dependent discovery point
+  for one that already existed. In-process CPU-only measurement: heap loses
+  to linear scan below N≈10 (heap bookkeeping overhead exceeds the tiny
+  linear cost) and breaks even just above it, then wins by ~2.1x at N=100 and
+  ~3.9x at N=1000 (7 replicates per point, tight confidence intervals — see
+  `BenchmarkMergeSortCursor_HeapVsLinear`). End-to-end against real FDB
+  (`BenchmarkFDB_InUnionMergeSort_N*`, 5 replicates per point) shows no
+  measurable difference at N≤100 (FDB round-trip cost dominates), and an
+  ~11.7% rows/sec improvement at N=1000 with non-overlapping 95% CIs
+  (8366 vs 9348 rows/sec).
 
 ### Architectural (by design, with reason)
 

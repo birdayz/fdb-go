@@ -1508,6 +1508,135 @@ closed rather than silently alter rows or output schema.
   constructs the triggering comparison today, so this is inert, not a live
   bug. Found during the CQ-17 sweep; not implemented there (out of scope —
   recording only).
+- [x] **CQ-22 (executor, not planner/cost-model) — `mergeSortCursor.OnNext`
+  selected the next row with an O(N)-per-emitted-row rescan of every leg;
+  replaced with an O(log N) `container/heap` binary min-heap.** Investigated
+  because a concurrent InJoin-vs-InUnion benchmark would otherwise be
+  measuring InUnion with this overhead baked in. **Java does the same O(N)
+  thing** — `UnionCursor.chooseStates`
+  (`provider/foundationdb/cursors/UnionCursor.java:101-131`) is a per-row
+  linear rescan of every leg, and `computeNextResultStates` (:74-98, the
+  exhaustion/limit check) is the same shape; there is no heap or tournament
+  tree in Java anywhere in this cursor family. This is NOT a Go-vs-Java
+  divergence being fixed — Java's N is bounded by query shape (a two-cursor
+  UNION, a handful of OR branches) and never needed better than O(N); Go's
+  InUnion plan turns a SQL IN list into one leg per value, so N can reach the
+  hundreds or thousands where the O(N) rescan dominates. Recorded as a
+  Go-only extension in `DIVERGENCES.md` (clean-extensions list), not a parity
+  fix. Implementation: `mergeSortHeap` orders by comparison key then by
+  original leg index, reproducing `chooseStates`'s first-leg-wins tie rule
+  exactly (`pkg/recordlayer/query/executor/executor_new_plans.go`); the
+  exhaustion/limit scan is also made incremental (a leg's stop state can only
+  change when it is re-pulled, so only legs pulled THIS round need checking).
+  A first attempt eagerly re-pulled consumed legs before snapshotting the
+  emitted row's continuation and tripped the "cannot return end continuation
+  with next value" invariant — fixed by deferring the re-pull to the top of
+  the FOLLOWING `OnNext` call (`pendingAdmit`), matching Java's actual timing
+  (`consume()` clears the cached future; the next future is only resolved by
+  the following round's `whenAll`). **Proof of behavior preservation**: the
+  replaced linear scan is kept as a test-only oracle
+  (`referenceMergeSortOnNext`, `merge_sort_heap_differential_test.go`) and
+  compared row-by-row (value, stop reason, continuation bytes) against the
+  heap over 500 randomized heavy-tie trials (1-12 legs, key range as narrow
+  as 1-6 forcing dense cross- and within-leg ties) and 100 wide-key/many-leg
+  trials (20-100 legs, key range 100k) — 0 divergences; resumption from every
+  emitted continuation reproduces the exact remaining suffix for both a
+  heap-resumed and reference-resumed cursor (150 trials); a differential fuzz
+  target ran 621k executions / 51s with 0 failures. All pre-existing
+  `mergeSortCursor` unit tests, `TestFDB_InUnionRowContinuation_BudgetSweep_Paged`,
+  `TestFDB_InJoin_SortedClaimMatchesExecutionOrder`,
+  `TestFDB_InOrCompoundSargProbe`, and the full yamsql/explaindiff corpus
+  (`TestPlanShapeGolden`, `TestNoUnexpectedPlanFailures`,
+  `TestCorpusPlanReachability`, etc.) pass unchanged against real FDB —
+  explain/plandiff goldens are byte-identical (executor-only change, no plan
+  shape reads merge cost). Intersection cursors (`multiIntersectionMergeCursor`
+  → `recordlayer.IntersectionMultiResume`) are a separate cursor family and
+  untouched by this change. **Measured improvement**: in-process CPU-only
+  (`BenchmarkMergeSortCursor_HeapVsLinear`, 7 replicates/point, no I/O) —
+  heap LOSES to the linear scan below N≈10 (heap bookkeeping exceeds the tiny
+  linear cost: N=3, 2.29M vs 2.70M rows/sec), is a wash at N=10 (1.80M vs
+  1.81M), and wins at N=100 (761k vs 363k, ~2.1x) and N=1000 (168k vs 43.4k,
+  ~3.9x), all with sub-2% relative stddev. End-to-end against real FDB
+  (`BenchmarkFDB_InUnionMergeSort_N*`, before = clean worktree of this
+  commit's parent, after = this change, 5 replicates/point, `-benchtime=5x`):
+  no measurable difference at N∈{3,10,100} (95% CIs overlap — FDB round-trip
+  latency dominates at that scale), and a real ~11.7% rows/sec improvement at
+  N=1000 with non-overlapping 95% CIs (before 8366 [8345,8388], after 9348
+  [9287,9409] rows/sec, 5000 total rows). Not committed as part of any
+  benchmark comparing InJoin vs InUnion — that comparison, wherever it lands,
+  should now be against this non-handicapped InUnion. (Wording fix: N≈10
+  loses to the linear scan below that point and breaks even just above it —
+  not "a wash at N=10"; three replicates put N=10 consistently on the losing
+  side.)
+
+  **Milestone review (Graefe + Torvalds): first pass NAK, two mechanical
+  blockers, algorithm ACK'd.** Tie-break stability (300 randomized
+  staggered-tie trials), resumption (200 randomized trials), the fuzz target
+  (799k execs at review time), byte-identical goldens, and Java's own O(N)
+  shape were all accepted outright — "Clean extensions" framing stands.
+  Both blockers fixed same-day:
+  - **B1 — a leg pull error orphaned the rest of the admit batch.**
+    `pullAndAdmit` used to take the whole pending batch as a captured local
+    while the caller cleared `m.pendingAdmit` BEFORE calling it; a pull error
+    on any leg but the last in that batch permanently dropped every leg after
+    it — not in the heap, not in `pendingAdmit`, never pulled again. Depending
+    on which leg failed and how many rounds followed, this either silently
+    lost rows or, if every remaining leg in the batch ended up orphaned that
+    way, panicked out of `stopWith` (`SourceExhausted` demands an all-END
+    continuation snapshot; an orphaned leg's continuation was stuck mid-page).
+    **Fixed** by making `pullAndAdmit` consume `m.pendingAdmit` as a queue,
+    popping a leg off the front only AFTER its pull succeeds — a failing leg
+    (and everything behind it) stays queued for the very next `OnNext` call to
+    retry, and `mergeSortChildState.pull`'s existing idempotence (`s.pulled`
+    only advances on success) means a leg that already succeeded is never
+    re-pulled or double-pushed into the heap. New regression suite
+    (`merge_sort_heap_error_test.go`, three cases: error on the first leg of
+    the init batch, error on a middle leg of the init batch, error on a
+    later round's re-admit) proves no row is dropped and no panic occurs;
+    confirmed each test reds with the pre-fix `pullAndAdmit` restored
+    (reproduces the exact `"SourceExhausted requires an end continuation"`
+    panic) and greens with the fix. The differential harness in
+    `merge_sort_heap_differential_test.go` cannot cover this axis at all —
+    every leg there is a `recordlayer.FromList`, which only ever stops via
+    `SourceExhausted`, never a hard `OnNext` error.
+  - **B2 — `BUILD.bazel` was never regenerated, so none of the new evidence
+    ran under Bazel/CI.** `just gazelle` now wires all three new test files
+    (plus the new `merge_sort_heap_error_test.go` from the B1 fix) into
+    `executor_test`'s `srcs`/`embedsrcs`
+    (`pkg/recordlayer/query/executor/BUILD.bazel`) and the bench file into
+    `pkg/relational/sqldriver/BUILD.bazel`; `bazel mod tidy` needed no
+    changes (no new external deps). `FuzzMergeSortCursorHeapMatchesLinearScan`
+    is now Bazel-discoverable (`-test.list='Fuzz.*'` lists it) and was run for
+    20s / 1.04M executions with 0 failures. `pkg/docscheck`'s hygiene gate
+    (`git ls-files`-driven) now covers all four files now that they're
+    tracked.
+
+  Folded non-blocking notes: the `pendingStop` field comment previously
+  claimed the STOP CHECK was "deferred to the top of the next OnNext call" —
+  reworded to say precisely what's deferred (the ADMIT, i.e. the pull of the
+  legs consumed at the end of round R, pushed to the top of round R+1) versus
+  what fires immediately once admitted (the `pendingStop` check, same call).
+  `m.heapErr` used to latch permanently once set (a stray comparison error
+  would poison every later, otherwise-unrelated heap operation into
+  re-returning the same stale error); it is now read-and-cleared via a
+  `takeHeapErr()` helper so it is a one-shot signal per mutation, matching
+  the replaced scan's behavior of re-erroring deterministically on a genuine
+  repeat rather than poisoning unrelated future calls. DIVERGENCES.md's
+  headline now leads with the strongest form of the argument: the heap
+  swap is ordering-neutral, so it cannot diverge from Java observably at
+  all, plus the one-sentence cross-type-comparison-key caveat (N2: the heap
+  compares leg pairs the linear scan never happened to compare, which can
+  surface a pre-existing invariant violation earlier than the scan would
+  have — not a new bug).
+
+  **Full verify re-run post-fix**: `gofumpt -l pkg` clean; `just gazelle`
+  wired the four files above; `bazelisk build //pkg/... //cmd/...
+  //conformance/...` green (192 actions); `bazelisk test
+  //pkg/recordlayer/query/executor:all --nocache_test_results` 1/1 green;
+  `bazelisk test //pkg/relational/conformance/... //conformance/...
+  --nocache_test_results` 6/6 green; `bazelisk test //pkg/docscheck:all
+  --nocache_test_results` 1/1 green; fuzz target 1.04M execs / 0 failures
+  under Bazel.
 
 **Exit gate:** focused tests for every item, Cascades unit + race suites,
 planner/translator tests, explain-plan golden, yamsql/FDB conformance, generated
