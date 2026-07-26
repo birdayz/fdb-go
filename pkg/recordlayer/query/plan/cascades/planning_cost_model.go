@@ -772,17 +772,38 @@ func countClassifiedResidualPredicates(
 	}
 }
 
+// compareRecursiveCTE ranks both sides by recursiveCTERank, so — like
+// compareInPlan/inPlanPenaltyRank and comparePrimaryScanVsIndexScan/
+// primaryVsIndexRankOf — it is antisymmetric by construction and a total
+// preorder on a small integer rank: comparing two per-plan ranks with intCompare
+// can never produce an intransitive tie (CQ-23). The prior form derived its
+// verdict from the PAIR (aDFS&&bLevel / aLevel&&bDFS), which let DFS tie
+// Unclassified, Level tie Unclassified, and DFS still strictly beat Level — an
+// indifference-transitivity violation (a~b, b~c, but not a~c).
 func compareRecursiveCTE(a, b expressions.RelationalExpression) int {
-	aDFS, aLevel := recursiveCTEKind(a)
-	bDFS, bLevel := recursiveCTEKind(b)
+	return intCompare(recursiveCTERank(a), recursiveCTERank(b))
+}
 
-	if aDFS && bLevel {
-		return -1
-	}
-	if aLevel && bDFS {
+// recursiveCTERank is compareRecursiveCTE's intrinsic per-plan rank: 0 for a
+// DFS recursive join, 1 for anything recursiveCTEKind cannot classify
+// (including every ordinary non-recursive-CTE plan — overwhelmingly the common
+// case), 2 for a level-union recursive join. DFS is verified strictly cheaper
+// than Level (recursiveCTEKind's doc comment / RecursiveLevelUnionPlan.HintCost
+// double-charges the level union), so it sits below the unclassified default;
+// Level is the one known-worse shape, so it sits above. An unclassified plan
+// has no informed preference either way, which the middle rank encodes as
+// "loses to a known-good DFS, beats a known-bad Level" rather than tying with
+// both simultaneously.
+func recursiveCTERank(e expressions.RelationalExpression) int {
+	isDFS, isLevel := recursiveCTEKind(e)
+	switch {
+	case isDFS:
+		return 0
+	case isLevel:
+		return 2
+	default:
 		return 1
 	}
-	return 0
 }
 
 // recursiveCTEKind classifies an expression by its CONCRETE recursive-CTE plan
@@ -1471,32 +1492,32 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 	// canonicalizes the OuterJoinExpression to FlatMaps and the cost model only ever
 	// ranks FlatMap-vs-FlatMap; see Java PlanningCostModel.compare, which gates its
 	// join-ordering criterion on `a instanceof RecordQueryFlatMapPlan && b instanceof
-	// RecordQueryFlatMapPlan`). For this Go-only pair the two cardinality FORMULAS are
-	// inconsistent — nestedLoopJoinCost uses a cross-product proxy
-	// (outerCard*innerCard*sel), flatMapCost an outer-only proxy (outerCard*sel) — for
-	// the SAME logical join (identical true output cardinality, a group property), so
-	// the cardinality term is an UNFAIR discriminator. Rank by WORK (CPU): with the
-	// materialization fix (nestedLoopJoinCost charges the inner scanned ONCE), CPU
-	// orders materialized-NLJ < re-scan-FlatMap for a non-probe inner and FlatMap < NLJ
-	// for a card-1 probe inner — the correct plan for each, cost-driven, no rule
-	// heuristic (RFC-152).
+	// RecordQueryFlatMapPlan`). It used to need a pair-dependent metric switch here
+	// (CPU-only for a shape mismatch, full cost otherwise) because the two shapes'
+	// cardinality FORMULAS disagreed on the SAME logical join: nestedLoopJoinCost
+	// used a cross-product proxy (outerCard*innerCard*sel) while flatMapCost used an
+	// outer-only proxy (outerCard*sel) that ignored the inner side entirely. That
+	// metric switch made compareJoinOrdering depend on which PAIR was being compared,
+	// not on either plan alone — not a total preorder, and Reference.GetBest folds
+	// pairwise, so the elected plan tracked member arrival order rather than cost
+	// (CQ-24).
 	//
-	// For SAME-shape pairs (FlatMap-vs-FlatMap, NLJ-vs-NLJ) the cardinality term is a
-	// CONSISTENT, fair discriminator and is LOAD-BEARING — for two FlatMaps it is the
-	// Java small-side-driving heuristic (drive from the lower-cardinality outer; Java
-	// PlanningCostModel "Return the one with lower cardinality on the outer plan"). So
-	// keep the full recursive Total there (the RFC-069 behaviour). Ranking those by CPU
-	// would discard the outer-cardinality asymmetry and pick the larger-outer driver
-	// (the order-invariant index-join regression). The CPU branch fires ONLY for the
-	// Go-only NLJ-vs-FlatMap shape mismatch.
-	if joinShapesDiffer(planA, planB) {
-		if costA.CPU != costB.CPU {
-			if costA.CPU < costB.CPU {
-				return -1
-			}
-			return 1
-		}
-	}
+	// The real defect was upstream: true join output cardinality is a property of
+	// the LOGICAL group (both physical shapes implement the same join, so both must
+	// agree on how many rows it produces), and each physical shape applies the join
+	// predicate EXACTLY ONCE, just at a different point in its own subtree. A
+	// FlatMap's inner already carries the predicate — pushed there by
+	// RewriteOuterJoinRule as a below-null-extension PredicatesFilter, by the
+	// data-access rule as an equality-bound SARG on the leaf scan/index, or as a
+	// FirstOrDefault collapse for a scalar/EXISTS inner — so inner.Cardinality
+	// already IS the filtered per-outer-row count; the NestedLoopJoin's inner is
+	// raw and the join predicate is applied once, explicitly, by
+	// NestedLoopJoinCost's own FilterSelectivity term. FlatMapCost now uses
+	// outerCard*innerCard with no extra selectivity factor (see FlatMapCost's
+	// doc comment), which makes the two formulas compute the SAME true
+	// cardinality for the same logical join. With a single consistent
+	// cardinality term, Cost.Less alone is a fair, shape-independent metric — no
+	// pair-dependent branch needed.
 	if costA.Less(costB) {
 		return -1
 	}
@@ -1504,43 +1525,6 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 		return 1
 	}
 	return 0
-}
-
-// topmostJoinIsNLJ reports whether the topmost join operator (NLJ or FlatMap) in a
-// concrete plan tree is a materialized RecordQueryNestedLoopJoinPlan (true) or a
-// correlated RecordQueryFlatMapPlan (false). The second return is false when the
-// plan contains no join at all.
-func topmostJoinIsNLJ(p plans.RecordQueryPlan) (isNLJ bool, found bool) {
-	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
-		if found {
-			return false
-		}
-		switch n.(type) {
-		case *plans.RecordQueryNestedLoopJoinPlan:
-			isNLJ, found = true, true
-			return false
-		case *plans.RecordQueryFlatMapPlan:
-			isNLJ, found = false, true
-			return false
-		}
-		return true
-	})
-	return isNLJ, found
-}
-
-// joinShapesDiffer reports whether two plans' topmost join operators are different
-// shapes — one a materialized NestedLoopJoin, the other a correlated FlatMap. This
-// is the Go-only materialized-vs-re-scan comparison (Java has only FlatMaps), the
-// one case where the per-shape cardinality proxies are inconsistent and the cost
-// model must rank by work rather than the (unfair) cardinality term. Returns false
-// for same-shape pairs (both FlatMap, both NLJ) and when either lacks a join.
-func joinShapesDiffer(planA, planB plans.RecordQueryPlan) bool {
-	aNLJ, aFound := topmostJoinIsNLJ(planA)
-	bNLJ, bFound := topmostJoinIsNLJ(planB)
-	if !aFound || !bFound {
-		return false
-	}
-	return aNLJ != bNLJ
 }
 
 // concretePlanCost computes the recursive Cost of a CONCRETE RecordQueryPlan tree,
@@ -1592,12 +1576,28 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		if len(child) < 2 {
 			return properties.Cost{}
 		}
-		return properties.FlatMapCost(child[0], child[1])
+		// FK-chain cap (fk_chain_cardinality.go): a join whose inner leg
+		// equality-binds the FULL primary key the outer chain is already
+		// provably threaded through cannot output more rows than the inner
+		// table itself has — sound regardless of drive direction or index
+		// uniqueness (see that file's doc comment). When the cap actually
+		// binds, fkChainCappedInnerCost derives a CPU-consistent inner Cost
+		// from the SAME proven bound (see its doc comment for the
+		// derivation) instead of only overwriting Cardinality — a hop cannot
+		// be credited with producing at most `cap` rows while still being
+		// charged CPU for scanning the larger, disproven row count.
+		innerCost := child[1]
+		if cap, ok := fkChainCardinalityCap(pl, stats); ok {
+			if corrected, applied := fkChainCappedInnerCost(child[0], innerCost, cap); applied {
+				innerCost = corrected
+			}
+		}
+		return properties.FlatMapCost(child[0], innerCost)
 	case *plans.RecordQueryNestedLoopJoinPlan:
 		if len(child) < 2 {
 			return properties.Cost{}
 		}
-		return properties.NestedLoopJoinCost(child[0], child[1])
+		return properties.NestedLoopJoinCost(child[0], child[1], predicates.CountConjuncts(pl.GetPredicates()))
 	case *plans.RecordQueryPredicatesFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
@@ -1801,10 +1801,19 @@ func warnUnclassifiedPlanType(
 // if it were one row. Without PlanContext we cannot prove a secondary
 // index unique, so we conservatively fall through to the selectivity estimate; the
 // metadata-aware wrapper HintCost still recognises unique indexes for the memo cost.
+//
+// The 1-row shortcut's CPU is FetchCPU, not ScanCPU: a full-PK/full-unique-index
+// equality bind returns EXACTLY one row via ONE isolated GetRange call (proven
+// against the executor — key_value_cursor.go's initIterator, flat_map_cursor.go's
+// unpipelined per-outer-row ExecutePlan — see FetchCPU's doc comment for the full
+// trace). ScanCPU is the AMORTIZED per-row rate for a range read that streams back
+// MANY rows in one call; a point probe streams back exactly one, so there is
+// nothing to amortize over — it is the same isolated round trip a Fetch pays,
+// priced at the same rate.
 func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, stats properties.StatisticsProvider, fullBindUnique bool) properties.Cost {
 	sel, numBound, allEquality := properties.BoundSelectivity(comps)
 	if fullBindUnique && numBound > 0 && allEquality && numBound == len(comps) {
-		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
+		return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
 	}
 	total := 0.0
 	if len(recordTypes) == 0 {
@@ -1814,8 +1823,8 @@ func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, sta
 			total += stats.RecordTypeCardinality(t)
 		}
 	}
-	card := total * sel * physicalWrapperCostMultiplier
-	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
+	card := total * sel
+	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU * physicalWrapperCostMultiplier}
 }
 
 // planContainsJoin reports whether the concrete plan tree contains a join

@@ -121,6 +121,30 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	templateID := s.SchemaTemplateId().GetText()
 	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
 
+	// WITH OPTIONS(...) — ENABLE_LONG_ROWS / INTERMINGLE_TABLES / STORE_ROW_VERSIONS.
+	// Mirrors Java's DdlVisitor.visitCreateSchemaTemplateStatement: applied before
+	// the table/index passes below, since intermingleTbls changes how AddTable's
+	// primary keys are compiled at Build() time (buildPrimaryKeyExpression prepends
+	// RecordTypeKey() unless intermingled).
+	if oc := s.OptionsClause(); oc != nil {
+		for _, opt := range oc.AllOption() {
+			switch {
+			case opt.ENABLE_LONG_ROWS() != nil:
+				b.SetEnableLongRows(opt.BooleanLiteral().TRUE() != nil)
+			case opt.INTERMINGLE_TABLES() != nil:
+				b.SetIntermingleTables(opt.BooleanLiteral().TRUE() != nil)
+			case opt.STORE_ROW_VERSIONS() != nil:
+				b.SetStoreRowVersions(opt.BooleanLiteral().TRUE() != nil)
+			default:
+				// Unreachable through the grammar (option's three alternatives are
+				// exhaustive) — defensive default matching Java's
+				// Assert.failUnchecked(ErrorCode.SYNTAX_ERROR, ...).
+				return 0, api.NewErrorf(api.ErrCodeSyntaxError,
+					"unknown option in schema template creation: %s", opt.GetText())
+			}
+		}
+	}
+
 	// First pass: register tables (indexes reference them by name).
 	for _, clause := range s.AllTemplateClause() {
 		td := clause.TableDefinition()

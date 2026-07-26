@@ -32,6 +32,7 @@ func TestPrimaryScanMatchCandidateReportsKeyOrder(t *testing.T) {
 		[]string{"TBL"},
 		[]string{"TBL"},
 		[]string{"ID", "K"},
+		true,
 		values.UnknownType,
 	)
 
@@ -102,6 +103,7 @@ func TestPrimaryScanMatchCandidateStopsAtUnknownParameter(t *testing.T) {
 		[]string{"TBL"},
 		[]string{"TBL"},
 		[]string{"ID", "K"},
+		true,
 		values.UnknownType,
 	)
 

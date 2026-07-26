@@ -34,6 +34,9 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 	eqOrder := scanCostRange(t, predicates.ComparisonEquals, int64(9))
 	rangeOrder := scanCostRange(t, predicates.ComparisonGreaterThan, int64(9))
 
+	// Expected cardinalities carry NO PhysicalWrapperCostMultiplier: it applies
+	// to CPU only (a logical group's true row count cannot depend on how many
+	// physical nodes wrap the plan — cost_formulas.go).
 	tests := []struct {
 		name            string
 		plan            *RecordQueryScanPlan
@@ -45,8 +48,7 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 				WithPrimaryKey(pk2).
 				WithScanComparisons([]*predicates.ComparisonRange{eqTenant}),
 			wantCardinality: stats.Cardinality *
-				properties.EqualityBoundSelectivity *
-				properties.PhysicalWrapperCostMultiplier,
+				properties.EqualityBoundSelectivity,
 		},
 		{
 			name: "composite PK fully equality bound",
@@ -60,8 +62,7 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 			plan: NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 				WithScanComparisons([]*predicates.ComparisonRange{eqTenant}),
 			wantCardinality: stats.Cardinality *
-				properties.EqualityBoundSelectivity *
-				properties.PhysicalWrapperCostMultiplier,
+				properties.EqualityBoundSelectivity,
 		},
 		{
 			name: "full primary key includes range",
@@ -70,8 +71,7 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 				WithScanComparisons([]*predicates.ComparisonRange{eqTenant, rangeOrder}),
 			wantCardinality: stats.Cardinality *
 				properties.EqualityBoundSelectivity *
-				properties.RangeSelectivity *
-				properties.PhysicalWrapperCostMultiplier,
+				properties.RangeSelectivity,
 		},
 	}
 

@@ -107,9 +107,36 @@ const (
 	IntersectionCPU = 1.0
 	SelectCPU       = 0.5
 	WriteCPU        = 1.0
-	FetchCPU        = 1.5  // per-row base-record fetch via PK lookup (random I/O)
-	StreamingAggCPU = 1.2  // cheaper than DistinctCPU (no hash table, pre-sorted input)
-	ScanCPU         = 0.05 // per-row sequential I/O cost for full table/index scans (kept < FilterCPU so a bare scan is never costed as a filtered scan)
+	// FetchCPU is the cost of ONE ISOLATED random single-key round trip: a
+	// Get, or a GetRange bound to exactly one row when that call is NOT
+	// amortized across a shared streaming iterator returning many rows.
+	// Two executor paths verified to have this exact shape:
+	//   - RecordQueryFetchFromPartialRecordPlan: split_helper.go's
+	//     loadWithSplit does one blocking tx.Get(unsplitKey).Get() per index
+	//     entry (the common unsplit-record case), called once per resolved
+	//     entry with NO batching across entries (flat_map_cursor.go's own
+	//     comment: "Go simplification: no async pipelining").
+	//   - A full-PK or full-unique-index EQUALITY point-probe reached as an
+	//     ISOLATED probe (a FlatMap's per-outer-row inner, or a standalone
+	//     `WHERE pk = ?`): key_value_cursor.go's initIterator issues its OWN
+	//     tx.GetRange bound to that one row, and flatMapCursor.OnNext opens a
+	//     FRESH inner cursor per outer row via ExecutePlan with no
+	//     cross-row pipelining (same file/comment as above) — so this
+	//     GetRange is exactly as isolated, unbatched, and unamortized as the
+	//     Fetch's Get. Charging the AMORTIZED sequential-scan rate (ScanCPU,
+	//     below) for it was pricing the same physical round trip two
+	//     different ways depending on which plan node issued it.
+	FetchCPU = 1.5
+	// StreamingAggCPU is cheaper than DistinctCPU (no hash table, pre-sorted input).
+	StreamingAggCPU = 1.2
+	// ScanCPU is the AMORTIZED per-row cost of a genuine multi-row streaming
+	// range read (a full table/index scan, or any bound that leaves more
+	// than one row un-eliminated): the single tx.GetRange call's
+	// round-trip cost is spread over however many rows the SAME call
+	// streams back, so each row's marginal cost is small. This is NOT the
+	// rate for an isolated single-row probe — see FetchCPU. Kept < FilterCPU
+	// so a bare scan is never costed as a filtered scan.
+	ScanCPU = 0.05
 
 	// IterationOverhead is the fixed per-outer-row cost a dependent (FlatMap)
 	// join pays to RE-EXECUTE its inner once per outer row: open the inner

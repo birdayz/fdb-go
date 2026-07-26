@@ -505,6 +505,86 @@ func TestPredicatePushDown_IntoSelectExpression(t *testing.T) {
 	}
 }
 
+// TestPredicatePushDownRule_DoesNotPushIntoOuterJoinChild pins the
+// nested_box_conjunct regression (TestFDB_FilteredBoxUnnest): pushIntoSelect
+// must decline (return nil) when the child SelectExpression is a Go-only
+// FULL/LEFT/RIGHT OUTER join (ChildrenAsSet()==false), not just when it's
+// wrapped in a strict-single quantifier.
+//
+// Java's PredicatePushDownRule.visitSelectExpression (PushToVisitor) pushes
+// into a child SelectExpression UNCONDITIONALLY, because Java's
+// SelectExpression can never carry outer-join semantics — LEFT OUTER is a
+// null-on-empty quantifier (already guarded, see NullOnEmptySkipped) and
+// Java's Cascades has no representation for FULL OUTER at all, so every
+// Java SelectExpression is inner-equivalent. Go's SelectExpression is a
+// wider, documented extension that ALSO carries FULL/LEFT/RIGHT OUTER
+// directly via joinType (select.go's ChildrenAsSet doc,
+// RewriteOuterJoinRule's header) — a child in that shape needs the SAME
+// opacity guard PushFilterBelowJoinRule, PartitionBinarySelectRule, and
+// SelectMergeRule already carry (JoinInner / ChildrenAsSet checks).
+//
+// Absorbing a WHERE-class predicate into a FULL-OUTER child's own
+// predicate list turns it into an ON-condition: the join's null-extension
+// drain for an unmatched row runs regardless of that extra condition, so
+// WHERE-above-OUTER silently degrades into ON-below-OUTER. This was a
+// real bug: TestFDB_FilteredBoxUnnest/nested_box_conjunct returned a
+// NULL-extended row through `WHERE LA.K = 100` over a nested
+// `(LA FULL LB) FULL CC` box, because the rule fused the WHERE predicate
+// into the FULL child's own predicate list at BOTH nesting levels.
+func TestPredicatePushDownRule_DoesNotPushIntoOuterJoinChild(t *testing.T) {
+	t.Parallel()
+
+	// Child: A FULL OUTER JOIN B ON a.id = b.id — a 2-quantifier
+	// SelectExpression with joinType=JoinFullOuter.
+	scanA := &expressions.FullUnorderedScanExpression{}
+	aQ := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
+
+	scanB := &expressions.FullUnorderedScanExpression{}
+	bQ := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
+
+	onPred := &predicates.ComparisonPredicate{
+		Operand: ppdFieldValue(aQ, "id"),
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: ppdFieldValue(bQ, "id"),
+		},
+	}
+
+	fullChild := expressions.NewSelectExpressionWithJoinType(
+		values.NewQuantifiedObjectValue(aQ.GetAlias()),
+		[]expressions.Quantifier{aQ, bQ},
+		[]predicates.QueryPredicate{onPred},
+		nil,
+		expressions.JoinFullOuter,
+	)
+	childRef := expressions.InitialOf(fullChild)
+	childQ := expressions.ForEachQuantifier(childRef)
+
+	// WHERE childQ.k = 100 — a WHERE-class predicate referencing only the
+	// box quantifier, so the rule classifies it as pushable.
+	wherePred := &predicates.ComparisonPredicate{
+		Operand: ppdFieldValue(childQ, "k"),
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(100)},
+		},
+	}
+
+	outerSel := expressions.NewSelectExpression(
+		childQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{childQ},
+		[]predicates.QueryPredicate{wherePred},
+	)
+	outerRef := expressions.InitialOf(outerSel)
+
+	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	if len(yielded) != 0 {
+		t.Fatalf("expected 0 yields — a FULL OUTER child must stay opaque to predicate "+
+			"absorption (fusing WHERE into its own predicate list turns it into an "+
+			"ON-condition the null-extension drain bypasses), got %d: %#v", len(yielded), yielded)
+	}
+}
+
 // TestPredicatePushDown_NullOnEmptySkipped verifies that ForEach
 // quantifiers with nullOnEmpty=true (LEFT JOIN) are skipped.
 func TestPredicatePushDown_NullOnEmptySkipped(t *testing.T) {

@@ -44,7 +44,9 @@ type WithBaseQuantifierMatchCandidate interface {
 // Key distinction from ValueIndexScanMatchCandidate: the primary scan
 // has separate "available" vs "queried" record types. Available types
 // are all types in the store; queried types are the subset the query
-// needs. When they differ, a TypeFilterPlan wraps the scan.
+// needs. Whether a TypeFilterPlan wraps the scan depends on
+// HasAndOrderedByRecordTypeKey(), not on whether available and queried
+// differ — see ToScanPlan.
 type PrimaryScanMatchCandidate struct {
 	// parameters are the sargable aliases — one per primary key column.
 	parameters []values.CorrelationIdentifier
@@ -62,6 +64,25 @@ type PrimaryScanMatchCandidate struct {
 	// primaryKeyColumns are the column names of the primary key.
 	primaryKeyColumns []string
 
+	// hasRecordTypeKeyPrefix reports whether the FULL primary key (the one
+	// backing this candidate, not just primaryKeyColumns — which excludes
+	// the type-key component because RecordTypeKeyExpression.FieldNames()
+	// is empty) starts with a RecordTypeKeyExpression. Mirrors Java's
+	// PrimaryScanMatchCandidate.hasAndOrderedByRecordTypeKey(), computed
+	// once by the caller from RecordType.PrimaryKeyHasRecordTypePrefix()
+	// (or RecordMetaData.PrimaryKeyHasRecordTypePrefix() for the
+	// store-wide case) and carried here rather than re-derived, since the
+	// candidate does not keep the raw KeyExpression.
+	//
+	// When true, every row this scan can physically produce already
+	// belongs to the queried type — the FDB key range is prefixed by the
+	// record-type ordinal by construction (see executeScan) — so
+	// ToScanPlan does not need a TypeFilterPlan on top. When false, the
+	// scan's key range is not type-discriminated (an intermingled store or
+	// a store using a primary key without the type-key prefix) and rows of
+	// other available types can genuinely appear, so the wrap is required.
+	hasRecordTypeKeyPrefix bool
+
 	// baseType is the record type flowing through the scan.
 	baseType values.Type
 
@@ -78,6 +99,11 @@ type PrimaryScanMatchCandidate struct {
 //   - availableRecordTypes: all record types in the store.
 //   - queriedRecordTypes: the subset of types the query needs.
 //   - primaryKeyColumns: the PK column names in order.
+//   - hasRecordTypeKeyPrefix: whether the primary key backing this
+//     candidate starts with a RecordTypeKeyExpression — see the field
+//     doc on hasRecordTypeKeyPrefix. Callers derive this from
+//     RecordType.PrimaryKeyHasRecordTypePrefix() /
+//     RecordMetaData.PrimaryKeyHasRecordTypePrefix().
 //   - baseType: the record type of the scan output.
 func NewPrimaryScanMatchCandidate(
 	traversal *Traversal,
@@ -85,6 +111,7 @@ func NewPrimaryScanMatchCandidate(
 	availableRecordTypes []string,
 	queriedRecordTypes []string,
 	primaryKeyColumns []string,
+	hasRecordTypeKeyPrefix bool,
 	baseType values.Type,
 ) *PrimaryScanMatchCandidate {
 	params := make([]values.CorrelationIdentifier, len(parameters))
@@ -97,13 +124,21 @@ func NewPrimaryScanMatchCandidate(
 	copy(pkCols, primaryKeyColumns)
 
 	return &PrimaryScanMatchCandidate{
-		parameters:           params,
-		traversal:            traversal,
-		availableRecordTypes: avail,
-		queriedRecordTypes:   queried,
-		primaryKeyColumns:    pkCols,
-		baseType:             baseType,
+		parameters:             params,
+		traversal:              traversal,
+		availableRecordTypes:   avail,
+		queriedRecordTypes:     queried,
+		primaryKeyColumns:      pkCols,
+		hasRecordTypeKeyPrefix: hasRecordTypeKeyPrefix,
+		baseType:               baseType,
 	}
+}
+
+// HasAndOrderedByRecordTypeKey reports whether the primary key starts with
+// the record type key, partitioning the scan by record type. Mirrors Java's
+// PrimaryScanMatchCandidate.hasAndOrderedByRecordTypeKey().
+func (c *PrimaryScanMatchCandidate) HasAndOrderedByRecordTypeKey() bool {
+	return c.hasRecordTypeKeyPrefix
 }
 
 // CandidateName returns "primary(type1,type2,...)" using the available
@@ -261,14 +296,20 @@ func (c *PrimaryScanMatchCandidate) ComputeBoundParameterPrefixMap(
 	return prefix
 }
 
-// ToScanPlan converts the matched prefix into a physical plan. If the
-// queried record types are a strict subset of the available types (and
-// the PK does not begin with a record-type discriminator), the scan is
-// wrapped in a TypeFilterPlan.
+// ToScanPlan converts the matched prefix into a physical plan. When the
+// primary key is NOT ordered by the record-type key
+// (HasAndOrderedByRecordTypeKey() is false), the scan's key range is not
+// type-discriminated and can genuinely produce rows of any available type,
+// so the scan is wrapped in a TypeFilterPlan restricting it to the queried
+// types.
 //
 // Mirrors Java's PrimaryScanMatchCandidate.toEquivalentPlan(): extracts
 // ComparisonRanges from the prefix map in PK column order and embeds
-// them as ScanComparisons in the RecordQueryScanPlan.
+// them as ScanComparisons in the RecordQueryScanPlan, then wraps in a
+// TypeFilterPlan unless hasAndOrderedByRecordTypeKey() — a scan whose key
+// range is already prefixed by the record-type ordinal cannot yield any
+// other type, so a filter on top would be pure overhead (and, worse for
+// costing, an unearned selectivity discount; see TypeFilterCost).
 func (c *PrimaryScanMatchCandidate) ToScanPlan(
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	reverse bool,
@@ -306,8 +347,10 @@ func (c *PrimaryScanMatchCandidate) ToScanPlan(
 		}
 	}
 
-	// If available == queried, no filter needed.
-	if stringSlicesEqual(c.availableRecordTypes, c.queriedRecordTypes) {
+	// A record-type-key-prefixed primary key already scopes the physical
+	// scan to the queried type (see executeScan) — no filter needed.
+	// Mirrors Java's `if (hasAndOrderedByRecordTypeKey()) { return scanPlan; }`.
+	if c.hasRecordTypeKeyPrefix {
 		return scanPlan
 	}
 
@@ -319,20 +362,6 @@ func (c *PrimaryScanMatchCandidate) ToScanPlan(
 // Mirrors Java's PrimaryScanMatchCandidate.toString().
 func (c *PrimaryScanMatchCandidate) String() string {
 	return "primary[" + strings.Join(c.queriedRecordTypes, ",") + "]"
-}
-
-// stringSlicesEqual reports whether two string slices have the same
-// elements (order-sensitive).
-func stringSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 var (

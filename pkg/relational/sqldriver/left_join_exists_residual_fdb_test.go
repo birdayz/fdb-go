@@ -291,18 +291,39 @@ func TestFDB_LeftJoinExistsResidual(t *testing.T) {
 		}
 	}
 
-	// (H) EXPLAIN shape + determinism for the bug class, both polarities:
-	// the winner must carry the correlated step-1 (DefaultOnEmpty preserves
-	// the LEFT null-extension under the existential FlatMap — the fix's
-	// plan shape, not merely its rows), and one deterministic winner per
-	// shape.
+	// (H) EXPLAIN shape + determinism for the bug class, both polarities: the
+	// winner must carry a correlated step-1 that STRUCTURALLY preserves the
+	// LEFT null-extension for the dept/emp join (not merely produce the right
+	// rows on this one fixture) under the existential FlatMap+FirstOrDefault
+	// (the badge probe, unaffected by which LEFT-join strategy is chosen).
+	//
+	// The null-extension marker is EITHER of two currently-valid physical
+	// shapes for LEFT OUTER, not just one: a correlated FlatMap wraps its
+	// null-supplying leg in DefaultOnEmpty, while a materialized
+	// NestedLoopJoin carries the extension directly via its own LEFT OUTER
+	// join-type flag (executor.go executeNestedLoopJoin) — no DefaultOnEmpty
+	// node exists in that shape because the join itself does not need one.
+	// Which of the two the cost model picks for THIS join is an ordinary,
+	// data-driven cost decision (materialize-once beats re-scan-per-row for a
+	// non-probe inner, RFC-152) and is NOT the historical bug: that bug was a
+	// completely different code path — a dissolved LEFT box merging into the
+	// existential select and DROPPING its null-on-empty flag entirely (LEFT
+	// silently degrading to INNER, see the file-header comment) — not a
+	// legitimate alternative LEFT-OUTER-preserving physical operator.
+	// Requiring only ONE specific implementation of a correct property this
+	// pin does not actually need is exactly the failure mode CQ-24's
+	// PhysicalWrapperCostMultiplier fix surfaced here: fixing Cardinality's
+	// group-property violation made the materialized NLJ cost-correct for
+	// this shape, which is progress, not a regression.
 	for _, q := range []string{qA, qAn} {
 		var first string
 		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&first); err != nil {
 			t.Fatalf("explain: %v", err)
 		}
-		if !containsAll(first, "FlatMap", "DefaultOnEmpty", "FirstOrDefault") {
-			t.Errorf("bug-class plan lost the correlated step-1 shape: %s", first)
+		nullExtended := strings.Contains(first, "DefaultOnEmpty") || strings.Contains(first, "LEFT OUTER")
+		if !nullExtended || !containsAll(first, "FlatMap", "FirstOrDefault") {
+			t.Errorf("bug-class plan lost the correlated step-1 shape (need FlatMap+FirstOrDefault for the "+
+				"badge probe, and DefaultOnEmpty OR a LEFT OUTER join for the null-extension): %s", first)
 		}
 		for i := 0; i < 9; i++ {
 			var again string

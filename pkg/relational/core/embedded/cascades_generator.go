@@ -2105,6 +2105,7 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 			allTypeNames,
 			[]string{rt.Name},
 			upperPK,
+			rt.PrimaryKeyHasRecordTypePrefix(),
 			flowed,
 		))
 	}

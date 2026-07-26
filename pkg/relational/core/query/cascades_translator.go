@@ -8232,26 +8232,19 @@ func (t *cascadesTranslator) namedQuantifier(alias string, ref *expressions.Refe
 // the JOIN-LEVEL correlation identity changes, so field lookups (bm["COL"])
 // are unaffected.
 func existsInnerCorrelation(esq logical.ExistsSubquery) (string, predicates.QueryPredicate) {
-	// The rename is ONLY safe when the inner is a plain single-table scan whose
-	// ENTIRE correlation to the parent is captured in esq.JoinPredicate. Two
-	// inner shapes carry references to their OWN source alias that the rename
-	// cannot reach, so renaming the binding orphans them and the EXISTS goes
-	// silently false:
-	//
-	//   - a JOIN inner emits a MERGED row resolved by qualified leg keys
-	//     (T2.ID, T3.T2_ID, …), never a single-alias binding
-	//     (executePredicatesFilter: producesMergedRows ⇒ bindAlias=false);
-	//     pointing the predicate at a `<uniqueAlias>.*` namespace nothing writes
-	//     yields NULL; and
-	//   - a NESTED-EXISTS inner (a LogicalFilter carrying its own
-	//     ExistsSubqueries) has a nested existential correlation that references
-	//     the MIDDLE scan's source alias from INSIDE esq.Plan — not in
-	//     esq.JoinPredicate — so the rename leaves it bound to the old alias.
-	//
-	// Both keep the leg/source-alias routing. The alias-shadow collision the
-	// rename fixes only arises for a clean single-table inner (one bare
-	// namespace bound under one alias); the merged-row / nested-EXISTS inners
-	// route by distinct qualified keys and cannot clobber the outer binding.
+	// The rename is ONLY safe when the inner has ONE well-defined source alias
+	// (existsInnerSafeToRename) — a plain single-table scan, optionally under
+	// further filters, INCLUDING a nested EXISTS: the rebase below touches only
+	// esq.JoinPredicate, a value tree entirely separate from esq.Plan, so it can
+	// neither reach nor need to reach a correlation buried inside esq.Plan (that
+	// reference resolves in the nested plan's own re-translation, over the same
+	// unchanged scan alias). The one inner shape that DOES carry a reference the
+	// rename cannot reach is a JOIN inner: it emits a MERGED row resolved by
+	// qualified leg keys (T2.ID, T3.T2_ID, …), never a single-alias binding
+	// (executePredicatesFilter: producesMergedRows ⇒ bindAlias=false); pointing
+	// the predicate at a `<uniqueAlias>.*` namespace nothing writes yields NULL.
+	// That keeps the leg/source-alias routing — the merged-row inner routes by
+	// distinct qualified keys and cannot clobber the outer binding.
 	if !existsInnerSafeToRename(esq.Plan) {
 		return sourceAlias(esq.Plan), esq.JoinPredicate
 	}
@@ -8264,15 +8257,29 @@ func existsInnerCorrelation(esq logical.ExistsSubquery) (string, predicates.Quer
 	return uniqueAlias.Name(), joinPred
 }
 
-// existsInnerSafeToRename reports whether an existential subquery's plan is a
-// clean single-table scan whose only correlation to the parent lives in
-// esq.JoinPredicate — the only shape for which renaming the inner correlation to
-// the unique existential alias is safe. Returns false for a JOIN (merged-row
-// keyed by leg aliases), a CTE/derived-table (its own correlation namespace), or
-// a LogicalFilter carrying ExistsSubqueries (a nested EXISTS whose correlation
-// references the inner scan's alias from inside the plan). Walks the single-child
-// chain the same way sourceAlias does; a plain WHERE filter (no nested EXISTS) is
-// transparent.
+// existsInnerSafeToRename reports whether an existential subquery's plan has
+// ONE well-defined source alias (sourceAlias(op)) that fully captures the
+// plan's correlatable identity as seen from OUTSIDE — the shape for which
+// rebasing esq.JoinPredicate's references to that alias, onto the unique
+// existential alias, is safe. Returns false for a JOIN (a merged row keyed by
+// SEVERAL leg aliases — one rebase target cannot capture them all) and a
+// CTE/derived-table (its own correlation namespace). A LogicalFilter carrying
+// its OWN nested ExistsSubqueries is safe to walk through: the rename only
+// rewrites esq.JoinPredicate (a value tree entirely separate from esq.Plan),
+// so it can never reach — and never needs to reach — a correlation buried
+// INSIDE esq.Plan. That inner reference resolves in the nested plan's OWN
+// re-translation (translateFilter's own sourceAlias(f.Input) call), which
+// walks the SAME unchanged scan and so recomputes the SAME alias regardless
+// of what the enclosing existential quantifier ends up named. Declining to
+// rename here left esq.JoinPredicate referencing the plan's OLD internal
+// alias while the enclosing quantifier is registered under esq.Alias — two
+// different CorrelationIdentifiers — so the join predicate resolved against
+// nothing the outer SelectExpression's row-eval context ever bound (a
+// nested-EXISTS-with-its-own-correlation middle, e.g. `EXISTS (SELECT 1 FROM
+// t WHERE t.c < outer.x AND EXISTS (SELECT 1 FROM u WHERE u.c < t.c))`, hit
+// this: the middle correlation `t.c < outer.x` rode the plan's un-renamed
+// scan alias, and nothing in the enclosing select bound it). Walks the
+// single-child chain the same way sourceAlias does.
 func existsInnerSafeToRename(op logical.LogicalOperator) bool {
 	for cur := op; cur != nil; {
 		switch o := cur.(type) {
@@ -8283,11 +8290,6 @@ func existsInnerSafeToRename(op logical.LogicalOperator) bool {
 		case *logical.LogicalCTE:
 			return false
 		case *logical.LogicalFilter:
-			// A nested EXISTS inside the inner WHERE references the inner scan's
-			// own alias from within esq.Plan — the rename can't reach it.
-			if len(o.ExistsSubqueries) > 0 {
-				return false
-			}
 			ch := o.Children()
 			if len(ch) == 1 {
 				cur = ch[0]

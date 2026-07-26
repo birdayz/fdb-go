@@ -316,6 +316,50 @@ func NewAnd(preds ...QueryPredicate) *AndPredicate {
 
 func (p *AndPredicate) Children() []QueryPredicate { return p.SubPredicates }
 
+// CountConjuncts returns the number of independent AND-conjuncts in preds,
+// flattening AndPredicate nodes (recursively, so a nested AND(AND(a,b),c)
+// counts as 3) — the same logical residual predicate SET produces the same
+// count regardless of whether the CONSTRUCTING rule happened to combine
+// conjuncts into one AndPredicate or leave them as separate top-level list
+// entries. Every non-AND predicate (including OR/NOT, treated as one
+// opaque unit — this is a conjunct count, not full CNF expansion) counts as
+// exactly 1. An empty result floors at 1, matching FilterCost's "a
+// zero-predicate filter still pays one selectivity factor" convention.
+//
+// Exists because NestedLoopJoinCost and PredicatesFilter's own numPreds
+// (both a per-conjunct selectivity-compounding cost, cost_formulas.go)
+// otherwise disagree on a residual that reaches one path as N separate
+// QueryPredicate list entries and the other as one AndPredicate combining
+// the same N conditions — a representation artifact, not a difference in
+// the true selectivity, so the SAME logical join was costed two different
+// ways depending on which physical shape happened to receive which
+// packaging.
+func CountConjuncts(preds []QueryPredicate) int {
+	n := 0
+	for _, p := range preds {
+		n += countConjunctsOne(p)
+	}
+	if n == 0 {
+		return 1
+	}
+	return n
+}
+
+func countConjunctsOne(p QueryPredicate) int {
+	and, ok := p.(*AndPredicate)
+	if !ok {
+		return 1
+	}
+	n := 0
+	for _, child := range and.SubPredicates {
+		n += countConjunctsOne(child)
+	}
+	if n == 0 {
+		return 1
+	}
+	return n
+}
+
 // GetCorrelatedTo returns the union of all children's correlations.
 func (p *AndPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}

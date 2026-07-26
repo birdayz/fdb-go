@@ -3,6 +3,7 @@ package plans
 import (
 	"math"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -26,6 +27,11 @@ import (
 // the bound-comparison selectivity. A fully-equality-bound scan over the
 // primary key is a point lookup (one row), but only when the primary-key shape
 // stamped on the plan proves that the comparison prefix covers the whole key.
+//
+// The point-lookup branch charges FetchCPU, not ScanCPU: a full-PK equality
+// bind is ONE isolated GetRange round trip with nothing to amortize over (see
+// properties.FetchCPU's doc comment for the executor trace) — the same
+// physical shape as a Fetch, not a multi-row streaming scan.
 func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
 	if p == nil {
 		card := stats.RecordTypeCardinality("")
@@ -35,7 +41,7 @@ func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.Sta
 	// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY).
 	sel, _, _ := properties.BoundSelectivity(comps)
 	if properties.EqualityBoundsCoverKey(comps, len(p.GetPrimaryKeyValues())) {
-		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
+		return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
 	}
 	types := p.GetRecordTypes()
 	total := 0.0
@@ -46,8 +52,8 @@ func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.Sta
 			total += stats.RecordTypeCardinality(t)
 		}
 	}
-	card := total * sel * properties.PhysicalWrapperCostMultiplier
-	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
+	card := total * sel
+	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier}
 }
 
 // HintCost: index scans are cheaper than full table scans because they read a
@@ -55,19 +61,25 @@ func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.Sta
 // discount. Unique indexes with all columns equality-bound return
 // cardinality=1 (point lookup).
 //
-// Fetch I/O cost (FetchCPU per row) is NOT included here — it belongs on the
-// Fetch enforcer, which is eliminated for covering scans.
+// The point-lookup branch charges FetchCPU for the INDEX round trip itself —
+// it is ONE isolated GetRange call with nothing to amortize over, the same
+// physical shape as a Fetch (see properties.FetchCPU's doc comment). This is
+// NOT the base-record fetch: that per-row cost still belongs on the separate
+// Fetch enforcer (eliminated for covering scans), added on TOP of this when
+// the index is non-covering — a covering unique-index point-probe (no Fetch
+// node) correctly costs one round trip; a non-covering one correctly costs
+// two.
 func (p *RecordQueryIndexPlan) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
-	base := indexBaseCardinality(p, stats) * properties.PhysicalWrapperCostMultiplier
+	base := indexBaseCardinality(p, stats)
 	if p != nil {
 		// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY).
 		sel, numBound, allEquality := properties.BoundSelectivity(p.GetScanComparisons())
 		if p.IsUnique() && allEquality && numBound == len(p.GetColumnNames()) {
-			return properties.Cost{Cardinality: properties.PhysicalWrapperCostMultiplier, CPU: 0}
+			return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
 		}
 		base *= sel
 	}
-	return properties.Cost{Cardinality: base, CPU: base * properties.ScanCPU}
+	return properties.Cost{Cardinality: base, CPU: base * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier}
 }
 
 func indexBaseCardinality(plan *RecordQueryIndexPlan, stats properties.StatisticsProvider) float64 {
@@ -88,7 +100,7 @@ func indexBaseCardinality(plan *RecordQueryIndexPlan, stats properties.Statistic
 func (p *RecordQueryVectorIndexPlan) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	card := vectorScanCardinality(p)
 	return properties.Cost{
-		Cardinality: card * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: card,
 		CPU:         card * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier,
 	}
 }
@@ -99,11 +111,11 @@ func (p *RecordQueryAggregateIndexPlan) HintCost(_ []properties.Cost, stats prop
 	if stats != nil {
 		tableCard = stats.RecordTypeCardinality(p.GetRecordTypeName())
 	}
-	cardinality := tableCard * properties.DistinctSelectivity * properties.PhysicalWrapperCostMultiplier
+	cardinality := tableCard * properties.DistinctSelectivity
 	if cardinality < 1 {
 		cardinality = 1
 	}
-	return properties.Cost{Cardinality: cardinality, CPU: cardinality * properties.ScanCPU}
+	return properties.Cost{Cardinality: cardinality, CPU: cardinality * properties.ScanCPU * properties.PhysicalWrapperCostMultiplier}
 }
 
 // HintCost: a literal row source costs nothing to produce.
@@ -125,13 +137,13 @@ func (p *RecordQueryExplodePlan) HintCost(_ []properties.Cost, _ properties.Stat
 			}
 		}
 	}
-	return properties.Cost{Cardinality: card * properties.PhysicalWrapperCostMultiplier, CPU: 0}
+	return properties.Cost{Cardinality: card, CPU: 0}
 }
 
 // HintCost: a temp-table scan reads an in-memory buffer of unknown size.
 func (p *RecordQueryTempTableScanPlan) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	return properties.Cost{
-		Cardinality: properties.LeafScanCardinality * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: properties.LeafScanCardinality,
 		CPU:         0,
 	}
 }
@@ -139,7 +151,7 @@ func (p *RecordQueryTempTableScanPlan) HintCost(_ []properties.Cost, _ propertie
 // HintCost: a table function's row count is opaque at plan time.
 func (p *RecordQueryTableFunctionPlan) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	return properties.Cost{
-		Cardinality: properties.LeafScanCardinality * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: properties.LeafScanCardinality,
 		CPU:         0,
 	}
 }
@@ -170,7 +182,7 @@ func (p *RecordQueryPredicatesFilterPlan) HintCost(child []properties.Cost, _ pr
 		sel *= properties.FilterSelectivity
 	}
 	return properties.Cost{
-		Cardinality: in * sel * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: in * sel,
 		CPU:         (child[0].CPU + in*properties.FilterCPU*float64(numPreds)) * properties.PhysicalWrapperCostMultiplier,
 	}
 }
@@ -242,18 +254,16 @@ func (p *RecordQueryProjectionPlan) HintCost(child []properties.Cost, _ properti
 		return properties.Cost{}
 	}
 	return properties.Cost{
-		Cardinality: child[0].Cardinality * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: child[0].Cardinality,
 		CPU:         (child[0].CPU + child[0].Cardinality*properties.ProjectionCPU) * properties.PhysicalWrapperCostMultiplier,
 	}
 }
 
-// HintCost: DefaultOnEmpty passes its child through unchanged — literally.
-// It is a per-row null-extension shim, not an alternative implementation
-// competing in the memo, so it must NOT carry the physical-wrapper
-// discount: through the join-ordering walk's HintCost dispatch (RFC-186
-// §2D) that discount made the correlated re-scan FlatMap shape ~10%
-// cheaper than the materialized NLJ and flipped the RFC-152 preserved-only
-// LEFT JOIN back to the per-outer-row re-scan the RFC exists to prevent.
+// HintCost: DefaultOnEmpty passes its child through unchanged — literally,
+// Cardinality AND CPU. It is a per-row null-extension shim over the SAME rows
+// the child produces, not an alternative implementation competing in the
+// memo, so it earns no physical-wrapper CPU discount of its own — unlike
+// every other wrapper here, it adds no real execution step worth pricing.
 func (p *RecordQueryDefaultOnEmptyPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
@@ -267,7 +277,7 @@ func (p *RecordQueryTempTableInsertPlan) HintCost(child []properties.Cost, _ pro
 		return properties.Cost{}
 	}
 	return properties.Cost{
-		Cardinality: child[0].Cardinality * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: child[0].Cardinality,
 		CPU:         child[0].CPU * properties.PhysicalWrapperCostMultiplier,
 	}
 }
@@ -288,7 +298,7 @@ func (p *RecordQueryLimitPlan) HintCost(child []properties.Cost, _ properties.St
 		}
 	}
 	return properties.Cost{
-		Cardinality: outCard * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: outCard,
 		CPU:         child[0].CPU * properties.PhysicalWrapperCostMultiplier,
 	}
 }
@@ -300,7 +310,7 @@ func (p *RecordQueryStreamingAggregationPlan) HintCost(child []properties.Cost, 
 	}
 	in := child[0].Cardinality
 	return properties.Cost{
-		Cardinality: in * properties.DistinctSelectivity * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: in * properties.DistinctSelectivity,
 		CPU:         (child[0].CPU + in*properties.StreamingAggCPU) * properties.PhysicalWrapperCostMultiplier,
 	}
 }
@@ -313,7 +323,7 @@ func dmlCost(child []properties.Cost) properties.Cost {
 	}
 	in := child[0].Cardinality
 	return properties.Cost{
-		Cardinality: in * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: in,
 		CPU:         (child[0].CPU + in*properties.WriteCPU) * properties.PhysicalWrapperCostMultiplier,
 	}
 }
@@ -342,7 +352,7 @@ func unionLikeCost(child []properties.Cost) properties.Cost {
 		sumCPU += c.CPU
 	}
 	return properties.Cost{
-		Cardinality: sumCard * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: sumCard,
 		CPU:         (sumCPU + sumCard*properties.UnionCPU) * properties.PhysicalWrapperCostMultiplier,
 	}
 }
@@ -400,13 +410,19 @@ func (p *RecordQueryNestedLoopJoinPlan) HintCost(child []properties.Cost, _ prop
 	if len(child) < 2 {
 		return properties.Cost{}
 	}
-	return properties.NestedLoopJoinCost(child[0], child[1])
+	return properties.NestedLoopJoinCost(child[0], child[1], predicates.CountConjuncts(p.GetPredicates()))
 }
 
 // HintCost: an InJoin is a correlated index probe — for each IN value the
 // inner does an equality point-lookup returning ~1 row. The child's standalone
 // cardinality overstates this (it reports the index's selectivity against the
 // full table), so the IN-list length is the output cardinality.
+//
+// Both terms are FetchCPU: each IN value pays TWO isolated, unamortized round
+// trips — the index equality point-probe itself (ONE GetRange bound to that
+// value, no batching across IN values) and the base-record fetch it resolves
+// — the same physical shape properties.FetchCPU's doc comment establishes for
+// any isolated point-probe/fetch, not the amortized multi-row ScanCPU rate.
 func (p *RecordQueryInJoinPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
@@ -416,8 +432,8 @@ func (p *RecordQueryInJoinPlan) HintCost(child []properties.Cost, _ properties.S
 		inListLen = 10 // parameterized IN — values not bound at plan time
 	}
 	return properties.Cost{
-		Cardinality: inListLen * properties.PhysicalWrapperCostMultiplier,
-		CPU:         inListLen * (properties.ScanCPU + properties.FetchCPU) * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: inListLen,
+		CPU:         inListLen * (properties.FetchCPU + properties.FetchCPU) * properties.PhysicalWrapperCostMultiplier,
 	}
 }
 
@@ -439,7 +455,7 @@ func (p *RecordQueryInUnionPlan) HintCost(child []properties.Cost, _ properties.
 	}
 	in := child[0].Cardinality
 	return properties.Cost{
-		Cardinality: in * fanout * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: in * fanout,
 		CPU:         (child[0].CPU*fanout + in*fanout*properties.UnionCPU) * properties.PhysicalWrapperCostMultiplier,
 	}
 }
@@ -497,7 +513,7 @@ func recursiveCost(child []properties.Cost) properties.Cost {
 		recCard = properties.LeafScanCardinality
 	}
 	return properties.Cost{
-		Cardinality: seedCard * recCard * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: seedCard * recCard,
 		CPU:         (child[0].CPU + seedCard*child[1].CPU) * properties.PhysicalWrapperCostMultiplier,
 	}
 }

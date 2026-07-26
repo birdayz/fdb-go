@@ -55,8 +55,31 @@ tests:
   # with RangeExclusive low endpoint). ORDER BY id is satisfied by the
   # primary-key scan order, so the sort MUST be eliminated — never materialized
   # into an InMemorySort over the already-ordered scan (RFC-184 W2 depth-rung gate).
+  #
+  # No TypeFilter wraps the scan: this schema does not opt into
+  # INTERMINGLE_TABLES, so every table's primary key is RecordTypeKey()-
+  # prefixed (buildPrimaryKeyExpression) and executeScan clamps any
+  # unbounded scan endpoint to that type's key-prefix range — the scan
+  # physically cannot produce a row of another type, so a TypeFilterPlan on
+  # top would be pure overhead. Mirrors Java's
+  # PrimaryScanMatchCandidate.hasAndOrderedByRecordTypeKey()/toEquivalentPlan
+  # (`if (hasAndOrderedByRecordTypeKey()) { return scanPlan; }`), which never
+  # wraps a record-type-key-prefixed scan regardless of how many OTHER types
+  # share the store. See intermingle_type_filter.yaml for the discriminating
+  # counterpart (INTERMINGLE_TABLES=true), where the filter is load-bearing
+  # and its absence would show up as WRONG ROWS, not just a plan-shape diff.
   - query: SELECT id FROM t WHERE id > 2 ORDER BY id
-    plan_contains: "TypeFilter([T], Scan(T, [<>]))"
+    plan_contains: "Scan(T, [<>])"
+    plan_not_contains: TypeFilter
+    rows:
+      - [3]
+      - [4]
+
+  # Same query, second EXPLAIN assertion: plan_not_contains only checks one
+  # substring, so the sort-elimination pin (the ORDER BY id case's original
+  # purpose — RFC-184 W2 depth-rung gate) needs its own entry now that this
+  # line above also pins TypeFilter absence.
+  - query: SELECT id FROM t WHERE id > 2 ORDER BY id
     plan_not_contains: InMemorySort
     rows:
       - [3]

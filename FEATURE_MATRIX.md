@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**340 scenarios · 2730 query/assertion cases** across 18 feature areas — 2389 supported, 111 unsupported-feature pins, 230 error-path pins.
+**341 scenarios · 2734 query/assertion cases** across 18 feature areas — 2393 supported, 111 unsupported-feature pins, 230 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -40,12 +40,12 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | NULL handling | 5 | 26 | 22 | 0 | 4 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
 | Index usage | 9 | 162 | 160 | 0 | 2 |
-| Types | 12 | 145 | 124 | 4 | 17 |
-| Keys & primary keys | 5 | 132 | 127 | 0 | 5 |
+| Types | 13 | 148 | 127 | 4 | 17 |
+| Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 37 | 8 | 2 | 27 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 30 | 233 | 200 | 10 | 23 |
-| **Total** | **340** | **2730** | **2389** | **111** | **230** |
+| **Total** | **341** | **2734** | **2393** | **111** | **230** |
 
 ## Aggregates & GROUP BY
 
@@ -406,6 +406,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `bytes` | 14 | 11 | 0 | 3 | BYTES column type — hex literals (x'DEADBEEF'), comparisons, IN, |
 | `datetime_column_types` | 43 | 39 | 4 | 0 | Go extension: DATE and TIMESTAMP column types. |
 | `integer_column_types` | 27 | 22 | 0 | 5 | Comprehensive INTEGER (INT32) column type coverage: |
+| `intermingle_type_filter` | 3 | 3 | 0 | 0 | INTERMINGLE_TABLES=true puts every table's primary key in the SAME FDB |
 | `mixed_type_equality` | 5 | 3 | 0 | 2 | swingshift-35 commit 6853cee5: valuesEqual and compareValues no longer |
 | `numeric_types` | 8 | 6 | 0 | 2 | Arithmetic across numeric column types — pins that: |
 | `select_where_comparison_types` | 6 | 6 | 0 | 0 | WHERE with all comparison operators |
@@ -422,7 +423,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `composite_pk` | 4 | 3 | 0 | 1 | Composite PRIMARY KEY (col1, col2). |
 | `composite_pk_java` | 10 | 9 | 0 | 1 | Composite primary key patterns. |
 | `composite_pk_prefix_pushdown` | 15 | 14 | 0 | 1 | Pure-prefix composite PK pushdown: equalities on a leading subset |
-| `pk_pushdown` | 96 | 94 | 0 | 2 | Primary-key equality pushdown: queries of the form |
+| `pk_pushdown` | 97 | 95 | 0 | 2 | Primary-key equality pushdown: queries of the form |
 | `pk_range_scan` | 7 | 7 | 0 | 0 | PK range scan with comparison operators |
 
 ## Error codes & validation

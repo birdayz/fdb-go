@@ -32,15 +32,17 @@ import (
 // for every criterion function this package exposes, and composes them for
 // the full comparator too.
 //
-// SELF-CLEANING EXCLUSION LIST: compareJoinOrdering (CQ-24) and
-// compareRecursiveCTE (CQ-23) are KNOWN to violate these properties and are
-// NOT fixed here — the fix is design work behind the query-engine RFC gate
-// (see TODO.md). Each is tested TWICE: assertKnownViolation proves the
-// documented counterexample still reproduces (so this file stays RED, and
-// forces someone to remove the exclusion, the moment either is actually
-// fixed), and the composed-comparator corpus below deliberately excludes
-// join-containing and recursive-CTE plans so the mandatory suite stays
-// green on the axes that are NOT known-broken.
+// compareJoinOrdering (CQ-24) and compareRecursiveCTE (CQ-23) used to be a
+// SELF-CLEANING EXCLUSION LIST here: both were known to violate these
+// properties (assertKnownViolation proved the documented counterexample
+// still reproduced, forcing removal from the list the moment either was
+// actually fixed). Both are fixed now — compareJoinOrdering ranks every pair
+// by a single Cost.Less metric once FlatMapCost.Cardinality stopped being an
+// outer-only proxy blind to the inner side (cost_formulas.go), and
+// compareRecursiveCTE ranks by an intrinsic per-plan rank
+// (recursiveCTERank) instead of a pair-dependent branch — so both are
+// covered the same way every other criterion in this file is: standalone
+// assertTotalPreorder + assertFoldStable sections below.
 // ============================================================================
 
 // preorderCandidate names an expression for readable violation messages.
@@ -122,23 +124,6 @@ func assertTotalPreorder(t *testing.T, label string, compare preorderCompareFn, 
 		}
 		t.Errorf("%s: %s", label, v)
 	}
-}
-
-// assertKnownViolation is the self-cleaning half of the exclusion list for a
-// criterion documented as non-total-preorder (CQ-24 / CQ-23): it FAILS
-// unless compare still violates the property on corpus, so the moment
-// someone fixes the underlying criterion this test forces its removal from
-// the exclusion list instead of quietly continuing to pass forever.
-func assertKnownViolation(t *testing.T, label, todoRef string, compare preorderCompareFn, corpus []preorderCandidate) {
-	t.Helper()
-	violations := preorderViolations(compare, corpus)
-	if len(violations) == 0 {
-		t.Fatalf("%s: expected a STILL-OPEN total-preorder violation tracked at %s, but none was "+
-			"found on this corpus — the criterion looks FIXED; remove it from the exclusion list "+
-			"in this file and in TODO.md", label, todoRef)
-	}
-	t.Logf("%s: confirmed still violating (%s): %d violation(s) found, e.g. %s",
-		label, todoRef, len(violations), violations[0])
 }
 
 // foldGetBest replicates Reference.GetBest's exact pairwise fold
@@ -429,9 +414,11 @@ func structuralCriteria() []structuralCriterion {
 // guard that neutralises it — the corresponding COUNT rung already
 // separates any pair where one side is genuinely N/A (-1) and the other
 // is not, so the depth rung the false tie routes through is never reached
-// on a live comparison. Compare with TestCostModel_CompareJoinOrdering_
-// StillViolatesTotalPreorder_CQ24, which has no such guard: joinShapesDiffer
-// is consulted with no preceding rung that already equalises the precondition.
+// on a live comparison. Contrast with the FORMER compareJoinOrdering defect
+// (CQ-24, now fixed): that one had no such guard — its pair-dependent
+// joinShapesDiffer branch was consulted with no preceding rung that already
+// equalised the precondition, so the break reached production instead of
+// being absorbed the way this one is.
 func TestCostModel_DepthCriteria_AbstentionIsPositionallyGuarded(t *testing.T) {
 	t.Parallel()
 	corpus := structuralCorpus(t)
@@ -566,11 +553,12 @@ func TestCostModel_StructuralCriteria_TotalPreorderAndFoldStable(t *testing.T) {
 // criterion #2 (see the doc comment on cardinalityBoundaryCorpus for why
 // that criterion has no standalone function to test directly).
 //
-// DELIBERATELY EXCLUDES join-containing plans (FlatMap / NestedLoopJoin) and
-// recursive-CTE plans (RecursiveDfsJoin / RecursiveLevelUnion): those are
-// the CQ-24 / CQ-23 known-broken axes, tested and confirmed-still-broken
-// separately below. Including them here would make this mandatory suite red
-// for a reason already tracked, which is not the point of THIS test.
+// Join-containing plans (FlatMap / NestedLoopJoin) and recursive-CTE plans
+// (RecursiveDfsJoin / RecursiveLevelUnion) get their own dedicated corpus and
+// tests below (compareJoinOrdering / compareRecursiveCTE) rather than joining
+// this union — each needs its own StatisticsProvider/table-cardinality setup
+// to exercise the shape it is testing, which the rest of this corpus does not
+// carry.
 // ============================================================================
 
 // cardinalityBoundaryCorpus exercises criterion #2 (max-of-max provable data-
@@ -578,8 +566,10 @@ func TestCostModel_StructuralCriteria_TotalPreorderAndFoldStable(t *testing.T) {
 // rather than a standalone function — there is nothing to call directly the
 // way compareInPlan or comparePrimaryScanVsIndexScan can be called. Its outer
 // guard (wholePlanMaxCardinalityKnown(a) || wholePlanMaxCardinalityKnown(b))
-// is pair-dependent (an OR of two per-side booleans) exactly like CQ-24's
-// joinShapesDiffer gate, AND that guard is blind to PlanContext (it always
+// is pair-dependent (an OR of two per-side booleans) — the same shape of gate
+// the FORMER compareJoinOrdering defect used to pick its metric from (CQ-24,
+// fixed by making the metric a single per-plan-pair Cost value with no
+// shape-conditioned branch) — AND that guard is blind to PlanContext (it always
 // resolves PK arity from plan-stamped metadata only — see
 // wholePlanMaxCardinalityKnown -> computeCardinalities -> scanProvableMaxCard,
 // which hardcodes ctx=nil) while the criterion's own rank
@@ -698,21 +688,30 @@ func TestCostModel_ComposedComparator_FoldStable(t *testing.T) {
 }
 
 // ============================================================================
-// EXCLUSION 1 — compareJoinOrdering (CQ-24). Picks its metric from
+// compareJoinOrdering (CQ-24, fixed). Used to pick its metric from
 // joinShapesDiffer(a,b), a property of the PAIR: shapes differ -> raw
 // Cost.CPU, shapes same -> Cost.Less (Cardinality+CPU). Two independent
-// unequal-metric choices for what is nominally one lexicographic rung breaks
-// transitivity outright.
+// unequal-metric choices for what is nominally one lexicographic rung broke
+// transitivity outright. The fix made FlatMapCost.Cardinality a true
+// outerCard*innerCard join-cardinality (cost_formulas.go) instead of an
+// outer-only proxy blind to the inner side, so it agrees with
+// NestedLoopJoinCost's cardinality on the SAME logical join and a single
+// Cost.Less metric decides every pair — no shape-conditioned branch left.
 //
-// The 3-plan cycle below was found by a targeted search over FlatMap/NLJ
-// pairs across a spread of table cardinalities (Fibonacci sizes 1..10946,
-// chosen only to get enough spread that CPU and Total orderings diverge
-// somewhere — small round-number spreads did not reproduce it). It is
-// genuinely minimal: T0=1, T1=2, T2=3, T4=8.
+// The corpus below carries BOTH 3-plan cycles TODO.md's CQ-24 entry
+// documents: the minimal one found by a targeted search over FlatMap/NLJ
+// pairs across a spread of table cardinalities (T0=1, T1=2, T2=3, T4=8), and
+// the second, independent cycle a permutation sweep alongside it found
+// (flatMap(outer=1,inner=1000), flatMap(outer=100,inner=1),
+// nlj(outer=1,inner=220)). Neither cycles any more; assertTotalPreorder
+// covers both plus every other pair the corpus can form.
 // ============================================================================
 
 func joinOrderingCorpus() ([]preorderCandidate, properties.StatisticsProvider) {
-	stats := properties.MapStatistics{PerType: map[string]float64{"T0": 1, "T1": 2, "T2": 3, "T4": 8}}
+	stats := properties.MapStatistics{PerType: map[string]float64{
+		"T0": 1, "T1": 2, "T2": 3, "T4": 8,
+		"U_o1": 1, "U_i1000": 1000, "U_o100": 100, "U_i1": 1, "U_i220": 220,
+	}}
 	mkFlatMap := func(outerT, innerT string, suffix int) *plans.RecordQueryFlatMapPlan {
 		outer := plans.NewRecordQueryScanPlan([]string{outerT}, values.UnknownType, false)
 		inner := plans.NewRecordQueryScanPlan([]string{innerT}, values.UnknownType, false)
@@ -734,38 +733,54 @@ func joinOrderingCorpus() ([]preorderCandidate, properties.StatisticsProvider) {
 	}
 
 	return []preorderCandidate{
+		// Cycle 1 (the minimal reproducer).
 		{"NLJ(T0,T2)", mkNLJ("T0", "T2", 1)},
 		{"FM(T0,T4)", mkFlatMap("T0", "T4", 2)},
 		{"FM(T1,T0)", mkFlatMap("T1", "T0", 3)},
+		// Cycle 2 (the independent second cycle from the permutation sweep).
+		{"FM(U_o1,U_i1000)", mkFlatMap("U_o1", "U_i1000", 4)},
+		{"FM(U_o100,U_i1)", mkFlatMap("U_o100", "U_i1", 5)},
+		{"NLJ(U_o1,U_i220)", mkNLJ("U_o1", "U_i220", 6)},
 	}, stats
 }
 
-func TestCostModel_CompareJoinOrdering_StillViolatesTotalPreorder_CQ24(t *testing.T) {
+func TestCostModel_CompareJoinOrdering_TotalPreorderAndFoldStable(t *testing.T) {
 	t.Parallel()
 	corpus, stats := joinOrderingCorpus()
 	compare := func(a, b expressions.RelationalExpression) int {
 		return compareJoinOrdering(a, b, stats, nil)
 	}
-	assertKnownViolation(t, "compareJoinOrdering", "CQ-24", compare, corpus)
+	assertTotalPreorder(t, "compareJoinOrdering", compare, corpus)
+	assertFoldStable(t, "compareJoinOrdering", compare, corpus)
 
-	// Pin the exact minimal cycle, independent of the generic harness, so a
-	// change to the harness itself can't silently stop exercising it.
+	// Pin the exact two documented cycles are gone, independent of the
+	// generic harness, so a change to the harness itself can't silently stop
+	// exercising them.
 	ab := compare(corpus[0].expr, corpus[1].expr)
 	bc := compare(corpus[1].expr, corpus[2].expr)
 	ac := compare(corpus[0].expr, corpus[2].expr)
-	if !(ab < 0 && bc < 0 && ac >= 0) {
-		t.Fatalf("CQ-24 minimal cycle no longer reproduces (fixed?): "+
-			"cmp(NLJ(T0,T2),FM(T0,T4))=%d cmp(FM(T0,T4),FM(T1,T0))=%d cmp(NLJ(T0,T2),FM(T1,T0))=%d — "+
-			"if this is intentional, close CQ-24 and remove this test", ab, bc, ac)
+	if ab < 0 && bc < 0 && ac >= 0 {
+		t.Fatalf("CQ-24 cycle 1 reproduced: cmp(NLJ(T0,T2),FM(T0,T4))=%d "+
+			"cmp(FM(T0,T4),FM(T1,T0))=%d cmp(NLJ(T0,T2),FM(T1,T0))=%d", ab, bc, ac)
+	}
+	de := compare(corpus[3].expr, corpus[4].expr)
+	ef := compare(corpus[4].expr, corpus[5].expr)
+	df := compare(corpus[3].expr, corpus[5].expr)
+	if de < 0 && ef < 0 && df >= 0 {
+		t.Fatalf("CQ-24 cycle 2 reproduced: cmp(FM(U_o1,U_i1000),FM(U_o100,U_i1))=%d "+
+			"cmp(FM(U_o100,U_i1),NLJ(U_o1,U_i220))=%d cmp(FM(U_o1,U_i1000),NLJ(U_o1,U_i220))=%d", de, ef, df)
 	}
 }
 
 // ============================================================================
-// EXCLUSION 2 — compareRecursiveCTE (CQ-23). DFS < Level strictly, but an
+// compareRecursiveCTE (CQ-23, fixed). Used to rank via aDFS&&bLevel /
+// aLevel&&bDFS, a property of the PAIR: DFS < Level strictly, but an
 // unclassified candidate (any non-recursive-CTE plan — the overwhelmingly
-// common case, since this runs on every pair unconditionally) ties with
-// BOTH: DFS ~ Unclassified ~ Level. Ties must be transitive in a total
-// preorder; this one is not.
+// common case, since this runs on every pair unconditionally) tied with
+// BOTH: DFS ~ Unclassified ~ Level, an indifference-transitivity violation.
+// The fix ranks by recursiveCTERank, an intrinsic per-plan rank in {0,1,2}
+// (DFS, Unclassified, Level) — ordering by intCompare on a per-item rank can
+// never cycle or produce an intransitive tie.
 // ============================================================================
 
 func recursiveCTECorpus() []preorderCandidate {
@@ -790,18 +805,21 @@ func recursiveCTECorpus() []preorderCandidate {
 	}
 }
 
-func TestCostModel_CompareRecursiveCTE_StillViolatesTotalPreorder_CQ23(t *testing.T) {
+func TestCostModel_CompareRecursiveCTE_TotalPreorderAndFoldStable(t *testing.T) {
 	t.Parallel()
 	corpus := recursiveCTECorpus()
 	compare := compareRecursiveCTE
-	assertKnownViolation(t, "compareRecursiveCTE", "CQ-23", compare, corpus)
+	assertTotalPreorder(t, "compareRecursiveCTE", compare, corpus)
+	assertFoldStable(t, "compareRecursiveCTE", compare, corpus)
 
+	// Pin the documented relative order directly: DFS still strictly beats
+	// Level (the load-bearing preference this criterion exists for), and
+	// Unclassified no longer ties with both simultaneously.
 	dl := compare(corpus[0].expr, corpus[1].expr) // DFS vs Level
 	du := compare(corpus[0].expr, corpus[2].expr) // DFS vs Unclassified
 	ul := compare(corpus[2].expr, corpus[1].expr) // Unclassified vs Level
-	if !(dl < 0 && du == 0 && ul == 0) {
-		t.Fatalf("CQ-23 indifference-transitivity break no longer reproduces (fixed?): "+
-			"compare(DFS,Level)=%d compare(DFS,Unclassified)=%d compare(Unclassified,Level)=%d — "+
-			"if this is intentional, close CQ-23 and remove this test", dl, du, ul)
+	if !(dl < 0 && du < 0 && ul < 0) {
+		t.Fatalf("expected DFS < Unclassified < Level strictly, got "+
+			"compare(DFS,Level)=%d compare(DFS,Unclassified)=%d compare(Unclassified,Level)=%d", dl, du, ul)
 	}
 }

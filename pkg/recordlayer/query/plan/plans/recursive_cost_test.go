@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -56,12 +57,16 @@ func TestRecursiveCost_DfsStrictlyCheaperThanLevelUnion(t *testing.T) {
 					dfsCost.Cardinality, levelCost.Cardinality)
 			}
 
-			// (3) The gap must equal the level-buffer echo term EXACTLY — pins
-			// the sizing (per-row buffer write+read-back at the union merge
-			// rate), not just "some positive nudge".
+			// (3) The gap must equal the level-buffer echo term — pins the
+			// sizing (per-row buffer write+read-back at the union merge rate),
+			// not just "some positive nudge". Tolerance-based: gotEcho is a
+			// DIFFERENCE of two independently-rounded sums (levelCost.CPU and
+			// dfsCost.CPU each accumulate their own float64 rounding), so it
+			// need not bit-exactly equal a fresh product even when the true
+			// values are mathematically identical.
 			wantEcho := dfsCost.Cardinality * properties.UnionCPU * levelUnionBufferTouches
 			gotEcho := levelCost.CPU - dfsCost.CPU
-			if gotEcho != wantEcho {
+			if math.Abs(gotEcho-wantEcho) > 1e-9 {
 				t.Fatalf("echo term mismatch: got %g, want %g (card %g × UnionCPU %g × touches %d)",
 					gotEcho, wantEcho, dfsCost.Cardinality, properties.UnionCPU, levelUnionBufferTouches)
 			}

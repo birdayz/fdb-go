@@ -26,6 +26,7 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 		[]string{"T", "U"},
 		[]string{"T"},
 		[]string{"TENANT", "ORDER"},
+		false, // genuine shared-primary-key-range multi-type scan: no record-type-key prefix
 		values.UnknownType,
 	)
 
@@ -49,11 +50,12 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 
 	stats := properties.FixedStatistics{Cardinality: 1000}
 	got := (&scanPlanExpression{plan: partialPlan}).HintCost(nil, stats)
+	// NO PhysicalWrapperCostMultiplier on Cardinality (CPU-only, cost_formulas.go):
+	// Cardinality is a logical-group property, so stacking a TypeFilter on top of
+	// the scan must not shrink the row count beyond the two selectivity factors.
 	want := stats.Cardinality *
 		properties.EqualityBoundSelectivity *
-		properties.PhysicalWrapperCostMultiplier *
-		properties.TypeFilterSelectivity *
-		properties.PhysicalWrapperCostMultiplier
+		properties.TypeFilterSelectivity
 	if math.Abs(got.Cardinality-want) > 1e-12 {
 		t.Fatalf("partial-PK adapter cardinality = %v, want selectivity-priced %v", got.Cardinality, want)
 	}
@@ -74,7 +76,8 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 		t.Fatalf("fully equality-bound stamped scan cardinality = %v, want 1", fullLeafCost.Cardinality)
 	}
 	fullAdapterCost := (&scanPlanExpression{plan: fullPlan}).HintCost(nil, stats)
-	wantFullAdapter := properties.TypeFilterSelectivity * properties.PhysicalWrapperCostMultiplier
+	// NO PhysicalWrapperCostMultiplier on Cardinality — see the partial-PK case above.
+	wantFullAdapter := properties.TypeFilterSelectivity
 	if math.Abs(fullAdapterCost.Cardinality-wantFullAdapter) > 1e-12 {
 		t.Fatalf("full-PK adapter cardinality = %v, want point-priced %v", fullAdapterCost.Cardinality, wantFullAdapter)
 	}

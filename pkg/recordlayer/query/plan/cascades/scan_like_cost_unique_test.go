@@ -35,10 +35,12 @@ func TestScanLikeCost_UniqueGating(t *testing.T) {
 	}
 
 	// Sanity: the bucket is the table cardinality scaled by the EQUALITY-bound
-	// selectivity and the physical-wrapper discount — far larger than a point probe.
+	// selectivity — far larger than a point probe. NO physical-wrapper discount:
+	// Cardinality is a property of the logical group, not of how many physical
+	// nodes wrap the plan, so physicalWrapperCostMultiplier applies to CPU only.
 	// (Uses EqualityBoundSelectivity, not FilterSelectivity: an indexed equality
 	// bound is a point lookup, not a generic residual filter — RFC-164 COST-SELECTIVITY.)
-	want := 1_000_000.0 * properties.EqualityBoundSelectivity * physicalWrapperCostMultiplier
+	want := 1_000_000.0 * properties.EqualityBoundSelectivity
 	if nonUniq != want {
 		t.Fatalf("non-unique bucket cardinality=%v, want %v", nonUniq, want)
 	}

@@ -1565,6 +1565,162 @@ closed rather than silently alter rows or output schema.
   not yet constructed. Fold into the CQ-24 RFC — same file, same class, and a
   comparator-wide total-preorder property test should cover both.
 
+- [x] **CQ-25 — `TestFDB_MultiwayJoinOrder_Nway` now elects the forward
+  (index-probe) drive order for the physically correct reason: three
+  compounding cost-model incoherences, each a "the same execution priced
+  two different ways depending on which node performed it" defect, found
+  and fixed in sequence.**
+
+  **Fix 1 — the cap's condition wasn't reaching real plans.**
+  `fk_chain_cardinality.go`'s cap ("a FlatMap chain's output can't exceed the
+  probed table's own size") was already keyed on the right thing — the
+  OUTER's proven uniqueness (via chained `pkThread`), not the inner leg's
+  index kind — but `innerFullyBindsThread` failed closed on any
+  `RecordTypeValue` component of `outerThread.pkValues`.
+  `TranslatePrimaryKeyToValues` (`primary_key_translation.go`) stamps one
+  whenever a table's declared PK compiles to `Concat(RecordTypeKey(),
+  Field(...))` — the normal shape for every table in a non-intermingled
+  multi-type SQL schema. A chain's first hop roots its outer thread at a
+  plain `RecordQueryScanPlan` (`GetPrimaryKeyValues`, no prefix), so hop 1
+  was never affected; every hop after that roots at the PRECEDING hop's
+  inner leg — an `IndexPlan`, whose `GetCommonPrimaryKeyValues` DOES carry
+  the prefix — so the cap could fire on hop 1 only, never hop 2+. Fixed by
+  skipping `RecordTypeValue` components when building `wantFields`: within
+  one `pkThread` every row already shares one record type, so that
+  component is a per-thread CONSTANT, never a discriminating column.
+  Regression: `TestFKChainCardinalityCap_PropagatesAcrossRecordTypeKeyPrefixedPK`
+  (mutation-checked). Chain cardinality: **2000** (true value), was the
+  impossible **8000**.
+
+  **Fix 2 — the cap clamped Cardinality but left CPU inconsistent.**
+  `combineConcreteCost`'s FlatMap case only overwrote `cost.Cardinality`
+  when the cap fired, never `cost.CPU` — crediting a hop with producing at
+  most `cap` rows while still charging it CPU for the larger, disproven
+  uncapped row count. Fixed with `fkChainCappedInnerCost`
+  (`fk_chain_cardinality.go`): when the cap binds, it derives a corrected
+  inner `Cost` — `Cardinality: cap/outerCard`, `CPU` scaled by the SAME
+  ratio — since `scanLikeCost` and every wrapper the cap sees through
+  (Fetch/TypeFilter/Filter) are exactly linear, zero-intercept functions of
+  Cardinality, so the identical ratio that corrects Cardinality also
+  correctly corrects CPU; not a picked constant. Property-tested
+  (`TestFKChainCappedInnerCost_DerivationProperty`), pinned end-to-end
+  (`TestFKChainCardinalityCap_CPUConsistentAcrossChain`, mutation-checked),
+  confirmed inert when the cap declines
+  (`TestFKChainCardinalityCap_CPUUnaffectedWhenCapDoesNotFire`). Forward's
+  CPU: 9146.29 → 2388.46 (~74% down) — still lost to backward's 807.58.
+
+  **Fix 3 — a full-PK/unique-index point-probe was priced at the
+  AMORTIZED sequential-scan rate (`ScanCPU`), not the isolated
+  random-access rate (`FetchCPU`), even though the executor proves it is
+  the SAME physical operation as a Fetch.** Verified against the executor
+  before changing anything (per instruction: prove the physical claim, do
+  not assume it): `key_value_cursor.go`'s `initIterator` issues its OWN
+  `tx.GetRange` per invocation; `flat_map_cursor.go`'s `OnNext` opens a
+  FRESH inner cursor per outer row via `ExecutePlan` with NO pipelining
+  across rows (its own comment: "Go simplification: no async pipelining");
+  `split_helper.go`'s `loadWithSplit` (the Fetch path) does one blocking
+  `tx.Get(unsplitKey).Get()` in the common case — the SAME
+  isolated-single-round-trip shape as the point-probe's `GetRange`, not the
+  amortized-over-many-rows shape `ScanCPU` is calibrated for. Fixed at
+  every site with this exact shape (same defect class, same pass, per
+  instruction #3): `scanLikeCost`'s `fullBindUnique` branch
+  (`planning_cost_model.go`), `RecordQueryScanPlan.HintCost`'s point-lookup
+  branch and `RecordQueryIndexPlan.HintCost`'s unique point-lookup branch
+  (`plans/cost.go` — the index one was charging literally **0**, an even
+  starker version of the same defect), and `RecordQueryInJoinPlan.HintCost`
+  (each IN value's index-probe term was `ScanCPU`, now `FetchCPU` — it pays
+  the SAME two isolated round trips a Fetch-wrapped point-probe does).
+  `properties.FetchCPU`/`ScanCPU`'s doc comments now state the general rule
+  (isolated-random-access vs amortized-streaming) so future call sites can
+  self-classify. Deliberately NOT touched: `BoundSelectivity` (a genuinely
+  different, unrelated calibration axis) and every OTHER `ScanCPU` site that
+  IS a real amortized multi-row streaming scan (general scanLikeCost
+  branch, `FullUnorderedScanExpression`, aggregate/vector index scans —
+  audited, left alone).
+
+  Property-tested with a table of (cardinality) values, not one example
+  (`TestScanLikeCost_PointProbeChargesFetchRate`,
+  `TestPointProbeHintCost_ChargesFetchRateNotScanRate`,
+  `TestInJoinHintCost_BothTermsAreFetchRate`), confirmed inert on the
+  non-point-probe cases (`TestScanLikeCost_NonPointProbeCPUUnaffected`,
+  `TestPointProbeHintCost_NonUniqueOrPartialBindUnaffected`), all
+  mutation-checked (revert → red, restore → green, verbatim in the shift
+  record).
+
+  **Result: forward now wins on physically-justified numbers.** Forward
+  card=2000 cpu=86.39 (synthetic) / real-FDB total ≈ matches; backward
+  card=2000 cpu=7870.41 (synthetic) — backward's 6000 unbatched point
+  probes, now correctly priced at the same isolated-round-trip rate as
+  forward's 2220 index-probe+fetch operations, are the more expensive
+  total. `TestFDB_MultiwayJoinOrder_Nway` passes (verified repeatedly, not
+  a coincidence of one run).
+
+  **Corpus impact (fix 3 alone, `cmd/explain-differ dump`, tree otherwise
+  constant): 17 plans changed, in two categories, both verified —**
+  (a) 5 FK-join drive-direction flips (`flatmap_secondary_index.yaml#0`,
+  `join_index_correlation.yaml#0`, two department/employee variants, one
+  customer/order variant) — small dimension table now drives, large table
+  reached via its FK index; mechanism is fewer FlatMap re-executions
+  (`IterationOverhead` scales with outer row count, now correctly the
+  deciding factor once point-probes and fetches cost the same) — a genuine
+  improvement, confirmed by running the full `flatmap_secondary_index` /
+  `join_index_correlation` yamsql scenarios (all row assertions pass); (b)
+  9 recursive-CTE/self-join cases gain an extra pass-through
+  `RecordQueryProjectionPlan` that a projection-fusion rule doesn't
+  eliminate on this specific memo alternative — cost-neutral-ish
+  (`ProjectionCPU`=0.05/row, negligible on these tables), NOT a correctness
+  issue (`recursive_cte` scenario re-run: 26/26 assertions pass; `cte`
+  scenario's self-join `COUNT(*)` case doesn't expose individual columns
+  at all). This is a pre-existing, separate projection-fusion completeness
+  gap surfaced by the cost shift, not caused by it — worth a follow-up but
+  not numbered here (too small to warrant its own item; note for whoever
+  next touches `ProjectionMerge`-family rules). Golden left un-blessed for
+  review, per instruction.
+
+  **1M stress test** (`TestFDB_Stress_1M`, before/after): identical row
+  counts and plan shapes throughout; `join_10_outer`'s
+  `FlatMap(outer=Scan(ORDERS,[<>]), inner=Scan(CUSTOMERS,[=]))` (a PK
+  point-probe inner) is UNCHANGED both ways — no cheaper alternative
+  exists for that shape, so raising the point-probe rate didn't flip it;
+  timings within noise (~16ms either way, real durations dominated by
+  actual FDB I/O, not the planning-time cost model). No regression at
+  scale.
+
+  **Pre-existing finding, now root-caused and fixed:** `yamsql_test`'s
+  `pk_pushdown` scenario (`SELECT id FROM t WHERE id > 2 ORDER BY id`
+  expecting `TypeFilter([T], Scan(T, [<>]))`) failed identically with fix 3
+  applied AND fully reverted (a RANGE bound, not a point-probe — none of
+  fix 3's changed formulas even apply to it). Bisected (`git apply -R` per
+  file, independently re-verified) to the SAME session's
+  `primary_scan_match_candidate.go`/`cascades_generator.go` change: a
+  record-type-key-prefixed primary scan (the default for every SQL table —
+  `buildPrimaryKeyExpression` prepends `RecordTypeKey()` unless
+  `INTERMINGLE_TABLES` is set) now correctly ELIMINATES the TypeFilter
+  wrapper instead of keying elimination off `available==queried` record
+  types, matching Java's `PrimaryScanMatchCandidate.hasAndOrderedByRecordTypeKey()`
+  1:1 (`fdb-record-layer-core/.../PrimaryScanMatchCandidate.java:207-220`).
+  Verified NOT a wrong-rows regression: `executeScan` (`executor.go:237-264`,
+  pre-existing, untouched by this session) already clamps an unbounded scan
+  endpoint to the record-type-key prefix range, so the scan physically
+  cannot cross into another type's rows — the TypeFilter really was dead
+  weight. This is case (a): the fix is correct, the scenario's pinned
+  expectation was pinned to the pre-fix Go divergence. `pk_pushdown.yaml`
+  updated (`Scan(T, [<>])` + `plan_not_contains: TypeFilter`, sort-elimination
+  check split into its own entry since `plan_not_contains` is single-valued).
+  New scenario `intermingle_type_filter.yaml` pins the DISCRIMINATING side
+  (`INTERMINGLE_TABLES=true` — the filter is load-bearing there, and the
+  test proves it with an actual WRONG-ROWS backstop: overlapping id ranges
+  across two intermingled tables, `id > 2` unbounded on the high end). That
+  surfaced its own gap: `WITH OPTIONS(...)` parsed but `execCreateSchemaTemplate`
+  (`pkg/relational/core/embedded/ddl.go`) never read `s.OptionsClause()` —
+  `ENABLE_LONG_ROWS`/`INTERMINGLE_TABLES`/`STORE_ROW_VERSIONS` were silently
+  dropped from every SQL `CREATE SCHEMA TEMPLATE`. Fixed by porting Java's
+  `DdlVisitor.visitCreateSchemaTemplateStatement` option-clause loop
+  (1:1 — same three-way switch, same ordering before the table/index passes).
+  Mutation-checked both fixes (revert → RED on `pk_pushdown`/
+  `intermingle_type_filter` respectively → restore → GREEN, verbatim).
+  `SQL_COVERAGE.md`/`FEATURE_MATRIX.md` regenerated for the new scenario.
+
 - [ ] **CQ-18 (LOW) — `RecordQueryInUnionPlan.maxSize`/`GetMaxSize()` is
   stamped and preserved but never read by the executor.** Set at
   `rule_implement_in_union.go:337` from
