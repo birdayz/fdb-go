@@ -1602,12 +1602,16 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return properties.FilterCost(c0(), len(pl.GetPredicates()))
+		// CountConjuncts, not len(): the same logical residual must apply the
+		// same number of selectivity factors whether it is packaged as
+		// [And(a, b)] or as [a, b] — matching the NestedLoopJoinPlan arm
+		// above and RecordQueryPredicatesFilterPlan.HintCost (plans/cost.go).
+		return properties.FilterCost(c0(), predicates.CountConjuncts(pl.GetPredicates()))
 	case *plans.RecordQueryFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return properties.FilterCost(c0(), len(pl.GetPredicates()))
+		return properties.FilterCost(c0(), predicates.CountConjuncts(pl.GetPredicates()))
 	case *plans.RecordQueryTypeFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}

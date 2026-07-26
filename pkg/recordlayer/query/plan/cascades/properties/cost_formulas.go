@@ -84,15 +84,22 @@ const PhysicalWrapperCostMultiplier = 0.9
 // FilterSelectivity on top of an already-filtered innerCard would double-count
 // the predicate and systematically undercost FlatMap relative to the
 // materialized NestedLoopJoin over the identical join (see NestedLoopJoinCost).
+//
+// outerCard/innerCard are NOT zero-guarded. A zero Cardinality here is never
+// "the child's cost wasn't computed" — every leaf/operator formula in this
+// file that lacks a real cardinality either floors it at >=1 (FirstOrDefault,
+// AggregateIndex, Explode) or returns before reaching FlatMapCost at all (the
+// `len(child) < 2` guards in the callers). It IS the genuine output of an
+// empty-relation operator — RecordQueryLimitPlan.HintCost's explicit
+// cardinality-0 for LIMIT 0, or RecordQueryInUnionPlan.HintCost's cost-0 for a
+// zero-length literal IN source (plan/plans/cost.go) — and must propagate
+// unchanged: `SELECT * FROM t1, (SELECT * FROM t2 LIMIT 0)` joins to exactly
+// zero rows, not outerCard*LeafScanCardinality. Substituting LeafScanCardinality
+// for an exact zero silently turned a free empty join into the single most
+// expensive shape on the plan, which can flip the winner away from it.
 func FlatMapCost(outer, inner Cost) Cost {
 	outerCard := outer.Cardinality
-	if outerCard == 0 {
-		outerCard = LeafScanCardinality
-	}
 	innerCard := inner.Cardinality
-	if innerCard == 0 {
-		innerCard = LeafScanCardinality
-	}
 	innerCPU := inner.CPU
 	if innerCPU == 0 {
 		innerCPU = FilterCPU
@@ -130,17 +137,17 @@ func FlatMapCost(outer, inner Cost) Cost {
 // PhysicalWrapperCostMultiplier caused, one level removed: here it is the join's OWN
 // selectivity term, not an external per-node discount, that failed to scale with an
 // input (predicate count) both shapes must agree on.
+//
+// outer.Cardinality/inner.Cardinality are NOT zero-guarded, for the same reason
+// FlatMapCost's are not (see its doc comment): an exact zero here is a genuine
+// empty child (LIMIT 0, an empty literal IN-list), never "unknown", and must
+// produce a genuine zero-row join rather than being inflated to
+// outerCard*LeafScanCardinality.
 func NestedLoopJoinCost(outer, inner Cost, numPreds int) Cost {
 	if numPreds < 1 {
 		numPreds = 1
 	}
 	outerCard, innerCard := outer.Cardinality, inner.Cardinality
-	if outerCard == 0 {
-		outerCard = LeafScanCardinality
-	}
-	if innerCard == 0 {
-		innerCard = LeafScanCardinality
-	}
 	sel := 1.0
 	for i := 0; i < numPreds; i++ {
 		sel *= FilterSelectivity
@@ -201,12 +208,20 @@ func FirstOrDefaultCost(child Cost) Cost {
 
 // InMemorySortCost: materialize + O(n log n). Note: NO physical-wrapper discount —
 // an in-memory sort must stay strictly more expensive than index-based elimination.
+//
+// The returned Cardinality is the child's EXACT count, never clamped — the
+// same zero-preservation reasoning as FlatMapCost/NestedLoopJoinCost applies
+// (a LIMIT-0 child sorts zero rows, and must report zero, not a phantom one).
+// Only the LOG argument is floored at >=1: math.Log2 is undefined below that,
+// and the floor is purely a numerical-domain guard local to logN — it must
+// never leak into the Cardinality the caller rolls up.
 func InMemorySortCost(child Cost) Cost {
 	n := child.Cardinality
-	if n < 1 {
-		n = 1
+	logInput := n
+	if logInput < 1 {
+		logInput = 1
 	}
-	logN := math.Max(1, math.Log2(math.Max(2, n)))
+	logN := math.Max(1, math.Log2(math.Max(2, logInput)))
 	return Cost{Cardinality: n, CPU: child.CPU + n*SortCPU*logN}
 }
 

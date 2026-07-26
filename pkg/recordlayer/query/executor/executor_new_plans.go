@@ -1145,10 +1145,23 @@ func executeInUnion(
 	if len(bindingNames) == 1 && len(inSources[0]) > 0 {
 		bindingID := values.NamedCorrelationIdentifier(bindingNames[0])
 		vals := inSources[0]
-		childFactory := func(val any) recordlayer.CursorFactory[QueryResult] {
+		// childFactory tags each value's execution context with its own
+		// index (withRecursionInvocationBranch): when compKeys is non-empty
+		// below, newMergeSortCursorFromFactories constructs and drives ALL
+		// len(vals) factories CONCURRENTLY (every leg pulled from in
+		// lockstep, not one after another), so if p.GetInner() is itself a
+		// recursive-union plan, its statement-scoped depth guard
+		// (recordlayer.ExecuteState.recursionLevels) would otherwise key
+		// every one of these concurrently-live invocations by the SAME
+		// plan pointer — see recursionInvocationKey's doc comment for why
+		// that under- and over-counts. The index-tagged ctx gives each
+		// value's invocation of the same inner plan a distinct, resume-
+		// stable identity.
+		childFactory := func(idx int, val any) recordlayer.CursorFactory[QueryResult] {
 			return func(cont []byte) recordlayer.RecordCursor[QueryResult] {
 				boundCtx := evalCtx.WithBinding(bindingID, val)
-				cursor, err := ExecutePlan(ctx, p.GetInner(), store, boundCtx, cont, props.ClearSkipAndLimit())
+				childCtx := withRecursionInvocationBranch(ctx, idx)
+				cursor, err := ExecutePlan(childCtx, p.GetInner(), store, boundCtx, cont, props.ClearSkipAndLimit())
 				if err != nil {
 					return &errResultCursor{err: err}
 				}
@@ -1159,11 +1172,11 @@ func executeInUnion(
 			// Java: size == 1 → childPlan.executePlan(store, childContext,
 			// continuation, executeProperties) — the raw child continuation IS
 			// the in-union continuation.
-			return applySkipLimit(childFactory(vals[0])(continuation), props.Skip, props.ReturnedRowLimit), nil
+			return applySkipLimit(childFactory(0, vals[0])(continuation), props.Skip, props.ReturnedRowLimit), nil
 		}
 		factories := make([]recordlayer.CursorFactory[QueryResult], len(vals))
 		for i, val := range vals {
-			factories[i] = childFactory(val)
+			factories[i] = childFactory(i, val)
 		}
 		compKeys := p.GetComparisonKeys()
 		if len(compKeys) > 0 {

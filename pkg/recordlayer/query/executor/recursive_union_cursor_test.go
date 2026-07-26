@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -489,6 +490,150 @@ func TestRecursiveUnionCursor_ManyShallowInvocations_NoFalsePositive(t *testing.
 		if rows != 1 {
 			t.Fatalf("invocation %d: got %d rows, want 1", i, rows)
 		}
+	}
+}
+
+// levelCounterExplodeValue is the CONCURRENCY-SAFE counterpart to
+// countdownExplodeValue: instead of decrementing a Go closure variable shared
+// by every caller (which would silently make 3 "independent" concurrent
+// invocations of the SAME plan pointer share ONE piece of state — invalidating
+// TestRecursiveUnionCursor_ConcurrentInvocations_NoFalsePositive's premise,
+// since the whole point is 3 invocations that must NOT interfere with each
+// other), it reads its counter from the CURRENT scan-table frontier row via
+// evalCtx's binding for scanAlias. That TempTable is genuinely per-invocation
+// — recursiveUnionCursor.legCursor binds a fresh *TempTable pair for every
+// *recursiveUnionCursor instance, even when every instance shares the same
+// plan pointer — so three concurrently-live invocations reading and writing
+// their OWN scan/insert tables never see each other's counters, exactly the
+// property the depth-guard fix needs to be tested against.
+type levelCounterExplodeValue struct {
+	scanAlias values.CorrelationIdentifier
+	target    int
+}
+
+func (c *levelCounterExplodeValue) Children() []values.Value { return []values.Value{} }
+func (c *levelCounterExplodeValue) Type() values.Type        { return values.UnknownType }
+func (c *levelCounterExplodeValue) Name() string             { return "levelCounter" }
+func (c *levelCounterExplodeValue) Evaluate(evalCtx any) (any, error) {
+	ec, ok := evalCtx.(*EvaluationContext)
+	if !ok {
+		return nil, fmt.Errorf("levelCounterExplodeValue: evalCtx is %T, want *EvaluationContext", evalCtx)
+	}
+	binding, ok := ec.GetBinding(c.scanAlias)
+	if !ok {
+		return nil, fmt.Errorf("levelCounterExplodeValue: no binding for scan alias %v", c.scanAlias)
+	}
+	tt, ok := binding.(*TempTable)
+	if !ok {
+		return nil, fmt.Errorf("levelCounterExplodeValue: binding is %T, want *TempTable", binding)
+	}
+	rows := tt.GetList()
+	if len(rows) != 1 {
+		return nil, fmt.Errorf("levelCounterExplodeValue: scan table has %d rows, want exactly 1", len(rows))
+	}
+	v, ok := rows[0].Positional.Get(0)
+	if !ok {
+		return nil, fmt.Errorf("levelCounterExplodeValue: frontier row missing slot 0")
+	}
+	counter, ok := v.(int64)
+	if !ok {
+		return nil, fmt.Errorf("levelCounterExplodeValue: frontier slot 0 is %T, want int64", v)
+	}
+	if int(counter) >= c.target-1 {
+		return []any{}, nil
+	}
+	return []any{counter + 1}, nil
+}
+
+var _ values.Value = (*levelCounterExplodeValue)(nil)
+
+// independentCounterLevelUnionPlan builds a level-union recursive CTE whose
+// termination state lives ENTIRELY in the scan/insert TempTable content
+// (levelCounterExplodeValue), not in any Go-side variable — see that type's
+// doc comment for why this matters for the concurrency test below. Seeds
+// counter=0; each recursive-leg start increments it by one until it reaches
+// target-1, at which point that leg inserts nothing and the recursion
+// completes naturally with exactly `target` recursive-leg starts (same
+// counting convention as naturallyTerminatingLevelUnionPlan).
+func independentCounterLevelUnionPlan(scanAlias, insertAlias values.CorrelationIdentifier, target int) *plans.RecordQueryRecursiveLevelUnionPlan {
+	initial := plans.NewRecordQueryTempTableInsertPlan(
+		plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{int64(0)}}),
+		insertAlias, true,
+	)
+	recursive := plans.NewRecordQueryTempTableInsertPlan(
+		plans.NewRecordQueryExplodePlan(&levelCounterExplodeValue{scanAlias: scanAlias, target: target}),
+		insertAlias, true,
+	)
+	return plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+}
+
+// TestRecursiveUnionCursor_ConcurrentInvocations_NoFalsePositive is the
+// concurrency regression neither the v1 (per-cursor field) nor v2/v3
+// (plan-pointer-keyed, reset-on-fresh-construction) fixes cover: a SORTED
+// RecordQueryInUnionPlan drives every per-value leg CONCURRENTLY —
+// newMergeSortCursorFromFactories constructs all N legs' cursors up front and
+// pulls from them in lockstep (mergeSortCursor.pullAndAdmit), unlike
+// ConcatCursors, which only ever holds one leg alive at a time. So N
+// independently-shallow invocations of the SAME p.GetInner() plan pointer are
+// live AT THE SAME TIME, not one after another.
+//
+// Keyed by plan pointer alone (with or without the reset-on-nil fix), those N
+// invocations share ONE map entry: every leg's checkDepth call increments the
+// SAME count, so their levels SUM instead of staying independent — a valid
+// query where every leg is individually shallow gets rejected once the
+// AGGREGATE crosses the cap. This drives 3 concurrent legs to depth 600 each
+// (aggregate 1800 > maxStreamingRecursionDepth(1000), but no single leg
+// anywhere near the cap) through the real executeInUnion dispatch (not a
+// synthetic reproduction) and requires that none of them ever see
+// RecursiveCTEDepthExceededError. Each leg's own depth state is carried in
+// its own scan/insert TempTable (independentCounterLevelUnionPlan), so the 3
+// invocations are genuinely independent — a shared-Go-variable countdown
+// would accidentally make them co-terminate early and hide exactly the bug
+// this test targets.
+func TestRecursiveUnionCursor_ConcurrentInvocations_NoFalsePositive(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	execState := recordlayer.NewExecuteState(0)
+	props := recordlayer.DefaultExecuteProperties()
+	props.State = execState
+
+	// 3 legs * 600 each = 1800 aggregate, well past the 1000 cap — but every
+	// individual invocation only ever reaches depth 600, so a correct
+	// per-invocation guard must let this through.
+	const perLegDepth = 600
+	scanAlias := values.NamedCorrelationIdentifier("concurrent_scan")
+	insertAlias := values.NamedCorrelationIdentifier("concurrent_insert")
+	inner := independentCounterLevelUnionPlan(scanAlias, insertAlias, perLegDepth)
+	// A comparison key is required to route through the SORTED (merge-sort)
+	// branch of executeInUnion — the concurrent one. Every row's ordinal-0
+	// slot is that leg's OWN counter, which independently walks 0..perLegDepth
+	// across all 3 legs — ties happen often enough (every leg passes through
+	// every counter value) that the merge always finds an order to run in.
+	compKey := values.NewOrdinalFieldValue(nil, 0, values.UnknownType)
+	p := plans.NewRecordQueryInUnionPlan(inner, []string{"in_concurrent"}, []values.Value{compKey}, false)
+	p.SetInSources([][]any{{int64(1), int64(2), int64(3)}})
+
+	cur, err := ExecutePlan(ctx, p, nil, EmptyEvaluationContext(), nil, props)
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cur.Close()
+
+	rows, err := drainRecursiveUnion(t, ctx, cur)
+	if err != nil {
+		var depthErr *RecursiveCTEDepthExceededError
+		if errors.As(err, &depthErr) {
+			t.Fatalf("3 concurrent depth-%d invocations of the SAME plan pointer (aggregate %d > cap %d, "+
+				"no single invocation over it) were wrongly rejected as RecursiveCTEDepthExceededError "+
+				"after %d rows — the depth guard is conflating independent concurrently-live invocations "+
+				"of the same plan pointer into one shared counter",
+				perLegDepth, 3*perLegDepth, maxStreamingRecursionDepth, rows)
+		}
+		t.Fatalf("unexpected error after %d rows: %v", rows, err)
+	}
+	if rows == 0 {
+		t.Fatalf("got 0 rows, want > 0")
 	}
 }
 

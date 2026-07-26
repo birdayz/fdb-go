@@ -158,33 +158,31 @@ func (p *RecordQueryTableFunctionPlan) HintCost(_ []properties.Cost, _ propertie
 
 // --- single-child, shared formulas ------------------------------------------
 
-// HintCost: one selectivity factor per predicate.
+// HintCost: one selectivity factor per predicate. Counted via CountConjuncts,
+// NOT len(), so this agrees with RecordQueryPredicatesFilterPlan.HintCost and
+// NestedLoopJoinCost on the SAME logical residual regardless of whether the
+// constructing rule packaged N conditions as one AndPredicate or N top-level
+// list entries — see predicates.CountConjuncts's doc comment for why a raw
+// len() here reintroduces the shape-dependent cardinality mismatch this cost
+// model exists to eliminate.
 func (p *RecordQueryFilterPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 || p == nil {
 		return properties.Cost{}
 	}
-	return properties.FilterCost(child[0], len(p.GetPredicates()))
+	return properties.FilterCost(child[0], predicates.CountConjuncts(p.GetPredicates()))
 }
 
-// HintCost: same shape as FilterCost, spelled out because a zero-predicate
-// predicates-filter still pays one selectivity factor.
+// HintCost: same formula as RecordQueryFilterPlan.HintCost — one selectivity
+// factor per CONJUNCT (predicates.CountConjuncts, not len()), so the same
+// logical residual costs identically whether it reaches this plan as
+// `[a, b]` or as `[And(a, b)]`. Previously duplicated FilterCost's body
+// inline while counting via len(); now delegates so there is exactly one
+// formula to keep in sync with NestedLoopJoinCost's numPreds.
 func (p *RecordQueryPredicatesFilterPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 || p == nil {
 		return properties.Cost{}
 	}
-	in := child[0].Cardinality
-	numPreds := len(p.GetPredicates())
-	if numPreds == 0 {
-		numPreds = 1
-	}
-	sel := properties.FilterSelectivity
-	for i := 1; i < numPreds; i++ {
-		sel *= properties.FilterSelectivity
-	}
-	return properties.Cost{
-		Cardinality: in * sel,
-		CPU:         (child[0].CPU + in*properties.FilterCPU*float64(numPreds)) * properties.PhysicalWrapperCostMultiplier,
-	}
+	return properties.FilterCost(child[0], predicates.CountConjuncts(p.GetPredicates()))
 }
 
 // HintCost: record-type discrimination over the child stream.
@@ -504,14 +502,14 @@ func estimatedInUnionFanout(p *RecordQueryInUnionPlan) float64 {
 // recursiveCost: the recursive leg is re-executed once per row the seed leg
 // produced, so the seed's cardinality multiplies both the output and the
 // recursive leg's CPU.
+//
+// seedCard/recCard are NOT zero-guarded — the same reasoning as
+// properties.FlatMapCost's doc comment applies here: an exact zero is a
+// genuine empty seed (e.g. a LIMIT 0 seed leg), which correctly recurses zero
+// times and must yield a zero-row CTE, not
+// LeafScanCardinality*recCard rows conjured from a seed that produced none.
 func recursiveCost(child []properties.Cost) properties.Cost {
 	seedCard, recCard := child[0].Cardinality, child[1].Cardinality
-	if seedCard == 0 {
-		seedCard = properties.LeafScanCardinality
-	}
-	if recCard == 0 {
-		recCard = properties.LeafScanCardinality
-	}
 	return properties.Cost{
 		Cardinality: seedCard * recCard,
 		CPU:         (child[0].CPU + seedCard*child[1].CPU) * properties.PhysicalWrapperCostMultiplier,

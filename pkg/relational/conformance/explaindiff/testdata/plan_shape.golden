@@ -1381,7 +1381,7 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between_edge_cases.yaml#0
 sql:   SELECT id FROM t WHERE val BETWEEN 20 AND 40 ORDER BY id
-plan:  Project([ID#0], PredicatesFilter(Scan(T), [2 preds]))
+plan:  Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -1417,7 +1417,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_java.yaml#1
 sql:   SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 4 ORDER BY id
-plan:  Project([ID#0], PredicatesFilter(Scan(T1), [2 preds]))
+plan:  Project([ID#0], PredicatesFilter(Scan(T1), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -1862,7 +1862,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === bug_hunt_probes.yaml#10
 sql:   SELECT id FROM t WHERE (n > 5) AND (s IS NULL) ORDER BY id
-plan:  Project([ID#0], PredicatesFilter(Scan(T), [2 preds]))
+plan:  Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -2604,7 +2604,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === complex_where_java.yaml#6
 sql:   SELECT id FROM items WHERE cat = 'B' AND price > 10 AND active = true ORDER BY id
-plan:  Project([ID#0], PredicatesFilter(Scan(ITEMS), [3 preds]))
+plan:  Project([ID#0], PredicatesFilter(Scan(ITEMS), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -3030,7 +3030,7 @@ sql:   SELECT fname FROM emp WHERE id NOT IN (SELECT emp_id FROM project WHERE e
 plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
 === correlated_subquery_probes.yaml#9
 sql:   SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id AND id = 99999)
-plan:  Project([FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds])))
+plan:  Project([FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [2 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
@@ -5211,7 +5211,7 @@ shape:           RecordQueryScanPlan
 shape:           RecordQueryScanPlan
 === e2e_ecommerce.yaml#3
 sql:   SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped') ORDER BY c.name
-plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds]))))
+plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -5284,7 +5284,7 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === e2e_inventory.yaml#2
 sql:   SELECT w.city FROM warehouses w WHERE NOT EXISTS ( SELECT 1 FROM stock s WHERE s.warehouse_id = w.id AND s.product_id = 3 ) ORDER BY w.city
-plan:  Project([CITY#1], InMemorySort([CITY ASC], FlatMap(outer=Scan(WAREHOUSES), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(STOCK), [1 preds])), [1 preds]))))
+plan:  Project([CITY#1], InMemorySort([CITY ASC], FlatMap(outer=Scan(WAREHOUSES), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(STOCK), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -5329,7 +5329,7 @@ shape:             RecordQueryPredicatesFilterPlan
 shape:               RecordQueryScanPlan
 === e2e_order_management.yaml#2
 sql:   SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'pending')
-plan:  Project([NAME#1], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds])))
+plan:  Project([NAME#1], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [2 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
@@ -5708,7 +5708,7 @@ shape:           RecordQueryProjectionPlan
 shape:             RecordQueryScanPlan
 === exists_multi_table_inner.yaml#0
 sql:   SELECT a.name FROM authors a WHERE EXISTS ( SELECT 1 FROM books b, awards w WHERE b.author_id = a.id AND w.book_id = b.id ) ORDER BY a.name
-plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(AUTHORS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(NestedLoopJoin(INNER, Scan(BOOKS), Scan(AWARDS)), [1 preds])), [1 preds]))))
+plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(AUTHORS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(NestedLoopJoin(INNER, Scan(BOOKS), Scan(AWARDS)), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -5756,7 +5756,7 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === exists_subquery_java.yaml#2
 sql:   SELECT name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.amount > 200) ORDER BY name
-plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds]))))
+plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -5968,7 +5968,7 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === flatmap_join_pagination.yaml#3
 sql:   SELECT p.id FROM parents p WHERE EXISTS (SELECT 1 FROM children c WHERE c.parent_id = p.id AND c.label = 'child_1') ORDER BY p.id
-plan:  Project([ID#0], FlatMap(outer=Scan(PARENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(CHILDREN), [1 preds])), [1 preds])))
+plan:  Project([ID#0], FlatMap(outer=Scan(PARENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(CHILDREN), [2 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
@@ -6081,7 +6081,7 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === flatmap_regression.yaml#1
 sql:   SELECT p.name FROM parent p WHERE EXISTS (SELECT 1 FROM child c WHERE c.parent_id = p.id AND c.val > 100) ORDER BY p.name
-plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(PARENT), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(CHILD), [1 preds])), [1 preds]))))
+plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(PARENT), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(CHILD), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -7502,7 +7502,7 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryIndexPlan
 === in_list_pushdown.yaml#35
 sql:   SELECT id FROM tp WHERE plan = 'pro' AND region IN ('us', 'eu') ORDER BY id
-plan:  Project([ID#0], PredicatesFilter(Scan(TP), [2 preds]))
+plan:  Project([ID#0], PredicatesFilter(Scan(TP), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -9894,7 +9894,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === like_prefix_pushdown.yaml#8
 sql:   SELECT name FROM t WHERE name LIKE 'a%' AND v > 10 ORDER BY name
-plan:  Project([NAME#0], PredicatesFilter(Scan(T), [2 preds]))
+plan:  Project([NAME#0], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -15271,7 +15271,7 @@ sql:   SELECT val || '!' FROM texts WHERE id = 1
 plan:  <PLAN-ERROR: 42804: expected boolean expression, got type STRING NULL>
 === subquery_exists_complex.yaml#0
 sql:   SELECT d.name FROM departments d WHERE EXISTS ( SELECT 1 FROM employees e WHERE e.dept_id = d.id AND e.salary > 100 ) ORDER BY d.name
-plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(DEPARTMENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(EMPLOYEES), [1 preds])), [1 preds]))))
+plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(DEPARTMENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(EMPLOYEES), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -15282,7 +15282,7 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === subquery_exists_complex.yaml#1
 sql:   SELECT d.name FROM departments d WHERE NOT EXISTS ( SELECT 1 FROM employees e WHERE e.dept_id = d.id AND e.salary > 100 ) ORDER BY d.name
-plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(DEPARTMENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(EMPLOYEES), [1 preds])), [1 preds]))))
+plan:  Project([NAME#1], InMemorySort([NAME ASC], FlatMap(outer=Scan(DEPARTMENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(EMPLOYEES), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -16531,7 +16531,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === where_complex_predicates.yaml#4
 sql:   SELECT id FROM t WHERE a BETWEEN 20 AND 40 ORDER BY id
-plan:  Project([ID#0], PredicatesFilter(Scan(T), [2 preds]))
+plan:  Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -16561,7 +16561,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === where_is_null_is_not_null.yaml#4
 sql:   SELECT id FROM t WHERE a IS NULL AND b IS NOT NULL ORDER BY id
-plan:  Project([ID#0], PredicatesFilter(Scan(T), [2 preds]))
+plan:  Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -16657,7 +16657,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === where_or_optimization.yaml#3
 sql:   SELECT id FROM t WHERE (status = 'open' OR status = 'pending') AND priority >= 3 ORDER BY id
-plan:  Project([ID#0], PredicatesFilter(Scan(T), [2 preds]))
+plan:  Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan

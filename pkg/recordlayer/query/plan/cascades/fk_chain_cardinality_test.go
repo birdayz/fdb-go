@@ -51,13 +51,33 @@ func fkChainPKProbe(t *testing.T, rt string, outerAlias values.CorrelationIdenti
 }
 
 // fkChainFKProbe is a non-unique secondary-index equality probe against rt,
-// correlated to outerAlias.ID — the PRECEDING table's own primary key.
+// correlated to outerAlias.ID — the PRECEDING table's own primary key. It
+// models a plain SCALAR index (one entry per record — no FAN_OUT field), so
+// it stamps distinctRecordsKnown/createsDuplicates=false exactly as
+// abstract_data_access_rule.go does in production from the match candidate's
+// createsDuplicates() signal — a scalar index never fans out, so
+// ProducesDistinctRecords() must read true for the FK-chain cap to fire on
+// it, same as production.
 func fkChainFKProbe(t *testing.T, rt, idx string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
 	return plans.NewRecordQueryIndexPlan(idx,
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerAlias, "ID")},
 		[]string{rt}, values.UnknownType, false).
-		WithCommonPrimaryKey(fkChainIDPK())
+		WithCommonPrimaryKey(fkChainIDPK()).
+		WithDistinctRecordsSignal(false)
+}
+
+// fkChainFanOutFKProbe is fkChainFKProbe but models a FAN-OUT index (one
+// entry per repeated/nested element, e.g. an index over a repeated field) —
+// createsDuplicates=true, so the SAME physical record/PK can be emitted more
+// than once per probe. See TestFKChainCardinalityCap_DeclinesOnFanOutIndex.
+func fkChainFanOutFKProbe(t *testing.T, rt, idx string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
+	t.Helper()
+	return plans.NewRecordQueryIndexPlan(idx,
+		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerAlias, "ID")},
+		[]string{rt}, values.UnknownType, false).
+		WithCommonPrimaryKey(fkChainIDPK()).
+		WithDistinctRecordsSignal(true)
 }
 
 // fkChainRTPrefixedPK models the primary key shape
@@ -86,7 +106,8 @@ func fkChainFKProbeRTPrefixed(t *testing.T, rt, idx string, outerAlias values.Co
 	return plans.NewRecordQueryIndexPlan(idx,
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerAlias, "ID")},
 		[]string{rt}, values.UnknownType, false).
-		WithCommonPrimaryKey(fkChainRTPrefixedPK())
+		WithCommonPrimaryKey(fkChainRTPrefixedPK()).
+		WithDistinctRecordsSignal(false)
 }
 
 func fkChainFlat(outer, inner plans.RecordQueryPlan, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
@@ -468,5 +489,133 @@ func TestFKChainCardinalityCap_CPUUnaffectedWhenCapDoesNotFire(t *testing.T) {
 				t.Fatalf("cost = %+v, want unscaled FlatMapCost %+v — the cap must leave BOTH terms untouched when it declines", got, want)
 			}
 		})
+	}
+}
+
+// TestFKChainCardinalityCap_DeclinesWhenOuterThreadedThroughFanOutIndex is
+// HOLE 1's regression: fkChainCardinalityCap's soundness rests on every outer
+// row's tracked bind value being genuinely UNIQUE across the accumulated
+// outer chain. A fan-out index (createsDuplicates=true — one emitting
+// multiple entries per record, e.g. an index over a repeated/nested field)
+// can emit the SAME physical record and primary key more than once, so when
+// T2 is threaded through such an index and then used as the OUTER for a
+// further hop probing T3, repeated T2.ID values probe OVERLAPPING T3 rows —
+// the true output can exceed T3's own table size (200), so the cap must
+// decline rather than fire at 200.
+//
+// Both the direct unit (computePKThread on the fan-out-rooted hop) and the
+// end-to-end cap on the next hop are asserted: the unit pins exactly the
+// function this hole lives in, and the end-to-end assertion proves the unit
+// result actually propagates to where an unsound cap would otherwise fire.
+func TestFKChainCardinalityCap_DeclinesWhenOuterThreadedThroughFanOutIndex(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		t2Inner func(t *testing.T) plans.RecordQueryPlan
+	}{
+		{"explicit fan-out signal (createsDuplicates=true)", func(t *testing.T) plans.RecordQueryPlan {
+			return fkChainFanOutFKProbe(t, "T2", "t2_by_t1_fanout", fkChainAlias(0))
+		}},
+		{"distinct-records signal never stamped (Java's empty-candidate default)", func(t *testing.T) plans.RecordQueryPlan {
+			return plans.NewRecordQueryIndexPlan("t2_by_t1_unstamped",
+				[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, fkChainAlias(0), "ID")},
+				[]string{"T2"}, values.UnknownType, false).
+				WithCommonPrimaryKey(fkChainIDPK())
+		}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			stats := fkChainStats()
+
+			hop1 := fkChainFlat(fkChainFullScan("T1"), c.t2Inner(t), fkChainAlias(0))
+			if computePKThread(hop1).ok {
+				t.Fatalf("computePKThread(hop1) should be ok=false: hop1's inner leg's " +
+					"distinct-records signal does not prove T2's rows are duplicate-free")
+			}
+
+			hop2 := fkChainFlat(hop1, fkChainFKProbe(t, "T3", "t3_by_t2", fkChainAlias(1)), fkChainAlias(1))
+			if cap, ok := fkChainCardinalityCap(hop2.(*plans.RecordQueryFlatMapPlan), stats); ok {
+				t.Fatalf("cap fired (cap=%v) on hop2 whose outer thread is rooted at a "+
+					"not-provably-distinct T2 index — must decline: repeated T2 PKs can probe "+
+					"overlapping T3 rows and the true output can exceed T3's table size (200)", cap)
+			}
+		})
+	}
+}
+
+// TestFKChainCardinalityCap_DeclinesWhenProjectionReplacesTrackedPK is HOLE
+// 2's regression: a RecordQueryProjectionPlan can REPLACE the tracked PK
+// field with a computed/constant value while keeping its NAME — "ID" stays
+// "ID" in the output schema, but it no longer distinguishes one T2 row from
+// another. If the next hop's name-only check treated that "ID" as the same
+// distinct underlying PK, every T2 row would bind the identical constant, so
+// probes of T3 keyed off it are not partitioned by distinct row identity and
+// the true output can exceed T3's table size (200) — the cap must decline.
+func TestFKChainCardinalityCap_DeclinesWhenProjectionReplacesTrackedPK(t *testing.T) {
+	t.Parallel()
+	stats := fkChainStats()
+
+	hop1 := fkChainFlat(fkChainFullScan("T1"), fkChainFKProbe(t, "T2", "t2_by_t1", fkChainAlias(0)), fkChainAlias(0))
+
+	// A schema-legal projection that overwrites the tracked "ID" output with a
+	// constant — the output column is still named "ID", but every row now
+	// carries the SAME value, breaking the underlying distinctness the name
+	// alone cannot reveal.
+	brokenProjection := plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{&values.ConstantValue{Value: int64(42), Typ: values.UnknownType}},
+		[]string{"ID"},
+		hop1,
+	)
+
+	if computePKThread(brokenProjection).ok {
+		t.Fatalf("computePKThread(brokenProjection) should be ok=false: the projection " +
+			"replaces the tracked PK field with a constant, so \"ID\" no longer distinguishes T2 rows")
+	}
+
+	hop2 := fkChainFlat(brokenProjection, fkChainFKProbe(t, "T3", "t3_by_t2", fkChainAlias(1)), fkChainAlias(1))
+	if cap, ok := fkChainCardinalityCap(hop2.(*plans.RecordQueryFlatMapPlan), stats); ok {
+		t.Fatalf("cap fired (cap=%v) on hop2 whose outer thread passes through a PK-replacing "+
+			"projection — must decline: every T2 row binds the SAME constant \"ID\", so T3 probes "+
+			"can legitimately overlap and the true output can exceed T3's table size (200)", cap)
+	}
+}
+
+// TestFKChainCardinalityCap_DeclinesWhenFlatMapResultValueDropsTrackedPK is
+// the THIRD instance of hole 2's shape, found while auditing every path into
+// pkThread with the same "output mapping can replace/drop/rename the tracked
+// PK" risk: computeFlatMapPKThread re-roots a proven INNER pkThread through
+// the FlatMap's OWN resultValue (Java's RecordQueryFlatMapPlan.resultValue,
+// which can merge outer+inner fields, rename them, or drop the inner's PK
+// outright), not through a Map or Projection. Every OTHER test in this file
+// builds resultValue as a bare QuantifiedObjectValue over the inner alias —
+// the identity fast path — so this is the only test that exercises a
+// non-identity FlatMap resultValue at all.
+func TestFKChainCardinalityCap_DeclinesWhenFlatMapResultValueDropsTrackedPK(t *testing.T) {
+	t.Parallel()
+	stats := fkChainStats()
+
+	// hop1's OWN resultValue is a constant, not QOV("i") — it discards the
+	// probed T2 row (and its PK) entirely from what the FlatMap actually
+	// emits, even though the inner leg's own scan fully binds T1's PK.
+	hop1 := plans.NewRecordQueryFlatMapPlan(
+		fkChainFullScan("T1"), fkChainFKProbe(t, "T2", "t2_by_t1", fkChainAlias(0)),
+		fkChainAlias(0), values.NamedCorrelationIdentifier("i"),
+		&values.ConstantValue{Value: int64(7), Typ: values.UnknownType}, false,
+	)
+
+	if computePKThread(hop1).ok {
+		t.Fatalf("computePKThread(hop1) should be ok=false: hop1's OWN resultValue is a " +
+			"constant, not the inner row it probed — the FlatMap's actual output does not " +
+			"carry T2's tracked PK at all")
+	}
+
+	hop2 := fkChainFlat(hop1, fkChainFKProbe(t, "T3", "t3_by_t2", fkChainAlias(1)), fkChainAlias(1))
+	if cap, ok := fkChainCardinalityCap(hop2.(*plans.RecordQueryFlatMapPlan), stats); ok {
+		t.Fatalf("cap fired (cap=%v) on hop2 whose outer thread is hop1, whose OWN resultValue "+
+			"drops the tracked PK — must decline: hop1's output no longer identifies distinct "+
+			"T2 rows, so T3 probes off it can legitimately exceed T3's table size (200)", cap)
 	}
 }

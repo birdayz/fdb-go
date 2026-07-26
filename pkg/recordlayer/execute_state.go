@@ -126,13 +126,22 @@ func (s *ExecuteState) ReleaseMemory(n int64) {
 // ExecuteProperties.State, so it survives the per-page cursor rebuild
 // structurally.
 //
-// id anchors the count to one recursive construct — pass the recursive-CTE
-// plan node's own pointer, which is stable across every page of one
-// statement execution (the SQL layer rebuilds the cursor hierarchy each page
-// but reuses the same plan tree). Two independent recursive CTEs in the same
-// statement therefore get INDEPENDENT budgets (distinct plan pointers),
-// matching the eager recursion arms' own per-call-local bound rather than
-// sharing one statement-wide total.
+// id anchors the count to one INVOCATION of a recursive construct — the
+// caller (recursiveUnionCursor) passes a key combining the recursive-CTE plan
+// node's own pointer (stable across every page of one statement execution:
+// the SQL layer rebuilds the cursor hierarchy each page but reuses the same
+// plan tree) with a branch scope identifying which concurrently-live
+// invocation this is, when more than one can execute the same plan pointer
+// at once (a sorted RecordQueryInUnionPlan runs one cursor per IN value,
+// merged in lockstep — see recursionInvocationKey's doc comment in
+// recursive_union_cursor.go for why plan pointer alone is not a safe key).
+// ExecuteState itself doesn't interpret id beyond map-key equality; it just
+// needs to be stable across one invocation's own resumes and distinct across
+// concurrently-live invocations, whatever shape the caller builds it in.
+// Two independent recursive CTEs in the same statement get INDEPENDENT
+// budgets (distinct plan pointers, hence distinct keys), matching the eager
+// recursion arms' own per-call-local bound rather than sharing one
+// statement-wide total.
 //
 // SCOPE, stated exactly: the guard covers one *ExecuteState's lifetime, i.e.
 // one Execute() call / one statement execution — cascades_generator.go mints
@@ -160,26 +169,30 @@ func (s *ExecuteState) IncrementRecursionLevel(id any) int {
 	return s.recursionLevels[id]
 }
 
-// ResetRecursionLevel zeroes the level count tracked under id, marking the
-// start of a FRESH invocation of a recursive-union plan node.
+// ResetRecursionLevel zeroes (deletes) the level count tracked under id. The
+// caller uses this at two distinct moments with the same effect — freeing an
+// entry that must not linger — for different reasons:
 //
-// id is the plan node's own pointer — stable for the whole statement — so
-// without this reset, IncrementRecursionLevel's map entry accumulates across
-// every invocation of that node, not just within one. That over-counts: a
-// recursive CTE nested in a correlated subquery is re-invoked once per outer
-// row (recursive_union_cursor.go's newRecursiveUnionCursor is called fresh,
-// continuation==nil, from flatMapCursor.OnNext for every outer row — see its
-// doc comment), and a CTE nested in a scalar subquery is re-invoked once per
-// page it is re-evaluated on. Neither case is a RESUME of an in-flight
-// invocation; each is independent and must start its own count at zero, or a
-// shallow recursion invoked many times trips the depth cap that no single
-// invocation ever approached.
-//
-// The caller resets exactly when continuation==nil at cursor construction —
-// that is the invocation boundary: a resume of an in-flight invocation
-// (paging mid-recursion) always carries a non-nil continuation and must NOT
-// reset, or the original bug (a cyclic recursion that pages mid-recursion
-// streaming forever because its counter resets every page) returns.
+//  1. At the start of a FRESH invocation (continuation==nil at cursor
+//     construction), to guard against a stale entry from a prior invocation
+//     that shared this exact id and somehow didn't clean up via (2). Without
+//     this, a recursive CTE nested in a correlated subquery — re-invoked once
+//     per outer row (recursive_union_cursor.go's newRecursiveUnionCursor is
+//     called fresh, continuation==nil, from flatMapCursor.OnNext for every
+//     outer row — see its doc comment) and getting the SAME id every row,
+//     since sequential invocations aren't distinguished by branch scope —
+//     could have its count over-accumulate across invocations instead of
+//     starting each at zero. A resume of an in-flight invocation (paging
+//     mid-recursion) always carries a non-nil continuation and must NOT
+//     reset, or the original bug (a cyclic recursion that pages
+//     mid-recursion streaming forever because its counter resets every page)
+//     returns.
+//  2. When an invocation ENDS — naturally (source exhausted, no further
+//     continuation) or by aborting (the depth cap itself firing) — so a
+//     statement driving many sequential or concurrent invocations doesn't
+//     accumulate unbounded dead map entries for ids that will never be
+//     touched again. See recursiveUnionCursor.OnNext and checkDepth for
+//     where each fires.
 //
 // A nil receiver or a never-populated map is a no-op — nothing to reset.
 func (s *ExecuteState) ResetRecursionLevel(id any) {

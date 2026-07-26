@@ -88,6 +88,17 @@ func computePKThread(p plans.RecordQueryPlan) pkThread {
 		if len(rts) != 1 || len(pk) == 0 {
 			return pkThread{}
 		}
+		// A fan-out index (ProducesDistinctRecords()==false — either it is
+		// KNOWN to createDuplicates, or the signal was never stamped at all,
+		// Java's own empty-candidate default) can emit the SAME physical
+		// record/PK more than once. The partition argument this whole file
+		// rests on — each row of the probed table matches at most one outer
+		// row — needs the leaf's OWN rows to be distinct in the first place;
+		// a duplicating leaf breaks that before the thread even starts, so
+		// fail closed rather than assume a scalar index.
+		if !pl.ProducesDistinctRecords() {
+			return pkThread{}
+		}
 		return pkThread{recordType: rts[0], pkValues: pk, ok: true}
 
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
@@ -99,9 +110,9 @@ func computePKThread(p plans.RecordQueryPlan) pkThread {
 	case *plans.RecordQueryFilterPlan:
 		return pkThreadFromSingleChild(pl.GetChildren())
 	case *plans.RecordQueryMapPlan:
-		return pkThreadFromSingleChild(pl.GetChildren())
+		return computeMapPKThread(pl)
 	case *plans.RecordQueryProjectionPlan:
-		return pkThreadFromSingleChild(pl.GetChildren())
+		return computeProjectionPKThread(pl)
 	case *plans.RecordQueryInMemorySortPlan:
 		return pkThreadFromSingleChild(pl.GetChildren())
 
@@ -120,6 +131,148 @@ func pkThreadFromSingleChild(children []plans.RecordQueryPlan) pkThread {
 	return computePKThread(children[0])
 }
 
+// namedValue pairs an output-row field name with the Value that computes it —
+// the normalized shape pkThreadThroughFields needs from either a
+// RecordConstructorValue's Fields (RecordQueryMapPlan.resultValue,
+// RecordQueryFlatMapPlan.resultValue) or a RecordQueryProjectionPlan's
+// parallel projections/aliases slices.
+type namedValue struct {
+	name  string
+	value values.Value
+}
+
+// computeMapPKThread extends a proven child pkThread across a
+// RecordQueryMapPlan's output-shaping resultValue. A Map can REPLACE, DROP, or
+// RENAME the tracked PK field (project a constant as ID, and every outer row
+// binds the same value — silently breaking the partition argument the whole
+// file rests on), so the child's thread survives only when resultValue
+// provably preserves every tracked PK value: see pkThreadThroughResultValue.
+func computeMapPKThread(pl *plans.RecordQueryMapPlan) pkThread {
+	childThread := pkThreadFromSingleChild(pl.GetChildren())
+	return pkThreadThroughResultValue(childThread, pl.GetInnerQuantifier().GetAlias(), pl.GetResultValue())
+}
+
+// computeProjectionPKThread is computeMapPKThread's analogue for
+// RecordQueryProjectionPlan, whose output shape is a parallel
+// projections/aliases pair rather than a single RecordConstructorValue.
+// IsIdentity() (the projection passes every column through unchanged) is the
+// same full-passthrough fast path pkThreadThroughResultValue recognizes for a
+// bare QuantifiedObjectValue resultValue; the general case defers to
+// pkThreadThroughFields with each projection's OWN output-name authority
+// (values.OutputColumnName — the exact name executeProjection keys the slot
+// under), so the check matches names the same way any downstream reader must.
+func computeProjectionPKThread(pl *plans.RecordQueryProjectionPlan) pkThread {
+	childThread := pkThreadFromSingleChild(pl.GetChildren())
+	if !childThread.ok {
+		return pkThread{}
+	}
+	if pl.IsIdentity() {
+		return childThread
+	}
+	childAlias := pl.GetInnerQuantifier().GetAlias()
+	projections := pl.GetProjections()
+	aliases := pl.GetAliases()
+	fields := make([]namedValue, len(projections))
+	for i, v := range projections {
+		alias := ""
+		if i < len(aliases) {
+			alias = aliases[i]
+		}
+		fields[i] = namedValue{name: values.OutputColumnName(v, alias), value: v}
+	}
+	return pkThreadThroughFields(childThread, childAlias, fields)
+}
+
+// pkThreadThroughResultValue re-roots childThread (a proven pkThread whose
+// rows are read under childAlias) through an output-shaping resultValue —
+// RecordQueryMapPlan.resultValue or RecordQueryFlatMapPlan.resultValue. Fails
+// closed unless resultValue provably preserves every tracked PK value:
+//
+//   - resultValue IS childAlias's entire row, unchanged (a bare
+//     QuantifiedObjectValue over childAlias) — every field, PK included,
+//     passes through untouched, so childThread survives verbatim; or
+//   - resultValue is a RecordConstructorValue in which every PK field has
+//     some named slot that is a DIRECT, uncomputed read of that same field
+//     off childAlias (see correlatedFieldOf) — never a renamed-without-
+//     tracking, computed, or constant slot.
+//
+// Anything else (a bare computed Value, a RecordConstructor missing a PK
+// field, nil) declines: under-applying the cap is always safe, so this
+// function is deliberately conservative rather than clever.
+func pkThreadThroughResultValue(childThread pkThread, childAlias values.CorrelationIdentifier, resultValue values.Value) pkThread {
+	if !childThread.ok {
+		return pkThread{}
+	}
+	if qov, ok := resultValue.(*values.QuantifiedObjectValue); ok && qov.Correlation == childAlias {
+		return childThread
+	}
+	rc, ok := resultValue.(*values.RecordConstructorValue)
+	if !ok {
+		return pkThread{}
+	}
+	fields := make([]namedValue, len(rc.Fields))
+	for i, f := range rc.Fields {
+		fields[i] = namedValue{name: f.Name, value: f.Value}
+	}
+	return pkThreadThroughFields(childThread, childAlias, fields)
+}
+
+// pkThreadThroughFields is the shared engine behind pkThreadThroughResultValue
+// and computeProjectionPKThread: given a proven childThread and a set of
+// named output slots computed over childAlias's row, it re-derives childThread
+// under the NEW output names — or fails closed the moment any tracked PK
+// component cannot be proven to survive.
+//
+// A values.RecordTypeValue component is carried through UNCHANGED rather than
+// matched against a field slot: per innerFullyBindsThread's doc comment it is
+// a per-thread CONSTANT (the record type never changes under a Map/Projection
+// over the same underlying row), never a discriminating column, so no field
+// slot needs to reproduce it for the thread to remain sound.
+//
+// Every other PK component must be a flat, leaf-relative FieldValue
+// (leafFieldName), and some output slot must be a DIRECT reference to that
+// same field off childAlias (correlatedFieldOf) — a renamed, computed, or
+// constant slot does not count, and a missing match fails the WHOLE thread
+// closed (not just that one component): a partial PK is not a PK.
+func pkThreadThroughFields(childThread pkThread, childAlias values.CorrelationIdentifier, fields []namedValue) pkThread {
+	if !childThread.ok {
+		return pkThread{}
+	}
+	newPK := make([]values.Value, 0, len(childThread.pkValues))
+	for _, pv := range childThread.pkValues {
+		if _, isRecordType := pv.(*values.RecordTypeValue); isRecordType {
+			newPK = append(newPK, pv)
+			continue
+		}
+		wantedName, ok := leafFieldName(pv)
+		if !ok {
+			return pkThread{} // a non-flat-FieldValue PK component — fail closed
+		}
+		outName, found := findDirectFieldMapping(fields, childAlias, wantedName)
+		if !found {
+			return pkThread{}
+		}
+		newPK = append(newPK, &values.FieldValue{Field: outName})
+	}
+	return pkThread{recordType: childThread.recordType, pkValues: newPK, ok: true}
+}
+
+// findDirectFieldMapping searches fields for a slot that is a DIRECT,
+// uncomputed read of wantedField off childAlias — i.e. correlatedFieldOf(v)
+// == (wantedField, childAlias, true) — and returns that slot's own output
+// name. Multiple slots may qualify (a field projected twice under different
+// names); any one witness is sufficient to prove the PK component survives.
+func findDirectFieldMapping(fields []namedValue, childAlias values.CorrelationIdentifier, wantedField string) (string, bool) {
+	for _, f := range fields {
+		field, corr, ok := correlatedFieldOf(f.value)
+		if !ok || corr != childAlias || field != wantedField {
+			continue
+		}
+		return f.name, true
+	}
+	return "", false
+}
+
 // computeFlatMapPKThread extends a proven outer pkThread across one more
 // FlatMap hop: if the inner leg's search fully equality-binds every column of
 // the outer's established primary key (correlated to the FlatMap's own outer
@@ -135,7 +288,16 @@ func computeFlatMapPKThread(fm *plans.RecordQueryFlatMapPlan) pkThread {
 	if !innerFullyBindsThread(fm, outerThread) {
 		return pkThread{}
 	}
-	return computePKThread(fm.GetInner())
+	innerThread := computePKThread(fm.GetInner())
+	if !innerThread.ok {
+		return pkThread{}
+	}
+	// fm's OWN resultValue defines what the FlatMap actually emits — it can
+	// merge outer and inner fields, rename them, or drop the inner's PK
+	// entirely, exactly like a Map/Projection's resultValue can. Re-root
+	// innerThread through it rather than assuming the FlatMap's output is
+	// interchangeable with the bare inner leg's own identity.
+	return pkThreadThroughResultValue(innerThread, fm.GetInnerAlias(), fm.GetResultValue())
 }
 
 // innerFullyBindsThread reports whether fm's inner leg's own scan/index
