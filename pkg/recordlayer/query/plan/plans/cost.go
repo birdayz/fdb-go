@@ -485,8 +485,27 @@ func (p *RecordQueryNestedLoopJoinPlan) HintCost(child []properties.Cost, _ prop
 // Under-detecting only forgoes the correction (today's flat
 // FilterSelectivity fallback remains exactly as before); over-detecting
 // would let a non-selective join masquerade as a point probe.
+//
+// Also fails closed on JoinFullOuter: uniqueness caps only the MATCHED
+// (outer, inner) pairs at one row each — it says nothing about the inner rows
+// FULL OUTER additionally preserves when they matched no outer row at all, so
+// a 10-row outer against a 1000-row inner cannot be capped to 10 the way an
+// INNER join's equivalent bind can. JoinInner and JoinLeftOuter both still
+// take the correction: LEFT OUTER already preserves every outer row exactly
+// once (matched-or-NULL-padded) when the inner key is unique — 0 or 1 inner
+// matches per outer row — so its true cardinality is already outerCard, same
+// as INNER. JoinCross carries no join-predicate conjuncts to bind a key with
+// in the first place, so it is excluded by omission rather than needing its
+// own reasoning. Go has no separate JoinRightOuter: RIGHT JOIN is normalized
+// to LEFT OUTER with outer/inner swapped at plan-construction time
+// (cascades_translator.go), so that LEFT OUTER reasoning already covers it.
 func NestedLoopJoinUniqueKeyConjuncts(p *RecordQueryNestedLoopJoinPlan) (int, bool) {
 	if p == nil {
+		return 0, false
+	}
+	switch p.GetJoinType() {
+	case JoinInner, JoinLeftOuter:
+	default:
 		return 0, false
 	}
 	keyCols, ok := innerLeafUniqueKeyColumns(p.GetInner())
@@ -540,6 +559,16 @@ func flattenAndConjuncts(p predicates.QueryPredicate) []predicates.QueryPredicat
 // as the LHS operand or the RHS comparand. Declines an already-bound column:
 // a redundant repeat conjunct (`inner.pk = outer.a AND inner.pk = outer.a`)
 // is not a second consumed conjunct.
+//
+// Also requires the OPPOSITE operand to carry NO correlation to innerAlias
+// (valueCorrelatedTo — the same "is this value a function of alias X"
+// membership idiom rule_implement_nested_loop_join.go's
+// referenceIsCorrelatedTo and physical_wrapper.go already use elsewhere in
+// this planner): `i.id = i.other` and `i.id = i.id` both read the inner's OWN
+// key column on one side, but the OTHER side is ALSO a function of the same
+// inner row, so the predicate is an intra-inner comparison the join
+// re-evaluates for every (outer, inner) pair — it does not pin the inner to
+// at most one row per outer row the way a real outer-parameterized bind does.
 func matchedInnerKeyEquality(
 	conjunct predicates.QueryPredicate,
 	innerAlias values.CorrelationIdentifier,
@@ -549,23 +578,47 @@ func matchedInnerKeyEquality(
 	if !ok || cmp.Comparison.Type != predicates.ComparisonEquals {
 		return "", false
 	}
-	if field, corr, ok := correlatedInnerField(cmp.Operand); ok && corr == innerAlias && want[field] && !bound[field] {
+	lhs, rhs := cmp.Operand, cmp.Comparison.Operand
+	if field, corr, ok := correlatedInnerField(lhs); ok && corr == innerAlias && want[field] && !bound[field] &&
+		!valueCorrelatedTo(rhs, innerAlias) {
 		return field, true
 	}
-	if cmp.Comparison.Operand != nil {
-		if field, corr, ok := correlatedInnerField(cmp.Comparison.Operand); ok && corr == innerAlias && want[field] && !bound[field] {
+	if rhs != nil {
+		if field, corr, ok := correlatedInnerField(rhs); ok && corr == innerAlias && want[field] && !bound[field] &&
+			!valueCorrelatedTo(lhs, innerAlias) {
 			return field, true
 		}
 	}
 	return "", false
 }
 
+// valueCorrelatedTo reports whether v's correlation set includes alias.
+func valueCorrelatedTo(v values.Value, alias values.CorrelationIdentifier) bool {
+	if v == nil {
+		return false
+	}
+	_, ok := values.GetCorrelatedToOfValue(v)[alias]
+	return ok
+}
+
 // correlatedInnerField returns the field name and root correlation of a
-// comparand shaped like FieldValue{Field, Child: QuantifiedObjectValue} — the
-// shape a correlated column reference takes. Mirrors
-// fk_chain_cardinality.go's correlatedFieldOf (package cascades); duplicated
-// here rather than imported because plans cannot import cascades (cascades
-// already imports plans — the reverse direction would cycle).
+// comparand shaped like a BARE column reference off a source
+// QuantifiedObjectValue — the SAME bare-column allowlist
+// match_candidate_index.go's buildTranslateValueFunction applies before
+// trusting a FieldValue's leaf name (RFC-179 F12): a chained accessor
+// (FieldValue{ID, Child: FieldValue{ADDRESS, Child: QOV}}) or a fused
+// baked multi-accessor path (Child=QOV directly, Resolved=[ADDRESS,ID],
+// Field="ID") both put a DIFFERENT column's leaf name where a real top-level
+// "ID" reference would be; treating either shape's bare Field as a flat
+// top-level match would let a same-leaf-named nested column (i.address.id)
+// impersonate the top-level primary-key column ID.
+//
+// Unlike buildTranslateValueFunction — which can fall through to a lazy
+// re-resolution against the actual target row that fails loud if the guess
+// was wrong — this function's result is consumed directly as a cost-model map
+// key with no downstream re-check, so (unlike that function) it declines a
+// fused multi-accessor path outright (Resolved != nil && !Single()) rather
+// than falling through to a name-only match.
 func correlatedInnerField(v values.Value) (field string, corr values.CorrelationIdentifier, ok bool) {
 	fv, isField := v.(*values.FieldValue)
 	if !isField {
@@ -574,6 +627,11 @@ func correlatedInnerField(v values.Value) (field string, corr values.Correlation
 	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
 	if !isQOV {
 		return "", values.CorrelationIdentifier{}, false
+	}
+	if fv.Resolved != nil {
+		if _, single := fv.Resolved.Single(); !single {
+			return "", values.CorrelationIdentifier{}, false
+		}
 	}
 	return fv.Field, qov.Correlation, true
 }
@@ -617,6 +675,17 @@ func innerLeafUniqueKeyColumns(plan RecordQueryPlan) ([]string, bool) {
 		return names, true
 	case *RecordQueryIndexPlan:
 		if p == nil || !p.IsUnique() {
+			return nil, false
+		}
+		// GetColumnNames() retains display/leaf names even for a function or
+		// nested-key index whose names WithOrderingKeyNamesUnavailable has
+		// marked unsafe for name-based matching (e.g. a unique
+		// CARDINALITY(TAGS) or a nested ADDR.CITY key) — the same marker
+		// HintOrdering (ordering.go) already gates on before trusting these
+		// names for a different purpose. Consult it here too: a plain leaf
+		// name off such an index is not proof of a bind on a flat top-level
+		// key column.
+		if !p.orderingKeyNamesKnown || !p.orderingKeyNamesSafe {
 			return nil, false
 		}
 		cols := p.GetColumnNames()

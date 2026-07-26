@@ -395,10 +395,15 @@ func leafFieldName(v values.Value) (string, bool) {
 }
 
 // correlatedFieldOf returns the field name and root correlation of a
-// comparand shaped like FieldValue{Field, Child: QuantifiedObjectValue} — the
-// shape a correlated column reference takes, baked or lazy alike. Anything
-// else (a literal, a nested/computed expression, a differently-shaped
-// correlation) fails closed.
+// comparand shaped like a BARE column reference off a source
+// QuantifiedObjectValue, baked or lazy alike. Anything else (a literal, a
+// nested/computed expression, a differently-shaped correlation) fails closed
+// — including a fused baked multi-accessor path (Child=QOV directly,
+// Resolved carrying more than one accessor): FieldValue.Field is only the
+// LEAF name there, so a nested `outer.address.id` would otherwise report
+// field="ID" and impersonate a real top-level "ID" column in wantFields
+// (plans/cost.go's correlatedInnerField closes the identical hole in the
+// unique-key join-cost proof this function mirrors; keep both in lockstep).
 func correlatedFieldOf(v values.Value) (field string, corr values.CorrelationIdentifier, ok bool) {
 	fv, isField := v.(*values.FieldValue)
 	if !isField {
@@ -407,6 +412,11 @@ func correlatedFieldOf(v values.Value) (field string, corr values.CorrelationIde
 	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
 	if !isQOV {
 		return "", values.CorrelationIdentifier{}, false
+	}
+	if fv.Resolved != nil {
+		if _, single := fv.Resolved.Single(); !single {
+			return "", values.CorrelationIdentifier{}, false
+		}
 	}
 	return fv.Field, qov.Correlation, true
 }

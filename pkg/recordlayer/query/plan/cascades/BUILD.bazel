@@ -215,6 +215,7 @@ go_test(
         "alias_map_test.go",
         "asymmetric_union_planning_test.go",
         "benchmark_test.go",
+        "cardinality_cost_bound_test.go",
         "comparison_simplify_test.go",
         "compensation_determinism_test.go",
         "compensation_fuzz_test.go",
@@ -936,6 +937,7 @@ go_test(
         "fk_chain_cardinality_test.go",
         "primary_scan_match_candidate_type_filter_test.go",
         "scan_like_cost_point_probe_rate_test.go",
+        "cardinality_cost_bound_test.go",
     ],
     deps = [
         "//gen",

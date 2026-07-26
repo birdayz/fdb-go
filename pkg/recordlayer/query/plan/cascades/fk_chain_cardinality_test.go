@@ -222,6 +222,58 @@ func TestFKChainCardinalityCap_DoesNotFireOnNonPKBind(t *testing.T) {
 	}
 }
 
+// fkChainCorrelatedNestedEq is fkChainCorrelatedEq but builds a FUSED baked
+// nested reference (Field=leaf, Child=the bare source QOV directly, Resolved
+// carrying a TWO-accessor [parent, leaf] path) — the shape a baked
+// `outerAlias.parent.leaf` reference takes, as opposed to a flat
+// `outerAlias.leaf` top-level column.
+func fkChainCorrelatedNestedEq(t *testing.T, outerAlias values.CorrelationIdentifier, parent, leaf string) *predicates.ComparisonRange {
+	t.Helper()
+	operand := &values.FieldValue{
+		Field: leaf, Typ: values.UnknownType,
+		Child: values.NewQuantifiedObjectValue(outerAlias),
+		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
+			{Field: parent, Ordinal: 0},
+			{Field: leaf, Ordinal: 1},
+		}},
+	}
+	cmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
+	res := predicates.EmptyComparisonRange().Merge(&cmp)
+	if !res.Ok {
+		t.Fatalf("failed to build correlated nested eq range")
+	}
+	return res.Range
+}
+
+// TestFKChainCardinalityCap_DoesNotFireOnNestedFieldSameLeafName pins the
+// nested-field analogue of the non-PK-bind counter-example above: the outer's
+// OWN top-level primary key is flat "ID" (fkChainIDPK), but the inner's scan
+// comparison binds a NESTED `outerAlias.ADDRESS.ID` — a fused baked reference
+// whose LEAF name happens to also be "ID". correlatedFieldOf must not report
+// this as a bind on the outer's flat top-level ID column merely because the
+// leaf names collide: FieldValue.Field is a display leaf, not the whole
+// accessor identity, and a two-accessor Resolved path is not the same column
+// as the outer's actual single-accessor primary key. Mirrors
+// plans/cost.go's TestNestedLoopJoinPlan_HintCost_NestedFieldSameLeafName_Unaffected,
+// which pins the identical hole in the sibling unique-key join-cost proof.
+func TestFKChainCardinalityCap_DoesNotFireOnNestedFieldSameLeafName(t *testing.T) {
+	t.Parallel()
+
+	outer := fkChainFullScan("T1") // PK: flat top-level "ID"
+	inner := plans.NewRecordQueryIndexPlan("t2_by_addr_id",
+		[]*predicates.ComparisonRange{fkChainCorrelatedNestedEq(t, fkChainAlias(0), "ADDRESS", "ID")},
+		[]string{"T2"}, values.UnknownType, false).
+		WithCommonPrimaryKey(fkChainIDPK()).
+		WithDistinctRecordsSignal(false)
+	fm := plans.NewRecordQueryFlatMapPlan(outer, inner,
+		fkChainAlias(0), values.NamedCorrelationIdentifier("i"),
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("i")), false)
+
+	if cap, ok := fkChainCardinalityCap(fm, properties.MapStatistics{PerType: map[string]float64{"T2": 500}}); ok {
+		t.Fatalf("cap fired on a nested same-leaf-name bind (T1.ADDRESS.ID mistaken for T1's own top-level ID), cap=%v — must decline (ok=false)", cap)
+	}
+}
+
 // TestFKChainCardinalityCap_PropagatesAcrossFetchAndTypeFilter checks the
 // pass-through wrappers computePKThread/scanComparisonsOfLeaf/
 // singleLeafRecordType see through: a real production FlatMap chain wraps a
