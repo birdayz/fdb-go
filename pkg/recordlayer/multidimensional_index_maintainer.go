@@ -829,8 +829,21 @@ func (c *rtreeScanCursor) IsClosed() bool { return c.closed }
 // nextPrefixTuple builds a brand-new KeyValueCursor — and so a brand-new,
 // independent CursorLimitManager — on every call
 // (KeyValueCursorBase.java:359, MultidimensionalIndexMaintainer.java:213-246),
-// so each enumeration read keeps its own de-facto free pass, unconditional on
-// rtreeFreePassUsed; findNextPrefix is intentionally left ungated here to match.
+// so each enumeration read is checked against ITS OWN fresh usedInitialPass,
+// never against rtreeFreePassUsed. That does not mean the enumeration read is
+// always ungated, though: CursorLimitManager.tryRecordScan()'s halt condition
+// is "!recordScanLimiter.tryRecordScan() && (usedInitialPass ||
+// failOnScanLimitReached)" (CursorLimitManager.java:134-136) — a fresh
+// usedInitialPass=false grants a free pass in the DEFAULT (paginating) mode
+// (the "usedInitialPass ||" side never becomes true), but the
+// "|| failOnScanLimitReached" side means FailOnScanLimitReached denies that
+// free pass regardless of usedInitialPass. So in fail mode, findNextPrefix
+// below is gated on the shared record-scan budget exactly like every other
+// leaf cursor's first read; in paginating mode it is intentionally left
+// ungated, matching Java's always-fresh free pass for this read. Bytes/time
+// limits stay unconditionally free-passed for this read in BOTH modes —
+// their halt conditions are gated on usedInitialPass alone, with no
+// failOnScanLimitReached override, so a fresh manager never halts on them.
 type prefixSkipScanCursor struct {
 	m              *multidimensionalIndexMaintainer
 	dimExpr        *DimensionsKeyExpression
@@ -942,6 +955,22 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
 		}
 
+		// Ask before reading: under FailOnScanLimitReached the shared record-scan
+		// budget must be checked BEFORE findNextPrefix issues its GetRange, not
+		// charged after the read has already come back. A hard limit that only
+		// surfaces once the read has escaped is not a hard limit — see
+		// noNextOrFail's own doc comment, and CursorLimitManager.tryRecordScan()
+		// (CursorLimitManager.java:134-136), which is called by
+		// KeyValueCursorBase.onNext() BEFORE it awaits iterator.onHasNext()
+		// (KeyValueCursorBase.java:99-100), not after. Scoped to
+		// FailOnScanLimitReached only — see the struct doc comment above for why
+		// the default (paginating) mode leaves this read's free pass alone.
+		if c.scanProperties.ExecuteProperties.FailOnScanLimitReached &&
+			c.scanProperties.ExecuteProperties.ScannedRecordsLimit > 0 &&
+			c.scanState.RecordsScanned() >= c.scanProperties.ExecuteProperties.ScannedRecordsLimit {
+			return noNextOrFail[*IndexEntry](c.scanProperties.ExecuteProperties, ScanLimitReached, nil)
+		}
+
 		// Find the next prefix and create a cursor for it.
 		prefix, found, err := c.findNextPrefix()
 		if err != nil {
@@ -951,7 +980,8 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			c.exhausted = true
 			return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
 		}
-		c.scanState.AddRecordScanned() // the prefix-enumeration read counts against the scan budget
+		// findNextPrefix already charged c.scanState.AddRecordScanned() for this
+		// read (on every return path, hit or miss) — nothing left to charge here.
 		c.currentPrefixBytes = prefix.Pack()
 
 		// Build a per-prefix scanRange with this prefix in the Low/High bounds.
@@ -1067,6 +1097,23 @@ func (c *prefixSkipScanCursor) findNextPrefix() (tuple.Tuple, bool, error) {
 		Begin: c.nextPrefixStart,
 		End:   fdb.Key(indexEnd),
 	}
+	// Charge the shared record-scan budget for this ATTEMPT immediately before
+	// issuing the GetRange — matching CursorLimitManager.tryRecordScan(), which
+	// decrements recordScanLimiter BEFORE KeyValueCursorBase.onNext() awaits
+	// iterator.onHasNext() (CursorLimitManager.java:134-136,
+	// KeyValueCursorBase.java:99-100). The charge reflects the decision to
+	// read, not the read's outcome: every return path below this point (error,
+	// miss, unparseable key, short prefix, or a genuine next prefix) has
+	// already performed the GetRange, so every one of them costs the same one
+	// record — matching Java, where a miss decrements recordScanLimiter
+	// exactly like a hit. Charging only the success path (as this used to)
+	// silently undercounts: an enumeration that terminates by exhaustion still
+	// issued a real read, and across a fan-out plan sharing one ScanLimiterState
+	// that is one uncharged read per exhausted leg, not a one-off. Only the
+	// Strinc call above this point returns without ever reaching this line —
+	// pure in-memory key-encoding, no read attempted, so it correctly charges
+	// nothing.
+	c.scanState.AddRecordScanned()
 	kvs, err := c.m.tx.GetRange(rng, fdb.RangeOptions{Limit: 1}).GetSliceWithError()
 	if err != nil {
 		return nil, false, fmt.Errorf("MULTIDIMENSIONAL prefix skip-scan: range read: %w", err)
@@ -1076,7 +1123,10 @@ func (c *prefixSkipScanCursor) findNextPrefix() (tuple.Tuple, bool, error) {
 	}
 	// The enumeration read counts against the shared byte budget too, not just
 	// the record budget (RFC-106a) — otherwise many-prefix overhead bypasses
-	// ScannedBytesLimit. (The caller adds one record via AddRecordScanned.)
+	// ScannedBytesLimit. Bytes are charged only on an actual hit, matching
+	// Java's reportScannedBytes call, which KeyValueCursorBase.onNext() only
+	// reaches inside its `if (hasNext)` branch (KeyValueCursorBase.java:107) —
+	// unlike the record charge above, a miss costs no bytes in Java either.
 	c.scanState.AddBytesScanned(int64(len(kvs[0].Key) + len(kvs[0].Value)))
 
 	// Unpack the key relative to the index subspace.

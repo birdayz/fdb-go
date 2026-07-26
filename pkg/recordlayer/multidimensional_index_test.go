@@ -1300,6 +1300,144 @@ var _ = Describe("MultidimensionalIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("prefix skip-scan does not issue another read once the shared record budget is already spent (FailOnScanLimitReached)", func() {
+		// Regression test: prefixSkipScanCursor.OnNext used to call
+		// findNextPrefix() (a real GetRange) UNCONDITIONALLY, charging
+		// AddRecordScanned() only after that read came back — so under
+		// FailOnScanLimitReached, a shared budget that was ALREADY at its
+		// limit before this cursor ever ran still let one more
+		// prefix-enumeration read reach FDB before the limit error
+		// surfaced (only the per-prefix rtreeScanCursor built from that
+		// escaped read would ever report it). A hard limit checked after
+		// the read has already gone out is not a hard limit.
+		//
+		// Pre-spend the shared *ScanLimiterState directly (no read
+		// involved) to the cap, exactly the state a prior leg of an
+		// IN-join/IN-union fan-out would have left behind sharing the
+		// same pointer (see the fan-out test above), then run a fresh
+		// unbounded-prefix scan against a non-empty index. If a read
+		// escapes, findNextPrefix's own AddRecordScanned() call (fired
+		// only after a successful GetRange) advances the counter past
+		// the pre-charged value — that is the observable this test pins.
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("coord_x")), 1, 1)
+		mdIdx := NewMultidimensionalIndex("md_prefix_prespent", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		const scanLimit = 3
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Real data — without the fix, findNextPrefix would actually
+			// find this prefix and the escaped read would succeed.
+			for i, x := range []int64{10, 20} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(int64(i + 1)),
+					Price:   proto.Int32(1),
+					CoordX:  proto.Int64(x),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			props := ForwardScan()
+			props.ExecuteProperties = props.ExecuteProperties.WithScannedRecordsLimit(scanLimit)
+			props.ExecuteProperties.FailOnScanLimitReached = true
+
+			state := props.ExecuteProperties.ScanState
+			for state.RecordsScanned() < scanLimit {
+				state.AddRecordScanned()
+			}
+			before := state.RecordsScanned()
+
+			_, scanErr := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, props))
+			var sle *ScanLimitReachedError
+			Expect(errors.As(scanErr, &sle)).To(BeTrue(),
+				"an already-spent shared budget under FailOnScanLimitReached must surface "+
+					"ScanLimitReachedError before the skip-scan opens its first prefix, got: %v", scanErr)
+
+			Expect(state.RecordsScanned()).To(Equal(before),
+				"prefix skip-scan must not perform another range read once the shared "+
+					"record-scan budget is already spent under FailOnScanLimitReached — "+
+					"the shared counter advanced past the pre-charged value, meaning a "+
+					"findNextPrefix GetRange escaped the hard limit")
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("prefix skip-scan charges the shared budget for a miss that exhausts enumeration, not just for a hit", func() {
+		// Regression test for the sibling half of the ask-before-read fix
+		// above: findNextPrefix used to charge AddRecordScanned() only on its
+		// `found` return path, back in the caller (OnNext). Every MISS return
+		// — GetRange came back empty, an unparseable key, a too-short prefix —
+		// still performs the exact same GetRange and must cost the same one
+		// record, matching CursorLimitManager.tryRecordScan(), which
+		// decrements recordScanLimiter on the ATTEMPT, before the outcome is
+		// known (CursorLimitManager.java:134-136) — a miss costs identically
+		// to a hit in Java. Charging only hits silently undercounts every leg
+		// whose prefix enumeration terminates by exhaustion: one uncharged
+		// read per leg, against a budget shared across an entire fan-out plan
+		// (not a one-off — see the fan-out test above for why that sharing
+		// matters).
+		//
+		// An index with ZERO records isolates the assertion cleanly:
+		// PrefixSize > 0 still routes ScanIndex through prefixSkipScanCursor
+		// (Scan()'s dispatch is on the index shape, not on data presence), so
+		// OnNext makes exactly ONE findNextPrefix() call, which immediately
+		// misses (GetRange finds nothing) and exhausts the cursor — no
+		// per-prefix rtreeScanCursor is ever built, so there is no other read
+		// in the leg to conflate the count with.
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("coord_x")), 1, 1)
+		mdIdx := NewMultidimensionalIndex("md_prefix_miss_charge", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		const numLegs = 5
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			// Deliberately no SaveRecord calls: the index stays empty, so
+			// every leg's single findNextPrefix() call is a miss.
+
+			// ONE ScanProperties (and so one shared *ScanLimiterState) reused
+			// across every leg — same fan-out sharing mechanism as the
+			// existing aggregation test above.
+			props := ForwardScan()
+			state := props.ExecuteProperties.ScanState
+			before := state.RecordsScanned()
+
+			for leg := 0; leg < numLegs; leg++ {
+				legProps := props
+				legProps.ExecuteProperties = legProps.ExecuteProperties.ClearSkipAndLimit()
+				entries, legErr := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, legProps))
+				Expect(legErr).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(0))
+			}
+
+			Expect(state.RecordsScanned()).To(Equal(before+numLegs),
+				"each of %d exhausted legs must charge exactly one record for its "+
+					"terminating findNextPrefix miss — got %d new charges, want %d",
+				numLegs, state.RecordsScanned()-before, numLegs)
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("delete record clears index entry", func() {
 		ks := specSubspace()
 
