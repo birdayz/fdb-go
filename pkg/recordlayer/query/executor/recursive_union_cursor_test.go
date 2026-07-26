@@ -440,6 +440,58 @@ func TestRecursiveUnionCursor_DepthCap_OneOverBoundary_Fails(t *testing.T) {
 	}
 }
 
+// TestRecursiveUnionCursor_ManyShallowInvocations_NoFalsePositive is the
+// false-positive regression for keying the statement-scoped depth guard
+// (recordlayer.ExecuteState.recursionLevels) by plan pointer ALONE: the SAME
+// static plan node, invoked independently many times within one statement —
+// e.g. a depth-1 recursive CTE nested in a correlated subquery, re-evaluated
+// once per outer row via flatMapCursor.OnNext (flat_map_cursor.go:380 calls
+// ExecutePlan with a nil inner continuation for every outer row except the
+// one specific row being resumed mid-inner) — must NOT have those
+// invocations' levels summed into one shared total. Without
+// newRecursiveUnionCursor resetting the count at each fresh (continuation ==
+// nil) invocation boundary, invocation 1001 of a plan whose SINGLE
+// invocation only ever reaches depth 1 would alone trip
+// maxStreamingRecursionDepth even though no single invocation came anywhere
+// close — a valid query wrongly rejected.
+func TestRecursiveUnionCursor_ManyShallowInvocations_NoFalsePositive(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Statement-scoped: minted ONCE and reused across every invocation below,
+	// exactly as one real statement execution shares one ExecuteState across
+	// every re-invocation of a correlated subquery's plan tree.
+	execState := recordlayer.NewExecuteState(0)
+	props := recordlayer.DefaultExecuteProperties()
+	props.State = execState
+
+	// targetDepth==1: each invocation's initial leg seeds one row, which
+	// triggers exactly ONE checkDepth call (the lone recursive-leg start),
+	// which immediately inserts nothing and terminates naturally. The SAME
+	// plan pointer is reused for every invocation below — required, since
+	// the guard keys off c.plan identity.
+	plan := naturallyTerminatingLevelUnionPlan(1)
+
+	const invocations = maxStreamingRecursionDepth + 100 // well past the cap if levels wrongly accumulated across invocations
+	for i := 1; i <= invocations; i++ {
+		cur, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, props)
+		if err != nil {
+			t.Fatalf("invocation %d: ExecutePlan: %v", i, err)
+		}
+		rows, err := drainRecursiveUnion(t, ctx, cur)
+		cur.Close()
+		if err != nil {
+			t.Fatalf("invocation %d of %d (each independently depth-1): got error %v — "+
+				"the statement-scoped counter is accumulating ACROSS independent invocations of "+
+				"the same plan node instead of resetting at each fresh-invocation boundary",
+				i, invocations, err)
+		}
+		if rows != 1 {
+			t.Fatalf("invocation %d: got %d rows, want 1", i, rows)
+		}
+	}
+}
+
 // neverTerminatingDfsPlan builds a streaming (UNION ALL, non-DISTINCT)
 // recursive DFS join whose child leg unconditionally emits exactly one row
 // per node, regardless of the parent — every node has exactly one child,

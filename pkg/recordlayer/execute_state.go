@@ -160,6 +160,35 @@ func (s *ExecuteState) IncrementRecursionLevel(id any) int {
 	return s.recursionLevels[id]
 }
 
+// ResetRecursionLevel zeroes the level count tracked under id, marking the
+// start of a FRESH invocation of a recursive-union plan node.
+//
+// id is the plan node's own pointer — stable for the whole statement — so
+// without this reset, IncrementRecursionLevel's map entry accumulates across
+// every invocation of that node, not just within one. That over-counts: a
+// recursive CTE nested in a correlated subquery is re-invoked once per outer
+// row (recursive_union_cursor.go's newRecursiveUnionCursor is called fresh,
+// continuation==nil, from flatMapCursor.OnNext for every outer row — see its
+// doc comment), and a CTE nested in a scalar subquery is re-invoked once per
+// page it is re-evaluated on. Neither case is a RESUME of an in-flight
+// invocation; each is independent and must start its own count at zero, or a
+// shallow recursion invoked many times trips the depth cap that no single
+// invocation ever approached.
+//
+// The caller resets exactly when continuation==nil at cursor construction —
+// that is the invocation boundary: a resume of an in-flight invocation
+// (paging mid-recursion) always carries a non-nil continuation and must NOT
+// reset, or the original bug (a cyclic recursion that pages mid-recursion
+// streaming forever because its counter resets every page) returns.
+//
+// A nil receiver or a never-populated map is a no-op — nothing to reset.
+func (s *ExecuteState) ResetRecursionLevel(id any) {
+	if s == nil || s.recursionLevels == nil {
+		return
+	}
+	delete(s.recursionLevels, id)
+}
+
 // MemoryLimitExceededError is returned when a statement's accounted in-memory
 // buffering exceeds the statement-wide memory byte budget (RFC-130). It is a
 // per-statement resource-limit error in the same family as the scan/byte/time

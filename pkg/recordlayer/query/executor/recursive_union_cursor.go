@@ -323,6 +323,15 @@ func newRecursiveUnionCursor(
 
 	if len(continuation) == 0 {
 		c.isInitialState = true
+		// A nil continuation is the invocation boundary: this cursor starts a
+		// FRESH invocation of p, not a resume of one already in flight (a
+		// resume — paging mid-recursion — always carries a non-nil
+		// continuation; see checkDepth and ResetRecursionLevel's doc
+		// comments). Reset the statement-scoped level count for p so an
+		// earlier invocation's levels (e.g. a prior outer row of a
+		// correlated subquery wrapping this CTE) don't carry over into this
+		// one.
+		c.props.State.ResetRecursionLevel(p)
 		active, err := c.legCursor(ctx, p.GetInitialState(), nil)
 		if err != nil {
 			return nil, err
@@ -424,7 +433,13 @@ func (c *recursiveUnionCursor) wrapContinuation(childCont recordlayer.RecordCurs
 //   - props.State.IncrementRecursionLevel(c.plan): the STATEMENT-scoped count
 //     (see its doc comment on recordlayer.ExecuteState) that survives the
 //     per-page rebuild, so a cyclic recursion that pages mid-recursion still
-//     trips the cap instead of streaming forever.
+//     trips the cap instead of streaming forever. This count is scoped to
+//     one INVOCATION of c.plan, not the whole statement: newRecursiveUnionCursor
+//     resets it (ResetRecursionLevel) whenever it starts fresh (continuation
+//     == nil) rather than resuming one already in flight, so independent
+//     invocations of the same plan node within a statement (e.g. once per
+//     outer row of a correlated subquery) each get their own budget instead
+//     of accumulating into one shared total.
 //
 // A nil props.State (raw ExecuteProperties, as some executor-level tests
 // use) makes IncrementRecursionLevel a no-op returning 0, so c.levels alone
