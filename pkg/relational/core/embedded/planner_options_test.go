@@ -457,3 +457,30 @@ func TestPlannerOptions_CacheKeyPart(t *testing.T) {
 		t.Fatalf("cache key part is order-dependent: %q vs %q", a, b)
 	}
 }
+
+// TestPlannerOptions_CacheKeyPart_Injective pins that cacheKeyPart cannot
+// collide two DIFFERENT disabled-rule sets into the same string. Before the
+// rendering was length-prefixed, names were joined with a bare comma, so two
+// real rule names given as separate entries and one inert (unrecognized, and
+// therefore never rejected — see optStringSet) name that merely CONTAINS a
+// comma rendered identically: {"PredicatePushDownRule", "SelectMergeRule"}
+// and {"PredicatePushDownRule,SelectMergeRule"} both produced
+// ",PredicatePushDownRule,SelectMergeRule". A caller who set the latter would
+// then get served a plan built with BOTH real rules disabled — a wrong-plan
+// bug from the plan cache, not merely a missed optimization.
+func TestPlannerOptions_CacheKeyPart_Injective(t *testing.T) {
+	t.Parallel()
+
+	twoRules := plannerOptionsFrom(api.NewOptionsBuilder().
+		Set(api.OptDisabledPlannerRules, []string{"PredicatePushDownRule", "SelectMergeRule"}).Build()).
+		cacheKeyPart()
+	oneCommaJoinedName := plannerOptionsFrom(api.NewOptionsBuilder().
+		Set(api.OptDisabledPlannerRules, []string{"PredicatePushDownRule,SelectMergeRule"}).Build()).
+		cacheKeyPart()
+
+	if twoRules == oneCommaJoinedName {
+		t.Fatalf("cache key part collides two different disabled-rule sets: "+
+			"{PredicatePushDownRule, SelectMergeRule} and {PredicatePushDownRule,SelectMergeRule} "+
+			"both render %q", twoRules)
+	}
+}

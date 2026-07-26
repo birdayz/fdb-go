@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer"
@@ -104,6 +105,24 @@ func plannerOptionsFrom(o *api.Options) plannerOptions {
 // keep returning the plan built under the previous options — a wrong-plan bug,
 // not merely a stale-cost one.
 //
+// The rendering MUST be injective over (ShouldJoinRightDeep, disabledRules-as-
+// -a-set): two materially different option sets that render the same string
+// would collide in the plan cache, silently serving one connection's plan to
+// another built under different planner options. disabledRules names are
+// user-controlled and NOT restricted to identifier characters — an unknown
+// name is inert as a rule but still stored and keyed (see optStringSet) — so a
+// plain delimiter between names is not safe: {"A", "B"} and {"A,B"} would both
+// render ",A,B" under a comma join. Each name is therefore length-prefixed
+// instead, the same scheme values.ProjectionOutputIdentityKey uses for the
+// analogous problem: a leading decimal byte count followed by exactly that
+// many bytes for the name means the boundary is never inferred from content,
+// so no character (or sequence of characters) inside a name can be mistaken
+// for a separator, whatever it is. Lengths are rendered via strconv.Itoa, a
+// canonical decimal encoding, so no two byte counts render the same digits.
+// The "rd" prefix stays distinguishable from the names because a names-only
+// rendering always starts with a decimal digit (a length prefix), never the
+// letter 'r'.
+//
 // The all-defaults case renders the empty string, which planCacheScope treats
 // as "emit no component at all" — so a caller who sets no options gets exactly
 // the scope it got before planner options were keyed.
@@ -121,7 +140,8 @@ func (p plannerOptions) cacheKeyPart() string {
 		b.WriteString("rd")
 	}
 	for _, n := range names {
-		b.WriteString(",")
+		b.WriteString(strconv.Itoa(len(n)))
+		b.WriteByte(':')
 		b.WriteString(n)
 	}
 	return b.String()
