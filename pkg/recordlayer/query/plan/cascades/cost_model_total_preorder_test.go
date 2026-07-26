@@ -32,7 +32,7 @@ import (
 // for every criterion function this package exposes, and composes them for
 // the full comparator too.
 //
-// SELF-CLEANING EXCLUSION LIST: compareJoinOrdering (CQ-22) and
+// SELF-CLEANING EXCLUSION LIST: compareJoinOrdering (CQ-24) and
 // compareRecursiveCTE (CQ-23) are KNOWN to violate these properties and are
 // NOT fixed here — the fix is design work behind the query-engine RFC gate
 // (see TODO.md). Each is tested TWICE: assertKnownViolation proves the
@@ -125,7 +125,7 @@ func assertTotalPreorder(t *testing.T, label string, compare preorderCompareFn, 
 }
 
 // assertKnownViolation is the self-cleaning half of the exclusion list for a
-// criterion documented as non-total-preorder (CQ-22 / CQ-23): it FAILS
+// criterion documented as non-total-preorder (CQ-24 / CQ-23): it FAILS
 // unless compare still violates the property on corpus, so the moment
 // someone fixes the underlying criterion this test forces its removal from
 // the exclusion list instead of quietly continuing to pass forever.
@@ -164,7 +164,7 @@ func foldGetBest(members []preorderCandidate, less func(a, b expressions.Relatio
 // class; that is not the hazard this file exists to catch. What IS the
 // hazard: a comparator that is not a total preorder can make the fold land
 // in a DIFFERENT, non-equivalent class depending on arrival order (that is
-// exactly what CQ-22's 3-cycle does — no two rotations even agree on
+// exactly what CQ-24's 3-cycle does — no two rotations even agree on
 // whether their picks tie). Requiring compare(base,got)==0 catches that
 // while tolerating harmless within-tie-class nondeterminism.
 //
@@ -379,7 +379,7 @@ func TestCostModel_PhysicalVsLogicalGate_TotalPreorderAndFoldStable(t *testing.T
 //     strictly, breaking the transitivity of the two abstentions.
 //
 //     This does NOT reach the composed comparator as a live bug, and is
-//     deliberately NOT added to the CQ-22/CQ-23 exclusion list: each depth
+//     deliberately NOT added to the CQ-24/CQ-23 exclusion list: each depth
 //     rung is reached ONLY after its corresponding COUNT rung already tied
 //     (typeFilterDepth sits directly below typeFilterCount; fetchDepth sits
 //     inside the same `indexScanCount+coveringIndexCount>0` block as
@@ -430,7 +430,7 @@ func structuralCriteria() []structuralCriterion {
 // separates any pair where one side is genuinely N/A (-1) and the other
 // is not, so the depth rung the false tie routes through is never reached
 // on a live comparison. Compare with TestCostModel_CompareJoinOrdering_
-// StillViolatesTotalPreorder_CQ22, which has no such guard: joinShapesDiffer
+// StillViolatesTotalPreorder_CQ24, which has no such guard: joinShapesDiffer
 // is consulted with no preceding rung that already equalises the precondition.
 func TestCostModel_DepthCriteria_AbstentionIsPositionallyGuarded(t *testing.T) {
 	t.Parallel()
@@ -568,7 +568,7 @@ func TestCostModel_StructuralCriteria_TotalPreorderAndFoldStable(t *testing.T) {
 //
 // DELIBERATELY EXCLUDES join-containing plans (FlatMap / NestedLoopJoin) and
 // recursive-CTE plans (RecursiveDfsJoin / RecursiveLevelUnion): those are
-// the CQ-22 / CQ-23 known-broken axes, tested and confirmed-still-broken
+// the CQ-24 / CQ-23 known-broken axes, tested and confirmed-still-broken
 // separately below. Including them here would make this mandatory suite red
 // for a reason already tracked, which is not the point of THIS test.
 // ============================================================================
@@ -578,7 +578,7 @@ func TestCostModel_StructuralCriteria_TotalPreorderAndFoldStable(t *testing.T) {
 // rather than a standalone function — there is nothing to call directly the
 // way compareInPlan or comparePrimaryScanVsIndexScan can be called. Its outer
 // guard (wholePlanMaxCardinalityKnown(a) || wholePlanMaxCardinalityKnown(b))
-// is pair-dependent (an OR of two per-side booleans) exactly like CQ-22's
+// is pair-dependent (an OR of two per-side booleans) exactly like CQ-24's
 // joinShapesDiffer gate, AND that guard is blind to PlanContext (it always
 // resolves PK arity from plan-stamped metadata only — see
 // wholePlanMaxCardinalityKnown -> computeCardinalities -> scanProvableMaxCard,
@@ -698,7 +698,7 @@ func TestCostModel_ComposedComparator_FoldStable(t *testing.T) {
 }
 
 // ============================================================================
-// EXCLUSION 1 — compareJoinOrdering (CQ-22). Picks its metric from
+// EXCLUSION 1 — compareJoinOrdering (CQ-24). Picks its metric from
 // joinShapesDiffer(a,b), a property of the PAIR: shapes differ -> raw
 // Cost.CPU, shapes same -> Cost.Less (Cardinality+CPU). Two independent
 // unequal-metric choices for what is nominally one lexicographic rung breaks
@@ -740,13 +740,13 @@ func joinOrderingCorpus() ([]preorderCandidate, properties.StatisticsProvider) {
 	}, stats
 }
 
-func TestCostModel_CompareJoinOrdering_StillViolatesTotalPreorder_CQ22(t *testing.T) {
+func TestCostModel_CompareJoinOrdering_StillViolatesTotalPreorder_CQ24(t *testing.T) {
 	t.Parallel()
 	corpus, stats := joinOrderingCorpus()
 	compare := func(a, b expressions.RelationalExpression) int {
 		return compareJoinOrdering(a, b, stats, nil)
 	}
-	assertKnownViolation(t, "compareJoinOrdering", "CQ-22", compare, corpus)
+	assertKnownViolation(t, "compareJoinOrdering", "CQ-24", compare, corpus)
 
 	// Pin the exact minimal cycle, independent of the generic harness, so a
 	// change to the harness itself can't silently stop exercising it.
@@ -754,9 +754,9 @@ func TestCostModel_CompareJoinOrdering_StillViolatesTotalPreorder_CQ22(t *testin
 	bc := compare(corpus[1].expr, corpus[2].expr)
 	ac := compare(corpus[0].expr, corpus[2].expr)
 	if !(ab < 0 && bc < 0 && ac >= 0) {
-		t.Fatalf("CQ-22 minimal cycle no longer reproduces (fixed?): "+
+		t.Fatalf("CQ-24 minimal cycle no longer reproduces (fixed?): "+
 			"cmp(NLJ(T0,T2),FM(T0,T4))=%d cmp(FM(T0,T4),FM(T1,T0))=%d cmp(NLJ(T0,T2),FM(T1,T0))=%d — "+
-			"if this is intentional, close CQ-22 and remove this test", ab, bc, ac)
+			"if this is intentional, close CQ-24 and remove this test", ab, bc, ac)
 	}
 }
 

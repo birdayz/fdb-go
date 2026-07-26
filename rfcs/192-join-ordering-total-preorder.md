@@ -1,4 +1,4 @@
-# RFC-192: Make the join-ordering criterion a total preorder (CQ-22, CQ-23)
+# RFC-192: Make the join-ordering criterion a total preorder (CQ-24, CQ-23)
 
 **Status:** Draft — revision 1. Requests a Graefe ruling on WHICH of three options to take, before any
 implementation. No code changes proposed until that ruling is in.
@@ -149,7 +149,7 @@ not a measurement, and it gates the rest.
 ## What is already done
 
 - Both cycles reproduced against real formulas, with the fold's rotation-dependent winners.
-- The unification dead end implemented, measured, and reverted; findings recorded in TODO.md CQ-22 so the next
+- The unification dead end implemented, measured, and reverted; findings recorded in TODO.md CQ-24 so the next
   attempt starts past it.
 - A property suite (`cost_model_total_preorder_test.go`) enforcing reflexivity, antisymmetry, transitivity,
   indifference-transitivity and fold-stability across every drivable criterion, with a self-cleaning exclusion
