@@ -293,6 +293,153 @@ func TestRecursiveUnionCursor_CyclicAcrossPages_HitsDepthCap(t *testing.T) {
 	}
 }
 
+// countdownExplodeValue is a values.Value whose Evaluate returns a
+// single-element collection for the first N calls and an EMPTY collection on
+// the (N+1)-th, where N is set by the caller through remaining. Used as the
+// recursive leg's collection in naturallyTerminatingLevelUnionPlan so the
+// recursion's natural stop point (the insert table coming up empty) lands at
+// an EXACT, caller-chosen recursive-leg count instead of depending on data
+// content — executeExplode (executor.go) evaluates the collection exactly
+// once per leg execution and materializes every element eagerly, so one
+// Evaluate call corresponds to exactly one recursive leg.
+type countdownExplodeValue struct {
+	remaining *int
+}
+
+func (c *countdownExplodeValue) Children() []values.Value { return []values.Value{} }
+func (c *countdownExplodeValue) Type() values.Type        { return values.UnknownType }
+func (c *countdownExplodeValue) Name() string             { return "countdown" }
+func (c *countdownExplodeValue) Evaluate(any) (any, error) {
+	if *c.remaining <= 0 {
+		return []any{}, nil
+	}
+	*c.remaining--
+	return []any{int64(1)}, nil
+}
+
+var _ values.Value = (*countdownExplodeValue)(nil)
+
+// naturallyTerminatingLevelUnionPlan builds a level-union recursive CTE whose
+// recursive leg inserts exactly one row per level until the level-union has
+// made targetDepth recursive-leg STARTS (checkDepth calls), at which point
+// the leg inserts nothing and the recursion stops via ordinary fixpoint
+// exhaustion (scanTable empty) — NOT via the depth cap.
+//
+// This pins checkDepth's `>` boundary (recursive_union_cursor.go) exactly:
+// checkDepth is called once per recursive-leg start, immediately before that
+// leg runs, so the leg that starts at depth==targetDepth is the
+// targetDepth-th checkDepth call. With targetDepth ==
+// maxStreamingRecursionDepth, that call must SUCCEED (1000 is not >1000) and
+// the recursion must complete naturally with no error — an `>=` mutant would
+// instead reject that exact call and turn a valid, naturally-terminating
+// recursion into a spurious RecursiveCTEDepthExceededError.
+func naturallyTerminatingLevelUnionPlan(targetDepth int) *plans.RecordQueryRecursiveLevelUnionPlan {
+	scanAlias := values.NamedCorrelationIdentifier("scan")
+	insertAlias := values.NamedCorrelationIdentifier("insert")
+	initial := plans.NewRecordQueryTempTableInsertPlan(
+		plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{int64(1)}}),
+		insertAlias, true,
+	)
+	// The first targetDepth-1 recursive-leg starts must each insert a row (so
+	// each is followed by another checkDepth call); the targetDepth-th must
+	// insert nothing (so the recursion stops right there, without a
+	// (targetDepth+1)-th checkDepth call).
+	remaining := targetDepth - 1
+	recursive := plans.NewRecordQueryTempTableInsertPlan(
+		plans.NewRecordQueryExplodePlan(&countdownExplodeValue{remaining: &remaining}),
+		insertAlias, true,
+	)
+	return plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+}
+
+// drainRecursiveUnion pulls every row from cur, returning the row count and
+// the first error encountered (nil if the cursor drained to SourceExhausted).
+func drainRecursiveUnion(t *testing.T, ctx context.Context, cur recordlayer.RecordCursor[QueryResult]) (int, error) {
+	t.Helper()
+	n := 0
+	for {
+		r, err := cur.OnNext(ctx)
+		if err != nil {
+			return n, err
+		}
+		if !r.HasNext() {
+			if !r.GetNoNextReason().IsSourceExhausted() {
+				t.Fatalf("drained to a non-exhaustion stop (reason=%v) after %d rows — unexpected for this fixture", r.GetNoNextReason(), n)
+			}
+			return n, nil
+		}
+		n++
+	}
+}
+
+// TestRecursiveUnionCursor_DepthCap_ExactBoundary_NaturalTerminationSucceeds
+// is the exact-boundary pin the depth-cap tests above don't provide: those
+// drive an unboundedly cyclic recursion into the cap from above, where ±1 in
+// checkDepth's comparison is invisible (the recursion would hit the cap
+// either way, just one row earlier or later). This fixture instead
+// terminates NATURALLY at EXACTLY maxStreamingRecursionDepth recursive-leg
+// starts — a valid recursion a real cyclic-free CTE could produce — and it
+// must succeed with no RecursiveCTEDepthExceededError. See
+// naturallyTerminatingLevelUnionPlan's doc comment for why targetDepth ==
+// maxStreamingRecursionDepth is exactly the boundary checkDepth's `>` (not
+// `>=`) must allow through.
+func TestRecursiveUnionCursor_DepthCap_ExactBoundary_NaturalTerminationSucceeds(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cur, err := ExecutePlan(ctx, naturallyTerminatingLevelUnionPlan(maxStreamingRecursionDepth), nil,
+		EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cur.Close()
+
+	rows, err := drainRecursiveUnion(t, ctx, cur)
+	if err != nil {
+		var depthErr *RecursiveCTEDepthExceededError
+		if errors.As(err, &depthErr) {
+			t.Fatalf("a recursion that terminates naturally at EXACTLY maxStreamingRecursionDepth (%d) "+
+				"recursive-leg starts was rejected as RecursiveCTEDepthExceededError after %d rows — "+
+				"checkDepth's boundary check is off by one (rejecting depth==%d instead of only depth>%d)",
+				maxStreamingRecursionDepth, rows, maxStreamingRecursionDepth, maxStreamingRecursionDepth)
+		}
+		t.Fatalf("unexpected error after %d rows: %v", rows, err)
+	}
+	// 1 initial-leg row + (targetDepth-1) recursive-leg rows, one per
+	// non-empty leg start (see naturallyTerminatingLevelUnionPlan).
+	wantRows := maxStreamingRecursionDepth
+	if rows != wantRows {
+		t.Fatalf("got %d rows, want %d", rows, wantRows)
+	}
+}
+
+// TestRecursiveUnionCursor_DepthCap_OneOverBoundary_Fails is the paired
+// control: a recursion whose natural termination would require ONE MORE
+// recursive-leg start than the cap allows must still fail with
+// RecursiveCTEDepthExceededError. Without this, a test suite could pass a
+// cap that always allows one extra level (an off-by-one in the OTHER
+// direction) purely because the exact-boundary test above only checks the
+// allowed side.
+func TestRecursiveUnionCursor_DepthCap_OneOverBoundary_Fails(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cur, err := ExecutePlan(ctx, naturallyTerminatingLevelUnionPlan(maxStreamingRecursionDepth+1), nil,
+		EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cur.Close()
+
+	rows, err := drainRecursiveUnion(t, ctx, cur)
+	var depthErr *RecursiveCTEDepthExceededError
+	if !errors.As(err, &depthErr) {
+		t.Fatalf("recursion needing %d recursive-leg starts (one more than maxStreamingRecursionDepth=%d) "+
+			"drained %d rows with err=%v, want RecursiveCTEDepthExceededError",
+			maxStreamingRecursionDepth+1, maxStreamingRecursionDepth, rows, err)
+	}
+}
+
 // neverTerminatingDfsPlan builds a streaming (UNION ALL, non-DISTINCT)
 // recursive DFS join whose child leg unconditionally emits exactly one row
 // per node, regardless of the parent — every node has exactly one child,

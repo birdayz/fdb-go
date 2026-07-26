@@ -1094,3 +1094,97 @@ func TestPlanningCostModel_AggregateIndexBeatsStreamingAgg(t *testing.T) {
 		t.Fatal("streaming agg should not be cheaper than aggregate index")
 	}
 }
+
+// TestPlanningCostModelLess_InMemorySortCount_FewerNestedSortsWins is the
+// standalone regression pin for the promoted inMemorySortCount rung
+// (planning_cost_model.go, right after comparePrimaryScanVsIndexScan): among
+// two candidates tied on every earlier ORDINAL criterion, the one carrying
+// FEWER in-memory sorts wins — and it must win BECAUSE this ordinal rung
+// fired, not merely because the scalar-cost fallback happens to agree.
+//
+// The rung is reachable ONLY when both candidates carry >=1 sort with
+// DIFFERENT counts: primaryVsIndexRankOf (criterion #7,
+// comparePrimaryScanVsIndexScan) collapses EVERY sort-bearing plan to
+// primaryVsIndexTierSorted regardless of how many sorts it carries, so a
+// 0-vs-1 pair is already decided at #7 (Unencumbered beats Sorted) and never
+// reaches this rung — only a >=1-vs->=1 pair with unequal counts falls
+// through to it. Two nested RecordQueryInMemorySortPlans (a sort of a sort —
+// contrived, but exactly what inMemorySortCount=2 requires) over an
+// otherwise-identical scan is the smallest construction that reaches this
+// exact slot: every earlier rung (physical, cardinality, residuals,
+// data-access count, recursive CTE, join ordering, IN-plan, #7's tier) ties
+// on two bare unbound scans, so this is the FIRST rung capable of telling
+// them apart.
+//
+// A naive version of this test (both scans over the SAME record type, so
+// their scalar EstimateCost also happens to grow with sort count) does NOT
+// kill a mutant that disables this rung: InMemorySortCost adds a strictly
+// positive n*log(n) CPU term per sort, so the Go-statistics scalar-cost
+// fallback (the very next tiebreak slot) independently agrees "fewer sorts
+// is cheaper" for ANY same-cardinality pair — the two rungs' verdicts always
+// coincide, so disabling the ordinal one is invisible. This test instead
+// uses record types with WILDLY different configured cardinalities (a
+// "SMALL" type under the 2-sort candidate, orders of magnitude cheaper than
+// the unconfigured "BIG" type's LeafScanCardinality default under the 1-sort
+// candidate) so the scalar fallback's verdict is the OPPOSITE of the ordinal
+// rung's: fewer-sorts-wins only survives if the ordinal rung actually fires
+// before the scalar fallback is ever consulted.
+func TestPlanningCostModelLess_InMemorySortCount_FewerNestedSortsWins(t *testing.T) {
+	t.Parallel()
+
+	oneSort := plans.NewRecordQueryInMemorySortPlan(
+		plans.NewRecordQueryScanPlan([]string{"BIG"}, values.UnknownType, false), nil)
+	twoSorts := plans.NewRecordQueryInMemorySortPlan(
+		plans.NewRecordQueryInMemorySortPlan(
+			plans.NewRecordQueryScanPlan([]string{"SMALL"}, values.UnknownType, false), nil), nil)
+
+	opsOne := findExpressionsByType(oneSort, nil, nil)
+	opsTwo := findExpressionsByType(twoSorts, nil, nil)
+	if opsOne.inMemorySortCount != 1 {
+		t.Fatalf("oneSort.inMemorySortCount = %d, want 1", opsOne.inMemorySortCount)
+	}
+	if opsTwo.inMemorySortCount != 2 {
+		t.Fatalf("twoSorts.inMemorySortCount = %d, want 2", opsTwo.inMemorySortCount)
+	}
+
+	// Precondition: every criterion EARLIER than the inMemorySortCount rung
+	// must tie, or the test would pass without ever exercising it. Record
+	// type NAME feeds only the scalar cost fallback (via stats lookup), not
+	// any ordinal criterion, so "BIG" vs "SMALL" does not disturb these.
+	if opsOne.scanCount != opsTwo.scanCount {
+		t.Fatalf("scanCount precondition: %d vs %d, want equal", opsOne.scanCount, opsTwo.scanCount)
+	}
+	rankOne := primaryVsIndexRankOf(oneSort, opsOne, PreferScan)
+	rankTwo := primaryVsIndexRankOf(twoSorts, opsTwo, PreferScan)
+	if rankOne.tier != primaryVsIndexTierSorted || rankTwo.tier != primaryVsIndexTierSorted {
+		t.Fatalf("precondition: both candidates must land in the Sorted tier, got %d and %d",
+			rankOne.tier, rankTwo.tier)
+	}
+	if comparePrimaryVsIndexRank(rankOne, rankTwo) != 0 {
+		t.Fatalf("precondition: criterion #7 must tie a 1-sort and a 2-sort candidate " +
+			"(both Sorted-tier) — test no longer isolates the inMemorySortCount rung")
+	}
+
+	// Adversarial statistics: "SMALL" is configured far cheaper than "BIG"'s
+	// unconfigured LeafScanCardinality default, so the scalar-cost fallback
+	// alone would pick twoSorts (the 2-sort, SMALL-typed candidate) despite
+	// its extra sort — the OPPOSITE of what the ordinal rung must decide.
+	stats := properties.MapStatistics{PerType: map[string]float64{"SMALL": 1}}
+	costLess := NewPlanningCostModelLessWithContext(stats, nil)
+
+	costOne := properties.EstimateCostWith(oneSort, stats)
+	costTwo := properties.EstimateCostWith(twoSorts, stats)
+	if !costTwo.Less(costOne) {
+		t.Fatalf("adversarial-stats precondition: scalar cost of twoSorts (%+v) must be LOWER than "+
+			"oneSort's (%+v), or this test cannot distinguish the ordinal rung firing from the scalar "+
+			"fallback agreeing by coincidence", costTwo, costOne)
+	}
+
+	if !costLess(oneSort, twoSorts) {
+		t.Error("PlanningCostModelLess(1 sort, 2 sorts) = false, want true (fewer in-memory sorts wins, " +
+			"even though the 2-sort candidate is scalar-cheaper)")
+	}
+	if costLess(twoSorts, oneSort) {
+		t.Error("PlanningCostModelLess(2 sorts, 1 sort) = true, want false")
+	}
+}

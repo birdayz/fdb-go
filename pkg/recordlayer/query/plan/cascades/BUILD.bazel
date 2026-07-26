@@ -249,6 +249,7 @@ go_test(
         "in_union_cost_regression_test.go",
         "index_expansion_test.go",
         "index_primary_key_property_test.go",
+        "index_scan_ordering_partition_test.go",
         "index_scan_preference_test.go",
         "index_test_plan_context_test.go",
         "intersector_primary_key_test.go",
@@ -924,6 +925,7 @@ go_test(
         "descending_in_union_test.go",
         "pk_scan_ordering_partition_test.go",
         "cost_model_total_preorder_test.go",
+        "index_scan_ordering_partition_test.go",
     ],
     deps = [
         "//gen",

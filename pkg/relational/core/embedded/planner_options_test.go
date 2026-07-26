@@ -484,3 +484,71 @@ func TestPlannerOptions_CacheKeyPart_Injective(t *testing.T) {
 			"both render %q", twoRules)
 	}
 }
+
+// TestPlannerOptions_CacheKeyPart_InjectiveTable pins injectivity as a
+// PROPERTY of cacheKeyPart's rendering scheme, not as a fact about one
+// character. TestPlannerOptions_CacheKeyPart_Injective above only exercises a
+// comma — the character the historical bug happened to use — which is not
+// enough to pin the length-prefix mechanism itself: a mutant that drops the
+// length prefix but keeps a bare ':' delimiter (rendering "N:name" as just
+// ":name") still fails that one test's comma case, because ':' still isn't a
+// comma, but it reintroduces the exact same class of collision one character
+// later. Each pair below sets are DIFFERENT (as sets) and MUST render
+// DIFFERENT cache-key parts; a scheme that merely swaps delimiter character
+// collides every pair here.
+//
+// The sets are built directly against the plannerOptions{disabledRules: ...}
+// field rather than through plannerOptionsFrom/optStringSet, because
+// cacheKeyPart's own contract (see its doc comment) is injectivity over
+// "disabledRules-as-a-set" — a property of the rendering function itself,
+// independent of how the caller populated the set. Routing the empty-string
+// case through optStringSet would only prove optStringSet drops blanks
+// (already covered elsewhere), not that cacheKeyPart is safe if it didn't.
+func TestPlannerOptions_CacheKeyPart_InjectiveTable(t *testing.T) {
+	t.Parallel()
+
+	set := func(names ...string) map[string]struct{} {
+		out := make(map[string]struct{}, len(names))
+		for _, n := range names {
+			out[n] = struct{}{}
+		}
+		return out
+	}
+	part := func(names ...string) string {
+		return plannerOptions{disabledRules: set(names...)}.cacheKeyPart()
+	}
+
+	for _, tc := range []struct {
+		name string
+		a, b []string
+	}{
+		// The historical bug: a bare comma join lets two real names and one
+		// inert comma-joined name collide.
+		{"comma", []string{"PredicatePushDownRule", "SelectMergeRule"}, []string{"PredicatePushDownRule,SelectMergeRule"}},
+		// A bare ':' delimiter (what survives if the length prefix is
+		// dropped but the delimiter kept) lets the same class of collision
+		// happen one character later.
+		{"colon", []string{"A", "B"}, []string{"A:B"}},
+		// A name that is itself digits followed by ':' — adversarial against
+		// a scheme that tries to recover the length prefix by scanning for
+		// the first ':' instead of trusting a fixed-width count.
+		{"digits-then-colon", []string{"3", "ab"}, []string{"3:ab"}},
+		// A name shaped exactly like ITS OWN correct length prefix ("2:xy"
+		// looks like the rendering of the single name "xy"): a
+		// delimiter-based scheme cannot tell the two-name set {"2","xy"}
+		// from the one-name set {"2:xy"}.
+		{"looks-like-length-prefix", []string{"2", "xy"}, []string{"2:xy"}},
+		// The empty string is a legal map key even though optStringSet never
+		// produces one from user input (it trims and drops blanks) — the
+		// rendering function must not rely on that upstream filtering to
+		// stay injective. "" sorts first, so it lands adjacent to the
+		// delimiter in the rendering.
+		{"empty-name", []string{"", "A", "B"}, []string{":A:B"}},
+	} {
+		got, other := part(tc.a...), part(tc.b...)
+		if got == other {
+			t.Fatalf("%s: cache key part collides different disabled-rule sets %v and %v: both render %q",
+				tc.name, tc.a, tc.b, got)
+		}
+	}
+}

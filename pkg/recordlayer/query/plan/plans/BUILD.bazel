@@ -74,6 +74,7 @@ go_test(
         "f21_comparand_identity_test.go",
         "in_join_test.go",
         "in_union_cost_test.go",
+        "index_scan_ordering_test.go",
         "multi_intersection_test.go",
         "new_plans_test.go",
         "pk_scan_ordering_test.go",
@@ -165,6 +166,7 @@ go_test(
         "scan_cost_test.go",
         "in_union_cost_test.go",
         "pk_scan_ordering_test.go",
+        "index_scan_ordering_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
