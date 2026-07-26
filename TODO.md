@@ -1483,6 +1483,84 @@ closed rather than silently alter rows or output schema.
   strategy (adjacent-dedup vs hash-set) — both modes dedup, so it does not
   affect distinctness. `RecordQueryMergeSortUnionPlan` was the only plan in
   the switch whose ignored field actually changed whether duplicates survive.
+- [ ] **CQ-22 (HIGH) — `compareJoinOrdering` is not a total preorder, so the
+  elected plan depends on member insertion order.** `planning_cost_model.go`
+  picks its metric from `joinShapesDiffer(planA, planB)` — a property of the
+  PAIR, not of either plan: shapes differ → raw `Cost.CPU`, shapes same →
+  `Cost.Less`. That is the same anti-pattern removed from `compareInPlan` and
+  `comparePrimaryScanVsIndexScan`, left in place here.
+
+  REPRODUCER (runs green against the defect today; inverted copy that asserts
+  transitivity is parked at `scratchpad/join_ordering_cycle_reproducer_INVERTED.go.keep`
+  and FAILS on current code):
+
+      costA (FlatMap) CPU=36.5715 Total=36.9765
+      costB (NLJ)     CPU=24.9885 Total=105.1785
+      costC (FlatMap) CPU=15.795  Total=56.295
+      compare(A,C)=-1   compare(A,B)=1   compare(B,C)=1   -> 3-cycle
+
+  `Reference.GetBest` (`expressions/reference.go:300`) folds pairwise and
+  elects a different winner per rotation: `[A,B,C]→C`, `[B,C,A]→A`,
+  `[C,A,B]→B`. Its own doc comment states the precondition it violates: "the
+  comparator must be a total order on Cost". A permutation test written
+  alongside the reproducer found a SECOND independent cycle
+  (`flatMap(1,1000)`, `flatMap(100,1)`, `nlj(1,220)`), so the hand-built triple
+  is not the only one. No live SQL query is known to flip, because member
+  insertion order is not SQL-controllable — which is the hazard, not the
+  reassurance: an unrelated rule reordering silently changes plans for
+  identical SQL.
+
+  THE OBVIOUS FIX IS MEASURABLY WRONG — do not repeat it. Unifying the two
+  cardinality formulas (`FlatMapCost.Cardinality = outerCard*sel` ignores
+  inner cardinality; `NestedLoopJoinCost` uses the cross-product) and deleting
+  the pair-dependent branch DOES kill both cycles, but it is unsound: the two
+  shapes are not costed from the same inputs. `RewriteOuterJoinRule` pushes the
+  join predicate INTO the FlatMap's inner subtree as a `PredicatesFilter`, so
+  that selectivity is already baked into `inner.Cardinality`, while
+  `NestedLoopJoinCost` receives raw inputs and applies `FilterSelectivity`
+  itself. Unified, FlatMap applies selectivity TWICE and is systematically
+  undercosted in exactly the non-probe case. Measured consequences of that
+  attempt: 5 failing targets / 10 top-level tests, including the exact
+  RFC-152/153 preserved-only regression those RFCs closed, an executor failure
+  (`TestFDB_ExistsInnerShadow`), a join-order regression that stops
+  index-probing a 2000-row table (`TestFDB_MultiwayJoinOrder_Nway`), 36/2633
+  corpus plans flipped (32 NLJ→FlatMap, 3 losing an `InMemorySort`), and on
+  real yamsql statistics `flatmap_secondary_index#3` turning two ordered index
+  scans with no sort into a full scan plus a materialized sort. Hand-computed
+  RFC-152 `A=1e6,B=1e6`: post-change FlatMap wins at Total 2.624e11 vs NLJ
+  4.374e11 while doing strictly more work.
+
+  Also measured, refuting the "cheap fix" hypothesis: only 182/375 (48.5%) of
+  FlatMap occurrences in the plan-shape golden are probe-shaped (inner root
+  scan all-equality-bound, where the formulas already agree). 51.5% are not —
+  187 `PredicatesFilter`, 6 `DefaultOnEmpty`.
+
+  So the real fix must make the cardinality INPUTS comparable, not point one
+  formula at both: either `NestedLoopJoinCost` stops applying its own
+  `FilterSelectivity` when the predicate is already reflected in a child's
+  cost, or `FlatMapCost` detects and does not double-count a predicate the
+  rewrite rule baked into its inner. That is design work behind the
+  query-engine gate — needs an RFC and a Graefe ACK before implementation,
+  plus a corpus re-bless and a stress comparison. Java sidesteps this entirely:
+  it has no materialized NLJ plan at all and gates the criterion on both sides
+  being `RecordQueryFlatMapPlan` (`PlanningCostModel.java:277`), so the whole
+  NLJ-vs-FlatMap comparison is Go-only.
+
+- [ ] **CQ-23 (LOW, found alongside CQ-22) — `compareRecursiveCTE` violates
+  indifference-transitivity.** `planning_cost_model.go:775-786`:
+  `compare(DFS, Level) = -1`, but `compare(DFS, Unclassified) = 0` and
+  `compare(Level, Unclassified) = 0` — DFS ~ Unclassified ~ Level while
+  DFS < Level strictly. Ties must be transitive in a total preorder. It is
+  called unconditionally on every pair
+  (`planning_cost_model.go:257`), so "Unclassified" is the overwhelmingly
+  common case (any non-recursive-CTE plan), and `recursiveCTEKind`
+  (`:798`) classifies only through single-child pass-throughs — so a DFS or
+  Level plan buried under a multi-child node (a `UNION` combining the CTE with
+  something else) itself misclassifies as Unclassified. Whether this yields a
+  full-comparator cycle depends on later criteria also tying those pairs;
+  not yet constructed. Fold into the CQ-22 RFC — same file, same class, and a
+  comparator-wide total-preorder property test should cover both.
+
 - [ ] **CQ-18 (LOW) — `RecordQueryInUnionPlan.maxSize`/`GetMaxSize()` is
   stamped and preserved but never read by the executor.** Set at
   `rule_implement_in_union.go:337` from
