@@ -220,6 +220,7 @@ go_test(
         "compensation_test.go",
         "correlated_intersection_guard_test.go",
         "cost_fuzz_test.go",
+        "cost_model_total_preorder_test.go",
         "cost_monotonicity_test.go",
         "cost_selectivity_test.go",
         "cost_transitivity_test.go",
@@ -922,6 +923,7 @@ go_test(
         "main_test.go",
         "descending_in_union_test.go",
         "pk_scan_ordering_partition_test.go",
+        "cost_model_total_preorder_test.go",
     ],
     deps = [
         "//gen",
