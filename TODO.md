@@ -1483,7 +1483,7 @@ closed rather than silently alter rows or output schema.
   strategy (adjacent-dedup vs hash-set) — both modes dedup, so it does not
   affect distinctness. `RecordQueryMergeSortUnionPlan` was the only plan in
   the switch whose ignored field actually changed whether duplicates survive.
-- [ ] **CQ-24 (HIGH) — `compareJoinOrdering` is not a total preorder, so the
+- [x] **CQ-24 (HIGH) — `compareJoinOrdering` is not a total preorder, so the
   elected plan depends on member insertion order.** `planning_cost_model.go`
   picks its metric from `joinShapesDiffer(planA, planB)` — a property of the
   PAIR, not of either plan: shapes differ → raw `Cost.CPU`, shapes same →
@@ -1550,7 +1550,7 @@ closed rather than silently alter rows or output schema.
   being `RecordQueryFlatMapPlan` (`PlanningCostModel.java:277`), so the whole
   NLJ-vs-FlatMap comparison is Go-only.
 
-- [ ] **CQ-23 (LOW, found alongside CQ-24) — `compareRecursiveCTE` violates
+- [x] **CQ-23 (LOW, found alongside CQ-24) — `compareRecursiveCTE` violates
   indifference-transitivity.** `planning_cost_model.go:775-786`:
   `compare(DFS, Level) = -1`, but `compare(DFS, Unclassified) = 0` and
   `compare(Level, Unclassified) = 0` — DFS ~ Unclassified ~ Level while

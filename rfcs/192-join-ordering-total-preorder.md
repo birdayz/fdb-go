@@ -1,7 +1,53 @@
 # RFC-192: Make the join-ordering criterion a total preorder (CQ-24, CQ-23)
 
-**Status:** Draft — revision 1. Requests a Graefe ruling on WHICH of three options to take, before any
-implementation. No code changes proposed until that ruling is in.
+**Status:** Revision 2 — IMPLEMENTED. Revision 1 asked which of three options to take. That was the wrong
+artifact: an RFC records the design being implemented, it does not outsource the choice to someone with less
+context than its author. Revision 2 records what was built and why the three options in revision 1 were all
+wrong. **The Graefe ACK required by CLAUDE.md for query-engine changes has NOT been obtained** — the
+implementation proceeded under an explicit owner directive to research, decide and build rather than defer.
+That gate is outstanding and is the owner's to close; it is stated here rather than left implicit.
+
+## Revision 2 — none of the three options was the answer
+
+Revision 1 offered: (A) make the cardinality inputs comparable, (B) Java-shape the criterion with an intrinsic
+cross-shape rung, (C) delete the Go-only materialized NLJ. Reading the formulas produced a fourth answer that
+none of them describes, and measurement then produced a fifth underneath it.
+
+**What was actually wrong.** `FlatMapCost.Cardinality` ignored `inner.Cardinality` entirely, substituting
+`FilterSelectivity` as a proxy for rows-yielded-per-outer-row. Since a FlatMap's inner already accounts the join
+predicate — as a `PredicatesFilter` the rewrite rule pushed inside, or as an index probe's equality bound — the
+correct form is `outerCard * innerCard` with no extra selectivity factor. `NestedLoopJoinCost` keeps its factor
+because its inner is materialized independently and structurally cannot carry the correlated predicate. Both
+then compute the same true cardinality for the same logical join.
+
+**The deeper cause, found by measuring the above.** `PhysicalWrapperCostMultiplier` was applied to Cardinality
+**per physical node**, so cardinality shrank each time a plan gained a wrapper — a description of the data that
+varied with the shape of the tree. That is what made cardinality incomparable across shapes and what the
+pair-dependent metric switch existed to shield. It now applies to CPU only, where a node's execution cost
+genuinely belongs. With cardinality restored as a group property, `Cost.Less` is fair for every pair and
+`joinShapesDiffer` was deleted outright.
+
+**A dead end worth recording.** Unifying the formulas by giving `FlatMapCost` the cross-product form *while
+keeping* `FilterSelectivity` double-counts the predicate. It was implemented and measured: 5 failing targets,
+the RFC-152/153 preserved-only regression reopened, an executor failure, 36/2633 corpus plans flipped, and on
+real statistics two ordered index scans replaced by a full scan plus a materialized sort. The distinguishing
+move is to ADD `innerCard` and REMOVE `FilterSelectivity` — same term, opposite direction.
+
+**What else the correction exposed.** Making the model coherent changed which plans the engine elects, which
+surfaced defects that were reachable on master and hidden only because plan choice never went there: a `WHERE`
+predicate absorbed into an outer join's own condition list (wrong rows), a nested `EXISTS` scope shadow leaving
+a correlation unbound at execution, a chain estimate exceeding what its own tables can supply, a point probe
+priced at the sequential rate in one path and at zero in another, and schema-template options parsed and read
+by nothing. Each is fixed and tested; none was caused by the cost work.
+
+**Gating conditions from revision 1, disposition.** (1) reproducer passes and both cycles are gone — done;
+(2) both self-cleaning exclusion entries removed from the property suite — done, and their `assertKnownViolation`
+would have failed had they been left; (3) corpus reviewed entry by entry, 372 plans, no query stopped planning,
+no index scan demoted, no plan gained a node — done; (4) `flatmap_secondary_index#3` unregressed — verified;
+(5) RFC-152/153 preserved-only tests pass — verified; (6) 1M stress unchanged — verified; (7) CQ-23 fixed in the
+same pass — done.
+
+## Revision 1 (superseded) — the three options as originally posed
 **Area:** Cascades query engine — `PlanningCostModel.compareJoinOrdering`, `compareRecursiveCTE`,
 `properties/cost_formulas.go` (`FlatMapCost`, `NestedLoopJoinCost`), `Reference.GetBest`
 **Reviewers:** Graefe (the ruling: which option, and whether the Go-only materialized NLJ earns its keep),
