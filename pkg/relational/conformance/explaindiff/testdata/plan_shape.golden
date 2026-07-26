@@ -3043,7 +3043,7 @@ sql:   SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = 
 plan:  <PLAN-ERROR: 42703: no FROM source aliased as BOGUS>
 === correlated_subquery_probes.yaml#11
 sql:   SELECT e.fname FROM emp AS e, project AS p WHERE e.id = p.emp_id AND EXISTS (SELECT 1 FROM project WHERE emp_id = e.id) ORDER BY e.id
-plan:  Project([E.FNAME#1], InMemorySort([E.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(PROJECT), Scan(EMP)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]))))
+plan:  Project([E.FNAME#1], InMemorySort([E.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(EMP), Scan(PROJECT)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -5695,7 +5695,7 @@ sql:   SELECT COUNT(*) FROM orders HAVING EXISTS (SELECT k FROM flags)
 plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
 === exists.yaml#7
 sql:   SELECT o.id FROM orders AS o, flags AS f WHERE EXISTS (SELECT k FROM flags) ORDER BY o.id
-plan:  Project([O.ID#0], InMemorySort([O.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, Scan(FLAGS), Scan(ORDERS)), inner=PredicatesFilter(FirstOrDefault(Project([K#0], Scan(FLAGS))), [1 preds]))))
+plan:  Project([O.ID#0], InMemorySort([O.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, Scan(ORDERS), Scan(FLAGS)), inner=PredicatesFilter(FirstOrDefault(Project([K#0], Scan(FLAGS))), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan

@@ -40,7 +40,7 @@ func (p *RecordQueryScanPlan) HintCost(_ []properties.Cost, stats properties.Sta
 	comps := p.GetScanComparisons()
 	// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY).
 	sel, _, _ := properties.BoundSelectivity(comps)
-	if properties.EqualityBoundsCoverKey(comps, len(p.GetPrimaryKeyValues())) {
+	if isProvablePointProbe(p) {
 		return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
 	}
 	types := p.GetRecordTypes()
@@ -73,8 +73,8 @@ func (p *RecordQueryIndexPlan) HintCost(_ []properties.Cost, stats properties.St
 	base := indexBaseCardinality(p, stats)
 	if p != nil {
 		// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY).
-		sel, numBound, allEquality := properties.BoundSelectivity(p.GetScanComparisons())
-		if p.IsUnique() && allEquality && numBound == len(p.GetColumnNames()) {
+		sel, _, _ := properties.BoundSelectivity(p.GetScanComparisons())
+		if isProvablePointProbe(p) {
 			return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
 		}
 		base *= sel
@@ -93,6 +93,41 @@ func indexBaseCardinality(plan *RecordQueryIndexPlan, stats properties.Statistic
 		}
 	}
 	return stats.RecordTypeCardinality("")
+}
+
+// isProvablePointProbe reports whether plan is proven, by its OWN static
+// shape, to return AT MOST ONE row per execution: a full-PK equality-bound
+// RecordQueryScanPlan, or a unique index with every column equality-bound.
+// This is the SAME condition RecordQueryScanPlan.HintCost and
+// RecordQueryIndexPlan.HintCost gate their point-lookup branch on, factored
+// out so RecordQueryInJoinPlan.HintCost can reuse it rather than
+// re-deriving it: ImplementInJoinRule (rule_implement_in_join.go) matches
+// ANY equality-bound inner, unique or not, so a non-unique secondary-index
+// probe is a reachable InJoin inner and must NOT be treated as a point
+// lookup. A Fetch is transparent 1:1 over its child
+// (RecordQueryFetchFromPartialRecordPlan.HintCost), so it inherits the
+// child's provable-point-probe status unchanged.
+func isProvablePointProbe(plan RecordQueryPlan) bool {
+	switch p := plan.(type) {
+	case *RecordQueryScanPlan:
+		if p == nil {
+			return false
+		}
+		return properties.EqualityBoundsCoverKey(p.GetScanComparisons(), len(p.GetPrimaryKeyValues()))
+	case *RecordQueryIndexPlan:
+		if p == nil {
+			return false
+		}
+		_, numBound, allEquality := properties.BoundSelectivity(p.GetScanComparisons())
+		return p.IsUnique() && allEquality && numBound == len(p.GetColumnNames())
+	case *RecordQueryFetchFromPartialRecordPlan:
+		if p == nil {
+			return false
+		}
+		return isProvablePointProbe(p.GetInner())
+	default:
+		return false
+	}
 }
 
 // HintCost: a K-NN probe returns its top-K (or, for an ordered stream, its
@@ -404,23 +439,239 @@ func (p *RecordQueryFlatMapPlan) HintCost(child []properties.Cost, _ properties.
 }
 
 // HintCost: a MATERIALIZED nested-loop join — the inner is executed once.
+// When p's own join predicates PROVABLY bind the inner leg's full UNIQUE key
+// via equality (nestedLoopJoinUniqueKeyConjuncts), NestedLoopJoinCost applies
+// the derived 1/innerCard selectivity for those conjuncts instead of the
+// flat FilterSelectivity guess — see that function's and
+// NestedLoopJoinCost's doc comments for why the flat guess is wrong there
+// (a ~500x overestimate for a 1000-row inner) and disagrees with the SAME
+// logical join's FlatMap-shape cost, which the total-preorder join-ordering
+// comparison (RFC-192) requires to agree.
 func (p *RecordQueryNestedLoopJoinPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) < 2 {
 		return properties.Cost{}
 	}
-	return properties.NestedLoopJoinCost(child[0], child[1], predicates.CountConjuncts(p.GetPredicates()))
+	uniqueKeyConjuncts, _ := NestedLoopJoinUniqueKeyConjuncts(p)
+	return properties.NestedLoopJoinCost(
+		child[0], child[1], predicates.CountConjuncts(p.GetPredicates()), uniqueKeyConjuncts)
 }
 
-// HintCost: an InJoin is a correlated index probe — for each IN value the
-// inner does an equality point-lookup returning ~1 row. The child's standalone
-// cardinality overstates this (it reports the index's selectivity against the
-// full table), so the IN-list length is the output cardinality.
+// --- unique-key equality-join detection for the materialized NLJ -----------
+
+// NestedLoopJoinUniqueKeyConjuncts reports how many of p's own join-predicate
+// conjuncts are consumed by a full equality bind on the inner leg's own
+// UNIQUE key — the primary key of a bare scan, or the key columns of a
+// declared-UNIQUE index scan. Exported so cascades/planning_cost_model.go's
+// combineConcreteCost can reuse the identical detection for its own
+// RecordQueryNestedLoopJoinPlan arm (both call sites must feed
+// properties.NestedLoopJoinCost the SAME proof, or the concrete
+// join-ordering comparison and the memo's HintCost would rank the identical
+// plan two different ways).
 //
-// Both terms are FetchCPU: each IN value pays TWO isolated, unamortized round
+// This is the join-predicate analogue of isProvablePointProbe, applied
+// exactly where isProvablePointProbe itself cannot fire: a materialized
+// RecordQueryNestedLoopJoinPlan's inner leg is executed RAW and
+// un-parameterized (NestedLoopJoinCost's own doc comment — the inner's own
+// ScanComparisons carry no trace of the join predicate at all), so the
+// equality only becomes visible in p's OWN predicate list, evaluated
+// pairwise by the join itself. A FlatMap's correlated inner instead pushes
+// the SAME equality down as a bound scan comparison, which is exactly what
+// isProvablePointProbe already recognizes — this function recognizes the
+// materialized join's OWN residual-predicate form of the identical shape.
+//
+// Fails closed (0, false) on anything not specifically recognized — a
+// non-unique index, a composite/nested (non-flat) PK component, a conjunct
+// under OR/NOT, or a predicate binding only SOME of the key's columns.
+// Under-detecting only forgoes the correction (today's flat
+// FilterSelectivity fallback remains exactly as before); over-detecting
+// would let a non-selective join masquerade as a point probe.
+func NestedLoopJoinUniqueKeyConjuncts(p *RecordQueryNestedLoopJoinPlan) (int, bool) {
+	if p == nil {
+		return 0, false
+	}
+	keyCols, ok := innerLeafUniqueKeyColumns(p.GetInner())
+	if !ok || len(keyCols) == 0 {
+		return 0, false
+	}
+	innerAlias := values.NamedCorrelationIdentifier(p.GetInnerAlias())
+
+	want := make(map[string]bool, len(keyCols))
+	for _, c := range keyCols {
+		want[c] = true
+	}
+	bound := make(map[string]bool, len(keyCols))
+	consumed := 0
+	for _, pred := range p.GetPredicates() {
+		for _, conjunct := range flattenAndConjuncts(pred) {
+			field, matched := matchedInnerKeyEquality(conjunct, innerAlias, want, bound)
+			if !matched {
+				continue
+			}
+			bound[field] = true
+			consumed++
+		}
+	}
+	if len(bound) != len(want) {
+		return 0, false
+	}
+	return consumed, true
+}
+
+// flattenAndConjuncts recursively flattens AndPredicate nodes into their leaf
+// conjuncts — the same recursion predicates.CountConjuncts's own
+// countConjunctsOne applies (predicates.go), duplicated locally because that
+// helper only returns a COUNT, not the conjuncts themselves, and this
+// function needs to inspect each one individually.
+func flattenAndConjuncts(p predicates.QueryPredicate) []predicates.QueryPredicate {
+	and, ok := p.(*predicates.AndPredicate)
+	if !ok {
+		return []predicates.QueryPredicate{p}
+	}
+	var out []predicates.QueryPredicate
+	for _, child := range and.SubPredicates {
+		out = append(out, flattenAndConjuncts(child)...)
+	}
+	return out
+}
+
+// matchedInnerKeyEquality reports whether conjunct is an equality binding one
+// of want's inner-key columns via innerAlias — checked on EITHER side of the
+// comparison, since the join predicate's inner reference can equally appear
+// as the LHS operand or the RHS comparand. Declines an already-bound column:
+// a redundant repeat conjunct (`inner.pk = outer.a AND inner.pk = outer.a`)
+// is not a second consumed conjunct.
+func matchedInnerKeyEquality(
+	conjunct predicates.QueryPredicate,
+	innerAlias values.CorrelationIdentifier,
+	want, bound map[string]bool,
+) (string, bool) {
+	cmp, ok := conjunct.(*predicates.ComparisonPredicate)
+	if !ok || cmp.Comparison.Type != predicates.ComparisonEquals {
+		return "", false
+	}
+	if field, corr, ok := correlatedInnerField(cmp.Operand); ok && corr == innerAlias && want[field] && !bound[field] {
+		return field, true
+	}
+	if cmp.Comparison.Operand != nil {
+		if field, corr, ok := correlatedInnerField(cmp.Comparison.Operand); ok && corr == innerAlias && want[field] && !bound[field] {
+			return field, true
+		}
+	}
+	return "", false
+}
+
+// correlatedInnerField returns the field name and root correlation of a
+// comparand shaped like FieldValue{Field, Child: QuantifiedObjectValue} — the
+// shape a correlated column reference takes. Mirrors
+// fk_chain_cardinality.go's correlatedFieldOf (package cascades); duplicated
+// here rather than imported because plans cannot import cascades (cascades
+// already imports plans — the reverse direction would cycle).
+func correlatedInnerField(v values.Value) (field string, corr values.CorrelationIdentifier, ok bool) {
+	fv, isField := v.(*values.FieldValue)
+	if !isField {
+		return "", values.CorrelationIdentifier{}, false
+	}
+	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV {
+		return "", values.CorrelationIdentifier{}, false
+	}
+	return fv.Field, qov.Correlation, true
+}
+
+// innerLeafUniqueKeyColumns resolves plan down through the same
+// identity-preserving wrappers isProvablePointProbe/the fk-chain pkThread
+// already see through (a Fetch/TypeFilter/PredicatesFilter/Filter changes
+// neither a record's primary key nor a named index's own key columns) and
+// returns the bottommost scan/index leaf's own UNIQUE key column names: the
+// full primary key for a bare table scan, or the index's own key columns
+// when the index is declared UNIQUE. ok=false for anything else (a
+// non-unique index, an unrecognized wrapper, a nil leaf, or a
+// composite/nested PK component that is not a flat field reference) — fails
+// closed.
+func innerLeafUniqueKeyColumns(plan RecordQueryPlan) ([]string, bool) {
+	switch p := plan.(type) {
+	case *RecordQueryScanPlan:
+		if p == nil {
+			return nil, false
+		}
+		names := make([]string, 0, len(p.GetPrimaryKeyValues()))
+		for _, v := range p.GetPrimaryKeyValues() {
+			if _, isRecordType := v.(*values.RecordTypeValue); isRecordType {
+				// A per-thread CONSTANT (the RecordTypeKey-prefixed
+				// composite PK every table in a non-intermingled multi-type
+				// schema has) — never a discriminating column, so it needs
+				// no corresponding equality conjunct. Same reasoning as
+				// fk_chain_cardinality.go's innerFullyBindsThread doc
+				// comment.
+				continue
+			}
+			fv, ok := v.(*values.FieldValue)
+			if !ok || fv.Child != nil {
+				return nil, false // composite/nested PK component — fail closed
+			}
+			names = append(names, fv.Field)
+		}
+		if len(names) == 0 {
+			return nil, false
+		}
+		return names, true
+	case *RecordQueryIndexPlan:
+		if p == nil || !p.IsUnique() {
+			return nil, false
+		}
+		cols := p.GetColumnNames()
+		if len(cols) == 0 {
+			return nil, false
+		}
+		out := make([]string, len(cols))
+		copy(out, cols)
+		return out, true
+	case *RecordQueryFetchFromPartialRecordPlan:
+		if p == nil {
+			return nil, false
+		}
+		return innerLeafUniqueKeyColumns(p.GetInner())
+	case *RecordQueryTypeFilterPlan:
+		if p == nil {
+			return nil, false
+		}
+		return innerLeafUniqueKeyColumns(p.GetInner())
+	case *RecordQueryPredicatesFilterPlan:
+		if p == nil {
+			return nil, false
+		}
+		return innerLeafUniqueKeyColumns(p.GetInner())
+	case *RecordQueryFilterPlan:
+		if p == nil {
+			return nil, false
+		}
+		return innerLeafUniqueKeyColumns(p.GetInner())
+	default:
+		return nil, false
+	}
+}
+
+// HintCost: an InJoin re-runs its inner once per IN value. ImplementInJoinRule
+// (rule_implement_in_join.go) matches ANY equality-bound inner — a unique
+// index, a full primary-key bind, OR a non-unique secondary index — so
+// "the inner does an equality point-lookup returning ~1 row" is only sound
+// when isProvablePointProbe proves it. When it does, the IN-list length IS
+// the output cardinality and each value pays TWO isolated, unamortized round
 // trips — the index equality point-probe itself (ONE GetRange bound to that
 // value, no batching across IN values) and the base-record fetch it resolves
 // — the same physical shape properties.FetchCPU's doc comment establishes for
 // any isolated point-probe/fetch, not the amortized multi-row ScanCPU rate.
+//
+// When it is NOT a provable point probe (e.g. `category IN ('a','b','c')`
+// over a non-unique index), the child's own cardinality is the per-probe row
+// count and must NOT be discarded — the same principle plan_properties.go's
+// computeCardinalities uses for RecordQueryInJoinPlan
+// (inSize.Times(child.GetMaxCardinality())) and RecordQueryInUnionPlan.
+// HintCost already applies below. FlatMapCost is the exact right shape for
+// this: the IN-list is a synthetic, free-to-produce "outer" of inListLen rows
+// (RecordQueryValuesPlan.HintCost prices a literal row source at CPU 0)
+// driving one execution of the SAME inner per row — precisely what a
+// correlated dependent join costs.
 func (p *RecordQueryInJoinPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
@@ -429,10 +680,13 @@ func (p *RecordQueryInJoinPlan) HintCost(child []properties.Cost, _ properties.S
 	if inListLen < 1 {
 		inListLen = 10 // parameterized IN — values not bound at plan time
 	}
-	return properties.Cost{
-		Cardinality: inListLen,
-		CPU:         inListLen * (properties.FetchCPU + properties.FetchCPU) * properties.PhysicalWrapperCostMultiplier,
+	if isProvablePointProbe(p.GetInner()) {
+		return properties.Cost{
+			Cardinality: inListLen,
+			CPU:         inListLen * (properties.FetchCPU + properties.FetchCPU) * properties.PhysicalWrapperCostMultiplier,
+		}
 	}
+	return properties.FlatMapCost(properties.Cost{Cardinality: inListLen}, child[0])
 }
 
 // HintCost: an InUnion runs its child once per Cartesian-product

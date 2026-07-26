@@ -47,7 +47,7 @@ func TestNestedLoopJoinCost_ZeroCardinalityStaysZero(t *testing.T) {
 		t.Parallel()
 		outer := Cost{Cardinality: 500, CPU: 50}
 		zeroInner := Cost{Cardinality: 0, CPU: 3}
-		got := NestedLoopJoinCost(outer, zeroInner, 1)
+		got := NestedLoopJoinCost(outer, zeroInner, 1, 0)
 		if got.Cardinality != 0 {
 			t.Fatalf("Cardinality = %v, want 0", got.Cardinality)
 		}
@@ -57,7 +57,7 @@ func TestNestedLoopJoinCost_ZeroCardinalityStaysZero(t *testing.T) {
 		t.Parallel()
 		zeroOuter := Cost{Cardinality: 0, CPU: 3}
 		inner := Cost{Cardinality: 500, CPU: 50}
-		got := NestedLoopJoinCost(zeroOuter, inner, 1)
+		got := NestedLoopJoinCost(zeroOuter, inner, 1, 0)
 		if got.Cardinality != 0 {
 			t.Fatalf("Cardinality = %v, want 0", got.Cardinality)
 		}
@@ -92,5 +92,59 @@ func TestFlatMapCost_NonZeroCardinalityUnaffected(t *testing.T) {
 	got := FlatMapCost(outer, inner)
 	if got.Cardinality != 200 {
 		t.Fatalf("Cardinality = %v, want 200 (10*20)", got.Cardinality)
+	}
+}
+
+// TestNestedLoopJoinCost_UniqueKeyEqualityJoin_MatchesFlatMapCost pins the
+// exact production defect a review found: for a unique/full-PK equality
+// join, the FlatMap shape correctly gives outerCard*1 = outerCard (a
+// unique-key equality join returns at most one inner row per outer row), but
+// NestedLoopJoinCost applied a flat FilterSelectivity (0.5) to the RAW inner
+// scan, giving outerCard*innerCard*0.5 — a 10-row outer joined via a unique
+// key against a 1000-row inner was costed at 5000 rows by the materialized
+// shape versus the true 10, a 500x overestimate that also made the two
+// physical shapes of the IDENTICAL logical join disagree — precisely the
+// invariant compareJoinOrdering (planning_cost_model.go, RFC-192) requires
+// to hold for its total-preorder guarantee.
+//
+// uniqueKeyConjuncts=1 is the caller's proof (plans.NestedLoopJoinUniqueKeyConjuncts
+// in production) that the join's one predicate is a full equality bind on
+// the inner's own unique key.
+func TestNestedLoopJoinCost_UniqueKeyEqualityJoin_MatchesFlatMapCost(t *testing.T) {
+	t.Parallel()
+	outer := Cost{Cardinality: 10, CPU: 1}
+	inner := Cost{Cardinality: 1000, CPU: 5}
+
+	nljGot := NestedLoopJoinCost(outer, inner, 1, 1)
+	if nljGot.Cardinality != 10 {
+		t.Fatalf("NestedLoopJoinCost.Cardinality = %v, want 10 (outerCard — a unique-key equality join returns at most one inner row per outer row)", nljGot.Cardinality)
+	}
+
+	// The FlatMap shape of the SAME logical join: its inner already applied
+	// the identical equality bind at the scan/index leaf, so inner.Cardinality
+	// there is 1 (a proven point probe — see plans/cost.go's
+	// isProvablePointProbe), not the raw 1000 NestedLoopJoinCost receives.
+	flatMapGot := FlatMapCost(outer, Cost{Cardinality: 1, CPU: FetchCPU})
+	if flatMapGot.Cardinality != nljGot.Cardinality {
+		t.Fatalf("the two physical shapes of the SAME logical join disagree: NestedLoopJoinCost=%v FlatMapCost=%v, want equal", nljGot.Cardinality, flatMapGot.Cardinality)
+	}
+}
+
+// TestNestedLoopJoinCost_NonUniqueEqualityJoin_FlatSelectivityUnaffected
+// pins the gate: when uniqueness cannot be proven (uniqueKeyConjuncts=0),
+// NestedLoopJoinCost must apply EXACTLY the old flat FilterSelectivity
+// formula — the correction is an ADDITION for a proven case, never a
+// replacement of the honest fallback for a non-unique join (e.g.
+// `category IN (...)` against a non-unique secondary index, or a plain
+// cross-join predicate).
+func TestNestedLoopJoinCost_NonUniqueEqualityJoin_FlatSelectivityUnaffected(t *testing.T) {
+	t.Parallel()
+	outer := Cost{Cardinality: 10, CPU: 1}
+	inner := Cost{Cardinality: 1000, CPU: 5}
+
+	got := NestedLoopJoinCost(outer, inner, 1, 0)
+	want := outer.Cardinality * inner.Cardinality * FilterSelectivity
+	if got.Cardinality != want {
+		t.Fatalf("Cardinality = %v, want %v (unchanged flat-selectivity formula)", got.Cardinality, want)
 	}
 }

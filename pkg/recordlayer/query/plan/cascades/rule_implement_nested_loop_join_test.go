@@ -464,3 +464,118 @@ func TestImplementNestedLoopJoin_ExistsShortcutRejectsFanOutCandidate(t *testing
 		t.Fatalf("EXISTS shortcut selected indexes %v, want only the non-fan-out FK index", selected)
 	}
 }
+
+// TestMaterializedNLJOrdinalLayoutMatches pins a real production defect: a
+// ChildrenAsSet-swapped firing of ImplementNestedLoopJoinRule (the
+// join-commutativity exploration in fireExprRuleOnMember,
+// expression_matcher.go) reuses the logical select's resultValue UNCHANGED
+// under the swapped (outer, inner) assignment
+// (expressions.SelectExpression.WithSwappedQuantifiers). That is sound for
+// an ordinary correlation-addressed resultValue (order-independent by
+// design) but NOT for a pristine ORDINAL SEED — a RecordConstructorValue of
+// baked FrontierPinned FieldValues whose ordinals assume ONE FIXED physical
+// field order, baked when the seed was first built. The materialized NLJ's
+// own executor (executor.go's concatLegPositionals/mergeRows) ALWAYS
+// concatenates outer-then-inner, so a swapped orientation whose seed still
+// assumes the OTHER leg first silently (or loudly) misreads the runtime
+// merged row.
+//
+// This was found via TestFDB_LeftJoinExistsResidual/I1 going from a correct
+// empty result to a hard "correlated FieldValue ID (correlation E) evaluated
+// against an unbound/unrecognized context" runtime error once a cost-model
+// fix (RFC-192 follow-up) made the previously-never-cheapest swapped
+// orientation the memo's winner for the first time — the bug was always
+// latent, just unreachable before. A first fix attempt compared alias
+// STRINGS (sel.GetSourceAliases() falling back to the quantifier's own
+// GetAlias()) and regressed two OTHER real things: several RIGHT-OUTER-JOIN
+// queries (whose quantifier identity is the synthetic one while
+// sourceAliases carries the real leg name — the opposite divergence
+// direction) and, worse, TestFDB_QuotedMachineShapedAliases/join_legs — a
+// user alias quoted as "q$2" is byte-identical to a synthetic
+// UniqueCorrelationIdentifier that happens to reach counter 2
+// (values.CorrelationIdentifier is a bare wrapped string), so alias-string
+// guessing is fundamentally unsafe. The final fix compares leg ROW SHAPE
+// (RecordName + fields) instead — never a name.
+func TestMaterializedNLJOrdinalLayoutMatches(t *testing.T) {
+	t.Parallel()
+
+	t1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
+	t2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
+	seed := reconstructFoldStep1Seed(t1, t2, "T1", "T2")
+	if seed == nil {
+		t.Fatal("setup: expected reconstructFoldStep1Seed to build a seed for two scan legs")
+	}
+	// Sanity-check the setup matches TestReconstructFoldStep1Seed's own pin:
+	// T1 at offset 0 (2 columns), T2 at offset 2.
+	if w, _ := ordinalSeedLegWindowsOf(seed); w == nil || w["T1"].Offset != 0 || w["T2"].Offset != 2 {
+		t.Fatalf("setup: unexpected seed layout %+v", w)
+	}
+
+	t.Run("matching orientation passes", func(t *testing.T) {
+		t.Parallel()
+		if !materializedNLJOrdinalLayoutMatches(seed, t1, t2) {
+			t.Fatal("T1-outer/T2-inner matches the seed's own T1@0,T2@2 layout — must pass")
+		}
+	})
+
+	t.Run("swapped orientation is rejected", func(t *testing.T) {
+		t.Parallel()
+		if materializedNLJOrdinalLayoutMatches(seed, t2, t1) {
+			t.Fatal("T2-outer/T1-inner contradicts the seed's T1-first layout — must be rejected")
+		}
+	})
+
+	t.Run("non-ordinal-seed resultValue is always order-independent", func(t *testing.T) {
+		t.Parallel()
+		lazy := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("X"))
+		if !materializedNLJOrdinalLayoutMatches(lazy, t2, t1) {
+			t.Fatal("a non-ordinal-seed (correlation-addressed) resultValue must match regardless of orientation")
+		}
+	})
+
+	t.Run("adversarial quoted alias shaped like the machine namespace never matters", func(t *testing.T) {
+		t.Parallel()
+		// The real production regression: a user alias quoted as "q$2" is
+		// byte-identical, as a values.CorrelationIdentifier, to a synthetic
+		// UniqueCorrelationIdentifier that happens to reach counter 2 — an
+		// alias-string-based check cannot tell them apart. Naming the legs
+		// "Q$1"/"Q$2" here must not change the verdict at all, because this
+		// check never looks at a name.
+		q1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
+		q2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
+		adversarialSeed := reconstructFoldStep1Seed(q1, q2, "Q$1", "Q$2")
+		if adversarialSeed == nil {
+			t.Fatal("setup: expected a seed for the adversarially-named legs")
+		}
+		if !materializedNLJOrdinalLayoutMatches(adversarialSeed, q1, q2) {
+			t.Fatal("matching orientation must pass regardless of the legs' alias spelling")
+		}
+		if materializedNLJOrdinalLayoutMatches(adversarialSeed, q2, q1) {
+			t.Fatal("swapped orientation must still be rejected regardless of the legs' alias spelling")
+		}
+	})
+
+	t.Run("cannot verify structurally defaults to true", func(t *testing.T) {
+		t.Parallel()
+		// A plan whose own GetResultType() isn't a (Relation-of-)RecordType
+		// (here: nil, standing in for an opaque/erased result) can't be
+		// compared against the seed's leg shapes at all — under-detecting is
+		// the documented safe default.
+		if !materializedNLJOrdinalLayoutMatches(seed, nil, t2) {
+			t.Fatal("an unverifiable outer plan must default to true (under-detection is safe)")
+		}
+	})
+
+	t.Run("self-join (identical leg shapes) is always safe", func(t *testing.T) {
+		t.Parallel()
+		s1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
+		s2 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
+		selfSeed := reconstructFoldStep1Seed(s1, s2, "A", "B")
+		if selfSeed == nil {
+			t.Fatal("setup: expected a seed for two same-shaped legs")
+		}
+		if !materializedNLJOrdinalLayoutMatches(selfSeed, s1, s2) || !materializedNLJOrdinalLayoutMatches(selfSeed, s2, s1) {
+			t.Fatal("identical leg shapes are structurally indistinguishable — both orientations must pass")
+		}
+	})
+}

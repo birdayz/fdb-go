@@ -143,14 +143,42 @@ func FlatMapCost(outer, inner Cost) Cost {
 // empty child (LIMIT 0, an empty literal IN-list), never "unknown", and must
 // produce a genuine zero-row join rather than being inflated to
 // outerCard*LeafScanCardinality.
-func NestedLoopJoinCost(outer, inner Cost, numPreds int) Cost {
+//
+// uniqueKeyConjuncts is how many of numPreds conjuncts the caller has PROVEN
+// (plans/cost.go's nestedLoopJoinUniqueKeyConjuncts) to be a full equality
+// bind on the inner leg's own UNIQUE key (primary key or a declared-UNIQUE
+// index). For those conjuncts the flat per-predicate FilterSelectivity guess
+// is provably wrong: a unique-key equality can match AT MOST ONE inner row
+// per pair, so their TRUE combined selectivity is exactly 1/innerCard, not
+// FilterSelectivity^uniqueKeyConjuncts. This is the exact invariant
+// FlatMapCost's doc comment requires of this function — the two physical
+// shapes of the SAME logical unique-key equality join must compute the SAME
+// cardinality (outerCard), and only 1/innerCard achieves that here; the flat
+// guess overestimates a 1000-row inner's join by ~500x (0.5 vs 1/1000). The
+// remaining (numPreds-uniqueKeyConjuncts) conjuncts still take the flat
+// FilterSelectivity fallback — the unique-key bind explains only ITS OWN
+// conjuncts' selectivity, not any other residual predicate's.
+//
+// uniqueKeyConjuncts<=0, or an innerCard<=0 the ratio cannot divide by,
+// reproduces today's unconditional flat-selectivity formula exactly — the
+// correction is a gated ADDITION, never a replacement of the honest fallback
+// when uniqueness cannot be proven (e.g. a non-unique secondary-index
+// equality join, where the flat guess remains the right answer).
+func NestedLoopJoinCost(outer, inner Cost, numPreds int, uniqueKeyConjuncts int) Cost {
 	if numPreds < 1 {
 		numPreds = 1
 	}
 	outerCard, innerCard := outer.Cardinality, inner.Cardinality
 	sel := 1.0
-	for i := 0; i < numPreds; i++ {
-		sel *= FilterSelectivity
+	if uniqueKeyConjuncts > 0 && uniqueKeyConjuncts <= numPreds && innerCard > 0 {
+		sel = 1.0 / innerCard
+		for i := 0; i < numPreds-uniqueKeyConjuncts; i++ {
+			sel *= FilterSelectivity
+		}
+	} else {
+		for i := 0; i < numPreds; i++ {
+			sel *= FilterSelectivity
+		}
 	}
 	return Cost{
 		Cardinality: outerCard * innerCard * sel,

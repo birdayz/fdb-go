@@ -105,13 +105,27 @@ func TestPointProbeHintCost_NonUniqueOrPartialBindUnaffected(t *testing.T) {
 // then the base-record fetch it resolves) — both at FetchCPU, not the
 // previous ScanCPU+FetchCPU mix that priced the index point-probe at the
 // amortized sequential rate.
+//
+// The inner MUST be a genuinely provable point probe (full-PK equality bind)
+// for this branch to fire — see isProvablePointProbe and
+// TestInJoinHintCost_ScalesOffChildCardinalityWhenNotAPointProbe for the case
+// where it is not.
 func TestInJoinHintCost_BothTermsAreFetchRate(t *testing.T) {
 	t.Parallel()
-	plan := NewRecordQueryInJoinPlan(NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false), "x", false, false)
+	pk := []values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}}
+	eq := scanCostRange(t, predicates.ComparisonEquals, int64(5))
+	inner := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithPrimaryKey(pk).
+		WithScanComparisons([]*predicates.ComparisonRange{eq})
+	plan := NewRecordQueryInJoinPlan(inner, "x", false, false)
 	plan.SetInValues([]any{int64(1), int64(2), int64(3)})
-	got := plan.HintCost([]properties.Cost{{}}, nil)
+	// The child cost passed here is deliberately NOT what inner.HintCost would
+	// actually produce (Cardinality 1) — a genuine point probe ignores the
+	// child cost entirely, so an absurd child cardinality must not leak
+	// through.
+	got := plan.HintCost([]properties.Cost{{Cardinality: 999}}, nil)
 	if got.Cardinality != 3 {
-		t.Fatalf("cardinality = %v, want 3 (the IN-list length)", got.Cardinality)
+		t.Fatalf("cardinality = %v, want 3 (the IN-list length, child cardinality ignored for a proven point probe)", got.Cardinality)
 	}
 	want := 3.0 * (properties.FetchCPU + properties.FetchCPU) * properties.PhysicalWrapperCostMultiplier
 	if got.CPU != want {

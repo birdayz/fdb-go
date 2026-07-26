@@ -1597,7 +1597,15 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		if len(child) < 2 {
 			return properties.Cost{}
 		}
-		return properties.NestedLoopJoinCost(child[0], child[1], predicates.CountConjuncts(pl.GetPredicates()))
+		// Same unique-key equality-join detection plans/cost.go's HintCost
+		// uses (plans.NestedLoopJoinUniqueKeyConjuncts) — this walk and the
+		// memo's HintCost must feed properties.NestedLoopJoinCost the
+		// identical proof, or compareJoinOrdering's total-preorder guarantee
+		// (RFC-192) would rank the SAME concrete plan two different ways
+		// depending on which cost path evaluated it.
+		uniqueKeyConjuncts, _ := plans.NestedLoopJoinUniqueKeyConjuncts(pl)
+		return properties.NestedLoopJoinCost(
+			child[0], child[1], predicates.CountConjuncts(pl.GetPredicates()), uniqueKeyConjuncts)
 	case *plans.RecordQueryPredicatesFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}

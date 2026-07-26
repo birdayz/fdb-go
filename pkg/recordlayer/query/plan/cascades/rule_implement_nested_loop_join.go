@@ -3,6 +3,7 @@ package cascades
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -281,6 +282,22 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		if sharesExcludedSibling {
 			return
 		}
+		// NOTE: a ChildrenAsSet-swapped firing (fireExprRuleOnMember) reuses
+		// sel's resultValue verbatim under the swapped orientation, which is
+		// unsound for a pristine ordinal seed IF some downstream consumer
+		// later reads that seed's baked ordinals expecting the UNSWAPPED
+		// physical layout (see materializedNLJOrdinalLayoutMatches's doc
+		// comment for the full mechanism and its two false-positive
+		// histories). No such consumer exists at THIS construction site —
+		// this plan is embedded and yielded as-is, nothing here reads its
+		// resultValue's ordinals — so no orientation check belongs here;
+		// declining based on a mismatch that nothing will ever act on
+		// rejected working, tested plans (TestFDB_QuotedMachineShapedAliases/
+		// join_legs' swapped cross-join orientation, which never consumes its
+		// own seed's ordinals downstream). The check instead lives at the
+		// ACTUAL consumption site: implementJoinWithExistential's materialized
+		// branch below, which immediately uses this same resultValue's
+		// ordinal windows to rebase EXISTS predicates onto baked slots.
 		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
 		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
 		// The materialized NLJ is its own cascades expression carrying its two leg
@@ -1980,6 +1997,136 @@ func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAli
 	return values.NewRawRecordConstructorValue(fields...)
 }
 
+// materializedNLJOrdinalLayoutMatches reports whether resultValue is SAFE to
+// use, verbatim, as a materialized RecordQueryNestedLoopJoinPlan's own result
+// value when that plan's outer leg is outerPlan and its inner leg is
+// innerPlan.
+//
+// The executor's merge for a materialized NLJ (executor.go's
+// concatLegPositionals, called from mergeRows) ALWAYS concatenates the
+// OUTER leg's fields first (offset 0) and the INNER leg's immediately after
+// (offset outerWidth) — a PHYSICAL, execution-order fact. When resultValue
+// is a pristine ORDINAL SEED (every field a BAKED FrontierPinned FieldValue —
+// see ordinalSeedLegWindowsOf), its ordinals were baked assuming ONE FIXED
+// physical field order at the time the seed was built. A join-commutativity
+// exploration (fireExprRuleOnMember's ChildrenAsSet permutation,
+// expressions.SelectExpression.WithSwappedQuantifiers) tries the SAME
+// logical select with its first two quantifiers swapped so both outer/inner
+// assignments get evaluated on cost — but WithSwappedQuantifiers reuses
+// resultValue UNCHANGED (correct for an ordinary correlation-addressed
+// result value, whose meaning does not depend on quantifier order at all).
+// For an ordinal seed this is unsound: if the outer/inner legs have been
+// swapped relative to the seed's OWN baked layout, the seed's ordinals no
+// longer address the row this SPECIFIC physical plan will actually produce —
+// a stale-cost-model victory for this orientation (see
+// NestedLoopJoinUniqueKeyConjuncts) can promote it to the memo's winner, and
+// every baked reference into it then reads the wrong slot (or, when out of
+// range or genuinely unbound downstream, fails loud with an
+// unbound-correlation error) — never a silent wrong VALUE reaching the user
+// undetected, since the ordinal read is either right or loud, but still a
+// plan the query cannot execute.
+//
+// Verification is STRUCTURAL, never by alias/correlation-identity STRING: an
+// earlier version of this check compared outer/innerAlias strings against
+// the windows map, tried first with sel.GetSourceAliases() and then with the
+// quantifier's own GetAlias() as a fallback when the other was a synthetic
+// unique ID. Both individually regressed real queries — sourceAliases can
+// fall back to a synthetic ID for one SelectExpression member while
+// GetAlias() carries the seed's real leg name (the original 3-quantifier
+// EXISTS bug this check exists for), and the reverse can ALSO happen (a
+// 2-quantifier RIGHT-OUTER-JOIN-normalized member). Worse, GetAlias()'s
+// synthetic IDs are literally "q$N" strings (values.UniqueCorrelationIdentifier's
+// format) which a user-supplied QUOTED alias can legitimately collide with
+// byte-for-byte (values.CorrelationIdentifier is a bare wrapped string, so
+// NamedCorrelationIdentifier("q$2") == a synthetic UniqueCorrelationIdentifier
+// that happens to reach counter 2) — exactly the adversarial shape
+// TestFDB_QuotedMachineShapedAliases pins, and exactly what a second
+// alias-guessing "fallback-of-a-fallback" would still be exposed to. There is
+// no string namespace that is safe to guess in. A leg's ROW SHAPE (RecordName
+// + fields), by contrast, is never ambiguous: comparing outerPlan's/
+// innerPlan's OWN GetResultType() against the seed's two top-level windows
+// SORTED BY OFFSET (the seed's own physical order, independent of any name)
+// identifies which physical leg occupies which slot with no naming
+// involved at all.
+//
+// Declining (returning false) here is always safe: the join-commutativity
+// exploration ADDS an alternative candidate, it never removes the
+// non-swapped one, so the correctly-laid-out orientation remains available
+// in the SAME memo group to compete on cost normally. A resultValue that is
+// NOT an ordinal seed (the common case: a lazy, correlation-addressed
+// RecordConstructorValue) is always safe regardless of orientation — its
+// field reads resolve by correlation, not by physical position — and a
+// self-join (both legs share the identical row shape) is also always safe:
+// the ordinals address a structurally valid slot of either physical leg
+// either way, so there is nothing for this check to distinguish.
+func materializedNLJOrdinalLayoutMatches(resultValue values.Value, outerPlan, innerPlan plans.RecordQueryPlan) bool {
+	windows, _ := ordinalSeedLegWindowsOf(resultValue)
+	if len(windows) != 2 {
+		// Not a pristine 2-leg ordinal seed (nil: not an ordinal seed at all;
+		// any count other than 2 is outside a 2-quantifier join's own scope,
+		// e.g. a buried/nested leg layout this check does not reason about)
+		// — not this check's concern either way.
+		return true
+	}
+	outerType := planRowRecordType(outerPlan)
+	innerType := planRowRecordType(innerPlan)
+	if outerType == nil || innerType == nil {
+		return true // can't verify structurally — safe default
+	}
+	legs := make([]ordinalLegWindow, 0, 2)
+	for _, w := range windows {
+		legs = append(legs, w)
+	}
+	sort.Slice(legs, func(i, j int) bool { return legs[i].Offset < legs[j].Offset })
+	return recordFieldsMatch(legs[0].Typ, outerType) && recordFieldsMatch(legs[1].Typ, innerType)
+}
+
+// recordFieldsMatch compares two RecordTypes by FIELDS only (name + ordinal +
+// field type, via values.Field.Equals) — NOT the full values.RecordType.Equals,
+// which also requires RecordName/Nullable to match. A window's own Typ
+// (ordinalLegWindow, built by OrdinalSeedLegWindows from a positional slice
+// of the merged seed's fields) never carries the leg's original RecordName —
+// it is a synthesized sub-record, not the leg's declared type — so comparing
+// full Equals against a real plan's GetResultType() (which DOES carry its
+// RecordName, e.g. "DEPT") would spuriously mismatch every single leg,
+// including the correctly-oriented one. Field shape is the information both
+// sides actually carry and is exactly what distinguishes one base table's
+// leg from another's (different tables have different column sets).
+func recordFieldsMatch(a, b *values.RecordType) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if len(a.Fields) != len(b.Fields) {
+		return false
+	}
+	for i := range a.Fields {
+		if !a.Fields[i].Equals(b.Fields[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// planRowRecordType unwraps p's own GetResultType() down to the *RecordType
+// describing its row shape — directly, or through a RelationType wrapper
+// (values.RelationType.InnerType) when the plan reports a stream-of-rows
+// type rather than the bare row type. nil when neither shape applies (an
+// opaque/erased result type) — the caller treats that as "can't verify".
+func planRowRecordType(p plans.RecordQueryPlan) *values.RecordType {
+	if p == nil {
+		return nil
+	}
+	switch t := p.GetResultType().(type) {
+	case *values.RecordType:
+		return t
+	case *values.RelationType:
+		if rt, ok := t.InnerType.(*values.RecordType); ok {
+			return rt
+		}
+	}
+	return nil
+}
+
 // foldStep1Seed is the step-1 result-value decision for the 3-quantifier
 // join+EXISTS arm. It returns the FULL leg-concat
 // ordinal seed (with the second result true) for an INDEPENDENT-legs
@@ -2978,6 +3125,24 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		// correlatedStep1 branch above does the same with its FlatMap. Both legs
 		// keep their own interned groups, so this only ADDS reachability — no group
 		// is narrowed.
+		//
+		// step1RV can be an ordinal seed even when gatedSeedStep1 above declined
+		// to (re)construct one — foldStep1Seed only decides whether to BUILD a
+		// fresh seed for a projected-EXISTS fold; a WHERE-EXISTS pass-through
+		// keeps sel's OWN resultValue verbatim, which an earlier pass (the box
+		// dissolution that produced this 3-quantifier select) may already have
+		// baked as a pristine ordinal seed. A ChildrenAsSet-swapped firing of
+		// THIS rule reuses that seed under a SWAPPED (leftAlias, rightAlias)
+		// without rebuilding it (expressions.SelectExpression.
+		// WithSwappedQuantifiers's doc comment) — decline rather than yield a
+		// plan whose baked existential rebase (below) would address the wrong
+		// slot of the executor's actual outer-then-inner merged row; see
+		// materializedNLJOrdinalLayoutMatches's doc comment (structural
+		// verification against leftPlan/rightPlan's own row shape — never by
+		// alias string).
+		if !materializedNLJOrdinalLayoutMatches(step1RV, leftPlan, rightPlan) {
+			return
+		}
 		nljPlan := plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
 			expressions.NamedForEachQuantifier(
 				values.NamedCorrelationIdentifier(leftAlias), call.MemoizeExpression(leftExpr)),
