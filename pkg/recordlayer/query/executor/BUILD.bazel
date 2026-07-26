@@ -74,6 +74,7 @@ go_test(
         "merge_sort_heap_bench_test.go",
         "merge_sort_heap_differential_test.go",
         "merge_sort_heap_error_test.go",
+        "merge_sort_heap_pop_error_test.go",
         "merge_union_continuation_integration_test.go",
         "merge_union_continuation_test.go",
         "name_oracle_test.go",
@@ -178,6 +179,7 @@ go_test(
         "merge_sort_heap_bench_test.go",
         "merge_sort_heap_differential_test.go",
         "merge_sort_heap_error_test.go",
+        "merge_sort_heap_pop_error_test.go",
     ],
     deps = [
         "//gen",

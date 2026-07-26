@@ -1545,7 +1545,17 @@ func (m *mergeSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 	// comparison happens BEFORE the corresponding pop, and any already-popped
 	// tied leg is pushed back on a comparison error, so an error leaves the
 	// heap exactly as it was on entry — matching the pre-heap linear scan,
-	// which never mutated m.states before returning an error.
+	// which never mutated m.states before returning an error. This holds for
+	// BOTH error sources below: the direct peek compare against minKeyVals,
+	// and heap.Pop's own internal sift-down (which, with 3+ legs remaining,
+	// compares two OTHER legs to pick the smaller child and can latch an
+	// error into m.heapErr with no relation to the leg heapPop just
+	// returned) — an error return must leave the heap holding every leg it
+	// held on entry, so a leg m.heapPop() already extracted from the heap
+	// gets pushed back right alongside any earlier ties in chosen before the
+	// error propagates; otherwise that leg is gone from both the heap and
+	// chosen the moment this call returns, orphaned exactly like the legs
+	// pullAndAdmit's doc comment describes.
 	minKeyVals := m.heap.items[0].keyVals
 	chosen := make([]*mergeSortChildState, 0, 1)
 	for m.heap.Len() > 0 {
@@ -1576,6 +1586,14 @@ func (m *mergeSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 		}
 		chosen = append(chosen, m.heapPop())
 		if err := m.takeHeapErr(); err != nil {
+			// Same invariant as the cmpErr branch above, and for the same
+			// reason: chosen (including the leg m.heapPop() just returned)
+			// holds legs no longer present in m.heap, so they must go back
+			// in before this error reaches the caller.
+			for _, s := range chosen {
+				m.heapPush(s)
+			}
+			m.heapErr = nil
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
 	}
