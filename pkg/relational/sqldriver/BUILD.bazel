@@ -252,6 +252,8 @@ go_test(
         "negative_covering_index_probe_test.go",
         "negative_double_index_probe_test.go",
         "negative_int_index_probe_test.go",
+        "negative_zero_composite_index_sarg_probe_test.go",
+        "negative_zero_distinct_dedup_probe_test.go",
         "negative_zero_index_sarg_probe_test.go",
         "nested_derived_table_probe_test.go",
         "nested_left_box_chained_unnest_fdb_test.go",

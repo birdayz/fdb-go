@@ -946,6 +946,16 @@ func genTable(rng *rand.Rand) TableDef {
 		{Name: "IDX_D", Cols: []string{"D"}},
 		{Name: "IDX_E", Cols: []string{"E"}},
 	}
+	// SAFETY INVARIANT (do not violate without reading TODO.md CQ-28 first):
+	// D and E (DOUBLE/FLOAT) are ONLY ever single-column indexes here — the
+	// one composite index, IDX_AB, is BIGINT-only. genRows now seeds -0.0
+	// into the D/E domains (CQ-27 closed the single-column signed-zero SARG
+	// gap), which is safe ONLY because no composite index puts a
+	// FLOAT/DOUBLE column in a NON-TERMINAL position: CQ-28 is the narrower,
+	// still-open sibling gap for exactly that shape
+	// (negative_zero_composite_index_sarg_probe_test.go has the reproducer).
+	// Adding a composite index with D or E as a leading column here before
+	// CQ-28 closes would reopen a mystery, hard-to-bisect nightly red.
 	rng.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	// ≥2 indexes with high probability: that is where intersections and
 	// cost ties live. 0-1 indexes still occur so full scans stay covered.
@@ -994,19 +1004,18 @@ func genRows(rng *rand.Rand, table TableDef) []Row {
 				// pattern) plus the boundary values that make DOUBLE hard:
 				// 2^53 and its negation (the exactness boundary beyond which
 				// a double can no longer represent every integer exactly,
-				// probed on both sides of zero) and 0.1 (classic
-				// non-terminating binary fraction). Deliberately NOT signed
-				// zero: an indexed column's SARG range/probe construction
-				// compares raw FDB tuple bytes (where -0.0 sorts strictly
-				// below +0.0), while the residual-filter path compares via
-				// cmpAny's IEEE equality (-0.0 == +0.0) — the two physical
-				// plans can DISAGREE on a query landing exactly on zero, a
-				// real, documented matching/data-access-infra gap (TODO.md
-				// CQ-27) a RANDOM generator would trip
-				// unpredictably at nightly scale. Covered instead by a
-				// dedicated, deterministic pin test
-				// (negative_zero_index_sarg_probe_test.go) that proves the
-				// CURRENT boundary and flips when the gap closes.
+				// probed on both sides of zero), 0.1 (classic non-terminating
+				// binary fraction), and signed zero (TODO.md CQ-27, FIXED: an
+				// indexed column's SARG range/probe construction used to
+				// disagree with the residual-filter path — cmpAny's IEEE
+				// equality (-0.0 == +0.0) — on a query landing exactly on
+				// zero; scanComparisonsToTupleRange now widens the zero
+				// endpoint of a range to span both adjacent keys, so the two
+				// physical plans agree and this domain can include -0.0 like
+				// any other boundary value. The dedicated deterministic pin
+				// (negative_zero_index_sarg_probe_test.go) still exists as
+				// the fast, targeted regression; this is the
+				// random/nightly-scale corroboration).
 				switch rng.IntN(20) {
 				case 0:
 					r[col.Name] = float64(-9007199254740992) // -(2^53)
@@ -1014,6 +1023,8 @@ func genRows(rng *rand.Rand, table TableDef) []Row {
 					r[col.Name] = float64(9007199254740992) // 2^53
 				case 2:
 					r[col.Name] = 0.1 // classic non-terminating binary fraction
+				case 3:
+					r[col.Name] = math.Copysign(0, -1) // -0.0
 				default:
 					r[col.Name] = float64(rng.IntN(10))
 				}
@@ -1029,6 +1040,11 @@ func genRows(rng *rand.Rand, table TableDef) []Row {
 					f64 = 0.1
 				case 2:
 					f64 = float64(16777216) // 2^24: float32's mantissa-exactness boundary
+				case 3:
+					// -0.0 (TODO.md CQ-27, FIXED — see the ColDouble domain's
+					// comment above for the SARG-vs-residual signed-zero gap
+					// this now exercises rather than avoids).
+					f64 = math.Copysign(0, -1)
 				default:
 					f64 = float64(rng.IntN(10))
 				}

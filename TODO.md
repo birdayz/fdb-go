@@ -1905,37 +1905,115 @@ closed rather than silently alter rows or output schema.
   //pkg/recordlayer/query/plan/cascades:cascades_test
   --test_arg="--test.run=TestCardinalityPropertyBoundsCostEstimate/typeFilter/overExactlyOneChild"
   --test_arg="-test.v"` (logs "KNOWN violation still reproduces").
-- [ ] **CQ-27 (MED, found extending the sargability differential oracle to
-  indexed DOUBLE/FLOAT columns, 2026-07-26) — an indexed DOUBLE/FLOAT
-  column's equality/IN/range SARG DISAGREES with the full-scan
+- [x] **CQ-27 (MED, found extending the sargability differential oracle to
+  indexed DOUBLE/FLOAT columns, 2026-07-26; FIXED 2026-07-27) — an indexed
+  DOUBLE/FLOAT column's equality/IN/range SARG DISAGREES with the full-scan
   residual-filter path on a value stored as -0.0 (negative zero).**
-  `scanComparisonsToTupleRange` (executor.go) packs a comparand into the raw
-  FDB tuple encoding and compares byte ranges, and that encoding preserves
-  the IEEE sign bit — so -0.0 sorts strictly BELOW +0.0. The residual-filter
-  path instead evaluates through `predicates.Comparison`'s `cmpAny`, which
-  follows SQL/IEEE numeric equality (-0.0 == +0.0 is TRUE, and per RFC-082 a
-  `>=` predicate correctly keeps a -0.0 row against a 0.0 bound). The two
-  physical plans for the SAME query disagree at exactly zero: `col = 0` and
-  `col IN (0, …)` MISS a stored -0.0 row via the index (full scan matches
-  it); `col < 0` WRONGLY INCLUDES a stored -0.0 row via the index (full scan
-  correctly excludes it); `col >= 0` WRONGLY EXCLUDES a stored -0.0 row via
-  the index (full scan correctly includes it, RFC-082's own rule, reached
-  here through a DIFFERENT physical plan than RFC-082's regression
-  exercises). This is **matching/data-access infra** (SARG range/probe
-  construction) and needs its own RFC + Graefe/Torvalds milestone-level ACK
-  per the query-engine skill — out of scope for the harness-scaling work
-  that found it. PINNED (not fixed) by
-  `pkg/relational/sqldriver/negative_zero_index_sarg_probe_test.go`, which
-  asserts the CURRENT boundary on both DOUBLE and FLOAT and fails the day it
-  flips. Both `sargability_differential_oracle_fdb_test.go`'s
-  `dbl_col`/`flt_col` schema (deterministic, always-run) and
-  `pkg/relational/conformance/rowdiff`'s DOUBLE/FLOAT column data generator
-  (random, thousands of seeds/night) deliberately do NOT seed a signed-zero
-  value for the identical reason — either would otherwise trip this
-  ALREADY-KNOWN gap and turn its harness red for a reason that isn't a new
-  finding (documented at both generator sites). Reproduce:
-  `bazelisk test //pkg/relational/sqldriver:sqldriver_test
-  --test_arg="--test.run=TestFDB_NegativeZeroIndexSargProbe" --test_arg="-test.v"`.
+  `scanComparisonsToTupleRange` (executor.go) packed a comparand into the raw
+  FDB tuple encoding and compared byte ranges, and that encoding preserves
+  the IEEE sign bit — so -0.0 sorts strictly BELOW +0.0 as two DISTINCT,
+  physically ADJACENT keys with nothing else representable between them. The
+  residual-filter path instead evaluates through `predicates.Comparison`'s
+  `cmpAny`, which follows SQL/IEEE numeric equality (-0.0 == +0.0 is TRUE,
+  and per RFC-082 a `>=` predicate correctly keeps a -0.0 row against a 0.0
+  bound — a deliberate, already-reviewed Go-correct-vs-Java-wrong
+  divergence: Java's own `Comparisons.compare`/`compareEquals` are
+  `Double.compareTo`/`.equals`-based and are NOT IEEE-correct on signed
+  zero either, so this bug was Go-only from the start, with no Java
+  reference to port).
+  **Model chosen: widen the scan RANGE at probe-construction time, not
+  normalize the stored/wire encoding.** Checked CockroachDB
+  (`pkg/util/encoding/float.go EncodeFloatAscending`): it collapses ±0 to
+  ONE key (`floatZero`) at the KEY-ENCODING layer specifically (not the
+  general tuple/datum layer), with `DDecimal.IsComposite` marking the value
+  as needing the value part to reconstruct sign — i.e. even Cockroach's
+  "normalize" is scoped to the key, never the generic encoder. Checked Java
+  (`fdb-extensions/.../TupleOrderingTest.java`): the raw Tuple layer
+  preserves the sign bit and sorts -0.0 strictly below +0.0, same as Go —
+  confirming the RAW TUPLE ENCODER (`pkg/fdbgo/fdb/tuple`'s
+  `encodeFloat`/`encodeDouble`) is the shared, generic FDB wire format and
+  must not diverge from Java's identical implementation (also used verbatim
+  by the SORT comparator, which deliberately stays sign-preserving per
+  RFC-082). Normalizing at the SQL-layer index-key-write boundary instead
+  (Cockroach's move) was rejected too: unlike Cockroach's own single-engine
+  key format, this store's index entries are read by BOTH Go and Java on a
+  shared cluster, and Java's Record Layer index maintainer does not
+  normalize signed zero before packing — a Go-side write-time normalization
+  would silently split one indexed value across two physically different
+  keys depending on which engine inserted the row. Range-widening only
+  changes how Go's OWN executor builds a scan boundary; it touches no wire
+  byte anyone else reads.
+  **Fix:** `scanComparisonsToTupleRange` widens a zero-valued FLOAT/DOUBLE
+  bound to cover BOTH adjacent keys wherever it terminates the range: an
+  equality (or IN-list per-element sub-probe) that is the LAST comparison
+  widens to an inclusive `[-0.0, +0.0]` subtree; `>=`/`<` canonicalize their
+  bound to whichever of the two adjacent keys makes the IEEE-correct
+  endpoint (`>=` pins to -0.0, `<` pins to -0.0 as the exclusive stop); `>`
+  and `<=` are canonicalized too (pin to +0.0) for symmetry, closing a
+  latent `col > -0.0`-literal gap the bug report didn't call out. A
+  zero-valued equality that is NOT the terminal comparison in a composite
+  index's equality prefix (more columns follow it) is deliberately left
+  UNWIDENED — see CQ-28 below. `expr.promoteColumnColumnNumeric`
+  (`pkg/relational/core/query/expr/expr.go`) — a SEPARATE bug in the same
+  introducing commit — no longer wraps an INT-vs-LONG column-vs-column
+  comparison in `PromoteValue` (`sharesIntegerWireEncoding`): the two codes
+  pack to byte-identical tuple encodings, and the wrapper was defeating the
+  SARG matcher's `AccessorNamePath` (only unwraps `*FieldValue` chains),
+  degrading a BIGINT=INTEGER point lookup to a residual full scan.
+  Pinned by `pkg/relational/sqldriver/negative_zero_index_sarg_probe_test.go`
+  (rewritten to assert CORRECT behavior across `=`,`<>`,`<`,`<=`,`>`,`>=`,
+  `IN`, `IS [NOT] NULL` on indexed DOUBLE and FLOAT — was the buggy-boundary
+  pin) and a new `bigint_eq_integer_uses_index` EXPLAIN subtest in
+  `cross_type_join_probe_test.go`. Both mutation-checked RED→GREEN. The
+  signed-zero exclusions in `sargability_differential_oracle_fdb_test.go`'s
+  `dbl_col`/`flt_col` seeding and `pkg/relational/conformance/rowdiff/gen.go`'s
+  DOUBLE/FLOAT domains are REMOVED — both now seed `-0.0` and stay green
+  (the oracle's existing bare-int-literal `= 0`/`>= 0`/`< 0`/… sweep exercises
+  the fixed row on every run). `cmd/explain-differ` before/after dump over the
+  full yamsql corpus: 2637/2637 identical, zero plan-shape flips (neither
+  fix changes a plan the corpus happens to exercise).
+  **Review-found sibling bug, fixed in the same change:** removing the
+  generators' signed-zero exclusion exposed that `packedDedupKey`
+  (executor.go, the encoder every unordered DISTINCT/UNION-DISTINCT/CTE
+  dedup path routes through) tuple-packed a FLOAT/DOUBLE slot verbatim —
+  sign-preserving, like the raw encoder — so `SELECT DISTINCT v` would
+  silently split a single SQL-equal value (`-0.0`/`+0.0`) into two output
+  rows, disagreeing with `=` (cmpAny is IEEE per RFC-082). DISTINCT is an
+  EQUALITY concept and must agree with `=`, not with the sign-preserving
+  SORT total order (`compareValues`), which is correctly unchanged. Fixed by
+  canonicalizing a zero-valued FLOAT/DOUBLE dedup slot to `+0.0` before
+  packing. Pinned by
+  `pkg/relational/sqldriver/negative_zero_distinct_dedup_probe_test.go`
+  (DOUBLE and FLOAT, both signs seeded twice), mutation-checked RED→GREEN
+  (reverting the canonicalization reproduces the exact `[-0 0 5]` 3-row
+  split).
+- [ ] **CQ-28 (LOW, follow-up from CQ-27) — a zero-valued FLOAT/DOUBLE
+  equality is left un-widened when it is NOT the terminal column of a
+  composite index's equality prefix** (e.g. index `(a DOUBLE, b BIGINT)`,
+  predicate `a = 0 AND b = 5`, where `a`'s stored value is `-0.0`).
+  `scanComparisonsToTupleRange`'s CQ-27 fix only widens a zero bound at the
+  position that terminates the range (nothing pinned after it), because
+  widening a MIDDLE column requires either a genuine two-way range union
+  (not expressible as a single `TupleRange` low/high pair — verified: the
+  interval `[(-0.0,5), (+0.0,5)]` is not the 2-key set `{(-0.0,5),(+0.0,5)}`,
+  it also admits every `(-0.0, x>5)` and `(+0.0, x<5)`) or teaching the SARG
+  matcher (`abstract_data_access_rule.go`/`match_candidate_index.go`) to
+  keep a residual filter for the abandoned trailing predicates when it
+  decides a composite equality prefix is "fully sarg'd, no residual
+  needed" — infra that does not exist today. Needs its own RFC (this is
+  matching/data-access infra, milestone-level Graefe/Torvalds ACK) deciding
+  between (a) multi-range union execution (reusing the same per-element
+  fan-out the IN-list path already has) or (b) matcher-side residual-filter
+  cooperation. REPRODUCED and PINNED (not fixed) by
+  `pkg/relational/sqldriver/negative_zero_composite_index_sarg_probe_test.go`
+  (composite index `(v DOUBLE, w BIGINT)`, `WHERE v = 0 AND w = 5` misses a
+  stored `-0.0` row via the index) — fails the day this closes, forcing that
+  file to flip. `pkg/relational/conformance/rowdiff/gen.go` and
+  `sargability_differential_oracle_fdb_test.go` both carry a documented
+  safety invariant (no FLOAT/DOUBLE column in a non-terminal composite-index
+  position) that keeps their random/deterministic -0.0 seeding from tripping
+  this gap; re-check that invariant before adding any composite index with a
+  leading DOUBLE/FLOAT column to either generator.
 
 **Exit gate:** focused tests for every item, Cascades unit + race suites,
 planner/translator tests, explain-plan golden, yamsql/FDB conformance, generated

@@ -80,6 +80,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"sort"
@@ -493,6 +494,17 @@ func composeCombos(rng *rand.Rand, n int, atomsA, atomsB, atomsC []sargCase) []s
 // inserted (never guessed).
 func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB, idxC intColModel, uniqU intColModel, idxS strColModel, idxD, idxF floatColModel) {
 	t.Helper()
+	// SAFETY INVARIANT (do not violate without reading TODO.md CQ-28 first):
+	// the ONLY composite index below, composite_idx_ab, is BIGINT-only —
+	// dbl_col/flt_col each carry a single-column index. dbl_col/flt_col's
+	// row generation now seeds -0.0 (CQ-27 closed the single-column
+	// signed-zero SARG gap), which is safe ONLY because no composite index
+	// puts a FLOAT/DOUBLE column in a NON-TERMINAL position: CQ-28 is the
+	// narrower, still-open sibling gap for exactly that shape
+	// (negative_zero_composite_index_sarg_probe_test.go has the
+	// reproducer). Adding a DOUBLE/FLOAT column to composite_idx_ab (or a
+	// new composite index) before CQ-28 closes would reopen a
+	// deterministic, ALWAYS-RUN red for an already-known reason.
 	const dbPath = "/testdb_sargoracle"
 	setup := openTestDB(t, dbPath)
 	ctx := context.Background()
@@ -633,19 +645,19 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	// roughly [-40, 60] ~10% NULL, plus deliberate boundary rows: the
 	// double-exactness boundary 2^53 and its negation (beyond which not
 	// every integer is exactly representable, probed on both sides of
-	// zero), and the float32-inexact fraction 0.1 (meaningful here as a
-	// plain double value, and directly comparable against flt_col's
-	// rounded copy). Deliberately NOT signed zero: an indexed column's SARG
-	// range/probe construction compares raw FDB tuple bytes (where -0.0
-	// sorts strictly below +0.0), while the residual-filter path compares
-	// via cmpAny's IEEE equality (-0.0 == +0.0) — the two physical plans
-	// this file's own differential mechanism compares can DISAGREE on a
-	// query landing exactly on zero, a real, documented
-	// matching/data-access-infra gap (TODO.md CQ-27) this deterministic,
-	// ALWAYS-RUN generator would trip on EVERY run, not merely at random.
-	// Covered instead by a dedicated pin test
-	// (negative_zero_index_sarg_probe_test.go) that proves the CURRENT
-	// boundary and flips when the gap closes.
+	// zero), the float32-inexact fraction 0.1 (meaningful here as a plain
+	// double value, and directly comparable against flt_col's rounded
+	// copy), and signed zero (TODO.md CQ-27, FIXED: an indexed column's SARG
+	// range/probe construction used to disagree with the residual-filter
+	// path — cmpAny's IEEE equality (-0.0 == +0.0) — on a query landing
+	// exactly on zero; scanComparisonsToTupleRange now widens the zero
+	// endpoint of a range to span both adjacent keys, so the two physical
+	// plans this file's differential mechanism compares AGREE. floatAtoms'
+	// bare-integer-literal sweep already runs `= 0`, `>= 0`, `< 0`, … against
+	// this column on every invocation, so this row is exercised on EVERY
+	// run, not merely at random — the dedicated pin
+	// (negative_zero_index_sarg_probe_test.go) remains the fast, targeted
+	// regression).
 	idxD.name = "d"
 	seenD := map[float64]bool{}
 	addD := func(v float64) {
@@ -663,7 +675,7 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO dbl_col (id, d) VALUES (%d, %s)", 2000+i, renderFloat(v)))
 		addD(v)
 	}
-	for i, sp := range []float64{0.1, 9007199254740992, -9007199254740992} {
+	for i, sp := range []float64{0.1, 9007199254740992, -9007199254740992, math.Copysign(0, -1)} {
 		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO dbl_col (id, d) VALUES (%d, %s)", 2500+i, renderFloat(sp)))
 		addD(sp)
 	}
@@ -696,7 +708,7 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 		stored := addF(v)
 		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, %s)", 3000+i, renderFloat(stored)))
 	}
-	for i, sp := range []float64{0.1, 16777216, -16777216} {
+	for i, sp := range []float64{0.1, 16777216, -16777216, math.Copysign(0, -1)} {
 		stored := addF(sp)
 		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, %s)", 3500+i, renderFloat(stored)))
 	}

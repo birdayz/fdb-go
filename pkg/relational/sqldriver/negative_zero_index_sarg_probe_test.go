@@ -1,45 +1,35 @@
 package sqldriver_test
 
-// KNOWN BUG sentinel — an indexed DOUBLE/FLOAT column's equality and ordered
-// range SARG DISAGREES with the full-scan residual-filter path on a value
-// stored as -0.0 (negative zero). TODO.md CQ-27 "signed-zero SARG vs residual
-// disagreement on an indexed DOUBLE/FLOAT column".
+// Regression pin for TODO.md CQ-27 — an indexed DOUBLE/FLOAT column's
+// equality and ordered-range SARG must agree with the full-scan
+// residual-filter path on a value stored as -0.0 (negative zero).
 //
-// Root cause: the SARG range/probe construction
-// (scanComparisonsToTupleRange, executor.go) packs a comparand into the raw
-// FDB tuple encoding and compares byte ranges — and the tuple encoding
-// preserves the IEEE sign bit, so -0.0 sorts strictly BELOW +0.0. The
-// residual-filter path instead evaluates via predicates.Comparison's cmpAny,
-// which follows SQL/IEEE numeric equality: -0.0 == +0.0 is TRUE, and (per
-// RFC-082) a `>=` predicate correctly keeps a -0.0 row against a 0.0 bound.
-// The two physical plans for the SAME query can therefore disagree at
-// exactly zero:
-//   - `col = 0`:    the index MISSES a stored -0.0 row (full scan matches it).
-//   - `col IN (0, ...)`: same miss, via the IN sub-probe.
-//   - `col < 0`:    the index INCLUDES a stored -0.0 row (full scan excludes
-//     it — -0.0 is not strictly less than 0 under IEEE equality).
-//   - `col >= 0`:   the index MISSES a stored -0.0 row (full scan includes
-//     it — this is RFC-082's rule, reached here through a DIFFERENT physical
-//     plan than the one RFC-082's own regression exercises).
+// Root cause (fixed): scanComparisonsToTupleRange (executor.go) packed a
+// zero comparand with whatever sign it happened to carry. FDB tuple encoding
+// preserves the IEEE sign bit (pkg/fdbgo/fdb/tuple's adjustFloatBytes), so
+// +0.0 and -0.0 are two DISTINCT, adjacent index keys — but the
+// residual-filter comparator (cmpAny, RFC-082) follows IEEE/SQL numeric
+// equality, where -0.0 == +0.0. A sign-pinned probe or range endpoint
+// therefore disagreed with the residual path at exactly zero:
+//   - `col = 0` / `col IN (0, ...)` missed a stored -0.0 row.
+//   - `col < 0` wrongly included a stored -0.0 row.
+//   - `col >= 0` wrongly excluded a stored -0.0 row.
 //
-// Found scaling the sargability differential oracle's DOUBLE/FLOAT coverage
-// (sargability_differential_oracle_fdb_test.go) to include boundary rows —
-// its generator deliberately does NOT seed a signed-zero row (see the
-// dbl_col/flt_col setup comments) specifically so this ALREADY-KNOWN gap
-// does not make that ALWAYS-RUN, deterministic test permanently red. This
-// file is the dedicated, controlled pin instead: it PASSES today by
-// asserting the CURRENT (buggy) boundary, and FAILS the day the gap closes,
-// forcing this file to be updated (flip the assertions + the SARG/matching
-// fix needs its own RFC and the milestone-level architectural review ACK the
-// query-engine skill requires for any matching/data-access-infra change,
-// since scanComparisonsToTupleRange is core matching/data-access infra).
+// The fix widens the zero endpoint of a scan range to span BOTH adjacent
+// keys (equality widens to the [-0.0, +0.0] subtree; `<`/`>=` canonicalize
+// their bound to whichever of the two adjacent keys makes the endpoint
+// IEEE-correct) rather than normalizing the stored/wire encoding — the raw
+// FDB tuple layer's sign-preserving float encoding matches Java's
+// (TupleOrderingTest) and the record layer's SORT comparator on purpose
+// (executor's compareValues / values.CompareFloat64), so it must not change;
+// only the SARG/probe construction, which is Go-only executor logic with no
+// Java analog (Java's own predicate comparator is sign-preserving too, per
+// Comparisons.compare -> Double.compareTo/equals — RFC-082 is a deliberate,
+// already-reviewed Go extension beyond Java), needed to change.
 //
-// A row soundness harness like rowdiff (pkg/relational/conformance/rowdiff)
-// deliberately does NOT seed a random -0.0 value into its DOUBLE/FLOAT
-// column domain for the identical reason: a RANDOM generator hitting this
-// exact combination (indexed column + a query landing on zero + a stored
-// -0.0) unpredictably, at nightly scale, would make that nightly red for an
-// already-known, not-yet-fixed reason rather than a new finding.
+// This test asserts the two physical paths for the SAME query now AGREE,
+// on both DOUBLE and FLOAT, indexed, across every operator a SARG can be
+// built from plus NULL interaction.
 
 import (
 	"context"
@@ -75,9 +65,10 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// id 1 stores NEGATIVE zero; id 2 is a clear positive control so a
-	// non-zero-boundary query still returns something.
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id, v) VALUES (1, -0.0), (2, 5.0)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO f (id, v) VALUES (1, -0.0), (2, 5.0)")
+	// non-zero-boundary query still returns something; id 3 is NULL so the
+	// SARG's null-boundary handling around a zero comparand is also exercised.
+	mwjoMustExec(t, db, ctx, "INSERT INTO d (id, v) VALUES (1, -0.0), (2, 5.0), (3, NULL)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO f (id, v) VALUES (1, -0.0), (2, 5.0), (3, NULL)")
 
 	idxConn := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
 	fullConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
@@ -122,44 +113,62 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 	}
 
 	// probe runs one query on both the index-eligible connection and the
-	// full-scan (MatchLeafRule disabled) connection, asserting: the
-	// full-scan side is IEEE-correct (`wantCorrect`), and the index side
-	// reproduces the CURRENT documented divergence (`wantBuggy`) — proving
-	// the disagreement is specific to the SARG/index path, not a general
-	// signed-zero comparison bug the residual filter shares.
-	probe := func(t *testing.T, tbl, q string, wantBuggy, wantCorrect []int64) {
+	// full-scan (MatchLeafRule disabled) connection, asserting BOTH equal
+	// `want` — proving the SARG range and the residual filter now AGREE at
+	// the signed-zero boundary, not merely that one of them is right.
+	probe := func(t *testing.T, tbl, q string, want []int64) {
 		t.Helper()
 		requireIndexPlan(q)
 		full := ids(fullConn, q)
-		if !eq(full, wantCorrect) {
-			t.Fatalf("%s: %q via full-scan (residual filter) = %v, want %v — the residual path's own "+
-				"signed-zero handling regressed; that is a DIFFERENT, more severe bug than CQ-27",
-				tbl, q, full, wantCorrect)
+		if !eq(full, want) {
+			t.Fatalf("%s: %q via full-scan (residual filter) = %v, want %v", tbl, q, full, want)
 		}
 		idx := ids(idxConn, q)
-		if eq(idx, wantCorrect) {
-			t.Fatalf("%s: %q via the index now returns %v, matching the full-scan side — "+
-				"the signed-zero SARG gap (TODO.md CQ-27) may be FIXED; flip this sentinel's "+
-				"wantBuggy to wantCorrect and close the TODO entry", tbl, q, idx)
+		if !eq(idx, want) {
+			t.Fatalf("%s: %q via the index = %v, want %v (full-scan agrees on %v — this is a "+
+				"SARG-vs-residual disagreement, exactly what CQ-27 was)", tbl, q, idx, want, full)
 		}
-		if !eq(idx, wantBuggy) {
-			t.Fatalf("%s: %q via the index = %v, want %v (current buggy boundary) or %v (fixed) — "+
-				"got something else entirely, investigate before touching this sentinel",
-				tbl, q, idx, wantBuggy, wantCorrect)
+	}
+	// notEqProbe checks `<>` WITHOUT requiring an IndexScan: NOT_EQUALS is
+	// ComparisonType.NONE in Java (residual, never sargable — see
+	// scanComparisonsToTupleRange's default-arm comment) and, with no other
+	// predicate to justify visiting the secondary index at all, the planner
+	// takes a full PRIMARY scan here rather than IndexScan(D_V)/IndexScan(F_V)
+	// — there is no SARG-vs-residual disagreement to prove for this operator,
+	// only that the residual comparator itself is signed-zero-correct.
+	notEqProbe := func(t *testing.T, tbl, q string, want []int64) {
+		t.Helper()
+		got := ids(idxConn, q)
+		if !eq(got, want) {
+			t.Fatalf("%s: %q = %v, want %v", tbl, q, got, want)
 		}
 	}
 
 	for _, tbl := range []string{"d", "f"} {
 		tbl := tbl
 		t.Run(tbl, func(t *testing.T) {
-			// Equality: index MISSES the -0.0 row; full scan matches it.
-			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v = 0", tbl), nil, []int64{1})
-			// IN-list: same miss via the sub-probe.
-			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v IN (0, 5)", tbl), []int64{2}, []int64{1, 2})
-			// `<`: index WRONGLY INCLUDES -0.0 (not strictly < 0 under IEEE).
-			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v < 0", tbl), []int64{1}, nil)
-			// `>=`: index WRONGLY EXCLUDES -0.0 (RFC-082: -0.0 >= 0.0 is TRUE).
-			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v >= 0", tbl), []int64{2}, []int64{1, 2})
+			// Equality: -0.0 == +0.0 under IEEE, so `= 0` must match the stored
+			// -0.0 row.
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v = 0", tbl), []int64{1})
+			// Inverse of equality: `<> 0` must NOT match the -0.0 row (it's
+			// numerically equal to 0), and must not match the NULL row (3VL
+			// UNKNOWN).
+			notEqProbe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v <> 0", tbl), []int64{2})
+			// IN-list: same as equality, via the per-element sub-probe.
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v IN (0, 5)", tbl), []int64{1, 2})
+			// `<`: neither -0.0 nor +0.0 is strictly less than 0.
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v < 0", tbl), nil)
+			// `<=`: both -0.0 and +0.0 satisfy <= 0, so the -0.0 row matches.
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v <= 0", tbl), []int64{1})
+			// `>`: neither -0.0 nor +0.0 is strictly greater than 0.
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v > 0", tbl), []int64{2})
+			// `>=`: both -0.0 and +0.0 satisfy >= 0 (RFC-082), so the -0.0 row
+			// must NOT be dropped.
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v >= 0", tbl), []int64{1, 2})
+			// NULL interaction: IS [NOT] NULL around a zero-valued indexed
+			// column must be unaffected by the signed-zero widening.
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v IS NULL", tbl), []int64{3})
+			probe(t, tbl, fmt.Sprintf("SELECT id FROM %s WHERE v IS NOT NULL", tbl), []int64{1, 2})
 		})
 	}
 }

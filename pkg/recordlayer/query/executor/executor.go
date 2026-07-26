@@ -742,13 +742,100 @@ func tupleElementToRowValue(v any) any {
 	return v
 }
 
+// isZeroFloatBound reports whether a scan comparand v — already run through
+// coerceTupleElement, so it carries the wire Go type (float32 for FLOAT,
+// float64 for DOUBLE) — is a zero of either sign. Only FLOAT/DOUBLE need the
+// signed-zero range widening below: FDB tuple encoding preserves the IEEE
+// sign bit (adjustFloatBytes, pkg/fdbgo/fdb/tuple/tuple.go), so +0.0 and
+// -0.0 pack to two DISTINCT, adjacent index keys (-0.0 sorts immediately
+// before +0.0, with no other representable value between them — the
+// negative-float encoding inverts all bits, giving -0.0 the bit pattern
+// just below +0.0's). cmpAny (predicates package, RFC-082) instead follows
+// IEEE/SQL numeric equality, where -0.0 == +0.0. A single-key probe or a
+// range endpoint pinned to the comparand's own sign therefore silently
+// disagrees with the residual-filter semantics the planner promises for an
+// unmatched predicate — see scanComparisonsToTupleRange's callers.
+//
+// Dispatches on v's OWN Go runtime type, not the Comparison operand's
+// declared values.Type: an IN-list element reaches this comparand already
+// narrowed to the right Go type by expr.ResolveIn (widenIntToDouble /
+// narrowToFloat32, done once at plan time against the LHS column's type),
+// but the per-iteration Operand the InJoin/Explode machinery binds it
+// through is a QuantifiedObjectValue over an UnknownType-elemented array
+// (rule_in_to_explode.go), so comp.Operand.Type() reports Unknown at this
+// call site even though the runtime value is a genuine float32/float64. The
+// coerced value's own type is authoritative for what the tuple packer will
+// actually emit; the declared type is not.
+func isZeroFloatBound(v any) bool {
+	switch f := v.(type) {
+	case float32:
+		return f == 0
+	case float64:
+		return f == 0
+	default:
+		return false
+	}
+}
+
+// negativeZeroLike and positiveZeroLike return the canonical negative/positive
+// zero in the same Go runtime type as a coerced comparand v (float32 for a
+// FLOAT column, float64 for DOUBLE) — the tuple encoder dispatches on the Go
+// runtime type, so the returned value must pack under the SAME type code
+// (single vs double) the comparand already carries, regardless of which sign
+// the original literal or stored value happened to be.
+func negativeZeroLike(v any) any {
+	if _, ok := v.(float32); ok {
+		return float32(math.Copysign(0, -1))
+	}
+	return math.Copysign(0, -1)
+}
+
+func positiveZeroLike(v any) any {
+	if _, ok := v.(float32); ok {
+		return float32(0)
+	}
+	return float64(0)
+}
+
+// canonicalizeZeroSignedBound rewrites a zero-valued FLOAT/DOUBLE
+// ordered-inequality comparand to whichever sign makes its scan-range
+// endpoint agree with IEEE/SQL numeric comparison (cmpAny), regardless of
+// which sign the original literal or stored value happened to carry. -0.0
+// and +0.0 are adjacent index keys (isZeroFloatBound), -0.0 sorting
+// immediately below +0.0:
+//   - `>`  is FALSE for both -0.0 and +0.0 (neither is strictly greater than
+//     zero) -> pin to +0.0: an EXCLUSIVE low bound at +0.0 starts scanning
+//     strictly after the +0.0 key, which — because -0.0 sorts below it — also
+//     clears -0.0.
+//   - `<=` is TRUE for both -0.0 and +0.0 -> pin to +0.0: an INCLUSIVE high
+//     bound at +0.0 covers its own key and everything below, including -0.0.
+//   - `>=` is TRUE for both -0.0 and +0.0 -> pin to -0.0: an INCLUSIVE low
+//     bound at -0.0 starts scanning AT the lower of the two adjacent keys,
+//     so both are included.
+//   - `<`  is FALSE for both -0.0 and +0.0 -> pin to -0.0: an EXCLUSIVE high
+//     bound at -0.0 stops before the lower of the two adjacent keys, so
+//     neither is included.
+func canonicalizeZeroSignedBound(comparand any, t predicates.ComparisonType) any {
+	if !isZeroFloatBound(comparand) {
+		return comparand
+	}
+	switch t {
+	case predicates.ComparisonGreaterThan, predicates.ComparisonLessThanOrEq:
+		return positiveZeroLike(comparand)
+	case predicates.ComparisonGreaterThanEq, predicates.ComparisonLessThan:
+		return negativeZeroLike(comparand)
+	default:
+		return comparand
+	}
+}
+
 func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, error) {
 	if len(comparisons) == 0 {
 		return recordlayer.TupleRangeAllOf(nil), nil
 	}
 
 	var prefix tuple.Tuple
-	for _, cr := range comparisons {
+	for i, cr := range comparisons {
 		if !cr.IsEquality() {
 			break
 		}
@@ -787,6 +874,29 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 				High:         prefix,
 				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
 				HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
+			}, nil
+		}
+		// A zero-valued FLOAT/DOUBLE equality that terminates the prefix (the
+		// whole comparisons list is equality — nothing follows this column) widens
+		// to a subtree spanning BOTH zero keys rather than pinning the single sign
+		// the comparand happened to carry: -0.0 and +0.0 are adjacent index keys
+		// (see isZeroFloatBound) with nothing representable between them, so
+		// [prefix+(-0.0) .. prefix+(+0.0)] inclusive-inclusive is the EXACT set of
+		// keys an IEEE `= 0` (or an IN-list sub-probe on a zero element, which
+		// reaches this same equality path once per element) must match — neither
+		// more nor fewer. A zero equality that is NOT terminal (more columns follow
+		// in a composite index) is intentionally left unwidened here: expressing
+		// "this component is EITHER key, AND later components are pinned exactly"
+		// needs a two-way range union, not a single contiguous TupleRange, and no
+		// composite-index-signed-zero repro exists yet to justify that machinery.
+		if i == len(comparisons)-1 && isZeroFloatBound(val) {
+			low := append(append(tuple.Tuple{}, prefix...), negativeZeroLike(val))
+			high := append(append(tuple.Tuple{}, prefix...), positiveZeroLike(val))
+			return recordlayer.TupleRange{
+				Low:          low,
+				High:         high,
+				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
+				HighEndpoint: recordlayer.EndpointTypeRangeInclusive,
 			}, nil
 		}
 		prefix = append(prefix, val)
@@ -878,6 +988,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 				return recordlayer.TupleRange{}, err
 			}
 			comparand = coerceTupleElement(comparand, ineq.Operand.Type())
+			comparand = canonicalizeZeroSignedBound(comparand, ineq.Type)
 		}
 		// A NULL comparand makes an ordered inequality (<, <=, >, >=) UNKNOWN
 		// for every row (SQL 3VL) → unsatisfiable → empty result. We must NOT
@@ -1789,12 +1900,30 @@ func primaryKeyDistinctKey(qr QueryResult) (string, error) {
 // canonicalization; the composite %T:%v fallback keeps distinct concrete types
 // key-distinct. (The merge-sort union dedups via compareValues on evaluated
 // keys instead — Java UnionCursor's advance-all-equal — so it no longer packs
-// a dedup key at all.)
+// a dedup key at all — and compareValues is correctly sign-preserving there,
+// matching the SORT total order per RFC-082/values.CompareFloat64: ORDER BY
+// keeps -0.0 and +0.0 apart on purpose. DISTINCT is an EQUALITY concept, not
+// an ORDERING one, so it must instead agree with cmpAny's IEEE `=` — a
+// zero-valued FLOAT/DOUBLE slot is canonicalized to +0.0 below before tuple
+// packing, same principle as scanComparisonsToTupleRange's signed-zero
+// widening: without it, a raw tuple-packed key keeps the sign bit and DISTINCT
+// would silently split a single SQL-equal value (-0.0 and +0.0) into two
+// output rows, disagreeing with `=`.)
 func packedDedupKey(slots []any) (string, error) {
 	t := make(tuple.Tuple, len(slots))
 	for i, v := range slots {
 		switch tv := v.(type) {
-		case nil, int64, int, uint, uint64, float32, float64, string, []byte, bool:
+		case float32:
+			if tv == 0 {
+				tv = 0 // canonicalize -0.0 -> +0.0 (see doc comment)
+			}
+			t[i] = tv
+		case float64:
+			if tv == 0 {
+				tv = 0
+			}
+			t[i] = tv
+		case nil, int64, int, uint, uint64, string, []byte, bool:
 			t[i] = tv
 		case int32:
 			t[i] = int64(tv)

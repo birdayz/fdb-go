@@ -929,6 +929,22 @@ func isNumericTypeCode(c values.TypeCode) bool {
 	return false
 }
 
+// sharesIntegerWireEncoding reports whether both codes are INT and/or LONG —
+// the only two numeric codes that funnel to the SAME FDB tuple encoding.
+// pkg/fdbgo/fdb/tuple's encodeInt takes any Go integer width as int64 and
+// packs purely by magnitude, so an INT column and a LONG column holding the
+// same value produce IDENTICAL wire bytes. FLOAT and DOUBLE do not share
+// this property — they use distinct tuple type codes (0x20 vs 0x21, see
+// encodeFloat/encodeDouble) — so this deliberately does not generalize to
+// "any two numeric codes". Used by promoteColumnColumnNumeric to skip a
+// promotion wrapper that would change nothing about the bytes.
+func sharesIntegerWireEncoding(a, b values.TypeCode) bool {
+	isIntFamily := func(c values.TypeCode) bool {
+		return c == values.TypeCodeInt || c == values.TypeCodeLong
+	}
+	return isIntFamily(a) && isIntFamily(b)
+}
+
 // promoteColumnColumnNumeric wraps the narrower-typed operand of a
 // numeric comparison in a values.PromoteValue toward the pair's
 // MaximumType, when NEITHER operand is a compile-time constant. Mirrors
@@ -953,6 +969,18 @@ func isNumericTypeCode(c values.TypeCode) bool {
 // matches the indexed column's tuple type code — the same division of
 // labor as the bare-constant path, just split across plan time (retype)
 // vs. row time (wrap + coerce) depending on whether a value is known yet.
+//
+// An INT-vs-LONG pair is deliberately left UNWRAPPED (sharesIntegerWireEncoding):
+// the two codes pack to identical wire bytes, so a PromoteValue here buys
+// nothing at the encoding boundary and only costs a match — AccessorNamePath
+// (values/accessor_name_path.go) walks *FieldValue chains and stops at any
+// other node type, so a wrapped column no longer matches an index
+// placeholder's raw FieldValue in the SARG matcher (valuesMatchColumn),
+// degrading a point lookup to a residual full scan. cmpAny already compares
+// mixed-width ints correctly (values.CompareExactInts) with no promotion
+// needed. FLOAT-vs-DOUBLE still needs the wrapper: different wire type
+// codes, and the exact-representable-bound narrowing the comparison-
+// resolution callers above perform depends on it.
 func promoteColumnColumnNumeric(left, right values.Value) (values.Value, values.Value) {
 	if values.IsConstantValue(left) || values.IsConstantValue(right) {
 		return left, right
@@ -962,6 +990,9 @@ func promoteColumnColumnNumeric(left, right values.Value) (values.Value, values.
 		return left, right
 	}
 	if !isNumericTypeCode(lt.Code()) || !isNumericTypeCode(rt.Code()) {
+		return left, right
+	}
+	if sharesIntegerWireEncoding(lt.Code(), rt.Code()) {
 		return left, right
 	}
 	common := values.MaximumType(lt, rt)

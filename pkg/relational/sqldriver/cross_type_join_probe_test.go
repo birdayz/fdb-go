@@ -70,6 +70,28 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 		}
 	})
 
+	// FIXED: BIGINT = INTEGER must still probe the index. Unlike the
+	// DOUBLE/FLOAT pairs above, INT and LONG pack to IDENTICAL wire bytes
+	// (pkg/fdbgo/fdb/tuple's encodeInt takes any width as int64), so
+	// promoteColumnColumnNumeric deliberately does NOT wrap the INTEGER side
+	// in PromoteValue (sharesIntegerWireEncoding) — wrapping it used to make
+	// the SARG matcher's AccessorNamePath walk stop at the PromoteValue node
+	// (it only unwraps *FieldValue chains), so valuesMatchColumn could no
+	// longer identify the wrapped column against the index placeholder and
+	// the point lookup degraded to a residual full scan. The plain
+	// "bigint_eq_integer" subtest above would stay green through that
+	// degradation (a full scan still returns correct rows) — this is the
+	// one that actually proves the index fires.
+	t.Run("bigint_eq_integer_uses_index", func(t *testing.T) {
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN SELECT a.id, bi.id FROM a JOIN bi ON a.xbig = bi.yint").Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN: %v", err)
+		}
+		if !strings.Contains(plan, "IndexScan(BI_Y") {
+			t.Fatalf("expected an IndexScan(BI_Y ...) probe for a.xbig=bi.yint, got: %s", plan)
+		}
+	})
+
 	// FIXED: BIGINT = DOUBLE via an index probe (index on the DOUBLE side) —
 	// column-vs-column, so promoteColumnColumnNumeric wraps the outer BIGINT
 	// comparand in PromoteValue(DOUBLE); the executor's coerceTupleElement
