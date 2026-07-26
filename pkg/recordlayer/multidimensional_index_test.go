@@ -1213,6 +1213,93 @@ var _ = Describe("MultidimensionalIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("prefix skip-scan aggregates the scanned-records budget across legs of a fan-out (RFC-106a)", func() {
+		// The MULTIDIMENSIONAL index has no SQL surface (no CREATE INDEX ...
+		// USING RTREE / SPATIAL DDL — grep confirms zero references to
+		// MULTIDIMENSIONAL anywhere under pkg/relational), so this cannot be
+		// driven through a SQL IN-join/IN-union the way
+		// TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs exercises the
+		// index_scan.go leaf cursor. Instead, drive store.ScanIndex directly,
+		// N times, reusing the SAME ScanProperties (and so the SAME
+		// *ScanLimiterState pointer on ExecuteProperties.ScanState) across
+		// every call — exactly the mechanism executeInJoin/executeInUnion use
+		// for real IN-list legs (props.ClearSkipAndLimit(), never a fresh
+		// DefaultExecuteProperties() per leg — executor_new_plans.go:1055).
+		// Each "leg" here is a full unbound-prefix scan of a tiny index (one
+		// partition, two points in it), so it always hits prefixSkipScanCursor
+		// (dimExpr.PrefixSize > 0, scanRange.Low == nil) — the cursor that used
+		// to nil out ExecuteProperties.ScanState for its per-prefix inner scans
+		// and keep a local total that reset to zero on every new
+		// prefixSkipScanCursor, i.e. every leg.
+		//
+		// Per leg, in Hilbert order: findNextPrefix's 1-row enumeration probe
+		// charges the shared state, the FIRST point read is exempt (the
+		// leg-wide free-initial-pass — CursorLimitManager.java:134-138, granted
+		// once per prefixSkipScanCursor, not once per prefix), and the SECOND
+		// point read is fully gated by the shared cumulative count. A leg is
+		// "individually small" — 3 units of shared budget — yet with the fix
+		// the AGGREGATE across legs still trips a small shared cap; without the
+		// fix every leg resets to zero and none ever would, no matter how many
+		// legs ran.
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("coord_x")), 1, 1)
+		mdIdx := NewMultidimensionalIndex("md_fanout_legs", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		const scanLimit = 10
+		const numLegs = 10
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// One partition (price=1), two points in it (coord_x=10,20) — the
+			// per-leg cost every leg re-scans identically.
+			for i, x := range []int64{10, 20} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(int64(i + 1)),
+					Price:   proto.Int32(1),
+					CoordX:  proto.Int64(x),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// ONE ScanProperties (and so one shared *ScanLimiterState) reused
+			// across every leg — the fan-out sharing mechanism under test.
+			props := ForwardScan()
+			props.ExecuteProperties = props.ExecuteProperties.WithScannedRecordsLimit(scanLimit)
+
+			var tripped int
+			for leg := 0; leg < numLegs; leg++ {
+				legProps := props
+				legProps.ExecuteProperties = legProps.ExecuteProperties.ClearSkipAndLimit()
+				entries, legErr := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, legProps))
+				if legErr != nil {
+					var sle *ScanLimitReachedError
+					Expect(errors.As(legErr, &sle)).To(BeTrue(),
+						"leg %d: want ScanLimitReachedError, got: %v", leg, legErr)
+					tripped++
+					continue
+				}
+				Expect(entries).To(HaveLen(2), "leg %d: an untripped leg must see both points", leg)
+			}
+
+			Expect(tripped).To(BeNumerically(">", 0),
+				"the aggregate scan budget across %d individually-small legs (cap=%d) never tripped — "+
+					"the shared ScanLimiterState is not being charged across legs", numLegs, scanLimit)
+			Expect(tripped).To(BeNumerically("<", numLegs),
+				"every leg tripped — the cap is too tight to also prove early legs succeed on their own merits")
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("delete record clears index entry", func() {
 		ks := specSubspace()
 
