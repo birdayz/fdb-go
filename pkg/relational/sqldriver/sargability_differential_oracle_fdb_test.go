@@ -359,6 +359,100 @@ func strAtoms(col strColModel) []sargCase {
 	return cs
 }
 
+// --- predicate generation: floating-point columns ---
+
+// floatColModel mirrors intColModel/strColModel for a DOUBLE/FLOAT column:
+// real boundary constants come from data actually inserted, never guesses.
+type floatColModel struct {
+	name   string
+	values []float64 // sorted, deduplicated, non-NULL values actually inserted
+}
+
+func (c floatColModel) min() float64      { return c.values[0] }
+func (c floatColModel) max() float64      { return c.values[len(c.values)-1] }
+func (c floatColModel) interior() float64 { return c.values[len(c.values)/2] }
+
+// renderFloat formats v as a SQL REAL_LITERAL. The grammar
+// (RelationalLexer.g4) requires a decimal point or an exponent, so an
+// integral value like 2^53 needs an explicit ".0" appended or it lexes as a
+// DECIMAL_LITERAL (BIGINT), a different literal TYPE. strconv's shortest
+// round-trip format reproduces the exact float64 bit pattern, which matters
+// for the float32 width-narrowing boundary values (their exact decimal
+// expansion runs many digits, e.g. float64(float32(0.1))).
+func renderFloat(v float64) string {
+	s := strconv.FormatFloat(v, 'f', -1, 64)
+	if !strings.Contains(s, ".") {
+		s += ".0"
+	}
+	return s
+}
+
+// sargFloatTag turns a float64 into a test-name-safe fragment.
+func sargFloatTag(v float64) string {
+	return strings.NewReplacer(".", "p", "-", "n").Replace(strconv.FormatFloat(v, 'f', -1, 64))
+}
+
+// floatAtoms mirrors intAtoms for a DOUBLE/FLOAT column: comparisons at real
+// boundary values (rendered as float literals), IS [NOT] NULL, BETWEEN, IN,
+// NOT(...) — plus two shapes intAtoms/strAtoms have no analogue for, both
+// aimed squarely at the bug this file exists to catch:
+//
+//   - bare INTEGER-literal comparisons (`f = 1`, `f > 0`, …): the exact
+//     cross-WIDTH shape that matched ZERO rows for EVERY comparison against
+//     an indexed FLOAT column before narrowConstAgainstFloatColumn /
+//     widenIntConstAgainstDouble — a same-typed float literal alone can
+//     never reach that promotion code path at all.
+//   - the float32-inexact boundary (0.1) at every ordered comparison: 0.1
+//     has no exact float32 representation, so a FLOAT column's stored value
+//     for a row inserted with 0.1 is the REAL number
+//     float64(float32(0.1)) ≈ 0.10000000149011612 — strictly greater than
+//     the double literal 0.1. A naive "round the literal to float32 and
+//     keep the operator" rewrite gets `f > 0.1` / `f < 0.1` wrong at that
+//     row (see indexed_float_sarg_probe_test.go, which pins the identical
+//     case against a fixed expectation; this file re-derives the same
+//     property differentially instead).
+func floatAtoms(col floatColModel) []sargCase {
+	var cs []sargCase
+	min, max, interior := col.min(), col.max(), col.interior()
+	for _, b := range []float64{min - 1, min, interior, max, max + 1} {
+		for _, op := range intCmpOps {
+			cs = append(cs, sargCase{
+				name:  fmt.Sprintf("%s_%s_%s", col.name, op.tag, sargFloatTag(b)),
+				where: fmt.Sprintf("%s %s %s", col.name, op.sym, renderFloat(b)),
+			})
+		}
+	}
+	// Bare INTEGER literal comparisons — see doc comment above.
+	for _, iv := range []int64{-1, 0, 1, 2} {
+		for _, op := range intCmpOps {
+			cs = append(cs, sargCase{
+				name:  fmt.Sprintf("%s_intlit_%s_%d", col.name, op.tag, iv),
+				where: fmt.Sprintf("%s %s %d", col.name, op.sym, iv),
+			})
+		}
+	}
+	// The float32-inexact boundary (0.1) — see doc comment above.
+	for _, op := range intCmpOps {
+		cs = append(cs, sargCase{
+			name:  col.name + "_boundary01_" + op.tag,
+			where: fmt.Sprintf("%s %s 0.1", col.name, op.sym),
+		})
+	}
+	cs = append(cs,
+		sargCase{name: col.name + "_is_null", where: col.name + " IS NULL"},
+		sargCase{name: col.name + "_is_not_null", where: col.name + " IS NOT NULL"},
+		sargCase{name: col.name + "_between_full", where: fmt.Sprintf("%s BETWEEN %s AND %s", col.name, renderFloat(min), renderFloat(max))},
+		sargCase{name: col.name + "_between_partial", where: fmt.Sprintf("%s BETWEEN %s AND %s", col.name, renderFloat(min-5), renderFloat(interior))},
+		sargCase{name: col.name + "_in_present", where: fmt.Sprintf("%s IN (%s, %s, %s)", col.name, renderFloat(min), renderFloat(interior), renderFloat(max))},
+		sargCase{name: col.name + "_in_intlit", where: fmt.Sprintf("%s IN (0, 1, 2)", col.name)},
+		sargCase{name: col.name + "_not_in", where: fmt.Sprintf("%s NOT IN (%s, %s)", col.name, renderFloat(min), renderFloat(max))},
+		sargCase{name: col.name + "_not_eq_interior", where: fmt.Sprintf("NOT (%s = %s)", col.name, renderFloat(interior))},
+		sargCase{name: col.name + "_eq_null_literal", where: col.name + " = NULL"},
+		sargCase{name: col.name + "_lt_null_literal", where: col.name + " < NULL"},
+	)
+	return cs
+}
+
 // composeCombos builds the AND/OR/3-way combinations item 2 asks for, drawing
 // atoms from a's, b's (and, for the 3-way shape, c's) generated atoms. AND-2
 // stays within the composite (a,b) index's sargable prefix; OR-2 and AND-3
@@ -387,13 +481,17 @@ func composeCombos(rng *rand.Rand, n int, atomsA, atomsB, atomsC []sargCase) []s
 
 // --- schema setup ---
 
-// sargOracleSchema creates the five table shapes the RFC asks for in one
+// sargOracleSchema creates the seven table shapes the RFC asks for in one
 // schema: single-column PK + nullable secondary index, composite PK +
 // secondary index, a composite secondary index with a residual (unindexed)
-// column, a UNIQUE index, and an indexed STRING column (the STARTS_WITH/LIKE
-// carrier). It returns the *sql.DB plus the per-column models the generators
-// need, all derived from data actually inserted (never guessed).
-func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB, idxC intColModel, uniqU intColModel, idxS strColModel) {
+// column, a UNIQUE index, an indexed STRING column (the STARTS_WITH/LIKE
+// carrier), and nullable indexed DOUBLE / FLOAT columns — the type class this
+// file could not exercise at all until now (no generator here could emit a
+// floating-point column, exactly the blind spot that hid the indexed-FLOAT
+// SARG bug and the cross-type-numeric-index bug). It returns the *sql.DB plus
+// the per-column models the generators need, all derived from data actually
+// inserted (never guessed).
+func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB, idxC intColModel, uniqU intColModel, idxS strColModel, idxD, idxF floatColModel) {
 	t.Helper()
 	const dbPath = "/testdb_sargoracle"
 	setup := openTestDB(t, dbPath)
@@ -410,7 +508,11 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 			"CREATE TABLE uniq_col (id BIGINT NOT NULL, u BIGINT, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX uniq_col_u ON uniq_col (u) "+
 			"CREATE TABLE str_col (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id)) "+
-			"CREATE INDEX str_col_s ON str_col (s)")
+			"CREATE INDEX str_col_s ON str_col (s) "+
+			"CREATE TABLE dbl_col (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id)) "+
+			"CREATE INDEX dbl_col_d ON dbl_col (d) "+
+			"CREATE TABLE flt_col (id BIGINT NOT NULL, f FLOAT, PRIMARY KEY (id)) "+
+			"CREATE INDEX flt_col_f ON flt_col (f)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE sargoracle")
 	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -527,7 +629,80 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	}
 	sort.Strings(idxS.values)
 
-	return db, singleK, compositeK, idxA, idxB, idxC, uniqU, idxS
+	// dbl_col: nullable indexed DOUBLE — random fractional values in
+	// roughly [-40, 60] ~10% NULL, plus deliberate boundary rows: the
+	// double-exactness boundary 2^53 and its negation (beyond which not
+	// every integer is exactly representable, probed on both sides of
+	// zero), and the float32-inexact fraction 0.1 (meaningful here as a
+	// plain double value, and directly comparable against flt_col's
+	// rounded copy). Deliberately NOT signed zero: an indexed column's SARG
+	// range/probe construction compares raw FDB tuple bytes (where -0.0
+	// sorts strictly below +0.0), while the residual-filter path compares
+	// via cmpAny's IEEE equality (-0.0 == +0.0) — the two physical plans
+	// this file's own differential mechanism compares can DISAGREE on a
+	// query landing exactly on zero, a real, documented
+	// matching/data-access-infra gap (TODO.md CQ-27) this deterministic,
+	// ALWAYS-RUN generator would trip on EVERY run, not merely at random.
+	// Covered instead by a dedicated pin test
+	// (negative_zero_index_sarg_probe_test.go) that proves the CURRENT
+	// boundary and flips when the gap closes.
+	idxD.name = "d"
+	seenD := map[float64]bool{}
+	addD := func(v float64) {
+		if !seenD[v] {
+			seenD[v] = true
+			idxD.values = append(idxD.values, v)
+		}
+	}
+	for i := 0; i < 150; i++ {
+		if rng.Intn(10) == 0 {
+			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO dbl_col (id) VALUES (%d)", 2000+i))
+			continue
+		}
+		v := float64(rng.Intn(101)-40) + float64(rng.Intn(10))/10
+		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO dbl_col (id, d) VALUES (%d, %s)", 2000+i, renderFloat(v)))
+		addD(v)
+	}
+	for i, sp := range []float64{0.1, 9007199254740992, -9007199254740992} {
+		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO dbl_col (id, d) VALUES (%d, %s)", 2500+i, renderFloat(sp)))
+		addD(sp)
+	}
+	sort.Float64s(idxD.values)
+
+	// flt_col: nullable indexed FLOAT (32-bit). The model's authoritative
+	// values are the ROUNDED (float64(float32(x))) copies — the exact value
+	// the column actually stores and reads back (row-domain convention, see
+	// executor.coerceTupleElement) — including the float32 mantissa-
+	// exactness boundary 2^24 (DOUBLE's 2^53 one width narrower) and 0.1
+	// (NOT exactly representable in float32 — the width-narrowing boundary
+	// that hid the original bug: see indexed_float_sarg_probe_test.go and
+	// floatAtoms' doc comment).
+	idxF.name = "f"
+	seenF := map[float64]bool{}
+	addF := func(v float64) float64 {
+		v = float64(float32(v))
+		if !seenF[v] {
+			seenF[v] = true
+			idxF.values = append(idxF.values, v)
+		}
+		return v
+	}
+	for i := 0; i < 150; i++ {
+		if rng.Intn(10) == 0 {
+			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id) VALUES (%d)", 3000+i))
+			continue
+		}
+		v := float64(rng.Intn(101)-40) + float64(rng.Intn(10))/10
+		stored := addF(v)
+		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, %s)", 3000+i, renderFloat(stored)))
+	}
+	for i, sp := range []float64{0.1, 16777216, -16777216} {
+		stored := addF(sp)
+		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, %s)", 3500+i, renderFloat(stored)))
+	}
+	sort.Float64s(idxF.values)
+
+	return db, singleK, compositeK, idxA, idxB, idxC, uniqU, idxS, idxD, idxF
 }
 
 // TestFDB_SargabilityDifferentialOracle is the property test itself: schema x
@@ -538,7 +713,7 @@ func TestFDB_SargabilityDifferentialOracle(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db, singleK, compositeK, idxA, idxB, idxC, uniqU, idxS := sargOracleSchema(t)
+	db, singleK, compositeK, idxA, idxB, idxC, uniqU, idxS, idxD, idxF := sargOracleSchema(t)
 	ctr := &sargOracleCounters{}
 
 	run := func(table, projection string, cases []sargCase) {
@@ -571,6 +746,15 @@ func TestFDB_SargabilityDifferentialOracle(t *testing.T) {
 	run("composite_idx", "id", intAtoms(idxA))
 	rng := rand.New(rand.NewSource(sargOracleSeed(20260726) + 1))
 	run("composite_idx", "id", composeCombos(rng, sargOracleCombos(30), intAtoms(idxA), intAtoms(idxB), intAtoms(idxC)))
+
+	// Nullable indexed DOUBLE / FLOAT columns: real boundary constants plus
+	// bare-INTEGER-literal comparisons — the cross-width shape
+	// (narrowConstAgainstFloatColumn / widenIntConstAgainstDouble) that
+	// matched ZERO rows for every comparison against an indexed FLOAT
+	// column, and returned empty for every DOUBLE comparison whose constant
+	// arrived as an int, before that fix.
+	run("dbl_col", "id", floatAtoms(idxD))
+	run("flt_col", "id", floatAtoms(idxF))
 
 	// Reverse scans: ORDER BY forces the index-side plan to either scan the
 	// (ascending-only; Go has no per-column DESC index storage) index in

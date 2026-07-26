@@ -43,6 +43,9 @@ package cascades
 // FAILS, forcing the entry's removal — the exclusion cannot outlive the bug.
 import (
 	"fmt"
+	"math/rand/v2"
+	"os"
+	"strconv"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -440,6 +443,25 @@ func cardinalityCostShapes() []cardinalityCostShape {
 				plans.NewRecordQueryLimitPlan(scan("DOE_ZERO"), 0, 0), values.NewNullValue(values.UnknownType))
 		})
 
+	// --- typeFilter over an EXACTLY-ONE child: KNOWN VIOLATION below min ------
+	// Found by the random-combo generator below (TypeFilter/Values(1) composes
+	// two building blocks neither the fixed shapes above ever pairs directly):
+	// RecordQueryValuesPlan proves ExactlyOne (min=1, max=1) -- it is a
+	// literal row, deterministic, no "might not exist" the way a point-lookup
+	// scan has -- but TypeFilterCost applies its flat TypeFilterSelectivity=0.5
+	// with no floor, same shape as the Distinct/StreamingAggregation-ungrouped
+	// exclusions above, just with TypeFilter as the unfloored operator. The
+	// fixed typeFilter/overBoundedChild shape above cannot see this: its child
+	// (pointLookupScan) proves AtMostOne (min=0), and 0.5 >= 0 never violates.
+	addExcluded("typeFilter/overExactlyOneChild", knownBelowMin,
+		"RecordQueryTypeFilterPlan reports the child's bounds UNCHANGED (transparent, matching Java's "+
+			"CardinalitiesVisitor) -- an exactly-one-row child (RecordQueryValuesPlan) structurally proves min=1, "+
+			"but TypeFilterCost applies a flat TypeFilterSelectivity=0.5 with no floor, so 1 row costs out to 0.5",
+		func(t *testing.T) plans.RecordQueryPlan {
+			return plans.NewRecordQueryTypeFilterPlan([]string{"T1"},
+				plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))}))
+		})
+
 	// --- FirstOrDefault: always exactly one, and the cost model agrees --------
 	add("firstOrDefault/overZeroCostChild_costFloorsCorrectly", func(t *testing.T) plans.RecordQueryPlan {
 		// Direct contrast with defaultOnEmpty/overZeroCostChild above:
@@ -574,4 +596,151 @@ func TestCardinalityPropertyBoundsCostEstimate_MutationGuard(t *testing.T) {
 	}
 	t.Logf("mutation check OK: cost=%v provenMax=%v (real, passes); perturbed provenMax=%v correctly flagged: %v",
 		cost, prov.Max.Value(), prov.Max.Value()-1, v)
+}
+
+// ============================================================================
+// Random combos: the fixed shape table above scaled arbitrarily wide.
+// ============================================================================
+//
+// The standing invariant (cost estimate inside [provenMin, provenMax]
+// whenever a bound is proven) needs NO reference oracle to check — both
+// sides come from the plan itself, so a random COMPOSITION of the same
+// well-behaved building blocks costs nothing extra to verify and can run at
+// however many combos time allows. This is the self-checking-oracle
+// equivalent of rowdiff/sargability's random generators, sized for a
+// PR-gate-safe default and a nightly deep sweep via env, exactly like
+// SARG_ORACLE_COMBOS/SARG_ORACLE_SEED:
+//
+//	CARDINALITY_COMBOS=200000 CARDINALITY_SEED=99 bazelisk test \
+//	  //pkg/recordlayer/query/plan/cascades:cascades_test \
+//	  --test_arg="--test.run=TestCardinalityPropertyBoundsCostEstimate_RandomCombos" \
+//	  --test_arg="-test.v"
+//
+// The random generator draws ONLY from operators the fixed shape table
+// documents as noKnownViolation (scan/indexScan/fetch/filter/typeFilter/
+// projection/map/flatMap/nestedLoopJoin/union variants/intersection/sort) —
+// it deliberately excludes every operator with a DOCUMENTED violation
+// (Distinct, ungrouped StreamingAggregation, DefaultOnEmpty-over-zero-cost,
+// the collapsing RecursiveLevelUnion shape, …), because those violations are
+// conditional on a SPECIFIC child shape the fixed table constructs
+// deliberately; composing them into arbitrary random trees would require
+// re-deriving, per random shape, whether the violation propagates — turning
+// a scale exercise into a source of false, un-investigatable failures. The
+// well-behaved building blocks have no such precondition, so ANY composition
+// of them is a valid noKnownViolation check.
+
+func cardinalityComboCount(defaultN int) int {
+	if v := os.Getenv("CARDINALITY_COMBOS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultN
+}
+
+func cardinalityComboSeed(defaultSeed uint64) uint64 {
+	if v := os.Getenv("CARDINALITY_SEED"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return defaultSeed
+}
+
+// randCardinalityPlan builds a random tree of noKnownViolation building
+// blocks, up to depth deep. nextCorr mints a fresh, never-reused correlation
+// identifier per FlatMap edge (kept out of the recursion's own state so the
+// caller controls it, and so this function stays free of any shared
+// mutable package state a concurrent caller would race on).
+func randCardinalityPlan(t *testing.T, rng *rand.Rand, depth int, nextCorr func(prefix string) values.CorrelationIdentifier) plans.RecordQueryPlan {
+	scan := func(name string) *plans.RecordQueryScanPlan {
+		return plans.NewRecordQueryScanPlan([]string{name}, values.UnknownType, false)
+	}
+	// Deliberately NO RecordQueryValuesPlan (ExactlyOne, min=1) in this leaf
+	// pool: composed under a TypeFilter anywhere in the random tree, it
+	// reproduces the ALREADY-KNOWN, ALREADY-PINNED
+	// "typeFilter/overExactlyOneChild" violation above on every run — a
+	// permanently red nightly for a gap that is already documented and
+	// tracked, not a new finding. Every leaf here proves either UNKNOWN
+	// bounds or AtMostOne (min=0), so no composition of transparent
+	// operators over it can ever push a cost estimate below a proven floor
+	// of 1 — keeping this generator a signal for genuinely NEW composition
+	// gaps instead of a rediscovery engine for this one.
+	leaf := func() plans.RecordQueryPlan {
+		switch rng.IntN(3) {
+		case 0:
+			return scan("RC_SCAN")
+		case 1:
+			return scan("RC_PL").
+				WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.TypeInt}}).
+				WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))})
+		default:
+			return plans.NewRecordQueryIndexPlan("RC_IDX", nil, []string{"RC_IDX_T"}, values.UnknownType, false)
+		}
+	}
+	if depth <= 0 || rng.IntN(3) == 0 {
+		return leaf()
+	}
+	child := func() plans.RecordQueryPlan { return randCardinalityPlan(t, rng, depth-1, nextCorr) }
+	switch rng.IntN(11) {
+	case 0:
+		return plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{rungPredicate("A")}, child())
+	case 1:
+		return plans.NewRecordQueryPredicatesFilterPlan(child(),
+			[]predicates.QueryPredicate{rungPredicate("A"), rungPredicate("B")})
+	case 2:
+		return plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, child())
+	case 3:
+		return plans.NewRecordQueryProjectionPlan(
+			[]values.Value{&values.FieldValue{Field: "K", Typ: values.TypeInt}}, child())
+	case 4:
+		return plans.NewRecordQueryMapPlan(child(), nil)
+	case 5:
+		return plans.NewRecordQueryFlatMapPlan(child(), child(),
+			nextCorr("rc_o"), nextCorr("rc_i"), nil, false)
+	case 6:
+		return plans.NewRecordQueryNestedLoopJoinPlan(child(), child(),
+			[]predicates.QueryPredicate{rungPredicate("A")}, plans.JoinInner, "O", "I", nil)
+	case 7:
+		return plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{child(), child()})
+	case 8:
+		return plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{child(), child()})
+	case 9:
+		return plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{child(), child()}, nil)
+	default:
+		return plans.NewRecordQueryInMemorySortPlan(child(), nil)
+	}
+}
+
+// TestCardinalityPropertyBoundsCostEstimate_RandomCombos scales the standing
+// check (TestCardinalityPropertyBoundsCostEstimate) to however many random
+// compositions the caller budgets, at a tiny PR-gate default and orders of
+// magnitude more in the nightly deep sweep — see the file-section doc
+// comment above for why this needs no reference oracle and stays free of
+// false failures. t.Parallel() covers this test's scheduling relative to its
+// SIBLINGS; the combo loop itself runs single-threaded in one goroutine (the
+// correlation-identifier counter is not synchronized), which is what keeps
+// it race-free without needing one.
+func TestCardinalityPropertyBoundsCostEstimate_RandomCombos(t *testing.T) {
+	t.Parallel()
+	n := cardinalityComboCount(50)
+	seed := cardinalityComboSeed(20260726)
+	rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
+
+	var corrCounter int
+	nextCorr := func(prefix string) values.CorrelationIdentifier {
+		corrCounter++
+		return values.NamedCorrelationIdentifier(fmt.Sprintf("%s%d", prefix, corrCounter))
+	}
+
+	for i := 0; i < n; i++ {
+		plan := randCardinalityPlan(t, rng, 4, nextCorr)
+		prov := provenCardinalities(t, plan)
+		cost := costCardinality(plan)
+		sh := cardinalityCostShape{name: fmt.Sprintf("random/combo_%d", i)}
+		for _, v := range cardinalityCostViolations(sh, prov, cost) {
+			t.Errorf("combo %d (seed %d): %s\n  plan:\n%s", i, seed, v, plan.Explain())
+		}
+	}
+	t.Logf("cardinality/cost random combos: %d checked (seed %d)", n, seed)
 }

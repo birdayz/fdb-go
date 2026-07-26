@@ -719,7 +719,19 @@ func foldAgg(a *AggSpec, rows []Row) any {
 func distinctKey(r Row, cols []string) string {
 	parts := make([]string, 0, len(cols))
 	for _, c := range cols {
-		parts = append(parts, fmt.Sprintf("%s=%v(%T)", c, r[c], r[c]))
+		v := r[c]
+		if fv, ok := v.(float64); ok && fv == 0 {
+			// Canonicalize +/-0.0 for SET membership: IEEE equality (fv==0
+			// is true for BOTH signs of zero) is what DISTINCT/UNION
+			// dedup keys on — and it is what Go's own built-in map[float64]
+			// key equality does natively, so this is the representation a
+			// hash-based engine dedup would actually use. ORDER BY keeps the
+			// two apart (see compareNonNull) — that split (RFC-082) is real
+			// and deliberate, not something to paper over here; it just
+			// does not apply to a SET-membership key.
+			v = 0.0
+		}
+		parts = append(parts, fmt.Sprintf("%s=%v(%T)", c, v, v))
 	}
 	return strings.Join(parts, "|")
 }
@@ -1012,6 +1024,16 @@ func compareNonNull(a, b any) int {
 			return 1
 		}
 		return 0
+	case float64:
+		// values.CompareFloat64, NOT native </>/== : ORDER BY follows the
+		// FDB-tuple / index total order (signed zero split, NaN sorts
+		// highest), which deliberately DIFFERS from the IEEE equality
+		// predicate.Eval's cmpAny uses (-0.0 == +0.0 there) — the same
+		// documented predicate-vs-sort split as RFC-082's
+		// double_negative_zero_ge_predicate. Sharing the engine's own sort
+		// comparator (rather than restating float ordering here) keeps that
+		// split correct by construction instead of by coincidence.
+		return values.CompareFloat64(av, b.(float64))
 	case string:
 		return strings.Compare(av, b.(string))
 	case bool:

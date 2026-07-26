@@ -1876,6 +1876,67 @@ closed rather than silently alter rows or output schema.
   --nocache_test_results` 1/1 green; fuzz target 1.04M execs / 0 failures
   under Bazel.
 
+- [ ] **CQ-26 (LOW, found scaling the cardinality/cost bound oracle to random
+  combos, 2026-07-26) — `TypeFilterCost` has no floor at the property's
+  proven min, same class as the already-documented Distinct/
+  StreamingAggregation-ungrouped/DefaultOnEmpty-over-zero-cost gaps.**
+  `properties.TypeFilterCost` (cost_formulas.go) applies a flat
+  `TypeFilterSelectivity=0.5` multiplier unconditionally; when the child
+  structurally proves an exact positive floor (e.g. `RecordQueryValuesPlan`,
+  which is `ExactlyOne`, min=1 max=1 — a literal row, not a "might not
+  exist" point lookup), the resulting cost estimate (0.5) falls below the
+  proven min (1), violating the standing invariant
+  `pkg/recordlayer/query/plan/cascades/cardinality_cost_bound_test.go`
+  checks. The existing fixed `typeFilter/overBoundedChild` shape cannot see
+  this — its child (`pointLookupScan`) proves `AtMostOne` (min=0), and
+  0.5 >= 0 never violates — so this was invisible until the random-combo
+  generator (`TestCardinalityPropertyBoundsCostEstimate_RandomCombos`,
+  scaled via `CARDINALITY_COMBOS`/`CARDINALITY_SEED`) composed
+  `TypeFilter(Values(1))` directly. PINNED (not fixed) as
+  `typeFilter/overExactlyOneChild` (`knownBelowMin`, self-cleaning) in the
+  same file; the random generator's leaf pool deliberately excludes
+  `RecordQueryValuesPlan` so it does not rediscover this SAME known gap on
+  every run (documented at the leaf-pool site). Fixing `TypeFilterCost` to
+  floor at the child's proven min (mirroring `FirstOrDefaultCost`'s
+  unconditional floor) is a **cost-model change** and therefore needs the
+  Graefe+Torvalds milestone-level ACK the query-engine skill requires before
+  it lands — out of scope for the harness-scaling work that found it.
+  Reproduce: `CARDINALITY_COMBOS=1000 CARDINALITY_SEED=1 bazelisk test
+  //pkg/recordlayer/query/plan/cascades:cascades_test
+  --test_arg="--test.run=TestCardinalityPropertyBoundsCostEstimate/typeFilter/overExactlyOneChild"
+  --test_arg="-test.v"` (logs "KNOWN violation still reproduces").
+- [ ] **CQ-27 (MED, found extending the sargability differential oracle to
+  indexed DOUBLE/FLOAT columns, 2026-07-26) — an indexed DOUBLE/FLOAT
+  column's equality/IN/range SARG DISAGREES with the full-scan
+  residual-filter path on a value stored as -0.0 (negative zero).**
+  `scanComparisonsToTupleRange` (executor.go) packs a comparand into the raw
+  FDB tuple encoding and compares byte ranges, and that encoding preserves
+  the IEEE sign bit — so -0.0 sorts strictly BELOW +0.0. The residual-filter
+  path instead evaluates through `predicates.Comparison`'s `cmpAny`, which
+  follows SQL/IEEE numeric equality (-0.0 == +0.0 is TRUE, and per RFC-082 a
+  `>=` predicate correctly keeps a -0.0 row against a 0.0 bound). The two
+  physical plans for the SAME query disagree at exactly zero: `col = 0` and
+  `col IN (0, …)` MISS a stored -0.0 row via the index (full scan matches
+  it); `col < 0` WRONGLY INCLUDES a stored -0.0 row via the index (full scan
+  correctly excludes it); `col >= 0` WRONGLY EXCLUDES a stored -0.0 row via
+  the index (full scan correctly includes it, RFC-082's own rule, reached
+  here through a DIFFERENT physical plan than RFC-082's regression
+  exercises). This is **matching/data-access infra** (SARG range/probe
+  construction) and needs its own RFC + Graefe/Torvalds milestone-level ACK
+  per the query-engine skill — out of scope for the harness-scaling work
+  that found it. PINNED (not fixed) by
+  `pkg/relational/sqldriver/negative_zero_index_sarg_probe_test.go`, which
+  asserts the CURRENT boundary on both DOUBLE and FLOAT and fails the day it
+  flips. Both `sargability_differential_oracle_fdb_test.go`'s
+  `dbl_col`/`flt_col` schema (deterministic, always-run) and
+  `pkg/relational/conformance/rowdiff`'s DOUBLE/FLOAT column data generator
+  (random, thousands of seeds/night) deliberately do NOT seed a signed-zero
+  value for the identical reason — either would otherwise trip this
+  ALREADY-KNOWN gap and turn its harness red for a reason that isn't a new
+  finding (documented at both generator sites). Reproduce:
+  `bazelisk test //pkg/relational/sqldriver:sqldriver_test
+  --test_arg="--test.run=TestFDB_NegativeZeroIndexSargProbe" --test_arg="-test.v"`.
+
 **Exit gate:** focused tests for every item, Cascades unit + race suites,
 planner/translator tests, explain-plan golden, yamsql/FDB conformance, generated
 file drift checks, and the repository's full non-stress CI suite. Keep this

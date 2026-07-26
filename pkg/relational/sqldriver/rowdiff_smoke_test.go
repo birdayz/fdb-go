@@ -22,9 +22,10 @@ import (
 const rowdiffSmokeSeeds = 25
 
 // rowdiffSeedRange returns the seed range to sweep. It defaults to the fast
-// smoke slice (seeds 1..25) and is widened by environment for the deep runs
-// the RFCs call for — RFC-183's exit criteria ask for >=50k seeds, which at
-// roughly 2.7 seeds/s is a multi-hour sweep that must not sit in `just test`.
+// smoke slice (25 seeds, ROTATED daily — see below) and is widened by
+// environment for the deep runs the RFCs call for — RFC-183's exit criteria
+// ask for >=50k seeds, which at roughly 2.7 seeds/s is a multi-hour sweep
+// that must not sit in `just test`.
 //
 //	ROWDIFF_SEEDS=50000 ROWDIFF_SEED_START=1 bazelisk test \
 //	  //pkg/relational/sqldriver:sqldriver_test --test_output=streamed \
@@ -34,9 +35,19 @@ const rowdiffSmokeSeeds = 25
 // SEED_START exists so successive deep runs cover FRESH ranges instead of
 // re-walking the same seeds; a run that always starts at 1 re-proves what the
 // last one already proved.
+//
+// The DEFAULT start (no env override — the PR gate's actual path) rotates by
+// day-of-year, mirroring nightly-rowdiff.yml's window rotation
+// (1 + dayOfYear*budget): a fixed "seeds 1..25 forever" window spends the
+// PR gate's entire lifetime re-verifying the SAME 25 cases that already
+// passed, proving nothing new after day one. Rotating keeps the budget (and
+// therefore the gate's runtime) identical while walking a fresh, disjoint
+// 25-seed window every calendar day — free additional coverage at zero extra
+// PR latency.
 func rowdiffSeedRange(t *testing.T) (start, count uint64) {
 	t.Helper()
-	start, count = 1, rowdiffSmokeSeeds
+	count = rowdiffSmokeSeeds
+	start = 1 + uint64(time.Now().UTC().YearDay())*count
 	if v := os.Getenv("ROWDIFF_SEED_START"); v != "" {
 		n, err := strconv.ParseUint(v, 10, 64)
 		if err != nil || n == 0 {

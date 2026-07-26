@@ -15,6 +15,7 @@ package rowdiff
 
 import (
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"strconv"
 	"strings"
@@ -23,15 +24,46 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// ColType is the P1 column-type universe. DOUBLE is deliberately absent
-// (RFC-182 OQ-3); LIKE/IN/BETWEEN arrive with P2.
+// ColType is the P1 column-type universe. DOUBLE and FLOAT close RFC-182
+// OQ-3: no generator in this harness could previously emit a floating-point
+// column at all, which is exactly the blind spot that let an indexed FLOAT
+// column matching NOTHING for any predicate (and a cross-type numeric
+// comparison against an index building the wrong tuple-type range) ship
+// undetected. LIKE/IN/BETWEEN arrive with P2.
 type ColType int
 
 const (
 	ColBigint ColType = iota
 	ColString
 	ColBoolean
+	ColDouble // 64-bit IEEE double
+	ColFloat  // 32-bit IEEE single, carried as float64 everywhere above the
+	// tuple-packing boundary (see coerceTupleElement) -- genRows rounds
+	// through float32 once at generation time so the oracle's row already
+	// holds the value the engine will actually store and read back.
 )
+
+// NaN and +/-Infinity are deliberately NOT part of the DOUBLE/FLOAT data
+// domain: the grammar's REAL_LITERAL (RelationalLexer.g4) requires at least
+// one digit plus a '.' or exponent -- there is no NaN/Infinity token, so no
+// SQL literal can spell either value, and genRows/InsertSQL seed data purely
+// through literal INSERT text. Both values ARE reachable at runtime through
+// computed expressions (e.g. 1.0/0.0 = Infinity), which is a materially
+// different, non-literal-based harness and out of scope here.
+
+// isNumericColType reports whether t is one of the numeric column types this
+// generator supports (as opposed to STRING/BOOLEAN). Numeric types all
+// promote against one another (Java's Type.maximumType / the value layer's
+// values.MaximumType), so cross-type numeric comparisons and self-joins are
+// meaningful, sargable shapes -- not merely the error path a cross-CATEGORY
+// comparison (numeric vs string/bool) would be.
+func isNumericColType(t ColType) bool {
+	switch t {
+	case ColBigint, ColDouble, ColFloat:
+		return true
+	}
+	return false
+}
 
 // ColumnDef describes one generated column.
 type ColumnDef struct {
@@ -892,14 +924,17 @@ func Generate(seed uint64) *Case {
 
 func genTable(rng *rand.Rand) TableDef {
 	// Fixed column pool: A,B,C BIGINT (B NOT NULL so it is sortable in P1),
-	// S STRING, F BOOLEAN. Small and stable so index/predicate interplay —
-	// not schema exotica — is what varies.
+	// S STRING, F BOOLEAN, D DOUBLE, E FLOAT (both nullable). Small and
+	// stable so index/predicate interplay — not schema exotica — is what
+	// varies.
 	cols := []ColumnDef{
 		{Name: "A", Type: ColBigint},
 		{Name: "B", Type: ColBigint, NotNull: true},
 		{Name: "C", Type: ColBigint},
 		{Name: "S", Type: ColString},
 		{Name: "F", Type: ColBoolean},
+		{Name: "D", Type: ColDouble},
+		{Name: "E", Type: ColFloat},
 	}
 
 	pool := []IndexDef{
@@ -908,6 +943,8 @@ func genTable(rng *rand.Rand) TableDef {
 		{Name: "IDX_C", Cols: []string{"C"}},
 		{Name: "IDX_S", Cols: []string{"S"}},
 		{Name: "IDX_AB", Cols: []string{"A", "B"}},
+		{Name: "IDX_D", Cols: []string{"D"}},
+		{Name: "IDX_E", Cols: []string{"E"}},
 	}
 	rng.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	// ≥2 indexes with high probability: that is where intersections and
@@ -952,6 +989,57 @@ func genRows(rng *rand.Rand, table TableDef) []Row {
 				r[col.Name] = stringDomain[rng.IntN(len(stringDomain))]
 			case ColBoolean:
 				r[col.Name] = rng.IntN(2) == 0
+			case ColDouble:
+				// Domain 0..9 (matching the BIGINT columns' heavy-duplicate
+				// pattern) plus the boundary values that make DOUBLE hard:
+				// 2^53 and its negation (the exactness boundary beyond which
+				// a double can no longer represent every integer exactly,
+				// probed on both sides of zero) and 0.1 (classic
+				// non-terminating binary fraction). Deliberately NOT signed
+				// zero: an indexed column's SARG range/probe construction
+				// compares raw FDB tuple bytes (where -0.0 sorts strictly
+				// below +0.0), while the residual-filter path compares via
+				// cmpAny's IEEE equality (-0.0 == +0.0) — the two physical
+				// plans can DISAGREE on a query landing exactly on zero, a
+				// real, documented matching/data-access-infra gap (TODO.md
+				// CQ-27) a RANDOM generator would trip
+				// unpredictably at nightly scale. Covered instead by a
+				// dedicated, deterministic pin test
+				// (negative_zero_index_sarg_probe_test.go) that proves the
+				// CURRENT boundary and flips when the gap closes.
+				switch rng.IntN(20) {
+				case 0:
+					r[col.Name] = float64(-9007199254740992) // -(2^53)
+				case 1:
+					r[col.Name] = float64(9007199254740992) // 2^53
+				case 2:
+					r[col.Name] = 0.1 // classic non-terminating binary fraction
+				default:
+					r[col.Name] = float64(rng.IntN(10))
+				}
+			case ColFloat:
+				var f64 float64
+				switch rng.IntN(20) {
+				case 0:
+					f64 = -16777216 // -(2^24): FLOAT's negative-side mantissa-exactness boundary
+				case 1:
+					// NOT exactly representable in float32 — the width-
+					// narrowing boundary that hid the indexed-FLOAT SARG bug
+					// (narrowConstAgainstFloatColumn's ceil/floor rewrite).
+					f64 = 0.1
+				case 2:
+					f64 = float64(16777216) // 2^24: float32's mantissa-exactness boundary
+				default:
+					f64 = float64(rng.IntN(10))
+				}
+				// FLOAT columns store as a genuine float32; the value layer
+				// and the driver widen it back to float64 on read (the
+				// row-domain convention documented at coerceTupleElement).
+				// The oracle's authoritative row value must reflect that
+				// ROUNDING or it would compare against a value the engine
+				// can never actually produce — this line is what keeps
+				// genRows and the real stored/read-back value in agreement.
+				r[col.Name] = float64(float32(f64))
 			}
 		}
 		rows = append(rows, r)
@@ -970,22 +1058,27 @@ func genJoinQuery(rng *rand.Rand, table TableDef) Query {
 			indexed[c] = true
 		}
 	}
-	// Join key: both sides must be the SAME TYPE — the engine rejects a
-	// cross-type comparison with 42804, which is correct behaviour, so
-	// generating one tests nothing but the error path. BIGINT columns only
-	// (ID plus the numeric value columns): they are the join-key shape real
-	// schemas use, and STRING/BOOLEAN keys add no planner coverage.
-	// Prefer an indexed column on the right (the probed side) so a
-	// correlated index access is available; ID is always indexed (pk).
+	// Join key: a genuinely cross-CATEGORY comparison (numeric vs
+	// string/bool) has NO common maximum type — the engine rejects it with
+	// 42804, correct behaviour that tests nothing but the error path — so
+	// STRING/BOOLEAN keys are excluded. But a cross-TYPE NUMERIC pair
+	// (BIGINT = DOUBLE, BIGINT = FLOAT) DOES have a common maximum type
+	// (values.MaximumType / Java's Type.maximumType) and lowers to a
+	// promoted correlated index probe (expr.promoteColumnColumnNumeric) —
+	// exactly the shape that returned EMPTY for every row before that fix,
+	// so mixing numeric column types on the two join-key sides is
+	// deliberate, not an oversight. Prefer an indexed column on the right
+	// (the probed side) so a correlated index access is available; ID is
+	// always indexed (pk).
 	rightCandidates := []string{"ID"}
 	for _, col := range table.Cols {
-		if col.Type == ColBigint && indexed[col.Name] {
+		if isNumericColType(col.Type) && indexed[col.Name] {
 			rightCandidates = append(rightCandidates, col.Name)
 		}
 	}
 	leftCandidates := []string{"ID"}
 	for _, col := range table.Cols {
-		if col.Type == ColBigint {
+		if isNumericColType(col.Type) {
 			leftCandidates = append(leftCandidates, col.Name)
 		}
 	}
@@ -1020,18 +1113,21 @@ func genJoinQuery(rng *rand.Rand, table TableDef) Query {
 
 	// A CROSS-SIDE column comparison (`l.a > r.b`) — a theta/non-equi
 	// residual on top of the join equality, which the single-sided leaves
-	// above can never produce. BIGINT columns only, so the two operands stay
-	// type-compatible.
+	// above can never produce. Numeric columns only (BIGINT/DOUBLE/FLOAT):
+	// every pair has a common maximum type, so a mixed-width pair (e.g.
+	// `l.a > r.d`) promotes rather than erroring — the same
+	// promoteColumnColumnNumeric path the join KEY above exercises, reached
+	// here as a residual filter instead of the ON-equality.
 	if rng.IntN(3) == 0 {
-		bigints := []string{"A", "B", "C"}
+		numericCols := []string{"A", "B", "C", "D", "E"}
 		ops := []predicates.ComparisonType{
 			predicates.ComparisonLessThan, predicates.ComparisonGreaterThan,
 			predicates.ComparisonNotEquals, predicates.ComparisonLessThanOrEq,
 		}
 		leaves = append(leaves, &Pred{
-			Col: bigints[rng.IntN(len(bigints))], Qual: "L",
+			Col: numericCols[rng.IntN(len(numericCols))], Qual: "L",
 			Op:     ops[rng.IntN(len(ops))],
-			RhsCol: bigints[rng.IntN(len(bigints))], RhsQual: "R",
+			RhsCol: numericCols[rng.IntN(len(numericCols))], RhsQual: "R",
 		})
 	}
 
@@ -1107,12 +1203,19 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 	}
 
 	// Column-vs-column leaf (~1/7): non-sargable, so it forces a residual
-	// filter and reaches plan shapes literal comparisons never do. Same-typed
-	// columns only — cross-type comparison semantics are their own axis.
+	// filter and reaches plan shapes literal comparisons never do. Numeric
+	// columns only (BIGINT/DOUBLE/FLOAT) — every pair has a common maximum
+	// type (values.MaximumType), so a mixed-width pair (e.g. `b > d`)
+	// exercises ResolveComparison's promoteColumnColumnNumeric the same way
+	// a correlated join comparand does (see genJoinQuery), just without a
+	// join: neither FieldValue is a compile-time constant here either, so
+	// this is the SAME code path at row-scope instead of join-scope. A
+	// cross-CATEGORY pair (numeric vs string/bool) has no common maximum
+	// type and would only test the 42804 error path, so it stays excluded.
 	if rng.IntN(7) == 0 {
-		bigints := []string{"A", "B", "C"}
-		l := bigints[rng.IntN(len(bigints))]
-		r := bigints[rng.IntN(len(bigints))]
+		numericCols := []string{"A", "B", "C", "D", "E"}
+		l := numericCols[rng.IntN(len(numericCols))]
+		r := numericCols[rng.IntN(len(numericCols))]
 		if l != r {
 			ops := []predicates.ComparisonType{
 				predicates.ComparisonEquals, predicates.ComparisonNotEquals,
@@ -1192,9 +1295,12 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 		// order so the oracle's expected sequence is unique.
 		orderBy = []OrderKey{{Col: "B", Desc: rng.IntN(2) == 0}, {Col: "ID"}}
 	case 2:
-		// NULLABLE sort key (A, C, or S) with a NULLS placement drawn from
-		// {default, FIRST, LAST}; ID suffix keeps the total order unique.
-		col := []string{"A", "C", "S"}[rng.IntN(3)]
+		// NULLABLE sort key (A, C, S, D, or E) with a NULLS placement drawn
+		// from {default, FIRST, LAST}; ID suffix keeps the total order
+		// unique. D/E (DOUBLE/FLOAT) exercise compareSortKey's float64 arm —
+		// the FDB-tuple total order (signed zero split, values.CompareFloat64),
+		// which deliberately disagrees with predicate equality on -0.0/+0.0.
+		col := []string{"A", "C", "S", "D", "E"}[rng.IntN(5)]
 		orderBy = []OrderKey{
 			{Col: col, Desc: rng.IntN(2) == 0, Nulls: NullsPlacement(rng.IntN(3))},
 			{Col: "ID"},
@@ -1246,6 +1352,44 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 	return q
 }
 
+// floatColLit returns one predicate-position literal for a DOUBLE/FLOAT
+// column. A quarter of the time it is a bare INTEGER literal (int64) —
+// exactly the cross-WIDTH shape that silently matched ZERO rows against an
+// indexed FLOAT/DOUBLE column before narrowConstAgainstFloatColumn /
+// widenIntConstAgainstDouble (a same-typed float literal alone can never
+// reach that code path, since nothing needs promoting). The rest is a
+// float64 drawn from the row-generation domain, including the float32
+// width-narrowing boundary (0.1) and the double-exactness boundary (2^53) —
+// the same constants genRows seeds into the data, so a boundary predicate
+// has a real, reachable row to match or exclude.
+func floatColLit(rng *rand.Rand) any {
+	switch rng.IntN(4) {
+	case 0:
+		return int64(rng.IntN(10))
+	case 1:
+		return 0.1
+	case 2:
+		return 9007199254740992.0 // 2^53
+	default:
+		return float64(rng.IntN(10))
+	}
+}
+
+// floatListElem returns a float64 element for an ALL-FLOAT IN list (see
+// floatColLit's doc comment for why a list may never mix int64 and float64
+// elements): the same domain and boundary values as floatColLit minus the
+// bare-integer branch.
+func floatListElem(rng *rand.Rand) float64 {
+	switch rng.IntN(3) {
+	case 0:
+		return 0.1
+	case 1:
+		return 9007199254740992.0 // 2^53
+	default:
+		return float64(rng.IntN(10))
+	}
+}
+
 func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 	// NULL-comparison leaves at low probability on nullable columns.
 	if !col.NotNull && rng.IntN(10) == 0 {
@@ -1261,10 +1405,31 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 	case col.Type != ColBoolean && rng.IntN(8) == 0:
 		n := 2 + rng.IntN(3)
 		list := make([]any, 0, n)
+		// A DOUBLE/FLOAT column's list is ALL-INTEGER or ALL-FLOAT for the
+		// WHOLE list, decided once — never per element. Java's constant-array
+		// type unification (SemanticAnalyzer.resolveArrayTypeFromElementTypes,
+		// ported at expr.go's inElemClass) requires every non-NULL IN-list
+		// element to be the SAME class (LONG vs DOUBLE are different classes),
+		// rejecting a mixed list with 42804 by DESIGN — so `d IN (1, 2.5)` is
+		// invalid SQL, not a shape this harness should generate. An ALL-INTEGER
+		// list against a DOUBLE/FLOAT column still exercises the intended
+		// per-element ResolveIn narrowing (narrowToFloat32/widenIntToDouble),
+		// since every element gets the SAME int64->float treatment.
+		intList := col.Type == ColDouble || col.Type == ColFloat
+		if intList {
+			intList = rng.IntN(2) == 0
+		}
 		for i := 0; i < n; i++ {
-			if col.Type == ColBigint {
+			switch col.Type {
+			case ColBigint:
 				list = append(list, int64(rng.IntN(12)))
-			} else {
+			case ColDouble, ColFloat:
+				if intList {
+					list = append(list, int64(rng.IntN(10)))
+				} else {
+					list = append(list, floatListElem(rng))
+				}
+			default:
 				list = append(list, []string{"", "alpha", "beta", "gamma", "delta", "zeta"}[rng.IntN(6)])
 			}
 		}
@@ -1272,6 +1437,10 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 	case col.Type == ColBigint && rng.IntN(10) == 0:
 		lo := int64(rng.IntN(10)) - 1
 		hi := lo + int64(rng.IntN(6))
+		return &Pred{Col: col.Name, Op: predicates.ComparisonGreaterThanEq, Lit: lo, BetweenHi: hi, IsBetween: true}
+	case (col.Type == ColDouble || col.Type == ColFloat) && rng.IntN(10) == 0:
+		lo := float64(rng.IntN(8))
+		hi := lo + float64(1+rng.IntN(4))
 		return &Pred{Col: col.Name, Op: predicates.ComparisonGreaterThanEq, Lit: lo, BetweenHi: hi, IsBetween: true}
 	case col.Type == ColString && rng.IntN(6) == 0:
 		pat := []string{"%a%", "al%", "%ta", "_eta", "%e%a%", "alpha", "%"}[rng.IntN(7)]
@@ -1350,6 +1519,8 @@ func genPred(rng *rand.Rand, col ColumnDef, indexBiased bool) *Pred {
 		// Only =/<> make sense; force equality.
 		op = predicates.ComparisonEquals
 		lit = rng.IntN(2) == 0
+	case ColDouble, ColFloat:
+		lit = floatColLit(rng)
 	}
 	return &Pred{Col: col.Name, Op: op, Lit: lit}
 }
@@ -1372,6 +1543,10 @@ func (c *Case) DDL() string {
 			b.WriteString(" STRING")
 		case ColBoolean:
 			b.WriteString(" BOOLEAN")
+		case ColDouble:
+			b.WriteString(" DOUBLE")
+		case ColFloat:
+			b.WriteString(" FLOAT")
 		}
 	}
 	b.WriteString(", PRIMARY KEY (id))")
@@ -2000,6 +2175,31 @@ func renderLiteral(v any) string {
 			return "TRUE"
 		}
 		return "FALSE"
+	case float64:
+		return renderFloatLiteral(t)
 	}
 	panic(fmt.Sprintf("rowdiff: unrenderable literal %T", v))
+}
+
+// renderFloatLiteral formats v as a SQL REAL_LITERAL. The grammar
+// (RelationalLexer.g4) requires a decimal point or an exponent — a bare
+// integral value like "9007199254740992" lexes as a DECIMAL_LITERAL (a
+// different literal TYPE, BIGINT not DOUBLE/FLOAT), so an integral float
+// value needs an explicit ".0" appended. strconv's shortest round-trip
+// format ('f', -1, 64) is used so the literal reparses to the EXACT same
+// float64 bit pattern generated (load-bearing for the float32 width-
+// narrowing boundary values, whose exact decimal expansion has many
+// significant digits — e.g. float64(float32(0.1))). The sign is handled by
+// FormatFloat itself, including -0.0 (renders "-0", then ".0" is appended),
+// which already round-trips through this codebase's SQL surface (see
+// plandiff/corpus.go's "double_negative_zero" cases).
+func renderFloatLiteral(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		panic(fmt.Sprintf("rowdiff: NaN/Infinity has no SQL literal spelling (%v) — see the ColType doc comment", v))
+	}
+	s := strconv.FormatFloat(v, 'f', -1, 64)
+	if !strings.Contains(s, ".") {
+		s += ".0"
+	}
+	return s
 }
