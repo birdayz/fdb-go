@@ -1,31 +1,36 @@
 package sqldriver_test
 
-// KNOWN BUG sentinel — SEVERE: an indexed FLOAT (32-bit) column returns ZERO rows for
-// equality/range comparisons (silent missing rows). TODO.md "indexed FLOAT column
-// SARG returns no rows".
+// Regression for the indexed-FLOAT(32-bit) cross-type SARG bug: an indexed
+// FLOAT column returned ZERO rows for EVERY equality/range comparison,
+// because the constant comparand packed into the index range as a tuple
+// DOUBLE (0x21) against the column's tuple SINGLE (0x20) index entries —
+// a mismatched FDB tuple type code that never matches, even when the
+// literal (1.5, 1.0) is exactly representable in float32 so precision
+// wasn't the issue. Non-indexed FLOAT and indexed DOUBLE were both fine;
+// only the indexed FLOAT(32) SARG path was cross-type-broken. Fixed by
+// expr.narrowConstAgainstFloatColumn (the FLOAT-column analogue of
+// widenIntConstAgainstDouble/narrowFloatConstAgainstInt) plus the
+// executor's coerceTupleElement, which downcasts the wire-packed value to
+// a genuine Go float32 at the tuple-packing boundary.
 //
-// `f = 1.5` / `f > 1.0` on an INDEXED FLOAT column → []; the SAME query on a
-// NON-indexed FLOAT column is correct (residual path compares in double space). So
-// the index SARG is the culprit: the float64 literal is packed into the float32 index
-// range with a mismatched FDB tuple type code (float vs double), matching nothing.
-// (1.5/1.0 are exactly representable in float32, so this is NOT a precision issue —
-// the SARG is fundamentally cross-type-broken for FLOAT columns.) DOUBLE-indexed
-// columns are fine; only FLOAT(32) is affected.
-//
-// This is the sibling of the int-const-vs-DOUBLE-col SARG bug this PR fixes
-// (widenIntConstAgainstDouble): here it's double/int-const vs FLOAT-col. Root cause:
-// promoteConstant (value_constant_object.go:150) has no float64→TypeCodeFloat case,
-// and widenIntConstAgainstDouble doesn't handle FLOAT columns. The fix is a
-// cross-WIDTH SARG decision (compare in float32-space, or widen the float32 index
-// scan + residual-filter in double-space) — an open design call (concern C: uniform
-// PromoteValue/MaximumType). This test pins the current (buggy) boundary; flip the
-// indexed cases when fixed.
+// This file also pins the width-narrowing BOUNDARY case that the naive
+// "just cast to float32 and keep the operator" approach gets wrong: 0.1
+// is not exactly representable in float32 (float32(0.1) rounds to
+// 0.10000000149011612 as a real number, which is > the double literal
+// 0.1). A row that stores 0.1 therefore has a REAL stored value strictly
+// greater than the literal 0.1 — `f > 0.1` must include it, `f < 0.1` /
+// `f <= 0.1` must exclude it. A naive unadjusted-operator rewrite
+// (`f > float32(0.1)` with the SAME `>`) would wrongly EXCLUDE that exact
+// row, since colVal == float32(0.1) is not strictly greater than itself —
+// this is the mutation-sensitive case: reverting the ceil/floor op
+// rewrite to a bare round-and-keep-op turns this test red.
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -41,8 +46,10 @@ func TestFDB_IndexedFloatSargProbe(t *testing.T) {
 		"CREATE TABLE noidx (id BIGINT NOT NULL, f FLOAT, PRIMARY KEY (id)) "+
 		"CREATE TABLE withidx (id BIGINT NOT NULL, f FLOAT, PRIMARY KEY (id)) "+
 		"CREATE TABLE dblidx (id BIGINT NOT NULL, f DOUBLE, PRIMARY KEY (id)) "+
+		"CREATE TABLE bnd (id BIGINT NOT NULL, f FLOAT, PRIMARY KEY (id)) "+
 		"CREATE INDEX wi_f ON withidx (f) "+
-		"CREATE INDEX di_f ON dblidx (f)")
+		"CREATE INDEX di_f ON dblidx (f) "+
+		"CREATE INDEX bnd_f ON bnd (f)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ifs/s WITH TEMPLATE ifs")
 	dsn := fmt.Sprintf("fdbsql:///testdb_ifs?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -51,8 +58,12 @@ func TestFDB_IndexedFloatSargProbe(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	mwjoMustExec(t, db, ctx, "INSERT INTO noidx (id, f) VALUES (1,1.5),(2,2.5),(3,0.5)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO withidx (id, f) VALUES (1,1.5),(2,2.5),(3,0.5)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO withidx (id, f) VALUES (1,1.5),(2,2.5),(3,0.5),(4,1.0)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO dblidx (id, f) VALUES (1,1.5),(2,2.5),(3,0.5)")
+	// id 10: stores 0.1 (rounds to float32(0.1) at insert, a REAL value
+	// strictly > the double literal 0.1). id 11: clearly below. id 12:
+	// clearly above.
+	mwjoMustExec(t, db, ctx, "INSERT INTO bnd (id, f) VALUES (10, 0.1), (11, 0.05), (12, 0.2)")
 
 	ids := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)
@@ -80,35 +91,64 @@ func TestFDB_IndexedFloatSargProbe(t *testing.T) {
 		}
 		return true
 	}
+	ck := func(name, q string, want []int64) {
+		t.Run(name, func(t *testing.T) {
+			if got := ids(q); !eq(got, want) {
+				t.Errorf("%s = %v, want %v", name, got, want)
+			}
+		})
+	}
 
-	// CORRECT: non-indexed FLOAT (residual path, double-space comparison).
-	t.Run("noindex_float_eq_correct", func(t *testing.T) {
-		if got := ids("SELECT id FROM noidx WHERE f = 1.5"); !eq(got, []int64{1}) {
-			t.Errorf("noidx f=1.5 = %v, want [1]", got)
+	// Baseline: non-indexed FLOAT (residual path, double-space comparison) —
+	// unaffected by this fix, kept as a control.
+	ck("noindex_float_eq_correct", "SELECT id FROM noidx WHERE f = 1.5", []int64{1})
+	ck("noindex_float_range_correct", "SELECT id FROM noidx WHERE f > 1.0", []int64{1, 2})
+	// Baseline: DOUBLE-indexed (the common type) — unaffected, kept as a control.
+	ck("double_indexed_eq_correct", "SELECT id FROM dblidx WHERE f = 1.5", []int64{1})
+
+	// FIXED: indexed FLOAT now returns the correct rows via the index SARG,
+	// not merely via a residual-filter fallback — assert the plan actually
+	// uses the index range scan (not a full scan + filter), the same
+	// EXPLAIN discipline crosstype_const_sarg_fdb_test.go uses for the
+	// DOUBLE-column sibling fix.
+	t.Run("indexed_float_uses_index_range_scan", func(t *testing.T) {
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN SELECT id FROM withidx WHERE f = 1.5").Scan(&plan); err != nil {
+			t.Fatalf("EXPLAIN: %v", err)
+		}
+		if !strings.Contains(plan, "IndexScan(WI_F") {
+			t.Fatalf("expected an IndexScan(WI_F ...) range scan for `f = 1.5`, got: %s", plan)
 		}
 	})
-	t.Run("noindex_float_range_correct", func(t *testing.T) {
-		if got := ids("SELECT id FROM noidx WHERE f > 1.0"); !eq(got, []int64{1, 2}) {
-			t.Errorf("noidx f>1.0 = %v, want [1 2]", got)
-		}
-	})
-	// CORRECT: DOUBLE-indexed (the common type) works — scopes the bug to FLOAT(32).
-	t.Run("double_indexed_eq_correct", func(t *testing.T) {
-		if got := ids("SELECT id FROM dblidx WHERE f = 1.5"); !eq(got, []int64{1}) {
-			t.Errorf("dblidx f=1.5 = %v, want [1] (DOUBLE index should work)", got)
-		}
-	})
-	// BUG: indexed FLOAT returns empty (flip these when fixed).
-	t.Run("indexed_float_eq_currently_empty_BUG", func(t *testing.T) {
-		if got := ids("SELECT id FROM withidx WHERE f = 1.5"); len(got) != 0 {
-			t.Errorf("indexed f=1.5 now returns %v — the FLOAT SARG bug may be FIXED; "+
-				"flip this sentinel (want [1]) + update TODO.md", got)
-		}
-	})
-	t.Run("indexed_float_range_currently_empty_BUG", func(t *testing.T) {
-		if got := ids("SELECT id FROM withidx WHERE f > 1.0"); len(got) != 0 {
-			t.Errorf("indexed f>1.0 now returns %v — the FLOAT SARG bug may be FIXED; "+
-				"flip this sentinel (want [1 2]) + update TODO.md", got)
-		}
-	})
+	ck("indexed_float_eq_double_lit", "SELECT id FROM withidx WHERE f = 1.5", []int64{1})
+	ck("indexed_float_range_double_lit", "SELECT id FROM withidx WHERE f > 1.0", []int64{1, 2})
+	ck("indexed_float_reversed_eq", "SELECT id FROM withidx WHERE 1.5 = f", []int64{1})
+	// int-literal widen (exact — 1 fits float32 trivially): mirrors
+	// widenIntConstAgainstDouble's int-vs-DOUBLE fix, one width narrower.
+	ck("indexed_float_eq_int_lit", "SELECT id FROM withidx WHERE f = 1", []int64{4})
+	ck("indexed_float_in_list", "SELECT id FROM withidx WHERE f IN (1.5, 2.5)", []int64{1, 2})
+	ck("indexed_float_le", "SELECT id FROM withidx WHERE f <= 1.0", []int64{3, 4})
+	ck("indexed_float_ne", "SELECT id FROM withidx WHERE f <> 1.5", []int64{2, 3, 4})
+
+	// BOUNDARY (mutation-sensitive): 0.1 is not exactly representable in
+	// float32; the stored value for id 10 is the REAL number
+	// float64(float32(0.1)) ≈ 0.10000000149011612, strictly greater than
+	// the double literal 0.1. A correct SARG must reflect that:
+	//   f > 0.1  → includes id 10 (its true value IS > 0.1)
+	//   f >= 0.1 → includes id 10 (same reason, and exact-boundary safe)
+	//   f < 0.1  → excludes id 10 (its true value is NOT < 0.1)
+	//   f <= 0.1 → excludes id 10 (its true value is NOT <= 0.1)
+	// A naive "round the literal to float32 and keep the operator"
+	// implementation would instead evaluate `storedF32 > float32(0.1)`,
+	// which is false for id 10 (equal, not greater) — WRONGLY excluding
+	// it from `f > 0.1`. That is exactly the bug this rewrite (ceil/floor
+	// + op adjustment) fixes.
+	ck("boundary_gt_excludes_naive_would_miss", "SELECT id FROM bnd WHERE f > 0.1", []int64{10, 12})
+	ck("boundary_ge_includes", "SELECT id FROM bnd WHERE f >= 0.1", []int64{10, 12})
+	ck("boundary_lt_excludes_row10", "SELECT id FROM bnd WHERE f < 0.1", []int64{11})
+	ck("boundary_le_excludes_row10", "SELECT id FROM bnd WHERE f <= 0.1", []int64{11})
+	// Equality against a value that can never equal any float32 in the
+	// table (0.15 is not exactly representable and no row was inserted
+	// with a value rounding to it): must return empty, not error.
+	ck("boundary_eq_unrepresentable_returns_empty", "SELECT id FROM bnd WHERE f = 0.15", nil)
 }

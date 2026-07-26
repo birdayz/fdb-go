@@ -484,6 +484,8 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	}
 	left, right = widenIntConstAgainstDouble(op, left, right)
 	op, left, right = narrowFloatConstAgainstInt(op, left, right)
+	op, left, right = narrowConstAgainstFloatColumn(op, left, right)
+	left, right = promoteColumnColumnNumeric(left, right)
 	left, right = promoteStringComparandToUuid(op, left, right)
 	// PLAN-TIME promotion gate (Java SemanticAnalyzer + PromoteValue
 	// lattice): a comparison whose operand types have NO common maximum
@@ -787,6 +789,194 @@ func narrowFloatConstAgainstInt(op predicates.ComparisonType, left, right values
 	return op, left, coerced
 }
 
+// constAsFloat64 widens a plan-time-evaluated numeric literal (whatever
+// concrete Go type EvaluateConstant handed back) to float64, the common
+// working precision for the exactness/ceil/floor arithmetic below.
+func constAsFloat64(cv any) (float64, bool) {
+	switch n := cv.(type) {
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	}
+	return 0, false
+}
+
+// narrowConstAgainstFloatColumn fixes the cross-WIDTH sibling of
+// widenIntConstAgainstDouble/narrowFloatConstAgainstInt: an INT/LONG/DOUBLE
+// compile-time CONSTANT compared against a non-constant FLOAT (32-bit)
+// value (an indexed FLOAT column) packs the wrong FDB tuple type code
+// (0x21 double, or a bare int code) against the column's 0x20 single-float
+// index entries — an equality probe misses every row and an inequality
+// range degenerates to all-or-nothing, exactly like the int-vs-DOUBLE bug,
+// just one width narrower. `f = 1.5` / `f > 1.0` against an indexed FLOAT
+// column returned ZERO rows for every comparison before this: FLOAT was
+// the only numeric column type NO widen/narrow rule covered at all.
+//
+// Unlike widenIntConstAgainstDouble (int→double is always exact for any
+// realistic int64) float32 has a 24-bit mantissa, so an ordinary integer
+// beyond 2^24 — or almost any non-terminating-binary fraction — is NOT
+// exactly representable. This function checks exactness explicitly
+// (round-trip float64(float32(f)) == f) rather than assuming it:
+//   - exact: retype the bare constant to float32 with the column's own
+//     Type (same pattern as the two sibling helpers — a bare re-typed
+//     ConstantValue, not a PromoteValue, because the SARG range-builder
+//     packs ConstantValue.Evaluate() directly).
+//   - non-exact equality/inequality (=, <>): left UNPROMOTED. This is
+//     value-correct on every path: a float32-tuple index entry can never
+//     byte-match a differently-type-coded double/int constant, so the SARG
+//     probe returns empty — which coincides with the true answer, since no
+//     float32 can equal a value it cannot exactly represent.
+//   - non-exact ordered bound (<, <=, >, >=): rewritten to the TIGHTEST
+//     float32 predicate via float32Ceil/float32Floor (this function's
+//     analogue of narrowFloatConstAgainstInt's math.Ceil/math.Floor),
+//     exactly mirroring that helper's op-rewrite table: GT/GE round up to
+//     the ceiling and become GE; LT/LE round down to the floor and become
+//     LE; sides mirrored when the constant is on the left.
+//   - NaN: left unpromoted (every comparison with NaN is false/unknown in
+//     SQL, and the mismatched tuple type code makes the SARG naturally
+//     empty — the same fortunate coincidence as the non-exact EQ case).
+func narrowConstAgainstFloatColumn(op predicates.ComparisonType, left, right values.Value) (predicates.ComparisonType, values.Value, values.Value) {
+	switch op {
+	case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
+		predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+	default:
+		return op, left, right
+	}
+	lc, rc := values.IsConstantValue(left), values.IsConstantValue(right)
+	if lc == rc {
+		return op, left, right
+	}
+	constV, colV := left, right
+	if rc {
+		constV, colV = right, left
+	}
+	ct, colt := constV.Type(), colV.Type()
+	if ct == nil || colt == nil || colt.Code() != values.TypeCodeFloat {
+		return op, left, right
+	}
+	switch ct.Code() {
+	case values.TypeCodeInt, values.TypeCodeLong, values.TypeCodeDouble:
+	default:
+		return op, left, right
+	}
+	cv, ok := values.EvaluateConstant(constV)
+	if !ok {
+		return op, left, right
+	}
+	f, ok := constAsFloat64(cv)
+	if !ok {
+		return op, left, right
+	}
+	if math.IsNaN(f) {
+		return op, left, right
+	}
+	if f32 := float32(f); float64(f32) == f {
+		// Exact — same value, correct tuple code (colt, not a generic
+		// float type descriptor — same load-bearing reason as the sibling
+		// helpers' Typ comment).
+		coerced := &values.ConstantValue{Value: f32, Typ: colt}
+		if lc {
+			return op, coerced, right
+		}
+		return op, left, coerced
+	}
+	switch op {
+	case predicates.ComparisonEquals, predicates.ComparisonNotEquals:
+		return op, left, right
+	}
+	colRelOp := op
+	if lc {
+		colRelOp = mirrorOp(op)
+	}
+	var bound float32
+	switch colRelOp {
+	case predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+		bound = float32Ceil(f)
+		colRelOp = predicates.ComparisonGreaterThanEq
+	case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq:
+		bound = float32Floor(f)
+		colRelOp = predicates.ComparisonLessThanOrEq
+	}
+	if lc {
+		op = mirrorOp(colRelOp)
+	} else {
+		op = colRelOp
+	}
+	coerced := &values.ConstantValue{Value: bound, Typ: colt}
+	if lc {
+		return op, coerced, right
+	}
+	return op, left, coerced
+}
+
+// isNumericTypeCode reports whether c is one of the four primitive
+// numeric type codes the promotion lattice orders (INT < LONG < FLOAT <
+// DOUBLE, matching Java's Type.maximumType). Used to gate
+// promoteColumnColumnNumeric to genuinely numeric pairs.
+func isNumericTypeCode(c values.TypeCode) bool {
+	switch c {
+	case values.TypeCodeInt, values.TypeCodeLong, values.TypeCodeFloat, values.TypeCodeDouble:
+		return true
+	}
+	return false
+}
+
+// promoteColumnColumnNumeric wraps the narrower-typed operand of a
+// numeric comparison in a values.PromoteValue toward the pair's
+// MaximumType, when NEITHER operand is a compile-time constant. Mirrors
+// Java's RelOpValue.encapsulate (PromoteValue.java call sites in
+// RelOpValue.java: `lhs = PromoteValue.inject(lhs, maximumType); rhs =
+// PromoteValue.inject(rhs, maximumType);`) for the one shape the
+// constant-specific helpers above cannot handle: a correlated equi-join
+// comparand — `a.xbig (BIGINT) = bd.ydbl (DOUBLE)` lowered to an
+// index-nested-loop probe against bd's DOUBLE index — whose concrete
+// value isn't known until each outer row is read, so there is no
+// compile-time literal to retype in place.
+//
+// The widen/narrow helpers above retype a bare ConstantValue directly
+// (Java's PromoteValue.inject "value.with(promoteToType)" fast path,
+// taken because a literal's concrete value IS known at plan time); this
+// helper takes Java's OTHER branch — wrap in an actual PromoteValue node
+// — because a FieldValue/CorrelatedFieldValue cannot declare a different
+// result type without a real per-row coercion. values.PromoteValue.Evaluate
+// (coerceNumericResult) performs that coercion at row-eval time, and the
+// executor's tuple-packing boundary (coerceTupleElement) narrows a
+// FLOAT-targeted result to a genuine Go float32 so the wire encoding
+// matches the indexed column's tuple type code — the same division of
+// labor as the bare-constant path, just split across plan time (retype)
+// vs. row time (wrap + coerce) depending on whether a value is known yet.
+func promoteColumnColumnNumeric(left, right values.Value) (values.Value, values.Value) {
+	if values.IsConstantValue(left) || values.IsConstantValue(right) {
+		return left, right
+	}
+	lt, rt := left.Type(), right.Type()
+	if lt == nil || rt == nil || lt.Code() == rt.Code() {
+		return left, right
+	}
+	if !isNumericTypeCode(lt.Code()) || !isNumericTypeCode(rt.Code()) {
+		return left, right
+	}
+	common := values.MaximumType(lt, rt)
+	if common == nil {
+		return left, right
+	}
+	if lt.Code() != common.Code() {
+		left = values.NewPromoteValue(left, common)
+	}
+	if rt.Code() != common.Code() {
+		right = values.NewPromoteValue(right, common)
+	}
+	return left, right
+}
+
 // ResolveCast wraps v in a CastValue with the target type. Rejects
 // nil child (programmer error) and Unknown target (use the direct
 // Value if the target is genuinely unknown).
@@ -906,6 +1096,13 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	// IN sub-probe packs the right tuple type (else `d IN (5,7)` over a DOUBLE
 	// index misses everything — int and double tuple elements don't interleave).
 	widenIntToDouble := left.Type() != nil && left.Type().Code() == values.TypeCodeDouble
+	// Sibling fix for a FLOAT (32-bit) indexed column: narrow each element to
+	// float32 IF exactly representable (same exactness rule as
+	// narrowConstAgainstFloatColumn — a float32 index entry can never
+	// byte-match a differently-type-coded comparand, so a non-exact element
+	// is left as its original numeric type: the sub-probe naturally matches
+	// nothing, which is correct since no float32 value could equal it anyway).
+	narrowToFloat32 := left.Type() != nil && left.Type().Code() == values.TypeCodeFloat
 	// Same SARG-type fix for a UUID column: parse each STRING element to the
 	// neutral [16]byte the value layer carries UUIDs as, so `uuid_col IN
 	// ('<u1>','<u2>')` packs a tuple.UUID per sub-probe (the InJoin binds each
@@ -977,6 +1174,13 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 				lit = float64(n)
 			case int:
 				lit = float64(n)
+			}
+		}
+		if narrowToFloat32 {
+			if f, ok := constAsFloat64(lit); ok && !math.IsNaN(f) {
+				if f32 := float32(f); float64(f32) == f {
+					lit = f32
+				}
 			}
 		}
 		if parseStringToUUID {

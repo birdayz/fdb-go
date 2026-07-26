@@ -661,6 +661,58 @@ func uuidToTupleElement(v any) any {
 	return v
 }
 
+// toFloat32Scalar narrows any admitted numeric runtime value to float32.
+// Companion to toFloat64Scalar, used only at the tuple-packing boundary
+// (coerceTupleElement) where the declared comparand type says FLOAT.
+func toFloat32Scalar(v any) (float32, bool) {
+	f, ok := toFloat64Scalar(v)
+	if !ok {
+		return 0, false
+	}
+	return float32(f), true
+}
+
+// coerceTupleElement adapts a scan-comparand's EVALUATED Go value to the
+// wire representation its DECLARED type (opType, the Comparison operand's
+// own values.Type — not the raw Go type Evaluate happened to return) needs
+// at the FDB tuple-packing boundary. Two independent coercions land here:
+//
+//   - UUID: unchanged, delegates to uuidToTupleElement (kept as a single
+//     choke point rather than duplicated at both call sites below).
+//   - FLOAT (32-bit): downcast to a genuine Go float32. A FLOAT-indexed
+//     column's entries are tuple-packed as 0x20 (single); everywhere else
+//     in the value layer a FLOAT-typed result is deliberately carried as
+//     float64 rounded to float32 precision (see tupleElementToRowValue's
+//     doc comment — row-domain consistency between the base-record and
+//     covering-index read paths, and values.PromoteValue's
+//     coerceNumericResult, which returns that same float64-carrying
+//     float32). That convention is right for materialized rows but WRONG
+//     here: the tuple encoder dispatches on the Go RUNTIME type
+//     (float32 → single, float64 → double — pkg/fdbgo/fdb/tuple), so a
+//     float64 comparand would pack against a FLOAT column's index entries
+//     under the wrong type code and match nothing (or, for an inequality
+//     bound, degrade to all-or-nothing — the same class of bug
+//     widenIntConstAgainstDouble fixed for int-vs-DOUBLE). This is the
+//     mirror image of tupleElementToRowValue's float32→float64 upcast on
+//     the READ side; this is the WRITE-a-probe-key side, downcasting back
+//     down to the wire's actual type code. Covers both a bare re-typed
+//     ConstantValue (expr.narrowConstAgainstFloatColumn: Evaluate already
+//     returns a real float32, so this is a no-op type-assert-that-hits)
+//     and a values.PromoteValue-wrapped correlated comparand
+//     (expr.promoteColumnColumnNumeric, the column-vs-column cross-type
+//     join case: Evaluate returns the row-domain float64, and THIS is
+//     where it finally narrows to match the index's wire type).
+func coerceTupleElement(v any, opType values.Type) any {
+	v = uuidToTupleElement(v)
+	if v == nil || opType == nil || opType.Code() != values.TypeCodeFloat {
+		return v
+	}
+	if f, ok := toFloat32Scalar(v); ok {
+		return f
+	}
+	return v
+}
+
 // tupleElementToRowValue normalizes a decoded tuple element read off an index
 // entry / primary key into the value layer's row domain:
 //   - tuple.UUID → the neutral [16]byte the value layer works with (cmpAny,
@@ -713,7 +765,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		if err != nil {
 			return recordlayer.TupleRange{}, err
 		}
-		val = uuidToTupleElement(val)
+		val = coerceTupleElement(val, comp.Operand.Type())
 		// `col = <NULL>` (a regular equality whose comparand evaluates to NULL —
 		// NOT `IS NULL`, handled above): SQL `NULL = x` is UNKNOWN for every row,
 		// so the probe matches NOTHING. Appending nil here would instead seek the
@@ -825,7 +877,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			if err != nil {
 				return recordlayer.TupleRange{}, err
 			}
-			comparand = uuidToTupleElement(comparand)
+			comparand = coerceTupleElement(comparand, ineq.Operand.Type())
 		}
 		// A NULL comparand makes an ordered inequality (<, <=, >, >=) UNKNOWN
 		// for every row (SQL 3VL) → unsatisfiable → empty result. We must NOT

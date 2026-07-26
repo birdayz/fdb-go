@@ -6122,44 +6122,95 @@ the broken Go-only `ZeroLimitRule` (Java has no LIMIT, so no reference). `LIMIT 
 rows. Regression: `limit_zero_fdb_test.go` (bare / WHERE / ORDER BY / index / aggregate / OFFSET shapes). The
 pre-existing `TestFDB_LimitZeroReturnsNothing` only covered the bare case — a dimensional gap.
 
-### [~] executor/types: cross-type numeric SARG on an INDEXED column — PARTIALLY FIXED 2026-06-28 (int-const vs DOUBLE-col done; IN / float-const / col-col remain)
+### [x] executor/types: cross-type numeric SARG on an INDEXED column — CLOSED (all four categories, 2026-07-26)
+
+**FIXED (2026-06-28):** int-literal vs DOUBLE-indexed column (widenIntConstAgainstDouble), all six ops + IN.
+
+**FIXED (2026-07-18, RFC-181 WS-T, previously mis-tracked as still-broken here):** the narrowing direction —
+DOUBLE/FLOAT literal vs INT/LONG column. `narrowFloatConstAgainstInt` rewrites a non-integral bound to the
+tightest integer predicate (`col > 1.5` ≡ `col >= 2`, sides mirrored when the constant is on the left,
+out-of-int64-range bounds clamp to always-true/false). Pinned by `comparison_promotion_gate.yaml`. This TODO
+entry said "STILL BROKEN" for eight weeks after it was actually fixed — the entry just never got updated in
+place; a reminder that a stale gate note outlives the code it describes if nobody deletes it.
+
+**FIXED (2026-07-26):** the two remaining categories, closing this item out:
+
+1. **Indexed FLOAT (32-bit) columns** — SEVERE, zero rows for every comparison. `expr.narrowConstAgainstFloatColumn`
+   (`pkg/relational/core/query/expr/expr.go`) is the FLOAT-column sibling of the two functions above, covering
+   BOTH directions at once (int/long/double constant vs FLOAT column) because float32's 24-bit mantissa makes
+   exactness the interesting question regardless of which side started narrower: exact → retype the bare
+   constant to a genuine Go `float32` (same `Typ: colt` pattern as the other two); non-exact ordered bound →
+   rewrite to the tightest float32 predicate via `float32Ceil`/`float32Floor`
+   (`pkg/relational/core/query/expr/float32_bounds.go` — a "sortable float" bit-transform giving correct
+   next-representable-value semantics, including across the zero crossing and float32 overflow to ±Inf);
+   non-exact equality → left unpromoted (mismatched tuple type codes make the SARG naturally empty, which
+   coincides with the true answer, same reasoning the int-narrowing fix already relied on). `ResolveIn` got the
+   matching per-element treatment. The executor's tuple-packing boundary needed a companion fix
+   (`coerceTupleElement` in `pkg/recordlayer/query/executor/executor.go`, replacing the narrower
+   `uuidToTupleElement`): the row-domain convention deliberately keeps a FLOAT-typed value as float64 everywhere
+   else (`tupleElementToRowValue`'s doc comment), but the FDB tuple encoder dispatches on the Go RUNTIME type
+   (float32 → tuple code 0x20, float64 → 0x21), so a comparand whose declared type says FLOAT must be downcast
+   to a genuine `float32` at the exact point it gets packed into the scan range — the mirror image of
+   `tupleElementToRowValue`'s float32→float64 upcast on the read side.
+2. **Column-vs-column cross-type joins** (`a.xbig BIGINT = bd.ydbl DOUBLE` / `... = bf.yflt FLOAT` via an index
+   on the DOUBLE/FLOAT side) — previously empty. Neither operand is a compile-time constant here, so there is
+   nothing to retype in place; `expr.promoteColumnColumnNumeric` instead wraps the narrower-typed operand in a
+   `values.PromoteValue` toward `values.MaximumType`, mirroring Java's `RelOpValue.encapsulate`
+   (`PromoteValue.inject` on both sides of a `RelOpValue`). `values.PromoteValue.Evaluate`'s numeric coercion
+   already worked correctly by this point (the 2026-06-28 "EXPERIMENT FINDING" below, that Promote-wrapping a
+   CONSTANT gets unwrapped/ignored by the matcher, turned out to be irrelevant here — that finding was about
+   retyping a literal, which the sibling constant-side functions already handle without Promote; wrapping a
+   genuine non-constant FieldValue/CorrelatedFieldValue works because there is no bare value to extract instead).
+   The same `coerceTupleElement` packer fix from (1) makes the FLOAT variant of this case work at the wire
+   boundary too.
+
+**A real second bug DFS'd in the same pass:** wrapping an `AggregateValue` operand in `PromoteValue` (e.g.
+`HAVING SUM(int_col) > (SELECT AVG(v) FROM t)`, an inherent Long-vs-Double comparison since AVG is always
+DOUBLE) broke `TestFDB_HavingSubqueryProbe` — `rewriteAggregateValuesInTree`
+(`pkg/relational/core/embedded/logical_predicate.go`) is the bespoke tree-walk that replaces `AggregateValue`
+nodes with typed FieldValue references into the aggregated row, and its type switch had no `*values.PromoteValue`
+case (unlike `*values.CastValue`, which it already handled), so an aggregate wrapped one level down stayed
+unrewritten and reached `AggregateValue.Evaluate` at row time via the residual filter path, which always errors
+("aggregate function is not allowed here") since an aggregate has no per-row scalar semantics. Fixed by adding
+the missing case, mirroring the existing `CastValue` one. Mutation-verified (reverting either half of this fix
+turns the corresponding test red with the exact wrong-rows/error shown, restoring turns it green): see
+`indexed_float_sarg_probe_test.go`, `cross_type_join_probe_test.go`, `TestFDB_HavingSubqueryProbe`.
+
+**Fail-closed design note:** for ORDERED comparisons there is always a lossless tightest rewrite (ceil/floor in
+the narrower type), so "fail closed to a residual filter" is never actually needed for those — CockroachDB's
+own model was researched for comparison (`pkg/sql/opt/idxconstraint`, `pkg/sql/sem/tree/type_check.go`,
+`pkg/sql/sem/tree/overload.go`) and turns out to be MORE conservative than what we ship: CRDB never tightens a
+mixed-type bound at all, it just declines to build a span and falls back to a remaining filter whenever the
+literal's resolved type differs from the indexed column's
+(`pkg/sql/opt/idxconstraint/testdata/misc:197-210`, `a > 1.5` on an INT column → unconstrained span + remaining
+filter, citing issue #4313). Java's model (comparand promotion to `MaximumType`, tightening the bound) is the
+one we ported, per "wire compat is the hard line, Java is the reference" — only genuinely-lossy EQUALITY needs
+the "leave unpromoted" fallback, and that fallback is safe for the structural reason above (cross-type tuple
+bytes can never accidentally collide), not because of an explicit sargability gate.
+
+Regression: `indexed_float_sarg_probe_test.go` (indexed FLOAT eq/range/IN/reversed/int-widen, plus the
+mutation-sensitive 0.1-boundary cases proving the ceil/floor op-rewrite fires, not a naive round-and-keep-op),
+`cross_type_join_probe_test.go` (BIGINT=DOUBLE, BIGINT=FLOAT, both directions, plus an ordered `>` join), both
+now with `EXPLAIN`/`plan_contains`-style `IndexScan(...)` assertions proving the SARG actually fires rather than
+silently degrading to a full scan. Full `just test` (all 56 top-level test targets) green; no plan-shape/golden
+regression in explaindiff/memoinvariant/rowdiff/the sargability differential oracle.
+
+Original history below, kept for the record (the "STILL BROKEN" / "EXPERIMENT FINDING" / "SEVERITY UPDATE"
+framing describes the state as of 2026-06-28-through-07-18, superseded by the fixes above):
 
 **FIXED (2026-06-28):** the common + severe direction — an INTEGER literal vs a DOUBLE indexed column, for both
 comparison ops (`=,<>,<,<=,>,>=`, via `expr.ResolveComparison`→`widenIntConstAgainstDouble`) AND IN-lists (`d IN
 (5,7)`, via `expr.ResolveIn`). The int constant(s) are widened to DOUBLE (`5`→`5.0`) when the other operand /
 the LHS is a non-constant DOUBLE, so the SARG packs the right tuple type while the indexed column stays bare (index
 still matched — verified with an EXPLAIN IndexScan assertion). Regression: `crosstype_const_sarg_fdb_test.go`. Full
-53-target suite green (no plan-shape/result regression); Graefe + Torvalds ACK. **STILL BROKEN (deferred — need the
-broader MaximumType+PromoteValue design that SUBSUMES this special case, not a parallel branch):**
-- DOUBLE/FLOAT literal vs INT/LONG column (the narrowing direction): `n_bigint = 5.0` / `n > 6.0` → `[]`. Needs
-  per-operator float→int exactness (floor/ceil + integral check), so it was NOT folded into the safe int→double fix.
-- col-vs-col cross-type join: `a.xbig(BIGINT) = bd.ydbl(DOUBLE)` (both non-constant) → still empty.
-- FLOAT (not DOUBLE) columns — only DOUBLE handled. **SEVERE + now pinned
-  (indexed_float_sarg_probe_test.go, 2026-06-28):** an INDEXED FLOAT(32-bit) column
-  returns ZERO rows for EVERY equality/range comparison — even `f = 1.5` where 1.5 is
-  exactly representable in float32 (so it is NOT a precision edge; the SARG is wholly
-  cross-type-broken for FLOAT cols). The float64 literal is packed into the float32
-  index with a mismatched FDB tuple type code → matches nothing. Non-indexed FLOAT and
-  indexed DOUBLE are both correct. Note `promoteConstant`
-  (value_constant_object.go:150) has no `float64→TypeCodeFloat` case. The fix is a
-  cross-WIDTH SARG decision (compare in float32-space, or widen the float32 scan +
-  residual-filter in double-space) — part of the MaximumType/PromoteValue design
-  below, Graefe-gated.
-Original detail below (the equality `ydbl = 5` case is now fixed; the rest stands):
+53-target suite green (no plan-shape/result regression); Graefe + Torvalds ACK.
 
 `SELECT id FROM bd WHERE ydbl = 5` (ydbl DOUBLE, indexed) returns 0 rows instead of 1 (5 promotes to 5.0,
 which equals the stored 5.0). Same for a cross-type index-probe join `a.xbig(BIGINT) = bd.ydbl(DOUBLE)` → empty
 instead of matching 5=5.0. **Root cause:** the index SARG packs the comparand in its NATIVE type
 (int64 `5`), which encodes differently from the column's DOUBLE tuple element, so the probe misses the entries.
 The RESIDUAL (non-index) path is CORRECT — `xbig = 5.0` matches via `cmpAny`'s runtime numeric coercion — and an
-explicit `CAST(a.xbig AS DOUBLE) = bd.ydbl` works. Only the index-SARG path is wrong. **Why deferred (dedicated
-effort):** the Java-aligned fix is comparand promotion to `MaximumType` at comparison resolution
-(`expr.ResolveComparison`) PLUS making `values.PromoteValue.Evaluate` actually coerce numerics (it is currently a
-no-op passthrough — an incomplete port; Java's PromoteValue coerces) PLUS the data-access matcher handling a
-`Promote(col)`-wrapped operand. That touches EVERY comparison's resolution + core value-eval semantics + the
-matching/SARG infra (Graefe-gated, high blast radius) — not a safe unattended change. Repro shape lives in
-`cross_type_join_probe_test.go` (the BIGINT=DOUBLE case is noted, not asserted, pending the fix). int↔bigint joins
-work (identical tuple encoding); the gap is specifically int/bigint ↔ double/float (and presumably ↔ string).
+explicit `CAST(a.xbig AS DOUBLE) = bd.ydbl` works. Only the index-SARG path is wrong.
 
 **EXPERIMENT FINDING (2026-06-28, saves the next implementer a dead end):** I tried the "obvious" Java-aligned
 approach — make `PromoteValue.Evaluate` coerce (via `promoteConstant`) and wrap the narrower int operand in
@@ -6169,14 +6220,9 @@ regressed to `[]` — i.e. the data-access matcher does NOT route the comparand 
 packing the index range; it extracts/packs the underlying value, bypassing the coercion. So the int 5 was packed,
 not 5.0. (Reverted.) Conclusion: the working const fix uses a BARE coerced `ConstantValue{Value:5.0}` precisely
 because the matcher packs `ConstantValue.Evaluate()` directly — a Promote wrapper is transparent-to-the-matcher and
-gets unwrapped/ignored. **The real fix must coerce at the matcher / SARG-range-build level** (where the comparand
-is turned into a tuple element — e.g. thread the index column's key type into `scanComparisonsToTupleRange` and
-coerce there, or have the matcher rewrite the comparand to a typed constant), NOT merely promote at resolution.
-That is the col-vs-col + narrowing path and is the Graefe DESIGN decision. Plumbing note: there is NO direct
-"index key column types" accessor — `executeIndexScan` has `idx` whose `RootExpression` (a KeyExpression with
-`ColumnSize()`) lists the indexed columns, but per-position TYPES must be derived by mapping each key field to its
-record-type field type (handle nested / grouping key expressions). int→double coercion is exact (the common +
-col-col + severe-inequality direction); float→int (narrowing) needs per-operator floor/ceil + an integral check.
+gets unwrapped/ignored for a CONSTANT. (This is why the eventual col-vs-col fix above wraps a non-constant
+FieldValue in Promote instead of trying to retype it — there is no bare value to extract there, so the matcher's
+generic `Operand.Evaluate()` call genuinely runs `PromoteValue.Evaluate`.)
 
 **SEVERITY UPDATE (broader + worse than first thought):** the gap is not limited to equality missing rows. With a
 DOUBLE indexed column `d ∈ {5.0,7.0,10.0}` and INT literal comparands:
@@ -6188,25 +6234,12 @@ DOUBLE indexed column `d ∈ {5.0,7.0,10.0}` and INT literal comparands:
   closed range that the open inequalities skip).
 - All `*.0` double-literal comparands and the residual path are correct.
 The inequality cases are the worst: INT and DOUBLE are different FDB tuple type-codes and all doubles sort after all
-ints, so an int-bound range over a double index degenerates to all-or-nothing. This RAISES priority — `WHERE
-double_col > <int>` silently returning wrong rows is a serious correctness hole, not a niche miss. Design question
-for the fix: plan-time comparand promotion (Java-aligned, ResolveComparison+PromoteValue) vs executor-level coercion
-of the comparand to the index column's key type in scanComparisonsToTupleRange (localized, but a "downstream"
-fix). Graefe should pick. Either way the int/float-exactness rules (float→int inequality bound: floor vs ceil per
-operator) must be handled.
+ints, so an int-bound range over a double index degenerates to all-or-nothing.
 
 **Scope note (good news):** the INSERT/UPDATE *store* side is CORRECT and wire-safe — an int literal written to a
 DOUBLE column is widened and stored as `5.0` (verified: a double-typed index probe finds it; `insert_type_coercion_probe_test.go`),
-and narrowing double→BIGINT is conformantly rejected (22000, no double→long promote). So the bug is confined to the
+and narrowing double→BIGINT is conformantly rejected (22000, no double→long promote). So the bug was confined to the
 COMPARISON/SARG comparand promotion, not record storage — the wire format of stored records is fine.
-
-**Implementer caveat (found while scoping):** a naive "promote both operands to MaximumType" will REGRESS plan
-shapes. INT↔LONG (and any tuple-encoding-compatible pair) must NOT be promoted — wrapping the indexed column in a
-`Promote(col)` makes the data-access matcher fail to recognise it and silently drops to a residual full scan
-(plandiff/yamsql assert the index plan). Scope the promotion to the int/float boundary ONLY, and never wrap the
-operand that is (or could be) the indexed column — wrap only the narrower NON-indexed comparand, leaving the wider
-(indexed) operand bare so its index is still matched. Also confirm whether FLOAT↔DOUBLE tuple encodings differ
-(if so they need the same treatment). This is why it needs a Graefe DESIGN review, not just an ACK.
 
 ### [x] query-engine: correlated scalar-subquery cardinality is enforced consistently — CQ-4 (found 2026-06-28, completed 2026-07-24)
 

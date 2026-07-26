@@ -4004,6 +4004,18 @@ func rewriteAggregateValuesInTree(v values.Value) values.Value {
 	if cv, ok := v.(*values.CastValue); ok {
 		return values.NewCastValue(rewriteAggregateValuesInTree(cv.Child), cv.Target)
 	}
+	// A machine-inserted PromoteValue (expr.promoteColumnColumnNumeric,
+	// RelOpValue's Java analogue: `HAVING SUM(int_col) > 5.5` rewrites to
+	// PromoteValue(SUM(int_col), DOUBLE) > 5.5) can wrap an AggregateValue
+	// exactly like CastValue can — without this case the aggregate stayed
+	// buried one level down, unrewritten, and reached AggregateValue.Evaluate
+	// at row time via the residual filter path (which always errors — an
+	// aggregate has no per-row scalar semantics), turning a legal
+	// `HAVING aggregate > scalar-subquery` of mismatched numeric types into
+	// "42803: aggregate function is not allowed here".
+	if pv, ok := v.(*values.PromoteValue); ok {
+		return values.NewPromoteValue(rewriteAggregateValuesInTree(pv.Child), pv.Target)
+	}
 	if pv, ok := v.(*values.PickValue); ok {
 		alts := make([]values.Value, len(pv.Alternatives))
 		for i, a := range pv.Alternatives {
