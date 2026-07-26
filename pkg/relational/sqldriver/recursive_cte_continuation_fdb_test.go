@@ -338,6 +338,99 @@ func TestFDB_RecursiveDistinct_CycleTerminates(t *testing.T) {
 	}
 }
 
+// TestFDB_RecursiveCTE_CyclicPaged_HitsDepthCap is the end-to-end regression
+// for the recursion-depth guard surviving PAGING. RecordQueryRecursiveLevel
+// UnionPlan's UNION ALL arm has no fixpoint/dedup (only the DISTINCT
+// extension does — see TestFDB_RecursiveDistinct_CycleTerminates above), so
+// a CYCLIC self-referential recursive CTE can only be stopped by the
+// streaming recursion-depth cap (RecursiveCTEDepthExceededError,
+// maxStreamingRecursionDepth=1000 — a Go-only safety extension; Java has no
+// cap at all, its recursion is fixpoint-only).
+//
+// Before the statement-scoped fix, that cap lived on the cursor itself
+// (recursiveUnionCursor.levels) and every fetchPage rebuilds a FRESH cursor
+// from the previous page's continuation — the counter reset to zero on
+// every page, so a cyclic CTE that pages mid-recursion (forced here by the
+// same tiny scanned-rows budget TestFDB_RecursiveCTE_Continuation_
+// ResumeAcrossPages uses to force page breaks) could never trip the cap: it
+// streamed forever, one page per transaction, until the client stopped
+// pulling. The row ceiling below turns "the cap never fires" into a fast,
+// clear test failure instead of a hang.
+func TestFDB_RecursiveCTE_CyclicPaged_HitsDepthCap(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	const dbPath = "/rec_cte_cyclic_paged"
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rec_cte_cyclic_paged_tmpl"+
+		" CREATE TABLE edge2 (eid BIGINT, src BIGINT, dst BIGINT, PRIMARY KEY (eid))"); err != nil {
+		t.Fatalf("tmpl: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_cte_cyclic_paged_tmpl"); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	// Same cyclic graph as TestFDB_RecursiveDistinct_CycleTerminates:
+	// 1→2→3→4→2 (the 4→2 edge closes the cycle). Every level's join scans
+	// edge2, so a small scanned-rows budget forces a page break per level.
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO edge2 VALUES (1,1,2),(2,2,3),(3,3,4),(4,4,2)"); err != nil {
+		t.Fatalf("seed edge2: %v", err)
+	}
+
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, 3).
+			Build())
+	})
+	// TRAVERSAL ORDER level_order pins the level-union plan — the cursor
+	// under test — and UNION ALL (no DISTINCT) means only the depth cap,
+	// never a seen-set, can stop the cycle.
+	rows, qerr := conn.QueryContext(ctx,
+		"WITH RECURSIVE r(n) AS ("+
+			"SELECT dst FROM edge2 WHERE src = 1 "+
+			"UNION ALL "+
+			"SELECT e.dst FROM edge2 AS e, r WHERE e.src = r.n"+
+			") TRAVERSAL ORDER level_order SELECT n FROM r")
+	var iterErr error
+	if qerr == nil {
+		n := 0
+		// One row per level in this 3-node cycle: the cap trips at ~1000
+		// levels, so 1500 is a generous ceiling that still fails fast (well
+		// under a real hang) if the guard is broken.
+		const ceiling = 1500
+		for rows.Next() {
+			n++
+			if n > ceiling {
+				t.Fatalf("cyclic UNION ALL recursion did not hit the depth cap within %d rows — "+
+					"the paged recursion is streaming forever", ceiling)
+			}
+		}
+		iterErr = rows.Err()
+		rows.Close()
+	} else {
+		iterErr = qerr
+	}
+	if iterErr == nil {
+		t.Fatal("a cyclic UNION ALL recursive CTE must surface RecursiveCTEDepthExceededError (54F01), got no error at all")
+	}
+	if !strings.Contains(iterErr.Error(), "54F01") {
+		t.Fatalf("want 54F01 (execution limit reached), got: %v", iterErr)
+	}
+	if !strings.Contains(iterErr.Error(), "recursive CTE exceeded maximum depth") {
+		t.Fatalf("want the recursion-depth error specifically (not some other 54F01 cap), got: %v", iterErr)
+	}
+}
+
 // TestFDB_RecursiveDistinct_DeepChain pins the depth-cap parity of the
 // DISTINCT recursion arms: a clause-less UNION (distinct) recursion over a
 // 300-node acyclic chain must answer ALL rows regardless of which physical

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -159,5 +160,184 @@ func TestRecursiveUnionCursor_HeldContinuationImmuneToLaterLevelTransition(t *te
 			"([1,2,3], the level 0->1 scan frontier at the time row4 was produced) — "+
 			"a live *TempTable reference would instead see whatever level 2 inserted into the recycled table object",
 			gotRows)
+	}
+}
+
+// neverTerminatingLevelUnionPlan builds a level-union recursive CTE whose
+// recursive leg unconditionally inserts exactly one row every level — the
+// insert table is NEVER empty, so the level_order (RecordQueryRecursiveLevel
+// UnionPlan / RecursiveUnionCursor) fixpoint check never fires. Since the
+// Go executor only supports UNION ALL for this plan shape (no dedup/seen-set
+// arm), the ONLY thing that can stop this recursion is the streaming
+// recursion-depth cap — exactly the scenario a cyclic self-referential
+// recursive CTE produces against a real graph.
+//
+// The legs are OWNING inserts (owning=true), matching what the SQL layer
+// actually generates for CTE legs (cascades_translator.go's seedInsert /
+// recursiveInsert — "Java TempTableInsertExpression.ofCorrelated defaults
+// isOwningTempTable=true for CTE legs"). Only the owning arm's
+// TempTableInsertCursor snapshots its table in its own continuation, which
+// is what lets a rebuilt cursor restore the insert table's accumulated rows
+// across a real page boundary — the non-owning arm's continuation carries
+// no table state at all, so it cannot be used to test page-to-page resume.
+func neverTerminatingLevelUnionPlan() *plans.RecordQueryRecursiveLevelUnionPlan {
+	scanAlias := values.NamedCorrelationIdentifier("scan")
+	insertAlias := values.NamedCorrelationIdentifier("insert")
+	initial := plans.NewRecordQueryTempTableInsertPlan(
+		plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}}),
+		insertAlias, true,
+	)
+	recursive := plans.NewRecordQueryTempTableInsertPlan(
+		plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{int64(100)}}),
+		insertAlias, true,
+	)
+	return plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+}
+
+// TestRecursiveUnionCursor_CyclicSinglePage_HitsDepthCap is the "non-paging"
+// depth-cap pin required alongside the paging one below: nothing in the
+// suite exercised RecursiveCTEDepthExceededError at all before this, for
+// either recursion arm. A single, never-rebuilt cursor instance drains a
+// recursion that can only stop via the depth cap (see
+// neverTerminatingLevelUnionPlan) and must surface
+// RecursiveCTEDepthExceededError instead of running forever. The row
+// ceiling below turns "the cap is broken" into a fast, clear test failure
+// instead of a hung test run.
+func TestRecursiveUnionCursor_CyclicSinglePage_HitsDepthCap(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cur, err := ExecutePlan(ctx, neverTerminatingLevelUnionPlan(), nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cur.Close()
+
+	const ceiling = 2000 // > maxStreamingRecursionDepth(1000) + the 3-row seed; a broken cap streams straight past this
+	var depthErr *RecursiveCTEDepthExceededError
+	for n := 1; ; n++ {
+		if n > ceiling {
+			t.Fatalf("cyclic recursion did not hit the depth cap within %d rows — RecursiveCTEDepthExceededError never fired", ceiling)
+		}
+		_, err := cur.OnNext(ctx)
+		if err != nil {
+			if !errors.As(err, &depthErr) {
+				t.Fatalf("row %d: got error %v, want RecursiveCTEDepthExceededError", n, err)
+			}
+			return
+		}
+	}
+}
+
+// TestRecursiveUnionCursor_CyclicAcrossPages_HitsDepthCap is the paging
+// regression: it reproduces exactly what the SQL layer's paginatingRows does
+// on a real cyclic recursive CTE that scans mid-recursion (see
+// TestFDB_RecursiveCTE_Continuation_ResumeAcrossPages for the SQL-level
+// analogue) — a FRESH *recursiveUnionCursor is built via
+// newRecursiveUnionCursor for every single row, from that row's own
+// continuation, exactly like every fetchPage call building a fresh cursor
+// hierarchy from the previous page's continuation. Without the statement-
+// scoped fix, recursiveUnionCursor.levels lived on the (per-page-rebuilt)
+// cursor and reset to zero on every rebuild, so this loop never terminates
+// naturally — the depth cap could never fire because no single cursor
+// instance ever saw more than one level transition. The row ceiling turns
+// that into a fast, clear failure instead of a hang.
+//
+// The fix threads one recordlayer.ExecuteState — minted ONCE here, exactly
+// as cascades_generator.go's paginatingRows.execState is minted once per
+// Execute() and re-assigned into every page's ExecuteProperties.State — into
+// every rebuilt cursor's props, so the level count survives the rebuild.
+func TestRecursiveUnionCursor_CyclicAcrossPages_HitsDepthCap(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Statement-scoped: minted ONCE, threaded into every page's props below —
+	// this is the mechanism under test.
+	execState := recordlayer.NewExecuteState(0)
+	props := recordlayer.DefaultExecuteProperties()
+	props.State = execState
+
+	plan := neverTerminatingLevelUnionPlan()
+	var cont []byte
+	const ceiling = 2000 // > maxStreamingRecursionDepth(1000) + the 3-row seed
+	var depthErr *RecursiveCTEDepthExceededError
+	for n := 1; ; n++ {
+		if n > ceiling {
+			t.Fatalf("cyclic recursion paged %d times without hitting the depth cap — "+
+				"the statement-scoped counter is not surviving the per-page cursor rebuild", ceiling)
+		}
+		cur, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), cont, props)
+		if err != nil {
+			t.Fatalf("page %d: ExecutePlan(cont=%x): %v", n, cont, err)
+		}
+		r, err := cur.OnNext(ctx)
+		if err != nil {
+			cur.Close()
+			if !errors.As(err, &depthErr) {
+				t.Fatalf("page %d: got error %v, want RecursiveCTEDepthExceededError", n, err)
+			}
+			return
+		}
+		if !r.HasNext() {
+			cur.Close()
+			t.Fatalf("page %d: cyclic recursion reported exhausted (reason=%v) — it should never naturally terminate",
+				n, r.GetNoNextReason())
+		}
+		contBytes, err := r.GetContinuation().ToBytes()
+		if err != nil {
+			cur.Close()
+			t.Fatalf("page %d: continuation ToBytes: %v", n, err)
+		}
+		cur.Close()
+		cont = contBytes
+	}
+}
+
+// neverTerminatingDfsPlan builds a streaming (UNION ALL, non-DISTINCT)
+// recursive DFS join whose child leg unconditionally emits exactly one row
+// per node, regardless of the parent — every node has exactly one child,
+// forever, so the traversal has no natural leaf and the ONLY thing that can
+// stop it is the depth cap in executeRecursiveDfsJoinStreaming's childFn.
+func neverTerminatingDfsPlan() *plans.RecordQueryRecursiveDfsJoinPlan {
+	node := func() *plans.RecordQueryValuesPlan {
+		return plans.NewRecordQueryValuesPlan([]values.Value{
+			&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeLong, false)},
+		})
+	}
+	prior := values.NamedCorrelationIdentifier("prior")
+	return plans.NewRecordQueryRecursiveDfsJoinPlan(node(), node(), prior, plans.DfsPreorder)
+}
+
+// TestRecursiveDfsJoinStreaming_HitsDepthCap is the DFS-arm half of the
+// "either arm" non-paging depth-cap coverage: executeRecursiveDfsJoinStreaming
+// (the sibling that already survives paging correctly — its depth is the
+// TRUE reconstructed stack depth from the continuation's level list, not a
+// side counter, see recursive_cursor.go) still needs its OWN cap check
+// pinned, since nothing exercised RecursiveCTEDepthExceededError for this arm
+// either. A never-terminating one-child-per-node traversal must surface the
+// depth error instead of recursing forever.
+func TestRecursiveDfsJoinStreaming_HitsDepthCap(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cur, err := ExecutePlan(ctx, neverTerminatingDfsPlan(), nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cur.Close()
+
+	const ceiling = 2000 // > maxStreamingRecursionDepth(1000)
+	var depthErr *RecursiveCTEDepthExceededError
+	for n := 1; ; n++ {
+		if n > ceiling {
+			t.Fatalf("cyclic DFS recursion did not hit the depth cap within %d rows — RecursiveCTEDepthExceededError never fired", ceiling)
+		}
+		_, err := cur.OnNext(ctx)
+		if err != nil {
+			if !errors.As(err, &depthErr) {
+				t.Fatalf("row %d: got error %v, want RecursiveCTEDepthExceededError", n, err)
+			}
+			return
+		}
 	}
 }

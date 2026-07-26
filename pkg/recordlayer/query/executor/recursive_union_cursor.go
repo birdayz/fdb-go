@@ -290,8 +290,13 @@ type recursiveUnionCursor struct {
 	scanTable      *TempTable // == Java's recursiveUnionTempTable
 	insertTable    *TempTable
 	active         recordlayer.RecordCursor[QueryResult]
-	levels         int
-	closed         bool
+	// levels is a per-cursor-instance FALLBACK level count: it always
+	// increments (regardless of whether props.State is wired up) so a raw
+	// ExecuteProperties without State still gets the pre-fix protection —
+	// bounding runaway growth within one page/cursor lifetime. It is NOT the
+	// authoritative count once props.State is available; see checkDepth.
+	levels int
+	closed bool
 }
 
 // maxStreamingRecursionDepth mirrors the eager path's cycle bound
@@ -408,6 +413,38 @@ func (c *recursiveUnionCursor) wrapContinuation(childCont recordlayer.RecordCurs
 	}
 }
 
+// checkDepth increments the level count and errors with
+// RecursiveCTEDepthExceededError once it exceeds maxStreamingRecursionDepth.
+// It combines two counters and uses whichever is larger:
+//
+//   - c.levels: a per-cursor-instance counter, always incremented, that
+//     alone would only bound growth WITHIN one page (the pre-fix behavior —
+//     every page rebuilds a fresh *recursiveUnionCursor via
+//     newRecursiveUnionCursor, so this resets to zero on every resume).
+//   - props.State.IncrementRecursionLevel(c.plan): the STATEMENT-scoped count
+//     (see its doc comment on recordlayer.ExecuteState) that survives the
+//     per-page rebuild, so a cyclic recursion that pages mid-recursion still
+//     trips the cap instead of streaming forever.
+//
+// A nil props.State (raw ExecuteProperties, as some executor-level tests
+// use) makes IncrementRecursionLevel a no-op returning 0, so c.levels alone
+// governs — identical to the pre-fix per-page-only bound. Taking the max
+// (rather than only the state-backed count) means the guard is never weaker
+// than before this fix, only stronger when props.State is wired up.
+func (c *recursiveUnionCursor) checkDepth() error {
+	c.levels++
+	depth := c.levels
+	if stateDepth := c.props.State.IncrementRecursionLevel(c.plan); stateDepth > depth {
+		depth = stateDepth
+	}
+	// > (not >=): recursive legs 1..1000 run, matching the eager path's
+	// level indices 0..999.
+	if depth > maxStreamingRecursionDepth {
+		return &RecursiveCTEDepthExceededError{MaxDepth: maxStreamingRecursionDepth}
+	}
+	return nil
+}
+
 func (c *recursiveUnionCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	for {
 		r, err := c.active.OnNext(ctx)
@@ -433,14 +470,8 @@ func (c *recursiveUnionCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 				recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
 			), nil
 		}
-		c.levels++
-		// > (not >=): recursive legs 1..1000 run, matching the eager
-		// path's level indices 0..999. The counter is NOT carried in the
-		// continuation, so under paging it resets per resume — the cap
-		// bounds runaway cycles within one page, not across a statement
-		// (Java has no cap at all; its recursion is fixpoint-only).
-		if c.levels > maxStreamingRecursionDepth {
-			return recordlayer.RecordCursorResult[QueryResult]{}, &RecursiveCTEDepthExceededError{MaxDepth: maxStreamingRecursionDepth}
+		if err := c.checkDepth(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
 		active, aerr := c.legCursor(ctx, c.plan.GetRecursiveState(), nil)
 		if aerr != nil {

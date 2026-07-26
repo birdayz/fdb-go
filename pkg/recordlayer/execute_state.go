@@ -13,21 +13,28 @@ import "fmt"
 // (:240-245) preserves the ExecuteState for free because it only zeroes
 // skip/rowLimit.
 //
-// RFC-130: the only counter tracked here today is the statement-wide memory
-// byte budget that bounds in-memory buffering operators (the row-count
-// MaterializationLimit cannot stop 100k LARGE rows from OOMing). The
-// scan/byte/time counters Go currently tracks per-cursor are the correct
-// future home here too, to fully match Java — out of scope for RFC-130, noted
-// for the divergence ledger.
+// RFC-130 minted the memory byte budget that bounds in-memory buffering
+// operators (the row-count MaterializationLimit cannot stop 100k LARGE rows
+// from OOMing). recursionLevels below is a second, unrelated statement-scoped
+// counter set that reuses the same by-reference survival pattern for a
+// different purpose (see its own doc comment). The scan/byte/time counters Go
+// currently tracks per-cursor are the correct future home here too, to fully
+// match Java — out of scope for RFC-130, noted for the divergence ledger.
 //
 // Concurrency: the executor is single-threaded per statement (zero goroutine
 // launches in pkg/recordlayer/query/executor — pinned by
-// package_invariant_test.go), so ChargeMemory needs no mutex/atomic. If a
-// future parallel-union breaks that invariant the pinned test fires and the
-// counter moves to atomic.
+// package_invariant_test.go), so ChargeMemory/IncrementRecursionLevel need no
+// mutex/atomic. If a future parallel-union breaks that invariant the pinned
+// test fires and the counters move to atomic / a mutex.
 type ExecuteState struct {
 	memUsed  int64
 	memLimit int64
+
+	// recursionLevels backs the streaming recursive-CTE cycle guard
+	// (recordlayer/query/executor/recursive_union_cursor.go) — see
+	// IncrementRecursionLevel for why it exists and exactly what it does and
+	// does not cover. Lazily allocated; nil until first use.
+	recursionLevels map[any]int
 }
 
 // NewExecuteState mints a fresh statement-scoped state with the given memory
@@ -99,6 +106,58 @@ func (s *ExecuteState) ReleaseMemory(n int64) {
 		return
 	}
 	s.memUsed -= n
+}
+
+// IncrementRecursionLevel bumps and returns the level count tracked under id.
+//
+// This is the STATEMENT-scoped half of the streaming level-union recursive
+// CTE's cycle guard: RecordQueryRecursiveLevelUnionPlan's UNION ALL arm is a
+// pure streaming cursor with no fixpoint/dedup (Java has none either — this
+// cap is a Go-only safety extension), so a cyclic self-referential CTE only
+// terminates via a hard recursion-depth cap. That cap must count LEVELS FOR
+// THE WHOLE STATEMENT, but the streaming cursor itself is rebuilt fresh on
+// every page (a new *recursiveUnionCursor per fetchPage, per the SQL layer's
+// "no cursor persists across transactions" architecture) — a counter living
+// on the cursor resets to zero every page and a cyclic CTE that pages
+// mid-recursion would never trip it. ExecuteState is the vehicle already used
+// for exactly this shape of problem (RFC-130's memory budget): a pointer the
+// SQL layer mints ONCE per statement (cascades_generator.go's
+// paginatingRows.execState) and threads into every page's
+// ExecuteProperties.State, so it survives the per-page cursor rebuild
+// structurally.
+//
+// id anchors the count to one recursive construct — pass the recursive-CTE
+// plan node's own pointer, which is stable across every page of one
+// statement execution (the SQL layer rebuilds the cursor hierarchy each page
+// but reuses the same plan tree). Two independent recursive CTEs in the same
+// statement therefore get INDEPENDENT budgets (distinct plan pointers),
+// matching the eager recursion arms' own per-call-local bound rather than
+// sharing one statement-wide total.
+//
+// SCOPE, stated exactly: the guard covers one *ExecuteState's lifetime, i.e.
+// one Execute() call / one statement execution — cascades_generator.go mints
+// a fresh ExecuteState per Execute and never reuses one across statements or
+// connections. A continuation resumed by a DIFFERENT statement execution
+// cannot inherit the count (there is no such thing today: Go's SQL layer
+// rejects caller-supplied continuations outright, see cascadesPlan.Execute,
+// so this is not a live gap, just an honest boundary of the mechanism).
+//
+// A nil receiver returns 0 on every call — it cannot persist anything, by
+// construction. This is a Go-only safety cap, not an RFC-130 resource budget,
+// so callers must not treat a nil ExecuteState as "no cap": the caller
+// (recursiveUnionCursor.checkDepth) always combines this with its own
+// per-cursor-instance counter and uses whichever is larger, so a nil State
+// still bounds runaway growth within one page/cursor lifetime — identical to
+// the pre-fix behavior — even though it can no longer see across pages.
+func (s *ExecuteState) IncrementRecursionLevel(id any) int {
+	if s == nil {
+		return 0
+	}
+	if s.recursionLevels == nil {
+		s.recursionLevels = make(map[any]int)
+	}
+	s.recursionLevels[id]++
+	return s.recursionLevels[id]
 }
 
 // MemoryLimitExceededError is returned when a statement's accounted in-memory
