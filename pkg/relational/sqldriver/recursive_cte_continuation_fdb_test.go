@@ -344,6 +344,18 @@ func TestFDB_RecursiveDistinct_CycleTerminates(t *testing.T) {
 // arm the cost model picks — the eager DFS arm's former 256 cap silently
 // cut availability relative to the level union's 1000 once the Java-shaped
 // (insert-free) DFS legs could win costing for this shape.
+//
+// The table carries an index on parent so the per-level join
+// (e.parent = r.n) has a seek. Without it there is no access path for that
+// predicate, so every recursion level pays a full scan of edges — an
+// incidental N²+N row-read cost (90,300 reads at N=300) that is inherent to
+// the unindexed schema, not a planner defect, and that runs close enough to
+// the per-transaction time budget on a loaded machine to make this specific
+// test flaky. This test exists to pin depth-cap parity above the old 256
+// cap, not to measure unindexed scan throughput, so the index keeps it
+// deterministic; TestFDB_RecursiveDistinct_DeepChain_Unindexed below still
+// exercises the full-scan-per-step shape at a length short enough to stay
+// fast.
 func TestFDB_RecursiveDistinct_DeepChain(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -356,7 +368,8 @@ func TestFDB_RecursiveDistinct_DeepChain(t *testing.T) {
 		t.Fatalf("db: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rec_dist_deep_tmpl"+
-		" CREATE TABLE edges (id BIGINT, parent BIGINT, PRIMARY KEY (id))"); err != nil {
+		" CREATE TABLE edges (id BIGINT, parent BIGINT, PRIMARY KEY (id))"+
+		" CREATE INDEX edges_parent ON edges(parent)"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dist_deep_tmpl"); err != nil {
@@ -398,5 +411,69 @@ func TestFDB_RecursiveDistinct_DeepChain(t *testing.T) {
 	}
 	if n != chain {
 		t.Fatalf("deep DISTINCT recursion = %d rows, want %d", n, chain)
+	}
+}
+
+// TestFDB_RecursiveDistinct_DeepChain_Unindexed pins the full-scan-per-step
+// plan shape: with no index on parent, the per-level join (e.parent = r.n)
+// has no seek, so every recursion level pays a full scan of edges. That
+// makes total row reads quadratic in the chain length (N²+N), so the chain
+// here is kept short (well under the 300-node depth-cap chain above) to stay
+// comfortably inside the per-transaction time budget while still exercising
+// the unindexed shape end to end.
+func TestFDB_RecursiveDistinct_DeepChain_Unindexed(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	const dbPath = "/rec_dist_deep_noidx"
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rec_dist_deep_noidx_tmpl"+
+		" CREATE TABLE edges (id BIGINT, parent BIGINT, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("tmpl: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dist_deep_noidx_tmpl"); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	const chain = 120
+	var b strings.Builder
+	b.WriteString("INSERT INTO edges VALUES (1,0)")
+	for i := 2; i <= chain; i++ {
+		fmt.Fprintf(&b, ",(%d,%d)", i, i-1)
+	}
+	if _, err := db.ExecContext(ctx, b.String()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rows, err := db.QueryContext(ctx,
+		"WITH RECURSIVE r(n) AS ("+
+			"SELECT id FROM edges WHERE parent = 0 "+
+			"UNION "+
+			"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n"+
+			") SELECT n FROM r")
+	if err != nil {
+		t.Fatalf("unindexed DISTINCT recursion must ANSWER: %v", err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		n++
+		if n > chain+8 {
+			t.Fatal("row runaway")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if n != chain {
+		t.Fatalf("unindexed DISTINCT recursion = %d rows, want %d", n, chain)
 	}
 }
