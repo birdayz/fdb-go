@@ -380,7 +380,7 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		pointFilter:       pointFilter,
 		outerContinuation: outerContinuation,
 		props:             scanProperties.ExecuteProperties,
-		startTime:         time.Now(),
+		scanState:         resolveScanLimiterState(scanProperties.ExecuteProperties),
 	}
 }
 
@@ -519,12 +519,15 @@ type rtreeScanCursor struct {
 	closed            bool
 
 	// RFC-106a scan governance. props carries the scan/byte/time limits +
-	// FailOnScanLimitReached; scanned/bytesScanned count EVERY item read from the
-	// R-tree (including point-filtered ones — reading them is the scan cost).
-	props        ExecuteProperties
-	scanned      int
-	bytesScanned int64
-	startTime    time.Time
+	// FailOnScanLimitReached; scanned counts EVERY item read from the R-tree
+	// (including point-filtered ones — reading them is the scan cost) and is
+	// this cursor's own free-initial-pass gate (Java's usedInitialPass).
+	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
+	// counter set the limits above are checked against — see
+	// ScanLimiterState's doc comment. Never nil.
+	props     ExecuteProperties
+	scanned   int
+	scanState *ScanLimiterState
 }
 
 func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
@@ -546,22 +549,26 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 
 		// Scan governance (RFC-106a): bound the spatial scan by scanned records /
 		// time / bytes, counting EVERY item read below (incl. point-filtered ones —
-		// reading them is the scan cost). noNextOrFail → 54F01 in fail mode.
-		if c.props.ScannedRecordsLimit > 0 && c.scanned >= c.props.ScannedRecordsLimit {
+		// reading them is the scan cost). noNextOrFail → 54F01 in fail mode. The scanned-records
+		// free pass (c.scanned>0) is bypassed under FailOnScanLimitReached, matching Java's
+		// CursorLimitManager.java:135-136; the time free pass stays unconditional (:138).
+		if c.props.ScannedRecordsLimit > 0 &&
+			(c.scanned > 0 || c.props.FailOnScanLimitReached) &&
+			c.scanState.RecordsScanned() >= c.props.ScannedRecordsLimit {
 			cont, cerr := c.buildContinuation()
 			if cerr != nil {
 				return RecordCursorResult[*IndexEntry]{}, cerr
 			}
 			return noNextOrFail[*IndexEntry](c.props, ScanLimitReached, &BytesContinuation{bytes: cont})
 		}
-		if c.props.TimeLimit > 0 && c.scanned > 0 && time.Since(c.startTime) >= c.props.TimeLimit {
+		if c.props.TimeLimit > 0 && c.scanned > 0 && time.Since(c.scanState.StartTime()) >= c.props.TimeLimit {
 			cont, cerr := c.buildContinuation()
 			if cerr != nil {
 				return RecordCursorResult[*IndexEntry]{}, cerr
 			}
-			return NewResultNoNext[*IndexEntry](TimeLimitReached, &BytesContinuation{bytes: cont}), nil
+			return noNextOrFail[*IndexEntry](c.props, TimeLimitReached, &BytesContinuation{bytes: cont})
 		}
-		if c.props.ScannedBytesLimit > 0 && c.scanned > 0 && c.bytesScanned >= c.props.ScannedBytesLimit {
+		if c.props.ScannedBytesLimit > 0 && c.scanned > 0 && c.scanState.BytesScanned() >= c.props.ScannedBytesLimit {
 			cont, cerr := c.buildContinuation()
 			if cerr != nil {
 				return RecordCursorResult[*IndexEntry]{}, cerr
@@ -583,7 +590,8 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 		c.lastHV = item.HilbertValue
 		c.lastKey = item.ItemKey()
 		c.scanned++
-		c.bytesScanned += int64(len(c.lastKey.Pack())) // approx scanned bytes (RFC-106a)
+		c.scanState.AddRecordScanned()
+		c.scanState.AddBytesScanned(int64(len(c.lastKey.Pack()))) // approx scanned bytes (RFC-106a)
 
 		// Exact point filter: skip items whose coordinates don't match the
 		// scan range. This matches Java's containsPosition() post-filter.
@@ -697,6 +705,17 @@ func (c *rtreeScanCursor) IsClosed() bool { return c.closed }
 // row-limit boundary needs no separate encoding, which is what the previous
 // empty-placeholder continuation got wrong (it could never resume, so
 // cross-prefix pagination silently replayed prefix #1 forever).
+//
+// KNOWN GAP (not fixed by ScanLimiterState): totalScanned/totalBytesScanned/
+// startTime below aggregate scan/byte/time usage across the PREFIXES of one
+// MULTIDIMENSIONAL scan, but this cursor is constructed fresh — with fresh
+// zero totals — every time a scan over this index runs, INCLUDING once per
+// leg of an outer IN-join/IN-union over a MULTIDIMENSIONAL index. It never
+// charges an outer shared ScanLimiterState the way every other leaf cursor in
+// this package now does, so a many-legged IN-list over a MULTIDIMENSIONAL
+// index can still silently run past a configured scan/byte/time budget —
+// the same class of bug ScanLimiterState fixes elsewhere in this package,
+// still open here. See TODO.md.
 type prefixSkipScanCursor struct {
 	m              *multidimensionalIndexMaintainer
 	dimExpr        *DimensionsKeyExpression
@@ -809,7 +828,7 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			// the count is never silently dropped.)
 			if rc, ok := c.currentCursor.(*rtreeScanCursor); ok {
 				c.totalScanned += rc.scanned
-				c.totalBytesScanned += rc.bytesScanned
+				c.totalBytesScanned += rc.scanState.BytesScanned()
 			}
 			_ = c.currentCursor.Close()
 			c.currentCursor = nil
@@ -858,6 +877,25 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 		// happen here.
 		perPrefixProps := c.scanProperties
 		perPrefixProps.ExecuteProperties = perPrefixProps.ExecuteProperties.WithReturnedRowLimit(0)
+		// This cursor already aggregates scan/byte/time across every prefix WITHIN
+		// ITS OWN SCAN (totalScanned/totalBytesScanned/startTime below, folded from
+		// each per-prefix rtreeScanCursor after it closes) — a narrower, pre-existing
+		// mechanism than ScanLimiterState's cross-LEG sharing, not an instance of it:
+		// it aggregates across the prefixes of ONE MULTIDIMENSIONAL scan, never across
+		// separate IN-join/IN-union legs the way ScanLimiterState does for every other
+		// leaf cursor. A many-legged IN-union over a MULTIDIMENSIONAL index therefore
+		// still gets a fresh totalScanned/totalBytesScanned/startTime per LEG — the
+		// exact bug ScanLimiterState fixes elsewhere, still open for this one index
+		// type (filed as a follow-up TODO item; see prefixSkipScanCursor's own doc
+		// comment above this method).
+		//
+		// The per-prefix cursor gets its OWN private ScanLimiterState here (nil so
+		// resolveScanLimiterState mints a fresh one), never the caller's shared one —
+		// otherwise the remaining-budget math below (scanLimit - c.totalScanned,
+		// passed as the per-prefix WithScannedRecordsLimit) would be checked against a
+		// counter that already reflects every OTHER prefix (and every other IN-leg
+		// outside this scan entirely), double-charging.
+		perPrefixProps.ExecuteProperties.ScanState = nil
 		// Decrement the shared scan budgets so this prefix's cursor can only consume
 		// what's left of each aggregate cap (RFC-106a) — records, bytes, and time.
 		if scanLimit > 0 {

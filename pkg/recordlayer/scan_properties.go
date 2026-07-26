@@ -164,12 +164,17 @@ type ExecuteProperties struct {
 	// DefaultMaterializationLimit.
 	MaterializationLimit int
 
-	// State is the statement-scoped mutable counter object (RFC-130),
-	// mirroring Java's ExecuteState held by reference inside the otherwise
-	// value-copied ExecuteProperties. It is a POINTER, so every value-copy of
-	// ExecuteProperties (the WithX helpers, ClearSkipAndLimit, per-operator
-	// innerProps) shares ONE counter and none of them reset it — the
-	// statement-wide memory byte budget survives all inner-plan resets
+	// State is the statement-scoped mutable counter object (RFC-130) — a
+	// Go-only extension (the statement-wide in-memory buffering byte budget;
+	// Java has no memory-specific SQLSTATE or ExecuteState field for this) that
+	// borrows the SAME reference-holding PATTERN Java's ExecuteState uses
+	// (a pointer inside the otherwise value-copied ExecuteProperties), but is
+	// NOT a content port of Java's ExecuteState — see ScanState below for the
+	// field that actually corresponds structurally to Java's ExecuteState
+	// (the RecordScanLimiter/ByteScanLimiter pair). It is a POINTER, so every
+	// value-copy of ExecuteProperties (the WithX helpers, ClearSkipAndLimit,
+	// per-operator innerProps) shares ONE counter and none of them reset it —
+	// the statement-wide memory byte budget survives all inner-plan resets
 	// structurally, which is the whole point. It is always minted once per
 	// statement (never nil) where the statement's ExecuteProperties is first
 	// built; the "no budget" case is memLimit<=0, NOT a nil State, so a missed
@@ -177,6 +182,32 @@ type ExecuteProperties struct {
 	// no-oping. None of the WithX helpers below clear it: they copy the value
 	// struct, which copies the pointer.
 	State *ExecuteState
+
+	// ScanState is the execution-scoped mutable counter set (scanned records,
+	// scanned bytes, start-of-execution time) that ScannedRecordsLimit /
+	// ScannedBytesLimit / TimeLimit are checked against — the type that
+	// actually corresponds structurally to Java's ExecuteState
+	// (ExecuteState.java: the RecordScanLimiter + ByteScanLimiter pair), named
+	// ScanLimiterState in Go only because the name ExecuteState was already
+	// taken by the unrelated Go-only RFC-130 type above (State's doc comment).
+	// Do not read the two fields' similar shape as the SAME Java concept split
+	// two ways — State has no Java analog at all; ScanState is the one with a
+	// direct Java counterpart. Like State, ScanState is a POINTER shared by
+	// every value-copy of ExecuteProperties, so every leg of an IN-join/
+	// IN-union (which recurses via ClearSkipAndLimit, never a fresh
+	// DefaultExecuteProperties) charges the SAME counters — see
+	// ScanLimiterState's doc comment for the hang this fixes. UNLIKE State,
+	// ScanState is page/transaction-scoped, not statement-scoped: it is minted
+	// fresh by EVERY call to DefaultExecuteProperties (never nil from that
+	// constructor, matching Java's @Nonnull ExecuteState), and
+	// paginatingRows.executeProps() calls DefaultExecuteProperties exactly once
+	// per page, INSIDE the retried transaction closure — so every retry
+	// attempt and every page gets its own honest budget, matching Java's
+	// CursorLimitManager being rebuilt from a fresh FDBRecordContext each
+	// attempt. A raw ExecuteProperties struct literal leaves ScanState nil,
+	// and every leaf cursor falls back to a private per-cursor instance in
+	// that case — identical to the pre-fix behavior.
+	ScanState *ScanLimiterState
 
 	// DryRun, when true, makes data-modification execution validate and PREVIEW
 	// each mutation via the store's DryRun* primitives instead of staging a real
@@ -189,7 +220,16 @@ type ExecuteProperties struct {
 
 const DefaultMaterializationLimit = 100_000
 
-// DefaultExecuteProperties returns properties with sensible defaults
+// DefaultExecuteProperties returns properties with sensible defaults. Mints a
+// fresh ScanState every call (never nil) — matching Java's
+// ExecuteProperties.Builder.build(), which always constructs an ExecuteState
+// (@Nonnull) even when no limit is configured (ExecuteProperties.java:598-608).
+// Every caller of DefaultExecuteProperties (directly or via ForwardScan/
+// ReverseScan) therefore gets its OWN counter set, shared with every
+// downstream copy of the returned value (WithX helpers, ClearSkipAndLimit,
+// IN-join/IN-union leg recursion) but never with a DIFFERENT top-level call —
+// exactly the per-execution-attempt scope CursorLimitManager gets from a
+// fresh FDBRecordContext per transaction.
 func DefaultExecuteProperties() ExecuteProperties {
 	return ExecuteProperties{
 		IsolationLevel:             SerializableIsolation,
@@ -199,6 +239,7 @@ func DefaultExecuteProperties() ExecuteProperties {
 		TimeLimit:                  0, // No limit
 		DefaultCursorStreamingMode: StreamingModeIterator,
 		FailOnScanLimitReached:     false,
+		ScanState:                  NewScanLimiterState(),
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -71,6 +72,28 @@ func wantExecLimit(t *testing.T, err error) {
 	}
 	if apiErr.Code != api.ErrCodeExecutionLimitReached {
 		t.Fatalf("error code = %q, want %q (full: %v)", apiErr.Code, api.ErrCodeExecutionLimitReached, err)
+	}
+}
+
+// wantScanLimitReached asserts err is SQLSTATE 54F01 caused SPECIFICALLY by a
+// leaf cursor's *recordlayer.ScanLimitReachedError with the given Reason —
+// not merely SOME 54F01. 54F01 is shared with other resource-limit causes
+// (the paginating driver's liveness tripwire in cascades_generator.go, a
+// statement timeout, RFC-130's memory budget, …), any of which would also
+// satisfy wantExecLimit; a query that stalls instead of aggregating its scan
+// budget could still trip the liveness tripwire and wrongly pass a bare
+// wantExecLimit check. errors.As unwraps through api.Error.Cause (set by
+// WrapError in translateExecError's scan-limit branch) to the underlying
+// typed error.
+func wantScanLimitReached(t *testing.T, err error, wantReason recordlayer.NoNextReason) {
+	t.Helper()
+	wantExecLimit(t, err)
+	var scanErr *recordlayer.ScanLimitReachedError
+	if !errors.As(err, &scanErr) {
+		t.Fatalf("want *recordlayer.ScanLimitReachedError in the error chain, got %T (%v)", err, err)
+	}
+	if scanErr.Reason != wantReason {
+		t.Fatalf("ScanLimitReachedError.Reason = %v, want %v (full: %v)", scanErr.Reason, wantReason, err)
 	}
 }
 
@@ -591,6 +614,143 @@ func TestFDB_UnionAllResumesAcrossScanLimitPages(t *testing.T) {
 	}
 	if n != 51 {
 		t.Fatalf("union across page boundaries returned %d rows, want 51 (50 from A + 1 from B)", n)
+	}
+}
+
+// TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs pins the fix for a real
+// hang class: indexFetchCursor/keyValueCursor — the leaf cursors under a
+// RecordQueryInJoinPlan — previously tracked scanned-records against a LOCAL,
+// per-cursor counter reset fresh for EVERY IN-value's own leg
+// (key_value_cursor.go's c.recordsScanned, index_scan.go's c.recordsRead).
+// A many-legged IN-join whose individual legs each stayed under the
+// configured scan limit therefore never tripped it, however large the
+// IN-list: production impact was a query with a large IN-list and small
+// per-value match counts running unbounded inside a single FDB transaction,
+// past the 5s hard wall, retried forever by FDBDatabase.Run with no error
+// ever surfaced. ScanLimiterState (recordlayer/scan_limiter_state.go) fixes
+// this by sharing ONE counter set across every leg of the IN-join — mirroring
+// Java's ExecuteState.RecordScanLimiter, held by reference across
+// ExecuteProperties.clearSkipAndLimit() (ExecuteState.java:44-47,
+// CursorLimitManager.java:88-98).
+//
+// The scanned-RECORDS limit is the deterministic proxy for the reported
+// wall-clock hang (reproducing that directly needs an actual multi-second FDB
+// round trip): it is the SAME shared/reset-per-leg counter, checked by the
+// SAME leaf cursors, on the line immediately next to the TimeLimit check —
+// see key_value_cursor.go's OnNext and index_scan.go's indexCursor.OnNext.
+//
+// 30 IN-values, each matching exactly ONE row (id = literal), plan as
+// InJoin(Scan(ITEM,[=])) — a primary-key equality scan per leg, verified by
+// EXPLAIN. ScannedRowsLimit=5: with the bug, every leg's LOCAL counter starts
+// at 0 and never reaches 5 (1 row per leg), so all 30 legs run to completion
+// and the query wrongly returns 30 rows / never errors even in fail mode.
+// Fixed, the shared counter crosses 5 partway through the IN-list and the
+// query stops — errors in fail mode, or truncates to a resumable page in
+// paginate mode (proving no silent unbounded run AND no data loss across
+// pages).
+func TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc106a_injoinscan", "injoinscan",
+		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
+	ctx := context.Background()
+
+	const rows = 30
+	const scanLimit = 5
+
+	seed := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedItemsOnConn(t, ctx, seed, rows, "x")
+
+	inList := make([]string, rows)
+	for i := range inList {
+		inList[i] = fmt.Sprintf("%d", i)
+	}
+	q := "SELECT id FROM Item WHERE id IN (" + strings.Join(inList, ",") + ")"
+
+	// Plan-shape guard: this must be an IN-JOIN over a primary-key equality
+	// scan (the leaf cursor this test pins), not some other shape a future
+	// planner change might substitute.
+	if plan := planExplainVia(t, ctx, db, q); !strings.Contains(plan, "InJoin(Scan(") {
+		t.Fatalf("want InJoin(Scan(...)) plan shape, got: %s", plan)
+	}
+
+	// --- fail mode: the AGGREGATE scan across every leg must trip the limit,
+	// even though no single leg (1 row) comes close to it on its own.
+	failConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+		ec.SetFailOnScanLimitReached(true)
+	})
+	_, err := drainIDs(ctx, failConn, q)
+	wantScanLimitReached(t, err, recordlayer.ScanLimitReached)
+
+	// --- paginate mode: the same aggregate limit forces multiple pages, but
+	// every row still comes back — the fix bounds the scan, it does not drop
+	// rows or fail to resume across the IN-list.
+	pageConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+	})
+	got, perr := drainIDs(ctx, pageConn, q)
+	if perr != nil {
+		t.Fatalf("paginate drain: %v", perr)
+	}
+	if got != rows {
+		t.Fatalf("paginate returned %d rows, want %d (pagination must be transparent, no row loss)", got, rows)
+	}
+}
+
+// TestFDB_RFC106a_INUnionScanLimitAggregatesAcrossLegs is the InUnion sibling
+// of the InJoin test above — the exact "indexFetchCursor" mechanism named in
+// the original hang report (a many-legged IN-union over a SECONDARY index,
+// each leg's entries fetched by indexFetchCursor wrapping the index_scan.go
+// leaf cursor). ORDER BY on the IN column forces the InUnion (merge-sort)
+// plan shape instead of InJoin (verified by EXPLAIN).
+func TestFDB_RFC106a_INUnionScanLimitAggregatesAcrossLegs(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc106a_inunionscan", "inunionscan",
+		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE INDEX payload_idx ON Item (payload)")
+	ctx := context.Background()
+
+	const rows = 30
+	const scanLimit = 5
+
+	seed := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	for i := 0; i < rows; i++ {
+		if _, err := seed.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO Item (id, payload) VALUES (%d, 'p%d')", i, i)); err != nil {
+			t.Fatalf("INSERT %d: %v", i, err)
+		}
+	}
+
+	inList := make([]string, rows)
+	for i := range inList {
+		inList[i] = fmt.Sprintf("'p%d'", i)
+	}
+	q := "SELECT id FROM Item WHERE payload IN (" + strings.Join(inList, ",") + ") ORDER BY payload"
+
+	if plan := planExplainVia(t, ctx, db, q); !strings.Contains(plan, "InUnion(IndexScan(") {
+		t.Fatalf("want InUnion(IndexScan(...)) plan shape, got: %s", plan)
+	}
+
+	failConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+		ec.SetFailOnScanLimitReached(true)
+	})
+	_, err := drainIDs(ctx, failConn, q)
+	wantScanLimitReached(t, err, recordlayer.ScanLimitReached)
+
+	pageConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+	})
+	got, perr := drainIDs(ctx, pageConn, q)
+	if perr != nil {
+		t.Fatalf("paginate drain: %v", perr)
+	}
+	if got != rows {
+		t.Fatalf("paginate returned %d rows, want %d (pagination must be transparent, no row loss)", got, rows)
 	}
 }
 

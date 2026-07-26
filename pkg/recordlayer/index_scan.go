@@ -440,11 +440,13 @@ type indexCursor struct {
 
 	iterator     rangeIterator
 	closed       bool
-	recordsRead  int
-	bytesScanned int64
+	recordsRead  int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
 	prefixLength int
 	lastCont     []byte
-	startTime    time.Time
+
+	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
+	// counter set — see ScanLimiterState's doc comment. Never nil.
+	scanState *ScanLimiterState
 }
 
 func newIndexCursor(
@@ -463,7 +465,7 @@ func newIndexCursor(
 		continuation:  continuation,
 		scanProps:     scanProps,
 		prefixLength:  len(indexSubspace.FDBKey()),
-		startTime:     time.Now(),
+		scanState:     resolveScanLimiterState(scanProps.ExecuteProperties),
 	}
 }
 
@@ -508,22 +510,31 @@ func (c *indexCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntr
 		), nil
 	}
 
-	// Check scanned records limit (free initial pass for first record).
-	if executeProps.ScannedRecordsLimit > 0 && c.recordsRead >= executeProps.ScannedRecordsLimit {
+	// Check scanned records limit (free initial pass for first record, EXCEPT under
+	// FailOnScanLimitReached — Java's record-scan branch never grants the free pass in fail mode,
+	// CursorLimitManager.java:135-136; see key_value_cursor.go's OnNext for the full citation). The
+	// threshold is the (possibly shared) scanState, so every leg of an IN-join/IN-union over a
+	// secondary index charges the same aggregate budget instead of resetting per leg — see
+	// ScanLimiterState.
+	if executeProps.ScannedRecordsLimit > 0 &&
+		(c.recordsRead > 0 || executeProps.FailOnScanLimitReached) &&
+		c.scanState.RecordsScanned() >= executeProps.ScannedRecordsLimit {
 		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
 	}
 
-	// Check time limit before reading next entry (free initial pass for first record).
-	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
-		return NewResultNoNext[*IndexEntry](
-			TimeLimitReached,
-			c.limitContinuation(),
-		), nil
+	// Check time limit before reading next entry (free initial pass for first record — unconditional,
+	// Java never suppresses the time branch's free pass). Measured against the shared scanState's
+	// anchor, not this cursor's own construction time — matching Java's TimeScanLimiter anchored to
+	// FDBRecordContext.getTransactionCreateTime(). noNextOrFail (not a raw NewResultNoNext): Java
+	// throws on ANY halted limit under failOnScanLimitReached, not just the scanned-records one
+	// (CursorLimitManager.java:141-144).
+	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.scanState.StartTime()) >= executeProps.TimeLimit {
+		return noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, c.limitContinuation())
 	}
 
 	// Check byte limit BEFORE reading next entry (matching Java's CursorLimitManager.tryRecordScan).
 	// Allow at least one entry (free initial pass).
-	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
+	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.scanState.BytesScanned() >= executeProps.ScannedBytesLimit {
 		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, c.limitContinuation())
 	}
 
@@ -551,7 +562,8 @@ func (c *indexCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntr
 	}
 
 	// Accumulate bytes scanned — checked pre-read on next call
-	c.bytesScanned += int64(len(kv.Key) + len(kv.Value))
+	c.scanState.AddBytesScanned(int64(len(kv.Key) + len(kv.Value)))
+	c.scanState.AddRecordScanned()
 
 	c.recordsRead++
 

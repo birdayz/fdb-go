@@ -309,7 +309,7 @@ func TestForwardScan(t *testing.T) {
 	if s.CursorStreamingMode != StreamingModeIterator {
 		t.Fatalf("streaming mode: got %d, want Iterator", s.CursorStreamingMode)
 	}
-	if s.GetExecuteProperties() != DefaultExecuteProperties() {
+	if !executePropertiesEqualIgnoringScanState(s.GetExecuteProperties(), DefaultExecuteProperties()) {
 		t.Fatal("ForwardScan should have default execute properties")
 	}
 }
@@ -343,9 +343,22 @@ func TestReverseScan(t *testing.T) {
 	if s.CursorStreamingMode != StreamingModeIterator {
 		t.Fatalf("streaming mode: got %d", s.CursorStreamingMode)
 	}
-	if s.GetExecuteProperties() != DefaultExecuteProperties() {
+	if !executePropertiesEqualIgnoringScanState(s.GetExecuteProperties(), DefaultExecuteProperties()) {
 		t.Fatal("ReverseScan should have default execute properties")
 	}
+}
+
+// executePropertiesEqualIgnoringScanState compares two ExecuteProperties for
+// equality, disregarding the ScanState pointer. DefaultExecuteProperties
+// mints a fresh *ScanLimiterState on every call (so every execution attempt
+// gets its own counters — see ScanLimiterState's doc comment), so two
+// otherwise-identical ExecuteProperties values are never == to each other or
+// to a fresh DefaultExecuteProperties() call; tests that want to assert
+// "these are the defaults" need to ignore that one pointer identity.
+func executePropertiesEqualIgnoringScanState(a, b ExecuteProperties) bool {
+	a.ScanState = nil
+	b.ScanState = nil
+	return a == b
 }
 
 // ---------------------------------------------------------------------------

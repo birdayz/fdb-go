@@ -1907,9 +1907,16 @@ func translateExecError(err error) error {
 	}
 	// Leaf-cursor scan limit hit with FailOnScanLimitReached set
 	// (RFC-106a parity): Java throws ScanLimitReachedException (54F01).
+	// WrapError (not NewError) so *recordlayer.ScanLimitReachedError survives as
+	// the api.Error's Cause — errors.As can then distinguish an ACTUAL scan/
+	// byte/time limit hit from the unrelated liveness-tripwire 54F01
+	// (pageContinuationState's caller, "query cannot progress...") that also
+	// carries this same SQLSTATE but is a plain api.NewError with no Cause.
+	// The rendered message is unchanged in substance — scanLimit.Error() is
+	// still fully present, now as the Cause suffix instead of the sole Message.
 	var scanLimit *recordlayer.ScanLimitReachedError
 	if errors.As(err, &scanLimit) {
-		return api.NewError(api.ErrCodeExecutionLimitReached, scanLimit.Error())
+		return api.WrapError(api.ErrCodeExecutionLimitReached, "leaf cursor scan limit exceeded", scanLimit)
 	}
 	var aggTypeMismatch *executor.AggregateTypeMismatchError
 	if errors.As(err, &aggTypeMismatch) {

@@ -73,6 +73,7 @@ go_library(
         "rtree_storage.go",
         "rtree_types.go",
         "runner.go",
+        "scan_limiter_state.go",
         "scan_properties.go",
         "spfresh_build.go",
         "spfresh_cache.go",

@@ -180,11 +180,26 @@ func TestFDB_RecursiveDFS_Continuation_ResumeAcrossPages(t *testing.T) {
 			// each level's PRE-YIELD position (Java buildContinuation reads
 			// childContinuationBefore), so a resume re-descends the saved
 			// path (~depth scans) before new work — a budget below that
-			// floor can never progress. 16 clears the floor while breaking
-			// the ~60-scan traversal into several pages.
+			// floor can never progress. (Was 16 before the scan-limit
+			// aggregation fix: every recursion level's leg used to get its
+			// OWN free-standing scanned-records counter, so the EFFECTIVE
+			// per-page budget was ~16 × levels-visited — an instance of the
+			// same "many small legs never trip the aggregate limit" bug
+			// key_value_cursor.go/index_scan.go had. Fixed, every level
+			// shares ONE counter (ScanLimiterState) and the limit is
+			// honestly 16 total, which no longer clears this tree's resume
+			// floor.) MEASURED (temporary fetchPage-invocation counter, swept
+			// against this exact query/tree over real FDB): the honest floor
+			// is between 22 (fails, 0 pages of progress) and 24 (passes, 6
+			// pages) — 24 is the lowest value that clears it, NOT 32. 32 is
+			// chosen as floor(24) + ~33% margin so the test keeps exercising
+			// genuine multi-page resume with room to spare — page count falls
+			// monotonically as the limit rises (24→6, 32→5, 48→3, 64→2) and
+			// collapses to a single page at 96, so 32 is comfortably inside
+			// the multi-page region, not hugging either boundary.
 			conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 				ec.SetOptions(api.NewOptionsBuilder().
-					Set(api.OptExecutionScannedRowsLimit, 16).
+					Set(api.OptExecutionScannedRowsLimit, 32).
 					Build())
 			})
 			paged := readInt64Col(t, ctx, conn.QueryContext, q, len(tc.want)*4+16)

@@ -446,11 +446,13 @@ type bitmapKVCursor struct {
 
 	iterator     rangeIterator
 	closed       bool
-	recordsRead  int
-	bytesScanned int64
+	recordsRead  int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
 	prefixLength int
 	lastCont     []byte
-	startTime    time.Time
+
+	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
+	// counter set — see ScanLimiterState's doc comment. Never nil.
+	scanState *ScanLimiterState
 }
 
 func newBitmapKVCursor(
@@ -471,7 +473,7 @@ func newBitmapKVCursor(
 		scanProps:     scanProperties,
 		entrySize:     entrySize,
 		prefixLength:  len(indexSubspace.FDBKey()),
-		startTime:     time.Now(),
+		scanState:     resolveScanLimiterState(scanProperties.ExecuteProperties),
 	}
 }
 
@@ -555,21 +557,27 @@ func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexE
 	}
 
 	// Check scanned-records limit (RFC-106a parity with the other leaf cursors —
-	// index_scan/record_key honor ScannedRecordsLimit; bitmap omitted it).
-	if executeProps.ScannedRecordsLimit > 0 && c.recordsRead >= executeProps.ScannedRecordsLimit {
+	// index_scan/record_key honor ScannedRecordsLimit; bitmap omitted it). Threshold
+	// is the (possibly shared) scanState so every leg of an IN-join/IN-union charges
+	// the same aggregate budget instead of resetting per leg. The free pass
+	// (c.recordsRead>0) is bypassed under FailOnScanLimitReached, matching Java's
+	// CursorLimitManager.java:135-136.
+	if executeProps.ScannedRecordsLimit > 0 &&
+		(c.recordsRead > 0 || executeProps.FailOnScanLimitReached) &&
+		c.scanState.RecordsScanned() >= executeProps.ScannedRecordsLimit {
 		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
 	}
 
-	// Check time limit.
-	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
-		return NewResultNoNext[*IndexEntry](
-			TimeLimitReached,
-			c.limitContinuation(),
-		), nil
+	// Check time limit, measured against the shared scanState's anchor rather than
+	// this cursor's own construction time. Free pass unconditional (Java never suppresses it);
+	// noNextOrFail because Java throws on ANY halted limit under FailOnScanLimitReached
+	// (CursorLimitManager.java:141-144).
+	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.scanState.StartTime()) >= executeProps.TimeLimit {
+		return noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, c.limitContinuation())
 	}
 
 	// Check byte limit.
-	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
+	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.scanState.BytesScanned() >= executeProps.ScannedBytesLimit {
 		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, c.limitContinuation())
 	}
 
@@ -599,7 +607,8 @@ func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexE
 		Value: tuple.Tuple{kv.Value},
 	}
 
-	c.bytesScanned += int64(len(kv.Key) + len(kv.Value))
+	c.scanState.AddBytesScanned(int64(len(kv.Key) + len(kv.Value)))
+	c.scanState.AddRecordScanned()
 	c.recordsRead++
 
 	cont, err := c.makeContinuation(kv.Key)
