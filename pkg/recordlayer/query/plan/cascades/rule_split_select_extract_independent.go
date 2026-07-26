@@ -68,6 +68,18 @@ func (r *SplitSelectExtractIndependentQuantifiersRule) OnMatch(call *ExpressionR
 		return
 	}
 
+	// Both halves below are rebuilt via NewSelectExpression, which always
+	// defaults to JoinInner — this rule never carries the matched select's
+	// JoinType forward. Splitting a LEFT/RIGHT/FULL OUTER select this way would
+	// erase its directional null-extension exactly like the identical
+	// rule_partition_select.go hazard (see its guard comment); ChildrenAsSet()
+	// (JoinInner || JoinCross) is the correct gate for the same reason — a
+	// CROSS select carries no predicates and no directional semantics, so
+	// splitting it into two default-JoinInner halves reproduces identical rows.
+	if !sel.ChildrenAsSet() {
+		return
+	}
+
 	// Step 1: Identify ForEach quantifiers ranging over ExplodeExpressions.
 	explodeAliases := map[values.CorrelationIdentifier]struct{}{}
 	for _, q := range quantifiers {

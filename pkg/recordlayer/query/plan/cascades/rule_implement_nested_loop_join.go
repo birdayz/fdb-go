@@ -2198,6 +2198,18 @@ func buriedLegOrdinalLayout(outerPlan plans.RecordQueryPlan) map[string]int {
 			if !isQOV {
 				continue
 			}
+			// Bare-column allowlist (the same one fieldValueAliasAndCol /
+			// correlatedFieldOf / correlatedInnerField apply): a fused
+			// multi-accessor bake (Resolved carrying more than one
+			// accessor) puts a DIFFERENT column's leaf name in fv.Field, so
+			// keying this layout by leaf name would let a nested slot
+			// (leg.address.id) collide with a genuine top-level "leg.id"
+			// entry. Skip the fused slot rather than mint a colliding key.
+			if fv.Resolved != nil {
+				if _, single := fv.Resolved.Single(); !single {
+					continue
+				}
+			}
 			key := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(fv.Field)
 			if _, dup := layout[key]; !dup {
 				layout[key] = i
@@ -2327,8 +2339,21 @@ func rebaseOuterLegValue(
 			// fold here would let a quoted user alias cross into the
 			// lowercase machine namespace.
 			corr := qov.Correlation.Name()
+			// Bare-column allowlist (fieldValueAliasAndCol /
+			// correlatedFieldOf / correlatedInnerField): a fused
+			// multi-accessor bake (Child=QOV directly, Resolved carrying
+			// more than one accessor) passes the Child==QOV check above
+			// while fv.Field is only its LEAF name — a nested
+			// `leg.address.id` would otherwise mint qualField "LEG.ID" and
+			// impersonate a genuine top-level "leg.id" reference. Decline
+			// (leave the node unrewritten) rather than mint that colliding
+			// qualified name.
+			bareChild := true
+			if fv.Resolved != nil {
+				_, bareChild = fv.Resolved.Single()
+			}
 			for _, leg := range legAliases {
-				if leg != "" && leg == corr {
+				if bareChild && leg != "" && leg == corr {
 					// This rewrite degrades the reference to a lazy dotted
 					// name over a merge correlation — a silent baked→lazy
 					// degradation for an eager ordinal node. It only fires
@@ -3644,8 +3669,25 @@ func (r *ImplementNestedLoopJoinRule) matchJoinPKPredicate(
 	return nil, ""
 }
 
+// fieldValueAliasAndCol splits a comparand into its source alias and bare
+// column name. For a Child=QOV bake it applies the SAME bare-column allowlist
+// as correlatedFieldOf (fk_chain_cardinality.go) and correlatedInnerField
+// (plans/cost.go): a fused multi-accessor path (Child=QOV directly,
+// Resolved=[ADDRESS, ID], Field="ID") passes the Child==QOV check while still
+// being a nested reference, so fv.Field is only the LEAF name there — a
+// nested `inner.address.id` would otherwise report col="ID" and impersonate
+// the table's real top-level "ID" column in matchJoinPKPredicate's pkCol
+// comparison, building a correlated PK/index scan on the wrong semantics
+// (wrong EXISTS rows, not merely a worse plan). Declining
+// (alias="", col="") never matches a real, non-empty outerAlias/innerAlias,
+// so this fails the rewrite closed rather than accepting the false match.
 func fieldValueAliasAndCol(fv *values.FieldValue) (alias, col string) {
 	if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
+		if fv.Resolved != nil {
+			if _, single := fv.Resolved.Single(); !single {
+				return "", ""
+			}
+		}
 		return strings.ToUpper(qov.Correlation.String()), strings.ToUpper(fv.Field)
 	}
 	upper := strings.ToUpper(fv.Field)

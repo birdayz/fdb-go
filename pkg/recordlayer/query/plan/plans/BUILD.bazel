@@ -71,6 +71,7 @@ go_test(
         "conjunct_packaging_cost_test.go",
         "coverage_test.go",
         "cte_plans_test.go",
+        "equality_prefix_test.go",
         "explode_test.go",
         "f21_comparand_identity_test.go",
         "in_join_test.go",
@@ -177,6 +178,7 @@ go_test(
         "limit_zero_cardinality_cost_test.go",
         "injoin_cardinality_cost_test.go",
         "nested_loop_join_unique_key_cost_test.go",
+        "equality_prefix_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

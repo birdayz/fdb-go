@@ -104,6 +104,46 @@ func TestSplitSelectExtractIndependentQuantifiersRule_Fires(t *testing.T) {
 	}
 }
 
+// TestSplitSelectExtractIndependentQuantifiersRule_OuterJoinFailsClosed pins
+// the ChildrenAsSet() guard: both halves this rule builds
+// (NewSelectExpression) always default to JoinInner, so splitting a
+// JoinLeftOuter select would silently erase its null-extension semantics.
+// The quantifier shape is identical to
+// TestSplitSelectExtractIndependentQuantifiersRule_Fires (an independent
+// Explode leg extractable into the outer SELECT), so JoinLeftOuter alone
+// must be what blocks the split.
+func TestSplitSelectExtractIndependentQuantifiersRule_OuterJoinFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+
+	explode := expressions.NewExplodeExpression(values.LiteralValue([]any{int64(1), int64(2)}))
+	explodeQ := expressions.ForEachQuantifier(expressions.InitialOf(explode))
+
+	pred := predicates.NewComparisonPredicate(
+		values.NewFieldValue(
+			values.NewQuantifiedObjectValue(scanQ.GetAlias()),
+			"ID",
+			values.NullableLong,
+		),
+		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)),
+	)
+	sel := expressions.NewSelectExpressionWithJoinType(
+		scanQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{scanQ, explodeQ},
+		[]predicates.QueryPredicate{pred},
+		nil,
+		expressions.JoinLeftOuter,
+	)
+
+	yielded := FireExpressionRule(
+		NewSplitSelectExtractIndependentQuantifiersRule(), expressions.InitialOf(sel))
+	if len(yielded) != 0 {
+		t.Fatalf("LEFT OUTER select yielded %d split(s), want fail-closed zero", len(yielded))
+	}
+}
+
 func TestSplitSelectExtractIndependentQuantifiersRule_StrictSingleFailsClosed(t *testing.T) {
 	t.Parallel()
 

@@ -351,6 +351,51 @@ func TestMemoMerge_PanicsDuringPlanning(t *testing.T) {
 	m.merge(a, b)
 }
 
+// TestMemoMerge_AliasRenamedSelectsMustNotMergeUngated pins the RFC-077 7.5
+// gate onto the CROSS-GROUP merge path (findEquivalentRef), not just
+// Reference.Insert/InsertFinal. selA and selB are structurally IDENTICAL
+// SelectExpressions (same shape, same predicates — none) that differ ONLY in
+// their OWN quantifier's alias (QA vs QB); the resultValue is a
+// QuantifiedObjectValue over that SAME quantifier, so it references the
+// node's own alias directly. SemanticEquals under EmptyAliasMap (the
+// alias-IDENTITY tiers) does NOT match them — only alias-aware MemoEqual
+// recognizes them as equal up to a consistent renaming. Neither select
+// implements InternsAliasAware() (only merge-selects, i.e.
+// values.IsPositionalMergeRC/IsOrdinalJoinRV result values, opt in), so per
+// the documented reasoning in SelectExpression.InternsAliasAware — "an
+// alias-aware member collapse keeps a survivor whose quantifier aliases
+// differ from the discarded member's; any external structure that captured
+// the discarded member's aliases by identity then mis-resolves" — these two
+// groups must NOT merge. findEquivalentRef currently calls MemoEqual
+// unconditionally with no InternsAliasAware check, so absent the gate this
+// test fails (the two groups merge, the RFC-039 landmine reproduced on the
+// merge path instead of the Insert path it was fenced on).
+func TestMemoMerge_AliasRenamedSelectsMustNotMergeUngated(t *testing.T) {
+	t.Parallel()
+	child := expressions.InitialOf(fixtureScan("T"))
+	aliasA := values.NamedCorrelationIdentifier("QA")
+	aliasB := values.NamedCorrelationIdentifier("QB")
+	selA := expressions.NewSelectExpression(values.NewQuantifiedObjectValue(aliasA),
+		[]expressions.Quantifier{expressions.NamedForEachQuantifier(aliasA, child)}, nil)
+	selB := expressions.NewSelectExpression(values.NewQuantifiedObjectValue(aliasB),
+		[]expressions.Quantifier{expressions.NamedForEachQuantifier(aliasB, child)}, nil)
+
+	refA := expressions.InitialOf(selA)
+	refB := expressions.InitialOf(selB)
+
+	m := NewMemo(refA)
+	m.Integrate(refA, selA)
+	m.Integrate(refB, selB)
+
+	if refA.Canonical() == refB.Canonical() {
+		t.Fatal("alias-renamed, non-opted-in SelectExpressions merged across groups: " +
+			"findEquivalentRef must gate its MemoEqual tier on InternsAliasAware exactly like Reference.Insert")
+	}
+	if m.MergeCount() != 0 {
+		t.Fatalf("expected 0 merges for non-opted-in expressions, got %d", m.MergeCount())
+	}
+}
+
 // TestMemoMergeable_DeclinesDuringPlanning pins the soft path of the
 // RFC-037 §0 phase gate: expression rules still fire during PLANNING and
 // integrateOne consults mergeable — a PLANNING-time equivalence discovery

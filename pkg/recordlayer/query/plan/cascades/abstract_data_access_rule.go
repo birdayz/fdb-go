@@ -810,10 +810,15 @@ func (s *scanPlanExpression) HintCost(child []properties.Cost, stats properties.
 	return concretePlanCost(s.plan, stats, nil)
 }
 
-// HintRichOrdering — the FIXED-equality-prefix PK ordering; see
-// pkScanRichOrdering.
+// HintRichOrdering delegates to the unwrapped PK scan's own derivation
+// (RecordQueryScanPlan.HintRichOrdering, plans/ordering.go) rather than
+// re-deriving the FIXED-equality-prefix PK ordering here. A second hand-coded
+// copy of that derivation is exactly the shape that let plans/ordering.go's
+// plain and rich forms disagree on a resumed-equality-after-gap comparison
+// array; delegating means there is nothing here to drift out of sync with the
+// helper the plan itself uses.
 func (s *scanPlanExpression) HintRichOrdering() *properties.RichOrdering {
-	return pkScanRichOrdering(pkScanFromDataAccessPlan(s.plan))
+	return pkScanFromDataAccessPlan(s.plan).HintRichOrdering()
 }
 
 // compile-time check

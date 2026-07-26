@@ -579,3 +579,223 @@ func TestMaterializedNLJOrdinalLayoutMatches(t *testing.T) {
 		}
 	})
 }
+
+// fusedNestedFieldValue builds a FUSED baked nested reference (Field=leaf,
+// Child=the bare source QOV directly, Resolved carrying a TWO-accessor
+// [parent, leaf] path) — the shape a baked `alias.parent.leaf` reference
+// takes, as opposed to a flat `alias.leaf` top-level column. Mirrors
+// fkChainCorrelatedNestedEq (fk_chain_cardinality_test.go), which pins the
+// identical hole in the sibling fk-chain cardinality cap.
+func fusedNestedFieldValue(alias values.CorrelationIdentifier, parent, leaf string) *values.FieldValue {
+	return &values.FieldValue{
+		Field: leaf, Typ: values.UnknownType,
+		Child: values.NewQuantifiedObjectValue(alias),
+		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
+			{Field: parent, Ordinal: 0},
+			{Field: leaf, Ordinal: 1},
+		}},
+	}
+}
+
+// TestFieldValueAliasAndCol_DeclinesFusedNestedSameLeafName pins the
+// wrong-rows hole fixed in fieldValueAliasAndCol: a fused multi-accessor bake
+// (Child=QOV directly, Resolved=[ADDRESS, ID], Field="ID") passes the
+// Child==QOV check while fv.Field is only the LEAF name — a nested
+// `i.address.id` must not be reported as a bare top-level "I.ID" reference,
+// or matchJoinPKPredicate would mistake it for a real PK equi-join.
+func TestFieldValueAliasAndCol_DeclinesFusedNestedSameLeafName(t *testing.T) {
+	t.Parallel()
+
+	fused := fusedNestedFieldValue(values.NamedCorrelationIdentifier("I"), "ADDRESS", "ID")
+	alias, col := fieldValueAliasAndCol(fused)
+	if alias != "" || col != "" {
+		t.Fatalf(`fieldValueAliasAndCol(fused I.ADDRESS.ID) = (%q, %q), want ("", "") — `+
+			"a nested reference must never impersonate a bare top-level column sharing its leaf name", alias, col)
+	}
+}
+
+// TestFieldValueAliasAndCol_AcceptsBareTopLevelColumn is the accept-direction
+// companion: a genuine bare top-level reference (Child=QOV, no Resolved path,
+// or a single-accessor Resolved path) must still resolve to its alias and
+// column — the fix must decline ONLY the fused nested shape, not every
+// Child=QOV reference.
+func TestFieldValueAliasAndCol_AcceptsBareTopLevelColumn(t *testing.T) {
+	t.Parallel()
+
+	bare := values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("I")), "ID", values.UnknownType)
+	alias, col := fieldValueAliasAndCol(bare)
+	if alias != "I" || col != "ID" {
+		t.Fatalf(`fieldValueAliasAndCol(bare I.ID) = (%q, %q), want ("I", "ID") — `+
+			"the fix must not over-decline a genuine bare top-level reference", alias, col)
+	}
+}
+
+// buildExistsPKShortcutScenario assembles `SELECT * FROM OUTER O WHERE
+// EXISTS (SELECT 1 FROM INNER I WHERE <innerOperand> = O.ID)` — the shape
+// tryExistsFlatMap's PK-shortcut branch tries to rewrite into a correlated
+// PK-narrowed scan. The inner table's declared primary key is the flat
+// top-level column "ID" (via pkGateTestCtx).
+func buildExistsPKShortcutScenario(t *testing.T, innerOperand *values.FieldValue) []expressions.RelationalExpression {
+	t.Helper()
+
+	outerAlias := values.NamedCorrelationIdentifier("O")
+	innerAlias := values.NamedCorrelationIdentifier("I")
+
+	outerScan := expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, values.UnknownType)
+	outerRef := expressions.InitialOf(outerScan)
+	outerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"OUTER"}, values.UnknownType, false))
+
+	innerScan := expressions.NewFullUnorderedScanExpression([]string{"INNER"}, values.UnknownType)
+	innerRef := expressions.InitialOf(innerScan)
+	innerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"INNER"}, values.UnknownType, false))
+
+	outerQ := expressions.NamedForEachQuantifier(outerAlias, outerRef)
+	innerQ := expressions.NamedExistentialQuantifier(innerAlias, innerRef)
+
+	outerID := values.NewFieldValue(values.NewQuantifiedObjectValue(outerAlias), "ID", values.UnknownType)
+	joinPredicate := predicates.NewComparisonPredicate(
+		innerOperand,
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: outerID},
+	)
+	selectExpr := expressions.NewSelectExpressionWithAliases(
+		values.NewQuantifiedObjectValue(outerAlias),
+		[]expressions.Quantifier{outerQ, innerQ},
+		[]predicates.QueryPredicate{
+			joinPredicate,
+			predicates.NewExistentialAlias(innerAlias),
+		},
+		[]string{"O", "I"},
+	)
+
+	ctx := &pkGateTestCtx{pk: []string{"ID"}}
+	return FireExpressionRuleWithMemo(
+		NewImplementNestedLoopJoinRule(),
+		expressions.InitialOf(selectExpr),
+		ctx,
+		nil,
+	)
+}
+
+// anyScanCarriesComparisons reports whether any RecordQueryScanPlan reachable
+// from any produced alternative carries non-empty ScanComparisons — the
+// marker that the EXISTS PK shortcut fired and narrowed the inner scan to a
+// correlated PK probe (WithScanComparisons is the shortcut's only producer of
+// scan comparisons in this scenario: both leaf scans start comparison-free).
+func anyScanCarriesComparisons(t *testing.T, results []expressions.RelationalExpression) bool {
+	t.Helper()
+	found := false
+	for _, r := range results {
+		rp, ok := r.(plans.RecordQueryPlan)
+		if !ok {
+			continue
+		}
+		plans.Walk(rp, func(p plans.RecordQueryPlan) bool {
+			if sp, ok := p.(*plans.RecordQueryScanPlan); ok && len(sp.GetScanComparisons()) > 0 {
+				found = true
+			}
+			return true
+		})
+	}
+	return found
+}
+
+// TestImplementNestedLoopJoin_ExistsPKShortcutDeclinesFusedNestedSameLeafName
+// pins the wrong-rows hazard fieldValueAliasAndCol's bare-column allowlist
+// guards against at the RULE level, not just the matcher unit: an EXISTS join
+// predicate whose INNER operand is a FUSED nested reference (i.address.id)
+// sharing its LEAF name with the inner table's own top-level primary key
+// ("ID") must NOT be mistaken for a PK equi-join and used to build a
+// correlated PK-narrowed scan — that scan would filter on the top-level ID
+// column while the query actually asked about a nested field, silently
+// changing which rows the EXISTS reports as present.
+func TestImplementNestedLoopJoin_ExistsPKShortcutDeclinesFusedNestedSameLeafName(t *testing.T) {
+	t.Parallel()
+
+	innerNestedID := fusedNestedFieldValue(values.NamedCorrelationIdentifier("I"), "ADDRESS", "ID")
+	results := buildExistsPKShortcutScenario(t, innerNestedID)
+	if len(results) == 0 {
+		t.Fatal("setup: expected at least one physical alternative from ImplementNestedLoopJoinRule")
+	}
+	if anyScanCarriesComparisons(t, results) {
+		t.Fatal("EXISTS PK shortcut fired on a fused nested reference sharing the PK's leaf name — " +
+			"built a correlated PK-narrowed scan that filters the WRONG column (wrong EXISTS rows)")
+	}
+}
+
+// TestImplementNestedLoopJoin_ExistsPKShortcutFiresOnBareTopLevelColumn is the
+// accept-direction companion at the rule level: a genuine bare top-level PK
+// join (i.id = o.id) must still take the correlated PK-shortcut fast path —
+// proving the fix declines ONLY the fused nested shape, not the ordinary case
+// the shortcut exists to serve.
+func TestImplementNestedLoopJoin_ExistsPKShortcutFiresOnBareTopLevelColumn(t *testing.T) {
+	t.Parallel()
+
+	innerID := values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("I")), "ID", values.UnknownType)
+	results := buildExistsPKShortcutScenario(t, innerID)
+	if len(results) == 0 {
+		t.Fatal("setup: expected at least one physical alternative from ImplementNestedLoopJoinRule")
+	}
+	if !anyScanCarriesComparisons(t, results) {
+		t.Fatal("EXISTS PK shortcut did not fire on a genuine bare top-level PK join — the fix must not over-decline")
+	}
+}
+
+// TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName pins the same
+// bare-column-allowlist hole in buriedLegOrdinalLayout's own leaf-name keying:
+// slot 0 is a FUSED nested reference (leg.address.id, leaf "ID"); slot 1 is
+// the leg's GENUINE bare "leg.id" column. Both would key to "LEG.ID" under a
+// leaf-name-only read, and "first occurrence wins" would let the fused slot's
+// ordinal (0) silently answer for the real bare column, misdirecting any
+// buried-leg rebase that looks up "LEG.ID" to the wrong RC slot. The fused
+// slot must be skipped so "LEG.ID" maps to its one genuine owner, slot 1.
+func TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName(t *testing.T) {
+	t.Parallel()
+
+	leg := values.NamedCorrelationIdentifier("LEG")
+	fused := fusedNestedFieldValue(leg, "ADDRESS", "ID")
+	bare := values.NewFieldValue(values.NewQuantifiedObjectValue(leg), "ID", values.UnknownType)
+
+	rc := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "F0", Value: fused},
+		values.RecordConstructorField{Name: "F1", Value: bare},
+	)
+
+	outer := plans.NewRecordQueryScanPlan([]string{"OUTER"}, values.UnknownType, false)
+	inner := plans.NewRecordQueryScanPlan([]string{"INNER"}, values.UnknownType, false)
+	fm := plans.NewRecordQueryFlatMapPlan(outer, inner, leg, values.NamedCorrelationIdentifier("i"), rc, false)
+
+	layout := buriedLegOrdinalLayout(fm)
+	if layout == nil {
+		t.Fatal("setup: expected a non-nil layout")
+	}
+	ord, ok := layout["LEG.ID"]
+	if !ok {
+		t.Fatal(`expected key "LEG.ID" to be present from the genuine bare field, got missing`)
+	}
+	if ord != 1 {
+		t.Fatalf(`layout["LEG.ID"] = %d, want 1 (the genuine bare "leg.id" field at slot 1) — `+
+			"the fused nested field at slot 0 must not have claimed this key first", ord)
+	}
+}
+
+// TestRebaseOuterLegValue_DeclinesFusedNestedSameLeafName pins the same hole
+// in rebaseOuterLegValue's own leg-match arm: a fused nested outer reference
+// (leg.address.id) whose leaf name ("ID") collides with a plain column must
+// not be rewritten into the qualified key "LEG.ID" — that would silently
+// discard the ADDRESS accessor and re-anchor the predicate onto the WRONG
+// column of the merged row. The node must come back unchanged (declined),
+// exactly like any other shape this rebase does not recognize.
+func TestRebaseOuterLegValue_DeclinesFusedNestedSameLeafName(t *testing.T) {
+	t.Parallel()
+
+	leg := "LEG"
+	fused := fusedNestedFieldValue(values.NamedCorrelationIdentifier(leg), "ADDRESS", "ID")
+	mergedCorr := values.NamedCorrelationIdentifier("MERGED")
+
+	got := rebaseOuterLegValue(fused, []string{leg}, mergedCorr, nil)
+	gotFV, ok := got.(*values.FieldValue)
+	if !ok || gotFV != fused {
+		t.Fatalf("rebaseOuterLegValue(fused LEG.ADDRESS.ID) = %#v, want the ORIGINAL unrewritten node — "+
+			"a nested reference must never be re-anchored onto a colliding leaf-name qualified key", got)
+	}
+}

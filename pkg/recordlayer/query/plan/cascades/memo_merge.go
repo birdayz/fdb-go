@@ -145,6 +145,23 @@ func (m *Memo) reachable(from, target *expressions.Reference) bool {
 // EqualsWithoutChildren and the same canonical child References. Returns
 // nil if no such Reference exists. Uses the same topological narrowing as
 // MemoizeExpression so the scan is bounded.
+//
+// Alias-aware equivalence (the MemoEqual tier below) is GATED to expressions
+// that opt in via expressions.InternsAliasAware, exactly like
+// Reference.Insert/InsertFinal (RFC-077 7.5). A cross-group merge is a
+// bigger widening than a single member collapse: it forces every future
+// quantifier ranging over EITHER group to share ONE winner chosen from the
+// union of both groups' members. An unconditional alias-aware match here
+// reopens the landmine documented on SelectExpression.InternsAliasAware —
+// discovered via Reference.Insert (a CTE column-rename select collapsed
+// alias-aware read its renamed column as NULL) but never fenced on THIS
+// path: findEquivalentRef called MemoEqual for every expression type with no
+// InternsAliasAware check at all. The alias-IDENTITY tier (SemanticEquals
+// under EmptyAliasMap) stays unconditional — it is what every merge test
+// predating RFC-077 already relies on for redundant-subexpression sharing —
+// so this change can only ever merge LESS than before, never more; RFC-039's
+// broad memoizeNonLeaf/refContains activation is untouched (a separate,
+// deliberately-tested surface, TODO.md tracks widening it).
 func (m *Memo) findEquivalentRef(expr expressions.RelationalExpression, exclude *expressions.Reference) *expressions.Reference {
 	exclude = exclude.Canonical()
 	h := expr.HashCodeWithoutChildren()
@@ -158,8 +175,10 @@ func (m *Memo) findEquivalentRef(expr expressions.RelationalExpression, exclude 
 			}
 			for _, member := range ref.Members() {
 				// Alias-aware (RFC-039 PR-A activation). Leaves have no
-				// quantifiers, so MemoEqual reduces to node-info equality;
-				// hash gate (alias-invariant) first.
+				// quantifiers, so MemoEqual reduces to node-info equality
+				// under an untouched (empty) alias map — no gate needed,
+				// there is nothing to rename; hash gate (alias-invariant)
+				// first.
 				if member.HashCodeWithoutChildren() == h && expressions.MemoEqual(member, expr) {
 					return ref
 				}
@@ -168,6 +187,9 @@ func (m *Memo) findEquivalentRef(expr expressions.RelationalExpression, exclude 
 		return nil
 	}
 
+	// Resolve the alias-aware opt-in once per call (expr is invariant across
+	// the candidate/member loop below) — mirrors Reference.Insert's hoist.
+	aliasAware := expressions.InternsAliasAware(expr)
 	for _, cand := range m.findCandidateParents(qs) {
 		cand = cand.Canonical()
 		if cand == exclude {
@@ -177,10 +199,16 @@ func (m *Memo) findEquivalentRef(expr expressions.RelationalExpression, exclude 
 			if member.HashCodeWithoutChildren() != h {
 				continue
 			}
-			// Alias-aware merge-candidate match: members equivalent up to a
-			// consistent quantifier-alias renaming now merge (the prior
-			// alias-sensitive comparison kept them in distinct groups).
-			if expressions.MemoEqual(member, expr) {
+			// Alias-IDENTITY tier: unconditional, same guarantee as the
+			// pre-RFC-077 baseline (fast pointer-identity paths collapse into
+			// this general structural walk; findEquivalentRef's candidates
+			// are already topologically narrowed, so the extra generality
+			// costs nothing here).
+			if expressions.SemanticEquals(member, expr, expressions.EmptyAliasMap()) {
+				return cand
+			}
+			// Alias-AWARE tier (RFC-077 7.5), GATED — see the doc comment above.
+			if aliasAware && expressions.MemoEqual(member, expr) {
 				return cand
 			}
 		}

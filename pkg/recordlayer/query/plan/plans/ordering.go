@@ -2,6 +2,7 @@ package plans
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -229,6 +230,48 @@ func (p *RecordQueryScanPlan) HintOrdering() properties.Ordering {
 	return PKScanOrdering(p)
 }
 
+// equalityPrefixLen returns the length of the leading equality-bound prefix
+// in comps, capped at n key positions. It is the SINGLE SOURCE OF TRUTH both
+// ordering derivations below consult — HintOrdering drops this prefix from
+// the ordering keys, HintRichOrdering retains it as FixedBinding entries —
+// so the two cannot classify a column differently by one caller's loop
+// breaking where the other's does not.
+//
+// Mirrors Java's ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons,
+// whose equality prefix is scanComparisons.getEqualitySize(): a leading run
+// of equality entries, ending at the first entry that is not an equality (an
+// inequality, an unbound/empty range, or simply running out of comps).
+//
+// An equality comparison that reappears AFTER a non-equality gap does NOT
+// resume the prefix — this is the conservative reading, chosen deliberately:
+// a gap comparison (e.g. index (a, b, c) SARGed a = 1, b > 5, c = 3) already
+// breaks the contiguous-range guarantee a scan provides. Rows are ordered by
+// (a, b, c) as a whole; fixing c to a single value only holds true WITHIN
+// each individual (a, b) sub-range the scan visits, not across the scan as a
+// whole the way a genuine leading equality prefix does (every row shares the
+// same a because a is bound before any range is opened). Classifying c as
+// FIXED would tell a caller that any direction on c is safe everywhere in
+// the stream, which breaks the moment b's bound range spans more than one
+// distinct b value. So a resumed equality stays an ordinary ordering key —
+// Sorted in the rich form, retained as a key in the plain form — despite
+// testing equal at its position.
+//
+// This shape is unreachable through the sole production constructor today
+// (ValueIndexScanMatchCandidate.ComputeBoundParameterPrefixMap always stops
+// at the first inequality or unbound parameter, so it never emits an
+// equality past a gap), but the helper defines it anyway rather than leaving
+// it to whichever caller's loop happens to run first.
+func equalityPrefixLen(comps []*predicates.ComparisonRange, n int) int {
+	prefix := 0
+	for i := 0; i < n && i < len(comps); i++ {
+		if !comps[i].IsEquality() {
+			break
+		}
+		prefix = i + 1
+	}
+	return prefix
+}
+
 // PKScanOrdering returns a primary scan's PK ordering. Shared with the
 // data-access path's plan-backed leaf, which memoizes a SARGed PK scan.
 //
@@ -254,14 +297,7 @@ func PKScanOrdering(plan *RecordQueryScanPlan) properties.Ordering {
 		return properties.Ordering{}
 	}
 	comps := plan.GetScanComparisons()
-	firstNonEq := 0
-	for i := range pk {
-		if i < len(comps) && comps[i].IsEquality() {
-			firstNonEq = i + 1
-		} else {
-			break
-		}
-	}
+	firstNonEq := equalityPrefixLen(comps, len(pk))
 	keys := pk[firstNonEq:]
 	if len(keys) == 0 {
 		return properties.Ordering{}
@@ -299,14 +335,7 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
-	firstNonEq := 0
-	for i, cr := range comps {
-		if cr.IsEquality() {
-			firstNonEq = i + 1
-		} else {
-			break
-		}
-	}
+	firstNonEq := equalityPrefixLen(comps, len(columnNames))
 	rev := p.IsReverse()
 	keys := make([]values.Value, 0, len(columnNames)-firstNonEq+len(pkColumnNames))
 	desc := make([]bool, 0, cap(keys))
@@ -579,6 +608,7 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 		return properties.EmptyOrdering()
 	}
 	comps := p.GetScanComparisons()
+	prefixLen := equalityPrefixLen(comps, len(pk))
 	bm := make(map[values.Value][]properties.OrderingBinding, len(pk))
 	keys := make([]values.Value, 0, len(pk))
 	dir := properties.ProvidedSortOrderAscending
@@ -587,7 +617,7 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 	}
 	for i, key := range pk {
 		keys = append(keys, key)
-		if i < len(comps) && comps[i].IsEquality() {
+		if i < prefixLen {
 			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
 			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
@@ -620,6 +650,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
+	prefixLen := equalityPrefixLen(comps, len(columnNames))
 	bm := make(map[values.Value][]properties.OrderingBinding)
 	keys := make([]values.Value, 0, len(columnNames)+len(pkColumnNames))
 
@@ -630,7 +661,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	for i, col := range columnNames {
 		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
 		keys = append(keys, key)
-		if i < len(comps) && comps[i].IsEquality() {
+		if i < prefixLen {
 			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
 			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
