@@ -462,7 +462,12 @@ func (p *Planner) plan(ctx context.Context, rootRef *expressions.Reference) (exp
 	}
 	plan, err := ExtractBestPlanFromSelectorContext(ctx, rootRef, p, p.stats)
 	if err != nil {
-		return plan, p.tasksRun, err
+		// Return an explicit nil, not the extracted plan value: on error there is
+		// no valid plan to hand back, and forwarding the callee's value would make
+		// correctness depend on the unenforced convention (every WithChildren
+		// implementer in plans/*.go happens to return nil alongside its own
+		// errors) rather than on this signature's own contract.
+		return nil, p.tasksRun, err
 	}
 	if err := plannerContextErr(ctx); err != nil {
 		return nil, p.tasksRun, err

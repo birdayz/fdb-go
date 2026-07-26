@@ -7,6 +7,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // exploreRewriting drives the production unified task stack through the
@@ -440,5 +441,84 @@ func TestPlanner_MemoSharesSubExpressions(t *testing.T) {
 	// The Memo should track all reachable References.
 	if got := len(memo.References()); got < 3 {
 		t.Fatalf("Memo has %d references, expected at least 3 (root+sort+scan)", got)
+	}
+}
+
+// errPlannerRuleBrokeExtractionContract is returned by
+// plannerExtractionErrorExpr.WithChildren alongside a non-nil expression, to
+// simulate a WithChildren implementer that violates the "return nil on
+// error" convention every real one in pkg/recordlayer/query/plan/plans
+// happens to follow.
+var errPlannerRuleBrokeExtractionContract = errors.New("simulated rebuild failure with a non-nil partial result")
+
+// plannerExtractionErrorExpr is a leaf RelationalExpression whose
+// WithChildren deliberately returns a non-nil expression together with a
+// non-nil error — the shape TestPlanner_Plan_ExtractionErrorReturnsNilPlan
+// needs to prove that plan()'s error path does not forward it.
+type plannerExtractionErrorExpr struct {
+	plan plans.RecordQueryPlan
+}
+
+func (e *plannerExtractionErrorExpr) GetResultValue() values.Value {
+	return values.NewNullValue(values.UnknownType)
+}
+
+func (*plannerExtractionErrorExpr) GetQuantifiers() []expressions.Quantifier { return nil }
+func (*plannerExtractionErrorExpr) CanCorrelate() bool                       { return false }
+func (*plannerExtractionErrorExpr) ChildrenAsSet() bool                      { return false }
+
+func (*plannerExtractionErrorExpr) HashCodeWithoutChildren() uint64 {
+	return 0x0e11e6
+}
+
+func (*plannerExtractionErrorExpr) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return nil
+}
+
+func (e *plannerExtractionErrorExpr) EqualsWithoutChildren(
+	other expressions.RelationalExpression,
+	_ *expressions.AliasMap,
+) bool {
+	_, ok := other.(*plannerExtractionErrorExpr)
+	return ok
+}
+
+func (e *plannerExtractionErrorExpr) WithQuantifiers(
+	_ []expressions.Quantifier,
+) expressions.RelationalExpression {
+	return e
+}
+
+func (e *plannerExtractionErrorExpr) GetRecordQueryPlan() plans.RecordQueryPlan {
+	return e.plan
+}
+
+// WithChildren returns itself alongside a non-nil error, breaking the
+// nil-plan-on-error convention every concrete WithChildren implementer in
+// pkg/recordlayer/query/plan/plans otherwise follows.
+func (e *plannerExtractionErrorExpr) WithChildren(
+	_ []expressions.Quantifier,
+) (expressions.RelationalExpression, error) {
+	return e, errPlannerRuleBrokeExtractionContract
+}
+
+// TestPlanner_Plan_ExtractionErrorReturnsNilPlan pins that plan()'s
+// extraction-error path returns an explicit nil plan rather than forwarding
+// whatever ExtractBestPlanFromSelectorContext handed back on the error path.
+// The fixture's WithChildren violates the nil-on-error convention on
+// purpose: it is the one case that distinguishes an explicit nil from
+// "the convention happened to hold."
+func TestPlanner_Plan_ExtractionErrorReturnsNilPlan(t *testing.T) {
+	t.Parallel()
+
+	expr := &plannerExtractionErrorExpr{plan: plans.NewRecordQueryValuesPlan(nil)}
+	p := NewPlanner(nil, nil)
+
+	plan, _, err := p.Plan(expressions.InitialOf(expr))
+	if !errors.Is(err, errPlannerRuleBrokeExtractionContract) {
+		t.Fatalf("err=%v, want errPlannerRuleBrokeExtractionContract", err)
+	}
+	if plan != nil {
+		t.Fatalf("plan=%T (%v), want nil on the extraction-error path", plan, plan)
 	}
 }
