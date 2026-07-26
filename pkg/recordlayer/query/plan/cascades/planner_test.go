@@ -522,3 +522,48 @@ func TestPlanner_Plan_ExtractionErrorReturnsNilPlan(t *testing.T) {
 		t.Fatalf("plan=%T (%v), want nil on the extraction-error path", plan, plan)
 	}
 }
+
+// TestRebuildWithFreshChildren_WithChildrenErrorReturnsNilExpression pins the
+// invariant at its source: rebuildWithFreshChildren's default arm — the choke
+// point every WithChildren implementer's return value flows through during
+// extraction — must not forward a non-nil expression alongside a non-nil
+// error, regardless of what the implementer itself returned. Unlike
+// TestPlanner_Plan_ExtractionErrorReturnsNilPlan, this calls the rebuilder
+// directly and so does not exercise (or depend on) planner.go's Plan()
+// top-level guard; it fails if the choke-point normalization regresses even
+// though that guard is still in place.
+func TestRebuildWithFreshChildren_WithChildrenErrorReturnsNilExpression(t *testing.T) {
+	t.Parallel()
+
+	expr := &plannerExtractionErrorExpr{plan: plans.NewRecordQueryValuesPlan(nil)}
+
+	rebuilt, err := rebuildWithFreshChildren(expr, nil)
+	if !errors.Is(err, errPlannerRuleBrokeExtractionContract) {
+		t.Fatalf("err=%v, want errPlannerRuleBrokeExtractionContract", err)
+	}
+	if rebuilt != nil {
+		t.Fatalf("rebuilt=%T (%v), want nil on the WithChildren error path", rebuilt, rebuilt)
+	}
+}
+
+// TestExtractBestPlanWith_ChokePointErrorReturnsNilPlan pins the same
+// invariant one layer up, through the public extraction entry point
+// (ExtractBestPlanWith / extractBestPlanWithVisited / rebuildExpressionVisited)
+// that callers other than Planner.Plan() use directly. None of those layers
+// has its own nil-on-error guard — they pass the choke point's return value
+// straight through — so this only stays green if the choke point itself is
+// fixed.
+func TestExtractBestPlanWith_ChokePointErrorReturnsNilPlan(t *testing.T) {
+	t.Parallel()
+
+	expr := &plannerExtractionErrorExpr{plan: plans.NewRecordQueryValuesPlan(nil)}
+	ref := expressions.InitialOf(expr)
+
+	plan, err := ExtractBestPlanWith(ref, nil)
+	if !errors.Is(err, errPlannerRuleBrokeExtractionContract) {
+		t.Fatalf("err=%v, want errPlannerRuleBrokeExtractionContract", err)
+	}
+	if plan != nil {
+		t.Fatalf("plan=%T (%v), want nil on the extraction-error path", plan, plan)
+	}
+}

@@ -720,7 +720,21 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		// which keeps the pipeline running but loses the singleton
 		// guarantee for that subtree.
 		if rebuilder, ok := e.(WithChildren); ok {
-			return rebuilder.WithChildren(freshChildren)
+			// Normalize HERE, not at each caller: an error return carries no
+			// expression. Every concrete WithChildren implementer in
+			// pkg/recordlayer/query/plan/plans happens to return nil alongside
+			// its own errors, but that is a convention the type system does
+			// not enforce — this is the single point every implementer's
+			// result flows through, so establishing the invariant here means
+			// callers throughout the extraction path (rebuildExpressionVisited,
+			// rebuildExpressionFromSelectorVisited, rebuildOrderedSpine, and
+			// everything that forwards their results) inherit it for free
+			// instead of each re-deriving it or trusting the convention holds.
+			built, buildErr := rebuilder.WithChildren(freshChildren)
+			if buildErr != nil {
+				return nil, buildErr
+			}
+			return built, nil
 		}
 		return e, nil
 	}
