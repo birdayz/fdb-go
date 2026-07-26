@@ -1539,8 +1539,12 @@ closed rather than silently alter rows or output schema.
   formula at both: either `NestedLoopJoinCost` stops applying its own
   `FilterSelectivity` when the predicate is already reflected in a child's
   cost, or `FlatMapCost` detects and does not double-count a predicate the
-  rewrite rule baked into its inner. That is design work behind the
-  query-engine gate — needs an RFC and a Graefe ACK before implementation,
+  rewrite rule baked into its inner. **RFC-192 is written and carries all of
+  the above plus three options and the gating conditions; it requests a Graefe
+  ruling on which option — including the prior question of whether the Go-only
+  materialized NLJ earns a cost model that must compare two shapes with
+  structurally different cost derivations.** That is design work behind the
+  query-engine gate — needs the RFC ACKed before implementation,
   plus a corpus re-bless and a stress comparison. Java sidesteps this entirely:
   it has no materialized NLJ plan at all and gates the criterion on both sides
   being `RecordQueryFlatMapPlan` (`PlanningCostModel.java:277`), so the whole
