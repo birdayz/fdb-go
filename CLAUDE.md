@@ -44,7 +44,13 @@ Worse, deferred findings **rot into invisibility**. Write a live defect into the
 
 **NEVER MOVE LATERALLY WHILE A DFS PATH IS OPEN.** If you are inside a problem and it is not finished, nothing else may be started — not an adjacent cleanup, not a different finding, not a "quick win" that would feel like progress. Lateral motion while a path is open is the same failure as deferral: the depth is abandoned, the context evaporates, and the problem comes back later as someone else's. Finish, or prove the path is genuinely blocked on a capability that does not exist.
 
-The only deferrals that are legitimate: it needs a capability that does not exist yet (and you have named the dependency chain), or it is a genuine upstream bug. "It's a separate concern", "it deserves its own item", "it changes plans so it needs its own review" — none of those are reasons to stop. They are reasons to do the extra work now: run the stress comparison, review the goldens, get the review lap. If you defer, the successor MUST be a numbered UNCHECKED entry carrying the reproducer and the measurement — never a paragraph inside something already done.
+**THERE ARE NO LEGITIMATE DEFERRALS. NONE.** Not "separate concern", not "deserves its own item", not "changes plans so it needs its own review" — those are reasons to do the extra work now: run the stress comparison, review the goldens, get the review lap.
+
+**"It needs a capability that doesn't exist yet" is not a deferral — it is the work.** This is the escape hatch that feels most legitimate and is the most damaging, because it is indistinguishable from real engineering right up until nothing gets built. A missing capability is a thing to BUILD, not a wall to stop at. Before you conclude a capability is missing, check Java: this is a port, and the odds are overwhelming that Java already has the machinery you just decided Go cannot have. A cost model that cannot tell a unique probe from a non-unique one is not blocked on statistics nobody has — Java has `CardinalitiesProperty`, so the task is to port it. "Go's substitute for X" in a comment is a standing admission that X is the real answer and someone stopped early.
+
+**"It's an upstream bug" is not a deferral either.** Fix it at the boundary, work around it deliberately with the divergence documented at the call site, and report it upstream. Shipping a known-broken path because the break is someone else's is still shipping a known-broken path.
+
+If you genuinely cannot proceed — the work needs a decision only the owner can make, or an external system nobody here controls — that is not a deferral, it is a **STOP**. Say so directly, in the conversation, with what you found and what you need. Do not convert it into a TODO entry and keep moving; a filed item is how a blocker becomes invisible. Escalating costs one sentence. Filing costs the next person everything you knew.
 
 ## NO FAKE CHECKBOXES — E2E OR IT'S NOT DONE
 
