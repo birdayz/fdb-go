@@ -2048,6 +2048,25 @@ closed rather than silently alter rows or output schema.
   position) that keeps their random/deterministic -0.0 seeding from tripping
   this gap; re-check that invariant before adding any composite index with a
   leading DOUBLE/FLOAT column to either generator.
+  **PREMISE NOW CONTINGENT (2026-07-27) — do NOT start this item until the
+  `=` semantics question is settled.** CQ-28 exists only to extend CQ-27's
+  zero-widening, and that widening exists only because Go's `=` is IEEE, so
+  `v = 0` is expected to match a stored `-0.0` and the index range must be
+  widened to agree with the filter. Java's `=` is NOT IEEE: it is bit
+  identity (`Comparisons.java:246` → `toClassWithRealEquals(...).equals(...)`
+  → `Double.equals` → `doubleToLongBits`), its ordering comparisons use
+  `Double.compareTo` (so `-0.0 < +0.0`), and its index probe agrees with its
+  filter — Java is self-consistent and simply does not match `-0.0` for
+  `= 0.0`. If Go adopts Java's contract (the open question raised by
+  `a8cad2edf`, now at the review gate), CQ-27's widening should be DELETED
+  rather than extended and CQ-28 dissolves along with the composite-prefix
+  problem, the multi-range-union RFC, and the two generator safety
+  invariants above. Building the (a)/(b) infra first risks constructing a
+  mechanism the semantics decision then removes. The sentinel test stays
+  either way: it just flips to asserting the Java-correct miss as CORRECT
+  instead of as a known gap. Note the dependency runs the other way for
+  `a8cad2edf`'s DISTINCT split, which is right under EITHER answer — value
+  identity is tuple-key identity regardless of what `=` does.
 
 **Exit gate:** focused tests for every item, Cascades unit + race suites,
 planner/translator tests, explain-plan golden, yamsql/FDB conformance, generated
