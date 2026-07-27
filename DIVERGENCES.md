@@ -649,6 +649,9 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 |---|---|---|
 | Compound DISTINCT (`SELECT DISTINCT a, b`) | Correctly deduplicates | Fails to dedup (returns all rows) |
 | Signed-zero comparison (`WHERE v >= 0.0` with `-0.0`) | Keeps row (IEEE 754: `-0.0 == +0.0`) | Drops the row |
+| Signed-zero equality (`WHERE v = 0.0` with `-0.0`) | Keeps row (IEEE) | Drops the row — see below |
+| NaN self-equality (`WHERE v = v` with `NaN`) | FALSE (IEEE, SQL standard) | **TRUE** — see below |
+| `SELECT v = 0.0` vs `WHERE v = 0.0` on the same `-0.0` | Agree (both IEEE) | **Contradict each other** — see below |
 | UNION ALL outer ORDER BY | Deterministic sorted output | Intermittent ordering |
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
 
@@ -1154,3 +1157,63 @@ stamped winner IS the designation wherever a REWRITING winner exists.
 END-STATE: when PLANNING re-derivation parity lands, the physical prune becomes affordable,
 the designation degenerates to the single final, and Java's `Verify(==1)` becomes
 enforceable — at which point this divergence closes.
+
+## Java's float `=` is bit identity, and contradicts itself (upstream bug)
+
+Go's `=` follows IEEE 754 on floats: `-0.0 = 0.0` is TRUE and `NaN = NaN` is
+FALSE, matching the SQL standard, Postgres and CockroachDB. Java does neither
+consistently, and the divergence is deliberate on our side.
+
+**Java's PREDICATE path uses bit identity.** `Comparisons.java:246` is the
+deciding line — `toClassWithRealEquals(value).equals(comparand)`, which for a
+`Double` is `Double.equals` → `doubleToLongBits`. Ordering comparisons go
+through `Double.compareTo` at `Comparisons.java:237-239`, the same total order.
+So in Java:
+
+- `WHERE d = 0.0` does NOT match a stored `-0.0`
+- `WHERE d = d` is **TRUE for NaN** — a flat SQL-standard violation
+
+Java's index probe agrees with its own filter here (FDB tuple encoding preserves
+the sign bit, so the two zeros are distinct adjacent keys), so Java is at least
+self-consistent between filter and index.
+
+**But Java contradicts itself between predicate and projection.** `RelOpValue`
+carries a second, independent evaluation path — the `BinaryPhysicalOperator`
+lambdas used when a `RelOpValue` is evaluated AS A VALUE rather than converted
+to a `QueryPredicate`. `RelOpValue.java:583`'s `EQ_DD` is
+`(l, r) -> (double)l == (double)r`: primitive IEEE. Same expression, two answers:
+
+| expression | mechanism | `-0.0` vs `0.0` | `NaN` vs `NaN` |
+|---|---|---|---|
+| `WHERE d = 0.0` | `SimpleComparison` → `Double.equals` | false | true |
+| `SELECT d = 0.0` | `EQ_DD` lambda → IEEE `==` | **true** | **false** |
+
+Exact opposites on both values. `SELECT d = 0.0 FROM t WHERE d = 0.0` over a
+stored `-0.0` yields zero rows; drop the `WHERE` and the projected column reads
+`true`. Note `RelOpValue.java:1149` explicitly delegates the ARRAY case back to
+`Comparisons.evalComparison` — the scalar DOUBLE/FLOAT cases simply do not.
+
+**Neither behaviour is pinned by any Java test.** `grep -rn -- "-0\.0"` over
+`fdb-record-layer-core` `src/main` and `src/test` returns only
+`TupleOrderingTest.java:81` (tuple byte order, unrelated to comparison) and the
+`Half` 16-bit-float utilities. It is emergent from `Double.equals`, not a
+defended contract.
+
+**Why Go diverges deliberately.** "Match Java" is not a coherent instruction
+when Java gives two answers for one expression, and porting the predicate path
+would import a standard violation (`NaN = NaN` TRUE). Comparison semantics are
+NOT wire format — the hard line is key encoding, record/index format and
+continuations, all of which Go matches byte-for-byte — so the read-side
+semantics are ours to get right. CockroachDB, the reference for calls Java does
+not settle, agrees with IEEE.
+
+**Consequence, stated plainly:** on a shared cluster, `WHERE d = 0.0` over a
+stored `-0.0` returns the row in Go and not in Java. That is a real cross-engine
+row difference, accepted because the alternative is importing a bug. It does NOT
+affect what either engine writes.
+
+**Related, and NOT the same question:** Go's DISTINCT / GROUP BY / uniqueness
+split the two zeros (value identity is tuple-key identity), which DOES match
+Java. `=` and dedup therefore disagree with each other in Go — an accepted,
+documented asymmetry, forced by the aggregate-index wire format. See
+`packedDedupKey`'s doc comment and TODO CQ-28 for the full argument.
