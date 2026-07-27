@@ -2038,7 +2038,49 @@ closed rather than silently alter rows or output schema.
   matching/data-access infra, milestone-level Graefe/Torvalds ACK) deciding
   between (a) multi-range union execution (reusing the same per-element
   fan-out the IN-list path already has) or (b) matcher-side residual-filter
-  cooperation. REPRODUCED and PINNED (not fixed) by
+  cooperation.
+  **RULING 2026-07-28 — the premise is CONFIRMED, not contingent; CQ-28 is real
+  work.** The prior note said this item might dissolve if Go adopted Java's
+  bit-identity `=`. It will not. Go keeps IEEE `=` (both zeros match), matching
+  the SQL standard, Postgres and CockroachDB. Java's alternative makes `d = 0`
+  fail to find a stored `-0.0`, breaks the most common operation in SQL, makes
+  `NaN = NaN` true, and moves away from the stated CRDB reference — for a corner
+  case, at the cost of touching every comparison, hash join and ordering in the
+  engine. Full-CRDB (everything merges) is physically impossible: a maintained
+  aggregate index stores the two zeros as two entries Java also reads. ANSI is
+  violated *somewhere* regardless; equality filters run constantly and
+  `SELECT DISTINCT` over a deliberately-stored `-0.0` is rare, so the common
+  path stays correct.
+  **ATTEMPTED AND REVERTED 2026-07-28 — the approach is viable but blocked on a
+  second bug.** Rewriting `floatCol = <zero>` to `floatCol IN (-0.0, +0.0)` at
+  resolve time is position-independent and needs no new execution machinery
+  (`rule_in_to_explode` already fans IN into per-value probes). It DID fix the
+  composite case — `v = 0 AND w = 5` returned `[1]` instead of nothing — but it
+  REGRESSED the terminal case from `[1 3]` to `[1]`, so it was reverted rather
+  than shipped. Root cause measured:
+  `inListValueEqual` (`rule_in_to_explode.go:211`) dedups IN elements with Go
+  `==`, under which `-0.0 == +0.0`, so the pair collapses to ONE element and the
+  surviving single probe does not get the zero-widening. That dedup is
+  semantically defensible (`v IN (-0.0,0.0)` ≡ `v = 0` under IEEE); the defect
+  is that the collapsed probe seeks only one of the two stored keys.
+  **NEW pre-existing wrong-rows bug found while measuring this — fix FIRST, it
+  blocks CQ-28 and is user-visible on its own.** Over rows
+  `(-0.0,5) (5.0,5) (0.0,9)` with index `(v,w)`:
+
+      v IN (-0.0, 0.0)  ->  [1]      plan IndexScan(T_VW,[=,*])   ONE probe
+      v IN (0.0, -0.0)  ->  [3]      same plan, keeps whichever is FIRST
+      v IN (-0.0, 5.0)  ->  [1] [2]  plan InJoin(...)             correct
+
+  So any user writing `v IN (-0.0, 0.0)` silently loses a row today, and the
+  result depends on element ORDER. Independent of CQ-28.
+  **Also measured: a separate, more general matcher gap.** An IN on a leading
+  column combined with a trailing equality does not sarg at all —
+  `v IN (5.0, 9.0) AND w = 5` plans as `PredicatesFilter(Scan(T))` while
+  `v IN (5.0, 9.0)` alone plans as `InJoin(IndexScan(T_V))` and
+  `v = 5.0 AND w = 5` as `IndexScan(T_VW,[=,=])`. Every `IN + trailing equality`
+  query pays a full scan. Far more general than signed zero and worth its own
+  item.
+  REPRODUCED and PINNED (not fixed) by
   `pkg/relational/sqldriver/negative_zero_composite_index_sarg_probe_test.go`
   (composite index `(v DOUBLE, w BIGINT)`, `WHERE v = 0 AND w = 5` misses a
   stored `-0.0` row via the index) — fails the day this closes, forcing that
