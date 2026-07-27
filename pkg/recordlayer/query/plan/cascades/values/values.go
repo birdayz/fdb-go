@@ -1556,11 +1556,20 @@ func explainValueOrdinals(v Value, withOrdinals bool) string {
 }
 
 // explainTypeName renders a Type as a short SQL-ish name for the
-// CAST / PROMOTE rendering in ExplainValue. Mirrors the legacy
-// ValueType.String() output (`INT` / `STRING` / `BOOL` / `FLOAT` /
-// `UNKNOWN`) — LONG/INT deliberately conflate to INT and DOUBLE/FLOAT
-// to FLOAT so the rendered output, and the plan-cache keys derived via
-// ExplainValue, stay byte-stable with the pre-retirement rendering.
+// CAST / PROMOTE rendering in ExplainValue.
+//
+// LONG/INT deliberately conflate to INT, so the rendered output — and the
+// plan-cache keys derived via ExplainValue — stay byte-stable with the legacy
+// ValueType.String() rendering. That conflation is safe because both are int64
+// in the row domain and sort identically, so nothing downstream can tell them
+// apart.
+//
+// DOUBLE/FLOAT used to conflate for the same byte-stability reason and no
+// longer do. They are genuinely different (binary32 rounding vs none), the
+// rendering is consumed as a semantic key by dedupSortKeys, and byte-stability
+// with a rendering that could not express the difference is not worth keeping.
+// Breaking it moved 8 plan-shape golden lines, every one a DOUBLE cast that had
+// been claiming to be a FLOAT one.
 func explainTypeName(t Type) string {
 	if t == nil {
 		return "UNKNOWN"
