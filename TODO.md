@@ -9455,7 +9455,14 @@ projection paths are robust to these inputs.
 Crash seeds NOT committed (they would red CI for gated bugs); recorded as
 hashes/reproducers. All experiments reverted; tree clean.
 
-## Phase 11: Optimizer invariants (RFC-193/194 follow-through)
+## Phase 11: Optimizer invariants
+
+(Header previously read "RFC-193/194 follow-through". Neither document was ever
+committed — no such file exists in the repo or its history. The findings they
+were meant to hold are recorded in the items below, which is why they survived
+the drafts being lost. Do not reuse numbers 193/194 for unrelated documents: a
+stale reference that resolves to the WRONG doc is worse than one that resolves
+to nothing.)
 
 - [ ] **CQ-29 (HIGH) — five cost estimates violate a proven cardinality bound.**
   Found by cross-checking the cost model against `CardinalitiesProperty` as an
@@ -9492,7 +9499,10 @@ hashes/reproducers. All experiments reverted; tree clean.
   per group (one winner per distinct requested ordering), so "the group's
   cardinality" is genuinely ambiguous and two disagreeing answers live side by
   side. Fix: route criterion 2 through `GetRefPlanPropertiesMap`/
-  `computeCardinalities` and delete the duplicate. RFC-193 §5.3.
+  `computeCardinalities` and delete the duplicate. Specified in
+  `rfcs/195-cost-must-not-contradict-proof.md`, which covers this together with
+  CQ-29 — they are the same defect (cardinality with two homes) seen from the
+  two sides, and fixing one without the other leaves the disagreement intact.
 
 - [ ] **CQ-31 (HIGH) — retire `.Field` as an input to any DECISION.**
   Seven separate hand-rolled proofs of a semantic property by leaf-name
@@ -9509,7 +9519,13 @@ hashes/reproducers. All experiments reverted; tree clean.
   `ColumnMeta.Alias` is documented as display-only. **Enforcement is the point** —
   a `pkg/docscheck`-style build check that `.Field` cannot feed a comparison
   outside an allowlisted display site, or an eighth instance is certain.
-  RFC-193 §5.1.
+  (This item previously cited "RFC-193 §5.1". **That document was never
+  committed** — no such file exists in the repo or its history, so the citation
+  pointed at nothing. The measurements above are the actual specification; they
+  were recorded here rather than in the uncommitted draft, which is why they
+  survived. RFC number 193 remains unused and is NOT reused, so any stale
+  reference elsewhere stays merely broken instead of silently resolving to an
+  unrelated document.)
 
 - [ ] **CQ-32 (MED) — two `MemoEqual` callers still bypass the alias gate.**
   `Memo.memoizeNonLeaf` and `Memo.refContains` (`memo.go:398-433`, `511-523`) call
