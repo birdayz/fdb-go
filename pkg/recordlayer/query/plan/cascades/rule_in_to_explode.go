@@ -2,7 +2,6 @@ package cascades
 
 import (
 	"bytes"
-	"math"
 	"reflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -184,22 +183,8 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 
 // distinctInListValues returns in with duplicate elements removed,
 // preserving first-occurrence order. Mirrors the runtime semantics of
-// Java's ArrayDistinctValue applied to a constant IN-list. []byte compares by
-// content; other scalar literals by ==, EXCEPT floats — see inListValueEqual.
-//
-// This dedup exists to avoid issuing the same PROBE twice, so its identity must
-// be PROBE identity (the tuple key an element packs to), not SQL value
-// identity. The two are the same for every type except float, where IEEE says
-// -0.0 == +0.0 while the FDB tuple encoder preserves the sign bit and packs
-// them to two distinct, adjacent keys.
-//
-// Deduping those by value dropped one, and the survivor probed only its own
-// key: `v IN (-0.0, 0.0)` returned ONE row instead of two, and WHICH row
-// depended on element order. Java does not hit this, but only by accident — its
-// `=` is bit identity (Comparisons.java:246, an upstream bug we deliberately do
-// not port, see DIVERGENCES.md), so its dedup keeps both for the wrong reason.
-// Go's `=` is correctly IEEE, which is exactly what made a value-based dedup
-// unsound here.
+// Java's ArrayDistinctValue applied to a constant IN-list. SQL value
+// equality: []byte compares by content; other scalar literals by ==.
 func distinctInListValues(in []any) []any {
 	out := make([]any, 0, len(in))
 	for _, v := range in {
@@ -230,23 +215,6 @@ func inListValueEqual(a, b any) bool {
 	if ab, ok := a.([]byte); ok {
 		bb, ok := b.([]byte)
 		return ok && bytes.Equal(ab, bb)
-	}
-	// Floats compare by BIT PATTERN, not by ==. This is a probe dedup (see
-	// distinctInListValues): two elements that pack to different tuple keys
-	// must both be probed, and -0.0/+0.0 are IEEE-equal but pack distinctly.
-	// NaN is covered by the same rule from the other side — every NaN packs
-	// identically here, so redundant NaN probes still collapse.
-	if af, ok := a.(float64); ok {
-		if bf, ok := b.(float64); ok {
-			return math.Float64bits(af) == math.Float64bits(bf)
-		}
-		return false
-	}
-	if af, ok := a.(float32); ok {
-		if bf, ok := b.(float32); ok {
-			return math.Float32bits(af) == math.Float32bits(bf)
-		}
-		return false
 	}
 	if !reflect.TypeOf(a).Comparable() || !reflect.TypeOf(b).Comparable() {
 		return reflect.DeepEqual(a, b)
