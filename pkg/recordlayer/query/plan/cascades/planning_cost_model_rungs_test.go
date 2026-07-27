@@ -424,11 +424,17 @@ func TestPlanningCostModel_PrimaryIndexWinnerFlipsWithConfiguration(t *testing.T
 	)
 }
 
-// TestPlanningCostModel_PrimaryIndexStrictSARGSuperset verifies the other
-// criterion-#7 branch end to end: even under PreferScan, an index without a
-// type filter wins when its bare comparison set strictly contains the primary
-// scan's comparison set.
-func TestPlanningCostModel_PrimaryIndexStrictSARGSuperset(t *testing.T) {
+// TestPlanningCostModel_PrimaryIndexSARGRichIndexWins verifies criterion #7's
+// contested band end to end: even under PreferScan, an index without a type
+// filter wins over a type-filtered primary scan when it carries MORE search
+// arguments.
+//
+// The isolation is differential rather than adversarial. The same pair with the
+// index's extra comparison removed must flip the winner back to the primary
+// scan, which no rung below criterion #7 could produce (the type-filter rung
+// directly beneath prefers the index in BOTH shapes). So a verdict that tracks
+// the extra comparison can only have come from this rung.
+func TestPlanningCostModel_PrimaryIndexSARGRichIndexWins(t *testing.T) {
 	t.Parallel()
 
 	shared := rungEqualityRange(t, values.LiteralValue(int64(1)))
@@ -436,9 +442,73 @@ func TestPlanningCostModel_PrimaryIndexStrictSARGSuperset(t *testing.T) {
 	primaryScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
 		WithScanComparisons([]*predicates.ComparisonRange{shared})
 	primary := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, primaryScan)
-	index := plans.NewRecordQueryInMemorySortPlan(
+	richIndex := plans.NewRecordQueryIndexPlan(
+		"idx_sarg_rich",
+		[]*predicates.ComparisonRange{shared, extra},
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	)
+	leanIndex := plans.NewRecordQueryIndexPlan(
+		"idx_sarg_lean",
+		[]*predicates.ComparisonRange{shared},
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	)
+	ctx := &prefTestCtx{pref: PreferScan}
+
+	opsPrimary := findExpressionsByType(primary, nil, ctx)
+	opsRich := findExpressionsByType(richIndex, nil, ctx)
+	opsLean := findExpressionsByType(leanIndex, nil, ctx)
+	if opsPrimary.typeFilterCount == 0 || opsRich.typeFilterCount != 0 || opsLean.typeFilterCount != 0 {
+		t.Fatalf(
+			"type-filter precondition = (%d, %d, %d), want (>0, 0, 0)",
+			opsPrimary.typeFilterCount, opsRich.typeFilterCount, opsLean.typeFilterCount,
+		)
+	}
+	if got := distinctSargCount(primary); got != 1 {
+		t.Fatalf("primary search-argument count = %d, want 1", got)
+	}
+	if got := distinctSargCount(richIndex); got != 2 {
+		t.Fatalf("rich index search-argument count = %d, want 2", got)
+	}
+	if got := distinctSargCount(leanIndex); got != 1 {
+		t.Fatalf("lean index search-argument count = %d, want 1", got)
+	}
+
+	if cmp := comparePrimaryScanVsIndexScan(primary, richIndex, opsPrimary, opsRich, PreferScan); cmp <= 0 {
+		t.Fatalf("SARG-rich comparison = %d, want the index to win", cmp)
+	}
+	// Differential control: strip the extra comparison and the primary wins.
+	if cmp := comparePrimaryScanVsIndexScan(primary, leanIndex, opsPrimary, opsLean, PreferScan); cmp >= 0 {
+		t.Fatalf("SARG-equal comparison = %d, want the primary scan to win", cmp)
+	}
+
+	less := NewPlanningCostModelLessWithContext(nil, ctx)
+	assertStrictPlanningPreference(t, less, richIndex, primary)
+	assertStrictPlanningPreference(t, less, primary, leanIndex)
+}
+
+// TestPlanningCostModel_PrimaryVsIndexRungIgnoresSortBearingPlans pins the
+// symmetric sort treatment. A plan carrying an in-memory sort has no stake in
+// the primary-versus-index trade-off, on EITHER side, so criterion #7 ranks it
+// last and the sort-count rung immediately below decides. The pre-fix rung
+// applied that guard to the primary side only, which let an
+// InMemorySort(IndexScan) win here and pre-empt the sort rung.
+func TestPlanningCostModel_PrimaryVsIndexRungIgnoresSortBearingPlans(t *testing.T) {
+	t.Parallel()
+
+	shared := rungEqualityRange(t, values.LiteralValue(int64(1)))
+	extra := rungEqualityRange(t, values.LiteralValue(int64(2)))
+	primary := plans.NewRecordQueryTypeFilterPlan(
+		[]string{"T"},
+		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			WithScanComparisons([]*predicates.ComparisonRange{shared}),
+	)
+	sortedIndex := plans.NewRecordQueryInMemorySortPlan(
 		plans.NewRecordQueryIndexPlan(
-			"idx_sarg_superset",
+			"idx_sorted_sarg_rich",
 			[]*predicates.ComparisonRange{shared, extra},
 			[]string{"T"},
 			values.UnknownType,
@@ -447,30 +517,30 @@ func TestPlanningCostModel_PrimaryIndexStrictSARGSuperset(t *testing.T) {
 		nil,
 	)
 	ctx := &prefTestCtx{pref: PreferScan}
-
 	opsPrimary := findExpressionsByType(primary, nil, ctx)
-	opsIndex := findExpressionsByType(index, nil, ctx)
-	if opsPrimary.inMemorySortCount != 0 || opsIndex.inMemorySortCount != 1 {
+	opsSorted := findExpressionsByType(sortedIndex, nil, ctx)
+	if opsPrimary.inMemorySortCount != 0 || opsSorted.inMemorySortCount != 1 {
 		t.Fatalf(
-			"sort-count adversary = (%d, %d), want (0, 1)",
-			opsPrimary.inMemorySortCount,
-			opsIndex.inMemorySortCount,
+			"sort-count precondition = (%d, %d), want (0, 1)",
+			opsPrimary.inMemorySortCount, opsSorted.inMemorySortCount,
 		)
 	}
-	if cmp := comparePrimaryScanVsIndexScan(
-		primary,
-		index,
-		opsPrimary,
-		opsIndex,
-		PreferScan,
-	); cmp <= 0 {
-		t.Fatalf("strict-SARG-superset comparison = %d, want index to win", cmp)
+	// Search-argument-wise this is the pair the previous test says the index
+	// wins; the sort is the only difference.
+	if distinctSargCount(sortedIndex) <= distinctSargCount(primary) {
+		t.Fatalf(
+			"adversary missing: sorted index search arguments %d must exceed the primary's %d",
+			distinctSargCount(sortedIndex), distinctSargCount(primary),
+		)
+	}
+	if cmp := comparePrimaryScanVsIndexScan(primary, sortedIndex, opsPrimary, opsSorted, PreferScan); cmp >= 0 {
+		t.Fatalf("sort-bearing comparison = %d, want the sort-free primary scan to win", cmp)
 	}
 	assertStrictPlanningPreference(
 		t,
 		NewPlanningCostModelLessWithContext(nil, ctx),
-		index,
 		primary,
+		sortedIndex,
 	)
 }
 
@@ -507,6 +577,97 @@ func TestPlanningCostModel_FetchCountBeforeFetchDepth(t *testing.T) {
 	assertStrictPlanningPreference(t, PlanningCostModelLess, lowerTotalDeeper, higherTotalShallower)
 }
 
+// TestPlanningCostModel_SargRichIndexBeatsSargPoorIndex pins criterion #7's
+// contested band on the INDEX-versus-INDEX axis: an index scan that bound a
+// search argument beats one that bound none, even when the bound one pays an
+// extra explicit Fetch node that the fetch rung below would charge it for.
+//
+// This is the axis the ranked rung reaches that the pair-restricted form could
+// not: the old rung abstained for index-versus-index and the fetch-count rung
+// decided, handing the win to the unbound full index scan. A bound index probe
+// beating an unbound index scan is the right preference, and the extra Fetch
+// node is a structural detail rather than a real cost difference — both
+// candidates fetch exactly once, one implicitly and one explicitly.
+//
+// The isolation is differential. The ONLY change between the two assertions is
+// whether the poor side also binds a comparison; giving it one restores the tie
+// at this rung and hands the decision back to the fetch-count rung, which
+// reverses the winner. A verdict that tracks that single comparison can only
+// have come from this rung.
+func TestPlanningCostModel_SargRichIndexBeatsSargPoorIndex(t *testing.T) {
+	t.Parallel()
+
+	// rich: covering index bound on one column, plus an explicit fetch.
+	rich := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		plans.NewRecordQueryIndexPlan(
+			"idx_sarg_rich_leg",
+			[]*predicates.ComparisonRange{rungEqualityRange(t, values.LiteralValue(int64(1)))},
+			[]string{"T"},
+			values.UnknownType,
+			false,
+		).WithCovering([]string{"K"}),
+		nil,
+		values.UnknownType,
+		plans.FetchIndexRecordsPrimaryKey,
+	)
+	// poor: unbound non-covering index scan, whose fetch is implicit.
+	poor := plans.NewRecordQueryIndexPlan(
+		"idx_sarg_poor_leg", nil, []string{"T"}, values.UnknownType, false)
+	// control: the same shape as poor, but bound like rich.
+	control := plans.NewRecordQueryIndexPlan(
+		"idx_sarg_control_leg",
+		[]*predicates.ComparisonRange{rungEqualityRange(t, values.LiteralValue(int64(1)))},
+		[]string{"T"},
+		values.UnknownType,
+		false,
+	)
+
+	opsRich := concretePlanCounts(rich, nil)
+	opsPoor := concretePlanCounts(poor, nil)
+	opsControl := concretePlanCounts(control, nil)
+	// Preconditions: all three are singular index scans with a fetch, none has a
+	// type filter or a sort, so they all land in the contested band.
+	for _, c := range []struct {
+		name string
+		ops  expressionCounts
+	}{{"rich", opsRich}, {"poor", opsPoor}, {"control", opsControl}} {
+		if !isSingularIndexScanWithFetch(c.ops) {
+			t.Fatalf("%s is not a singular index scan with fetch", c.name)
+		}
+		if c.ops.typeFilterCount != 0 || c.ops.inMemorySortCount != 0 {
+			t.Fatalf("%s must carry neither type filter nor sort, got tf=%d sort=%d",
+				c.name, c.ops.typeFilterCount, c.ops.inMemorySortCount)
+		}
+	}
+	if distinctSargCount(rich) != 1 || distinctSargCount(poor) != 0 || distinctSargCount(control) != 1 {
+		t.Fatalf("search-argument precondition = (%d, %d, %d), want (1, 0, 1)",
+			distinctSargCount(rich), distinctSargCount(poor), distinctSargCount(control))
+	}
+	// Adversary: the fetch-count rung below prefers the poor side, because its
+	// fetch is implicit in the index scan while the rich side spells one out.
+	// Total fetches tie, so only the explicit-node count separates them.
+	if opsRich.indexScanCount+opsRich.fetchCount != opsPoor.indexScanCount+opsPoor.fetchCount {
+		t.Fatalf("total-fetch adversary broken: rich=%d poor=%d",
+			opsRich.indexScanCount+opsRich.fetchCount, opsPoor.indexScanCount+opsPoor.fetchCount)
+	}
+	if opsRich.fetchCount <= opsPoor.fetchCount {
+		t.Fatalf("explicit-fetch adversary missing: rich fetches=%d must exceed poor fetches=%d",
+			opsRich.fetchCount, opsPoor.fetchCount)
+	}
+
+	if cmp := comparePrimaryScanVsIndexScan(rich, poor, opsRich, opsPoor, PreferScan); cmp >= 0 {
+		t.Fatalf("rung(rich, poor) = %d, want the bound index to win", cmp)
+	}
+	assertStrictPlanningPreference(t, PlanningCostModelLess, rich, poor)
+
+	// Differential control: bind the poor side too and the rung ties, so the
+	// fetch-count rung decides and the implicit-fetch candidate wins instead.
+	if cmp := comparePrimaryScanVsIndexScan(rich, control, opsRich, opsControl, PreferScan); cmp != 0 {
+		t.Fatalf("rung(rich, control) = %d, want 0 so the fetch rung can decide", cmp)
+	}
+	assertStrictPlanningPreference(t, PlanningCostModelLess, control, rich)
+}
+
 // TestPlanningCostModel_ExplicitFetchCountBeforeUnmatchedFields isolates the
 // last sub-rung in the index-fetch block. Both candidates tie on total fetches
 // and fetch depth; fewer explicit Fetch nodes must win even though the later
@@ -514,9 +675,12 @@ func TestPlanningCostModel_FetchCountBeforeFetchDepth(t *testing.T) {
 func TestPlanningCostModel_ExplicitFetchCountBeforeUnmatchedFields(t *testing.T) {
 	t.Parallel()
 
+	// Both candidates carry ONE search argument so criterion #7, which ranks the
+	// contested band by search-argument count, ties them and the index-fetch
+	// block below actually gets to decide.
 	implicit := plans.NewRecordQueryIndexPlan(
 		"idx_implicit_fetch",
-		nil,
+		[]*predicates.ComparisonRange{rungEqualityRange(t, values.LiteralValue(int64(1)))},
 		[]string{"T"},
 		values.UnknownType,
 		false,
@@ -571,9 +735,9 @@ func TestPlanningCostModel_ExplicitFetchCountBeforeUnmatchedFields(t *testing.T)
 	if opsWinner.fetchCount != 0 || opsLoser.fetchCount != 1 {
 		t.Fatalf("explicit-fetch precondition = (%d, %d), want (0, 1)", opsWinner.fetchCount, opsLoser.fetchCount)
 	}
-	if opsWinner.unmatchedFieldCount != 3 || opsLoser.unmatchedFieldCount != 0 {
+	if opsWinner.unmatchedFieldCount != 2 || opsLoser.unmatchedFieldCount != 0 {
 		t.Fatalf(
-			"unmatched-field adversary = (%d, %d), want (3, 0)",
+			"unmatched-field adversary = (%d, %d), want (2, 0)",
 			opsWinner.unmatchedFieldCount,
 			opsLoser.unmatchedFieldCount,
 		)

@@ -67,7 +67,12 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 		if pushQ.Kind() != expressions.QuantifierForEach {
 			continue
 		}
-		if pushQ.IsNullOnEmpty() {
+		// Both flags are semantic barriers. NullOnEmpty must see predicates
+		// after null extension; StrictSingle must count rows before any
+		// scalar-dependent predicate can hide a second row. This rule rebuilds
+		// the pushed edge as a plain ForEach, so either flag also has to block
+		// the rewrite to prevent carrier erasure.
+		if pushQ.IsNullOnEmpty() || pushQ.IsStrictSingle() {
 			continue
 		}
 
@@ -224,12 +229,49 @@ func pushIntoLogicalFilter(
 // pushIntoSelect absorbs predicates into a SelectExpression by
 // translating them to reference the select's result value and combining
 // with the select's existing predicates. Returns a new SelectExpression.
-// Ports Java's PushToVisitor.visitSelectExpression.
+// Ports Java's PushToVisitor.visitSelectExpression — UNCONDITIONAL there
+// (PredicatePushDownRule.java:378-392) because Java's SelectExpression can
+// never carry outer-join semantics: Java routes LEFT OUTER through a
+// null-on-empty quantifier (RewriteOuterJoinRule) and has no Cascades
+// representation for FULL OUTER at all, so every Java SelectExpression is
+// ChildrenAsSet-equivalent (inner/cross) and absorbing a predicate into its
+// own list is always sound.
+//
+// Go's SelectExpression is a wider, Go-only extension that ALSO carries
+// FULL/LEFT/RIGHT OUTER directly via joinType (select.go's ChildrenAsSet
+// doc, RewriteOuterJoinRule's header) — a child in THIS shape is not the
+// shape visitSelectExpression assumed. Absorbing a WHERE-class predicate
+// into such a child's OWN predicate list turns it into an ON-condition:
+// the join's null-extension drain for an unmatched row runs regardless of
+// that extra condition, so the predicate stops filtering the padded row it
+// was meant to reject (WHERE-above-OUTER silently degrades into
+// ON-below-OUTER — full/left/right outer join drain bypasses it). Every
+// sibling rule that can reach into a child SelectExpression already guards
+// this exact Go-only shape (PushFilterBelowJoinRule's JoinInner check,
+// PartitionBinarySelectRule's same check, SelectMergeRule's
+// ChildrenAsSet() gate) — this rule is the one that was missing it.
 func pushIntoSelect(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	selectExpr *expressions.SelectExpression,
 ) expressions.RelationalExpression {
+	// An OUTER-join child (FULL/LEFT/RIGHT) is opaque to predicate
+	// absorption: see the function doc. ChildrenAsSet() is Go's existing
+	// commutative/inner-equivalent marker (select.go) — false for every
+	// outer join type, matching the opacity gate every sibling rule uses.
+	if !selectExpr.ChildrenAsSet() {
+		return nil
+	}
+
+	// A plain parent edge can still range over a Select that owns the strict
+	// scalar edge internally. Absorbing the parent's predicate into that Select
+	// would move it below the strict FirstOrDefault boundary, allowing the
+	// predicate to hide a second row before cardinality is checked. Treat the
+	// nested carrier as opaque just like a directly flagged push quantifier.
+	if hasStrictSingleQuantifier(selectExpr.GetQuantifiers()) {
+		return nil
+	}
+
 	// Build a TranslationMap: pushQuantifier.alias -> selectExpr.resultValue.
 	resultValue := selectExpr.GetResultValue()
 	tmBuilder := NewTranslationMapBuilder()

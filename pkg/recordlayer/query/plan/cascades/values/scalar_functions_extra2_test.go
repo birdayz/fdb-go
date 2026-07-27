@@ -617,7 +617,7 @@ func TestEvalScalarFunction_RIGHT(t *testing.T) {
 // non-folding (impure), so the registry needs to be selective.
 func TestSimplifyValue_PI_DoesNotFold(t *testing.T) {
 	t.Parallel()
-	v := NewScalarFunctionValue("PI", TypeFloat)
+	v := NewScalarFunctionValue("PI", NullableDouble)
 	out := SimplifyValue(v)
 	if _, ok := out.(*ScalarFunctionValue); !ok {
 		t.Fatalf("expected ScalarFunctionValue (no fold for zero-arg fns), got %T — if a purity registry was added, update this test to assert *ConstantValue with math.Pi", out)

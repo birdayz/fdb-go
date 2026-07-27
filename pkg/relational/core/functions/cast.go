@@ -1,6 +1,7 @@
 package functions
 
 import (
+	"errors"
 	"math"
 	"strconv"
 	"strings"
@@ -94,7 +95,50 @@ func CastValue(v any, typeName string) (any, error) {
 			}
 			return int64(0), nil
 		}
-	case strings.HasPrefix(typeName, "FLOAT"), strings.HasPrefix(typeName, "DOUBLE"), strings.HasPrefix(typeName, "DECIMAL"), strings.HasPrefix(typeName, "NUMERIC"):
+	case strings.HasPrefix(typeName, "FLOAT"):
+		// FLOAT is binary32 (a FLOAT column's index entries pack as tuple code
+		// 0x20), so a cast TO it must ROUND, matching Java's DOUBLE_TO_FLOAT
+		// (`value.floatValue()`), INT/LONG_TO_FLOAT (`Float.valueOf`) and
+		// STRING_TO_FLOAT (`Float.parseFloat`) — CastValue.java:126-205.
+		// Sharing the DOUBLE arm below made the cast a no-op, wrong in BOTH
+		// directions on a value binary32 cannot represent: it matched DOUBLE
+		// rows the rounded constant differs from, and missed the FLOAT rows it
+		// equals. The rounding, the NaN/Infinite rejection and the range check
+		// match values.CastValue's FLOAT arm exactly — the two CAST
+		// implementations must agree on those or a constant fold and its
+		// runtime disagree about the same expression. They are NOT identical
+		// overall: this copy has no bool source arm (neither here nor in the
+		// DOUBLE case below), so CAST(<bool> AS FLOAT) is unsupported on the
+		// map path while the query engine converts it. That gap predates the
+		// float work and is left alone rather than widened silently.
+		switch n := v.(type) {
+		case float64:
+			if math.IsNaN(n) || math.IsInf(n, 0) {
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+					"Invalid cast operation Cannot cast NaN or Infinite to FLOAT")
+			}
+			if n > math.MaxFloat32 || n < -math.MaxFloat32 {
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+					"Invalid cast operation Value out of range for FLOAT: %s", javaDoubleToString(n))
+			}
+			return float64(float32(n)), nil
+		case float32:
+			return float64(n), nil
+		case int64:
+			return float64(float32(n)), nil
+		case string:
+			// bitSize 32 rounds to binary32. ErrRange is NOT a failure: Go
+			// reports binary32 overflow by returning ±Inf WITH an error, while
+			// Float.parseFloat returns Infinity and throws only on malformed
+			// text, so rejecting it would refuse `CAST('1e39' AS FLOAT)` that
+			// Java accepts. The returned value is already the ±Inf Java gives.
+			f, err := strconv.ParseFloat(strings.TrimSpace(n), 32)
+			if err != nil && !errors.Is(err, strconv.ErrRange) {
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to float: %v", n, err)
+			}
+			return f, nil
+		}
+	case strings.HasPrefix(typeName, "DOUBLE"), strings.HasPrefix(typeName, "DECIMAL"), strings.HasPrefix(typeName, "NUMERIC"):
 		switch n := v.(type) {
 		case float64:
 			return n, nil

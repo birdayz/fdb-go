@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"context"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -39,9 +41,12 @@ import (
 // the data-access path routes by physicality via the planner's
 // yieldUnknown.
 type ExpressionRuleCall struct {
-	Bindings    *matching.PlannerBindings
-	Reference   *expressions.Reference
-	Context     PlanContext
+	Bindings  *matching.PlannerBindings
+	Reference *expressions.Reference
+	Context   PlanContext
+	// RunContext is the cancellation scope for this planner invocation. It is
+	// nil only for standalone rule tests constructed outside Planner.
+	RunContext  context.Context
 	Constraints *ConstraintMap
 	// Stats is the planner's table-cardinality provider, threaded so a
 	// rule's internal cost comparisons (e.g. selecting the best physical
@@ -55,6 +60,15 @@ type ExpressionRuleCall struct {
 	memo        *Memo
 	yieldedExps []expressions.RelationalExpression
 	yieldFn     func(expressions.RelationalExpression) bool
+}
+
+// CancellationErr reports whether the owning planning run was canceled.
+// Standalone rule calls with no RunContext are non-cancelable.
+func (c *ExpressionRuleCall) CancellationErr() error {
+	if c == nil || c.RunContext == nil {
+		return nil
+	}
+	return c.RunContext.Err()
 }
 
 // CostModel returns the comparator a rule should use for internal best-plan
@@ -101,11 +115,22 @@ func NewExpressionRuleCallWithMemo(ref *expressions.Reference, bindings *matchin
 // Yield inserts `expr` into the Reference's equivalence class. Returns
 // true if the expression was a new member, false if Reference.Insert
 // detected a duplicate (matching EqualsWithoutChildren under empty
-// alias map). yieldedExps records the call regardless — the rule's
-// intent was to yield, even if dedup absorbed the result.
+// alias map). On the insert paths yieldedExps records the call even when
+// dedup absorbed the result — the rule's intent was to yield.
+//
+// A canceled run returns false without inserting; the record is not
+// guaranteed — cancellation seen at entry skips yieldedExps entirely, while
+// cancellation that lands inside yieldFn still appends. Either way false now
+// means EITHER "dedup absorbed this" OR "planning was canceled". No rule
+// branches on the return today; one that wants a dedup fallback
+// (`if !call.Yield(x) { ... }`) must first check CancellationErr, or it will
+// run that fallback while the run is being torn down.
 func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) bool {
 	if expr == nil {
 		panic("ExpressionRuleCall.Yield: nil expression")
+	}
+	if c.CancellationErr() != nil {
+		return false
 	}
 	if c.yieldFn != nil {
 		result := c.yieldFn(expr)

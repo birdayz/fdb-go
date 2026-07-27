@@ -4419,6 +4419,52 @@ func TestMergeSortCursor_DedupWithAllDuplicates(t *testing.T) {
 	}
 }
 
+// TestMergeSortCursor_DedupTieBreak_PicksOrigIndexLeastLeg pins WHICH leg's
+// row a tied dedup emits, not just that dedup drops the duplicate. Every
+// other merge-sort fixture in this suite uses the comparison key as the
+// row's ONLY field, so a tied pair is byte-identical and the choice between
+// legs is unobservable — chosen[len(chosen)-1] (last-tied-leg, i.e. highest
+// origIndex) would pass every one of them exactly as well as chosen[0]
+// (origIndex-least, matching Java's chosenStates.get(0) —
+// UnionCursorBase.java:70-72 — and mergeSortHeap's doc comment).
+//
+// Here leg 0 and leg 1 both hold id=5 but carry a distinguishing "tag" field
+// the comparison key never touches, so the emitted row's tag reveals which
+// leg's VALUE the cursor actually returned.
+func TestMergeSortCursor_DedupTieBreak_PicksOrigIndexLeastLeg(t *testing.T) {
+	t.Parallel()
+
+	legA := recordlayer.FromList([]QueryResult{
+		qr("id", int64(5), "tag", "A"),
+	})
+	legB := recordlayer.FromList([]QueryResult{
+		qr("id", int64(5), "tag", "B"),
+	})
+
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{legA, legB},
+		[]values.Value{compKey},
+		false, // ascending
+		true,  // dedup
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 (tied rows must dedup to one emission); values: %v", len(results), results)
+	}
+	m, ok := rowMapOK(results[0])
+	if !ok {
+		t.Fatalf("datum type %T, want map[string]any", results[0].Positional)
+	}
+	if got := m["tag"]; got != "A" {
+		t.Fatalf("emitted tied row has tag %v, want %q (leg 0, the origIndex-least tied leg, "+
+			"matching Java's chosenStates.get(0)) — a tied dedup emitted leg %v's row instead of leg 0's",
+			got, "A", got)
+	}
+}
+
 func TestMergeSortCursor_ThreeInputs(t *testing.T) {
 	t.Parallel()
 
@@ -4765,7 +4811,7 @@ func TestAggregateContinuation_FloatMinMax(t *testing.T) {
 	t.Parallel()
 
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("price", values.TypeFloat)},
+		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("price", values.NullableDouble)},
 	}
 	gs := &groupState{
 		keyVals: []any{"x"},
@@ -4856,7 +4902,7 @@ func TestAggregateContinuation_TypesPreserved_F5(t *testing.T) {
 	bigInt := int64(1<<60 + 1) // 1152921504606846977 — not representable in float64
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("v", values.TypeInt)},
-		{Function: expressions.AggMax, Operand: values.NewFlatFieldValue("w", values.TypeFloat)},
+		{Function: expressions.AggMax, Operand: values.NewFlatFieldValue("w", values.NullableDouble)},
 	}
 	gs := &groupState{
 		keyVals: []any{[]byte{1, 2}, float64(2.0), bigInt},

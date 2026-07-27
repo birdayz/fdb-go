@@ -34,6 +34,12 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 	if len(quantifiers) != 1 {
 		return
 	}
+	// A strict edge is meaningful only as the inner of the binary correlated
+	// scalar FlatMap. Implementing it as a standalone passthrough/filter would
+	// erase the at-most-one-row check.
+	if hasStrictSingleQuantifier(quantifiers) {
+		return
+	}
 
 	innerQuantifier := quantifiers[0]
 	innerRef := innerQuantifier.GetRangesOver()

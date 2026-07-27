@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"fmt"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -150,17 +151,17 @@ func extractTieBreakTypeKey(e expressions.RelationalExpression) string {
 }
 
 // extractTieBreakHash is a deterministic structural hash over the
-// expression DAG: the node's own HashCodeWithoutChildren folded
-// ORDER-SENSITIVELY over each quantifier's reference hash (quantifier
-// order is structural), where a reference hashes as the COMMUTATIVE
-// (XOR) fold of its members — so the value never depends on member
-// insertion order. Back-edges (recursive CTE references) are skipped
-// via the visited guard.
+// expression DAG: the node's schema-neutral tie-break hash folded
+// ORDER-SENSITIVELY over each quantifier's reference hash (quantifier order is
+// structural), where a reference hashes as the COMMUTATIVE (XOR) fold of its
+// members — so the value never depends on member insertion order. Memo identity
+// remains schema-aware. Back-edges (recursive CTE references) are skipped via
+// the visited guard.
 func extractTieBreakHash(e expressions.RelationalExpression, visited map[*expressions.Reference]bool) uint64 {
 	if e == nil {
 		return 0
 	}
-	h := e.HashCodeWithoutChildren()
+	h := tieBreakNodeHash(e)
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
 		if ref == nil || visited[ref] {
@@ -200,19 +201,37 @@ type BestMemberSelector interface {
 // back to CostLess+stats otherwise.
 //
 // Use this when the caller has a pre-populated selector (e.g. the
-// cascades.Planner after Plan). It avoids repeating the OPTIMIZE
+// cascades.Planner after PlanWithContext). It avoids repeating the OPTIMIZE
 // work that already happened during planning.
 //
 // Pass nil sel to fall back to ExtractBestPlanWith(ref, stats)
 // (no selector path).
 func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelector, stats properties.StatisticsProvider) (expressions.RelationalExpression, error) {
+	return ExtractBestPlanFromSelectorContext(context.Background(), ref, sel, stats)
+}
+
+// ExtractBestPlanFromSelectorContext is the cancelable form of
+// ExtractBestPlanFromSelector. It polls ctx throughout recursive extraction
+// so a canceled planning run does not continue rebuilding a large plan DAG.
+func ExtractBestPlanFromSelectorContext(
+	ctx context.Context,
+	ref *expressions.Reference,
+	sel BestMemberSelector,
+	stats properties.StatisticsProvider,
+) (expressions.RelationalExpression, error) {
+	if ctx == nil {
+		return nil, ErrPlannerNilContext
+	}
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, err
+	}
 	if ref == nil || len(ref.AllMembers()) == 0 {
 		return nil, nil
 	}
 	if stats == nil {
 		stats = properties.DefaultStatistics{}
 	}
-	return extractBestPlanFromSelectorVisited(ref, sel, stats, make(map[*expressions.Reference]bool))
+	return extractBestPlanFromSelectorVisited(ctx, ref, sel, stats, make(map[*expressions.Reference]bool))
 }
 
 // extractBestPlanFromSelectorVisited is the cycle-guarded inner loop
@@ -220,7 +239,16 @@ func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelec
 // recursion when the Reference DAG contains back-edges (e.g.
 // recursive CTE expression trees where RecursiveUnion quantifiers
 // form cycles through the Memo).
-func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemberSelector, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
+func extractBestPlanFromSelectorVisited(
+	ctx context.Context,
+	ref *expressions.Reference,
+	sel BestMemberSelector,
+	stats properties.StatisticsProvider,
+	visited map[*expressions.Reference]bool,
+) (expressions.RelationalExpression, error) {
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, err
+	}
 	if ref == nil || len(ref.AllMembers()) == 0 {
 		return nil, nil
 	}
@@ -238,16 +266,32 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 	// stamped, use it directly. Non-physical winners fall through to
 	// the legacy extraction which navigates Members to find the
 	// physical plan.
-	if w := ref.Winner(); w != nil && isPhysicalPlan(w) {
-		return rebuildExpressionFromSelectorVisited(w, sel, stats, visited)
+	w := ref.Winner()
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, err
+	}
+	if w != nil && isPhysicalPlan(w) {
+		return rebuildExpressionFromSelectorVisited(ctx, w, sel, stats, visited)
 	}
 
 	var best expressions.RelationalExpression
-	if sel != nil && sel.HasBestMember(ref) {
-		best = sel.BestMember(ref)
+	if sel != nil {
+		hasBest := sel.HasBestMember(ref)
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, err
+		}
+		if hasBest {
+			best = sel.BestMember(ref)
+			if err := plannerContextErr(ctx); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if !isPhysicalPlan(best) {
 		best = ref.GetBest(costLessFor(sel, stats))
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, err
+		}
 	}
 	if best == nil {
 		return nil, nil
@@ -260,12 +304,16 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 	// runs it on the rich Value + sort-order representation — this
 	// package deliberately has no ordering model of its own.
 	if sortExpr, ok := best.(*expressions.LogicalSortExpression); ok {
-		if childWinner := sortWinnerFromChild(sortExpr, sel, stats, visited); childWinner != nil {
+		childWinner, err := sortWinnerFromChild(ctx, sortExpr, sel, stats, visited)
+		if err != nil {
+			return nil, err
+		}
+		if childWinner != nil {
 			return childWinner, nil
 		}
 	}
 
-	return rebuildExpressionFromSelectorVisited(best, sel, stats, visited)
+	return rebuildExpressionFromSelectorVisited(ctx, best, sel, stats, visited)
 }
 
 // TieBrokenCostSelector is the optional extension of BestMemberSelector a
@@ -306,24 +354,44 @@ type SortElisionSelector interface {
 // with its ordering spine PINNED (sort eliminated). If not — or the
 // selector doesn't implement SortElisionSelector, or the spine cannot be
 // pinned — returns nil and the sort stays.
-func sortWinnerFromChild(sortExpr *expressions.LogicalSortExpression, sel BestMemberSelector, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) expressions.RelationalExpression {
+func sortWinnerFromChild(
+	ctx context.Context,
+	sortExpr *expressions.LogicalSortExpression,
+	sel BestMemberSelector,
+	stats properties.StatisticsProvider,
+	visited map[*expressions.Reference]bool,
+) (expressions.RelationalExpression, error) {
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, err
+	}
 	elider, ok := sel.(SortElisionSelector)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	childRef := sortExpr.GetInner().GetRangesOver()
 	if childRef == nil {
-		return nil
+		return nil, nil
 	}
 	winner := elider.OrderedChildWinner(sortExpr, childRef)
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, err
+	}
 	if winner == nil || !isPhysicalPlan(winner) {
-		return nil
+		return nil, nil
 	}
-	rebuilt, err := rebuildOrderedSpine(winner, sortExpr, elider, sel, stats, visited, map[*expressions.Reference]bool{})
-	if err != nil || rebuilt == nil {
-		return nil
+	rebuilt, err := rebuildOrderedSpine(ctx, winner, sortExpr, elider, sel, stats, visited, map[*expressions.Reference]bool{})
+	if err != nil {
+		if cancelErr := plannerContextErr(ctx); cancelErr != nil {
+			return nil, cancelErr
+		}
+		// Sort elision is optional. Preserve the historical fallback for a
+		// non-cancellation rebuild failure: keep the explicit sort.
+		return nil, nil
 	}
-	return rebuilt
+	if rebuilt == nil {
+		return nil, nil
+	}
+	return rebuilt, nil
 }
 
 // rebuildOrderedSpine rebuilds a sort-elision winner with its ordering
@@ -341,6 +409,7 @@ func sortWinnerFromChild(sortExpr *expressions.LogicalSortExpression, sel BestMe
 // pinned group) returns nil — the caller keeps the sort, which is always
 // order-correct.
 func rebuildOrderedSpine(
+	ctx context.Context,
 	e expressions.RelationalExpression,
 	sortExpr *expressions.LogicalSortExpression,
 	elider SortElisionSelector,
@@ -349,9 +418,18 @@ func rebuildOrderedSpine(
 	visited map[*expressions.Reference]bool,
 	pinned map[*expressions.Reference]bool,
 ) (expressions.RelationalExpression, error) {
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, err
+	}
 	srcRef, delegates := elider.OrderingSourceRef(e)
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, err
+	}
 	freshChildren := make([]expressions.Quantifier, 0, len(e.GetQuantifiers()))
 	for _, q := range e.GetQuantifiers() {
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, err
+		}
 		childRef := q.GetRangesOver()
 		if delegates && childRef == srcRef && srcRef != nil {
 			if pinned[srcRef] {
@@ -359,10 +437,13 @@ func rebuildOrderedSpine(
 			}
 			pinned[srcRef] = true
 			om := elider.OrderedChildWinner(sortExpr, srcRef)
+			if err := plannerContextErr(ctx); err != nil {
+				return nil, err
+			}
 			if om == nil || !isPhysicalPlan(om) {
 				return nil, nil // spine broken — decline elision
 			}
-			inner, err := rebuildOrderedSpine(om, sortExpr, elider, sel, stats, visited, pinned)
+			inner, err := rebuildOrderedSpine(ctx, om, sortExpr, elider, sel, stats, visited, pinned)
 			if err != nil {
 				return nil, err
 			}
@@ -372,7 +453,7 @@ func rebuildOrderedSpine(
 			freshChildren = append(freshChildren, expressions.ForEachQuantifier(expressions.InitialOf(inner)))
 			continue
 		}
-		inner, err := extractBestPlanFromSelectorVisited(childRef, sel, stats, visited)
+		inner, err := extractBestPlanFromSelectorVisited(ctx, childRef, sel, stats, visited)
 		if err != nil {
 			return nil, err
 		}
@@ -385,6 +466,9 @@ func rebuildOrderedSpine(
 		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
 	}
 	rebuilt, err := rebuildWithFreshChildren(e, freshChildren)
+	if cancelErr := plannerContextErr(ctx); cancelErr != nil {
+		return nil, cancelErr
+	}
 	if err != nil || rebuilt == nil {
 		return rebuilt, err
 	}
@@ -444,13 +528,25 @@ func planEmbedsDirectChild(plan, child plans.RecordQueryPlan) bool {
 // rebuilder as rebuildExpression but recurses through
 // extractBestPlanFromSelectorVisited to consult the selector at
 // every Reference, with cycle detection.
-func rebuildExpressionFromSelectorVisited(e expressions.RelationalExpression, sel BestMemberSelector, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
+func rebuildExpressionFromSelectorVisited(
+	ctx context.Context,
+	e expressions.RelationalExpression,
+	sel BestMemberSelector,
+	stats properties.StatisticsProvider,
+	visited map[*expressions.Reference]bool,
+) (expressions.RelationalExpression, error) {
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, err
+	}
 	if e == nil {
 		return nil, nil
 	}
 	freshChildren := make([]expressions.Quantifier, 0, len(e.GetQuantifiers()))
 	for _, q := range e.GetQuantifiers() {
-		inner, err := extractBestPlanFromSelectorVisited(q.GetRangesOver(), sel, stats, visited)
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, err
+		}
+		inner, err := extractBestPlanFromSelectorVisited(ctx, q.GetRangesOver(), sel, stats, visited)
 		if err != nil {
 			return nil, err
 		}
@@ -462,7 +558,11 @@ func rebuildExpressionFromSelectorVisited(e expressions.RelationalExpression, se
 		}
 		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
 	}
-	return rebuildWithFreshChildren(e, freshChildren)
+	rebuilt, err := rebuildWithFreshChildren(e, freshChildren)
+	if cancelErr := plannerContextErr(ctx); cancelErr != nil {
+		return nil, cancelErr
+	}
+	return rebuilt, err
 }
 
 // rebuildExpressionVisited returns a fresh RelationalExpression of the
@@ -497,9 +597,33 @@ func rebuildExpressionVisited(e expressions.RelationalExpression, stats properti
 	return rebuildWithFreshChildren(e, freshChildren)
 }
 
+// PlanRebuildError marks a failure to rebuild an expression with fresh child
+// quantifiers during plan extraction — an arity mismatch between an expression
+// and the children the memo produced for it. Like a yield-invariant violation
+// it is memo corruption, never a statement about the user's query.
+//
+// It exists so a caller can identify the FAMILY without parsing the message,
+// which the SQL layer withholds because it names Go types.
+type PlanRebuildError struct{ Cause error }
+
+// Error returns the underlying rebuild message unchanged.
+func (e *PlanRebuildError) Error() string { return e.Cause.Error() }
+
+// Unwrap returns the underlying rebuild error.
+func (e *PlanRebuildError) Unwrap() error { return e.Cause }
+
 // rebuildWithFreshChildren is the switch-on-type rebuilder shared
 // by rebuildExpression and rebuildExpressionFromSelector.
-func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren []expressions.Quantifier) (expressions.RelationalExpression, error) {
+func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren []expressions.Quantifier) (rebuilt expressions.RelationalExpression, err error) {
+	// One deferred tag covers every arity failure in this function AND every
+	// error returned by a WithChildren implementer through the default arm —
+	// the family is "the rebuild failed", regardless of which of the 30-odd
+	// expression and plan types reported it.
+	defer func() {
+		if err != nil {
+			err = &PlanRebuildError{Cause: err}
+		}
+	}()
 	switch ex := e.(type) {
 
 	case *expressions.FullUnorderedScanExpression:
@@ -596,7 +720,21 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		// which keeps the pipeline running but loses the singleton
 		// guarantee for that subtree.
 		if rebuilder, ok := e.(WithChildren); ok {
-			return rebuilder.WithChildren(freshChildren)
+			// Normalize HERE, not at each caller: an error return carries no
+			// expression. Every concrete WithChildren implementer in
+			// pkg/recordlayer/query/plan/plans happens to return nil alongside
+			// its own errors, but that is a convention the type system does
+			// not enforce — this is the single point every implementer's
+			// result flows through, so establishing the invariant here means
+			// callers throughout the extraction path (rebuildExpressionVisited,
+			// rebuildExpressionFromSelectorVisited, rebuildOrderedSpine, and
+			// everything that forwards their results) inherit it for free
+			// instead of each re-deriving it or trusting the convention holds.
+			built, buildErr := rebuilder.WithChildren(freshChildren)
+			if buildErr != nil {
+				return nil, buildErr
+			}
+			return built, nil
 		}
 		return e, nil
 	}

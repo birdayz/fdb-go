@@ -1093,16 +1093,21 @@ func SeedRunCorpus() []RunQuery {
 		// aware parsing (separate parseSelectQuery entry points or a
 		// flag) — deferred as a separate large-scope conformance
 		// task. Probed against live Java.
-		// NOTE: `col IN (SELECT ...)` is a known one-sided divergence:
-		// Java NPEs on the form (visitor walks `ExpressionsContext`
-		// which is null when the IN list comes from a subquery, per
-		// CLAUDE.md gotcha "`col IN (SELECT ...)` parser-NPEs in
-		// fdb-relational"); Go's embedded engine implements it
-		// correctly. Aligning Go to reject would invalidate ~14
-		// Go-side test files (yamsql + sqldriver) that exercise the
-		// feature; deferred as a separate large-scope conformance
-		// task. Until then, IN-subquery is a Go-only feature with
-		// no cross-engine corpus entry.
+		// NOTE: `col IN (SELECT ...)` is rejected by BOTH engines — no
+		// divergence. Java's `ExpressionVisitor.visitInPredicate`
+		// asserts `inList().queryExpressionBody() == null` with
+		// UNSUPPORTED_QUERY ("IN predicate does not support nested
+		// SELECT"), and the earlier `AstNormalizer.visitInPredicate`
+		// NPEs on the same shape (it walks `ExpressionsContext`, which
+		// is null when the IN list comes from a subquery). Go rejects
+		// with 0AF00 in every position (SELECT/DML WHERE, JOIN ON,
+		// projection); the yamsql corpus pins that. This run corpus has
+		// no entry because there is nothing to compare beyond "both
+		// reject" — Java's wording is an NPE stack trace and is not
+		// portable. SeedCorpus (the explain-only plan-tree half, far
+		// below) likewise has none, and the comment where the entry
+		// used to sit records why a text-echo "success" there was not
+		// evidence of support.
 		// NOTE: COUNT/SUM/AVG/MIN/MAX with DISTINCT are rejected by
 		// BOTH engines — Java NPEs (visitor unconditionally calls
 		// `AggregateWindowedFunctionContext.ALL().getText()` which is
@@ -13095,9 +13100,12 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT count(val), count(*) FROM T_DSN_11",
 		},
 		{
-			// IN-list with a NULL element. The NULL is silently ignored
-			// for matching purposes — rows match iff val equals one of
-			// the non-NULL list members.
+			// IN-list with a NULL element. BOTH engines reject this — the
+			// NULL is not silently ignored. Go raises 42809 "NULL values
+			// are not allowed in the IN list" from the seed walker, and
+			// Java asserts the same code in SemanticAnalyzer before a
+			// logical plan exists. The entry is kept as a both-reject
+			// parity shape, matching the two sibling NULL-in-IN entries.
 			Name:           "null_in_list_with_null_element",
 			SchemaTemplate: "CREATE TABLE T_DSN_12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
@@ -18453,10 +18461,19 @@ func SeedCorpus() []Query {
 			SQL:  "SELECT id, CASE WHEN price > 100 THEN 'high' ELSE 'low' END FROM orders",
 		},
 		// --- Subqueries ----------------------------------------------------
-		{
-			Name: "select_with_in_subquery",
-			SQL:  "SELECT id FROM orders WHERE customer IN (SELECT id FROM users WHERE active = TRUE)",
-		},
+		// There is deliberately NO `x IN (SELECT …)` entry here. One used to
+		// exist and TestSeedCorpus_GoEngineSucceedsOnAll was green on it, which
+		// read as "Go plans IN-subqueries" — it does not. This corpus drives the
+		// explain-ONLY generator, whose LogicalFilter carries `PredicateText`:
+		// the verbatim WHERE source text (canonicalTextOf), never a resolved
+		// predicate. `Filter(customer IN (SELECT id FROM users WHERE active =
+		// TRUE))` is the input SQL echoed back, so the entry proved only that
+		// the text echo does not crash — the real planner rejects every
+		// IN-subquery position with 0AF00, and so does Java
+		// (ExpressionVisitor.visitInPredicate asserts
+		// `inList().queryExpressionBody() == null`). Re-adding it would also
+		// turn into a spurious Go-only divergence the moment SeedCorpus runs
+		// against live Java via NewJavaEngineHTTP.
 		{
 			Name: "select_with_exists_subquery",
 			SQL:  "SELECT id FROM orders WHERE EXISTS (SELECT 1 FROM users WHERE users.id = orders.customer)",

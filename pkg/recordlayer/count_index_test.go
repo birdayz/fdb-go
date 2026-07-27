@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -218,6 +219,76 @@ var _ = Describe("CountIndex", func() {
 			Expect(entries).To(HaveLen(1))
 			Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(200)}))
 			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(2)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("shared scan-record budget aggregates across legs of a fan-out (RFC-106a)", func() {
+		// countKVCursor threads a (possibly shared) *ScanLimiterState through
+		// resolveScanLimiterState, so every leg of an IN-join/IN-union fan-out
+		// charges the same aggregate budget instead of resetting per leg —
+		// same mechanism as the multidimensional prefix skip-scan and the
+		// sqldriver IN-join/IN-union tests, and the bitmap index's own
+		// equivalent test. Nothing in this file exercised it: every other
+		// test here drives exactly one scan against one fresh ScanProperties,
+		// so a regression that stopped sharing scanState across legs
+		// (reverting countKVCursor to a fresh per-cursor budget) would ship
+		// silently.
+		//
+		// Drive store.ScanIndex N times reusing the SAME ScanProperties (and
+		// so the same *ScanLimiterState pointer) — the mechanism
+		// executeInJoin/executeInUnion use for real IN-list legs
+		// (props.ClearSkipAndLimit(), never a fresh DefaultExecuteProperties()
+		// per leg). Two distinct prices scanned per leg are individually far
+		// under the cap; only the aggregate across legs can trip it.
+		ks := specSubspace()
+
+		countIdx := NewCountIndex("count_fanout_legs", GroupAll(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", countIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		const scanLimit = 10
+		const numLegs = 10
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, price := range []int32{100, 200} {
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(price)), Price: proto.Int32(price)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// ONE ScanProperties (and so one shared *ScanLimiterState) reused
+			// across every leg — the fan-out sharing mechanism under test.
+			props := ForwardScan()
+			props.ExecuteProperties = props.ExecuteProperties.WithScannedRecordsLimit(scanLimit)
+
+			var tripped int
+			for leg := 0; leg < numLegs; leg++ {
+				legProps := props
+				legProps.ExecuteProperties = legProps.ExecuteProperties.ClearSkipAndLimit()
+				entries, legErr := AsList(ctx, store.ScanIndex(countIdx, TupleRangeAll, nil, legProps))
+				if legErr != nil {
+					var sle *ScanLimitReachedError
+					Expect(errors.As(legErr, &sle)).To(BeTrue(),
+						"leg %d: want ScanLimitReachedError, got: %v", leg, legErr)
+					tripped++
+					continue
+				}
+				Expect(entries).To(HaveLen(2), "leg %d: an untripped leg must see both grouping keys", leg)
+			}
+
+			Expect(tripped).To(BeNumerically(">", 0),
+				"the aggregate scan budget across %d individually-small legs (cap=%d) never tripped — "+
+					"the shared ScanLimiterState is not being charged across count-index legs", numLegs, scanLimit)
+			Expect(tripped).To(BeNumerically("<", numLegs),
+				"every leg tripped — the cap is too tight to also prove early legs succeed on their own merits")
 
 			return nil, nil
 		})

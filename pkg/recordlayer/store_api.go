@@ -3,7 +3,6 @@ package recordlayer
 import (
 	"fmt"
 	"maps"
-	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -548,7 +547,7 @@ func (store *FDBRecordStore) ScanRecordKeys(
 		store:          store,
 		continuation:   continuation,
 		scanProperties: scanProperties,
-		startTime:      time.Now(),
+		scanState:      resolveScanLimiterState(scanProperties.ExecuteProperties),
 		// Bare-key layout applies ONLY when the store does not split long records
 		// (a split-capable store always suffixes its keys). Matches Java's
 		// scanRecordKeys, which gates the bare-key branch on !isSplitLongRecords().

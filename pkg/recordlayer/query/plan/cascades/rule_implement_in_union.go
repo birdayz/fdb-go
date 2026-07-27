@@ -157,6 +157,10 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 	if len(quantifiers) < 2 {
 		return
 	}
+	// InUnion merge execution does not own StrictSingle semantics.
+	if hasStrictSingleQuantifier(quantifiers) {
+		return
+	}
 
 	resultValue := selectExpr.GetResultValue()
 
@@ -268,9 +272,18 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				isReverse := ResolveComparisonDirection(comparisonParts)
 				comparisonParts = AdjustFixedBindings(comparisonParts, isReverse)
 
-				comparisonKeys := make([]values.Value, len(comparisonParts))
-				for i, p := range comparisonParts {
-					comparisonKeys[i] = p.Value
+				// The merge compares raw tuple-encoded Values in ONE direction,
+				// so every comparison part must agree with that direction. A
+				// part that disagrees — or asks for counterflow NULLs — needs
+				// the ordered-bytes encoding Go does not evaluate yet; decline
+				// the candidate rather than merge a descending key forward.
+				// This is the same fail-closed gate the intersection plans use.
+				//
+				// Reachable: it declines exactly twice over the 2475-query
+				// corpus, both times parts=[ASC, DESC] against a forward merge.
+				comparisonKeys, natural := properties.NaturalComparisonKeyValues(comparisonParts, isReverse)
+				if !natural {
+					continue
 				}
 				comparisonKeys = bakeMergeComparisonKeys(comparisonKeys, requestedOrdering, innerPlans[0].GetResultType())
 				if comparisonKeys == nil {

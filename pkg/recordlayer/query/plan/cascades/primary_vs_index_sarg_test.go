@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 func eqComp(op values.Value) *predicates.Comparison {
@@ -66,38 +67,48 @@ func TestSargComparisonEqual_StructuralIdentity(t *testing.T) {
 	}
 }
 
-// TestSargSubset pins the "index SARGs strictly more" predicate: prefer the
-// index iff (primary − index) is empty AND (index − primary) is non-empty.
-func TestSargSubset(t *testing.T) {
+// TestDistinctSargCount pins the scale criterion #7's contested band ranks on:
+// the CARDINALITY of the comparison SET, so a comparison repeated across columns
+// or across the nodes of one concrete plan tree counts once, exactly as it does
+// in Java's Set<Comparisons.Comparison>.
+func TestDistinctSargCount(t *testing.T) {
 	t.Parallel()
 
-	pk := eqComp(values.LiteralValue(int64(1)))    // shared
-	rt := eqComp(values.LiteralValue(int64(99)))   // index-only
-	extra := eqComp(values.LiteralValue(int64(2))) // primary-only
+	pk := rungEqualityRange(t, values.LiteralValue(int64(1)))
+	rt := rungEqualityRange(t, values.LiteralValue(int64(99)))
+	same := rungEqualityRange(t, values.LiteralValue(int64(1)))
 
-	primary := []*predicates.Comparison{pk}
-	index := []*predicates.Comparison{pk, rt}
-
-	// Index has everything the primary has (pk) plus more (rt) → strict superset.
-	if !sargSubset(primary, index) {
-		t.Fatal("primary ⊆ index should hold (index covers pk)")
-	}
-	if sargSubset(index, primary) {
-		t.Fatal("index ⊄ primary should hold (rt is index-only)")
+	none := plans.NewRecordQueryIndexPlan("idx_sargcount_none", nil,
+		[]string{"T"}, values.UnknownType, false)
+	if got := distinctSargCount(none); got != 0 {
+		t.Fatalf("no comparisons → %d, want 0", got)
 	}
 
-	// Primary has an extra SARG the index lacks → not a superset.
-	primaryExtra := []*predicates.Comparison{pk, extra}
-	if sargSubset(primaryExtra, index) {
-		t.Fatal("primaryExtra ⊄ index (extra is primary-only)")
+	two := plans.NewRecordQueryIndexPlan("idx_sargcount_two",
+		[]*predicates.ComparisonRange{pk, rt}, []string{"T"}, values.UnknownType, false)
+	if got := distinctSargCount(two); got != 2 {
+		t.Fatalf("two distinct comparisons → %d, want 2", got)
 	}
 
-	// Identical sets ⊆ each other.
-	if !sargSubset(index, index) || !sargSubset(primary, primary) {
-		t.Fatal("a ⊆ a must hold")
+	// The same comparison on two columns is ONE set member.
+	repeated := plans.NewRecordQueryIndexPlan("idx_sargcount_repeat",
+		[]*predicates.ComparisonRange{pk, same}, []string{"T"}, values.UnknownType, false)
+	if got := distinctSargCount(repeated); got != 1 {
+		t.Fatalf("a comparison repeated across columns → %d, want 1", got)
 	}
-	// Empty is a subset of anything.
-	if !sargSubset(nil, index) {
-		t.Fatal("∅ ⊆ index must hold")
+
+	// The count is taken over the whole concrete tree, and de-duplicates across
+	// nodes: a fetch over the index contributes nothing new.
+	fetched := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		two, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+	if got := distinctSargCount(fetched); got != 2 {
+		t.Fatalf("fetch over a two-comparison index → %d, want 2", got)
+	}
+
+	// A type filter over a scan does not hide the scan's comparisons.
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithScanComparisons([]*predicates.ComparisonRange{pk})
+	if got := distinctSargCount(plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scan)); got != 1 {
+		t.Fatalf("type filter over a one-comparison scan → %d, want 1", got)
 	}
 }

@@ -1,0 +1,169 @@
+name: Nightly Self-Checking Oracles
+
+# Two self-checking oracles that need NO reference/expected output — the
+# property they check comes entirely from the plan/data they generate — so
+# scaling them up is nearly free, the same reasoning nightly-rowdiff.yml
+# applies to its own generative sweep:
+#
+#   - TestFDB_SargabilityDifferentialOracle (pkg/relational/sqldriver): for
+#     any predicate over an indexed column, an index-driven plan and a
+#     full-scan-plus-residual-filter plan (MatchLeafRule disabled) must
+#     return the SAME rows. Sized small (SARG_ORACLE_COMBOS) so the PR gate
+#     stays a few seconds; this job runs it at real combinatorial depth.
+#   - TestCardinalityPropertyBoundsCostEstimate_RandomCombos
+#     (pkg/recordlayer/query/plan/cascades): the cost model's point-estimate
+#     Cardinality must fall inside the bound CardinalitiesProperty
+#     structurally proves, for a random COMPOSITION of plan-tree building
+#     blocks (CARDINALITY_COMBOS) — no FDB needed, pure in-memory plan
+#     construction, so this half of the job is nearly instant even at huge
+#     combo counts.
+#
+# Both rotate their seed daily (day-of-year) so a long-running nightly walks
+# fresh combinations instead of re-verifying the same ones — same rationale
+# as nightly-rowdiff.yml's window rotation. Neither gates PRs; a red run here
+# is a release blocker, surfaced like the other nightly jobs.
+on:
+  schedule:
+    # 13:00 UTC daily — outside the 00:00-05:30ish rowdiff/coverage/libfdbc/
+    # fuzz/stress cluster on the single hetzner-fdb runner slot.
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+    inputs:
+      sarg_combos:
+        description: 'Sargability oracle AND/OR/3-way combo count (default 20000)'
+        required: false
+        default: '20000'
+      cardinality_combos:
+        description: 'Cardinality/cost random-combo count (default 500000)'
+        required: false
+        default: '500000'
+
+jobs:
+  oracles:
+    name: Sargability + cardinality/cost oracles at scale
+    runs-on: hetzner-fdb
+    timeout-minutes: 90
+
+    steps:
+      - name: Check nightly window
+        # Same reasoning as nightly-rowdiff.yml: a `schedule` trigger fires
+        # the WORKFLOW, but the single self-hosted runner dispatches the JOB
+        # whenever it frees up, which a backlog can delay by hours. The check
+        # runs here, as the first step on the runner actually allocated.
+        # `workflow_dispatch` always proceeds.
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HOUR=$(date -u +%-H)
+          # 13:00-15:00 UTC only: outside the 00:00-05:30ish window the other
+          # nightly jobs already occupy on this single runner slot.
+          if [ "$HOUR" -ge 13 ] && [ "$HOUR" -lt 15 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 13:00-15:00 window (the self-hosted queue delayed dispatch) — skipping to protect other nightly jobs' slot; it fires again at tomorrow's scheduled time."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.window.outputs.ok == 'true'
+        uses: actions/checkout@v5
+
+      - name: Check Docker (mandatory — the sargability half needs FDB)
+        if: steps.window.outputs.ok == 'true'
+        # The sargability oracle takes the allowed `FDB not available (no
+        # Docker)` skip when there is no container, so without Docker that
+        # half of the job reports SUCCESS having compared ZERO rows. Fail
+        # loudly here instead, so a green run always means real coverage.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the sargability oracle would skip (exit 0) and this job would silently pass with no coverage"; exit 1; }
+
+      - name: Resolve seeds
+        if: steps.window.outputs.ok == 'true'
+        id: seeds
+        # ROTATE both seeds by day-of-year, same rationale as
+        # nightly-rowdiff.yml: re-running the identical combo set every night
+        # re-proves what last night already proved.
+        run: |
+          SARG_COMBOS="${{ github.event.inputs.sarg_combos }}"
+          SARG_COMBOS="${SARG_COMBOS:-20000}"
+          CARD_COMBOS="${{ github.event.inputs.cardinality_combos }}"
+          CARD_COMBOS="${CARD_COMBOS:-500000}"
+          DOY=$(date -u +%-j)
+          echo "sarg_combos=$SARG_COMBOS" >> "$GITHUB_OUTPUT"
+          echo "sarg_seed=$(( 20260726 + DOY ))" >> "$GITHUB_OUTPUT"
+          echo "card_combos=$CARD_COMBOS" >> "$GITHUB_OUTPUT"
+          echo "card_seed=$(( 20260726 + DOY ))" >> "$GITHUB_OUTPUT"
+          echo "Sargability: $SARG_COMBOS combos, seed $(( 20260726 + DOY ))"
+          echo "Cardinality/cost: $CARD_COMBOS combos, seed $(( 20260726 + DOY ))"
+
+      - name: Run sargability differential oracle at scale
+        if: steps.window.outputs.ok == 'true'
+        id: sarg
+        # pipefail is REQUIRED: GitHub Actions runs `bash -e` but NOT
+        # pipefail, so `bazelisk test … | tee` would return tee's exit (0)
+        # and SILENTLY PASS a red sweep.
+        run: |
+          set -o pipefail
+          bazelisk test //pkg/relational/sqldriver:sqldriver_test \
+            --test_output=streamed \
+            --test_arg="--test.run=TestFDB_SargabilityDifferentialOracle" \
+            --test_arg="--test.v" \
+            --test_timeout=3600 \
+            --nocache_test_results \
+            --test_env=SARG_ORACLE_COMBOS=${{ steps.seeds.outputs.sarg_combos }} \
+            --test_env=SARG_ORACLE_SEED=${{ steps.seeds.outputs.sarg_seed }} \
+            2>&1 | tee sarg-oracle-output.txt
+
+      - name: Run cardinality/cost random-combo oracle at scale
+        if: steps.window.outputs.ok == 'true'
+        id: cardinality
+        # No FDB needed (pure in-memory plan construction), so this step is
+        # fast even at very high combo counts; pipefail as above.
+        run: |
+          set -o pipefail
+          bazelisk test //pkg/recordlayer/query/plan/cascades:cascades_test \
+            --test_output=streamed \
+            --test_arg="--test.run=TestCardinalityPropertyBoundsCostEstimate_RandomCombos" \
+            --test_arg="--test.v" \
+            --test_timeout=1200 \
+            --nocache_test_results \
+            --test_env=CARDINALITY_COMBOS=${{ steps.seeds.outputs.card_combos }} \
+            --test_env=CARDINALITY_SEED=${{ steps.seeds.outputs.card_seed }} \
+            2>&1 | tee cardinality-oracle-output.txt
+
+      - name: Report oracle summary
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.sarg.outcome != 'skipped' }}
+        run: |
+          {
+            echo "## Nightly self-checking oracles ($(date -u +%FT%TZ))"
+            echo ""
+            echo "### Sargability differential oracle (${{ steps.seeds.outputs.sarg_combos }} combos, seed ${{ steps.seeds.outputs.sarg_seed }})"
+            echo '```'
+            grep -m 60 -E 'MISMATCH|SKIP|sargability oracle:|FAIL' \
+              sarg-oracle-output.txt || echo "(clean)"
+            echo '```'
+            echo ""
+            echo "### Cardinality/cost random-combo oracle (${{ steps.seeds.outputs.card_combos }} combos, seed ${{ steps.seeds.outputs.card_seed }})"
+            echo '```'
+            if [ -f cardinality-oracle-output.txt ]; then
+              grep -m 60 -E 'impossible by construction|random combos:|FAIL' \
+                cardinality-oracle-output.txt || echo "(clean)"
+            else
+              echo "(did not run)"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload oracle output
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.sarg.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-oracles-output
+          path: |
+            sarg-oracle-output.txt
+            cardinality-oracle-output.txt
+          retention-days: 30
+          if-no-files-found: ignore

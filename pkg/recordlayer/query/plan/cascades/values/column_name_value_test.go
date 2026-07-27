@@ -56,6 +56,47 @@ func TestColumnNameValue_IgnoresBakedOrdinals(t *testing.T) {
 	}
 }
 
+func TestProjectionOutputIdentityKey_DistinguishesAliasFromDerivedExpression(t *testing.T) {
+	t.Parallel()
+	computed := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  NewFieldValueWithResolvedOrdinal("X", 0, UnknownType),
+		Right: &ConstantValue{Value: int64(1), Typ: NotNullLong},
+	}
+	aliasedName := OutputColumnName(computed, "X")
+	derivedName := OutputColumnName(computed, "")
+	if aliasedName == derivedName {
+		t.Fatalf("test precondition failed: alias and derived output names both %q", aliasedName)
+	}
+	if ProjectionOutputIdentityKey(computed, "X") == ProjectionOutputIdentityKey(computed, "") {
+		t.Fatalf("identity key collapsed explicit alias %q with derived name %q", aliasedName, derivedName)
+	}
+}
+
+func TestProjectionOutputIdentityKey_IncludesMultiAccessorDisplayPath(t *testing.T) {
+	t.Parallel()
+	build := func(rootName string) *FieldValue {
+		return &FieldValue{
+			Field: "CITY",
+			Typ:   UnknownType,
+			Resolved: &FieldPath{Accessors: []ResolvedAccessor{
+				{Field: rootName, Ordinal: 0},
+				{Field: "CITY", Ordinal: 1},
+			}},
+		}
+	}
+	left, right := build("ADDRESS"), build("HOME")
+	if !SemanticEqualsUnderAliasMap(left, right, AliasMap{}) {
+		t.Fatal("test requires equal ordinal paths with different display names to be semantically equal")
+	}
+	if ExplainValue(left) == ExplainValue(right) {
+		t.Fatalf("test precondition failed: multi-accessor renderings both %q", ExplainValue(left))
+	}
+	if ProjectionOutputIdentityKey(left, "") == ProjectionOutputIdentityKey(right, "") {
+		t.Fatalf("identity key collapsed rendered paths %q and %q", ExplainValue(left), ExplainValue(right))
+	}
+}
+
 func TestCanBridgeOrderingFieldValues_PreservesOrdinalIdentity(t *testing.T) {
 	t.Parallel()
 

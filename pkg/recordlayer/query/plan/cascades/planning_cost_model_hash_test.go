@@ -3,6 +3,7 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -98,5 +99,211 @@ func TestCostModel_PlanHashContentSensitive(t *testing.T) {
 	}
 	if stablePlanHash(build(1)) == stablePlanHash(build(2)) {
 		t.Fatal("stablePlanHash is content-blind: predicates differing only in their literal hashed equal — such ties fall to arrival order")
+	}
+}
+
+func TestCostModel_ProjectionSchemaIdentityDoesNotPerturbTieBreak(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"SCORES"}, values.UnknownType, false)
+	scanRef := expressions.InitialOf(scan)
+	innerQ := expressions.ForEachQuantifier(scanRef)
+	projected := []values.Value{
+		values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType),
+	}
+
+	logicalScore := expressions.NewLogicalProjectionExpressionWithAliases(
+		projected, []string{"SCORE"}, innerQ)
+	logicalPoints := expressions.NewLogicalProjectionExpressionWithAliases(
+		projected, []string{"POINTS"}, innerQ)
+	logicalMemo := NewMemo(nil)
+	logicalMemo.RegisterReference(scanRef)
+	if logicalMemo.MemoizeExpression(logicalScore) == logicalMemo.MemoizeExpression(logicalPoints) {
+		t.Fatal("logical projections with different output schemas collapsed in memo identity")
+	}
+	if logicalScore.HashCodeWithoutChildren() == logicalPoints.HashCodeWithoutChildren() {
+		t.Fatal("logical memo hashes must distinguish projection output schemas")
+	}
+	if tieBreakNodeHash(logicalScore) != tieBreakNodeHash(logicalPoints) {
+		t.Fatal("logical projection output schema perturbed the schema-neutral tie-break node hash")
+	}
+	if deepHashCode(logicalScore) != deepHashCode(logicalPoints) {
+		t.Fatal("logical projection output schema perturbed the planning cost tie-break")
+	}
+	if extractTieBreakHash(logicalScore, map[*expressions.Reference]bool{}) !=
+		extractTieBreakHash(logicalPoints, map[*expressions.Reference]bool{}) {
+		t.Fatal("logical projection output schema perturbed the extraction tie-break")
+	}
+	if newDesignationScope().deepHash(logicalScore, map[*expressions.Reference]bool{}) !=
+		newDesignationScope().deepHash(logicalPoints, map[*expressions.Reference]bool{}) {
+		t.Fatal("logical projection output schema perturbed the rewriting designation tie-break")
+	}
+
+	physicalScore := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		projected, []string{"SCORE"}, innerQ)
+	physicalPoints := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		projected, []string{"POINTS"}, innerQ)
+	physicalMemo := NewMemo(nil)
+	physicalMemo.RegisterReference(scanRef)
+	if physicalMemo.MemoizeExpression(physicalScore) == physicalMemo.MemoizeExpression(physicalPoints) {
+		t.Fatal("physical projections with different output schemas collapsed in memo identity")
+	}
+	if physicalScore.EqualsPlanWithoutChildren(physicalPoints) {
+		t.Fatal("physical memo equality must distinguish projection output schemas")
+	}
+	if physicalScore.HashCodeWithoutChildren() == physicalPoints.HashCodeWithoutChildren() {
+		t.Fatal("physical memo hashes must distinguish projection output schemas")
+	}
+	if tieBreakNodeHash(physicalScore) != tieBreakNodeHash(physicalPoints) {
+		t.Fatal("physical projection output schema perturbed the schema-neutral tie-break node hash")
+	}
+	if stablePlanHash(physicalScore) != stablePlanHash(physicalPoints) {
+		t.Fatal("physical projection output schema perturbed the stable cost tie-break")
+	}
+}
+
+func TestCostModel_ScanPlanExpressionProjectionSchemaDoesNotPerturbTieBreak(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"SCORES"}, values.UnknownType, false)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	projected := []values.Value{
+		values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType),
+	}
+	wrappedScore := &scanPlanExpression{plan: plans.NewRecordQueryProjectionPlanFromQuantifier(
+		projected, []string{"SCORE"}, innerQ)}
+	wrappedPoints := &scanPlanExpression{plan: plans.NewRecordQueryProjectionPlanFromQuantifier(
+		projected, []string{"POINTS"}, innerQ)}
+
+	memo := NewMemo(nil)
+	if memo.MemoizeExpression(wrappedScore) == memo.MemoizeExpression(wrappedPoints) {
+		t.Fatal("scanPlanExpression collapsed wrapped projections with different output schemas")
+	}
+	if wrappedScore.HashCodeWithoutChildren() == wrappedPoints.HashCodeWithoutChildren() {
+		t.Fatal("scanPlanExpression memo hashes must preserve wrapped projection schemas")
+	}
+	if tieBreakNodeHash(wrappedScore) != tieBreakNodeHash(wrappedPoints) {
+		t.Fatal("scanPlanExpression leaked wrapped projection schema into its tie-break node hash")
+	}
+	if deepHashCode(wrappedScore) != deepHashCode(wrappedPoints) {
+		t.Fatal("wrapped projection schema perturbed the planning cost tie-break")
+	}
+	if extractTieBreakHash(wrappedScore, map[*expressions.Reference]bool{}) !=
+		extractTieBreakHash(wrappedPoints, map[*expressions.Reference]bool{}) {
+		t.Fatal("wrapped projection schema perturbed the extraction tie-break")
+	}
+	if newDesignationScope().deepHash(wrappedScore, map[*expressions.Reference]bool{}) !=
+		newDesignationScope().deepHash(wrappedPoints, map[*expressions.Reference]bool{}) {
+		t.Fatal("wrapped projection schema perturbed the rewriting designation tie-break")
+	}
+}
+
+func TestCostModel_UnaliasedProjectionDisplayNamesAreMemoOnly(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"SCORES"}, values.UnknownType, false)
+	scanRef := expressions.InitialOf(scan)
+	innerQ := expressions.ForEachQuantifier(scanRef)
+	readA := values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)
+	readB := values.NewFieldValueWithResolvedOrdinal("B", 0, values.UnknownType)
+	if !values.SemanticEqualsUnderAliasMap(readA, readB, values.AliasMap{}) {
+		t.Fatal("test requires same-ordinal baked reads to be semantically equal")
+	}
+
+	logicalA := expressions.NewLogicalProjectionExpression([]values.Value{readA}, innerQ)
+	logicalB := expressions.NewLogicalProjectionExpression([]values.Value{readB}, innerQ)
+	logicalMemo := NewMemo(nil)
+	logicalMemo.RegisterReference(scanRef)
+	if logicalMemo.MemoizeExpression(logicalA) == logicalMemo.MemoizeExpression(logicalB) {
+		t.Fatal("unaliased logical projections with different derived names collapsed in memo identity")
+	}
+	if tieBreakNodeHash(logicalA) != tieBreakNodeHash(logicalB) {
+		t.Fatal("derived display-only names perturbed the historical logical tie-break hash")
+	}
+
+	physicalA := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{readA}, nil, innerQ)
+	physicalB := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{readB}, nil, innerQ)
+	physicalMemo := NewMemo(nil)
+	physicalMemo.RegisterReference(scanRef)
+	if physicalMemo.MemoizeExpression(physicalA) == physicalMemo.MemoizeExpression(physicalB) {
+		t.Fatal("unaliased physical projections with different derived names collapsed in memo identity")
+	}
+	if tieBreakNodeHash(physicalA) != tieBreakNodeHash(physicalB) {
+		t.Fatal("derived display-only names perturbed the historical physical tie-break hash")
+	}
+}
+
+func TestCostModel_ProjectionSemanticContentChangesTieBreakHash(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"SCORES"}, values.UnknownType, false)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	read0 := values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType)
+	read1 := values.NewFieldValueWithResolvedOrdinal("ID", 1, values.UnknownType)
+	if values.SemanticEqualsUnderAliasMap(read0, read1, values.AliasMap{}) {
+		t.Fatal("test requires different ordinals to be a genuine semantic Value change")
+	}
+
+	logical0 := expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{read0}, []string{"SCORE"}, innerQ)
+	logical1 := expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{read1}, []string{"SCORE"}, innerQ)
+	if tieBreakNodeHash(logical0) == tieBreakNodeHash(logical1) {
+		t.Fatal("historical logical tie-break hash ignored a genuine projected-Value change")
+	}
+
+	physical0 := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{read0}, []string{"SCORE"}, innerQ)
+	physical1 := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{read1}, []string{"SCORE"}, innerQ)
+	if tieBreakNodeHash(physical0) == tieBreakNodeHash(physical1) {
+		t.Fatal("historical physical tie-break hash ignored a genuine projected-Value change")
+	}
+}
+
+func TestCostModel_ProjectionAliasVariantsRemainComparatorTies(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"SCORES"}, values.UnknownType, false)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	projected := []values.Value{
+		values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType),
+	}
+
+	testCases := []struct {
+		name       string
+		scorePlan  expressions.RelationalExpression
+		pointsPlan expressions.RelationalExpression
+	}{
+		{
+			name: "logical",
+			scorePlan: expressions.NewLogicalProjectionExpressionWithAliases(
+				projected, []string{"SCORE"}, innerQ),
+			pointsPlan: expressions.NewLogicalProjectionExpressionWithAliases(
+				projected, []string{"POINTS"}, innerQ),
+		},
+		{
+			name: "physical",
+			scorePlan: plans.NewRecordQueryProjectionPlanFromQuantifier(
+				projected, []string{"SCORE"}, innerQ),
+			pointsPlan: plans.NewRecordQueryProjectionPlanFromQuantifier(
+				projected, []string{"POINTS"}, innerQ),
+		},
+	}
+	comparators := []struct {
+		name string
+		less func(expressions.RelationalExpression, expressions.RelationalExpression) bool
+	}{
+		{name: "planning", less: PlanningCostModelLess},
+		{name: "rewriting", less: RewritingCostModelLess},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, comparator := range comparators {
+				t.Run(comparator.name, func(t *testing.T) {
+					if comparator.less(tc.scorePlan, tc.pointsPlan) ||
+						comparator.less(tc.pointsPlan, tc.scorePlan) {
+						t.Fatal("alias-only projection variants must tie in both comparator directions")
+					}
+				})
+			}
+		})
 	}
 }

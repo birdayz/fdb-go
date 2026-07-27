@@ -108,9 +108,11 @@ func TestRuleSets_NoDuplicateRuleTypes(t *testing.T) {
 // failure. Generalizes the old hardcoded 11-name spot check to the
 // full registered surface.
 //
-// (No assertion over RegisteredRuleNames() as a whole: tests register
-// scratch names concurrently — rule_registry_test.go — so the global
-// registry contents are not stable under t.Parallel.)
+// The assertion is an exact set equality, not a subset: no test may
+// register into the package-level registry (TestMain fails the binary
+// if one does), so the registry's contents are exactly what init put
+// there and an unexpected EXTRA name is as much a regression as a
+// missing one.
 func TestRuleRegistry_ResolvesEveryRegisteredSetRule(t *testing.T) {
 	t.Parallel()
 	registered := map[string][]ExpressionRule{
@@ -119,12 +121,19 @@ func TestRuleRegistry_ResolvesEveryRegisteredSetRule(t *testing.T) {
 		"MatchingRules":          MatchingRules(),
 		"RewritingRules":         RewritingRules(),
 	}
+	fromSets := map[string]struct{}{}
 	for setName, rules := range registered {
 		for _, r := range rules {
 			name := shortTypeName(r)
+			fromSets[name] = struct{}{}
 			if LookupRule(name) == nil {
 				t.Errorf("%s: LookupRule(%q) = nil — package init did not register it", setName, name)
 			}
+		}
+	}
+	for _, name := range RegisteredRuleNames() {
+		if _, ok := fromSets[name]; !ok {
+			t.Errorf("registry holds %q, which no production rule set constructs", name)
 		}
 	}
 }

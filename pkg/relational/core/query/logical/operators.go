@@ -15,17 +15,14 @@ type ExistsSubquery struct {
 	Alias         values.CorrelationIdentifier
 	Plan          LogicalOperator
 	JoinPredicate predicates.QueryPredicate
-	// AlwaysTrue marks an EXISTS whose inner subquery ALWAYS produces at least
-	// one row, so `EXISTS(inner)` is unconditionally TRUE — set by the front-end
-	// for a NON-GROUPED aggregate inner (COUNT(*)/MAX/SUM with no GROUP BY /
-	// HAVING / QUALIFY / LIMIT 0 / positive OFFSET / windowed OVER). A POSITIVE
-	// WHERE-EXISTS consumer folds it to TRUE by NOT emitting the existential
-	// quantifier AND rewriting its EXISTS marker in the predicate to TRUE
-	// (foldAlwaysTrueExists / stripFoldedExistsMarkers) — which sidesteps the
-	// correlated-aggregate semi-join entirely (no joined-outer / windowed-DML
-	// hazard). NOT EXISTS (→ FALSE) and projected consumers do NOT fold on this
-	// flag (booked).
-	AlwaysTrue bool
+	// KnownTruth is non-nil when the front-end can prove the EXISTS result from
+	// relational cardinality alone. A non-grouped aggregate produces exactly one
+	// row before pagination; applying a literal LIMIT/OFFSET therefore makes the
+	// result statically TRUE (the row survives) or FALSE (the row is skipped).
+	// LIMIT 0 is likewise empty for every supported inner shape. The translator
+	// substitutes the constant in positive and negated WHERE consumers instead
+	// of building a correlated semi-join. Nil means the result is data-dependent.
+	KnownTruth predicates.TriBool
 	// OuterOnlyJoinConjuncts marks a JoinPredicate carrying conjuncts with
 	// NO inner-source reference that can FILTER (a nested-EXISTS middle
 	// routes them here; the inside placement does not plan for that
@@ -60,16 +57,20 @@ type ScalarSubquery struct {
 // `(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id)`.
 // The inner plan has the correlation predicate baked in as a filter
 // child of the aggregate — the executor re-evaluates it per outer
-// row via FlatMap. Carried on LogicalProject.
+// row via FlatMap. Carried on LogicalProject or LogicalFilter,
+// depending on whether the scalar is consumed by SELECT or WHERE.
 type CorrelatedScalarSubquery struct {
 	Alias      values.CorrelationIdentifier
 	InnerPlan  LogicalOperator
 	InnerAlias string
 	ScalarCol  string // output column name from the inner aggregate
-	// StrictSingle is true when the subquery has NO user-written LIMIT, so SQL
-	// standard at-most-one-row semantics apply: matching more than one inner row
-	// per outer row is a cardinality violation (21000), not a silent truncation.
-	// A user LIMIT clears it — truncation is then the user's deliberate intent.
+	// StrictSingle is true when the source can produce multiple post-pagination
+	// rows, so SQL standard at-most-one-row semantics apply: a second inner row
+	// per outer row is a cardinality violation (21000), not silent truncation.
+	// It is false when exact pagination caps a multi-row-capable source to 0/1,
+	// or when the source is intrinsically <=1 (for example a non-grouped real
+	// aggregate, for which even LIMIT >1 remains safe). Data-dependent LIMIT >1
+	// is rejected before this IR until post-pagination scalar collapse exists.
 	StrictSingle bool
 }
 
@@ -166,11 +167,12 @@ func (u *LogicalUnnest) Explain(indent string) string {
 // builder is constructed without a metadata-backed catalog (the
 // catalog-less Explain path, which has no transaction in scope).
 type LogicalFilter struct {
-	Input            LogicalOperator
-	Predicate        predicates.QueryPredicate // preferred when non-nil
-	PredicateText    string                    // source-text fallback
-	ExistsSubqueries []ExistsSubquery          // subquery plans for EXISTS predicates
-	ScalarSubqueries []ScalarSubquery          // subquery plans for scalar subqueries
+	Input                      LogicalOperator
+	Predicate                  predicates.QueryPredicate  // preferred when non-nil
+	PredicateText              string                     // source-text fallback
+	ExistsSubqueries           []ExistsSubquery           // subquery plans for EXISTS predicates
+	ScalarSubqueries           []ScalarSubquery           // uncorrelated scalar plans (pre-evaluated)
+	CorrelatedScalarSubqueries []CorrelatedScalarSubquery // correlated scalar plans (per-row LEFT scalar join)
 }
 
 // NewFilter constructs a text-only LogicalFilter — used by the
@@ -218,6 +220,13 @@ type LogicalProject struct {
 	Aliases         []string       // parallel to Projections; "" means no alias
 	ProjectedValues []values.Value // parallel to Projections; nil slot = walker declined
 	IsComputed      []bool         // parallel to Projections; true = expression, not plain column ref
+	// AggregateOutputOrdinals is the exact native [group keys..., aggregate
+	// calls...] input slot for each post-aggregate projection item. A negative
+	// entry marks a computed item whose Value tree is bound separately. nil
+	// means this is not the SQL aggregate-output boundary. Keeping this
+	// identity separate from Projections/Aliases prevents a group key and an
+	// aggregate alias with the same spelling from being rebound by name.
+	AggregateOutputOrdinals []int
 	// AggregateSlots is parallel to Projections; true = the slot's value tree
 	// CONTAINS an aggregate. Captured pre-rewrite, where the *AggregateValue
 	// node is still present (rewriteAggregateValuesInTree destructively replaces
@@ -276,6 +285,16 @@ type SortKey struct {
 	// diverges for computed items whose canonical source text differs from the
 	// baked output spelling.
 	Pos int
+	// AggregateOutputOrdinal is an exact address into the grouped input's
+	// native [keys..., calls...] row. The bool distinguishes native slot zero
+	// from an unset field. It is used when the visible aggregate Project is
+	// deliberately above ORDER BY.
+	AggregateOutputOrdinal    int
+	HasAggregateOutputOrdinal bool
+	// AggregateOutputValueExact marks Value as already structurally bound to
+	// the native aggregate row (including a computed tree whose leaves are
+	// native ordinals). Generic sort rebasing must not overwrite it by name.
+	AggregateOutputValueExact bool
 	// Bare/Qualifier/Qualified: parse-tree segments of a plain column
 	// reference key; zero values for positional and expression keys (their
 	// Expr is a rendering only). Qualification is FullId SEGMENT COUNT.
@@ -418,6 +437,22 @@ type LogicalAggregate struct {
 	HavingPredicate        predicates.QueryPredicate
 	HavingExistsSubqueries []ExistsSubquery // EXISTS subquery plans inside HAVING
 	HavingScalarSubqueries []ScalarSubquery // scalar subquery plans inside HAVING
+	// OutputSlots is the visible SQL SELECT contract in SELECT-list order.
+	// NativeOrdinal addresses the aggregate's physical output row
+	// [GroupKeys..., Calls...]; -1 marks a computed post-aggregate item.
+	// The aggregate keeps producing its native row until the legal projection
+	// boundary above ORDER BY, where this contract is materialized. Public
+	// labels live exclusively on that Project and are not producer identity.
+	OutputSlots []AggregateOutputSlot
+}
+
+// AggregateOutputSlot preserves one visible aggregate SELECT item after the
+// parser's internal key/call harvesting and reordering. SelectOrdinal is
+// one-based and unique. NativeOrdinal is zero-based into
+// [group keys..., aggregate calls...], or -1 for a computed expression.
+type AggregateOutputSlot struct {
+	SelectOrdinal int
+	NativeOrdinal int
 }
 
 // AggregateCall is the STRUCTURED form of one aggregate in the SELECT list,
@@ -995,6 +1030,9 @@ func AttachedPlans(op LogicalOperator) []LogicalOperator {
 		}
 		for _, sq := range o.ScalarSubqueries {
 			add(sq.Plan)
+		}
+		for _, sq := range o.CorrelatedScalarSubqueries {
+			add(sq.InnerPlan)
 		}
 	case *LogicalProject:
 		for _, sq := range o.ScalarSubqueries {

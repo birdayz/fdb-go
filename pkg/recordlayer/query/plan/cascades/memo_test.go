@@ -5,6 +5,8 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 func TestMemo_NewMemo_NilRoot(t *testing.T) {
@@ -101,6 +103,56 @@ func TestMemo_MemoizeExpression_NonLeafReuse(t *testing.T) {
 
 	if ref1 != ref2 {
 		t.Fatal("expected same Reference for structurally-equal non-leaf expressions over same child")
+	}
+}
+
+func TestMemo_MemoizeExpression_ProjectionAliasesDoNotCollapse(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scanRef := expressions.InitialOf(scan)
+	m := NewMemo(nil)
+	m.RegisterReference(scanRef)
+
+	projection := func(alias string) *expressions.LogicalProjectionExpression {
+		return expressions.NewLogicalProjectionExpressionWithAliases(
+			[]values.Value{values.NewBooleanValue(true)},
+			[]string{alias},
+			expressions.ForEachQuantifier(scanRef),
+		)
+	}
+
+	refA := m.MemoizeExpression(projection("A"))
+	refB := m.MemoizeExpression(projection("B"))
+	if refA == refB {
+		t.Fatal("memo collapsed projections with different output schemas")
+	}
+	if refATwin := m.MemoizeExpression(projection("A")); refATwin != refA {
+		t.Fatal("memo failed to intern a projection with the same exact output alias")
+	}
+}
+
+func TestMemo_MemoizeExpression_PhysicalProjectionAliasesDoNotCollapse(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scanRef := expressions.InitialOf(scan)
+	m := NewMemo(nil)
+	m.RegisterReference(scanRef)
+
+	projection := func(alias string) *plans.RecordQueryProjectionPlan {
+		return plans.NewRecordQueryProjectionPlanFromQuantifier(
+			[]values.Value{values.NewBooleanValue(true)},
+			[]string{alias},
+			expressions.ForEachQuantifier(scanRef),
+		)
+	}
+
+	refA := m.MemoizeExpression(projection("A"))
+	refB := m.MemoizeExpression(projection("B"))
+	if refA == refB {
+		t.Fatal("memo collapsed physical projections with different output schemas")
+	}
+	if refATwin := m.MemoizeExpression(projection("A")); refATwin != refA {
+		t.Fatal("memo failed to intern a physical projection with the same exact output alias")
 	}
 }
 

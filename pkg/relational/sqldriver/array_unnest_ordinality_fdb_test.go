@@ -3610,26 +3610,28 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRows(t, `SELECT WSRC."SID", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY WSRC."SID"`, []string{
 			"N=6|SID=1",
 		})
-		// GLOBAL aggregate COUNT(*) references no column, so it keeps the FLAT gathered
-		// seed — 1 WSRC row × {7,8} × 3 WAUX = 6. Pin the NO-wrap shape (ZERO Project) so
-		// the surgical trigger stays surgical.
+		// GLOBAL aggregate COUNT(*) references no column, so it keeps the FLAT
+		// gathered seed — 1 WSRC row × {7,8} × 3 WAUX = 6. The one Project is
+		// the universal public aggregate-output boundary; pin exactly one so no
+		// additional gathered-seed wrap can return.
 		exGCount := assertRows(t, `SELECT COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"N=6",
 		})
-		if strings.Count(exGCount, "Project(") >= 1 {
-			t.Fatalf("global COUNT(*) must keep the flat seed (no wrap), got: %s", exGCount)
+		if strings.Count(exGCount, "Project(") != 1 ||
+			!strings.Contains(exGCount, "Project([COUNT(*)#0]") {
+			t.Fatalf("global COUNT(*) must keep the flat seed with exactly one public output Project, got: %s", exGCount)
 		}
 		// GLOBAL aggregate whose OPERAND references the element (SUM(EL)) ORDINALIZES via
 		// the UN-COLLAPSE: the operand is positionally BAKED to the element's rc slot
 		// (fieldValueReferencesInner) over the raw gather — NO wrap. Each
 		// element {7,8} appears 3× (WAUX) → SUM=(7+8)*3=45. The plan is StreamingAgg over
-		// the raw NLJ gather with NO Project (a global aggregate has no outer-SELECT
-		// Project, and the wrap is retired).
+		// the raw NLJ gather with exactly the universal public output Project;
+		// the gathered-seed wrap remains retired.
 		exGSum := assertRows(t, `SELECT SUM("EL") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"S=45",
 		})
-		if strings.Count(exGSum, "Project(") != 0 || !strings.Contains(exGSum, "FlatMap(outer=Scan(WSRC)") {
-			t.Fatalf("global SUM(EL) must ORDINALIZE via the un-collapse (baked operand over the raw gather, no wrap), got: %s", exGSum)
+		if strings.Count(exGSum, "Project(") != 1 || !strings.Contains(exGSum, "FlatMap(outer=Scan(WSRC)") {
+			t.Fatalf("global SUM(EL) must ORDINALIZE over the raw gather with one public output Project, got: %s", exGSum)
 		}
 		// A global aggregate over a BURIED leaf column (SUM(WAUX.WV)) needs the same
 		// wrap. WAUX has WV=5,6,7 → each crossed with both elements {7,8} → SUM=(5+6+7)*2=36.
@@ -3661,12 +3663,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			"A=7.5",
 		})
 		// GUARD: the broadened trigger is INERT without a gathered multi-source unnest —
-		// a single-source global aggregate keeps its exact prior plan (no wrap). SID=1.
+		// a single-source global aggregate has only its public output Project,
+		// never a gathered-seed wrap. SID=1.
 		exNoGather := assertRows(t, `SELECT SUM(WSRC."SID") AS "S" FROM WSRC`, []string{
 			"S=1",
 		})
-		if strings.Count(exNoGather, "Project(") >= 1 {
-			t.Fatalf("non-gather global aggregate must not gain a wrap, got: %s", exNoGather)
+		if strings.Count(exNoGather, "Project(") != 1 {
+			t.Fatalf("non-gather global aggregate must have only the public output Project, got: %s", exNoGather)
 		}
 		// SHADOW-COLLISION ORDINALIZES via POSITIONAL binding: WAUX has a WV column and
 		// `WSRC.WARR AS WV` names the element WV too, so the seed carries BOTH under the

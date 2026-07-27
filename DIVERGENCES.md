@@ -204,8 +204,8 @@ explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-crit
 | 3. Residual predicate count | NormalizedResidualPredicateProperty (CNF size) | `countResidualPredicates` using `cnfSize()` | Aligned |
 | 4. Data access count | count(Scan, Index, Covering) | `scanCount + indexScanCount + coveringIndexCount` | Aligned |
 | 5. Recursive CTE DFS > level | flipFlop(compareRecursiveCte) | `compareRecursiveCTE` | Aligned |
-| 6. IN-plan SARG penalty | flipFlop(compareInOperator) | `compareInPlan` with `(int, bool)` flipFlop | Aligned |
-| 7. Primary vs index scan | comparison-set analysis + configured `IndexScanPreference` (Cascades default `PREFER_SCAN`) | `comparePrimaryScanVsIndexScan` + `isSingularIndexScanWithFetch` + mirrored configuration | Aligned; strict-SARG-superset and all three preference branches are behaviorally pinned |
+| 6. IN-plan SARG penalty | flipFlop(compareInOperator) — evaluates the LEFT argument only and returns a PRESENT tie for a SARGed in-plan | `compareInPlan` ranks BOTH sides on the penalty | **Deliberate divergence — Java's rung is not antisymmetric (see below)** |
+| 7. Primary vs index scan | `flipFlop(comparePrimaryScanToIndexScan)` — a pair-restricted guard, plus a comparison-SUBSET sub-case, plus the configured `IndexScanPreference` (Cascades default `PREFER_SCAN`) | `comparePrimaryScanVsIndexScan` ranks BOTH sides on `primaryVsIndexRankOf`, a tiered ladder whose contested band orders by comparison-set SIZE | **Deliberate divergence — Java's rung is not transitive, and its adjudicated verdicts are themselves cyclic (see below)** |
 | Go sort extension | Cascades `RemoveSortRule` eliminates redundant sorts before costing and has no physical-sort cost rung (`RecordQuerySortPlan` is legacy-planner-only) | `inMemorySortCount`, fewer wins, promoted before the structural block | Go read-side extension / cost-time analogue (RFC-190) |
 | 8. Type filter count | TypeFilterCountProperty | `len(GetRecordTypes())` per filter | Aligned |
 | 9. Type filter depth | ExpressionDepthProperty | Concrete depth plus logical fallback, with `InMemorySort` transparent | Aligned after RFC-190; unconditional with respect to sort |
@@ -221,6 +221,270 @@ explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-crit
 | 17. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `costExprHash`→`concretePlanHash`/`exprConcreteHash` (FNV-flavored) | **Shape-aligned, NOT byte-aligned** (RFC-167 §5) — both break cost ties by a structural plan hash so each engine is *intra-engine* stable, but Go uses an FNV-flavored hash (RFC-024 cache key) ≠ Java's `planHash(CURRENT_FOR_CONTINUATION)`, so Go and Java may pick **different** tie-winner indexes for the same query (rows identical; EXPLAIN may differ). Convergence is deferred until cross-engine continuation re-planning is a requirement (RFC-167 OQ#5). |
 
 Criterion 15b (`compareFlatMapVsNLJ`) is RETIRED (RFC-181 WS-P stage (d)): under the epoch convergence with finals-only physical yields and prune-to-winner, its recorded JOIN regression no longer reproduces — deleted with its tests. 15c is RECLASSIFIED: Java's PlanningCostModel is self-described heuristic — its rungs end in a planHash tiebreak and no statistics rung exists — so 15c is a Go statistics EXTENSION occupying that role slot (cost discriminator before the hash tiebreak), not a literal Java rung; the stage-(d) retirement probe regressed equality-index preference and vector outer-limit folding, proving it load-bearing. The maxRoundsPerRef load cap (10) is obsolete under epoch convergence (both constraint lattices are finite chains, so rounds are structurally bounded); it remains only as a loud divergence tripwire at 100. RFC-190 removed the five Go-specific per-rung sort gates and promoted sort count. The GROUP BY/covering-index flip exposed the missing `RecordQueryScanPlan` unmatched-fields arm; porting Java's scan branch fixed the apples-to-oranges comparison, so it is not evidence for retaining the gate.
+
+#### Criterion 6 — IN-plan SARG penalty — DELIBERATE DIVERGENCE (Java upstream defect)
+
+**Java's rung is not antisymmetric, so it can make the winner depend on the order the memo's members
+arrived in rather than on what they are. Go ranks both sides instead. Read-side plan choice only —
+nothing here touches the wire, so Java and Go still read and write byte-identical records.**
+
+Java (`PlanningCostModel.java`, tag 4.12.11.0):
+
+- `compareInOperator(leftExpression, rightExpression)` (`:433`) declares its second parameter
+  `@SuppressWarnings("unused")` (`:434`) and never reads it. It returns `OptionalInt.empty()` when the
+  LEFT expression is not an in-plan (`:436`), `OptionalInt.of(1)` when the left in-plan's bindings
+  never became search arguments (`:456`, `:463`), and `OptionalInt.of(0)` — a PRESENT tie — otherwise
+  (`:467`).
+- `flipFlop` (`:511`) returns variant A's result directly whenever it is present (`:514-515`), so a
+  present 0 stops the evaluation and the `(b, a)` orientation is never asked.
+- The call site (`:177-181`) then guards with `getAsInt() != 0`, so a present 0 falls through to the
+  remaining rungs. Java's own Javadoc says as much — *"That in turn causes the remainder of the
+  tie-breaking code to be used"* (`:429-430`) — and contains a typo, writing `OptionalInt.of(1)` twice
+  where the second occurrence means `of(0)` (`:427-428`).
+
+Writing `X` for a SARGed in-plan, `Z` for an unSARGed one and `Y` for a non-in-plan, that yields two
+independent antisymmetry violations:
+
+| pair | Java | Java reversed | antisymmetric? |
+|---|---|---|---|
+| `X, Z` | `0` (abstains, chain continues) | `+1` (short-circuits) | **no** |
+| `Z, Z'` | `+1` (`Z` is worse) | `+1` (`Z'` is worse) | **no** |
+
+A comparator built by lexicographic composition of criteria is transitive only if every criterion is
+itself a total preorder, and criterion 6 is not one. The consequence is not a visible "both are less"
+contradiction — winner selection asks `less` in both directions — it is quieter: for two unSARGed
+in-plans `less` is false BOTH ways, so every later rung, including the fetch/type-filter/sort rungs
+and the full cost model, is short-circuited and the winner falls to the plan-hash tie-break, or, in
+`OptimizeGroup`'s fold (which compares without a tie-break), straight to member insertion order. A
+dramatically better unSARGed in-plan can lose to a worse one for no reason connected to its cost.
+`X` versus `Z` fails the same way whenever a later rung happens to prefer `Z`.
+
+The correct shape already exists elsewhere in the same Java class: `compareRecursiveCteOperator`
+(`:492`) returns `of(-1)` only for the exact `(DFS, LevelUnion)` pair and `empty()` otherwise — never
+a present tie — so `flipFlop` always gets to ask the reverse question. `comparePrimaryScanToIndexScan`
+is likewise safe on this axis: its applicability guard cannot hold in both orientations at once.
+
+Go's `compareInPlan` evaluates `compareInOperator` for both arguments and compares the penalties. It
+reduces to a total preorder on a rank in `{0, 1}` — non-in-plans and SARGed in-plans both rank 0,
+unSARGed in-plans rank 1 — so `cmp(a,b) == -cmp(b,a)` holds for every pair and the rung composes
+transitively with the rest of the chain:
+
+| pair | Go | Go reversed |
+|---|---|---|
+| `X, Z` | `-1` | `+1` |
+| `Z, Z'` | `0` (falls through) | `0` |
+| `X, X'` | `0` (falls through) | `0` |
+| `Z, Y` | `+1` | `-1` |
+| `X, Y` | `0` (falls through) | `0` |
+
+Behaviourally this changes exactly two things versus Java: a SARGed in-plan now beats an unSARGed one
+outright instead of deferring to the later rungs, and two equally-penalised in-plans now tie so those
+later rungs decide them. Java's SARGed-abstains intent (its Javadoc's "remainder of the tie-breaking
+code") is preserved for the `X`-versus-`Y` and `X`-versus-`X'` cases, where it was never ambiguous.
+
+Pinned by `TestCostModel_InPlanComparisonIsOrderIndependent` (brute-force antisymmetry / transitivity
+/ totality / permutation sweep over an in-plan-rooted corpus of IN-joins and IN-unions, SARGed and
+not, mixed with non-IN plans), `TestCostModel_UnsargedInPlansRankedByRealRungs`,
+`TestCostModel_SargedInPlanBeatsUnsargedThroughFullChain`, `TestCompareInPlan_SargedBeatsUnsarged`,
+and `TestOptimizeGroup_InPlanWinnerIsInsertionOrderIndependent` (all 24 insertion orders of a
+four-member group elect the same winner, through the real `OptimizeGroupTask`), plus the SQL-level
+corpus file `pkg/relational/conformance/yamsql/testdata/in_plan_winner_stability.yaml`, which reaches
+the both-IN arm from SQL deliberately rather than incidentally.
+
+**Reachability and impact are measured, not assumed.** Byte-identical plans on their own are evidence
+of neither reachability nor safety — an arm that is never reached also changes nothing — which is why
+both were instrumented.
+
+*Reachability.* The both-IN arm fires 265 times across the six SQL-level suites (embedded,
+explaindiff, plandiff, memoinvariant, rowdiff, yamsql), and every one is the `penaltyA=1,
+penaltyB=1` case where Java answers `+1` and Go answers `0`. Over one pass of the plan-shape corpus
+(339 files, 2452 queries) the arm fires 27 times: `in_list_pushdown.yaml` ×14,
+`in_plan_winner_stability.yaml` ×7, `in_over_intersection.yaml` ×4, `e2e_inventory.yaml` ×2.
+
+*Impact.* Reconstructing the pair's winner both ways over those 27: **21 agree** with the pre-fix
+hash tie-break and **6 flip** — `in_over_intersection.yaml` ×4 (two InJoin/InJoin, two
+InUnion/InJoin) and `e2e_inventory.yaml` ×2 (InUnion/InJoin). The new corpus file contributes 0
+flips. The plans nevertheless hold, for a reason that differs per file and was checked rather than
+assumed:
+
+- In `in_over_intersection` the elected plan contains **no IN operator at all** — a third candidate
+  beats both members of the flipped pair (`PredicatesFilter(Fetch(Intersection(IndexScan(IDX_B,
+  [=]), IndexScan(IDX_C, [=]))), [1 preds])`, with the IN left as a residual), so the pair's local
+  verdict never reaches the output.
+- In `e2e_inventory#4` the elected plan **is** one member of the flipped pair — the
+  `InUnion(TypeFilter([STOCK], Scan(STOCK, [=])), bindings=1, ASC)` — and it is elected despite this
+  rung's verdict now pointing at the InJoin. The query carries `ORDER BY product_id, warehouse_id`
+  and the winner is sort-free, so the ordered-member retention path, not criterion #6, is what
+  selects it.
+
+The whole-corpus proof is independent of both explanations: regenerating the entire plan-shape
+baseline with the pre-fix rung forced back on yields output **byte-identical** to the fixed rung's,
+which is in turn byte-identical to the committed golden.
+
+#### Criterion 7 — primary scan versus index scan with fetch — DELIBERATE DIVERGENCE (Java upstream defect)
+
+**Java's rung is not transitive — not merely because it abstains on most pair shapes, but because its
+verdicts on the pairs it DOES adjudicate already contain a cycle. Go ranks both sides on a scale
+instead. Read-side plan choice only — nothing here touches the wire, so Java and Go still read and
+write byte-identical records.**
+
+Java (`PlanningCostModel.java`, tag 4.12.11.0):
+
+- `comparePrimaryScanToIndexScan(primaryScan, indexScan, …)` (`:370`) is guarded by an applicability
+  test (`:376-379`): the first side must be exactly one `RecordQueryScanPlan` with no
+  `RecordQueryPlanWithIndex`, the second must have no `RecordQueryScanPlan` and must satisfy
+  `isSingularIndexScanWithFetch` (`:474-478`). Outside that shape it returns `OptionalInt.empty()`
+  (`:414`) and the call site (`:190-195`) falls through to the remaining rungs.
+- Inside the guard there are two branches. The type-filter sub-case (`:381-406`): when the primary
+  side carries a type filter and the index side none, it takes `Sets.difference` both ways
+  (`:392`, `:394-395`) and returns `of(1)` — prefer the index — iff `primary − index` is empty AND
+  `index − primary` is non-empty, i.e. iff the primary's comparison set is a STRICT SUBSET of the
+  index's. Otherwise the config branch (`:408-412`): `PREFER_SCAN` returns `of(-1)`, the
+  index-preferring configurations `of(1)`.
+- `flipFlop` (`:511`) asks the reverse orientation when the first returns empty. The guard cannot hold
+  in both orientations at once (one side needs `scanCount == 1`, the other `scanCount == 0`), so
+  ANTISYMMETRY is fine here — unlike criterion 6. The defect is transitivity only.
+
+**Defect 1 — pair-restriction.** A criterion that adjudicates only some pair shapes is not a total
+preorder, and a lexicographic composition is transitive only if every rung is one. The failure is the
+indifference relation: the rung is indifferent between two index scans it ranks on OPPOSITE sides of
+the same primary scan, so a rung further down closes the ring. Writing `P` for a lone primary scan and
+`I` for a singular index-scan-with-fetch:
+
+	sargedIndex+3fetches   < primaryScan+typeFilter   the type-filter sub-case: the index SARGs
+	                                                  strictly more and pays no type filter
+	primaryScan+typeFilter < plainIndex+1fetch        the config branch, PREFER_SCAN (the default)
+	plainIndex+1fetch      < sargedIndex+3fetches     the rung ABSTAINS for an index/index pair;
+	                                                  the fetch rung decides, 2 < 4
+
+No IN operator is involved. Over the corpus of `TestCostModel_InPlanComparisonIsOrderIndependent` the
+pre-fix rung produces **69 transitivity violations at the 28 plans that corpus held when the scoping
+was introduced, and 138 at the 32 plans it holds now — 100% of them involving a primary scan** in both
+cases, with antisymmetry clean (0 violations) either way. That is why the sweep used to scope its
+transitivity and permutation properties to the index-rooted subset.
+
+**Defect 2 — the adjudicated verdicts are themselves cyclic**, so the repair could NOT simply extend
+Java's answers to the abstained pairs. The sub-case decides on the SUBSET relation between the two
+sides' comparison sets, and a subset relation is a partial order, not a total preorder. Four plans,
+every consecutive comparison a `(P, I)` pair inside Java's guard (`P` sides type-filtered, `I` sides
+not):
+
+| pair | Java | why |
+|---|---|---|
+| `P1{a}` vs `I2{b,c}` | primary wins | `primary − index = {a}` is non-empty: sub-case skipped, `PREFER_SCAN` |
+| `I2{b,c}` vs `P2{b}` | index wins | `{b} ⊊ {b,c}`: sub-case fires |
+| `P2{b}` vs `I3{c,a}` | primary wins | `primary − index = {b}` is non-empty: skipped again |
+| `I3{c,a}` vs `P1{a}` | index wins | `{a} ⊊ {c,a}`: sub-case fires |
+
+`P1 < I2 < P2 < I3 < P1`. Reproduced in Go on the pre-fix rung by
+`TestCriterion7_AdjudicatedCycleIsGone`. No total preorder can reproduce a cyclic relation, so any
+repair necessarily changes some verdicts; the only question is which.
+
+**Go's rung** (`comparePrimaryScanVsIndexScan` → `primaryVsIndexRankOf`) ranks each plan
+independently on a ladder, lower is better, and compares the ranks. Under `PREFER_SCAN` (the Cascades
+default):
+
+| tier | class | within-tier order |
+|---|---|---|
+| 0 | a lone primary scan with no type filter; and every plan with no stake in the trade-off (covering index needing no fetch, multi-access plan, …) | flat |
+| 1 | the contested band: a type-filtered lone primary scan, and a singular index-scan-with-fetch with no type filter | more search arguments wins; a tie goes to the primary scan |
+| 2 | a singular index-scan-with-fetch that also pays a type filter | flat |
+| 3 | any plan carrying an in-memory sort | flat |
+
+The index-preferring configurations penalise the lone primary scan instead (tier 1) and leave
+everything else at tier 0 — Java's sub-case is moot there because both of its branches already return
+"prefer the index".
+
+Two things change versus Java, and nothing else:
+
+1. **The subset test becomes a size test.** Inside the contested band the index wins iff it carries
+   strictly MORE distinct comparisons (`distinctSargCount`, the cardinality of the same set Java takes
+   differences of). That agrees with `primary ⊊ index` on every COMPARABLE pair — a strict subset has
+   strictly fewer members, equal sets have equal counts and the tie goes to the primary exactly as
+   Java's empty `indexMinusPrimary` does — and differs only on INCOMPARABLE sets, which is precisely
+   the configuration that makes Java cyclic.
+
+   **The price, stated plainly.** On incomparable sets the size test is BLIND TO WHICH comparisons
+   they are, so an index that is MISSING a comparison the primary scan has can still win, purely on
+   count: `primary{a,b}` versus `index{c,d,e}` goes to the index (3 > 2), where Java's
+   `primaryMinusIndex = {a,b}` is non-empty and it goes to the primary. Java's guard is the more
+   informative test — it will not hand the win to an index that dropped a search argument the primary
+   holds — and the repair gives that up. It has to: `primaryMinusIndex.isEmpty()` is a subset test,
+   and the four-plan cycle above is built from nothing but subset tests, so keeping it is keeping the
+   cycle. Size is the coarsest scale that reproduces Java wherever Java is self-consistent. The
+   exposure is bounded by the guard the rung keeps: this only ever arises when the primary side pays
+   a type-filter discard and the index side pays none. It does not arise on the corpus measured
+   below — all 24 contested-band consultations carry one comparison per side.
+2. **The in-memory-sort guard becomes symmetric.** Go's `ImplementInMemorySortRule` is a read-side
+   extension Java's ordinal rungs never see, and Go already refused to treat an `InMemorySort(Scan)`
+   as a bare primary scan. A rank has no "abstain", so a sort-bearing plan has to land somewhere;
+   ranking it last reproduces the verdict of the sort-count rung immediately below, and extends the
+   same guard to the index side, where an `InMemorySort(IndexScan)` could previously win here and
+   pre-empt that rung.
+
+Pinned by `TestCriterion7_AbstentionCycleIsGone` and `TestCriterion7_AdjudicatedCycleIsGone` (the two
+cycles above, red on the pre-fix rung), `TestCriterion7_RankIsATotalPreorder` (brute-force
+irreflexivity / antisymmetry / strict-transitivity / INDIFFERENCE-transitivity over a 12-plan corpus
+covering every tier, for all three `IndexScanPreference` values),
+`TestPlanningCostModel_PrimaryIndexSARGRichIndexWins` (the contested band end to end, isolated
+differentially: removing the index's extra comparison flips the winner back to the primary scan),
+`TestPlanningCostModel_PrimaryVsIndexRungIgnoresSortBearingPlans`, `TestDistinctSargCount`, and the
+widened `TestCostModel_InPlanComparisonIsOrderIndependent`, whose transitivity and
+permutation-independence sweeps now cover the WHOLE corpus, primary scans included (29,760 ordered
+triples, 64 permutations, 496 pairs over 32 plans).
+
+**Reachability and impact are measured, not assumed.**
+
+All figures below come from one instrumented pass over the six SQL-level suites (embedded,
+explaindiff, plandiff, memoinvariant, rowdiff, yamsql). They are stable to about a tenth of a percent
+across runs — an independent reviewer's pass measured 362,592 consultations against the 362,879 here
+(0.08%) — because memo exploration order is not bit-reproducible between processes. Treat the totals
+as ±0.1%; the ZERO counts below are exact and did reproduce exactly.
+
+*Reachability.* The rung is consulted **362,879** times. **197,807** of those are pairs the pre-fix
+rung ADJUDICATED — overwhelmingly primary-versus-index with no type filter (191,735 + 6,048), plus 24
+type-filtered-primary-versus-index pairs, the shape the sub-case exists for.
+
+*Impact on the adjudicated pairs.* **Zero** of the 197,807 change verdict. The size test never
+disagrees with the subset test on this corpus because the comparison sets are always comparable there
+— all 24 contested-band consultations carry one comparison on each side.
+
+*Impact on the abstained pairs.* **26,083** pairs get a rung verdict where the pre-fix rung had none:
+
+| pairs | shape | decided the same way by |
+|---|---|---|
+| 10,786 | primary-with-type-filter versus primary-without | the type-filter-count rung directly below (fewer wins) |
+| 14,147 | sort-bearing versus sort-free | the sort-count rung directly below (fewer wins) |
+| 1,150 | index-scan-with-fetch versus covering-index-needing-no-fetch | the fetch rung below (`indexScanCount + fetchCount`, 2 against 0) |
+
+The 1,150 are the only genuinely NEW class, and all 1,150 are the identical shape:
+`I(tf=0, sarg=k, idx=1, fetch=1)` against `E(tf=0, sarg=k, cov=1, fetch=0)` — equal search arguments,
+equal type filters, the covering side winning every time. Pinned by
+`TestCriterion7_FetchPayingIndexLosesToCoveringIndex`, which asserts BOTH this rung's verdict and the
+fetch rung's metric so the two cannot silently diverge.
+
+The index-versus-index search-argument ordering — the one dimension that could pre-empt the
+fetch-count and unmatched-field rungs below — **does not fire anywhere in the SQL corpus**: all 49,091
+index/index consultations have equal search-argument counts (unequal: 0). It is emphatically NOT
+unreachable in general, and is directly pinned by
+`TestPlanningCostModel_SargRichIndexBeatsSargPoorIndex`, whose shapes come from a pre-existing unit
+test that had to be adjusted for this change.
+
+*Net effect on the comparator.* The decisive measurement is not the rung but the CHAIN. Evaluating
+every full-comparator comparison twice in the same process — once with the pre-fix rung and once with
+the ranked rung — over **967,069** comparisons yields **zero sign differences** (729,088 `+1`,
+167,010 `-1`, 70,971 ties, identical both ways). Every one of the 26,083 rung-level changes is
+absorbed by a rung below returning the same sign. That, not the rung's own statistics, is why the
+elected plans and the stress numbers do not move.
+
+*Elected winners.* Independently: recording the extracted plan of every planning across those six
+suites — **42,560 plans** — and diffing the pre-fix run against the fixed run modulo run-to-run
+correlation-identifier counters yields **zero differences**. Byte-identical output is not on its own
+evidence of safety, which is why the 223,890 non-abstaining consultations and the 967,069 chain
+comparisons above were counted first.
+
+*Stress.* The 1M stress suite is unchanged: 23/23 subtests pass on both sides with identical row
+counts and a byte-identical EXPLAIN set (see TODO.md's stress table).
 
 ### Cost Model: RewritingCostModelLess
 
@@ -352,6 +616,31 @@ Go-only plan types: `RecordQueryHashAggregationPlan`, `RecordQueryInMemorySortPl
 
 Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
 
+### Go-only SQLSTATEs
+
+`pkg/relational/api/errcode.go` tracks Java's `ErrorCode` enum: **every one of Java's 74 codes exists in Go** — that direction has no gap. Go defines four codes Java has no member for:
+
+| Code | Go constant | Why it exists |
+|---|---|---|
+| `21000` | `ErrCodeCardinalityViolation` | SQL-standard class 21. Java's enum has no class-21 member at all, and its relational layer has no scalar-subquery cardinality check, so nothing there reports "subquery returned more than one row". Go enforces the cardinality and needed a code to name the violation. |
+| `22003` | `ErrCodeNumericValueOutOfRange` | SQL-standard code for arithmetic overflow. Java's enum has no member for it; overflow there escapes as a raw Java exception and reaches `ExceptionUtil`'s final fallthrough, reported as `UNKNOWN`. |
+| `22012` | `ErrCodeDivisionByZero` | SQL-standard code for division by zero. Java's enum has no member for it; the operation raises `java.lang.ArithmeticException`, which is not a `RecordCoreException`, so `ExceptionUtil.toRelationalException` reports `UNKNOWN`. |
+| `54F02` | `ErrCodePlanComplexityLimitReached` | Go bounds Cascades planning; Java's SQL layer never enables its planner caps, so the condition cannot arise there. Detailed below. |
+
+The first three predate this list; it was written when a claim that there was only one Go-only code turned out to be false. The list is not maintained by prose: `goOnlyErrorCodes` in `errcode.go` carries the same four with their reasons, and `TestErrorCodesMatchJava` diffs the Go enum against a captured snapshot of Java's, failing if the difference and the list disagree in either direction — a new unlisted Go-only code, a stale entry, or a Java code missing from Go. Regenerate the snapshot on a Java version bump using the command in its doc comment.
+
+#### `54F02` in detail
+
+Java's Cascades planner defines three complexity caps — `maxTotalTaskCount`, `maxTaskQueueSize`, `maxNumMatchesPerRuleCall` — and throws `RecordQueryPlanComplexityException` from `CascadesPlanner.java:448`, `:493`, and `:1026` when one trips. **Java's SQL layer never enables any of them.** `PlannerConfiguration.buildRecordQueryPlannerConfiguration` (`fdb-relational-core/.../query/PlannerConfiguration.java:150-161`) sets index scan preference, in-join union size, index fetch method, disabled rules and `setJoinRightDeep`, and none of the three cap setters. All three guards are gated on a positive bound (`CascadesPlanner.java:325-335`) and the default is `0`, documented as "unbound" (`RecordQueryPlannerConfiguration.java:236,244`). So no JDBC user of stock 4.12.11.0 can observe that exception.
+
+Go bounds planning at 100,000 tasks at every production callsite, because unbounded search on a pathological query is a liveness hazard. That makes budget exhaustion a **Go-only condition with no shared surface to conform to** — the cross-engine conformance principle governs inputs Java also attempts, and Java does not attempt this one.
+
+Porting Java's mapping would have been wrong twice over: `ExceptionUtil.recordCoreToRelationalException` matches `RecordQueryPlanComplexityException` against no `instanceof` arm, so it would land on `ErrorCode.UNKNOWN` (`XXXXX`) — a code Java's own javadoc says "shouldn't be used in general" (`ErrorCode.java:168-171`) — reached only through a path Java's SQL layer never walks.
+
+Class 54 ("program limit exceeded") is the honest class: the planner gave up because the query is too complex, and simplifying it is a real remedy. `54F01` (`EXECUTION_LIMIT_REACHED`) is deliberately NOT reused — it means an *execution*-time limit and is tied to a scan/row continuation reason, so conflating plan-time with it would corrupt a meaning Java owns. `54F02` is unused in Java's enum, leaving room for Java to adopt it should it ever enable the caps.
+
+The Go error carries the same context Java's `addLogInfo` attaches (`max_task_count`/`task_count` and the queue and rule-match equivalents) via `cascades.PlannerBudgetExceededError`.
+
 ## Java Upstream Bugs (Go is correct, Java is wrong)
 
 Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only positive tests; corpus entries omitted until Java upstream fixes.
@@ -444,6 +733,8 @@ written down with **"what invariant does Java carry that this drops?"** and each
 | **Scalar cost fallback + Go-only tiebreakers** (15b `compareFlatMapVsNLJ`, 15c `EstimateCostWith`) — no `advancePlannerStage`, so Go's flat member list has ties Java's prune-to-1-winner avoids | Structural single-winner selection; total-order tie resolution | nondeterministic / wrong index pick | **PARTIAL** — cost ORDERING pinned by WS-4 `TestBoundSelectivity_CostMonotonicity` (#405 class); equality-tie determinism pinned by `TestPlanDeterminism_*` (#409). **TRACKED:** the InJoin inner correlated-equality tie (WS-4 #2, OPEN — RFC-167 Phase 1b). |
 | **Hand-rolled `AggregateDataAccessRule`** (aggregate-index matching, not Java's generic data-access) | Guard(match)==consumer(build/execute) — one classifier | wrong agg result / wrong index match (COUNT-COL class) | **COVERED for the known drift** — WS-3 `expressions.IsCountStar` is the single source of truth for the planner candidate + the executor group cursors (#413); group-key matcher deduped via `groupColEqualityIndex` (RFC-163). **TRACKED:** the translator's OWN count-star normalization (`aggregateNamesStableForUnion`) is deliberately a SEPARATE classifier (`cascades_translator.go` — different question/scope) → audit whether it should share (WS-3 other-guard/consumer-pairs); the `COUNT(NULL)` fold fidelity (Graefe follow-up). |
 | **`WithPrimaryKeyIntersector` was forward-PK-only and discarded `requestedOrderings`** (vs Java's rich common-ordering gate) | Every intersection leg shares the directional comparison ordering consumed by the sorted merge | wrong rows if reverse were widened piecemeal; safe misses for unsupported key encodings | **RESOLVED (RFC-190.5b):** rich common-order derivation, translated requests, fixed-binding dependency normalization, free-PK compatibility, redundancy proof, directional parts, reverse plan identity/execution/ordering/rewrites, and fan-out-leg PK distinct are one atomic path. Natural flat all-ASC/all-DESC keys execute; mixed/counterflow, ordered-bytes, non-flat, ambiguous-layout, stale-ordinal, and mixed structural/name-only PK-provider shapes decline safely. Multi-type layout remains separately tracked below. |
+| **Merge UNIONs (`InUnion`, `MergeSortUnion`) decline a MIXED-direction comparison key** | Java encodes direction and NULL placement into the physical key with `ToOrderedBytesValue` (`ProvidedOrderingPart.comparisonKeyValue`), so it can merge on `(a DESC, b ASC)` | plan-space narrowing only — never wrong rows; the request falls back to an in-memory sort | **TRACKED, fail-closed.** Go's `ToOrderedBytesValue` has no evaluator, so the executable comparison key is the raw Value and a merge runs in exactly one direction. Both merge-union rules now gate on `properties.NaturalComparisonKeyValues(parts, isReverse)` — the same gate the intersection plans already used — and decline any candidate whose parts disagree with the resolved direction, instead of building a plan whose merge front compares one key the wrong way round. Newly REACHABLE rather than newly introduced: until descending merges were enumerated at all, every comparison key was ascending. **Measured:** the IN-union gate declines exactly twice over the 2475-query corpus, both times `parts=[ASC, DESC]` against a forward merge; the merge-sort-union gate declines nothing, because the union merge carries no equality-bound key for a request to give a direction to (`TestDistinctUnionMergedOrderingCarriesNoEqualityBoundKeys` pins that premise, so the fence's dormancy stays a fact rather than an assumption). The reachable half is pinned at RULE level by `TestInUnionRuleRefusesMixedDirectionMerge`, verified red with the gate removed — the corpus scenarios do NOT pin it, since the mixed-direction shapes plan an in-memory sort with or without the gate. Closing it means porting the `ToOrderedBytesValue` evaluator, which also closes the counterflow-NULLS decline in `EnumerateSatisfyingComparisonKeyValues`. |
+| **`PrimaryScanMatchCandidate.ComputeMatchedOrderingParts` SKIPS two branches of Java's shared implementation, and softens a third from an assert to a decline** | `ValueIndexLikeMatchCandidate.computeMatchedOrderingParts` (`ValueIndexLikeMatchCandidate.java:63-118`) hard-asserts `Verify.verify(ordinalInCandidate >= 0)` on an unknown sort parameter, branches on `normalizedKeyExpression.createsDuplicates()`, and de-duplicates emitted ordering VALUES through a `normalizedValues` set | plan-space narrowing only, never wrong rows | **TRACKED, all three deliberate.** (a) A primary key is a flat list of scalar columns, so `createsDuplicates()` is false at every position and the fan-out branch has nothing to act on. (b) With no fan-out and distinct key columns, the `normalizedValues` dedup can never fire. (c) Java ASSERTS an unknown sort parameter is impossible; Go ends the reported prefix instead (`primary_scan_match_candidate.go`, pinned by `TestPrimaryScanMatchCandidateStopsAtUnknownParameter`). Java's assert is the stronger statement and Go should eventually match it, but a panic in library code is forbidden by design principle 4, and truncating is the fail-closed reading — it can only cost an access path, never claim an order the records lack. Revisit (a) and (b) together if a primary key ever gains a fan-out key expression. |
 | **Cross-candidate PK-intersection pruning retains singleton alternatives** | Java builds compensated singles and all intersections in one shared `IntersectionInfo` map, evicts immediate subpartitions only after a useful replacement, then yields survivors once | safe plan-space widening / possible winner difference, never missing or wrong rows | **TRACKED SAFE RESIDUAL (RFC-190.5b review):** Go first yields candidate-local accesses, then its separate cross-candidate pass builds a private eviction map. It correctly prunes smaller intersection expressions internally but cannot retract already-yielded exact singleton scans. Do not delete memo members post hoc. Closing this requires a partition-level assembler that creates singles once, shares the map with intersection enumeration, and flattens survivors before any yield; regressions must preserve unrelated finals and safe logical compensations. |
 | **Per-wrapper relink** (RFC-070 nil-inner shells across ~20 wrappers, vs Java's eager `memoizePlan` to concrete) | Every non-leaf plan has its child; deterministic relink to the cost winner; one final member | dropped/nil child (0 rows); nondeterministic plan/cache | **CLOSED for the shell half (RFC-183).** Rules now bake the concrete child at rule time, matching Java's memoizePlan-as-constructor-argument; `verifyChildrenMemoized` rejects a holed expression at yield, always-on (ports `CascadesRuleCall.verifyChildrenMemoized`); the ~600 lines of repair machinery are deleted, after instrumentation showed ZERO shells across the full suite and all 2407 corpus queries. `ValidatePlanInvariants` remains as the sink-side backstop. **NOW CLOSED (RFC-184 W2):** P5's terminal step landed — every physical wrapper is deleted, so the parent→child edge is no longer stored twice. A physical plan is its own cascades expression holding its children SOLELY as quantifiers (`RecordQueryFlatMapPlan`/`RecordQueryNestedLoopJoinPlan` carry `outerQ`/`innerQ` and no embedded plan-snapshot field; `GetChildren` resolves through them), so the dual-storage state is unrepresentable. The earlier BLOCKER — `rule_implement_nested_loop_join.go` building compensating filters that were never memoized, so the plan pointer held what EXECUTES while the quantifier held what the memo COSTS (9868 rule-time edges, 472 semantically different) — is resolved: those rules now memoize each compensating operator and advance the quantifier over that reference in lockstep (the FlatMap collapse), matching `rule_implement_simple_select.go`'s long-standing shape. The **LIVE DEFECT** that fell out of the same finding (the memo costing expressions that are not the ones that execute) is therefore gone — see the "memo costs an expression that is not the one that executes — CLOSED" section below. **STILL TRACKED (separate concerns):** prune-to-one-final-member; retiring `findBestPhysicalPlan` — extraction's ad-hoc cost pick outside the cost framework, wired to ONE site against `findPhysicalPlan`'s twenty (do NOT "fix" that asymmetry by propagating the cheapest-selector: it is ordering-blind and turns `ORDER BY … DESC` into ASC, measured, see RFC-183 §10); and the reachability tally still driving a residual population of unreachable edges to zero (`plan_reachability.go` — a completeness/hygiene concern, NOT the wrong-tree-costing defect, which is closed). **RETRACTED:** an earlier revision of this row cited "1186 references hold multiple finals, 1125 multiple PHYSICAL finals" as P5's blocker. That measurement was taken at RULE TIME while rules were still firing, where groups legitimately hold alternatives; it says nothing about the extraction-time property P5 needs, which does hold (`TestOneFinalPlanPerReference`). Note also the split's stated rationale in `plans/plan.go:23-28` — "physical and logical plan trees live in different namespaces in Java" — is FALSE: `QueryPlan<T> extends RelationalExpression` (`QueryPlan.java:51`), so a Java plan IS a RelationalExpression; the comment conflates package separation (real) with hierarchy separation (not real). |
 | **Go-only physical-filter builders** (`ImplementIndexScanRule`, `ImplementSimpleSelectRule`, NLJ residual — extra paths past `Compensation`) | Index-only predicates never become an executable residual | panic / wrong plan on a vector `DistanceRank` residual | **COVERED** — `ImplementFilterRule` `!isIndexOnly()` gate (RFC-151) + the retained `validateNoIndexOnlyResidual` catch-all backstop (pinned by `TestVectorPlan_*`). **TRACKED end-state:** gate the remaining builders so the net can retire. |
@@ -642,6 +933,47 @@ intersection non-max `consume()` advance). What remains is classified below.
 - **ListCursor unsigned position decode**: a corrupt high-bit 4-byte token
   exhausts cleanly instead of Java's IndexOutOfBounds; unreachable from valid
   tokens.
+- **mergeSortCursor leg selection: binary heap vs Java's per-row linear scan**:
+  **Ordering-neutral by construction — this extension cannot diverge from
+  Java observably at all.** The heap and the replaced linear scan select the
+  exact same leg every round (same comparison key, same first-leg-wins tie
+  rule), consume the exact same legs, and produce the exact same emitted row
+  sequence and continuation bytes; a caller of `mergeSortCursor` cannot tell
+  which selection algorithm ran underneath. Java's `UnionCursor.chooseStates`
+  (`provider/foundationdb/cursors/UnionCursor.java:101-131`) rescans every leg
+  on every emitted row to find the minimum comparison key — no heap, no
+  tournament tree; `computeNextResultStates` (:74-98) is the same O(N) shape
+  for the exhaustion/limit check. This is not a Go bug relative to Java: Java
+  simply never needed better than O(N), since its N is bounded by query shape
+  (a two-cursor UNION, a handful of OR branches). Go's InUnion plan turns a
+  SQL IN list into one leg per value, so N can run into the hundreds or
+  thousands, and the O(N)-per-row rescan dominates at that scale. Go replaces
+  the scan with a `container/heap` binary min-heap
+  (`pkg/recordlayer/query/executor/executor_new_plans.go`,
+  `mergeSortCursor`/`mergeSortHeap`), giving O(log N) selection after an
+  unavoidable O(N) initial build, while reproducing Java's tie-break exactly
+  (the heap orders by comparison key, then by original leg index — the same
+  first-leg-wins rule `chooseStates`'s single forward pass produces).
+  Differential-tested against the replaced linear scan (kept only as a test
+  oracle) across randomized leg counts/keys/reverse/dedup/resumption,
+  including a fuzz target (1.04M executions, 0 divergences under Bazel); a
+  dedicated error-injection suite additionally proves a leg's transient pull
+  error mid-admit-batch is retried, not orphaned — no row lost, no panic
+  (`merge_sort_heap_error_test.go`). One caveat the differential harness
+  cannot see: the heap can surface a cross-type comparison-key invariant
+  violation on a leg pair the linear scan never happened to compare directly
+  (`chooseStates` only ever compares each leg against the running minimum,
+  not every pair) — not a new bug, since the keys were already
+  invariant-violating, just an earlier, heap-shape-dependent discovery point
+  for one that already existed. In-process CPU-only measurement: heap loses
+  to linear scan below N≈10 (heap bookkeeping overhead exceeds the tiny
+  linear cost) and breaks even just above it, then wins by ~2.1x at N=100 and
+  ~3.9x at N=1000 (7 replicates per point, tight confidence intervals — see
+  `BenchmarkMergeSortCursor_HeapVsLinear`). End-to-end against real FDB
+  (`BenchmarkFDB_InUnionMergeSort_N*`, 5 replicates per point) shows no
+  measurable difference at N≤100 (FDB round-trip cost dominates), and an
+  ~11.7% rows/sec improvement at N=1000 with non-overlapping 95% CIs
+  (8366 vs 9348 rows/sec).
 
 ### Architectural (by design, with reason)
 

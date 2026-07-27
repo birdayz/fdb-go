@@ -71,6 +71,14 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 		nullSupplying.Kind() != expressions.QuantifierForEach {
 		return
 	}
+	// StrictSingle is a semantic edge contract, and this rewrite replaces the
+	// null-supplying edge with a newly constructed null-on-empty quantifier.
+	// Neither that replacement nor the preserved-edge outer-join rewrite has a
+	// strict cardinality authority. Treat the flag as a rewrite barrier rather
+	// than relying on today's scalar seed being predicate-less.
+	if hasStrictSingleQuantifier(quantifiers) {
+		return
+	}
 
 	// Only rewrite when there ARE ON-predicates to push below the null-extension; a
 	// predicate-less LEFT OUTER is a degenerate cross-with-null-fill that the

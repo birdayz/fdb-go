@@ -32,6 +32,26 @@ Before treating a TODO "vs Java gap" as parity work, **verify Java actually supp
 
 **"For now" is a red flag.** If you're about to write "for now" or "pragmatic approach" or "we'll fix this later" — STOP. That means you're about to create technical debt. Either do it properly or document it as the FIRST priority in TODO.md so it gets done next. No deferred hacks.
 
+**DFS IS ABSOLUTELY CRITICAL. NEVER DEFER — FIX IT NOW.** This is the single most important working rule in this file. When a fix uncovers a second problem, fix that one too, in the same change. When a sweep surfaces something adjacent, chase it to ground. Take as long as it takes. The instinct to write it up and move on is always wrong, and it is strongest exactly when the finding is real — because a real finding looks like scope, and scope looks like something to schedule.
+
+Filing it feels responsible. It is not. A TODO entry ships nothing, deletes the regression sentinel that would have caught the bug, and hands the work to someone with none of the context you have right now — you have the reproducer, the measurement harness, and the Java source already open. That will never be true again as cheaply.
+
+Worse, deferred findings **rot into invisibility**. Write a live defect into the prose of an item you then mark `- [x]` and it is unreachable work: the execution rule is "pick the lowest-numbered UNCHECKED item", so nothing will ever pick it up. That has happened here — a redundant in-memory sort on `WHERE pk IN (...) ORDER BY pk`, fully diagnosed with a reproducer, was written into a completed item and would have sat there indefinitely. DFS'ing it instead removed the sort.
+
+**NEVER PROPOSE — RESEARCH, DECIDE, IMPLEMENT.** Writing up options and asking which one to take is deferral wearing a lab coat. An RFC that says "here are three paths, please rule" has shipped nothing and has moved the decision to someone with less context than you had while writing it. You did the research; you are the one who knows which path is right. Pick it, say why the others lose, and build it. An RFC is for *recording the design you are implementing* — the reasoning, the measurements, the rejected alternatives — not for outsourcing the choice.
+
+"Long-term correct" is the only selection criterion. Not smallest diff, not least blast radius, not what the existing structure makes convenient. If the right answer requires changing a cost formula, deleting a Go-only extension, or reworking a mechanism three commits old, that is the answer. A smaller change that leaves the architecture incoherent is a bigger cost paid later, by someone with none of the context.
+
+**NEVER MOVE LATERALLY WHILE A DFS PATH IS OPEN.** If you are inside a problem and it is not finished, nothing else may be started — not an adjacent cleanup, not a different finding, not a "quick win" that would feel like progress. Lateral motion while a path is open is the same failure as deferral: the depth is abandoned, the context evaporates, and the problem comes back later as someone else's. Finish, or prove the path is genuinely blocked on a capability that does not exist.
+
+**THERE ARE NO LEGITIMATE DEFERRALS. NONE.** Not "separate concern", not "deserves its own item", not "changes plans so it needs its own review" — those are reasons to do the extra work now: run the stress comparison, review the goldens, get the review lap.
+
+**"It needs a capability that doesn't exist yet" is not a deferral — it is the work.** This is the escape hatch that feels most legitimate and is the most damaging, because it is indistinguishable from real engineering right up until nothing gets built. A missing capability is a thing to BUILD, not a wall to stop at. Before you conclude a capability is missing, check Java: this is a port, and the odds are overwhelming that Java already has the machinery you just decided Go cannot have. A cost model that cannot tell a unique probe from a non-unique one is not blocked on statistics nobody has — Java has `CardinalitiesProperty`, so the task is to port it. "Go's substitute for X" in a comment is a standing admission that X is the real answer and someone stopped early.
+
+**"It's an upstream bug" is not a deferral either.** Fix it at the boundary, work around it deliberately with the divergence documented at the call site, and report it upstream. Shipping a known-broken path because the break is someone else's is still shipping a known-broken path.
+
+If you genuinely cannot proceed — the work needs a decision only the owner can make, or an external system nobody here controls — that is not a deferral, it is a **STOP**. Say so directly, in the conversation, with what you found and what you need. Do not convert it into a TODO entry and keep moving; a filed item is how a blocker becomes invisible. Escalating costs one sentence. Filing costs the next person everything you knew.
+
 ## NO FAKE CHECKBOXES — E2E OR IT'S NOT DONE
 
 **A TODO item is done when a SQL query exercises it end-to-end and a test pins the behavior.** "Plan type exists" is not done. "Rule ported but can't fire" is not done. "Infrastructure exists but SQL can't trigger it" is not done. If a user can't write a SQL query that hits the code path and gets the right answer, the checkbox stays unchecked.
@@ -85,6 +105,15 @@ If you're tempted to add a 5-line note explaining a divergence, write it as a co
 ## Testing
 
 **EVERY bug you discover gets a regression test — no exceptions.** The moment you find a problem (a failing probe, a reviewer catch, a "huh, that's wrong"), the fix is incomplete until a test pins the corrected behavior. This is not optional polish; it is the difference between fixing a bug and fixing it *for good*. **A green CI with the bug still latent is the real danger** — it reads as "covered" when it isn't. Most bugs ship green precisely because no test exercises that *dimension*: the gap is dimensional, not volumetric (you can have 100 tests for a feature and still miss the one axis that's broken). When you fix something, ask "what dimension was unprobed that let this through?" and add the test on that axis. Hard-won examples from this codebase: non-correlated `EXISTS` was wrong on master with full CI green because every `NOT EXISTS` test was *correlated*; deleting a DML helper silently dropped the secondary-UNIQUE→23505 and `RecordDoesNotExistError` mappings — caught by review and a deliberate probe, not by the suite. If a reviewer (human or Graefe/Torvalds/@claude) finds a problem the tests didn't, that's a doubly-important signal: fix the bug **and** add the test that should have caught it. Quality is the point.
+
+**EVERY PROOF GETS COMMITTED AS A TEST — never as a throwaway probe you delete.** If you wrote a scratch probe to establish a fact, and that fact justified a decision, the probe becomes a test. No exceptions. The instinct is to delete it once it has "done its job", and that is exactly backwards: the conclusion outlives the measurement, so the measurement is what has to survive. A deleted probe is the same failure as a filed-instead-of-fixed finding — the knowledge evaporates, and the next person either re-derives it or silently breaks the assumption it rested on.
+
+This applies with FULL force to two cases that feel exempt:
+
+- **Negative results.** "I probed X and it does not reproduce" is a load-bearing claim — it is what lets you classify something as latent rather than shipped. Pin the fact that makes it unreachable, with a failure message naming what gets re-armed if it changes. A real example: a wrong-order sort bug was unreachable only because the SQL layer rejects a repeated `ORDER BY` column with 42701 before the dedup rule sees it. Nothing pinned that rejection; relaxing it would have silently armed the bug.
+- **The exact shape that broke.** Pin the reproducer, not a simpler cousin of it. A signed-zero DISTINCT bug shipped a SINGLE-column test while the defect required a float in a NON-final dedup position — with one column the two zeros are adjacent, both plans agree, and the test passes with the bug fully present. A test that cannot express the defect is not coverage.
+
+If a probe is too slow or too broad to keep as-is, narrow it until it is keepable. Do not delete it.
 
 - Real FDB via testcontainers, never mocks. High and thorough coverage required for every feature/fix/behavior change — edge cases, error paths, zero-value behavior.
 - All tests MUST call `t.Parallel()` and be safe to run concurrently (unique key prefixes / subspaces, no shared mutable state).

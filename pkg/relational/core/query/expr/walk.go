@@ -1068,8 +1068,16 @@ func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, b
 		return values.TypeString, true
 	case ptc.BOOLEAN() != nil:
 		return values.TypeBool, true
-	case ptc.FLOAT() != nil, ptc.DOUBLE() != nil:
-		return values.TypeFloat, true
+	case ptc.FLOAT() != nil:
+		// FLOAT is binary32 and DOUBLE is binary64 — they are NOT the same CAST
+		// target. Mapping both here to one DOUBLE-coded type made
+		// `CAST(x AS FLOAT)` a no-op that never rounded, so it matched DOUBLE
+		// rows the rounded value differs from and missed the FLOAT rows it
+		// equals. CastValue's FLOAT arm does the binary32 rounding; it can only
+		// run if the target actually says FLOAT.
+		return values.NullableFloat, true
+	case ptc.DOUBLE() != nil:
+		return values.NullableDouble, true
 	case ptc.DATE() != nil:
 		return values.NullableDate, true
 	case ptc.TIMESTAMP() != nil:

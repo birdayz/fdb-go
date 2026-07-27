@@ -43,6 +43,7 @@ go_test(
         "duplicate_alias_binding_test.go",
         "exists_enclosure_lift_test.go",
         "exists_guard_narrowing_test.go",
+        "exists_known_truth_test.go",
         "exists_rider_test.go",
         "flatten_gate_test.go",
         "group_by_output_baker_test.go",

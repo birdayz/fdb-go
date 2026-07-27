@@ -929,10 +929,28 @@ func TestComparisonPredicate_Explain_NonConstantRHS(t *testing.T) {
 			want: "a < (b + 1)",
 		},
 		{
+			// The CAST target is named EXPLICITLY. These two cases used
+			// values.TypeInt, an alias for NullableLong, and asserted "INT" —
+			// so they read as INT coverage while casting to LONG, and only
+			// passed because the renderer collapsed both to "INT". It no
+			// longer does: it feeds sort-key dedup and max_match_map's
+			// identity mapping, and CAST(v AS INTEGER) raises 22F3H above 2^31
+			// where CAST(v AS BIGINT) succeeds, so the two are not the same
+			// operation.
 			name: "CastValue RHS over field",
 			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "id", Typ: values.TypeInt},
-				Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(&values.FieldValue{Field: "raw", Typ: values.TypeString}, values.TypeInt)},
+				&values.FieldValue{Field: "id", Typ: values.NullableLong},
+				Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(&values.FieldValue{Field: "raw", Typ: values.TypeString}, values.NullableLong)},
+			),
+			want: "id = CAST(raw AS BIGINT)",
+		},
+		{
+			// A genuine 32-bit INT target, so the two widths are covered as
+			// the distinct renderings they are.
+			name: "CastValue RHS to INT renders distinctly from BIGINT",
+			pred: NewComparisonPredicate(
+				&values.FieldValue{Field: "id", Typ: values.NullableLong},
+				Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(&values.FieldValue{Field: "raw", Typ: values.TypeString}, values.NullableInt)},
 			),
 			want: "id = CAST(raw AS INT)",
 		},
@@ -943,10 +961,10 @@ func TestComparisonPredicate_Explain_NonConstantRHS(t *testing.T) {
 			// rendering doesn't.
 			name: "CastValue RHS over constant preserves shape",
 			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "x", Typ: values.TypeInt},
-				Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, values.TypeInt)},
+				&values.FieldValue{Field: "x", Typ: values.NullableLong},
+				Comparison{Type: ComparisonEquals, Operand: values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, values.NullableLong)},
 			),
-			want: "x = CAST(5 AS INT)",
+			want: "x = CAST(5 AS BIGINT)",
 		},
 	}
 	for _, tc := range cases {
@@ -1156,7 +1174,7 @@ func TestComparisonPredicate_FloatComparisons(t *testing.T) {
 	t.Parallel()
 	// "price" carries its plan-time ordinal (sole column → slot 0).
 	pred := NewComparisonPredicate(
-		pbake("price", values.TypeFloat, "price"),
+		pbake("price", values.NullableDouble, "price"),
 		Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(float64(3.14))},
 	)
 	cases := []struct {

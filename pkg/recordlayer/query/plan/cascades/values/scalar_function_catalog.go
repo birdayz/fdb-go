@@ -199,15 +199,15 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 		scalarFunctionCeil, scalarFunctionFirstArgumentResult),
 	"ROUND": polymorphicScalarCall(
 		scalarFunctionRound, scalarFunctionFirstArgumentResult),
-	"SQRT":  scalarCallFunction(scalarFunctionSqrt, TypeFloat),
-	"POWER": scalarCallFunction(scalarFunctionPower, TypeFloat),
-	"POW":   scalarCallFunction(scalarFunctionPower, TypeFloat),
+	"SQRT":  scalarCallFunction(scalarFunctionSqrt, NullableDouble),
+	"POWER": scalarCallFunction(scalarFunctionPower, NullableDouble),
+	"POW":   scalarCallFunction(scalarFunctionPower, NullableDouble),
 	"SIGN": polymorphicScalarCall(
 		scalarFunctionSign, scalarFunctionFirstArgumentResult),
-	"PI":  scalarCallFunction(scalarFunctionPi, TypeFloat),
-	"EXP": scalarCallFunction(scalarFunctionExp, TypeFloat),
-	"LN":  scalarCallFunction(scalarFunctionLn, TypeFloat),
-	"LOG": scalarCallFunction(scalarFunctionLog, TypeFloat),
+	"PI":  scalarCallFunction(scalarFunctionPi, NullableDouble),
+	"EXP": scalarCallFunction(scalarFunctionExp, NullableDouble),
+	"LN":  scalarCallFunction(scalarFunctionLn, NullableDouble),
+	"LOG": scalarCallFunction(scalarFunctionLog, NullableDouble),
 
 	// Null/comparison helpers.
 	"COALESCE": legacyMapScalarCall(

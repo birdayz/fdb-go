@@ -1134,3 +1134,63 @@ func TestRemoveProjectionRule_FiresForIdentityProjection(t *testing.T) {
 		t.Fatalf("yielded %T, want the exact inner scan", yielded[0])
 	}
 }
+
+func TestRemoveProjectionRule_DeclinesForOutputAlias(t *testing.T) {
+	t.Parallel()
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	projection := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{values.NewQuantifiedObjectValue(innerQ.GetAlias())},
+		[]string{"RENAMED_ROW"},
+		innerQ,
+	)
+
+	yielded := FireImplementationRule(
+		NewRemoveProjectionRule(),
+		expressions.InitialOf(projection),
+	)
+	if len(yielded) != 0 {
+		t.Fatalf("rule erased a schema-bearing physical projection alias — got %d yields", len(yielded))
+	}
+}
+
+func TestRemoveProjectionRule_DeclinesForWrongQuantifier(t *testing.T) {
+	t.Parallel()
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	projection := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("OTHER"))},
+		nil,
+		innerQ,
+	)
+
+	yielded := FireImplementationRule(
+		NewRemoveProjectionRule(),
+		expressions.InitialOf(projection),
+	)
+	if len(yielded) != 0 {
+		t.Fatalf("rule erased a projection over the wrong quantifier — got %d yields", len(yielded))
+	}
+}
+
+func TestRemoveProjectionRule_FiresForExplicitEmptyAlias(t *testing.T) {
+	t.Parallel()
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	projection := plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{values.NewQuantifiedObjectValue(innerQ.GetAlias())},
+		[]string{""},
+		innerQ,
+	)
+
+	yielded := FireImplementationRule(
+		NewRemoveProjectionRule(),
+		expressions.InitialOf(projection),
+	)
+	if len(yielded) != 1 || yielded[0] != scan {
+		t.Fatalf("empty alias changed physical identity elimination: yielded %v, want exact scan", yielded)
+	}
+}

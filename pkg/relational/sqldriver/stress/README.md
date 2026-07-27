@@ -50,7 +50,7 @@ Fix: point-read the exact store info key (`tx.Get(expectedInfoKey)`), generating
 a minimal conflict range `[key, key\x00)`. Java uses `getRange` but doesn't
 suffer this issue because Java's async client pipelines reads differently.
 
-## Build tag
+## Build tags
 
 These files carry `//go:build stress`. A plain `go test ./...` does **not** set
 the tag, so it skips this package entirely — keeping the default Go test run fast
@@ -59,6 +59,27 @@ globally via `.bazelrc` (`--@rules_go//go/config:tags=...,stress`), but the
 `stress_test` target is also `manual`, so `bazel test //...` never picks it up;
 only an explicit invocation (the commands below, or the nightly stress workflow)
 runs it. To run directly with the Go toolchain, pass `-tags stress`.
+
+`stress_10m_test.go` additionally carries `realcluster`. That second tag is what
+keeps the **advertised scale list equal to the executed scale list**: under
+plain `stress`, this package is exactly 10K / 100K / 1M and runs all three. The
+10M scales are not compiled in at all, rather than being registered and skipped
+— a single-node FDB testcontainer cannot sustain 10M rows of writes (sustained
+load wedged the container, and the client, correctly having no default
+transaction timeout, retried a dead cluster to the 1h deadline).
+
+## Scale coverage
+
+| Scale | Tag              | Where it runs                          |
+|-------|------------------|----------------------------------------|
+| 10K   | `stress`         | nightly-stress (whole target, no filter)|
+| 100K  | `stress`         | nightly-stress (whole target, no filter)|
+| 1M    | `stress`         | nightly-stress (whole target, no filter)|
+| 10M   | `stress realcluster` | manual, against a real cluster only|
+
+The nightly workflow passes no `--test.run`, so it executes the entire target —
+all three container-sized scales, plus the ingest-parallelism matrix and the
+SaveRecord comparisons.
 
 ## Running
 
@@ -77,9 +98,15 @@ bazelisk test //pkg/relational/sqldriver/stress:stress_test \
   --test_arg="--test.timeout=600s" \
   --test_output=streamed --test_timeout=600
 
-# 10M ingest
-bazelisk test //pkg/relational/sqldriver/stress:stress_test \
-  --test_arg="--test.run=TestFDB_Ingest_10M" \
-  --test_arg="--test.timeout=600s" \
-  --test_output=streamed --test_timeout=600
+# 10M scales — NOT a Bazel target (the `realcluster` tag is not in .bazelrc, so
+# gazelle leaves stress_10m_test.go out of the go_test srcs). Point it at a real
+# cluster; a testcontainer cannot sustain these.
+FDB_STRESS_CLUSTER_FILE=/etc/foundationdb/fdb.cluster \
+  go test -tags 'stress realcluster' ./pkg/relational/sqldriver/stress/ \
+  -run 'TestFDB_(Stress|Ingest)_10M' -timeout 3h -v
 ```
+
+`FDB_STRESS_CLUSTER_FILE` also works for the container-sized scales, if you want
+to run them against an existing cluster instead of a fresh testcontainer. It is
+strict: an unreadable path fails the run rather than quietly falling back to
+Docker, so numbers labelled real-cluster always are.

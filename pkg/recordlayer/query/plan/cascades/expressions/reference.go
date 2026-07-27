@@ -390,13 +390,7 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	// e is invariant across the loop, so resolve the alias-aware opt-in once
 	// (hoisted out of the hot inner loop — avoids a type-switch + virtual call
 	// per member). See the alias-aware tier below.
-	aliasAware := false
-	if interner, ok := e.(aliasAwareInterner); ok {
-		aliasAware = interner.InternsAliasAware()
-	}
-	if disableAliasAwareInterning {
-		aliasAware = false // test-only alias-identity baseline (shadow-delta pin)
-	}
+	aliasAware := InternsAliasAware(e)
 	for _, m := range r.members {
 		// Fast path: pointer-identity on child References + local
 		// EqualsWithoutChildren. Hits when a rule yields output that
@@ -453,6 +447,31 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 // (RFC-077 7.5). Only merge re-enumeration selects opt in today.
 type aliasAwareInterner interface{ InternsAliasAware() bool }
 
+// InternsAliasAware reports whether e opts into the ALIAS-AWARE memo-interning
+// tier (RFC-077 7.5): true only for expressions whose quantifier aliases are
+// planner-internal (merge re-enumeration selects — see
+// SelectExpression.InternsAliasAware). Exported so every site that runs
+// MemoEqual across expressions NOT already known to be the same memo member —
+// not just Insert/InsertFinal — gates identically. Reference.Insert /
+// InsertFinal collapse MEMBERS within one group; Memo.findEquivalentRef (in
+// package cascades) decides whether to merge two DIFFERENT groups — both
+// widen memo equivalence beyond alias-identity and both hit the same landmine
+// documented on SelectExpression.InternsAliasAware if left ungated: a
+// non-opted-in expression's alias-renamed twin can survive as the sole member
+// of a merged/collapsed group, orphaning any external structure (Go's
+// identity-based column resolution) that resolved through the discarded
+// alias.
+func InternsAliasAware(e RelationalExpression) bool {
+	aware := false
+	if interner, ok := e.(aliasAwareInterner); ok {
+		aware = interner.InternsAliasAware()
+	}
+	if disableAliasAwareInterning {
+		aware = false // test-only alias-identity baseline (shadow-delta pin)
+	}
+	return aware
+}
+
 // disableAliasAwareInterning is a TEST-ONLY switch that suppresses the
 // alias-aware interning tier, so a corpus can be planned in the
 // alias-IDENTITY baseline to recover the pre-interning member population.
@@ -491,13 +510,7 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	}
 	eHash := e.HashCodeWithoutChildren()
 	// Resolve the alias-aware opt-in once (hoisted out of the loop) — see Insert.
-	aliasAware := false
-	if interner, ok := e.(aliasAwareInterner); ok {
-		aliasAware = interner.InternsAliasAware()
-	}
-	if disableAliasAwareInterning {
-		aliasAware = false // test-only alias-identity baseline (shadow-delta pin)
-	}
+	aliasAware := InternsAliasAware(e)
 	for _, m := range r.finalMembers {
 		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
 			return false

@@ -47,6 +47,13 @@ func (r *ProjectionElimRule) OnMatch(call *ExpressionRuleCall) {
 	if len(pvs) != 1 {
 		return
 	}
+	aliases := p.GetAliases()
+	// A non-empty alias renames the output column and is therefore part of the
+	// projection's semantics. More than one alias is malformed for this
+	// one-slot projection; fail closed instead of discarding uncertain schema.
+	if len(aliases) > 1 || len(aliases) == 1 && aliases[0] != "" {
+		return
+	}
 	qov, ok := pvs[0].(*values.QuantifiedObjectValue)
 	if !ok {
 		return

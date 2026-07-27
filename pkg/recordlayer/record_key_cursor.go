@@ -30,12 +30,14 @@ type recordKeyCursor struct {
 	iterator      rangeIterator
 	closed        bool
 	keysReturned  int
-	keysScanned   int
-	bytesScanned  int64
+	keysScanned   int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
 	prefixLength  int
-	startTime     time.Time
 	lastPK        tuple.Tuple // for dedup of adjacent duplicate PKs
 	peekedHasMore *bool       // non-nil when hasMore() has been called but result not consumed
+
+	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
+	// counter set — see ScanLimiterState's doc comment. Never nil.
+	scanState *ScanLimiterState
 }
 
 func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.Tuple], error) {
@@ -66,13 +68,29 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 		return NewResultNoNext[tuple.Tuple](SourceExhausted, &EndContinuation{}), nil
 	}
 
-	// Time limit
-	if ep.TimeLimit > 0 && c.keysScanned > 0 && time.Since(c.startTime) >= ep.TimeLimit {
+	// Time limit — measured against the shared scanState's anchor, matching Java's
+	// TimeScanLimiter anchored to FDBRecordContext.getTransactionCreateTime() rather than this
+	// cursor's own construction time (see ScanLimiterState's doc comment). Free pass
+	// (c.keysScanned>0) is unconditional — Java's time branch never suppresses it, even in fail
+	// mode (CursorLimitManager.java:138 has no `|| failOnScanLimitReached`) — but a halt here still
+	// throws under fail mode, matching Java's shared post-halt tail (:141-144: ANY halted* reason
+	// throws under failOnScanLimitReached, not just the scanned-records one).
+	if ep.TimeLimit > 0 && c.keysScanned > 0 && time.Since(c.scanState.StartTime()) >= ep.TimeLimit {
+		if ep.FailOnScanLimitReached {
+			return RecordCursorResult[tuple.Tuple]{}, &ScanLimitReachedError{Reason: TimeLimitReached}
+		}
 		return c.noNextWithCont(TimeLimitReached), nil
 	}
 
-	// Scan limit
-	if ep.ScannedRecordsLimit > 0 && c.keysScanned >= ep.ScannedRecordsLimit {
+	// Scan limit — threshold is the (possibly shared) scanState so every leg of an
+	// IN-join/IN-union charges the same aggregate budget instead of resetting per leg. The free
+	// pass (c.keysScanned>0) is bypassed under FailOnScanLimitReached: Java's record-scan branch is
+	// `!recordScanLimiter.tryRecordScan() && (usedInitialPass || failOnScanLimitReached)`
+	// (CursorLimitManager.java:135-136) — fail mode does not grant a free pass, so a fresh cursor's
+	// very first key still throws if the shared budget is already spent.
+	if ep.ScannedRecordsLimit > 0 &&
+		(c.keysScanned > 0 || ep.FailOnScanLimitReached) &&
+		c.scanState.RecordsScanned() >= ep.ScannedRecordsLimit {
 		if ep.FailOnScanLimitReached {
 			return RecordCursorResult[tuple.Tuple]{}, &ScanLimitReachedError{Reason: ScanLimitReached}
 		}
@@ -81,7 +99,7 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 
 	// Byte limit. Use >= to match the other leaf cursors (index_scan,
 	// key_value_cursor): stop AT the limit, not one key past it (RFC-106a).
-	if ep.ScannedBytesLimit > 0 && c.keysScanned > 0 && c.bytesScanned >= ep.ScannedBytesLimit {
+	if ep.ScannedBytesLimit > 0 && c.keysScanned > 0 && c.scanState.BytesScanned() >= ep.ScannedBytesLimit {
 		if ep.FailOnScanLimitReached {
 			return RecordCursorResult[tuple.Tuple]{}, &ScanLimitReachedError{Reason: ByteLimitReached}
 		}
@@ -116,7 +134,7 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 			return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("record key cursor: get: %w", err)
 		}
 
-		c.bytesScanned += int64(len(kv.Key) + len(kv.Value))
+		c.scanState.AddBytesScanned(int64(len(kv.Key) + len(kv.Value)))
 
 		// Unpack the key relative to the records subspace.
 		// Modern layout: (pk..., suffix); legacy omit layout: (pk...) with no suffix.
@@ -147,6 +165,7 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 		}
 
 		c.keysScanned++
+		c.scanState.AddRecordScanned()
 		c.lastPK = pk
 
 		// Update continuation: proto-wrap the key suffix (TO_NEW format) to match

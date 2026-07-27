@@ -2,7 +2,6 @@ package recordlayer
 
 import (
 	"context"
-	"sync/atomic"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -18,29 +17,34 @@ import (
 // of passing a Consumer<KeyValue> to scanMulti() that calls
 // byteScanLimiter.registerScannedBytes(key.length + value.length).
 type textCursor struct {
-	underlying   *BunchedMapMultiIterator
-	index        *Index
-	scanProps    ScanProperties
-	closed       bool
-	lastResult   *RecordCursorResult[*IndexEntry]
-	recordsRead  int       // entries returned (for scan limit tracking)
-	bytesScanned int64     // raw FDB bytes read (accumulated via callback)
-	startTime    time.Time // for time limit enforcement
+	underlying  *BunchedMapMultiIterator
+	index       *Index
+	scanProps   ScanProperties
+	closed      bool
+	lastResult  *RecordCursorResult[*IndexEntry]
+	recordsRead int // entries returned (also this cursor's own free-initial-pass gate)
+
+	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
+	// counter set — see ScanLimiterState's doc comment. Never nil.
+	scanState *ScanLimiterState
 }
 
 // newTextCursorWithByteTracking creates a textCursor and a KVCallback that
-// accumulates raw FDB bytes into the cursor's bytesScanned counter.
+// accumulates raw FDB bytes into the cursor's scanState.
 // The callback must be passed to NewBunchedMapMultiIteratorWithCallback.
 func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties) (*textCursor, KVCallback) {
 	c := &textCursor{
 		index:     index,
 		scanProps: scanProps,
-		startTime: time.Now(),
+		scanState: resolveScanLimiterState(scanProps.ExecuteProperties),
 	}
-	// Use atomic add so the callback is safe even though in practice
-	// the iterator and cursor run on the same goroutine.
+	// Called synchronously from within textCursor.OnNext's own call into the
+	// underlying iterator — never from a separate goroutine (see
+	// ScanLimiterState's Concurrency doc: the whole leaf-cursor call chain is
+	// single-threaded, pinned by pkg/recordlayer/query/executor's
+	// package_invariant_test.go).
 	callback := func(keyLen, valueLen int) {
-		atomic.AddInt64(&c.bytesScanned, int64(keyLen+valueLen))
+		c.scanState.AddBytesScanned(int64(keyLen + valueLen))
 	}
 	return c, callback
 }
@@ -82,7 +86,7 @@ func (c *textCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry
 	// Check byte scan limit BEFORE reading next entry (free initial pass for first record).
 	// Matches Java's CursorLimitManager.tryRecordScan() which checks
 	// byteScanLimiter.hasBytesRemaining() with usedInitialPass guard.
-	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && atomic.LoadInt64(&c.bytesScanned) >= executeProps.ScannedBytesLimit {
+	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.scanState.BytesScanned() >= executeProps.ScannedBytesLimit {
 		result, err := noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, c.limitContinuation())
 		if err != nil {
 			return RecordCursorResult[*IndexEntry]{}, err
@@ -91,19 +95,28 @@ func (c *textCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry
 		return result, nil
 	}
 
-	// Check time limit BEFORE reading next entry (free initial pass for first record).
-	// Matches Java's CursorLimitManager.tryRecordScan() which checks
-	// timeScanLimiter with usedInitialPass guard.
-	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
-		result := NewResultNoNext[*IndexEntry](TimeLimitReached, c.limitContinuation())
+	// Check time limit BEFORE reading next entry (free initial pass for first record — unconditional;
+	// Java's time branch never suppresses it, even in fail mode). Matches Java's
+	// CursorLimitManager.tryRecordScan(). noNextOrFail (not a raw NewResultNoNext): Java throws on
+	// ANY halted limit under failOnScanLimitReached, not just the scanned-records one
+	// (CursorLimitManager.java:141-144).
+	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.scanState.StartTime()) >= executeProps.TimeLimit {
+		result, err := noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, c.limitContinuation())
+		if err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
 		c.lastResult = &result
 		return result, nil
 	}
 
-	// Check scanned records limit BEFORE reading next entry (free initial pass).
-	// Matches Java's CursorLimitManager.tryRecordScan() which checks
-	// recordScanLimiter with usedInitialPass guard.
-	if executeProps.ScannedRecordsLimit > 0 && c.recordsRead >= executeProps.ScannedRecordsLimit {
+	// Check scanned records limit BEFORE reading next entry (free initial pass, EXCEPT under
+	// FailOnScanLimitReached — Java's record-scan branch never grants the free pass in fail mode,
+	// CursorLimitManager.java:135-136). Threshold is the (possibly shared) scanState so every leg of
+	// an IN-join/IN-union over a text index charges the same aggregate budget instead of resetting
+	// per leg.
+	if executeProps.ScannedRecordsLimit > 0 &&
+		(c.recordsRead > 0 || executeProps.FailOnScanLimitReached) &&
+		c.scanState.RecordsScanned() >= executeProps.ScannedRecordsLimit {
 		result, err := noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
 		if err != nil {
 			return RecordCursorResult[*IndexEntry]{}, err
@@ -156,6 +169,7 @@ func (c *textCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry
 	}
 
 	c.recordsRead++
+	c.scanState.AddRecordScanned()
 
 	cont := c.makeContinuation()
 	result := NewResultWithValue(indexEntry, cont)

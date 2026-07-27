@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -113,7 +114,7 @@ func FuzzPlanner_PlanFullPipeline(f *testing.F) {
 		p.MaxTasks = 100_000
 
 		plan, _, err := p.Plan(ref)
-		if err != nil && err != ErrPlannerCapHit {
+		if err != nil && !errors.Is(err, ErrPlannerCapHit) {
 			t.Fatalf("Plan: unexpected err %v", err)
 		}
 		if err == nil && plan == nil {

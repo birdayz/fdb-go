@@ -44,6 +44,7 @@ package values
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -70,7 +71,8 @@ const (
 // Type() returns the rich Type directly. The names below remain
 // as Type-typed vars so existing call sites (`Typ: values.TypeInt`)
 // keep working — the value's Go type changes (Type instead of int),
-// the constant name doesn't.
+// the constant name doesn't. TypeFloat is the one member NOT kept:
+// see the note below the block.
 //
 // Legacy bridge retirement: RFC-025.
 var (
@@ -89,11 +91,16 @@ var (
 	// NotNullBoolean (literals are NOT NULL); compare via
 	// `.Code() != TypeCodeBoolean` when nullability is irrelevant.
 	TypeBool Type = NullableBoolean
-	// TypeFloat is the legacy name for the package's default float
-	// width — bridged to DOUBLE (matches Java Record Layer's
-	// float64 representation).
-	TypeFloat Type = NullableDouble
 )
+
+// There is deliberately NO legacy float alias here. `TypeFloat` used to exist
+// as a bridge name for NullableDouble — a name that said FLOAT and WAS DOUBLE —
+// and it caused four separate defects before it was removed: the walker routed
+// `CAST(x AS FLOAT)` through it so the cast never rounded to binary32, and
+// three tests read as FLOAT coverage while asserting DOUBLE behaviour, one of
+// them pinning the FLOAT/DOUBLE explain collapse as the expectation. Every use
+// meant DOUBLE and now says so. Use NullableFloat for binary32 and
+// NullableDouble for binary64; nothing should ever name one and mean the other.
 
 // Value is the root of the Value hierarchy.
 // Concrete Values implement Children / Type / Name / Evaluate;
@@ -1292,6 +1299,59 @@ func OutputColumnName(v Value, alias string) string {
 	return ProjectionColumnName(v)
 }
 
+// ProjectionOutputIdentityKey returns an opaque, boundary-safe discriminator
+// for the parts of a projection's executor-visible output name that semantic
+// Value identity does not already preserve.
+//
+// A non-empty alias is the entire output-name authority, normalized exactly as
+// OutputColumnName normalizes it. Without an alias, the Value's tree shape,
+// operators, literals, and correlation structure already participate in
+// semantic identity; the missing discriminator is every FieldValue's rendered
+// display path. In particular, baked FieldValues compare by ordinal path alone,
+// while ProjectionColumnName and ExplainValue still render their Field text
+// (and a multi-accessor Explain renders every ResolvedAccessor.Field). Walking
+// all nested FieldValues therefore distinguishes both A#0 from B#0 and
+// arithmetic expressions containing those reads.
+//
+// CorrelationIdentifier spellings are deliberately excluded. They are
+// alpha-renamable planner binders, not SQL output aliases:
+// SemanticEqualsUnderAliasMap equates their Values through an AliasMap and
+// SemanticHashCode is alias-invariant so hash-first memo lookup can find those
+// equal expressions. A stable SQL-visible projection name is carried by an
+// explicit projection alias or by FieldValue display paths, both folded here.
+func ProjectionOutputIdentityKey(v Value, alias string) string {
+	names := make([]string, 0, 1)
+	category := byte(0) // Value-derived output name.
+	if alias != "" {
+		category = 1 // Explicit alias overrides the entire derived name.
+		names = append(names, OutputColumnName(v, alias))
+	} else {
+		WalkValue(v, func(node Value) bool {
+			if field, ok := node.(*FieldValue); ok {
+				if field.Resolved != nil && len(field.Resolved.Accessors) > 1 {
+					for _, accessor := range field.Resolved.Accessors {
+						names = append(names, accessor.Field)
+					}
+				} else {
+					names = append(names, field.Field)
+				}
+			}
+			return true
+		})
+	}
+
+	// The category byte keeps an explicit alias "X" distinct from an unaliased
+	// computed expression whose only nested FieldValue is also "X": their name
+	// lists match, but their emitted names are X vs the computed rendering.
+	encoded := []byte{category}
+	encoded = binary.AppendUvarint(encoded, uint64(len(names)))
+	for _, name := range names {
+		encoded = binary.AppendUvarint(encoded, uint64(len(name)))
+		encoded = append(encoded, name...)
+	}
+	return string(encoded)
+}
+
 // ExplainValue renders a Value as a readable expression string.
 // Free function rather than a Value-interface method so existing
 // third-party Value impls (once the port grows) don't have to
@@ -1502,24 +1562,58 @@ func explainValueOrdinals(v Value, withOrdinals bool) string {
 }
 
 // explainTypeName renders a Type as a short SQL-ish name for the
-// CAST / PROMOTE rendering in ExplainValue. Mirrors the legacy
-// ValueType.String() output (`INT` / `STRING` / `BOOL` / `FLOAT` /
-// `UNKNOWN`) — LONG/INT deliberately conflate to INT and DOUBLE/FLOAT
-// to FLOAT so the rendered output, and the plan-cache keys derived via
-// ExplainValue, stay byte-stable with the pre-retirement rendering.
+// CAST / PROMOTE rendering in ExplainValue.
+//
+// This rendering is INJECTIVE over the types it names, and must stay that way.
+// It is not merely human-facing text: it is consumed as a SEMANTIC IDENTITY KEY
+// by dedupSortKeys (sort-key equality), rule_intersection_merge (comparison-key
+// equality) and max_match_map (query-value → candidate-value matching during
+// index selection). Two distinct types rendering to one string is an identity
+// collision in all three.
+//
+// Both collapses that used to live here were justified by byte-stability with
+// the legacy ValueType.String() output, and both were wrong:
+//
+//   - DOUBLE/FLOAT produce DIFFERENT VALUES (binary32 rounding vs none). This
+//     one was a live defect — the walker routed CAST(x AS FLOAT) through a
+//     DOUBLE-coded type so the cast never rounded, and the rendering hid it.
+//   - INT/LONG produce the same int64 whenever both succeed, so no sort or
+//     comparison can diverge; but they are NOT interchangeable, because
+//     CAST(v AS INTEGER) raises 22F3H above 2^31 where CAST(v AS BIGINT)
+//     succeeds. "Nothing downstream can tell them apart" was too strong: the
+//     error path tells them apart, and an identity map has no business
+//     deciding that two operations differing in whether they raise are the
+//     same operation.
+//
+// Byte-stability with a rendering that cannot express a real difference is not
+// worth keeping. Splitting them moved 8 and 20 plan-shape golden lines
+// respectively, each one a cast that had been claiming to be another type.
 func explainTypeName(t Type) string {
 	if t == nil {
 		return "UNKNOWN"
 	}
 	switch t.Code() {
-	case TypeCodeInt, TypeCodeLong:
+	case TypeCodeInt:
 		return "INT"
+	case TypeCodeLong:
+		return "BIGINT"
 	case TypeCodeString:
 		return "STRING"
 	case TypeCodeBoolean:
 		return "BOOL"
-	case TypeCodeFloat, TypeCodeDouble:
+	case TypeCodeFloat:
 		return "FLOAT"
+	case TypeCodeDouble:
+		// FLOAT and DOUBLE render DISTINCTLY. Collapsing them was harmless
+		// only while the walker mapped both CAST targets onto one type, so the
+		// two really were the same operation; they are now genuinely different
+		// (binary32 rounding vs none) and a rendering that hides that is a name
+		// that lies. It also feeds a semantic decision: dedupSortKeys keys
+		// sort-key identity on this very text, so two ORDER BY keys that differ
+		// only in width would read as duplicates. INT/LONG stay collapsed above
+		// because they sort identically — both are int64 in the row domain —
+		// so nothing downstream can tell them apart.
+		return "DOUBLE"
 	case TypeCodeDate:
 		return "DATE"
 	case TypeCodeTimestamp:
@@ -3645,12 +3739,73 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		case int64:
 			return time.UnixMilli(val).UTC().Format(timestampLayout), nil
 		}
-	case TypeCodeFloat, TypeCodeDouble:
-		// CAST … AS FLOAT — accept float64/float32 verbatim; promote
+	case TypeCodeFloat:
+		// FLOAT is genuinely binary32 here — a FLOAT column's index entries
+		// pack as tuple code 0x20 (single) — so a cast TO it must ROUND to
+		// binary32, exactly like Java's DOUBLE_TO_FLOAT (`value.floatValue()`),
+		// INT/LONG_TO_FLOAT (`Float.valueOf`) and STRING_TO_FLOAT
+		// (`Float.parseFloat`) — CastValue.java:126-205. Sharing this arm with
+		// DOUBLE returned the operand at binary64 precision and made the cast a
+		// no-op, which is wrong in BOTH directions on a value binary32 cannot
+		// hold: `d = CAST(0.1 AS FLOAT)` matched a DOUBLE 0.1 that the rounded
+		// constant is not equal to, and `f = CAST(0.1 AS FLOAT)` missed the
+		// FLOAT row that it IS equal to.
+		//
+		// The result stays a float64 CARRYING binary32 precision, the row
+		// domain every FLOAT-typed value lives in (see tupleElementToRowValue);
+		// coerceTupleElement narrows it to a real float32 at the tuple-probe
+		// boundary, where the wire type code is what matters.
+		// A FLOAT-typed child makes this an IDENTITY cast, which Java short
+		// circuits before any operator runs ("If the types are the same, no
+		// cast is needed" — CastValue.inject, CastValue.java:441-446). It must
+		// NOT re-apply the DOUBLE_TO_FLOAT checks: an already-FLOAT ±Infinity
+		// (reachable via CAST('Infinity' AS FLOAT), which Float.parseFloat
+		// accepts) would otherwise be rejected by casting it to its own type.
+		// Dispatch on the child's STATIC type, since every FLOAT value is
+		// carried as a float64 and the runtime type cannot tell the two apart.
+		if c.Child != nil && c.Child.Type() != nil && c.Child.Type().Code() == TypeCodeFloat {
+			return v, nil
+		}
+		switch val := v.(type) {
+		case float64:
+			if math.IsNaN(val) || math.IsInf(val, 0) {
+				return nil, &InvalidCastError{Message: "Cannot cast NaN or Infinite to FLOAT"}
+			}
+			if val > math.MaxFloat32 || val < -math.MaxFloat32 {
+				return nil, &InvalidCastError{
+					Message: fmt.Sprintf("Value out of range for FLOAT: %s", javaFloatString(val, 64)),
+				}
+			}
+			return float64(float32(val)), nil
+		case float32:
+			return float64(val), nil
+		case int64:
+			return float64(float32(val)), nil
+		case string:
+			// bitSize 32 rounds to binary32. ErrRange is NOT a failure here:
+			// Go reports binary32 overflow by returning ±Inf WITH an error,
+			// while Java's Float.parseFloat returns Infinity and throws only on
+			// malformed text (CastValue.java:201-205). Treating ErrRange as an
+			// invalid cast would reject `CAST('1e39' AS FLOAT)`, which Java
+			// accepts. The returned value is already the ±Inf Java produces.
+			f, err := strconv.ParseFloat(trimJavaWhitespace(val), 32)
+			if err != nil && !errors.Is(err, strconv.ErrRange) {
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to FLOAT: %s", val, err)}
+			}
+			return f, nil
+		case bool:
+			if val {
+				return float64(1), nil
+			}
+			return float64(0), nil
+		}
+	case TypeCodeDouble:
+		// CAST … AS DOUBLE — accept float64/float32 verbatim; promote
 		// integral types to float64. Without this case, the walker's
-		// shiny new CastValue{TypeFloat} path silently returns nil
-		// from Evaluate and constant-fold of `CAST(5 AS FLOAT) = 3.14`
-		// gets UNKNOWN instead of FALSE.
+		// CastValue{TypeDouble} path silently returns nil from Evaluate and
+		// constant-fold of `CAST(5 AS DOUBLE) = 3.14` gets UNKNOWN instead of
+		// FALSE. Every conversion here WIDENS, so unlike FLOAT above there is
+		// no rounding step and no range that can overflow.
 		switch val := v.(type) {
 		case float64:
 			return val, nil

@@ -8,10 +8,60 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
+
+func TestPartitionCorrelatedScalarWherePredicate_OnlyTopLevelAndMoves(t *testing.T) {
+	t.Parallel()
+
+	outer := predicates.NewComparisonPredicate(
+		values.NewFieldValue(
+			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("P")),
+			"ID",
+			values.NotNullLong,
+		),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(2)},
+		},
+	)
+	scalar := predicates.NewComparisonPredicate(
+		values.NewScalarSubqueryValue(values.NamedCorrelationIdentifier("SQ"), values.NullableLong),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(30)},
+		},
+	)
+
+	pre, post := partitionCorrelatedScalarWherePredicate(
+		predicates.NewAnd(outer, scalar),
+		"P",
+	)
+	if !predicates.PredicateEquals(pre, outer) {
+		t.Fatalf("top-level outer conjunct was not isolated before the scalar box: %v", pre)
+	}
+	if !predicates.PredicateEquals(post, scalar) {
+		t.Fatalf("scalar conjunct did not remain above the scalar box: %v", post)
+	}
+
+	for name, wrapped := range map[string]predicates.QueryPredicate{
+		"or":  predicates.NewOr(outer, scalar),
+		"not": predicates.NewNot(predicates.NewAnd(outer, scalar)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			gotPre, gotPost := partitionCorrelatedScalarWherePredicate(wrapped, "P")
+			if gotPre != nil {
+				t.Fatalf("wrapped predicate produced a pre-scalar conjunct: %v", gotPre)
+			}
+			if !predicates.PredicateEquals(gotPost, wrapped) {
+				t.Fatalf("wrapped predicate was distributed across the scalar box: %v", gotPost)
+			}
+		})
+	}
+}
 
 // TestTableColumns_FromMetadata pins the md→columns derivation (tableColumns +
 // fieldTypeForFD) that 7.6 uses to source source-anchored join-leg columns. It
@@ -317,9 +367,12 @@ func TestTranslateUnion(t *testing.T) {
 	}
 }
 
-// TestUnionBranchNormalizable_AggregateArity pins the RFC-081 gate boundary. UNGROUPED bare
-// aggregate branches are unchanged from RFC-080 (always StreamingAgg) — always normalizable,
-// NOT re-gated (no regression). A GROUPED bare aggregate is normalizable IFF every
+// TestUnionBranchNormalizable_AggregateArity pins the defensive boundary for
+// directly constructed bare LogicalAggregate branches. SQL builders always add
+// an exact final Project, so qualified operands and constants bypass this
+// legacy-name gate positionally (covered end-to-end by the sqldriver tests).
+// An UNGROUPED direct aggregate remains normalizable. A GROUPED direct aggregate
+// is normalizable IFF every
 // aggregate's output name is STABLE between the logical leg schema and the physical row key —
 // i.e. COUNT(*) or FUNC(<bare column>); a qualified operand (SUM(T.C)), a constant
 // (COUNT(1)/COUNT(NULL)), an expression, or DISTINCT canonicalizes differently → gated (clean
@@ -818,6 +871,158 @@ func TestTranslateAggregateWithHavingReturnsNil(t *testing.T) {
 	ref := TranslateToCascades(agg)
 	if ref != nil {
 		t.Fatal("expected nil — aggregate with HAVING should bail to naive")
+	}
+}
+
+func TestTranslateAggregateOutputContractFailsClosedWhenMalformed(t *testing.T) {
+	t.Parallel()
+	scan := logical.NewScan("orders", "")
+	build := func(
+		slots []logical.AggregateOutputSlot,
+		projectOrdinals []int,
+		computed []bool,
+		projected []values.Value,
+	) logical.LogicalOperator {
+		agg := logical.NewAggregate(scan,
+			[]logical.GroupKey{{Display: "REGION", Bare: "REGION"}},
+			[]logical.AggregateCall{{Func: "SUM", Operand: "PRICE", BareColumn: true}},
+			[]string{""}, false)
+		agg.OutputSlots = slots
+		if projectOrdinals == nil {
+			return agg
+		}
+		proj := logical.NewProject(agg, []string{"SUM(PRICE)", "REGION"}, nil)
+		proj.AggregateOutputOrdinals = projectOrdinals
+		proj.IsComputed = computed
+		proj.ProjectedValues = projected
+		return proj
+	}
+	tests := []struct {
+		name string
+		op   logical.LogicalOperator
+	}{
+		{
+			name: "zero select ordinal",
+			op: build([]logical.AggregateOutputSlot{
+				{SelectOrdinal: 0, NativeOrdinal: 1},
+			}, nil, nil, nil),
+		},
+		{
+			name: "out of range native ordinal",
+			op: build([]logical.AggregateOutputSlot{
+				{SelectOrdinal: 1, NativeOrdinal: 2},
+			}, nil, nil, nil),
+		},
+		{
+			name: "project disagrees with producer slots",
+			op: build([]logical.AggregateOutputSlot{
+				{SelectOrdinal: 1, NativeOrdinal: 1},
+				{SelectOrdinal: 2, NativeOrdinal: 0},
+			}, []int{0, 1}, []bool{false, false}, nil),
+		},
+		{
+			name: "computed marker disagrees with native ordinal",
+			op: build([]logical.AggregateOutputSlot{
+				{SelectOrdinal: 1, NativeOrdinal: 1},
+				{SelectOrdinal: 2, NativeOrdinal: 0},
+			}, []int{1, 0}, []bool{true, false}, nil),
+		},
+		{
+			name: "computed value contains lazy source field",
+			op: build([]logical.AggregateOutputSlot{
+				{SelectOrdinal: 1, NativeOrdinal: -1},
+				{SelectOrdinal: 2, NativeOrdinal: 0},
+			}, []int{-1, 0}, []bool{true, false}, []values.Value{
+				&values.FieldValue{Field: "PRICE", Typ: values.NullableLong},
+				nil,
+			}),
+		},
+		{
+			name: "correlated scalar cannot bypass physical contract proof",
+			op: func() logical.LogicalOperator {
+				op := build([]logical.AggregateOutputSlot{
+					{SelectOrdinal: 1, NativeOrdinal: 1},
+					{SelectOrdinal: 2, NativeOrdinal: 0},
+				}, []int{1, 0}, []bool{false, false}, nil)
+				op.(*logical.LogicalProject).CorrelatedScalarSubqueries = []logical.CorrelatedScalarSubquery{{}}
+				return op
+			}(),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ref, _, err := TranslateToCascadesWithError(tc.op, nil)
+			if ref != nil {
+				t.Fatalf("malformed aggregate output layout translated: %T", ref.Get())
+			}
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
+				t.Fatalf("want typed 0AF00 fail-closed error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestCanonicalizeAggregateOutputValueRejectsNonNativeFieldPaths(t *testing.T) {
+	t.Parallel()
+	single := func(ordinal int) *values.FieldPath {
+		return &values.FieldPath{Accessors: []values.ResolvedAccessor{{Field: "OLD", Ordinal: ordinal}}}
+	}
+	tests := []struct {
+		name  string
+		value values.Value
+	}{
+		{
+			name:  "lazy field",
+			value: &values.FieldValue{Field: "A", Typ: values.NotNullLong},
+		},
+		{
+			name: "child bearing field",
+			value: &values.FieldValue{
+				Field:    "A",
+				Typ:      values.NotNullLong,
+				Child:    values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("source")),
+				Resolved: single(0),
+			},
+		},
+		{
+			name: "multi accessor field",
+			value: &values.FieldValue{
+				Field: "A",
+				Typ:   values.NotNullLong,
+				Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
+					{Field: "ROW", Ordinal: 0},
+					{Field: "A", Ordinal: 0},
+				}},
+			},
+		},
+		{
+			name: "out of range field",
+			value: &values.FieldValue{
+				Field:    "A",
+				Typ:      values.NotNullLong,
+				Resolved: single(2),
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, valid := canonicalizeAggregateOutputValue(tc.value, []string{"NATIVE"}); valid {
+				t.Fatal("unsafe FieldValue was accepted as an exact aggregate output reference")
+			}
+		})
+	}
+
+	got, valid := canonicalizeAggregateOutputValue(
+		values.NewFieldValueWithResolvedOrdinal("OLD", 0, values.NotNullLong),
+		[]string{"NATIVE"})
+	if !valid {
+		t.Fatal("single childless producer-native FieldValue was rejected")
+	}
+	fv, ok := got.(*values.FieldValue)
+	if !ok || fv.Field != "NATIVE" || fv.Child != nil || fv.Resolved == nil ||
+		len(fv.Resolved.Accessors) != 1 || fv.Resolved.Accessors[0].Ordinal != 0 {
+		t.Fatalf("canonical native field = %#v", got)
 	}
 }
 

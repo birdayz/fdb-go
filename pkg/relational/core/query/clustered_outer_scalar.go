@@ -78,7 +78,8 @@ func peelToClusterJoin(op logical.LogicalOperator) *logical.LogicalJoin {
 		case *logical.LogicalJoin:
 			return o
 		case *logical.LogicalFilter:
-			if len(o.ExistsSubqueries) > 0 || len(o.ScalarSubqueries) > 0 {
+			if len(o.ExistsSubqueries) > 0 || len(o.ScalarSubqueries) > 0 ||
+				len(o.CorrelatedScalarSubqueries) > 0 {
 				return nil
 			}
 			op = o.Input
@@ -240,7 +241,8 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 		}
 		return &cp, true
 	case *logical.LogicalFilter:
-		if len(o.ExistsSubqueries) > 0 || len(o.ScalarSubqueries) > 0 {
+		if len(o.ExistsSubqueries) > 0 || len(o.ScalarSubqueries) > 0 ||
+			len(o.CorrelatedScalarSubqueries) > 0 {
 			return nil, false
 		}
 		in, ok := rebuildInnerWithValues(o.Input, fn)

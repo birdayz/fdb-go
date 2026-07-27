@@ -99,9 +99,19 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 	case *plans.RecordQueryDefaultOnEmptyPlan,
 		*plans.RecordQueryInJoinPlan:
 		return distinctRecordsFromChildRef(w)
+	case *plans.RecordQueryMergeSortUnionPlan:
+		// Java's RecordQueryUnionOnValuesPlan/UnionOnKeyExpressionPlan (this
+		// plan's counterpart) has no non-dedup mode at all — UnionCursor
+		// always dedups, so DistinctRecordsProperty.visitUnionOnValuesPlan /
+		// visitUnionOnKeyExpressionPlan return true unconditionally. Go
+		// additionally supports removeDuplicates=false as an ordered UNION
+		// ALL (see merge_sort_union.go's doc comment); that mode does NOT
+		// remove duplicates, so the property must track the flag instead of
+		// assuming Java's always-true answer.
+		mp, ok := plan.(*plans.RecordQueryMergeSortUnionPlan)
+		return ok && mp.RemovesDuplicates()
 	case *plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
-		*plans.RecordQueryMergeSortUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
 		*plans.RecordQueryMultiIntersectionOnValuesPlan,
 		*plans.RecordQueryInUnionPlan:

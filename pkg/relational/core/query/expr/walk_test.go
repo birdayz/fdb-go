@@ -1243,7 +1243,7 @@ func TestWalkExpression_NilContext(t *testing.T) {
 	}
 }
 
-// Float literal → ConstantValue{Typ: TypeFloat}. Walker handles
+// Float literal → ConstantValue{Typ: NullableDouble}. Walker handles
 // `3.14`, `0.5`, scientific notation, and negative forms via
 // DecimalConstant + NegativeDecimalConstant dispatch on
 // REAL_LITERAL terminal.
@@ -1270,8 +1270,8 @@ func TestWalkExpression_FloatLiteral(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected *ConstantValue, got %T", v)
 			}
-			if cv.Typ != values.TypeFloat {
-				t.Fatalf("Typ: got %v, want TypeFloat", cv.Typ)
+			if cv.Typ != values.NullableDouble {
+				t.Fatalf("Typ: got %v, want NullableDouble", cv.Typ)
 			}
 			if cv.Value != want {
 				t.Fatalf("Value: got %v, want %v", cv.Value, want)
@@ -1444,16 +1444,27 @@ func TestWalkExpression_CastBytesPairGate(t *testing.T) {
 	}
 }
 
-// CAST AS FLOAT / DOUBLE → CastValue{Target: TypeFloat}. Walker now
-// supports float casts after TypeFloat landed.
+// CAST AS FLOAT / DOUBLE → CastValue{Target: NullableDouble}. Walker now
+// supports float casts after NullableDouble landed.
 func TestWalkExpression_CastFloat(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	for _, sql := range []string{"CAST(name AS FLOAT)", "CAST(name AS DOUBLE)"} {
-		t.Run(sql, func(t *testing.T) {
+	// FLOAT and DOUBLE must resolve to DISTINCT targets. Asserting one shared
+	// target for both is how the walker came to map them onto a single
+	// DOUBLE-coded type: CastValue's binary32 rounding is selected by the
+	// target, so a FLOAT cast that carries a DOUBLE target never rounds, and
+	// this test passed the whole time it was broken.
+	for _, tc := range []struct {
+		sql  string
+		want values.Type
+	}{
+		{"CAST(name AS FLOAT)", values.NullableFloat},
+		{"CAST(name AS DOUBLE)", values.NullableDouble},
+	} {
+		t.Run(tc.sql, func(t *testing.T) {
 			t.Parallel()
-			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+tc.sql)
 			v, err := r.WalkExpression(ctx)
 			if err != nil {
 				t.Fatalf("walk: %v", err)
@@ -1462,8 +1473,8 @@ func TestWalkExpression_CastFloat(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected *CastValue, got %T", v)
 			}
-			if cv.Target != values.TypeFloat {
-				t.Fatalf("Target: got %v, want TypeFloat", cv.Target)
+			if cv.Target.Code() != tc.want.Code() {
+				t.Fatalf("Target: got %v, want %v", cv.Target, tc.want)
 			}
 		})
 	}
@@ -1583,9 +1594,9 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 		{"SELECT * FROM users WHERE CEILING(id)", "CEILING", values.NullableInt, 1},
 		{"SELECT * FROM users WHERE ROUND(id)", "ROUND", values.NullableInt, 1},
 		{"SELECT * FROM users WHERE ROUND(id, 2)", "ROUND", values.NullableInt, 2},
-		{"SELECT * FROM users WHERE SQRT(id)", "SQRT", values.TypeFloat, 1},
-		{"SELECT * FROM users WHERE POWER(id, 2)", "POWER", values.TypeFloat, 2},
-		{"SELECT * FROM users WHERE POW(id, 2)", "POW", values.TypeFloat, 2},
+		{"SELECT * FROM users WHERE SQRT(id)", "SQRT", values.NullableDouble, 1},
+		{"SELECT * FROM users WHERE POWER(id, 2)", "POWER", values.NullableDouble, 2},
+		{"SELECT * FROM users WHERE POW(id, 2)", "POW", values.NullableDouble, 2},
 		{"SELECT * FROM users WHERE COALESCE(name, 'default')", "COALESCE", values.TypeString, 2},
 		{"SELECT * FROM users WHERE NULLIF(name, 'admin')", "NULLIF", values.TypeString, 2},
 		{"SELECT * FROM users WHERE TRIM(name)", "TRIM", values.TypeString, 1},
@@ -1601,7 +1612,7 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 		{"SELECT * FROM users WHERE CONCAT_WS('-', name, name)", "CONCAT_WS", values.TypeString, 3},
 		// PI() is a zero-arg function — exercises the no-args branch
 		// of the function-call walker (Java's `PI()` parse shape).
-		{"SELECT * FROM users WHERE PI()", "PI", values.TypeFloat, 0},
+		{"SELECT * FROM users WHERE PI()", "PI", values.NullableDouble, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fn+"_"+tc.sql, func(t *testing.T) {

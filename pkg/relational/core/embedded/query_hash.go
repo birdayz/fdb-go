@@ -13,7 +13,7 @@ import (
 const planCacheScopeDelim = "\x01"
 
 // planCacheScope builds the VERBATIM (un-normalized) plan-cache scope — the
-// schema identity + metadata version — that PlanCache prepends to the
+// schema identity + metadata version + planner options — that PlanCache prepends to the
 // normalized query text. A SET SCHEMA switch (connection.go SetSchema mutates
 // only the session schema, never the cache) or a metadata-version bump then
 // keys differently, so the same SQL against a different schema/table set can
@@ -34,8 +34,33 @@ const planCacheScopeDelim = "\x01"
 // PARAMETERIZES literals so `... WHERE x = 1` and `... WHERE x = 2` share a
 // plan with different bindings. Go keys on the literal text, so those miss —
 // more cache misses, never a wrong plan. Closing that is a separate reach item.
-func planCacheScope(schema string, metaDataVersion int) string {
-	return schema + planCacheScopeDelim + strconv.Itoa(metaDataVersion)
+// plannerOpts is the resolved planner-option signature (plannerOptions.
+// cacheKeyPart): a plan built with PLAN_RIGHT_DEEP or a disabled rule set is
+// NOT the plan the same SQL gets under the defaults, so it must not be served
+// from the same key. Java's QueryCacheKey carries the whole PlannerConfiguration
+// for exactly this reason.
+//
+// The all-defaults case renders empty and the delimiter is then omitted
+// ENTIRELY, so the default scope is byte-identical to what it was before
+// planner options were keyed at all. Appending a bare trailing delimiter would
+// have been harmless in practice but would still mean this feature changed the
+// key for every user who sets no options; not emitting it makes "no options
+// changes nothing" literally true.
+//
+// Injectivity: plannerOpts is non-empty only when at least one option is set,
+// and it is delimiter-free because optStringSet DROPS any rule name containing
+// planCacheScopeDelim (such a name can never match a Go rule anyway). That is
+// an enforced property, not an assumption about what users pass — the rule
+// names in this component are user-controlled, and a delimiter inside them
+// would be indistinguishable from the component boundary. See optStringSet for
+// the collision pair this closes; TestPlanCacheScope_InjectiveWithOptions
+// verifies it.
+func planCacheScope(schema string, metaDataVersion int, plannerOpts string) string {
+	scope := schema + planCacheScopeDelim + strconv.Itoa(metaDataVersion)
+	if plannerOpts == "" {
+		return scope
+	}
+	return scope + planCacheScopeDelim + plannerOpts
 }
 
 // normalizeSQL strips comments, collapses whitespace, uppercases

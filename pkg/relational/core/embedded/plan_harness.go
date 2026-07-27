@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -208,14 +209,11 @@ func planReferenceToPhysical(
 	verifyOneFinal bool,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, []string, error) {
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(planningRules).
-		WithStatistics(stats).
-		WithMaxTasks(100_000)
+	// The no-FDB harness has no connection and therefore no api.Options: it
+	// plans under the Java-default planner options, like any query that sets
+	// none. It still goes through newCascadesPlanner so the harness and the
+	// production paths cannot diverge in how a planner is built.
+	planner := newCascadesPlanner(md, plannerOptionsFrom(nil), planningRules, stats)
 
 	// RFC-183 P5 precondition: does every reference reachable at extraction
 	// hold at most ONE physical final? That is what Java's getRangesOverPlan
@@ -236,7 +234,7 @@ func planReferenceToPhysical(
 	// yield and accumulates nothing.
 	planner.SetReachabilityCollector(reach)
 
-	bestExpr, _, planErr := planner.Plan(ref)
+	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	var oneFinalViolations []string
 	if verifyOneFinal {
 		oneFinalViolations = planner.OneFinalViolations()
@@ -275,8 +273,9 @@ func planReferenceToPhysical(
 // planPhysicalDMLForTest is the no-FDB DML twin of planPhysicalForTest. It
 // mirrors the plan-shape-determining core of cascadesGenerator.planDML: the
 // WithCatalog logical build, qualified-name resolution, the DML EXISTS
-// correctness guards (CheckProjectedExistsFolded / CheckBuriedExistentialPredicate
-// — the guards that gate the DELETE-WHERE-EXISTS case this harness targets),
+// correctness guards (the pre-lowering window-aggregate reject plus
+// CheckProjectedExistsFolded / CheckBuriedExistentialPredicate — the guards
+// that gate the DELETE-WHERE-EXISTS case this harness targets),
 // and the DML planning rule set (Batch-A + DMLImplementationRules). The
 // production-only steps that need a live connection (statistics fetch, plan
 // logging, dry-run/OPTIONS handling) are dropped, exactly as the SELECT harness
@@ -303,6 +302,13 @@ func planPhysicalDMLForTest(
 	dml := stmts.AllStatement()[0].DmlStatement()
 	if dml == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "not a DML statement")
+	}
+	// Mirror planDML's parse-tree guard. OVER is lost during aggregate lowering,
+	// so the metadata-only harness must reject it before building the logical
+	// plan just like production does.
+	if windowedAggregateInTree(dml) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"windowed aggregate (aggregate function with an OVER clause) is not supported")
 	}
 
 	// Route DELETE→delete-build, UPDATE→update-build against the schema catalog,
@@ -414,16 +420,11 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
-		WithStatistics(stats).
-		WithMaxTasks(100_000)
+	// No connection here, so no api.Options: plan under the Java-default
+	// planner options via the shared construction site.
+	planner := newCascadesPlanner(md, plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), stats)
 
-	bestExpr, _, planErr := planner.Plan(ref)
+	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {
 		return "", fmt.Errorf("planning failed: %w", planErr)
 	}
@@ -562,16 +563,11 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
-		WithStatistics(stats).
-		WithMaxTasks(100_000)
+	// No connection here, so no api.Options: plan under the Java-default
+	// planner options via the shared construction site.
+	planner := newCascadesPlanner(md, plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), stats)
 
-	bestExpr, _, planErr := planner.Plan(ref)
+	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {
 		return nil, nil, fmt.Errorf("planning failed: %w", planErr)
 	}
@@ -597,7 +593,7 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 	// the production generator uses; PlanRecordQueryWithSubqueries surfaces
 	// them, the plan-only entry points drop them (execution without the
 	// bindings is loud — values.UnboundScalarSubqueryError).
-	subs, subErr := planScalarSubqueryPlans(scalarSubqueryPlans, md, stats)
+	subs, subErr := planScalarSubqueryPlans(context.Background(), scalarSubqueryPlans, md, stats, plannerOptionsFrom(nil))
 	if subErr != nil {
 		return nil, nil, subErr
 	}

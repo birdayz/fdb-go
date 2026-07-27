@@ -362,6 +362,65 @@ func TestTempTable_ClearThenAdd(t *testing.T) {
 	}
 }
 
+// TestTempTable_Snapshot_ImmuneToLaterAddAndClear pins the invariant
+// Snapshot's zero-copy contract depends on: once taken, a Snapshot's already-
+// exposed rows can never change, no matter what the table does afterward —
+// neither a plain Add (which only appends past the snapshot's own length) nor
+// a Clear+Add cycle (which, before this fix, reused the same backing array
+// via tt.list[:0] and so silently overwrote memory an outstanding Snapshot
+// still pointed at). This is the property recursiveUnionContinuation and
+// tempTableInsertContinuation depend on: they capture Snapshot() once, at
+// continuation-construction time, and may not serialize it (call ToBytes())
+// until arbitrarily many further Add/Clear cycles later.
+func TestTempTable_Snapshot_ImmuneToLaterAddAndClear(t *testing.T) {
+	t.Parallel()
+
+	t.Run("later Add does not retroactively grow an existing snapshot", func(t *testing.T) {
+		t.Parallel()
+		tt := NewTempTable()
+		tt.Add(dmap(map[string]any{"id": int64(1)}))
+		tt.Add(dmap(map[string]any{"id": int64(2)}))
+
+		snap := tt.Snapshot()
+		if len(snap) != 2 {
+			t.Fatalf("Snapshot len = %d, want 2", len(snap))
+		}
+		tt.Add(dmap(map[string]any{"id": int64(3)}))
+		if len(snap) != 2 {
+			t.Fatalf("Snapshot grew after a later Add: len = %d, want 2 (Go slice header, len fixed at capture time)", len(snap))
+		}
+	})
+
+	// The dangerous case, isolated with NO intervening Add between Snapshot
+	// and Clear (an intervening Add could reallocate tt's backing array on
+	// its own, which would mask the bug this pins): Clear + Add of UNRELATED
+	// rows — modeling the next recursion level reusing the table — must not
+	// corrupt what an earlier Snapshot exposes. Before the Clear/ReplaceList
+	// fix (fresh backing array instead of list[:0]), Clear left the same
+	// backing array in place with its length reset to 0, so the very next
+	// Add wrote its row into index 0 — silently overwriting the memory this
+	// Snapshot still points at.
+	t.Run("Clear+Add does not corrupt an already-taken snapshot", func(t *testing.T) {
+		t.Parallel()
+		tt := NewTempTable()
+		tt.Add(dmap(map[string]any{"id": int64(1)}))
+		tt.Add(dmap(map[string]any{"id": int64(2)}))
+
+		snap := tt.Snapshot()
+		tt.Clear()
+		tt.Add(dmap(map[string]any{"id": int64(99)}))
+
+		d0, ok := rowMapOK(snap[0])
+		if !ok || d0["id"] != int64(1) {
+			t.Fatalf("snapshot[0] corrupted by a later Clear+Add: got %v (ok=%v), want id=1", d0, ok)
+		}
+		d1, ok := rowMapOK(snap[1])
+		if !ok || d1["id"] != int64(2) {
+			t.Fatalf("snapshot[1] corrupted by a later Clear+Add: got %v (ok=%v), want id=2", d1, ok)
+		}
+	})
+}
+
 func TestTempTable_ConcurrentAdd(t *testing.T) {
 	t.Parallel()
 

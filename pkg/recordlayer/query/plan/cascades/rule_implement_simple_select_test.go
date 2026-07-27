@@ -90,6 +90,29 @@ func TestImplementSimpleSelectRule_NoPredicatesSimpleResult(t *testing.T) {
 	}
 }
 
+func TestImplementSimpleSelectRule_StrictSingleFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	innerRef := expressions.InitialOf(scan)
+	pm := NewPlanPropertiesMap()
+	pm.Add(scan)
+	innerRef.SetPlanProperties(pm)
+	alias := values.NamedCorrelationIdentifier("STRICT")
+	q := expressions.NamedForEachStrictSingleQuantifier(alias, innerRef)
+	sel := expressions.NewSelectExpression(
+		q.GetFlowedObjectValue(),
+		[]expressions.Quantifier{q},
+		nil,
+	)
+
+	results := FireImplementationRule(
+		NewImplementSimpleSelectRule(), expressions.InitialOf(sel))
+	if len(results) != 0 {
+		t.Fatalf("standalone strict-single select yielded %d implementation(s), want zero", len(results))
+	}
+}
+
 func TestImplementSimpleSelectRule_WithPredicates(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)

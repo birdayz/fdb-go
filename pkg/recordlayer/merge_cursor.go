@@ -56,6 +56,16 @@ type mergeChildState[T any] struct {
 	// child from its last DISCARD, never re-scanning the inter-match gap. Go
 	// mirrors that in the non-max advance loop.
 	continuation RecordCursorContinuation
+	// needsAdvance mirrors Java's MergeCursorState.onNextFuture == null: true
+	// means the cached result/comparisonKey is stale (never fetched, or its
+	// value was already consumed as part of a delivered/discarded row) and
+	// must be refreshed before this child can participate in the next
+	// max-key comparison. consume() sets it; advance() clears it. Pulling
+	// only happens where this flag says to — at the top of the merge loop,
+	// on the NEXT call — never inline with the row that set it, which is
+	// what keeps a read-ahead error from being bundled with (and discarding)
+	// a match that was already decided.
+	needsAdvance bool
 }
 
 // advance fetches the next result from this child's cursor. Mirrors Java
@@ -69,6 +79,7 @@ func (s *mergeChildState[T]) advance(ctx context.Context) error {
 	}
 	s.result = result
 	s.hasResult = result.HasNext()
+	s.needsAdvance = false
 	if s.hasResult {
 		key, keyErr := s.compKeyFunc(result.GetValue())
 		if keyErr != nil {
@@ -82,11 +93,15 @@ func (s *mergeChildState[T]) advance(ctx context.Context) error {
 	return nil
 }
 
-// consume records that this child's current value was emitted as part of a
-// merge result, advancing the cached continuation past it (Java
-// MergeCursorState.consume).
+// consume records that this child's current value was emitted (or discarded)
+// as part of a merge result, advancing the cached continuation past it and
+// marking the child stale (Java MergeCursorState.consume: nulls onNextFuture,
+// updates continuation). Deliberately NO I/O here — the next pull is deferred
+// to wherever the merge loop next checks needsAdvance, matching Java's lazy
+// getOnNextFuture() memoization.
 func (s *mergeChildState[T]) consume() {
 	s.continuation = s.result.GetContinuation()
+	s.needsAdvance = true
 }
 
 // NOTE: there is deliberately NO merge-union cursor in this file. The
@@ -106,7 +121,6 @@ func (s *mergeChildState[T]) consume() {
 type intersectionCursor[T any] struct {
 	children []*mergeChildState[T]
 	reverse  bool
-	started  bool
 	closed   bool
 	// lastNoNext replays the terminal result on a contract-violating re-call
 	// (Java MergeCursor.onNext: once stopped, every later onNext returns the
@@ -162,6 +176,7 @@ func newMergeChildren[T any](
 			cursor:       c,
 			compKeyFunc:  compKeyFunc,
 			continuation: initialIntersectionContinuation(resume, i),
+			needsAdvance: true, // first pull is due, same as any post-consume() child
 		}
 	}
 	return children
@@ -188,21 +203,33 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 		return *c.lastNoNext, nil
 	}
 
-	// Initial advance of all children
-	if !c.started {
-		for _, child := range c.children {
-			if err := child.advance(ctx); err != nil {
-				return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
-			}
-		}
-		c.started = true
-	}
-
 	// Merge-intersection loop: advance non-maximal cursors until all agree
 	for {
 		if err := ctx.Err(); err != nil {
 			return RecordCursorResult[T]{}, err
 		}
+
+		// Pull a fresh value for every child whose current one is stale — the
+		// first pull (needsAdvance seeded true at construction) or one already
+		// delivered/discarded by a PRIOR call to this method (consume() marks
+		// it). Java: whenAll(cursorStates) at the top of
+		// computeNextResultStates' loop body (IntersectionCursorBase.java:113),
+		// where MergeCursorState.getOnNextFuture only actually pulls when its
+		// memoized onNextFuture is null (MergeCursorState.java:66-74) — exactly
+		// the transitions consume()/advance() track here via needsAdvance. This
+		// is what makes a match's read-ahead LAZY: the row delivered by a PRIOR
+		// call marked its children needsAdvance and returned immediately
+		// without pulling (see the allMatch branch below) — the pull, and any
+		// error it can produce, happens here, on the FOLLOWING call, never
+		// bundled with the row it followed.
+		for _, child := range c.children {
+			if child.needsAdvance {
+				if err := child.advance(ctx); err != nil {
+					return RecordCursorResult[T]{}, err
+				}
+			}
+		}
+
 		// Check if any child is exhausted
 		for _, child := range c.children {
 			if !child.hasResult {
@@ -252,11 +279,18 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 
 		if allMatch {
 			// All match! Return from first cursor. consume() advances each
-			// child's cached continuation past the matched row, then we capture
-			// the continuation BEFORE the in-memory advance — so resume re-reads
-			// from just after the match and finds the next one (no skip, no
-			// dup). Building it after the advance would point each child a row
-			// too far, losing every other match on resume (RFC-071).
+			// child's cached continuation past the matched row — bookkeeping
+			// only, no I/O (see mergeChildState.consume) — so the continuation
+			// captured right after reflects "resume just past this match" (no
+			// skip, no dup). The read-ahead pull for the NEXT row is deliberately
+			// NOT done here: Java's MergeCursor.onNext (MergeCursor.java:294-304)
+			// returns the value immediately after resultStates.forEach(consume),
+			// with no further pull — the next child fetch happens lazily, at the
+			// top of THIS method on the next call (the needsAdvance step above).
+			// Pulling here — as a prior version did — meant a read-ahead error
+			// (e.g. ctx cancellation between "match found" and "look ahead")
+			// discarded an already-decided match instead of delivering the row
+			// it owed and surfacing the error on the NEXT call, where it belongs.
 			result := c.children[0].result
 			for _, child := range c.children {
 				child.consume()
@@ -265,19 +299,18 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 			if contErr != nil {
 				return RecordCursorResult[T]{}, contErr
 			}
-			for _, child := range c.children {
-				if err := child.advance(ctx); err != nil {
-					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
-				}
-			}
 			return NewResultWithValue[T](result.GetValue(), cont), nil
 		}
 
-		// Advance all non-maximal children. Java
+		// Discard all non-maximal children — Java
 		// (IntersectionCursorBase.computeNextResultStates) consumes each
-		// discarded row first, so the child's cached continuation advances
-		// past it — a stop mid-catch-up resumes from the last discard, not
-		// the last match.
+		// discarded row first, so the child's cached continuation advances past
+		// it — a stop mid-catch-up resumes from the last discard, not the last
+		// match. Nothing has been decided yet at this point (no value is being
+		// returned to the caller from this iteration), so marking them
+		// needsAdvance and re-pulling at the top of the next loop iteration —
+		// still within this SAME OnNext call — is exactly as immediate as
+		// pulling inline, and any error still propagates from this call.
 		for _, child := range c.children {
 			neq, neqErr := compareKeys(child.comparisonKey, maxKey)
 			if neqErr != nil {
@@ -285,9 +318,6 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 			}
 			if neq != 0 {
 				child.consume()
-				if err := child.advance(ctx); err != nil {
-					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
-				}
 			}
 		}
 	}
@@ -477,7 +507,6 @@ func (c *intersectionCursor[T]) IsClosed() bool { return c.closed }
 type intersectionMultiCursor[T any] struct {
 	children []*mergeChildState[T]
 	reverse  bool
-	started  bool
 	closed   bool
 	// lastNoNext replays the terminal result on a contract-violating re-call
 	// (Java MergeCursor.onNext's cached result) — see intersectionCursor.
@@ -522,19 +551,25 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 		return *c.lastNoNext, nil
 	}
 
-	if !c.started {
-		for _, child := range c.children {
-			if err := child.advance(ctx); err != nil {
-				return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
-			}
-		}
-		c.started = true
-	}
-
 	for {
 		if err := ctx.Err(); err != nil {
 			return RecordCursorResult[[]T]{}, err
 		}
+
+		// Pull a fresh value for every child whose current one is stale — see
+		// intersectionCursor.OnNext for the full rationale (Java's whenAll(...)
+		// at the top of computeNextResultStates, mirrored here via
+		// needsAdvance). This keeps the read-ahead pull lazy: it happens on the
+		// call AFTER a match/discard marked a child stale, never bundled with
+		// the row that marked it.
+		for _, child := range c.children {
+			if child.needsAdvance {
+				if err := child.advance(ctx); err != nil {
+					return RecordCursorResult[[]T]{}, err
+				}
+			}
+		}
+
 		// If any child has no result, the intersection can produce no more on
 		// this pass. Distinguish exhaustion (truly done → END) from an
 		// out-of-band limit (Scan/Byte/Time → checkpoint and propagate the
@@ -592,11 +627,14 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 			for i, child := range c.children {
 				results[i] = child.result.GetValue()
 			}
-			// consume() then capture BEFORE the in-memory advance — identical to
-			// intersectionCursor (shared buildIntersectionContinuation). The
-			// executor decodes it via DecodeIntersectionContinuation +
-			// IntersectionMultiResume to resume each child from its saved
-			// position (RFC-071).
+			// consume() (bookkeeping only, no I/O) then capture the continuation —
+			// identical to intersectionCursor (shared buildIntersectionContinuation).
+			// The read-ahead pull is deliberately deferred to the next call's
+			// needsAdvance step (see intersectionCursor.OnNext) rather than done
+			// here, so a read-ahead error can never discard an already-decided
+			// match. The executor decodes the continuation via
+			// DecodeIntersectionContinuation + IntersectionMultiResume to resume
+			// each child from its saved position (RFC-071).
 			for _, child := range c.children {
 				child.consume()
 			}
@@ -604,19 +642,17 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 			if contErr != nil {
 				return RecordCursorResult[[]T]{}, contErr
 			}
-			for _, child := range c.children {
-				if err := child.advance(ctx); err != nil {
-					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
-				}
-			}
 			return NewResultWithValue[[]T](results, cont), nil
 		}
 
-		// Advance all non-maximal children toward the max key. Java
+		// Discard all non-maximal children toward the max key. Java
 		// (IntersectionCursorBase.computeNextResultStates) consumes each
 		// discarded row first, so the child's cached continuation advances
 		// past it — a stop mid-catch-up resumes from the last discard, not
-		// the last match. Same shape as the binary intersectionCursor.
+		// the last match. Same shape as the binary intersectionCursor: nothing
+		// has been decided yet, so marking needsAdvance and re-pulling at the
+		// top of the next loop iteration (still this same OnNext call) is exactly
+		// as immediate as pulling inline.
 		for _, child := range c.children {
 			neq, neqErr := compareKeys(child.comparisonKey, maxKey)
 			if neqErr != nil {
@@ -624,9 +660,6 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 			}
 			if neq != 0 {
 				child.consume()
-				if err := child.advance(ctx); err != nil {
-					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
-				}
 			}
 		}
 	}

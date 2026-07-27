@@ -798,12 +798,16 @@ func TestCastValue(t *testing.T) {
 		assertErr(t, err)
 	})
 
-	// string → FLOAT.
+	// string → FLOAT parses at binary32, like Java's STRING_TO_FLOAT
+	// (Float.parseFloat, CastValue.java:201-205). 3.14 is not representable in
+	// binary32, so the result is deliberately NOT binary64 3.14 — this
+	// previously asserted the unrounded value, pinning a FLOAT cast that never
+	// narrowed.
 	t.Run("string_to_FLOAT", func(t *testing.T) {
 		t.Parallel()
 		got, err := CastValue("3.14", "FLOAT")
 		assertNoErr(t, err)
-		assertEq(t, got, float64(3.14))
+		assertEq(t, got, float64(float32(3.14)))
 	})
 
 	t.Run("string_to_FLOAT_error", func(t *testing.T) {

@@ -89,7 +89,7 @@ func TestValuePredicateConstantFold_NonBoolConstantDegrades(t *testing.T) {
 	cases := []values.Value{
 		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
 		&values.ConstantValue{Value: "hello", Typ: values.TypeString},
-		&values.ConstantValue{Value: 1.5, Typ: values.TypeFloat},
+		&values.ConstantValue{Value: 1.5, Typ: values.NullableDouble},
 	}
 	for _, child := range cases {
 		pred := predicates.NewValuePredicate(child)

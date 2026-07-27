@@ -73,3 +73,35 @@ func TestProjectionElimRule_DeclinesOnDifferentAlias(t *testing.T) {
 		t.Fatalf("rule fired on projection of different-alias QOV — yielded %d, want 0", len(yielded))
 	}
 }
+
+func TestProjectionElimRule_DeclinesOnOutputAlias(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	p := expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{q.GetFlowedObjectValue()},
+		[]string{"RENAMED_ROW"},
+		q,
+	)
+
+	yielded := FireExpressionRule(NewProjectionElimRule(), expressions.InitialOf(p))
+	if len(yielded) != 0 {
+		t.Fatalf("rule erased a schema-bearing projection alias — yielded %d, want 0", len(yielded))
+	}
+}
+
+func TestProjectionElimRule_FiresOnExplicitEmptyAlias(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	p := expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{q.GetFlowedObjectValue()},
+		[]string{""},
+		q,
+	)
+
+	yielded := FireExpressionRule(NewProjectionElimRule(), expressions.InitialOf(p))
+	if len(yielded) != 1 || yielded[0] != scan {
+		t.Fatalf("empty alias changed identity elimination: yielded %v, want exact scan", yielded)
+	}
+}

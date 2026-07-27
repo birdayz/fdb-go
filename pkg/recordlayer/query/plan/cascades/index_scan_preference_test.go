@@ -2,17 +2,16 @@ package cascades
 
 import "testing"
 
-// TestPrimaryVsIndexVerdict_HonorsIndexScanPreference pins RFC-189 F3
-// (finding 3-followup): the cost model's primary-scan-vs-index-scan tie-break
-// now consults the IndexScanPreference config (mirroring Java's
-// comparePrimaryScanToIndexScan config branch), instead of hardcoding
-// PREFER_SCAN. With no type filter on the primary the SARG sub-case is skipped,
-// so the config branch decides: PREFER_SCAN → prefer the primary (-1), the
-// non-scan preferences → prefer the index (+1).
-func TestPrimaryVsIndexVerdict_HonorsIndexScanPreference(t *testing.T) {
+// TestPrimaryVsIndexRank_HonorsIndexScanPreference pins RFC-189 F3
+// (finding 3-followup): the cost model's primary-scan-vs-index-scan rung
+// consults the IndexScanPreference config (mirroring Java's
+// comparePrimaryScanToIndexScan config branch) instead of hardcoding
+// PREFER_SCAN. With no type filter on the primary, PREFER_SCAN prefers the
+// primary (-1) and the non-scan preferences prefer the index (+1).
+func TestPrimaryVsIndexRank_HonorsIndexScanPreference(t *testing.T) {
 	t.Parallel()
-	// typeFilterCount 0 on both sides → the SARG sub-case does not fire.
-	ops := expressionCounts{}
+	primaryOps := expressionCounts{scanCount: 1}
+	indexOps := expressionCounts{indexScanCount: 1}
 
 	cases := []struct {
 		pref IndexScanPreference
@@ -23,8 +22,12 @@ func TestPrimaryVsIndexVerdict_HonorsIndexScanPreference(t *testing.T) {
 		{PreferPrimaryKeyIndex, 1},
 	}
 	for _, tc := range cases {
-		if got := primaryVsIndexVerdict(nil, nil, ops, ops, tc.pref); got != tc.want {
-			t.Fatalf("primaryVsIndexVerdict(pref=%v) = %d, want %d", tc.pref, got, tc.want)
+		got := comparePrimaryVsIndexRank(
+			primaryVsIndexRankOf(nil, primaryOps, tc.pref),
+			primaryVsIndexRankOf(nil, indexOps, tc.pref),
+		)
+		if got != tc.want {
+			t.Fatalf("primary-vs-index rung (pref=%v) = %d, want %d", tc.pref, got, tc.want)
 		}
 	}
 }

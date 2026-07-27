@@ -1,0 +1,53 @@
+# intermingle_type_filter.yaml
+#
+# INTERMINGLE_TABLES=true puts every table's primary key in the SAME FDB
+# key range (buildPrimaryKeyExpression in pkg/relational/core/metadata/
+# builder.go skips the RecordTypeKey() prefix it otherwise prepends). A
+# primary-scan match candidate over such a store genuinely CAN produce rows
+# of any available type, so PrimaryScanMatchCandidate.ToScanPlan must wrap
+# the scan in a TypeFilterPlan (Java: hasAndOrderedByRecordTypeKey()==false
+# → toEquivalentPlan wraps; Go: primary_scan_match_candidate.go mirrors it).
+#
+# This is the discriminating counterpart to pk_pushdown.yaml's `id > 2`
+# case, which pins the OPPOSITE outcome (the default non-intermingled
+# schema, where the PK IS RecordTypeKey-prefixed and the filter is
+# correctly ELIMINATED as redundant). Together the two pin both sides of
+# hasRecordTypeKeyPrefix — a regression that flips the condition either
+# way shows up as a plan-shape diff on one of these two files.
+#
+# The row assertion is not incidental: t and u's id ranges are chosen to
+# overlap in encoded-key order (t: 1-4, u: 10-11) and the query scans
+# `id > 2`, unbounded on the high end — a naive scan of the shared PK space
+# with NO TypeFilter would walk straight through u's rows too. If the
+# filter is ever wrongly eliminated here, this test fails on WRONG ROWS,
+# not just plan shape.
+name: intermingle_type_filter
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE u (id BIGINT NOT NULL, tag STRING, PRIMARY KEY (id))
+  WITH OPTIONS(INTERMINGLE_TABLES=true)
+setup:
+  - INSERT INTO t VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma'), (4, 'delta')
+  - INSERT INTO u VALUES (10, 'x'), (11, 'y')
+tests:
+  # Range scan on t's PK, unbounded high end. Without the TypeFilter, the
+  # underlying scan walks the shared key range past id=4 into u's rows
+  # (id=10,11) — this assertion is a correctness backstop, not just shape.
+  - query: SELECT id, name FROM t WHERE id > 2 ORDER BY id
+    plan_contains: "TypeFilter([T], Scan(T, [<>]))"
+    rows:
+      - [3, 'gamma']
+      - [4, 'delta']
+
+  # Same shape scanning u instead — proves the filter is load-bearing on
+  # both sides of the shared range, not an artifact of scan direction.
+  - query: SELECT id, tag FROM u WHERE id > 0 ORDER BY id
+    plan_contains: "TypeFilter([U], Scan(U, [<>]))"
+    rows:
+      - [10, 'x']
+      - [11, 'y']
+
+  # Point equality also stays type-scoped under intermingling.
+  - query: SELECT name FROM t WHERE id = 3
+    rows:
+      - ['gamma']

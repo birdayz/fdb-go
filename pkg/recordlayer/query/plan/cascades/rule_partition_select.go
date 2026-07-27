@@ -41,10 +41,45 @@ func NewPartitionSelectRule() *PartitionSelectRule {
 func (r *PartitionSelectRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
+	if call.CancellationErr() != nil {
+		return
+	}
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
 	quantifiers := sel.GetQuantifiers()
 
 	if len(quantifiers) < 3 {
+		return
+	}
+
+	// Both halves are rebuilt via NewSelectExpressionWithAliases, which has no
+	// joinType parameter and so always defaults to JoinInner — this rule NEVER
+	// carries the original select's JoinType forward, unlike
+	// PushFilterBelowJoinRule / PartitionBinarySelectRule (which relocate
+	// predicates AROUND a preserved JoinInner select via
+	// NewSelectExpressionWithJoinType) or SelectMergeRule / pushIntoSelect
+	// (which also rebuild fresh but gate on ChildrenAsSet()). A LEFT/RIGHT/FULL
+	// OUTER select's null-extension is directional and belongs to exactly the
+	// binary {preserved, null-supplying} shape RewriteOuterJoinRule builds
+	// (rule_select_merge.go's "binary box" doc) — bipartitioning it into two
+	// arbitrary, cost-driven, always-JoinInner halves would erase that
+	// null-extension outright (not merely mis-time a predicate), silently
+	// dropping unmatched rows. ChildrenAsSet() (JoinInner || JoinCross) is the
+	// correct gate here, not a strict JoinInner check: a CROSS select carries no
+	// predicates and no directional semantics by construction, so splitting it
+	// into two default-JoinInner halves reproduces identical rows — the same
+	// axis SelectMergeRule/pushIntoSelect already key on for this exact
+	// "rebuild fresh, discard JoinType" shape.
+	if !sel.ChildrenAsSet() {
+		return
+	}
+
+	// StrictSingle is a semantic edge contract owned by the binary
+	// correlated-scalar lowering. This N-way partitioner rebuilds the lower edge
+	// as a plain ForEach, so accepting a flagged input would erase its
+	// at-most-one-row guarantee before ImplementNestedLoopJoinRule can install
+	// the strict FirstOrDefault. SQL lowering does not emit supported N-way
+	// strict shapes; fail closed until partitioning can preserve and orient one.
+	if hasStrictSingleQuantifier(quantifiers) {
 		return
 	}
 
@@ -220,6 +255,11 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 	n := len(allAliases)
 	total := 1 << n
 	for mask := 1; mask < total-1; mask++ {
+		// This is the rule's exponential seam (2^N bipartitions). A task-loop
+		// check alone cannot interrupt one large invocation.
+		if call.CancellationErr() != nil {
+			return
+		}
 		lowerAliases := make(map[values.CorrelationIdentifier]struct{})
 		for bit := 0; bit < n; bit++ {
 			if mask&(1<<bit) != 0 {

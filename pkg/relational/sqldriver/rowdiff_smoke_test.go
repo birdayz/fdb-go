@@ -22,9 +22,10 @@ import (
 const rowdiffSmokeSeeds = 25
 
 // rowdiffSeedRange returns the seed range to sweep. It defaults to the fast
-// smoke slice (seeds 1..25) and is widened by environment for the deep runs
-// the RFCs call for — RFC-183's exit criteria ask for >=50k seeds, which at
-// roughly 2.7 seeds/s is a multi-hour sweep that must not sit in `just test`.
+// smoke slice (a FIXED 25 seeds) and is widened by environment for the deep
+// runs the RFCs call for — RFC-183's exit criteria ask for >=50k seeds, which
+// at roughly 2.7 seeds/s is a multi-hour sweep that must not sit in
+// `just test`.
 //
 //	ROWDIFF_SEEDS=50000 ROWDIFF_SEED_START=1 bazelisk test \
 //	  //pkg/relational/sqldriver:sqldriver_test --test_output=streamed \
@@ -34,9 +35,29 @@ const rowdiffSmokeSeeds = 25
 // SEED_START exists so successive deep runs cover FRESH ranges instead of
 // re-walking the same seeds; a run that always starts at 1 re-proves what the
 // last one already proved.
+//
+// The DEFAULT start is deliberately CONSTANT, and window rotation belongs to
+// nightly-rowdiff.yml alone (which derives the day, passes it as a declared
+// --test_env input, runs --nocache_test_results, and sweeps 18000 seeds a
+// night). Deriving the default from the wall clock in-process looks like free
+// PR-gate coverage but is not:
+//
+//   - It does not actually rotate. The calendar day is not part of Bazel's
+//     action key, so a cached green result from an earlier day is reused and
+//     the "fresh window" never executes.
+//   - It makes the gate irreproducible. A PR that was green yesterday can go
+//     red today from a seed window that has nothing to do with its diff, and
+//     the failing seed depends on WHEN the suite ran — the shape of flake
+//     this repo treats as a real bug.
+//   - The coverage it claims to add is noise next to the nightly: 25 seeds a
+//     day against 18000 a night.
+//
+// A deterministic gate seed and a rotating nightly is the split that gives
+// both properties; folding rotation into the gate gave neither.
 func rowdiffSeedRange(t *testing.T) (start, count uint64) {
 	t.Helper()
-	start, count = 1, rowdiffSmokeSeeds
+	count = rowdiffSmokeSeeds
+	start = 1
 	if v := os.Getenv("ROWDIFF_SEED_START"); v != "" {
 		n, err := strconv.ParseUint(v, 10, 64)
 		if err != nil || n == 0 {

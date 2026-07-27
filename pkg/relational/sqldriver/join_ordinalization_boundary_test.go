@@ -189,8 +189,10 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 // pre-existing planner gap:
 //
 //   - The comma/CTE spellings translate correctly (the cross-derived
-//     predicate survives into the logical plan — asserted below) but the
-//     Cascades planner cannot produce a physical plan: clean 0AF00.
+//     predicate survives into the logical plan — asserted in
+//     TestExplainOnlyMode_KeepsCrossDerivedPredicate, pkg/relational/core/
+//     embedded) but the Cascades planner cannot produce a physical plan:
+//     clean 0AF00, for the statement AND for EXPLAIN of it.
 //   - The explicit-JOIN spelling (`(...) t1 JOIN (...) t2 ON t1.aid =
 //     t2.cid`) is WORSE — pre-existing silent wrong rows, NOT pinned here:
 //     buildDerivedTableSource (embedded/logical_predicate.go) declines
@@ -202,10 +204,10 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 //     own red→green pin; pinning its current wrong rows green here would be
 //     forbidden expectation-adjustment.
 //
-// What this test pins TODAY: the evasion shape fails cleanly (0AF00,
-// predicate intact at translation), never ordinal artifacts, never silent
-// rows. When the derived-with-join gap closes, assertUnsupported goes red
-// and this must be upgraded to the full correct-rows assertion.
+// What this test pins TODAY: the evasion shape fails cleanly (0AF00), never
+// ordinal artifacts, never silent rows. When the derived-with-join gap
+// closes, assertUnsupported goes red and this must be upgraded to the full
+// correct-rows assertion.
 func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -241,14 +243,16 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 	t.Run("comma_form_fails_cleanly", func(t *testing.T) {
 		assertUnsupported(t, db, ctx, evasion)
 	})
-	t.Run("translation_keeps_cross_derived_predicate", func(t *testing.T) {
-		// EXPLAIN falls back to the logical plan when no physical plan exists;
-		// the cross-derived predicate must still be there — the clean-decline
-		// path must never share the ON-drop bug's silent predicate loss.
-		plan := pinExplain(t, db, ctx, evasion)
-		if !strings.Contains(plan, "Filter(t1.aid = t2.cid)") {
-			t.Errorf("logical plan lost the cross-derived predicate:\n%s", plan)
-		}
+	t.Run("explain_form_fails_cleanly", func(t *testing.T) {
+		// EXPLAIN of an unplannable query must raise the SAME 0AF00 the query
+		// raises — it may not describe a plan the engine refuses to run. This
+		// subtest previously asserted the cross-derived predicate in EXPLAIN's
+		// logical-plan text, which was pinning that degrade. The predicate's
+		// survival through TRANSLATION is a real property and still pinned, at
+		// the layer where logical text is the honest answer:
+		// TestExplainOnlyMode_KeepsCrossDerivedPredicate in
+		// pkg/relational/core/embedded.
+		assertUnsupported(t, db, ctx, "EXPLAIN "+evasion)
 	})
 	t.Run("cte_form_fails_cleanly", func(t *testing.T) {
 		assertUnsupported(t, db, ctx,

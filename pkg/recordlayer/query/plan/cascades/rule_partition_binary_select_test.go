@@ -586,6 +586,25 @@ func TestPartitionBinarySelectRule_NoPredicates(t *testing.T) {
 	}
 }
 
+func TestPartitionBinarySelectRule_StrictSingleFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tQ := baseT()
+	tauBase := baseTau()
+	tauQ := expressions.NamedForEachStrictSingleQuantifier(
+		tauBase.GetAlias(), tauBase.GetRangesOver())
+	sel := joinOf(tQ, tauQ).
+		addResultColumn(tQ, "a").
+		addResultColumn(tauQ, "alpha").
+		addPredicate(joinPred(tQ.GetAlias().Name(), tauQ.GetAlias().Name())).
+		buildSelect()
+
+	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), expressions.InitialOf(sel))
+	if len(yielded) != 0 {
+		t.Fatalf("binary strict-single select yielded %d partition(s), want fail-closed zero", len(yielded))
+	}
+}
+
 func TestPartitionBinarySelectRule_SingleQuantifier(t *testing.T) {
 	t.Parallel()
 

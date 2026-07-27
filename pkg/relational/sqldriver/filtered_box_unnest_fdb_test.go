@@ -241,4 +241,44 @@ func TestFDB_FilteredBoxUnnest(t *testing.T) {
 		want(t, `SELECT LA."K", LB."K", CC."CV", "X" FROM LA FULL OUTER JOIN LB ON LA."AID" = LB."BID" FULL OUTER JOIN CC ON LA."AID" = CC."CID", LA."ARR" AS "X" WHERE LA."K" = 100`,
 			"900|100|5|7", "900|100|5|8")
 	})
+
+	// Sibling shapes for the nested_box_conjunct dimension: a WHERE over a
+	// preserved/null-extendable leg of a NESTED outer-join box must keep
+	// WHERE-above-OUTER semantics regardless of whether an UNNEST rides
+	// alongside (a residual filter above the whole materialized nested join,
+	// never a predicate fused into an inner join's own ON-list — which would
+	// let a null-extended, non-matching row survive the WHERE via the drain
+	// path). These pin the same nested-box shape WITHOUT a trailing unnest
+	// (plain SELECT), the LEFT-OUTER analogue, and a WHERE over the
+	// null-extendable leg of the INNER (buried) join specifically.
+	const nestedBox = `FROM LA FULL OUTER JOIN LB ON LA."AID" = LB."BID" FULL OUTER JOIN CC ON LA."AID" = CC."CID"`
+
+	// Same nested box, no UNNEST: (LA FULL LB) FULL CC has three rows —
+	// aid=1 fully matched (LA.K=100,LB.K=5,CV=900), aid=2 unmatched on both
+	// legs (LA.K=110,LB.K=NULL,CV=NULL), and LB bid=3 unmatched in the INNER
+	// join (LA.K=NULL,LB.K=6,CV=NULL, LA.AID NULL so also CC-unmatched).
+	// WHERE LA.K=100 must keep only the fully-matched row.
+	t.Run("nested_box_no_unnest_preserved_leg", func(t *testing.T) {
+		want(t, `SELECT LA."K", LB."K", CC."CV" `+nestedBox+` WHERE LA."K" = 100`, "900|100|5")
+	})
+	// WHERE over LB — the null-extendable leg of the INNER (LA FULL LB)
+	// join, itself buried inside the OUTER box. LB.K=5 only on the
+	// fully-matched row (LB.K is NULL on the aid=2 row, 6 on the bid=3 row).
+	t.Run("nested_box_no_unnest_inner_null_supplied_leg", func(t *testing.T) {
+		want(t, `SELECT LA."K", LB."K", CC."CV" `+nestedBox+` WHERE LB."K" = 5`, "900|100|5")
+	})
+	// WHERE LB.K=6 isolates the bid=3 row: LA is NULL-extended by the INNER
+	// join (no LA.aid=3), and LA.AID being NULL then also NULL-extends CC at
+	// the OUTER join. Proves a predicate on the inner join's null-supplying
+	// leg still resolves correctly through a SECOND level of null-extension.
+	t.Run("nested_box_no_unnest_inner_null_supplied_leg_isolates_row", func(t *testing.T) {
+		want(t, `SELECT LA."K", LB."K", CC."CV" `+nestedBox+` WHERE LB."K" = 6`, "<nil>|<nil>|6")
+	})
+	// LEFT OUTER analogue of the nested box (no UNNEST): LA LEFT JOIN LB LEFT
+	// JOIN CC WHERE LA.K=100. Only the aid=1 row (fully matched) qualifies;
+	// the aid=2 row (LA.K=110, null-padded on both LB and CC) must drop.
+	t.Run("nested_box_left_outer_no_unnest_preserved_leg", func(t *testing.T) {
+		want(t, `SELECT LA."K", LB."K", CC."CV" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID" LEFT JOIN CC ON LA."AID" = CC."CID" WHERE LA."K" = 100`,
+			"900|100|5")
+	})
 }

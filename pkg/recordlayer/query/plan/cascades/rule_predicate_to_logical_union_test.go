@@ -83,6 +83,29 @@ func TestPredicateToLogicalUnionRule_SingleOR(t *testing.T) {
 	}
 }
 
+func TestPredicateToLogicalUnionRule_StrictSingleFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	scanRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	alias := values.NamedCorrelationIdentifier("STRICT")
+	q := expressions.NamedForEachStrictSingleQuantifier(alias, scanRef)
+	sel := expressions.NewSelectExpression(
+		q.GetFlowedObjectValue(),
+		[]expressions.Quantifier{q},
+		[]predicates.QueryPredicate{predicates.NewOr(
+			predicates.NewConstantPredicate(predicates.TriTrue),
+			predicates.NewConstantPredicate(predicates.TriFalse),
+		)},
+	)
+
+	yielded := FireExpressionRule(
+		NewPredicateToLogicalUnionRule(), expressions.InitialOf(sel))
+	if len(yielded) != 0 {
+		t.Fatalf("strict-single OR select yielded %d logical-union rewrite(s), want zero", len(yielded))
+	}
+}
+
 func TestPredicateToLogicalUnionRule_ORWithFixedPredicates(t *testing.T) {
 	t.Parallel()
 

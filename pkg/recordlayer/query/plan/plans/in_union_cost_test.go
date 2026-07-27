@@ -105,8 +105,11 @@ func TestInUnionHintCost_UsesValueCombinationCount(t *testing.T) {
 			case 1:
 				want = child
 			default:
+				// NO PhysicalWrapperCostMultiplier on Cardinality — CPU only
+				// (cost_formulas.go): the row count is a logical-group
+				// property and cannot shrink from wrapping the plan.
 				want = properties.Cost{
-					Cardinality: child.Cardinality * test.fanout * properties.PhysicalWrapperCostMultiplier,
+					Cardinality: child.Cardinality * test.fanout,
 					CPU: (child.CPU*test.fanout +
 						child.Cardinality*test.fanout*properties.UnionCPU) *
 						properties.PhysicalWrapperCostMultiplier,
@@ -144,7 +147,7 @@ func TestInUnionHintCost_SaturatesUnknownFanoutOverflow(t *testing.T) {
 	got := plan.HintCost([]properties.Cost{child}, properties.DefaultStatistics{})
 	wantFanout := float64(math.MaxInt64)
 	want := properties.Cost{
-		Cardinality: child.Cardinality * wantFanout * properties.PhysicalWrapperCostMultiplier,
+		Cardinality: child.Cardinality * wantFanout,
 		CPU: (child.CPU*wantFanout +
 			child.Cardinality*wantFanout*properties.UnionCPU) *
 			properties.PhysicalWrapperCostMultiplier,

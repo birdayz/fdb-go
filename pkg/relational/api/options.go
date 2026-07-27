@@ -61,9 +61,44 @@ const (
 	OptPlanCachePrimaryTimeToLiveMillis   OptionName = "PLAN_CACHE_PRIMARY_TIME_TO_LIVE_MILLIS"
 	OptPlanCacheSecondaryTimeToLiveMillis OptionName = "PLAN_CACHE_SECONDARY_TIME_TO_LIVE_MILLIS"
 	OptPlanCacheTertiaryTimeToLiveMillis  OptionName = "PLAN_CACHE_TERTIARY_TIME_TO_LIVE_MILLIS"
-	OptIndexFetchMethod                   OptionName = "INDEX_FETCH_METHOD"
-	OptDisabledPlannerRules               OptionName = "DISABLED_PLANNER_RULES"
-	OptDisablePlannerRewriting            OptionName = "DISABLE_PLANNER_REWRITING"
+	// OptIndexFetchMethod selects FDB's remote-fetch index scan in Java
+	// (Options.IndexFetchMethod → OptionsUtils.getIndexFetchMethod →
+	// RecordQueryPlannerConfiguration.setIndexFetchMethod, which every
+	// MatchCandidate stamps onto the RecordQueryIndexPlan it builds).
+	//
+	// It is currently NOT HONORED in Go, and the option is accepted rather than
+	// rejected only to keep Java-written option sets loadable. Remote fetch is
+	// an FDB client capability — Java drives it through
+	// Transaction.getMappedRange (IndexPrefetchRangeKeyValueCursor) — and
+	// neither FDB client Go uses exposes getMappedRange, nor does Go's
+	// index-scan plan have a fetch-method field to carry the choice. Wiring it
+	// is a record-layer + client feature, not option plumbing; the gap is
+	// tracked in TODO.md.
+	//
+	// The severity is narrower than "not honored" suggests, and the distinction
+	// matters:
+	//
+	//   - SCAN_AND_FETCH asks for exactly what Go always does, so it is
+	//     honored in effect.
+	//   - USE_REMOTE_FETCH_WITH_FALLBACK — Java's DEFAULT, and therefore what
+	//     almost every caller gets — permits falling back to scan-and-fetch,
+	//     which is what Go does. Go's behaviour is within the contract, so the
+	//     default path is CORRECT, not merely tolerated.
+	//   - USE_REMOTE_FETCH is the one sharp edge: it demands remote fetch with
+	//     no fallback, and Go silently scan-and-fetches instead. Same rows,
+	//     different round-trip profile than the caller asked for.
+	OptIndexFetchMethod        OptionName = "INDEX_FETCH_METHOD"
+	OptDisabledPlannerRules    OptionName = "DISABLED_PLANNER_RULES"
+	OptDisablePlannerRewriting OptionName = "DISABLE_PLANNER_REWRITING"
+	// OptPlanRightDeep restricts join enumeration to right-deep trees: each
+	// partition has exactly one "upper" quantifier and n-1 lower ones, so the
+	// planner explores O(n) join shapes instead of every bipartition. Boolean,
+	// default false — Java-identical (Options.Name.PLAN_RIGHT_DEEP, whose
+	// default is false and whose JOIN_RIGHT_DEEP_MASK reads unset ⇒ false).
+	// Setting it is an opt-in trade: bushy plans are excluded, so a wide star
+	// join that would otherwise exhaust the planner's task budget converges,
+	// at the cost of possibly missing the cheapest shape.
+	OptPlanRightDeep OptionName = "PLAN_RIGHT_DEEP"
 	// OptLogQuery gates the SLF4J log level in Java. Go has no ambient
 	// log-level concept: the planning-metrics hook (RFC-034) always emits a
 	// record and the handler owns level + sampling, so this option is
@@ -127,10 +162,15 @@ var nullValue = &nullSentinel{}
 // default flows through to plan cache keys and round-trip tests
 // against Java. Keep in sync with Java's Options static initializer.
 //
-// TODO: OptIndexFetchMethod defaults to USE_REMOTE_FETCH_WITH_FALLBACK
-// to match Java. Embedded Go users cannot use remote fetch until
-// Phase 9 (gRPC server); in the meantime the concrete Connection
-// impl should detect embedded mode and fall back to SCAN_AND_FETCH.
+// OptIndexFetchMethod keeps Java's USE_REMOTE_FETCH_WITH_FALLBACK default so
+// the default option set stays byte-identical to Java's, but nothing in Go
+// reads it — see the option's own doc above. The behaviour that default names
+// is Java's fallback-to-scan-and-fetch, which is also what Go does
+// unconditionally, so the inert default is the honest one; a Go-local
+// SCAN_AND_FETCH override would diverge the wire-visible default map for no
+// behavioural gain. (The previous note here blamed "Phase 9 (gRPC server)";
+// that was wrong — remote fetch is an FDB client feature, unrelated to the
+// gRPC frontend.)
 var defaultOptionValues = map[OptionName]any{
 	OptMaxRows:                            math.MaxInt32,
 	OptIndexFetchMethod:                   IndexFetchUseRemoteFetchWithFallback,
@@ -149,6 +189,7 @@ var defaultOptionValues = map[OptionName]any{
 	OptExecutionTimeLimit:                 int64(0),
 	OptExecutionScannedRowsLimit:          math.MaxInt32,
 	OptDryRun:                             false,
+	OptPlanRightDeep:                      false,
 	OptCaseSensitiveIdentifiers:           false,
 	OptAsyncOperationsTimeoutMillis:       int64(10_000),
 	OptEncryptWhenSerializing:             false,

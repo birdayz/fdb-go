@@ -9,6 +9,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // planPipeline runs the full Cascades pipeline (logical tree -> Explore ->
@@ -45,6 +46,34 @@ func planPipeline(t *testing.T, root expressions.RelationalExpression, indexes .
 	}
 	// Fallback: describe the expression type.
 	return fmt.Sprintf("%T", best)
+}
+
+func TestPlannerPipeline_PreservesIdentityProjectionOutputAlias(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	logical := expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{q.GetFlowedObjectValue()},
+		[]string{"RENAMED_ROW"},
+		q,
+	)
+
+	best, _, err := NewPlanner(DefaultExpressionRules(), nil).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules()).
+		WithMaxTasks(7_000).
+		Plan(expressions.InitialOf(logical))
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	projection, ok := best.(*plans.RecordQueryProjectionPlan)
+	if !ok {
+		t.Fatalf("planner erased schema-bearing projection: best=%T, want *plans.RecordQueryProjectionPlan", best)
+	}
+	aliases := projection.GetAliases()
+	if len(aliases) != 1 || aliases[0] != "RENAMED_ROW" {
+		t.Fatalf("planned projection aliases=%v, want [RENAMED_ROW]", aliases)
+	}
 }
 
 func planPipelineWithStats(t *testing.T, root expressions.RelationalExpression, stats properties.StatisticsProvider, indexes ...IndexDef) string {

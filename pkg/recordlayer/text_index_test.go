@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -2114,6 +2115,79 @@ var _ = Describe("TEXT index", func() {
 				idx, IndexScanByTextToken, TupleRangeAll, nil, props))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries).To(HaveLen(3))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("shared scan-record budget aggregates across legs of a fan-out (RFC-106a)", func() {
+		// textCursor threads a (possibly shared) *ScanLimiterState through
+		// resolveScanLimiterState, so every leg of an IN-join/IN-union fan-out
+		// charges the same aggregate budget instead of resetting per leg —
+		// same mechanism as the multidimensional prefix skip-scan and the
+		// bitmap/count index's own equivalent tests. The two tests above only
+		// ever exercise ScannedBytesLimit on a single cursor; neither drives
+		// more than one textCursor sharing state, so a regression that stopped
+		// sharing scanState across legs (reverting textCursor to a fresh
+		// per-cursor budget) would ship silently.
+		//
+		// Drive store.ScanIndexByType N times reusing the SAME ScanProperties
+		// (and so the same *ScanLimiterState pointer) — the mechanism
+		// executeInJoin/executeInUnion use for real IN-list legs
+		// (props.ClearSkipAndLimit(), never a fresh DefaultExecuteProperties()
+		// per leg). Two distinct single-token names scanned per leg are
+		// individually far under the cap; only the aggregate across legs can
+		// trip it.
+		ks := specSubspace()
+
+		idx := NewTextIndex("customer_name_text_fanout", Field("name"))
+		builder := baseMetaData()
+		builder.AddIndex("Customer", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		const scanLimit = 10
+		const numLegs = 10
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i, name := range []string{"alpha", "bravo"} {
+				_, err = store.SaveRecord(&gen.Customer{
+					CustomerId: proto.Int64(int64(i + 1)),
+					Name:       proto.String(name),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// ONE ScanProperties (and so one shared *ScanLimiterState) reused
+			// across every leg — the fan-out sharing mechanism under test.
+			props := ForwardScan()
+			props.ExecuteProperties = props.ExecuteProperties.WithScannedRecordsLimit(scanLimit)
+
+			var tripped int
+			for leg := 0; leg < numLegs; leg++ {
+				legProps := props
+				legProps.ExecuteProperties = legProps.ExecuteProperties.ClearSkipAndLimit()
+				entries, legErr := AsList(ctx, store.ScanIndexByType(idx, IndexScanByTextToken, TupleRangeAll, nil, legProps))
+				if legErr != nil {
+					var sle *ScanLimitReachedError
+					Expect(errors.As(legErr, &sle)).To(BeTrue(),
+						"leg %d: want ScanLimitReachedError, got: %v", leg, legErr)
+					tripped++
+					continue
+				}
+				Expect(entries).To(HaveLen(2), "leg %d: an untripped leg must see both tokens", leg)
+			}
+
+			Expect(tripped).To(BeNumerically(">", 0),
+				"the aggregate scan budget across %d individually-small legs (cap=%d) never tripped — "+
+					"the shared ScanLimiterState is not being charged across TEXT-index legs", numLegs, scanLimit)
+			Expect(tripped).To(BeNumerically("<", numLegs),
+				"every leg tripped — the cap is too tight to also prove early legs succeed on their own merits")
 
 			return nil, nil
 		})

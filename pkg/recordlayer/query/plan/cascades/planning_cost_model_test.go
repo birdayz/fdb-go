@@ -253,11 +253,14 @@ func TestRewritingCostModelLess_AllTie_HashDeterministic(t *testing.T) {
 	}
 }
 
-// TestCompareInPlan_FlipFlop_SargedVsUnsarged verifies the flipFlop
-// semantics: when both a and b are IN-plans, and a is SARGed (returns
-// 0, true) and b is unsarged (returns 1, true), the result should be
-// 0 — Java's flipFlop returns present(0), stops there. NOT -1.
-func TestCompareInPlan_FlipFlop_SargedVsUnsarged(t *testing.T) {
+// TestCompareInPlan_SargedBeatsUnsarged pins the rung's ANTISYMMETRY across the
+// heterogeneous pair that used to break it. Java evaluates the rung for the left
+// argument only, so a SARGed left returned a present 0 that flipFlop handed back
+// without asking the reverse question, while the swapped call returned +1 — the
+// two directions disagreed and the winner fell to a hash coin flip. Go ranks both
+// sides: the SARGed IN-plan is strictly preferred, and the reverse orientation
+// says exactly the opposite.
+func TestCompareInPlan_SargedBeatsUnsarged(t *testing.T) {
 	t.Parallel()
 
 	// Build an InJoin plan with a SARGed binding: the inner index scan
@@ -292,9 +295,25 @@ func TestCompareInPlan_FlipFlop_SargedVsUnsarged(t *testing.T) {
 	opsA := findExpressionsByType(inJoinPlanA, nil, nil)
 	opsB := findExpressionsByType(inJoinPlanB, nil, nil)
 
-	cmp := compareInPlan(inJoinPlanA, inJoinPlanB, opsA, opsB)
-	if cmp != 0 {
-		t.Errorf("compareInPlan(sarged, unsarged) = %d, want 0 (flipFlop stops at first applicable, returns present(0))", cmp)
+	if cmp := compareInPlan(inJoinPlanA, inJoinPlanB, opsA, opsB); cmp != -1 {
+		t.Errorf("compareInPlan(sarged, unsarged) = %d, want -1 (the SARGed IN-plan is preferred)", cmp)
+	}
+	if cmp := compareInPlan(inJoinPlanB, inJoinPlanA, opsB, opsA); cmp != 1 {
+		t.Errorf("compareInPlan(unsarged, sarged) = %d, want +1 (antisymmetric reverse)", cmp)
+	}
+
+	// Two unSARGed IN-plans must TIE so the remaining rungs decide, instead of
+	// each orientation claiming its own left argument is worse.
+	innerPlanC := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	innerRefC := expressions.InitialOf(innerPlanC)
+	inJoinPlanC := plans.NewRecordQueryInJoinPlanFromQuantifier(
+		expressions.NewPhysicalQuantifier(innerRefC), "third_bind", false, false)
+	opsC := findExpressionsByType(inJoinPlanC, nil, nil)
+	if cmp := compareInPlan(inJoinPlanB, inJoinPlanC, opsB, opsC); cmp != 0 {
+		t.Errorf("compareInPlan(unsarged, unsarged) = %d, want 0 (fall through to the later rungs)", cmp)
+	}
+	if cmp := compareInPlan(inJoinPlanC, inJoinPlanB, opsC, opsB); cmp != 0 {
+		t.Errorf("compareInPlan(unsarged, unsarged) reversed = %d, want 0", cmp)
 	}
 }
 
@@ -400,17 +419,199 @@ func TestCollectSargedAliases_IntersectionIsSetIntersection(t *testing.T) {
 	}
 }
 
-// TestIntersectChildAliases_EmptyChildren returns nil for expressions
+// TestIntersectChildComparisons_EmptyChildren returns nil for expressions
 // without quantifiers.
-func TestIntersectChildAliases_EmptyChildren(t *testing.T) {
+func TestIntersectChildComparisons_EmptyChildren(t *testing.T) {
 	t.Parallel()
 
 	// Use a bare scan — a leaf expression with no quantifiers.
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	result := intersectChildAliases(scan)
+	result := intersectChildComparisons(scan)
 	if result != nil {
-		t.Errorf("intersectChildAliases(no quantifiers) = %v, want nil", result)
+		t.Errorf("intersectChildComparisons(no quantifiers) = %v, want nil", result)
 	}
+}
+
+// TestCollectSargedComparisons_IntersectionFoldsComparisonsNotAliases pins the
+// GRANULARITY of the intersection fold in criterion #6's search-argument
+// detection: the legs are folded on Comparison OBJECTS, not on the correlation
+// aliases derived from them.
+//
+// The two granularities agree on every shape the Go planner can build today,
+// because Go's InComparisonToExplodeRule emits exactly one equality per IN
+// binding and its comparand is always a bare QuantifiedObjectValue over the
+// explode alias — so two legs that bind the same alias necessarily carry the
+// SAME comparison. That agreement is a property of what the rule happens to
+// emit, not of the fold, and it is precisely why an alias fold can sit here
+// looking correct: no reachable query distinguishes them, so no corpus test
+// can. This test builds the distinguishing shape directly.
+//
+// The shape is Java's record-typed IN: createSimpleEqualitiesForRecordTypeValue
+// splits `(a, b) IN ((1, 2), ...)` into `a = $x.0` and `b = $x.1`, two
+// DIFFERENT comparands correlated to the SAME binding $x. A leg on `a` and a
+// leg on `b` then share the alias while sharing no comparison, and only the
+// comparison fold gives criterion #6 the answer its Javadoc asks for — whether
+// "the rewritten equality" bounds the scan, which under an intersection
+// requires every leg to carry that equality, not merely to mention its alias.
+//
+// If this ever fails with $x reported as SARGed, the fold has silently
+// regressed to alias granularity.
+func TestCollectSargedComparisons_IntersectionFoldsComparisonsNotAliases(t *testing.T) {
+	t.Parallel()
+
+	binding := values.NamedCorrelationIdentifier("x")
+	base := values.NewQuantifiedObjectValue(binding)
+	// Two distinct comparands, both correlated to the one binding.
+	field0 := values.NewFieldValue(base, "F0", values.UnknownType)
+	field1 := values.NewFieldValue(base, "F1", values.UnknownType)
+
+	// Guard the premise rather than assuming it: the operands must really be
+	// unequal and must really both carry the binding, or the test would pass
+	// for the wrong reason.
+	if values.SemanticEqualsUnderAliasMap(field0, field1, nil) {
+		t.Fatal("premise broken: the two comparands compare equal, so the shape does not distinguish the granularities")
+	}
+	for name, operand := range map[string]values.Value{"F0": field0, "F1": field1} {
+		cmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
+		if _, ok := cmp.GetCorrelatedTo()[binding]; !ok {
+			t.Fatalf("premise broken: comparand %s is not correlated to the binding", name)
+		}
+	}
+
+	intersectionOf := func(t *testing.T, leftOperand, rightOperand values.Value) plans.RecordQueryPlan {
+		t.Helper()
+		left := plans.NewRecordQueryIndexPlan("idx_left",
+			[]*predicates.ComparisonRange{rungEqualityRange(t, leftOperand)},
+			[]string{"T"}, values.UnknownType, false)
+		right := plans.NewRecordQueryIndexPlan("idx_right",
+			[]*predicates.ComparisonRange{rungEqualityRange(t, rightOperand)},
+			[]string{"T"}, values.UnknownType, false)
+		return plans.NewRecordQueryIntersectionPlanFromQuantifiers(
+			[]expressions.Quantifier{
+				expressions.NewPhysicalQuantifier(expressions.InitialOf(left)),
+				expressions.NewPhysicalQuantifier(expressions.InitialOf(right)),
+			}, nil)
+	}
+
+	t.Run("different comparands, same alias", func(t *testing.T) {
+		t.Parallel()
+		intersection := intersectionOf(t, field0, field1)
+
+		if _, ok := collectSargedAliases(intersection)[binding]; ok {
+			t.Error("binding counted as SARGed: no comparison survives the intersection fold, " +
+				"so the fold has regressed from comparison granularity to alias granularity")
+		}
+		inJoin := plans.NewRecordQueryInJoinPlan(intersection, "x", false, false)
+		if penalty, applicable := compareInOperator(inJoin); !applicable || penalty != 1 {
+			t.Errorf("compareInOperator = (%d, %v), want (1, true) — an IN-plan whose "+
+				"binding is not a search argument on the intersection must be penalised",
+				penalty, applicable)
+		}
+	})
+
+	// Positive control: the same two legs carrying the SAME comparison must
+	// still count as SARGed, so the assertion above cannot pass merely because
+	// the fold started returning nothing.
+	t.Run("same comparand on both legs", func(t *testing.T) {
+		t.Parallel()
+		intersection := intersectionOf(t, field0, field0)
+
+		if _, ok := collectSargedAliases(intersection)[binding]; !ok {
+			t.Error("binding not counted as SARGed although both legs carry the same comparison")
+		}
+		inJoin := plans.NewRecordQueryInJoinPlan(intersection, "x", false, false)
+		if penalty, applicable := compareInOperator(inJoin); !applicable || penalty != 0 {
+			t.Errorf("compareInOperator = (%d, %v), want (0, true)", penalty, applicable)
+		}
+	})
+}
+
+// TestCollectSargedComparisons_PrimaryScanCountsAsSarg pins the coverage half
+// of the collector: comparisons are read off every ScanComparisonProvider, so a
+// binding that became a search argument on a PRIMARY scan counts exactly as one
+// on an index scan does. Java's visitor reads them off every
+// RecordQueryPlanWithComparisons and RecordQueryScanPlan is one.
+//
+// The dimension matters more than it looks. While the collector inspected index
+// plans only, `WHERE pk IN (...) ORDER BY pk` — an ordinary shape — had its
+// IN-plan penalised for a binding that WAS bounding the scan, and the penalty
+// pushed the planner onto a plan needing a redundant in-memory sort. Nothing in
+// the suite failed: no unit test built a SARGed primary scan under an IN-plan,
+// and the corpus only recorded the worse plan as the expected one.
+func TestCollectSargedComparisons_PrimaryScanCountsAsSarg(t *testing.T) {
+	t.Parallel()
+
+	binding := values.NamedCorrelationIdentifier("x")
+	operand := values.NewQuantifiedObjectValue(binding)
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		WithScanComparisons([]*predicates.ComparisonRange{rungEqualityRange(t, operand)})
+
+	// Premise guard: the scan really does carry an equality on the binding, so
+	// a failure below means the collector skipped it rather than that the
+	// fixture never had it.
+	if got := comparisonsFromRanges(scan.GetScanComparisons()); len(got) != 1 {
+		t.Fatalf("premise broken: the scan carries %d comparisons, want 1", len(got))
+	}
+
+	if _, ok := collectSargedAliases(scan)[binding]; !ok {
+		t.Error("a primary scan's equality on the binding is not counted as a search argument")
+	}
+	inJoin := plans.NewRecordQueryInJoinPlan(scan, "x", false, false)
+	if penalty, applicable := compareInOperator(inJoin); !applicable || penalty != 0 {
+		t.Errorf("compareInOperator = (%d, %v), want (0, true) — the binding bounds the "+
+			"primary scan, so the IN-plan must not be penalised", penalty, applicable)
+	}
+}
+
+// TestCollectSargedComparisons_NodeComparisonsUnionWithChildren pins the other
+// half of evaluateAtExpression: a node contributes its OWN comparisons IN
+// ADDITION TO its children's, rather than either shadowing the other.
+//
+// No Go plan carries scan comparisons above a child today — index and primary
+// scans are both leaves — so the union and an own-comparisons-only early return
+// are indistinguishable on every plan the planner builds. That is exactly why
+// the early return survived: it is a structural divergence from Java that no
+// reachable plan can expose. This builds the shape directly.
+func TestCollectSargedComparisons_NodeComparisonsUnionWithChildren(t *testing.T) {
+	t.Parallel()
+
+	childAlias := values.NamedCorrelationIdentifier("child")
+	parentAlias := values.NamedCorrelationIdentifier("parent")
+
+	index := plans.NewRecordQueryIndexPlan("idx",
+		[]*predicates.ComparisonRange{rungEqualityRange(t, values.NewQuantifiedObjectValue(childAlias))},
+		[]string{"T"}, values.UnknownType, false)
+	// A fetch over the index scan, itself carrying a comparison — the "node with
+	// both children and own comparisons" shape Java's evaluateAtExpression
+	// handles and no Go plan currently produces.
+	parent := &comparisonBearingWrapper{
+		RecordQueryPlan: plans.NewRecordQueryFetchFromPartialRecordPlan(
+			index, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey),
+		ranges: []*predicates.ComparisonRange{
+			rungEqualityRange(t, values.NewQuantifiedObjectValue(parentAlias)),
+		},
+	}
+
+	got := collectSargedAliases(parent)
+	if _, ok := got[childAlias]; !ok {
+		t.Error("child's comparison was dropped — the node's own comparisons shadowed its children's")
+	}
+	if _, ok := got[parentAlias]; !ok {
+		t.Error("node's own comparison was dropped — the children's comparisons shadowed its own")
+	}
+}
+
+// comparisonBearingWrapper is a plan with BOTH quantifiers and its own scan
+// comparisons. It exists only so the union in evaluateAtExpression can be
+// asserted; every production Go plan that carries scan comparisons is a leaf.
+type comparisonBearingWrapper struct {
+	plans.RecordQueryPlan
+	ranges []*predicates.ComparisonRange
+}
+
+func (w *comparisonBearingWrapper) GetScanComparisons() []*predicates.ComparisonRange {
+	return w.ranges
 }
 
 func TestPlanningCostModel_CoveringEqualityIndexPreferredOverPrimaryScan(t *testing.T) {
@@ -891,5 +1092,99 @@ func TestPlanningCostModel_AggregateIndexBeatsStreamingAgg(t *testing.T) {
 	}
 	if PlanningCostModelLess(streamingAgg, aggIdx) {
 		t.Fatal("streaming agg should not be cheaper than aggregate index")
+	}
+}
+
+// TestPlanningCostModelLess_InMemorySortCount_FewerNestedSortsWins is the
+// standalone regression pin for the promoted inMemorySortCount rung
+// (planning_cost_model.go, right after comparePrimaryScanVsIndexScan): among
+// two candidates tied on every earlier ORDINAL criterion, the one carrying
+// FEWER in-memory sorts wins — and it must win BECAUSE this ordinal rung
+// fired, not merely because the scalar-cost fallback happens to agree.
+//
+// The rung is reachable ONLY when both candidates carry >=1 sort with
+// DIFFERENT counts: primaryVsIndexRankOf (criterion #7,
+// comparePrimaryScanVsIndexScan) collapses EVERY sort-bearing plan to
+// primaryVsIndexTierSorted regardless of how many sorts it carries, so a
+// 0-vs-1 pair is already decided at #7 (Unencumbered beats Sorted) and never
+// reaches this rung — only a >=1-vs->=1 pair with unequal counts falls
+// through to it. Two nested RecordQueryInMemorySortPlans (a sort of a sort —
+// contrived, but exactly what inMemorySortCount=2 requires) over an
+// otherwise-identical scan is the smallest construction that reaches this
+// exact slot: every earlier rung (physical, cardinality, residuals,
+// data-access count, recursive CTE, join ordering, IN-plan, #7's tier) ties
+// on two bare unbound scans, so this is the FIRST rung capable of telling
+// them apart.
+//
+// A naive version of this test (both scans over the SAME record type, so
+// their scalar EstimateCost also happens to grow with sort count) does NOT
+// kill a mutant that disables this rung: InMemorySortCost adds a strictly
+// positive n*log(n) CPU term per sort, so the Go-statistics scalar-cost
+// fallback (the very next tiebreak slot) independently agrees "fewer sorts
+// is cheaper" for ANY same-cardinality pair — the two rungs' verdicts always
+// coincide, so disabling the ordinal one is invisible. This test instead
+// uses record types with WILDLY different configured cardinalities (a
+// "SMALL" type under the 2-sort candidate, orders of magnitude cheaper than
+// the unconfigured "BIG" type's LeafScanCardinality default under the 1-sort
+// candidate) so the scalar fallback's verdict is the OPPOSITE of the ordinal
+// rung's: fewer-sorts-wins only survives if the ordinal rung actually fires
+// before the scalar fallback is ever consulted.
+func TestPlanningCostModelLess_InMemorySortCount_FewerNestedSortsWins(t *testing.T) {
+	t.Parallel()
+
+	oneSort := plans.NewRecordQueryInMemorySortPlan(
+		plans.NewRecordQueryScanPlan([]string{"BIG"}, values.UnknownType, false), nil)
+	twoSorts := plans.NewRecordQueryInMemorySortPlan(
+		plans.NewRecordQueryInMemorySortPlan(
+			plans.NewRecordQueryScanPlan([]string{"SMALL"}, values.UnknownType, false), nil), nil)
+
+	opsOne := findExpressionsByType(oneSort, nil, nil)
+	opsTwo := findExpressionsByType(twoSorts, nil, nil)
+	if opsOne.inMemorySortCount != 1 {
+		t.Fatalf("oneSort.inMemorySortCount = %d, want 1", opsOne.inMemorySortCount)
+	}
+	if opsTwo.inMemorySortCount != 2 {
+		t.Fatalf("twoSorts.inMemorySortCount = %d, want 2", opsTwo.inMemorySortCount)
+	}
+
+	// Precondition: every criterion EARLIER than the inMemorySortCount rung
+	// must tie, or the test would pass without ever exercising it. Record
+	// type NAME feeds only the scalar cost fallback (via stats lookup), not
+	// any ordinal criterion, so "BIG" vs "SMALL" does not disturb these.
+	if opsOne.scanCount != opsTwo.scanCount {
+		t.Fatalf("scanCount precondition: %d vs %d, want equal", opsOne.scanCount, opsTwo.scanCount)
+	}
+	rankOne := primaryVsIndexRankOf(oneSort, opsOne, PreferScan)
+	rankTwo := primaryVsIndexRankOf(twoSorts, opsTwo, PreferScan)
+	if rankOne.tier != primaryVsIndexTierSorted || rankTwo.tier != primaryVsIndexTierSorted {
+		t.Fatalf("precondition: both candidates must land in the Sorted tier, got %d and %d",
+			rankOne.tier, rankTwo.tier)
+	}
+	if comparePrimaryVsIndexRank(rankOne, rankTwo) != 0 {
+		t.Fatalf("precondition: criterion #7 must tie a 1-sort and a 2-sort candidate " +
+			"(both Sorted-tier) — test no longer isolates the inMemorySortCount rung")
+	}
+
+	// Adversarial statistics: "SMALL" is configured far cheaper than "BIG"'s
+	// unconfigured LeafScanCardinality default, so the scalar-cost fallback
+	// alone would pick twoSorts (the 2-sort, SMALL-typed candidate) despite
+	// its extra sort — the OPPOSITE of what the ordinal rung must decide.
+	stats := properties.MapStatistics{PerType: map[string]float64{"SMALL": 1}}
+	costLess := NewPlanningCostModelLessWithContext(stats, nil)
+
+	costOne := properties.EstimateCostWith(oneSort, stats)
+	costTwo := properties.EstimateCostWith(twoSorts, stats)
+	if !costTwo.Less(costOne) {
+		t.Fatalf("adversarial-stats precondition: scalar cost of twoSorts (%+v) must be LOWER than "+
+			"oneSort's (%+v), or this test cannot distinguish the ordinal rung firing from the scalar "+
+			"fallback agreeing by coincidence", costTwo, costOne)
+	}
+
+	if !costLess(oneSort, twoSorts) {
+		t.Error("PlanningCostModelLess(1 sort, 2 sorts) = false, want true (fewer in-memory sorts wins, " +
+			"even though the 2-sort candidate is scalar-cheaper)")
+	}
+	if costLess(twoSorts, oneSort) {
+		t.Error("PlanningCostModelLess(2 sorts, 1 sort) = true, want false")
 	}
 }

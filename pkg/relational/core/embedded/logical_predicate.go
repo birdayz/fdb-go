@@ -476,6 +476,14 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 	if errors.As(walkErr, &binErr) {
 		return api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
 	}
+	// A nested planner may deliberately carry the more specific
+	// UnsupportedQuery (0AF00) classification through a correlation wrapper.
+	// Preserve it before the generic CorrelatedExistsError fallback maps
+	// message-only unsupported shapes to UnsupportedOperation (0A000).
+	var carriedAPI *api.Error
+	if errors.As(walkErr, &carriedAPI) && carriedAPI.Code == api.ErrCodeUnsupportedQuery {
+		return carriedAPI
+	}
 	var corrExistsErr *CorrelatedExistsError
 	if errors.As(walkErr, &corrExistsErr) {
 		// Every GENUINE semantic resolution error (Ambiguous / ColumnNotFound /
@@ -2558,9 +2566,18 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		if herr := upgradeHavingPredicate(op, sq, md, schemaName, cteScopes, existsPlanner); herr != nil {
 			return nil, herr
 		}
+		// HAVING has no per-group correlated-scalar quantifier lowering yet.
+		// Never let the freshly minted alias escape unattached into runtime
+		// evaluation (an UnboundScalarSubqueryError on valid SQL).
+		if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"correlated scalar subquery in a HAVING predicate is not supported")
+		}
 	}
 
-	upgradeSortKeyValues(op, sq, md, schemaName, cteScopes)
+	if err := upgradeSortKeyValues(op, sq, md, schemaName, cteScopes); err != nil {
+		return nil, err
+	}
 
 	// A BARE ORDER BY sort key that binds to a lateral-unnest SHADOWING source
 	// (`FROM t, t.arr AS v, …`) must sort by the key QUALIFIED to the unnest
@@ -2667,7 +2684,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	// or scalar), use it directly. The buildWherePredicate functions
 	// build their own resolvers without a SubqueryPlanner — they'd
 	// decline these shapes and fall back to text, losing the plans.
-	hasSubqueries := existsPlanner != nil && (len(existsPlanner.subqueries) > 0 || len(existsPlanner.scalarSubqueries) > 0)
+	hasSubqueries := existsPlanner != nil &&
+		(len(existsPlanner.subqueries) > 0 ||
+			len(existsPlanner.scalarSubqueries) > 0 ||
+			len(existsPlanner.correlatedScalarSubqueries) > 0)
 	if hasSubqueries && preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
 
@@ -2679,12 +2699,26 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				"EXISTS within an OR (disjunction) is not supported")
 		}
 
-		_ = upgradeFirstFilter(op, pred)
+		if installErr := installFirstWherePredicate(op, pred); installErr != nil {
+			return nil, installErr
+		}
 		if len(existsPlanner.subqueries) > 0 {
-			upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+			if !upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE subqueries could not be installed on the logical plan")
+			}
 		}
 		if len(existsPlanner.scalarSubqueries) > 0 {
-			upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
+			if !upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE scalar subqueries could not be installed on the logical plan")
+			}
+		}
+		if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+			if !upgradeFirstFilterCorrelatedScalarSubqueries(op, existsPlanner.correlatedScalarSubqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE correlated scalar subqueries could not be installed on the logical plan")
+			}
 		}
 		return op, nil
 	}
@@ -2721,7 +2755,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	if !ok {
 		return op, nil
 	}
-	_ = upgradeFirstFilter(op, pred)
+	if installErr := installFirstWherePredicate(op, pred); installErr != nil {
+		return nil, installErr
+	}
 	op = wrapGlobalRankVectorLimit(op, pred)
 	return op, nil
 }
@@ -3320,6 +3356,26 @@ func upgradeFirstFilterScalarSubqueries(op logical.LogicalOperator, subqueries [
 	return false
 }
 
+// upgradeFirstFilterCorrelatedScalarSubqueries attaches correlated scalar
+// plans to the WHERE filter that owns their ScalarSubqueryValue references.
+// Unlike uncorrelated scalars these plans are not pre-evaluated: the Cascades
+// translator materializes each scalar per outer row through the strict
+// LEFT-scalar join lowering.
+func upgradeFirstFilterCorrelatedScalarSubqueries(op logical.LogicalOperator, subqueries []logical.CorrelatedScalarSubquery) bool {
+	for cur := op; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			f.CorrelatedScalarSubqueries = subqueries
+			return true
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			return false
+		}
+		cur = ch[0]
+	}
+	return false
+}
+
 // upgradeFirstFilter walks the single-child chain from op and, at
 // the first LogicalFilter, sets Predicate. Stops at the first
 // non-unary node. Returns true when a Filter was found and upgraded.
@@ -3336,6 +3392,23 @@ func upgradeFirstFilter(op logical.LogicalOperator, pred predicates.QueryPredica
 		cur = ch[0]
 	}
 	return false
+}
+
+// installFirstWherePredicate is the checked form of upgradeFirstFilter for
+// WHERE-bearing production builders. Those builders create a LogicalFilter
+// before adding unary SELECT shells; if that structural invariant ever drifts,
+// fail closed with a typed SQL error instead of returning a logical tree whose
+// text-only filter cannot be translated.
+func installFirstWherePredicate(op logical.LogicalOperator, pred predicates.QueryPredicate) error {
+	if pred == nil {
+		return api.NewError(api.ErrCodeUnsupportedQuery,
+			"WHERE predicate could not be constructed")
+	}
+	if !upgradeFirstFilter(op, pred) {
+		return api.NewError(api.ErrCodeUnsupportedQuery,
+			"WHERE predicate could not be installed on the logical plan")
+	}
+	return nil
 }
 
 // upgradeProjectionValues walks the unary spine from op to find the
@@ -3363,6 +3436,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 			resolver.SetSubqueryPlanner(subqPlanner)
 		}
 		vals := make([]values.Value, len(proj.Projections))
+		copy(vals, proj.ProjectedValues)
 		agg := findAggregate(op)
 		var groupKeyExplains map[string]values.Value
 		if agg != nil && len(agg.GroupKeys) > 0 {
@@ -3378,11 +3452,21 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 			}
 		}
 		aggSlots := make([]bool, len(proj.Projections))
+		if agg != nil && len(proj.AggregateOutputOrdinals) == len(proj.Projections) {
+			for i, ordinal := range proj.AggregateOutputOrdinals {
+				aggSlots[i] = ordinal >= len(agg.GroupKeys)
+				if ordinal >= 0 {
+					typ := aggregateNativeOutputType(agg, ordinal)
+					vals[i] = values.NewFieldValueWithResolvedOrdinal(
+						aggregateNativeOutputName(agg, ordinal), ordinal, typ)
+				}
+			}
+		}
 		for i, e := range sq.postAggExprs {
 			if i >= len(vals) || e == nil {
 				continue
 			}
-			if groupKeyExplains != nil {
+			if groupKeyExplains != nil && len(proj.AggregateOutputOrdinals) != len(proj.Projections) {
 				projText := strings.ToUpper(strings.TrimSpace(canonicalTextOf(e)))
 				if ref, ok := groupKeyExplains[projText]; ok {
 					vals[i] = ref
@@ -3401,7 +3485,14 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 				continue
 			}
 			aggSlots[i] = containsAggregate(v) // pre-rewrite: aggregate nodes still present
-			v = rewriteAggregateValuesInTree(v)
+			if len(proj.AggregateOutputOrdinals) == len(proj.Projections) {
+				v, err = bindPostAggregateValueToNativeOrdinals(v, agg)
+				if err != nil {
+					return err
+				}
+			} else {
+				v = rewriteAggregateValuesInTree(v)
+			}
 			vals[i] = v
 		}
 		// Unifying post-aggregate rebase: a computed projection over
@@ -3412,8 +3503,10 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		// bare aggregate-output name — the SAME aggregateGroupKeyOutputName the
 		// ORDER-BY rebase uses — so the projection reads the element, not a missing
 		// `V.V` key (→ NULL). RFC-142.
-		for i := range vals {
-			vals[i] = rebasePostAggregateGroupKeyValue(vals[i], agg)
+		if len(proj.AggregateOutputOrdinals) != len(proj.Projections) {
+			for i := range vals {
+				vals[i] = rebasePostAggregateGroupKeyValue(vals[i], agg)
+			}
 		}
 		proj.ProjectedValues = vals
 		proj.AggregateSlots = aggSlots
@@ -3481,6 +3574,48 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 	proj.ProjectedValues = vals
 	proj.AggregateSlots = aggSlots
 	return nil
+}
+
+func aggregateNativeOutputType(agg *logical.LogicalAggregate, ordinal int) values.Type {
+	if agg == nil || ordinal < 0 {
+		return values.UnknownType
+	}
+	if ordinal < len(agg.GroupKeys) {
+		if v := agg.GroupKeys[ordinal].Value; v != nil && v.Type() != nil {
+			return v.Type()
+		}
+		return values.UnknownType
+	}
+	callIdx := ordinal - len(agg.GroupKeys)
+	if callIdx < 0 || callIdx >= len(agg.Calls) {
+		return values.UnknownType
+	}
+	var operand []values.Value
+	if callIdx < len(agg.AggregateOperands) {
+		operand = []values.Value{agg.AggregateOperands[callIdx]}
+	}
+	return aggregateCallOutputType(agg.Calls[callIdx], operand)
+}
+
+func aggregateNativeOutputName(agg *logical.LogicalAggregate, ordinal int) string {
+	if agg == nil || ordinal < 0 {
+		return ""
+	}
+	if ordinal < len(agg.GroupKeys) {
+		key := agg.GroupKeys[ordinal]
+		if key.Value != nil {
+			return aggregateGroupKeyOutputName(key.Value)
+		}
+		if key.Bare != "" {
+			return strings.ToUpper(key.Bare)
+		}
+		return strings.ToUpper(key.Display)
+	}
+	callIdx := ordinal - len(agg.GroupKeys)
+	if callIdx < 0 || callIdx >= len(agg.Calls) {
+		return ""
+	}
+	return strings.ToUpper(agg.Calls[callIdx].CanonicalName())
 }
 
 // isCascadesSafeValue checks whether v's tree contains only Value types
@@ -3672,6 +3807,27 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 				filled = true
 				continue
 			}
+			// A qualified reference over ONE source resolves to the same
+			// childless source-relative bake as its unqualified twin: the
+			// qualifier is redundant once the scope proves there is no leg
+			// choice. resolveQualifiedBaked intentionally accepts only
+			// QOV-addressed multi-source references, so retain this exact
+			// single-source result explicitly. On a join, childless would lose
+			// the defining leg and remains forbidden.
+			if len(sq.joins) == 0 {
+				rv, rerr := resolver.ResolveIdentifier(qualID, semantic.FromNormalized(ref.bare()))
+				if rerr == nil {
+					if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
+						keyValues[i] = fv
+						filled = true
+						continue
+					}
+				}
+				var unresKey *expr.UnresolvableOrdinalError
+				if errors.As(rerr, &unresKey) {
+					return unresKey
+				}
+			}
 		}
 		qv, ok, err := resolver.ResolveColumnShadowingQualified(qualID, semantic.FromNormalized(ref.bare()))
 		if err == nil && ok {
@@ -3848,6 +4004,18 @@ func rewriteAggregateValuesInTree(v values.Value) values.Value {
 	if cv, ok := v.(*values.CastValue); ok {
 		return values.NewCastValue(rewriteAggregateValuesInTree(cv.Child), cv.Target)
 	}
+	// A machine-inserted PromoteValue (expr.promoteColumnColumnNumeric,
+	// RelOpValue's Java analogue: `HAVING SUM(int_col) > 5.5` rewrites to
+	// PromoteValue(SUM(int_col), DOUBLE) > 5.5) can wrap an AggregateValue
+	// exactly like CastValue can — without this case the aggregate stayed
+	// buried one level down, unrewritten, and reached AggregateValue.Evaluate
+	// at row time via the residual filter path (which always errors — an
+	// aggregate has no per-row scalar semantics), turning a legal
+	// `HAVING aggregate > scalar-subquery` of mismatched numeric types into
+	// "42803: aggregate function is not allowed here".
+	if pv, ok := v.(*values.PromoteValue); ok {
+		return values.NewPromoteValue(rewriteAggregateValuesInTree(pv.Child), pv.Target)
+	}
 	if pv, ok := v.(*values.PickValue); ok {
 		alts := make([]values.Value, len(pv.Alternatives))
 		for i, a := range pv.Alternatives {
@@ -3868,6 +4036,153 @@ func rewriteAggregateValuesInTree(v values.Value) values.Value {
 		return ph
 	}
 	return v
+}
+
+// bindPostAggregateValueToNativeOrdinals rewrites a computed SELECT item over a
+// grouped row while producer identity is still structural. AggregateValue nodes
+// bind only to aggregate-call slots; group-key Values bind only to key slots.
+// This must run before aggregate aliases are rendered as FieldValue names:
+// `SUM(v) AS a` and group key `a` intentionally share a label but never a slot.
+func bindPostAggregateValueToNativeOrdinals(v values.Value, agg *logical.LogicalAggregate) (values.Value, error) {
+	if v == nil || agg == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"post-aggregate expression has no aggregate output layout")
+	}
+
+	var bindErr error
+	bound := values.Replace(v, func(node values.Value) values.Value {
+		if bindErr != nil {
+			return node
+		}
+		if av, ok := node.(*values.AggregateValue); ok {
+			var matches []int
+			for i, call := range agg.Calls {
+				if av.Op == values.AggCountStar {
+					if call.Star {
+						matches = append(matches, i)
+					}
+					continue
+				}
+				if call.Star || !strings.EqualFold(call.Func, av.Op.Symbol()) {
+					continue
+				}
+				if i < len(agg.AggregateOperands) && agg.AggregateOperands[i] != nil &&
+					values.SemanticEqualsUnderAliasMap(av.Operand, agg.AggregateOperands[i], values.AliasMap{}) {
+					matches = append(matches, i)
+				}
+			}
+			// A catalog-free or constant call may not carry a resolved
+			// AggregateOperands entry. Canonical call identity is a safe
+			// fallback only when it selects one result shape.
+			if len(matches) == 0 {
+				want := normalizeAggregateBindingName(canonicalAggName(av.Op.Symbol(), av.Operand))
+				for i, call := range agg.Calls {
+					if normalizeAggregateBindingName(call.CanonicalName()) == want {
+						matches = append(matches, i)
+					}
+				}
+			}
+			if len(matches) == 0 {
+				bindErr = api.NewError(api.ErrCodeUnsupportedQuery,
+					"post-aggregate expression could not bind an aggregate call to the native output row")
+				return node
+			}
+			// Repeated identical aggregate calls are value-equivalent; the
+			// first native slot is a deterministic, semantics-preserving bind.
+			ordinal := len(agg.GroupKeys) + matches[0]
+			return values.NewFieldValueWithResolvedOrdinal(
+				agg.Calls[matches[0]].CanonicalName(), ordinal, av.Type())
+		}
+
+		// Pre-order matching binds a whole computed GROUP BY expression before
+		// considering any of its leaves.
+		keyMatch := -1
+		for i, key := range agg.GroupKeys {
+			if key.Value != nil &&
+				(values.SemanticEqualsUnderAliasMap(node, key.Value, values.AliasMap{}) ||
+					fieldValueMatchesAggregateGroupKey(node, key.Value, agg)) {
+				keyMatch = i
+				break
+			}
+		}
+		if keyMatch >= 0 {
+			return values.NewFieldValueWithResolvedOrdinal(
+				aggregateGroupKeyOutputName(agg.GroupKeys[keyMatch].Value), keyMatch, node.Type())
+		}
+		if _, isField := node.(*values.FieldValue); isField {
+			// This is an ORIGINAL resolver reference: replacement roots are
+			// not revisited by values.Replace. If it was neither consumed as
+			// an aggregate operand nor matched as a complete grouping-key
+			// subtree, its source-relative ordinal has no meaning on the
+			// private aggregate row. Even an ordinal that happens to fall
+			// within nativeWidth would be a coincidental, silently wrong
+			// reinterpretation.
+			bindErr = api.NewError(api.ErrCodeUnsupportedQuery,
+				"post-aggregate expression references a field outside the aggregate output contract")
+			return node
+		}
+		return node
+	})
+	if bindErr != nil {
+		return nil, bindErr
+	}
+	return bound, nil
+}
+
+// fieldValueMatchesAggregateGroupKey recognizes the one safe representation
+// difference semantic equality preserves: a qualified read over a single
+// source carries QOV(source), while the same source's GROUP BY key may already
+// have had that redundant qualifier stripped. Resolved path and defining source
+// still have to prove identical; a multi-source aggregate never gets this
+// childless/qualified relaxation.
+func fieldValueMatchesAggregateGroupKey(candidate, key values.Value, agg *logical.LogicalAggregate) bool {
+	cf, cok := candidate.(*values.FieldValue)
+	kf, kok := key.(*values.FieldValue)
+	if !cok || !kok || cf.Resolved == nil || kf.Resolved == nil ||
+		len(cf.Resolved.Accessors) == 0 ||
+		len(cf.Resolved.Accessors) != len(kf.Resolved.Accessors) {
+		return false
+	}
+	for i := range cf.Resolved.Accessors {
+		ca, ka := cf.Resolved.Accessors[i], kf.Resolved.Accessors[i]
+		if ca.Ordinal != ka.Ordinal {
+			return false
+		}
+		if ca.Field != "" && ka.Field != "" && !strings.EqualFold(ca.Field, ka.Field) {
+			return false
+		}
+	}
+	cq, cHasQOV := cf.Child.(*values.QuantifiedObjectValue)
+	kq, kHasQOV := kf.Child.(*values.QuantifiedObjectValue)
+	switch {
+	case cf.Child == nil && kf.Child == nil:
+		// Childless resolved ordinals are source-relative. They identify a
+		// producer field only when there is exactly one possible inner source.
+		return len(innerSourceAliases(agg.Input)) == 1
+	case cf.Child != nil && kf.Child != nil:
+		return cHasQOV && kHasQOV &&
+			strings.EqualFold(cq.Correlation.Name(), kq.Correlation.Name())
+	default:
+		var qualified *values.QuantifiedObjectValue
+		switch {
+		case cHasQOV && kf.Child == nil:
+			qualified = cq
+		case kHasQOV && cf.Child == nil:
+			qualified = kq
+		default:
+			return false
+		}
+		aliases := innerSourceAliases(agg.Input)
+		if len(aliases) != 1 {
+			return false
+		}
+		_, sameSource := aliases[strings.ToUpper(qualified.Correlation.Name())]
+		return sameSource
+	}
+}
+
+func normalizeAggregateBindingName(s string) string {
+	return strings.ReplaceAll(strings.ToUpper(s), " ", "")
 }
 
 // canonicalAggName is the single canonicaliser for an aggregate's result-row
@@ -4099,6 +4414,55 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 		}
 	}
 
+	// ORDER BY over a grouped row obeys the same coverage rule as HAVING.
+	// Validate it before exact native-slot binding so an ungrouped source
+	// reference remains the user-facing 42803 error, not an internal 0AF00
+	// contract failure. Aggregate operands are skipped by this walk, while a
+	// unique bare output alias wins before source-column interpretation.
+	if len(sq.orderBy) > 0 {
+		groupByColumns := make(map[string]bool)
+		for _, gb := range sq.groupBy {
+			if gb.expr != nil {
+				for _, c := range harvestBareColumnRefsOutsideSubqueries(gb.expr) {
+					groupByColumns[strings.ToUpper(c)] = true
+				}
+				continue
+			}
+			groupByColumns[parseColRef(strings.ToUpper(gb.display)).bare()] = true
+			if gb.qualified {
+				groupByColumns[strings.ToUpper(gb.bare)] = true
+			}
+		}
+		for _, ob := range sq.orderBy {
+			if ob.pos > 0 || ob.rawExpr == nil {
+				continue
+			}
+			if bare, n := orderByOutputAliasBinding(ob.rawExpr, ob.colName, sq); bare && n == 1 {
+				continue
+			}
+			for _, ref := range harvestBareColumnRefsOutsideSubqueries(ob.rawExpr) {
+				bare := strings.ToUpper(ref)
+				if groupByColumns[bare] {
+					continue
+				}
+				if tableFields != nil && tableFields[bare] {
+					diagnosticRef := ref
+					// The structural harvester deliberately returns bare
+					// segments so delimited identifiers containing dots are
+					// never re-split. For a direct plain ORDER BY reference we
+					// already carry its parse-derived qualifier separately;
+					// restore that source spelling for the user-facing 42803
+					// diagnostic without using it as binding identity.
+					if ob.qualified && strings.EqualFold(ob.bare, ref) {
+						diagnosticRef = ob.qualifier + "." + ob.bare
+					}
+					return api.NewErrorf(api.ErrCodeGroupingError,
+						"column %q must appear in the GROUP BY clause or be used in an aggregate function", diagnosticRef)
+				}
+			}
+		}
+	}
+
 	if len(sq.aggCols) > 0 {
 		for _, ac := range sq.aggCols {
 			if ac.aggFunc != "" || !ac.visible {
@@ -4290,7 +4654,9 @@ func buildLogicalPlanForDeleteWithCatalog(
 	if !ok {
 		return op, nil
 	}
-	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
+	if installErr := installFirstWherePredicate(op, pred); installErr != nil {
+		return nil, installErr
+	}
 	return op, nil
 }
 
@@ -4385,26 +4751,44 @@ func upgradeDMLWhereWithCatalog(
 		if errors.As(err, &colNF) || errors.As(err, &ambig) || errors.As(err, &srcNF) {
 			return false, mapPredicateWalkError(err)
 		}
-		// A specific carried SQLSTATE from a subquery PLAN failure (the EXISTS inner build
-		// returned an *api.Error, e.g. WRONG_OBJECT_TYPE for an AT-on-a-table source) takes
-		// precedence over the text fallback. Gate on the WHERE actually containing an EXISTS
-		// atom: that is the one shape the plain text builder cannot plan AT ALL, so the
-		// catalog path's error is authoritative — for a plain comparison WHERE the text
-		// fallback may still succeed, and swallowing a generic api error here preserves that.
+		// A specific carried SQLSTATE from a subquery PLAN failure (an EXISTS inner
+		// build, or a scalar build rejecting LIMIT > 1 / DISTINCT / a window)
+		// takes precedence over the text fallback. Gate on the WHERE actually
+		// containing either subquery atom: those are precisely the shapes the
+		// plain text builder cannot plan, so the catalog path's error is
+		// authoritative. For a plain comparison WHERE the text fallback may still
+		// succeed, and swallowing a generic api error here preserves that.
 		var apiErr *api.Error
-		if errors.As(err, &apiErr) && expr.ContainsExistsAtom(whereExpr.Expression()) {
+		hasSubqueryAtom := expr.ContainsExistsAtom(whereExpr.Expression()) ||
+			expr.ContainsSubqueryAtom(whereExpr.Expression())
+		if errors.As(err, &apiErr) && hasSubqueryAtom {
 			return false, apiErr
 		}
 		return false, nil
 	}
-	if !upgradeFirstFilter(op, predicates.SimplifyPredicateValues(walked)) {
-		return false, nil
+	// The SELECT lowering hides its materialized scalar slot with an outer-only
+	// projection. DML consumes record identity directly, so that projection is
+	// not yet proven transparent to UPDATE/DELETE record+primary-key plumbing.
+	// Decline before attaching the carrier; never let DML fall into an unbound
+	// alias or a reshaped-record write.
+	if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+		return false, api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated scalar subquery in a DML WHERE predicate is not supported")
+	}
+	if installErr := installFirstWherePredicate(op, predicates.SimplifyPredicateValues(walked)); installErr != nil {
+		return false, installErr
 	}
 	if len(existsPlanner.subqueries) > 0 {
-		upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+		if !upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries) {
+			return false, api.NewError(api.ErrCodeUnsupportedQuery,
+				"WHERE subqueries could not be installed on the logical plan")
+		}
 	}
 	if len(existsPlanner.scalarSubqueries) > 0 {
-		upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
+		if !upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries) {
+			return false, api.NewError(api.ErrCodeUnsupportedQuery,
+				"WHERE scalar subqueries could not be installed on the logical plan")
+		}
 	}
 	return true, nil
 }
@@ -4507,7 +4891,9 @@ func buildLogicalPlanForUpdateWithCatalog(
 				return nil, werr
 			}
 			if ok {
-				_ = upgradeFirstFilter(op, pred)
+				if installErr := installFirstWherePredicate(op, pred); installErr != nil {
+					return nil, installErr
+				}
 			}
 		}
 	}
@@ -4592,91 +4978,8 @@ func buildLogicalPlanForInsertWithCatalog(
 	if upgraded != nil {
 		insertOp.Source = upgraded
 	}
-	wrapBareAggregateInsertSource(insertOp, sq)
 	alignInsertSelectColumns(insertOp, md)
 	return insertOp, nil
-}
-
-// wrapBareAggregateInsertSource fixes INSERT … SELECT … GROUP BY (RFC-084). A
-// plain GROUP BY SELECT builds a bare LogicalAggregate with NO Project (standalone
-// derives its schema from the physical plan), so its row datum is keyed by the
-// aggregate's own canonical column names (e.g. "G", "SUM(V)"). buildInsertRecord
-// maps by TARGET field name, finds none of them, and leaves every field unset —
-// so each grouped row collapses to the same all-default record (unset PK) and the
-// second group collides with the first → spurious 23505.
-//
-// Wrap the bare aggregate in the canonical post-aggregate Project (reusing the
-// same buildPostAggregateProjection the standalone builders use): visible-only,
-// canonical-named (matches the runtime datum key, not an alias), in SELECT order.
-// alignInsertSelectColumns (called next) then sets the target column aliases
-// positionally, so the projection re-keys the datum to the target names and
-// buildInsertRecord finds every field. The Project-source case (findProjection
-// non-nil) already aligns, so it's skipped here.
-//
-// Interim: RFC-079's builder unification moves this coercion into the Insert
-// expression and DELETES this wrap (one query path), not a third parallel path.
-func wrapBareAggregateInsertSource(insertOp *logical.LogicalInsert, sq *selectQuery) {
-	if insertOp == nil || insertOp.Source == nil || sq == nil {
-		return
-	}
-	if findProjection(insertOp.Source) != nil {
-		return
-	}
-	agg := findAggregate(insertOp.Source)
-	if agg == nil {
-		return
-	}
-	// A QUALIFIED aggregate operand or group key (e.g. `SUM(s.v)`) is a known
-	// SEPARATE defect on this insert-source path: the aggregate's operand is left
-	// unresolved (nil), so the aggregate computes NULL. Wrapping would align the
-	// (NULL) column and SILENTLY insert NULL; NOT wrapping leaves the original LOUD
-	// failure (unset PK → 23505). Until the qualified-operand resolution is fixed
-	// (follow-up), skip. A bare column's qualification is parse-tree truth
-	// (call.Qualified); a computed operand keeps the conservative
-	// canonical-text scan (its dots come from real qualified refs or quoted
-	// literals, and skipping only retains the loud path).
-	for _, call := range agg.Calls {
-		if call.BareColumn {
-			if call.Qualified {
-				return
-			}
-		} else if strings.Contains(call.Operand, ".") {
-			return
-		}
-	}
-	for _, k := range agg.GroupKeys {
-		if k.Qualified {
-			return
-		}
-	}
-	// A sole `SELECT COUNT(*)` is tracked as sq.countStar (NOT an aggCol — the
-	// parser sets the flag only when COUNT(*) is the single SELECT element), so it
-	// is invisible to buildPostAggregateProjection. Synthesize its column (in
-	// SELECT position, i.e. before any HAVING-only aggCols) so the bare COUNT(*)
-	// insert is aligned too — else its row keys on "COUNT(*)" and buildInsertRecord
-	// leaves the target unset (silently wrong, or a 23505 under GROUP BY).
-	aggCols := sq.aggCols
-	if sq.countStar {
-		cs := aggSelectCol{aggFunc: "COUNT", aggArg: "*", outName: sq.countStarAlias, visible: true}
-		aggCols = append([]aggSelectCol{cs}, aggCols...)
-	}
-	// Identity strip — matches the stripPrefix="" buildLogicalPlanForSelectWithCatalog
-	// used to name this base-table aggregate's columns, so the Project's canonical
-	// names match the runtime datum keys. (Qualified operands, where the runtime
-	// key diverges from this naming, are filtered out above.)
-	strip := func(s string) string { return s }
-	proj, _ := buildPostAggregateProjection(insertOp.Source, aggCols, strip)
-	if proj == nil {
-		return
-	}
-	// A bare aggregate carries no post-aggregate antlr expressions, so
-	// upgradeProjectionValues never fills these slots — fill them with canonical
-	// FieldValue references (upper-cased to match the runtime upper-cased datum keys).
-	proj.ProjectedValues = make([]values.Value, len(proj.Projections))
-	for i, name := range proj.Projections {
-		proj.ProjectedValues[i] = &values.FieldValue{Field: strings.ToUpper(name), Typ: values.UnknownType}
-	}
-	insertOp.Source = proj
 }
 
 // alignInsertSelectColumns sets the SELECT projection's output aliases to
@@ -4737,16 +5040,16 @@ func protoKindToValueType(k protoreflect.Kind) values.Type {
 // structurally-derived type, independent of whether the source produces any rows
 // (the empty-source axis).
 //
-// A projected aggregate appears in one of two shapes:
+// Every SQL aggregate source now has one final LogicalProject in SELECT-list
+// order. An aggregate-derived slot appears in one of two shapes:
 //   - a COMPUTED expression that CONTAINS an aggregate (e.g. AVG(v)+1) —
 //     flagged by LogicalProject.AggregateSlots (provenance, captured pre-rewrite)
 //     and reliably typed via the value's Type() (the aggregate reference carries
 //     its result type, B′; ArithmeticValue propagates it). Provenance, NOT
 //     type-presence: plain columns are concrete-typed too (ResolveIdentifier).
-//   - a BARE aggregate (e.g. SELECT AVG(v)) — the projection slot carries a nil
-//     ProjectedValue (the executor resolves it from the aggregate's output by
-//     name), so its type comes from the producing LogicalAggregate, looked up by
-//     the slot's canonical name.
+//   - a DIRECT aggregate (e.g. SELECT AVG(v)) — its exact projected Value carries
+//     the native aggregate result type. The canonical-name lookup below remains
+//     a defensive fallback for hand-built/legacy logical trees.
 //
 // Plain-column narrowing (LONG→INT, DOUBLE-col→INT) is NOT checked here — it
 // stays deferred to the runtime converter, pending the Java end-state
@@ -4754,12 +5057,9 @@ func protoKindToValueType(k protoreflect.Kind) values.Type {
 // with an explicit column list is rejected upstream, so the projection maps
 // positionally onto the target record's fields.
 //
-// Scope: covers sources with a LogicalProject (scalar aggregates, expressions
-// over aggregates, plain projections). A bare GROUP BY whose Source is a
-// LogicalAggregate DIRECTLY (no Project, e.g. INSERT … SELECT g, AVG(v) … GROUP
-// BY g) has no projection to read column order from, so it is deferred to the
-// PromoteValue follow-up (tracked in TODO.md) — its runtime converter still
-// rejects the non-empty case.
+// Scope: covers every SQL-built aggregate and ordinary projected source. A
+// direct hand-built LogicalAggregate has no public SELECT contract and is
+// conservatively outside this SQL-layer check.
 func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlayer.RecordMetaData) error {
 	proj := findProjection(insertOp.Source)
 	if proj == nil {
@@ -4769,10 +5069,8 @@ func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlaye
 	if rt == nil {
 		return nil
 	}
-	// Canonical aggregate output name → reliable result type, for the bare-
-	// aggregate case (nil ProjectedValue). CanonicalName reproduces the
-	// projection text up to case (both render from the same operand text,
-	// e.g. "AVG(V)"), and the lookup below upper-cases both sides.
+	// Canonical aggregate output name → reliable result type for a legacy or
+	// hand-built Project whose direct aggregate Value was not populated.
 	aggTypes := map[string]values.Type{}
 	if agg := findAggregate(insertOp.Source); agg != nil {
 		for j, call := range agg.Calls {
@@ -4810,14 +5108,14 @@ func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlaye
 }
 
 // aggResultTypeFromName derives an aggregate's result type from its canonical
-// output name (e.g. "AVG(V)", "SUM(PRICE)") and its resolved operand — the
-// single source for the bare-aggregate projection case, where no ProjectedValue
-// is present. AVG→DOUBLE and COUNT→LONG are function-determined; SUM/MIN/MAX
+// output function and its resolved operand. It is the defensive fallback for a
+// legacy/hand-built aggregate projection without a ProjectedValue. AVG→DOUBLE
+// and COUNT→LONG are function-determined; SUM/MIN/MAX
 // inherit the operand type. The function prefix is read off the *internal*
 // canonical name (the contract the executor's aggResultName also relies on), not
 // user SQL text. Mirrors AggregateValue.Type() / Java's per-operator resultTypeCode
 // — keep the two in sync until the PromoteValue follow-up (RFC-083) dissolves this
-// function (it exists only for the nil-ProjectedValue bare-aggregate path).
+// function.
 // Divergences from the shared javaAggregateResultCode table, deliberate
 // for METADATA (this function feeds ResultSet column types, not the
 // plan-time gates): COUNT reports NOT NULL (the metadata contract), and
@@ -5516,10 +5814,10 @@ func buildUnionRightBranchStrippingOrderBy(
 // key is an aggregate expression (SUM(v)*2, COALESCE(SUM(v),0)), the
 // walker produces a Value tree with AggregateValues rewritten to
 // FieldValues referencing the aggregate output.
-func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) {
+func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
 	sort := findSort(op)
 	if sort == nil || len(sort.Keys) == 0 {
-		return
+		return nil
 	}
 
 	// Build alias→column mapping from projections.
@@ -5624,6 +5922,10 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// aggregate reshaping strip below the sort, or a union), Pos survives
 	// untouched — those inputs ARE select-list carriers and the
 	// translator's Pos bake against them is the correct binding.
+	positionalKey := make([]bool, len(sort.Keys))
+	for i := range sort.Keys {
+		positionalKey[i] = sort.Keys[i].Pos > 0
+	}
 	if proj != nil && sortOwnedBySelect(proj, sort) {
 		for i := range sort.Keys {
 			pos := sort.Keys[i].Pos
@@ -5632,6 +5934,9 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			}
 			if proj.ProjectedValues != nil && pos-1 < len(proj.ProjectedValues) && proj.ProjectedValues[pos-1] != nil {
 				sort.Keys[i].Value = proj.ProjectedValues[pos-1]
+				if len(proj.AggregateOutputOrdinals) == len(proj.Projections) {
+					sort.Keys[i].AggregateOutputValueExact = true
+				}
 			} else {
 				sort.Keys[i].Expr = proj.Projections[pos-1]
 			}
@@ -5653,13 +5958,19 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		if idx, ok := aliasToIdx[upper]; ok && proj != nil && sort.Keys[i].BareRef {
 			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
 				sort.Keys[i].Value = proj.ProjectedValues[idx]
+				if len(proj.AggregateOutputOrdinals) == len(proj.Projections) {
+					sort.Keys[i].AggregateOutputValueExact = true
+				}
 			}
 		} else if idx, ok := colToIdx[upper]; ok && proj != nil && sort.Keys[i].Value == nil {
 			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
 				sort.Keys[i].Value = proj.ProjectedValues[idx]
+				if len(proj.AggregateOutputOrdinals) == len(proj.Projections) {
+					sort.Keys[i].AggregateOutputValueExact = true
+				}
 			}
 		}
-		if groupKeyExplainMap != nil {
+		if groupKeyExplainMap != nil && !sort.Keys[i].AggregateOutputValueExact {
 			if explain, ok := groupKeyExplainMap[strings.ToUpper(sort.Keys[i].Expr)]; ok {
 				// The sort reads the row ABOVE the outermost operator. Directly
 				// over the aggregate that is the AGGREGATE output name; with a
@@ -5708,25 +6019,55 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		// RFC-142 (P2a).
 		resolver = buildSelectScope(sq, md, schemaName, cteScopes)
 		if resolver == nil {
-			return
+			return nil
 		}
 	}
+	exactAggregateBoundary := agg != nil && proj != nil &&
+		len(proj.AggregateOutputOrdinals) == len(proj.Projections)
 	for i := range sort.Keys {
+		// Positional keys were already bound by ordinal above (or retain Pos
+		// for the translator). Never walk their raw parse node: it is the
+		// numeric literal itself and would overwrite ORDER BY 2 with constant
+		// 2. Likewise, a prior alias/project/group-key mapping is already the
+		// authoritative SQL output binding.
+		if positionalKey[i] || sort.Keys[i].HasAggregateOutputOrdinal ||
+			sort.Keys[i].AggregateOutputValueExact ||
+			(!exactAggregateBoundary && sort.Keys[i].Value != nil) {
+			continue
+		}
 		ob := findOrderByForKey(sq, sort.Keys[i].Expr)
 		if ob == nil || ob.rawExpr == nil {
 			continue
 		}
-		if ob.colName != "" {
-			continue
-		}
-		if ob.rawExpr == nil {
-			continue
-		}
+		// rawExpr is authoritative even when the parser could also render a
+		// colName. Aggregate calls such as MAX(x.v) are name-classified, but
+		// their qualified operand still has to resolve structurally and bind to
+		// the producer-native aggregate slot. Skipping name-classified items
+		// leaves a qualified spelling (MAX(X.V)) that cannot match the private
+		// aggregate label (MAX(V)), causing either a malformed plan or a
+		// name-based misbind. Plain column references are safe here too: in an
+		// aggregate query the structural binder maps a group key to its native
+		// key slot; outside one the normal resolver Value is retained.
 		v, err := resolver.WalkExpression(ob.rawExpr)
 		if err != nil {
+			if exactAggregateBoundary {
+				if mapped := mapPredicateWalkError(err); mapped != nil {
+					return mapped
+				}
+				return api.NewErrorf(api.ErrCodeUnsupportedQuery,
+					"ORDER BY expression could not be resolved against the exact aggregate output: %v", err)
+			}
 			continue
 		}
-		v = rewriteAggregateValuesInTree(v)
+		if exactAggregateBoundary {
+			v, err = bindPostAggregateValueToNativeOrdinals(v, agg)
+			if err != nil {
+				return err
+			}
+			sort.Keys[i].AggregateOutputValueExact = true
+		} else {
+			v = rewriteAggregateValuesInTree(v)
+		}
 		// A bare unnest sort key (`ORDER BY v`) resolves through the unnest's
 		// Shadowing scope source to a qualified FieldValue over the unnest
 		// correlation, which the P2a path already qualifies via
@@ -5736,6 +6077,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		// evaluates the qualified reference per row and the sort sorts for real.
 		sort.Keys[i].Value = v
 	}
+	return nil
 }
 
 // aggregateGroupKeyOutputName returns the OUTPUT column name a group-key Value is
@@ -6852,23 +7194,106 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 	if innerOp == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: inner query could not be planned")
 	}
-	// A CORRELATED non-grouped aggregate inner is unconditionally one row (the
-	// correlated fallback drops the aggregate, which is why this shape was
-	// silently filtering); flag it so a positive WHERE-EXISTS consumer folds it
-	// to TRUE. Only the correlated (isUndefinedCol) case — the non-correlated
-	// path keeps the aggregate in the inner plan and already answers correctly.
-	alwaysTrue := isUndefinedCol && !correlatedPrimaryUnnest && queryInnerIsUnconditionalOneRow(q)
+	// The correlated fallback deliberately ignores the SELECT values (EXISTS
+	// observes only cardinality), but that is not enough when an aggregate or
+	// pagination changes cardinality. Classify those operators in SQL order:
+	// first establish the non-grouped aggregate's exact one-row output, then
+	// apply LIMIT/OFFSET. A known result is folded by the translator, avoiding
+	// the semi-join entirely while preserving correlation semantics. A
+	// data-dependent OFFSET or a pagination atom still unresolved at planning
+	// time cannot ride the fallback
+	// safely and is rejected typed-loud rather than reverting to raw row
+	// existence. The uncorrelated path keeps its real Aggregate/Limit operators.
+	var knownTruth predicates.TriBool
+	if isUndefinedCol && !correlatedPrimaryUnnest {
+		knownTruth, err = correlatedExistsTruthAfterPagination(q)
+		if err != nil {
+			return values.CorrelationIdentifier{}, err
+		}
+	}
 	alias := p.mintSubqueryAlias()
 	p.subqueries = append(p.subqueries, logical.ExistsSubquery{
 		Alias:                  alias,
 		Plan:                   innerOp,
 		JoinPredicate:          p.lastJoinPredicate,
 		OuterOnlyJoinConjuncts: p.lastJoinPredicateOuterOnly,
-		AlwaysTrue:             alwaysTrue,
+		KnownTruth:             knownTruth,
 	})
 	p.lastJoinPredicate = nil
 	p.lastJoinPredicateOuterOnly = false
 	return alias, nil
+}
+
+// correlatedExistsTruthAfterPagination classifies the cardinality effects that
+// buildCorrelatedExists otherwise drops with the ignored SELECT list.
+//
+// A non-grouped, non-windowed aggregate produces exactly one row before
+// pagination. Applying a literal LIMIT/OFFSET to that one row therefore yields
+// a compile-time EXISTS truth value. For every other supported inner shape,
+// LIMIT n>=1 OFFSET 0 preserves row existence and LIMIT 0 is always empty, so
+// those cases are also safe. A positive OFFSET is data-dependent (notably after
+// GROUP BY), and a pagination atom still unresolved at planning time is unsafe;
+// both are rejected typed-loud instead of falling through to the raw-row
+// semi-join. Public SQL-driver arguments are substituted before parsing and
+// therefore reach this classifier as ordinary literal values.
+//
+// A nil truth with nil error means the fallback may proceed because the dropped
+// shaping operators provably preserve existence.
+func correlatedExistsTruthAfterPagination(q antlrgen.IQueryContext) (predicates.TriBool, error) {
+	if q == nil {
+		return nil, nil
+	}
+	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return nil, nil
+	}
+	simpleTable, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok {
+		return nil, nil
+	}
+
+	exactlyOneBeforePagination := queryInnerIsExactlyOneRowBeforePagination(q)
+	limitClause := simpleTable.LimitClause()
+	if limitClause == nil {
+		if exactlyOneBeforePagination {
+			return predicates.TriTrue, nil
+		}
+		return nil, nil
+	}
+
+	// parseLimitClause intentionally leaves a sentinel for an atom that is still
+	// unresolved in this planner invocation. Here that sentinel is unsafe:
+	// treating `LIMIT ?` as absent can change EXISTS. (The public driver
+	// substitutes bound arguments before parsing, so those arrive as literals.)
+	for _, atom := range limitClause.AllLimitClauseAtom() {
+		if _, resolved, atomErr := resolveLimitAtom(atom); atomErr != nil {
+			return nil, atomErr
+		} else if !resolved {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"a correlated EXISTS with a planning-time unresolved LIMIT/OFFSET is not supported")
+		}
+	}
+	limit, offset, limitErr := parseLimitClause(simpleTable)
+	if limitErr != nil {
+		return nil, limitErr
+	}
+
+	if exactlyOneBeforePagination {
+		if limit == 0 || offset > 0 {
+			return predicates.TriFalse, nil
+		}
+		return predicates.TriTrue, nil
+	}
+	if limit == 0 {
+		return predicates.TriFalse, nil
+	}
+	if offset > 0 {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"a correlated EXISTS with data-dependent OFFSET is not supported")
+	}
+	// LIMIT n>=1 with no OFFSET preserves whether a non-aggregate/grouped inner
+	// is empty, so dropping that cap from an EXISTS plan is semantics-neutral.
+	return nil, nil
 }
 
 // correlatedSubqueryJoinRight builds the right child for a comma/JOIN FROM leg of
@@ -7032,9 +7457,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// A HAVING-less GROUP BY is deliberately NOT declined: for EXISTS the
 	// drop is semantics-preserving — grouping a non-empty row set yields ≥1
 	// group and grouping an empty set yields none, so EXISTS(GROUP BY over S)
-	// ⇔ EXISTS(S). A NON-grouped aggregate inner likewise continues: it is
-	// unconditionally one row, which BuildExists flags (AlwaysTrue) and the
-	// translator folds to TRUE — or declines loudly under NOT EXISTS.
+	// ⇔ EXISTS(S) when pagination preserves existence. BuildExists separately
+	// rejects a data-dependent grouped OFFSET. A NON-grouped aggregate inner
+	// continues because its exact pre-pagination cardinality is one row;
+	// BuildExists applies LIMIT/OFFSET to that cardinality and the translator
+	// folds the resulting TRUE/FALSE in either polarity.
 	if sq.havingExpr != nil || sq.qualifyExpr != nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"correlated EXISTS over a GROUP BY / HAVING subquery is not supported")
@@ -7900,6 +8327,24 @@ func scalarSubqueryOutputType(op logical.LogicalOperator) values.Type {
 	case *logical.LogicalFilter:
 		return scalarSubqueryOutputType(o.Input)
 	case *logical.LogicalProject:
+		if len(o.Projections) == 1 && len(o.AggregateOutputOrdinals) == 1 {
+			if agg := findAggregate(o.Input); agg != nil {
+				ordinal := o.AggregateOutputOrdinals[0]
+				switch {
+				case ordinal >= 0 && ordinal < len(agg.GroupKeys):
+					if v := agg.GroupKeys[ordinal].Value; v != nil && v.Type() != nil {
+						return v.Type()
+					}
+				case ordinal >= len(agg.GroupKeys) && ordinal < len(agg.GroupKeys)+len(agg.Calls):
+					callIdx := ordinal - len(agg.GroupKeys)
+					var operand []values.Value
+					if callIdx < len(agg.AggregateOperands) {
+						operand = []values.Value{agg.AggregateOperands[callIdx]}
+					}
+					return aggregateCallOutputType(agg.Calls[callIdx], operand)
+				}
+			}
+		}
 		if len(o.Projections) == 1 && len(o.ProjectedValues) == 1 && o.ProjectedValues[0] != nil {
 			if t := o.ProjectedValues[0].Type(); t != nil {
 				return t
@@ -8031,105 +8476,149 @@ func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQu
 	return nil
 }
 
-// aggColRefFromExpr inspects an ORDER BY expression for a column-argument
-// aggregate function — `SUM(o.amount)` → ("SUM", "o.amount", true),
-// `COUNT(*)` → ("COUNT", "", true) — by walking the parse tree (NOT text
-// matching). Returns isAgg=false for non-aggregate refs and for
-// expression-argument aggregates (`SUM(a*b)`), which have no bare column name
-// to form the producer's stable FN(BAREARG) key.
-// aggColRefFromExpr returns the aggregate function name and the STRUCTURAL
-// bare operand column from the parse tree (extractAwfFields' argBare — WS-N
-// slice 6: never a dot re-split of the rendered operand, which a qualified
-// `SUM(o.amount)` rendering would split at the inner dot).
-func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argBare string, isAgg bool) {
-	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
-	if !ok || pred.Predicate() != nil {
-		return "", "", false
+// resolveCorrelatedVisibleGroupKeyOrdinal binds a selected grouping-column
+// reference to the exact private aggregate key slot after both sides have been
+// resolved through the same semantic scope. Parse spelling is deliberately not
+// an identity channel here: on a single source `SELECT status GROUP BY o.status`
+// differs only by a redundant qualifier, while joined `a.k` and `b.k` must
+// remain different despite their shared bare label. Repeated keys that resolve
+// to the same producer value are interchangeable and deterministically use the
+// first native slot.
+func resolveCorrelatedVisibleGroupKeyOrdinal(
+	agg *logical.LogicalAggregate,
+	ac *aggSelectCol,
+	resolver *expr.Resolver,
+) (int, error) {
+	if agg == nil || ac == nil || resolver == nil || ac.groupColBare == "" {
+		return -1, api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated scalar grouping-key output has no structural identity")
 	}
-	atom, ok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
-	if !ok {
-		return "", "", false
+	selected, err := resolveCorrelatedColumnValue(
+		resolver,
+		ac.groupColBare,
+		ac.groupColQualifier,
+		ac.groupColQualified,
+	)
+	if err != nil {
+		return -1, err
 	}
-	agg, ok := atom.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
-	if !ok {
-		return "", "", false
+	first := -1
+	for i, key := range agg.GroupKeys {
+		if key.Value == nil {
+			continue
+		}
+		if values.SemanticEqualsUnderAliasMap(selected, key.Value, values.AliasMap{}) ||
+			fieldValueMatchesAggregateGroupKey(selected, key.Value, agg) {
+			if first < 0 {
+				first = i
+				continue
+			}
+			// Multiple native slots are safe only when they are themselves
+			// the same resolved producer value.
+			firstValue := agg.GroupKeys[first].Value
+			if !values.SemanticEqualsUnderAliasMap(firstValue, key.Value, values.AliasMap{}) &&
+				!fieldValueMatchesAggregateGroupKey(firstValue, key.Value, agg) {
+				return -1, api.NewError(api.ErrCodeUnsupportedQuery,
+					"correlated scalar grouping-key output matches multiple native producer values")
+			}
+		}
 	}
-	awf, ok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
-	if !ok {
-		return "", "", false
+	if first < 0 {
+		return -1, api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated scalar grouping-key output could not be bound to the native aggregate row")
 	}
-	f, a, aExpr, _, _, _, aBare, _, ok := extractAwfFields(awf)
-	if !ok || aExpr != nil {
-		return "", "", false
-	}
-	if aBare != "" {
-		return f, aBare, true
-	}
-	return f, a, true
+	return first, nil
 }
 
-// groupedScalarSortKeys builds the ORDER BY sort keys for a correlated scalar
-// subquery's grouped output (RFC-085). Each key's .Value is a FieldValue keyed by
-// the EXACT datum key the aggregate cursor emits — a group key as
-// strings.ToUpper(bare(col)) (the same derivation scalarCol uses, :4317), or a
-// visible aggregate via aggDatumKey (its materialised name, not a recomputed
-// canonical). The executor's sort does an exact-case datum lookup (values.go), so a
-// mismatched key returns nil and sorts every row equal (nondeterministic — the bug
-// this fixes). Hence any ORDER BY ref resolving to neither a group key nor a visible
-// aggregate — including an ORDER-BY-only (not selected) aggregate or an expression
-// key — is REJECTED loudly (SQL grouping semantics), never silently dropped. Setting
-// .Value (which translateSort prefers over .Expr) bypasses the raw-text lookup.
-func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]logical.SortKey, error) {
+// groupedScalarSortKeys binds ORDER BY on a correlated scalar's grouped output
+// to the exact native [keys...,calls...] ordinal. Positional keys and bare
+// output aliases use their SQL output contract; every source/group/aggregate
+// expression is otherwise walked through the semantic scope and structurally
+// rebound against the resolved aggregate producer. Names are diagnostics only.
+func groupedScalarSortKeys(
+	sq *selectQuery,
+	agg *logical.LogicalAggregate,
+	outputOrdinals map[string]int,
+	resolver *expr.Resolver,
+) ([]logical.SortKey, error) {
 	keys := make([]logical.SortKey, 0, len(sq.orderBy))
 	for _, ob := range sq.orderBy {
-		bare := strings.ToUpper(ob.bare)
-		if ob.bare == "" {
-			bare = strings.ToUpper(ob.colName)
-		}
-		dk := ""
-		for _, k := range sq.groupBy {
-			gkdk := strings.ToUpper(k.bare)
-			if k.bare == "" {
-				gkdk = strings.ToUpper(k.display)
-			}
-			if gkdk == bare && bare != "" {
-				dk = gkdk
-				break
-			}
-		}
-		if dk == "" {
-			if v, ok := aggDatumKey[strings.ToUpper(ob.colName)]; ok {
-				dk = v
-			} else if v, ok := aggDatumKey[bare]; ok {
-				dk = v
-			}
-		}
-		// A selected aggregate spelled differently in ORDER BY than in SELECT
-		// (`SELECT SUM(amount) … ORDER BY SUM(o.amount)`): the raw-text forms
-		// above miss (a rendered `SUM(o.amount)` key never matches the bare
-		// producer key). Recover the producer's stable FN(BAREARG) key from the
-		// parse tree so a genuinely-selected aggregate resolves regardless of
-		// operand qualifier.
-		if dk == "" && ob.rawExpr != nil {
-			if fn, argBare, isAgg := aggColRefFromExpr(ob.rawExpr); isAgg {
-				canonKey := strings.ToUpper(fn) + "(*)"
-				if b := strings.ToUpper(argBare); b != "" {
-					canonKey = strings.ToUpper(fn) + "(" + b + ")"
-				}
-				if v, ok := aggDatumKey[canonKey]; ok {
-					dk = v
+		ordinal := -1
+		// A positional ORDER BY item is an output ordinal by definition. The
+		// scalar shape has one visible output, but bind through OutputSlots
+		// rather than relying on that fact so the private aggregate ABI remains
+		// explicit and self-checking.
+		if ob.pos > 0 && agg != nil {
+			for _, slot := range agg.OutputSlots {
+				if slot.SelectOrdinal == ob.pos {
+					ordinal = slot.NativeOrdinal
+					break
 				}
 			}
 		}
-		if dk == "" {
+		// SQL output-alias precedence applies only to a bare one-segment key.
+		if ordinal < 0 && ob.bareRef {
+			if v, exists := outputOrdinals[strings.ToUpper(ob.colName)]; exists {
+				ordinal = v
+			}
+		}
+
+		// Source/group/aggregate expressions bind through the same structural
+		// producer contract as post-aggregate SELECT expressions. This handles
+		// redundant single-source qualification in either direction, computed
+		// grouping keys, qualified aggregate operands, and same-bare joined
+		// keys without a render-and-reparse heuristic.
+		if ordinal < 0 && ob.rawExpr != nil {
+			if resolver == nil {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"grouped correlated scalar ORDER BY has no semantic resolver")
+			}
+			walked, walkErr := resolver.WalkExpression(ob.rawExpr)
+			if walkErr != nil {
+				return nil, walkErr
+			}
+			bound, bindErr := bindPostAggregateValueToNativeOrdinals(walked, agg)
+			if bindErr == nil {
+				if fv, ok := bound.(*values.FieldValue); ok &&
+					fv.Child == nil &&
+					fv.Resolved != nil &&
+					len(fv.Resolved.Accessors) == 1 {
+					ordinal = fv.Resolved.Accessors[0].Ordinal
+				}
+			}
+		}
+		nativeWidth := 0
+		if agg != nil {
+			nativeWidth = len(agg.GroupKeys) + len(agg.Calls)
+		}
+		if ordinal < 0 || ordinal >= nativeWidth {
 			return nil, api.NewErrorf(api.ErrCodeGroupingError,
 				"ORDER BY %q must reference a grouping column or a selected aggregate in a grouped correlated scalar subquery", ob.colName)
+		}
+		if ordinal >= len(agg.GroupKeys) {
+			selectedAggregate := false
+			for _, slot := range agg.OutputSlots {
+				if slot.NativeOrdinal == ordinal {
+					selectedAggregate = true
+					break
+				}
+			}
+			if !selectedAggregate {
+				return nil, api.NewErrorf(api.ErrCodeGroupingError,
+					"ORDER BY %q must reference a grouping column or a selected aggregate in a grouped correlated scalar subquery", ob.colName)
+			}
 		}
 		dir := logical.SortAsc
 		if !ob.ascending {
 			dir = logical.SortDesc
 		}
-		sk := logical.SortKey{Value: &values.FieldValue{Field: dk}, Expr: dk, Dir: dir}
+		nativeName := aggregateNativeOutputName(agg, ordinal)
+		sk := logical.SortKey{
+			Expr:                      nativeName,
+			Dir:                       dir,
+			AggregateOutputOrdinal:    ordinal,
+			HasAggregateOutputOrdinal: true,
+		}
 		if ob.nullsFirst != nil {
 			sk.NullsFirst = *ob.nullsFirst
 		}
@@ -8152,6 +8641,26 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 	if err != nil || sq == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 			Message: fmt.Sprintf("correlated scalar subquery: %v", err), Cause: err,
+		}
+	}
+	userPagination, paginationErr := correlatedScalarHasResolvedPagination(q)
+	if paginationErr != nil {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: fmt.Sprintf("correlated scalar subquery: %v", paginationErr), Cause: paginationErr,
+		}
+	}
+	if sq.distinct {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: "correlated scalar subquery: SELECT DISTINCT is not yet supported",
+			Cause: api.NewError(api.ErrCodeUnsupportedQuery,
+				"SELECT DISTINCT in a correlated scalar subquery is not yet supported"),
+		}
+	}
+	if queryScopeHasWindowedAggregate(body) || sq.qualifyExpr != nil {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: "correlated scalar subquery: window functions are not yet supported",
+			Cause: api.NewError(api.ErrCodeUnsupportedQuery,
+				"window functions in a correlated scalar subquery are not yet supported"),
 		}
 	}
 
@@ -8288,6 +8797,33 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			break
 		}
 	}
+	// The current non-strict LEFT-scalar join null-fills an empty inner but does
+	// not collapse multiple post-pagination rows. LIMIT 0/1 therefore has an
+	// exact lowering for every shape. A larger limit is also exact for a
+	// non-grouped real aggregate, whose pre-pagination cardinality is already
+	// <=1; for data-dependent rows/groups it could fan one outer row into
+	// several. Preserve the written limit by declining those multi-row-capable
+	// shapes typed-loud until a post-page scalar-collapse mode exists; never clamp
+	// with a hidden LIMIT 1.
+	if userPagination && sq.limit > 1 && (!hasRealAgg || len(sq.groupBy) > 0) {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: "correlated scalar subquery: LIMIT greater than 1 requires post-pagination scalar collapse",
+			Cause: api.NewError(api.ErrCodeUnsupportedQuery,
+				"LIMIT greater than 1 in a correlated scalar subquery is not yet supported"),
+		}
+	}
+	// The group-key-only branch materializes grouping keys but has no HAVING
+	// rewrite/bake onto that aggregate output. Letting it proceed would silently
+	// ignore HAVING and then run the strict cardinality probe against the wrong
+	// (pre-HAVING) group set. Real-aggregate HAVING is lowered below; this
+	// distinct shape remains correct-or-loud until it has the same output rewrite.
+	if !hasRealAgg && sq.havingExpr != nil {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: "correlated scalar subquery: HAVING over a group-key-only projection is not yet supported",
+			Cause: api.NewError(api.ErrCodeUnsupportedQuery,
+				"HAVING over a group-key-only correlated scalar subquery is not yet supported"),
+		}
+	}
 
 	// A scalar subquery must produce exactly one output column. Count the
 	// visible SELECT items: under a GROUP BY each item is a visible aggCol (an
@@ -8320,17 +8856,18 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 	}
 
 	var scalarCol string
-	// strictSingle is set by the non-aggregate branch below when the subquery has
-	// no user LIMIT, so the lowering enforces at-most-one via a strict FirstOrDefault.
+	scalarNativeOrdinal := -1
+	// strictSingle is set whenever a data-dependent inner can emit more than one
+	// row and the user did not write a LIMIT. The lowering then enforces
+	// at-most-one via a strict FirstOrDefault.
 	var strictSingle bool
 	if hasRealAgg {
 		// Build the aggregate over the correlated filter. With GROUP BY the
-		// aggregate may emit more than one group; the scalar contract is then
-		// enforced by FirstOrDefault — the LIMIT 1 below plus the LEFT-OUTER
-		// NULL-on-empty wrap in the translator — not a runtime cardinality
-		// assertion (which would need look-ahead and breaks continuation-based
-		// pagination). Empty input => zero groups => NULL falls out naturally,
-		// whereas the no-GROUP-BY scalar aggregate emits one row (e.g. COUNT=0).
+		// aggregate may emit more than one group, so an uncapped scalar must use
+		// the same strict FirstOrDefault cardinality barrier as a non-aggregate
+		// scalar: a second group is SQLSTATE 21000, never an implicit first-group
+		// choice. Empty input => zero groups => NULL falls out naturally, whereas
+		// the no-GROUP-BY scalar aggregate emits one row (e.g. COUNT=0).
 		//
 		// Compute EVERY aggregate the query needs — the single visible one (the
 		// scalar's value) AND any non-visible ones the parser harvested for
@@ -8346,11 +8883,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		var aggOperands []values.Value
 		aggSeen := make(map[string]struct{})
 		exprAggNames := make(map[string]struct{}) // join-path collision tracking only
-		// Match-name (uppercased: SELECT alias, source FN(bareArg), canonical) →
-		// the EXACT datum key the aggregate cursor emits (addAgg's returned name),
-		// for resolving an ORDER BY ref over the grouped output (RFC-085).
-		aggDatumKey := make(map[string]string)
-		addAgg := func(fn, arg, argBare, argQual string, argQualified bool, e antlrgen.IExpressionContext, distinct bool) (string, error) {
+		// Match-name (uppercased SELECT alias / source FN(bareArg) /
+		// canonical) → exact native aggregate-call ordinal, for ORDER BY.
+		aggDatumOrdinal := make(map[string]int)
+		aggCallOrdinalByName := make(map[string]int)
+		addAgg := func(fn, arg, argBare, argQual string, argQualified bool, e antlrgen.IExpressionContext, distinct bool) (string, int, error) {
 			// An expression argument has no bare column name, so it collapses to
 			// FN(*). Two DISTINCT expression aggregates (e.g. SUM(a+b) projected
 			// and SUM(c*d) in HAVING) would both synthesize "SUM(*)" and the
@@ -8373,7 +8910,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			if e != nil {
 				v, err := resolver.WalkExpression(e)
 				if err != nil {
-					return "", err
+					return "", -1, err
 				}
 				opVal = v
 			} else if arg != "" {
@@ -8383,7 +8920,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				}
 				v, err := resolveCorrelatedColumnValue(resolver, b, argQual, argQualified)
 				if err != nil {
-					return "", err
+					return "", -1, err
 				}
 				opVal = v
 			}
@@ -8391,7 +8928,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			// into the materialised slot, and COUNT(DISTINCT 1) != COUNT(*)). Reject
 			// explicitly rather than rely on a name-prefix check.
 			if distinct {
-				return "", fmt.Errorf("DISTINCT aggregate not supported in a correlated scalar subquery")
+				return "", -1, fmt.Errorf("DISTINCT aggregate not supported in a correlated scalar subquery")
 			}
 			if singleSource {
 				// Single-source inner: materialise under the canonical name the
@@ -8402,9 +8939,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				// reuses one slot.
 				cname := canonicalAggName(fn, opVal)
 				if _, dup := aggSeen[cname]; dup {
-					return cname, nil
+					return cname, aggCallOrdinalByName[cname], nil
 				}
+				callOrdinal := len(aggCalls)
 				aggSeen[cname] = struct{}{}
+				aggCallOrdinalByName[cname] = callOrdinal
 				aggCalls = append(aggCalls, logical.AggregateCall{
 					Func:       strings.ToUpper(fn),
 					Operand:    canonicalAggOperandText(cname),
@@ -8413,7 +8952,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				})
 				aggAliases = append(aggAliases, cname)
 				aggOperands = append(aggOperands, opVal)
-				return cname, nil
+				return cname, callOrdinal, nil
 			}
 			// Join path: an expression/constant argument has no bare column name, so it
 			// collapses to FN(*) here — but the HAVING rewrite
@@ -8432,15 +8971,17 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			if _, dup := aggSeen[name]; dup {
 				_, priorExpr := exprAggNames[name]
 				if opaqueExpr || priorExpr {
-					return "", fmt.Errorf("an expression-argument aggregate (e.g. SUM(<expr>)) collides with another aggregate named %q; not supported in a correlated scalar subquery", name)
+					return "", -1, fmt.Errorf("an expression-argument aggregate (e.g. SUM(<expr>)) collides with another aggregate named %q; not supported in a correlated scalar subquery", name)
 				}
 				// Identical bare-column / star aggregate referenced twice (e.g.
 				// COUNT(*) in both SELECT and HAVING) — safe to reuse the slot.
 				// (Any expression/constant arg is opaque and exited above, so
 				// this dup is always a non-opaque, identically-named aggregate.)
-				return name, nil
+				return name, aggCallOrdinalByName[name], nil
 			}
+			callOrdinal := len(aggCalls)
 			aggSeen[name] = struct{}{}
+			aggCallOrdinalByName[name] = callOrdinal
 			if opaqueExpr {
 				exprAggNames[name] = struct{}{}
 			}
@@ -8452,7 +8993,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			})
 			aggAliases = append(aggAliases, name)
 			aggOperands = append(aggOperands, opVal)
-			return name, nil
+			return name, callOrdinal, nil
 		}
 		for i := range sq.aggCols {
 			ac := &sq.aggCols[i]
@@ -8473,7 +9014,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 					Message: "correlated scalar subquery over a join: HAVING references an expression/constant-argument aggregate (e.g. COUNT(1), SUM(<expr>)) that cannot be resolved against the grouped output",
 				}
 			}
-			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified, ac.aggExpr, ac.aggDistinct)
+			name, callOrdinal, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggArgBare, ac.aggArgQualifier, ac.aggArgQualified, ac.aggExpr, ac.aggDistinct)
 			if err != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 					Message: fmt.Sprintf("correlated scalar subquery: resolve aggregate argument: %v", err), Cause: err,
@@ -8481,25 +9022,26 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			}
 			if ac.visible {
 				scalarCol = name
-				// Record the datum key under every form an ORDER BY might name it:
-				// its SELECT alias, its source FN(bareArg) form, and the materialised
-				// canonical name itself.
-				aggDatumKey[strings.ToUpper(name)] = name
+				scalarNativeOrdinal = len(sq.groupBy) + callOrdinal
+				// Record the native ordinal under every form an ORDER BY
+				// might name it.
+				aggDatumOrdinal[strings.ToUpper(name)] = scalarNativeOrdinal
 				if ac.outName != "" {
-					aggDatumKey[strings.ToUpper(ac.outName)] = name
+					aggDatumOrdinal[strings.ToUpper(ac.outName)] = scalarNativeOrdinal
 				}
 				if bareArg := ac.aggArgBare; bareArg != "" {
-					aggDatumKey[strings.ToUpper(ac.aggFunc+"("+bareArg+")")] = name
+					aggDatumOrdinal[strings.ToUpper(ac.aggFunc+"("+bareArg+")")] = scalarNativeOrdinal
 				}
 			}
 		}
 		// A sole COUNT(*) the parser flagged via countStar (no aggCol entry).
 		if sq.countStar {
-			name, _ := addAgg("COUNT", "", "", "", false, nil, false) // -> COUNT(*)
+			name, callOrdinal, _ := addAgg("COUNT", "", "", "", false, nil, false) // -> COUNT(*)
 			scalarCol = name
-			aggDatumKey[strings.ToUpper(name)] = name
+			scalarNativeOrdinal = len(sq.groupBy) + callOrdinal
+			aggDatumOrdinal[strings.ToUpper(name)] = scalarNativeOrdinal
 			if sq.countStarAlias != "" {
-				aggDatumKey[strings.ToUpper(sq.countStarAlias)] = name
+				aggDatumOrdinal[strings.ToUpper(sq.countStarAlias)] = scalarNativeOrdinal
 			}
 		}
 		// If the single visible output is a bare group-key projection (e.g.
@@ -8511,6 +9053,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// error below rather than silently resolving to NULL. Use the grouping
 		// column (qualifier stripped) so the name matches the grouped row key
 		// (and replaceScalarSubqueryRef does not double-prefix `O.O.STATUS`).
+		var visibleGroupCol *aggSelectCol
 		if scalarCol == "" {
 			for i := range sq.aggCols {
 				if sq.aggCols[i].visible && sq.aggCols[i].aggFunc == "" && sq.aggCols[i].groupCol != "" {
@@ -8519,6 +9062,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 						gcBare = sq.aggCols[i].groupCol
 					}
 					scalarCol = strings.ToUpper(gcBare)
+					visibleGroupCol = &sq.aggCols[i]
 					break
 				}
 			}
@@ -8528,13 +9072,42 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				Message: "correlated scalar subquery: expected an aggregate function or grouping-key projection",
 			}
 		}
-		aggOp := logical.NewAggregate(innerOp, logicalGroupKeys(sq.groupBy), aggCalls, aggAliases, false)
+		groupKeys := logicalGroupKeys(sq.groupBy)
+		aggOp := logical.NewAggregate(innerOp, groupKeys, aggCalls, aggAliases, false)
 		aggOp.AggregateOperands = aggOperands
 		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver); gkErr != nil {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 				Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,
 			}
 		}
+		if scalarNativeOrdinal < 0 && visibleGroupCol != nil {
+			var ordinalErr error
+			scalarNativeOrdinal, ordinalErr = resolveCorrelatedVisibleGroupKeyOrdinal(
+				aggOp, visibleGroupCol, resolver,
+			)
+			if ordinalErr != nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: fmt.Sprintf("correlated scalar subquery: bind visible GROUP BY key: %v", ordinalErr),
+					Cause:   ordinalErr,
+				}
+			}
+			if visibleGroupCol.outName != "" {
+				aggDatumOrdinal[strings.ToUpper(visibleGroupCol.outName)] = scalarNativeOrdinal
+			}
+			aggDatumOrdinal[strings.ToUpper(visibleGroupCol.groupCol)] = scalarNativeOrdinal
+		}
+		if scalarNativeOrdinal < 0 ||
+			scalarNativeOrdinal >= len(aggOp.GroupKeys)+len(aggOp.Calls) {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: visible grouped output has no exact native ordinal",
+				Cause: api.NewError(api.ErrCodeUnsupportedQuery,
+					"correlated scalar subquery grouped output could not be bound positionally"),
+			}
+		}
+		aggOp.OutputSlots = []logical.AggregateOutputSlot{{
+			SelectOrdinal: 1,
+			NativeOrdinal: scalarNativeOrdinal,
+		}}
 		if sq.havingExpr != nil {
 			havingPred, hErr := resolver.WalkPredicate(sq.havingExpr)
 			if hErr != nil {
@@ -8545,22 +9118,42 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			aggOp.HavingPredicate = rewriteAggregateRefsInPredicate(havingPred)
 		}
 		innerOp = aggOp
-		// ORDER BY over the grouped output: sort the groups BEFORE the LIMIT 1 so
-		// FirstOrDefault picks the ordered-first group deterministically. Keys are
-		// canonicalised to the exact post-aggregate datum keys (RFC-085).
+		// ORDER BY over the grouped output: sort the groups before an explicit
+		// user LIMIT (when present). Keys are canonicalised to the exact
+		// post-aggregate datum keys (RFC-085).
 		if len(sq.orderBy) > 0 {
-			sortKeys, skErr := groupedScalarSortKeys(sq, aggDatumKey)
+			sortKeys, skErr := groupedScalarSortKeys(sq, aggOp, aggDatumOrdinal, resolver)
 			if skErr != nil {
 				return values.CorrelationIdentifier{}, skErr
 			}
 			innerOp = logical.NewSort(innerOp, sortKeys)
 		}
-		// GROUP BY may yield many groups; HAVING may filter the single group
-		// to none. Cap at the first group (FirstOrDefault) for the scalar
-		// contract. The plain scalar aggregate (no GROUP BY, no HAVING) already
-		// emits exactly one row, so it is left uncapped.
-		if len(sq.groupBy) > 0 || sq.havingExpr != nil {
-			innerOp = logical.NewLimit(innerOp, 1, 0)
+		// Materialize the one SQL-visible scalar after grouped ORDER BY and
+		// before pagination. The correlated-scalar lowering peels a root Limit
+		// and reattaches it per outer row, so Project must be the Limit's input,
+		// not its parent. The seed then reads ordinal 0 from a proven one-field
+		// row even when the selected value lives after native grouping keys.
+		scalarType := aggregateNativeOutputType(aggOp, scalarNativeOrdinal)
+		scalarValue := values.NewFieldValueWithResolvedOrdinal(
+			aggregateNativeOutputName(aggOp, scalarNativeOrdinal),
+			scalarNativeOrdinal,
+			scalarType,
+		)
+		scalarProj := logical.NewProject(innerOp, []string{scalarCol}, nil)
+		scalarProj.ProjectedValues = []values.Value{scalarValue}
+		scalarProj.IsComputed = []bool{false}
+		scalarProj.AggregateOutputOrdinals = []int{scalarNativeOrdinal}
+		innerOp = scalarProj
+		// Accepted user LIMIT/OFFSET is deliberate pagination and is preserved
+		// exactly. A grouped aggregate accepts only LIMIT 0/1 here, so the
+		// post-page result is <=1 and needs no strict probe. A global aggregate,
+		// with or without HAVING, is intrinsically <=1 and safely accepts a larger
+		// limit too. Without pagination, GROUP BY is the only real-aggregate shape
+		// capable of producing multiple rows, so leave it uncapped and strict.
+		if userPagination {
+			innerOp = logical.NewLimit(innerOp, sq.limit, sq.offset)
+		} else if len(sq.groupBy) > 0 {
+			strictSingle = true
 		}
 	} else {
 		// Non-aggregate correlated scalar subquery. The single output column is
@@ -8570,6 +9163,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// it is materialized as the inner's projected output AFTER the sort/limit
 		// below.
 		var computedScalarVal values.Value
+		var visibleGroupCol *aggSelectCol
 		// classifyProjFieldValue routes a resolved single-column projection by
 		// the SCOPE its reference binds: an OUTER-scoped field is NOT an inner
 		// row key and must take the materialized path (its value comes from
@@ -8696,6 +9290,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 						gcBare = sq.aggCols[i].groupCol
 					}
 					scalarCol = strings.ToUpper(gcBare)
+					visibleGroupCol = &sq.aggCols[i]
 					break
 				}
 			}
@@ -8715,13 +9310,49 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// validateGroupByProjection above already confirmed the projected
 		// column is a grouping key. Build the GroupBy below the optional
 		// ORDER BY so the sort runs over the grouped output.
+		var groupedKeyAgg *logical.LogicalAggregate
+		groupedKeyNativeOrdinal := -1
+		groupedOutputOrdinals := make(map[string]int)
 		if len(sq.groupBy) > 0 {
-			aggOp := logical.NewAggregate(innerOp, logicalGroupKeys(sq.groupBy), nil, nil, false)
+			groupKeys := logicalGroupKeys(sq.groupBy)
+			aggOp := logical.NewAggregate(innerOp, groupKeys, nil, nil, false)
 			if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver); gkErr != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 					Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,
 				}
 			}
+			if visibleGroupCol == nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: "correlated scalar subquery: grouping-key projection has no structural output identity",
+					Cause: api.NewError(api.ErrCodeUnsupportedQuery,
+						"correlated scalar subquery grouped output could not be bound positionally"),
+				}
+			}
+			ordinal, ordinalErr := resolveCorrelatedVisibleGroupKeyOrdinal(
+				aggOp, visibleGroupCol, resolver,
+			)
+			if ordinalErr != nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: fmt.Sprintf("correlated scalar subquery: bind visible GROUP BY key: %v", ordinalErr),
+					Cause:   ordinalErr,
+				}
+			}
+			if ordinal < 0 || ordinal >= len(groupKeys) {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: "correlated scalar subquery: visible grouping key has no exact native ordinal",
+					Cause: api.NewError(api.ErrCodeUnsupportedQuery,
+						"correlated scalar subquery grouped output could not be bound positionally"),
+				}
+			}
+			groupedKeyNativeOrdinal = ordinal
+			aggOp.OutputSlots = []logical.AggregateOutputSlot{{
+				SelectOrdinal: visibleGroupCol.selectOrdinal,
+				NativeOrdinal: groupedKeyNativeOrdinal,
+			}}
+			if visibleGroupCol.outName != "" {
+				groupedOutputOrdinals[strings.ToUpper(visibleGroupCol.outName)] = groupedKeyNativeOrdinal
+			}
+			groupedKeyAgg = aggOp
 			innerOp = aggOp
 		}
 
@@ -8732,7 +9363,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				// row, whose keys are bare-uppercased — raw ob.colName (original case,
 				// possibly qualified) would miss and sort every row equal. Canonicalise
 				// to the exact group-key datum keys (RFC-085). No aggregates here.
-				sortKeys, skErr := groupedScalarSortKeys(sq, nil)
+				sortKeys, skErr := groupedScalarSortKeys(sq, groupedKeyAgg, groupedOutputOrdinals, resolver)
 				if skErr != nil {
 					return values.CorrelationIdentifier{}, skErr
 				}
@@ -8763,14 +9394,32 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			}
 		}
 
+		// A zero-call aggregate has the same private [keys..., calls...] ABI as
+		// every other aggregate. Expose only the selected grouping-key slot,
+		// after sorting but before pagination, so duplicate bare names from
+		// joined sources cannot affect either the sort or scalar seed.
+		if groupedKeyAgg != nil {
+			scalarValue := values.NewFieldValueWithResolvedOrdinal(
+				aggregateNativeOutputName(groupedKeyAgg, groupedKeyNativeOrdinal),
+				groupedKeyNativeOrdinal,
+				aggregateNativeOutputType(groupedKeyAgg, groupedKeyNativeOrdinal),
+			)
+			scalarProj := logical.NewProject(innerOp, []string{scalarCol}, nil)
+			scalarProj.ProjectedValues = []values.Value{scalarValue}
+			scalarProj.IsComputed = []bool{false}
+			scalarProj.AggregateOutputOrdinals = []int{groupedKeyNativeOrdinal}
+			innerOp = scalarProj
+		}
+
 		// SQL standard: scalar subquery must return at most 1 row.
-		// A user-written LIMIT is the user's deliberate truncation intent — respect
-		// it and do NOT enforce strict cardinality. With NO user LIMIT (limit < 0),
+		// An accepted user-written LIMIT (0/1; larger limits decline above) is
+		// deliberate truncation intent — preserve it and do NOT enforce strict
+		// cardinality. With NO user LIMIT,
 		// leave the inner UNCAPPED and mark StrictSingle: the lowering then enforces
 		// at-most-one via a strict FirstOrDefault barrier (a second inner row → 21000),
 		// rather than a silent LIMIT 1 truncation (which the planner could also push
 		// into the scan as a returned-row limit, bypassing the check).
-		if sq.limit >= 0 {
+		if userPagination {
 			innerOp = logical.NewLimit(innerOp, sq.limit, sq.offset)
 		} else {
 			// No user LIMIT (and, in this grammar, therefore no OFFSET either — a
@@ -8811,6 +9460,39 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		StrictSingle: strictSingle,
 	})
 	return alias, nil
+}
+
+// correlatedScalarHasResolvedPagination distinguishes an absent LIMIT from a
+// clause whose atom is still unresolved in this planning invocation.
+// parseLimitClause uses the same -1 sentinel for both, which would otherwise
+// misclassify `LIMIT ?` as "no user LIMIT" and install a strict probe over the
+// unpaginated input. Public driver bindings are substituted before parsing and
+// therefore arrive here as resolved literals.
+func correlatedScalarHasResolvedPagination(q antlrgen.IQueryContext) (bool, error) {
+	if q == nil {
+		return false, nil
+	}
+	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return false, nil
+	}
+	simpleTable, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok {
+		return false, nil
+	}
+	limitClause := simpleTable.LimitClause()
+	if limitClause == nil {
+		return false, nil
+	}
+	for _, atom := range limitClause.AllLimitClauseAtom() {
+		if _, resolved, atomErr := resolveLimitAtom(atom); atomErr != nil {
+			return false, atomErr
+		} else if !resolved {
+			return false, api.NewError(api.ErrCodeUnsupportedQuery,
+				"a correlated scalar subquery with a planning-time unresolved LIMIT/OFFSET is not supported")
+		}
+	}
+	return true, nil
 }
 
 // innerSourceAliases collects the UPPER source aliases a correlated scalar

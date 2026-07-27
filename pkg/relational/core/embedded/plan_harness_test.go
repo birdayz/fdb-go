@@ -980,6 +980,110 @@ func TestPlanHarness_ExistsSubquery(t *testing.T) {
 	assertPlanContains(t, plan, "FlatMap")
 }
 
+func TestPlanHarness_CorrelatedExistsAggregatePagination(t *testing.T) {
+	t.Parallel()
+
+	t.Run("known_false_positive", func(t *testing.T) {
+		plan, err := PlanQueryForTest(
+			"SELECT id FROM orders WHERE EXISTS ("+
+				"SELECT COUNT(*) FROM customers WHERE customers.id = orders.customer_id LIMIT 1 OFFSET 1)",
+			multiTableSchema, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertPlanNotContains(t, plan, "FlatMap")
+	})
+
+	t.Run("known_false_negated", func(t *testing.T) {
+		plan, err := PlanQueryForTest(
+			"SELECT id FROM orders WHERE NOT EXISTS ("+
+				"SELECT COUNT(*) FROM customers WHERE customers.id = orders.customer_id LIMIT 1 OFFSET 1)",
+			multiTableSchema, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertPlanNotContains(t, plan, "FlatMap")
+	})
+
+	// translateProject has a widened projection fold for an arity>=3 gathered
+	// cluster. That early-return path bypasses translateFilter, so both known
+	// cardinalities must already have removed the existential before it can build
+	// the gathered EXISTS wrap. FlatMap is the load-bearing negative sentinel:
+	// before this regression, both queries raw-semi-joined the inner rows here.
+	for _, test := range []struct {
+		name       string
+		pagination string
+	}{
+		{name: "arity_three_known_false", pagination: " LIMIT 1 OFFSET 1"},
+		{name: "arity_three_known_true"},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			plan, err := PlanQueryForTest(
+				"SELECT orders.id FROM orders, customers AS c1, customers AS c2 WHERE EXISTS ("+
+					"SELECT COUNT(*) FROM customers AS inner_c "+
+					"WHERE inner_c.id = orders.customer_id"+test.pagination+
+					") ORDER BY orders.id",
+				multiTableSchema, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertPlanNotContains(t, plan, "FlatMap")
+		})
+	}
+
+	t.Run("group_key_only_is_not_global_aggregate", func(t *testing.T) {
+		plan, err := PlanQueryForTest(
+			"SELECT id FROM orders WHERE EXISTS ("+
+				"SELECT region FROM customers WHERE customers.id = orders.customer_id GROUP BY region LIMIT 1)",
+			multiTableSchema, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertPlanContains(t, plan, "FlatMap")
+	})
+
+	for _, test := range []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "grouped_offset",
+			sql: "SELECT id FROM orders WHERE EXISTS (" +
+				"SELECT COUNT(*) FROM customers WHERE customers.id = orders.customer_id " +
+				"GROUP BY region LIMIT 1 OFFSET 1)",
+		},
+		{
+			name: "planning_time_unresolved_limit",
+			sql: "SELECT id FROM orders WHERE EXISTS (" +
+				"SELECT COUNT(*) FROM customers WHERE customers.id = orders.customer_id LIMIT ?)",
+		},
+		{
+			name: "projected_known_truth",
+			sql: "SELECT id, EXISTS (" +
+				"SELECT COUNT(*) FROM customers WHERE customers.id = orders.customer_id LIMIT 1 OFFSET 1) " +
+				"FROM orders",
+		},
+		{
+			name: "join_on_known_truth",
+			sql: "SELECT orders.id FROM orders JOIN customers ON customers.id = orders.customer_id AND EXISTS (" +
+				"SELECT COUNT(*) FROM customers AS c2 WHERE c2.id = orders.customer_id LIMIT 1 OFFSET 1)",
+		},
+	} {
+		test := test
+		t.Run(test.name+"_typed_decline", func(t *testing.T) {
+			_, err := PlanQueryForTest(test.sql, multiTableSchema, nil)
+			if err == nil {
+				t.Fatal("expected typed unsupported rejection")
+			}
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
+				t.Fatalf("error = %v, want SQLSTATE %s", err, api.ErrCodeUnsupportedQuery)
+			}
+		})
+	}
+}
+
 // --- DISTINCT ---
 
 func TestPlanHarness_SelectDistinct(t *testing.T) {

@@ -289,15 +289,15 @@ func TestSimplify_IsDistinctFrom_FoldsEndToEnd(t *testing.T) {
 }
 
 // CAST(5 AS FLOAT) > 3.14 — composite-constant LHS via values.CastValue
-// over an int. values.CastValue.Evaluate now handles values.TypeFloat, so the
+// over an int. values.CastValue.Evaluate now handles values.NullableDouble, so the
 // constant-fold rule unwraps to float64(5) and compares against
-// 3.14 → TRUE. Round-12 reviewer flagged the missing values.TypeFloat
+// 3.14 → TRUE. Round-12 reviewer flagged the missing values.NullableDouble
 // case in values.CastValue.Evaluate which silently produced UNKNOWN.
 func TestComparisonConstantSimplify_CastFloat_Folds(t *testing.T) {
 	t.Parallel()
 	rule := NewComparisonConstantSimplifyRule()
 	pred := predicates.NewComparisonPredicate(
-		values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, values.TypeFloat),
+		values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, values.NullableDouble),
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(float64(3.14))},
 	)
 	got := FireRule(rule, pred)

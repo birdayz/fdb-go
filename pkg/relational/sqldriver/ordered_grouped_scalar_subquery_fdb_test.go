@@ -25,7 +25,9 @@ func ogsDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	tmpl := "ogs_tmpl_" + tag
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE "+tmpl+
 		" CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id))"+
-		" CREATE TABLE orders (id BIGINT, customer_id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id))"); err != nil {
+		" CREATE TABLE orders (id BIGINT, customer_id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE ga (id BIGINT, customer_id BIGINT, k BIGINT, amount BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE gb (id BIGINT, a_id BIGINT, k BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
@@ -41,6 +43,15 @@ func ogsDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	}
 	if _, err := db.ExecContext(ctx, "INSERT INTO orders VALUES (1,1,'a',10),(2,1,'a',5),(3,1,'b',20)"); err != nil {
 		t.Fatalf("seed o: %v", err)
+	}
+	// Joined grouping keys deliberately share the bare name K but have
+	// divergent order. Native groups are (a.k,b.k,sum)=(1,20,300),(2,10,100),
+	// so ordering by either qualified leg proves which exact key was read.
+	if _, err := db.ExecContext(ctx, "INSERT INTO ga VALUES (101,1,1,300),(102,1,2,100)"); err != nil {
+		t.Fatalf("seed ga: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO gb VALUES (201,101,20),(202,102,10)"); err != nil {
+		t.Fatalf("seed gb: %v", err)
 	}
 	return db, ctx
 }
@@ -64,19 +75,19 @@ func ogsScalarStr(t *testing.T, ctx context.Context, db *sql.DB, q string) (stri
 }
 
 // TestFDB_OrderedGroupedScalarSubquery pins RFC-085: ORDER BY over the grouped
-// output of a correlated scalar subquery makes the multi-group FirstOrDefault
-// choice deterministic (was rejected outright).
+// output of a correlated scalar subquery gives the explicit user LIMIT 1 an
+// exact, deterministic page (the shape was previously rejected outright).
 func TestFDB_OrderedGroupedScalarSubquery(t *testing.T) {
 	t.Parallel()
 	db, ctx := ogsDB(t, "core")
 
-	// ORDER BY the group key ASC → first group 'a' → SUM(amount)=15.
+	// ORDER BY the group key ASC + written LIMIT 1 → group 'a' → SUM(amount)=15.
 	asc := "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status LIMIT 1) FROM customers c WHERE c.id = 1"
 	if got, ok := ogsScalar(t, ctx, db, asc); !ok || got != 15 {
 		t.Fatalf("ORDER BY status ASC: got %d (valid=%v), want 15 (group 'a')", got, ok)
 	}
 
-	// ORDER BY the group key DESC → first group 'b' → SUM(amount)=20.
+	// ORDER BY the group key DESC + written LIMIT 1 → group 'b' → SUM(amount)=20.
 	desc := "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status DESC LIMIT 1) FROM customers c WHERE c.id = 1"
 	if got, ok := ogsScalar(t, ctx, db, desc); !ok || got != 20 {
 		t.Fatalf("ORDER BY status DESC: got %d (valid=%v), want 20 (group 'b')", got, ok)
@@ -167,9 +178,9 @@ func TestFDB_OrderedGroupedScalarSubquery_ExplainSort(t *testing.T) {
 
 // TestFDB_OrderedGroupedScalarSubquery_GroupKeyOnly pins the group-key-only
 // (NON-aggregate) GROUP BY + ORDER BY path — the subquery selects a grouping
-// column directly (no aggregate function), exercising the `!hasRealAgg +
-// groupBy + orderBy` branch that calls groupedScalarSortKeys(sq, nil). Without
-// this, a refactor could break that branch unnoticed (@claude PR #268).
+// column directly (no aggregate function). The zero-call LogicalAggregate has
+// the same exact OutputSlots, structural sort-key binding, and one-field public
+// Project contract as a real aggregate.
 func TestFDB_OrderedGroupedScalarSubquery_GroupKeyOnly(t *testing.T) {
 	t.Parallel()
 	db, ctx := ogsDB(t, "gkonly")
@@ -183,10 +194,107 @@ func TestFDB_OrderedGroupedScalarSubquery_GroupKeyOnly(t *testing.T) {
 	if got, ok := ogsScalarStr(t, ctx, db, asc); !ok || got != "a" {
 		t.Fatalf("group-key-only ORDER BY ASC: got %q (valid=%v), want \"a\"", got, ok)
 	}
+	// The selected key and GROUP BY key bind semantically, not by matching
+	// qualifier spelling. A single surviving group avoids pagination and pins
+	// the visible-output mapping itself.
+	bareSelect := "SELECT (SELECT status FROM orders o WHERE o.customer_id = c.id AND status = 'a' GROUP BY o.status) FROM customers c WHERE c.id = 1"
+	if got, ok := ogsScalarStr(t, ctx, db, bareSelect); !ok || got != "a" {
+		t.Fatalf("bare SELECT / qualified GROUP BY: got %q (valid=%v), want \"a\"", got, ok)
+	}
+
+	// ORDER BY qualification is symmetric with GROUP BY qualification. These
+	// cases bypass bare output-alias binding via AS chosen, so the raw key must
+	// resolve structurally to the same native producer slot.
+	qualificationCases := []struct {
+		name string
+		q    string
+	}{
+		{"qualified_group_bare_order", "SELECT (SELECT o.status AS chosen FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY status DESC LIMIT 1) FROM customers c WHERE c.id = 1"},
+		{"bare_group_qualified_order", "SELECT (SELECT o.status AS chosen FROM orders o WHERE o.customer_id = c.id GROUP BY status ORDER BY o.status DESC LIMIT 1) FROM customers c WHERE c.id = 1"},
+	}
+	for _, tc := range qualificationCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, ok := ogsScalarStr(t, ctx, db, tc.q); !ok || got != "b" {
+				t.Fatalf("%s: got %q (valid=%v), want \"b\"", tc.name, got, ok)
+			}
+		})
+	}
+}
+
+// TestFDB_OrderedGroupedScalarSubquery_GroupKeyQualificationSymmetry pins the
+// same structural ORDER BY identity for real aggregates. DESC must select the
+// status-b group (SUM=20) regardless of which spelling carries the redundant
+// single-source qualifier.
+func TestFDB_OrderedGroupedScalarSubquery_GroupKeyQualificationSymmetry(t *testing.T) {
+	t.Parallel()
+	db, ctx := ogsDB(t, "gk_qualification")
+	cases := []struct {
+		name string
+		q    string
+	}{
+		{"qualified_group_bare_order", "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY status DESC LIMIT 1) FROM customers c WHERE c.id = 1"},
+		{"bare_group_qualified_order", "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY status ORDER BY o.status DESC LIMIT 1) FROM customers c WHERE c.id = 1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, ok := ogsScalar(t, ctx, db, tc.q); !ok || got != 20 {
+				t.Fatalf("%s: got %d (valid=%v), want 20", tc.name, got, ok)
+			}
+		})
+	}
+}
+
+// TestFDB_OrderedGroupedScalarSubquery_QualifiedJoinKeyIdentity pins the
+// private aggregate ABI as [a.k,b.k,SUM(a.amount)] for both real aggregates and
+// zero-call (group-key-only) aggregates. The joined sources intentionally use
+// the same bare key name with opposite ordering: any name-based collapse reads
+// the wrong native slot and returns a different, valid-looking scalar.
+func TestFDB_OrderedGroupedScalarSubquery_QualifiedJoinKeyIdentity(t *testing.T) {
+	t.Parallel()
+	db, ctx := ogsDB(t, "join_key_identity")
+	from := " FROM ga a JOIN gb b ON b.a_id = a.id WHERE a.customer_id = c.id GROUP BY a.k, b.k "
+	outer := " FROM customers c WHERE c.id = 1"
+	cases := []struct {
+		name string
+		expr string
+		want int64
+	}{
+		// a.k asc picks (1,20,300); b.k asc picks (2,10,100).
+		{"aggregate_order_a_key", "SUM(a.amount)" + from + "ORDER BY a.k LIMIT 1", 300},
+		{"aggregate_order_b_key", "SUM(a.amount)" + from + "ORDER BY b.k LIMIT 1", 100},
+		// The selected group key is native slot 1, not the scalar seed's
+		// assumed slot 0. The exact one-field Project must expose b.k=20.
+		{"group_key_only_second_native_slot", "b.k" + from + "ORDER BY a.k LIMIT 1", 20},
+		// A qualified source reference must never fall back to the selected
+		// aggregate's colliding bare alias K. Qualified a.k picks SUM=300,
+		// whereas a mistaken alias-map fallback would order by SUM and pick 100.
+		// (Bare alias binding itself is covered by ByAlias above; bare K is
+		// intentionally source-ambiguous in this joined fixture.)
+		{"qualified_key_beats_colliding_alias", "SUM(a.amount) AS k" + from + "ORDER BY a.k LIMIT 1", 300},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := "SELECT (SELECT " + tc.expr + ")" + outer
+			if got, ok := ogsScalar(t, ctx, db, q); !ok || got != tc.want {
+				t.Fatalf("%s: got %d (valid=%v), want %d; query=%s", tc.name, got, ok, tc.want, q)
+			}
+		})
+	}
+
+	t.Run("repeated_equivalent_single_source_keys", func(t *testing.T) {
+		// Qualified a.k and bare k resolve to the same producer value on this
+		// single-source inner. Both native grouping slots are equal, so ORDER BY
+		// bare k may deterministically use the first. This must not weaken the
+		// joined a.k/b.k distinction proved above.
+		q := "SELECT (SELECT SUM(a.amount) FROM ga a WHERE a.customer_id = c.id GROUP BY a.k, k ORDER BY k LIMIT 1)" + outer
+		if got, ok := ogsScalar(t, ctx, db, q); !ok || got != 300 {
+			t.Fatalf("repeated equivalent keys: got %d (valid=%v), want 300; query=%s", got, ok, q)
+		}
+	})
 }
 
 // TestFDB_OrderedGroupedScalarSubquery_Determinism runs the ordered subquery
-// repeatedly — the whole point is a stable group choice.
+// repeatedly — the written one-row page must select the same group every time.
 func TestFDB_OrderedGroupedScalarSubquery_Determinism(t *testing.T) {
 	t.Parallel()
 	db, ctx := ogsDB(t, "det")

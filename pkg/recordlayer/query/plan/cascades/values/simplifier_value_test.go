@@ -196,7 +196,7 @@ func TestSimplifyValue_NULLPropagatesThroughArith(t *testing.T) {
 
 func TestSimplifyValue_PromoteFold(t *testing.T) {
 	t.Parallel()
-	// PROMOTE(1+2, TypeFloat) → row-carrier float64(3) with Typ=TypeFloat.
+	// PROMOTE(1+2, NullableDouble) → row-carrier float64(3) with Typ=NullableDouble.
 	// Mirrors TestSimplifyValue_CastFold for the PromoteValue arm of
 	// isFoldableComposite / simplifyChildren — keeps both cast-like
 	// shapes covered before either grows real wire-up.
@@ -206,7 +206,7 @@ func TestSimplifyValue_PromoteFold(t *testing.T) {
 			Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
 			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
 		},
-		TypeFloat,
+		NullableDouble,
 	)
 	got := SimplifyValue(v)
 	cv, ok := got.(*ConstantValue)
@@ -218,16 +218,16 @@ func TestSimplifyValue_PromoteFold(t *testing.T) {
 	if cv.Value != float64(3) {
 		t.Fatalf("Value: got %v (%T), want float64(3)", cv.Value, cv.Value)
 	}
-	if cv.Typ != TypeFloat {
-		t.Fatalf("Typ: got %v, want TypeFloat (preserved from PROMOTE target)", cv.Typ)
+	if cv.Typ != NullableDouble {
+		t.Fatalf("Typ: got %v, want NullableDouble (preserved from PROMOTE target)", cv.Typ)
 	}
 }
 
 func TestSimplifyValue_PromotePartialFold(t *testing.T) {
 	t.Parallel()
-	// PROMOTE(name, TypeFloat) — non-constant child; pointer-equal
+	// PROMOTE(name, NullableDouble) — non-constant child; pointer-equal
 	// short-circuit through simplifyChildren.
-	v := NewPromoteValue(&FieldValue{Field: "name", Typ: TypeInt}, TypeFloat)
+	v := NewPromoteValue(&FieldValue{Field: "name", Typ: TypeInt}, NullableDouble)
 	if got := SimplifyValue(v); got != Value(v) {
 		t.Fatal("PROMOTE(field) should be unchanged")
 	}

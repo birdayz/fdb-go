@@ -74,6 +74,24 @@ func classifyTest(t Test) Outcome {
 	return OutcomeErrorPath
 }
 
+// classifyTests tallies a scenario's cases into a CoverageBucket. This is the ONLY
+// place the per-test classification is folded, so SQL_COVERAGE.md and
+// FEATURE_MATRIX.md cannot report different splits of the same corpus.
+func classifyTests(tests []Test) CoverageBucket {
+	var b CoverageBucket
+	for _, t := range tests {
+		switch classifyTest(t) {
+		case OutcomeSupported:
+			b.Supported++
+		case OutcomeUnsupported:
+			b.Unsupported++
+		case OutcomeErrorPath:
+			b.ErrorPath++
+		}
+	}
+	return b
+}
+
 // CoverageBucket is the per-category (or total) case tally.
 type CoverageBucket struct {
 	Supported   int
@@ -83,6 +101,13 @@ type CoverageBucket struct {
 
 // Total is supported + unsupported + error-path.
 func (b CoverageBucket) Total() int { return b.Supported + b.Unsupported + b.ErrorPath }
+
+// Add folds other into b, bucket by bucket.
+func (b *CoverageBucket) Add(other CoverageBucket) {
+	b.Supported += other.Supported
+	b.Unsupported += other.Unsupported
+	b.ErrorPath += other.ErrorPath
+}
 
 // SupportedPct is the share of cases that are positive (rows-verified)
 // assertions, rounded to one decimal. Returns 0 for an empty bucket.
@@ -134,19 +159,9 @@ func ParseCoverage(dir string) (*CoverageReport, error) {
 			b = &CoverageBucket{}
 			rep.ByCategory[categoryFor(name)] = b
 		}
-		for _, t := range s.Tests {
-			switch classifyTest(t) {
-			case OutcomeSupported:
-				b.Supported++
-				rep.Total.Supported++
-			case OutcomeUnsupported:
-				b.Unsupported++
-				rep.Total.Unsupported++
-			case OutcomeErrorPath:
-				b.ErrorPath++
-				rep.Total.ErrorPath++
-			}
-		}
+		cb := classifyTests(s.Tests)
+		b.Add(cb)
+		rep.Total.Add(cb)
 	}
 	return rep, nil
 }

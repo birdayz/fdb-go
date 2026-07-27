@@ -121,6 +121,231 @@ func TestImplementNestedLoopJoin_PlanOutput(t *testing.T) {
 	t.Logf("NLJ Explain: %s", explain)
 }
 
+// TestImplementNestedLoopJoin_StrictSingleForcesCompensatedFlatMap pins the
+// semantic carrier used by correlated scalar subqueries. A later simplification
+// can remove the inner plan's last syntactic reference to the outer row (for
+// example, `inner.fk = outer.id OR TRUE`), but that must not make the
+// strict-single edge eligible for the ordinary materialized NLJ path: that path
+// has no at-most-one-row check and would silently fan out the outer row.
+//
+// The edge flag is the durable contract. Even with two completely independent
+// scan references, it must force the existing FlatMap + strict
+// FirstOrDefault compensation and must produce no unwrapped NLJ alternative.
+func TestImplementNestedLoopJoin_StrictSingleForcesCompensatedFlatMap(t *testing.T) {
+	t.Parallel()
+
+	outerAlias := values.NamedCorrelationIdentifier("O")
+	innerAlias := values.NamedCorrelationIdentifier("I")
+
+	outerLogical := expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, values.UnknownType)
+	outerRef := expressions.InitialOf(outerLogical)
+	outerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"OUTER"}, values.UnknownType, false))
+
+	innerLogical := expressions.NewFullUnorderedScanExpression([]string{"INNER"}, values.UnknownType)
+	innerRef := expressions.InitialOf(innerLogical)
+	innerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"INNER"}, values.UnknownType, false))
+
+	outerQ := expressions.NamedForEachQuantifier(outerAlias, outerRef)
+	innerQ := expressions.NamedForEachStrictSingleQuantifier(innerAlias, innerRef)
+	sel := expressions.NewSelectExpressionWithJoinType(
+		outerQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{outerQ, innerQ},
+		nil,
+		[]string{"O", "I"},
+		expressions.JoinLeftOuter,
+	)
+
+	results := FireExpressionRule(NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+	if len(results) == 0 {
+		t.Fatal("strict-single select yielded no physical implementation")
+	}
+
+	foundStrictFlatMap := false
+	for _, result := range results {
+		if _, ok := result.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+			t.Fatalf("strict-single select yielded an unwrapped materialized NLJ: %T", result)
+		}
+		flatMap, ok := result.(*plans.RecordQueryFlatMapPlan)
+		if !ok {
+			continue
+		}
+		hasStrictFirstOrDefault := false
+		plans.Walk(flatMap, func(plan plans.RecordQueryPlan) bool {
+			if first, ok := plan.(*plans.RecordQueryFirstOrDefaultPlan); ok && first.IsStrict() {
+				hasStrictFirstOrDefault = true
+			}
+			return true
+		})
+		if hasStrictFirstOrDefault {
+			foundStrictFlatMap = true
+		}
+	}
+	if !foundStrictFlatMap {
+		t.Fatalf("strict-single select yielded no FlatMap with strict FirstOrDefault; results: %d", len(results))
+	}
+}
+
+// TestImplementNestedLoopJoin_DualStrictSingleFailsClosed covers a malformed
+// shape the SQL translator does not emit: both legs claim scalar cardinality.
+// The current FlatMap compensation can enforce one inner leg per outer, not two
+// mutually inner legs. The rule must therefore decline the shape rather than
+// fall back to an ordinary materialized NLJ that enforces neither contract.
+func TestImplementNestedLoopJoin_DualStrictSingleFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	leftAlias := values.NamedCorrelationIdentifier("L")
+	rightAlias := values.NamedCorrelationIdentifier("R")
+
+	leftRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"LEFT"}, values.UnknownType))
+	leftRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"LEFT"}, values.UnknownType, false))
+	rightRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"RIGHT"}, values.UnknownType))
+	rightRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"RIGHT"}, values.UnknownType, false))
+
+	leftQ := expressions.NamedForEachStrictSingleQuantifier(leftAlias, leftRef)
+	rightQ := expressions.NamedForEachStrictSingleQuantifier(rightAlias, rightRef)
+	sel := expressions.NewSelectExpressionWithJoinType(
+		leftQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{leftQ, rightQ},
+		nil,
+		[]string{"L", "R"},
+		expressions.JoinInner,
+	)
+
+	results := FireExpressionRule(NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+	if len(results) != 0 {
+		for _, result := range results {
+			if _, ok := result.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+				t.Fatalf("dual strict-single select yielded an unwrapped materialized NLJ: %T", result)
+			}
+		}
+		t.Fatalf("dual strict-single select must fail closed, got %d implementation(s)", len(results))
+	}
+}
+
+// TestImplementNestedLoopJoin_StrictSingleUnsupportedShapesFailClosed pins the
+// rule's global carrier invariant. StrictSingle has exactly one implementation:
+// LEFT OUTER [plain outer, strict right]. Other join kinds, orientations, and
+// special arms must not consume or materialize a flagged edge without the exact
+// scalar-subquery semantics owned by that path.
+func TestImplementNestedLoopJoin_StrictSingleUnsupportedShapesFailClosed(t *testing.T) {
+	t.Parallel()
+
+	newScanRef := func(name string) *expressions.Reference {
+		ref := expressions.InitialOf(
+			expressions.NewFullUnorderedScanExpression([]string{name}, values.UnknownType))
+		ref.InsertFinal(plans.NewRecordQueryScanPlan([]string{name}, values.UnknownType, false))
+		return ref
+	}
+	assertNoImplementation := func(t *testing.T, sel *expressions.SelectExpression) {
+		t.Helper()
+		results := FireExpressionRule(NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel))
+		if len(results) != 0 {
+			t.Fatalf("strict-single unsupported shape yielded %d implementation(s), including %T",
+				len(results), results[0])
+		}
+	}
+
+	t.Run("full_outer", func(t *testing.T) {
+		leftQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithJoinType(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ},
+			nil,
+			[]string{"L", "R"},
+			expressions.JoinFullOuter,
+		))
+	})
+
+	t.Run("inner", func(t *testing.T) {
+		leftQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithJoinType(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ},
+			nil,
+			[]string{"L", "R"},
+			expressions.JoinInner,
+		))
+	})
+
+	t.Run("cross", func(t *testing.T) {
+		leftQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithJoinType(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ},
+			nil,
+			[]string{"L", "R"},
+			expressions.JoinCross,
+		))
+	})
+
+	t.Run("strict_left", func(t *testing.T) {
+		leftQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithJoinType(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ},
+			nil,
+			[]string{"L", "R"},
+			expressions.JoinLeftOuter,
+		))
+	})
+
+	t.Run("null_on_empty_left", func(t *testing.T) {
+		leftQ := expressions.NamedForEachNullOnEmptyQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithJoinType(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ},
+			nil,
+			[]string{"L", "R"},
+			expressions.JoinLeftOuter,
+		))
+	})
+
+	t.Run("three_quantifier_existential", func(t *testing.T) {
+		leftQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		rightQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("R"), newScanRef("RIGHT"))
+		existAlias := values.NamedCorrelationIdentifier("E")
+		existQ := expressions.NamedExistentialQuantifier(existAlias, newScanRef("EXISTS"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithAliases(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, rightQ, existQ},
+			[]predicates.QueryPredicate{predicates.NewExistentialAlias(existAlias)},
+			[]string{"L", "R", "E"},
+		))
+	})
+
+	t.Run("two_quantifier_existential", func(t *testing.T) {
+		leftQ := expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier("L"), newScanRef("LEFT"))
+		existAlias := values.NamedCorrelationIdentifier("E")
+		existQ := expressions.NamedExistentialQuantifier(existAlias, newScanRef("EXISTS"))
+		assertNoImplementation(t, expressions.NewSelectExpressionWithAliases(
+			leftQ.GetFlowedObjectValue(),
+			[]expressions.Quantifier{leftQ, existQ},
+			[]predicates.QueryPredicate{predicates.NewExistentialAlias(existAlias)},
+			[]string{"L", "E"},
+		))
+	})
+}
+
 // TestImplementNestedLoopJoin_ExistsShortcutRejectsFanOutCandidate pins the
 // raw correlated-index shortcut used by nested EXISTS. A composite
 // (FK, TAGS FAN_OUT) index has no entry when TAGS is empty, even when FK
@@ -237,5 +462,340 @@ func TestImplementNestedLoopJoin_ExistsShortcutRejectsFanOutCandidate(t *testing
 	})
 	if len(selected) != 1 || selected[0] != "INNER$fk_status" {
 		t.Fatalf("EXISTS shortcut selected indexes %v, want only the non-fan-out FK index", selected)
+	}
+}
+
+// TestMaterializedNLJOrdinalLayoutMatches pins a real production defect: a
+// ChildrenAsSet-swapped firing of ImplementNestedLoopJoinRule (the
+// join-commutativity exploration in fireExprRuleOnMember,
+// expression_matcher.go) reuses the logical select's resultValue UNCHANGED
+// under the swapped (outer, inner) assignment
+// (expressions.SelectExpression.WithSwappedQuantifiers). That is sound for
+// an ordinary correlation-addressed resultValue (order-independent by
+// design) but NOT for a pristine ORDINAL SEED — a RecordConstructorValue of
+// baked FrontierPinned FieldValues whose ordinals assume ONE FIXED physical
+// field order, baked when the seed was first built. The materialized NLJ's
+// own executor (executor.go's concatLegPositionals/mergeRows) ALWAYS
+// concatenates outer-then-inner, so a swapped orientation whose seed still
+// assumes the OTHER leg first silently (or loudly) misreads the runtime
+// merged row.
+//
+// This was found via TestFDB_LeftJoinExistsResidual/I1 going from a correct
+// empty result to a hard "correlated FieldValue ID (correlation E) evaluated
+// against an unbound/unrecognized context" runtime error once a cost-model
+// fix (RFC-192 follow-up) made the previously-never-cheapest swapped
+// orientation the memo's winner for the first time — the bug was always
+// latent, just unreachable before. A first fix attempt compared alias
+// STRINGS (sel.GetSourceAliases() falling back to the quantifier's own
+// GetAlias()) and regressed two OTHER real things: several RIGHT-OUTER-JOIN
+// queries (whose quantifier identity is the synthetic one while
+// sourceAliases carries the real leg name — the opposite divergence
+// direction) and, worse, TestFDB_QuotedMachineShapedAliases/join_legs — a
+// user alias quoted as "q$2" is byte-identical to a synthetic
+// UniqueCorrelationIdentifier that happens to reach counter 2
+// (values.CorrelationIdentifier is a bare wrapped string), so alias-string
+// guessing is fundamentally unsafe. The final fix compares leg ROW SHAPE
+// (RecordName + fields) instead — never a name.
+func TestMaterializedNLJOrdinalLayoutMatches(t *testing.T) {
+	t.Parallel()
+
+	t1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
+	t2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
+	seed := reconstructFoldStep1Seed(t1, t2, "T1", "T2")
+	if seed == nil {
+		t.Fatal("setup: expected reconstructFoldStep1Seed to build a seed for two scan legs")
+	}
+	// Sanity-check the setup matches TestReconstructFoldStep1Seed's own pin:
+	// T1 at offset 0 (2 columns), T2 at offset 2.
+	if w, _ := ordinalSeedLegWindowsOf(seed); w == nil || w["T1"].Offset != 0 || w["T2"].Offset != 2 {
+		t.Fatalf("setup: unexpected seed layout %+v", w)
+	}
+
+	t.Run("matching orientation passes", func(t *testing.T) {
+		t.Parallel()
+		if !materializedNLJOrdinalLayoutMatches(seed, t1, t2) {
+			t.Fatal("T1-outer/T2-inner matches the seed's own T1@0,T2@2 layout — must pass")
+		}
+	})
+
+	t.Run("swapped orientation is rejected", func(t *testing.T) {
+		t.Parallel()
+		if materializedNLJOrdinalLayoutMatches(seed, t2, t1) {
+			t.Fatal("T2-outer/T1-inner contradicts the seed's T1-first layout — must be rejected")
+		}
+	})
+
+	t.Run("non-ordinal-seed resultValue is always order-independent", func(t *testing.T) {
+		t.Parallel()
+		lazy := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("X"))
+		if !materializedNLJOrdinalLayoutMatches(lazy, t2, t1) {
+			t.Fatal("a non-ordinal-seed (correlation-addressed) resultValue must match regardless of orientation")
+		}
+	})
+
+	t.Run("adversarial quoted alias shaped like the machine namespace never matters", func(t *testing.T) {
+		t.Parallel()
+		// The real production regression: a user alias quoted as "q$2" is
+		// byte-identical, as a values.CorrelationIdentifier, to a synthetic
+		// UniqueCorrelationIdentifier that happens to reach counter 2 — an
+		// alias-string-based check cannot tell them apart. Naming the legs
+		// "Q$1"/"Q$2" here must not change the verdict at all, because this
+		// check never looks at a name.
+		q1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
+		q2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
+		adversarialSeed := reconstructFoldStep1Seed(q1, q2, "Q$1", "Q$2")
+		if adversarialSeed == nil {
+			t.Fatal("setup: expected a seed for the adversarially-named legs")
+		}
+		if !materializedNLJOrdinalLayoutMatches(adversarialSeed, q1, q2) {
+			t.Fatal("matching orientation must pass regardless of the legs' alias spelling")
+		}
+		if materializedNLJOrdinalLayoutMatches(adversarialSeed, q2, q1) {
+			t.Fatal("swapped orientation must still be rejected regardless of the legs' alias spelling")
+		}
+	})
+
+	t.Run("cannot verify structurally defaults to true", func(t *testing.T) {
+		t.Parallel()
+		// A plan whose own GetResultType() isn't a (Relation-of-)RecordType
+		// (here: nil, standing in for an opaque/erased result) can't be
+		// compared against the seed's leg shapes at all — under-detecting is
+		// the documented safe default.
+		if !materializedNLJOrdinalLayoutMatches(seed, nil, t2) {
+			t.Fatal("an unverifiable outer plan must default to true (under-detection is safe)")
+		}
+	})
+
+	t.Run("self-join (identical leg shapes) is always safe", func(t *testing.T) {
+		t.Parallel()
+		s1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
+		s2 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
+		selfSeed := reconstructFoldStep1Seed(s1, s2, "A", "B")
+		if selfSeed == nil {
+			t.Fatal("setup: expected a seed for two same-shaped legs")
+		}
+		if !materializedNLJOrdinalLayoutMatches(selfSeed, s1, s2) || !materializedNLJOrdinalLayoutMatches(selfSeed, s2, s1) {
+			t.Fatal("identical leg shapes are structurally indistinguishable — both orientations must pass")
+		}
+	})
+}
+
+// fusedNestedFieldValue builds a FUSED baked nested reference (Field=leaf,
+// Child=the bare source QOV directly, Resolved carrying a TWO-accessor
+// [parent, leaf] path) — the shape a baked `alias.parent.leaf` reference
+// takes, as opposed to a flat `alias.leaf` top-level column. Mirrors
+// fkChainCorrelatedNestedEq (fk_chain_cardinality_test.go), which pins the
+// identical hole in the sibling fk-chain cardinality cap.
+func fusedNestedFieldValue(alias values.CorrelationIdentifier, parent, leaf string) *values.FieldValue {
+	return &values.FieldValue{
+		Field: leaf, Typ: values.UnknownType,
+		Child: values.NewQuantifiedObjectValue(alias),
+		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
+			{Field: parent, Ordinal: 0},
+			{Field: leaf, Ordinal: 1},
+		}},
+	}
+}
+
+// TestFieldValueAliasAndCol_DeclinesFusedNestedSameLeafName pins the
+// wrong-rows hole fixed in fieldValueAliasAndCol: a fused multi-accessor bake
+// (Child=QOV directly, Resolved=[ADDRESS, ID], Field="ID") passes the
+// Child==QOV check while fv.Field is only the LEAF name — a nested
+// `i.address.id` must not be reported as a bare top-level "I.ID" reference,
+// or matchJoinPKPredicate would mistake it for a real PK equi-join.
+func TestFieldValueAliasAndCol_DeclinesFusedNestedSameLeafName(t *testing.T) {
+	t.Parallel()
+
+	fused := fusedNestedFieldValue(values.NamedCorrelationIdentifier("I"), "ADDRESS", "ID")
+	alias, col := fieldValueAliasAndCol(fused)
+	if alias != "" || col != "" {
+		t.Fatalf(`fieldValueAliasAndCol(fused I.ADDRESS.ID) = (%q, %q), want ("", "") — `+
+			"a nested reference must never impersonate a bare top-level column sharing its leaf name", alias, col)
+	}
+}
+
+// TestFieldValueAliasAndCol_AcceptsBareTopLevelColumn is the accept-direction
+// companion: a genuine bare top-level reference (Child=QOV, no Resolved path,
+// or a single-accessor Resolved path) must still resolve to its alias and
+// column — the fix must decline ONLY the fused nested shape, not every
+// Child=QOV reference.
+func TestFieldValueAliasAndCol_AcceptsBareTopLevelColumn(t *testing.T) {
+	t.Parallel()
+
+	bare := values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("I")), "ID", values.UnknownType)
+	alias, col := fieldValueAliasAndCol(bare)
+	if alias != "I" || col != "ID" {
+		t.Fatalf(`fieldValueAliasAndCol(bare I.ID) = (%q, %q), want ("I", "ID") — `+
+			"the fix must not over-decline a genuine bare top-level reference", alias, col)
+	}
+}
+
+// buildExistsPKShortcutScenario assembles `SELECT * FROM OUTER O WHERE
+// EXISTS (SELECT 1 FROM INNER I WHERE <innerOperand> = O.ID)` — the shape
+// tryExistsFlatMap's PK-shortcut branch tries to rewrite into a correlated
+// PK-narrowed scan. The inner table's declared primary key is the flat
+// top-level column "ID" (via pkGateTestCtx).
+func buildExistsPKShortcutScenario(t *testing.T, innerOperand *values.FieldValue) []expressions.RelationalExpression {
+	t.Helper()
+
+	outerAlias := values.NamedCorrelationIdentifier("O")
+	innerAlias := values.NamedCorrelationIdentifier("I")
+
+	outerScan := expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, values.UnknownType)
+	outerRef := expressions.InitialOf(outerScan)
+	outerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"OUTER"}, values.UnknownType, false))
+
+	innerScan := expressions.NewFullUnorderedScanExpression([]string{"INNER"}, values.UnknownType)
+	innerRef := expressions.InitialOf(innerScan)
+	innerRef.InsertFinal(plans.NewRecordQueryScanPlan([]string{"INNER"}, values.UnknownType, false))
+
+	outerQ := expressions.NamedForEachQuantifier(outerAlias, outerRef)
+	innerQ := expressions.NamedExistentialQuantifier(innerAlias, innerRef)
+
+	outerID := values.NewFieldValue(values.NewQuantifiedObjectValue(outerAlias), "ID", values.UnknownType)
+	joinPredicate := predicates.NewComparisonPredicate(
+		innerOperand,
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: outerID},
+	)
+	selectExpr := expressions.NewSelectExpressionWithAliases(
+		values.NewQuantifiedObjectValue(outerAlias),
+		[]expressions.Quantifier{outerQ, innerQ},
+		[]predicates.QueryPredicate{
+			joinPredicate,
+			predicates.NewExistentialAlias(innerAlias),
+		},
+		[]string{"O", "I"},
+	)
+
+	ctx := &pkGateTestCtx{pk: []string{"ID"}}
+	return FireExpressionRuleWithMemo(
+		NewImplementNestedLoopJoinRule(),
+		expressions.InitialOf(selectExpr),
+		ctx,
+		nil,
+	)
+}
+
+// anyScanCarriesComparisons reports whether any RecordQueryScanPlan reachable
+// from any produced alternative carries non-empty ScanComparisons — the
+// marker that the EXISTS PK shortcut fired and narrowed the inner scan to a
+// correlated PK probe (WithScanComparisons is the shortcut's only producer of
+// scan comparisons in this scenario: both leaf scans start comparison-free).
+func anyScanCarriesComparisons(t *testing.T, results []expressions.RelationalExpression) bool {
+	t.Helper()
+	found := false
+	for _, r := range results {
+		rp, ok := r.(plans.RecordQueryPlan)
+		if !ok {
+			continue
+		}
+		plans.Walk(rp, func(p plans.RecordQueryPlan) bool {
+			if sp, ok := p.(*plans.RecordQueryScanPlan); ok && len(sp.GetScanComparisons()) > 0 {
+				found = true
+			}
+			return true
+		})
+	}
+	return found
+}
+
+// TestImplementNestedLoopJoin_ExistsPKShortcutDeclinesFusedNestedSameLeafName
+// pins the wrong-rows hazard fieldValueAliasAndCol's bare-column allowlist
+// guards against at the RULE level, not just the matcher unit: an EXISTS join
+// predicate whose INNER operand is a FUSED nested reference (i.address.id)
+// sharing its LEAF name with the inner table's own top-level primary key
+// ("ID") must NOT be mistaken for a PK equi-join and used to build a
+// correlated PK-narrowed scan — that scan would filter on the top-level ID
+// column while the query actually asked about a nested field, silently
+// changing which rows the EXISTS reports as present.
+func TestImplementNestedLoopJoin_ExistsPKShortcutDeclinesFusedNestedSameLeafName(t *testing.T) {
+	t.Parallel()
+
+	innerNestedID := fusedNestedFieldValue(values.NamedCorrelationIdentifier("I"), "ADDRESS", "ID")
+	results := buildExistsPKShortcutScenario(t, innerNestedID)
+	if len(results) == 0 {
+		t.Fatal("setup: expected at least one physical alternative from ImplementNestedLoopJoinRule")
+	}
+	if anyScanCarriesComparisons(t, results) {
+		t.Fatal("EXISTS PK shortcut fired on a fused nested reference sharing the PK's leaf name — " +
+			"built a correlated PK-narrowed scan that filters the WRONG column (wrong EXISTS rows)")
+	}
+}
+
+// TestImplementNestedLoopJoin_ExistsPKShortcutFiresOnBareTopLevelColumn is the
+// accept-direction companion at the rule level: a genuine bare top-level PK
+// join (i.id = o.id) must still take the correlated PK-shortcut fast path —
+// proving the fix declines ONLY the fused nested shape, not the ordinary case
+// the shortcut exists to serve.
+func TestImplementNestedLoopJoin_ExistsPKShortcutFiresOnBareTopLevelColumn(t *testing.T) {
+	t.Parallel()
+
+	innerID := values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("I")), "ID", values.UnknownType)
+	results := buildExistsPKShortcutScenario(t, innerID)
+	if len(results) == 0 {
+		t.Fatal("setup: expected at least one physical alternative from ImplementNestedLoopJoinRule")
+	}
+	if !anyScanCarriesComparisons(t, results) {
+		t.Fatal("EXISTS PK shortcut did not fire on a genuine bare top-level PK join — the fix must not over-decline")
+	}
+}
+
+// TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName pins the same
+// bare-column-allowlist hole in buriedLegOrdinalLayout's own leaf-name keying:
+// slot 0 is a FUSED nested reference (leg.address.id, leaf "ID"); slot 1 is
+// the leg's GENUINE bare "leg.id" column. Both would key to "LEG.ID" under a
+// leaf-name-only read, and "first occurrence wins" would let the fused slot's
+// ordinal (0) silently answer for the real bare column, misdirecting any
+// buried-leg rebase that looks up "LEG.ID" to the wrong RC slot. The fused
+// slot must be skipped so "LEG.ID" maps to its one genuine owner, slot 1.
+func TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName(t *testing.T) {
+	t.Parallel()
+
+	leg := values.NamedCorrelationIdentifier("LEG")
+	fused := fusedNestedFieldValue(leg, "ADDRESS", "ID")
+	bare := values.NewFieldValue(values.NewQuantifiedObjectValue(leg), "ID", values.UnknownType)
+
+	rc := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "F0", Value: fused},
+		values.RecordConstructorField{Name: "F1", Value: bare},
+	)
+
+	outer := plans.NewRecordQueryScanPlan([]string{"OUTER"}, values.UnknownType, false)
+	inner := plans.NewRecordQueryScanPlan([]string{"INNER"}, values.UnknownType, false)
+	fm := plans.NewRecordQueryFlatMapPlan(outer, inner, leg, values.NamedCorrelationIdentifier("i"), rc, false)
+
+	layout := buriedLegOrdinalLayout(fm)
+	if layout == nil {
+		t.Fatal("setup: expected a non-nil layout")
+	}
+	ord, ok := layout["LEG.ID"]
+	if !ok {
+		t.Fatal(`expected key "LEG.ID" to be present from the genuine bare field, got missing`)
+	}
+	if ord != 1 {
+		t.Fatalf(`layout["LEG.ID"] = %d, want 1 (the genuine bare "leg.id" field at slot 1) — `+
+			"the fused nested field at slot 0 must not have claimed this key first", ord)
+	}
+}
+
+// TestRebaseOuterLegValue_DeclinesFusedNestedSameLeafName pins the same hole
+// in rebaseOuterLegValue's own leg-match arm: a fused nested outer reference
+// (leg.address.id) whose leaf name ("ID") collides with a plain column must
+// not be rewritten into the qualified key "LEG.ID" — that would silently
+// discard the ADDRESS accessor and re-anchor the predicate onto the WRONG
+// column of the merged row. The node must come back unchanged (declined),
+// exactly like any other shape this rebase does not recognize.
+func TestRebaseOuterLegValue_DeclinesFusedNestedSameLeafName(t *testing.T) {
+	t.Parallel()
+
+	leg := "LEG"
+	fused := fusedNestedFieldValue(values.NamedCorrelationIdentifier(leg), "ADDRESS", "ID")
+	mergedCorr := values.NamedCorrelationIdentifier("MERGED")
+
+	got := rebaseOuterLegValue(fused, []string{leg}, mergedCorr, nil)
+	gotFV, ok := got.(*values.FieldValue)
+	if !ok || gotFV != fused {
+		t.Fatalf("rebaseOuterLegValue(fused LEG.ADDRESS.ID) = %#v, want the ORIGINAL unrewritten node — "+
+			"a nested reference must never be re-anchored onto a colliding leaf-name qualified key", got)
 	}
 }

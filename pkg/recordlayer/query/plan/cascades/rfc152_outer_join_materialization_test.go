@@ -96,6 +96,46 @@ func TestRFC152_RewriteOuterJoinYieldsNullOnEmpty(t *testing.T) {
 	}
 }
 
+func TestRewriteOuterJoin_StrictSingleFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	aliasA := values.NamedCorrelationIdentifier("A")
+	aliasB := values.NamedCorrelationIdentifier("B")
+	scanARef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType))
+	scanBRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType))
+	flagField := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(aliasA), "flag", values.UnknownType)
+	pred := predicates.NewComparisonPredicate(
+		flagField,
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+	)
+
+	for _, strictSide := range []string{"preserved", "null_supplying"} {
+		t.Run(strictSide, func(t *testing.T) {
+			qA := expressions.NamedForEachQuantifier(aliasA, scanARef)
+			qB := expressions.NamedForEachQuantifier(aliasB, scanBRef)
+			if strictSide == "preserved" {
+				qA = expressions.NamedForEachStrictSingleQuantifier(aliasA, scanARef)
+			} else {
+				qB = expressions.NamedForEachStrictSingleQuantifier(aliasB, scanBRef)
+			}
+			sel := expressions.NewSelectExpressionWithJoinType(
+				qA.GetFlowedObjectValue(),
+				[]expressions.Quantifier{qA, qB},
+				[]predicates.QueryPredicate{pred},
+				[]string{"A", "B"},
+				expressions.JoinLeftOuter,
+			)
+			yielded := FireExpressionRule(NewRewriteOuterJoinRule(), expressions.InitialOf(sel))
+			if len(yielded) != 0 {
+				t.Fatalf("strict-single LEFT select yielded %d outer-join rewrite(s), want zero", len(yielded))
+			}
+		})
+	}
+}
+
 // TestRewriteOuterJoinDeclinesFullOuter pins that RewriteOuterJoinRule
 // yields NOTHING for a FULL OUTER SelectExpression. The fixture is
 // deliberately the EXACT shape the LEFT-OUTER test above fires on — 2

@@ -1,6 +1,10 @@
 package embedded
 
-import "testing"
+import (
+	"testing"
+
+	"fdb.dev/pkg/relational/api"
+)
 
 // planCacheHitsSame reports whether two (scope, sql) pairs land on the same
 // cache entry — the ground truth for injectivity/scoping, exercised through
@@ -68,19 +72,84 @@ func TestPlanCacheKey_SchemaScoped(t *testing.T) {
 
 	sql := canonicalTextOf(parseQuery(t, "SELECT id FROM orders"))
 
-	if planCacheHitsSame(t, planCacheScope("SCHEMA_A", 0), sql, planCacheScope("SCHEMA_B", 0), sql) {
+	if planCacheHitsSame(t, planCacheScope("SCHEMA_A", 0, ""), sql, planCacheScope("SCHEMA_B", 0, ""), sql) {
 		t.Fatal("same SQL under different schemas shares a cache entry — SET SCHEMA staleness")
 	}
-	if planCacheHitsSame(t, planCacheScope("SCHEMA_A", 1), sql, planCacheScope("SCHEMA_A", 2), sql) {
+	if planCacheHitsSame(t, planCacheScope("SCHEMA_A", 1, ""), sql, planCacheScope("SCHEMA_A", 2, ""), sql) {
 		t.Fatal("same SQL under different metadata versions shares a cache entry")
 	}
 	// case-distinct schemas are DISTINCT (the scope is not folded).
-	if planCacheHitsSame(t, planCacheScope("s", 0), sql, planCacheScope("S", 0), sql) {
+	if planCacheHitsSame(t, planCacheScope("s", 0, ""), sql, planCacheScope("S", 0, ""), sql) {
 		t.Fatal("case-distinct schemas `s` and `S` collided — scope was normalized (wrong-schema plan)")
 	}
 	// Scope must not bleed into query text: schema "A" + query B... must not
 	// equal schema "" + query AB...
-	if planCacheHitsSame(t, planCacheScope("A", 0), sql, planCacheScope("", 0), "A"+sql) {
+	if planCacheHitsSame(t, planCacheScope("A", 0, ""), sql, planCacheScope("", 0, ""), "A"+sql) {
 		t.Fatal("schema scope bled into query text")
+	}
+}
+
+// TestPlanCacheKey_PlannerOptionsScoped_Injective is the end-to-end proof that
+// the cacheKeyPart injectivity fix actually protects the plan cache: two
+// connections whose DISABLED_PLANNER_RULES option sets differ — one disabling
+// two real rules as separate entries, the other disabling one inert,
+// unrecognized name that happens to spell the same two names joined by a
+// comma — must not serve one connection's cached plan to the other. Before
+// cacheKeyPart length-prefixed its names, both rendered the identical
+// ",PredicatePushDownRule,SelectMergeRule" component and shared one entry: a
+// connection that asked for only the inert name disabled would have been
+// served the plan built with both real rules disabled instead.
+func TestPlanCacheKey_PlannerOptionsScoped_Injective(t *testing.T) {
+	t.Parallel()
+
+	sql := canonicalTextOf(parseQuery(t, "SELECT id FROM orders"))
+
+	twoRealRules := plannerOptionsFrom(api.NewOptionsBuilder().
+		Set(api.OptDisabledPlannerRules, []string{"PredicatePushDownRule", "SelectMergeRule"}).Build())
+	oneInertCommaName := plannerOptionsFrom(api.NewOptionsBuilder().
+		Set(api.OptDisabledPlannerRules, []string{"PredicatePushDownRule,SelectMergeRule"}).Build())
+
+	scopeA := planCacheScope("S", 0, twoRealRules.cacheKeyPart())
+	scopeB := planCacheScope("S", 0, oneInertCommaName.cacheKeyPart())
+
+	if scopeA == scopeB {
+		t.Fatalf("plan-cache scope collides two different DISABLED_PLANNER_RULES option sets: %q", scopeA)
+	}
+	if planCacheHitsSame(t, scopeA, sql, scopeB, sql) {
+		t.Fatal("a connection with two rules disabled and a connection with one inert comma-bearing " +
+			"name disabled share a plan-cache entry — the plan built under one option set would be " +
+			"served to a connection that asked for the other")
+	}
+}
+
+// TestPlanCacheKey_PlannerOptionsScoped_Injective_Colon is the same
+// end-to-end proof as TestPlanCacheKey_PlannerOptionsScoped_Injective, but
+// for a ':' collision rather than a ','  one. It exists because a mutant that
+// drops cacheKeyPart's length prefix but keeps a bare ':' delimiter passes
+// the comma-based test above untouched (':' isn't ','), yet still lets two
+// real rule names disabled as separate entries collide with one inert name
+// that merely CONTAINS a colon — DISABLED_PLANNER_RULES names are
+// user-controlled strings, never validated against the rule set (see
+// optStringSet), so nothing stops a caller from choosing one.
+func TestPlanCacheKey_PlannerOptionsScoped_Injective_Colon(t *testing.T) {
+	t.Parallel()
+
+	sql := canonicalTextOf(parseQuery(t, "SELECT id FROM orders"))
+
+	twoRealRules := plannerOptionsFrom(api.NewOptionsBuilder().
+		Set(api.OptDisabledPlannerRules, []string{"A", "B"}).Build())
+	oneInertColonName := plannerOptionsFrom(api.NewOptionsBuilder().
+		Set(api.OptDisabledPlannerRules, []string{"A:B"}).Build())
+
+	scopeA := planCacheScope("S", 0, twoRealRules.cacheKeyPart())
+	scopeB := planCacheScope("S", 0, oneInertColonName.cacheKeyPart())
+
+	if scopeA == scopeB {
+		t.Fatalf("plan-cache scope collides two different DISABLED_PLANNER_RULES option sets: %q", scopeA)
+	}
+	if planCacheHitsSame(t, scopeA, sql, scopeB, sql) {
+		t.Fatal("a connection with two rules disabled ({A, B}) and a connection with one inert " +
+			"colon-bearing name disabled ({\"A:B\"}) share a plan-cache entry — the plan built under " +
+			"one option set would be served to a connection that asked for the other")
 	}
 }

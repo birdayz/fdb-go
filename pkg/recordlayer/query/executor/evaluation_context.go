@@ -265,7 +265,10 @@ func (tt *TempTable) ReleaseCharges() {
 	}
 }
 
-// GetList returns a snapshot of the temp table contents.
+// GetList returns a COPY of the temp table contents (safe to hold across any
+// later mutation, at the cost of an O(len) copy on every call). Prefer
+// Snapshot for a read that will be held across an unbounded number of future
+// Add calls without needing that copy.
 func (tt *TempTable) GetList() []QueryResult {
 	tt.mu.Lock()
 	defer tt.mu.Unlock()
@@ -274,11 +277,41 @@ func (tt *TempTable) GetList() []QueryResult {
 	return out
 }
 
-// Clear removes all entries from the temp table.
+// Snapshot returns the table's current row slice with NO copy — O(1), just
+// the three-word slice header. This is safe to hold indefinitely (across any
+// number of subsequent Add calls, in particular across a lazily-serialized
+// continuation that may never be read, or read long after further rows were
+// added) because of an invariant the rest of this type maintains: Add only
+// ever appends past the length a Snapshot already captured (so old data a
+// Snapshot exposes is never overwritten by later growth), and Clear/
+// ReplaceList always hand tt.list a FRESH backing array rather than
+// truncating the existing one in place — so nothing this table does after a
+// Snapshot was taken can ever become visible through it. Same principle as
+// mergeSortCursor's per-child continuation snapshot (executor_new_plans.go):
+// a held reference is safe because the type never mutates what it already
+// exposed, only replaces it wholesale.
+//
+// That safety is one-directional: it covers what THIS TYPE does to the
+// backing array, not what a careless caller could do to it. The returned
+// slice aliases tt's own memory — never write through it (no element
+// assignment, no append() within its existing capacity: both land exactly
+// where Add's own next append would write, corrupting rows Add hasn't
+// produced yet). Treat the result as read-only. Call GetList instead if you
+// need a slice you're allowed to mutate.
+func (tt *TempTable) Snapshot() []QueryResult {
+	tt.mu.Lock()
+	defer tt.mu.Unlock()
+	return tt.list
+}
+
+// Clear removes all entries from the temp table. Allocates a fresh backing
+// array (tt.list = nil, not tt.list[:0]) rather than truncating in place —
+// see Snapshot's doc comment for why: reusing the old array would let a
+// still-unread Snapshot silently see whatever level's rows get Add-ed next.
 func (tt *TempTable) Clear() {
 	tt.mu.Lock()
 	defer tt.mu.Unlock()
-	tt.list = tt.list[:0]
+	tt.list = nil
 }
 
 // ReplaceList replaces the temp-table contents with rows that have ALREADY
@@ -288,8 +321,11 @@ func (tt *TempTable) Clear() {
 // non-duplicate subset; re-charging them through Add would double-count the
 // same resident rows. memUsed is monotonic, so the rows dropped by the filter
 // stay charged (a conservative ceiling) — that is intentional and correct.
+// Allocates a fresh backing array for the same reason as Clear (see
+// Snapshot): appending rows[:0] would let a still-unread Snapshot alias this
+// replacement's writes.
 func (tt *TempTable) ReplaceList(rows []QueryResult) {
 	tt.mu.Lock()
 	defer tt.mu.Unlock()
-	tt.list = append(tt.list[:0], rows...)
+	tt.list = append([]QueryResult(nil), rows...)
 }

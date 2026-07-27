@@ -772,17 +772,38 @@ func countClassifiedResidualPredicates(
 	}
 }
 
+// compareRecursiveCTE ranks both sides by recursiveCTERank, so — like
+// compareInPlan/inPlanPenaltyRank and comparePrimaryScanVsIndexScan/
+// primaryVsIndexRankOf — it is antisymmetric by construction and a total
+// preorder on a small integer rank: comparing two per-plan ranks with intCompare
+// can never produce an intransitive tie (CQ-23). The prior form derived its
+// verdict from the PAIR (aDFS&&bLevel / aLevel&&bDFS), which let DFS tie
+// Unclassified, Level tie Unclassified, and DFS still strictly beat Level — an
+// indifference-transitivity violation (a~b, b~c, but not a~c).
 func compareRecursiveCTE(a, b expressions.RelationalExpression) int {
-	aDFS, aLevel := recursiveCTEKind(a)
-	bDFS, bLevel := recursiveCTEKind(b)
+	return intCompare(recursiveCTERank(a), recursiveCTERank(b))
+}
 
-	if aDFS && bLevel {
-		return -1
-	}
-	if aLevel && bDFS {
+// recursiveCTERank is compareRecursiveCTE's intrinsic per-plan rank: 0 for a
+// DFS recursive join, 1 for anything recursiveCTEKind cannot classify
+// (including every ordinary non-recursive-CTE plan — overwhelmingly the common
+// case), 2 for a level-union recursive join. DFS is verified strictly cheaper
+// than Level (recursiveCTEKind's doc comment / RecursiveLevelUnionPlan.HintCost
+// double-charges the level union), so it sits below the unclassified default;
+// Level is the one known-worse shape, so it sits above. An unclassified plan
+// has no informed preference either way, which the middle rank encodes as
+// "loses to a known-good DFS, beats a known-bad Level" rather than tying with
+// both simultaneously.
+func recursiveCTERank(e expressions.RelationalExpression) int {
+	isDFS, isLevel := recursiveCTEKind(e)
+	switch {
+	case isDFS:
+		return 0
+	case isLevel:
+		return 2
+	default:
 		return 1
 	}
-	return 0
 }
 
 // recursiveCTEKind classifies an expression by its CONCRETE recursive-CTE plan
@@ -824,16 +845,35 @@ func recursiveCTEKind(e expressions.RelationalExpression) (isDFS, isLevel bool) 
 	return false, false
 }
 
-// compareInPlan implements Java's flipFlop(compareInOperator(a,b), compareInOperator(b,a)).
-// If variant A is applicable (even if result is 0), variant B is never evaluated.
+// compareInPlan ranks both sides by inPlanPenaltyRank, so it is antisymmetric
+// by construction and is a total preorder on a rank in {0,1} — a legal rung of
+// the lexicographic chain.
+//
+// DELIBERATE DIVERGENCE from Java (PlanningCostModel.compareInOperator /
+// flipFlop), which evaluates the rung for the LEFT argument only and returns a
+// PRESENT 0 for a SARGed IN-plan that flipFlop hands back without asking the
+// reverse question. A present tie must not short-circuit the reverse question:
+// the two orientations then disagree, `less` is false both ways, and the winner
+// falls to a plan-hash coin flip — or, in a fold that compares without a
+// tie-break, to member insertion order — discarding every later rung including
+// the full cost model. Nothing here touches the wire; this is read-side plan
+// choice only. Full derivation, Java file:line evidence and the pair table are
+// in DIVERGENCES.md ("Criterion 6 — IN-plan SARG penalty").
 func compareInPlan(a, b expressions.RelationalExpression, _, _ expressionCounts) int {
-	if cmp, applicable := compareInOperator(a); applicable {
-		return cmp
+	return intCompare(inPlanPenaltyRank(a), inPlanPenaltyRank(b))
+}
+
+// inPlanPenaltyRank is criterion #6's rank: 1 for an IN-plan whose bindings
+// never became search arguments, 0 for everything else — a non-IN plan and a
+// SARGed IN-plan are equally unpenalised, and both fall through to the
+// remaining rungs, which is what Java's Javadoc means by a SARGed in-plan
+// causing "the remainder of the tie-breaking code to be used".
+func inPlanPenaltyRank(e expressions.RelationalExpression) int {
+	penalty, isInPlan := compareInOperator(e)
+	if !isInPlan {
+		return 0
 	}
-	if cmp, applicable := compareInOperator(b); applicable {
-		return -cmp
-	}
-	return 0
+	return penalty
 }
 
 // compareInOperator returns (penalty, applicable). applicable=false means the
@@ -866,86 +906,165 @@ func compareInOperator(expr expressions.RelationalExpression) (int, bool) {
 	return 1, true
 }
 
-// collectSargedAliases walks the physical plan tree and collects all
-// CorrelationIdentifiers that appear in equality comparisons of index
-// scans. For intersection plans, takes the set intersection of children's
-// aliases (only aliases SARGed by ALL legs count). For all other nodes,
-// takes the union. Matches Java's ComparisonsProperty semantics.
+// collectSargedAliases returns the CorrelationIdentifiers that criterion #6
+// counts as search arguments under e: the correlations of the SARGing
+// comparisons the plan tree contributes, in Java's two-stage order — collect
+// the Comparisons first (collectSargedComparisons, mirroring
+// ComparisonsProperty), then derive aliases from the equality ones
+// (PlanningCostModel.compareInOperator's ValueComparison/EQUALS filter).
 func collectSargedAliases(e expressions.RelationalExpression) map[values.CorrelationIdentifier]struct{} {
+	return equalityComparisonAliases(collectSargedComparisons(e))
+}
+
+// collectSargedComparisons walks the physical plan tree and collects the
+// Comparisons bounding its scans. It is Go's only port of
+// ComparisonsProperty.ComparisonsVisitor, and it reproduces two of that
+// visitor's behaviours:
+//
+//   - evaluateAtExpression unions the child results with the node's OWN
+//     comparisons, which it reads off any RecordQueryPlanWithComparisons — every
+//     plan carrying scan comparisons, an index scan and a PRIMARY scan alike.
+//     ScanComparisonProvider is that interface here, so a binding that became a
+//     search argument on a primary-key range scan counts exactly as one on an
+//     index scan does.
+//   - visitRecordQueryIntersectionPlan replaces that union with a retainAll
+//     fold over the legs, so only comparisons carried by ALL legs survive, and
+//     the intersection node contributes none of its own. Dispatched off the
+//     IntersectionExpression marker, as Java dispatches off the visit override.
+//
+// The visitor's remaining behaviours are deliberately NOT reproduced, and the
+// list is open rather than closed — it is what the Java class holds today:
+//
+//   - Unwrapping RecordQueryCoveringIndexPlan has no Go analogue at all:
+//     covering is a flag on the index plan, not a wrapper around it.
+//   - visitRecordQueryScoreForRankPlan REPLACES the child result with the
+//     ranks' comparisons, and visitRecordQueryTextIndexPlan contributes the
+//     text scan's grouping and text comparisons. Go's score-for-rank plan is a
+//     pass-through union here and its text-index plan contributes nothing. Both
+//     are unreachable rather than agreed: neither plan is constructed outside
+//     tests, so no query can reach either arm.
+//   - evaluateAtRef unions ALL members of a Reference; this descends
+//     firstPhysicalChild only. That narrowing is the cost model's convention
+//     for walking a concrete candidate (see concretePlanCounts) and predates
+//     this property.
+//
+// The fold is over COMPARISON OBJECTS, not over the correlation aliases derived
+// from them, and that granularity is load-bearing rather than incidental. The
+// two differ exactly when an intersection's legs bind the same alias through
+// DIFFERENT comparands — a record-typed IN splits `(a, b) IN ((1, 2), ...)`
+// into `a = $x.0` and `b = $x.1`, so a leg on `a` and a leg on `b` share the
+// alias $x while sharing no comparison. Comparison granularity is the one
+// criterion #6 means: it asks whether "the rewritten equality" — one
+// comparison, not one alias — became an index search argument, and under an
+// intersection that equality only bounds the scan if every leg carries it.
+// Alias granularity would answer yes for the record-typed IN above even though
+// neither leg is bounded by the equality the other leg matched.
+func collectSargedComparisons(e expressions.RelationalExpression) []*predicates.Comparison {
 	if e == nil {
 		return nil
 	}
-	if p, ok := e.(*plans.RecordQueryIndexPlan); ok {
-		return equalityAliasesFromRanges(p.GetScanComparisons())
+	if _, isIntersection := e.(properties.IntersectionExpression); isIntersection {
+		return intersectChildComparisons(e)
 	}
-	_, isIntersection := e.(*plans.RecordQueryIntersectionPlan)
-	_, isMultiIntersection := e.(*plans.RecordQueryMultiIntersectionOnValuesPlan)
-	if isIntersection || isMultiIntersection {
-		return intersectChildAliases(e)
-	}
-	out := map[values.CorrelationIdentifier]struct{}{}
+	var out []*predicates.Comparison
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
 		if ref == nil {
 			continue
 		}
 		if child := firstPhysicalChild(ref); child != nil {
-			for alias := range collectSargedAliases(child) {
-				out[alias] = struct{}{}
+			for _, c := range collectSargedComparisons(child) {
+				out = addComparisonToSet(out, c)
 			}
+		}
+	}
+	if p, ok := e.(properties.ScanComparisonProvider); ok {
+		for _, c := range comparisonsFromRanges(p.GetScanComparisons()) {
+			out = addComparisonToSet(out, c)
 		}
 	}
 	return out
 }
 
-func intersectChildAliases(e expressions.RelationalExpression) map[values.CorrelationIdentifier]struct{} {
-	var childSets []map[values.CorrelationIdentifier]struct{}
+func intersectChildComparisons(e expressions.RelationalExpression) []*predicates.Comparison {
+	var childSets [][]*predicates.Comparison
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
 		if ref == nil {
 			continue
 		}
 		if child := firstPhysicalChild(ref); child != nil {
-			childSets = append(childSets, collectSargedAliases(child))
+			childSets = append(childSets, collectSargedComparisons(child))
 		}
 	}
 	if len(childSets) == 0 {
 		return nil
 	}
-	result := make(map[values.CorrelationIdentifier]struct{})
-	for alias := range childSets[0] {
-		inAll := true
-		for _, s := range childSets[1:] {
-			if _, found := s[alias]; !found {
-				inAll = false
-				break
+	result := childSets[0]
+	for _, other := range childSets[1:] {
+		var kept []*predicates.Comparison
+		for _, c := range result {
+			if containsComparison(other, c) {
+				kept = append(kept, c)
 			}
 		}
-		if inAll {
-			result[alias] = struct{}{}
-		}
+		result = kept
 	}
 	return result
 }
 
-func equalityAliasesFromRanges(ranges []*predicates.ComparisonRange) map[values.CorrelationIdentifier]struct{} {
-	out := map[values.CorrelationIdentifier]struct{}{}
+// comparisonsFromRanges is Java's RecordQueryPlanWithComparisons.getComparisons:
+// every Comparison the ranges carry, equalities and inequalities alike. The
+// EQUALS filter belongs at extraction, not here — filtering elementwise before
+// or after the intersection gives the same set, and collecting everything keeps
+// this the plan's comparison property rather than a criterion-#6 special case.
+func comparisonsFromRanges(ranges []*predicates.ComparisonRange) []*predicates.Comparison {
+	var out []*predicates.Comparison
 	for _, cr := range ranges {
-		if cr == nil || !cr.IsEquality() {
+		for _, c := range cr.GetComparisons() {
+			if c == nil {
+				continue
+			}
+			out = addComparisonToSet(out, c)
+		}
+	}
+	return out
+}
+
+// equalityComparisonAliases is compareInOperator's extraction step: keep the
+// equality comparisons, flat-map their correlations.
+func equalityComparisonAliases(comps []*predicates.Comparison) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, c := range comps {
+		if c == nil || c.Type != predicates.ComparisonEquals {
 			continue
 		}
-		eq := cr.GetEqualityComparison()
-		if eq == nil {
-			continue
-		}
-		if eq.Type != predicates.ComparisonEquals {
-			continue
-		}
-		for alias := range eq.GetCorrelatedTo() {
+		for alias := range c.GetCorrelatedTo() {
 			out[alias] = struct{}{}
 		}
 	}
 	return out
+}
+
+// addComparisonToSet appends c unless the slice already holds a comparison
+// equal to it, giving the slice the membership semantics of Java's
+// ImmutableSet<Comparison> — Comparison equality there is semantic
+// (Comparisons.ValueComparison.equals is semanticEquals under the empty alias
+// map), which is what comparisonsEqual implements.
+func addComparisonToSet(set []*predicates.Comparison, c *predicates.Comparison) []*predicates.Comparison {
+	if containsComparison(set, c) {
+		return set
+	}
+	return append(set, c)
+}
+
+func containsComparison(set []*predicates.Comparison, c *predicates.Comparison) bool {
+	for _, e := range set {
+		if comparisonsEqual(e, c) {
+			return true
+		}
+	}
+	return false
 }
 
 func expressionDepth(e expressions.RelationalExpression, match func(expressions.RelationalExpression) bool) int {
@@ -1013,29 +1132,144 @@ func isFetchExpression(e expressions.RelationalExpression) bool {
 	return ok
 }
 
-// comparePrimaryScanVsIndexScan ports Java's comparePrimaryScanToIndexScan
-// (invoked via flipFlop). Only fires when one plan is a singular primary scan
-// and the other is a singular index scan WITH a fetch (non-covering or
-// covering+fetch); a covering index without fetch is strictly better and
-// doesn't enter this path. When it fires it runs the type-filter SARG sub-case
-// (prefer the index when it SARGs strictly more, needing no type filter) and
-// otherwise applies the PREFER_SCAN default — see primaryVsIndexVerdict.
+// comparePrimaryScanVsIndexScan ranks both sides on primaryVsIndexRank, so it
+// is antisymmetric AND transitive by construction — a legal rung of the
+// lexicographic chain.
+//
+// DELIBERATE DIVERGENCE from Java (PlanningCostModel.comparePrimaryScanToIndexScan
+// via flipFlop), whose applicability guard fires only for (lone primary scan)
+// versus (singular index-scan-with-fetch). A pair-restricted criterion is not a
+// total preorder, and the chain composes transitively only if every rung is one.
+// Java's verdicts cannot merely be extended to the abstained pairs, either:
+// restricted to the pairs it DOES adjudicate they already contain a cycle,
+// because the type-filter sub-case decides on the SUBSET relation between the
+// two sides' search-argument sets, and a subset relation is a partial order
+// that no total preorder can reproduce. Go therefore ranks the sets by SIZE,
+// which agrees with the subset test on every comparable pair and differs only
+// on incomparable ones — exactly the configuration that made Java cyclic.
+// Nothing here touches the wire; this is read-side plan choice only. Full
+// derivation, Java file:line evidence and the four-plan cycle are in
+// DIVERGENCES.md ("Criterion 7 — primary scan versus index scan with fetch").
 func comparePrimaryScanVsIndexScan(a, b expressions.RelationalExpression, opsA, opsB expressionCounts, pref IndexScanPreference) int {
-	aIsPrimaryScan := opsA.scanCount == 1 && opsA.indexScanCount == 0 && opsA.coveringIndexCount == 0 && opsA.inMemorySortCount == 0
-	bIsPrimaryScan := opsB.scanCount == 1 && opsB.indexScanCount == 0 && opsB.coveringIndexCount == 0 && opsB.inMemorySortCount == 0
-	aIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsA)
-	bIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsB)
+	return comparePrimaryVsIndexRank(
+		primaryVsIndexRankOf(a, opsA, pref),
+		primaryVsIndexRankOf(b, opsB, pref),
+	)
+}
 
-	if aIsPrimaryScan && bIsIndexScanWithFetch {
-		return primaryVsIndexVerdict(a, b, opsA, opsB, pref)
+// primaryVsIndexRank is criterion #7's per-plan rank. Lower is better.
+//
+// tier is the only component that is meaningful across the whole rank domain;
+// sargs and shape are zero outside the CONTESTED tier so every other tier is a
+// flat equivalence class that falls through to the rungs below, exactly as the
+// pair-restricted form's abstention did.
+type primaryVsIndexRank struct {
+	tier int
+	// sargs is the number of DISTINCT search-argument comparisons the plan's
+	// data access carries. Compared DESCENDING: more search arguments wins.
+	sargs int
+	// shape is 0 for the primary scan and 1 for the index scan. It breaks a
+	// contested-tier search-argument TIE in the primary scan's favour, which is
+	// what Java does when the index buys no comparison the primary lacks.
+	shape int
+}
+
+const (
+	// The plan has no stake in the primary-versus-index trade-off, or it is the
+	// configured preference's favoured shape unencumbered.
+	primaryVsIndexTierUnencumbered = iota
+	// The trade-off itself: a primary scan paying a type-filter discard against
+	// an index scan paying a fetch. Resolved by search-argument count.
+	primaryVsIndexTierContested
+	// An index scan that pays a fetch AND a type filter — it bought neither of
+	// the two things this criterion trades off.
+	primaryVsIndexTierEncumberedIndex
+	// A plan carrying an in-memory sort. Go's ImplementInMemorySortRule is a
+	// read-side extension whose plans Java's ordinal rungs never see, and an
+	// InMemorySort(Scan) is not a bare primary scan — it pays O(n log n) on top.
+	// Ranking every sort-bearing plan last hands the decision to the sort-count
+	// rung immediately below, which is the same verdict that rung would reach on
+	// its own; the pair-restricted form applied this guard to the primary side
+	// only, so an InMemorySort(IndexScan) could still win here and pre-empt it.
+	primaryVsIndexTierSorted
+)
+
+func comparePrimaryVsIndexRank(a, b primaryVsIndexRank) int {
+	if a.tier != b.tier {
+		return intCompare(a.tier, b.tier)
 	}
-	if bIsPrimaryScan && aIsIndexScanWithFetch {
-		// Roles swapped: b is the primary scan, a the index. The verdict is
-		// computed in the (primary, index) orientation, then negated — Java's
-		// flipFlop(compare(primary,index), compare(index,primary)) negation.
-		return -primaryVsIndexVerdict(b, a, opsB, opsA, pref)
+	if a.sargs != b.sargs {
+		return intCompare(b.sargs, a.sargs) // more search arguments wins
 	}
-	return 0
+	return intCompare(a.shape, b.shape)
+}
+
+// primaryVsIndexRankOf places one plan on criterion #7's ladder.
+//
+// Under PREFER_SCAN (the Cascades default) the penalised shape is the index
+// scan that must pay for a fetch; under the index-preferring configurations it
+// is the lone primary scan, and Java's type-filter sub-case is moot there
+// because both of its branches already return "prefer the index".
+func primaryVsIndexRankOf(e expressions.RelationalExpression, ops expressionCounts, pref IndexScanPreference) primaryVsIndexRank {
+	if ops.inMemorySortCount > 0 {
+		return primaryVsIndexRank{tier: primaryVsIndexTierSorted}
+	}
+	isPrimaryScan := ops.scanCount == 1 && ops.indexScanCount == 0 && ops.coveringIndexCount == 0
+	isIndexScanWithFetch := isSingularIndexScanWithFetch(ops)
+
+	if pref != PreferScan {
+		// Only the lone primary scan is penalised, unconditionally: there is no
+		// trade-off left to weigh once the configuration has said "prefer the
+		// index" for every branch.
+		if isPrimaryScan {
+			return primaryVsIndexRank{tier: primaryVsIndexTierContested}
+		}
+		return primaryVsIndexRank{tier: primaryVsIndexTierUnencumbered}
+	}
+
+	switch {
+	case isPrimaryScan && ops.typeFilterCount > 0:
+		return primaryVsIndexRank{
+			tier:  primaryVsIndexTierContested,
+			sargs: distinctSargCount(e),
+			shape: 0,
+		}
+	case isIndexScanWithFetch && ops.typeFilterCount == 0:
+		return primaryVsIndexRank{
+			tier:  primaryVsIndexTierContested,
+			sargs: distinctSargCount(e),
+			shape: 1,
+		}
+	case isIndexScanWithFetch:
+		return primaryVsIndexRank{tier: primaryVsIndexTierEncumberedIndex}
+	default:
+		// A lone primary scan that pays no type-filter discard, and every plan
+		// with no stake in the trade-off (a covering index that needs no fetch,
+		// a multi-access plan, …).
+		return primaryVsIndexRank{tier: primaryVsIndexTierUnencumbered}
+	}
+}
+
+// distinctSargCount is |ComparisonsProperty| for e's concrete plan tree — the
+// cardinality of the SET Java's comparePrimaryScanToIndexScan takes differences
+// of, so repeated comparisons on different columns count once, as they do in
+// Java's Set<Comparisons.Comparison>.
+func distinctSargCount(e expressions.RelationalExpression) int {
+	all := scanSargComparisons(e)
+	distinct := 0
+	for i, c := range all {
+		seen := false
+		for _, earlier := range all[:i] {
+			if sargComparisonEqual(c, earlier) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			distinct++
+		}
+	}
+	return distinct
 }
 
 // indexScanPreferenceOf reads the IndexScanPreference from the planner config,
@@ -1046,39 +1280,6 @@ func indexScanPreferenceOf(ctx PlanContext) IndexScanPreference {
 		return PreferScan
 	}
 	return ctx.GetPlannerConfiguration().IndexScanPreference
-}
-
-// primaryVsIndexVerdict ports the body of Java's comparePrimaryScanToIndexScan
-// in its native (primaryScan=first, indexScan=second) orientation. Returns +1
-// when the INDEX scan is preferred (the primary loses), -1 when the primary
-// scan is preferred. The caller negates when the roles are swapped (flipFlop).
-//
-// The SARG sub-case: if the primary side carries a type filter and the index
-// side none, and the two scans SARG the same comparisons EXCEPT the index has
-// extra comparisons the primary lacks (e.g. a record-type-key comparison the
-// index gets for free but the primary must pay for with a high-discard type
-// filter), prefer the index. Otherwise fall back to the IndexScanPreference
-// config branch (Java: PREFER_SCAN → prefer the primary; PREFER_INDEX /
-// PREFER_PRIMARY_KEY_INDEX → prefer the index).
-func primaryVsIndexVerdict(primaryScan, indexScan expressions.RelationalExpression, opsPrimary, opsIndex expressionCounts, pref IndexScanPreference) int {
-	if opsPrimary.typeFilterCount > 0 && opsIndex.typeFilterCount == 0 {
-		primaryComparisons := scanSargComparisons(primaryScan)
-		indexComparisons := scanSargComparisons(indexScan)
-		// primary − index empty AND index − primary non-empty ⇒ the index
-		// SARGs everything the primary does plus more, without a type filter.
-		if sargSubset(primaryComparisons, indexComparisons) &&
-			!sargSubset(indexComparisons, primaryComparisons) {
-			return 1 // prefer the index scan
-		}
-	}
-	// Config branch (Java comparePrimaryScanToIndexScan): PREFER_SCAN prefers the
-	// primary scan (-1); the non-scan preferences prefer the index (+1). The
-	// Cascades default is PREFER_SCAN, so with no config surface setting a
-	// non-default this stays -1 (unchanged behavior).
-	if pref == PreferScan {
-		return -1
-	}
-	return 1
 }
 
 // scanSargComparisons collects the BARE SARG comparisons (compared by Comparison
@@ -1131,24 +1332,6 @@ func collectPlanSargComparisons(p plans.RecordQueryPlan, out *[]*predicates.Comp
 	for _, c := range p.GetChildren() {
 		collectPlanSargComparisons(c, out)
 	}
-}
-
-// sargSubset reports whether every comparison in sub also appears in super
-// (i.e. sub − super is empty), by full Comparison identity.
-func sargSubset(sub, super []*predicates.Comparison) bool {
-	for _, c := range sub {
-		found := false
-		for _, s := range super {
-			if sargComparisonEqual(c, s) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
 }
 
 // sargComparisonEqual is the FULL structural identity of a scan comparison, the
@@ -1215,10 +1398,13 @@ func isSingularIndexScanWithFetch(ops expressionCounts) bool {
 // matching Java's planHash(CURRENT_FOR_CONTINUATION). Combines the
 // node's own hash with children's hashes via FNV mixing.
 //
-// Unlike stablePlanHash, this LOGICAL-path hash still folds
+// Unlike stablePlanHash, this LOGICAL-path hash normally folds
 // HashCodeWithoutChildren — which carries minted correlation identifiers
 // (q$N) — so REWRITING-phase ties between alias-only twins resolve by
-// arrival order, not hash order. Tolerated deliberately: REWRITING's
+// arrival order, not hash order. Schema-bearing projections opt into their
+// historical schema-neutral tie-break hash: output names refine memo identity
+// but do not change the work being costed or the pre-existing winner. The
+// remaining alias sensitivity is tolerated deliberately: REWRITING's
 // criteria (select/table-function/conjunct counts, predicate depth) are
 // structural and rarely tie across genuinely different rewrites, no
 // nondeterminism has been observed there (the PLANNING-phase flip that
@@ -1230,7 +1416,7 @@ func deepHashCode(e expressions.RelationalExpression) uint64 {
 	if e == nil {
 		return 0
 	}
-	h := e.HashCodeWithoutChildren()
+	h := tieBreakNodeHash(e)
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
 		if ref == nil {
@@ -1306,32 +1492,32 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 	// canonicalizes the OuterJoinExpression to FlatMaps and the cost model only ever
 	// ranks FlatMap-vs-FlatMap; see Java PlanningCostModel.compare, which gates its
 	// join-ordering criterion on `a instanceof RecordQueryFlatMapPlan && b instanceof
-	// RecordQueryFlatMapPlan`). For this Go-only pair the two cardinality FORMULAS are
-	// inconsistent — nestedLoopJoinCost uses a cross-product proxy
-	// (outerCard*innerCard*sel), flatMapCost an outer-only proxy (outerCard*sel) — for
-	// the SAME logical join (identical true output cardinality, a group property), so
-	// the cardinality term is an UNFAIR discriminator. Rank by WORK (CPU): with the
-	// materialization fix (nestedLoopJoinCost charges the inner scanned ONCE), CPU
-	// orders materialized-NLJ < re-scan-FlatMap for a non-probe inner and FlatMap < NLJ
-	// for a card-1 probe inner — the correct plan for each, cost-driven, no rule
-	// heuristic (RFC-152).
+	// RecordQueryFlatMapPlan`). It used to need a pair-dependent metric switch here
+	// (CPU-only for a shape mismatch, full cost otherwise) because the two shapes'
+	// cardinality FORMULAS disagreed on the SAME logical join: nestedLoopJoinCost
+	// used a cross-product proxy (outerCard*innerCard*sel) while flatMapCost used an
+	// outer-only proxy (outerCard*sel) that ignored the inner side entirely. That
+	// metric switch made compareJoinOrdering depend on which PAIR was being compared,
+	// not on either plan alone — not a total preorder, and Reference.GetBest folds
+	// pairwise, so the elected plan tracked member arrival order rather than cost
+	// (CQ-24).
 	//
-	// For SAME-shape pairs (FlatMap-vs-FlatMap, NLJ-vs-NLJ) the cardinality term is a
-	// CONSISTENT, fair discriminator and is LOAD-BEARING — for two FlatMaps it is the
-	// Java small-side-driving heuristic (drive from the lower-cardinality outer; Java
-	// PlanningCostModel "Return the one with lower cardinality on the outer plan"). So
-	// keep the full recursive Total there (the RFC-069 behaviour). Ranking those by CPU
-	// would discard the outer-cardinality asymmetry and pick the larger-outer driver
-	// (the order-invariant index-join regression). The CPU branch fires ONLY for the
-	// Go-only NLJ-vs-FlatMap shape mismatch.
-	if joinShapesDiffer(planA, planB) {
-		if costA.CPU != costB.CPU {
-			if costA.CPU < costB.CPU {
-				return -1
-			}
-			return 1
-		}
-	}
+	// The real defect was upstream: true join output cardinality is a property of
+	// the LOGICAL group (both physical shapes implement the same join, so both must
+	// agree on how many rows it produces), and each physical shape applies the join
+	// predicate EXACTLY ONCE, just at a different point in its own subtree. A
+	// FlatMap's inner already carries the predicate — pushed there by
+	// RewriteOuterJoinRule as a below-null-extension PredicatesFilter, by the
+	// data-access rule as an equality-bound SARG on the leaf scan/index, or as a
+	// FirstOrDefault collapse for a scalar/EXISTS inner — so inner.Cardinality
+	// already IS the filtered per-outer-row count; the NestedLoopJoin's inner is
+	// raw and the join predicate is applied once, explicitly, by
+	// NestedLoopJoinCost's own FilterSelectivity term. FlatMapCost now uses
+	// outerCard*innerCard with no extra selectivity factor (see FlatMapCost's
+	// doc comment), which makes the two formulas compute the SAME true
+	// cardinality for the same logical join. With a single consistent
+	// cardinality term, Cost.Less alone is a fair, shape-independent metric — no
+	// pair-dependent branch needed.
 	if costA.Less(costB) {
 		return -1
 	}
@@ -1339,43 +1525,6 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 		return 1
 	}
 	return 0
-}
-
-// topmostJoinIsNLJ reports whether the topmost join operator (NLJ or FlatMap) in a
-// concrete plan tree is a materialized RecordQueryNestedLoopJoinPlan (true) or a
-// correlated RecordQueryFlatMapPlan (false). The second return is false when the
-// plan contains no join at all.
-func topmostJoinIsNLJ(p plans.RecordQueryPlan) (isNLJ bool, found bool) {
-	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
-		if found {
-			return false
-		}
-		switch n.(type) {
-		case *plans.RecordQueryNestedLoopJoinPlan:
-			isNLJ, found = true, true
-			return false
-		case *plans.RecordQueryFlatMapPlan:
-			isNLJ, found = false, true
-			return false
-		}
-		return true
-	})
-	return isNLJ, found
-}
-
-// joinShapesDiffer reports whether two plans' topmost join operators are different
-// shapes — one a materialized NestedLoopJoin, the other a correlated FlatMap. This
-// is the Go-only materialized-vs-re-scan comparison (Java has only FlatMaps), the
-// one case where the per-shape cardinality proxies are inconsistent and the cost
-// model must rank by work rather than the (unfair) cardinality term. Returns false
-// for same-shape pairs (both FlatMap, both NLJ) and when either lacks a join.
-func joinShapesDiffer(planA, planB plans.RecordQueryPlan) bool {
-	aNLJ, aFound := topmostJoinIsNLJ(planA)
-	bNLJ, bFound := topmostJoinIsNLJ(planB)
-	if !aFound || !bFound {
-		return false
-	}
-	return aNLJ != bNLJ
 }
 
 // concretePlanCost computes the recursive Cost of a CONCRETE RecordQueryPlan tree,
@@ -1427,22 +1576,50 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		if len(child) < 2 {
 			return properties.Cost{}
 		}
-		return properties.FlatMapCost(child[0], child[1])
+		// FK-chain cap (fk_chain_cardinality.go): a join whose inner leg
+		// equality-binds the FULL primary key the outer chain is already
+		// provably threaded through cannot output more rows than the inner
+		// table itself has — sound regardless of drive direction or index
+		// uniqueness (see that file's doc comment). When the cap actually
+		// binds, fkChainCappedInnerCost derives a CPU-consistent inner Cost
+		// from the SAME proven bound (see its doc comment for the
+		// derivation) instead of only overwriting Cardinality — a hop cannot
+		// be credited with producing at most `cap` rows while still being
+		// charged CPU for scanning the larger, disproven row count.
+		innerCost := child[1]
+		if cap, ok := fkChainCardinalityCap(pl, stats); ok {
+			if corrected, applied := fkChainCappedInnerCost(child[0], innerCost, cap); applied {
+				innerCost = corrected
+			}
+		}
+		return properties.FlatMapCost(child[0], innerCost)
 	case *plans.RecordQueryNestedLoopJoinPlan:
 		if len(child) < 2 {
 			return properties.Cost{}
 		}
-		return properties.NestedLoopJoinCost(child[0], child[1])
+		// Same unique-key equality-join detection plans/cost.go's HintCost
+		// uses (plans.NestedLoopJoinUniqueKeyConjuncts) — this walk and the
+		// memo's HintCost must feed properties.NestedLoopJoinCost the
+		// identical proof, or compareJoinOrdering's total-preorder guarantee
+		// (RFC-192) would rank the SAME concrete plan two different ways
+		// depending on which cost path evaluated it.
+		uniqueKeyConjuncts, _ := plans.NestedLoopJoinUniqueKeyConjuncts(pl)
+		return properties.NestedLoopJoinCost(
+			child[0], child[1], predicates.CountConjuncts(pl.GetPredicates()), uniqueKeyConjuncts)
 	case *plans.RecordQueryPredicatesFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return properties.FilterCost(c0(), len(pl.GetPredicates()))
+		// CountConjuncts, not len(): the same logical residual must apply the
+		// same number of selectivity factors whether it is packaged as
+		// [And(a, b)] or as [a, b] — matching the NestedLoopJoinPlan arm
+		// above and RecordQueryPredicatesFilterPlan.HintCost (plans/cost.go).
+		return properties.FilterCost(c0(), predicates.CountConjuncts(pl.GetPredicates()))
 	case *plans.RecordQueryFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
-		return properties.FilterCost(c0(), len(pl.GetPredicates()))
+		return properties.FilterCost(c0(), predicates.CountConjuncts(pl.GetPredicates()))
 	case *plans.RecordQueryTypeFilterPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
@@ -1636,10 +1813,19 @@ func warnUnclassifiedPlanType(
 // if it were one row. Without PlanContext we cannot prove a secondary
 // index unique, so we conservatively fall through to the selectivity estimate; the
 // metadata-aware wrapper HintCost still recognises unique indexes for the memo cost.
+//
+// The 1-row shortcut's CPU is FetchCPU, not ScanCPU: a full-PK/full-unique-index
+// equality bind returns EXACTLY one row via ONE isolated GetRange call (proven
+// against the executor — key_value_cursor.go's initIterator, flat_map_cursor.go's
+// unpipelined per-outer-row ExecutePlan — see FetchCPU's doc comment for the full
+// trace). ScanCPU is the AMORTIZED per-row rate for a range read that streams back
+// MANY rows in one call; a point probe streams back exactly one, so there is
+// nothing to amortize over — it is the same isolated round trip a Fetch pays,
+// priced at the same rate.
 func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, stats properties.StatisticsProvider, fullBindUnique bool) properties.Cost {
 	sel, numBound, allEquality := properties.BoundSelectivity(comps)
 	if fullBindUnique && numBound > 0 && allEquality && numBound == len(comps) {
-		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
+		return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
 	}
 	total := 0.0
 	if len(recordTypes) == 0 {
@@ -1649,8 +1835,8 @@ func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, sta
 			total += stats.RecordTypeCardinality(t)
 		}
 	}
-	card := total * sel * physicalWrapperCostMultiplier
-	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
+	card := total * sel
+	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU * physicalWrapperCostMultiplier}
 }
 
 // planContainsJoin reports whether the concrete plan tree contains a join
@@ -2420,6 +2606,11 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 		if rv := t.GetResultValue(); rv != nil {
 			stableHashU64(h, values.SemanticHashCode(rv))
 		}
+	case *plans.RecordQueryProjectionPlan:
+		// Deliberately type-only. Projection Values and output names belong to
+		// memo identity; the #17 cost tie-break historically treated two
+		// projections over the same child as equal work. Folding the new
+		// schema discriminator here would flip established plan shapes.
 	case *plans.RecordQueryInMemorySortPlan:
 		for _, k := range t.GetSortKeys() {
 			_, _ = io.WriteString(h, k.Field)

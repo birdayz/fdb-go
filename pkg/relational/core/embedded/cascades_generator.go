@@ -63,7 +63,40 @@ func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
 	}
 }
 
+func contextCancellationError(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("embedded planner: nil context")
+	}
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+	cause := context.Cause(ctx)
+	if cause == nil || cause == err {
+		return err
+	}
+	return fmt.Errorf("%w: %w", err, cause)
+}
+
+func isContextCancellation(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func explainWithContext(ctx context.Context, explain func() string) (string, error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return "", err
+	}
+	text := explain()
+	if err := contextCancellationError(ctx); err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
 func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return nil, err
+	}
 	root, err := parser.Parse(sql)
 	if err != nil {
 		return nil, err
@@ -89,6 +122,9 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	// (DDL/DML only). Refuse a mixed batch containing SELECT/SHOW.
 	children := make([]query.Plan, 0, len(all))
 	for _, s := range all {
+		if err := contextCancellationError(ctx); err != nil {
+			return nil, err
+		}
 		p, pErr := g.planOne(ctx, s)
 		if pErr != nil {
 			return nil, pErr
@@ -254,12 +290,16 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 // false so EXPLAIN does not emit a phantom planning event (Java's getPlan
 // funnel does not fire for EXPLAIN-internal planning).
 func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData, logMetrics bool) (plan query.Plan, err error) {
-	// Plan-cache key parts: a VERBATIM schema+version scope (case-sensitive,
-	// never normalized) and the injective canonical query text. NOT q.GetText()
-	// — that concatenated tokens with no separator, colliding `SELECT AB` with
-	// `SELECT A B`. PlanCache normalizes only the query text (see planCacheScope
-	// / PlanCache.Get).
-	cacheScope := planCacheScope(g.c.sess.Schema, md.Version())
+	if err := contextCancellationError(ctx); err != nil {
+		return nil, err
+	}
+	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
+	// (case-sensitive, never normalized) and the injective canonical query
+	// text. NOT q.GetText() — that concatenated tokens with no separator,
+	// colliding `SELECT AB` with `SELECT A B`. PlanCache normalizes only the
+	// query text (see planCacheScope / PlanCache.Get).
+	popts := plannerOptionsFrom(g.c.Options())
+	cacheScope := planCacheScope(g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
 	cacheSQL := canonicalTextOf(q)
 	var ls *planLogScope
 	if logMetrics {
@@ -303,8 +343,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, buildErr
 	}
 	if logicalOp == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"Cascades planner could not plan query")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, plannerUnableToPlanMessage)
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
@@ -381,8 +420,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, translateErr
 	}
 	if ref == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"Cascades planner could not plan query")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, plannerUnableToPlanMessage)
 	}
 
 	// RFC-141 §8 safety guard: a projected ExistsValue is correct ONLY when it is
@@ -407,20 +445,15 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
 	}
 
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
 	stats := g.fetchTableStatistics(ctx, md)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
-		WithStatistics(stats).
-		WithMaxTasks(100_000)
+	planner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
 
-	bestExpr, _, planErr := planner.Plan(ref)
-	if planErr != nil || bestExpr == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"Cascades planner could not plan query")
+	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
+	if planErr != nil {
+		return nil, translatePlannerError(planErr, plannerUnableToPlanMessage)
+	}
+	if bestExpr == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, plannerUnableToPlanMessage)
 	}
 
 	type planExtractor interface {
@@ -428,13 +461,11 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	}
 	ph, ok := bestExpr.(planExtractor)
 	if !ok {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"Cascades planner could not plan query")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, plannerUnableToPlanMessage)
 	}
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"Cascades planner could not plan query")
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, plannerUnableToPlanMessage)
 	}
 	// RFC-164 WS-2: structural plan invariants on the PRODUCTION path — a relink
 	// that dropped a child fails loudly here rather than executing to wrong/zero
@@ -445,7 +476,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// Plan scalar subqueries independently through the Cascades pipeline
 	// (planScalarSubqueryPlans — the one planning path, shared with the
 	// plan harness).
-	scalarSubs, subErr := planScalarSubqueryPlans(scalarSubqueryPlans, md, stats)
+	scalarSubs, subErr := planScalarSubqueryPlans(ctx, scalarSubqueryPlans, md, stats, popts)
 	if subErr != nil {
 		return nil, subErr
 	}
@@ -484,7 +515,10 @@ func (g *cascadesGenerator) planExplain(ctx context.Context, full antlrgen.IFull
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"EXPLAIN form not supported (only EXPLAIN <query|insert|update|delete>)")
 	}
-	planText := g.computeExplainText(ctx, descStmts)
+	planText, explainErr := g.computeExplainText(ctx, descStmts)
+	if explainErr != nil {
+		return nil, explainErr
+	}
 	if planText == "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"EXPLAIN inner statement produced no plan text")
@@ -501,68 +535,129 @@ func (g *cascadesGenerator) planExplain(ctx context.Context, full antlrgen.IFull
 	}, nil
 }
 
+// explainLogicalQuery renders the logical-plan text for a query, preferring
+// the catalog-aware builder when metadata is available. It is the EXPLAIN half
+// of the ExplainFn that planSelect installs for the two query shapes that never
+// reach Cascades, and reproduces all three of its steps — including the
+// echo-the-statement last resort, which both logical builders can fall through
+// to (buildLogicalPlanForQuery returns nil on an out-of-scope query body or CTE
+// body). Returning "" there instead would make planExplain raise
+// "produced no plan text" for a query whose own plan renders that echo, which
+// is the same failure this file exists to remove, pointed the other way.
+//
+// planSelect echoes the SelectStatement node while EXPLAIN hands us the Query
+// node; the grammar is `selectStatement : query`, a single child, so the two
+// GetText() renderings are identical.
+func (g *cascadesGenerator) explainLogicalQuery(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData) (string, error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return "", err
+	}
+	if md != nil {
+		if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
+			return explainWithContext(ctx, func() string { return op.Explain("") })
+		}
+	}
+	if op := buildLogicalPlanForQuery(q); op != nil {
+		return explainWithContext(ctx, func() string { return op.Explain("") })
+	}
+	return explainWithContext(ctx, func() string { return explainStatement("SELECT", q) })
+}
+
 // computeExplainText builds the plan-tree text for the inner
-// statement of an EXPLAIN. For SELECT queries, attempts to run
-// the full Cascades pipeline to produce a physical plan explain.
-// Falls back to logical plan text for DML and when Cascades can't
-// plan the query (e.g. no metadata, INFORMATION_SCHEMA).
-func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.DescribeStatementsContext) string {
+// statement of an EXPLAIN.
+//
+// The SELECT branch holds this invariant: EXPLAIN renders the plan the engine
+// would actually run, or fails with the error running the query itself would
+// raise — it never renders a plan the engine cannot execute. It mirrors
+// planSelect's routing one-for-one, error returns included: once Cascades is
+// attempted, its failure IS the answer. Java behaves the same way — an
+// unplannable EXPLAIN lets UnableToPlanException propagate as 0AF00, and its
+// relational layer has no logical-plan renderer on the EXPLAIN path at all.
+// The logical-text arms that remain are the shapes where planSelect itself
+// yields no physical plan, so EXPLAIN and the executed query still agree on
+// what they describe; each is annotated at its branch.
+//
+// The DML branches do NOT hold it, and knowingly so. They render logical text
+// while planDML builds a real Cascades plan, so EXPLAIN describes a different
+// tree than the one that executes. That is a weaker defect than the SELECT one
+// — the statement does run — but it is a divergence from Java, which renders
+// the physical RecordQueryPlan for DML too. Tracked in TODO.md; see the note
+// above the DML arms.
+func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.DescribeStatementsContext) (string, error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return "", err
+	}
 	c := g.c
 	md := c.cachedMetaData()
 
-	// SELECT: try Cascades pipeline for physical plan explain.
 	if q := d.Query(); q != nil {
-		// Try Cascades for a physical plan explain when FDB + metadata are available.
-		if c.sess != nil && c.sess.DB != nil && !referencesInformationSchema(q) {
-			if err := c.ensureMetaData(ctx); err == nil {
-				if freshMd := c.cachedMetaData(); freshMd != nil {
-					if plan, planErr := g.planSelectCascades(ctx, q, freshMd, false); planErr == nil {
-						return plan.Explain()
-					}
-				}
-			}
+		// Explain-only mode (no FDB session): planSelect routes to
+		// planSelectExplainOnly, whose plan renders this same logical text and
+		// refuses to execute. There is no physical plan in this mode to hide,
+		// so matching it is the accurate answer, not a degrade.
+		if c.sess == nil || c.sess.DB == nil {
+			return g.explainLogicalQuery(ctx, q, md)
 		}
-		// Fallback to logical plan text.
-		if md != nil {
-			if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
-				return op.Explain("")
-			}
+		// INFORMATION_SCHEMA is a Go-only extension served off the catalog by
+		// execSystemTableQuery, never by Cascades. planSelect's PlanFunc runs
+		// the same three-step rendering as its own Explain, so EXPLAIN reports
+		// the plan that really runs.
+		if referencesInformationSchema(q) {
+			return g.explainLogicalQuery(ctx, q, md)
 		}
-		if op := buildLogicalPlanForQuery(q); op != nil {
-			return op.Explain("")
+		// From here the Cascades plan IS the plan. Every failure below is the
+		// failure `SELECT ...` would raise, so it is surfaced verbatim.
+		if err := c.ensureMetaData(ctx); err != nil {
+			return "", err
 		}
+		freshMd := c.cachedMetaData()
+		if freshMd == nil {
+			return "", api.NewError(api.ErrCodeUnsupportedQuery,
+				"no schema metadata available")
+		}
+		plan, planErr := g.planSelectCascades(ctx, q, freshMd, false)
+		if planErr != nil {
+			return "", planErr
+		}
+		return explainWithContext(ctx, plan.Explain)
 	}
+	// DML renders logical text. Java's EXPLAIN of a DML statement produces the
+	// physical RecordQueryPlan instead (the mutation is not executed); closing
+	// that gap is tracked in TODO.md, not done here.
 	if del := d.DeleteStatement(); del != nil {
 		if md != nil {
 			if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionSchema()); op != nil {
-				return op.Explain("")
+				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
 		if op := buildLogicalPlanForDelete(del); op != nil {
-			return op.Explain("")
+			return explainWithContext(ctx, func() string { return op.Explain("") })
 		}
 	}
 	if ins := d.InsertStatement(); ins != nil {
 		if md != nil {
 			if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionSchema()); op != nil {
-				return op.Explain("")
+				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
 		if op := buildLogicalPlanForInsert(ins); op != nil {
-			return op.Explain("")
+			return explainWithContext(ctx, func() string { return op.Explain("") })
 		}
 	}
 	if upd := d.UpdateStatement(); upd != nil {
 		if md != nil {
 			if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionSchema()); op != nil {
-				return op.Explain("")
+				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
 		if op := buildLogicalPlanForUpdate(upd); op != nil {
-			return op.Explain("")
+			return explainWithContext(ctx, func() string { return op.Explain("") })
 		}
 	}
-	return ""
+	if err := contextCancellationError(ctx); err != nil {
+		return "", err
+	}
+	return "", nil
 }
 
 // planDDL wraps a DDL or transaction statement in a PlanFunc that
@@ -712,7 +807,22 @@ func updateHasSubqueryAssignment(upd antlrgen.IUpdateStatementContext) bool {
 }
 
 func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (plan query.Plan, err error) {
+	if err := contextCancellationError(ctx); err != nil {
+		return nil, err
+	}
 	c := g.c
+
+	// Keep DML on the same pre-lowering correctness boundary as SELECT.
+	// Aggregate lowering discards OVER, so allowing a windowed aggregate through
+	// an EXISTS in DELETE/UPDATE would make the correlated fallback test raw-row
+	// existence instead of the query's aggregate/window cardinality. Reject the
+	// unsupported construct while its parse-tree distinction is still present.
+	// This runs before the explain-only split so every DML planning surface has
+	// identical correct-or-loud semantics.
+	if windowedAggregateInTree(dml) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"windowed aggregate (aggregate function with an OVER clause) is not supported")
+	}
 
 	// Explain-only mode: no FDB available, produce logical plan text only.
 	// No planning happens here, so it is outside the metrics funnel.
@@ -926,20 +1036,18 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
 	}
 
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
 	dmlStats := g.fetchTableStatistics(ctx, md)
 	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(planningRules).
-		WithStatistics(dmlStats).
-		WithMaxTasks(100_000)
+	popts := plannerOptionsFrom(g.c.Options())
+	planner := newCascadesPlanner(md, popts, planningRules, dmlStats)
 
-	bestExpr, _, planErr := planner.Plan(ref)
-	if planErr != nil || bestExpr == nil {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "DML Cascades planning failed: %v", planErr)
+	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
+	if planErr != nil {
+		return nil, translatePlannerError(planErr, plannerUnableToPlanMessage)
+	}
+	if bestExpr == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"DML Cascades planning returned no expression")
 	}
 
 	type planExtractor interface {
@@ -965,7 +1073,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// NULL — the DELETE compared v > NULL (UNKNOWN) and removed NOTHING, with
 	// both differential models identically wrong; the loud
 	// values.UnboundScalarSubqueryError is what surfaced it.
-	dmlScalarSubs, dmlSubErr := planScalarSubqueryPlans(dmlScalarSubqueryPlans, md, dmlStats)
+	dmlScalarSubs, dmlSubErr := planScalarSubqueryPlans(ctx, dmlScalarSubqueryPlans, md, dmlStats, popts)
 	if dmlSubErr != nil {
 		return nil, dmlSubErr
 	}
@@ -1799,9 +1907,16 @@ func translateExecError(err error) error {
 	}
 	// Leaf-cursor scan limit hit with FailOnScanLimitReached set
 	// (RFC-106a parity): Java throws ScanLimitReachedException (54F01).
+	// WrapError (not NewError) so *recordlayer.ScanLimitReachedError survives as
+	// the api.Error's Cause — errors.As can then distinguish an ACTUAL scan/
+	// byte/time limit hit from the unrelated liveness-tripwire 54F01
+	// (pageContinuationState's caller, "query cannot progress...") that also
+	// carries this same SQLSTATE but is a plain api.NewError with no Cause.
+	// The rendered message is unchanged in substance — scanLimit.Error() is
+	// still fully present, now as the Cause suffix instead of the sole Message.
 	var scanLimit *recordlayer.ScanLimitReachedError
 	if errors.As(err, &scanLimit) {
-		return api.NewError(api.ErrCodeExecutionLimitReached, scanLimit.Error())
+		return api.WrapError(api.ErrCodeExecutionLimitReached, "leaf cursor scan limit exceeded", scanLimit)
 	}
 	var aggTypeMismatch *executor.AggregateTypeMismatchError
 	if errors.As(err, &aggTypeMismatch) {
@@ -1903,21 +2018,28 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 	return properties.MapStatistics{PerType: counts}
 }
 
-func buildCascadesPlanContext(md *recordlayer.RecordMetaData) cascades.PlanContext {
-	if md == nil {
-		return cascades.EmptyPlanContext()
-	}
-	return &metadataPlanContext{md: md}
+// buildCascadesPlanContext builds the plan context for one planning run. cfg
+// carries the option-driven PlannerConfiguration (see plannerOptions); pass
+// cascades.DefaultPlannerConfiguration() where no options apply. It is a
+// parameter rather than a constant read inside the context so that
+// PLAN_RIGHT_DEEP reaches PartitionSelectRule, which consults the
+// configuration through PlanContext and has no other route to it.
+//
+// A nil md still yields a metadataPlanContext (every accessor handles nil
+// md): an EmptyPlanContext would silently discard cfg.
+func buildCascadesPlanContext(md *recordlayer.RecordMetaData, cfg cascades.PlannerConfiguration) cascades.PlanContext {
+	return &metadataPlanContext{md: md, cfg: cfg}
 }
 
 type metadataPlanContext struct {
 	md             *recordlayer.RecordMetaData
+	cfg            cascades.PlannerConfiguration
 	candidatesOnce sync.Once
 	candidates     []cascades.MatchCandidate
 }
 
 func (c *metadataPlanContext) GetPlannerConfiguration() cascades.PlannerConfiguration {
-	return cascades.DefaultPlannerConfiguration()
+	return c.cfg
 }
 
 // GetMatchCandidates returns stable candidate identities for the lifetime of
@@ -1983,6 +2105,7 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 			allTypeNames,
 			[]string{rt.Name},
 			upperPK,
+			rt.PrimaryKeyHasRecordTypePrefix(),
 			flowed,
 		))
 	}
@@ -3174,7 +3297,7 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 		// dotted AND leaf-matches the projected column degrades to the bare
 		// leaf too — a pathological corner traded for the duplicated-leaf
 		// class matching Java's metadata.
-		if ref := parseColRef(label); ref.isQualified() &&
+		if ref := parseColRef(label); isPlainQualifiedColumnReference(label) && ref.isQualified() &&
 			strings.EqualFold(ref.bare(), parseColRef(fv.Field).bare()) {
 			displayLabel = strings.ToUpper(ref.bare())
 		}
@@ -4786,6 +4909,9 @@ func subqueryPlans(op logical.LogicalOperator) []logical.LogicalOperator {
 		}
 		for _, ssq := range o.ScalarSubqueries {
 			plans = append(plans, ssq.Plan)
+		}
+		for _, csq := range o.CorrelatedScalarSubqueries {
+			plans = append(plans, csq.InnerPlan)
 		}
 	case *logical.LogicalProject:
 		for _, ssq := range o.ScalarSubqueries {

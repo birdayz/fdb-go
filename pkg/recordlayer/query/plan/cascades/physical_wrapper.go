@@ -416,48 +416,6 @@ type hashWriter interface {
 // with structurally-different alternatives.
 const physicalWrapperCostMultiplier = properties.PhysicalWrapperCostMultiplier
 
-// pkScanOrdering derives the directional PK ordering of a primary scan:
-// PK columns in order, all ascending (descending under reverse).
-// pkScanRichOrdering returns a primary scan's PK ordering with bindings:
-// PK positions bound by an equality comparison become FixedBinding
-// entries, the rest SortedBinding. A primary scan is a value-index-like
-// candidate in Java (PrimaryScanMatchCandidate implements
-// ValueIndexLikeMatchCandidate), so its ordering comes from the same
-// computeOrderingFromScanComparisons: the equality prefix is
-// Binding.fixed, which is compatible with ANY requested direction. That
-// is what lets `WHERE a = 1 ORDER BY a DESC` elide the sort over a
-// FORWARD eq-bound scan (every row has the same a, so direction on a is
-// a no-op) — without the FIXED modeling the prefix reads as directional
-// ASC and a DESC request wrongly keeps the sort. Used by the plan-backed
-// leaf scanPlanExpression (the data-access path memoizes a SARGed PK scan
-// as the latter); the bare RecordQueryScanPlan computes its own via
-// HintRichOrdering.
-func pkScanRichOrdering(plan *plans.RecordQueryScanPlan) *properties.RichOrdering {
-	if plan == nil {
-		return properties.EmptyOrdering()
-	}
-	pk := plan.GetPrimaryKeyValues()
-	if len(pk) == 0 {
-		return properties.EmptyOrdering()
-	}
-	comps := plan.GetScanComparisons()
-	bm := make(map[values.Value][]properties.OrderingBinding, len(pk))
-	keys := make([]values.Value, 0, len(pk))
-	dir := properties.ProvidedSortOrderAscending
-	if plan.IsReverse() {
-		dir = properties.ProvidedSortOrderDescending
-	}
-	for i, key := range pk {
-		keys = append(keys, key)
-		if i < len(comps) && comps[i].IsEquality() {
-			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
-		} else {
-			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
-		}
-	}
-	return properties.NewRichOrdering(bm, keys, false)
-}
-
 // IsPhysicalAggregateIndex reports whether the expression is an aggregate index
 // scan. Since RFC-184 W2 the memo holds *plans.RecordQueryAggregateIndexPlan
 // directly (no physicalAggregateIndexWrapper), so this is a bare type check.

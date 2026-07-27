@@ -47,7 +47,7 @@ func TestNotValue_Evaluate_TypeMismatchDegrades(t *testing.T) {
 	cases := []Value{
 		&ConstantValue{Value: int64(1), Typ: TypeInt},
 		&ConstantValue{Value: "true", Typ: TypeString},
-		&ConstantValue{Value: 1.5, Typ: TypeFloat},
+		&ConstantValue{Value: 1.5, Typ: NullableDouble},
 	}
 	for _, child := range cases {
 		got, errEv0 := NewNotValue(child).Evaluate(nil)

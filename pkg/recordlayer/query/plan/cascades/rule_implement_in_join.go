@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"context"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/combinatorics"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
@@ -34,7 +36,7 @@ func NewImplementInJoinRule() *ImplementInJoinRule {
 func (r *ImplementInJoinRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
-	if call.IsConstraintOnly() {
+	if call.IsConstraintOnly() || call.CancellationErr() != nil {
 		return
 	}
 	selectExpr := call.Bindings.Get(r.matcher).(*expressions.SelectExpression)
@@ -45,6 +47,12 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 
 	quantifiers := selectExpr.GetQuantifiers()
 	if len(quantifiers) < 2 {
+		return
+	}
+	// IN-join chains have no strict scalar compensation. A malformed/future
+	// strict+Explode shape must stay unimplemented rather than bypass the sole
+	// FirstOrDefault authority in ImplementNestedLoopJoinRule.
+	if hasStrictSingleQuantifier(quantifiers) {
 		return
 	}
 
@@ -116,6 +124,9 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	for _, partition := range partitions {
+		if call.CancellationErr() != nil {
+			return
+		}
 		innerPlans := partition.GetPlans()
 		if len(innerPlans) == 0 {
 			continue
@@ -136,28 +147,56 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 		innerExprs := partition.GetPhysicalExpressions()
 
 		for _, requestedOrdering := range requestedOrderings {
+			if call.CancellationErr() != nil {
+				return
+			}
 			allOrderings := r.enumerateSourceOrderingsForRequestedOrdering(
-				innerExprs, explodeQuantifiers, explodeAliases, explodeAliasMap,
+				call.RunContext, innerExprs, explodeQuantifiers, explodeAliases, explodeAliasMap,
 				requestedOrdering)
 
 			for _, orderedSources := range allOrderings {
+				if call.CancellationErr() != nil {
+					return
+				}
 				// Each innerPlans pass re-memoizes the SAME innerExprs group and
 				// builds structurally-identical InJoins that dedup in the memo; the
 				// specific member no longer seeds a plan snapshot (RFC-184 W2), so
 				// only the iteration count is consulted here.
 				for range innerPlans {
+					if call.CancellationErr() != nil {
+						return
+					}
 					currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
 
 					for i := len(orderedSources) - 1; i >= 0; i-- {
+						if call.CancellationErr() != nil {
+							return
+						}
 						source := orderedSources[i]
+						inValues := extractInValues(source.quantifier)
+						sorted := source.sorted
+						if sorted && len(inValues) > 1 {
+							// Back the "sorted" claim with actually-sorted values —
+							// Java's SortedInValuesSource sorts in its constructor
+							// (InSource.sortValues); this is the Go analog at the
+							// point the claim is made. If the values genuinely can't
+							// be totally ordered (an incomparable pair the planner's
+							// type checking should have excluded), fall back to NOT
+							// claiming an ordering rather than shipping a false one.
+							if sv, ok := sortInJoinValues(inValues, source.reverse); ok {
+								inValues = sv
+							} else {
+								sorted = false
+							}
+						}
 						// The InJoin is its own cascades expression carrying the live
 						// currentRef inner edge (RFC-184 W2); its per-ordering winner
 						// resolves at extraction via ref.Winner(). No plan snapshot —
 						// the deferred-winner case.
 						inJoinPlan := plans.NewRecordQueryInJoinPlanFromQuantifier(
 							expressions.NewPhysicalQuantifier(currentRef),
-							source.bindingName, source.sorted, source.reverse)
-						if inValues := extractInValues(source.quantifier); inValues != nil {
+							source.bindingName, sorted, source.reverse)
+						if inValues != nil {
 							inJoinPlan.SetInValues(inValues)
 						}
 						inJoinPlan.SetSourceKind(classifyInSourceKind(source.quantifier))
@@ -165,6 +204,9 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 					}
 
 					for _, m := range currentRef.AllMembers() {
+						if call.CancellationErr() != nil {
+							return
+						}
 						if _, ok := m.(physicalPlanExpression); !ok {
 							continue
 						}
@@ -191,14 +233,21 @@ type inJoinSource struct {
 //
 // Ports Java's ImplementInJoinRule.enumerateInSourcesForRequestedOrdering.
 func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
+	runCtx context.Context,
 	innerExprs []expressions.RelationalExpression,
 	explodeQuantifiers []expressions.Quantifier,
 	explodeAliases map[values.CorrelationIdentifier]struct{},
 	explodeAliasMap map[values.CorrelationIdentifier]expressions.Quantifier,
 	requestedOrdering *properties.RequestedOrdering,
 ) [][]inJoinSource {
+	if runCtx != nil && runCtx.Err() != nil {
+		return nil
+	}
 	var richOrdering *properties.RichOrdering
 	for _, expr := range innerExprs {
+		if runCtx != nil && runCtx.Err() != nil {
+			return nil
+		}
 		if ph, ok := expr.(physicalPlanExpression); ok {
 			richOrdering = computeWrapperRichOrdering(ph)
 			break
@@ -206,11 +255,11 @@ func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
 	}
 
 	if richOrdering == nil || len(richOrdering.GetKeys()) == 0 {
-		return r.enumerateDefaultSources(explodeQuantifiers)
+		return r.enumerateDefaultSources(runCtx, explodeQuantifiers)
 	}
 
 	if requestedOrdering.IsPreserve() || requestedOrdering.Size() == 0 {
-		return r.buildSourcesFromProvided(richOrdering, explodeQuantifiers, explodeAliases, explodeAliasMap)
+		return r.buildSourcesFromProvided(runCtx, richOrdering, explodeQuantifiers, explodeAliases, explodeAliasMap)
 	}
 
 	var prefix []inJoinSource
@@ -221,6 +270,9 @@ func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
 
 	reqParts := requestedOrdering.GetParts()
 	for i := 0; i < len(reqParts) && len(available) > 0; i++ {
+		if runCtx != nil && runCtx.Err() != nil {
+			return nil
+		}
 		part := reqParts[i]
 		bindings := richOrdering.GetBindingMap()[part.Value]
 		if len(bindings) == 0 {
@@ -282,21 +334,28 @@ func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
 		delete(available, correlatedAlias)
 	}
 
-	return r.appendRemaining(prefix, explodeQuantifiers, available)
+	return r.appendRemaining(runCtx, prefix, explodeQuantifiers, available)
 }
 
 // buildSourcesFromProvided walks the provided ordering (fallback when no
 // requested ordering is given).
 func (r *ImplementInJoinRule) buildSourcesFromProvided(
+	runCtx context.Context,
 	richOrdering *properties.RichOrdering,
 	explodeQuantifiers []expressions.Quantifier,
 	explodeAliases map[values.CorrelationIdentifier]struct{},
 	explodeAliasMap map[values.CorrelationIdentifier]expressions.Quantifier,
 ) [][]inJoinSource {
+	if runCtx != nil && runCtx.Err() != nil {
+		return nil
+	}
 	var prefix []inJoinSource
 	used := make(map[values.CorrelationIdentifier]struct{})
 
 	for _, key := range richOrdering.GetKeys() {
+		if runCtx != nil && runCtx.Err() != nil {
+			return nil
+		}
 		bindings := richOrdering.GetBindingMap()[key]
 		if !properties.AreAllBindingsFixed(bindings) {
 			continue
@@ -342,14 +401,18 @@ func (r *ImplementInJoinRule) buildSourcesFromProvided(
 			available[alias] = struct{}{}
 		}
 	}
-	return r.appendRemaining(prefix, explodeQuantifiers, available)
+	return r.appendRemaining(runCtx, prefix, explodeQuantifiers, available)
 }
 
 func (r *ImplementInJoinRule) appendRemaining(
+	runCtx context.Context,
 	prefix []inJoinSource,
 	explodeQuantifiers []expressions.Quantifier,
 	available map[values.CorrelationIdentifier]struct{},
 ) [][]inJoinSource {
+	if runCtx != nil && runCtx.Err() != nil {
+		return nil
+	}
 	var remaining []inJoinSource
 	for _, eq := range explodeQuantifiers {
 		alias := eq.GetAlias()
@@ -378,6 +441,9 @@ func (r *ImplementInJoinRule) appendRemaining(
 	iter := combinatorics.Permutations(remainingNames)
 	var results [][]inJoinSource
 	for {
+		if runCtx != nil && runCtx.Err() != nil {
+			return nil
+		}
 		perm := iter.Next()
 		if perm == nil {
 			break
@@ -385,6 +451,9 @@ func (r *ImplementInJoinRule) appendRemaining(
 		result := make([]inJoinSource, 0, len(prefix)+len(perm))
 		result = append(result, prefix...)
 		for _, name := range perm {
+			if runCtx != nil && runCtx.Err() != nil {
+				return nil
+			}
 			result = append(result, nameToSource[name])
 		}
 		results = append(results, result)
@@ -392,7 +461,13 @@ func (r *ImplementInJoinRule) appendRemaining(
 	return results
 }
 
-func (r *ImplementInJoinRule) enumerateDefaultSources(explodeQuantifiers []expressions.Quantifier) [][]inJoinSource {
+func (r *ImplementInJoinRule) enumerateDefaultSources(
+	runCtx context.Context,
+	explodeQuantifiers []expressions.Quantifier,
+) [][]inJoinSource {
+	if runCtx != nil && runCtx.Err() != nil {
+		return nil
+	}
 	if len(explodeQuantifiers) <= 1 {
 		sources := make([]inJoinSource, len(explodeQuantifiers))
 		for i, eq := range explodeQuantifiers {
@@ -418,12 +493,18 @@ func (r *ImplementInJoinRule) enumerateDefaultSources(explodeQuantifiers []expre
 	iter := combinatorics.Permutations(names)
 	var results [][]inJoinSource
 	for {
+		if runCtx != nil && runCtx.Err() != nil {
+			return nil
+		}
 		perm := iter.Next()
 		if perm == nil {
 			break
 		}
 		result := make([]inJoinSource, len(perm))
 		for i, name := range perm {
+			if runCtx != nil && runCtx.Err() != nil {
+				return nil
+			}
 			result[i] = nameToSource[name]
 		}
 		results = append(results, result)

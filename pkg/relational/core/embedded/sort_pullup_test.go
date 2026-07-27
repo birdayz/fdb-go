@@ -41,26 +41,29 @@ func TestGroupedOrderBy_ComputedKeyPullsUpToOutputSlot(t *testing.T) {
 	}
 }
 
-// TestGroupedOrderBy_UnderivableKeyDeclinesTyped pins the correct-or-loud
-// guard: an ORDER BY expression over a grouped reshaping projection that is
-// NOT one of the SELECT-list outputs cannot be evaluated against the projected
-// row — Java widens the select with the missing expression
-// (LogicalOperator.generateSelect, remainingOrderByExpressions branch; the
-// widening port is the RFC-180 booked follow-up). Until then the translator
-// must decline TYPED, never emit a plan whose sort key reads a foreign slot.
-func TestGroupedOrderBy_UnderivableKeyDeclinesTyped(t *testing.T) {
+// The CQ-5 output Project is deliberately after ORDER BY, so a sort expression
+// over grouped keys need not be selected to remain derivable. It evaluates on
+// the complete private aggregate row, then the final Project hides it.
+func TestGroupedOrderBy_NonSelectedKeyExpressionPlansBeforeOutputProject(t *testing.T) {
+	t.Parallel()
+	if _, err := PlanQueryForTest(
+		"SELECT a + b, MAX(c) FROM T GROUP BY a, b ORDER BY a - b", sortPullupSchema, nil); err != nil {
+		t.Fatalf("non-selected grouped ORDER BY expression should plan on the private aggregate row: %v", err)
+	}
+}
+
+func TestGroupedOrderBy_UngroupedQualifiedColumnPreservesDiagnostic(t *testing.T) {
 	t.Parallel()
 	_, err := PlanQueryForTest(
-		"SELECT a + b, MAX(c) FROM T GROUP BY a, b ORDER BY a - b", sortPullupSchema, nil)
+		"SELECT t.b FROM T t GROUP BY t.a ORDER BY t.b", sortPullupSchema, nil)
 	if err == nil {
-		t.Fatal("want typed decline for underivable grouped ORDER BY key, got nil " +
-			"(if the Java-style select-widening landed, replace this pin with a row-level one)")
+		t.Fatal("expected grouped ORDER BY validation error")
 	}
 	var apiErr *api.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
-		t.Fatalf("want *api.Error with ErrCodeUnsupportedQuery (0AF00), got %v", err)
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeGroupingError {
+		t.Fatalf("error = %v, want SQLSTATE 42803", err)
 	}
-	if !strings.Contains(apiErr.Message, "not derivable from the SELECT list") {
-		t.Fatalf("want the pull-up decline diagnostic, got %q", apiErr.Message)
+	if !strings.Contains(apiErr.Error(), `"T.B"`) {
+		t.Fatalf("error = %v, want parse-qualified column diagnostic T.B", apiErr)
 	}
 }

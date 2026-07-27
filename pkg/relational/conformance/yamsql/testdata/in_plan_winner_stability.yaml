@@ -1,0 +1,126 @@
+# in_plan_winner_stability.yaml
+#
+# Exercises the cost model's IN-plan rung (criterion #6) at the SQL level, on
+# the shape where Go DELIBERATELY diverges from Java: two IN-rooted candidates
+# competing in the SAME memo group.
+#
+# An IN predicate over a column no index can turn into a search argument, with
+# a requested ordering, makes both implementations viable for one group — a
+# RecordQueryInJoinPlan and a RecordQueryInUnionPlan, NEITHER of them SARGed.
+# Java's compareInOperator answers "+1, the first argument is worse" in BOTH
+# orientations for that pair, so `less` is false either way and the winner falls
+# to the plan-hash tie-break (or, in the group fold, to member insertion order)
+# with every later rung — fetch counts, type filters, sort count, and the full
+# cost model — skipped. Go ranks both sides, the pair TIES at criterion #6, and
+# the later rungs decide.
+#
+# WHAT THIS FILE IS AND IS NOT. It is a REACHABILITY AND PLAN-STABILITY
+# sentinel, not a red/green test for the defect: with the pre-fix rung forced
+# back on, all the queries below plan identically, so this file alone cannot
+# detect a regression of the antisymmetry bug. Its job is to keep the divergent
+# arm reachable from SQL on purpose rather than incidentally — it contributes
+# the only InUnion-versus-InUnion pair in the corpus; every other corpus query
+# that reaches the arm produces InUnion-versus-InJoin or InJoin-versus-InJoin —
+# and to pin the resulting plans so drift is visible. The RED/GREEN guard for
+# the defect itself lives in the Cascades property tests
+# (TestCostModel_InPlanComparisonIsOrderIndependent,
+# TestCostModel_UnsargedInPlansRankedByRealRungs,
+# TestCostModel_SargedInPlanBeatsUnsargedThroughFullChain,
+# TestOptimizeGroup_InPlanWinnerIsInsertionOrderIndependent), all of which go
+# red on the pre-fix rung.
+name: in_plan_winner_stability
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, cat BIGINT, val BIGINT, PRIMARY KEY (id))
+  CREATE INDEX idx_val ON t (val)
+setup:
+  - INSERT INTO t VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 40, 400), (5, 50, 500), (6, 20, 600)
+tests:
+  # Both-IN, both unSARGed: `cat` carries no index, so neither the InJoin nor
+  # the InUnion implementation turns the binding into a search argument. The
+  # ordering request is what makes the InUnion a candidate alongside the
+  # InJoin. Once criterion #6 abstains for the equally-penalised pair, the
+  # later rungs get to see that BOTH of them lose to a plain filtered scan —
+  # the IN-plans add an operator and buy nothing.
+  - query: SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id
+    plan_contains: "PredicatesFilter(Scan(T)"
+    rows:
+      - [2, 20]
+      - [4, 40]
+      - [6, 20]
+  # The same query, asserting each IN operator's absence BY NAME.
+  # plan_contains/plan_not_contains are raw case-sensitive substring matches, so
+  # a blanket "In" would also forbid IndexScan, InMemorySort and Intersection,
+  # and would start failing confusingly the day the planner legitimately picks
+  # an index here. These two name exactly what is meant.
+  - query: SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id
+    plan_not_contains: InJoin
+    rows:
+      - [2, 20]
+      - [4, 40]
+      - [6, 20]
+  - query: SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id
+    plan_not_contains: InUnion
+    rows:
+      - [2, 20]
+      - [4, 40]
+      - [6, 20]
+  # Same both-IN group with the ordering reversed. The scan serves this one too:
+  # `id` is the primary key, so a REVERSE primary scan is already in descending
+  # id order and both IN-plans stay unSARGed and unhelpful — an IN-join over an
+  # unindexed `cat` scans the whole table once per binding and then needs a sort
+  # on top of that.
+  #
+  # This used to plan as InMemorySort(InJoin(...)) purely because the
+  # primary-scan match candidate reported no key order, so no reverse primary
+  # scan was ever enumerated and the descending request had nothing to satisfy
+  # it. Two full scans plus a sort lost to one reverse full scan the moment the
+  # candidate started reporting its order.
+  - query: SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id DESC
+    plan_contains: "PredicatesFilter(Scan(T) REVERSE"
+    rows:
+      - [6, 20]
+      - [4, 40]
+      - [2, 20]
+  # ...and neither IN operator survives in it, named individually for the same
+  # reason as the ascending trio above.
+  - query: SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id DESC
+    plan_not_contains: InJoin
+    rows:
+      - [6, 20]
+      - [4, 40]
+      - [2, 20]
+  - query: SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id DESC
+    plan_not_contains: InUnion
+    rows:
+      - [6, 20]
+      - [4, 40]
+      - [2, 20]
+  # The other side of the rung: an IN over an INDEXED column DOES become a
+  # search argument, criterion #6 abstains for a different reason (penalty 0),
+  # and the index access wins.
+  - query: SELECT id FROM t WHERE val IN (200, 400) ORDER BY val
+    plan_contains: "InUnion(IndexScan(IDX_VAL"
+    rows:
+      - [2]
+      - [4]
+  # Two IN predicates, one over the indexed column and one not. NOTHING SARGs
+  # here: the plan takes an UNBOUNDED scan of IDX_VAL (`[*]` — no comparison
+  # pushed into the scan) to serve the ORDER BY, and BOTH IN predicates survive
+  # as residual filters, one below the fetch and one above it. Pinned on the
+  # unbounded marker so a future improvement that actually SARGs `val` surfaces
+  # as a golden diff instead of passing silently.
+  - query: SELECT id FROM t WHERE val IN (200, 400, 600) AND cat IN (20, 40) ORDER BY val
+    plan_contains: "IndexScan(IDX_VAL, [*])"
+    rows:
+      - [2]
+      - [4]
+      - [6]
+  # Empty IN-list result through the same plan shape.
+  - query: SELECT id FROM t WHERE cat IN (999, 998) ORDER BY id
+    rows: []
+  # Duplicate IN values must not duplicate rows.
+  - query: SELECT id FROM t WHERE cat IN (20, 20, 40) ORDER BY id
+    rows:
+      - [2]
+      - [4]
+      - [6]

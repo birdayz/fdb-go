@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
@@ -93,9 +94,13 @@ func decodeRecursiveRow(b []byte, resolve protoDescriptorResolver) (QueryResult,
 	return QueryResult{Positional: &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}}, nil
 }
 
-// encodeTempTableProto snapshots a temp table into the PTempTable shape.
-func encodeTempTableProto(tt *TempTable) (*gen.PTempTable, error) {
-	rows := tt.GetList()
+// encodeTempTableProto encodes an already-captured row snapshot into the
+// PTempTable shape. Takes rows, not a *TempTable: the caller must capture the
+// snapshot (TempTable.Snapshot) at the point that needs to be resumable —
+// typically well before this runs, since both call sites reach it from a
+// LAZY continuation's ToBytes (see tempTableInsertContinuation /
+// recursiveUnionContinuation) that may run long after the table has moved on.
+func encodeTempTableProto(rows []QueryResult) (*gen.PTempTable, error) {
 	out := &gen.PTempTable{BufferItems: make([]*gen.PQueryResult, 0, len(rows))}
 	for _, qr := range rows {
 		b, err := encodeRecursiveRow(qr)
@@ -199,15 +204,21 @@ func newTempTableInsertCursor(
 }
 
 // tempTableInsertContinuation is LAZY, like Java's
-// TempTableInsertCursor.Continuation: it holds the live table and the
-// child continuation and serializes only in ToBytes. Eager per-row
-// marshaling would be O(table) work per emitted row — thrown away for
-// every row whose continuation the caller never serializes (the pager
-// serializes once per page). Safe under the same consume-then-serialize
-// discipline as Java: ToBytes runs before any further OnNext mutates
-// the table.
+// TempTableInsertCursor.Continuation: encoding the captured row snapshot into
+// bytes happens only in ToBytes (thrown away for every row whose
+// continuation the caller never serializes — the pager serializes once per
+// page). What is NOT lazy, and must not be, is the SNAPSHOT itself: rows is
+// captured (via TempTable.Snapshot, O(1) — see its doc comment) at wrap time,
+// the moment this continuation object is constructed, not at ToBytes time.
+// A live *TempTable pointer captured here instead would let an arbitrary
+// number of intervening Add calls (this cursor's OWN inner keeps inserting
+// into the same table for every later row of this same leg) change what a
+// stale, not-yet-serialized continuation would encode — this is exactly the
+// bug: "the pager serializes once per page" is caller DISCIPLINE, not a
+// structural guarantee, and it breaks the moment any consumer peeks, retries,
+// or holds a row's continuation across more than one OnNext call.
 type tempTableInsertContinuation struct {
-	table     *TempTable
+	rows      []QueryResult
 	childCont recordlayer.RecordCursorContinuation
 }
 
@@ -216,7 +227,7 @@ func (c *tempTableInsertContinuation) ToBytes() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := encodeTempTableProto(c.table)
+	snapshot, err := encodeTempTableProto(c.rows)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +238,7 @@ func (c *tempTableInsertContinuation) ToBytes() ([]byte, error) {
 func (c *tempTableInsertContinuation) IsEnd() bool { return false }
 
 func (c *tempTableInsertCursor) wrapContinuation(childCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
-	return &tempTableInsertContinuation{table: c.table, childCont: childCont}
+	return &tempTableInsertContinuation{rows: c.table.Snapshot(), childCont: childCont}
 }
 
 func (c *tempTableInsertCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -259,6 +270,75 @@ func (c *tempTableInsertCursor) IsClosed() bool { return c.closed }
 
 var _ recordlayer.RecordCursor[QueryResult] = (*tempTableInsertCursor)(nil)
 
+// --- recursion invocation identity ---
+//
+// A statement can drive the SAME recursive-union plan pointer through
+// multiple CONCURRENTLY LIVE invocations — a sorted RecordQueryInUnionPlan
+// merges N per-value legs by key (newMergeSortCursorFromFactories), and every
+// leg executes p.GetInner() via ITS OWN *recursiveUnionCursor; all N are
+// constructed up front and pulled from in lockstep, not one-at-a-time
+// (mergeSortCursor.pullAndAdmit — unlike ConcatCursors, which only ever holds
+// one leg's cursor alive). Keying the depth guard by plan pointer alone (as
+// it was through two prior fixes) conflates those N invocations into one
+// shared counter: independent shallow invocations sum into a false positive,
+// and one invocation's fresh-construction reset zeroes another's live count.
+//
+// The fix scopes the counter to the INVOCATION, not just the plan: a
+// recursionInvocationKey pairs the plan pointer with a "branch scope" string
+// recording which sibling index (which IN-union value, at every nesting
+// level) led to this cursor's construction. Two concurrently live siblings
+// get DIFFERENT scopes (different branch index) and so different keys, even
+// though they share a plan pointer. The SAME invocation's own resume
+// reconstructs the identical branch path — the tree walk from the statement
+// root to this cursor's construction point is deterministic given the plan
+// and the (fixed, per-statement) IN-source values — so it always recomputes
+// the SAME scope string and lands back on the SAME key, with nothing
+// serialized to get there.
+//
+// That last property is why the scope lives ONLY in context.Context, never
+// in RecursiveCursorContinuation: that proto is Java's wire format (Java has
+// no depth cap at all — grep for RecursiveCTEDepthExceededError /
+// RecursionLimitReached-equivalent in fdb-record-layer/ turns up nothing;
+// this cap is a Go-only safety extension per checkDepth's own comment), and
+// adding a field to it to carry an invocation identity would be a wire
+// change Java could never produce or consume. Recomputing the scope
+// structurally on every reconstruction — rather than minting and persisting
+// an opaque id — means the wire format never needs to carry it.
+type recursionInvocationKey struct {
+	plan  *plans.RecordQueryRecursiveLevelUnionPlan
+	scope string
+}
+
+// recursionScopeCtxKeyType/recursionScopeCtxKey namespace the context.Context
+// value carrying the current recursion branch scope — an unexported type so
+// no other package can collide with or forge it.
+type recursionScopeCtxKeyType struct{}
+
+var recursionScopeCtxKey = recursionScopeCtxKeyType{}
+
+// withRecursionInvocationBranch tags ctx with the branch index of a
+// concurrently-live sibling invocation spawned from the same construction
+// point (executeInUnion's per-IN-value childFactory, for the sorted/merged
+// branch). The resulting scope threads through every nested ExecutePlan call
+// under ctx — any *recursiveUnionCursor constructed further down inherits it
+// via recursionInvocationScope. Nesting composes: tagging an already-scoped
+// ctx (an InUnion nested inside another InUnion's branch) appends to the
+// existing path rather than replacing it.
+func withRecursionInvocationBranch(ctx context.Context, index int) context.Context {
+	parent, _ := ctx.Value(recursionScopeCtxKey).(string)
+	return context.WithValue(ctx, recursionScopeCtxKey, parent+"/"+strconv.Itoa(index))
+}
+
+// recursionInvocationScope reads the current branch scope from ctx, or ""
+// when nothing has tagged one (the common case: a recursive-union plan not
+// reached through any concurrent fan-out gets the empty scope, so its key
+// collapses to exactly the plan pointer alone — identical to the pre-fix
+// behavior for every query shape that isn't the sorted-IN-union case).
+func recursionInvocationScope(ctx context.Context) string {
+	scope, _ := ctx.Value(recursionScopeCtxKey).(string)
+	return scope
+}
+
 // --- RecursiveUnionCursor (Java cursors/RecursiveUnionCursor +
 // RecursiveStateManagerImpl) ---
 
@@ -275,13 +355,25 @@ type recursiveUnionCursor struct {
 	baseCtx *EvaluationContext
 	props   recordlayer.ExecuteProperties
 	resolve protoDescriptorResolver
+	// key identifies THIS invocation for the statement-scoped depth guard
+	// (recursionInvocationKey's doc comment) — computed ONCE at construction
+	// from the plan pointer plus whatever branch scope ctx carried at that
+	// moment, and reused unchanged for the cursor's whole lifetime (including
+	// every checkDepth call across this invocation's own page-boundary
+	// resumes, since a resume rebuilds the cursor with the same ctx scope).
+	key recursionInvocationKey
 
 	isInitialState bool
 	scanTable      *TempTable // == Java's recursiveUnionTempTable
 	insertTable    *TempTable
 	active         recordlayer.RecordCursor[QueryResult]
-	levels         int
-	closed         bool
+	// levels is a per-cursor-instance FALLBACK level count: it always
+	// increments (regardless of whether props.State is wired up) so a raw
+	// ExecuteProperties without State still gets the pre-fix protection —
+	// bounding runaway growth within one page/cursor lifetime. It is NOT the
+	// authoritative count once props.State is available; see checkDepth.
+	levels int
+	closed bool
 }
 
 // maxStreamingRecursionDepth mirrors the eager path's cycle bound
@@ -302,12 +394,26 @@ func newRecursiveUnionCursor(
 		baseCtx: evalCtx,
 		props:   props.ClearSkipAndLimit(),
 		resolve: storeDescriptorResolver(store),
+		key:     recursionInvocationKey{plan: p, scope: recursionInvocationScope(ctx)},
 	}
 	c.scanTable = NewTempTableWithState(props.State)
 	c.insertTable = NewTempTableWithState(props.State)
 
 	if len(continuation) == 0 {
 		c.isInitialState = true
+		// A nil continuation is the invocation boundary: this cursor starts a
+		// FRESH invocation of p under THIS scope, not a resume of one already
+		// in flight (a resume — paging mid-recursion — always carries a
+		// non-nil continuation; see checkDepth and ResetRecursionLevel's doc
+		// comments). Reset the statement-scoped level count for c.key so an
+		// earlier invocation sharing this exact key (e.g. a prior outer row
+		// of a correlated subquery wrapping this CTE, which gets the same
+		// scope every row since FlatMap doesn't tag one) doesn't carry over
+		// into this one. Ordinarily a no-op by the time we get here: the
+		// prior invocation already deleted its own entry on natural
+		// exhaustion or depth-cap failure (see OnNext / checkDepth) — this is
+		// defense in depth for any exit path that doesn't reach either.
+		c.props.State.ResetRecursionLevel(c.key)
 		active, err := c.legCursor(ctx, p.GetInitialState(), nil)
 		if err != nil {
 			return nil, err
@@ -353,12 +459,20 @@ func (c *recursiveUnionCursor) legCursor(ctx context.Context, legPlan plans.Reco
 }
 
 // recursiveUnionContinuation is LAZY like Java's
-// RecursiveUnionCursor.Continuation (toBytes serializes on demand): it
-// captures the phase, the live scan frontier, and the child
-// continuation. See tempTableInsertContinuation for the discipline.
+// RecursiveUnionCursor.Continuation: encoding to bytes happens only in
+// ToBytes. The scan FRONTIER (scanRows) is captured (TempTable.Snapshot, O(1))
+// at wrap time, not at ToBytes time — see tempTableInsertContinuation's doc
+// comment for why a live *TempTable pointer is unsafe here. It matters even
+// more for this cursor: c.scanTable and c.insertTable are SWAPPED at every
+// level transition (OnNext, the ping-pong), and the table object that used to
+// BE scanTable is then Cleared and refilled as the new insertTable — so a
+// continuation issued mid-level that still held the live *scanTable pointer
+// would, once that object got recycled into next level's insert buffer,
+// serialize whatever the NEXT level happened to insert instead of the
+// frontier the row was actually resumable against.
 type recursiveUnionContinuation struct {
 	isInitialState bool
-	scanTable      *TempTable
+	scanRows       []QueryResult
 	childCont      recordlayer.RecordCursorContinuation
 }
 
@@ -367,7 +481,7 @@ func (c *recursiveUnionContinuation) ToBytes() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := encodeTempTableProto(c.scanTable)
+	snapshot, err := encodeTempTableProto(c.scanRows)
 	if err != nil {
 		return nil, err
 	}
@@ -385,9 +499,58 @@ func (c *recursiveUnionContinuation) IsEnd() bool { return false }
 func (c *recursiveUnionCursor) wrapContinuation(childCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
 	return &recursiveUnionContinuation{
 		isInitialState: c.isInitialState,
-		scanTable:      c.scanTable,
+		scanRows:       c.scanTable.Snapshot(),
 		childCont:      childCont,
 	}
+}
+
+// checkDepth increments the level count and errors with
+// RecursiveCTEDepthExceededError once it exceeds maxStreamingRecursionDepth.
+// It combines two counters and uses whichever is larger:
+//
+//   - c.levels: a per-cursor-instance counter, always incremented, that
+//     alone would only bound growth WITHIN one page (the pre-fix behavior —
+//     every page rebuilds a fresh *recursiveUnionCursor via
+//     newRecursiveUnionCursor, so this resets to zero on every resume).
+//   - props.State.IncrementRecursionLevel(c.key): the STATEMENT-scoped count
+//     (see its doc comment on recordlayer.ExecuteState) that survives the
+//     per-page rebuild, so a cyclic recursion that pages mid-recursion still
+//     trips the cap instead of streaming forever. This count is scoped to
+//     one INVOCATION of c.plan under c.key's branch scope, not the whole
+//     statement, and not even every concurrently-live use of c.plan:
+//     newRecursiveUnionCursor resets it (ResetRecursionLevel) whenever it
+//     starts fresh (continuation == nil) rather than resuming one already in
+//     flight, so independent SEQUENTIAL invocations sharing a scope (e.g.
+//     once per outer row of a correlated subquery) each get their own
+//     budget instead of accumulating into one shared total — and c.key's
+//     scope keeps independent CONCURRENT invocations (e.g. one per sorted
+//     IN-union value, all executing c.plan's pointer at once) from sharing a
+//     counter at all, which the reset alone cannot do (see
+//     recursionInvocationKey's doc comment).
+//
+// A nil props.State (raw ExecuteProperties, as some executor-level tests
+// use) makes IncrementRecursionLevel a no-op returning 0, so c.levels alone
+// governs — identical to the pre-fix per-page-only bound. Taking the max
+// (rather than only the state-backed count) means the guard is never weaker
+// than before this fix, only stronger when props.State is wired up.
+func (c *recursiveUnionCursor) checkDepth() error {
+	c.levels++
+	depth := c.levels
+	if stateDepth := c.props.State.IncrementRecursionLevel(c.key); stateDepth > depth {
+		depth = stateDepth
+	}
+	// > (not >=): recursive legs 1..1000 run, matching the eager path's
+	// level indices 0..999.
+	if depth > maxStreamingRecursionDepth {
+		// This invocation is aborting — the statement fails here and no
+		// continuation is ever produced for it, so nothing will ever resume
+		// under c.key again. Free the entry now rather than letting a long
+		// statement (many concurrent or sequential invocations) accumulate
+		// unbounded dead map entries.
+		c.props.State.ResetRecursionLevel(c.key)
+		return &RecursiveCTEDepthExceededError{MaxDepth: maxStreamingRecursionDepth}
+	}
+	return nil
 }
 
 func (c *recursiveUnionCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -411,18 +574,19 @@ func (c *recursiveUnionCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 		c.scanTable, c.insertTable = c.insertTable, c.scanTable
 		c.insertTable.Clear()
 		if len(c.scanTable.GetList()) == 0 {
+			// Natural termination: an EndContinuation means this invocation
+			// is genuinely done and nothing will ever resume under c.key
+			// again (a resume always carries a non-nil continuation this
+			// arm never produces). Free the map entry here — the other half
+			// of bounding recursionLevels' size alongside checkDepth's
+			// cleanup on the depth-cap error path.
+			c.props.State.ResetRecursionLevel(c.key)
 			return recordlayer.NewResultNoNext[QueryResult](
 				recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
 			), nil
 		}
-		c.levels++
-		// > (not >=): recursive legs 1..1000 run, matching the eager
-		// path's level indices 0..999. The counter is NOT carried in the
-		// continuation, so under paging it resets per resume — the cap
-		// bounds runaway cycles within one page, not across a statement
-		// (Java has no cap at all; its recursion is fixpoint-only).
-		if c.levels > maxStreamingRecursionDepth {
-			return recordlayer.RecordCursorResult[QueryResult]{}, &RecursiveCTEDepthExceededError{MaxDepth: maxStreamingRecursionDepth}
+		if err := c.checkDepth(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
 		active, aerr := c.legCursor(ctx, c.plan.GetRecursiveState(), nil)
 		if aerr != nil {

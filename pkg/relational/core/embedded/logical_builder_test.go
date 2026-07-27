@@ -2,14 +2,102 @@ package embedded
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
+
+func TestDeriveProjectionColumnDefDoesNotDequalifyExpressionLabel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		field     string
+		alias     string
+		wantLabel string
+	}{
+		{
+			name:      "machinery qualified column",
+			field:     "E.SALARY",
+			alias:     "E.SALARY",
+			wantLabel: "SALARY",
+		},
+		{
+			name:      "canonical qualified aggregate",
+			field:     "MAX(E.SALARY)",
+			alias:     "MAX(E.SALARY)",
+			wantLabel: "MAX(E.SALARY)",
+		},
+		{
+			name:      "delimited punctuation remains a qualified column",
+			field:     "E.SAL-ARY",
+			alias:     "E.SAL-ARY",
+			wantLabel: "SAL-ARY",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := values.NewFieldValueWithResolvedOrdinal(tc.field, 0, values.NullableLong)
+			got := deriveProjectionColumnDef(v, tc.alias, 0, nil)
+			if got.Label != tc.wantLabel {
+				t.Fatalf("label = %q, want %q", got.Label, tc.wantLabel)
+			}
+		})
+	}
+}
+
+func TestBindPostAggregateValueRejectsInRangeSourceOrdinal(t *testing.T) {
+	t.Parallel()
+	agg := logical.NewAggregate(
+		logical.NewScan("T", ""),
+		[]logical.GroupKey{{
+			Display: "A",
+			Bare:    "A",
+			Value:   values.NewFieldValueWithResolvedOrdinal("A", 0, values.NullableLong),
+		}},
+		[]logical.AggregateCall{{Func: "SUM", Operand: "V", BareColumn: true}},
+		[]string{""},
+		false,
+	)
+	agg.AggregateOperands = []values.Value{
+		values.NewFieldValueWithResolvedOrdinal("V", 2, values.NullableLong),
+	}
+
+	// Source B's ordinal 1 happens to equal the aggregate call's native
+	// ordinal [key=0, call=1]. It is still not producer-native identity.
+	_, err := bindPostAggregateValueToNativeOrdinals(
+		values.NewFieldValueWithResolvedOrdinal("B", 1, values.NullableLong),
+		agg,
+	)
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
+		t.Fatalf("in-range unmatched source ordinal must fail typed-loud, got %v", err)
+	}
+}
+
+func TestAggregateQualifiedStarFailsTypedBeforeOutputContract(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse(
+		"SELECT m.*, COUNT(*) FROM m GROUP BY id, a, b, v",
+	)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stmt := root.Statements().AllStatement()[0].SelectStatement()
+	if stmt == nil {
+		t.Fatal("expected SELECT statement")
+	}
+	_, err = extractSelectParts(stmt)
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedOperation {
+		t.Fatalf("aggregate qualifier.* must fail typed before zero ordinals can reach the output contract, got %v", err)
+	}
+}
 
 // parseSelect is a test helper that parses SQL and returns the
 // parsed selectQuery for the first SELECT statement.
@@ -81,9 +169,45 @@ func TestBuildLogicalPlan_CountStar(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Aggregate(group=[], agg=[COUNT(*)])\n  Scan(T)"
+	want := "Project(COUNT(*))\n  Aggregate(group=[], agg=[COUNT(*)])\n    Scan(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildLogicalPlan_CountStarKeepsHiddenAggregatesPrivate(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t,
+		"SELECT COUNT(*) FROM t HAVING SUM(v) > 0 ORDER BY MAX(v)",
+	)
+	op := buildLogicalPlanForSelect(sq)
+	agg := findAggregate(op)
+	if agg == nil {
+		t.Fatalf("expected aggregate:\n%s", op.Explain(""))
+	}
+	if got, want := len(agg.Calls), 3; got != want {
+		t.Fatalf("native calls = %v, want COUNT(*), SUM(V), MAX(V)", agg.Calls)
+	}
+	if !agg.Calls[0].Star || agg.Calls[0].Func != "COUNT" ||
+		agg.Calls[1].Func != "SUM" || agg.Calls[2].Func != "MAX" {
+		t.Fatalf("native call order = %v, want visible COUNT(*) then hidden parser order", agg.Calls)
+	}
+	if got, want := agg.OutputSlots, []logical.AggregateOutputSlot{{
+		SelectOrdinal: 1,
+		NativeOrdinal: 0,
+	}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("public slots = %v, want %v", got, want)
+	}
+	proj := findProjection(op)
+	if proj == nil || !reflect.DeepEqual(proj.AggregateOutputOrdinals, []int{0}) {
+		t.Fatalf("final Project ordinals = %v", proj)
+	}
+
+	dup := buildLogicalPlanForSelect(parseSelect(t,
+		"SELECT COUNT(*) FROM t HAVING COUNT(*) > 0 ORDER BY COUNT(*)",
+	))
+	if dupAgg := findAggregate(dup); dupAgg == nil || len(dupAgg.Calls) != 1 {
+		t.Fatalf("harvested COUNT(*) duplicates must collapse onto native call 0: %#v", dupAgg)
 	}
 }
 
@@ -150,6 +274,56 @@ func TestBuildLogicalPlan_GroupBySum(t *testing.T) {
 	// Project wraps the aggregate; keys list reflects the GROUP BY.
 	if got := op.Explain(""); !strings.Contains(got, "Aggregate(group=[DEPT], agg=[SUM(V)") {
 		t.Fatalf("got %q, want Aggregate(group=[DEPT], agg=[SUM(V)...])", got)
+	}
+}
+
+func TestBuildLogicalPlan_AggregateOutputContractPreservesSelectOrder(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		sql            string
+		projections    []string
+		nativeOrdinals []int
+	}{
+		{
+			sql:            "SELECT SUM(v), a FROM t GROUP BY a",
+			projections:    []string{"SUM(V)", "A"},
+			nativeOrdinals: []int{1, 0},
+		},
+		{
+			sql:            "SELECT SUM(v)+1, a FROM t GROUP BY a",
+			projections:    []string{"SUM(v)+1", "A"},
+			nativeOrdinals: []int{-1, 0},
+		},
+		{
+			sql:            "SELECT b, SUM(v), a, COUNT(*) FROM t GROUP BY a, b",
+			projections:    []string{"B", "SUM(V)", "A", "COUNT(*)"},
+			nativeOrdinals: []int{1, 2, 0, 3},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.sql, func(t *testing.T) {
+			op := buildLogicalPlanForSelect(parseSelect(t, tc.sql))
+			proj, ok := op.(*logical.LogicalProject)
+			if !ok {
+				t.Fatalf("aggregate SQL output must end in LogicalProject, got %T:\n%s", op, op.Explain(""))
+			}
+			if !reflect.DeepEqual(proj.Projections, tc.projections) {
+				t.Fatalf("projections = %v, want %v", proj.Projections, tc.projections)
+			}
+			if !reflect.DeepEqual(proj.AggregateOutputOrdinals, tc.nativeOrdinals) {
+				t.Fatalf("native ordinals = %v, want %v", proj.AggregateOutputOrdinals, tc.nativeOrdinals)
+			}
+			agg := findAggregate(op)
+			if agg == nil || len(agg.OutputSlots) != len(tc.projections) {
+				t.Fatalf("aggregate output contract missing/incomplete: %+v", agg)
+			}
+			for i, slot := range agg.OutputSlots {
+				if slot.SelectOrdinal != i+1 || slot.NativeOrdinal != tc.nativeOrdinals[i] {
+					t.Fatalf("slot %d = %+v, want select=%d native=%d",
+						i, slot, i+1, tc.nativeOrdinals[i])
+				}
+			}
+		})
 	}
 }
 

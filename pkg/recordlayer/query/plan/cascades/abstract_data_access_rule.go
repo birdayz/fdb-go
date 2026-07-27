@@ -711,6 +711,20 @@ func (s *scanPlanExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+// TieBreakHashCodeWithoutChildren preserves the adapter's historical
+// scanplanexpr framing while delegating its wrapped node to the schema-neutral
+// tie-break hash. A recursive-DFS leg can wrap a top-level physical Projection;
+// forwarding HashCodeWithoutChildren there would leak that projection's
+// schema-aware memo identity back into designation/extraction ranking.
+func (s *scanPlanExpression) TieBreakHashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("scanplanexpr|"))
+	if s.plan != nil {
+		writeHash64(h, tieBreakNodeHash(s.plan))
+	}
+	return h.Sum64()
+}
+
 // GetCorrelatedToWithoutChildren reports the outer correlations the wrapped plan
 // carries. A bare PK RecordQueryScanPlan SARGed with a join predicate (`pk =
 // QOV(outer).fk`) is a CORRELATED probe — returning nil here (the prior behaviour) let
@@ -796,10 +810,15 @@ func (s *scanPlanExpression) HintCost(child []properties.Cost, stats properties.
 	return concretePlanCost(s.plan, stats, nil)
 }
 
-// HintRichOrdering — the FIXED-equality-prefix PK ordering; see
-// pkScanRichOrdering.
+// HintRichOrdering delegates to the unwrapped PK scan's own derivation
+// (RecordQueryScanPlan.HintRichOrdering, plans/ordering.go) rather than
+// re-deriving the FIXED-equality-prefix PK ordering here. A second hand-coded
+// copy of that derivation is exactly the shape that let plans/ordering.go's
+// plain and rich forms disagree on a resumed-equality-after-gap comparison
+// array; delegating means there is nothing here to drift out of sync with the
+// helper the plan itself uses.
 func (s *scanPlanExpression) HintRichOrdering() *properties.RichOrdering {
-	return pkScanRichOrdering(pkScanFromDataAccessPlan(s.plan))
+	return pkScanFromDataAccessPlan(s.plan).HintRichOrdering()
 }
 
 // compile-time check

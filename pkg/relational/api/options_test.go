@@ -292,3 +292,45 @@ func TestIndexFetchMethodString(t *testing.T) {
 		}
 	}
 }
+
+// TestPlannerOptionNames pins the three planner options against Java's
+// Options.Name enum: the NAME strings are the wire/property contract (a DSN
+// parameter or a Properties round-trip carries the enum name verbatim), and
+// the DEFAULTS decide what every query plans as. Java's defaults are
+// DISABLE_PLANNER_REWRITING=false, DISABLED_PLANNER_RULES=empty and
+// PLAN_RIGHT_DEEP=false; a drift here silently changes plan shape for
+// everyone, so it gets an explicit assertion rather than riding on the
+// planner's own tests.
+func TestPlannerOptionNames(t *testing.T) {
+	t.Parallel()
+
+	for got, want := range map[OptionName]string{
+		OptDisabledPlannerRules:    "DISABLED_PLANNER_RULES",
+		OptDisablePlannerRewriting: "DISABLE_PLANNER_REWRITING",
+		OptPlanRightDeep:           "PLAN_RIGHT_DEEP",
+	} {
+		if string(got) != want {
+			t.Errorf("option name = %q, want %q (Java's Options.Name spelling)", got, want)
+		}
+	}
+
+	m := DefaultOptionValues()
+	if m[OptDisablePlannerRewriting] != false {
+		t.Errorf("DISABLE_PLANNER_REWRITING default = %v, want false", m[OptDisablePlannerRewriting])
+	}
+	if m[OptPlanRightDeep] != false {
+		t.Errorf("PLAN_RIGHT_DEEP default = %v, want false", m[OptPlanRightDeep])
+	}
+	rules, ok := m[OptDisabledPlannerRules].([]string)
+	if !ok || len(rules) != 0 {
+		t.Errorf("DISABLED_PLANNER_RULES default = %v, want an empty []string", m[OptDisabledPlannerRules])
+	}
+	// Unset must read back as the default, not nil — the planner reads the
+	// option through Get and an absent value must not disable rewriting.
+	if v := NoOptions().Get(OptPlanRightDeep); v != false {
+		t.Errorf("unset PLAN_RIGHT_DEEP reads %v, want false", v)
+	}
+	if v := NoOptions().Get(OptDisablePlannerRewriting); v != false {
+		t.Errorf("unset DISABLE_PLANNER_REWRITING reads %v, want false", v)
+	}
+}

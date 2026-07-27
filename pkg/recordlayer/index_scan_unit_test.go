@@ -650,7 +650,7 @@ var _ = Describe("Index Scan Unit Tests", func() {
 			Expect(c.prefixLength).To(Equal(len(ss.FDBKey())))
 			Expect(c.closed).To(BeFalse())
 			Expect(c.recordsRead).To(Equal(0))
-			Expect(c.bytesScanned).To(Equal(int64(0)))
+			Expect(c.scanState.BytesScanned()).To(Equal(int64(0)))
 		})
 	})
 

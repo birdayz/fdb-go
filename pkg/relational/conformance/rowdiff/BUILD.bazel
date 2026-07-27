@@ -42,6 +42,7 @@ go_test(
         "cost_test.go",
         "derived_oracle_test.go",
         "exists_oracle_test.go",
+        "group_key_coverage_test.go",
         "left_join_oracle_test.go",
         "num_fn_oracle_test.go",
         "ordering_test.go",

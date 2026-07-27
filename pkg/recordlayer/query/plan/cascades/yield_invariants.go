@@ -6,6 +6,24 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
 
+// PlannerInvariantViolationError marks a structural invariant violation caught
+// at rule-yield time: a nil expression, a quantifier over an unmemoized child,
+// or a nil-inner shell. Every such failure is an engine bug, never a statement
+// about the user's query.
+//
+// It exists so a caller can identify the FAMILY without parsing the message.
+// The underlying text names Go types (it formats the offending expression with
+// %T), so the SQL layer withholds it from users; a family that survives as a
+// type is what keeps those failures triageable from a log line.
+type PlannerInvariantViolationError struct{ Cause error }
+
+// Error returns the underlying invariant message unchanged, so in-package
+// diagnostics and tests are unaffected by the tagging.
+func (e *PlannerInvariantViolationError) Error() string { return e.Cause.Error() }
+
+// Unwrap returns the underlying invariant error.
+func (e *PlannerInvariantViolationError) Unwrap() error { return e.Cause }
+
 // verifyChildrenMemoized ports Java's CascadesRuleCall.verifyChildrenMemoized
 // (CascadesRuleCall.java:221-241) — an UNCONDITIONAL check (a `Verify`, not a
 // debug-only sanity check) that a rule never hands the memo an expression
@@ -36,7 +54,18 @@ import (
 // reach is the optional per-Planner reachability tally; nil collects nothing.
 // It is a PARAMETER rather than package state because a tally shared across
 // concurrent planners is not a measurement — see ReachabilityCollector.
-func verifyChildrenMemoized(expr expressions.RelationalExpression, reach *ReachabilityCollector) error {
+func verifyChildrenMemoized(expr expressions.RelationalExpression, reach *ReachabilityCollector) (err error) {
+	// Every failure below is one family — a rule handed the memo an expression
+	// that violates a structural invariant. Tagging it HERE, at the single
+	// chokepoint that mints them, is what lets a caller name the family without
+	// string-matching the message: the SQL layer withholds these messages from
+	// users (they format expressions with %T), so the type is the only thing
+	// left to triage from.
+	defer func() {
+		if err != nil {
+			err = &PlannerInvariantViolationError{Cause: err}
+		}
+	}()
 	if expr == nil {
 		return fmt.Errorf("yield-invariant: rule yielded a nil expression")
 	}

@@ -39,10 +39,12 @@ tests:
   # get deleted; 2 and 4 survive.
   #
   # Caveat for direct migration: NOT IN's UNKNOWN-on-NULL semantics differ
-  # from NOT EXISTS — when the subquery may yield NULLs and the caller
-  # needs the SQL §8.4 UNKNOWN-on-NULL filtering, they must explicitly
-  # filter the NULLs in the inner predicate. keep_set.k is NOT NULL here
-  # so the two forms coincide.
+  # from NOT EXISTS. Filtering NULLs inside the NOT EXISTS does NOT
+  # reconcile them — a NULL row already fails the equality. Emulating
+  # NOT IN needs a second existence test over the NULLs plus a NULL check
+  # on the left operand (spelled out in subquery_in.yaml, which pins it).
+  # keep_set.k is NOT NULL here, so the two forms coincide and the plain
+  # NOT EXISTS is exact.
   - query: DELETE FROM t WHERE NOT EXISTS (SELECT 1 FROM keep_set WHERE keep_set.k = t.id)
   - query: SELECT id, v FROM t ORDER BY id
     rows:

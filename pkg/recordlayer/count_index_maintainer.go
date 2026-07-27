@@ -24,16 +24,17 @@ type countKVCursor struct {
 
 	iterator     rangeIterator
 	closed       bool
-	returned     int
+	returned     int // also this cursor's own free-initial-pass gate (Java's usedInitialPass)
 	prefixLength int
 	lastCont     []byte
 	tupleValues  bool // if true, decode values as tuple-packed bytes
 
-	// Scan accounting for RFC-106a resource limits. Each aggregate-index KV is a
-	// pre-aggregated group, so one KV read == one entry returned; `returned`
-	// doubles as the scanned-records count (like index_scan's recordsRead).
-	bytesScanned int64
-	startTime    time.Time
+	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
+	// counter set for RFC-106a resource limits — see ScanLimiterState's doc
+	// comment. Each aggregate-index KV is a pre-aggregated group, so one KV
+	// read == one entry returned; `returned` doubles as the local
+	// scanned-records count (like index_scan's recordsRead). Never nil.
+	scanState *ScanLimiterState
 }
 
 // newCountIndexCursor creates a cursor that scans a COUNT index.
@@ -70,7 +71,13 @@ func newTupleValueIndexCursor(index *Index, indexSubspace subspace.Subspace, tx 
 }
 
 func (c *countKVCursor) initIterator() error {
-	c.startTime = time.Now() // per-page time-limit reference (RFC-106a)
+	// scanState is resolved lazily here (not at construction) so the nil-fallback private
+	// instance's StartTime anchor is captured at first USE, matching the pre-fix
+	// c.startTime = time.Now() that used to live in this exact spot — resolving it eagerly at
+	// construction would tighten the effective time budget for a cursor built well before its
+	// first OnNext (resolveScanLimiterState is a no-op passthrough for the shared, non-nil case:
+	// that pointer's StartTime was already fixed when the caller minted it).
+	c.scanState = resolveScanLimiterState(c.scanProps.ExecuteProperties)
 	// Compute begin from TupleRange low endpoint
 	var begin fdb.Key
 	switch c.tupleRange.LowEndpoint {
@@ -176,18 +183,26 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 	}
 
 	// Scanned-records limit (RFC-106a parity): one aggregate-index KV per entry,
-	// so `returned` is the scanned-records count. noNextOrFail → 54F01 in fail mode.
-	if executeProps.ScannedRecordsLimit > 0 && c.returned >= executeProps.ScannedRecordsLimit {
+	// so `returned` is the scanned-records count (local free-initial-pass gate, bypassed under
+	// FailOnScanLimitReached to match Java's CursorLimitManager.java:135-136); the
+	// threshold is the (possibly shared) scanState so every leg of an IN-join/IN-union
+	// charges the same aggregate budget instead of resetting per leg. noNextOrFail → 54F01.
+	if executeProps.ScannedRecordsLimit > 0 &&
+		(c.returned > 0 || executeProps.FailOnScanLimitReached) &&
+		c.scanState.RecordsScanned() >= executeProps.ScannedRecordsLimit {
 		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, &BytesContinuation{bytes: c.lastCont})
 	}
 
-	// Time limit (free initial pass like the other leaf cursors).
-	if executeProps.TimeLimit > 0 && c.returned > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
-		return NewResultNoNext[*IndexEntry](TimeLimitReached, &BytesContinuation{bytes: c.lastCont}), nil
+	// Time limit (free initial pass like the other leaf cursors, unconditional — Java never
+	// suppresses it), measured against the shared scanState's anchor rather than this cursor's own
+	// construction time. noNextOrFail: Java throws on ANY halted limit under
+	// FailOnScanLimitReached, not just the scanned-records one (CursorLimitManager.java:141-144).
+	if executeProps.TimeLimit > 0 && c.returned > 0 && time.Since(c.scanState.StartTime()) >= executeProps.TimeLimit {
+		return noNextOrFail[*IndexEntry](executeProps, TimeLimitReached, &BytesContinuation{bytes: c.lastCont})
 	}
 
 	// Scanned-bytes limit (free initial pass).
-	if executeProps.ScannedBytesLimit > 0 && c.returned > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
+	if executeProps.ScannedBytesLimit > 0 && c.returned > 0 && c.scanState.BytesScanned() >= executeProps.ScannedBytesLimit {
 		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, &BytesContinuation{bytes: c.lastCont})
 	}
 
@@ -204,7 +219,7 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 	if err != nil {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("count index scan: %w", err)
 	}
-	c.bytesScanned += int64(len(kv.Key) + len(kv.Value)) // RFC-106a byte accounting
+	c.scanState.AddBytesScanned(int64(len(kv.Key) + len(kv.Value))) // RFC-106a byte accounting
 
 	// Unpack key using fastUnpack for zero-alloc integer decode.
 	prefixLen := len(c.indexSubspace.Bytes())
@@ -245,6 +260,7 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 	}
 
 	c.returned++
+	c.scanState.AddRecordScanned()
 
 	cont, err := c.makeContinuation(kv.Key)
 	if err != nil {

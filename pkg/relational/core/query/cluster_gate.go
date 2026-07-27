@@ -203,6 +203,9 @@ func legExposesBuriedOuterBox(op logical.LogicalOperator) bool {
 			// box inside an INNER cluster ordinalizes correctly (verified).
 			return hasWrappedBuriedJoin(o.Left) || hasWrappedBuriedJoin(o.Right)
 		case *logical.LogicalFilter:
+			if len(o.CorrelatedScalarSubqueries) > 0 {
+				return false
+			}
 			op = o.Input
 			peeled = true
 		case *logical.LogicalProject:
@@ -234,6 +237,9 @@ func hasWrappedBuriedJoin(op logical.LogicalOperator) bool {
 			}
 			return walk(o.Left, false) || walk(o.Right, false)
 		case *logical.LogicalFilter:
+			if len(o.CorrelatedScalarSubqueries) > 0 {
+				return false
+			}
 			return walk(o.Input, true)
 		case *logical.LogicalProject:
 			if len(o.CorrelatedScalarSubqueries) > 0 {
@@ -446,6 +452,9 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		// the seed layout agree.
 		return t.gatesAsFreshCluster(o)
 	case *logical.LogicalFilter:
+		if len(o.CorrelatedScalarSubqueries) > 0 {
+			return false
+		}
 		// Rider subqueries are transparent to eligibility,
 		// mirroring clusterArity. A WHERE-EXISTS leg's output boundary is the
 		// existential FlatMap's IDENTITY RV — the source row itself, a
@@ -631,7 +640,8 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 		if !isF {
 			break
 		}
-		if len(f.ExistsSubqueries) > 0 || len(f.ScalarSubqueries) > 0 {
+		if len(f.ExistsSubqueries) > 0 || len(f.ScalarSubqueries) > 0 ||
+			len(f.CorrelatedScalarSubqueries) > 0 {
 			return nil, false
 		}
 		op = f.Input
@@ -845,12 +855,16 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 		}
 		return l + r
 	case *logical.LogicalFilter:
+		if len(o.CorrelatedScalarSubqueries) > 0 {
+			// A correlated scalar filter materializes a per-row LEFT-scalar box
+			// before applying WHERE; it is not transparent to cluster arity.
+			return arityPoison
+		}
 		// Rider subqueries are TRANSPARENT to arity. An
 		// EXISTS rider's existential quantifier rides the post-flattening
 		// merge (the 2+1 flatten's ordinal seed threads existential
 		// quantifiers on the seed select), and an uncorrelated scalar rider
-		// (all a filter can carry — correlated ones never land on
-		// LogicalFilter) is a pre-evaluated ROOT-context binding,
+		// uncorrelated scalar rider is a pre-evaluated ROOT-context binding,
 		// shape-agnostic. Neither adds a ForEach quantifier, so the filter
 		// contributes its input's arity — the poison here made every cluster
 		// with a subquery-bearing leg name-model for no structural reason.

@@ -28,7 +28,7 @@ type ScalarSubqueryPlan struct {
 // the bridge between the SQL parser's logical plan and the Cascades
 // optimizer.
 //
-// Returns the root Reference suitable for passing to Planner.Plan().
+// Returns the root Reference suitable for passing to Planner.PlanWithContext().
 // Returns nil if the operator tree contains shapes that can't be
 // translated (unsupported operators fall through to nil).
 func TranslateToCascades(op logical.LogicalOperator) *expressions.Reference {
@@ -617,10 +617,12 @@ func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []value
 // unionBranchNormalizable reports whether the executor's union position-remap can
 // remap this branch's columns to the first branch's names — i.e. whether the
 // branch's SCHEMA-defining node is a projection or scan (planColumnNamesWithMD
-// reports those branches' true output names). An AGGREGATE-schema'd branch is NOT
-// normalizable (the executor unwraps it to its input scan's names — TODO
-// 7.6-union-remap). Mirrors derivedOutputColumns's recursion through the
-// row-shape-preserving wrappers; an unknown shape is conservatively not normalizable.
+// reports those branches' true output names). Every SQL-built aggregate now has
+// an exact final Project, so it reaches the first arm regardless of qualified or
+// constant aggregate labels. The LogicalAggregate arm remains defense for
+// directly constructed/legacy trees that do not carry that public contract.
+// Mirrors derivedOutputColumns's recursion through row-shape-preserving
+// wrappers; an unknown shape is conservatively not normalizable.
 func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator) bool {
 	switch o := op.(type) {
 	case *logical.LogicalProject, *logical.LogicalJoin:
@@ -628,9 +630,9 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 	case *logical.LogicalScan:
 		// A scan may be a CTE/derived-table reference (translateScan resolves it from
 		// the CTE body, not a real table). A real-table scan is remappable, but a
-		// CTE-reference scan is only remappable if its BODY is — a CTE whose body is a
-		// bare aggregate is NOT (the executor unwraps it to its input scan's
-		// names). Resolve cteScope and recurse, mirroring legColumns (remove-while-
+		// CTE-reference scan is only remappable if its BODY is. SQL aggregate
+		// bodies are Projects; a directly constructed bare aggregate is checked
+		// by the defensive arm below. Resolve cteScope and recurse, mirroring legColumns (remove-while-
 		// recursing so a same-named scan inside the body resolves to the real table,
 		// not back to the CTE). A pre-translated (recursive) CTE ref is unverifiable →
 		// conservatively not normalizable.
@@ -647,7 +649,7 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		}
 		return true
 	case *logical.LogicalAggregate:
-		// Bare aggregate branch (no Project).
+		// Direct-tree bare aggregate branch (SQL builders always add Project).
 		if len(o.Calls) < 1 {
 			return false // 0-aggregate (group-only) shape — distinct concern, gated.
 		}
@@ -659,7 +661,7 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		if len(o.GroupKeys) == 0 {
 			return true
 		}
-		// GROUPED (RFC-081): a bare grouped aggregate can plan as AggregateIndex / MultiIntersection,
+		// GROUPED direct tree: a bare grouped aggregate can plan as AggregateIndex / MultiIntersection,
 		// whose canonical row key can DIVERGE from the logical leg-schema name (aggregateOutputColumns,
 		// the raw aggregate text) — so the executor's position-remap reads a missing key → NULL. The
 		// names agree only for COUNT(*) and FUNC(<bare column>); a qualified operand (SUM(t.c) →
@@ -2268,10 +2270,11 @@ func pushBuriedUnnestPredicateDown(f *logical.LogicalFilter) *logical.LogicalFil
 	residualPreds := append([]predicates.QueryPredicate{}, residual...)
 	residualPreds = append(residualPreds, extractExistsPredicates(f.Predicate)...)
 	return &logical.LogicalFilter{
-		Input:            newJoin,
-		Predicate:        andOf(residualPreds),
-		ExistsSubqueries: f.ExistsSubqueries,
-		ScalarSubqueries: f.ScalarSubqueries,
+		Input:                      newJoin,
+		Predicate:                  andOf(residualPreds),
+		ExistsSubqueries:           f.ExistsSubqueries,
+		ScalarSubqueries:           f.ScalarSubqueries,
+		CorrelatedScalarSubqueries: f.CorrelatedScalarSubqueries,
 	}
 }
 
@@ -2539,15 +2542,23 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
-	// Fold a POSITIVE WHERE-EXISTS over an unconditional-one-row
-	// aggregate (esq.AlwaysTrue) to TRUE — drop its existential quantifier AND
-	// rewrite its EXISTS marker in the predicate to TRUE (foldAlwaysTrueExists),
-	// before any routing. EXISTS(unconditional-one-row) is always satisfied, so
-	// `P AND EXISTS(...)` collapses to `P`. Running here — ahead of the
-	// join-flatten — means the correlated-aggregate semi-join is never built, so
-	// the joined-outer / windowed-DML hazards of the semi-join approach cannot
-	// arise. NOT EXISTS (negated) and projected consumers do NOT fold.
-	f = t.foldAlwaysTrueExists(f)
+	// Fold a WHERE-EXISTS whose post-pagination cardinality is known before any
+	// routing. The front-end proves the inner either empty or non-empty (notably:
+	// a non-grouped aggregate emits one row before LIMIT/OFFSET), so both EXISTS
+	// and NOT EXISTS can be substituted with their exact boolean result. Running
+	// here means the correlated-aggregate semi-join is never built, avoiding the
+	// joined-outer correlation-placement hazard entirely.
+	f = t.foldKnownExists(f)
+	// Every successfully substituted alias was removed from ExistsSubqueries.
+	// Any KnownTruth that remains is an unsupported consumer/boolean shape (for
+	// example a synthetic projected-EXISTS carrier or an EXISTS below OR).
+	// Raw-semi-joining it would reintroduce the aggregate/pagination cardinality
+	// bug, so decline typed-loud.
+	if hasKnownExistsTruth(f.ExistsSubqueries) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a cardinality-known EXISTS in this boolean position is not yet supported"))
+		return nil
+	}
 	// Narrowed correct-or-loud decline: a SCALAR SUBQUERY in a filter over a chained
 	// unnest (`FROM t, t.a AS x, x.b AS y WHERE t.id = (SELECT …)`) rides the wedgeGate
 	// POSITIONAL bake (rebaseUnnestOuterLegPredicateOrdinal), NOT the per-conjunct
@@ -2568,6 +2579,14 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	}
 	if f.Predicate != nil && predicateContainsUnsafeFunction(f.Predicate) {
 		return nil
+	}
+	// Correlated scalar predicates own a distinct two-level lowering: first
+	// materialize the per-outer scalar (strict FirstOrDefault when required),
+	// then evaluate WHERE above that LEFT-scalar box and strip the hidden slot.
+	// Dispatch before every generic filter rewrite so no carrier clone can drop
+	// the per-row plan or move the comparison below the cardinality barrier.
+	if len(f.CorrelatedScalarSubqueries) > 0 {
+		return t.translateFilterWithCorrelatedScalar(f)
 	}
 
 	// BURIED lateral-unnest element/ordinal WHERE (P1): push the
@@ -2659,11 +2678,12 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		if join, isJ := f.Input.(*logical.LogicalJoin); isJ {
 			if rotated, rok := t.rotateBuriedChainedSpine(join); rok {
 				f = &logical.LogicalFilter{
-					Input:            rotated,
-					Predicate:        f.Predicate,
-					PredicateText:    f.PredicateText,
-					ExistsSubqueries: f.ExistsSubqueries,
-					ScalarSubqueries: f.ScalarSubqueries,
+					Input:                      rotated,
+					Predicate:                  f.Predicate,
+					PredicateText:              f.PredicateText,
+					ExistsSubqueries:           f.ExistsSubqueries,
+					ScalarSubqueries:           f.ScalarSubqueries,
+					CorrelatedScalarSubqueries: f.CorrelatedScalarSubqueries,
 				}
 			}
 		}
@@ -3493,7 +3513,14 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 				} else {
 					rebased = rebaseUnnestOuterLegPredicate(lf.Predicate, outerLegs, mergedCorr)
 				}
-				esq.Plan = &logical.LogicalFilter{Input: lf.Input, Predicate: rebased, PredicateText: lf.PredicateText}
+				esq.Plan = &logical.LogicalFilter{
+					Input:                      lf.Input,
+					Predicate:                  rebased,
+					PredicateText:              lf.PredicateText,
+					ExistsSubqueries:           lf.ExistsSubqueries,
+					ScalarSubqueries:           lf.ScalarSubqueries,
+					CorrelatedScalarSubqueries: lf.CorrelatedScalarSubqueries,
+				}
 			}
 			// The JoinPredicate channel: name-model rebase for an anchored seed;
 			// leg-relative for a windowed BOX ordinal seed (the executor's below-FOD
@@ -4335,6 +4362,53 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	f *logical.LogicalFilter,
 	chain []logical.LogicalOperator,
 ) expressions.RelationalExpression {
+	// This method is an early-return consumer that bypasses translateFilter.
+	// A correlated-scalar carrier on f therefore cannot be left for the normal
+	// LEFT-scalar lowering: the EXISTS fold would consume only f's existential
+	// and uncorrelated-scalar lists and leave ScalarSubqueryValue unbound.
+	// Composition has no proven row-shape contract yet, so make the boundary
+	// explicit and typed-loud.
+	if len(f.CorrelatedScalarSubqueries) > 0 {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"projected EXISTS with a correlated scalar subquery in WHERE is not yet supported"))
+		return nil
+	}
+
+	// A projected ExistsValue is a distinct consumer whose alias must stay bound
+	// by the existential quantifier. Do not let the WHERE-marker fold below
+	// remove that subquery and then fall back to an ordinary projection with an
+	// unbound ExistsValue. Value substitution is not implemented yet, so retain
+	// the explicit correct-or-loud guard before rewriting f.
+	if projectionReferencesExistsSubquery(p.ProjectedValues) &&
+		hasKnownExistsTruth(f.ExistsSubqueries) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a projected cardinality-known EXISTS is not yet supported"))
+		return nil
+	}
+
+	// This fold is an early-return path that bypasses translateFilter, so perform
+	// the same cardinality-known WHERE substitution here before building any
+	// existential quantifier. This is load-bearing for the widened arity>=3
+	// gathered-cluster path: a plain projection over that shape reaches this
+	// method even when the SELECT list does not contain an ExistsValue.
+	//
+	// Top-level WHERE markers are removed (or absorb the predicate as FALSE).
+	// A known truth that remains is a distinct, unsupported consumer/boolean
+	// position (projected ExistsValue, nested OR, ...); raw-semi-joining its
+	// fallback plan would ignore aggregate/pagination cardinality, so reject
+	// typed-loud. If every existential was folded, return nil and let the
+	// ordinary project path translate p.Input: translateFilter will perform the
+	// identical fold on the original logical tree.
+	f = t.foldKnownExists(f)
+	if hasKnownExistsTruth(f.ExistsSubqueries) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a cardinality-known EXISTS in this projection-fold position is not yet supported"))
+		return nil
+	}
+	if len(f.ExistsSubqueries) == 0 {
+		return nil
+	}
+
 	// Collect the FILTER's (uncorrelated) scalar subqueries. The fold's early
 	// return in translateProject bypasses translateFilter — which is where
 	// f.ScalarSubqueries would otherwise be registered — so a scalar subquery in
@@ -5052,6 +5126,29 @@ func findExistsFilterUnderUnaryChain(input logical.LogicalOperator) (*logical.Lo
 			return nil, nil
 		}
 		chain = append(chain, cur)
+		cur = next
+	}
+}
+
+// findCorrelatedScalarFilterUnderUnaryChain is the scalar-carrier counterpart
+// of findExistsFilterUnderUnaryChain. It deliberately peers through only the
+// same row-shape-preserving Sort/Limit chain. A project carrying its own
+// correlated scalar cannot currently compose with a second scalar box in that
+// reachable filter: translating one first and relying on the other's arity gate
+// to fail is an incidental safety property, not an architectural invariant.
+func findCorrelatedScalarFilterUnderUnaryChain(input logical.LogicalOperator) *logical.LogicalFilter {
+	cur := input
+	for {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			if len(f.CorrelatedScalarSubqueries) > 0 {
+				return f
+			}
+			return nil
+		}
+		next, ok := logical.FoldTransparentUnaryInput(cur)
+		if !ok {
+			return nil
+		}
 		cur = next
 	}
 }
@@ -5896,6 +5993,30 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		// the select list's typed item Value (upgradeSortKeyValues) keeps
 		// that Value — the input projection here can be a DERIVED source's
 		// layout, whose slots are not this select's ordinals.
+		exactAggregateOrdinal := k.HasAggregateOutputOrdinal
+		exactAggregateValue := exactAggregateOrdinal || k.AggregateOutputValueExact
+		if exactAggregateOrdinal {
+			if sortGB == nil || k.AggregateOutputOrdinal < 0 || k.AggregateOutputOrdinal >= len(sortGBNames) {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+					"ORDER BY aggregate output ordinal is outside the native aggregate row"))
+				return nil
+			}
+			v = values.NewFieldValueWithResolvedOrdinal(
+				sortGBNames[k.AggregateOutputOrdinal], k.AggregateOutputOrdinal, values.UnknownType)
+		} else if k.AggregateOutputValueExact {
+			if sortGB == nil {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+					"exact ORDER BY aggregate Value has no native aggregate row"))
+				return nil
+			}
+			var valid bool
+			v, valid = canonicalizeAggregateOutputValue(v, sortGBNames)
+			if !valid {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+					"exact ORDER BY aggregate Value contains an invalid native ordinal"))
+				return nil
+			}
+		}
 		if v == nil && k.Pos > 0 && k.Pos <= len(inputCols) {
 			switch innerRef.Get().(type) {
 			case *expressions.LogicalProjectionExpression:
@@ -5921,7 +6042,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		if v == nil {
 			v = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
 		}
-		if sortGB != nil {
+		if sortGB != nil && !exactAggregateValue {
 			// WHOLE-value match first: an ORDER BY key that IS a group key /
 			// aggregate output — including a COMPUTED key (GROUP BY
 			// COALESCE(...) ORDER BY COALESCE(...)) — rebases onto the
@@ -6041,11 +6162,47 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 // projection, so for any sort input where this returns true, sortGB is nil
 // and the two rebase paths are mutually exclusive by construction.
 func projectionOverAggregate(p *logical.LogicalProject) bool {
-	cur := p.Input
+	return logicalAggregateUnder(p.Input) != nil
+}
+
+// canonicalizeAggregateOutputValue keeps an exact ordinal-bound sort Value
+// exact while replacing each one-slot FieldValue's display/name fallback with
+// the native GroupBy column name. The ordinal is identity; canonical naming is
+// required only so the name-model differential and provided-ordering matcher
+// agree with the PositionalRow model.
+func canonicalizeAggregateOutputValue(v values.Value, nativeNames []string) (values.Value, bool) {
+	valid := true
+	result := values.Replace(v, func(node values.Value) values.Value {
+		fv, ok := node.(*values.FieldValue)
+		if !ok {
+			return node
+		}
+		// Exact post-aggregate Values are allowed to address only a producer
+		// native slot. A child-bearing FieldValue addresses another row /
+		// quantifier, a lazy FieldValue has no proven identity, and a
+		// multi-accessor path descends beyond the aggregate's flat output.
+		// None can be made safe by preserving it or by borrowing a coincident
+		// final ordinal, so reject the complete tree loudly.
+		if fv.Child != nil || fv.Resolved == nil || len(fv.Resolved.Accessors) != 1 {
+			valid = false
+			return node
+		}
+		ordinal := fv.Resolved.Accessors[0].Ordinal
+		if ordinal < 0 || ordinal >= len(nativeNames) {
+			valid = false
+			return node
+		}
+		return values.NewFieldValueWithResolvedOrdinal(nativeNames[ordinal], ordinal, fv.Typ)
+	})
+	return result, valid
+}
+
+func logicalAggregateUnder(op logical.LogicalOperator) *logical.LogicalAggregate {
+	cur := op
 	for {
 		switch e := cur.(type) {
 		case *logical.LogicalAggregate:
-			return true
+			return e
 		case *logical.LogicalFilter:
 			cur = e.Input
 		case *logical.LogicalSort:
@@ -6053,7 +6210,7 @@ func projectionOverAggregate(p *logical.LogicalProject) bool {
 		case *logical.LogicalLimit:
 			cur = e.Input
 		default:
-			return false
+			return nil
 		}
 	}
 }
@@ -6068,10 +6225,24 @@ func projectionOverAggregate(p *logical.LogicalProject) bool {
 // name-match and diagnostics; ordinals are authoritative.
 func postAggregateProjectionFields(p *logical.LogicalProject) []values.RecordConstructorField {
 	fields := make([]values.RecordConstructorField, len(p.Projections))
+	var nativeNames []string
+	if agg := logicalAggregateUnder(p.Input); agg != nil {
+		nativeNames = logicalAggregateNativeOutputNames(agg)
+	}
 	for i, col := range p.Projections {
 		var v values.Value
 		if i < len(p.ProjectedValues) {
 			v = p.ProjectedValues[i]
+		}
+		if i < len(p.AggregateOutputOrdinals) && p.AggregateOutputOrdinals[i] >= 0 {
+			typ := values.Type(values.UnknownType)
+			if v != nil && v.Type() != nil {
+				typ = v.Type()
+			}
+			ordinal := p.AggregateOutputOrdinals[i]
+			if ordinal < len(nativeNames) {
+				v = values.NewFieldValueWithResolvedOrdinal(nativeNames[ordinal], ordinal, typ)
+			}
 		}
 		name := strings.ToUpper(col)
 		if i < len(p.Aliases) && p.Aliases[i] != "" {
@@ -6082,7 +6253,83 @@ func postAggregateProjectionFields(p *logical.LogicalProject) []values.RecordCon
 	return fields
 }
 
+func logicalAggregateNativeOutputNames(agg *logical.LogicalAggregate) []string {
+	names := make([]string, 0, len(agg.GroupKeys)+len(agg.Calls))
+	for _, key := range agg.GroupKeys {
+		name := stripColumnQualifier(key.Display)
+		if key.Value != nil {
+			if fv, ok := key.Value.(*values.FieldValue); ok {
+				name = fv.Field
+			} else {
+				name = values.ColumnNameValue(key.Value)
+			}
+		}
+		names = append(names, strings.ToUpper(name))
+	}
+	for i, call := range agg.Calls {
+		name := call.CanonicalName()
+		if i < len(agg.Aliases) && agg.Aliases[i] != "" {
+			name = agg.Aliases[i]
+		}
+		names = append(names, strings.ToUpper(name))
+	}
+	return names
+}
+
+// validateExactAggregateProjectContract checks the logical, producer-owned
+// SELECT-output contract before translateProject can take any early-return
+// path. Physical GroupBy output names and width are checked only after the
+// input has translated; this part deliberately needs no physical expression.
+func validateExactAggregateProjectContract(p *logical.LogicalProject) (*logical.LogicalAggregate, error) {
+	if p.AggregateOutputOrdinals == nil {
+		return nil, nil
+	}
+	agg := logicalAggregateUnder(p.Input)
+	if agg == nil || len(p.AggregateOutputOrdinals) != len(p.Projections) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"post-aggregate projection has an incomplete output-slot layout")
+	}
+	if len(agg.OutputSlots) != len(p.Projections) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"post-aggregate projection does not cover the aggregate SELECT output contract")
+	}
+	nativeWidth := len(agg.GroupKeys) + len(agg.Calls)
+	for i, ordinal := range p.AggregateOutputOrdinals {
+		computed := i < len(p.IsComputed) && p.IsComputed[i]
+		if agg.OutputSlots[i].SelectOrdinal != i+1 ||
+			agg.OutputSlots[i].NativeOrdinal != ordinal ||
+			(computed != (ordinal == -1)) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"post-aggregate projection disagrees with the aggregate SELECT output contract")
+		}
+		if ordinal < -1 || ordinal >= nativeWidth {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"post-aggregate projection contains an invalid native output ordinal")
+		}
+	}
+	return agg, nil
+}
+
 func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) expressions.RelationalExpression {
+	// Validate the exact aggregate boundary before any fold, correlated-scalar
+	// dispatch, or input translation can return. Malformed logical contracts
+	// are never eligible for another translation path.
+	exactAggregateLayout := p.AggregateOutputOrdinals != nil
+	exactAggregate, contractErr := validateExactAggregateProjectContract(p)
+	if contractErr != nil {
+		t.setTranslateErr(contractErr)
+		return nil
+	}
+	// The correlated-scalar lowering is a separate projection authority and
+	// returns before the physical GroupBy row is available here. Until it can
+	// consume and prove this exact aggregate contract itself, reject the
+	// composition rather than bypass native-slot canonicalization.
+	if exactAggregateLayout && len(p.CorrelatedScalarSubqueries) > 0 {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a post-aggregate projection with a correlated scalar subquery is not yet supported"))
+		return nil
+	}
+
 	// Collect scalar subquery plans from projections. This MUST run for every
 	// projection — including the RFC-141 projected-EXISTS fold below — because
 	// a SELECT can mix a projected EXISTS with an (uncorrelated) scalar
@@ -6095,6 +6342,29 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 			Alias: ssq.Alias,
 			Plan:  ssq.Plan,
 		})
+	}
+
+	// Two independently-carried correlated scalars would require nesting two
+	// LEFT-scalar boxes while preserving both private slots and cardinality
+	// barriers. That composition is not implemented. Reject before translating
+	// either carrier; do not depend on clusterArity becoming poison only after
+	// the first box happens to be translated.
+	if len(p.CorrelatedScalarSubqueries) > 0 &&
+		findCorrelatedScalarFilterUnderUnaryChain(p.Input) != nil {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated scalar subqueries in both SELECT and WHERE are not yet supported"))
+		return nil
+	}
+
+	// ON-clause EXISTS is translated through a separate existential-join path,
+	// not translateFilter's known-truth substitution. Until that consumer can
+	// replace its ON marker with the constant, reject rather than raw-semi-join
+	// the fallback plan and lose aggregate/pagination cardinality.
+	if join, ok := p.Input.(*logical.LogicalJoin); ok &&
+		hasKnownExistsTruth(join.OnExistsSubqueries) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a cardinality-known EXISTS in a JOIN ON clause is not yet supported"))
+		return nil
 	}
 
 	// An INNER join carrying an ON-clause EXISTS is
@@ -6201,13 +6471,59 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		}
 		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 	}
+	if exactAggregateLayout {
+		nativeWidth := len(exactAggregate.GroupKeys) + len(exactAggregate.Calls)
+		gb := underlyingGroupBy(innerRef.Get())
+		if gb == nil {
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"post-aggregate projection has no GroupBy output row"))
+			return nil
+		}
+		nativeNames := expressions.GroupByOutputColumnNames(gb.GetGroupingKeys(), gb.GetAggregates())
+		if len(nativeNames) != nativeWidth {
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"post-aggregate projection disagrees with the GroupBy output width"))
+			return nil
+		}
+		for i, ordinal := range p.AggregateOutputOrdinals {
+			switch {
+			case ordinal >= 0 && ordinal < nativeWidth:
+				typ := values.Type(values.UnknownType)
+				if projected[i] != nil && projected[i].Type() != nil {
+					typ = projected[i].Type()
+				}
+				// The display label is not identity. Reconstruct the direct
+				// slot from the proven native ordinal after all generic
+				// name-based setup, so alias collisions cannot rebind it.
+				projected[i] = values.NewFieldValueWithResolvedOrdinal(
+					nativeNames[ordinal], ordinal, typ)
+			case ordinal == -1:
+				if projected[i] == nil {
+					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+						"computed post-aggregate output did not resolve to a Value"))
+					return nil
+				}
+				var valid bool
+				projected[i], valid = canonicalizeAggregateOutputValue(projected[i], nativeNames)
+				if !valid {
+					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+						"computed post-aggregate output contains a non-native field reference"))
+					return nil
+				}
+			default:
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+					"post-aggregate projection contains an invalid native output ordinal"))
+				return nil
+			}
+		}
+	}
 	// A SELECT list over a GROUP BY resolves each aggregate/group-key
 	// reference to the aggregate OUTPUT COLUMN by ordinal (Java's
 	// FieldValue.ofOrdinalNumber over the GroupByExpression result) — so the
 	// alias-named aggregate slot resolves even though the projection references the
 	// canonical text. Without this the reference stays a free canonical name that
 	// misses the aggregate's ordinal PositionalRow (whose slot is alias-named).
-	if gb := underlyingGroupBy(innerRef.Get()); gb != nil {
+	if gb := underlyingGroupBy(innerRef.Get()); gb != nil && !exactAggregateLayout {
 		bakeGroupByOutputRefs(projected, gb)
 	}
 	// Any remaining FLAT lazy reference bakes against the input
@@ -6240,33 +6556,21 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	)
 }
 
-func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.LogicalProject) expressions.RelationalExpression {
-	csq := p.CorrelatedScalarSubqueries[0]
-
-	// A MULTI-TABLE outer cluster dispatches to the
-	// clustered-outer ordinal path first. decline=true is the CORRECT-or-LOUD
-	// policy: a known non-rightmost correlation that did not ordinalize would
-	// silently NULL (JOIN..ON / LEFT outers) or mis-plan (comma clusters) under
-	// an anchored fallback — refuse to translate instead.
-	if sel, decline := t.translateClusteredOuterScalar(p, csq); sel != nil || decline {
-		return sel
-	}
-
-	// The OUTER inherits the enclosing context (the former
-	// `t.inInnerCluster = true` name-model producer is retired). Only a single-source
-	// (clusterArity==1) or ungated outer reaches here — a buried-join/multi-source
-	// outer is arity≠1 and declines regardless of the flag — so inheriting
-	// prevEnclosure is the honest value (forcing false would be a latent wrong
-	// assertion when the whole project is itself a name-model leg).
-	outerRef := t.translateRef(p.Input)
+// translateSingleSourceCorrelatedScalarJoin is the one lowering authority for a
+// correlated scalar over a single-source outer, shared by SELECT-list and
+// WHERE-comparison consumers. It materializes [outer columns..., scalar] with a
+// LEFT join, preserving NULL-on-empty, and carries StrictSingle on the inner
+// quantifier so a second row is SQLSTATE 21000. Consumers decide how to use and
+// subsequently hide the scalar slot; neither is allowed to rebuild this join.
+func (t *cascadesTranslator) translateSingleSourceCorrelatedScalarJoin(
+	outerPlan logical.LogicalOperator,
+	csq logical.CorrelatedScalarSubquery,
+) (*expressions.SelectExpression, *values.RecordType, *values.RecordType) {
+	outerRef := t.translateRef(outerPlan)
 	if outerRef == nil {
-		return nil
+		return nil, nil, nil
 	}
-	// The single-source arm keys its outer leg by BINDING for uniformity
-	// with the cluster path — byte-identical to the alias here, since a
-	// duplicate mint needs ≥2 legs and a dup outer routes to the cluster
-	// dispatch above.
-	outerAlias := sourceBinding(p.Input)
+	outerAlias := sourceBinding(outerPlan)
 	outerQ := t.namedQuantifier(outerAlias, outerRef)
 
 	// Peel LogicalLimit off the inner plan and re-attach it explicitly here, so
@@ -6290,7 +6594,7 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// consistent and removes the defer's outer/inner enclosure conflation.
 	innerRef := t.translateSubqueryRef(innerPlan)
 	if innerRef == nil {
-		return nil
+		return nil, nil, nil
 	}
 
 	// Wrap with LogicalLimitExpression if the inner plan had a LIMIT.
@@ -6322,9 +6626,9 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// nil-md path — production always passes md): the opaque-seed fallback was RETIRED
 	// in RFC-077 7.6, so there is no result value to flow.
 	scalarCol := strings.ToUpper(csq.ScalarCol)
-	outerCols := t.legColumns(p.Input)
+	outerCols := t.legColumns(outerPlan)
 	if outerCols == nil || outerAlias == "" || scalarCol == "" || csq.InnerAlias == "" {
-		return nil
+		return nil, nil, nil
 	}
 	// Ordinalize the 2-leg seed when the OUTER is a SINGLE SOURCE
 	// (clusterArity==1); the clustered-outer dispatch above already ordinalized
@@ -6347,9 +6651,9 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// (see scalarSubqueryOrdinalSeed).
 	var resultValue values.Value
 	var innerLegCorr values.CorrelationIdentifier
-	if t.clusterArity(p.Input) == 1 {
+	if t.clusterArity(outerPlan) == 1 {
 		ordinalInnerCorr := values.UniqueCorrelationIdentifier()
-		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, p.Input, ordinalInnerCorr, csq.InnerAlias, scalarCol)
+		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, outerPlan, ordinalInnerCorr, csq.InnerAlias, scalarCol)
 		if resultValue != nil {
 			innerLegCorr = ordinalInnerCorr
 		}
@@ -6368,7 +6672,7 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		//     Reason names the real ungated cause (dup-poisoned `FROM x,x`,
 		//     lateral unnest, existential-ON, …) — none reachable from SQL today,
 		//     but a loud decline with the accurate reason beats a hand-guessed one.
-		if cj := peelToClusterJoin(p.Input); cj != nil {
+		if cj := peelToClusterJoin(outerPlan); cj != nil {
 			prevEnclosure := t.inInnerCluster
 			t.inInnerCluster = false
 			d := t.ordinalWedgeGateDecide(cj)
@@ -6384,13 +6688,15 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 				"correlated scalar subquery: the single-source outer is not derivable for the ordinal seed"))
 		}
-		return nil
+		return nil, nil, nil
 	}
 
-	// With no user LIMIT, the scalar must yield AT MOST ONE inner row per outer
-	// row: mark the inner quantifier strict-single so ImplementNestedLoopJoinRule
-	// wraps it in a strict FirstOrDefault (a second row → 21000). A user LIMIT
-	// leaves StrictSingle false — the LIMIT is the user's deliberate truncation.
+	// When the front end cannot prove that the scalar yields AT MOST ONE inner
+	// row per outer row, it marks the inner quantifier strict-single so
+	// ImplementNestedLoopJoinRule wraps it in a strict FirstOrDefault (a second
+	// row → 21000). StrictSingle is false only when exact pagination caps a
+	// multi-row-capable source to 0/1 rows, or when the source is intrinsically
+	// <=1 (for example a non-grouped real aggregate, even with LIMIT >1).
 	// The quantifier carries innerLegCorr — the ordinal seed's fresh unique id
 	// (the sole surviving path; the name-model fallback has been retired).
 	var innerQ expressions.Quantifier
@@ -6407,6 +6713,43 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		[]string{outerAlias, innerLegCorr.Name()},
 		expressions.JoinLeftOuter,
 	)
+	rc, ok := resultValue.(*values.RecordConstructorValue)
+	if !ok {
+		t.setTranslateErr(api.NewError(api.ErrCodeInternalError,
+			"correlated scalar ordinal seed did not produce a record constructor"))
+		return nil, nil, nil
+	}
+	mergedType, ok := rc.Type().(*values.RecordType)
+	if !ok {
+		t.setTranslateErr(api.NewError(api.ErrCodeInternalError,
+			"correlated scalar ordinal seed did not produce a record type"))
+		return nil, nil, nil
+	}
+	outerType := t.ordinalLegType(outerPlan)
+	if outerType == nil || len(mergedType.Fields) != len(outerType.Fields)+1 {
+		t.setTranslateErr(api.NewError(api.ErrCodeInternalError,
+			"correlated scalar ordinal seed output schema does not equal outer schema plus one scalar"))
+		return nil, nil, nil
+	}
+	return joinSelect, mergedType, outerType
+}
+
+func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.LogicalProject) expressions.RelationalExpression {
+	csq := p.CorrelatedScalarSubqueries[0]
+
+	// A MULTI-TABLE outer cluster dispatches to the
+	// clustered-outer ordinal path first. decline=true is the CORRECT-or-LOUD
+	// policy: a known non-rightmost correlation that did not ordinalize would
+	// silently NULL (JOIN..ON / LEFT outers) or mis-plan (comma clusters) under
+	// an anchored fallback — refuse to translate instead.
+	if sel, decline := t.translateClusteredOuterScalar(p, csq); sel != nil || decline {
+		return sel
+	}
+
+	joinSelect, _, _ := t.translateSingleSourceCorrelatedScalarJoin(p.Input, csq)
+	if joinSelect == nil {
+		return nil
+	}
 	joinRef := expressions.InitialOf(joinSelect)
 
 	projected := make([]values.Value, len(p.Projections))
@@ -6446,6 +6789,319 @@ func replaceScalarSubqueryRef(v values.Value, csq logical.CorrelatedScalarSubque
 		}
 		return node
 	})
+}
+
+// fieldOntoCorrelatedScalarRow rebases one outer-source field onto the fresh
+// materialized [outer..., scalar] row. The root ordinal changes to the merged
+// row's slot while a structured-column suffix is preserved verbatim.
+func fieldOntoCorrelatedScalarRow(fv *values.FieldValue, rowQOV values.Value, ordinal int) (*values.FieldValue, bool) {
+	baked, err := values.NewFieldValueOfOrdinal(rowQOV, ordinal)
+	if err != nil {
+		return nil, false
+	}
+	baked.Typ = fv.Typ
+	if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
+		suffixAccessors := append([]values.ResolvedAccessor(nil), fv.Resolved.Accessors[1:]...)
+		baked.Resolved = baked.Resolved.WithSuffix(&values.FieldPath{Accessors: suffixAccessors})
+		baked.Field = fv.Field
+	}
+	return baked, true
+}
+
+type correlatedScalarPredicateFacts struct {
+	hasTargetScalar bool
+	hasAnyScalar    bool
+	hasExistsValue  bool
+}
+
+// inspectCorrelatedScalarPredicateValues examines every Value embedded anywhere
+// in a predicate. Using the shared predicate-value spine is important here:
+// comparisons can carry values on either side (and in range/vector payloads),
+// so inspecting only a ComparisonPredicate's visible operand would make an
+// orphan carrier or a foreign scalar look safe.
+func inspectCorrelatedScalarPredicateValues(
+	p predicates.QueryPredicate,
+	target values.CorrelationIdentifier,
+) correlatedScalarPredicateFacts {
+	var facts correlatedScalarPredicateFacts
+	predicates.ReplaceValues(p, func(node values.Value) values.Value {
+		switch n := node.(type) {
+		case *values.ScalarSubqueryValue:
+			facts.hasAnyScalar = true
+			if n.Alias == target {
+				facts.hasTargetScalar = true
+			}
+		case *values.ExistsValue:
+			facts.hasExistsValue = true
+		}
+		return node
+	})
+	return facts
+}
+
+// partitionCorrelatedScalarWherePredicate splits only top-level AND
+// conjuncts. A scalar-free leaf that references no binding other than the
+// single outer source can run inside the outer leg before the per-row scalar
+// evaluation. This is semantically observable: an excluded outer row must not
+// trigger a cardinality error in a scalar subquery that SQL never evaluates for
+// that row. OR and NOT remain atomic above the scalar box; distributing either
+// would change three-valued/short-circuit semantics and duplicate evaluation.
+func partitionCorrelatedScalarWherePredicate(
+	p predicates.QueryPredicate,
+	outerAlias string,
+) (predicates.QueryPredicate, predicates.QueryPredicate) {
+	var pre, post []predicates.QueryPredicate
+	var partition func(predicates.QueryPredicate)
+	partition = func(candidate predicates.QueryPredicate) {
+		if candidate == nil {
+			return
+		}
+		if and, ok := candidate.(*predicates.AndPredicate); ok {
+			for _, child := range and.SubPredicates {
+				partition(child)
+			}
+			return
+		}
+
+		movable := true
+		switch candidate.(type) {
+		case *predicates.OrPredicate, *predicates.NotPredicate:
+			movable = false
+		}
+		facts := inspectCorrelatedScalarPredicateValues(candidate, values.CorrelationIdentifier{})
+		if facts.hasAnyScalar || facts.hasExistsValue ||
+			predicates.ContainsExistentialPredicate(candidate) {
+			movable = false
+		}
+		if movable {
+			for corr := range predicates.GetCorrelatedToOfPredicate(candidate) {
+				if !strings.EqualFold(corr.Name(), outerAlias) {
+					movable = false
+					break
+				}
+			}
+		}
+		if movable {
+			pre = append(pre, candidate)
+		} else {
+			post = append(post, candidate)
+		}
+	}
+	partition(p)
+	return andOf(pre), andOf(post)
+}
+
+// rebaseCorrelatedScalarFilterPredicate makes every outer-row and scalar read
+// relative to one fresh typed QOV that binds the LEFT-scalar join's materialized
+// [outer..., scalar] result. This correlation is intentionally distinct from
+// the join's outer/inner quantifiers: it keeps the WHERE comparison above the
+// LEFT null-extension and the (possibly strict) FirstOrDefault barrier.
+func rebaseCorrelatedScalarFilterPredicate(
+	p predicates.QueryPredicate,
+	csq logical.CorrelatedScalarSubquery,
+	outerAlias string,
+	outerType, mergedType *values.RecordType,
+	rowCorr values.CorrelationIdentifier,
+) (predicates.QueryPredicate, bool) {
+	if p == nil || outerType == nil || mergedType == nil ||
+		len(mergedType.Fields) != len(outerType.Fields)+1 {
+		return nil, false
+	}
+	rowQOV := values.NewQuantifiedObjectValueOfType(rowCorr, mergedType)
+	ok := true
+	rewritten := predicates.ReplaceValues(p, func(node values.Value) values.Value {
+		switch n := node.(type) {
+		case *values.ScalarSubqueryValue:
+			if n.Alias != csq.Alias {
+				return node
+			}
+			baked, err := values.NewFieldValueOfOrdinal(rowQOV, len(outerType.Fields))
+			if err != nil {
+				ok = false
+				return node
+			}
+			return baked
+		case *values.FieldValue:
+			var ordinal int
+			switch child := n.Child.(type) {
+			case *values.QuantifiedObjectValue:
+				if !strings.EqualFold(child.Correlation.Name(), outerAlias) {
+					return node
+				}
+				if n.Resolved == nil || len(n.Resolved.Accessors) == 0 {
+					ok = false
+					return node
+				}
+				ordinal = n.Resolved.Root().Ordinal
+			case nil:
+				if n.Resolved == nil || len(n.Resolved.Accessors) == 0 {
+					return node
+				}
+				ordinal = n.Resolved.Root().Ordinal
+			default:
+				return node
+			}
+			if ordinal < 0 || ordinal >= len(outerType.Fields) {
+				ok = false
+				return node
+			}
+			baked, bOK := fieldOntoCorrelatedScalarRow(n, rowQOV, ordinal)
+			if !bOK {
+				ok = false
+				return node
+			}
+			return baked
+		case *values.QuantifiedObjectValue:
+			// A bare outer-row QOV (row-valued expression) has no scalar WHERE
+			// lowering. Field reads are handled by the FieldValue arm above.
+			if strings.EqualFold(n.Correlation.Name(), outerAlias) {
+				ok = false
+			}
+		}
+		return node
+	})
+	if !ok {
+		return nil, false
+	}
+
+	// Structural safety net: neither the unmaterialized scalar alias nor the old
+	// outer binding may survive the rewrite. A survivor would evaluate unbound or
+	// let a rule move the comparison below the scalar barrier.
+	predicates.ReplaceValues(rewritten, func(v values.Value) values.Value {
+		values.WalkValue(v, func(node values.Value) bool {
+			switch n := node.(type) {
+			case *values.ScalarSubqueryValue:
+				if n.Alias == csq.Alias {
+					ok = false
+					return false
+				}
+			case *values.QuantifiedObjectValue:
+				if strings.EqualFold(n.Correlation.Name(), outerAlias) {
+					ok = false
+					return false
+				}
+			}
+			return true
+		})
+		return v
+	})
+	if !ok {
+		return nil, false
+	}
+	for corr := range predicates.GetCorrelatedToOfPredicate(rewritten) {
+		if corr != rowCorr {
+			return nil, false
+		}
+	}
+	return rewritten, true
+}
+
+// translateFilterWithCorrelatedScalar lowers a WHERE comparison against one
+// correlated scalar as:
+//
+//	Project(outer-only,
+//	  Filter(rebased comparison,
+//	    LEFT-scalar-join(outer, FirstOrDefault(inner))))
+//
+// The hidden scalar is available to the filter but cannot leak into the
+// consumer's schema. The shared join helper is also used by projection scalars,
+// so strict cardinality, NULL-on-empty, and explicit pagination cannot drift
+// between the two SQL positions.
+func (t *cascadesTranslator) translateFilterWithCorrelatedScalar(f *logical.LogicalFilter) expressions.RelationalExpression {
+	if len(f.CorrelatedScalarSubqueries) != 1 || f.Predicate == nil {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"exactly one correlated scalar subquery in a WHERE predicate is currently supported"))
+		return nil
+	}
+	if len(f.ExistsSubqueries) > 0 || len(f.ScalarSubqueries) > 0 {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"mixing correlated scalar and other subqueries in one WHERE predicate is not yet supported"))
+		return nil
+	}
+	csq := f.CorrelatedScalarSubqueries[0]
+	facts := inspectCorrelatedScalarPredicateValues(f.Predicate, csq.Alias)
+	if !facts.hasTargetScalar {
+		if facts.hasAnyScalar || facts.hasExistsValue ||
+			predicates.ContainsExistentialPredicate(f.Predicate) {
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"correlated scalar WHERE carrier does not match the predicate's subquery value"))
+			return nil
+		}
+		// Predicate simplification can erase a dead scalar expression while its
+		// attached plan remains on the logical carrier (FALSE AND scalar=...,
+		// TRUE OR scalar=...). Do not evaluate that dead plan and spuriously
+		// raise 21000; translate the surviving ordinary filter with the carrier
+		// explicitly retired.
+		copyFilter := *f
+		copyFilter.CorrelatedScalarSubqueries = nil
+		return t.translateFilter(&copyFilter)
+	}
+	if t.clusterArity(f.Input) != 1 {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated scalar subquery in WHERE over a multi-source outer is not yet supported"))
+		return nil
+	}
+	prePredicate, postPredicate := partitionCorrelatedScalarWherePredicate(f.Predicate, sourceBinding(f.Input))
+	if postPredicate == nil {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated scalar WHERE carrier has no residual scalar consumer"))
+		return nil
+	}
+	outerPlan := f.Input
+	if prePredicate != nil {
+		outerPlan = &logical.LogicalFilter{
+			Input:     f.Input,
+			Predicate: prePredicate,
+		}
+	}
+	joinSelect, mergedType, outerType := t.translateSingleSourceCorrelatedScalarJoin(outerPlan, csq)
+	if joinSelect == nil {
+		return nil
+	}
+	joinRef := expressions.InitialOf(joinSelect)
+
+	filterCorr := values.UniqueCorrelationIdentifier()
+	pred, ok := rebaseCorrelatedScalarFilterPredicate(
+		postPredicate,
+		csq,
+		sourceBinding(outerPlan),
+		outerType,
+		mergedType,
+		filterCorr,
+	)
+	if !ok {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated scalar WHERE predicate could not be rebound to its materialized scalar row"))
+		return nil
+	}
+	filterExpr := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.NamedForEachQuantifier(filterCorr, joinRef),
+	)
+	filterRef := expressions.InitialOf(filterExpr)
+
+	// Strip the private scalar slot. The outer type/ordinal prefix comes from
+	// scalarSubqueryOrdinalSeed itself, so this projection is a proof-preserving
+	// prefix identity rather than a name-based schema reconstruction.
+	outputCorr := values.UniqueCorrelationIdentifier()
+	outputQOV := values.NewQuantifiedObjectValueOfType(outputCorr, mergedType)
+	projected := make([]values.Value, len(outerType.Fields))
+	aliases := make([]string, len(outerType.Fields))
+	for i := range outerType.Fields {
+		fv, err := values.NewFieldValueOfOrdinal(outputQOV, i)
+		if err != nil {
+			t.setTranslateErr(api.NewError(api.ErrCodeInternalError,
+				"correlated scalar WHERE outer-schema projection could not bind an outer slot"))
+			return nil
+		}
+		projected[i] = fv
+		aliases[i] = outerType.Fields[i].Name
+	}
+	return expressions.NewLogicalProjectionExpressionWithAliases(
+		projected,
+		aliases,
+		expressions.NamedForEachQuantifier(outputCorr, filterRef),
+	)
 }
 
 func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expressions.RelationalExpression {
@@ -6489,6 +7145,20 @@ func aggregateOperandReferencesColumn(a *logical.LogicalAggregate) bool {
 // too — gatheredSeedBakeContext walks the identity wrappers to the seed so the group keys /
 // operands bake positionally, correct in both name-model and demolition (flip) states.
 func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
+	if a.OutputSlots != nil {
+		nativeWidth := len(a.GroupKeys) + len(a.Calls)
+		seenSelectOrdinals := make(map[int]struct{}, len(a.OutputSlots))
+		for i, slot := range a.OutputSlots {
+			_, duplicate := seenSelectOrdinals[slot.SelectOrdinal]
+			if slot.SelectOrdinal != i+1 || duplicate ||
+				slot.NativeOrdinal < -1 || slot.NativeOrdinal >= nativeWidth {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+					"aggregate SELECT output layout is malformed"))
+				return nil
+			}
+			seenSelectOrdinals[slot.SelectOrdinal] = struct{}{}
+		}
+	}
 	if a.HasHaving && a.HavingPredicate == nil {
 		return nil
 	}
@@ -6994,6 +7664,11 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	if onPred, ok := j.OnPredicate.(predicates.QueryPredicate); ok && t.declineNegatedOuterOnlyEsq(onPred, j.OnExistsSubqueries) {
 		return nil
 	}
+	if hasKnownExistsTruth(j.OnExistsSubqueries) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a cardinality-known EXISTS in a JOIN ON clause is not yet supported"))
+		return nil
+	}
 	for _, esq := range j.OnExistsSubqueries {
 		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
@@ -7246,105 +7921,148 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	)
 }
 
-// foldAlwaysTrueExists removes POSITIVE WHERE-EXISTS subqueries flagged
-// AlwaysTrue (an unconditional-one-row aggregate inner) from a filter, folding
-// `EXISTS(inner)` to TRUE: with no existential quantifier built and the EXISTS
-// marker already stripped from the predicate by splitNonExistsPredicates, the
-// conjunct simply disappears (`P AND TRUE == P`). ONLY positive consumers fold:
-// a negated one (`NOT EXISTS`) would be FALSE, not TRUE, so it is kept
-// (pre-existing behavior). f.ExistsSubqueries are AND-conjunct EXISTS by the
-// same invariant the existential-quantifier lowering relies on. Returns f
-// unchanged when nothing folds (no allocation on the common path).
-func (t *cascadesTranslator) foldAlwaysTrueExists(f *logical.LogicalFilter) *logical.LogicalFilter {
-	if f == nil || len(f.ExistsSubqueries) == 0 {
+// foldKnownExists substitutes exact cardinality-derived EXISTS results in a
+// filter's top-level AND conjuncts. KnownTruth describes EXISTS itself; a
+// NOT-EXISTS marker receives the boolean inverse. TRUE conjuncts disappear and
+// FALSE absorbs the entire AND. The corresponding subquery plan is removed, so
+// neither correlation routing nor execution can perturb the constant result.
+//
+// The existential lowering supports these markers as top-level AND conjuncts.
+// For robustness, an alias is folded only when every occurrence in the whole
+// predicate is one of those direct conjuncts. An occurrence nested under OR or
+// another unsupported boolean shape leaves the filter unchanged for that alias
+// rather than orphaning a marker by dropping its quantifier.
+func (t *cascadesTranslator) foldKnownExists(f *logical.LogicalFilter) *logical.LogicalFilter {
+	if f == nil || f.Predicate == nil || len(f.ExistsSubqueries) == 0 {
 		return f
 	}
-	anyAlwaysTrue := false
+	known := make(map[values.CorrelationIdentifier]predicates.TriBool)
 	for _, esq := range f.ExistsSubqueries {
-		if esq.AlwaysTrue {
-			anyAlwaysTrue = true
-			break
+		if esq.KnownTruth != nil {
+			known[esq.Alias] = esq.KnownTruth
 		}
 	}
-	if !anyAlwaysTrue {
+	if len(known) == 0 {
 		return f
 	}
-	negated := map[values.CorrelationIdentifier]struct{}{}
-	if f.Predicate != nil {
-		predicates.WalkPredicate(f.Predicate, func(p predicates.QueryPredicate) bool {
-			if a, ok := predicates.IsNotExistentialPredicate(p); ok {
-				negated[a] = struct{}{}
+
+	// Count every marker occurrence, stopping at a recognized NOT-EXISTS so its
+	// existential child is not counted a second time.
+	allOccurrences := make(map[values.CorrelationIdentifier]int)
+	predicates.WalkPredicate(f.Predicate, func(p predicates.QueryPredicate) bool {
+		if alias, ok := predicates.IsExistentialPredicate(p); ok {
+			allOccurrences[alias]++
+			return false
+		}
+		if alias, ok := predicates.IsNotExistentialPredicate(p); ok {
+			allOccurrences[alias]++
+			return false
+		}
+		return true
+	})
+
+	var conjuncts []predicates.QueryPredicate
+	var flattenAnd func(predicates.QueryPredicate)
+	flattenAnd = func(p predicates.QueryPredicate) {
+		if and, ok := p.(*predicates.AndPredicate); ok {
+			for _, sub := range and.SubPredicates {
+				flattenAnd(sub)
 			}
-			return true
-		})
-	}
-	// If ANY AlwaysTrue esq is consumed under NOT EXISTS, DECLINE the whole
-	// fold. `NOT EXISTS(one-row)` is FALSE, which this positive-only fold does
-	// not implement; folding just the sibling positive alias and leaving the
-	// (unfixed) negated one would silently change a formerly-rejected /
-	// pre-existing shape (e.g. `EXISTS(agg) AND NOT EXISTS(agg)` must be empty,
-	// not the broken negated residual). Preserve the base behavior for the whole
-	// filter — negated always-true folding is a booked follow-on.
-	for _, esq := range f.ExistsSubqueries {
-		if _, isNeg := negated[esq.Alias]; esq.AlwaysTrue && isNeg {
-			return f
+			return
 		}
+		conjuncts = append(conjuncts, p)
 	}
-	kept := make([]logical.ExistsSubquery, 0, len(f.ExistsSubqueries))
-	foldedAliases := map[values.CorrelationIdentifier]struct{}{}
-	for _, esq := range f.ExistsSubqueries {
-		if _, isNeg := negated[esq.Alias]; esq.AlwaysTrue && !isNeg {
-			foldedAliases[esq.Alias] = struct{}{}
+	flattenAnd(f.Predicate)
+
+	type marker struct {
+		alias   values.CorrelationIdentifier
+		negated bool
+		ok      bool
+	}
+	markers := make([]marker, len(conjuncts))
+	directOccurrences := make(map[values.CorrelationIdentifier]int)
+	for i, conjunct := range conjuncts {
+		if alias, ok := predicates.IsExistentialPredicate(conjunct); ok {
+			if _, isKnown := known[alias]; isKnown {
+				markers[i] = marker{alias: alias, ok: true}
+				directOccurrences[alias]++
+			}
 			continue
 		}
-		kept = append(kept, esq)
+		if alias, ok := predicates.IsNotExistentialPredicate(conjunct); ok {
+			if _, isKnown := known[alias]; isKnown {
+				markers[i] = marker{alias: alias, negated: true, ok: true}
+				directOccurrences[alias]++
+			}
+		}
 	}
-	if len(foldedAliases) == 0 {
+
+	eligible := make(map[values.CorrelationIdentifier]struct{})
+	for alias, direct := range directOccurrences {
+		if direct > 0 && direct == allOccurrences[alias] {
+			eligible[alias] = struct{}{}
+		}
+	}
+	if len(eligible) == 0 {
 		return f
 	}
+
+	keptPredicates := make([]predicates.QueryPredicate, 0, len(conjuncts))
+	foldedAliases := make(map[values.CorrelationIdentifier]struct{})
+	for i, conjunct := range conjuncts {
+		m := markers[i]
+		if !m.ok {
+			keptPredicates = append(keptPredicates, conjunct)
+			continue
+		}
+		if _, canFold := eligible[m.alias]; !canFold {
+			keptPredicates = append(keptPredicates, conjunct)
+			continue
+		}
+		foldedAliases[m.alias] = struct{}{}
+		truth := *known[m.alias]
+		if m.negated {
+			truth = !truth
+		}
+		if !truth {
+			f2 := *f
+			// FALSE absorbs every EXISTS conjunct, so none of their quantifiers
+			// need to be built. EXISTS has no side effects.
+			f2.ExistsSubqueries = nil
+			f2.Predicate = predicates.NewConstantPredicate(predicates.TriFalse)
+			return &f2
+		}
+		// TRUE disappears from an AND.
+	}
+
+	keptSubqueries := make([]logical.ExistsSubquery, 0, len(f.ExistsSubqueries))
+	for _, esq := range f.ExistsSubqueries {
+		if _, folded := foldedAliases[esq.Alias]; !folded {
+			keptSubqueries = append(keptSubqueries, esq)
+		}
+	}
+	var rewritten predicates.QueryPredicate
+	switch len(keptPredicates) {
+	case 0:
+		rewritten = predicates.NewConstantPredicate(predicates.TriTrue)
+	case 1:
+		rewritten = keptPredicates[0]
+	default:
+		rewritten = predicates.NewAnd(keptPredicates...)
+	}
 	f2 := *f
-	f2.ExistsSubqueries = kept
-	// Replace each folded esq's positive EXISTS marker with TRUE in the
-	// predicate (and collapse `P AND TRUE` -> P). The generic filter path would
-	// otherwise choke on a marker whose quantifier was dropped.
-	f2.Predicate = stripFoldedExistsMarkers(f.Predicate, foldedAliases)
+	f2.ExistsSubqueries = keptSubqueries
+	f2.Predicate = rewritten
 	return &f2
 }
 
-// stripFoldedExistsMarkers rewrites a predicate, replacing each POSITIVE
-// ExistentialValuePredicate whose alias was folded (EXISTS -> unconditionally
-// TRUE) with a TRUE constant, and dropping `AND TRUE` conjuncts. Only descends
-// through AND (folded esqs are AND-conjunct EXISTS).
-func stripFoldedExistsMarkers(pred predicates.QueryPredicate, folded map[values.CorrelationIdentifier]struct{}) predicates.QueryPredicate {
-	if pred == nil {
-		return nil
-	}
-	if a, ok := predicates.IsExistentialPredicate(pred); ok {
-		if _, isFolded := folded[a]; isFolded {
-			return predicates.NewConstantPredicate(predicates.TriTrue)
+func hasKnownExistsTruth(subqueries []logical.ExistsSubquery) bool {
+	for _, esq := range subqueries {
+		if esq.KnownTruth != nil {
+			return true
 		}
-		return pred
 	}
-	and, ok := pred.(*predicates.AndPredicate)
-	if !ok {
-		return pred
-	}
-	newSubs := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
-	for _, sub := range and.SubPredicates {
-		ns := stripFoldedExistsMarkers(sub, folded)
-		if c, isConst := ns.(*predicates.ConstantPredicate); isConst && c.Value == predicates.TriTrue {
-			continue // P AND TRUE == P
-		}
-		newSubs = append(newSubs, ns)
-	}
-	switch len(newSubs) {
-	case 0:
-		return predicates.NewConstantPredicate(predicates.TriTrue)
-	case 1:
-		return newSubs[0]
-	default:
-		return &predicates.AndPredicate{SubPredicates: newSubs}
-	}
+	return false
 }
 
 // declineNegatedOuterOnlyEsq records a LOUD decline (and reports true) when
@@ -7514,26 +8232,19 @@ func (t *cascadesTranslator) namedQuantifier(alias string, ref *expressions.Refe
 // the JOIN-LEVEL correlation identity changes, so field lookups (bm["COL"])
 // are unaffected.
 func existsInnerCorrelation(esq logical.ExistsSubquery) (string, predicates.QueryPredicate) {
-	// The rename is ONLY safe when the inner is a plain single-table scan whose
-	// ENTIRE correlation to the parent is captured in esq.JoinPredicate. Two
-	// inner shapes carry references to their OWN source alias that the rename
-	// cannot reach, so renaming the binding orphans them and the EXISTS goes
-	// silently false:
-	//
-	//   - a JOIN inner emits a MERGED row resolved by qualified leg keys
-	//     (T2.ID, T3.T2_ID, …), never a single-alias binding
-	//     (executePredicatesFilter: producesMergedRows ⇒ bindAlias=false);
-	//     pointing the predicate at a `<uniqueAlias>.*` namespace nothing writes
-	//     yields NULL; and
-	//   - a NESTED-EXISTS inner (a LogicalFilter carrying its own
-	//     ExistsSubqueries) has a nested existential correlation that references
-	//     the MIDDLE scan's source alias from INSIDE esq.Plan — not in
-	//     esq.JoinPredicate — so the rename leaves it bound to the old alias.
-	//
-	// Both keep the leg/source-alias routing. The alias-shadow collision the
-	// rename fixes only arises for a clean single-table inner (one bare
-	// namespace bound under one alias); the merged-row / nested-EXISTS inners
-	// route by distinct qualified keys and cannot clobber the outer binding.
+	// The rename is ONLY safe when the inner has ONE well-defined source alias
+	// (existsInnerSafeToRename) — a plain single-table scan, optionally under
+	// further filters, INCLUDING a nested EXISTS: the rebase below touches only
+	// esq.JoinPredicate, a value tree entirely separate from esq.Plan, so it can
+	// neither reach nor need to reach a correlation buried inside esq.Plan (that
+	// reference resolves in the nested plan's own re-translation, over the same
+	// unchanged scan alias). The one inner shape that DOES carry a reference the
+	// rename cannot reach is a JOIN inner: it emits a MERGED row resolved by
+	// qualified leg keys (T2.ID, T3.T2_ID, …), never a single-alias binding
+	// (executePredicatesFilter: producesMergedRows ⇒ bindAlias=false); pointing
+	// the predicate at a `<uniqueAlias>.*` namespace nothing writes yields NULL.
+	// That keeps the leg/source-alias routing — the merged-row inner routes by
+	// distinct qualified keys and cannot clobber the outer binding.
 	if !existsInnerSafeToRename(esq.Plan) {
 		return sourceAlias(esq.Plan), esq.JoinPredicate
 	}
@@ -7546,15 +8257,29 @@ func existsInnerCorrelation(esq logical.ExistsSubquery) (string, predicates.Quer
 	return uniqueAlias.Name(), joinPred
 }
 
-// existsInnerSafeToRename reports whether an existential subquery's plan is a
-// clean single-table scan whose only correlation to the parent lives in
-// esq.JoinPredicate — the only shape for which renaming the inner correlation to
-// the unique existential alias is safe. Returns false for a JOIN (merged-row
-// keyed by leg aliases), a CTE/derived-table (its own correlation namespace), or
-// a LogicalFilter carrying ExistsSubqueries (a nested EXISTS whose correlation
-// references the inner scan's alias from inside the plan). Walks the single-child
-// chain the same way sourceAlias does; a plain WHERE filter (no nested EXISTS) is
-// transparent.
+// existsInnerSafeToRename reports whether an existential subquery's plan has
+// ONE well-defined source alias (sourceAlias(op)) that fully captures the
+// plan's correlatable identity as seen from OUTSIDE — the shape for which
+// rebasing esq.JoinPredicate's references to that alias, onto the unique
+// existential alias, is safe. Returns false for a JOIN (a merged row keyed by
+// SEVERAL leg aliases — one rebase target cannot capture them all) and a
+// CTE/derived-table (its own correlation namespace). A LogicalFilter carrying
+// its OWN nested ExistsSubqueries is safe to walk through: the rename only
+// rewrites esq.JoinPredicate (a value tree entirely separate from esq.Plan),
+// so it can never reach — and never needs to reach — a correlation buried
+// INSIDE esq.Plan. That inner reference resolves in the nested plan's OWN
+// re-translation (translateFilter's own sourceAlias(f.Input) call), which
+// walks the SAME unchanged scan and so recomputes the SAME alias regardless
+// of what the enclosing existential quantifier ends up named. Declining to
+// rename here left esq.JoinPredicate referencing the plan's OLD internal
+// alias while the enclosing quantifier is registered under esq.Alias — two
+// different CorrelationIdentifiers — so the join predicate resolved against
+// nothing the outer SelectExpression's row-eval context ever bound (a
+// nested-EXISTS-with-its-own-correlation middle, e.g. `EXISTS (SELECT 1 FROM
+// t WHERE t.c < outer.x AND EXISTS (SELECT 1 FROM u WHERE u.c < t.c))`, hit
+// this: the middle correlation `t.c < outer.x` rode the plan's un-renamed
+// scan alias, and nothing in the enclosing select bound it). Walks the
+// single-child chain the same way sourceAlias does.
 func existsInnerSafeToRename(op logical.LogicalOperator) bool {
 	for cur := op; cur != nil; {
 		switch o := cur.(type) {
@@ -7565,11 +8290,6 @@ func existsInnerSafeToRename(op logical.LogicalOperator) bool {
 		case *logical.LogicalCTE:
 			return false
 		case *logical.LogicalFilter:
-			// A nested EXISTS inside the inner WHERE references the inner scan's
-			// own alias from within esq.Plan — the rename can't reach it.
-			if len(o.ExistsSubqueries) > 0 {
-				return false
-			}
 			ch := o.Children()
 			if len(ch) == 1 {
 				cur = ch[0]

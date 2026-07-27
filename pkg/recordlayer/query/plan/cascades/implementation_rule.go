@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"context"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -23,15 +25,25 @@ type ImplementationRule interface {
 //
 // Ports Java's ImplementationCascadesRuleCall.
 type ImplementationRuleCall struct {
-	Bindings             *matching.PlannerBindings
-	Reference            *expressions.Reference
-	Context              PlanContext
+	Bindings  *matching.PlannerBindings
+	Reference *expressions.Reference
+	Context   PlanContext
+	// RunContext is nil only for standalone rule tests.
+	RunContext           context.Context
 	Constraints          *ConstraintMap
 	Stats                properties.StatisticsProvider
 	memo                 *Memo
 	yielded              []expressions.RelationalExpression
 	constraintOnly       bool
 	constraintPushedRefs []*expressions.Reference
+}
+
+// CancellationErr reports whether the owning planning run was canceled.
+func (c *ImplementationRuleCall) CancellationErr() error {
+	if c == nil || c.RunContext == nil {
+		return nil
+	}
+	return c.RunContext.Err()
 }
 
 // CostModel returns the comparator a rule should use for internal best-plan
@@ -50,7 +62,7 @@ func (c *ImplementationRuleCall) CostModel() func(a, b expressions.RelationalExp
 // Yield records a final expression to be inserted into the
 // Reference's final members after the rule completes.
 func (c *ImplementationRuleCall) Yield(expr expressions.RelationalExpression) {
-	if c.constraintOnly {
+	if c.constraintOnly || c.CancellationErr() != nil {
 		return
 	}
 	c.yielded = append(c.yielded, expr)
@@ -91,6 +103,9 @@ func (c *ImplementationRuleCall) PushConstraint(
 	childRef *expressions.Reference,
 	orderings []*properties.RequestedOrdering,
 ) {
+	if c.CancellationErr() != nil {
+		return
+	}
 	// Set IS the combiner (Java pushProperty): the former pre-combine
 	// here duplicated it. A SUBSUMED push schedules no re-exploration —
 	// Java's empty Optional schedules nothing; enqueueing on every push

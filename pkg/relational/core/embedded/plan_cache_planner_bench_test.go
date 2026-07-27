@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"context"
 	"strconv"
 	"testing"
 
@@ -157,16 +158,9 @@ func planParsedForBench(b *testing.B, q antlrgen.IQueryContext, md *recordlayer.
 		b.Fatal("Cascades translation failed")
 	}
 
-	rules := cascades.DefaultExpressionRules()
-	rules = append(rules, cascades.RewritingRules()...)
-	planCtx := buildCascadesPlanContext(md)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
-		WithStatistics(nil).
-		WithMaxTasks(100_000)
+	planner := newCascadesPlanner(md, plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), nil)
 
-	bestExpr, _, err := planner.Plan(ref)
+	bestExpr, _, err := planner.PlanWithContext(context.Background(), ref)
 	if err != nil {
 		b.Fatalf("plan: %v", err)
 	}

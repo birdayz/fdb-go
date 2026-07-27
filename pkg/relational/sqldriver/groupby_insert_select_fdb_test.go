@@ -164,17 +164,17 @@ func TestFDB_GroupByInsertSelect_Variants(t *testing.T) {
 		}
 	})
 
-	// Qualified aggregate operand `SUM(s.v)` over an aliased source: on this
-	// insert-source path the qualified aggregate's operand is left unresolved
-	// (a SEPARATE pre-existing defect) so it computes NULL. The wrap therefore
-	// SKIPS qualified-operand sources — leaving the original LOUD failure (unset
-	// PK → 23505) rather than silently inserting NULL. Pins that the wrap does NOT
-	// corrupt qualified-operand inserts; the loud→correct fix is a tracked follow-up.
-	t.Run("qualified_source_stays_loud", func(t *testing.T) {
+	// A qualified aggregate operand uses the same native ordinal contract; the
+	// public spelling SUM(S.V) never participates in the inserted value's
+	// identity.
+	t.Run("qualified_source", func(t *testing.T) {
 		db, ctx := gbInsertDB(t, "qs")
-		_, err := db.ExecContext(ctx, "INSERT INTO dst SELECT g, SUM(s.v) FROM src s GROUP BY g")
-		if err == nil {
-			t.Fatal("qualified SUM(s.v) GROUP BY insert must error loudly, not silently insert NULL (wrap skips qualified until operand resolution is fixed)")
+		if _, err := db.ExecContext(ctx, "INSERT INTO dst SELECT g, SUM(s.v) FROM src s GROUP BY g"); err != nil {
+			t.Fatalf("qualified SUM(s.v) GROUP BY insert: %v", err)
+		}
+		if got := readDst(t, ctx, db, "SELECT id, s FROM dst ORDER BY id"); len(got) != 2 ||
+			got[0] != [2]int64{1, 30} || got[1] != [2]int64{2, 30} {
+			t.Fatalf("qualified SUM(s.v) insert = %v, want [[1 30] [2 30]]", got)
 		}
 	})
 
@@ -216,10 +216,9 @@ func TestFDB_GroupByInsertSelect_HavingStripProject(t *testing.T) {
 }
 
 // TestFDB_GroupByInsertSelect_CountStar pins the COUNT(*) shape: a sole
-// `SELECT COUNT(*)` is parsed as sq.countStar with EMPTY aggCols, so the wrap
-// must synthesize its column — else the bare aggregate keys on "COUNT(*)" and
-// buildInsertRecord leaves the target unset (silently wrong, or 23505 under
-// GROUP BY).
+// `SELECT COUNT(*)` is parsed as sq.countStar with EMPTY aggCols. The universal
+// aggregate-output Project must still synthesize that one public slot so
+// positional INSERT alignment cannot leave the target unset.
 func TestFDB_GroupByInsertSelect_CountStar(t *testing.T) {
 	t.Parallel()
 

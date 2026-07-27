@@ -500,13 +500,16 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// simpleTable.OrderByClause() and resolves positional references
 	// against the SELECT column list.
 	hasAggregate := cls.countStar || len(cls.aggCols) > 0
-	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, groupKeyRefDisplays(cls.groupBy), cls.groupByAliases, cls.postSortStripProj, cls.postSortStripAliases)
+	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, groupKeyRefDisplays(cls.groupBy), cls.groupByAliases, cls.postSortStripProj, cls.postSortStripAliases, cls.postSortAggregateOutputOrdinals)
 
 	// Post-sort strip projection: when hasSortOnly is true in the
 	// aggregate path, the visible-only projection is deferred past
 	// Sort so sort-key columns remain accessible.
 	if len(cls.postSortStripProj) > 0 {
-		op = logical.NewProject(op, cls.postSortStripProj, cls.postSortStripAliases)
+		proj := logical.NewProject(op, cls.postSortStripProj, cls.postSortStripAliases)
+		proj.AggregateOutputOrdinals = append([]int(nil), cls.postSortAggregateOutputOrdinals...)
+		proj.IsComputed = append([]bool(nil), cls.postSortIsComputed...)
+		op = proj
 	}
 
 	// Step 5: Projection (non-aggregate) + DISTINCT → directly from
@@ -984,20 +987,21 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			return nil, herr
 		}
 		// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
-		// HAVING walk has no lowering — ScalarSubqueryValue's evaluation
-		// contract is pre-eval (uncorrelated) only, and the projection attach
-		// (13) already ran and nil'd the lists, so anything here would reach
-		// the executor as an unbindable alias (runtime
-		// UnboundScalarSubqueryError on a valid query). Decline TYPED; Java's
-		// quantifier lowering is the booked follow-up.
+		// HAVING walk has no grouped-output lowering. WHERE has its own
+		// LEFT-scalar materialization, but HAVING would need to preserve the
+		// grouped row while exposing and then hiding the private scalar slot.
+		// The projection attach (13) already ran and cleared its lists, so an
+		// unattached alias here would reach runtime unbound. Decline typed.
 		if len(existsPlanner.correlatedScalarSubqueries) > 0 {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"correlated scalar subquery in a WHERE/HAVING predicate is not supported")
+				"correlated scalar subquery in a HAVING predicate is not supported")
 		}
 	}
 
 	// (15) Upgrade sort key values.
-	upgradeSortKeyValues(op, sq, v.md, v.schemaName, v.cteScopes)
+	if err := upgradeSortKeyValues(op, sq, v.md, v.schemaName, v.cteScopes); err != nil {
+		return nil, err
+	}
 
 	// (15a) RFC-142 (P2a): a BARE ORDER BY sort key that binds to a
 	// lateral-unnest SHADOWING source (`FROM t, t.arr AS v, …`) must sort by the
@@ -1082,25 +1086,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		}
 	}
 
-	// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
-	// WHERE walk above has no lowering. ScalarSubqueryValue's evaluation
-	// contract is pre-eval (uncorrelated) only — the uncorrelated list below
-	// attaches to the filter (upgradeFirstFilterScalarSubqueries) and the
-	// executor pre-binds it, but the correlated list's ONLY consumer is the
-	// PROJECTION path (materialized per-row column), whose attach step (13)
-	// already ran and nil'd the lists. A WHERE-position reference therefore
-	// reached the executor with an unbindable alias — the loud runtime
-	// UnboundScalarSubqueryError on a valid query (yamsql scalar_subquery_java:
-	// `WHERE e.salary = (SELECT MAX(e2.salary) … WHERE e2.dept_id =
-	// e.dept_id)`). Java lowers the subquery to a quantifier and lets the
-	// predicate reference its result — the booked RFC-180 follow-up; until
-	// then decline TYPED at plan time.
-	if len(existsPlanner.correlatedScalarSubqueries) > 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"correlated scalar subquery in a WHERE/HAVING predicate is not supported")
-	}
-
-	hasSubqueries := len(existsPlanner.subqueries) > 0 || len(existsPlanner.scalarSubqueries) > 0
+	hasSubqueries := len(existsPlanner.subqueries) > 0 ||
+		len(existsPlanner.scalarSubqueries) > 0 ||
+		len(existsPlanner.correlatedScalarSubqueries) > 0
 	if hasSubqueries && preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
 		// EXISTS is lowered to a conjunctive semi-join; under an OR that loses
@@ -1114,12 +1102,26 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		if qErr != nil {
 			return nil, qErr
 		}
-		_ = upgradeFirstFilter(op, combined)
+		if installErr := installFirstWherePredicate(op, combined); installErr != nil {
+			return nil, installErr
+		}
 		if len(existsPlanner.subqueries) > 0 {
-			upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+			if !upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE subqueries could not be installed on the logical plan")
+			}
 		}
 		if len(existsPlanner.scalarSubqueries) > 0 {
-			upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
+			if !upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE scalar subqueries could not be installed on the logical plan")
+			}
+		}
+		if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+			if !upgradeFirstFilterCorrelatedScalarSubqueries(op, existsPlanner.correlatedScalarSubqueries) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"WHERE correlated scalar subqueries could not be installed on the logical plan")
+			}
 		}
 		op = wrapGlobalRankVectorLimit(op, combined)
 		return op, nil
@@ -1131,7 +1133,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		if qErr != nil {
 			return nil, qErr
 		}
-		_ = upgradeFirstFilter(op, combined)
+		if installErr := installFirstWherePredicate(op, combined); installErr != nil {
+			return nil, installErr
+		}
 		op = wrapGlobalRankVectorLimit(op, combined)
 		return op, nil
 	}
@@ -1152,9 +1156,15 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		pred, predOk = buildWherePredicate(v.md, v.schemaName, sq, sq.whereExpr)
 	}
 	if !predOk {
+		// Keep the canonical text filter created by visitWhere. The Cascades
+		// translator deliberately declines text-only filters, so this remains
+		// fail closed while downstream table/CTE validation can report a more
+		// specific SQLSTATE for an unresolved source.
 		return op, nil
 	}
-	_ = upgradeFirstFilter(op, pred)
+	if installErr := installFirstWherePredicate(op, pred); installErr != nil {
+		return nil, installErr
+	}
 	return op, nil
 }
 
@@ -1337,9 +1347,6 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		return op, stripPrefix
 	}
 
-	var aggAliases []string
-	var aggCalls []logical.AggregateCall
-	hasDistinct := false
 	keys := logicalGroupKeys(cls.groupBy)
 	for i := range keys {
 		stripped := strip(keys[i].Display)
@@ -1350,110 +1357,28 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 			keys[i] = logical.GroupKey{Display: stripped, Bare: stripped}
 		}
 	}
-	if cls.countStar {
-		aggAliases = []string{cls.countStarAlias}
-		aggCalls = []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}
-	} else {
-		for _, ac := range cls.aggCols {
-			if ac.aggFunc != "" {
-				arg := ac.aggArg
-				if arg == "" && ac.aggExpr != nil {
-					arg = canonicalTextOf(ac.aggExpr)
-				}
-				if arg == "" {
-					arg = "*"
-				}
-				arg = strip(arg)
-				if ac.aggDistinct {
-					hasDistinct = true
-				}
-				aggCalls = append(aggCalls, logical.AggregateCall{
-					Func:       strings.ToUpper(ac.aggFunc),
-					Operand:    arg,
-					Star:       arg == "*",
-					Distinct:   ac.aggDistinct,
-					BareColumn: ac.aggArg != "" && ac.aggExpr == nil,
-					Qualified:  ac.aggArgQualified,
-				})
-				aggAliases = append(aggAliases, ac.outName)
-			}
-		}
-	}
+	aggCalls, hasDistinct := logicalAggregateCalls(cls.aggCols, cls.countStar, strip)
+	outputAggCols := visibleAggregateOutputColumns(cls.aggCols, cls.countStar, cls.countStarAlias)
+	// Every aggregate's internal ABI is canonical and alias-free:
+	// [group keys..., aggregate calls...]. SQL aliases belong exclusively to
+	// the final visible Project. Besides preventing key/alias collisions, this
+	// keeps memo identity honest because AggregateSpec aliases are not part of
+	// GroupByExpression equality/hash.
+	aggAliases := make([]string, len(aggCalls))
 	aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, cls.havingExpr != nil)
 	aggOp.HasDistinctAggregate = hasDistinct
+	aggOp.OutputSlots = buildAggregateOutputSlots(keys, outputAggCols, strip)
 	op = aggOp
 
-	// Post-aggregation projection for mixed SELECT lists that contain
-	// both aggregates and computed expressions / constants.
-	hasOutExpr := false
-	for _, ac := range cls.aggCols {
-		if ac.outExpr != nil && ac.aggFunc == "" && ac.visible {
-			hasOutExpr = true
-			break
-		}
-	}
-	if hasOutExpr {
-		if proj, antlr := buildPostAggregateProjection(op, cls.aggCols, strip); proj != nil {
-			op = proj
-			cls.postAggExprs = antlr
-		}
-	} else if len(keys) > 0 {
-		hasNonVisible := false
-		for _, ac := range cls.aggCols {
-			if !ac.visible {
-				hasNonVisible = true
-				break
-			}
-		}
-		var visibleProj []string
-		var visibleAliases []string
-		hasAggAlias := false
-		for _, ac := range cls.aggCols {
-			if !ac.visible {
-				continue
-			}
-			if ac.aggFunc != "" {
-				arg := ac.aggArg
-				if arg == "" && ac.aggExpr != nil {
-					arg = canonicalTextOf(ac.aggExpr)
-				}
-				if arg == "" {
-					arg = "*"
-				}
-				arg = strip(arg)
-				canonical := ac.aggFunc + "(" + arg + ")"
-				visibleProj = append(visibleProj, canonical)
-				alias := ""
-				if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
-					alias = ac.outName
-					hasAggAlias = true
-				}
-				visibleAliases = append(visibleAliases, alias)
-			} else if ac.groupCol != "" {
-				visibleProj = append(visibleProj, strip(ac.groupCol))
-				alias := ""
-				if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
-					alias = ac.outName
-				}
-				visibleAliases = append(visibleAliases, alias)
-			}
-		}
-		totalOutput := len(keys) + len(aggCalls)
-		needsStrip := len(visibleProj) != totalOutput || hasAggAlias || hasNonVisible
-		// != (not <): a DUPLICATE visible read of one group key
-		// (`SELECT id, id … GROUP BY id`) makes the visible list WIDER
-		// than the aggregate's deduplicated output — the reshaping
-		// projection must materialize each visible slot or downstream
-		// consumers (CTE column aliases, positional reads) see the
-		// internal one-slot layout.
-		if needsStrip {
-			if hasNonVisible || groupKeyMissingFromVisible(groupKeyDisplayNames(keys), visibleProj) {
-				cls.postSortStripProj = visibleProj
-				cls.postSortStripAliases = visibleAliases
-			} else {
-				op = logical.NewProject(op, visibleProj, visibleAliases)
-			}
-		}
+	// Every SQL aggregate has one public output boundary. It is deliberately
+	// deferred until after ORDER BY so hidden sort/HAVING accumulators remain
+	// available on the canonical [keys..., calls...] row.
+	if proj, antlr := buildPostAggregateProjection(op, outputAggCols, strip); proj != nil {
+		cls.postSortStripProj = append([]string(nil), proj.Projections...)
+		cls.postSortStripAliases = append([]string(nil), proj.Aliases...)
+		cls.postSortAggregateOutputOrdinals = append([]int(nil), proj.AggregateOutputOrdinals...)
+		cls.postSortIsComputed = append([]bool(nil), proj.IsComputed...)
+		cls.postAggExprs = antlr
 	}
 
 	return op, stripPrefix
@@ -1519,7 +1444,7 @@ func (v *PlanVisitor) buildCTEBodyQuery(inner antlrgen.IQueryContext) (logical.L
 // resolution. aggCols is the aggregate classification from
 // classifySelectElements, used as a fallback when the SELECT list
 // was reclassified (projCols nil, aggCols non-nil).
-func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string, groupBy []string, groupByAliases map[string]int, deferredStripProj, deferredStripAliases []string) logical.LogicalOperator {
+func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string, groupBy []string, groupByAliases map[string]int, deferredStripProj, deferredStripAliases []string, deferredOutputOrdinals []int) logical.LogicalOperator {
 	orderByCtx := simpleTable.OrderByClause()
 	if orderByCtx == nil {
 		return op
@@ -1604,7 +1529,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		}
 
 		// Handle positional references `ORDER BY N`.
-		posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), selectCols, selectAliases, aggCols)
+		posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), selectCols, selectAliases, aggCols, false)
 		if posErr != nil {
 			// Error during positional resolution — this was already
 			// validated by classifySelectElements, so this shouldn't
@@ -1627,7 +1552,12 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			// slots differ from the visible ones — bake the underlying
 			// expression text instead and drop the positional binding.
 			if len(deferredStripProj) > 0 && pos >= 1 && pos <= len(deferredStripProj) {
-				keys = append(keys, logical.SortKey{Expr: deferredStripProj[pos-1], Dir: dir, NullsFirst: nf})
+				sk := logical.SortKey{Expr: deferredStripProj[pos-1], Dir: dir, NullsFirst: nf, Pos: pos}
+				if pos <= len(deferredOutputOrdinals) && deferredOutputOrdinals[pos-1] >= 0 {
+					sk.AggregateOutputOrdinal = deferredOutputOrdinals[pos-1]
+					sk.HasAggregateOutputOrdinal = true
+				}
+				keys = append(keys, sk)
 				continue
 			}
 			// The positional name is ALIAS-preferred but this sort sits
@@ -1893,33 +1823,6 @@ func parseLimitClause(simpleTable *antlrgen.SimpleTableContext) (limit, offset i
 		offset = v
 	}
 	return limit, offset, nil
-}
-
-// limitClauseKeepsSingleRow reports whether simpleTable's LIMIT/OFFSET clause
-// (if any) provably preserves a single input row. It is STRICTER than reading
-// the (limit, offset) ints parseLimitClause returns: those sentinels conflate an
-// ABSENT clause with a syntactically-accepted-but-unparseable atom. Both `LIMIT
-// 0.0` and `LIMIT 1 OFFSET 1.0` parse (REAL_LITERAL is a decimalLiteral) yet
-// ParseInt fails, silently leaving limit=-1 / offset=0 — so a nonzero OFFSET
-// that failed to parse is indistinguishable from no offset via sq.offset alone.
-// A `LIMIT ?` parameter is likewise unknown at plan time. For the always-true
-// aggregate fold an unverifiable clause must DECLINE, never silently fold to
-// every row. So require EVERY atom to parse cleanly (no parameter, no non-integer
-// literal), then trust the resolved values: limit >= 1 keeps the row, offset == 0
-// does not skip it.
-func limitClauseKeepsSingleRow(simpleTable *antlrgen.SimpleTableContext) bool {
-	lc := simpleTable.LimitClause()
-	if lc == nil {
-		return true
-	}
-	for _, atom := range lc.AllLimitClauseAtom() {
-		if _, err := strconv.ParseInt(atom.GetText(), 10, 64); err != nil {
-			return false
-		}
-	}
-	// Every atom parsed cleanly above, so parseLimitClause cannot error here.
-	limit, offset, _ := parseLimitClause(simpleTable)
-	return limit >= 1 && offset == 0
 }
 
 // visitLimit checks the ANTLR parse tree for a LIMIT clause. Go

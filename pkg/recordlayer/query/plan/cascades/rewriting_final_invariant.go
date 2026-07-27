@@ -18,7 +18,7 @@ package cascades
 func (p *Planner) SetVerifyRewritingCoherence(on bool) { p.verifyRewritingCoherence = on }
 
 // RewritingCoherenceViolations returns what the coherence check recorded
-// across the last Plan() call, when enabled. Empty means every REWRITING
+// across the last planning run, when enabled. Empty means every REWRITING
 // winner stamped by OptimizeGroup was identical to the group's designated
 // final at stamp time — costing and pruning agreed everywhere.
 func (p *Planner) RewritingCoherenceViolations() []string { return p.rewritingCoherenceViolations }

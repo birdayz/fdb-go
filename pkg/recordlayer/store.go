@@ -1301,7 +1301,7 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 		continuation:        continuation,
 		scanProperties:      scanProperties,
 		prefixLength:        prefixLength,
-		startTime:           time.Now(),
+		scanState:           resolveScanLimiterState(scanProperties.ExecuteProperties),
 		recordsSubspace:     recordsSubspace,
 		storeRecordVersions: store.metaData.IsStoreRecordVersions(),
 		// Bare-key layout applies ONLY when the store does not split long records;

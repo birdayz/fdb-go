@@ -24,11 +24,32 @@ import (
 // without importing the planner package.
 
 // PhysicalWrapperCostMultiplier is applied to each physical operator's
-// inherited cost so cost-driven extraction prefers physical plans
-// over their logical counterparts. 0.9 = "physical is 10% cheaper
-// than logical" — enough to flip ordering on equally-shaped
-// alternatives, small enough not to dominate the cost comparison
-// with structurally-different alternatives.
+// inherited CPU so cost-driven extraction prefers physical plans over their
+// logical counterparts. 0.9 = "physical is 10% cheaper than logical" — enough
+// to flip ordering on equally-shaped alternatives.
+//
+// CPU-ONLY. It must NEVER scale Cardinality. Cardinality is a property of the
+// LOGICAL group — every physical implementation of the same join/filter/etc.
+// produces the same number of rows — so it cannot legitimately shrink just
+// because a plan happens to wrap its child in one more physical node than an
+// alternative does. CPU is different: each additional physical operator is a
+// genuine additional step at execution time, so a per-node execution-overhead
+// discount is a coherent (if approximate) model there.
+//
+// This WAS applied to Cardinality throughout this file and in plan/plans/cost.go
+// (compounding once per physical node in a plan's depth), and it was NOT "small
+// enough not to dominate the cost comparison with structurally-different
+// alternatives" as this comment used to claim: measured directly, comparing a
+// materialized NestedLoopJoin (one extra Fetch/Filter-free inner) against a
+// re-scanning FlatMap whose inner carries one more wrapper node
+// (PredicatesFilter/DefaultOnEmpty) made the FlatMap's Cardinality ~10% cheaper
+// for IDENTICAL true selectivity — a swing bigger than the entire CPU term the
+// two shapes otherwise differ by, so it silently decided compareJoinOrdering by
+// tree shape instead of cost (the RFC-152 preserved-only regression). Confining
+// the multiplier to CPU makes two physical realizations of the same logical
+// join carry EXACTLY EQUAL Cardinality, so Cost.Less falls through to CPU —
+// which is where the real discriminator (materialize-once vs re-scan-per-row)
+// already lives.
 const PhysicalWrapperCostMultiplier = 0.9
 
 // FlatMapCost: a correlated dependent join re-runs the inner once per outer row.
@@ -43,17 +64,48 @@ const PhysicalWrapperCostMultiplier = 0.9
 // extension that lives ONLY here (the compareJoinOrdering concrete-cost path),
 // sized as a tie-breaker so it never flips a clear cardinality/total-cost winner
 // (RFC-041/042).
+//
+// Cardinality is outerCard*innerCard, with NO extra FilterSelectivity factor —
+// the join predicate is NOT reapplied here because it is already accounted for
+// inside inner.Cardinality. Every FlatMap inner reaches this formula having
+// already applied the join predicate exactly once, in whichever form the inner
+// subtree takes: an equality-bound SARG on the leaf scan/index
+// (scanLikeCost/BoundSelectivity already discounts by the bind), a
+// PredicatesFilter the implementation rule stacked on the inner for a residual
+// join predicate (FilterCost already applies FilterSelectivity), or a
+// FirstOrDefault collapse for a scalar/EXISTS inner (FirstOrDefaultCost floors
+// cardinality at ~1, the correct one-row-per-outer count for that shape — not
+// outerCard*sel, which under-counts a guaranteed-one-row-out wrapper). So
+// inner.Cardinality already IS the true rows-yielded-per-outer-row count; using
+// it directly gives the same total cardinality a NestedLoopJoinCost over the
+// SAME logical join computes (outerCard*innerCardRaw*FilterSelectivity), because
+// innerCard here equals innerCardRaw*FilterSelectivity — each shape just applies
+// the predicate at a different place in its own subtree. Reapplying
+// FilterSelectivity on top of an already-filtered innerCard would double-count
+// the predicate and systematically undercost FlatMap relative to the
+// materialized NestedLoopJoin over the identical join (see NestedLoopJoinCost).
+//
+// outerCard/innerCard are NOT zero-guarded. A zero Cardinality here is never
+// "the child's cost wasn't computed" — every leaf/operator formula in this
+// file that lacks a real cardinality either floors it at >=1 (FirstOrDefault,
+// AggregateIndex, Explode) or returns before reaching FlatMapCost at all (the
+// `len(child) < 2` guards in the callers). It IS the genuine output of an
+// empty-relation operator — RecordQueryLimitPlan.HintCost's explicit
+// cardinality-0 for LIMIT 0, or RecordQueryInUnionPlan.HintCost's cost-0 for a
+// zero-length literal IN source (plan/plans/cost.go) — and must propagate
+// unchanged: `SELECT * FROM t1, (SELECT * FROM t2 LIMIT 0)` joins to exactly
+// zero rows, not outerCard*LeafScanCardinality. Substituting LeafScanCardinality
+// for an exact zero silently turned a free empty join into the single most
+// expensive shape on the plan, which can flip the winner away from it.
 func FlatMapCost(outer, inner Cost) Cost {
 	outerCard := outer.Cardinality
-	if outerCard == 0 {
-		outerCard = LeafScanCardinality
-	}
+	innerCard := inner.Cardinality
 	innerCPU := inner.CPU
 	if innerCPU == 0 {
 		innerCPU = FilterCPU
 	}
 	return Cost{
-		Cardinality: outerCard * FilterSelectivity * PhysicalWrapperCostMultiplier,
+		Cardinality: outerCard * innerCard,
 		CPU:         (outer.CPU + outerCard*(innerCPU+IterationOverhead)) * PhysicalWrapperCostMultiplier,
 	}
 }
@@ -74,17 +126,63 @@ func FlatMapCost(outer, inner Cost) Cost {
 // and let a re-scan FlatMap tie/beat the materialized NLJ for a NON-PROBE inner — the
 // RFC-152 preserved-only LEFT-OUTER regression. A card-1 PROBE inner keeps the FlatMap
 // cheapest regardless (its outerCard*~1 work beats materialize+iterate).
-func NestedLoopJoinCost(outer, inner Cost) Cost {
-	outerCard, innerCard := outer.Cardinality, inner.Cardinality
-	if outerCard == 0 {
-		outerCard = LeafScanCardinality
+//
+// numPreds is the join's predicate count, compounded exactly like FilterCost compounds
+// numPreds selectivity factors for PredicatesFilter — one FilterSelectivity factor PER
+// predicate, not one factor total. A 2-predicate FlatMap's inner is a PredicatesFilter
+// that already compounds FilterSelectivity^2; before this parameter existed,
+// NestedLoopJoinCost always applied exactly ONE factor regardless of predicate count, so
+// a multi-predicate join's SAME logical cardinality was estimated two different ways by
+// the two physical shapes — the identical group-property violation
+// PhysicalWrapperCostMultiplier caused, one level removed: here it is the join's OWN
+// selectivity term, not an external per-node discount, that failed to scale with an
+// input (predicate count) both shapes must agree on.
+//
+// outer.Cardinality/inner.Cardinality are NOT zero-guarded, for the same reason
+// FlatMapCost's are not (see its doc comment): an exact zero here is a genuine
+// empty child (LIMIT 0, an empty literal IN-list), never "unknown", and must
+// produce a genuine zero-row join rather than being inflated to
+// outerCard*LeafScanCardinality.
+//
+// uniqueKeyConjuncts is how many of numPreds conjuncts the caller has PROVEN
+// (plans/cost.go's nestedLoopJoinUniqueKeyConjuncts) to be a full equality
+// bind on the inner leg's own UNIQUE key (primary key or a declared-UNIQUE
+// index). For those conjuncts the flat per-predicate FilterSelectivity guess
+// is provably wrong: a unique-key equality can match AT MOST ONE inner row
+// per pair, so their TRUE combined selectivity is exactly 1/innerCard, not
+// FilterSelectivity^uniqueKeyConjuncts. This is the exact invariant
+// FlatMapCost's doc comment requires of this function — the two physical
+// shapes of the SAME logical unique-key equality join must compute the SAME
+// cardinality (outerCard), and only 1/innerCard achieves that here; the flat
+// guess overestimates a 1000-row inner's join by ~500x (0.5 vs 1/1000). The
+// remaining (numPreds-uniqueKeyConjuncts) conjuncts still take the flat
+// FilterSelectivity fallback — the unique-key bind explains only ITS OWN
+// conjuncts' selectivity, not any other residual predicate's.
+//
+// uniqueKeyConjuncts<=0, or an innerCard<=0 the ratio cannot divide by,
+// reproduces today's unconditional flat-selectivity formula exactly — the
+// correction is a gated ADDITION, never a replacement of the honest fallback
+// when uniqueness cannot be proven (e.g. a non-unique secondary-index
+// equality join, where the flat guess remains the right answer).
+func NestedLoopJoinCost(outer, inner Cost, numPreds int, uniqueKeyConjuncts int) Cost {
+	if numPreds < 1 {
+		numPreds = 1
 	}
-	if innerCard == 0 {
-		innerCard = LeafScanCardinality
+	outerCard, innerCard := outer.Cardinality, inner.Cardinality
+	sel := 1.0
+	if uniqueKeyConjuncts > 0 && uniqueKeyConjuncts <= numPreds && innerCard > 0 {
+		sel = 1.0 / innerCard
+		for i := 0; i < numPreds-uniqueKeyConjuncts; i++ {
+			sel *= FilterSelectivity
+		}
+	} else {
+		for i := 0; i < numPreds; i++ {
+			sel *= FilterSelectivity
+		}
 	}
 	return Cost{
-		Cardinality: outerCard * innerCard * FilterSelectivity * PhysicalWrapperCostMultiplier,
-		CPU:         (outer.CPU + inner.CPU + outerCard*innerCard*FilterCPU) * PhysicalWrapperCostMultiplier,
+		Cardinality: outerCard * innerCard * sel,
+		CPU:         (outer.CPU + inner.CPU + outerCard*innerCard*FilterCPU*float64(numPreds)) * PhysicalWrapperCostMultiplier,
 	}
 }
 
@@ -99,7 +197,7 @@ func FilterCost(child Cost, numPreds int) Cost {
 		sel *= FilterSelectivity
 	}
 	return Cost{
-		Cardinality: in * sel * PhysicalWrapperCostMultiplier,
+		Cardinality: in * sel,
 		CPU:         (child.CPU + in*FilterCPU*float64(numPreds)) * PhysicalWrapperCostMultiplier,
 	}
 }
@@ -108,7 +206,7 @@ func FilterCost(child Cost, numPreds int) Cost {
 func TypeFilterCost(child Cost) Cost {
 	in := child.Cardinality
 	return Cost{
-		Cardinality: in * TypeFilterSelectivity * PhysicalWrapperCostMultiplier,
+		Cardinality: in * TypeFilterSelectivity,
 		CPU:         (child.CPU + in*TypeFilterCPU) * PhysicalWrapperCostMultiplier,
 	}
 }
@@ -117,7 +215,7 @@ func TypeFilterCost(child Cost) Cost {
 func FetchCost(child Cost) Cost {
 	in := child.Cardinality
 	return Cost{
-		Cardinality: in * PhysicalWrapperCostMultiplier,
+		Cardinality: in,
 		CPU:         (child.CPU + in*FetchCPU) * PhysicalWrapperCostMultiplier,
 	}
 }
@@ -126,24 +224,32 @@ func FetchCost(child Cost) Cost {
 func MapCost(child Cost) Cost {
 	in := child.Cardinality
 	return Cost{
-		Cardinality: in * PhysicalWrapperCostMultiplier,
+		Cardinality: in,
 		CPU:         (child.CPU + in*ProjectionCPU) * PhysicalWrapperCostMultiplier,
 	}
 }
 
 // FirstOrDefaultCost: at most one row out, the child's work paid in full.
 func FirstOrDefaultCost(child Cost) Cost {
-	return Cost{Cardinality: 1 * PhysicalWrapperCostMultiplier, CPU: child.CPU * PhysicalWrapperCostMultiplier}
+	return Cost{Cardinality: 1, CPU: child.CPU * PhysicalWrapperCostMultiplier}
 }
 
 // InMemorySortCost: materialize + O(n log n). Note: NO physical-wrapper discount —
 // an in-memory sort must stay strictly more expensive than index-based elimination.
+//
+// The returned Cardinality is the child's EXACT count, never clamped — the
+// same zero-preservation reasoning as FlatMapCost/NestedLoopJoinCost applies
+// (a LIMIT-0 child sorts zero rows, and must report zero, not a phantom one).
+// Only the LOG argument is floored at >=1: math.Log2 is undefined below that,
+// and the floor is purely a numerical-domain guard local to logN — it must
+// never leak into the Cardinality the caller rolls up.
 func InMemorySortCost(child Cost) Cost {
 	n := child.Cardinality
-	if n < 1 {
-		n = 1
+	logInput := n
+	if logInput < 1 {
+		logInput = 1
 	}
-	logN := math.Max(1, math.Log2(math.Max(2, n)))
+	logN := math.Max(1, math.Log2(math.Max(2, logInput)))
 	return Cost{Cardinality: n, CPU: child.CPU + n*SortCPU*logN}
 }
 
@@ -151,15 +257,15 @@ func InMemorySortCost(child Cost) Cost {
 func DistinctCost(child Cost) Cost {
 	in := child.Cardinality
 	return Cost{
-		Cardinality: in * DistinctSelectivity * PhysicalWrapperCostMultiplier,
+		Cardinality: in * DistinctSelectivity,
 		CPU:         (child.CPU + in*DistinctCPU) * PhysicalWrapperCostMultiplier,
 	}
 }
 
 // IntersectionCost: output bounded by the smallest child; work ~ scanning every
-// child + per-output comparison-key merge. Carries the physical-wrapper discount
-// like the other join-tree operators so the plan HintCost and the concrete
-// join-ordering cost agree exactly.
+// child + per-output comparison-key merge. Carries the physical-wrapper CPU
+// discount like the other join-tree operators so the plan HintCost and the
+// concrete join-ordering cost agree exactly.
 func IntersectionCost(child []Cost) Cost {
 	if len(child) == 0 {
 		return Cost{}
@@ -173,7 +279,7 @@ func IntersectionCost(child []Cost) Cost {
 		sumCPU += c.CPU
 	}
 	return Cost{
-		Cardinality: minCard * PhysicalWrapperCostMultiplier,
+		Cardinality: minCard,
 		CPU:         (sumCPU + sumCard*IntersectionCPU) * PhysicalWrapperCostMultiplier,
 	}
 }

@@ -34,3 +34,56 @@ tests:
     rows:
       - ["Alice"]
       - ["Bob"]
+
+  # A non-grouped aggregate emits exactly one row before pagination. Alice has
+  # two raw order rows, which makes OFFSET 1 a discriminator: pagination over
+  # raw rows would incorrectly leave one match, but aggregate-then-offset skips
+  # the sole COUNT row and makes EXISTS false for every customer.
+  - query: >
+      SELECT c.name FROM customers c
+      WHERE EXISTS (
+        SELECT COUNT(*) FROM orders o
+        WHERE o.customer_id = c.id
+        LIMIT 1 OFFSET 1
+      )
+      ORDER BY c.name
+    rows: []
+
+  - query: >
+      SELECT c.name FROM customers c
+      WHERE EXISTS (
+        SELECT MAX(o.amount) FROM orders o
+        WHERE o.customer_id = c.id
+        LIMIT 0
+      )
+      ORDER BY c.name
+    rows: []
+
+  # NOT EXISTS inverts the known-empty post-pagination result.
+  - query: >
+      SELECT c.name FROM customers c
+      WHERE NOT EXISTS (
+        SELECT SUM(o.amount) FROM orders o
+        WHERE o.customer_id = c.id
+        LIMIT 1 OFFSET 1
+      )
+      ORDER BY c.name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+      - ["Charlie"]
+
+  # A positive LIMIT with zero OFFSET preserves the sole aggregate row,
+  # including for Charlie's empty correlated input (COUNT(*) = 0).
+  - query: >
+      SELECT c.name FROM customers c
+      WHERE EXISTS (
+        SELECT COUNT(*) FROM orders o
+        WHERE o.customer_id = c.id
+        LIMIT 1 OFFSET 0
+      )
+      ORDER BY c.name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+      - ["Charlie"]

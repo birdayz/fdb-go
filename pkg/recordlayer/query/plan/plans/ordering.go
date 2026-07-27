@@ -2,6 +2,7 @@ package plans
 
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -229,8 +230,64 @@ func (p *RecordQueryScanPlan) HintOrdering() properties.Ordering {
 	return PKScanOrdering(p)
 }
 
+// equalityPrefixLen returns the length of the leading equality-bound prefix
+// in comps, capped at n key positions. It is the SINGLE SOURCE OF TRUTH both
+// ordering derivations below consult — HintOrdering drops this prefix from
+// the ordering keys, HintRichOrdering retains it as FixedBinding entries —
+// so the two cannot classify a column differently by one caller's loop
+// breaking where the other's does not.
+//
+// Mirrors Java's ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons,
+// whose equality prefix is scanComparisons.getEqualitySize(): a leading run
+// of equality entries, ending at the first entry that is not an equality (an
+// inequality, an unbound/empty range, or simply running out of comps).
+//
+// An equality comparison that reappears AFTER a non-equality gap does NOT
+// resume the prefix — this is the conservative reading, chosen deliberately:
+// a gap comparison (e.g. index (a, b, c) SARGed a = 1, b > 5, c = 3) already
+// breaks the contiguous-range guarantee a scan provides. Rows are ordered by
+// (a, b, c) as a whole; fixing c to a single value only holds true WITHIN
+// each individual (a, b) sub-range the scan visits, not across the scan as a
+// whole the way a genuine leading equality prefix does (every row shares the
+// same a because a is bound before any range is opened). Classifying c as
+// FIXED would tell a caller that any direction on c is safe everywhere in
+// the stream, which breaks the moment b's bound range spans more than one
+// distinct b value. So a resumed equality stays an ordinary ordering key —
+// Sorted in the rich form, retained as a key in the plain form — despite
+// testing equal at its position.
+//
+// This shape is unreachable through the sole production constructor today
+// (ValueIndexScanMatchCandidate.ComputeBoundParameterPrefixMap always stops
+// at the first inequality or unbound parameter, so it never emits an
+// equality past a gap), but the helper defines it anyway rather than leaving
+// it to whichever caller's loop happens to run first.
+func equalityPrefixLen(comps []*predicates.ComparisonRange, n int) int {
+	prefix := 0
+	for i := 0; i < n && i < len(comps); i++ {
+		if !comps[i].IsEquality() {
+			break
+		}
+		prefix = i + 1
+	}
+	return prefix
+}
+
 // PKScanOrdering returns a primary scan's PK ordering. Shared with the
 // data-access path's plan-backed leaf, which memoizes a SARGed PK scan.
+//
+// PK positions bound by an equality comparison do not consume a sort
+// position: mirrors Java's
+// ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons, whose
+// equality-bound prefix (i < scanComparisons.getEqualitySize()) only
+// populates the binding map with Binding.fixed entries and is never
+// appended to orderingSequenceBuilder — the ordering sequence starts at the
+// first non-equality-bound key. Without this, a per-binding equality scan
+// (id Fixed) and an unbound scan over the same PK columns (id
+// Sorted-ascending) report the identical Keys, so plan partitioning
+// (expression_partition.go's orderingsEqual) cannot tell them apart and
+// co-partitions them. Compare RecordQueryScanPlan.HintRichOrdering below,
+// which already carries this distinction via FixedBinding/SortedBinding but
+// is not consulted by plain-ordering partitioning.
 func PKScanOrdering(plan *RecordQueryScanPlan) properties.Ordering {
 	if plan == nil {
 		return properties.Ordering{}
@@ -239,13 +296,19 @@ func PKScanOrdering(plan *RecordQueryScanPlan) properties.Ordering {
 	if len(pk) == 0 {
 		return properties.Ordering{}
 	}
-	desc := make([]bool, len(pk))
+	comps := plan.GetScanComparisons()
+	firstNonEq := equalityPrefixLen(comps, len(pk))
+	keys := pk[firstNonEq:]
+	if len(keys) == 0 {
+		return properties.Ordering{}
+	}
+	desc := make([]bool, len(keys))
 	if plan.IsReverse() {
 		for i := range desc {
 			desc[i] = true
 		}
 	}
-	return properties.Ordering{IsKnown: true, Keys: pk, Descending: desc}
+	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
 }
 
 // HintOrdering: an index scan produces rows in index-key order for the
@@ -272,14 +335,7 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
-	firstNonEq := 0
-	for i, cr := range comps {
-		if cr.IsEquality() {
-			firstNonEq = i + 1
-		} else {
-			break
-		}
-	}
+	firstNonEq := equalityPrefixLen(comps, len(columnNames))
 	rev := p.IsReverse()
 	keys := make([]values.Value, 0, len(columnNames)-firstNonEq+len(pkColumnNames))
 	desc := make([]bool, 0, cap(keys))
@@ -336,9 +392,11 @@ func (p *RecordQueryInMemorySortPlan) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc, NullsFirst: nullsFirst}
 }
 
-// HintOrdering: a merge-sort union emits rows in its comparison-key order.
+// HintOrdering: a merge-sort union emits rows in its comparison-key order,
+// in the direction it merges. See RecordQueryInUnionPlan.HintOrdering for why
+// the single reverse flag is the whole truth about that direction.
 func (p *RecordQueryMergeSortUnionPlan) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: true, Keys: p.GetComparisonKeys()}
+	return mergeComparisonKeyOrdering(p.GetComparisonKeys(), p.IsReverse())
 }
 
 // HintOrdering: an intersection emits rows in its semantic comparison-key
@@ -373,9 +431,34 @@ func (p *RecordQueryIntersectionPlan) HintOrdering() properties.Ordering {
 	}
 }
 
-// HintOrdering: an InUnion emits rows in its comparison-key order.
+// HintOrdering: an InUnion emits rows in its comparison-key order, in the
+// direction it merges its per-binding legs.
+//
+// The reverse flag IS the direction of every comparison key: the rules that
+// build these merges refuse any candidate whose parts do not all agree with it
+// (properties.NaturalComparisonKeyValues), because the executable comparison
+// key is the raw Value and a key read forward cannot express a descending
+// component. Reporting the keys without their direction advertised a
+// descending merge as ascending, so a matching ORDER BY DESC saw its own
+// access path as unsatisfying and kept an in-memory sort over it.
 func (p *RecordQueryInUnionPlan) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: true, Keys: p.GetComparisonKeys()}
+	return mergeComparisonKeyOrdering(p.GetComparisonKeys(), p.IsReverse())
+}
+
+// mergeComparisonKeyOrdering builds the provided ordering of a merge set
+// operation: its comparison keys, every one of them in the merge direction.
+// NULL placement stays natural (ASC → nulls first, DESC → nulls last) — the
+// merge compares raw tuple-encoded values, which is exactly the natural
+// placement.
+func mergeComparisonKeyOrdering(keys []values.Value, reverse bool) properties.Ordering {
+	if !reverse {
+		return properties.Ordering{IsKnown: true, Keys: keys}
+	}
+	descending := make([]bool, len(keys))
+	for i := range descending {
+		descending[i] = true
+	}
+	return properties.Ordering{IsKnown: true, Keys: keys, Descending: descending}
 }
 
 // HintOrdering: a multi-way intersection emits rows in its comparison-key
@@ -525,6 +608,7 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 		return properties.EmptyOrdering()
 	}
 	comps := p.GetScanComparisons()
+	prefixLen := equalityPrefixLen(comps, len(pk))
 	bm := make(map[values.Value][]properties.OrderingBinding, len(pk))
 	keys := make([]values.Value, 0, len(pk))
 	dir := properties.ProvidedSortOrderAscending
@@ -533,7 +617,7 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 	}
 	for i, key := range pk {
 		keys = append(keys, key)
-		if i < len(comps) && comps[i].IsEquality() {
+		if i < prefixLen {
 			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
 			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
@@ -566,6 +650,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
+	prefixLen := equalityPrefixLen(comps, len(columnNames))
 	bm := make(map[values.Value][]properties.OrderingBinding)
 	keys := make([]values.Value, 0, len(columnNames)+len(pkColumnNames))
 
@@ -576,7 +661,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	for i, col := range columnNames {
 		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
 		keys = append(keys, key)
-		if i < len(comps) && comps[i].IsEquality() {
+		if i < prefixLen {
 			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
 			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}

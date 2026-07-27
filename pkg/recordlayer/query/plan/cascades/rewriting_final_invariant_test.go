@@ -126,7 +126,7 @@ func TestOptimizeGroup_RewritingCoherence(t *testing.T) {
 	p.SetVerifyRewritingCoherence(true)
 
 	task := &OptimizeGroupTask{Phase: PhaseRewriting, Ref: ref}
-	task.Run(p)
+	task.Run(plannerTestContext(), p)
 
 	if v := p.RewritingCoherenceViolations(); len(v) != 0 {
 		t.Fatalf("winner and designation come from the same comparator — coherence must hold, got: %v", v)
@@ -172,7 +172,7 @@ func TestOptimizeGroup_CoherencePhaseGateAndDetection(t *testing.T) {
 		p.dscope = newDesignationScope()
 		p.SetVerifyRewritingCoherence(true)
 		task := &OptimizeGroupTask{Phase: PhasePlanning, Ref: ref}
-		task.Run(p)
+		task.Run(plannerTestContext(), p)
 		if v := p.RewritingCoherenceViolations(); len(v) != 0 {
 			t.Fatalf("PLANNING OptimizeGroup must never trip the REWRITING coherence check, got: %v", v)
 		}
@@ -193,7 +193,7 @@ func TestOptimizeGroup_CoherencePhaseGateAndDetection(t *testing.T) {
 			p.SetVerifyRewritingCoherence(true)
 
 			task := &OptimizeGroupTask{Phase: PhaseRewriting, Ref: ref}
-			task.Run(p)
+			task.Run(plannerTestContext(), p)
 			if v := p.RewritingCoherenceViolations(); len(v) != 0 {
 				t.Fatalf("healthy run must be coherent, got: %v", v)
 			}
@@ -239,7 +239,7 @@ func TestOptimizeGroup_CoherencePhaseGateAndDetection(t *testing.T) {
 			gen := expressions.FinalsGeneration()
 			p.dscope.cache[ref.Canonical()] = designationEntry{expr: impostor, gen: gen}
 			task := &OptimizeGroupTask{Phase: PhaseRewriting, Ref: ref}
-			task.Run(p)
+			task.Run(plannerTestContext(), p)
 			if len(p.RewritingCoherenceViolations()) > 0 {
 				return // detected through Run — the pre-prune ordering is live
 			}

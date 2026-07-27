@@ -3,6 +3,7 @@ package expressions
 import (
 	"encoding/binary"
 	"hash/fnv"
+	"slices"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -42,19 +43,19 @@ func NewLogicalProjectionExpressionWithAliases(projectedValues []values.Value, a
 	copy(copied, projectedValues)
 	return &LogicalProjectionExpression{
 		projectedValues: copied,
-		aliases:         aliases,
+		aliases:         slices.Clone(aliases),
 		inner:           inner,
 	}
 }
 
-// GetProjectedValues returns the projection list. Read-only.
+// GetProjectedValues returns a defensive copy of the projection list.
 func (e *LogicalProjectionExpression) GetProjectedValues() []values.Value {
-	return e.projectedValues
+	return slices.Clone(e.projectedValues)
 }
 
-// GetAliases returns the output column aliases (parallel to projectedValues).
+// GetAliases returns a defensive copy of the output column aliases.
 func (e *LogicalProjectionExpression) GetAliases() []string {
-	return e.aliases
+	return slices.Clone(e.aliases)
 }
 
 // GetInner returns the inner Quantifier.
@@ -89,13 +90,10 @@ func (e *LogicalProjectionExpression) GetCorrelatedToWithoutChildren() map[value
 	return out
 }
 
-// EqualsWithoutChildren compares two projections by projection-list
-// equality. Two Values are considered equal if their ExplainValue
-// renderings match — a conservative textual bridge (semantically equal
-// but differently-rendered Values compare unequal, so dedup may keep
-// both; distinct semantics are never merged). values.SemanticEquals
-// exists; switching this dedup to it changes memo-dedup behavior and
-// needs its own review cycle.
+// EqualsWithoutChildren compares two projections by projection-list and
+// output-schema equality. values.ProjectionOutputIdentityKey folds the
+// executor-visible name where it carries identity beyond the Value itself:
+// explicit aliases and unaliased FieldValue display names at any depth.
 func (e *LogicalProjectionExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
 	o, ok := other.(*LogicalProjectionExpression)
 	if !ok {
@@ -108,6 +106,10 @@ func (e *LogicalProjectionExpression) EqualsWithoutChildren(other RelationalExpr
 	// memo's empty-alias path until PR-A.
 	vm := aliases.ToValuesAliasMap()
 	for i := range e.projectedValues {
+		if values.ProjectionOutputIdentityKey(e.projectedValues[i], projectionAliasAt(e.aliases, i)) !=
+			values.ProjectionOutputIdentityKey(o.projectedValues[i], projectionAliasAt(o.aliases, i)) {
+			return false
+		}
 		if !values.SemanticEqualsUnderAliasMap(e.projectedValues[i], o.projectedValues[i], vm) {
 			return false
 		}
@@ -115,8 +117,31 @@ func (e *LogicalProjectionExpression) EqualsWithoutChildren(other RelationalExpr
 	return true
 }
 
-// HashCodeWithoutChildren hashes the projection list via Explain text.
+// HashCodeWithoutChildren hashes the projection list and each slot's additional
+// schema-name discriminator. This keeps semantically-equal baked FieldValues
+// with different display names in distinct schema buckets without folding
+// internal correlation aliases into the otherwise alias-invariant hash.
 func (e *LogicalProjectionExpression) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	var buf [8]byte
+	for i, v := range e.projectedValues {
+		binary.LittleEndian.PutUint64(buf[:], values.SemanticHashCode(v))
+		h.Write(buf[:])
+		outputIdentity := values.ProjectionOutputIdentityKey(v, projectionAliasAt(e.aliases, i))
+		binary.LittleEndian.PutUint64(buf[:], uint64(len(outputIdentity)))
+		h.Write(buf[:])
+		h.Write([]byte(outputIdentity))
+	}
+	return h.Sum64()
+}
+
+// TieBreakHashCodeWithoutChildren returns the schema-neutral projection hash
+// used only for deterministic candidate ranking. Output names belong in memo
+// identity, but letting them perturb a cost tie-break changes the chosen
+// operator placement for otherwise identical work. This is the exact
+// pre-schema-identity projection hash: semantic projected Values plus their
+// ordered slot boundaries.
+func (e *LogicalProjectionExpression) TieBreakHashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	var buf [8]byte
 	for _, v := range e.projectedValues {
@@ -125,6 +150,13 @@ func (e *LogicalProjectionExpression) HashCodeWithoutChildren() uint64 {
 		h.Write([]byte{0})
 	}
 	return h.Sum64()
+}
+
+func projectionAliasAt(aliases []string, ordinal int) string {
+	if ordinal < len(aliases) {
+		return aliases[ordinal]
+	}
+	return ""
 }
 
 func (e *LogicalProjectionExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {

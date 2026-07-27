@@ -27,6 +27,7 @@ go_test(
     name = "functions_test",
     srcs = [
         "ast_util_test.go",
+        "cast_float_test.go",
         "functions_test.go",
         "proto_value_test.go",
         "time_test.go",

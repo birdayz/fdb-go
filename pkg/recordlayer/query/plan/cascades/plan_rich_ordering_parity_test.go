@@ -88,6 +88,18 @@ func bindingsFor(bm map[values.Value][]properties.OrderingBinding, key values.Va
 	return nil
 }
 
+// nonEqualityRange builds a non-equality (>) ComparisonRange, the gap
+// shape equalityPrefixLen (plans/ordering.go) must stop a prefix at.
+func nonEqualityRange(t *testing.T, literal any) *predicates.ComparisonRange {
+	t.Helper()
+	cmp := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, literal)
+	res := predicates.EmptyComparisonRange().Merge(&cmp)
+	if !res.Ok {
+		t.Fatal("failed to build non-equality comparison range")
+	}
+	return res.Range
+}
+
 func TestRichOrderingParity_IndexScan(t *testing.T) {
 	t.Parallel()
 
@@ -98,12 +110,19 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 		unique        bool
 		reverse       bool
 		ranges        []*predicates.ComparisonRange
+		// wantFields/wantFixed describe the FULL expected rich ordering, in
+		// output order: each key's field name and whether its binding is
+		// FixedBinding (true, equality-bound) or SortedBinding (false).
+		wantFields []string
+		wantFixed  []bool
 	}{
 		{
 			name:          "eq-prefix forward with PK suffix",
 			columnNames:   []string{"STATUS"},
 			pkColumnNames: []string{"ID"},
 			ranges:        []*predicates.ComparisonRange{equalityRange(t, "active")},
+			wantFields:    []string{"STATUS", "ID"},
+			wantFixed:     []bool{true, false},
 		},
 		{
 			name:          "eq-prefix reverse with PK suffix",
@@ -111,30 +130,57 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 			pkColumnNames: []string{"ID"},
 			reverse:       true,
 			ranges:        []*predicates.ComparisonRange{equalityRange(t, "active")},
+			wantFields:    []string{"STATUS", "ID"},
+			wantFixed:     []bool{true, false},
 		},
 		{
 			name:          "trimmed PK suffix",
 			columnNames:   []string{"B"},
 			pkColumnNames: []string{"A", "B", "C"},
 			ranges:        []*predicates.ComparisonRange{equalityRange(t, int64(20))},
+			wantFields:    []string{"B", "A", "C"},
+			wantFixed:     []bool{true, false, false},
 		},
 		{
 			name:          "unique index, no comparisons",
 			columnNames:   []string{"EMAIL"},
 			pkColumnNames: []string{"ID"},
 			unique:        true,
+			wantFields:    []string{"EMAIL", "ID"},
+			wantFixed:     []bool{false, false},
 		},
 		{
 			name:          "multi-column index, partial equality prefix",
 			columnNames:   []string{"A", "B", "C"},
 			pkColumnNames: []string{"ID"},
 			ranges:        []*predicates.ComparisonRange{equalityRange(t, int64(1))},
+			wantFields:    []string{"A", "B", "C", "ID"},
+			wantFixed:     []bool{true, false, false, false},
 		},
 		{
 			name:          "fan-out index (empty PK columns)",
 			columnNames:   []string{"TAG"},
 			pkColumnNames: nil,
 			ranges:        []*predicates.ComparisonRange{equalityRange(t, "x")},
+			wantFields:    []string{"TAG"},
+			wantFixed:     []bool{true},
+		},
+		{
+			// The shape that was previously unreachable-but-undefined: an
+			// equality resumes AFTER a non-equality gap (A=1, B>3, C=9). The
+			// gap already breaks the contiguous-range guarantee, so C must
+			// stay Sorted despite testing equal — see equalityPrefixLen's doc
+			// in plans/ordering.go for why FixedBinding here would be wrong.
+			name:          "resumed equality after gap stays Sorted, not Fixed",
+			columnNames:   []string{"A", "B", "C"},
+			pkColumnNames: []string{"ID"},
+			ranges: []*predicates.ComparisonRange{
+				equalityRange(t, int64(1)),
+				nonEqualityRange(t, int64(3)),
+				equalityRange(t, int64(9)),
+			},
+			wantFields: []string{"A", "B", "C", "ID"},
+			wantFixed:  []bool{true, false, false, false},
 		},
 	}
 
@@ -149,15 +195,42 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 			// The index scan is its own cascades expression now (RFC-184 W2): the
 			// memo asks the PLAN's HintRichOrdering directly (no physicalIndexScanWrapper
 			// to compare against). Exercise the plan-side body over the stamped-
-			// metadata input; the end-to-end ordering shapes are pinned by the yamsql
-			// sort-elimination corpus (differ=0 at the wrapper deletion confirmed the
-			// port matches).
+			// metadata input against an INDEPENDENTLY stated expected shape (not
+			// just non-emptiness) — the same structural bar TestRichOrderingParity_PrimaryScan
+			// holds itself to. The end-to-end ordering shapes are additionally
+			// pinned by the yamsql sort-elimination corpus.
 			got := idx.HintRichOrdering()
 			if got == nil {
 				t.Fatal("nil rich ordering")
 			}
-			if len(tc.columnNames) > 0 && len(got.GetKeys()) == 0 {
-				t.Errorf("expected non-empty rich ordering for columns %v", tc.columnNames)
+			gkeys := got.GetKeys()
+			if len(gkeys) != len(tc.wantFields) {
+				t.Fatalf("keys = %v, want %v", explainKeys(gkeys), tc.wantFields)
+			}
+			dir := properties.ProvidedSortOrderAscending
+			if tc.reverse {
+				dir = properties.ProvidedSortOrderDescending
+			}
+			gbm := got.GetBindingMap()
+			for i, field := range tc.wantFields {
+				fv, ok := gkeys[i].(*values.FieldValue)
+				if !ok || fv.Field != field {
+					t.Fatalf("key %d = %s, want field %q", i, values.ExplainValue(gkeys[i]), field)
+				}
+				bindings := bindingsFor(gbm, gkeys[i])
+				if len(bindings) != 1 {
+					t.Fatalf("field %q bindings = %v, want exactly one", field, bindings)
+				}
+				b := bindings[0]
+				switch {
+				case tc.wantFixed[i] && !b.IsFixed():
+					t.Errorf("field %q binding = %#v, want FixedBinding", field, b)
+				case !tc.wantFixed[i] && (!b.IsSorted() || b.GetSortOrder() != dir):
+					t.Errorf("field %q binding = %#v, want SortedBinding(%v)", field, b, dir)
+				}
+			}
+			if got.IsDistinct() {
+				t.Errorf("IsDistinct() = true, want false (strictlySorted is only set via WithStrictlySorted, which none of these cases call)")
 			}
 		})
 	}

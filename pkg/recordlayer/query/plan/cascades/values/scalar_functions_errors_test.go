@@ -139,8 +139,8 @@ func TestEvalScalarFunction_ErrorEdges(t *testing.T) {
 // bare evalScalarFunction helper.
 func TestScalarFunctionValue_PropagatesError(t *testing.T) {
 	t.Parallel()
-	v := NewScalarFunctionValue("SQRT", TypeFloat,
-		&ConstantValue{Value: float64(-9), Typ: TypeFloat})
+	v := NewScalarFunctionValue("SQRT", NullableDouble,
+		&ConstantValue{Value: float64(-9), Typ: NullableDouble})
 	got, err := v.Evaluate(nil)
 	if got != nil || err == nil {
 		t.Fatalf("SQRT(-9).Evaluate: got (%v, %v), want (nil, InvalidArgumentError)", got, err)

@@ -1,0 +1,250 @@
+# in_over_primary_scan_sarg.yaml
+#
+# An IN over a PRIMARY-KEY prefix, ordered by that key: `WHERE pk IN (...)
+# ORDER BY pk`, whose ordering the primary scan already delivers.
+#
+# The IN-transformation turns `id IN (1, 2, 3)` into `id = $binding` and the
+# primary scan takes that equality as a search argument, so the binding IS a
+# SARG and the cost model's criterion #6 must not penalise the IN-plan. While
+# the cost model read scan comparisons off index plans only, the equality on
+# the PRIMARY scan went uncredited, the IN-plan was penalised, and the planner
+# elected a shape that then needed an in-memory sort to satisfy ORDER BY:
+#
+#   before:  InMemorySort([ID ASC, K ASC], InUnion(Scan(TBL, [=]), bindings=1, ASC))
+#   after:   InUnion(Scan(TBL, [=]), bindings=1, ASC)
+#
+# The sort was pure waste — its input was already in primary-key order. Nothing
+# in the suite caught it: the rows were right, so every row-level test passed,
+# and the corpus recorded the sorted plan as the expected one.
+#
+# WHY `SELECT *` AND NOT A COLUMN LIST. Criterion #6 inspects the ROOT
+# expression, so a projection over the IN-plan makes the rung abstain and the
+# sort never appears in the first place — `SELECT id, k FROM ... ORDER BY id`
+# plans identically before and after the fix. Only the shape that leaves the
+# IN-plan AT THE ROOT reaches the rung, which is why every assertion below that
+# names the sort uses `SELECT *`. Verified per query against both collectors,
+# not assumed.
+#
+# The plan assertions have to name the sort's absence rather than rely on the
+# rows: a redundant sort returns exactly the same rows in exactly the same
+# order, which is precisely why it hid.
+#
+# The descending half of the file (from "THE DESCENDING MIRROR" down) covers a
+# separate defect the ascending fix exposed rather than caused: no descending
+# IN-union candidate existed at all, so DESC kept a sort that ASC had shed. It
+# is fixed here too, and both directions now plan the same shape.
+name: in_over_primary_scan_sarg
+schema_template: |
+  CREATE TABLE tbl (
+    id BIGINT NOT NULL,
+    k BIGINT NOT NULL,
+    a BIGINT,
+    b BIGINT,
+    PRIMARY KEY (id, k)
+  )
+  CREATE INDEX ia ON tbl (a)
+setup:
+  - INSERT INTO tbl VALUES
+      (1, 1, 10, 100),
+      (1, 2, 20, 200),
+      (2, 1, 30, 300),
+      (3, 5, 40, 400),
+      (4, 1, 50, 500)
+tests:
+  # The reproducer. ORDER BY the full primary key, so the expected row order is
+  # a total order and cannot depend on how ties are broken.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id, k
+    plan_not_contains: InMemorySort
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]
+  # Same query, naming the plan that must be elected instead: the IN-union
+  # reading the primary scan directly, with the equality bound.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id, k
+    plan_contains: "InUnion(Scan(TBL, [=])"
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]
+  # ORDER BY the key PREFIX only — the literal `WHERE pk IN (...) ORDER BY pk`
+  # shape. The rows are asserted as a set because ORDER BY id alone leaves the
+  # two id=1 rows mutually unordered, and this file must not pin an ordering
+  # SQL does not promise; the sort's absence is asserted regardless.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id
+    plan_not_contains: InMemorySort
+    unordered: true
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]
+  # An IN list given out of order still comes back in key order without a sort:
+  # the IN-union sorts its bindings, not its output.
+  - query: SELECT * FROM tbl WHERE id IN (3, 1, 2) ORDER BY id, k
+    plan_not_contains: InMemorySort
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]
+  # Bindings that match nothing must contribute no rows, not the whole scan.
+  - query: SELECT * FROM tbl WHERE id IN (404) ORDER BY id, k
+    rows: []
+  # Mixed present/absent bindings, still unsorted.
+  - query: SELECT * FROM tbl WHERE id IN (2, 404) ORDER BY id, k
+    plan_not_contains: InMemorySort
+    rows:
+      - [2, 1, 30, 300]
+  # Control: the same IN with NO ordering request. This used to plan the
+  # plain filtered full scan below, because PKScanOrdering reported every PK
+  # column for BOTH a per-binding equality scan (id Fixed) and a fully
+  # unbound scan (id Sorted) — the identical Ordering{Keys:[ID,K]} for two
+  # plans with very different costs. That made plan partitioning
+  # (expression_partition.go) co-partition them, so the bounded IN-join
+  # candidate could be shadowed by the unbound scan and never even compete.
+  # With PKScanOrdering trimming the equality-bound PK prefix (CQ-20), the
+  # two land in different partitions and the correctly-costed bounded InJoin
+  # wins outright: three point seeks beat one full scan.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3)
+    plan_contains: "InJoin(Scan(TBL, [=])"
+    unordered: true
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]
+  # An IN on a NON-key, NON-indexed column, ordered by the primary key. The
+  # binding cannot become a search argument on any access path here, so the
+  # IN-plan stays correctly penalised — this file covers the negative side of
+  # the criterion too, not only the case the fix improves.
+  - query: SELECT * FROM tbl WHERE b IN (100, 300) ORDER BY id, k
+    plan_contains: "PredicatesFilter(Scan(TBL)"
+    rows:
+      - [1, 1, 10, 100]
+      - [2, 1, 30, 300]
+  # THE DESCENDING MIRROR. The sort is gone here too: the IN-union now merges
+  # its legs descending over reverse primary scans, so ASC and DESC get the
+  # same shape.
+  #
+  # It took three fixes to get here, and the row order below is what proves all
+  # three. The primary-scan match candidate reported no key order at all, so a
+  # primary-scan access could never satisfy a requested ordering and no reverse
+  # variant was ever built. The IN-like SELECT downgraded its parent's ordering
+  # request to Preserve, and a Preserve alongside a concrete request makes every
+  # access below resolve to "either direction", which yields forward only. And
+  # the IN-union advertised its comparison keys without the direction it merges
+  # them in, so a descending merge looked ascending to the sort above it.
+  #
+  # The rows discriminate every one of those: id=1 carries two k values, so a
+  # leg scanned forward under a descending merge would return 1,1 before 1,2,
+  # and a merge run ascending would return the ids the other way round.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id DESC, k DESC
+    plan_not_contains: InMemorySort
+    rows:
+      - [3, 5, 40, 400]
+      - [2, 1, 30, 300]
+      - [1, 2, 20, 200]
+      - [1, 1, 10, 100]
+  # The same query, naming the plan that must be elected: the IN-union over a
+  # REVERSE primary scan, merging descending.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id DESC, k DESC
+    plan_contains: "InUnion(Scan(TBL, [=]) REVERSE, bindings=1, DESC)"
+    rows:
+      - [3, 5, 40, 400]
+      - [2, 1, 30, 300]
+      - [1, 2, 20, 200]
+      - [1, 1, 10, 100]
+  # A MIXED ordering request stays on the sort, and that is correct rather than
+  # a gap: the merge compares raw tuple-encoded values in ONE direction, so a
+  # comparison key that is descending in one component and ascending in another
+  # cannot be expressed at all.
+  #
+  # THESE TWO SCENARIOS DO NOT PIN THE RULE'S REFUSAL. They plan an in-memory
+  # sort with or without the gate that declines the mixed candidate — the
+  # mis-merged plan loses on cost here either way. What they pin is that the
+  # rows come back in the requested mixed order. The refusal itself is pinned at
+  # rule level by TestInUnionRuleRefusesMixedDirectionMerge, which drives
+  # ImplementInUnionRule directly and goes red when the gate is removed.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id DESC, k
+    plan_contains: InMemorySort
+    rows:
+      - [3, 5, 40, 400]
+      - [2, 1, 30, 300]
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id, k DESC
+    plan_contains: InMemorySort
+    rows:
+      - [1, 2, 20, 200]
+      - [1, 1, 10, 100]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]
+  # An out-of-order IN list still comes back in descending key order: the
+  # IN-union sorts its bindings by the merge direction, not by list position.
+  - query: SELECT * FROM tbl WHERE id IN (2, 3, 1) ORDER BY id DESC, k DESC
+    plan_not_contains: InMemorySort
+    rows:
+      - [3, 5, 40, 400]
+      - [2, 1, 30, 300]
+      - [1, 2, 20, 200]
+      - [1, 1, 10, 100]
+  # Bindings that match nothing contribute nothing to the descending merge.
+  - query: SELECT * FROM tbl WHERE id IN (2, 404) ORDER BY id DESC, k DESC
+    plan_not_contains: InMemorySort
+    rows:
+      - [2, 1, 30, 300]
+  # THE INDEX MIRROR of the same fix. `a` is indexed, so the IN-union merges
+  # over reverse INDEX scans rather than reverse primary scans, and the index
+  # order (a, then the trimmed primary key) is what the descending request is
+  # satisfied by end to end.
+  - query: SELECT * FROM tbl WHERE a IN (10, 20, 30) ORDER BY a DESC, id DESC, k DESC
+    plan_contains: "InUnion(IndexScan(IA, [=]) REVERSE, bindings=1, DESC)"
+    rows:
+      - [2, 1, 30, 300]
+      - [1, 2, 20, 200]
+      - [1, 1, 10, 100]
+  # The ascending index mirror, unchanged, so the pair reads as a symmetry
+  # rather than as one blessed direction.
+  - query: SELECT * FROM tbl WHERE a IN (10, 20, 30) ORDER BY a, id, k
+    plan_contains: "InUnion(IndexScan(IA, [=]), bindings=1, ASC)"
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+  # ORDER BY the key PREFIX alone, descending. THE CQ-10f REGRESSION, CLOSED
+  # BUT NOT YET AT JAVA PARITY.
+  #
+  # This query used to plan a FULL REVERSE TABLE SCAN
+  # (`PredicatesFilter(Scan(TBL) REVERSE, ...)`), because the co-partitioning
+  # bug described above (CQ-20) shadowed the bounded IN-join/IN-union
+  # candidates behind an unbound scan at the SAME rung the sort-vs-full-scan
+  # decision is made. With CQ-20's PKScanOrdering fix, the bounded candidate
+  # survives partitioning and wins: three point seeks under a sort beat one
+  # full scan.
+  #
+  # This is NOT yet Java parity: Java plans the IN-join with its bindings
+  # sorted descending and needs no sort at all
+  # (`INJOIN q0 -> { SCAN([IS TBL, EQUALS q0]) }, SORTED DESC`). Go still
+  # wraps the InJoin in an InMemorySort because `RecordQueryInJoinPlan`
+  # itself does not yet derive an ordering from its Fixed-bound inner
+  # scan (Java's `OrderingProperty.visitInJoinPlan`) and the requested-
+  # ordering enumeration cannot look a baked-vs-lazy Value up in the rich
+  # binding map — those are RFC-191 defects (a) and (b), deliberately NOT
+  # implemented here (a separate, milestone-sized change per the RFC). The
+  # regression (full scan on a billion-row table) is gone; the remaining gap
+  # is "one avoidable sort", tracked as the rest of CQ-10f.
+  #
+  # `unordered` because ORDER BY id alone leaves the two id=1 rows mutually
+  # unordered, and this file does not pin an order SQL does not promise. The
+  # descending ROW ORDER is proved by the full-key scenarios above.
+  - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id DESC
+    plan_contains: "InMemorySort([ID DESC], InJoin(Scan(TBL, [=]), binding ASC))"
+    unordered: true
+    rows:
+      - [1, 1, 10, 100]
+      - [1, 2, 20, 200]
+      - [2, 1, 30, 300]
+      - [3, 5, 40, 400]

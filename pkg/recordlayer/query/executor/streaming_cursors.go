@@ -487,6 +487,17 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		// deterministic packing is safe; both sides of a resume re-derive it
 		// with this same encoding. The group's surfaced VALUE rides separately
 		// in keyVals (typed, lossless).
+		//
+		// A zero-valued float is packed VERBATIM, so -0.0 and +0.0 are two
+		// groups. This is deliberate and must stay: when the same GROUP BY is
+		// served by a maintained aggregate index, the grouping prefix IS the
+		// index key, so the two signed zeros are two physical entries that Java
+		// reads the same way (Java's own grouping splits them too — its key is
+		// a protobuf message compared with Double.equals). Canonicalizing here
+		// would make the answer depend on whether an aggregate index exists.
+		// packedDedupKey follows the same rule for the same reason; see its doc
+		// comment for the full argument, including why the opposite choice
+		// broke the ordered dedup path.
 		switch tv := v.(type) {
 		case nil, int64, float64, string, []byte, bool:
 			t[i] = tv

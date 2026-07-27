@@ -104,10 +104,16 @@ type keyValueCursor struct {
 	iterator       rangeIterator
 	closed         bool
 	recordsRead    int // Records returned to the caller
-	recordsScanned int // Records scanned (including skipped ones)
-	bytesScanned   int64
-	prefixLength   int       // Length of the subspace prefix for continuation handling
-	startTime      time.Time // For time limit enforcement
+	recordsScanned int // Records scanned by THIS cursor (including skipped ones) — the
+	// local "free initial pass" gate (Java's per-cursor CursorLimitManager.usedInitialPass);
+	// always allows this cursor's own first scan even if scanState is already past its budget.
+	prefixLength int // Length of the subspace prefix for continuation handling
+
+	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
+	// counter set that ScannedRecordsLimit/ScannedBytesLimit/TimeLimit are
+	// checked against — see ScanLimiterState's doc comment. Never nil
+	// (resolveScanLimiterState falls back to a private instance).
+	scanState *ScanLimiterState
 
 	// Cached subspace to avoid recomputing store.subspace.Sub(RecordKey) per record.
 	recordsSubspace subspace.Subspace
@@ -177,25 +183,42 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	}
 
 	// Check time limit BEFORE reading next record (matching Java's CursorLimitManager.tryRecordScan).
-	// Allow at least one record before enforcing (free initial pass).
-	if executeProps.TimeLimit > 0 && c.recordsScanned > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
-		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-			TimeLimitReached,
-			c.limitContinuation(),
-		), nil
+	// Allow at least one record before enforcing (free initial pass — Java's timeScanLimiter branch
+	// never suppresses usedInitialPass, even in fail mode: CursorLimitManager.java:138 has no
+	// `|| failOnScanLimitReached` term). time.Since(c.scanState.StartTime()) is measured against the
+	// (possibly shared) execution-wide anchor, not this cursor's own construction time — so a
+	// many-leg IN-join/IN-union actually trips this once the AGGREGATE time across every leg crosses
+	// the limit, matching Java's TimeScanLimiter anchored to FDBRecordContext.getTransactionCreateTime()
+	// (CursorLimitManager.java:93). noNextOrFail (not a raw NewResultNoNext) because Java throws on
+	// ANY halted limit under failOnScanLimitReached, not just the scanned-records one
+	// (CursorLimitManager.java:141-144: the throw is in tryRecordScan's shared tail, after all three
+	// halted* flags are computed).
+	if executeProps.TimeLimit > 0 && c.recordsScanned > 0 && time.Since(c.scanState.StartTime()) >= executeProps.TimeLimit {
+		return noNextOrFail[*FDBStoredRecord[proto.Message]](executeProps, TimeLimitReached, c.limitContinuation())
 	}
 
 	// Check scanned records limit BEFORE reading next record.
 	// Continuation points to the last RETURNED record, so resumption starts after it.
 	// Matches Java's CursorLimitManager.tryRecordScan() which checks limits pre-read.
-	if executeProps.ScannedRecordsLimit > 0 && c.recordsScanned >= executeProps.ScannedRecordsLimit {
+	// c.recordsScanned>0 is this cursor's own free-initial-pass gate (Java's per-cursor
+	// usedInitialPass); the threshold itself is the shared scanState so every leg of an
+	// IN-join/IN-union charges the same aggregate budget instead of resetting per leg.
+	// The gate is ALSO bypassed when FailOnScanLimitReached is set: Java's record-scan branch is
+	// `!recordScanLimiter.tryRecordScan() && (usedInitialPass || failOnScanLimitReached)`
+	// (CursorLimitManager.java:135-136) — fail mode does NOT grant a free pass, so a fresh cursor's
+	// very first record still throws if the shared budget is already spent. (Byte and time keep the
+	// free pass unconditionally — Java never adds `|| failOnScanLimitReached` to those two branches,
+	// :137-138 — which is why only THIS check gets the extra disjunct.)
+	if executeProps.ScannedRecordsLimit > 0 &&
+		(c.recordsScanned > 0 || executeProps.FailOnScanLimitReached) &&
+		c.scanState.RecordsScanned() >= executeProps.ScannedRecordsLimit {
 		return noNextOrFail[*FDBStoredRecord[proto.Message]](executeProps, ScanLimitReached, c.limitContinuation())
 	}
 
 	// Check byte limit BEFORE reading next record (matching Java's CursorLimitManager.tryRecordScan).
 	// Java's tryRecordScan() calls byteScanLimiter.hasBytesRemaining() before the read.
 	// Allow at least one record (free initial pass — usedInitialPass in Java).
-	if executeProps.ScannedBytesLimit > 0 && c.recordsScanned > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
+	if executeProps.ScannedBytesLimit > 0 && c.recordsScanned > 0 && c.scanState.BytesScanned() >= executeProps.ScannedBytesLimit {
 		return noNextOrFail[*FDBStoredRecord[proto.Message]](executeProps, ByteLimitReached, c.limitContinuation())
 	}
 
@@ -212,9 +235,10 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	}
 
 	c.recordsScanned++
+	c.scanState.AddRecordScanned()
 
 	// Accumulate bytes scanned — checked pre-read on next call
-	c.bytesScanned += int64(record.KeySize + record.ValueSize)
+	c.scanState.AddBytesScanned(int64(record.KeySize + record.ValueSize))
 
 	// Handle skip — count the record as scanned but don't return it
 	if executeProps.Skip > 0 && c.recordsScanned <= executeProps.Skip {

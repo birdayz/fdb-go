@@ -160,8 +160,9 @@ exhaustive, auto-generated inventory of every scenario by feature area, see
 - JOINs: INNER, comma-join / self-join, and LEFT / RIGHT / FULL OUTER JOIN
   (outer joins are a Go-only read-side extension — Java's SQL layer has none; wire
   compat is unaffected)
-- Subqueries in WHERE: EXISTS / NOT EXISTS, IN (SELECT ...), and correlated scalar
-  subqueries (Go-only read-side extensions)
+- Subqueries in WHERE: EXISTS / NOT EXISTS and correlated scalar subqueries
+  (Go-only read-side extensions). `x IN (SELECT ...)` is **not supported** — see
+  the gap list below
 - CTEs: WITH ... AS (SELECT ...), including chained CTEs
 - UNION ALL
 - INSERT, UPDATE, DELETE
@@ -176,7 +177,24 @@ avoid OOM. Self-joins and CTE+JOINs correctly resolve alias-qualified columns.
 Not yet supported in the SQL engine:
 - A plain CTE referenced inside a UNION branch (recursive CTEs, which use UNION
   internally, do work)
-- `IN (SELECT ...)` in DML WHERE (rejected; rewrite as a correlated `EXISTS`)
+- `x IN (SELECT ...)` / `x NOT IN (SELECT ...)` **anywhere** — SELECT WHERE, DML
+  WHERE, a JOIN ON conjunct, or a projection. Every form is rejected with SQLSTATE
+  `0AF00`; rewrite as a correlated `EXISTS` / `NOT EXISTS` or a join. This matches
+  Java, which rejects the same grammar alternative
+  (`ExpressionVisitor.visitInPredicate` asserts `inList().queryExpressionBody() == null`
+  → `UNSUPPORTED_QUERY` "IN predicate does not support nested SELECT"), so it is a
+  shared gap, not a Go divergence. `NOT IN` needs care: it is UNKNOWN (so the row
+  drops) when the subquery yields a NULL or the left operand is NULL, whereas a bare
+  `NOT EXISTS` keeps those rows. Adding `IS NOT NULL` inside the `NOT EXISTS` does
+  **not** fix that — a NULL row already fails the equality. Emulate `NOT IN` with a
+  second existence test:
+  ```sql
+  -- x NOT IN (SELECT y FROM t)
+  WHERE x IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM t WHERE t.y = x)
+    AND NOT EXISTS (SELECT 1 FROM t WHERE t.y IS NULL)
+  ```
+  (`x IN (a, b, c)` value lists are unaffected and fully supported.)
 - General window functions (matching Java — only `ROW_NUMBER() ... QUALIFY` for
   vector K-NN search exists; see TODO.md)
 - Synthetic record types (JoinedRecordType, UnnestedRecordType)

@@ -2,32 +2,18 @@ package sqldriver_test
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 )
 
-// TestFDB_UnionScalarAggregateAlias is the RFC-080 (RFC-078 follow-up a+c) e2e
-// regression: a UNION whose branches are BARE-SCALAR aggregates with mismatched
-// output aliases, read downstream BY NAME, must return the aggregate values — not
-// error / drop rows.
-//
-// RFC-078 taught the executor to remap STREAMING-aggregate union branches but the
-// unionBranchNormalizable gate stayed shut for ALL LogicalAggregate branches. RFC-080
-// opens it for the safe, reachable sub-shape: an UNGROUPED bare aggregate. An ungrouped
-// aggregate produces NO match candidate for an aggregate index (tryAggregateIndexCandidate
-// returns nil when groupingCount == 0), so it ALWAYS plans as StreamingAgg — which flows
-// every aggregate under its alias (RFC-078) for any arity. (A GROUPED bare aggregate CAN
-// plan as AggregateIndex, whose names are not reported; it stays gated — see
-// TestFDB_UnionGroupedAggregateStillGated.)
-//
-// This pins, end-to-end against real FDB: (a) the load-bearing invariant — an ungrouped
-// scalar aggregate does NOT plan as AggregateIndex even when an ungrouped index exists
-// (still StreamingAgg), which is WHY the gate can open for ungrouped branches; and (b) that
-// ungrouped single- AND multi-aggregate unions return correct rows when read by name.
-// (These derived-table-in-FROM unions exercise the executor's column remap, not the
-// translator gate itself — the gate is the union-as-JOIN-LEG path; its red→green is
-// TestFDB_UnionJoinLeg case 3 (ungrouped, opens) and TestFDB_UnionGroupedAggregateStillGated
-// (grouped, stays gated).)
+// TestFDB_UnionScalarAggregateAlias is the RFC-080/RFC-078 end-to-end
+// regression for scalar aggregate UNION branches with mismatched public
+// aliases. CQ-5 now gives every SQL aggregate an exact SELECT-order Project,
+// so the union consumes a stable positional public schema rather than private
+// StreamingAgg/AggregateIndex names. The no-AggregateIndex assertion below
+// remains a useful scalar-planning invariant; grouped and divergent-spelling
+// positive coverage lives later in this file.
 func TestFDB_UnionScalarAggregateAlias(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -118,7 +104,7 @@ func TestFDB_UnionGroupedAggregate(t *testing.T) {
 	// The single-aggregate grouped branch DOES plan as AggregateIndex — the realization
 	// RFC-081 teaches planColumnNamesWithMD to report (the gate-open premise).
 	if plan := planExplainVia(t, ctx, db, "SELECT g, COUNT(*) FROM ga GROUP BY g"); !strings.Contains(plan, "AggregateIndex") {
-		t.Fatalf("grouped bare aggregate must plan as AggregateIndex (RFC-081 premise), got: %s", plan)
+		t.Fatalf("grouped aggregate must plan as AggregateIndex (RFC-081 premise), got: %s", plan)
 	}
 
 	// (1) Grouped SINGLE-aggregate union as a JOIN LEG, mismatched group-key names (g vs h),
@@ -144,15 +130,11 @@ func TestFDB_UnionGroupedAggregate(t *testing.T) {
 	assertInt64Set(t, db, ctx, miQuery, []int64{1, 1})
 }
 
-// TestFDB_UnionGroupedCountConstantGated pins the RFC-081 review P2 boundary: a GROUPED
-// COUNT(<constant>) (e.g. COUNT(1)) union branch stays UNTRANSLATABLE (clean error, never
-// wrong rows). COUNT(1) matches a count-star aggregate index, so its AggregateIndex
-// realization reports the canonical "COUNT(*)" while the logical schema keeps "COUNT(1)";
-// that name mismatch would make the union remap read a missing key → NULL count. The gate
-// conservatively rejects a grouped branch with a constant aggregate operand until the
-// AggregateIndex plan carries the logical output name (follow-up). COUNT(*) and COUNT(col)
-// grouped branches (no name divergence) remain normalizable.
-func TestFDB_UnionGroupedCountConstantGated(t *testing.T) {
+// TestFDB_UnionGroupedCountConstant pins COUNT(1) through a grouped aggregate
+// UNION used as a join leg. The universal exact output Project makes each
+// branch's public slots positional, so the private COUNT(*) index spelling can
+// no longer diverge from the logical COUNT(1) label.
+func TestFDB_UnionGroupedCountConstant(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -169,15 +151,21 @@ func TestFDB_UnionGroupedCountConstantGated(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100), (20, 300)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
 
-	// COUNT(1) matches the count-star index — confirm the realization, then assert the
-	// grouped COUNT(1) union JOIN LEG stays untranslatable (would otherwise NULL the count).
+	// COUNT(1) still matches the count-star index; correctness therefore proves
+	// the Project boundary, rather than accidentally avoiding the divergent
+	// physical realization.
 	if plan := planExplainVia(t, ctx, db, "SELECT g, COUNT(1) FROM ga GROUP BY g"); !strings.Contains(plan, "AggregateIndex") {
 		t.Fatalf("grouped COUNT(1) must match the count-star AggregateIndex (premise), got: %s", plan)
 	}
-	cc := "WITH u AS (SELECT g, COUNT(1) FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) FROM gb GROUP BY h) " +
-		"SELECT u.* FROM u, c WHERE u.g = c.id"
-	if _, err := db.QueryContext(ctx, cc); err == nil {
-		t.Errorf("grouped COUNT(1) union JOIN LEG must stay gated (clean error), not NULL the count: %q", cc)
+	cc := "WITH u(k,n) AS (SELECT g, COUNT(1) FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) FROM gb GROUP BY h) " +
+		"SELECT u.k,u.n,c.w FROM u, c WHERE u.k = c.id ORDER BY u.k,u.n DESC"
+	if got, want := collectRows(t, db, cc), [][]any{
+		{int64(100), int64(2), int64(1)},
+		{int64(100), int64(1), int64(1)},
+		{int64(200), int64(1), int64(2)},
+		{int64(300), int64(1), int64(3)},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("grouped COUNT(1) union rows:\n got  %v\n want %v", got, want)
 	}
 
 	// COUNT(*) grouped union JOIN LEG (no name divergence) remains normalizable → correct rows.
@@ -187,14 +175,10 @@ func TestFDB_UnionGroupedCountConstantGated(t *testing.T) {
 		[]int64{1, 2, 1, 3})
 }
 
-// TestFDB_UnionQualifiedAggregateGated pins the RFC-081 review finding: a bare aggregate union
-// branch whose aggregate name DIVERGES between the logical leg schema (aggregateOutputColumns,
-// raw text e.g. SUM(GA.V)) and the physical row key (StreamingAgg/AggregateIndex canonical, e.g.
-// SUM(V)) stays UNTRANSLATABLE (clean error, never wrong rows). A QUALIFIED operand is the case
-// the constant-only gate missed and review flagged. An UNQUALIFIED operand (SUM(v)) is stable and
-// remains normalizable. The gate decides at translation, so a join on the group key suffices to
-// exercise it (no SELECT u.* needed — star expansion over aggregate unions is a separate issue).
-func TestFDB_UnionQualifiedAggregateGated(t *testing.T) {
+// TestFDB_UnionQualifiedAggregate pins qualified aggregate operands through a
+// grouped aggregate UNION join leg. SUM(GA.V) and SUM(GB.V) are public labels,
+// while each exact output Project reads the native SUM(V) slot by ordinal.
+func TestFDB_UnionQualifiedAggregate(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -209,11 +193,15 @@ func TestFDB_UnionQualifiedAggregateGated(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
 
-	// QUALIFIED SUM(ga.v): logical "SUM(GA.V)" vs physical "SUM(V)" → gated (clean error).
-	qual := "WITH u AS (SELECT g, SUM(ga.v) FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) FROM gb GROUP BY h) " +
-		"SELECT c.w FROM u, c WHERE u.g = c.id"
-	if _, err := db.QueryContext(ctx, qual); err == nil {
-		t.Errorf("qualified-operand aggregate union join leg must be gated (name divergence), not run: %q", qual)
+	qual := "WITH u(k,n) AS (SELECT g, SUM(ga.v) FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) FROM gb GROUP BY h) " +
+		"SELECT u.k,u.n,c.w FROM u, c WHERE u.k = c.id ORDER BY u.k,u.n DESC"
+	if got, want := collectRows(t, db, qual), [][]any{
+		{int64(100), int64(12), int64(1)},
+		{int64(100), int64(1), int64(1)},
+		{int64(200), int64(9), int64(2)},
+		{int64(300), int64(2), int64(3)},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("qualified aggregate union rows:\n got  %v\n want %v", got, want)
 	}
 
 	// UNQUALIFIED SUM(v): logical "SUM(V)" == physical "SUM(V)" → normalizable → correct rows.

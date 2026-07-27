@@ -837,6 +837,178 @@ func TestProjectionPlan_Construction(t *testing.T) {
 	}
 }
 
+func TestProjectionPlan_DefensiveCopy(t *testing.T) {
+	t.Parallel()
+	originalProjection := &values.FieldValue{Field: "id", Typ: values.NotNullLong}
+	projections := []values.Value{originalProjection}
+	aliases := []string{"ID_ALIAS"}
+	p := NewRecordQueryProjectionPlanWithAliases(projections, aliases, stub("Inner"))
+
+	projections[0] = &values.FieldValue{Field: "mutated", Typ: values.NotNullLong}
+	aliases[0] = "MUTATED_INPUT"
+	if got := p.GetProjections(); len(got) != 1 || got[0] != originalProjection {
+		t.Fatalf("constructor retained mutable projection input: got %v", got)
+	}
+	if got := p.GetAliases(); len(got) != 1 || got[0] != "ID_ALIAS" {
+		t.Fatalf("constructor retained mutable alias input: got %v", got)
+	}
+
+	gotProjections := p.GetProjections()
+	gotAliases := p.GetAliases()
+	gotProjections[0] = values.NewBooleanValue(false)
+	gotAliases[0] = "MUTATED_GETTER"
+	if got := p.GetProjections(); len(got) != 1 || got[0] != originalProjection {
+		t.Fatalf("GetProjections exposed mutable semantic identity: got %v", got)
+	}
+	if got := p.GetAliases(); len(got) != 1 || got[0] != "ID_ALIAS" {
+		t.Fatalf("GetAliases exposed mutable semantic identity: got %v", got)
+	}
+}
+
+func TestProjectionPlan_AliasesAreSemanticIdentity(t *testing.T) {
+	t.Parallel()
+	readA := values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)
+	readB := values.NewFieldValueWithResolvedOrdinal("B", 0, values.UnknownType)
+	if !values.SemanticEqualsUnderAliasMap(readA, readB, values.AliasMap{}) {
+		t.Fatal("test requires same-ordinal baked reads to be semantically equal")
+	}
+	aliased := NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{readA}, []string{"output_alias"}, stub("Inner"))
+	aliasedTwin := NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{readB}, []string{"OUTPUT_ALIAS"}, stub("OtherInner"))
+	renamed := NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{readB}, []string{"OTHER_ALIAS"}, stub("Inner"))
+
+	if !aliased.EqualsPlanWithoutChildren(aliasedTwin) {
+		t.Fatal("aliases producing the same executor-visible output name reported unequal")
+	}
+	if aliased.HashCodeWithoutChildren() != aliasedTwin.HashCodeWithoutChildren() {
+		t.Fatal("equal aliased projection plans produced different hash codes")
+	}
+	if aliased.EqualsPlanWithoutChildren(renamed) {
+		t.Fatal("projection plans with different executor-visible output names reported equal")
+	}
+	if aliased.HashCodeWithoutChildren() == renamed.HashCodeWithoutChildren() {
+		t.Fatal("different executor-visible output names produced the same projection-plan hash")
+	}
+}
+
+func TestProjectionPlan_EmptyAliasesAreEquivalent(t *testing.T) {
+	t.Parallel()
+	projection := []values.Value{
+		&values.FieldValue{Field: "id", Typ: values.NotNullLong},
+	}
+	withoutAliases := NewRecordQueryProjectionPlan(projection, stub("Inner"))
+	emptyAliases := NewRecordQueryProjectionPlanWithAliases(
+		projection, []string{}, stub("Inner"))
+	blankPlaceholder := NewRecordQueryProjectionPlanWithAliases(
+		projection, []string{""}, stub("Inner"))
+
+	for _, candidate := range []*RecordQueryProjectionPlan{emptyAliases, blankPlaceholder} {
+		if !withoutAliases.EqualsPlanWithoutChildren(candidate) {
+			t.Fatal("missing and empty aliases must use the same derived output-name semantics")
+		}
+		if withoutAliases.HashCodeWithoutChildren() != candidate.HashCodeWithoutChildren() {
+			t.Fatal("semantically equal empty-alias representations produced different hashes")
+		}
+	}
+}
+
+func TestProjectionPlan_DerivedOutputNamesAreSemanticIdentity(t *testing.T) {
+	t.Parallel()
+	readA := values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)
+	readB := values.NewFieldValueWithResolvedOrdinal("B", 0, values.UnknownType)
+	if !values.SemanticEqualsUnderAliasMap(readA, readB, values.AliasMap{}) {
+		t.Fatal("test requires same-ordinal baked reads to be semantically equal")
+	}
+
+	testCases := []struct {
+		name        string
+		aliases     []string
+		useAliasAPI bool
+	}{
+		{name: "nil"},
+		{name: "empty slice", aliases: []string{}, useAliasAPI: true},
+		{name: "trailing empty", aliases: []string{""}, useAliasAPI: true},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			build := func(v values.Value) *RecordQueryProjectionPlan {
+				if tc.useAliasAPI {
+					return NewRecordQueryProjectionPlanWithAliases(
+						[]values.Value{v}, tc.aliases, stub("Inner"))
+				}
+				return NewRecordQueryProjectionPlan([]values.Value{v}, stub("Inner"))
+			}
+			left, right := build(readA), build(readB)
+			if left.EqualsPlanWithoutChildren(right) {
+				t.Fatal("semantic-equal reads with different derived output names reported equal")
+			}
+			if left.HashCodeWithoutChildren() == right.HashCodeWithoutChildren() {
+				t.Fatal("different derived output names produced the same projection-plan hash")
+			}
+		})
+	}
+}
+
+func TestProjectionPlan_NestedFieldNamesAreSemanticIdentity(t *testing.T) {
+	t.Parallel()
+	one := func() values.Value {
+		return &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}
+	}
+	leftValue := &values.ArithmeticValue{
+		Op:    values.OpAdd,
+		Left:  values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType),
+		Right: one(),
+	}
+	rightValue := &values.ArithmeticValue{
+		Op:    values.OpAdd,
+		Left:  values.NewFieldValueWithResolvedOrdinal("B", 0, values.UnknownType),
+		Right: one(),
+	}
+	if !values.SemanticEqualsUnderAliasMap(leftValue, rightValue, values.AliasMap{}) {
+		t.Fatal("test requires same-shape arithmetic over same-ordinal reads to be semantically equal")
+	}
+
+	left := NewRecordQueryProjectionPlan([]values.Value{leftValue}, stub("Inner"))
+	right := NewRecordQueryProjectionPlan([]values.Value{rightValue}, stub("Inner"))
+	if left.EqualsPlanWithoutChildren(right) {
+		t.Fatal("nested baked field display names changed output schema but compared equal")
+	}
+	if left.HashCodeWithoutChildren() == right.HashCodeWithoutChildren() {
+		t.Fatal("different nested field display names produced the same projection-plan hash")
+	}
+}
+
+func TestProjectionPlan_IsIdentityChecksSchemaAndInnerCorrelation(t *testing.T) {
+	t.Parallel()
+	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	identityValue := values.NewQuantifiedObjectValue(innerQ.GetAlias())
+
+	if !NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{identityValue}, nil, innerQ).IsIdentity() {
+		t.Fatal("unaliased QOV over the projection's inner quantifier must be identity")
+	}
+	if !NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{identityValue}, []string{""}, innerQ).IsIdentity() {
+		t.Fatal("an explicit empty alias must preserve identity")
+	}
+	if NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{identityValue}, []string{"RENAMED"}, innerQ).IsIdentity() {
+		t.Fatal("a schema-renaming alias must not be identity")
+	}
+	if NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{identityValue}, []string{"", ""}, innerQ).IsIdentity() {
+		t.Fatal("a malformed alias list must fail identity closed")
+	}
+	otherAlias := values.NamedCorrelationIdentifier("OTHER")
+	if NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{values.NewQuantifiedObjectValue(otherAlias)}, nil, innerQ).IsIdentity() {
+		t.Fatal("a QOV over a different quantifier must not be identity")
+	}
+}
+
 // TestProjectionPlan_Identity_ResolvedOrdinal pins plan-level identity for
 // plan-time-resolved ordinal accessors (review round-2 on PR #446): two
 // projection plans whose reads differ ONLY by resolved ordinal (the

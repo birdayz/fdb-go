@@ -26,7 +26,7 @@ func TestBugHunt_CastDoubleToIntJavaRounding(t *testing.T) {
 		{-9007199254740994.0, -9007199254740994}, // negative integral
 	}
 	for _, tc := range cases {
-		cv := NewCastValue(&ConstantValue{Value: tc.in, Typ: TypeFloat}, TypeInt)
+		cv := NewCastValue(&ConstantValue{Value: tc.in, Typ: NullableDouble}, TypeInt)
 		got, err := cv.Evaluate(nil)
 		if err != nil {
 			t.Fatalf("cast %v: %v", tc.in, err)

@@ -337,8 +337,17 @@ func planProfile(p plans.RecordQueryPlan, ctx PlanContext) string {
 // chains, asserting antisymmetry, strict-order transitivity, and consistency
 // of comparator ties. The corpus exercises the five formerly sort-gated
 // structural rungs against the later rungs that exposed the old cycle. It is
-// deliberately an all-index, sort-gate-scoped corpus; it does not claim a
-// global total-order contract across Java's retained applicability gates.
+// deliberately an all-index corpus, aimed at those rungs.
+//
+// It is no longer scoped AWAY from criterion #7: that rung used to be
+// pair-restricted — adjudicating only (lone primary scan) versus (singular
+// index-scan-with-fetch) and abstaining for index-versus-index — and so was a
+// second, independent source of intransitivity that an all-index corpus simply
+// avoided. It now ranks both sides (primaryVsIndexRankOf), and the whole-corpus
+// transitivity contract is asserted with primary scans included by
+// TestCostModel_InPlanComparisonIsOrderIndependent and, for the rung in
+// isolation, by TestCriterion7_RankIsATotalPreorder. The all-index shape here
+// is now about which rungs the corpus TARGETS, not about a rung it has to dodge.
 //
 // Before the RFC-190 190.2 fix (moving the sort-count tiebreak to just before
 // the typeFilterCount rung, and dropping the now-moot per-rung sort gates),

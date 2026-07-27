@@ -13,17 +13,77 @@ import (
 // Micro-benchmarks for the cascades planner primitives. These aren't
 // a performance gate — they exist so Value / predicate / planner
 // regressions show up in `just bench` comparisons.
+//
+// Every benchmark here VALIDATES the work it times. A benchmark that
+// discards the result records an excellent number for a regression that
+// turns the operation into an instant failure — planning that errors out,
+// a rule that stops matching, an exploration that never converges all look
+// like speedups. The validation is deliberately split by where it can sit
+// without distorting the measurement:
+//
+//   - Loop-invariant, deterministic operations (Value.Evaluate,
+//     predicate Eval, matcher BindMatches over a fixed input) are validated
+//     ONCE before b.ResetTimer(). The same input yields the same result on
+//     every iteration, so one check proves the whole loop while the timed
+//     region keeps doing exactly the measured work and nothing else. This
+//     matters at the nanosecond scale these run at, where an in-loop
+//     nil-compare would be a measurable fraction of the sample. (The two
+//     Simplify benchmarks additionally hoist their per-iteration tree
+//     construction into a `build` closure so the pre-loop check builds the
+//     same tree the loop does; that adds one call per iteration to both the
+//     before and after of any comparison, matching the shape the other
+//     planner benchmarks in this file already use.)
+//   - Per-iteration work (planner runs, memoization, GetBest) is validated
+//     INSIDE the loop, because each iteration builds a fresh Reference and a
+//     fresh single-use Planner, so no pre-loop check can speak for them. The
+//     added cost is a handful of comparisons against microsecond-scale work,
+//     and it is paid identically by every revision being compared, so it
+//     cannot manufacture or mask a delta. b.StopTimer/StartTimer is
+//     deliberately NOT used for this: the pair costs far more than the
+//     comparisons it would exclude and perturbs b.N estimation.
+
+// benchRow is the minimal values.OrdinalRow the Value/predicate benchmarks
+// evaluate against. Production flows an ordinal-model row (structurally
+// executor.PositionalRow); a name-keyed map[string]any is NOT a recognized
+// eval context, so a FieldValue over one returns *UnboundEvalContextError
+// immediately. Benchmarking that tail measures the error construction, not
+// evaluation — which is precisely why these benchmarks assert their result.
+//
+// SCOPE, so nobody reads more into these numbers than they carry: this is a
+// bare []any, NOT executor.PositionalRow. It satisfies the same interface but
+// has a trivial Get, so these benchmarks measure Value/predicate evaluation
+// and its interface dispatch — not the production row implementation's own
+// lookup cost. That is the right boundary for a micro-benchmark of the Value
+// tree (and cascades cannot import executor anyway; the interface exists here
+// precisely to break that cycle). End-to-end row cost belongs to the executor
+// and SQL-layer benchmarks.
+type benchRow []any
+
+func (r benchRow) Get(ordinal int) (any, bool) {
+	if ordinal < 0 || ordinal >= len(r) {
+		return nil, false
+	}
+	return r[ordinal], true
+}
 
 func BenchmarkConstantValue_Evaluate(b *testing.B) {
 	v := &values.ConstantValue{Value: int64(42), Typ: values.TypeInt}
+	if got, err := v.Evaluate(nil); err != nil || got != int64(42) {
+		b.Fatalf("Evaluate = %v, err %v; want 42, nil", got, err)
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = v.Evaluate(nil)
 	}
 }
 
 func BenchmarkFieldValue_Evaluate(b *testing.B) {
-	v := &values.FieldValue{Field: "age", Typ: values.TypeInt}
-	row := map[string]any{"age": int64(30)}
+	v := values.NewFieldValueWithResolvedOrdinal("age", 0, values.TypeInt)
+	row := benchRow{int64(30)}
+	if got, err := v.Evaluate(row); err != nil || got != int64(30) {
+		b.Fatalf("Evaluate = %v, err %v; want 30, nil", got, err)
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = v.Evaluate(row)
 	}
@@ -35,16 +95,21 @@ func BenchmarkArithmeticValue_Evaluate(b *testing.B) {
 		Op: values.OpMul,
 		Left: &values.ArithmeticValue{
 			Op:    values.OpAdd,
-			Left:  &values.FieldValue{Field: "a", Typ: values.TypeInt},
-			Right: &values.FieldValue{Field: "b", Typ: values.TypeInt},
+			Left:  values.NewFieldValueWithResolvedOrdinal("a", 0, values.TypeInt),
+			Right: values.NewFieldValueWithResolvedOrdinal("b", 1, values.TypeInt),
 		},
 		Right: &values.ArithmeticValue{
 			Op:    values.OpSub,
-			Left:  &values.FieldValue{Field: "c", Typ: values.TypeInt},
-			Right: &values.FieldValue{Field: "d", Typ: values.TypeInt},
+			Left:  values.NewFieldValueWithResolvedOrdinal("c", 2, values.TypeInt),
+			Right: values.NewFieldValueWithResolvedOrdinal("d", 3, values.TypeInt),
 		},
 	}
-	row := map[string]any{"a": int64(3), "b": int64(4), "c": int64(10), "d": int64(5)}
+	row := benchRow{int64(3), int64(4), int64(10), int64(5)}
+	// (3+4) * (10-5)
+	if got, err := v.Evaluate(row); err != nil || got != int64(35) {
+		b.Fatalf("Evaluate = %v, err %v; want 35, nil", got, err)
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = v.Evaluate(row)
 	}
@@ -52,10 +117,14 @@ func BenchmarkArithmeticValue_Evaluate(b *testing.B) {
 
 func BenchmarkComparisonPredicate_Eval(b *testing.B) {
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		values.NewFieldValueWithResolvedOrdinal("age", 0, values.TypeInt),
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
-	row := map[string]any{"age": int64(30)}
+	row := benchRow{int64(30)}
+	if got, err := pred.Eval(row); err != nil || got != predicates.TriTrue {
+		b.Fatalf("Eval = %v, err %v; want TriTrue, nil", got, err)
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = pred.Eval(row)
 	}
@@ -71,10 +140,14 @@ func BenchmarkComparisonPredicate_Eval(b *testing.B) {
 // EvalAgainst's int64 promotion and comparison.
 func BenchmarkComparisonPredicate_Eval_NonConstantRHS(b *testing.B) {
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.FieldValue{Field: "cutoff", Typ: values.TypeInt}},
+		values.NewFieldValueWithResolvedOrdinal("age", 0, values.TypeInt),
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.NewFieldValueWithResolvedOrdinal("cutoff", 1, values.TypeInt)},
 	)
-	row := map[string]any{"age": int64(18), "cutoff": int64(18)}
+	row := benchRow{int64(18), int64(18)}
+	if got, err := pred.Eval(row); err != nil || got != predicates.TriTrue {
+		b.Fatalf("Eval = %v, err %v; want TriTrue, nil", got, err)
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = pred.Eval(row)
 	}
@@ -83,14 +156,18 @@ func BenchmarkComparisonPredicate_Eval_NonConstantRHS(b *testing.B) {
 func BenchmarkKleeneAnd_Eval(b *testing.B) {
 	// (age >= 18) AND (rank < 5) AND (score > 50)
 	tree := predicates.NewAnd(
-		predicates.NewComparisonPredicate(&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("age", 0, values.TypeInt),
 			predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))}),
-		predicates.NewComparisonPredicate(&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("rank", 1, values.TypeInt),
 			predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: values.LiteralValue(int64(5))}),
-		predicates.NewComparisonPredicate(&values.FieldValue{Field: "score", Typ: values.TypeInt},
+		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("score", 2, values.TypeInt),
 			predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(50))}),
 	)
-	row := map[string]any{"age": int64(30), "rank": int64(3), "score": int64(80)}
+	row := benchRow{int64(30), int64(3), int64(80)}
+	if got, err := tree.Eval(row); err != nil || got != predicates.TriTrue {
+		b.Fatalf("Eval = %v, err %v; want TriTrue, nil", got, err)
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = tree.Eval(row)
 	}
@@ -112,6 +189,10 @@ func BenchmarkArithmeticMatcher_BindMatches(b *testing.B) {
 		Right: &values.FieldValue{Field: "x", Typ: values.TypeInt},
 	}
 	outer := matching.NewBindings()
+	if got := matcher.BindMatches(outer, expr); len(got) == 0 {
+		b.Fatal("ArithmeticMatcher did not match — the benchmark would time a rejection, not a bind")
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = matcher.BindMatches(outer, expr)
 	}
@@ -123,6 +204,10 @@ func BenchmarkAllOf_BindMatches(b *testing.B) {
 	pattern := matching.NewAllOf("ConstantValue", matching.NewConstantMatcher(), matching.NewAnyValue())
 	cv := &values.ConstantValue{Value: int64(7), Typ: values.TypeInt}
 	outer := matching.NewBindings()
+	if got := pattern.BindMatches(outer, cv); len(got) == 0 {
+		b.Fatal("AllOf did not match — the benchmark would time a rejection, not a bind")
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = pattern.BindMatches(outer, cv)
 	}
@@ -140,9 +225,8 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 	)
 	// Build fresh each iter — Simplify sees a pristine tree, not a
 	// memoised folded one.
-	rules := DefaultSimplifyRules()
-	for i := 0; i < b.N; i++ {
-		pred := predicates.NewAnd(
+	build := func() predicates.QueryPredicate {
+		return predicates.NewAnd(
 			predicates.NewAnd(
 				predicates.NewComparisonPredicate(
 					&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
@@ -154,7 +238,17 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 			agePred,
 			predicates.NewConstantPredicate(predicates.TriTrue),
 		)
-		_ = Simplify(pred, rules)
+	}
+	rules := DefaultSimplifyRules()
+	// The whole tree must collapse to `agePred` (same expectation as
+	// TestSimplify_FullPipeline). A rule set that stops firing would leave the
+	// full tree standing and time a cheap no-op as if it were the pipeline.
+	if got := Simplify(build(), rules); got != predicates.QueryPredicate(agePred) {
+		b.Fatalf("Simplify = %T %s; want agePred", got, got.Explain())
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = Simplify(build(), rules)
 	}
 }
 
@@ -173,6 +267,12 @@ func BenchmarkSimplify_Absorption(b *testing.B) {
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(2))},
 	)
 	rules := DefaultSimplifyRules()
+	// Absorption must reduce `p AND (p OR q)` to `p`; if it stops firing the
+	// benchmark would time the un-absorbed tree and read as a speedup.
+	if got := Simplify(predicates.NewAnd(p, predicates.NewOr(p, q)), rules); got != predicates.QueryPredicate(p) {
+		b.Fatalf("Simplify = %T %s; want p (absorption)", got, got.Explain())
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Fresh per-iteration so we don't memoise.
 		pred := predicates.NewAnd(p, predicates.NewOr(p, q))
@@ -193,6 +293,10 @@ func BenchmarkListMatcher_BindMatches(b *testing.B) {
 		&values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
 	}
 	outer := matching.NewBindings()
+	if got := matcher.BindMatches(outer, in); len(got) == 0 {
+		b.Fatal("ListMatcher did not match — the benchmark would time a rejection, not a bind")
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = matcher.BindMatches(outer, in)
 	}
@@ -211,6 +315,10 @@ func BenchmarkAllElementsMatcher_BindMatches(b *testing.B) {
 		&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
 	}
 	outer := matching.NewBindings()
+	if got := matcher.BindMatches(outer, in); len(got) == 0 {
+		b.Fatal("AllElementsMatcher did not match — the benchmark would time a rejection, not a bind")
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = matcher.BindMatches(outer, in)
 	}
@@ -224,14 +332,22 @@ func BenchmarkSimplify_DeMorgan(b *testing.B) {
 	b.ReportAllocs()
 	a := &values.FieldValue{Field: "a", Typ: values.TypeInt}
 	bb := &values.FieldValue{Field: "b", Typ: values.TypeInt}
-	rules := NormalizationRules()
-	for i := 0; i < b.N; i++ {
-		// Fresh tree per iter — Simplify mutates via rebuild.
-		pred := predicates.NewNot(predicates.NewAnd(
+	build := func() predicates.QueryPredicate {
+		return predicates.NewNot(predicates.NewAnd(
 			predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))}),
 			predicates.NewComparisonPredicate(bb, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(2))}),
 		))
-		_ = Simplify(pred, rules)
+	}
+	rules := NormalizationRules()
+	// De Morgan must turn the NOT(AND(...)) into an OR. Timing an input the
+	// rules no longer rewrite would misreport the normalization cost as cheap.
+	if got, ok := Simplify(build(), rules).(*predicates.OrPredicate); !ok {
+		b.Fatalf("Simplify = %T; want *predicates.OrPredicate (De Morgan)", got)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Fresh tree per iter — Simplify mutates via rebuild.
+		_ = Simplify(build(), rules)
 	}
 }
 
@@ -245,6 +361,13 @@ func BenchmarkSimplify_NoOp(b *testing.B) {
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	rules := DefaultSimplifyRules()
+	// The point of this benchmark is that NOTHING yields: the driver must walk
+	// every rule and hand back the identical predicate. If some rule starts
+	// rewriting it, this stops being the pure-dispatch baseline it claims to be.
+	if got := Simplify(pred, rules); got != predicates.QueryPredicate(pred) {
+		b.Fatalf("Simplify rewrote the opaque predicate to %T %s; the no-op baseline is no longer a no-op", got, got.Explain())
+	}
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = Simplify(pred, rules)
 	}
@@ -262,10 +385,15 @@ func BenchmarkFireExpressionRule_FilterMerge(b *testing.B) {
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
 	outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerQ)
 	rule := NewFilterMergeRule()
+	// A rule that stops matching yields nothing and returns almost instantly —
+	// the fastest possible "hot path" and a pure regression. Each iteration
+	// builds a fresh Reference, so validate every one.
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ref := expressions.InitialOf(outerF) // fresh ref each iter
-		_ = FireExpressionRule(rule, ref)
+		if yielded := FireExpressionRule(rule, ref); len(yielded) == 0 {
+			b.Fatal("FilterMergeRule yielded nothing — the rule no longer fires on nested filters")
+		}
 	}
 }
 
@@ -277,6 +405,9 @@ func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
 	f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
 	matcher := NewExpressionMatcher[*expressions.LogicalFilterExpression]("logical_filter")
 	outer := matching.NewBindings()
+	if got := matcher.BindMatches(outer, f); len(got) == 0 {
+		b.Fatal("ExpressionMatcher did not match the filter — the benchmark would time the type-assert rejection")
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = matcher.BindMatches(outer, f)
@@ -312,7 +443,11 @@ func BenchmarkOptimise_StackedSorts(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ref := build()
 		p := NewPlanner(rules, nil)
-		_, _ = exploreRewriting(p, ref)
+		// converged=false means the run hit MaxTasks: the sample would then
+		// measure cap-clamped work, not the rewrite chain this claims to pin.
+		if tasks, converged := exploreRewriting(p, ref); !converged || tasks == 0 {
+			b.Fatalf("exploreRewriting: tasks=%d converged=%v; want tasks>0 and convergence", tasks, converged)
+		}
 	}
 }
 
@@ -345,8 +480,12 @@ func BenchmarkOptimise_GetBest(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ref := build()
 		p := NewPlanner(rules, nil)
-		_, _ = exploreRewriting(p, ref)
-		_ = ref.GetBest(properties.CostLess)
+		if tasks, converged := exploreRewriting(p, ref); !converged || tasks == 0 {
+			b.Fatalf("exploreRewriting: tasks=%d converged=%v; want tasks>0 and convergence", tasks, converged)
+		}
+		if best := ref.GetBest(properties.CostLess); best == nil {
+			b.Fatal("GetBest returned nil — an empty Reference makes the extraction free")
+		}
 	}
 }
 
@@ -374,7 +513,9 @@ func BenchmarkPlanner_RealisticTree(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ref := build()
 		p := NewPlanner(rules, nil)
-		_, _ = exploreRewriting(p, ref)
+		if tasks, converged := exploreRewriting(p, ref); !converged || tasks == 0 {
+			b.Fatalf("exploreRewriting: tasks=%d converged=%v; want tasks>0 and convergence", tasks, converged)
+		}
 	}
 }
 
@@ -396,7 +537,18 @@ func BenchmarkPlanner_FullPlan(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ref := build()
 		p := NewPlanner(rules, nil)
-		_, _, _ = p.Plan(ref)
+		// Planning that FAILS is instant, so an unchecked Plan turns a
+		// correctness regression into a headline speedup.
+		best, tasks, err := p.Plan(ref)
+		if err != nil {
+			b.Fatalf("Plan: %v", err)
+		}
+		if best == nil {
+			b.Fatal("Plan returned no expression")
+		}
+		if tasks == 0 {
+			b.Fatal("Plan ran zero tasks")
+		}
 	}
 }
 
@@ -413,6 +565,11 @@ func BenchmarkBestRefCost(b *testing.B) {
 	// Insert a few alternatives so GetBest does real work.
 	ref.Insert(expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(expressions.InitialOf(f))))
 	ref.Insert(expressions.NewLogicalDistinctExpression(scanQ))
+	// GetBest over an empty Reference returns nil immediately; the loop below
+	// re-reads one fixed Reference, so a single pre-loop check covers it.
+	if best := ref.GetBest(properties.CostLess); best == nil {
+		b.Fatal("GetBest returned nil — the Reference holds no members to compare")
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = ref.GetBest(properties.CostLess)
@@ -422,12 +579,17 @@ func BenchmarkBestRefCost(b *testing.B) {
 func BenchmarkMemo_MemoizeExpression_LeafHit(b *testing.B) {
 	m := NewMemo(nil)
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	m.MemoizeExpression(scan)
+	want := m.MemoizeExpression(scan)
 
+	// "Hit" is the whole claim: the equivalent leaf must resolve to the
+	// ALREADY-memoized Reference. If dedup regresses this becomes a miss —
+	// a different code path with a different cost, under a name that lies.
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		s := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-		m.MemoizeExpression(s)
+		if r := m.MemoizeExpression(s); r != want {
+			b.Fatal("MemoizeExpression missed — the leaf was not deduped onto the existing Reference")
+		}
 	}
 }
 
@@ -437,12 +599,14 @@ func BenchmarkMemo_MemoizeExpression_NonLeafHit(b *testing.B) {
 	scanRef := m.MemoizeExpression(scan)
 	pred := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}
 	filter := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
-	m.MemoizeExpression(filter)
+	want := m.MemoizeExpression(filter)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		f := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
-		m.MemoizeExpression(f)
+		if r := m.MemoizeExpression(f); r != want {
+			b.Fatal("MemoizeExpression missed — the non-leaf was not deduped onto the existing Reference")
+		}
 	}
 }
 
@@ -460,7 +624,9 @@ func BenchmarkPlanner_ExploreWithMemo(b *testing.B) {
 		)
 		rootRef := expressions.InitialOf(filter)
 		p := NewPlanner(DefaultExpressionRules(), nil)
-		exploreRewriting(p, rootRef)
+		if tasks, converged := exploreRewriting(p, rootRef); !converged || tasks == 0 {
+			b.Fatalf("exploreRewriting: tasks=%d converged=%v; want tasks>0 and convergence", tasks, converged)
+		}
 	}
 }
 
@@ -508,7 +674,7 @@ func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
 		p := NewPlanner(rules, ctx).
 			WithPlanningExpressionRules(BatchAExpressionRules()).
 			WithImplementationRules(DefaultImplementationRules())
-		p.Plan(ref)
+		mustPlanPhysical(b, p, ref)
 	}
 }
 
@@ -549,7 +715,7 @@ func BenchmarkPlanner_PlanAggregation(b *testing.B) {
 		p := NewPlanner(rules, ctx).
 			WithPlanningExpressionRules(BatchAExpressionRules()).
 			WithImplementationRules(DefaultImplementationRules())
-		p.Plan(ref)
+		mustPlanPhysical(b, p, ref)
 	}
 }
 
@@ -584,6 +750,34 @@ func BenchmarkPlanner_PlanAggregationFromIndex(b *testing.B) {
 		p := NewPlanner(rules, ctx).
 			WithPlanningExpressionRules(BatchAExpressionRules()).
 			WithImplementationRules(DefaultImplementationRules())
-		p.Plan(ref)
+		mustPlanPhysical(b, p, ref)
+	}
+}
+
+// mustPlanPhysical runs one full planning pass and fails the benchmark unless
+// it produced a PHYSICAL plan. Plan can also return a logical expression with a
+// nil error — no implementation rule realized the tree — which costs strictly
+// less than real planning, so checking only the error would still let an
+// implementation-rule regression register as a speedup.
+//
+// Called inside the timed loop on purpose: each iteration builds a fresh
+// Reference and a fresh single-use Planner, so nothing outside the loop can
+// vouch for them. It costs one type check and two comparisons against a
+// microsecond-scale planning run, and every revision under comparison pays it
+// identically, so it cannot fabricate or hide a delta.
+func mustPlanPhysical(b *testing.B, p *Planner, ref *expressions.Reference) {
+	b.Helper()
+	best, tasks, err := p.Plan(ref)
+	if err != nil {
+		b.Fatalf("Plan: %v", err)
+	}
+	if best == nil {
+		b.Fatal("Plan returned no expression")
+	}
+	if tasks == 0 {
+		b.Fatal("Plan ran zero tasks")
+	}
+	if !isPhysical(best) {
+		b.Fatalf("Plan returned a non-physical best expression %T — no implementation rule realized the tree", best)
 	}
 }

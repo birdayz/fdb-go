@@ -64,16 +64,11 @@ func TestFDB_UnionJoinLeg(t *testing.T) {
 			"SELECT c.w FROM u, c WHERE u.x = c.id",
 		[]int64{100, 200})
 
-	// (3) Mismatched-alias UNGROUPED-AGGREGATE branches as a JOIN LEG now return CORRECT
-	// rows (RFC-080 flipped this from the prior conservative clean-error). The gate
-	// (unionBranchNormalizable) now allows bare UNGROUPED aggregate branches: an ungrouped
-	// aggregate produces no aggregate-index candidate (groupingCount==0 → nil), so it
-	// always plans as StreamingAgg, which flows every aggregate under its alias (RFC-078),
-	// so the executor's position-remap normalizes the mismatched-alias second branch.
-	// (A GROUPED bare aggregate stays gated — it may plan as AggregateIndex; see
-	// TestFDB_UnionScalarAggregateAlias, which pins both the ungrouped-works and the
-	// grouped-stays-gated cases.) count(a)={2}, count(b)={1} → u.x={2,1}; join c on
-	// u.x=c.id → w {200,100}.
+	// (3) Mismatched-alias UNGROUPED-AGGREGATE branches as a JOIN LEG return
+	// correct rows. The universal aggregate-output Project supplies a stable
+	// positional schema regardless of the private physical aggregate spelling;
+	// the union remaps the second branch to it. count(a)={2}, count(b)={1} →
+	// u.x={2,1}; join c on u.x=c.id → w {200,100}.
 	assertInt64Set(t, db, ctx,
 		"WITH u AS (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) "+
 			"SELECT c.w FROM u, c WHERE u.x = c.id",
