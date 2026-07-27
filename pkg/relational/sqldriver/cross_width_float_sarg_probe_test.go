@@ -38,6 +38,78 @@ import (
 	"testing"
 )
 
+// ORDER BY with two sort keys that differ ONLY in float width. Sort-key dedup
+// (dedupSortKeys) keys identity on EXPLAIN text, so while that text rendered
+// FLOAT and DOUBLE identically, the second key read as a duplicate of the
+// first. It was harmless only while both CAST targets resolved to the same
+// type; once they stopped being the same operation, dropping the DOUBLE key
+// would discard the tie-breaker that orders values binary32 cannot separate.
+//
+// The three values below all sit within one binary32 step of 1.0: ids 1 and 2
+// round to the SAME float32, so the second key is the only thing that orders
+// them, and id 3 rounds up so it sorts last under either key.
+func TestFDB_CrossWidthFloatSortKeys(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_cwfsort")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cwfsort")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cwfsort "+
+		"CREATE TABLE t (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cwfsort/s WITH TEMPLATE cwfsort")
+	dsn := fmt.Sprintf("fdbsql:///testdb_cwfsort?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d) VALUES "+
+		"(1, 1.0000000596046448), (2, 1.0000000298023224), (3, 1.0000000894069672)")
+
+	for _, tc := range []struct {
+		query string
+		want  []int64
+	}{
+		// float32 ties ids 1 and 2; the DOUBLE key breaks the tie ascending.
+		{"SELECT id FROM t ORDER BY CAST(d AS FLOAT), CAST(d AS DOUBLE)", []int64{2, 1, 3}},
+		// Same, tie broken the other way — proves the second key is REALLY
+		// consulted rather than the result coinciding with the first key.
+		{"SELECT id FROM t ORDER BY CAST(d AS FLOAT), CAST(d AS DOUBLE) DESC", []int64{1, 2, 3}},
+		{"SELECT id FROM t ORDER BY d", []int64{2, 1, 3}},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, tc.query)
+			if err != nil {
+				t.Fatalf("query: %v", err)
+			}
+			defer rows.Close()
+			var got []int64
+			for rows.Next() {
+				var v int64
+				if err := rows.Scan(&v); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				got = append(got, v)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows: %v", err)
+			}
+			// Order is the assertion here — do NOT sort.
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %v, want %v — the width-differing second sort key was dropped "+
+						"or ignored, losing the tie-breaker", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

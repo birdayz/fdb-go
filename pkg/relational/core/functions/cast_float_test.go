@@ -109,4 +109,32 @@ func TestCastValueFloatRoundsToBinary32(t *testing.T) {
 			t.Fatalf("CastValue(MaxFloat32, FLOAT): %v, want it accepted", err)
 		}
 	})
+
+	// A STRING source overflows to Infinity rather than erroring: Java's
+	// Float.parseFloat returns Infinity on numeric overflow and throws only for
+	// malformed text. Go signals the same overflow as (±Inf, ErrRange), so
+	// treating that error as a failed cast would reject input Java accepts.
+	// Note this differs from the float64 source above on purpose — that one is
+	// DOUBLE_TO_FLOAT, which Java range-checks explicitly.
+	t.Run("string overflow yields Infinity", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			in   string
+			want float64
+		}{
+			{"1e39", math.Inf(1)},
+			{"-1e39", math.Inf(-1)},
+		} {
+			got, err := CastValue(tc.in, "FLOAT")
+			if err != nil {
+				t.Fatalf("CastValue(%q, FLOAT): %v, want %v", tc.in, err, tc.want)
+			}
+			if got != any(tc.want) {
+				t.Fatalf("CastValue(%q, FLOAT) = %v, want %v", tc.in, got, tc.want)
+			}
+		}
+		if _, err := CastValue("notanumber", "FLOAT"); err == nil {
+			t.Fatal("CastValue(\"notanumber\", FLOAT) = nil error, want a malformed-text rejection")
+		}
+	})
 }

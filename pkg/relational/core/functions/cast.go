@@ -1,6 +1,7 @@
 package functions
 
 import (
+	"errors"
 	"math"
 	"strconv"
 	"strings"
@@ -121,10 +122,13 @@ func CastValue(v any, typeName string) (any, error) {
 		case int64:
 			return float64(float32(n)), nil
 		case string:
-			// bitSize 32: ParseFloat rounds to binary32 and range-checks
-			// against the binary32 limits, like Float.parseFloat.
+			// bitSize 32 rounds to binary32. ErrRange is NOT a failure: Go
+			// reports binary32 overflow by returning ±Inf WITH an error, while
+			// Float.parseFloat returns Infinity and throws only on malformed
+			// text, so rejecting it would refuse `CAST('1e39' AS FLOAT)` that
+			// Java accepts. The returned value is already the ±Inf Java gives.
 			f, err := strconv.ParseFloat(strings.TrimSpace(n), 32)
-			if err != nil {
+			if err != nil && !errors.Is(err, strconv.ErrRange) {
 				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to float: %v", n, err)
 			}
 			return f, nil

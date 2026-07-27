@@ -1174,7 +1174,19 @@ func TestExplainTypeName(t *testing.T) {
 		{TypeInt, "INT"},
 		{TypeString, "STRING"},
 		{TypeBool, "BOOL"},
-		{TypeFloat, "FLOAT"},
+		// FLOAT and DOUBLE render DISTINCTLY — dedupSortKeys keys sort-key
+		// identity on this text, so collapsing them lets a width-differing
+		// second ORDER BY key read as a duplicate. This case previously used
+		// `TypeFloat`, which is an ALIAS for NullableDouble, and asserted
+		// "FLOAT" — so it never tested a FLOAT type at all and pinned the
+		// collapse as the expectation.
+		{NullableFloat, "FLOAT"},
+		{NotNullFloat, "FLOAT"},
+		{NullableDouble, "DOUBLE"},
+		// INT and LONG stay collapsed on purpose: both are int64 in the row
+		// domain and sort identically, so nothing downstream can tell them
+		// apart.
+		{NullableLong, "INT"},
 		{TypeUnknown, "UNKNOWN"},
 		{nil, "UNKNOWN"},
 		{NotNullBytes, "UNKNOWN"}, // out-of-renderer-set default arm

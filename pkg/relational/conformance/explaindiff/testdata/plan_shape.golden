@@ -2220,7 +2220,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#4
 sql:   SELECT CAST(' 3.14 ' AS DOUBLE) FROM t
-plan:  Project([CAST(' 3.14 ' AS FLOAT)], Scan(T))
+plan:  Project([CAST(' 3.14 ' AS DOUBLE)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#5
@@ -2245,7 +2245,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#9 expect-error=22F3H
 sql:   SELECT CAST(CAST('not a number' AS DOUBLE) AS BIGINT) FROM t
-plan:  Project([CAST(CAST('not a number' AS FLOAT) AS INT)], Scan(T))
+plan:  Project([CAST(CAST('not a number' AS DOUBLE) AS INT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#10 expect-error=22F3H
@@ -2260,7 +2260,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#12
 sql:   SELECT CAST(num_col AS DOUBLE) FROM test_cast WHERE id = 1
-plan:  Project([CAST(NUM_COL#1 AS FLOAT)], Scan(TEST_CAST, [=]))
+plan:  Project([CAST(NUM_COL#1 AS DOUBLE)], Scan(TEST_CAST, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#13
@@ -2297,7 +2297,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast_scalar_java.yaml#1
 sql:   SELECT CAST(num_col AS DOUBLE) FROM test_cast WHERE id = 1
-plan:  Project([CAST(NUM_COL#1 AS FLOAT)], Scan(TEST_CAST, [=]))
+plan:  Project([CAST(NUM_COL#1 AS DOUBLE)], Scan(TEST_CAST, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast_scalar_java.yaml#2
@@ -2317,12 +2317,12 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast_scalar_java.yaml#5
 sql:   SELECT CAST(CAST(CAST(num_col AS STRING) AS BIGINT) AS DOUBLE) FROM test_cast WHERE id = 1
-plan:  Project([CAST(CAST(CAST(NUM_COL#1 AS STRING) AS INT) AS FLOAT)], Scan(TEST_CAST, [=]))
+plan:  Project([CAST(CAST(CAST(NUM_COL#1 AS STRING) AS INT) AS DOUBLE)], Scan(TEST_CAST, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast_scalar_java.yaml#6
 sql:   SELECT CAST(num_col AS DOUBLE) * 2.5 FROM test_cast WHERE id = 1
-plan:  Project([(CAST(NUM_COL#1 AS FLOAT) * 2.5)], Scan(TEST_CAST, [=]))
+plan:  Project([(CAST(NUM_COL#1 AS DOUBLE) * 2.5)], Scan(TEST_CAST, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast_scalar_java.yaml#7
@@ -2395,7 +2395,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === collation_and_nan_pins.yaml#2
 sql:   SELECT COUNT(*) FROM (SELECT x / CAST('NaN' AS DOUBLE) AS k FROM d) AS t GROUP BY k
-plan:  Project([COUNT(*)#1], StreamingAgg(keys=[K#0], InMemorySort([K#0 ASC], Project([(X#1 / CAST('NaN' AS FLOAT))], Scan(D)))))
+plan:  Project([COUNT(*)#1], StreamingAgg(keys=[K#0], InMemorySort([K#0 ASC], Project([(X#1 / CAST('NaN' AS DOUBLE))], Scan(D)))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -8460,7 +8460,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === integer_column_types.yaml#21
 sql:   SELECT CAST(val AS DOUBLE) FROM t_int WHERE id = 4
-plan:  Project([CAST(VAL#1 AS FLOAT)], Scan(T_INT, [=]))
+plan:  Project([CAST(VAL#1 AS DOUBLE)], Scan(T_INT, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === integer_column_types.yaml#22 expect-error=22F3H

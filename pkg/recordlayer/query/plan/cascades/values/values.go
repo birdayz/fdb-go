@@ -44,6 +44,7 @@ package values
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -1571,8 +1572,19 @@ func explainTypeName(t Type) string {
 		return "STRING"
 	case TypeCodeBoolean:
 		return "BOOL"
-	case TypeCodeFloat, TypeCodeDouble:
+	case TypeCodeFloat:
 		return "FLOAT"
+	case TypeCodeDouble:
+		// FLOAT and DOUBLE render DISTINCTLY. Collapsing them was harmless
+		// only while the walker mapped both CAST targets onto one type, so the
+		// two really were the same operation; they are now genuinely different
+		// (binary32 rounding vs none) and a rendering that hides that is a name
+		// that lies. It also feeds a semantic decision: dedupSortKeys keys
+		// sort-key identity on this very text, so two ORDER BY keys that differ
+		// only in width would read as duplicates. INT/LONG stay collapsed above
+		// because they sort identically — both are int64 in the row domain —
+		// so nothing downstream can tell them apart.
+		return "DOUBLE"
 	case TypeCodeDate:
 		return "DATE"
 	case TypeCodeTimestamp:
@@ -3714,6 +3726,17 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		// domain every FLOAT-typed value lives in (see tupleElementToRowValue);
 		// coerceTupleElement narrows it to a real float32 at the tuple-probe
 		// boundary, where the wire type code is what matters.
+		// A FLOAT-typed child makes this an IDENTITY cast, which Java short
+		// circuits before any operator runs ("If the types are the same, no
+		// cast is needed" — CastValue.inject, CastValue.java:441-446). It must
+		// NOT re-apply the DOUBLE_TO_FLOAT checks: an already-FLOAT ±Infinity
+		// (reachable via CAST('Infinity' AS FLOAT), which Float.parseFloat
+		// accepts) would otherwise be rejected by casting it to its own type.
+		// Dispatch on the child's STATIC type, since every FLOAT value is
+		// carried as a float64 and the runtime type cannot tell the two apart.
+		if c.Child != nil && c.Child.Type() != nil && c.Child.Type().Code() == TypeCodeFloat {
+			return v, nil
+		}
 		switch val := v.(type) {
 		case float64:
 			if math.IsNaN(val) || math.IsInf(val, 0) {
@@ -3730,10 +3753,14 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		case int64:
 			return float64(float32(val)), nil
 		case string:
-			// bitSize 32: ParseFloat rounds to binary32 and reports range
-			// failures against the binary32 limits, matching Float.parseFloat.
+			// bitSize 32 rounds to binary32. ErrRange is NOT a failure here:
+			// Go reports binary32 overflow by returning ±Inf WITH an error,
+			// while Java's Float.parseFloat returns Infinity and throws only on
+			// malformed text (CastValue.java:201-205). Treating ErrRange as an
+			// invalid cast would reject `CAST('1e39' AS FLOAT)`, which Java
+			// accepts. The returned value is already the ±Inf Java produces.
 			f, err := strconv.ParseFloat(trimJavaWhitespace(val), 32)
-			if err != nil {
+			if err != nil && !errors.Is(err, strconv.ErrRange) {
 				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to FLOAT: %s", val, err)}
 			}
 			return f, nil
