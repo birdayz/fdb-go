@@ -103,9 +103,14 @@ func CastValue(v any, typeName string) (any, error) {
 		// Sharing the DOUBLE arm below made the cast a no-op, wrong in BOTH
 		// directions on a value binary32 cannot represent: it matched DOUBLE
 		// rows the rounded constant differs from, and missed the FLOAT rows it
-		// equals. Kept bit-identical to values.CastValue's FLOAT arm — the two
-		// CAST implementations must agree or a constant fold and its runtime
-		// disagree about the same expression.
+		// equals. The rounding, the NaN/Infinite rejection and the range check
+		// match values.CastValue's FLOAT arm exactly — the two CAST
+		// implementations must agree on those or a constant fold and its
+		// runtime disagree about the same expression. They are NOT identical
+		// overall: this copy has no bool source arm (neither here nor in the
+		// DOUBLE case below), so CAST(<bool> AS FLOAT) is unsupported on the
+		// map path while the query engine converts it. That gap predates the
+		// float work and is left alone rather than widened silently.
 		switch n := v.(type) {
 		case float64:
 			if math.IsNaN(n) || math.IsInf(n, 0) {
