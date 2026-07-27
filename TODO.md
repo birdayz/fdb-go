@@ -9373,3 +9373,135 @@ projection paths are robust to these inputs.
 
 Crash seeds NOT committed (they would red CI for gated bugs); recorded as
 hashes/reproducers. All experiments reverted; tree clean.
+
+## Phase 11: Optimizer invariants (RFC-193/194 follow-through)
+
+- [ ] **CQ-29 (HIGH) — five cost estimates violate a proven cardinality bound.**
+  Found by cross-checking the cost model against `CardinalitiesProperty` as an
+  oracle; all five are pinned as self-cleaning exclusions in
+  `pkg/recordlayer/query/plan/cascades/cardinality_cost_bound_test.go`, so fixing
+  one fails the build until its exclusion is removed. Each is an operator whose
+  guaranteed floor or ceiling the cost formula never special-cases:
+  (1) `RecordQueryStreamingAggregationPlan` with NO grouping keys — the property
+  proves max=1 (an ungrouped aggregate emits exactly one row) while `HintCost`
+  computes `in * DistinctSelectivity` ≈ **700,000** for a 1e6-row child. Worst of
+  the five: any parent operator above an ungrouped aggregate sees a full table
+  where there is one row, which flips join ordering.
+  (2) `RecordQueryDistinctPlan` and (3) `RecordQueryUnorderedPrimaryKeyDistinctPlan`
+  — flat 0.7 multiplier, no floor, drops below a proven min of 1.
+  (4) `RecordQueryDefaultOnEmptyPlan` — the property applies `child.Floor(1)`;
+  `HintCost` passes the child through unchanged. Internally inconsistent:
+  `FirstOrDefaultCost` DOES floor at 1 for identical reasoning.
+  (5) `RecordQueryRecursiveLevelUnionPlan` — property proves `min = seed.Min`
+  (UNION ALL always emits the seed); `recursiveCost` computes `seedCard*recCard`
+  with no additive seed term, collapsing toward zero when the recursive leg
+  estimates below 1. The formula's shape is questionable away from the boundary
+  too (`seed=1000, rec=1` costs 1000 where the true total is ≥ 2000).
+
+- [ ] **CQ-30 (HIGH) — the cost model keeps a private cardinality derivation.**
+  Java has exactly one `CardinalitiesProperty`, consulted by both the cached
+  properties map and `PlanningCostModel.compare`. Go has two independently-coded
+  switches: `plan_properties.go`'s `computeCardinalities`/`cardinalitiesForRef`
+  (weakens across ALL final members via `WeakenCardinalities`) and
+  `planning_cost_model.go`'s criterion-2 walk
+  (`findExpressionsByType`/`scanProvableMaxCard`/`indexProvableMaxCard`,
+  descending via `bestPhysicalChild` — a SINGLE cost-tie-broken member). **The
+  comparator that actually elects plans uses the narrower private one.** This
+  matters because `OptimizeGroupTask` deliberately retains multiple final members
+  per group (one winner per distinct requested ordering), so "the group's
+  cardinality" is genuinely ambiguous and two disagreeing answers live side by
+  side. Fix: route criterion 2 through `GetRefPlanPropertiesMap`/
+  `computeCardinalities` and delete the duplicate. RFC-193 §5.3.
+
+- [ ] **CQ-31 (HIGH) — retire `.Field` as an input to any DECISION.**
+  Seven separate hand-rolled proofs of a semantic property by leaf-name
+  comparison went wrong on this branch (`PushValueThroughFetch` per RFC-179 F12,
+  `correlatedInnerField`, `correlatedFieldOf`, `fieldValueAliasAndCol`,
+  `buriedLegOrdinalLayout`, `rebaseOuterLegValue`, and the unique-key proof), each
+  found by a different route. Measured: **107 non-test `.Field` reads outside the
+  values package, 98 of them DECISION-class**, and roughly half live in the SQL
+  translator/generator layer (`cascades_translator.go` 30, `cascades_generator.go`
+  11, `logical_predicate.go` 8). `FieldValue.Resolved` (the construction-time
+  resolved accessor, Java's `ResolvedAccessor`) and `SemanticEqualsUnderAliasMap`
+  already exist and are the correct inputs. CockroachDB assigns a column id during
+  name resolution and the optimizer never sees a name again;
+  `ColumnMeta.Alias` is documented as display-only. **Enforcement is the point** —
+  a `pkg/docscheck`-style build check that `.Field` cannot feed a comparison
+  outside an allowlisted display site, or an eighth instance is certain.
+  RFC-193 §5.1.
+
+- [ ] **CQ-32 (MED) — two `MemoEqual` callers still bypass the alias gate.**
+  `Memo.memoizeNonLeaf` and `Memo.refContains` (`memo.go:398-433`, `511-523`) call
+  `expressions.MemoEqual` unconditionally, with no `InternsAliasAware` check — the
+  same hazard fixed in `findEquivalentRef` and long-since fixed in
+  `Reference.Insert`. NOT fixed because gating them breaks two deliberately-written
+  tests (`TestMemoActivation_InternsAliasVariants`,
+  `TestMemoActivation_BroadInterningCollapsesK` in `memo_activation_test.go`) that
+  require alias-variant `Filter`s to intern into one shared Reference. RFC-077
+  flagged this and never audited it. Genuine open question: either those tests
+  encode a real requirement that the gate must accommodate, or they predate the
+  alias-identity hazard and should change. Needs the audit, not a drive-by.
+
+- [ ] **CQ-33 (MED) — `LIKE 'prefix%'` on an indexed column does a FULL SCAN.**
+  `ResolveStartsWith` (`pkg/relational/core/query/expr/expr.go:876`) has **zero
+  production callers**; `walk.go`'s LIKE arm always calls `ResolveLikeWithEscape`,
+  and no rule rewrites a constant-prefix LIKE into `ComparisonStartsWith`.
+  Measured by direct EXPLAIN: `s LIKE 'prefix%'` never produces an `IndexScan` at
+  any table size tried (6–150 rows). Two consequences: a common query shape scans
+  the whole table, and RFC-179's F11 fix (the `STARTS_WITH` arm in
+  `scanComparisonsToTupleRange`) is unreachable from SQL and therefore provable
+  only by unit test. This matches Java's non-exposure (`STARTS_WITH` is a
+  QueryComponent-only API there), so it is a permitted read-side extension rather
+  than a parity gap — and CockroachDB has exactly this optimisation
+  (`idxconstraint/index_constraints.go`, the `LikeOp` case in
+  `makeSpansForSingleColumnDatum`). Guard the rewrite on a constant prefix with no
+  further wildcards and no ESCAPE ambiguity.
+
+- [ ] **CQ-34 (MED) — the sargable gate and the range builder are kept in manual
+  lockstep.** `isSargableComparisonForMatch` (`match_max_match_map.go:67`) decides
+  what may be consumed into a scan range; `scanComparisonsToTupleRange`
+  (`executor.go:693`) decides what actually becomes a bound. They are two
+  functions in two files with no compiler-enforced tie, which is exactly the F11
+  shape (a comparison accepted as sargable whose bound is then never applied —
+  wrong rows, with the residual filter already removed). The inequality switch now
+  has a loud default that errors on an unrecognised comparison, but **the
+  equality-prefix loop (`executor.go:699-741`) has no equivalent** — it silently
+  assumes anything not `IS NULL` is a plain `=`. CockroachDB makes this class
+  structurally impossible: `idxconstraint` returns a `tight bool` from the same
+  call that builds the span, and `RemainingFilters()` may only drop a predicate
+  when that call said `tight` (`index_constraints.go:1288-1308`), with the
+  fallthrough default being `unconstrained, tight=false`. Port the shape of that,
+  or at minimum add the loud default to the equality-prefix loop.
+
+- [ ] **CQ-35 (LOW) — `ComparisonType.IsEquality()` is authoritative-looking dead
+  code.** `comparisons.go:106`, doc-commented as "useful for index-pushdown
+  decisions", has **zero production callers** — only its own unit test. The real
+  equality-range decision is a separate hardcoded check in `ComparisonRange.Merge`
+  (`comparison_range.go:146`), and the two already disagree: `IsEquality()` also
+  classifies `IN`, `IS NOT DISTINCT FROM`, `TEXT_CONTAINS_*` and
+  `DISTANCE_RANK_EQUALS` as equality; `Merge` does not. Harmless today because
+  nothing consults it, and precisely the "looks authoritative, isn't" trap that
+  produces a real bug the day someone wires it up. Either delete it or make it the
+  single source `Merge` consults.
+
+- [ ] **CQ-36 (LOW) — `df24afebb` has no mutation verdict.** The branch-wide
+  mutation audit reverted each correctness fix and confirmed the suite went red.
+  `df24afebb` (threading `context` cancellation through the whole task-execution
+  and plan-extraction call graph) could not be mechanically isolated — five later
+  commits edit the same plumbing, `cascades_generator.go` alone conflicts in 7
+  hunks, and `unified_tasks.go`'s conflict shows interleaved content from a
+  different commit. It is **unknown**, not passed. Re-attempt once the surrounding
+  churn settles, or write a directed test for cancellation mid-plan-extraction.
+
+- [ ] **CQ-37 (MED) — the generative harnesses cannot emit two known bug shapes.**
+  `rowdiff`'s `genExists` appends exactly ONE correlated `[NOT] EXISTS` to a
+  single-table query, correlated on a bare BIGINT column against a fixed inner
+  alias, and never nests an EXISTS inside an EXISTS, never gives the inner an
+  explicit `JOIN…ON`, and never puts the outer query behind an aliased
+  self-subquery that could collide names with the inner. Every bug in that class
+  (TODO's alias-shadowing self-subquery entries; "CORRELATED EXISTS with an
+  explicit JOIN..ON inner DROPS the inner ON", which took 7 codex rounds) was found
+  by review, never by a harness — because the harness cannot produce the shape.
+  Second shape, unresolved: whether an outer-join `WHERE`-vs-`ON` case was ever
+  actually exercised by a seed. Add a directed template rather than relying on
+  random weighting, so the question stops being ambiguous.
