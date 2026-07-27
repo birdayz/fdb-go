@@ -1372,7 +1372,7 @@ func genQuery(rng *rand.Rand, table TableDef) Query {
 // column. A quarter of the time it is a bare INTEGER literal (int64) —
 // exactly the cross-WIDTH shape that silently matched ZERO rows against an
 // indexed FLOAT/DOUBLE column before narrowConstAgainstFloatColumn /
-// widenIntConstAgainstDouble (a same-typed float literal alone can never
+// widenConstAgainstDoubleColumn (a same-typed float literal alone can never
 // reach that code path, since nothing needs promoting). The rest is a
 // float64 drawn from the row-generation domain, including the float32
 // width-narrowing boundary (0.1) and the double-exactness boundary (2^53) —

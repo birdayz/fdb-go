@@ -482,7 +482,7 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
 	}
-	left, right = widenIntConstAgainstDouble(op, left, right)
+	left, right = widenConstAgainstDoubleColumn(op, left, right)
 	op, left, right = narrowFloatConstAgainstInt(op, left, right)
 	op, left, right = narrowConstAgainstFloatColumn(op, left, right)
 	left, right = promoteColumnColumnNumeric(left, right)
@@ -520,7 +520,7 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 // then seeks as a tuple.UUID and cmpAny compares as [16]byte==[16]byte.
 //
 // This is comparand TYPING (a semantic property of the value), deliberately NOT
-// gated on the SARG operator whitelist the numeric widenIntConstAgainstDouble
+// gated on the SARG operator whitelist the numeric widenConstAgainstDoubleColumn
 // sibling uses: for numerics cmpAny widens int↔float at compare time so a
 // non-SARG operator (e.g. IS DISTINCT FROM) still compares correctly unpromoted,
 // but cmpAny cannot compensate for string-vs-[16]byte, so EVERY comparison
@@ -565,24 +565,30 @@ func promotableToUuid(t values.Type) bool {
 	}
 }
 
-// widenIntConstAgainstDouble fixes a cross-type index-SARG hole: when one operand
-// of an ordered/equality comparison is an INTEGER compile-time CONSTANT and the
-// other is a non-constant DOUBLE-typed value (typically an indexed column), it
-// widens the constant to a DOUBLE constant (e.g. `5` → `5.0`). Without this the
-// int literal is packed into the index range as a tuple-int, which encodes under
-// a different type-code than the column's tuple-double entries: an equality
-// probe misses and an inequality range degenerates to all-or-nothing (INT and
-// DOUBLE tuple elements never interleave). Coercing the constant to the column's
-// type makes the SARG pack the value in the right tuple type while leaving the
-// (indexed) column operand untouched, so its index is still matched.
+// widenConstAgainstDoubleColumn fixes a cross-type index-SARG hole: when one
+// operand of an ordered/equality comparison is a compile-time CONSTANT NARROWER
+// than DOUBLE (an INT/LONG integer, or a binary32 FLOAT) and the other is a
+// non-constant DOUBLE-typed value (typically an indexed column), it widens the
+// constant to a DOUBLE constant (e.g. `5` → `5.0`). Without this the constant is
+// packed into the index range under its own tuple type code — int, or 0x20
+// single-float — which never interleaves with the column's 0x21 tuple-double
+// entries: an equality probe misses every row and an inequality range
+// degenerates to all-or-nothing. Coercing the constant to the column's type
+// makes the SARG pack it under the right tuple type while leaving the (indexed)
+// column operand untouched, so its index is still matched.
 //
-// Deliberately NARROW — only INT/LONG constant vs DOUBLE non-constant. INT↔LONG
-// share tuple encoding (no fix needed; wrapping would needlessly do work), and
-// the col-vs-col / DOUBLE-const-vs-INT-col / FLOAT cases need the broader
-// MaximumType+promotion design (TODO.md "cross-type numeric SARG"). The residual
+// The FLOAT arm widens the ALREADY-ROUNDED binary32 value rather than the
+// original literal: `d = CAST(0.1 AS FLOAT)` must compare d against the binary32
+// value of 0.1 promoted back to binary64, which is NOT binary64 0.1. Rounding
+// happens in CastValue; this only re-declares the type so the value packs under
+// the column's wire code.
+//
+// Deliberately NARROW — only a constant vs a DOUBLE non-constant. INT↔LONG share
+// tuple encoding (no fix needed; wrapping would needlessly do work), and the
+// col-vs-col cases go through promoteColumnColumnNumeric. The residual
 // (non-index) path already coerces via cmpAny, so this only changes the value's
 // declared type, never the matched rows for non-index cases.
-func widenIntConstAgainstDouble(op predicates.ComparisonType, left, right values.Value) (values.Value, values.Value) {
+func widenConstAgainstDoubleColumn(op predicates.ComparisonType, left, right values.Value) (values.Value, values.Value) {
 	switch op {
 	case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
 		predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
@@ -602,8 +608,9 @@ func widenIntConstAgainstDouble(op predicates.ComparisonType, left, right values
 	if ct == nil || colt == nil {
 		return left, right
 	}
-	isIntConst := ct.Code() == values.TypeCodeInt || ct.Code() == values.TypeCodeLong
-	if !isIntConst || colt.Code() != values.TypeCodeDouble {
+	narrowerThanDouble := ct.Code() == values.TypeCodeInt || ct.Code() == values.TypeCodeLong ||
+		ct.Code() == values.TypeCodeFloat
+	if !narrowerThanDouble || colt.Code() != values.TypeCodeDouble {
 		return left, right
 	}
 	cv, ok := values.EvaluateConstant(constV)
@@ -618,14 +625,20 @@ func widenIntConstAgainstDouble(op predicates.ComparisonType, left, right values
 		f = float64(n)
 	case int:
 		f = float64(n)
+	case float64:
+		// A FLOAT-typed constant already carries binary32 precision (CastValue's
+		// FLOAT arm rounded it); widening to binary64 is exact and lossless.
+		f = n
+	case float32:
+		f = float64(n)
 	default:
 		return left, right
 	}
 	// Typ: colt (the COLUMN's actual DOUBLE type) is load-bearing — do NOT change it
-	// to a generic values.TypeFloat/TypeDouble. The SARG packing path keys on the
-	// declared column type to choose the FDB tuple type code; using anything but the
-	// column's own type descriptor would encode the value with a different wire type
-	// and silently miss every index entry (the bug this function fixes). @claude review.
+	// to a generic float/double type var. The SARG packing path keys on the declared
+	// column type to choose the FDB tuple type code; using anything but the column's
+	// own type descriptor would encode the value with a different wire type and
+	// silently miss every index entry (the bug this function fixes).
 	coerced := &values.ConstantValue{Value: f, Typ: colt}
 	if lc {
 		return coerced, right
@@ -649,7 +662,7 @@ func mirrorOp(op predicates.ComparisonType) predicates.ComparisonType {
 	return op
 }
 
-// narrowFloatConstAgainstInt is widenIntConstAgainstDouble's INVERSE:
+// narrowFloatConstAgainstInt is widenConstAgainstDoubleColumn's INVERSE:
 // a DOUBLE/FLOAT compile-time CONSTANT compared against a non-constant
 // INT/LONG-typed value (an integer column) packs as a tuple-double
 // against int-encoded index/PK entries — a different tuple type code,
@@ -781,7 +794,7 @@ func narrowFloatConstAgainstInt(op predicates.ComparisonType, left, right values
 		}
 	}
 	// Typ: colt (the COLUMN's integer type) is load-bearing for the SARG
-	// packing path, exactly as in widenIntConstAgainstDouble.
+	// packing path, exactly as in widenConstAgainstDoubleColumn.
 	coerced := &values.ConstantValue{Value: n, Typ: colt}
 	if lc {
 		return op, coerced, right
@@ -809,7 +822,7 @@ func constAsFloat64(cv any) (float64, bool) {
 }
 
 // narrowConstAgainstFloatColumn fixes the cross-WIDTH sibling of
-// widenIntConstAgainstDouble/narrowFloatConstAgainstInt: an INT/LONG/DOUBLE
+// widenConstAgainstDoubleColumn/narrowFloatConstAgainstInt: an INT/LONG/DOUBLE
 // compile-time CONSTANT compared against a non-constant FLOAT (32-bit)
 // value (an indexed FLOAT column) packs the wrong FDB tuple type code
 // (0x21 double, or a bare int code) against the column's 0x20 single-float
@@ -819,7 +832,7 @@ func constAsFloat64(cv any) (float64, bool) {
 // column returned ZERO rows for every comparison before this: FLOAT was
 // the only numeric column type NO widen/narrow rule covered at all.
 //
-// Unlike widenIntConstAgainstDouble (int→double is always exact for any
+// Unlike widenConstAgainstDoubleColumn (int→double is always exact for any
 // realistic int64) float32 has a 24-bit mantissa, so an ordinary integer
 // beyond 2^24 — or almost any non-terminating-binary fraction — is NOT
 // exactly representable. This function checks exactness explicitly
@@ -1122,7 +1135,7 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	if left == nil {
 		return nil, fmt.Errorf("expr.ResolveIn: LHS is nil")
 	}
-	// Same cross-type index-SARG fix as widenIntConstAgainstDouble, for IN: when
+	// Same cross-type index-SARG fix as widenConstAgainstDoubleColumn, for IN: when
 	// the LHS is a DOUBLE column, widen integer list elements to float64 so each
 	// IN sub-probe packs the right tuple type (else `d IN (5,7)` over a DOUBLE
 	// index misses everything — int and double tuple elements don't interleave).

@@ -401,7 +401,7 @@ func sargFloatTag(v float64) string {
 //   - bare INTEGER-literal comparisons (`f = 1`, `f > 0`, …): the exact
 //     cross-WIDTH shape that matched ZERO rows for EVERY comparison against
 //     an indexed FLOAT column before narrowConstAgainstFloatColumn /
-//     widenIntConstAgainstDouble — a same-typed float literal alone can
+//     widenConstAgainstDoubleColumn — a same-typed float literal alone can
 //     never reach that promotion code path at all.
 //   - the float32-inexact boundary (0.1) at every ordered comparison: 0.1
 //     has no exact float32 representation, so a FLOAT column's stored value
@@ -761,7 +761,7 @@ func TestFDB_SargabilityDifferentialOracle(t *testing.T) {
 
 	// Nullable indexed DOUBLE / FLOAT columns: real boundary constants plus
 	// bare-INTEGER-literal comparisons — the cross-width shape
-	// (narrowConstAgainstFloatColumn / widenIntConstAgainstDouble) that
+	// (narrowConstAgainstFloatColumn / widenConstAgainstDoubleColumn) that
 	// matched ZERO rows for every comparison against an indexed FLOAT
 	// column, and returned empty for every DOUBLE comparison whose constant
 	// arrived as an int, before that fix.

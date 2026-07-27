@@ -6303,6 +6303,34 @@ place; a reminder that a stale gate note outlives the code it describes if nobod
    The same `coerceTupleElement` packer fix from (1) makes the FLOAT variant of this case work at the wire
    boundary too.
 
+**FIXED (2026-07-27) — a FIFTH category this item claimed did not exist.** The header above said "all four
+categories"; a fifth was open the whole time, and the reason nobody saw it is that FLOAT and DOUBLE were not
+actually distinguishable in the plan. `primitiveTypeToValueType` (`expr/walk.go`) mapped BOTH `AS FLOAT` and
+`AS DOUBLE` onto `values.TypeFloat`, which is an alias for `NullableDouble` — a name that says FLOAT and IS
+DOUBLE. So `CAST(x AS FLOAT)` built a DOUBLE-target cast, and `CastValue`'s FLOAT arm (shared with DOUBLE in
+both implementations, `values.CastValue` and `functions.CastValue`) never rounded, never rejected NaN/Infinite
+and never range-checked — all three of which Java's `DOUBLE_TO_FLOAT` does (`CastValue.java:166-175`), with
+`STRING_TO_FLOAT` likewise parsing at binary32.
+
+The user-visible result was wrong rows in BOTH directions from a single cast: `d = CAST(0.1 AS FLOAT)` MATCHED
+a binary64 0.1 that the binary32 value is not equal to, while `f = CAST(0.1 AS FLOAT)` MISSED the binary32 row
+that it IS equal to. Splitting the walker targets and the CAST arms then exposed the genuine fifth SARG
+category — a FLOAT-typed constant probing a DOUBLE column packs tuple code 0x20 against 0x21 entries, so
+`d = CAST(1.5 AS FLOAT)` returned nothing and `d > CAST(1.0 AS FLOAT)` returned every row (a 0x20 bound sorts
+below every double). Closed by extending the constant-widening rule to FLOAT constants and renaming it
+`widenConstAgainstDoubleColumn`, since it is no longer int-only.
+
+Pinned by `cross_width_float_sarg_probe_test.go` (21 shapes, with EXPLAIN assertions so a silent fall back to a
+residual filter cannot hide a SARG regression) and `cast_float_test.go` (the `functions.CastValue` copy is
+reachable only from the system-table map-path evaluator, so it needs a direct unit test — a query-routed test
+exercises the other implementation and passes regardless). All four fixes mutation-verified independently.
+
+**The dimension that was unprobed:** every existing float test used values like `1.5`, exact in both binary32
+and binary64, which cannot distinguish a cast that rounds from one that does nothing. `0.1` is the discriminator
+and nothing used it. Two tests actively pinned the bug — `TestWalkExpression_CastFloat` asserted the SAME target
+for `AS FLOAT` and `AS DOUBLE` (encoding the conflation as the expectation), and `TestCastValue/string_to_FLOAT`
+asserted the unrounded value.
+
 **A real second bug DFS'd in the same pass:** wrapping an `AggregateValue` operand in `PromoteValue` (e.g.
 `HAVING SUM(int_col) > (SELECT AVG(v) FROM t)`, an inherent Long-vs-Double comparison since AVG is always
 DOUBLE) broke `TestFDB_HavingSubqueryProbe` — `rewriteAggregateValuesInTree`

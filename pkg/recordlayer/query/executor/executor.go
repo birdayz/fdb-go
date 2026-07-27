@@ -692,7 +692,7 @@ func toFloat32Scalar(v any) (float32, bool) {
 //     float64 comparand would pack against a FLOAT column's index entries
 //     under the wrong type code and match nothing (or, for an inequality
 //     bound, degrade to all-or-nothing — the same class of bug
-//     widenIntConstAgainstDouble fixed for int-vs-DOUBLE). This is the
+//     widenConstAgainstDoubleColumn fixed for int-vs-DOUBLE). This is the
 //     mirror image of tupleElementToRowValue's float32→float64 upcast on
 //     the READ side; this is the WRITE-a-probe-key side, downcasting back
 //     down to the wire's actual type code. Covers both a bare re-typed

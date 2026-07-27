@@ -3698,12 +3698,58 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		case int64:
 			return time.UnixMilli(val).UTC().Format(timestampLayout), nil
 		}
-	case TypeCodeFloat, TypeCodeDouble:
-		// CAST … AS FLOAT — accept float64/float32 verbatim; promote
+	case TypeCodeFloat:
+		// FLOAT is genuinely binary32 here — a FLOAT column's index entries
+		// pack as tuple code 0x20 (single) — so a cast TO it must ROUND to
+		// binary32, exactly like Java's DOUBLE_TO_FLOAT (`value.floatValue()`),
+		// INT/LONG_TO_FLOAT (`Float.valueOf`) and STRING_TO_FLOAT
+		// (`Float.parseFloat`) — CastValue.java:126-205. Sharing this arm with
+		// DOUBLE returned the operand at binary64 precision and made the cast a
+		// no-op, which is wrong in BOTH directions on a value binary32 cannot
+		// hold: `d = CAST(0.1 AS FLOAT)` matched a DOUBLE 0.1 that the rounded
+		// constant is not equal to, and `f = CAST(0.1 AS FLOAT)` missed the
+		// FLOAT row that it IS equal to.
+		//
+		// The result stays a float64 CARRYING binary32 precision, the row
+		// domain every FLOAT-typed value lives in (see tupleElementToRowValue);
+		// coerceTupleElement narrows it to a real float32 at the tuple-probe
+		// boundary, where the wire type code is what matters.
+		switch val := v.(type) {
+		case float64:
+			if math.IsNaN(val) || math.IsInf(val, 0) {
+				return nil, &InvalidCastError{Message: "Cannot cast NaN or Infinite to FLOAT"}
+			}
+			if val > math.MaxFloat32 || val < -math.MaxFloat32 {
+				return nil, &InvalidCastError{
+					Message: fmt.Sprintf("Value out of range for FLOAT: %s", javaFloatString(val, 64)),
+				}
+			}
+			return float64(float32(val)), nil
+		case float32:
+			return float64(val), nil
+		case int64:
+			return float64(float32(val)), nil
+		case string:
+			// bitSize 32: ParseFloat rounds to binary32 and reports range
+			// failures against the binary32 limits, matching Float.parseFloat.
+			f, err := strconv.ParseFloat(trimJavaWhitespace(val), 32)
+			if err != nil {
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to FLOAT: %s", val, err)}
+			}
+			return f, nil
+		case bool:
+			if val {
+				return float64(1), nil
+			}
+			return float64(0), nil
+		}
+	case TypeCodeDouble:
+		// CAST … AS DOUBLE — accept float64/float32 verbatim; promote
 		// integral types to float64. Without this case, the walker's
-		// shiny new CastValue{TypeFloat} path silently returns nil
-		// from Evaluate and constant-fold of `CAST(5 AS FLOAT) = 3.14`
-		// gets UNKNOWN instead of FALSE.
+		// CastValue{TypeDouble} path silently returns nil from Evaluate and
+		// constant-fold of `CAST(5 AS DOUBLE) = 3.14` gets UNKNOWN instead of
+		// FALSE. Every conversion here WIDENS, so unlike FLOAT above there is
+		// no rounding step and no range that can overflow.
 		switch val := v.(type) {
 		case float64:
 			return val, nil

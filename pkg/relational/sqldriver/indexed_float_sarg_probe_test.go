@@ -9,7 +9,7 @@ package sqldriver_test
 // wasn't the issue. Non-indexed FLOAT and indexed DOUBLE were both fine;
 // only the indexed FLOAT(32) SARG path was cross-type-broken. Fixed by
 // expr.narrowConstAgainstFloatColumn (the FLOAT-column analogue of
-// widenIntConstAgainstDouble/narrowFloatConstAgainstInt) plus the
+// widenConstAgainstDoubleColumn/narrowFloatConstAgainstInt) plus the
 // executor's coerceTupleElement, which downcasts the wire-packed value to
 // a genuine Go float32 at the tuple-packing boundary.
 //
@@ -124,7 +124,7 @@ func TestFDB_IndexedFloatSargProbe(t *testing.T) {
 	ck("indexed_float_range_double_lit", "SELECT id FROM withidx WHERE f > 1.0", []int64{1, 2})
 	ck("indexed_float_reversed_eq", "SELECT id FROM withidx WHERE 1.5 = f", []int64{1})
 	// int-literal widen (exact — 1 fits float32 trivially): mirrors
-	// widenIntConstAgainstDouble's int-vs-DOUBLE fix, one width narrower.
+	// widenConstAgainstDoubleColumn's int-vs-DOUBLE fix, one width narrower.
 	ck("indexed_float_eq_int_lit", "SELECT id FROM withidx WHERE f = 1", []int64{4})
 	ck("indexed_float_in_list", "SELECT id FROM withidx WHERE f IN (1.5, 2.5)", []int64{1, 2})
 	ck("indexed_float_le", "SELECT id FROM withidx WHERE f <= 1.0", []int64{3, 4})

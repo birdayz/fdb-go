@@ -110,6 +110,7 @@ go_test(
         "cross_leg_duplicate_column_box_unnest_fdb_test.go",
         "cross_table_predicate_probe_test.go",
         "cross_type_join_probe_test.go",
+        "cross_width_float_sarg_probe_test.go",
         "crossjoin_projection_probe_test.go",
         "crosstype_const_sarg_fdb_test.go",
         "cte_alias_propagation_probe_test.go",

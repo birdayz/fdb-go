@@ -94,7 +94,42 @@ func CastValue(v any, typeName string) (any, error) {
 			}
 			return int64(0), nil
 		}
-	case strings.HasPrefix(typeName, "FLOAT"), strings.HasPrefix(typeName, "DOUBLE"), strings.HasPrefix(typeName, "DECIMAL"), strings.HasPrefix(typeName, "NUMERIC"):
+	case strings.HasPrefix(typeName, "FLOAT"):
+		// FLOAT is binary32 (a FLOAT column's index entries pack as tuple code
+		// 0x20), so a cast TO it must ROUND, matching Java's DOUBLE_TO_FLOAT
+		// (`value.floatValue()`), INT/LONG_TO_FLOAT (`Float.valueOf`) and
+		// STRING_TO_FLOAT (`Float.parseFloat`) — CastValue.java:126-205.
+		// Sharing the DOUBLE arm below made the cast a no-op, wrong in BOTH
+		// directions on a value binary32 cannot represent: it matched DOUBLE
+		// rows the rounded constant differs from, and missed the FLOAT rows it
+		// equals. Kept bit-identical to values.CastValue's FLOAT arm — the two
+		// CAST implementations must agree or a constant fold and its runtime
+		// disagree about the same expression.
+		switch n := v.(type) {
+		case float64:
+			if math.IsNaN(n) || math.IsInf(n, 0) {
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+					"Invalid cast operation Cannot cast NaN or Infinite to FLOAT")
+			}
+			if n > math.MaxFloat32 || n < -math.MaxFloat32 {
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+					"Invalid cast operation Value out of range for FLOAT: %s", javaDoubleToString(n))
+			}
+			return float64(float32(n)), nil
+		case float32:
+			return float64(n), nil
+		case int64:
+			return float64(float32(n)), nil
+		case string:
+			// bitSize 32: ParseFloat rounds to binary32 and range-checks
+			// against the binary32 limits, like Float.parseFloat.
+			f, err := strconv.ParseFloat(strings.TrimSpace(n), 32)
+			if err != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to float: %v", n, err)
+			}
+			return f, nil
+		}
+	case strings.HasPrefix(typeName, "DOUBLE"), strings.HasPrefix(typeName, "DECIMAL"), strings.HasPrefix(typeName, "NUMERIC"):
 		switch n := v.(type) {
 		case float64:
 			return n, nil

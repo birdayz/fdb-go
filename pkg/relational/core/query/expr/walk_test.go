@@ -1450,10 +1450,21 @@ func TestWalkExpression_CastFloat(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	for _, sql := range []string{"CAST(name AS FLOAT)", "CAST(name AS DOUBLE)"} {
-		t.Run(sql, func(t *testing.T) {
+	// FLOAT and DOUBLE must resolve to DISTINCT targets. Asserting one shared
+	// target for both is how the walker came to map them onto a single
+	// DOUBLE-coded type: CastValue's binary32 rounding is selected by the
+	// target, so a FLOAT cast that carries a DOUBLE target never rounds, and
+	// this test passed the whole time it was broken.
+	for _, tc := range []struct {
+		sql  string
+		want values.Type
+	}{
+		{"CAST(name AS FLOAT)", values.NullableFloat},
+		{"CAST(name AS DOUBLE)", values.NullableDouble},
+	} {
+		t.Run(tc.sql, func(t *testing.T) {
 			t.Parallel()
-			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+tc.sql)
 			v, err := r.WalkExpression(ctx)
 			if err != nil {
 				t.Fatalf("walk: %v", err)
@@ -1462,8 +1473,8 @@ func TestWalkExpression_CastFloat(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected *CastValue, got %T", v)
 			}
-			if cv.Target != values.TypeFloat {
-				t.Fatalf("Target: got %v, want TypeFloat", cv.Target)
+			if cv.Target.Code() != tc.want.Code() {
+				t.Fatalf("Target: got %v, want %v", cv.Target, tc.want)
 			}
 		})
 	}
