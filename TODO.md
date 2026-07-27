@@ -2063,7 +2063,35 @@ closed rather than silently alter rows or output schema.
   surviving single probe does not get the zero-widening. That dedup is
   semantically defensible (`v IN (-0.0,0.0)` ≡ `v = 0` under IEEE); the defect
   is that the collapsed probe seeks only one of the two stored keys.
-  **NEW pre-existing wrong-rows bug found while measuring this — fix FIRST, it
+  **SOLUTION IDENTIFIED 2026-07-28, after TWO failed attempts. Do not retry
+  either of them.** The correct fix is: keep the IN-list dedup as VALUE dedup
+  (it is semantically right — `v IN (-0.0, 0.0)` genuinely is one set member
+  under IEEE), and give the surviving single-element probe the same zero-widening
+  a plain `v = 0` already gets. That is correct on BOTH paths simultaneously:
+  the residual/filter path evaluates one predicate under IEEE and returns both
+  rows with no duplicates, and the index path issues one probe widened across
+  the two adjacent keys. The widening currently does not reach the IN-derived
+  probe, which is the whole defect.
+  **Attempt 1 — rewrite `floatCol = <zero>` to `floatCol IN (-0.0, +0.0)`:
+  REVERTED.** Fixed the composite case but regressed the terminal case from
+  `[1 3]` to `[1]`, because the IN dedup collapsed the pair back to one probe.
+  **Attempt 2 — make the IN dedup compare floats by BIT PATTERN so both
+  survive: REVERTED (commit 36b7ad7fc, reverted by 6e8acdcf3).** It fixed the
+  index path and broke the filter path: `IN` is executed as a JOIN over an
+  exploded element list, emitting one row per matching element, which is sound
+  only when the elements are MUTUALLY EXCLUSIVE under the comparison. `-0.0` and
+  `+0.0` are IEEE-EQUAL, so on an unindexed column every zero row matched both
+  probes — `v IN (-0.0, 0.0)` returned `[1 3 1 3]`, each row twice. The test
+  that "verified" it used an indexed column in every case, where key-exact
+  probes hide the duplication. Mutation-checking it proved only that it changed
+  the indexed path.
+  **Therefore the IN-rewrite direction is DEAD for CQ-28**, independently of the
+  dedup: it manufactures exactly the IEEE-equal element pair that makes
+  IN-as-join unsound. Any future attempt must not route a zero equality through
+  IN.
+  **Pre-existing bug found while measuring, still OPEN and independent of
+
+
   blocks CQ-28 and is user-visible on its own.** Over rows
   `(-0.0,5) (5.0,5) (0.0,9)` with index `(v,w)`:
 
