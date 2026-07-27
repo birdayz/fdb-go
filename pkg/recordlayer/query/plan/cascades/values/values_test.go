@@ -356,29 +356,29 @@ func TestCastValue(t *testing.T) {
 
 	// Float source casts.
 	// int → float
-	intToFloat := NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeFloat)
+	intToFloat := NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, NullableDouble)
 	got, errEv9 := intToFloat.Evaluate(nil)
 	require.NoError(t, errEv9)
 	if got != float64(5) {
 		t.Fatalf("int→float: got %v", got)
 	}
 	// float → int (Java Math.round: floor(x+0.5))
-	floatToInt := NewCastValue(&ConstantValue{Value: float64(3.9), Typ: TypeFloat}, TypeInt)
+	floatToInt := NewCastValue(&ConstantValue{Value: float64(3.9), Typ: NullableDouble}, TypeInt)
 	got, errEv10 := floatToInt.Evaluate(nil)
 	require.NoError(t, errEv10)
 	if got != int64(4) {
 		t.Fatalf("3.9→int: got %v, want 4", got)
 	}
-	floatToIntNeg := NewCastValue(&ConstantValue{Value: float64(-3.9), Typ: TypeFloat}, TypeInt)
+	floatToIntNeg := NewCastValue(&ConstantValue{Value: float64(-3.9), Typ: NullableDouble}, TypeInt)
 	got, errEv11 := floatToIntNeg.Evaluate(nil)
 	require.NoError(t, errEv11)
 	if got != int64(-4) {
 		t.Fatalf("-3.9→int: got %v, want -4", got)
 	}
-	// DOUBLE/FLOAT → bool REJECT (no Java cast pair — TypeFloat is the
+	// DOUBLE/FLOAT → bool REJECT (no Java cast pair — NullableDouble is the
 	// DOUBLE alias); only an UNKNOWN-typed float child keeps the legacy
 	// conversion for internal untyped expressions.
-	floatToBool0 := NewCastValue(&ConstantValue{Value: float64(0), Typ: TypeFloat}, TypeBool)
+	floatToBool0 := NewCastValue(&ConstantValue{Value: float64(0), Typ: NullableDouble}, TypeBool)
 	if _, err := floatToBool0.Evaluate(nil); err == nil {
 		t.Fatal("DOUBLE→BOOLEAN must reject (no Java cast pair)")
 	}
@@ -389,14 +389,14 @@ func TestCastValue(t *testing.T) {
 		t.Fatalf("unknown-typed 0.5→bool: got %v", got)
 	}
 	// float → string
-	floatToStr := NewCastValue(&ConstantValue{Value: float64(3.14), Typ: TypeFloat}, TypeString)
+	floatToStr := NewCastValue(&ConstantValue{Value: float64(3.14), Typ: NullableDouble}, TypeString)
 	got, errEv14 := floatToStr.Evaluate(nil)
 	require.NoError(t, errEv14)
 	if got != "3.14" {
 		t.Fatalf("3.14→string: got %v", got)
 	}
 	// float → float (verbatim)
-	floatToFloat := NewCastValue(&ConstantValue{Value: float64(2.5), Typ: TypeFloat}, TypeFloat)
+	floatToFloat := NewCastValue(&ConstantValue{Value: float64(2.5), Typ: NullableDouble}, NullableDouble)
 	got, errEv15 := floatToFloat.Evaluate(nil)
 	require.NoError(t, errEv15)
 	if got != float64(2.5) {
@@ -411,7 +411,7 @@ func TestCastValue(t *testing.T) {
 		{"+Inf→int", math.Inf(1)},
 		{"-Inf→int", math.Inf(-1)},
 	} {
-		cv := NewCastValue(&ConstantValue{Value: tc.val, Typ: TypeFloat}, TypeInt)
+		cv := NewCastValue(&ConstantValue{Value: tc.val, Typ: NullableDouble}, TypeInt)
 		if v, err := cv.Evaluate(nil); v != nil || err == nil {
 			t.Fatalf("%s: got (%v, %v), want (nil, InvalidCastError)", tc.name, v, err)
 		} else {
@@ -455,13 +455,13 @@ func TestCastValue(t *testing.T) {
 	}
 	// bool → float. Mirrors runtime's CAST(b AS INT) AS FLOAT chain
 	// in one step (TRUE→1.0, FALSE→0.0).
-	boolToFloatT := NewCastValue(NewBooleanValue(true), TypeFloat)
+	boolToFloatT := NewCastValue(NewBooleanValue(true), NullableDouble)
 	got, errEv20 := boolToFloatT.Evaluate(nil)
 	require.NoError(t, errEv20)
 	if got != float64(1) {
 		t.Fatalf("TRUE→float: got %v, want 1", got)
 	}
-	boolToFloatF := NewCastValue(NewBooleanValue(false), TypeFloat)
+	boolToFloatF := NewCastValue(NewBooleanValue(false), NullableDouble)
 	got, errEv21 := boolToFloatF.Evaluate(nil)
 	require.NoError(t, errEv21)
 	if got != float64(0) {
@@ -1177,7 +1177,7 @@ func TestExplainTypeName(t *testing.T) {
 		// FLOAT and DOUBLE render DISTINCTLY — dedupSortKeys keys sort-key
 		// identity on this text, so collapsing them lets a width-differing
 		// second ORDER BY key read as a duplicate. This case previously used
-		// `TypeFloat`, which is an ALIAS for NullableDouble, and asserted
+		// `NullableDouble`, which is an ALIAS for NullableDouble, and asserted
 		// "FLOAT" — so it never tested a FLOAT type at all and pinned the
 		// collapse as the expectation.
 		{NullableFloat, "FLOAT"},

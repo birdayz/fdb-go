@@ -71,7 +71,8 @@ const (
 // Type() returns the rich Type directly. The names below remain
 // as Type-typed vars so existing call sites (`Typ: values.TypeInt`)
 // keep working — the value's Go type changes (Type instead of int),
-// the constant name doesn't.
+// the constant name doesn't. TypeFloat is the one member NOT kept:
+// see the note below the block.
 //
 // Legacy bridge retirement: RFC-025.
 var (
@@ -90,11 +91,16 @@ var (
 	// NotNullBoolean (literals are NOT NULL); compare via
 	// `.Code() != TypeCodeBoolean` when nullability is irrelevant.
 	TypeBool Type = NullableBoolean
-	// TypeFloat is the legacy name for the package's default float
-	// width — bridged to DOUBLE (matches Java Record Layer's
-	// float64 representation).
-	TypeFloat Type = NullableDouble
 )
+
+// There is deliberately NO legacy float alias here. `TypeFloat` used to exist
+// as a bridge name for NullableDouble — a name that said FLOAT and WAS DOUBLE —
+// and it caused four separate defects before it was removed: the walker routed
+// `CAST(x AS FLOAT)` through it so the cast never rounded to binary32, and
+// three tests read as FLOAT coverage while asserting DOUBLE behaviour, one of
+// them pinning the FLOAT/DOUBLE explain collapse as the expectation. Every use
+// meant DOUBLE and now says so. Use NullableFloat for binary32 and
+// NullableDouble for binary64; nothing should ever name one and mean the other.
 
 // Value is the root of the Value hierarchy.
 // Concrete Values implement Children / Type / Name / Evaluate;

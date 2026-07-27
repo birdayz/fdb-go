@@ -1156,7 +1156,7 @@ func TestComparisonPredicate_FloatComparisons(t *testing.T) {
 	t.Parallel()
 	// "price" carries its plan-time ordinal (sole column → slot 0).
 	pred := NewComparisonPredicate(
-		pbake("price", values.TypeFloat, "price"),
+		pbake("price", values.NullableDouble, "price"),
 		Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(float64(3.14))},
 	)
 	cases := []struct {

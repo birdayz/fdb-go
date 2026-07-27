@@ -370,7 +370,7 @@ func TestSimplifyValue_FoldsExtendedScalars(t *testing.T) {
 		{
 			"FLOOR",
 			NewScalarFunctionValue("FLOOR", TypeUnknown,
-				&ConstantValue{Value: float64(3.9), Typ: TypeFloat}),
+				&ConstantValue{Value: float64(3.9), Typ: NullableDouble}),
 			int64(3),
 		},
 		{

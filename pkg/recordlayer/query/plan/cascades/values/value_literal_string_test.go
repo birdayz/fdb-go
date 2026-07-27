@@ -47,17 +47,49 @@ func TestExplainValue_NarrowIntTypes(t *testing.T) {
 }
 
 // TestExplainValue_FloatTypes pins float32 + float64 rendering.
-// strconv.FormatFloat with 'g'/-1 and bitSize 32 vs 64 produces
-// subtly different shortest-round-trip output.
+// strconv.FormatFloat with 'g'/-1 and bitSize 32 vs 64 produces different
+// shortest-round-trip output, and the renderer dispatches on the RUNTIME Go
+// type to pick the width.
+//
+// The discriminating value is load-bearing. This used to test only 1.5 and
+// 2.5, which are exactly representable in binary32 AND binary64 and therefore
+// render identically at either bitSize — so the test could not detect the
+// difference its own comment claimed to pin, and would have stayed green if
+// both arms had used bitSize 64. 0.1 is not representable in binary32, so the
+// shortest round-trip of the widened value is a completely different string.
 func TestExplainValue_FloatTypes(t *testing.T) {
 	t.Parallel()
-	got := ExplainValue(&ConstantValue{Value: float64(1.5), Typ: TypeFloat})
-	if got != "1.5" {
-		t.Fatalf("float64 1.5: got %q", got)
-	}
-	got = ExplainValue(&ConstantValue{Value: float32(2.5), Typ: TypeFloat})
-	if got != "2.5" {
-		t.Fatalf("float32 2.5: got %q", got)
+	for _, tc := range []struct {
+		name string
+		v    any
+		want string
+	}{
+		// Exact in both widths — these cannot tell the arms apart on their own.
+		{"float64 exact", float64(1.5), "1.5"},
+		{"float32 exact", float32(2.5), "2.5"},
+		// NOT representable in binary32. Rendered at bitSize 32 the shortest
+		// round-trip is "0.1"; rendered at bitSize 64 the same bits are
+		// 0.10000000149011612. This is the case that actually pins the width.
+		{"float32 inexact", float32(0.1), "0.1"},
+		{"float64 inexact", float64(0.1), "0.1"},
+		// The widened binary32 value as a genuine float64 must render at full
+		// binary64 precision — the mirror of the case above, and what a
+		// float32 arm wrongly using bitSize 64 would produce.
+		{"widened binary32 as float64", float64(float32(0.1)), "0.10000000149011612"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// Typ is deliberately the type MATCHING the value's width; the
+			// renderer keys on the runtime Go type, but a ConstantValue whose
+			// declared type contradicts its value is a trap for the next reader.
+			typ := Type(NullableDouble)
+			if _, isF32 := tc.v.(float32); isF32 {
+				typ = NullableFloat
+			}
+			if got := ExplainValue(&ConstantValue{Value: tc.v, Typ: typ}); got != tc.want {
+				t.Fatalf("ExplainValue(%v (%T)): got %q, want %q", tc.v, tc.v, got, tc.want)
+			}
+		})
 	}
 }
 

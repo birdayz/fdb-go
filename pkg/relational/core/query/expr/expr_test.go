@@ -211,7 +211,7 @@ func TestResolver_ResolveConstant_Unsupported(t *testing.T) {
 	}
 }
 
-// Float literals now produce ConstantValue{Typ: TypeFloat}.
+// Float literals now produce ConstantValue{Typ: NullableDouble}.
 func TestResolver_ResolveConstant_Float(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
@@ -225,8 +225,8 @@ func TestResolver_ResolveConstant_Float(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", v)
 	}
-	if cv.Typ != values.TypeFloat {
-		t.Fatalf("Typ: got %v, want TypeFloat", cv.Typ)
+	if cv.Typ != values.NullableDouble {
+		t.Fatalf("Typ: got %v, want NullableDouble", cv.Typ)
 	}
 	if cv.Value != float64(3.14) {
 		t.Fatalf("Value: got %v", cv.Value)

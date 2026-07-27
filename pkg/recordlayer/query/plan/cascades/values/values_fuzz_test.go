@@ -85,7 +85,7 @@ func FuzzSimplifyValue_CastChain(f *testing.F) {
 		// Pool of cascades Types the seed CAST evaluator handles.
 		// NewCastValue rejects nil / UnknownType — pick from the
 		// concrete primitive singletons only.
-		pool := []Type{TypeInt, TypeString, TypeBool, TypeFloat}
+		pool := []Type{TypeInt, TypeString, TypeBool, NullableDouble}
 		t1 := pool[int(t1raw)%len(pool)]
 		t2 := pool[int(t2raw)%len(pool)]
 

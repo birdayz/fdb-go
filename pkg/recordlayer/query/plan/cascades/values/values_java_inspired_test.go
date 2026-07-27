@@ -371,7 +371,7 @@ func TestCastValue_Identity_Parameterised(t *testing.T) {
 		{"int → int", int64(42), TypeInt},
 		{"string → string", "hello", TypeString},
 		{"bool → bool", true, TypeBool},
-		{"float → float", float64(3.14), TypeFloat},
+		{"float → float", float64(3.14), NullableDouble},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -392,7 +392,7 @@ func TestCastValue_Identity_Parameterised(t *testing.T) {
 // nullPropagationTest and SQL §6.13 General Rule 1.
 func TestCastValue_NullPropagation(t *testing.T) {
 	t.Parallel()
-	for _, target := range []Type{TypeInt, TypeString, TypeBool, TypeFloat} {
+	for _, target := range []Type{TypeInt, TypeString, TypeBool, NullableDouble} {
 		target := target
 		t.Run(target.Code().String(), func(t *testing.T) {
 			t.Parallel()

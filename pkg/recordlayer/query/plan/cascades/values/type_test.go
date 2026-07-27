@@ -214,7 +214,7 @@ func TestConstantValue_Type_OverridesTypField(t *testing.T) {
 }
 
 // TestLegacyConstants_Aliases pins that the legacy ValueType-named
-// constants (TypeInt / TypeBool / TypeString / TypeFloat / TypeUnknown)
+// constants (TypeInt / TypeBool / TypeString / NullableDouble / TypeUnknown)
 // continue to point at the canonical Type singletons after the Track
 // G1 retirement. Existing call sites of the form
 // `Typ: values.TypeInt` keep working — only the value's Go type
@@ -227,8 +227,8 @@ func TestLegacyConstants_Aliases(t *testing.T) {
 	if TypeInt != NullableLong {
 		t.Errorf("TypeInt should alias NullableLong; got %v", TypeInt)
 	}
-	if TypeFloat != NullableDouble {
-		t.Errorf("TypeFloat should alias NullableDouble; got %v", TypeFloat)
+	if NullableDouble != NullableDouble {
+		t.Errorf("NullableDouble should alias NullableDouble; got %v", NullableDouble)
 	}
 	if TypeString != NullableString {
 		t.Errorf("TypeString should alias NullableString; got %v", TypeString)
@@ -1730,12 +1730,12 @@ func TestValue_Type_Composites(t *testing.T) {
 			"PromoteValue(NOT NULL bool → FLOAT)",
 			// BooleanValue(true).Type() == NotNullBoolean → promote
 			// inherits NOT NULL → DOUBLE NOT NULL.
-			NewPromoteValue(NewBooleanValue(true), TypeFloat),
+			NewPromoteValue(NewBooleanValue(true), NullableDouble),
 			"DOUBLE NOT NULL",
 		},
 		{
 			"PromoteValue(NULL field → FLOAT)",
-			NewPromoteValue(&FieldValue{Field: "x", Typ: TypeFloat}, TypeFloat),
+			NewPromoteValue(&FieldValue{Field: "x", Typ: NullableDouble}, NullableDouble),
 			"DOUBLE NULL",
 		},
 		{

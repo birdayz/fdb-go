@@ -4811,7 +4811,7 @@ func TestAggregateContinuation_FloatMinMax(t *testing.T) {
 	t.Parallel()
 
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("price", values.TypeFloat)},
+		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("price", values.NullableDouble)},
 	}
 	gs := &groupState{
 		keyVals: []any{"x"},
@@ -4902,7 +4902,7 @@ func TestAggregateContinuation_TypesPreserved_F5(t *testing.T) {
 	bigInt := int64(1<<60 + 1) // 1152921504606846977 — not representable in float64
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("v", values.TypeInt)},
-		{Function: expressions.AggMax, Operand: values.NewFlatFieldValue("w", values.TypeFloat)},
+		{Function: expressions.AggMax, Operand: values.NewFlatFieldValue("w", values.NullableDouble)},
 	}
 	gs := &groupState{
 		keyVals: []any{[]byte{1, 2}, float64(2.0), bigInt},
