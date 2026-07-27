@@ -108,6 +108,27 @@ func TestFDB_CrossWidthFloatSortKeys(t *testing.T) {
 			}
 		})
 	}
+
+	// Sort-key dedup (dedupSortKeys) keys identity on EXPLAIN text, which is a
+	// rendering, not a semantic key. The reason that is survivable today is
+	// that the SQL layer rejects a literally repeated ORDER BY column BEFORE
+	// the rule can see it — so the rule never gets a chance to collapse two
+	// keys that only LOOK alike. That rejection is load-bearing for the whole
+	// argument and is pinned here: if it is ever relaxed, dedup-by-rendering
+	// becomes reachable and the FLOAT/DOUBLE distinction in explainTypeName
+	// stops being a safety margin and starts being the only thing preventing
+	// a dropped sort key.
+	t.Run("duplicate ORDER BY column is rejected upstream", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT id FROM t ORDER BY d, d")
+		if err == nil {
+			t.Fatal("ORDER BY d, d was accepted — it used to be rejected 42701 before the sort-key " +
+				"dedup rule could see it. Dedup keys on EXPLAIN TEXT, so a rendering that collapses " +
+				"two distinct types can now silently drop a key; re-check dedupSortKeys.")
+		}
+		if !strings.Contains(err.Error(), "42701") {
+			t.Fatalf("ORDER BY d, d = %v, want the 42701 duplicate-column rejection", err)
+		}
+	})
 }
 
 func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {

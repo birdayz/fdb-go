@@ -46,6 +46,84 @@ import (
 	"testing"
 )
 
+// The actual reproducer of the bug the revert fixed, and the shape the
+// single-column test below CANNOT express.
+//
+// Adjacent-only dedup is sound because equal keys are adjacent in index order.
+// With one dedup column the two signed zeros ARE adjacent, so the hash and
+// ordered paths agree even with the canonicalization present — the
+// single-column test catches it only by row count. The disagreement needs a
+// float that is NOT the final dedup column, so a second column can separate
+// two rows the canonicalization then declares equal:
+//
+//	index order:        (-0.0,1)  (-0.0,2)  (+0.0,1)
+//	canonical keys:     ( 0.0,1)  ( 0.0,2)  ( 0.0,1)
+//	                     ^^^^^^^^^^^^^^^^^^^^^^^^^^ equal, but NOT adjacent
+//
+// so the ordered path emits all three while the hash path emits two, and
+// `SELECT DISTINCT d, a` answers differently depending on whether ORDER BY
+// pushed it onto the ordered path. Packing verbatim makes all three rows
+// genuinely distinct and both paths return 3.
+func TestFDB_NegativeZeroDistinctMultiColumnPlanIndependence(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_nzmulti")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nzmulti")
+	// Index leads on the DOUBLE column so the ordered dedup is eligible: the
+	// inner ordering (D, A) prefix-matches the dedup columns (D, A).
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzmulti "+
+		"CREATE TABLE t (id BIGINT NOT NULL, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
+		"CREATE INDEX t_da ON t (d, a)")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzmulti/s WITH TEMPLATE nzmulti")
+	dsn := fmt.Sprintf("fdbsql:///testdb_nzmulti?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d, a) VALUES (1, -0.0, 1), (2, -0.0, 2), (3, 0.0, 1)")
+
+	count := func(t *testing.T, q string) int {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query %q: %v", q, err)
+		}
+		defer rows.Close()
+		n := 0
+		for rows.Next() {
+			n++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows %q: %v", q, err)
+		}
+		return n
+	}
+
+	const unordered = "SELECT DISTINCT d, a FROM t"
+	const ordered = "SELECT DISTINCT d, a FROM t ORDER BY d, a"
+
+	got, gotOrdered := count(t, unordered), count(t, ordered)
+	if got != gotOrdered {
+		t.Fatalf("%q = %d rows but %q = %d — the SAME query must not depend on whether the "+
+			"planner picked the hash or the ordered dedup path", unordered, got, ordered, gotOrdered)
+	}
+	// All three rows are distinct: the two signed zeros are distinct tuple keys,
+	// and rows 1 and 3 differ only in that sign.
+	if got != 3 {
+		t.Fatalf("%q = %d rows, want 3 — (-0.0,1) (-0.0,2) (+0.0,1) are three distinct keys",
+			unordered, got)
+	}
+	// Reversing the column order takes the float out of the leading position,
+	// which changes which path is eligible; the answer must not move.
+	if n := count(t, "SELECT DISTINCT a, d FROM t"); n != 3 {
+		t.Fatalf("SELECT DISTINCT a, d = %d rows, want 3 — column order must not change the answer", n)
+	}
+}
+
 func TestFDB_NegativeZeroDistinctDedupProbe(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
