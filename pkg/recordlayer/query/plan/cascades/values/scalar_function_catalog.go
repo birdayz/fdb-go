@@ -164,6 +164,20 @@ func commonNumericArguments(
 //     ScalarFunctionCall.
 //   - the legacy INFORMATION_SCHEMA map evaluator supports only its
 //     Java-aligned subset and retains separate evaluation semantics.
+//
+// Integer-returning entries below are NullableLong (64-bit), not 32-bit INT,
+// and that is deliberate. SQL nominally types LENGTH/POSITION/DATE_PART as
+// INTEGER, so this looks wrong at a glance — it was previously written as the
+// `TypeInt` alias, which read as INT and WAS NullableLong, hiding the question
+// entirely.
+//
+// Java defines none of these functions (fdb-relational ships a deliberately
+// small scalar subset: COALESCE/GREATEST/LEAST/date-part), so there is no port
+// to match and CockroachDB is the reference for Go-only extensions. CRDB's
+// `length` returns `types.Int`, and CRDB's `types.Int` is Width: 64
+// (pkg/sql/types/types.go — int8 OID; its 32-bit type is a separate `Int4`).
+// So 64-bit is exactly what the reference engine returns, and narrowing these
+// to INT would diverge from it while gaining nothing.
 var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 	// String functions.
 	"UPPER":            scalarCallFunction(scalarFunctionUpper, TypeString),
