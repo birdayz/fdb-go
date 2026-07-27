@@ -213,22 +213,21 @@ func TestConstantValue_Type_OverridesTypField(t *testing.T) {
 	}
 }
 
-// TestLegacyConstants_Aliases pins that the legacy ValueType-named
-// constants (NullableLong / TypeBool / TypeString / NullableDouble / TypeUnknown)
-// continue to point at the canonical Type singletons after the Track
-// G1 retirement. Existing call sites of the form
-// `Typ: values.NullableLong` keep working — only the value's Go type
-// changes (`Type` instead of the retired `ValueType`).
+// TestLegacyConstants_Aliases pins that the surviving legacy ValueType-named
+// constants point at the canonical Type singletons, so existing call sites of
+// the form `Typ: values.TypeString` keep working.
+//
+// Only the members whose NAME MATCHES THEIR VALUE remain. TypeInt (was
+// NullableLong) and TypeFloat (was NullableDouble) are retired, and their arms
+// are DELETED here rather than rewritten: replacing a removed alias with the
+// thing it aliased leaves `NullableLong != NullableLong`, a self-comparison
+// that can never fail and reads like coverage. That tautology is the same
+// shape as the eight tests those two aliases produced — an assertion that is
+// self-consistent and therefore green no matter what the code does.
 func TestLegacyConstants_Aliases(t *testing.T) {
 	t.Parallel()
 	if TypeBool != NullableBoolean {
 		t.Errorf("TypeBool should alias NullableBoolean; got %v", TypeBool)
-	}
-	if NullableLong != NullableLong {
-		t.Errorf("NullableLong should alias NullableLong; got %v", NullableLong)
-	}
-	if NullableDouble != NullableDouble {
-		t.Errorf("NullableDouble should alias NullableDouble; got %v", NullableDouble)
 	}
 	if TypeString != NullableString {
 		t.Errorf("TypeString should alias NullableString; got %v", TypeString)
