@@ -1171,22 +1171,18 @@ func TestExplainTypeName(t *testing.T) {
 		t    Type
 		want string
 	}{
-		{TypeInt, "INT"},
-		{TypeString, "STRING"},
-		{TypeBool, "BOOL"},
-		// FLOAT and DOUBLE render DISTINCTLY — dedupSortKeys keys sort-key
-		// identity on this text, so collapsing them lets a width-differing
-		// second ORDER BY key read as a duplicate. This case previously used
-		// `NullableDouble`, which is an ALIAS for NullableDouble, and asserted
-		// "FLOAT" — so it never tested a FLOAT type at all and pinned the
-		// collapse as the expectation.
+		// Named types only — no legacy alias vars. `TypeInt` is an alias for
+		// NullableLong and `TypeFloat` was one for NullableDouble, so a case
+		// written `{TypeInt, "INT"}` asserts that a LONG renders "INT" while
+		// reading as INT coverage. That is how the DOUBLE/FLOAT collapse was
+		// pinned here as the expectation, and it is why TypeFloat is now gone.
+		{NullableInt, "INT"},
+		{NullableLong, "BIGINT"},
 		{NullableFloat, "FLOAT"},
 		{NotNullFloat, "FLOAT"},
 		{NullableDouble, "DOUBLE"},
-		// INT and LONG stay collapsed on purpose: both are int64 in the row
-		// domain and sort identically, so nothing downstream can tell them
-		// apart.
-		{NullableLong, "INT"},
+		{TypeString, "STRING"},
+		{TypeBool, "BOOL"},
 		{TypeUnknown, "UNKNOWN"},
 		{nil, "UNKNOWN"},
 		{NotNullBytes, "UNKNOWN"}, // out-of-renderer-set default arm

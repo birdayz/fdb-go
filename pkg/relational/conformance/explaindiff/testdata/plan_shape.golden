@@ -2200,22 +2200,22 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#0
 sql:   SELECT CAST(1.6 AS BIGINT) FROM t
-plan:  Project([CAST(1.6 AS INT)], Scan(T))
+plan:  Project([CAST(1.6 AS BIGINT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#1
 sql:   SELECT CAST(-1.5 AS BIGINT) FROM t
-plan:  Project([CAST(-1.5 AS INT)], Scan(T))
+plan:  Project([CAST(-1.5 AS BIGINT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#2
 sql:   SELECT CAST(-2.6 AS BIGINT) FROM t
-plan:  Project([CAST(-2.6 AS INT)], Scan(T))
+plan:  Project([CAST(-2.6 AS BIGINT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#3
 sql:   SELECT CAST(' 42 ' AS BIGINT) FROM t
-plan:  Project([CAST(' 42 ' AS INT)], Scan(T))
+plan:  Project([CAST(' 42 ' AS BIGINT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#4
@@ -2225,17 +2225,17 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#5
 sql:   SELECT CAST(NULL AS BIGINT) FROM t
-plan:  Project([CAST(NULL AS INT)], Scan(T))
+plan:  Project([CAST(NULL AS BIGINT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#6 expect-error=22F3H
 sql:   SELECT CAST(1e20 AS BIGINT) FROM t
-plan:  Project([CAST(1e+20 AS INT)], Scan(T))
+plan:  Project([CAST(1e+20 AS BIGINT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#7 expect-error=22F3H
 sql:   SELECT CAST(-1e20 AS BIGINT) FROM t
-plan:  Project([CAST(-1e+20 AS INT)], Scan(T))
+plan:  Project([CAST(-1e+20 AS BIGINT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#8 expect-error=22F3H
@@ -2245,7 +2245,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#9 expect-error=22F3H
 sql:   SELECT CAST(CAST('not a number' AS DOUBLE) AS BIGINT) FROM t
-plan:  Project([CAST(CAST('not a number' AS DOUBLE) AS INT)], Scan(T))
+plan:  Project([CAST(CAST('not a number' AS DOUBLE) AS BIGINT)], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast.yaml#10 expect-error=22F3H
@@ -2312,12 +2312,12 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast_scalar_java.yaml#4
 sql:   SELECT CAST(str_col AS BIGINT) FROM test_cast WHERE id = 3
-plan:  Project([CAST(STR_COL#2 AS INT)], Scan(TEST_CAST, [=]))
+plan:  Project([CAST(STR_COL#2 AS BIGINT)], Scan(TEST_CAST, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast_scalar_java.yaml#5
 sql:   SELECT CAST(CAST(CAST(num_col AS STRING) AS BIGINT) AS DOUBLE) FROM test_cast WHERE id = 1
-plan:  Project([CAST(CAST(CAST(NUM_COL#1 AS STRING) AS INT) AS DOUBLE)], Scan(TEST_CAST, [=]))
+plan:  Project([CAST(CAST(CAST(NUM_COL#1 AS STRING) AS BIGINT) AS DOUBLE)], Scan(TEST_CAST, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast_scalar_java.yaml#6
@@ -2344,7 +2344,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast_scalar_java.yaml#10 expect-error=22F3H
 sql:   SELECT CAST(str_col AS BIGINT) FROM test_cast WHERE id = 1
-plan:  Project([CAST(STR_COL#2 AS INT)], Scan(TEST_CAST, [=]))
+plan:  Project([CAST(STR_COL#2 AS BIGINT)], Scan(TEST_CAST, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cast_scalar_java.yaml#11 expect-error=22F3H

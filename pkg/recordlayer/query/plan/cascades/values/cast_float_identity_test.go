@@ -28,6 +28,50 @@ func TestExplainRendersFloatAndDoubleDistinctly(t *testing.T) {
 	}
 }
 
+// explainTypeName is consumed as a SEMANTIC IDENTITY KEY — by dedupSortKeys,
+// rule_intersection_merge, and max_match_map's query-value → candidate-value
+// mapping during index selection. Two distinct types rendering to one string is
+// an identity collision in all three, so the rendering must be INJECTIVE.
+//
+// This is a property test rather than a table of expected strings because the
+// failure mode is a NEW collision: adding a type code that reuses an existing
+// name looks harmless in review and is caught only by asking whether any two
+// codes now share a rendering. Both collapses that used to exist here (INT/LONG
+// and DOUBLE/FLOAT) were introduced deliberately, for byte-stability, and both
+// turned out to be wrong.
+func TestExplainTypeNameIsInjective(t *testing.T) {
+	t.Parallel()
+	// Every type code the renderer names. UNKNOWN is the shared fall-through
+	// for everything outside the set and is deliberately excluded.
+	named := map[TypeCode]Type{
+		TypeCodeInt:       NullableInt,
+		TypeCodeLong:      NullableLong,
+		TypeCodeFloat:     NullableFloat,
+		TypeCodeDouble:    NullableDouble,
+		TypeCodeString:    NullableString,
+		TypeCodeBoolean:   NullableBoolean,
+		TypeCodeDate:      NullableDate,
+		TypeCodeTimestamp: NullableTimestamp,
+		TypeCodeUuid:      NullableUuid,
+	}
+	seen := map[string]TypeCode{}
+	for code, typ := range named {
+		name := explainTypeName(typ)
+		if name == "UNKNOWN" {
+			t.Errorf("type code %v renders UNKNOWN — it is in the named set but the renderer has "+
+				"no arm for it, so it is indistinguishable from every unnamed type", code)
+			continue
+		}
+		if prev, dup := seen[name]; dup {
+			t.Errorf("type codes %v and %v BOTH render %q — explainTypeName feeds sort-key dedup, "+
+				"intersection-merge equality and max_match_map's identity mapping, so a shared "+
+				"rendering makes two different types the same value to all three", prev, code, name)
+			continue
+		}
+		seen[name] = code
+	}
+}
+
 // Java short-circuits a cast whose source and target types are equal before any
 // operator runs ("If the types are the same, no cast is needed" —
 // CastValue.inject, CastValue.java:441-446). Re-applying DOUBLE_TO_FLOAT's

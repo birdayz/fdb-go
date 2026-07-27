@@ -1564,25 +1564,39 @@ func explainValueOrdinals(v Value, withOrdinals bool) string {
 // explainTypeName renders a Type as a short SQL-ish name for the
 // CAST / PROMOTE rendering in ExplainValue.
 //
-// LONG/INT deliberately conflate to INT, so the rendered output — and the
-// plan-cache keys derived via ExplainValue — stay byte-stable with the legacy
-// ValueType.String() rendering. That conflation is safe because both are int64
-// in the row domain and sort identically, so nothing downstream can tell them
-// apart.
+// This rendering is INJECTIVE over the types it names, and must stay that way.
+// It is not merely human-facing text: it is consumed as a SEMANTIC IDENTITY KEY
+// by dedupSortKeys (sort-key equality), rule_intersection_merge (comparison-key
+// equality) and max_match_map (query-value → candidate-value matching during
+// index selection). Two distinct types rendering to one string is an identity
+// collision in all three.
 //
-// DOUBLE/FLOAT used to conflate for the same byte-stability reason and no
-// longer do. They are genuinely different (binary32 rounding vs none), the
-// rendering is consumed as a semantic key by dedupSortKeys, and byte-stability
-// with a rendering that could not express the difference is not worth keeping.
-// Breaking it moved 8 plan-shape golden lines, every one a DOUBLE cast that had
-// been claiming to be a FLOAT one.
+// Both collapses that used to live here were justified by byte-stability with
+// the legacy ValueType.String() output, and both were wrong:
+//
+//   - DOUBLE/FLOAT produce DIFFERENT VALUES (binary32 rounding vs none). This
+//     one was a live defect — the walker routed CAST(x AS FLOAT) through a
+//     DOUBLE-coded type so the cast never rounded, and the rendering hid it.
+//   - INT/LONG produce the same int64 whenever both succeed, so no sort or
+//     comparison can diverge; but they are NOT interchangeable, because
+//     CAST(v AS INTEGER) raises 22F3H above 2^31 where CAST(v AS BIGINT)
+//     succeeds. "Nothing downstream can tell them apart" was too strong: the
+//     error path tells them apart, and an identity map has no business
+//     deciding that two operations differing in whether they raise are the
+//     same operation.
+//
+// Byte-stability with a rendering that cannot express a real difference is not
+// worth keeping. Splitting them moved 8 and 20 plan-shape golden lines
+// respectively, each one a cast that had been claiming to be another type.
 func explainTypeName(t Type) string {
 	if t == nil {
 		return "UNKNOWN"
 	}
 	switch t.Code() {
-	case TypeCodeInt, TypeCodeLong:
+	case TypeCodeInt:
 		return "INT"
+	case TypeCodeLong:
+		return "BIGINT"
 	case TypeCodeString:
 		return "STRING"
 	case TypeCodeBoolean:
