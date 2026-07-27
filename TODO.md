@@ -1987,6 +1987,40 @@ closed rather than silently alter rows or output schema.
   (DOUBLE and FLOAT, both signs seeded twice), mutation-checked RED→GREEN
   (reverting the canonicalization reproduces the exact `[-0 0 5]` 3-row
   split).
+  **REVERTED 2026-07-27 — the canonicalization above was itself a wrong-rows
+  bug.** The principle ("DISTINCT is an equality concept") is right; it moved
+  the wrong side. Canonicalizing ONLY the dedup encoder, while index order,
+  aggregate-index keys and unique-key proofs all stay sign-preserving, made
+  the same query return different rows depending on the plan — MEASURED:
+  `SELECT DISTINCT d, a` returned 2 rows but `SELECT DISTINCT d, a ORDER BY
+  d, a` returned 3 over rows `(-0.0,1) (-0.0,2) (+0.0,1)`, because the
+  ORDERED dedup path (`distinctStreamCursor`) compares only against the
+  PREVIOUS row — sound solely because equal keys are adjacent in index order,
+  which canonicalizing the key alone destroys. It also put `SELECT DISTINCT
+  d` (1 row) in direct contradiction with `GROUP BY d` (2 rows), the same
+  question in SQL. GROUP BY cannot follow: a maintained aggregate index
+  stores each group as its own entry keyed by the grouping prefix, so two
+  signed zeros are two physical entries Java also reads
+  (`AtomicMutationIndexMaintainer.java:141-158`), and Java's own grouping
+  splits them (`DynamicMessage.equals` → `Double.equals`). Splitting needs no
+  guard on any path; merging needs one on each (ordered dedup, unique-key
+  elision, aggregate-index read) and still ends in a Go-vs-Java divergence on
+  the same index. Java is consistent here end-to-end — its scalar `=` is also
+  bit identity (`Comparisons.java:246` → `Double.equals`) and its index probe
+  agrees — so splitting moves Go TOWARD Java. The oracle's `distinctKey` was
+  reverted in lockstep; an oracle that disagrees with the engine reports the
+  correct engine as the defect. Now pinned as a plan-INDEPENDENCE property
+  (hash vs ordered vs GROUP BY must all agree), which is strictly stronger
+  than the row-count assertion it replaces.
+  **Accepted, documented divergence:** `WHERE v = 0` still matches BOTH zeros
+  (cmpAny is IEEE and the SARG range is widened to agree with it) while
+  DISTINCT keeps them apart. In strict SQL those should agree, and CockroachDB
+  makes them agree by normalizing zero inside its key encoder
+  (`pkg/util/encoding/float.go:36-39`) — an option closed to a port whose
+  encoder is Java's. Whether Go should instead adopt Java's bit-identity `=`
+  engine-wide (which would also make `NaN = NaN` true, as it is in Java) is a
+  genuine semantics question for the review gate, NOT a silent choice to make
+  here.
 - [ ] **CQ-28 (LOW, follow-up from CQ-27) — a zero-valued FLOAT/DOUBLE
   equality is left un-widened when it is NOT the terminal column of a
   composite index's equality prefix** (e.g. index `(a DOUBLE, b BIGINT)`,

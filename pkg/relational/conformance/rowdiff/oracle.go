@@ -719,19 +719,17 @@ func foldAgg(a *AggSpec, rows []Row) any {
 func distinctKey(r Row, cols []string) string {
 	parts := make([]string, 0, len(cols))
 	for _, c := range cols {
-		v := r[c]
-		if fv, ok := v.(float64); ok && fv == 0 {
-			// Canonicalize +/-0.0 for SET membership: IEEE equality (fv==0
-			// is true for BOTH signs of zero) is what DISTINCT/UNION
-			// dedup keys on — and it is what Go's own built-in map[float64]
-			// key equality does natively, so this is the representation a
-			// hash-based engine dedup would actually use. ORDER BY keeps the
-			// two apart (see compareNonNull) — that split (RFC-082) is real
-			// and deliberate, not something to paper over here; it just
-			// does not apply to a SET-membership key.
-			v = 0.0
-		}
-		parts = append(parts, fmt.Sprintf("%s=%v(%T)", c, v, v))
+		// -0.0 and +0.0 are DISTINCT dedup keys, and %v renders them
+		// distinctly ("-0" vs "0") without help. Value identity in this engine
+		// is tuple-key identity, and the tuple encoding preserves the sign bit
+		// (see packedDedupKey's doc comment for why every dedup, grouping and
+		// uniqueness path follows the bytes rather than IEEE `=`). A previous
+		// revision canonicalized zero here to mirror an engine-side
+		// canonicalization that has since been removed; leaving it would make
+		// the oracle disagree with the engine it is meant to check, and a
+		// differential whose oracle is wrong reports the correct engine as the
+		// defect.
+		parts = append(parts, fmt.Sprintf("%s=%v(%T)", c, r[c], r[c]))
 	}
 	return strings.Join(parts, "|")
 }

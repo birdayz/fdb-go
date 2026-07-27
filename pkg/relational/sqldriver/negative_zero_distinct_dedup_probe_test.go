@@ -1,26 +1,47 @@
 package sqldriver_test
 
-// Regression pin for a signed-zero DISTINCT/dedup bug found reviewing CQ-27
-// (TODO.md): packedDedupKey (pkg/recordlayer/query/executor/executor.go),
-// the single encoder every unordered dedup path routes through (DISTINCT,
-// UNION DISTINCT, CTE dedup), tuple-packed a FLOAT/DOUBLE slot verbatim.
-// FDB tuple encoding preserves the IEEE sign bit, so a stored -0.0 and a
-// stored +0.0 pack to two DIFFERENT keys — meaning `SELECT DISTINCT v`
-// would silently return BOTH as separate rows, disagreeing with `=`
-// (cmpAny, RFC-082, follows IEEE numeric equality: -0.0 == +0.0) and with
-// Go's own map[float64] key semantics.
+// Signed zero is TWO values for every set-like operation: DISTINCT, GROUP BY,
+// UNION dedup, unique-index distinctness, and ORDER BY. Value identity in this
+// engine is TUPLE-KEY identity, and the tuple encoding is Java's, which
+// preserves the IEEE sign bit — Java's own TupleOrderingTest asserts -0.0 and
+// +0.0 pack to distinct, adjacent keys with -0.0 first. Java's scalar `=` uses
+// the same contract (Comparisons.java:246 → Double.equals → doubleToLongBits),
+// and its index probe agrees with its filter.
 //
-// DISTINCT is an EQUALITY concept (SQL `SELECT DISTINCT x` groups by `x`),
-// not an ORDERING one — it must agree with cmpAny's `=`, not with the SORT
-// total order (which stays sign-preserving on purpose per RFC-082, and
-// rightly keeps -0.0 and +0.0 apart under ORDER BY: see
-// negative_zero_index_sarg_probe_test.go's doc comment for that split).
-// Fixed by canonicalizing a zero-valued FLOAT/DOUBLE slot to +0.0 before
-// tuple-packing the dedup key.
+// An earlier revision canonicalized zero inside packedDedupKey so DISTINCT
+// would instead agree with cmpAny's IEEE `=`. The principle behind that —
+// DISTINCT is an equality concept, not an ordering one — is sound, but it moved
+// the wrong side, and it made the same query return different rows depending on
+// the plan:
+//
+//	SELECT DISTINCT d, a FROM t                 -> 2 rows   (hash dedup)
+//	SELECT DISTINCT d, a FROM t ORDER BY d, a   -> 3 rows   (ordered dedup)
+//
+// over rows (-0.0,1) (-0.0,2) (+0.0,1). The ordered path dedups against the
+// PREVIOUS row only — sound because equal keys are adjacent in index order —
+// and index order keeps the sign, so canonicalizing the key alone broke the
+// adjacency the path rests on and emitted (-0.0,1) and (+0.0,1) as two rows,
+// duplicates under the very equality being asserted.
+//
+// GROUP BY could not have followed either: a maintained aggregate index stores
+// each group as its own entry keyed by the grouping prefix, so two signed zeros
+// are two physical entries Java also reads. Merging would mean writing key
+// bytes Java does not, or reporting a different group count from the same
+// index. Splitting needs no guard anywhere; merging needs one on every path and
+// still ends in a divergence.
+//
+// The cost is real and deliberate: `WHERE v = 0` matches BOTH rows (cmpAny is
+// IEEE, and the index range is widened to agree with it — see
+// negative_zero_index_sarg_probe_test.go), while DISTINCT keeps them apart. In
+// strict SQL those should agree. They cannot here, and Java is in the same
+// state. CockroachDB merges only because it normalizes zero inside its own key
+// encoder; that option is closed to a port whose encoder is Java's.
+
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"sort"
 	"testing"
 )
@@ -44,39 +65,96 @@ func TestFDB_NegativeZeroDistinctDedupProbe(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	// Both signed zeros AND a distinct nonzero control, twice each — proves
-	// the fix collapses zero (regardless of which row's sign wrote the
-	// canonical dedup key first) while still deduping/keeping everything
-	// else normally.
+	// Both signed zeros, plus a duplicated nonzero control that proves ordinary
+	// dedup still collapses — otherwise "3 rows" could mean dedup is simply off.
 	mwjoMustExec(t, db, ctx, "INSERT INTO d (id, v) VALUES (1, -0.0), (2, 0.0), (3, 5.0), (4, 5.0)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO f (id, v) VALUES (1, -0.0), (2, 0.0), (3, 5.0), (4, 5.0)")
 
+	// signbit distinguishes the two zeros; plain == cannot.
+	fmtSigned := func(v float64) string {
+		if v == 0 && math.Signbit(v) {
+			return "-0"
+		}
+		return fmt.Sprintf("%v", v)
+	}
+	collect := func(t *testing.T, q string) []float64 {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query %q: %v", q, err)
+		}
+		defer rows.Close()
+		var got []float64
+		for rows.Next() {
+			var v float64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			got = append(got, v)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows %q: %v", q, err)
+		}
+		// Sort signed so -0.0 and +0.0 keep a stable, distinguishable order.
+		sort.Slice(got, func(i, j int) bool {
+			if got[i] == got[j] {
+				return math.Signbit(got[i]) && !math.Signbit(got[j])
+			}
+			return got[i] < got[j]
+		})
+		return got
+	}
+	show := func(vs []float64) string {
+		out := "["
+		for i, v := range vs {
+			if i > 0 {
+				out += " "
+			}
+			out += fmtSigned(v)
+		}
+		return out + "]"
+	}
+	sameShape := func(a, b []float64) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if a[i] != b[i] || math.Signbit(a[i]) != math.Signbit(b[i]) {
+				return false
+			}
+		}
+		return true
+	}
+
 	for _, tbl := range []string{"d", "f"} {
-		tbl := tbl
 		t.Run(tbl, func(t *testing.T) {
-			rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT DISTINCT v FROM %s", tbl))
-			if err != nil {
-				t.Fatalf("query: %v", err)
+			// -0.0, +0.0 and 5.0 — three values, with 5.0 deduped from two rows.
+			want := []float64{math.Copysign(0, -1), 0, 5}
+
+			distinct := collect(t, fmt.Sprintf("SELECT DISTINCT v FROM %s", tbl))
+			if !sameShape(distinct, want) {
+				t.Fatalf("%s: SELECT DISTINCT v = %s, want %s — the two signed zeros are "+
+					"distinct tuple keys and must dedup as two values (and 5.0 must still collapse)",
+					tbl, show(distinct), show(want))
 			}
-			defer rows.Close()
-			var got []float64
-			for rows.Next() {
-				var v float64
-				if err := rows.Scan(&v); err != nil {
-					t.Fatalf("scan: %v", err)
-				}
-				got = append(got, v)
+
+			// The property that the canonicalization broke: the ORDERED dedup
+			// path (adjacent-only) must agree with the hash path. These are the
+			// same query; only the plan differs.
+			ordered := collect(t, fmt.Sprintf("SELECT DISTINCT v FROM %s ORDER BY v", tbl))
+			if !sameShape(ordered, distinct) {
+				t.Fatalf("%s: DISTINCT with ORDER BY = %s but without = %s — the same query must "+
+					"not depend on which dedup path the planner picks",
+					tbl, show(ordered), show(distinct))
 			}
-			sort.Float64s(got)
-			want := []float64{0, 5}
-			if len(got) != len(want) {
-				t.Fatalf("%s: SELECT DISTINCT v = %v (len %d), want %v (len %d) — signed zero "+
-					"was not collapsed into one DISTINCT row", tbl, got, len(got), want, len(want))
-			}
-			for i := range want {
-				if got[i] != want[i] {
-					t.Fatalf("%s: SELECT DISTINCT v = %v, want %v", tbl, got, want)
-				}
+
+			// DISTINCT v and GROUP BY v ask the same question and must answer
+			// alike; GROUP BY is pinned to split by the aggregate-index wire
+			// format, so DISTINCT follows it rather than the other way around.
+			grouped := collect(t, fmt.Sprintf("SELECT v FROM %s GROUP BY v", tbl))
+			if !sameShape(grouped, distinct) {
+				t.Fatalf("%s: GROUP BY v = %s but SELECT DISTINCT v = %s — these are the same "+
+					"question and must not disagree", tbl, show(grouped), show(distinct))
 			}
 		})
 	}

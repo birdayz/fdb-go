@@ -1900,28 +1900,41 @@ func primaryKeyDistinctKey(qr QueryResult) (string, error) {
 // canonicalization; the composite %T:%v fallback keeps distinct concrete types
 // key-distinct. (The merge-sort union dedups via compareValues on evaluated
 // keys instead — Java UnionCursor's advance-all-equal — so it no longer packs
-// a dedup key at all — and compareValues is correctly sign-preserving there,
-// matching the SORT total order per RFC-082/values.CompareFloat64: ORDER BY
-// keeps -0.0 and +0.0 apart on purpose. DISTINCT is an EQUALITY concept, not
-// an ORDERING one, so it must instead agree with cmpAny's IEEE `=` — a
-// zero-valued FLOAT/DOUBLE slot is canonicalized to +0.0 below before tuple
-// packing, same principle as scanComparisonsToTupleRange's signed-zero
-// widening: without it, a raw tuple-packed key keeps the sign bit and DISTINCT
-// would silently split a single SQL-equal value (-0.0 and +0.0) into two
-// output rows, disagreeing with `=`.)
+// a dedup key at all.)
+//
+// A zero-valued FLOAT/DOUBLE slot is packed VERBATIM, sign bit and all, so
+// -0.0 and +0.0 dedup as two distinct values. That looks like it contradicts
+// cmpAny's IEEE `=`, and a previous revision canonicalized zero here for
+// exactly that reason. It cannot: value identity in this engine is TUPLE-KEY
+// identity, and the tuple encoding is Java's, which preserves the sign bit
+// (Java asserts the two pack distinctly and adjacently in TupleOrderingTest).
+// Canonicalizing only this encoder made the same query return different rows
+// depending on the plan:
+//
+//   - The ORDERED dedup path (distinctStreamCursor) compares a row against the
+//     PREVIOUS one only, which is sound because equal keys are adjacent in
+//     index order — and index order keeps the sign. Canonicalizing the key
+//     while the order stays signed breaks that adjacency, so
+//     `SELECT DISTINCT d, a ORDER BY d, a` over rows (-0.0,1) (-0.0,2) (+0.0,1)
+//     emitted (-0.0,1) and (+0.0,1) as two rows — a duplicate under the very
+//     equality the canonicalization was asserting.
+//   - GROUP BY cannot follow. A maintained aggregate index stores each group
+//     as its own index entry keyed by the grouping prefix, so two signed zeros
+//     are two physical entries that Java also reads; merging them would mean
+//     either writing key bytes Java does not, or reporting a different group
+//     count than Java does from the same index.
+//   - A UNIQUE index or primary key over the column proves distinctness from
+//     those same bytes, and the planner elides DISTINCT on that proof.
+//
+// Splitting needs no guard on any of those paths; merging needs one on each
+// and still ends in a divergence. CockroachDB merges because it normalizes
+// zero inside its key encoder (EncodeFloatAscending) — the same principle,
+// applied to an encoding it controls and we do not.
 func packedDedupKey(slots []any) (string, error) {
 	t := make(tuple.Tuple, len(slots))
 	for i, v := range slots {
 		switch tv := v.(type) {
-		case float32:
-			if tv == 0 {
-				tv = 0 // canonicalize -0.0 -> +0.0 (see doc comment)
-			}
-			t[i] = tv
-		case float64:
-			if tv == 0 {
-				tv = 0
-			}
+		case float32, float64:
 			t[i] = tv
 		case nil, int64, int, uint, uint64, string, []byte, bool:
 			t[i] = tv
