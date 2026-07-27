@@ -602,7 +602,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 		{
 			name: "int RHS is bare",
 			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "id", Typ: values.TypeInt},
+				&values.FieldValue{Field: "id", Typ: values.NullableLong},
 				Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(int64(5))},
 			),
 			want: "id > 5",
@@ -610,7 +610,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 		{
 			name: "NULL RHS (rare but possible via constant-fold)",
 			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "id", Typ: values.TypeInt},
+				&values.FieldValue{Field: "id", Typ: values.NullableLong},
 				Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(nil)},
 			),
 			want: "id = NULL",
@@ -626,7 +626,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 		{
 			name: "IN list of ints",
 			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "id", Typ: values.TypeInt},
+				&values.FieldValue{Field: "id", Typ: values.NullableLong},
 				Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)})},
 			),
 			want: "id IN (1, 2, 3)",
@@ -713,7 +713,7 @@ func TestComparisonPredicate_EndToEnd(t *testing.T) {
 	// Predicate: field `age >= 18` against a row represented as a
 	// map. FieldValue.Evaluate resolves the column by its plan-time ordinal
 	// (sole column "age" → slot 0); Value.Evaluate drives the predicate.
-	operand := pbake("age", values.TypeInt, "age")
+	operand := pbake("age", values.NullableLong, "age")
 	cmp := Comparison{Type: ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))}
 	pred := NewComparisonPredicate(operand, cmp)
 
@@ -756,9 +756,9 @@ func TestComparisonPredicate_ComposesWithKleeneConnectives(t *testing.T) {
 	// (age >= 18) AND (rank < 5) — each ref carries its plan-time
 	// ordinal (sorted {age, rank} → age=0, rank=1).
 	tree := NewAnd(
-		NewComparisonPredicate(pbake("age", values.TypeInt, "age", "rank"),
+		NewComparisonPredicate(pbake("age", values.NullableLong, "age", "rank"),
 			Comparison{Type: ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))}),
-		NewComparisonPredicate(pbake("rank", values.TypeInt, "age", "rank"),
+		NewComparisonPredicate(pbake("rank", values.NullableLong, "age", "rank"),
 			Comparison{Type: ComparisonLessThan, Operand: values.LiteralValue(int64(5))}),
 	)
 	if got, _ := tree.Eval(predRow(row)); got != TriTrue {
@@ -778,8 +778,8 @@ func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
 	// (sorted {a, b} → a=0, b=1).
 	sum := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  pbake("a", values.TypeInt, "a", "b"),
-		Right: pbake("b", values.TypeInt, "a", "b"),
+		Left:  pbake("a", values.NullableLong, "a", "b"),
+		Right: pbake("b", values.NullableLong, "a", "b"),
 	}
 	pred := NewComparisonPredicate(sum,
 		Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(int64(10))})
@@ -806,8 +806,8 @@ func TestComparisonPredicate_NonConstantRHS(t *testing.T) {
 	// age = rank_cutoff (both FieldValues) — each carries its
 	// plan-time ordinal (sorted {age, cutoff} → age=0, cutoff=1).
 	pred := NewComparisonPredicate(
-		pbake("age", values.TypeInt, "age", "cutoff"),
-		Comparison{Type: ComparisonEquals, Operand: pbake("cutoff", values.TypeInt, "age", "cutoff")},
+		pbake("age", values.NullableLong, "age", "cutoff"),
+		Comparison{Type: ComparisonEquals, Operand: pbake("cutoff", values.NullableLong, "age", "cutoff")},
 	)
 
 	cases := []struct {
@@ -840,12 +840,12 @@ func TestComparisonPredicate_IsDistinctFrom_NonConstantRHS(t *testing.T) {
 	t.Parallel()
 	// Each side carries its plan-time ordinal (sorted {a, b} → a=0, b=1).
 	dist := NewComparisonPredicate(
-		pbake("a", values.TypeInt, "a", "b"),
-		Comparison{Type: ComparisonIsDistinctFrom, Operand: pbake("b", values.TypeInt, "a", "b")},
+		pbake("a", values.NullableLong, "a", "b"),
+		Comparison{Type: ComparisonIsDistinctFrom, Operand: pbake("b", values.NullableLong, "a", "b")},
 	)
 	notDist := NewComparisonPredicate(
-		pbake("a", values.TypeInt, "a", "b"),
-		Comparison{Type: ComparisonNotDistinctFrom, Operand: pbake("b", values.TypeInt, "a", "b")},
+		pbake("a", values.NullableLong, "a", "b"),
+		Comparison{Type: ComparisonNotDistinctFrom, Operand: pbake("b", values.NullableLong, "a", "b")},
 	)
 
 	cases := []struct {
@@ -879,13 +879,13 @@ func TestComparisonPredicate_NonConstantRHS_Arithmetic(t *testing.T) {
 	t.Parallel()
 	// Each ref carries its plan-time ordinal (sorted {a, b} → a=0, b=1).
 	pred := NewComparisonPredicate(
-		pbake("a", values.TypeInt, "a", "b"),
+		pbake("a", values.NullableLong, "a", "b"),
 		Comparison{
 			Type: ComparisonEquals,
 			Operand: &values.ArithmeticValue{
 				Op:    values.OpAdd,
-				Left:  pbake("b", values.TypeInt, "a", "b"),
-				Right: &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
+				Left:  pbake("b", values.NullableLong, "a", "b"),
+				Right: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
 			},
 		},
 	)
@@ -911,26 +911,26 @@ func TestComparisonPredicate_Explain_NonConstantRHS(t *testing.T) {
 		{
 			name: "FieldValue RHS",
 			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "age", Typ: values.TypeInt},
-				Comparison{Type: ComparisonEquals, Operand: &values.FieldValue{Field: "cutoff", Typ: values.TypeInt}},
+				&values.FieldValue{Field: "age", Typ: values.NullableLong},
+				Comparison{Type: ComparisonEquals, Operand: &values.FieldValue{Field: "cutoff", Typ: values.NullableLong}},
 			),
 			want: "age = cutoff",
 		},
 		{
 			name: "Arithmetic RHS over fields",
 			pred: NewComparisonPredicate(
-				&values.FieldValue{Field: "a", Typ: values.TypeInt},
+				&values.FieldValue{Field: "a", Typ: values.NullableLong},
 				Comparison{Type: ComparisonLessThan, Operand: &values.ArithmeticValue{
 					Op:    values.OpAdd,
-					Left:  &values.FieldValue{Field: "b", Typ: values.TypeInt},
-					Right: &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
+					Left:  &values.FieldValue{Field: "b", Typ: values.NullableLong},
+					Right: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
 				}},
 			),
 			want: "a < (b + 1)",
 		},
 		{
 			// The CAST target is named EXPLICITLY. These two cases used
-			// values.TypeInt, an alias for NullableLong, and asserted "INT" —
+			// values.NullableLong, an alias for NullableLong, and asserted "INT" —
 			// so they read as INT coverage while casting to LONG, and only
 			// passed because the renderer collapsed both to "INT". It no
 			// longer does: it feeds sort-key dedup and max_match_map's

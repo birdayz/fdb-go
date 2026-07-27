@@ -112,7 +112,7 @@ func TestIntegration_InUnionRowContinuation_OneRowPerTx(t *testing.T) {
 	// (order_id@0, price@2), the index's own (price, pk) entry order.
 	compKeys := []values.Value{
 		values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
-		values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.TypeInt),
+		values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.NullableLong),
 	}
 	makePlan := func() plans.RecordQueryPlan {
 		p := plans.NewRecordQueryInUnionPlan(priceProbeIndexPlan(t, bindingID), []string{bindingName}, compKeys, false)
@@ -141,7 +141,7 @@ func TestIntegration_InUnionDuplicateValues_DedupAcrossResumes(t *testing.T) {
 	bindingID := values.NamedCorrelationIdentifier(bindingName)
 	compKeys := []values.Value{
 		values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
-		values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.TypeInt),
+		values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.NullableLong),
 	}
 	makePlan := func() plans.RecordQueryPlan {
 		p := plans.NewRecordQueryInUnionPlan(priceProbeIndexPlan(t, bindingID), []string{bindingName}, compKeys, false)

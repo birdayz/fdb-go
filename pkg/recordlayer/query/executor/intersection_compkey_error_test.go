@@ -20,7 +20,7 @@ import (
 // against a 1-slot scalar row: the resolved ordinal 5 misses (loud) in
 // FieldValue.Evaluate's ordinal read.
 func evalFailKeyVals() []values.Value {
-	return []values.Value{values.NewFieldValueWithResolvedOrdinal("X", 5, values.TypeInt)}
+	return []values.Value{values.NewFieldValueWithResolvedOrdinal("X", 5, values.NullableLong)}
 }
 
 func TestIntersectionCompKeyFunc_EvalFailure_ReturnsError(t *testing.T) {

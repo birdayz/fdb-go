@@ -24,10 +24,10 @@ func TestDefaultFolder_ConstantFolds_FullyComposed(t *testing.T) {
 		Op: OpAdd,
 		Left: &ArithmeticValue{
 			Op:    OpMul,
-			Left:  &ConstantValue{Value: int64(2), Typ: TypeInt},
-			Right: &ConstantValue{Value: int64(3), Typ: TypeInt},
+			Left:  &ConstantValue{Value: int64(2), Typ: NullableLong},
+			Right: &ConstantValue{Value: int64(3), Typ: NullableLong},
 		},
-		Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	}
 	got, ok := f.Fold(v)
 	if !ok {
@@ -45,8 +45,8 @@ func TestDefaultFolder_FieldRefDeclines(t *testing.T) {
 	f := DefaultFolder()
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "x", Typ: TypeInt},
-		Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Left:  &FieldValue{Field: "x", Typ: NullableLong},
+		Right: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	}
 	if got, ok := f.Fold(v); ok {
 		t.Fatalf("expected decline, got (%v, %v)", got, ok)
@@ -61,7 +61,7 @@ func TestDefaultFolder_ParameterValueDeclines(t *testing.T) {
 	v := &ArithmeticValue{
 		Op:    OpMul,
 		Left:  NewParameterValue(1),
-		Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 	}
 	if got, ok := f.Fold(v); ok {
 		t.Fatalf("expected decline for ParameterValue, got (%v, %v)", got, ok)
@@ -79,11 +79,11 @@ func TestDefaultFolder_PartialFoldDoesNotReturnOk(t *testing.T) {
 	f := DefaultFolder()
 	v := &ArithmeticValue{
 		Op:   OpAdd,
-		Left: &FieldValue{Field: "name", Typ: TypeInt},
+		Left: &FieldValue{Field: "name", Typ: NullableLong},
 		Right: &ArithmeticValue{
 			Op:    OpAdd,
-			Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
-			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+			Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
+			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		},
 	}
 	if got, ok := f.Fold(v); ok {

@@ -15,8 +15,8 @@ func TestSomeElementsMatcher_AnyMatchSucceeds(t *testing.T) {
 	// Downstream matches only ConstantValue.
 	m := NewSomeElementsMatcher(NewConstantMatcher())
 	in := []any{
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(7), Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(7), Typ: values.NullableLong},
 		&values.FieldValue{Field: "y", Typ: values.TypeString},
 	}
 	got := m.BindMatches(NewBindings(), in)
@@ -37,9 +37,9 @@ func TestSomeElementsMatcher_AllMatchProduceCartesian(t *testing.T) {
 	t.Parallel()
 	m := NewSomeElementsMatcher(NewConstantMatcher())
 	in := []any{
-		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(3), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
 	}
 	got := m.BindMatches(NewBindings(), in)
 	if len(got) != 3 {
@@ -54,7 +54,7 @@ func TestSomeElementsMatcher_NoMatch(t *testing.T) {
 	t.Parallel()
 	m := NewSomeElementsMatcher(NewConstantMatcher())
 	in := []any{
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		&values.FieldValue{Field: "y", Typ: values.TypeString},
 	}
 	if got := m.BindMatches(NewBindings(), in); got != nil {
@@ -119,7 +119,7 @@ func TestSomeElementsMatcher_DistinctIdentity(t *testing.T) {
 	t.Parallel()
 	a := NewSomeElementsMatcher(NewConstantMatcher())
 	b := NewSomeElementsMatcher(NewConstantMatcher())
-	in := []any{&values.ConstantValue{Value: int64(1), Typ: values.TypeInt}}
+	in := []any{&values.ConstantValue{Value: int64(1), Typ: values.NullableLong}}
 
 	bindings := NewBindings()
 	for _, partial := range a.BindMatches(bindings, in) {

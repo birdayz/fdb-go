@@ -9,7 +9,7 @@ import (
 
 // testVal creates a minimal ConstantValue for test use.
 func testVal(v any) values.Value {
-	return &values.ConstantValue{Value: v, Typ: values.TypeInt}
+	return &values.ConstantValue{Value: v, Typ: values.NullableLong}
 }
 
 func TestRegularMatchInfo_Construction(t *testing.T) {

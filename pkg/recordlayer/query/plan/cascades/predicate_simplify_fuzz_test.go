@@ -36,7 +36,7 @@ func FuzzSimplify_PredicateTree(f *testing.F) {
 		op2 := predicates.ComparisonType(op2raw % 6)
 
 		// Two leaves over a synthetic FieldValue + literal RHS.
-		field := &values.FieldValue{Field: "x", Typ: values.TypeInt}
+		field := &values.FieldValue{Field: "x", Typ: values.NullableLong}
 		left := predicates.NewComparisonPredicate(field, predicates.Comparison{Type: op1, Operand: values.LiteralValue(a)})
 		right := predicates.NewComparisonPredicate(field, predicates.Comparison{Type: op2, Operand: values.LiteralValue(b)})
 

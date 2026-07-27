@@ -84,7 +84,7 @@ func TestFrontierOrdinalAuthority(t *testing.T) {
 		evalCtx := EmptyEvaluationContext()
 		pred := predicates.NewComparisonPredicate(fieldV, predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.ConstantValue{Value: int64(42), Typ: values.TypeInt},
+			Operand: &values.ConstantValue{Value: int64(42), Typ: values.NullableLong},
 		})
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{pred}, authorityInner(t, evalCtx, "auth_filter"))
@@ -99,7 +99,7 @@ func TestFrontierOrdinalAuthority(t *testing.T) {
 		evalCtx := EmptyEvaluationContext()
 		pred := predicates.NewComparisonPredicate(fieldV, predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.ConstantValue{Value: int64(42), Typ: values.TypeInt},
+			Operand: &values.ConstantValue{Value: int64(42), Typ: values.NullableLong},
 		})
 		pfilter := plans.NewRecordQueryPredicatesFilterPlan(
 			authorityInner(t, evalCtx, "auth_pfilter"), []predicates.QueryPredicate{pred})

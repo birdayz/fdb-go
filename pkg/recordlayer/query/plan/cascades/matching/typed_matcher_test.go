@@ -18,8 +18,8 @@ func TestTypedMatcher_ExtractAndMatch(t *testing.T) {
 	)
 	in := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
-		Right: &values.FieldValue{Field: "x", Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
+		Right: &values.FieldValue{Field: "x", Typ: values.NullableLong},
 	}
 	got := m.BindMatches(NewBindings(), in)
 	if len(got) != 1 {
@@ -39,8 +39,8 @@ func TestTypedMatcher_DownstreamFails(t *testing.T) {
 	)
 	in := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.FieldValue{Field: "x", Typ: values.TypeInt},
-		Right: &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+		Left:  &values.FieldValue{Field: "x", Typ: values.NullableLong},
+		Right: &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 	}
 	if got := m.BindMatches(NewBindings(), in); got != nil {
 		t.Errorf("expected nil (Left is FieldValue), got %d bindings", len(got))
@@ -60,7 +60,7 @@ func TestTypedMatcher_HostTypeMismatch(t *testing.T) {
 		},
 		NewConstantMatcher(),
 	)
-	in := &values.ConstantValue{Value: int64(7), Typ: values.TypeInt}
+	in := &values.ConstantValue{Value: int64(7), Typ: values.NullableLong}
 	if got := m.BindMatches(NewBindings(), in); got != nil {
 		t.Errorf("expected nil for wrong host type, got %d", len(got))
 	}
@@ -104,7 +104,7 @@ func TestTypedMatcher_DistinctIdentity(t *testing.T) {
 		"X", func(c *values.ConstantValue) any { return c }, NewConstantMatcher())
 	b := NewTypedMatcher[*values.ConstantValue, any](
 		"X", func(c *values.ConstantValue) any { return c }, NewConstantMatcher())
-	in := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
+	in := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 	bindings := NewBindings()
 	for _, partial := range a.BindMatches(bindings, in) {
 		bindings = partial

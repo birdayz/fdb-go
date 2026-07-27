@@ -7396,7 +7396,7 @@ func aggregateOperandColumn(v values.Value) (string, bool) {
 // int32-vs-int64 SUM/AVG overflow decision, keyed off the proto-faithful input
 // record type (Go's resolver widens INTEGER column references to LONG, so the
 // operand's own Type() cannot carry the INT32/INT64 split — see the
-// TypeInt==NullableLong bridge). Returns values.TypeCodeInt only when the operand
+// NullableLong==NullableLong bridge). Returns values.TypeCodeInt only when the operand
 // is a single column whose backing proto field is TYPE_INT32 (SQL INTEGER) and
 // the name match is unambiguous; values.TypeCodeUnknown otherwise — never a
 // narrower, wrong overflow width.

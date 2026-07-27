@@ -67,7 +67,7 @@ func (r benchRow) Get(ordinal int) (any, bool) {
 }
 
 func BenchmarkConstantValue_Evaluate(b *testing.B) {
-	v := &values.ConstantValue{Value: int64(42), Typ: values.TypeInt}
+	v := &values.ConstantValue{Value: int64(42), Typ: values.NullableLong}
 	if got, err := v.Evaluate(nil); err != nil || got != int64(42) {
 		b.Fatalf("Evaluate = %v, err %v; want 42, nil", got, err)
 	}
@@ -78,7 +78,7 @@ func BenchmarkConstantValue_Evaluate(b *testing.B) {
 }
 
 func BenchmarkFieldValue_Evaluate(b *testing.B) {
-	v := values.NewFieldValueWithResolvedOrdinal("age", 0, values.TypeInt)
+	v := values.NewFieldValueWithResolvedOrdinal("age", 0, values.NullableLong)
 	row := benchRow{int64(30)}
 	if got, err := v.Evaluate(row); err != nil || got != int64(30) {
 		b.Fatalf("Evaluate = %v, err %v; want 30, nil", got, err)
@@ -95,13 +95,13 @@ func BenchmarkArithmeticValue_Evaluate(b *testing.B) {
 		Op: values.OpMul,
 		Left: &values.ArithmeticValue{
 			Op:    values.OpAdd,
-			Left:  values.NewFieldValueWithResolvedOrdinal("a", 0, values.TypeInt),
-			Right: values.NewFieldValueWithResolvedOrdinal("b", 1, values.TypeInt),
+			Left:  values.NewFieldValueWithResolvedOrdinal("a", 0, values.NullableLong),
+			Right: values.NewFieldValueWithResolvedOrdinal("b", 1, values.NullableLong),
 		},
 		Right: &values.ArithmeticValue{
 			Op:    values.OpSub,
-			Left:  values.NewFieldValueWithResolvedOrdinal("c", 2, values.TypeInt),
-			Right: values.NewFieldValueWithResolvedOrdinal("d", 3, values.TypeInt),
+			Left:  values.NewFieldValueWithResolvedOrdinal("c", 2, values.NullableLong),
+			Right: values.NewFieldValueWithResolvedOrdinal("d", 3, values.NullableLong),
 		},
 	}
 	row := benchRow{int64(3), int64(4), int64(10), int64(5)}
@@ -117,7 +117,7 @@ func BenchmarkArithmeticValue_Evaluate(b *testing.B) {
 
 func BenchmarkComparisonPredicate_Eval(b *testing.B) {
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValueWithResolvedOrdinal("age", 0, values.TypeInt),
+		values.NewFieldValueWithResolvedOrdinal("age", 0, values.NullableLong),
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	row := benchRow{int64(30)}
@@ -140,8 +140,8 @@ func BenchmarkComparisonPredicate_Eval(b *testing.B) {
 // EvalAgainst's int64 promotion and comparison.
 func BenchmarkComparisonPredicate_Eval_NonConstantRHS(b *testing.B) {
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValueWithResolvedOrdinal("age", 0, values.TypeInt),
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.NewFieldValueWithResolvedOrdinal("cutoff", 1, values.TypeInt)},
+		values.NewFieldValueWithResolvedOrdinal("age", 0, values.NullableLong),
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.NewFieldValueWithResolvedOrdinal("cutoff", 1, values.NullableLong)},
 	)
 	row := benchRow{int64(18), int64(18)}
 	if got, err := pred.Eval(row); err != nil || got != predicates.TriTrue {
@@ -156,11 +156,11 @@ func BenchmarkComparisonPredicate_Eval_NonConstantRHS(b *testing.B) {
 func BenchmarkKleeneAnd_Eval(b *testing.B) {
 	// (age >= 18) AND (rank < 5) AND (score > 50)
 	tree := predicates.NewAnd(
-		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("age", 0, values.TypeInt),
+		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("age", 0, values.NullableLong),
 			predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))}),
-		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("rank", 1, values.TypeInt),
+		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("rank", 1, values.NullableLong),
 			predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: values.LiteralValue(int64(5))}),
-		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("score", 2, values.TypeInt),
+		predicates.NewComparisonPredicate(values.NewFieldValueWithResolvedOrdinal("score", 2, values.NullableLong),
 			predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(50))}),
 	)
 	row := benchRow{int64(30), int64(3), int64(80)}
@@ -185,8 +185,8 @@ func BenchmarkArithmeticMatcher_BindMatches(b *testing.B) {
 	matcher := &matching.ArithmeticMatcher{Op: values.OpAdd, Left: lhs, Right: rhs}
 	expr := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
-		Right: &values.FieldValue{Field: "x", Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
+		Right: &values.FieldValue{Field: "x", Typ: values.NullableLong},
 	}
 	outer := matching.NewBindings()
 	if got := matcher.BindMatches(outer, expr); len(got) == 0 {
@@ -202,7 +202,7 @@ func BenchmarkAllOf_BindMatches(b *testing.B) {
 	b.ReportAllocs()
 	// AllOf(ConstantMatcher, AnyValue) against a ConstantValue.
 	pattern := matching.NewAllOf("ConstantValue", matching.NewConstantMatcher(), matching.NewAnyValue())
-	cv := &values.ConstantValue{Value: int64(7), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(7), Typ: values.NullableLong}
 	outer := matching.NewBindings()
 	if got := pattern.BindMatches(outer, cv); len(got) == 0 {
 		b.Fatal("AllOf did not match — the benchmark would time a rejection, not a bind")
@@ -220,7 +220,7 @@ func BenchmarkAllOf_BindMatches(b *testing.B) {
 func BenchmarkSimplify_FullPipeline(b *testing.B) {
 	b.ReportAllocs()
 	agePred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	// Build fresh each iter — Simplify sees a pristine tree, not a
@@ -229,7 +229,7 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 		return predicates.NewAnd(
 			predicates.NewAnd(
 				predicates.NewComparisonPredicate(
-					&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+					&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 					predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))},
 				),
 				predicates.NewNot(predicates.NewNot(predicates.NewConstantPredicate(predicates.TriTrue))),
@@ -259,11 +259,11 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 func BenchmarkSimplify_Absorption(b *testing.B) {
 	b.ReportAllocs()
 	p := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "a", Typ: values.TypeInt},
+		&values.FieldValue{Field: "a", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 	)
 	q := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "b", Typ: values.TypeInt},
+		&values.FieldValue{Field: "b", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(2))},
 	)
 	rules := DefaultSimplifyRules()
@@ -288,9 +288,9 @@ func BenchmarkListMatcher_BindMatches(b *testing.B) {
 	b.ReportAllocs()
 	matcher := matching.NewListMatcher(matching.NewConstantMatcher(), matching.NewFieldMatcher(), matching.NewConstantMatcher())
 	in := []any{
-		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 	}
 	outer := matching.NewBindings()
 	if got := matcher.BindMatches(outer, in); len(got) == 0 {
@@ -308,11 +308,11 @@ func BenchmarkAllElementsMatcher_BindMatches(b *testing.B) {
 	b.ReportAllocs()
 	matcher := matching.NewAllElementsMatcher(matching.NewConstantMatcher())
 	in := []any{
-		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(3), Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(4), Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(4), Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 	}
 	outer := matching.NewBindings()
 	if got := matcher.BindMatches(outer, in); len(got) == 0 {
@@ -330,8 +330,8 @@ func BenchmarkAllElementsMatcher_BindMatches(b *testing.B) {
 // extra rule set's overhead vs DefaultSimplifyRules-only.
 func BenchmarkSimplify_DeMorgan(b *testing.B) {
 	b.ReportAllocs()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeInt}
-	bb := &values.FieldValue{Field: "b", Typ: values.TypeInt}
+	a := &values.FieldValue{Field: "a", Typ: values.NullableLong}
+	bb := &values.FieldValue{Field: "b", Typ: values.NullableLong}
 	build := func() predicates.QueryPredicate {
 		return predicates.NewNot(predicates.NewAnd(
 			predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))}),
@@ -357,7 +357,7 @@ func BenchmarkSimplify_DeMorgan(b *testing.B) {
 func BenchmarkSimplify_NoOp(b *testing.B) {
 	b.ReportAllocs()
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	rules := DefaultSimplifyRules()
@@ -653,11 +653,11 @@ func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
 		filter := expressions.NewLogicalFilterExpression(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "A", Typ: values.TypeInt},
+					&values.FieldValue{Field: "A", Typ: values.NullableLong},
 					predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 				),
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "B", Typ: values.TypeInt},
+					&values.FieldValue{Field: "B", Typ: values.NullableLong},
 					predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10)),
 				),
 			},

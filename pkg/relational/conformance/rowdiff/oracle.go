@@ -909,8 +909,8 @@ func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 		}
 		av := &values.ArithmeticValue{
 			Op:    p.ArithOp,
-			Left:  &values.ConstantValue{Value: li, Typ: values.TypeInt},
-			Right: &values.ConstantValue{Value: ri, Typ: values.TypeInt},
+			Left:  &values.ConstantValue{Value: li, Typ: values.NullableLong},
+			Right: &values.ConstantValue{Value: ri, Typ: values.NullableLong},
 		}
 		res, err := av.Evaluate(nil)
 		if err != nil {
@@ -935,8 +935,8 @@ func evalLeaf(p *Pred, r Row) (predicates.TriBool, error) {
 		fn := &values.ScalarFunctionValue{
 			FuncName: p.BitOp,
 			Args: []values.Value{
-				&values.ConstantValue{Value: li, Typ: values.TypeInt},
-				&values.ConstantValue{Value: ri, Typ: values.TypeInt},
+				&values.ConstantValue{Value: li, Typ: values.NullableLong},
+				&values.ConstantValue{Value: ri, Typ: values.NullableLong},
 			},
 		}
 		res, err := fn.Evaluate(nil)

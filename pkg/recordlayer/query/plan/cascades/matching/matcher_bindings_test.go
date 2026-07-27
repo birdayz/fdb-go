@@ -29,8 +29,8 @@ func TestPlannerBindings_BindIsImmutable(t *testing.T) {
 	t.Parallel()
 	m1 := NewConstantMatcher()
 	m2 := NewConstantMatcher()
-	cv1 := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
-	cv2 := &values.ConstantValue{Value: int64(2), Typ: values.TypeInt}
+	cv1 := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
+	cv2 := &values.ConstantValue{Value: int64(2), Typ: values.NullableLong}
 
 	original := NewBindings().Bind(m1, cv1)
 	derived := original.Bind(m2, cv2)
@@ -55,8 +55,8 @@ func TestPlannerBindings_BindIsImmutable(t *testing.T) {
 func TestPlannerBindings_BindAccumulates(t *testing.T) {
 	t.Parallel()
 	m := NewAnyValue()
-	cv1 := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
-	cv2 := &values.ConstantValue{Value: int64(2), Typ: values.TypeInt}
+	cv1 := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
+	cv2 := &values.ConstantValue{Value: int64(2), Typ: values.NullableLong}
 	b := NewBindings().Bind(m, cv1).Bind(m, cv2)
 
 	got := b.GetAll(m)
@@ -105,7 +105,7 @@ func TestPlannerBindings_Get_PanicsOnMultiple(t *testing.T) {
 		}
 	}()
 	m := NewAnyValue()
-	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 	b := NewBindings().Bind(m, cv).Bind(m, cv)
 	_ = b.Get(m)
 }
@@ -116,7 +116,7 @@ func TestPlannerBindings_Get_PanicsOnMultiple(t *testing.T) {
 func TestPlannerBindings_MergedWith_EmptyCases(t *testing.T) {
 	t.Parallel()
 	m := NewConstantMatcher()
-	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 	withVal := NewBindings().Bind(m, cv)
 	empty := NewBindings()
 
@@ -138,8 +138,8 @@ func TestPlannerBindings_MergedWith_EmptyCases(t *testing.T) {
 func TestPlannerBindings_MergedWith_ConcatenatesSameMatcher(t *testing.T) {
 	t.Parallel()
 	m := NewAnyValue()
-	cv1 := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
-	cv2 := &values.ConstantValue{Value: int64(2), Typ: values.TypeInt}
+	cv1 := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
+	cv2 := &values.ConstantValue{Value: int64(2), Typ: values.NullableLong}
 	left := NewBindings().Bind(m, cv1)
 	right := NewBindings().Bind(m, cv2)
 
@@ -159,8 +159,8 @@ func TestPlannerBindings_MergedWith_DisjointMatchers(t *testing.T) {
 	t.Parallel()
 	m1 := NewConstantMatcher()
 	m2 := NewFieldMatcher()
-	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
-	fv := &values.FieldValue{Field: "x", Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
+	fv := &values.FieldValue{Field: "x", Typ: values.NullableLong}
 
 	left := NewBindings().Bind(m1, cv)
 	right := NewBindings().Bind(m2, fv)
@@ -179,8 +179,8 @@ func TestPlannerBindings_MergedWith_DisjointMatchers(t *testing.T) {
 func TestPlannerBindings_MergedWith_ImmutableInputs(t *testing.T) {
 	t.Parallel()
 	m := NewAnyValue()
-	cv1 := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
-	cv2 := &values.ConstantValue{Value: int64(2), Typ: values.TypeInt}
+	cv1 := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
+	cv2 := &values.ConstantValue{Value: int64(2), Typ: values.NullableLong}
 	left := NewBindings().Bind(m, cv1)
 	right := NewBindings().Bind(m, cv2)
 
@@ -207,8 +207,8 @@ func TestArithmeticMatcher_OpMismatch(t *testing.T) {
 	// Input has matching shape but wrong op.
 	expr := &values.ArithmeticValue{
 		Op:    values.OpSub,
-		Left:  &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		Right: &values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		Right: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 	}
 	if got := matcher.BindMatches(NewBindings(), expr); len(got) != 0 {
 		t.Fatalf("op mismatch should return empty, got %d matches", len(got))
@@ -228,8 +228,8 @@ func TestArithmeticMatcher_BindsHostNode(t *testing.T) {
 	}
 	expr := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		Right: &values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		Right: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 	}
 	got := matcher.BindMatches(NewBindings(), expr)
 	if len(got) != 1 {
@@ -267,7 +267,7 @@ func TestAnyValue_RejectsNonValue(t *testing.T) {
 func TestInstance_NewConstantMatcher_RejectsField(t *testing.T) {
 	t.Parallel()
 	m := NewConstantMatcher()
-	fv := &values.FieldValue{Field: "x", Typ: values.TypeInt}
+	fv := &values.FieldValue{Field: "x", Typ: values.NullableLong}
 	if got := m.BindMatches(NewBindings(), fv); got != nil {
 		t.Fatalf("ConstantMatcher matched a FieldValue: %v", got)
 	}
@@ -277,7 +277,7 @@ func TestInstance_NewConstantMatcher_RejectsField(t *testing.T) {
 func TestInstance_NewFieldMatcher_RejectsConstant(t *testing.T) {
 	t.Parallel()
 	m := NewFieldMatcher()
-	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 	if got := m.BindMatches(NewBindings(), cv); got != nil {
 		t.Fatalf("FieldMatcher matched a ConstantValue: %v", got)
 	}

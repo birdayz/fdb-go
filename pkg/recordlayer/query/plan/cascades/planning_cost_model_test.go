@@ -38,11 +38,11 @@ func TestPlanningCostModel_FewerResidualPredicatesWins(t *testing.T) {
 	innerQ := expressions.ForEachQuantifier(scanRef)
 
 	pred1 := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 	)
 	pred2 := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "y", Typ: values.TypeInt},
+		&values.FieldValue{Field: "y", Typ: values.NullableLong},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(2)),
 	)
 
@@ -122,7 +122,7 @@ func TestPlanningCostModel_CNFSizeForOrPredicates(t *testing.T) {
 
 	pred := func(field string) predicates.QueryPredicate {
 		return predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: field, Typ: values.TypeInt},
+			&values.FieldValue{Field: field, Typ: values.NullableLong},
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 		)
 	}
@@ -219,7 +219,7 @@ func TestRewritingCostModelLess_TiesOnSelectsFewerTableFunctionsWins(t *testing.
 	// Both are non-Select, non-TableFunction — same count on selects.
 	// a has 0 TableFunctionExpressions, b has 1.
 	a := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	b := expressions.NewTableFunctionExpression(&values.ConstantValue{Value: int64(1), Typ: values.TypeInt})
+	b := expressions.NewTableFunctionExpression(&values.ConstantValue{Value: int64(1), Typ: values.NullableLong})
 
 	if !RewritingCostModelLess(a, b) {
 		t.Error("RewritingCostModelLess: 0 table functions should beat 1")
@@ -617,7 +617,7 @@ func (w *comparisonBearingWrapper) GetScanComparisons() []*predicates.Comparison
 func TestPlanningCostModel_CoveringEqualityIndexPreferredOverPrimaryScan(t *testing.T) {
 	t.Parallel()
 	primary := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	comp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: 42, Typ: values.TypeInt}}
+	comp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: 42, Typ: values.NullableLong}}
 	cr := predicates.EmptyComparisonRange()
 	mr := cr.Merge(&comp)
 	if !mr.Ok {
@@ -658,7 +658,7 @@ func TestPlanningCostModel_NonCoveringFullIndexLosesToPrimaryScan(t *testing.T) 
 func TestPlanningCostModel_EqualityIndexBeatsFullScan(t *testing.T) {
 	t.Parallel()
 	primary := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	comp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: 42, Typ: values.TypeInt}}
+	comp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: 42, Typ: values.NullableLong}}
 	cr := predicates.EmptyComparisonRange()
 	mr := cr.Merge(&comp)
 	if !mr.Ok {
@@ -1038,7 +1038,7 @@ func TestPlanningCostModelLess_Criterion14_MapPredicatesFilterCount(t *testing.T
 	// fix), so the operator nesting must live in the concrete plans, not only in
 	// the wrapper quantifiers.
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(scan, []predicates.QueryPredicate{pred})
@@ -1047,7 +1047,7 @@ func TestPlanningCostModelLess_Criterion14_MapPredicatesFilterCount(t *testing.T
 	// Plan B: same filter, plus a map on top → predicatesFilterCount=1, mapCount=1 → sum=2.
 	filterRef := expressions.InitialOf(oneFilter)
 	filterQ := expressions.ForEachQuantifier(filterRef)
-	mapPlan := plans.NewRecordQueryMapPlan(filterPlan, &values.ConstantValue{Value: int64(0), Typ: values.TypeInt})
+	mapPlan := plans.NewRecordQueryMapPlan(filterPlan, &values.ConstantValue{Value: int64(0), Typ: values.NullableLong})
 	withMap := mapPlan.WithQuantifiers([]expressions.Quantifier{filterQ})
 
 	opsA := findExpressionsByType(oneFilter, nil, nil)

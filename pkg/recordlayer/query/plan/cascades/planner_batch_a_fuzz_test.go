@@ -135,7 +135,7 @@ func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
 		for i := range preds {
 			col := colPool[(int(seed)+i)%len(colPool)]
 			preds[i] = predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: col, Typ: values.TypeInt},
+				&values.FieldValue{Field: col, Typ: values.NullableLong},
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i+1)),
 			)
 		}

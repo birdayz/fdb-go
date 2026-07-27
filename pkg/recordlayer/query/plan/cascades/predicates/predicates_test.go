@@ -33,7 +33,7 @@ func TestValuePredicate(t *testing.T) {
 		t.Fatalf("NULL bool: got %v", got)
 	}
 	// Non-boolean Value → TriUnknown (safety net against analyzer gaps).
-	p = NewValuePredicate(&values.ConstantValue{Value: int64(1), Typ: values.TypeInt})
+	p = NewValuePredicate(&values.ConstantValue{Value: int64(1), Typ: values.NullableLong})
 	if got, _ := p.Eval(nil); got != TriUnknown {
 		t.Fatalf("int literal: got %v", got)
 	}
@@ -199,7 +199,7 @@ func TestNotPredicate_ExplainParens(t *testing.T) {
 		{
 			name: "NOT(ComparisonPredicate) — wraps",
 			in: NewNot(NewComparisonPredicate(
-				&values.FieldValue{Field: "age", Typ: values.TypeInt},
+				&values.FieldValue{Field: "age", Typ: values.NullableLong},
 				Comparison{Type: ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 			)),
 			want: "NOT (age >= 18)",
@@ -352,7 +352,7 @@ func TestValueNamesEqual_NilSafety(t *testing.T) {
 	t.Parallel()
 	withNil := &ValuePredicate{Value: nil}
 	alsoNil := &ValuePredicate{Value: nil}
-	withVal := &ValuePredicate{Value: &values.FieldValue{Field: "x", Typ: values.TypeInt}}
+	withVal := &ValuePredicate{Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}}
 
 	if !PredicateEquals(withNil, alsoNil) {
 		t.Fatal("two ValuePredicate{Value:nil} should be equal")
@@ -399,11 +399,11 @@ func TestPredicateEquals(t *testing.T) {
 	}
 	// ComparisonPredicate structural (same operand name + same op + same literal)
 	c1 := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))},
 	)
 	c2 := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))},
 	)
 	if !PredicateEquals(c1, c2) {
@@ -411,7 +411,7 @@ func TestPredicateEquals(t *testing.T) {
 	}
 	// Different op.
 	c3 := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		Comparison{Type: ComparisonLessThan, Operand: values.LiteralValue(int64(5))},
 	)
 	if PredicateEquals(c1, c3) {
@@ -452,25 +452,25 @@ func TestChildren_Walk(t *testing.T) {
 func TestPredicateEquals_DifferentFieldsAreNotEqual(t *testing.T) {
 	t.Parallel()
 	age := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))},
 	)
 	rank := NewComparisonPredicate(
-		&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		&values.FieldValue{Field: "rank", Typ: values.NullableLong},
 		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))},
 	)
 	if PredicateEquals(age, rank) {
 		t.Fatal("age=5 and rank=5 should NOT be equal — different fields")
 	}
 	age2 := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))},
 	)
 	if !PredicateEquals(age, age2) {
 		t.Fatal("two identical age=5 predicates should be equal")
 	}
 	age10 := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(10))},
 	)
 	if PredicateEquals(age, age10) {
@@ -497,7 +497,7 @@ func TestPredicateEquals_ValuePredicateDifferentFields(t *testing.T) {
 // ComparisonPredicates crashed with "comparing uncomparable type".
 func TestPredicateEquals_ComparisonInOperand(t *testing.T) {
 	t.Parallel()
-	field := &values.FieldValue{Field: "x", Typ: values.TypeInt}
+	field := &values.FieldValue{Field: "x", Typ: values.NullableLong}
 	pIn1 := NewComparisonPredicate(field, Comparison{
 		Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)}),
 	})
@@ -522,7 +522,7 @@ func TestPredicateEquals_ComparisonInOperand(t *testing.T) {
 // equal even though their structural Operand differs.
 func TestPredicateEquals_UnaryIgnoresOperand(t *testing.T) {
 	t.Parallel()
-	field := &values.FieldValue{Field: "x", Typ: values.TypeInt}
+	field := &values.FieldValue{Field: "x", Typ: values.NullableLong}
 	nilOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNull})
 	nullValueOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNull, Operand: values.LiteralValue(nil)})
 	if !PredicateEquals(nilOp, nullValueOp) {
@@ -560,7 +560,7 @@ func TestComparisonPredicate_GetCorrelatedTo_LHSAndRHS(t *testing.T) {
 	lhsAlias := values.NamedCorrelationIdentifier("q_lhs")
 	rhsAlias := values.NamedCorrelationIdentifier("q_rhs")
 
-	lhs := &values.FieldValue{Field: "col", Typ: values.TypeInt, Child: values.NewQuantifiedObjectValue(lhsAlias)}
+	lhs := &values.FieldValue{Field: "col", Typ: values.NullableLong, Child: values.NewQuantifiedObjectValue(lhsAlias)}
 	rhs := values.NewQuantifiedObjectValue(rhsAlias)
 
 	pred := NewComparisonPredicate(lhs, Comparison{
@@ -584,7 +584,7 @@ func TestComparisonPredicate_GetCorrelatedTo_UnaryEmpty(t *testing.T) {
 	t.Parallel()
 	// IS NULL with a plain FieldValue (no QOV) — empty correlations.
 	pred := NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		Comparison{Type: ComparisonIsNull},
 	)
 	corr := pred.GetCorrelatedTo()

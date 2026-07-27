@@ -34,7 +34,7 @@ import (
 
 // idKey is the single comparison key (ordinal 0, "id") the merge pins use.
 func idKey() []values.Value {
-	return []values.Value{values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)}
+	return []values.Value{values.NewFieldValueWithResolvedOrdinal("id", 0, values.NullableLong)}
 }
 
 // mustBytes renders a continuation to bytes, failing the test on error.

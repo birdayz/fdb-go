@@ -21,8 +21,8 @@ func TestSimplifyPredicateValues_ComparisonOperandFold(t *testing.T) {
 	t.Parallel()
 	op := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		Right: &values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		Right: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 	}
 	pred := &ComparisonPredicate{
 		Operand:    op,
@@ -48,11 +48,11 @@ func TestSimplifyPredicateValues_ComparisonRHSFold(t *testing.T) {
 	t.Parallel()
 	rhs := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		Right: &values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		Right: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 	}
 	pred := &ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "NAME", Typ: values.TypeInt},
+		Operand: &values.FieldValue{Field: "NAME", Typ: values.NullableLong},
 		Comparison: Comparison{
 			Type:    ComparisonEquals,
 			Operand: rhs,
@@ -87,8 +87,8 @@ func TestSimplifyPredicateValues_AndRecurses(t *testing.T) {
 				Type: ComparisonEquals,
 				Operand: &values.ArithmeticValue{
 					Op:    values.OpAdd,
-					Left:  &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-					Right: &values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+					Left:  &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+					Right: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 				},
 			},
 		},
@@ -98,8 +98,8 @@ func TestSimplifyPredicateValues_AndRecurses(t *testing.T) {
 				Type: ComparisonEquals,
 				Operand: &values.ArithmeticValue{
 					Op:    values.OpMul,
-					Left:  &values.ConstantValue{Value: int64(3), Typ: values.TypeInt},
-					Right: &values.ConstantValue{Value: int64(4), Typ: values.TypeInt},
+					Left:  &values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
+					Right: &values.ConstantValue{Value: int64(4), Typ: values.NullableLong},
 				},
 			},
 		},
@@ -134,8 +134,8 @@ func TestSimplifyPredicateValues_NotRecurses(t *testing.T) {
 			Type: ComparisonEquals,
 			Operand: &values.ArithmeticValue{
 				Op:    values.OpAdd,
-				Left:  &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-				Right: &values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+				Left:  &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+				Right: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 			},
 		},
 	}
@@ -215,8 +215,8 @@ func TestSimplifyPredicateValues_OrRecurses(t *testing.T) {
 	t.Parallel()
 	op := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		Right: &values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		Right: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 	}
 	left := &ComparisonPredicate{
 		Operand:    op,
@@ -256,11 +256,11 @@ func TestSimplifyPredicateValues_OrRecurses(t *testing.T) {
 func TestSimplifyPredicateValues_OrPointerStableWhenNoFold(t *testing.T) {
 	t.Parallel()
 	leaf1 := &ComparisonPredicate{
-		Operand:    &values.FieldValue{Field: "x", Typ: values.TypeInt},
+		Operand:    &values.FieldValue{Field: "x", Typ: values.NullableLong},
 		Comparison: NewLiteralComparison(ComparisonEquals, int64(1)),
 	}
 	leaf2 := &ComparisonPredicate{
-		Operand:    &values.FieldValue{Field: "y", Typ: values.TypeInt},
+		Operand:    &values.FieldValue{Field: "y", Typ: values.NullableLong},
 		Comparison: NewLiteralComparison(ComparisonGreaterThan, int64(0)),
 	}
 	or := &OrPredicate{SubPredicates: []QueryPredicate{leaf1, leaf2}}
@@ -322,8 +322,8 @@ func TestSimplifyPredicateValues_DeeplyNested(t *testing.T) {
 	t.Parallel()
 	op := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
-		Right: &values.ConstantValue{Value: int64(3), Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
+		Right: &values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
 	}
 	leaf := &ComparisonPredicate{
 		Operand:    op,

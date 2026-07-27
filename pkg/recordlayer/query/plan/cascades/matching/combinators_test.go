@@ -15,7 +15,7 @@ func TestAllOf_AllDownstreamsMustMatch(t *testing.T) {
 	anyMatcher := NewAnyValue()
 	pattern := NewAllOf("ConstantValue", constMatcher, anyMatcher)
 
-	cv := &values.ConstantValue{Value: int64(7), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(7), Typ: values.NullableLong}
 	got := pattern.BindMatches(NewBindings(), cv)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 match, got %d", len(got))
@@ -41,7 +41,7 @@ func TestAllOf_AnyFailureCollapses(t *testing.T) {
 	// fails the field matcher, AllOf returns empty.
 	pattern := NewAllOf("Value", NewConstantMatcher(), NewFieldMatcher())
 
-	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 	if got := pattern.BindMatches(NewBindings(), cv); len(got) != 0 {
 		t.Fatalf("expected 0 matches on AND failure, got %d", len(got))
 	}
@@ -56,7 +56,7 @@ func TestAnyOf_UnionOfMatches(t *testing.T) {
 	pattern := NewAnyOf("Value", constMatcher, fieldMatcher)
 
 	// ConstantValue input: only constMatcher matches → 1 result.
-	cv := &values.ConstantValue{Value: int64(3), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(3), Typ: values.NullableLong}
 	got := pattern.BindMatches(NewBindings(), cv)
 	if len(got) != 1 {
 		t.Fatalf("ConstantValue input: expected 1 match, got %d", len(got))
@@ -104,7 +104,7 @@ func TestCombinators_Nested(t *testing.T) {
 	// ArithmeticMatcher's left×right bindings yields 1 result.
 	expr := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 		Right: &values.FieldValue{Field: "name", Typ: values.TypeString},
 	}
 	got := pattern.BindMatches(NewBindings(), expr)
@@ -118,7 +118,7 @@ func TestMergedWith_NilSafety(t *testing.T) {
 	t.Parallel()
 	empty := NewBindings()
 	m := NewConstantMatcher()
-	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 	nonEmpty := empty.Bind(m, cv)
 
 	// empty.MergedWith(nonEmpty) → nonEmpty
@@ -178,7 +178,7 @@ func TestAllOf_CartesianProduct(t *testing.T) {
 	any := NewAnyValue()
 	pattern := NewAllOf("Value", multi, any)
 
-	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 	got := pattern.BindMatches(NewBindings(), cv)
 	// doubleMatcher returns 2 partial bindings; any then returns 1
 	// each → 2 final results. AllOf's self-bind doesn't change count.
@@ -200,7 +200,7 @@ func TestAnyOf_PreservesDownstreamOrder(t *testing.T) {
 	second := NewAnyValue()
 	pattern := NewAnyOf("Value", first, second)
 
-	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 	got := pattern.BindMatches(NewBindings(), cv)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 matches (one per downstream), got %d", len(got))
@@ -219,11 +219,11 @@ func TestAnyOf_PreservesDownstreamOrder(t *testing.T) {
 func TestAllOf_ThreadsOuterBindings(t *testing.T) {
 	t.Parallel()
 	outerMatcher := NewAnyValue()
-	preset := &values.FieldValue{Field: "preset", Typ: values.TypeInt}
+	preset := &values.FieldValue{Field: "preset", Typ: values.NullableLong}
 	outer := NewBindings().Bind(outerMatcher, preset)
 
 	pattern := NewAllOf("Value", NewConstantMatcher())
-	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 	got := pattern.BindMatches(outer, cv)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 match, got %d", len(got))
@@ -264,7 +264,7 @@ func TestMergedWith_BothBindingsVisible(t *testing.T) {
 	t.Parallel()
 	m1 := NewConstantMatcher()
 	m2 := NewFieldMatcher()
-	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 	fv := &values.FieldValue{Field: "x", Typ: values.TypeString}
 	b1 := NewBindings().Bind(m1, cv)
 	b2 := NewBindings().Bind(m2, fv)

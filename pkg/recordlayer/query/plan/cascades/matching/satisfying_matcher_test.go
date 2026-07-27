@@ -14,7 +14,7 @@ func TestSatisfyingMatcher_PredicateTrue(t *testing.T) {
 		"FieldNamedX",
 		func(f *values.FieldValue) bool { return f.Field == "x" },
 	)
-	got := m.BindMatches(NewBindings(), &values.FieldValue{Field: "x", Typ: values.TypeInt})
+	got := m.BindMatches(NewBindings(), &values.FieldValue{Field: "x", Typ: values.NullableLong})
 	if len(got) != 1 {
 		t.Fatalf("expected 1 binding, got %d", len(got))
 	}
@@ -28,7 +28,7 @@ func TestSatisfyingMatcher_PredicateFalse(t *testing.T) {
 		"FieldNamedX",
 		func(f *values.FieldValue) bool { return f.Field == "x" },
 	)
-	if got := m.BindMatches(NewBindings(), &values.FieldValue{Field: "y", Typ: values.TypeInt}); got != nil {
+	if got := m.BindMatches(NewBindings(), &values.FieldValue{Field: "y", Typ: values.NullableLong}); got != nil {
 		t.Errorf("expected nil (predicate false), got %d bindings", len(got))
 	}
 }
@@ -46,7 +46,7 @@ func TestSatisfyingMatcher_TypeMismatch(t *testing.T) {
 			return true
 		},
 	)
-	if got := m.BindMatches(NewBindings(), &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}); got != nil {
+	if got := m.BindMatches(NewBindings(), &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}); got != nil {
 		t.Errorf("expected nil for wrong-type input, got %d", len(got))
 	}
 	if predicateRan {
@@ -88,7 +88,7 @@ func TestSatisfyingMatcher_DistinctIdentity(t *testing.T) {
 	t.Parallel()
 	a := NewSatisfyingMatcher[*values.FieldValue]("A", func(f *values.FieldValue) bool { return true })
 	b := NewSatisfyingMatcher[*values.FieldValue]("B", func(f *values.FieldValue) bool { return true })
-	in := &values.FieldValue{Field: "x", Typ: values.TypeInt}
+	in := &values.FieldValue{Field: "x", Typ: values.NullableLong}
 
 	bindings := NewBindings()
 	for _, partial := range a.BindMatches(bindings, in) {

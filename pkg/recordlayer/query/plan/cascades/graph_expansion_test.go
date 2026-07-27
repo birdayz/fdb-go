@@ -28,7 +28,7 @@ func TestEmptyGraphExpansion(t *testing.T) {
 func TestBuilderAddColumnsPredicatesQuantifiersPlaceholders(t *testing.T) {
 	t.Parallel()
 
-	fv := &values.FieldValue{Field: "A", Typ: values.TypeInt}
+	fv := &values.FieldValue{Field: "A", Typ: values.NullableLong}
 	alias := values.UniqueCorrelationIdentifier()
 	ph := predicates.NewPlaceholder(alias, fv)
 
@@ -64,7 +64,7 @@ func TestBuilderAddColumnsPredicatesQuantifiersPlaceholders(t *testing.T) {
 func TestMergeGraphExpansions(t *testing.T) {
 	t.Parallel()
 
-	fvA := &values.FieldValue{Field: "A", Typ: values.TypeInt}
+	fvA := &values.FieldValue{Field: "A", Typ: values.NullableLong}
 	fvB := &values.FieldValue{Field: "B", Typ: values.TypeString}
 
 	aliasA := values.UniqueCorrelationIdentifier()
@@ -106,7 +106,7 @@ func TestMergeGraphExpansions(t *testing.T) {
 func TestSealDeduplicatesPlaceholdersByAlias(t *testing.T) {
 	t.Parallel()
 
-	fv := &values.FieldValue{Field: "X", Typ: values.TypeInt}
+	fv := &values.FieldValue{Field: "X", Typ: values.NullableLong}
 	alias := values.UniqueCorrelationIdentifier()
 
 	// Two placeholders with the same alias but added separately —
@@ -136,7 +136,7 @@ func TestSealDeduplicatesPlaceholdersByAlias(t *testing.T) {
 func TestSealNoPlaceholders(t *testing.T) {
 	t.Parallel()
 
-	fv := &values.FieldValue{Field: "COL", Typ: values.TypeInt}
+	fv := &values.FieldValue{Field: "COL", Typ: values.NullableLong}
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
 
 	ge := NewGraphExpansionBuilder().
@@ -173,7 +173,7 @@ func TestBuildSelectWithResultValue(t *testing.T) {
 
 	sealed := ge.Seal()
 
-	resultValue := &values.FieldValue{Field: "RESULT", Typ: values.TypeInt}
+	resultValue := &values.FieldValue{Field: "RESULT", Typ: values.NullableLong}
 	sel := sealed.BuildSelectWithResultValue(resultValue)
 
 	if sel == nil {
@@ -193,7 +193,7 @@ func TestBuildSelectWithResultValue(t *testing.T) {
 func TestBuildSelectWithResultValuePanicsOnNonEmptyColumns(t *testing.T) {
 	t.Parallel()
 
-	fv := &values.FieldValue{Field: "A", Typ: values.TypeInt}
+	fv := &values.FieldValue{Field: "A", Typ: values.NullableLong}
 	ge := NewGraphExpansionBuilder().
 		AddColumn("A", fv).
 		Build()
@@ -215,7 +215,7 @@ func TestBuildSelect(t *testing.T) {
 	ref := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
 	q := expressions.ForEachQuantifier(ref)
 
-	fv := &values.FieldValue{Field: "Y", Typ: values.TypeInt}
+	fv := &values.FieldValue{Field: "Y", Typ: values.NullableLong}
 
 	ge := NewGraphExpansionBuilder().
 		AddColumn("Y", fv).
@@ -246,7 +246,7 @@ func TestSealDuplicateColumnNames(t *testing.T) {
 
 	// Two columns with the same name should both become unnamed
 	// after sealing (Java behavior).
-	fv1 := &values.FieldValue{Field: "A", Typ: values.TypeInt}
+	fv1 := &values.FieldValue{Field: "A", Typ: values.NullableLong}
 	fv2 := &values.FieldValue{Field: "B", Typ: values.TypeString}
 
 	ge := NewGraphExpansionBuilder().
@@ -277,7 +277,7 @@ func TestSealDuplicateColumnNames(t *testing.T) {
 func TestGetPlaceholdersOnSealed(t *testing.T) {
 	t.Parallel()
 
-	fv := &values.FieldValue{Field: "Z", Typ: values.TypeInt}
+	fv := &values.FieldValue{Field: "Z", Typ: values.NullableLong}
 	alias1 := values.UniqueCorrelationIdentifier()
 	alias2 := values.UniqueCorrelationIdentifier()
 	ph1 := predicates.NewPlaceholder(alias1, fv)

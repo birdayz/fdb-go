@@ -171,7 +171,7 @@ func TestStructuralRung_MapFilterCount_SortInvariant(t *testing.T) {
 	t.Parallel()
 	pred := func(field string) predicates.QueryPredicate {
 		return predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: field, Typ: values.TypeInt},
+			&values.FieldValue{Field: field, Typ: values.NullableLong},
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
 	}
 	// Same total residual (2 preds) but different filter-NODE count: one node vs a

@@ -133,7 +133,7 @@ func TestGetCorrelatedToOfValue_Nil(t *testing.T) {
 
 func TestGetCorrelatedToOfValue_ConstantNoCorrelations(t *testing.T) {
 	t.Parallel()
-	v := &ConstantValue{Value: int64(1), Typ: TypeInt}
+	v := &ConstantValue{Value: int64(1), Typ: NullableLong}
 	got := GetCorrelatedToOfValue(v)
 	if got == nil {
 		t.Fatal("GetCorrelatedToOfValue(ConstantValue) returned nil, want non-nil empty map")

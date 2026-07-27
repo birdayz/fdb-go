@@ -124,13 +124,13 @@ func TestSimplify_FullPipeline(t *testing.T) {
 	//   )
 	// After simplification: just `age >= 18`.
 	agePred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	pred := predicates.NewAnd(
 		predicates.NewAnd(
 			predicates.NewComparisonPredicate(
-				&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+				&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))},
 			),
 			predicates.NewNot(predicates.NewNot(predicates.NewConstantPredicate(predicates.TriTrue))),
@@ -181,7 +181,7 @@ func TestSimplify_IsNullVariants(t *testing.T) {
 	t.Run("ConstantValue LHS, IS NOT NULL folds to TRUE", func(t *testing.T) {
 		t.Parallel()
 		pred := predicates.NewComparisonPredicate(
-			&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+			&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 			predicates.Comparison{Type: predicates.ComparisonIsNotNull},
 		)
 		got := Simplify(pred, DefaultSimplifyRules())
@@ -200,8 +200,8 @@ func TestSimplify_CompositeConstantOnEitherSide_Folds(t *testing.T) {
 	t.Parallel()
 	add12 := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		Right: &values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		Right: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 	}
 	cases := []struct {
 		name string
@@ -210,12 +210,12 @@ func TestSimplify_CompositeConstantOnEitherSide_Folds(t *testing.T) {
 		{
 			name: "(1+2) > 0",
 			pred: predicates.NewComparisonPredicate(add12,
-				predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: &values.ConstantValue{Value: int64(0), Typ: values.TypeInt}}),
+				predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: &values.ConstantValue{Value: int64(0), Typ: values.NullableLong}}),
 		},
 		{
 			name: "0 < (1+2)",
 			pred: predicates.NewComparisonPredicate(
-				&values.ConstantValue{Value: int64(0), Typ: values.TypeInt},
+				&values.ConstantValue{Value: int64(0), Typ: values.NullableLong},
 				predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: add12}),
 		},
 	}
@@ -241,8 +241,8 @@ func TestSimplify_CompositeConstantOnEitherSide_Folds(t *testing.T) {
 func TestSimplify_NonConstantRHS_Survives(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.FieldValue{Field: "cutoff", Typ: values.TypeInt}},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.FieldValue{Field: "cutoff", Typ: values.NullableLong}},
 	)
 	got := Simplify(pred, DefaultSimplifyRules())
 	cp, ok := got.(*predicates.ComparisonPredicate)
@@ -266,8 +266,8 @@ func TestSimplify_NonConstantRHS_Survives(t *testing.T) {
 func TestSimplify_NotComparison_NonConstantRHS_Rewrites(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewNot(predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "a", Typ: values.TypeInt},
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.FieldValue{Field: "b", Typ: values.TypeInt}},
+		&values.FieldValue{Field: "a", Typ: values.NullableLong},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.FieldValue{Field: "b", Typ: values.NullableLong}},
 	))
 	got := Simplify(pred, DefaultSimplifyRules())
 	cp, ok := got.(*predicates.ComparisonPredicate)
@@ -308,7 +308,7 @@ func TestSimplify_RecursesThroughNot(t *testing.T) {
 // NotComparisonRewriteRule cooperating across the fixpoint.
 func TestSimplify_TripleNotCollapses(t *testing.T) {
 	t.Parallel()
-	age := &values.FieldValue{Field: "age", Typ: values.TypeInt}
+	age := &values.FieldValue{Field: "age", Typ: values.NullableLong}
 	cp := predicates.NewComparisonPredicate(age, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))})
 	got := Simplify(
 		predicates.NewNot(predicates.NewNot(predicates.NewNot(cp))),
@@ -330,7 +330,7 @@ func TestSimplify_TripleNotCollapses(t *testing.T) {
 func TestSimplify_Idempotent(t *testing.T) {
 	t.Parallel()
 	rules := DefaultSimplifyRules()
-	age := &values.FieldValue{Field: "age", Typ: values.TypeInt}
+	age := &values.FieldValue{Field: "age", Typ: values.NullableLong}
 	samples := []predicates.QueryPredicate{
 		// Fully simplifiable → collapses to a constant.
 		predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue), predicates.NewConstantPredicate(predicates.TriFalse)),
@@ -400,16 +400,16 @@ func TestSimplify_ComparisonPlusAnd(t *testing.T) {
 	// folds: (TRUE AND TRUE AND age >= 18). AND identity-drop
 	// removes the TRUEs, leaving the surviving ComparisonPredicate.
 	agePred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	pred := predicates.NewAnd(
 		predicates.NewComparisonPredicate(
-			&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+			&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))},
 		),
 		predicates.NewComparisonPredicate(
-			&values.ConstantValue{Value: int64(3), Typ: values.TypeInt},
+			&values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
 			predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(1))},
 		),
 		agePred,

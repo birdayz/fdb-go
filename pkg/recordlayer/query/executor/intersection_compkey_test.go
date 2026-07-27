@@ -21,7 +21,7 @@ import (
 func TestIntersectionCompKeyFunc_Int32Widened(t *testing.T) {
 	t.Parallel()
 
-	keyVals := []values.Value{&values.ConstantValue{Value: int32(7), Typ: values.TypeInt}}
+	keyVals := []values.Value{&values.ConstantValue{Value: int32(7), Typ: values.NullableLong}}
 	want := tuple.Tuple{int64(7)}.Pack()
 
 	assertPacks := func(t *testing.T, tup tuple.Tuple) {

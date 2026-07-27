@@ -168,11 +168,11 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 	// String functions.
 	"UPPER":            scalarCallFunction(scalarFunctionUpper, TypeString),
 	"LOWER":            scalarCallFunction(scalarFunctionLower, TypeString),
-	"LENGTH":           scalarCallFunction(scalarFunctionLength, TypeInt),
-	"LEN":              scalarCallFunction(scalarFunctionLength, TypeInt),
-	"CHAR_LENGTH":      scalarCallFunction(scalarFunctionLength, TypeInt),
-	"CHARACTER_LENGTH": scalarCallFunction(scalarFunctionLength, TypeInt),
-	"OCTET_LENGTH":     scalarCallFunction(scalarFunctionOctetLength, TypeInt),
+	"LENGTH":           scalarCallFunction(scalarFunctionLength, NullableLong),
+	"LEN":              scalarCallFunction(scalarFunctionLength, NullableLong),
+	"CHAR_LENGTH":      scalarCallFunction(scalarFunctionLength, NullableLong),
+	"CHARACTER_LENGTH": scalarCallFunction(scalarFunctionLength, NullableLong),
+	"OCTET_LENGTH":     scalarCallFunction(scalarFunctionOctetLength, NullableLong),
 	"SUBSTRING":        scalarCallFunction(scalarFunctionSubstring, TypeString),
 	"SUBSTR":           scalarCallFunction(scalarFunctionSubstring, TypeString),
 	"TRIM":             scalarCallFunction(scalarFunctionTrim, TypeString),
@@ -183,7 +183,7 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 	"REPLACE":          scalarCallFunction(scalarFunctionReplace, TypeString),
 	"LEFT":             scalarCallFunction(scalarFunctionLeft, TypeString),
 	"RIGHT":            scalarCallFunction(scalarFunctionRight, TypeString),
-	"POSITION":         scalarCallFunction(scalarFunctionPosition, TypeInt),
+	"POSITION":         scalarCallFunction(scalarFunctionPosition, NullableLong),
 	"REVERSE":          scalarCallFunction(scalarFunctionReverse, TypeString),
 
 	// Math functions.
@@ -229,37 +229,37 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 		scalarFunctionIf, scalarFunctionBranchResult),
 
 	// Bit operators lower directly from BitExpressionAtom.
-	"BITAND": routedScalarFunction(scalarFunctionBitAnd, TypeInt),
-	"BITOR":  routedScalarFunction(scalarFunctionBitOr, TypeInt),
-	"BITXOR": routedScalarFunction(scalarFunctionBitXor, TypeInt),
+	"BITAND": routedScalarFunction(scalarFunctionBitAnd, NullableLong),
+	"BITOR":  routedScalarFunction(scalarFunctionBitOr, NullableLong),
+	"BITXOR": routedScalarFunction(scalarFunctionBitXor, NullableLong),
 
 	// Date/time functions.
 	"YEAR": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, TypeInt),
+		scalarCallFunction(scalarFunctionDatePart, NullableLong),
 		LegacyMapScalarFunctionYear),
 	"MONTH": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, TypeInt),
+		scalarCallFunction(scalarFunctionDatePart, NullableLong),
 		LegacyMapScalarFunctionMonth),
 	"DAY": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, TypeInt),
+		scalarCallFunction(scalarFunctionDatePart, NullableLong),
 		LegacyMapScalarFunctionDay),
 	"DAYOFMONTH": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, TypeInt),
+		scalarCallFunction(scalarFunctionDatePart, NullableLong),
 		LegacyMapScalarFunctionDayOfMonth),
 	"HOUR": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, TypeInt),
+		scalarCallFunction(scalarFunctionDatePart, NullableLong),
 		LegacyMapScalarFunctionHour),
 	"MINUTE": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, TypeInt),
+		scalarCallFunction(scalarFunctionDatePart, NullableLong),
 		LegacyMapScalarFunctionMinute),
 	"SECOND": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, TypeInt),
+		scalarCallFunction(scalarFunctionDatePart, NullableLong),
 		LegacyMapScalarFunctionSecond),
 	"DAYOFWEEK": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, TypeInt),
+		scalarCallFunction(scalarFunctionDatePart, NullableLong),
 		LegacyMapScalarFunctionDayOfWeek),
 	"DAYOFYEAR": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, TypeInt),
+		scalarCallFunction(scalarFunctionDatePart, NullableLong),
 		LegacyMapScalarFunctionDayOfYear),
 	"CURRENT_DATE": routedScalarFunction(
 		scalarFunctionStatementDate, NullableDate),

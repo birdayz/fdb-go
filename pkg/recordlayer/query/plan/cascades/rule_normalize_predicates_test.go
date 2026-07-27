@@ -10,7 +10,7 @@ import (
 
 func pred(name string) predicates.QueryPredicate {
 	return predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: name, Typ: values.TypeInt},
+		&values.FieldValue{Field: name, Typ: values.NullableLong},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 	)
 }

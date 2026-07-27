@@ -22,8 +22,8 @@ func TestTranslateQueryValueMaybe_CoveringIndexMultiColumnProjection(t *testing.
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("candidate")
-	fx := &values.FieldValue{Field: "X", Typ: values.TypeInt}
-	fy := &values.FieldValue{Field: "Y", Typ: values.TypeInt}
+	fx := &values.FieldValue{Field: "X", Typ: values.NullableLong}
+	fy := &values.FieldValue{Field: "Y", Typ: values.NullableLong}
 
 	qv := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "a", Value: fx},

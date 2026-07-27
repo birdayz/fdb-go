@@ -1323,8 +1323,8 @@ func TestWalkExpression_IntegerDivOperator(t *testing.T) {
 			// channel (matches Java's ArithmeticException; executor maps 22012).
 			divZero := &values.ArithmeticValue{
 				Op:    values.OpDiv,
-				Left:  &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
-				Right: &values.ConstantValue{Value: int64(0), Typ: values.TypeInt},
+				Left:  &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
+				Right: &values.ConstantValue{Value: int64(0), Typ: values.NullableLong},
 			}
 			if v, err := divZero.Evaluate(nil); v != nil || err == nil {
 				t.Errorf("5/0: got (%v, %v), want (nil, ArithmeticDivisionByZeroError)", v, err)
@@ -1404,7 +1404,7 @@ func TestWalkExpression_CastTargets(t *testing.T) {
 	cases := map[string]values.Type{
 		"CAST(name AS STRING)":  values.TypeString,
 		"CAST(name AS BOOLEAN)": values.TypeBool,
-		"CAST(name AS BIGINT)":  values.TypeInt,
+		"CAST(name AS BIGINT)":  values.NullableLong,
 	}
 	for sql, want := range cases {
 		t.Run(sql, func(t *testing.T) {
@@ -1534,10 +1534,10 @@ func TestWalkExpression_ScalarFunctions(t *testing.T) {
 	}{
 		{"SELECT * FROM users WHERE UPPER(name)", "UPPER", values.TypeString, 1},
 		{"SELECT * FROM users WHERE LOWER(name)", "LOWER", values.TypeString, 1},
-		{"SELECT * FROM users WHERE LENGTH(name)", "LENGTH", values.TypeInt, 1},
-		{"SELECT * FROM users WHERE CHAR_LENGTH(name)", "CHAR_LENGTH", values.TypeInt, 1},
-		{"SELECT * FROM users WHERE CHARACTER_LENGTH(name)", "CHARACTER_LENGTH", values.TypeInt, 1},
-		{"SELECT * FROM users WHERE OCTET_LENGTH(name)", "OCTET_LENGTH", values.TypeInt, 1},
+		{"SELECT * FROM users WHERE LENGTH(name)", "LENGTH", values.NullableLong, 1},
+		{"SELECT * FROM users WHERE CHAR_LENGTH(name)", "CHAR_LENGTH", values.NullableLong, 1},
+		{"SELECT * FROM users WHERE CHARACTER_LENGTH(name)", "CHARACTER_LENGTH", values.NullableLong, 1},
+		{"SELECT * FROM users WHERE OCTET_LENGTH(name)", "OCTET_LENGTH", values.NullableLong, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fn, func(t *testing.T) {
@@ -1586,7 +1586,7 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 		// result type from the operand (id is LONG) instead of UNKNOWN.
 		// id is a genuine 32-bit INT column, and these functions are
 		// type-preserving in their first operand (Java Math.abs(int) is
-		// int) — so they yield INT, not the old LONG the TypeInt alias
+		// int) — so they yield INT, not the old LONG the NullableLong alias
 		// erased everything to.
 		{"SELECT * FROM users WHERE ABS(id)", "ABS", values.NullableInt, 1},
 		{"SELECT * FROM users WHERE FLOOR(id)", "FLOOR", values.NullableInt, 1},
@@ -1608,7 +1608,7 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 		{"SELECT * FROM users WHERE REPLACE(name, 'a', 'b')", "REPLACE", values.TypeString, 3},
 		// Extended-set additions: walker must build ScalarFunctionValue
 		// for these fn names so the cascades fold path can fire.
-		{"SELECT * FROM users WHERE LEN(name)", "LEN", values.TypeInt, 1},
+		{"SELECT * FROM users WHERE LEN(name)", "LEN", values.NullableLong, 1},
 		{"SELECT * FROM users WHERE CONCAT_WS('-', name, name)", "CONCAT_WS", values.TypeString, 3},
 		// PI() is a zero-arg function — exercises the no-args branch
 		// of the function-call walker (Java's `PI()` parse shape).

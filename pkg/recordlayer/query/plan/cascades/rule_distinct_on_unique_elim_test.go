@@ -488,13 +488,13 @@ func TestNewPhysicalDistinctFor_FreezesStreamingInner(t *testing.T) {
 	// ORDERED member: an in-memory sort on G over an index whose result type
 	// carries G, so the whole-row dedup key {G} is adjacent → Streaming=true.
 	gRec := values.NewRecordType("", false, []values.Field{
-		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
+		{Name: "G", FieldType: values.NullableLong, Ordinal: 0},
 	})
 	indexPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
 	sortKeys := []plans.SortKey{{
 		Field:      "G",
 		NullsFirst: true,
-		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
+		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.NullableLong),
 	}}
 	// Since RFC-184 W2 the bare in-memory sort IS its own physical member (no
 	// physicalInMemorySortWrapper), so it doubles as the ordered member here.

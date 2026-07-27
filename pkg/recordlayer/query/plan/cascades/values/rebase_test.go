@@ -112,7 +112,7 @@ func TestRebaseValue_CastRecursion(t *testing.T) {
 	t.Parallel()
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
-	v := NewCastValue(&QuantifiedObjectValue{Correlation: oldAlias}, TypeInt)
+	v := NewCastValue(&QuantifiedObjectValue{Correlation: oldAlias}, NullableLong)
 	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
 	cast, ok := result.(*CastValue)
 	if !ok {
@@ -129,7 +129,7 @@ func TestRebaseValue_CastRecursion(t *testing.T) {
 
 func TestRebaseValue_CastNoChange(t *testing.T) {
 	t.Parallel()
-	v := NewCastValue(&ConstantValue{Value: 42}, TypeInt)
+	v := NewCastValue(&ConstantValue{Value: 42}, NullableLong)
 	result := RebaseValue(v, AliasMap{
 		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
 	})
@@ -272,7 +272,7 @@ func TestRebaseValue_QuantifiedRecordValue(t *testing.T) {
 	t.Parallel()
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
-	v := &QuantifiedRecordValue{Alias: oldAlias, ResultType: TypeInt}
+	v := &QuantifiedRecordValue{Alias: oldAlias, ResultType: NullableLong}
 	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
 	qrv, ok := result.(*QuantifiedRecordValue)
 	if !ok {
@@ -281,7 +281,7 @@ func TestRebaseValue_QuantifiedRecordValue(t *testing.T) {
 	if qrv.Alias != newAlias {
 		t.Fatalf("expected alias %v, got %v", newAlias, qrv.Alias)
 	}
-	if qrv.ResultType != TypeInt {
+	if qrv.ResultType != NullableLong {
 		t.Fatal("ResultType should be preserved")
 	}
 }

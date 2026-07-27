@@ -102,7 +102,7 @@ func aggGroupedFixture() ([]QueryResult, []values.Value, []expressions.Aggregate
 	}
 	groupKeys := []values.Value{values.NewFieldValueWithResolvedOrdinal("dept", 1, values.TypeString)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("amount", 0, values.TypeInt)},
+		{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("amount", 0, values.NullableLong)},
 	}
 	return rows, groupKeys, aggs
 }
@@ -181,7 +181,7 @@ func TestAggregateCursor_SingleElementGroups_ContinuationAdvance(t *testing.T) {
 	}
 	groupKeys := []values.Value{values.NewFieldValueWithResolvedOrdinal("dept", 1, values.TypeString)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("amount", 0, values.TypeInt)},
+		{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("amount", 0, values.NullableLong)},
 	}
 
 	c := newAggregateCursor(recordlayer.FromList(rows), groupKeys, aggs, nil, nil)

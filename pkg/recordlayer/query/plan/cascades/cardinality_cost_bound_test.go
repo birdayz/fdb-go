@@ -150,7 +150,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		return plans.NewRecordQueryScanPlan([]string{t}, values.UnknownType, false)
 	}
 	pkOf := func(field string) []values.Value {
-		return []values.Value{&values.FieldValue{Field: field, Typ: values.TypeInt}}
+		return []values.Value{&values.FieldValue{Field: field, Typ: values.NullableLong}}
 	}
 	// pointLookupScan is a full-PK-equality primary scan: computeCardinalities
 	// proves AtMostOne (0,1), and HintCost's isProvablePointProbe branch
@@ -220,7 +220,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	// --- projection / map (cardinality-preserving) --------------------------
 	add("projection/overBoundedChild", func(t *testing.T) plans.RecordQueryPlan {
 		return plans.NewRecordQueryProjectionPlan(
-			[]values.Value{&values.FieldValue{Field: "K", Typ: values.TypeInt}}, pointLookupScan(t, "PROJ", "ID"))
+			[]values.Value{&values.FieldValue{Field: "K", Typ: values.NullableLong}}, pointLookupScan(t, "PROJ", "ID"))
 	})
 	add("map/overBoundedChild", func(t *testing.T) plans.RecordQueryPlan {
 		return plans.NewRecordQueryMapPlan(pointLookupScan(t, "MAP", "ID"), nil)
@@ -268,14 +268,14 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	add("inUnion/knownFanoutThree", func(t *testing.T) plans.RecordQueryPlan {
 		p := plans.NewRecordQueryInUnionPlan(
 			pointLookupScan(t, "INU_PP", "ID"), []string{"inu_b"},
-			[]values.Value{&values.FieldValue{Field: "K", Typ: values.TypeInt}}, false)
+			[]values.Value{&values.FieldValue{Field: "K", Typ: values.NullableLong}}, false)
 		p.SetInSources([][]any{{int64(1), int64(2), int64(3)}})
 		return p
 	})
 	add("inUnion/emptySource", func(t *testing.T) plans.RecordQueryPlan {
 		p := plans.NewRecordQueryInUnionPlan(
 			pointLookupScan(t, "INU_EMPTY", "ID"), []string{"inu_b2"},
-			[]values.Value{&values.FieldValue{Field: "K", Typ: values.TypeInt}}, false)
+			[]values.Value{&values.FieldValue{Field: "K", Typ: values.NullableLong}}, false)
 		p.SetInSources([][]any{{}})
 		return p
 	})
@@ -350,7 +350,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	})
 	add("limit/runtimeValue_transparentBothSides", func(t *testing.T) plans.RecordQueryPlan {
 		return plans.NewRecordQueryLimitPlanWithValue(
-			scan("LIMIT_RT"), &values.FieldValue{Field: "N", Typ: values.TypeInt}, 0)
+			scan("LIMIT_RT"), &values.FieldValue{Field: "N", Typ: values.NullableLong}, 0)
 	})
 
 	// --- aggregate index (leaf, always unknown-max) --------------------------
@@ -362,7 +362,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	// --- streaming aggregation: grouped (unknown) vs ungrouped (KNOWN VIOLATION) ---
 	add("streamingAggregation/grouped", func(t *testing.T) plans.RecordQueryPlan {
 		return plans.NewRecordQueryStreamingAggregationPlan(
-			scan("SAGG_GROUPED"), []values.Value{&values.FieldValue{Field: "K", Typ: values.TypeInt}}, nil)
+			scan("SAGG_GROUPED"), []values.Value{&values.FieldValue{Field: "K", Typ: values.NullableLong}}, nil)
 	})
 	addExcluded("streamingAggregation/ungrouped", knownExceedsMax,
 		"an ungrouped RecordQueryStreamingAggregationPlan structurally emits EXACTLY ONE output row (property "+
@@ -388,7 +388,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		// plain point-lookup leg does not do.
 		seed := plans.NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
 		rec := plans.NewRecordQueryScanPlan([]string{"LU_REC"}, values.UnknownType, false).
-			WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.TypeInt}}).
+			WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.NullableLong}}).
 			WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))})
 		return plans.NewRecordQueryRecursiveLevelUnionPlan(
 			seed, rec, values.NamedCorrelationIdentifier("lu_scan"), values.NamedCorrelationIdentifier("lu_insert"))
@@ -672,7 +672,7 @@ func randCardinalityPlan(t *testing.T, rng *rand.Rand, depth int, nextCorr func(
 			return scan("RC_SCAN")
 		case 1:
 			return scan("RC_PL").
-				WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.TypeInt}}).
+				WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.NullableLong}}).
 				WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))})
 		default:
 			return plans.NewRecordQueryIndexPlan("RC_IDX", nil, []string{"RC_IDX_T"}, values.UnknownType, false)
@@ -692,7 +692,7 @@ func randCardinalityPlan(t *testing.T, rng *rand.Rand, depth int, nextCorr func(
 		return plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, child())
 	case 3:
 		return plans.NewRecordQueryProjectionPlan(
-			[]values.Value{&values.FieldValue{Field: "K", Typ: values.TypeInt}}, child())
+			[]values.Value{&values.FieldValue{Field: "K", Typ: values.NullableLong}}, child())
 	case 4:
 		return plans.NewRecordQueryMapPlan(child(), nil)
 	case 5:
