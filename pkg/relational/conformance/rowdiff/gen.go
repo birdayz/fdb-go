@@ -812,11 +812,34 @@ func genAggQuery(rng *rand.Rand, table TableDef) Query {
 	}
 	// GROUP BY two thirds of the time; prefer an indexed key so the
 	// aggregate-index / streaming-aggregation paths are reachable.
+	//
+	// DOUBLE and FLOAT are eligible grouping keys. They were restricted to
+	// BIGINT, which meant the harness could not reach a signed-zero GROUP BY
+	// at all: the D/E columns seed -0.0, but a grouping key was never chosen
+	// from them, so a reviewer had to find by reading what the generator was
+	// structurally incapable of generating.
+	//
+	// Safe now that grouping is settled: -0.0 and +0.0 are two groups on every
+	// path (packedDedupKey's doc comment has the argument), and the oracle
+	// agrees by construction — it keys groups on `%v(%T)`, and %v renders -0
+	// and 0 distinctly. The float domain carries no NaN or Infinity (see the
+	// ColType doc comment: neither has a SQL literal spelling), so there is no
+	// payload-identity question to model here.
+	groupable := func(t ColType) bool {
+		return t == ColBigint || t == ColDouble || t == ColFloat
+	}
 	if rng.IntN(3) != 0 {
 		keys := []string{}
 		for _, col := range table.Cols {
-			if col.Type == ColBigint && indexed[col.Name] {
+			if groupable(col.Type) && indexed[col.Name] {
 				keys = append(keys, col.Name)
+			}
+		}
+		if len(keys) == 0 {
+			for _, col := range table.Cols {
+				if groupable(col.Type) {
+					keys = append(keys, col.Name)
+				}
 			}
 		}
 		if len(keys) == 0 {
