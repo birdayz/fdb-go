@@ -829,6 +829,21 @@ func canonicalizeZeroSignedBound(comparand any, t predicates.ComparisonType) any
 	}
 }
 
+// anyLaterComparisonConstrains reports whether any comparison after index i
+// narrows the key range. A candidate index contributes one ComparisonRange per
+// indexed column, so unconstrained trailing columns appear as EMPTY ranges and
+// must not count — otherwise a scan range that genuinely terminates at i looks
+// non-terminal purely because the index has more columns than the query
+// mentions.
+func anyLaterComparisonConstrains(comparisons []*predicates.ComparisonRange, i int) bool {
+	for _, cr := range comparisons[i+1:] {
+		if cr != nil && !cr.IsEmpty() {
+			return true
+		}
+	}
+	return false
+}
+
 func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, error) {
 	if len(comparisons) == 0 {
 		return recordlayer.TupleRangeAllOf(nil), nil
@@ -884,12 +899,29 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		// [prefix+(-0.0) .. prefix+(+0.0)] inclusive-inclusive is the EXACT set of
 		// keys an IEEE `= 0` (or an IN-list sub-probe on a zero element, which
 		// reaches this same equality path once per element) must match — neither
-		// more nor fewer. A zero equality that is NOT terminal (more columns follow
-		// in a composite index) is intentionally left unwidened here: expressing
-		// "this component is EITHER key, AND later components are pinned exactly"
-		// needs a two-way range union, not a single contiguous TupleRange, and no
-		// composite-index-signed-zero repro exists yet to justify that machinery.
-		if i == len(comparisons)-1 && isZeroFloatBound(val) {
+		// more nor fewer.
+		//
+		// "Terminal" means NOTHING AFTER THIS CONSTRAINS THE KEY, which is not
+		// the same as being the last element of the slice. A candidate index
+		// contributes one ComparisonRange per indexed column, so an equality on
+		// the leading column of a composite index is followed by an EMPTY range
+		// for every column the query does not constrain. Testing
+		// `i == len(comparisons)-1` skipped the widening in exactly that case:
+		// `v = 0` planned against index (v, w) produced comparisons
+		// [equality(v), empty(w)], the equality sat at i=0 with len-1 == 1, and
+		// the probe found only its own signed zero. That is a wrong-rows bug
+		// whenever the chosen index happens to be composite — the same query
+		// answered correctly through a single-column index and incorrectly
+		// through a composite one.
+		//
+		// A trailing CONSTRAINING comparison is different and still correctly
+		// excluded: with `v = 0 AND w = 5` the union of (-0.0,5) and (+0.0,5) is
+		// not a contiguous interval — the span between them also admits
+		// (-0.0, w>5) and (+0.0, w<5) — so a single TupleRange cannot express it
+		// and widening here would return WRONG rows rather than missing ones.
+		// That case needs a genuine two-probe union (TODO CQ-28) and is left
+		// alone deliberately.
+		if isZeroFloatBound(val) && !anyLaterComparisonConstrains(comparisons, i) {
 			low := append(append(tuple.Tuple{}, prefix...), negativeZeroLike(val))
 			high := append(append(tuple.Tuple{}, prefix...), positiveZeroLike(val))
 			return recordlayer.TupleRange{

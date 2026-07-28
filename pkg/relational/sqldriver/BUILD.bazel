@@ -87,6 +87,7 @@ go_test(
         "comparison_typecheck_probe_test.go",
         "compkey_ordinal_fdb_test.go",
         "composite_index_sarg_probe_test.go",
+        "composite_index_zero_widen_test.go",
         "composite_pk_probe_test.go",
         "compound_index_oracle_test.go",
         "computed_correlated_scalar_subquery_fdb_test.go",
