@@ -13,11 +13,11 @@ func TestSimplifyValue_NilSafe(t *testing.T) {
 
 func TestSimplifyValue_LeafConstantsUnchanged(t *testing.T) {
 	t.Parallel()
-	c := &ConstantValue{Value: int64(5), Typ: TypeInt}
+	c := &ConstantValue{Value: int64(5), Typ: NullableLong}
 	if got := SimplifyValue(c); got != Value(c) {
 		t.Fatalf("ConstantValue: should be unchanged (pointer-equal)")
 	}
-	null := NewNullValue(TypeInt)
+	null := NewNullValue(NullableLong)
 	if got := SimplifyValue(null); got != Value(null) {
 		t.Fatal("NullValue: should be unchanged")
 	}
@@ -25,7 +25,7 @@ func TestSimplifyValue_LeafConstantsUnchanged(t *testing.T) {
 	if got := SimplifyValue(bv); got != Value(bv) {
 		t.Fatal("BooleanValue: should be unchanged")
 	}
-	fv := &FieldValue{Field: "x", Typ: TypeInt}
+	fv := &FieldValue{Field: "x", Typ: NullableLong}
 	if got := SimplifyValue(fv); got != Value(fv) {
 		t.Fatal("FieldValue: non-constant, should be unchanged")
 	}
@@ -36,8 +36,8 @@ func TestSimplifyValue_ArithmeticFold(t *testing.T) {
 	// 1 + 2 → 3
 	a := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
-		Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+		Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
+		Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 	}
 	got := SimplifyValue(a)
 	cv, ok := got.(*ConstantValue)
@@ -47,8 +47,8 @@ func TestSimplifyValue_ArithmeticFold(t *testing.T) {
 	if cv.Value != int64(3) {
 		t.Fatalf("Value: got %v, want 3", cv.Value)
 	}
-	if cv.Typ != TypeInt {
-		t.Fatalf("Typ: got %v, want TypeInt (preserved from source)", cv.Typ)
+	if cv.Typ != NullableLong {
+		t.Fatalf("Typ: got %v, want NullableLong (preserved from source)", cv.Typ)
 	}
 }
 
@@ -59,10 +59,10 @@ func TestSimplifyValue_NestedArithmeticFold(t *testing.T) {
 		Op: OpMul,
 		Left: &ArithmeticValue{
 			Op:    OpAdd,
-			Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
-			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+			Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
+			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		},
-		Right: &ConstantValue{Value: int64(3), Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(3), Typ: NullableLong},
 	}
 	got := SimplifyValue(v)
 	cv := got.(*ConstantValue)
@@ -78,11 +78,11 @@ func TestSimplifyValue_PartialFold(t *testing.T) {
 	// collapses).
 	v := &ArithmeticValue{
 		Op:   OpAdd,
-		Left: &FieldValue{Field: "name", Typ: TypeInt},
+		Left: &FieldValue{Field: "name", Typ: NullableLong},
 		Right: &ArithmeticValue{
 			Op:    OpAdd,
-			Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
-			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+			Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
+			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		},
 	}
 	got := SimplifyValue(v).(*ArithmeticValue)
@@ -106,8 +106,8 @@ func TestSimplifyValue_NoFoldOnNonConstantLeaves(t *testing.T) {
 	// name + 5 → name + 5 (no fold; pointer-equal).
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "name", Typ: TypeInt},
-		Right: &ConstantValue{Value: int64(5), Typ: TypeInt},
+		Left:  &FieldValue{Field: "name", Typ: NullableLong},
+		Right: &ConstantValue{Value: int64(5), Typ: NullableLong},
 	}
 	got := SimplifyValue(v)
 	if got != Value(v) {
@@ -121,8 +121,8 @@ func TestSimplifyValue_CastFold(t *testing.T) {
 	v := NewCastValue(
 		&ArithmeticValue{
 			Op:    OpAdd,
-			Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
-			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+			Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
+			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		},
 		TypeString,
 	)
@@ -164,7 +164,7 @@ func TestSimplifyValue_ScalarFunctionPartialFold(t *testing.T) {
 		t.Fatalf("UPPER(field): should be unchanged")
 	}
 	// LENGTH(LOWER('Hello')) over a constant — folds fully.
-	w := NewScalarFunctionValue("LENGTH", TypeInt,
+	w := NewScalarFunctionValue("LENGTH", NullableLong,
 		NewScalarFunctionValue("LOWER", TypeString,
 			&ConstantValue{Value: "Hello", Typ: TypeString}))
 	if got, ok := SimplifyValue(w).(*ConstantValue); !ok || got.Value != int64(5) {
@@ -175,22 +175,22 @@ func TestSimplifyValue_ScalarFunctionPartialFold(t *testing.T) {
 func TestSimplifyValue_NULLPropagatesThroughArith(t *testing.T) {
 	t.Parallel()
 	// NULL + 5 → NULL (NullValue, not nil) via fold path. Pin the
-	// Type as well — the source ArithmeticValue is TypeInt, and the
+	// Type as well — the source ArithmeticValue is NullableLong, and the
 	// folded NullValue must carry that forward so future type-aware
-	// rules (`NULL :: TypeInt` vs `NULL :: TypeUnknown`) see the
+	// rules (`NULL :: NullableLong` vs `NULL :: TypeUnknown`) see the
 	// correct annotation.
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  NewNullValue(TypeInt),
-		Right: &ConstantValue{Value: int64(5), Typ: TypeInt},
+		Left:  NewNullValue(NullableLong),
+		Right: &ConstantValue{Value: int64(5), Typ: NullableLong},
 	}
 	got := SimplifyValue(v)
 	nv, ok := got.(*NullValue)
 	if !ok {
 		t.Fatalf("NULL + 5 should fold to NullValue, got %T (%v)", got, got)
 	}
-	if nv.Typ != TypeInt {
-		t.Fatalf("NullValue.Typ: got %v, want TypeInt (carried from source)", nv.Typ)
+	if nv.Typ != NullableLong {
+		t.Fatalf("NullValue.Typ: got %v, want NullableLong (carried from source)", nv.Typ)
 	}
 }
 
@@ -203,8 +203,8 @@ func TestSimplifyValue_PromoteFold(t *testing.T) {
 	v := NewPromoteValue(
 		&ArithmeticValue{
 			Op:    OpAdd,
-			Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
-			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+			Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
+			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		},
 		NullableDouble,
 	)
@@ -227,7 +227,7 @@ func TestSimplifyValue_PromotePartialFold(t *testing.T) {
 	t.Parallel()
 	// PROMOTE(name, NullableDouble) — non-constant child; pointer-equal
 	// short-circuit through simplifyChildren.
-	v := NewPromoteValue(&FieldValue{Field: "name", Typ: TypeInt}, NullableDouble)
+	v := NewPromoteValue(&FieldValue{Field: "name", Typ: NullableLong}, NullableDouble)
 	if got := SimplifyValue(v); got != Value(v) {
 		t.Fatal("PROMOTE(field) should be unchanged")
 	}
@@ -240,7 +240,7 @@ func TestSimplifyValue_NoFoldOnUnknownComposite(t *testing.T) {
 	// change that adds composite handling has a clear regression
 	// signal.
 	v := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: TypeInt}},
+		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: NullableLong}},
 	)
 	if got := SimplifyValue(v); got != Value(v) {
 		t.Fatal("RecordConstructorValue: should be unchanged (not in seed set)")
@@ -250,7 +250,7 @@ func TestSimplifyValue_NoFoldOnUnknownComposite(t *testing.T) {
 func TestSimplifyValue_CoalesceAllNulls(t *testing.T) {
 	t.Parallel()
 	v := NewScalarFunctionValue("COALESCE", NullableLong,
-		NewNullValue(TypeInt), NewNullValue(TypeInt))
+		NewNullValue(NullableLong), NewNullValue(NullableLong))
 	got := SimplifyValue(v)
 	if _, ok := got.(*NullValue); !ok {
 		t.Fatalf("COALESCE(NULL, NULL) = %T, want NullValue", got)
@@ -260,9 +260,9 @@ func TestSimplifyValue_CoalesceAllNulls(t *testing.T) {
 func TestSimplifyValue_CoalesceFirstNonNullConstant(t *testing.T) {
 	t.Parallel()
 	v := NewScalarFunctionValue("COALESCE", NullableLong,
-		NewNullValue(TypeInt),
-		&ConstantValue{Value: int64(42), Typ: TypeInt},
-		&FieldValue{Field: "x", Typ: TypeInt},
+		NewNullValue(NullableLong),
+		&ConstantValue{Value: int64(42), Typ: NullableLong},
+		&FieldValue{Field: "x", Typ: NullableLong},
 	)
 	got := SimplifyValue(v)
 	c, ok := got.(*ConstantValue)
@@ -276,10 +276,10 @@ func TestSimplifyValue_CoalesceFirstNonNullConstant(t *testing.T) {
 
 func TestSimplifyValue_CoalesceRemoveRedundantNulls(t *testing.T) {
 	t.Parallel()
-	x := &FieldValue{Field: "x", Typ: TypeInt}
-	y := &FieldValue{Field: "y", Typ: TypeInt}
+	x := &FieldValue{Field: "x", Typ: NullableLong}
+	y := &FieldValue{Field: "y", Typ: NullableLong}
 	v := NewScalarFunctionValue("COALESCE", NullableLong,
-		x, NewNullValue(TypeInt), y, NewNullValue(TypeInt))
+		x, NewNullValue(NullableLong), y, NewNullValue(NullableLong))
 	got := SimplifyValue(v)
 	sf, ok := got.(*ScalarFunctionValue)
 	if !ok {
@@ -292,8 +292,8 @@ func TestSimplifyValue_CoalesceRemoveRedundantNulls(t *testing.T) {
 
 func TestSimplifyValue_CoalesceNoChangeNeeded(t *testing.T) {
 	t.Parallel()
-	x := &FieldValue{Field: "x", Typ: TypeInt}
-	y := &FieldValue{Field: "y", Typ: TypeInt}
+	x := &FieldValue{Field: "x", Typ: NullableLong}
+	y := &FieldValue{Field: "y", Typ: NullableLong}
 	v := NewScalarFunctionValue("COALESCE", NullableLong, x, y)
 	got := SimplifyValue(v)
 	if got != Value(v) {
@@ -330,13 +330,13 @@ func TestCannotFoldCoalesce_BooleanNil(t *testing.T) {
 	}
 
 	// NullValue is always foldable (it IS a NULL literal).
-	nv := NewNullValue(TypeInt)
+	nv := NewNullValue(NullableLong)
 	if cannotFoldCoalesce(nv) {
 		t.Error("cannotFoldCoalesce(NullValue) = true, want false")
 	}
 
 	// ConstantValue with non-nil payload is foldable.
-	cv := &ConstantValue{Value: int64(42), Typ: TypeInt}
+	cv := &ConstantValue{Value: int64(42), Typ: NullableLong}
 	if cannotFoldCoalesce(cv) {
 		t.Error("cannotFoldCoalesce(ConstantValue{42}) = true, want false")
 	}
@@ -344,13 +344,13 @@ func TestCannotFoldCoalesce_BooleanNil(t *testing.T) {
 	// ConstantValue with nil payload is NOT foldable (typed NULL is
 	// represented as ConstantValue{Value: nil}, which is not guaranteed
 	// non-null).
-	cvNil := &ConstantValue{Value: nil, Typ: TypeInt}
+	cvNil := &ConstantValue{Value: nil, Typ: NullableLong}
 	if !cannotFoldCoalesce(cvNil) {
 		t.Error("cannotFoldCoalesce(ConstantValue{nil}) = false, want true")
 	}
 
 	// FieldValue is non-constant — cannot fold.
-	fv := &FieldValue{Field: "x", Typ: TypeInt}
+	fv := &FieldValue{Field: "x", Typ: NullableLong}
 	if !cannotFoldCoalesce(fv) {
 		t.Error("cannotFoldCoalesce(FieldValue) = false, want true")
 	}
@@ -371,7 +371,7 @@ func TestSimplifyValue_CoalesceBooleanNilPreservesInSimplifyCoalesce(t *testing.
 	// simplifyCoalesce should NOT return ConstantValue(42) as a
 	// short-circuit fold (the BooleanValue(nil) blocks early-out).
 	boolNil := &BooleanValue{Value: nil}
-	constant42 := &ConstantValue{Value: int64(42), Typ: TypeInt}
+	constant42 := &ConstantValue{Value: int64(42), Typ: NullableLong}
 	v := NewScalarFunctionValue("COALESCE", NullableLong, boolNil, constant42)
 
 	// Call simplifyCoalesce directly (bypasses the general
@@ -398,7 +398,7 @@ func TestSimplifyValueWithContext_EliminateArithmeticConstant(t *testing.T) {
 	v1 := &ArithmeticValue{
 		Op:    OpAdd,
 		Left:  NewQuantifiedObjectValue(nonConstAlias),
-		Right: &ConstantValue{Value: int64(5), Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(5), Typ: NullableLong},
 	}
 	got1 := SimplifyValueWithContext(v1, ctx)
 	if qov, ok := got1.(*QuantifiedObjectValue); !ok || qov.Correlation != nonConstAlias {
@@ -415,7 +415,7 @@ func TestSimplifyValueWithContext_EliminateArithmeticConstant(t *testing.T) {
 	v2 := &ArithmeticValue{
 		Op:    OpAdd,
 		Left:  NewQuantifiedObjectValue(alias),
-		Right: &ConstantValue{Value: int64(5), Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(5), Typ: NullableLong},
 	}
 	got2 := SimplifyValueWithContext(v2, ctx)
 	if _, ok := got2.(*ConstantValue); !ok {
@@ -445,12 +445,12 @@ func TestSimplifyValueWithContext_LiftConstructor(t *testing.T) {
 	varAlias := NamedCorrelationIdentifier("var")
 	inner := &RecordConstructorValue{Fields: []RecordConstructorField{
 		{Name: "b", Value: NewQuantifiedObjectValue(varAlias)},
-		{Name: "c", Value: &ConstantValue{Value: int64(3), Typ: TypeInt}},
+		{Name: "c", Value: &ConstantValue{Value: int64(3), Typ: NullableLong}},
 	}}
 	outer := &RecordConstructorValue{Fields: []RecordConstructorField{
-		{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: TypeInt}},
+		{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: NullableLong}},
 		{Name: "inner", Value: inner},
-		{Name: "d", Value: &ConstantValue{Value: int64(4), Typ: TypeInt}},
+		{Name: "d", Value: &ConstantValue{Value: int64(4), Typ: NullableLong}},
 	}}
 	got := SimplifyValueWithContext(outer, ctx)
 	rc, ok := got.(*RecordConstructorValue)
@@ -486,7 +486,7 @@ func TestSimplifyValueWithContext_LiftConstructorNotAtRoot(t *testing.T) {
 func TestSimplifyValue_FieldOverRecordConstructor(t *testing.T) {
 	t.Parallel()
 	rc := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: TypeInt}},
+		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: NullableLong}},
 		RecordConstructorField{Name: "b", Value: &ConstantValue{Value: "hello", Typ: TypeString}},
 	)
 	fv := &FieldValue{Field: "b", Typ: TypeString, Child: rc}
@@ -503,7 +503,7 @@ func TestSimplifyValue_FieldOverRecordConstructor(t *testing.T) {
 func TestSimplifyValue_FieldOverRecordConstructor_NotFound(t *testing.T) {
 	t.Parallel()
 	rc := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: TypeInt}},
+		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: NullableLong}},
 	)
 	fv := &FieldValue{Field: "z", Typ: TypeString, Child: rc}
 	got := SimplifyValue(fv)

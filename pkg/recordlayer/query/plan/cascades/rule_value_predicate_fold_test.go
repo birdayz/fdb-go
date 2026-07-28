@@ -87,7 +87,7 @@ func TestValuePredicateConstantFold_NonBoolConstantDegrades(t *testing.T) {
 	t.Parallel()
 	rule := NewValuePredicateConstantFoldRule()
 	cases := []values.Value{
-		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
 		&values.ConstantValue{Value: "hello", Typ: values.TypeString},
 		&values.ConstantValue{Value: 1.5, Typ: values.NullableDouble},
 	}
@@ -117,8 +117,8 @@ func TestValuePredicateConstantFold_NonConstantValue_Declines(t *testing.T) {
 	// Arithmetic with field child — composite but not constant.
 	arith := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.FieldValue{Field: "x", Typ: values.TypeInt},
-		Right: &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
+		Left:  &values.FieldValue{Field: "x", Typ: values.NullableLong},
+		Right: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
 	}
 	pred = predicates.NewValuePredicate(arith)
 	if got := FireRule(rule, pred); len(got) != 0 {
@@ -148,7 +148,7 @@ func TestValuePredicateConstantFold_NonValuePredicate_Declines(t *testing.T) {
 		t.Fatalf("ConstantPredicate: expected no yield (not a ValuePredicate)")
 	}
 	cp := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 	)
 	if got := FireRule(rule, cp); len(got) != 0 {
@@ -164,7 +164,7 @@ func TestValuePredicateConstantFold_NonValuePredicate_Declines(t *testing.T) {
 func TestSimplify_ValuePredicateInAndCollapses(t *testing.T) {
 	t.Parallel()
 	cmp := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(5))},
 	)
 	pred := predicates.NewAnd(predicates.NewValuePredicate(values.NewBooleanValue(true)), cmp)
@@ -181,7 +181,7 @@ func TestSimplify_ValuePredicateInAndCollapses(t *testing.T) {
 func TestSimplify_ValuePredicateInOrCollapses(t *testing.T) {
 	t.Parallel()
 	cmp := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(5))},
 	)
 	pred := predicates.NewOr(predicates.NewValuePredicate(values.NewBooleanValue(false)), cmp)

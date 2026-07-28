@@ -16,9 +16,9 @@ func TestListMatcher_PairsByPosition(t *testing.T) {
 	d2 := NewConstantMatcher()
 	m := NewListMatcher(d0, d1, d2)
 
-	cv0 := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
-	fv := &values.FieldValue{Field: "x", Typ: values.TypeInt}
-	cv2 := &values.ConstantValue{Value: int64(2), Typ: values.TypeInt}
+	cv0 := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
+	fv := &values.FieldValue{Field: "x", Typ: values.NullableLong}
+	cv2 := &values.ConstantValue{Value: int64(2), Typ: values.NullableLong}
 	in := []any{cv0, fv, cv2}
 
 	got := m.BindMatches(NewBindings(), in)
@@ -45,15 +45,15 @@ func TestListMatcher_LengthMismatch_ReturnsEmpty(t *testing.T) {
 	t.Parallel()
 	m := NewListMatcher(NewAnyValue(), NewAnyValue())
 
-	short := []any{&values.ConstantValue{Value: int64(1), Typ: values.TypeInt}}
+	short := []any{&values.ConstantValue{Value: int64(1), Typ: values.NullableLong}}
 	if got := m.BindMatches(NewBindings(), short); got != nil {
 		t.Fatalf("too-short: expected nil, got %d matches", len(got))
 	}
 
 	long := []any{
-		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(3), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
 	}
 	if got := m.BindMatches(NewBindings(), long); got != nil {
 		t.Fatalf("too-long: expected nil, got %d matches", len(got))
@@ -69,8 +69,8 @@ func TestListMatcher_AnyDownstreamFailureCollapses(t *testing.T) {
 	// — d1 (FieldMatcher) declines on the constant.
 	m := NewListMatcher(NewConstantMatcher(), NewFieldMatcher())
 	in := []any{
-		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 	}
 	if got := m.BindMatches(NewBindings(), in); got != nil {
 		t.Fatalf("expected nil on downstream failure, got %d matches", len(got))
@@ -83,7 +83,7 @@ func TestListMatcher_AnyDownstreamFailureCollapses(t *testing.T) {
 func TestListMatcher_NonSliceInput_ReturnsEmpty(t *testing.T) {
 	t.Parallel()
 	m := NewListMatcher(NewAnyValue())
-	if got := m.BindMatches(NewBindings(), &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}); got != nil {
+	if got := m.BindMatches(NewBindings(), &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}); got != nil {
 		t.Fatalf("Value input: expected nil, got %d matches", len(got))
 	}
 	if got := m.BindMatches(NewBindings(), nil); got != nil {
@@ -101,8 +101,8 @@ func TestListMatcher_BindsHostNode(t *testing.T) {
 	t.Parallel()
 	m := NewListMatcher(NewAnyValue(), NewAnyValue())
 	in := []any{
-		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 	}
 	got := m.BindMatches(NewBindings(), in)
 	if len(got) != 1 {
@@ -122,8 +122,8 @@ func TestListMatcher_CartesianProduct(t *testing.T) {
 	t.Parallel()
 	m := NewListMatcher(&doubleMatcher{}, &doubleMatcher{})
 	in := []any{
-		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		&values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		&values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 	}
 	got := m.BindMatches(NewBindings(), in)
 	// 2 × 2 = 4 Cartesian-product results.
@@ -150,11 +150,11 @@ func TestNewListMatcher_ZeroDownstreamsPanics(t *testing.T) {
 func TestListMatcher_ThreadsOuterBindings(t *testing.T) {
 	t.Parallel()
 	outerMatcher := NewAnyValue()
-	preset := &values.FieldValue{Field: "preset", Typ: values.TypeInt}
+	preset := &values.FieldValue{Field: "preset", Typ: values.NullableLong}
 	outer := NewBindings().Bind(outerMatcher, preset)
 
 	m := NewListMatcher(NewAnyValue())
-	in := []any{&values.ConstantValue{Value: int64(1), Typ: values.TypeInt}}
+	in := []any{&values.ConstantValue{Value: int64(1), Typ: values.NullableLong}}
 	got := m.BindMatches(outer, in)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 match, got %d", len(got))

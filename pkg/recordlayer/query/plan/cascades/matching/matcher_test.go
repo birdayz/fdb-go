@@ -24,7 +24,7 @@ func TestCascades_ConstPlusField(t *testing.T) {
 	// Input tree: 5 + name.
 	expr := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 		Right: &values.FieldValue{Field: "name", Typ: values.TypeString},
 	}
 
@@ -72,7 +72,7 @@ func TestCascades_GetTypeMismatchPanics(t *testing.T) {
 	}()
 
 	lhs := NewConstantMatcher()
-	b := NewBindings().Bind(lhs, &values.ConstantValue{Value: int64(1), Typ: values.TypeInt})
+	b := NewBindings().Bind(lhs, &values.ConstantValue{Value: int64(1), Typ: values.NullableLong})
 	// Ask for the wrong type — should panic.
 	_ = Get[*values.FieldValue](b, lhs)
 }
@@ -86,7 +86,7 @@ func TestCascades_MismatchEmpty(t *testing.T) {
 		Right: NewFieldMatcher(),
 	}
 	// Wrong shape: constant, not arithmetic.
-	expr := &values.ConstantValue{Value: int64(5), Typ: values.TypeInt}
+	expr := &values.ConstantValue{Value: int64(5), Typ: values.NullableLong}
 	if got := matcher.BindMatches(NewBindings(), expr); len(got) != 0 {
 		t.Fatalf("expected 0 matches on type mismatch, got %d", len(got))
 	}
@@ -103,7 +103,7 @@ func TestCascades_SubShapeMismatch(t *testing.T) {
 	}
 	expr := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.FieldValue{Field: "x", Typ: values.TypeInt}, // not a Constant
+		Left:  &values.FieldValue{Field: "x", Typ: values.NullableLong}, // not a Constant
 		Right: &values.FieldValue{Field: "y", Typ: values.TypeString},
 	}
 	if got := matcher.BindMatches(NewBindings(), expr); len(got) != 0 {
@@ -149,8 +149,8 @@ func TestCascades_AnyDownstream(t *testing.T) {
 
 	expr := &values.ArithmeticValue{
 		Op:    values.OpSub,
-		Left:  &values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
-		Right: &values.FieldValue{Field: "x", Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		Right: &values.FieldValue{Field: "x", Typ: values.NullableLong},
 	}
 	got := matcher.BindMatches(NewBindings(), expr)
 	if len(got) != 1 {

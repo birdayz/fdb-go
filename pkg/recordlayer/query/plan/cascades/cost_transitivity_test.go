@@ -155,7 +155,7 @@ func nljPlan(name string, numPredicates int) plans.RecordQueryPlan {
 	preds := make([]predicates.QueryPredicate, numPredicates)
 	for i := range preds {
 		preds[i] = predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: fmt.Sprintf("f%d", i), Typ: values.TypeInt},
+			&values.FieldValue{Field: fmt.Sprintf("f%d", i), Typ: values.NullableLong},
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i)),
 		)
 	}

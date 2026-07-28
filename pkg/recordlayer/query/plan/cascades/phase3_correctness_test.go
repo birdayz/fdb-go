@@ -124,7 +124,7 @@ func TestPlanner_GroupByProducesAggregation(t *testing.T) {
 	groupBy := expressions.NewGroupByExpression(
 		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.TypeString}},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}},
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}},
 		},
 		q,
 	)
@@ -191,7 +191,7 @@ func TestPlanner_ProjectionOverScanProducesPhysicalProjection(t *testing.T) {
 	q := expressions.ForEachQuantifier(scanRef)
 
 	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{&values.FieldValue{Field: "ID", Typ: values.TypeInt}},
+		[]values.Value{&values.FieldValue{Field: "ID", Typ: values.NullableLong}},
 		q,
 	)
 	ref := expressions.InitialOf(proj)
@@ -311,11 +311,11 @@ func TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection(t *testing
 		RecordName: "Order",
 		Fields: []values.Field{{
 			Name:      "ID",
-			FieldType: values.TypeInt,
+			FieldType: values.NullableLong,
 			Ordinal:   0,
 		}},
 	}
-	comparisonKey := &values.FieldValue{Field: "ID", Typ: values.TypeInt}
+	comparisonKey := &values.FieldValue{Field: "ID", Typ: values.NullableLong}
 	scan1 := plans.NewRecordQueryScanPlan([]string{"Order"}, rt, false).
 		WithPrimaryKey([]values.Value{comparisonKey})
 	scan1Ref := expressions.InitialOf(scan1)
@@ -353,7 +353,7 @@ func TestPlanner_SortOverScanStaysLogical(t *testing.T) {
 
 	sort := expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "CREATED_AT", Typ: values.TypeInt}, Reverse: false},
+			{Value: &values.FieldValue{Field: "CREATED_AT", Typ: values.NullableLong}, Reverse: false},
 		},
 		q,
 	)
@@ -549,7 +549,7 @@ func TestPlanner_ValuesProducesPhysicalValues(t *testing.T) {
 	t.Parallel()
 
 	vals := expressions.NewLogicalValuesExpression([]values.Value{
-		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
 		&values.ConstantValue{Value: "hello", Typ: values.TypeString},
 	})
 	ref := expressions.InitialOf(vals)

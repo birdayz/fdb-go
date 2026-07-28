@@ -151,7 +151,7 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 
 	// Filter with one pushable predicate.
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred})
@@ -361,7 +361,7 @@ func TestPushMapThroughFetch_Fires(t *testing.T) {
 	fetchWrapper := fetchPlan.WithQuantifiers([]expressions.Quantifier{fetchQ})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
-	resultVal := &values.FieldValue{Field: "x", Typ: values.TypeInt}
+	resultVal := &values.FieldValue{Field: "x", Typ: values.NullableLong}
 	mapPlan := plans.NewRecordQueryMapPlan(nil, resultVal)
 	mapQ := expressions.ForEachQuantifier(fetchRef)
 	mapWrapper := mapPlan.WithQuantifiers([]expressions.Quantifier{mapQ})
@@ -401,7 +401,7 @@ func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	// Use a correlated FieldValue so translation is actually attempted.
-	resultVal := values.NewFieldValue(values.NewQuantifiedObjectValue(mapAlias), "x", values.TypeInt)
+	resultVal := values.NewFieldValue(values.NewQuantifiedObjectValue(mapAlias), "x", values.NullableLong)
 	mapPlan := plans.NewRecordQueryMapPlan(nil, resultVal)
 	mapQ := expressions.NamedForEachQuantifier(mapAlias, fetchRef)
 	mapWrapper := mapPlan.WithQuantifiers([]expressions.Quantifier{mapQ})
@@ -613,7 +613,7 @@ func TestFieldValueChild_PushFilterDecision(t *testing.T) {
 		if fv, ok := v.(*values.FieldValue); ok {
 			if fv.Field == "x" {
 				return values.NewFieldValue(
-					values.NewQuantifiedObjectValue(targetAlias), "x", values.TypeInt,
+					values.NewQuantifiedObjectValue(targetAlias), "x", values.NullableLong,
 				), true
 			}
 		}
@@ -628,11 +628,11 @@ func TestFieldValueChild_PushFilterDecision(t *testing.T) {
 
 	// Predicates using FieldValue WITH child — correlated to filterAlias.
 	pushablePred := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(filterAlias), "x", values.TypeInt),
+		values.NewFieldValue(values.NewQuantifiedObjectValue(filterAlias), "x", values.NullableLong),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 	)
 	residualPred := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(filterAlias), "y", values.TypeInt),
+		values.NewFieldValue(values.NewQuantifiedObjectValue(filterAlias), "y", values.NullableLong),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(2)),
 	)
 

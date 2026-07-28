@@ -116,7 +116,7 @@ func TestComparatorPlan_Construction(t *testing.T) {
 	t.Parallel()
 	c1 := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	c2 := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	keys := []values.Value{&values.FieldValue{Field: "id", Typ: values.TypeInt}}
+	keys := []values.Value{&values.FieldValue{Field: "id", Typ: values.NullableLong}}
 	p := NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 0, false, true)
 
 	if len(p.GetChildren()) != 2 {
@@ -161,7 +161,7 @@ func TestComparatorPlan_EqualityAndExplain(t *testing.T) {
 	t.Parallel()
 	c1 := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	c2 := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	keys := []values.Value{&values.FieldValue{Field: "id", Typ: values.TypeInt}}
+	keys := []values.Value{&values.FieldValue{Field: "id", Typ: values.NullableLong}}
 
 	a := NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 0, true, false)
 	b := NewRecordQueryComparatorPlan([]RecordQueryPlan{c1, c2}, keys, 0, true, false)

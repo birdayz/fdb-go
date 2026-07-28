@@ -35,14 +35,14 @@ func TestGroupByMappingsWithPopulatedMaps(t *testing.T) {
 
 	// Build aggregates map.
 	aggMap := NewValueBiMap()
-	qAggVal := &values.ConstantValue{Value: "q_sum", Typ: values.TypeInt}
-	cAggVal := &values.ConstantValue{Value: "c_sum", Typ: values.TypeInt}
+	qAggVal := &values.ConstantValue{Value: "q_sum", Typ: values.NullableLong}
+	cAggVal := &values.ConstantValue{Value: "c_sum", Typ: values.NullableLong}
 	aggMap.Put(qAggVal, cAggVal)
 
 	// Build unmatched aggregates map.
 	unmatchedMap := NewCorrValueBiMap()
 	alias := values.NamedCorrelationIdentifier("unmatched_agg_alias")
-	unmatchedVal := &values.ConstantValue{Value: "unmatched_count", Typ: values.TypeInt}
+	unmatchedVal := &values.ConstantValue{Value: "unmatched_count", Typ: values.NullableLong}
 	unmatchedMap.Put(alias, unmatchedVal)
 
 	gm := NewGroupByMappings(groupingsMap, aggMap, unmatchedMap)
@@ -114,22 +114,22 @@ func TestGroupByMappingsMultipleEntries(t *testing.T) {
 
 	groupingsMap := NewValueBiMap()
 	for i := 0; i < 5; i++ {
-		q := &values.ConstantValue{Value: int64(i), Typ: values.TypeInt}
-		c := &values.ConstantValue{Value: int64(i + 100), Typ: values.TypeInt}
+		q := &values.ConstantValue{Value: int64(i), Typ: values.NullableLong}
+		c := &values.ConstantValue{Value: int64(i + 100), Typ: values.NullableLong}
 		groupingsMap.Put(q, c)
 	}
 
 	aggMap := NewValueBiMap()
 	for i := 0; i < 3; i++ {
-		q := &values.ConstantValue{Value: int64(i + 200), Typ: values.TypeInt}
-		c := &values.ConstantValue{Value: int64(i + 300), Typ: values.TypeInt}
+		q := &values.ConstantValue{Value: int64(i + 200), Typ: values.NullableLong}
+		c := &values.ConstantValue{Value: int64(i + 300), Typ: values.NullableLong}
 		aggMap.Put(q, c)
 	}
 
 	unmatchedMap := NewCorrValueBiMap()
 	for i := 0; i < 2; i++ {
 		alias := values.NamedCorrelationIdentifier("alias_" + string(rune('a'+i)))
-		val := &values.ConstantValue{Value: int64(i + 400), Typ: values.TypeInt}
+		val := &values.ConstantValue{Value: int64(i + 400), Typ: values.NullableLong}
 		unmatchedMap.Put(alias, val)
 	}
 
@@ -434,8 +434,8 @@ func TestBiMapWithCorrelationIdentifier(t *testing.T) {
 	bm := NewCorrValueBiMap()
 	alias1 := values.NamedCorrelationIdentifier("alias1")
 	alias2 := values.NamedCorrelationIdentifier("alias2")
-	v1 := &values.ConstantValue{Value: int64(10), Typ: values.TypeInt}
-	v2 := &values.ConstantValue{Value: int64(20), Typ: values.TypeInt}
+	v1 := &values.ConstantValue{Value: int64(10), Typ: values.NullableLong}
+	v2 := &values.ConstantValue{Value: int64(20), Typ: values.NullableLong}
 
 	bm.Put(alias1, v1)
 	bm.Put(alias2, v2)
@@ -470,10 +470,10 @@ func TestBiMap_StructuralEquality(t *testing.T) {
 	bm := NewValueBiMap()
 
 	// Create two structurally identical but pointer-different Values.
-	v1 := &values.FieldValue{Field: "col1", Typ: values.TypeInt}
-	v2 := &values.FieldValue{Field: "col1", Typ: values.TypeInt}
+	v1 := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
+	v2 := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
 
-	target := &values.FieldValue{Field: "agg_sum", Typ: values.TypeInt}
+	target := &values.FieldValue{Field: "agg_sum", Typ: values.NullableLong}
 
 	bm.Put(v1, target)
 
@@ -487,7 +487,7 @@ func TestBiMap_StructuralEquality(t *testing.T) {
 	}
 
 	// Inverse lookup with a different pointer to the same structure.
-	target2 := &values.FieldValue{Field: "agg_sum", Typ: values.TypeInt}
+	target2 := &values.FieldValue{Field: "agg_sum", Typ: values.NullableLong}
 	invKey, ok := bm.GetInverse(target2)
 	if !ok {
 		t.Fatal("structural equality inverse lookup failed — BiMap using pointer identity")

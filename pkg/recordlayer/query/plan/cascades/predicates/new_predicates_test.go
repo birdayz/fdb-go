@@ -13,7 +13,7 @@ import (
 
 func TestPredicateWithValueAndRanges_Construction(t *testing.T) {
 	t.Parallel()
-	val := &values.FieldValue{Field: "age", Typ: values.TypeInt}
+	val := &values.FieldValue{Field: "age", Typ: values.NullableLong}
 	rc := NewRangeConstraints(
 		[]Comparison{NewLiteralComparison(ComparisonGreaterThan, int64(18))},
 		nil,
@@ -31,7 +31,7 @@ func TestPredicateWithValueAndRanges_Construction(t *testing.T) {
 func TestPredicateWithValueAndRanges_IsLeafPredicate(t *testing.T) {
 	t.Parallel()
 	p := NewPredicateWithValueAndRanges(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt}, nil)
+		&values.FieldValue{Field: "x", Typ: values.NullableLong}, nil)
 	if len(p.Children()) != 0 {
 		t.Fatal("should be a leaf predicate")
 	}
@@ -47,7 +47,7 @@ func TestPredicateWithValueAndRanges_GetComparisons(t *testing.T) {
 	rc1 := NewRangeConstraints([]Comparison{c1}, nil)
 	rc2 := NewRangeConstraints([]Comparison{c2}, nil)
 	p := NewPredicateWithValueAndRanges(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		[]*RangeConstraints{rc1, rc2},
 	)
 	comps := p.GetComparisons()
@@ -59,7 +59,7 @@ func TestPredicateWithValueAndRanges_GetComparisons(t *testing.T) {
 func TestPredicateWithValueAndRanges_WithValue(t *testing.T) {
 	t.Parallel()
 	original := NewPredicateWithValueAndRanges(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		[]*RangeConstraints{EmptyRangeConstraints()},
 	)
 	newVal := &values.FieldValue{Field: "y", Typ: values.TypeString}
@@ -76,7 +76,7 @@ func TestPredicateWithValueAndRanges_WithValue(t *testing.T) {
 func TestPredicateWithValueAndRanges_WithRanges(t *testing.T) {
 	t.Parallel()
 	original := NewPredicateWithValueAndRanges(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		nil,
 	)
 	rc := NewRangeConstraints(
@@ -93,7 +93,7 @@ func TestPredicateWithValueAndRanges_WithRanges(t *testing.T) {
 
 func TestPredicateWithValueAndRanges_Explain(t *testing.T) {
 	t.Parallel()
-	val := &values.FieldValue{Field: "score", Typ: values.TypeInt}
+	val := &values.FieldValue{Field: "score", Typ: values.NullableLong}
 	rc := NewRangeConstraints(
 		[]Comparison{NewLiteralComparison(ComparisonGreaterThan, int64(90))},
 		nil,
@@ -111,7 +111,7 @@ func TestPredicateWithValueAndRanges_IsCompileTime(t *testing.T) {
 	rc := NewRangeConstraints(
 		[]Comparison{NewLiteralComparison(ComparisonEquals, int64(5))}, nil)
 	p := NewPredicateWithValueAndRanges(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		[]*RangeConstraints{rc},
 	)
 	if !p.IsCompileTime() {
@@ -124,7 +124,7 @@ func TestPredicateWithValueAndRanges_IsCompileTime(t *testing.T) {
 	deferred := Comparison{Type: ComparisonEquals, Operand: corVal}
 	rc2 := NewRangeConstraints(nil, []Comparison{deferred})
 	p2 := NewPredicateWithValueAndRanges(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		[]*RangeConstraints{rc2},
 	)
 	if p2.IsCompileTime() {
@@ -139,7 +139,7 @@ func TestPredicateWithValueAndRanges_GetCorrelatedTo(t *testing.T) {
 	deferred := Comparison{Type: ComparisonEquals, Operand: corVal}
 	rc := NewRangeConstraints(nil, []Comparison{deferred})
 	p := NewPredicateWithValueAndRanges(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		[]*RangeConstraints{rc},
 	)
 	corr := p.GetCorrelatedTo()
@@ -333,7 +333,7 @@ func TestDatabaseObjectDependenciesPredicate_DefensiveCopy(t *testing.T) {
 func TestFoldPredicateWithRanges_NullIsNull(t *testing.T) {
 	t.Parallel()
 	p := NewPredicateWithValueAndRanges(
-		values.NewNullValue(values.TypeInt),
+		values.NewNullValue(values.NullableLong),
 		[]*RangeConstraints{NewRangeConstraints(
 			[]Comparison{{Type: ComparisonIsNull}}, nil,
 		)},
@@ -378,7 +378,7 @@ func TestFoldPredicateWithRanges_TrueEqualsTrue(t *testing.T) {
 func TestFoldPredicateWithRanges_NullEqualsAnything(t *testing.T) {
 	t.Parallel()
 	p := NewPredicateWithValueAndRanges(
-		values.NewNullValue(values.TypeInt),
+		values.NewNullValue(values.NullableLong),
 		[]*RangeConstraints{NewRangeConstraints(
 			[]Comparison{NewLiteralComparison(ComparisonEquals, true)}, nil,
 		)},
@@ -393,7 +393,7 @@ func TestFoldPredicateWithRanges_NullEqualsAnything(t *testing.T) {
 func TestFoldPredicateWithRanges_NonConstantNoFold(t *testing.T) {
 	t.Parallel()
 	p := NewPredicateWithValueAndRanges(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		[]*RangeConstraints{NewRangeConstraints(
 			[]Comparison{NewLiteralComparison(ComparisonEquals, int64(5))}, nil,
 		)},

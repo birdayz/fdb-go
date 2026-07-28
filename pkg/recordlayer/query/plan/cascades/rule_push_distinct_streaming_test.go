@@ -21,14 +21,14 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 	t.Parallel()
 
 	gRec := values.NewRecordType("", false, []values.Field{
-		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
+		{Name: "G", FieldType: values.NullableLong, Ordinal: 0},
 	})
 	scanPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
 
 	sortKeys := []plans.SortKey{{
 		Field:      "G",
 		NullsFirst: true,
-		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
+		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.NullableLong),
 	}}
 	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryInMemorySortPlan
 	// (no physicalInMemorySortWrapper); it is its own physical member directly.
@@ -36,7 +36,7 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 	sortRef := expressions.InitialOf(sortPlan)
 
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
+		values.NewFieldValueWithResolvedOrdinal("G", 0, values.NullableLong),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 	)
 	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(sortPlan, []predicates.QueryPredicate{pred})
@@ -80,14 +80,14 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 	t.Parallel()
 
 	gRec := values.NewRecordType("", false, []values.Field{
-		{Name: "G", FieldType: values.TypeInt, Ordinal: 0},
+		{Name: "G", FieldType: values.NullableLong, Ordinal: 0},
 	})
 	scanPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
 
 	sortKeys := []plans.SortKey{{
 		Field:      "G",
 		NullsFirst: true,
-		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.TypeInt),
+		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.NullableLong),
 	}}
 	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryInMemorySortPlan
 	// (no physicalInMemorySortWrapper); it is its own physical member directly.

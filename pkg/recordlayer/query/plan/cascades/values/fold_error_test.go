@@ -14,8 +14,8 @@ func TestEvaluateConstant_DivByZeroDeclinesToFold(t *testing.T) {
 	t.Parallel()
 	div := &ArithmeticValue{
 		Op:    OpDiv,
-		Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
-		Right: &ConstantValue{Value: int64(0), Typ: TypeInt},
+		Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
+		Right: &ConstantValue{Value: int64(0), Typ: NullableLong},
 	}
 	if got, ok := EvaluateConstant(div); ok {
 		t.Fatalf("constant 1/0 must NOT fold (must raise 22012 at runtime); folded to %v", got)
@@ -31,8 +31,8 @@ func TestEvaluateConstant_OverflowDeclinesToFold(t *testing.T) {
 	t.Parallel()
 	add := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &ConstantValue{Value: int64(math.MaxInt64), Typ: TypeInt},
-		Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Left:  &ConstantValue{Value: int64(math.MaxInt64), Typ: NullableLong},
+		Right: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	}
 	if got, ok := EvaluateConstant(add); ok {
 		t.Fatalf("constant overflow must NOT fold; folded to %v", got)
@@ -45,8 +45,8 @@ func TestEvaluateConstant_PlainConstantStillFolds(t *testing.T) {
 	t.Parallel()
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &ConstantValue{Value: int64(2), Typ: TypeInt},
-		Right: &ConstantValue{Value: int64(3), Typ: TypeInt},
+		Left:  &ConstantValue{Value: int64(2), Typ: NullableLong},
+		Right: &ConstantValue{Value: int64(3), Typ: NullableLong},
 	}
 	got, ok := EvaluateConstant(v)
 	if !ok || got != int64(5) {

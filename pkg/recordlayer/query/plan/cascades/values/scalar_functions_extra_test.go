@@ -364,7 +364,7 @@ func TestSimplifyValue_FoldsExtendedScalars(t *testing.T) {
 		{
 			"ABS",
 			NewScalarFunctionValue("ABS", TypeUnknown,
-				&ConstantValue{Value: int64(-7), Typ: TypeInt}),
+				&ConstantValue{Value: int64(-7), Typ: NullableLong}),
 			int64(7),
 		},
 		{

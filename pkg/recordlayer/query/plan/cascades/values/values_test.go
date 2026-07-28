@@ -24,22 +24,22 @@ func TestExplainValue(t *testing.T) {
 	if got := ExplainValue(nil); got != "" {
 		t.Fatalf("nil: got %q", got)
 	}
-	if got := ExplainValue(&ConstantValue{Value: int64(42), Typ: TypeInt}); got != "42" {
+	if got := ExplainValue(&ConstantValue{Value: int64(42), Typ: NullableLong}); got != "42" {
 		t.Fatalf("int const: got %q", got)
 	}
 	if got := ExplainValue(&ConstantValue{Value: "x", Typ: TypeString}); got != "'x'" {
 		t.Fatalf("string const: got %q", got)
 	}
-	if got := ExplainValue(&ConstantValue{Value: nil, Typ: TypeInt}); got != "NULL" {
+	if got := ExplainValue(&ConstantValue{Value: nil, Typ: NullableLong}); got != "NULL" {
 		t.Fatalf("NULL const: got %q", got)
 	}
-	if got := ExplainValue(&FieldValue{Field: "age", Typ: TypeInt}); got != "age" {
+	if got := ExplainValue(&FieldValue{Field: "age", Typ: NullableLong}); got != "age" {
 		t.Fatalf("field: got %q", got)
 	}
 	arith := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "a", Typ: TypeInt},
-		Right: &ConstantValue{Value: int64(5), Typ: TypeInt},
+		Left:  &FieldValue{Field: "a", Typ: NullableLong},
+		Right: &ConstantValue{Value: int64(5), Typ: NullableLong},
 	}
 	if got := ExplainValue(arith); got != "(a + 5)" {
 		t.Fatalf("arith: got %q", got)
@@ -56,7 +56,7 @@ func TestExplainValue(t *testing.T) {
 	if got := ExplainValue(NewNullValue(TypeString)); got != "NULL" {
 		t.Fatalf("NullValue: got %q", got)
 	}
-	cast := NewCastValue(&ConstantValue{Value: int64(1), Typ: TypeInt}, TypeString)
+	cast := NewCastValue(&ConstantValue{Value: int64(1), Typ: NullableLong}, TypeString)
 	if got := ExplainValue(cast); got != "CAST(1 AS STRING)" {
 		t.Fatalf("cast: got %q", got)
 	}
@@ -64,7 +64,7 @@ func TestExplainValue(t *testing.T) {
 
 func TestNullValue(t *testing.T) {
 	t.Parallel()
-	nv := NewNullValue(TypeInt)
+	nv := NewNullValue(NullableLong)
 	if nv.Type().Code() != TypeCodeLong {
 		t.Fatal("Type should match constructor")
 	}
@@ -89,7 +89,7 @@ func TestNullValue(t *testing.T) {
 
 func TestConstantValue_Evaluate(t *testing.T) {
 	t.Parallel()
-	c := &ConstantValue{Value: int64(42), Typ: TypeInt}
+	c := &ConstantValue{Value: int64(42), Typ: NullableLong}
 	got, errEv0 := c.Evaluate(nil)
 	require.NoError(t, errEv0)
 	if got != int64(42) {
@@ -102,7 +102,7 @@ func TestConstantValue_Evaluate(t *testing.T) {
 		t.Fatalf("constant ignores ctx: got %v", got)
 	}
 	// NULL literal.
-	null := &ConstantValue{Value: nil, Typ: TypeInt}
+	null := &ConstantValue{Value: nil, Typ: NullableLong}
 	got, errEv2 := null.Evaluate(nil)
 	require.NoError(t, errEv2)
 	if got != nil {
@@ -149,8 +149,8 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 	t.Parallel()
 	// operands carry plan-time ordinals — sorted {a, b} → a=slot 0,
 	// b=slot 1 (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
+	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableLong)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableLong)
 
 	cases := []struct {
 		op   ArithmeticOp
@@ -270,25 +270,25 @@ func TestCastValue(t *testing.T) {
 	// negative path used `uitoa(uint64(i))` which reinterprets a
 	// signed int64 as the corresponding unsigned, producing
 	// "18446744073709551611" for -5 instead of "-5".
-	strC := NewCastValue(&ConstantValue{Value: int64(42), Typ: TypeInt}, TypeString)
+	strC := NewCastValue(&ConstantValue{Value: int64(42), Typ: NullableLong}, TypeString)
 	got, errEv0 := strC.Evaluate(nil)
 	require.NoError(t, errEv0)
 	if got != "42" {
 		t.Fatalf("int→string: got %v", got)
 	}
-	negStrC := NewCastValue(&ConstantValue{Value: int64(-5), Typ: TypeInt}, TypeString)
+	negStrC := NewCastValue(&ConstantValue{Value: int64(-5), Typ: NullableLong}, TypeString)
 	got, errEv1 := negStrC.Evaluate(nil)
 	require.NoError(t, errEv1)
 	if got != "-5" {
 		t.Fatalf("negative int→string: got %v, want \"-5\" (regression for uitoa(uint64(int64))) bug", got)
 	}
-	zeroStrC := NewCastValue(&ConstantValue{Value: int64(0), Typ: TypeInt}, TypeString)
+	zeroStrC := NewCastValue(&ConstantValue{Value: int64(0), Typ: NullableLong}, TypeString)
 	got, errEv2 := zeroStrC.Evaluate(nil)
 	require.NoError(t, errEv2)
 	if got != "0" {
 		t.Fatalf("zero→string: got %v", got)
 	}
-	minStrC := NewCastValue(&ConstantValue{Value: int64(-9223372036854775808), Typ: TypeInt}, TypeString)
+	minStrC := NewCastValue(&ConstantValue{Value: int64(-9223372036854775808), Typ: NullableLong}, TypeString)
 	got, errEv3 := minStrC.Evaluate(nil)
 	require.NoError(t, errEv3)
 	if got != "-9223372036854775808" {
@@ -296,13 +296,13 @@ func TestCastValue(t *testing.T) {
 	}
 
 	// bool → int: true=1, false=0.
-	boolToInt := NewCastValue(NewBooleanValue(true), TypeInt)
+	boolToInt := NewCastValue(NewBooleanValue(true), NullableLong)
 	got, errEv4 := boolToInt.Evaluate(nil)
 	require.NoError(t, errEv4)
 	if got != int64(1) {
 		t.Fatalf("true→int: got %v", got)
 	}
-	boolToInt = NewCastValue(NewBooleanValue(false), TypeInt)
+	boolToInt = NewCastValue(NewBooleanValue(false), NullableLong)
 	got, errEv5 := boolToInt.Evaluate(nil)
 	require.NoError(t, errEv5)
 	if got != int64(0) {
@@ -310,7 +310,7 @@ func TestCastValue(t *testing.T) {
 	}
 
 	// INT → bool: 0=false, non-zero=true (Java INT_TO_BOOLEAN — the
-	// genuine 32-bit type; TypeInt is the LONG alias, which REJECTS).
+	// genuine 32-bit type; NullableLong is the LONG alias, which REJECTS).
 	intToBool := NewCastValue(&ConstantValue{Value: int64(0), Typ: NullableInt}, TypeBool)
 	got, errEv6 := intToBool.Evaluate(nil)
 	require.NoError(t, errEv6)
@@ -347,7 +347,7 @@ func TestCastValue(t *testing.T) {
 	}
 
 	// NULL propagates.
-	nullC := NewCastValue(&ConstantValue{Value: nil, Typ: TypeInt}, TypeString)
+	nullC := NewCastValue(&ConstantValue{Value: nil, Typ: NullableLong}, TypeString)
 	got, errEv8 := nullC.Evaluate(nil)
 	require.NoError(t, errEv8)
 	if got != nil {
@@ -356,20 +356,20 @@ func TestCastValue(t *testing.T) {
 
 	// Float source casts.
 	// int → float
-	intToFloat := NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, NullableDouble)
+	intToFloat := NewCastValue(&ConstantValue{Value: int64(5), Typ: NullableLong}, NullableDouble)
 	got, errEv9 := intToFloat.Evaluate(nil)
 	require.NoError(t, errEv9)
 	if got != float64(5) {
 		t.Fatalf("int→float: got %v", got)
 	}
 	// float → int (Java Math.round: floor(x+0.5))
-	floatToInt := NewCastValue(&ConstantValue{Value: float64(3.9), Typ: NullableDouble}, TypeInt)
+	floatToInt := NewCastValue(&ConstantValue{Value: float64(3.9), Typ: NullableDouble}, NullableLong)
 	got, errEv10 := floatToInt.Evaluate(nil)
 	require.NoError(t, errEv10)
 	if got != int64(4) {
 		t.Fatalf("3.9→int: got %v, want 4", got)
 	}
-	floatToIntNeg := NewCastValue(&ConstantValue{Value: float64(-3.9), Typ: NullableDouble}, TypeInt)
+	floatToIntNeg := NewCastValue(&ConstantValue{Value: float64(-3.9), Typ: NullableDouble}, NullableLong)
 	got, errEv11 := floatToIntNeg.Evaluate(nil)
 	require.NoError(t, errEv11)
 	if got != int64(-4) {
@@ -411,7 +411,7 @@ func TestCastValue(t *testing.T) {
 		{"+Inf→int", math.Inf(1)},
 		{"-Inf→int", math.Inf(-1)},
 	} {
-		cv := NewCastValue(&ConstantValue{Value: tc.val, Typ: NullableDouble}, TypeInt)
+		cv := NewCastValue(&ConstantValue{Value: tc.val, Typ: NullableDouble}, NullableLong)
 		if v, err := cv.Evaluate(nil); v != nil || err == nil {
 			t.Fatalf("%s: got (%v, %v), want (nil, InvalidCastError)", tc.name, v, err)
 		} else {
@@ -424,13 +424,13 @@ func TestCastValue(t *testing.T) {
 
 	// Unknown conversion: int → bool via the reverse path is OK,
 	// string → int: trims whitespace, parses decimal.
-	strToInt := NewCastValue(&ConstantValue{Value: "3", Typ: TypeString}, TypeInt)
+	strToInt := NewCastValue(&ConstantValue{Value: "3", Typ: TypeString}, NullableLong)
 	got, errEv16 := strToInt.Evaluate(nil)
 	require.NoError(t, errEv16)
 	if got != int64(3) {
 		t.Fatalf("string→int: got %v, want 3", got)
 	}
-	strToIntWs := NewCastValue(&ConstantValue{Value: "  42  ", Typ: TypeString}, TypeInt)
+	strToIntWs := NewCastValue(&ConstantValue{Value: "  42  ", Typ: TypeString}, NullableLong)
 	got, errEv17 := strToIntWs.Evaluate(nil)
 	require.NoError(t, errEv17)
 	if got != int64(42) {
@@ -526,9 +526,9 @@ func TestAggregateOp_Symbol(t *testing.T) {
 
 func TestAggregateValue_Shape(t *testing.T) {
 	t.Parallel()
-	sum := NewAggregateValue(AggSum, &FieldValue{Field: "amount", Typ: TypeInt})
-	if got := sum.Type(); got != TypeInt {
-		t.Fatalf("SUM(int) Type: got %v, want TypeInt", got)
+	sum := NewAggregateValue(AggSum, &FieldValue{Field: "amount", Typ: NullableLong})
+	if got := sum.Type(); got != NullableLong {
+		t.Fatalf("SUM(int) Type: got %v, want NullableLong", got)
 	}
 	if len(sum.Children()) != 1 {
 		t.Fatalf("SUM children: expected 1, got %d", len(sum.Children()))
@@ -554,7 +554,7 @@ func TestAggregateValue_Shape(t *testing.T) {
 	}
 
 	// MIN inherits operand type.
-	minAge := NewAggregateValue(AggMin, &FieldValue{Field: "age", Typ: TypeInt})
+	minAge := NewAggregateValue(AggMin, &FieldValue{Field: "age", Typ: NullableLong})
 	if minAge.Type().Code() != TypeCodeLong {
 		t.Fatal("MIN should inherit operand type")
 	}
@@ -562,7 +562,7 @@ func TestAggregateValue_Shape(t *testing.T) {
 	// AVG is ALWAYS DOUBLE, independent of operand type (Java AVG_*→DOUBLE).
 	// AVG(BIGINT) is DOUBLE, not LONG — this is the load-bearing fix: it
 	// makes DOUBLE→LONG assignability checks reject AVG into a BIGINT column.
-	for _, opType := range []Type{TypeInt, NullableLong, NotNullLong, NullableFloat, NullableDouble} {
+	for _, opType := range []Type{NullableLong, NullableLong, NotNullLong, NullableFloat, NullableDouble} {
 		avg := NewAggregateValue(AggAvg, &FieldValue{Field: "v", Typ: opType})
 		if got := avg.Type().Code(); got != TypeCodeDouble {
 			t.Fatalf("AVG(%v) Type code: got %v, want DOUBLE", opType.Code(), got)
@@ -581,7 +581,7 @@ func TestAggregateValue_CountStarWithOperandPanics(t *testing.T) {
 			t.Fatal("expected panic")
 		}
 	}()
-	_ = NewAggregateValue(AggCountStar, &FieldValue{Field: "x", Typ: TypeInt})
+	_ = NewAggregateValue(AggCountStar, &FieldValue{Field: "x", Typ: NullableLong})
 }
 
 // Non-COUNT(*) without operand is also a programmer error.
@@ -601,7 +601,7 @@ func TestAggregateValue_MissingOperandPanics(t *testing.T) {
 // message tells the caller which aggregator they should be using.
 func TestAggregateValue_EvaluatePanics(t *testing.T) {
 	t.Parallel()
-	sum := NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: TypeInt})
+	sum := NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: NullableLong})
 	v, err := sum.Evaluate(map[string]any{"x": int64(5)})
 	if v != nil || err == nil {
 		t.Fatalf("AggregateValue.Evaluate: got (%v, %v), want (nil, AggregateEvalError)", v, err)
@@ -723,7 +723,7 @@ var _ Value = (*PromoteValue)(nil)
 
 func TestPromoteValue_Shape(t *testing.T) {
 	t.Parallel()
-	child := &FieldValue{Field: "age", Typ: TypeInt}
+	child := &FieldValue{Field: "age", Typ: NullableLong}
 	p := NewPromoteValue(child, TypeString)
 
 	if got, want := p.Type(), TypeString; got != want {
@@ -742,7 +742,7 @@ func TestPromoteValue_Shape(t *testing.T) {
 
 func TestPromoteValue_EvaluateRepresentationPreserving(t *testing.T) {
 	t.Parallel()
-	child := &ConstantValue{Value: int64(42), Typ: TypeInt}
+	child := &ConstantValue{Value: int64(42), Typ: NullableLong}
 	p := NewPromoteValue(child, TypeString)
 	tmpEv0,
 		// Non-numeric, non-UUID promotion remains representation-preserving.
@@ -843,7 +843,7 @@ func TestPromoteValue_NilChildPanics(t *testing.T) {
 			t.Fatal("expected panic on nil child")
 		}
 	}()
-	_ = NewPromoteValue(nil, TypeInt)
+	_ = NewPromoteValue(nil, NullableLong)
 }
 
 func TestPromoteValue_UnknownTargetPanics(t *testing.T) {
@@ -853,7 +853,7 @@ func TestPromoteValue_UnknownTargetPanics(t *testing.T) {
 			t.Fatal("expected panic on TypeUnknown target")
 		}
 	}()
-	_ = NewPromoteValue(&ConstantValue{Value: int64(1), Typ: TypeInt}, TypeUnknown)
+	_ = NewPromoteValue(&ConstantValue{Value: int64(1), Typ: NullableLong}, TypeUnknown)
 }
 
 // --- RecordConstructorValue ----------------------------------------
@@ -881,11 +881,11 @@ var (
 func TestRecordConstructorValue_Shape(t *testing.T) {
 	t.Parallel()
 	r := NewRecordConstructorValue(
-		RecordConstructorField{Name: "id", Value: &FieldValue{Field: "id", Typ: TypeInt}},
+		RecordConstructorField{Name: "id", Value: &FieldValue{Field: "id", Typ: NullableLong}},
 		RecordConstructorField{Name: "doubled", Value: &ArithmeticValue{
 			Op:    OpMul,
-			Left:  &FieldValue{Field: "x", Typ: TypeInt},
-			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+			Left:  &FieldValue{Field: "x", Typ: NullableLong},
+			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		}},
 	)
 
@@ -904,7 +904,7 @@ func TestRecordConstructorValue_Evaluate(t *testing.T) {
 	t.Parallel()
 	r := NewRecordConstructorValue(
 		// "id" carries its plan-time ordinal (sole column → slot 0).
-		RecordConstructorField{Name: "a", Value: NewFieldValueWithResolvedOrdinal("id", 0, TypeInt)},
+		RecordConstructorField{Name: "a", Value: NewFieldValueWithResolvedOrdinal("id", 0, NullableLong)},
 		RecordConstructorField{Name: "b", Value: &ConstantValue{Value: "hello", Typ: TypeString}},
 	)
 	ctx := fom(map[string]any{"id": int64(7)})
@@ -927,8 +927,8 @@ func TestRecordConstructorValue_Evaluate(t *testing.T) {
 func TestRecordConstructorValue_Explain(t *testing.T) {
 	t.Parallel()
 	r := NewRecordConstructorValue(
-		RecordConstructorField{Name: "id", Value: &FieldValue{Field: "id", Typ: TypeInt}},
-		RecordConstructorField{Name: "lit", Value: &ConstantValue{Value: int64(42), Typ: TypeInt}},
+		RecordConstructorField{Name: "id", Value: &FieldValue{Field: "id", Typ: NullableLong}},
+		RecordConstructorField{Name: "lit", Value: &ConstantValue{Value: int64(42), Typ: NullableLong}},
 	)
 	if got, want := ExplainValue(r), "{id: id, lit: 42}"; got != want {
 		t.Fatalf("Explain: got %q, want %q", got, want)
@@ -938,8 +938,8 @@ func TestRecordConstructorValue_Explain(t *testing.T) {
 func TestRecordConstructorValue_DuplicateFieldNameDedup(t *testing.T) {
 	t.Parallel()
 	rcv := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: TypeInt}},
-		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(2), Typ: TypeInt}},
+		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: NullableLong}},
+		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(2), Typ: NullableLong}},
 	)
 	if len(rcv.Fields) != 2 {
 		t.Fatalf("expected 2 fields, got %d", len(rcv.Fields))
@@ -955,7 +955,7 @@ func TestRecordConstructorValue_DuplicateFieldNameDedup(t *testing.T) {
 func TestRecordConstructorValue_DefensiveCopy(t *testing.T) {
 	t.Parallel()
 	fields := []RecordConstructorField{
-		{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: TypeInt}},
+		{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: NullableLong}},
 	}
 	r := NewRecordConstructorValue(fields...)
 	// Mutating the caller's slice must not change r.
@@ -974,10 +974,10 @@ func TestWalkValue_PreOrder(t *testing.T) {
 		Op: OpMul,
 		Left: &ArithmeticValue{
 			Op:    OpAdd,
-			Left:  &FieldValue{Field: "a", Typ: TypeInt},
-			Right: &FieldValue{Field: "b", Typ: TypeInt},
+			Left:  &FieldValue{Field: "a", Typ: NullableLong},
+			Right: &FieldValue{Field: "b", Typ: NullableLong},
 		},
-		Right: &FieldValue{Field: "c", Typ: TypeInt},
+		Right: &FieldValue{Field: "c", Typ: NullableLong},
 	}
 	var visited int
 	WalkValue(tree, func(Value) bool {
@@ -994,7 +994,7 @@ func TestWalkValue_SkipSubtree(t *testing.T) {
 	tree := &ArithmeticValue{
 		Op:    OpAdd,
 		Left:  &ArithmeticValue{Op: OpAdd, Left: &FieldValue{Field: "a"}, Right: &FieldValue{Field: "b"}},
-		Right: &FieldValue{Field: "c", Typ: TypeInt},
+		Right: &FieldValue{Field: "c", Typ: NullableLong},
 	}
 	var visited int
 	WalkValue(tree, func(v Value) bool {
@@ -1020,7 +1020,7 @@ func TestWalkValue_NilSafe(t *testing.T) {
 
 func TestValueSize(t *testing.T) {
 	t.Parallel()
-	leaf := &FieldValue{Field: "x", Typ: TypeInt}
+	leaf := &FieldValue{Field: "x", Typ: NullableLong}
 	if got := ValueSize(leaf); got != 1 {
 		t.Fatalf("leaf: got %d, want 1", got)
 	}
@@ -1045,8 +1045,8 @@ func TestContainsAggregate(t *testing.T) {
 	t.Parallel()
 	plain := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "a", Typ: TypeInt},
-		Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Left:  &FieldValue{Field: "a", Typ: NullableLong},
+		Right: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	}
 	if ContainsAggregate(plain) {
 		t.Fatal("scalar tree should not contain aggregate")
@@ -1054,8 +1054,8 @@ func TestContainsAggregate(t *testing.T) {
 
 	withAgg := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: TypeInt}),
-		Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Left:  NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: NullableLong}),
+		Right: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	}
 	if !ContainsAggregate(withAgg) {
 		t.Fatal("tree with SUM should report aggregate")
@@ -1075,30 +1075,30 @@ func TestIsConstantValue(t *testing.T) {
 		v    Value
 		want bool
 	}{
-		{"ConstantValue", &ConstantValue{Value: int64(5), Typ: TypeInt}, true},
-		{"NullValue", NewNullValue(TypeInt), true},
+		{"ConstantValue", &ConstantValue{Value: int64(5), Typ: NullableLong}, true},
+		{"NullValue", NewNullValue(NullableLong), true},
 		{"BooleanValue true", NewBooleanValue(true), true},
 		{"BooleanValue nil", &BooleanValue{Value: nil}, true},
-		{"FieldValue", &FieldValue{Field: "x", Typ: TypeInt}, false},
+		{"FieldValue", &FieldValue{Field: "x", Typ: NullableLong}, false},
 		{"QuantifiedObjectValue", NewQuantifiedObjectValue(NamedCorrelationIdentifier("t")), false},
-		{"AggregateValue", NewAggregateValue(AggSum, &ConstantValue{Value: int64(1), Typ: TypeInt}), false},
+		{"AggregateValue", NewAggregateValue(AggSum, &ConstantValue{Value: int64(1), Typ: NullableLong}), false},
 
 		// Composite over all-constant children: true.
 		{"arith(1, 2)", &ArithmeticValue{
 			Op:    OpAdd,
-			Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
-			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+			Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
+			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		}, true},
 		// Composite with one non-constant: false.
 		{"arith(field, 2)", &ArithmeticValue{
 			Op:    OpAdd,
-			Left:  &FieldValue{Field: "x", Typ: TypeInt},
-			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+			Left:  &FieldValue{Field: "x", Typ: NullableLong},
+			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		}, false},
 		// Cast over constant: true.
-		{"cast(constant)", NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeString), true},
+		{"cast(constant)", NewCastValue(&ConstantValue{Value: int64(5), Typ: NullableLong}, TypeString), true},
 		// Cast over field: false.
-		{"cast(field)", NewCastValue(&FieldValue{Field: "x", Typ: TypeInt}, TypeString), false},
+		{"cast(field)", NewCastValue(&FieldValue{Field: "x", Typ: NullableLong}, TypeString), false},
 
 		{"nil", nil, false},
 	}
@@ -1117,23 +1117,23 @@ func TestIsConstantValue(t *testing.T) {
 func TestEvaluateConstant(t *testing.T) {
 	t.Parallel()
 
-	if got, ok := EvaluateConstant(&ConstantValue{Value: int64(5), Typ: TypeInt}); !ok || got != int64(5) {
+	if got, ok := EvaluateConstant(&ConstantValue{Value: int64(5), Typ: NullableLong}); !ok || got != int64(5) {
 		t.Fatalf("ConstantValue: got (%v, %v), want (5, true)", got, ok)
 	}
-	if got, ok := EvaluateConstant(NewNullValue(TypeInt)); !ok || got != nil {
+	if got, ok := EvaluateConstant(NewNullValue(NullableLong)); !ok || got != nil {
 		t.Fatalf("Null: got (%v, %v), want (nil, true)", got, ok)
 	}
 	// Composite: 1 + 2 → 3.
 	arith := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
-		Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+		Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
+		Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 	}
 	if got, ok := EvaluateConstant(arith); !ok || got != int64(3) {
 		t.Fatalf("1+2: got (%v, %v), want (3, true)", got, ok)
 	}
 	// Non-constant declines.
-	if _, ok := EvaluateConstant(&FieldValue{Field: "x", Typ: TypeInt}); ok {
+	if _, ok := EvaluateConstant(&FieldValue{Field: "x", Typ: NullableLong}); ok {
 		t.Fatal("FieldValue should decline (not constant)")
 	}
 	// Nil safe.
@@ -1152,7 +1152,7 @@ func TestScalarFunctionValue_Evaluate_NilArg(t *testing.T) {
 	v := &ScalarFunctionValue{
 		FuncName: "ABS",
 		Args:     []Value{nil}, // deliberately malformed
-		Typ:      TypeInt,
+		Typ:      NullableLong,
 	}
 	got, errEv0 := v.Evaluate(nil)
 	require.NoError(t, errEv0)
@@ -1171,9 +1171,9 @@ func TestExplainTypeName(t *testing.T) {
 		t    Type
 		want string
 	}{
-		// Named types only — no legacy alias vars. `TypeInt` is an alias for
+		// Named types only — no legacy alias vars. `NullableLong` is an alias for
 		// NullableLong and `TypeFloat` was one for NullableDouble, so a case
-		// written `{TypeInt, "INT"}` asserts that a LONG renders "INT" while
+		// written `{NullableLong, "INT"}` asserts that a LONG renders "INT" while
 		// reading as INT coverage. That is how the DOUBLE/FLOAT collapse was
 		// pinned here as the expectation, and it is why TypeFloat is now gone.
 		{NullableInt, "INT"},
@@ -1202,7 +1202,7 @@ func TestExplainTypeName(t *testing.T) {
 // pins the fall-through arm for raw struct-construction.
 func TestAggregateValue_Type_UnknownOpIsUnknown(t *testing.T) {
 	t.Parallel()
-	a := &AggregateValue{Op: AggInvalid, Operand: &FieldValue{Field: "x", Typ: TypeInt}}
+	a := &AggregateValue{Op: AggInvalid, Operand: &FieldValue{Field: "x", Typ: NullableLong}}
 	if got := a.Type(); got != TypeUnknown {
 		t.Fatalf("AggInvalid.Type() = %v, want UnknownType", got)
 	}
@@ -1234,7 +1234,7 @@ func TestAggregateValue_Type_SumWithoutOperandFallsBackToLong(t *testing.T) {
 func TestEvaluateConstant_ProgrammerInvariantPanicSurfaces(t *testing.T) {
 	t.Parallel()
 	v := &panicValue{
-		child: &ConstantValue{Value: int64(1), Typ: TypeInt},
+		child: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	}
 	defer func() {
 		if r := recover(); r == nil {
@@ -1369,7 +1369,7 @@ func TestParameterValue_IsNotConstant(t *testing.T) {
 	// Composite containing a parameter is not constant either.
 	arith := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
 		Right: NewParameterValue(1),
 	}
 	if IsConstantValue(arith) {
@@ -1436,15 +1436,15 @@ func TestScalarFunctionValue_Evaluate(t *testing.T) {
 		{"UPPER literal", NewScalarFunctionValue("UPPER", TypeString, str("Hello")), nil, "HELLO"},
 		{"LOWER literal", NewScalarFunctionValue("LOWER", TypeString, str("Hello")), nil, "hello"},
 		{"UPPER over field", NewScalarFunctionValue("UPPER", TypeString, field("NAME")), row, "ALICE"},
-		{"LENGTH ascii", NewScalarFunctionValue("LENGTH", TypeInt, str("hello")), nil, int64(5)},
-		{"CHAR_LENGTH multibyte", NewScalarFunctionValue("CHAR_LENGTH", TypeInt, str("café")), nil, int64(4)},
-		{"OCTET_LENGTH multibyte", NewScalarFunctionValue("OCTET_LENGTH", TypeInt, str("café")), nil, int64(5)},
-		{"LENGTH bytes", NewScalarFunctionValue("LENGTH", TypeInt, bytesV([]byte{1, 2, 3})), nil, int64(3)},
+		{"LENGTH ascii", NewScalarFunctionValue("LENGTH", NullableLong, str("hello")), nil, int64(5)},
+		{"CHAR_LENGTH multibyte", NewScalarFunctionValue("CHAR_LENGTH", NullableLong, str("café")), nil, int64(4)},
+		{"OCTET_LENGTH multibyte", NewScalarFunctionValue("OCTET_LENGTH", NullableLong, str("café")), nil, int64(5)},
+		{"LENGTH bytes", NewScalarFunctionValue("LENGTH", NullableLong, bytesV([]byte{1, 2, 3})), nil, int64(3)},
 		{"NULL propagates", NewScalarFunctionValue("UPPER", TypeString, &NullValue{Typ: TypeString}), nil, nil},
 		{"unknown function declines", NewScalarFunctionValue("FROBNICATE", TypeString, str("x")), nil, nil},
-		{"wrong arg type declines", NewScalarFunctionValue("UPPER", TypeString, &ConstantValue{Value: int64(5), Typ: TypeInt}), nil, nil},
-		{"OCTET_LENGTH bytes", NewScalarFunctionValue("OCTET_LENGTH", TypeInt, field("BIN")), row, int64(2)},
-		{"empty string LENGTH", NewScalarFunctionValue("LENGTH", TypeInt, field("BLANK")), row, int64(0)},
+		{"wrong arg type declines", NewScalarFunctionValue("UPPER", TypeString, &ConstantValue{Value: int64(5), Typ: NullableLong}), nil, nil},
+		{"OCTET_LENGTH bytes", NewScalarFunctionValue("OCTET_LENGTH", NullableLong, field("BIN")), row, int64(2)},
+		{"empty string LENGTH", NewScalarFunctionValue("LENGTH", NullableLong, field("BLANK")), row, int64(0)},
 	}
 	for _, tc := range cases {
 		got, errEv0 := tc.v.Evaluate(tc.ctx)
@@ -1489,7 +1489,7 @@ func TestExplainValue_ScalarFunctionValue(t *testing.T) {
 	if got, want := ExplainValue(v), "UPPER(NAME)"; got != want {
 		t.Fatalf("UPPER(NAME): got %q, want %q", got, want)
 	}
-	nested := NewScalarFunctionValue("LENGTH", TypeInt,
+	nested := NewScalarFunctionValue("LENGTH", NullableLong,
 		NewScalarFunctionValue("LOWER", TypeString,
 			&FieldValue{Field: "NAME", Typ: TypeString}))
 	if got, want := ExplainValue(nested), "LENGTH(LOWER(NAME))"; got != want {

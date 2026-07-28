@@ -66,23 +66,26 @@ const (
 	dateLayout      = "2006-01-02"
 )
 
-// The legacy `ValueType` enum (TypeUnknown / TypeInt / TypeString /
-// TypeBool / TypeFloat) is retired — every Value impl's
-// Type() returns the rich Type directly. The names below remain
-// as Type-typed vars so existing call sites (`Typ: values.TypeInt`)
-// keep working — the value's Go type changes (Type instead of int),
-// the constant name doesn't. TypeFloat is the one member NOT kept:
-// see the note below the block.
+// The legacy `ValueType` enum (TypeUnknown / TypeInt / TypeString / TypeBool /
+// TypeFloat) is retired — every Value impl's Type() returns the rich Type
+// directly. Only the members whose NAME MATCHES THEIR VALUE remain as bridge
+// vars; TypeString is NullableString and TypeBool is NullableBoolean, so
+// neither can mislead.
+//
+// TypeInt and TypeFloat are gone. Both named one type and were another —
+// TypeInt was NullableLong, TypeFloat was NullableDouble — and between them
+// they produced eight tests that read as coverage for the type in their name
+// while asserting the other one's behaviour, plus a live wrong-rows bug where
+// the walker routed `CAST(x AS FLOAT)` through the DOUBLE-coded alias so the
+// cast never rounded to binary32. Every use of both meant the wider type and
+// now says so. Name the type you mean: NullableInt / NullableLong /
+// NullableFloat / NullableDouble.
 //
 // Legacy bridge retirement: RFC-025.
 var (
 	// TypeUnknown is the placeholder for "type not yet inferred".
 	// Maps to the canonical UnknownType singleton.
 	TypeUnknown Type = UnknownType
-	// TypeInt is the legacy name for the package's default integer
-	// width — bridged to LONG (BIGINT default; matches Java Record
-	// Layer's int64 representation).
-	TypeInt Type = NullableLong
 	// TypeString is the legacy name for STRING — bridged to
 	// NullableString.
 	TypeString Type = NullableString
@@ -92,15 +95,6 @@ var (
 	// `.Code() != TypeCodeBoolean` when nullability is irrelevant.
 	TypeBool Type = NullableBoolean
 )
-
-// There is deliberately NO legacy float alias here. `TypeFloat` used to exist
-// as a bridge name for NullableDouble — a name that said FLOAT and WAS DOUBLE —
-// and it caused four separate defects before it was removed: the walker routed
-// `CAST(x AS FLOAT)` through it so the cast never rounded to binary32, and
-// three tests read as FLOAT coverage while asserting DOUBLE behaviour, one of
-// them pinning the FLOAT/DOUBLE explain collapse as the expectation. Every use
-// meant DOUBLE and now says so. Use NullableFloat for binary32 and
-// NullableDouble for binary64; nothing should ever name one and mean the other.
 
 // Value is the root of the Value hierarchy.
 // Concrete Values implement Children / Type / Name / Evaluate;

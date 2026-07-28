@@ -17,7 +17,7 @@ func TestInComparisonToExplodeRule_BasicExplode(t *testing.T) {
 
 	inList := &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}, Typ: values.TypeUnknown}
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.TypeInt},
+		&values.FieldValue{Field: "STATUS", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
 	filter := expressions.NewLogicalFilterExpression(
@@ -126,7 +126,7 @@ func TestInComparisonToExplodeRule_SingleElement(t *testing.T) {
 
 	inList := &values.ConstantValue{Value: []any{int64(6)}, Typ: values.TypeUnknown}
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "B", Typ: values.TypeInt},
+		&values.FieldValue{Field: "B", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
 	filter := expressions.NewLogicalFilterExpression(
@@ -171,7 +171,7 @@ func TestInComparisonToExplodeRule_PreservesOtherPredicates(t *testing.T) {
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
 	otherPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "AMOUNT", Typ: values.TypeInt},
+		&values.FieldValue{Field: "AMOUNT", Typ: values.NullableLong},
 		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(100)),
 	)
 	filter := expressions.NewLogicalFilterExpression(
@@ -372,7 +372,7 @@ func TestInComparisonToExplodeRule_ImplementInJoinShape(t *testing.T) {
 
 	inList := &values.ConstantValue{Value: []any{int64(10), int64(20)}, Typ: values.TypeUnknown}
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "ID", Typ: values.TypeInt},
+		&values.FieldValue{Field: "ID", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
 	filter := expressions.NewLogicalFilterExpression(

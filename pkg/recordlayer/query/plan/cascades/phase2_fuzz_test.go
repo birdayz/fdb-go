@@ -59,7 +59,7 @@ func FuzzDataAccessScan_NoPanic(f *testing.F) {
 			col := colPool[int(predSeed+byte(i))%len(colPool)]
 			cmpType := cmpTypes[int(predSeed+byte(i*3))%len(cmpTypes)]
 			preds[i] = predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: col, Typ: values.TypeInt},
+				&values.FieldValue{Field: col, Typ: values.NullableLong},
 				predicates.NewLiteralComparison(cmpType, int64(i+1)),
 			)
 		}
@@ -102,14 +102,14 @@ func FuzzInExplode_NoPanic(f *testing.F) {
 			}
 			inList := &values.ConstantValue{Value: items, Typ: values.TypeUnknown}
 			preds = append(preds, predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.TypeInt},
+				&values.FieldValue{Field: "STATUS", Typ: values.NullableLong},
 				predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 			))
 		}
 
 		for i := 0; i < nExtra; i++ {
 			preds = append(preds, predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "OTHER", Typ: values.TypeInt},
+				&values.FieldValue{Field: "OTHER", Typ: values.NullableLong},
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i)),
 			))
 		}

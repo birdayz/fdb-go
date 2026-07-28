@@ -250,7 +250,7 @@ func TestImplementInJoinRule_MultipleExplodes(t *testing.T) {
 func TestClassifyInSourceKind_ConstantValueCollection(t *testing.T) {
 	t.Parallel()
 
-	collection := &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}, Typ: values.TypeInt}
+	collection := &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}, Typ: values.NullableLong}
 	explode := expressions.NewExplodeExpression(collection)
 	ref := expressions.InitialOf(explode)
 	q := expressions.ForEachQuantifier(ref)

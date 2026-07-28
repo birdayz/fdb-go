@@ -45,7 +45,7 @@ func TestNotValue_Evaluate_TruthTable(t *testing.T) {
 func TestNotValue_Evaluate_TypeMismatchDegrades(t *testing.T) {
 	t.Parallel()
 	cases := []Value{
-		&ConstantValue{Value: int64(1), Typ: TypeInt},
+		&ConstantValue{Value: int64(1), Typ: NullableLong},
 		&ConstantValue{Value: "true", Typ: TypeString},
 		&ConstantValue{Value: 1.5, Typ: NullableDouble},
 	}
@@ -88,7 +88,7 @@ func TestNotValue_Evaluate_FieldLookup(t *testing.T) {
 // independent of the child's type. NOT is a boolean-typed operator.
 func TestNotValue_Type(t *testing.T) {
 	t.Parallel()
-	v := NewNotValue(&ConstantValue{Value: int64(1), Typ: TypeInt})
+	v := NewNotValue(&ConstantValue{Value: int64(1), Typ: NullableLong})
 	if v.Type().Code() != TypeCodeBoolean {
 		t.Fatalf("Type: got %v, want a boolean type", v.Type())
 	}
@@ -120,8 +120,8 @@ func TestNotValue_WalkValue(t *testing.T) {
 	t.Parallel()
 	tree := NewNotValue(&ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "x", Typ: TypeInt},
-		Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Left:  &FieldValue{Field: "x", Typ: NullableLong},
+		Right: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	})
 	visited := 0
 	WalkValue(tree, func(Value) bool {

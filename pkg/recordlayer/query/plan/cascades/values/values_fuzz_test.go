@@ -36,10 +36,10 @@ func FuzzSimplifyValue_ArithmeticTree(f *testing.F) {
 			Op: op2,
 			Left: &ArithmeticValue{
 				Op:    op1,
-				Left:  &ConstantValue{Value: a, Typ: TypeInt},
-				Right: &ConstantValue{Value: b, Typ: TypeInt},
+				Left:  &ConstantValue{Value: a, Typ: NullableLong},
+				Right: &ConstantValue{Value: b, Typ: NullableLong},
 			},
-			Right: &ConstantValue{Value: c, Typ: TypeInt},
+			Right: &ConstantValue{Value: c, Typ: NullableLong},
 		}
 
 		// 1. SimplifyValue must not panic on any byte input.
@@ -85,13 +85,13 @@ func FuzzSimplifyValue_CastChain(f *testing.F) {
 		// Pool of cascades Types the seed CAST evaluator handles.
 		// NewCastValue rejects nil / UnknownType — pick from the
 		// concrete primitive singletons only.
-		pool := []Type{TypeInt, TypeString, TypeBool, NullableDouble}
+		pool := []Type{NullableLong, TypeString, TypeBool, NullableDouble}
 		t1 := pool[int(t1raw)%len(pool)]
 		t2 := pool[int(t2raw)%len(pool)]
 
 		tree := NewCastValue(
 			NewCastValue(
-				&ConstantValue{Value: n, Typ: TypeInt},
+				&ConstantValue{Value: n, Typ: NullableLong},
 				t1,
 			),
 			t2,

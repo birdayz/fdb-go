@@ -1373,8 +1373,8 @@ func aggregateOpForName(name string, isStar bool) (values.AggregateOp, bool) {
 func sqlTypeToCascadesType(sqlType string) values.Type {
 	switch sqlType {
 	case "INT", "INTEGER":
-		// Genuine 32-bit INT (TypeCodeInt), NOT the historical
-		// values.TypeInt alias (= NullableLong): Java types INTEGER
+		// Genuine 32-bit INT (TypeCodeInt), NOT the width the retired
+		// `TypeInt` alias carried (it WAS NullableLong): Java types INTEGER
 		// columns INT and dispatches the int32-bounded arithmetic lane
 		// (ADD_II = Math.addExact(int,int) — overflow at 2^31 errors
 		// 22003 where the LONG lane silently returns the wide value).

@@ -75,7 +75,7 @@ func TestResolver_ResolveIdentifier_Qualified(t *testing.T) {
 
 // sqlTypeToCascadesType is exercised via ResolveIdentifier (it's
 // unexported). Pin the SQL-string → values.ValueType mapping so
-// any drift (including misses like the old BYTES→TypeInt lie) surfaces
+// any drift (including misses like the old BYTES→NullableLong lie) surfaces
 // at test time. Downstream comparators dispatch on ValueType; a bad
 // mapping would silently pick the wrong path.
 func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
@@ -451,7 +451,7 @@ func TestResolver_ResolveCast(t *testing.T) {
 		t.Fatal("expected error for TypeUnknown target")
 	}
 	// Nil child rejected.
-	if _, err := r.ResolveCast(nil, values.TypeInt); err == nil {
+	if _, err := r.ResolveCast(nil, values.NullableLong); err == nil {
 		t.Fatal("expected error for nil child")
 	}
 }

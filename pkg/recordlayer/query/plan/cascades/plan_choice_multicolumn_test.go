@@ -598,7 +598,7 @@ func TestPlanChoice_ParameterizedResidualKeepsIndex(t *testing.T) {
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
-	param := values.NewConstantObjectValue(values.UniqueCorrelationIdentifier(), "p1", values.TypeInt)
+	param := values.NewConstantObjectValue(values.UniqueCorrelationIdentifier(), "p1", values.NullableLong)
 	filter := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(

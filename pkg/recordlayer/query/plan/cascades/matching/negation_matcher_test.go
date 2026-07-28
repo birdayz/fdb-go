@@ -12,7 +12,7 @@ func TestNegationMatcher_DownstreamFails_Negates(t *testing.T) {
 	t.Parallel()
 	// Downstream wants ConstantValue; input is FieldValue → fails.
 	m := NewNegationMatcher(NewConstantMatcher())
-	got := m.BindMatches(NewBindings(), &values.FieldValue{Field: "x", Typ: values.TypeInt})
+	got := m.BindMatches(NewBindings(), &values.FieldValue{Field: "x", Typ: values.NullableLong})
 	if len(got) != 1 {
 		t.Fatalf("expected 1 binding (downstream rejected), got %d", len(got))
 	}
@@ -23,7 +23,7 @@ func TestNegationMatcher_DownstreamFails_Negates(t *testing.T) {
 func TestNegationMatcher_DownstreamMatches_Fails(t *testing.T) {
 	t.Parallel()
 	m := NewNegationMatcher(NewConstantMatcher())
-	got := m.BindMatches(NewBindings(), &values.ConstantValue{Value: int64(7), Typ: values.TypeInt})
+	got := m.BindMatches(NewBindings(), &values.ConstantValue{Value: int64(7), Typ: values.NullableLong})
 	if got != nil {
 		t.Fatalf("expected nil (downstream matched), got %d bindings", len(got))
 	}
@@ -39,12 +39,12 @@ func TestNegationMatcher_DoubleNegation(t *testing.T) {
 	outer := NewNegationMatcher(inner)
 
 	// ConstantValue: downstream matches → inner fails → outer matches.
-	gotMatch := outer.BindMatches(NewBindings(), &values.ConstantValue{Value: int64(7), Typ: values.TypeInt})
+	gotMatch := outer.BindMatches(NewBindings(), &values.ConstantValue{Value: int64(7), Typ: values.NullableLong})
 	if len(gotMatch) != 1 {
 		t.Fatalf("expected 1 binding (double-negation matches downstream), got %d", len(gotMatch))
 	}
 	// FieldValue: downstream fails → inner matches → outer fails.
-	gotFail := outer.BindMatches(NewBindings(), &values.FieldValue{Field: "x", Typ: values.TypeInt})
+	gotFail := outer.BindMatches(NewBindings(), &values.FieldValue{Field: "x", Typ: values.NullableLong})
 	if gotFail != nil {
 		t.Fatalf("expected nil (double-negation rejects what downstream rejects), got %d", len(gotFail))
 	}
@@ -67,7 +67,7 @@ func TestNegationMatcher_DistinctIdentity(t *testing.T) {
 	t.Parallel()
 	a := NewNegationMatcher(NewConstantMatcher())
 	b := NewNegationMatcher(NewConstantMatcher())
-	in := &values.FieldValue{Field: "x", Typ: values.TypeInt}
+	in := &values.FieldValue{Field: "x", Typ: values.NullableLong}
 
 	bindings := NewBindings()
 	for _, partial := range a.BindMatches(bindings, in) {

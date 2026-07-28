@@ -107,9 +107,9 @@ func TestDeMorgan_NestedNot_DoesNotFire(t *testing.T) {
 func TestDeMorgan_PreservesOrder(t *testing.T) {
 	t.Parallel()
 	rule := NewDeMorganRule()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeInt}
-	b := &values.FieldValue{Field: "b", Typ: values.TypeInt}
-	c := &values.FieldValue{Field: "c", Typ: values.TypeInt}
+	a := &values.FieldValue{Field: "a", Typ: values.NullableLong}
+	b := &values.FieldValue{Field: "b", Typ: values.NullableLong}
+	c := &values.FieldValue{Field: "c", Typ: values.NullableLong}
 	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))})
 	p2 := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(2))})
 	p3 := predicates.NewComparisonPredicate(c, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(3))})
@@ -134,7 +134,7 @@ func TestDeMorgan_PreservesOrder(t *testing.T) {
 // Concretely: NOT(a = 5 OR FALSE) → a <> 5.
 func TestNormalizationRules_AppliesDeMorganThenSimplify(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeInt}
+	a := &values.FieldValue{Field: "a", Typ: values.NullableLong}
 	cp := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))})
 
 	pred := predicates.NewNot(predicates.NewOr(cp, predicates.NewConstantPredicate(predicates.TriFalse)))
@@ -262,7 +262,7 @@ func TestNormalizationRules_DeMorganIntoVPFold(t *testing.T) {
 // Pins the rule pipeline doesn't fall through any of the 4 transforms.
 func TestNormalizationRules_DeMorganMixed(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeInt}
+	a := &values.FieldValue{Field: "a", Typ: values.NullableLong}
 	cp := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))})
 	pred := predicates.NewNot(predicates.NewAnd(cp, predicates.NewValuePredicate(values.NewBooleanValue(false))))
 	got := Simplify(pred, NormalizationRules())
@@ -324,7 +324,7 @@ func TestNormalizationRules_Idempotent(t *testing.T) {
 	rules := NormalizationRules()
 	a := &values.FieldValue{Field: "a", Typ: values.TypeString}
 	b := &values.FieldValue{Field: "b", Typ: values.TypeString}
-	age := &values.FieldValue{Field: "age", Typ: values.TypeInt}
+	age := &values.FieldValue{Field: "age", Typ: values.NullableLong}
 	samples := []predicates.QueryPredicate{
 		// DeMorgan-then-NOT-rewrite: NOT(AND(a=x, b=y)) → OR(a<>x, b<>y).
 		predicates.NewNot(predicates.NewAnd(

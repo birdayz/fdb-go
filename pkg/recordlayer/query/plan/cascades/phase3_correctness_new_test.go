@@ -246,7 +246,7 @@ func TestPhase3_ProjectionOverFilter(t *testing.T) {
 	filterRef := expressions.InitialOf(filter)
 
 	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{&values.FieldValue{Field: "ID", Typ: values.TypeInt}},
+		[]values.Value{&values.FieldValue{Field: "ID", Typ: values.NullableLong}},
 		expressions.ForEachQuantifier(filterRef),
 	)
 	rootRef := expressions.InitialOf(proj)

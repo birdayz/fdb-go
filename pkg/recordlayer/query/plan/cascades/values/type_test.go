@@ -213,22 +213,21 @@ func TestConstantValue_Type_OverridesTypField(t *testing.T) {
 	}
 }
 
-// TestLegacyConstants_Aliases pins that the legacy ValueType-named
-// constants (TypeInt / TypeBool / TypeString / NullableDouble / TypeUnknown)
-// continue to point at the canonical Type singletons after the Track
-// G1 retirement. Existing call sites of the form
-// `Typ: values.TypeInt` keep working — only the value's Go type
-// changes (`Type` instead of the retired `ValueType`).
+// TestLegacyConstants_Aliases pins that the surviving legacy ValueType-named
+// constants point at the canonical Type singletons, so existing call sites of
+// the form `Typ: values.TypeString` keep working.
+//
+// Only the members whose NAME MATCHES THEIR VALUE remain. TypeInt (was
+// NullableLong) and TypeFloat (was NullableDouble) are retired, and their arms
+// are DELETED here rather than rewritten: replacing a removed alias with the
+// thing it aliased leaves `NullableLong != NullableLong`, a self-comparison
+// that can never fail and reads like coverage. That tautology is the same
+// shape as the eight tests those two aliases produced — an assertion that is
+// self-consistent and therefore green no matter what the code does.
 func TestLegacyConstants_Aliases(t *testing.T) {
 	t.Parallel()
 	if TypeBool != NullableBoolean {
 		t.Errorf("TypeBool should alias NullableBoolean; got %v", TypeBool)
-	}
-	if TypeInt != NullableLong {
-		t.Errorf("TypeInt should alias NullableLong; got %v", TypeInt)
-	}
-	if NullableDouble != NullableDouble {
-		t.Errorf("NullableDouble should alias NullableDouble; got %v", NullableDouble)
 	}
 	if TypeString != NullableString {
 		t.Errorf("TypeString should alias NullableString; got %v", TypeString)
@@ -1686,14 +1685,14 @@ func TestValue_Type_Leaves(t *testing.T) {
 		// → NOT NULL, nil → NULL). The Typ field's own nullability
 		// is overridden — callers don't need to pre-pick the right
 		// NotNull/Nullable singleton.
-		{"ConstantValue(int64=5)", &ConstantValue{Value: int64(5), Typ: TypeInt}, "LONG NOT NULL"},
+		{"ConstantValue(int64=5)", &ConstantValue{Value: int64(5), Typ: NullableLong}, "LONG NOT NULL"},
 		{"ConstantValue(string=hello)", &ConstantValue{Value: "hello", Typ: TypeString}, "STRING NOT NULL"},
-		{"ConstantValue(nil)", &ConstantValue{Value: nil, Typ: TypeInt}, "LONG NULL"},
-		{"NullValue(typed-INT)", &NullValue{Typ: TypeInt}, "LONG NULL"},
+		{"ConstantValue(nil)", &ConstantValue{Value: nil, Typ: NullableLong}, "LONG NULL"},
+		{"NullValue(typed-INT)", &NullValue{Typ: NullableLong}, "LONG NULL"},
 		{"NullValue(unknown)", &NullValue{Typ: TypeUnknown}, "UNKNOWN NULL"},
-		{"FieldValue(int)", &FieldValue{Field: "x", Typ: TypeInt}, "LONG NULL"},
+		{"FieldValue(int)", &FieldValue{Field: "x", Typ: NullableLong}, "LONG NULL"},
 		{"FieldValue(bool)", &FieldValue{Field: "active", Typ: TypeBool}, "BOOLEAN NULL"},
-		{"ParameterValue(int)", &ParameterValue{Ordinal: 1, Typ: TypeInt}, "LONG NULL"},
+		{"ParameterValue(int)", &ParameterValue{Ordinal: 1, Typ: NullableLong}, "LONG NULL"},
 	}
 	for _, tc := range cases {
 		got := tc.v.Type()
@@ -1716,14 +1715,14 @@ func TestValue_Type_Composites(t *testing.T) {
 			"ArithmeticValue(c+c)",
 			&ArithmeticValue{
 				Op:    OpAdd,
-				Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
-				Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+				Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
+				Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 			},
 			"LONG NULL",
 		},
 		{
 			"CastValue(int → STRING)",
-			NewCastValue(&ConstantValue{Value: int64(42), Typ: TypeInt}, TypeString),
+			NewCastValue(&ConstantValue{Value: int64(42), Typ: NullableLong}, TypeString),
 			"STRING NULL",
 		},
 		{
@@ -1772,12 +1771,12 @@ func TestValue_Type_Aggregate(t *testing.T) {
 		{"COUNT(*)", NewAggregateValue(AggCountStar, nil), "LONG NOT NULL"},
 		{
 			"COUNT(col)",
-			NewAggregateValue(AggCount, &FieldValue{Field: "x", Typ: TypeInt}),
+			NewAggregateValue(AggCount, &FieldValue{Field: "x", Typ: NullableLong}),
 			"LONG NOT NULL",
 		},
 		{
 			"SUM(col)",
-			NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: TypeInt}),
+			NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: NullableLong}),
 			"LONG NULL",
 		},
 		{
@@ -1801,7 +1800,7 @@ func TestValue_Type_RecordConstructor(t *testing.T) {
 	t.Parallel()
 	rcv := NewRecordConstructorValue(
 		RecordConstructorField{Name: "id", Value: NewBooleanValue(true)},
-		RecordConstructorField{Name: "v", Value: &ConstantValue{Value: int64(42), Typ: TypeInt}},
+		RecordConstructorField{Name: "v", Value: &ConstantValue{Value: int64(42), Typ: NullableLong}},
 	)
 	got := rcv.Type()
 	rt, ok := got.(*RecordType)
@@ -1821,7 +1820,7 @@ func TestValue_Type_RecordConstructor(t *testing.T) {
 	if rt.Fields[0].Name != "id" || !rt.Fields[0].FieldType.Equals(NotNullBoolean) {
 		t.Errorf("Fields[0]: got %v", rt.Fields[0])
 	}
-	// Second field: ConstantValue(int64=5, Typ=TypeInt).Type() ==
+	// Second field: ConstantValue(int64=5, Typ=NullableLong).Type() ==
 	// NotNullLong (non-nil Value → NOT NULL per ConstantValue.Type()).
 	if rt.Fields[1].Name != "v" || !rt.Fields[1].FieldType.Equals(NotNullLong) {
 		t.Errorf("Fields[1]: got %v", rt.Fields[1])

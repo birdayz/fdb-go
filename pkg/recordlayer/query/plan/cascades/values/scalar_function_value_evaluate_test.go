@@ -26,7 +26,7 @@ func TestScalarFunctionValue_Evaluate_GreatestLeastMismatchReturnsError(t *testi
 			t.Parallel()
 			// fn(1, 'x') — int64 vs string, incompatible types.
 			v := NewScalarFunctionValue(fn, TypeUnknown,
-				&ConstantValue{Value: int64(1), Typ: TypeInt},
+				&ConstantValue{Value: int64(1), Typ: NullableLong},
 				&ConstantValue{Value: "x", Typ: TypeString},
 			)
 
@@ -51,28 +51,28 @@ func TestScalarFunctionValue_Evaluate_GreatestLeastMismatchReturnsError(t *testi
 func TestScalarFunctionValue_Evaluate_GreatestLeastHappyPath(t *testing.T) {
 	t.Parallel()
 
-	greatest := NewScalarFunctionValue("GREATEST", TypeInt,
-		&ConstantValue{Value: int64(3), Typ: TypeInt},
-		&ConstantValue{Value: int64(7), Typ: TypeInt},
-		&ConstantValue{Value: int64(5), Typ: TypeInt},
+	greatest := NewScalarFunctionValue("GREATEST", NullableLong,
+		&ConstantValue{Value: int64(3), Typ: NullableLong},
+		&ConstantValue{Value: int64(7), Typ: NullableLong},
+		&ConstantValue{Value: int64(5), Typ: NullableLong},
 	)
 	if got, err := greatest.Evaluate(nil); err != nil || got != int64(7) {
 		t.Fatalf("GREATEST(3,7,5) = (%v, %v), want (7, nil)", got, err)
 	}
 
-	least := NewScalarFunctionValue("LEAST", TypeInt,
-		&ConstantValue{Value: int64(3), Typ: TypeInt},
-		&ConstantValue{Value: int64(7), Typ: TypeInt},
-		&ConstantValue{Value: int64(5), Typ: TypeInt},
+	least := NewScalarFunctionValue("LEAST", NullableLong,
+		&ConstantValue{Value: int64(3), Typ: NullableLong},
+		&ConstantValue{Value: int64(7), Typ: NullableLong},
+		&ConstantValue{Value: int64(5), Typ: NullableLong},
 	)
 	if got, err := least.Evaluate(nil); err != nil || got != int64(3) {
 		t.Fatalf("LEAST(3,7,5) = (%v, %v), want (3, nil)", got, err)
 	}
 
 	// NULL propagation: any NULL arg → NULL result, no error.
-	withNull := NewScalarFunctionValue("GREATEST", TypeInt,
-		&ConstantValue{Value: int64(3), Typ: TypeInt},
-		&ConstantValue{Value: nil, Typ: TypeInt},
+	withNull := NewScalarFunctionValue("GREATEST", NullableLong,
+		&ConstantValue{Value: int64(3), Typ: NullableLong},
+		&ConstantValue{Value: nil, Typ: NullableLong},
 	)
 	if got, err := withNull.Evaluate(nil); err != nil || got != nil {
 		t.Fatalf("GREATEST(3, NULL) = (%v, %v), want (nil, nil)", got, err)

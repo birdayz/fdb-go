@@ -56,7 +56,7 @@ func SimplifyValue(v Value) Value {
 		// arithmetic / cast result type from the source node, so
 		// surface it on the folded ConstantValue / NullValue. Once
 		// the Type hierarchy lands and rules start matching on
-		// `NULL :: TypeInt` vs `NULL :: TypeUnknown`, this carries
+		// `NULL :: NullableLong` vs `NULL :: TypeUnknown`, this carries
 		// the typed-null semantics through the fold path.
 		switch o := out.(type) {
 		case *ConstantValue:

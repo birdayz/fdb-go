@@ -26,11 +26,11 @@ func TestAndDedup_RemovesDuplicates(t *testing.T) {
 	t.Parallel()
 	rule := NewAndDedupRule()
 	p := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 	)
 	q := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "y", Typ: values.TypeInt},
+		&values.FieldValue{Field: "y", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
 	// Four children, two distinct: p and q.
@@ -204,7 +204,7 @@ func TestComparisonConstSimplify_Folds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			pred := predicates.NewComparisonPredicate(
-				&values.ConstantValue{Value: tc.lhs, Typ: values.TypeInt},
+				&values.ConstantValue{Value: tc.lhs, Typ: values.NullableLong},
 				predicates.Comparison{Type: tc.op, Operand: values.LiteralValue(tc.rhs)},
 			)
 			got := FireRule(rule, pred)
@@ -234,11 +234,11 @@ func TestComparisonConstSimplify_UnaryIsNull(t *testing.T) {
 		op      predicates.ComparisonType
 		want    predicates.TriBool
 	}{
-		{"NULL IS NULL → TRUE", values.NewNullValue(values.TypeInt), predicates.ComparisonIsNull, predicates.TriTrue},
-		{"NULL IS NOT NULL → FALSE", values.NewNullValue(values.TypeInt), predicates.ComparisonIsNotNull, predicates.TriFalse},
-		{"ConstantValue(5) IS NULL → FALSE", &values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, predicates.ComparisonIsNull, predicates.TriFalse},
-		{"ConstantValue(5) IS NOT NULL → TRUE", &values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, predicates.ComparisonIsNotNull, predicates.TriTrue},
-		{"ConstantValue(nil) IS NULL → TRUE", &values.ConstantValue{Value: nil, Typ: values.TypeInt}, predicates.ComparisonIsNull, predicates.TriTrue},
+		{"NULL IS NULL → TRUE", values.NewNullValue(values.NullableLong), predicates.ComparisonIsNull, predicates.TriTrue},
+		{"NULL IS NOT NULL → FALSE", values.NewNullValue(values.NullableLong), predicates.ComparisonIsNotNull, predicates.TriFalse},
+		{"ConstantValue(5) IS NULL → FALSE", &values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, predicates.ComparisonIsNull, predicates.TriFalse},
+		{"ConstantValue(5) IS NOT NULL → TRUE", &values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, predicates.ComparisonIsNotNull, predicates.TriTrue},
+		{"ConstantValue(nil) IS NULL → TRUE", &values.ConstantValue{Value: nil, Typ: values.NullableLong}, predicates.ComparisonIsNull, predicates.TriTrue},
 		{"BooleanValue(true) IS NOT NULL → TRUE", values.NewBooleanValue(true), predicates.ComparisonIsNotNull, predicates.TriTrue},
 		{"BooleanValue(nil) IS NULL → TRUE", &values.BooleanValue{Value: nil}, predicates.ComparisonIsNull, predicates.TriTrue},
 	}
@@ -357,22 +357,22 @@ func TestComparisonConstSimplify_IsDistinctFrom(t *testing.T) {
 		want    predicates.TriBool
 	}{
 		{
-			"NULL IS DISTINCT FROM NULL", values.NewNullValue(values.TypeInt),
+			"NULL IS DISTINCT FROM NULL", values.NewNullValue(values.NullableLong),
 			predicates.Comparison{Type: predicates.ComparisonIsDistinctFrom, Operand: values.LiteralValue(nil)},
 			predicates.TriFalse,
 		},
 		{
-			"NULL IS NOT DISTINCT FROM NULL", values.NewNullValue(values.TypeInt),
+			"NULL IS NOT DISTINCT FROM NULL", values.NewNullValue(values.NullableLong),
 			predicates.Comparison{Type: predicates.ComparisonNotDistinctFrom, Operand: values.LiteralValue(nil)},
 			predicates.TriTrue,
 		},
 		{
-			"5 IS NOT DISTINCT FROM 5", &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+			"5 IS NOT DISTINCT FROM 5", &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 			predicates.Comparison{Type: predicates.ComparisonNotDistinctFrom, Operand: values.LiteralValue(int64(5))},
 			predicates.TriTrue,
 		},
 		{
-			"5 IS DISTINCT FROM NULL", &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+			"5 IS DISTINCT FROM NULL", &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 			predicates.Comparison{Type: predicates.ComparisonIsDistinctFrom, Operand: values.LiteralValue(nil)},
 			predicates.TriTrue,
 		},
@@ -411,7 +411,7 @@ func TestComparisonConstSimplify_FieldOperandDeclines(t *testing.T) {
 	t.Parallel()
 	rule := NewComparisonConstantSimplifyRule()
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	if got := FireRule(rule, pred); len(got) != 0 {
@@ -626,11 +626,11 @@ func TestAndAbsorbOr_DropsRedundantOrChild(t *testing.T) {
 	t.Parallel()
 	rule := NewAndAbsorbOrRule()
 	p := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	q := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		&values.FieldValue{Field: "rank", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
 	and := predicates.NewAnd(p, predicates.NewOr(p, q))
@@ -654,15 +654,15 @@ func TestAndAbsorbOr_KeepsMultipleSurvivors(t *testing.T) {
 	t.Parallel()
 	rule := NewAndAbsorbOrRule()
 	p := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	q := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		&values.FieldValue{Field: "rank", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
 	r := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "score", Typ: values.TypeInt},
+		&values.FieldValue{Field: "score", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(50))},
 	)
 	and := predicates.NewAnd(p, predicates.NewOr(p, q), r) // p AND (p OR q) AND r
@@ -686,15 +686,15 @@ func TestAndAbsorbOr_NoOpWhenNoSharedOperand(t *testing.T) {
 	t.Parallel()
 	rule := NewAndAbsorbOrRule()
 	p := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	q := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		&values.FieldValue{Field: "rank", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
 	r := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "score", Typ: values.TypeInt},
+		&values.FieldValue{Field: "score", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(50))},
 	)
 	and := predicates.NewAnd(p, predicates.NewOr(q, r))
@@ -708,11 +708,11 @@ func TestOrAbsorbAnd_DropsRedundantAndChild(t *testing.T) {
 	t.Parallel()
 	rule := NewOrAbsorbAndRule()
 	p := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	q := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		&values.FieldValue{Field: "rank", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
 	or := predicates.NewOr(p, predicates.NewAnd(p, q))
@@ -730,11 +730,11 @@ func TestOrAbsorbAnd_DropsRedundantAndChild(t *testing.T) {
 func TestSimplify_Absorption_EndToEnd(t *testing.T) {
 	t.Parallel()
 	p := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	q := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		&values.FieldValue{Field: "rank", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
 	// AND(p, OR(p, q), TRUE) → AND(p, TRUE) → p.
@@ -754,7 +754,7 @@ func TestNotComparisonRewrite_NegatesEquals(t *testing.T) {
 	t.Parallel()
 	rule := NewNotComparisonRewriteRule()
 	cp := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))},
 	)
 	got := FireRule(rule, predicates.NewNot(cp))
@@ -795,7 +795,7 @@ func TestNotComparisonRewrite_InDeclines(t *testing.T) {
 	t.Parallel()
 	rule := NewNotComparisonRewriteRule()
 	cp := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		&values.FieldValue{Field: "age", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2)})},
 	)
 	if got := FireRule(rule, predicates.NewNot(cp)); len(got) != 0 {
@@ -817,7 +817,7 @@ func TestNotComparisonRewrite_NonComparisonDeclines(t *testing.T) {
 // `age <> 18` and the outer NOT vanishes.
 func TestSimplify_NotComparisonEndToEnd(t *testing.T) {
 	t.Parallel()
-	age := &values.FieldValue{Field: "age", Typ: values.TypeInt}
+	age := &values.FieldValue{Field: "age", Typ: values.NullableLong}
 	got := Simplify(
 		predicates.NewNot(predicates.NewComparisonPredicate(age, predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(18))})),
 		DefaultSimplifyRules(),

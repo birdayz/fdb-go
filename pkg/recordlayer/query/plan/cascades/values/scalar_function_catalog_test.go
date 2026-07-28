@@ -219,9 +219,9 @@ func TestScalarFunctionCatalogRouteBoundaries(t *testing.T) {
 		require.False(t, scalarCall, name)
 	}
 	for name, want := range map[string]Type{
-		"BITAND":            TypeInt,
-		"BITOR":             TypeInt,
-		"BITXOR":            TypeInt,
+		"BITAND":            NullableLong,
+		"BITOR":             NullableLong,
+		"BITXOR":            NullableLong,
 		"CURRENT_DATE":      NullableDate,
 		"CURRENT_TIME":      NullableTimestamp,
 		"LOCALTIME":         NullableTimestamp,

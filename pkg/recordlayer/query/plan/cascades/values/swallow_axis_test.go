@@ -26,7 +26,7 @@ func TestEvaluateConstant_TypeMismatch_DeclinesToFold(t *testing.T) {
 	t.Parallel()
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &ConstantValue{Value: int64(5), Typ: TypeInt},
+		Left:  &ConstantValue{Value: int64(5), Typ: NullableLong},
 		Right: &ConstantValue{Value: true, Typ: TypeBool},
 	}
 	if !IsConstantValue(v) {
@@ -44,7 +44,7 @@ func TestEvaluateConstant_TypeMismatch_DeclinesToFold(t *testing.T) {
 // the error.
 func TestTryCastConstant_TypeMismatch_DeclinesToFold(t *testing.T) {
 	t.Parallel()
-	out := tryCastConstant(&ConstantValue{Value: math.NaN(), Typ: NullableDouble}, TypeInt)
+	out := tryCastConstant(&ConstantValue{Value: math.NaN(), Typ: NullableDouble}, NullableLong)
 	if out != nil {
 		t.Fatalf("tryCastConstant(NaN→BIGINT): got %v, want nil — decline-to-fold", out)
 	}

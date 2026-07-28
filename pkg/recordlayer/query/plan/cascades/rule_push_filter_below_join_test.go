@@ -89,10 +89,10 @@ func TestPushFilterBelowJoin_BothSidePredicate(t *testing.T) {
 
 	// Predicate: A.ID = B.ID — references both aliases.
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "A.ID", Typ: values.TypeInt},
+		&values.FieldValue{Field: "A.ID", Typ: values.NullableLong},
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.FieldValue{Field: "B.ID", Typ: values.TypeInt},
+			Operand: &values.FieldValue{Field: "B.ID", Typ: values.NullableLong},
 		},
 	)
 
@@ -118,10 +118,10 @@ func TestPushFilterBelowJoin_MixedPredicates(t *testing.T) {
 	)
 	// Predicate 2: A.ID = B.ID — both sides.
 	predBoth := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "A.ID", Typ: values.TypeInt},
+		&values.FieldValue{Field: "A.ID", Typ: values.NullableLong},
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.FieldValue{Field: "B.ID", Typ: values.TypeInt},
+			Operand: &values.FieldValue{Field: "B.ID", Typ: values.NullableLong},
 		},
 	)
 

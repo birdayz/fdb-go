@@ -3584,10 +3584,10 @@ func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
 		})
 		agg := plans.NewRecordQueryStreamingAggregationPlan(
 			sort,
-			[]values.Value{values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.TypeInt)},
+			[]values.Value{values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.NullableLong)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}},
-				{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.TypeInt)},
+				{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}},
+				{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NullableLong)},
 			},
 		)
 
@@ -3654,8 +3654,8 @@ func TestIntegration_ProjectionOverJoin(t *testing.T) {
 		nlj := plans.NewRecordQueryNestedLoopJoinPlan(scan1, scan2, nil, plans.JoinInner, "ORDER", "ORDER", nil)
 		proj := plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
-				values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.TypeInt),
-				values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.TypeInt),
+				values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.NullableLong),
+				values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NullableLong),
 			},
 			nlj,
 		)
@@ -3766,11 +3766,11 @@ func TestIntegration_FilterPlan_CompoundPredicate(t *testing.T) {
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		pricePred := predicates.NewComparisonPredicate(
-			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.TypeInt),
+			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NullableLong),
 			predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(100)),
 		)
 		qtyPred := predicates.NewComparisonPredicate(
-			values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.TypeInt),
+			values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.NullableLong),
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 		)
 		andPred := predicates.NewAnd(pricePred, qtyPred)
@@ -3930,11 +3930,11 @@ func TestIntegration_FilterPlan_OrPredicate(t *testing.T) {
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		lowPred := predicates.NewComparisonPredicate(
-			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.TypeInt),
+			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NullableLong),
 			predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(20)),
 		)
 		highPred := predicates.NewComparisonPredicate(
-			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.TypeInt),
+			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NullableLong),
 			predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(100)),
 		)
 		orPred := predicates.NewOr(lowPred, highPred)

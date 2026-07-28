@@ -38,7 +38,7 @@ func (r *addConstantFoldRule) OnMatch(call *RuleCall) {
 		// Non-integer constant — decline to fold.
 		return
 	}
-	call.Yield(&values.ConstantValue{Value: li + ri, Typ: values.TypeInt})
+	call.Yield(&values.ConstantValue{Value: li + ri, Typ: values.NullableLong})
 }
 
 var _ CascadesRule = (*addConstantFoldRule)(nil)
@@ -64,8 +64,8 @@ func TestFireRule_AddConstantFold(t *testing.T) {
 	// Matching shape: Constant + Constant → should fold.
 	expr := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(3), Typ: values.TypeInt},
-		Right: &values.ConstantValue{Value: int64(4), Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
+		Right: &values.ConstantValue{Value: int64(4), Typ: values.NullableLong},
 	}
 	replacements := FireRule(rule, expr)
 	if len(replacements) != 1 {
@@ -82,8 +82,8 @@ func TestFireRule_AddConstantFold(t *testing.T) {
 	// Non-matching shape: Constant + Field → rule does not fire.
 	nonMatch := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  &values.ConstantValue{Value: int64(3), Typ: values.TypeInt},
-		Right: &values.FieldValue{Field: "x", Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
+		Right: &values.FieldValue{Field: "x", Typ: values.NullableLong},
 	}
 	if got := FireRule(rule, nonMatch); len(got) != 0 {
 		t.Fatalf("non-matching shape: expected 0 replacements, got %d", len(got))
@@ -92,8 +92,8 @@ func TestFireRule_AddConstantFold(t *testing.T) {
 	// Wrong op: Mul instead of Add → rule does not fire.
 	wrongOp := &values.ArithmeticValue{
 		Op:    values.OpMul,
-		Left:  &values.ConstantValue{Value: int64(3), Typ: values.TypeInt},
-		Right: &values.ConstantValue{Value: int64(4), Typ: values.TypeInt},
+		Left:  &values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
+		Right: &values.ConstantValue{Value: int64(4), Typ: values.NullableLong},
 	}
 	if got := FireRule(rule, wrongOp); len(got) != 0 {
 		t.Fatalf("wrong op: expected 0 replacements, got %d", len(got))
@@ -117,15 +117,15 @@ func (r *multiYieldRule) OnMatch(call *RuleCall) {
 		return
 	}
 	// Yield two alternatives — original literal vs +1.
-	call.Yield(&values.ConstantValue{Value: li, Typ: values.TypeInt})
-	call.Yield(&values.ConstantValue{Value: li + 1, Typ: values.TypeInt})
+	call.Yield(&values.ConstantValue{Value: li, Typ: values.NullableLong})
+	call.Yield(&values.ConstantValue{Value: li + 1, Typ: values.NullableLong})
 }
 
 func TestFireRule_MultipleYieldsPerMatch(t *testing.T) {
 	t.Parallel()
 	target := matching.NewConstantMatcher()
 	rule := &multiYieldRule{matcher: target, target: target}
-	cv := &values.ConstantValue{Value: int64(10), Typ: values.TypeInt}
+	cv := &values.ConstantValue{Value: int64(10), Typ: values.NullableLong}
 
 	replacements := FireRule(rule, cv)
 	if len(replacements) != 2 {
@@ -166,7 +166,7 @@ func (r *declineRule) OnMatch(*RuleCall)                { /* deliberately empty 
 func TestFireRule_DeclineToYield(t *testing.T) {
 	t.Parallel()
 	rule := &declineRule{matcher: matching.NewAnyValue()}
-	got := FireRule(rule, &values.ConstantValue{Value: int64(1), Typ: values.TypeInt})
+	got := FireRule(rule, &values.ConstantValue{Value: int64(1), Typ: values.NullableLong})
 	if len(got) != 0 {
 		t.Fatalf("expected 0 (decline), got %d", len(got))
 	}

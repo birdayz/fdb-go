@@ -77,7 +77,7 @@ func TestInExplode_MultiColumnIndex(t *testing.T) {
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
 	eqPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "AMOUNT", Typ: values.TypeInt},
+		&values.FieldValue{Field: "AMOUNT", Typ: values.NullableLong},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(50)),
 	)
 	filter := expressions.NewLogicalFilterExpression(
@@ -300,7 +300,7 @@ func TestInExplode_DuplicateElements(t *testing.T) {
 	// ArrayDistinctValue), leaving the two distinct values [1, 2].
 	inList := &values.ConstantValue{Value: []any{int64(1), int64(1), int64(2)}, Typ: values.TypeUnknown}
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.TypeInt},
+		&values.FieldValue{Field: "STATUS", Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
 	filter := expressions.NewLogicalFilterExpression(

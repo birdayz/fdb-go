@@ -585,7 +585,7 @@ func TestCostModel_StructuralCriteria_TotalPreorderAndFoldStable(t *testing.T) {
 // transitivity/fold-stability checks exercise the axis on every run; if a
 // real cycle is lurking here it will fail THIS test, not go unnoticed.
 func cardinalityBoundaryCorpus() []preorderCandidate {
-	pk := []values.Value{&values.FieldValue{Field: "ID", Typ: values.TypeInt}}
+	pk := []values.Value{&values.FieldValue{Field: "ID", Typ: values.NullableLong}}
 	return []preorderCandidate{
 		{"pointLookupStamped", plans.NewRecordQueryScanPlan([]string{"P2"}, values.UnknownType, false).
 			WithPrimaryKey(pk).
@@ -725,7 +725,7 @@ func joinOrderingCorpus() ([]preorderCandidate, properties.StatisticsProvider) {
 		outer := plans.NewRecordQueryScanPlan([]string{outerT}, values.UnknownType, false)
 		inner := plans.NewRecordQueryScanPlan([]string{innerT}, values.UnknownType, false)
 		pred := predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: "K", Typ: values.TypeInt},
+			&values.FieldValue{Field: "K", Typ: values.NullableLong},
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
 		return plans.NewRecordQueryNestedLoopJoinPlan(
 			outer, inner, []predicates.QueryPredicate{pred}, plans.JoinInner,

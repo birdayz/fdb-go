@@ -21,8 +21,8 @@ func TestComparisonConstantSimplify_NonConstantRHS_NoFold(t *testing.T) {
 	t.Parallel()
 	rule := NewComparisonConstantSimplifyRule()
 	pred := predicates.NewComparisonPredicate(
-		&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.FieldValue{Field: "col", Typ: values.TypeInt}},
+		&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.FieldValue{Field: "col", Typ: values.NullableLong}},
 	)
 	if got := FireRule(rule, pred); len(got) != 0 {
 		t.Fatalf("expected no yield (non-constant RHS), got %d", len(got))
@@ -39,7 +39,7 @@ func TestComparisonConstantSimplify_TypeMismatch_DeclinesToFold(t *testing.T) {
 	t.Parallel()
 	rule := NewComparisonConstantSimplifyRule()
 	pred := predicates.NewComparisonPredicate(
-		&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: "abc", Typ: values.TypeString}},
 	)
 	got := FireRule(rule, pred)
@@ -59,11 +59,11 @@ func TestComparisonConstantSimplify_DeeplyNestedConstants_Folds(t *testing.T) {
 	// `5 = CAST(5 AS INT) + 0`
 	rhs := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, values.TypeInt),
-		Right: &values.ConstantValue{Value: int64(0), Typ: values.TypeInt},
+		Left:  values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, values.NullableLong),
+		Right: &values.ConstantValue{Value: int64(0), Typ: values.NullableLong},
 	}
 	pred := predicates.NewComparisonPredicate(
-		&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: rhs},
 	)
 	got := FireRule(rule, pred)
@@ -86,8 +86,8 @@ func TestComparisonConstantSimplify_ConstantValueRHS_Folds(t *testing.T) {
 	t.Parallel()
 	rule := NewComparisonConstantSimplifyRule()
 	pred := predicates.NewComparisonPredicate(
-		&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(5), Typ: values.TypeInt}},
+		&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(5), Typ: values.NullableLong}},
 	)
 	got := FireRule(rule, pred)
 	if len(got) != 1 {
@@ -113,10 +113,10 @@ func TestComparisonConstantSimplify_CompositeConstantLHS_Folds(t *testing.T) {
 	rule := NewComparisonConstantSimplifyRule()
 	// CAST(5 AS INT) is a composite constant — child values.ConstantValue is
 	// constant, so the whole values.CastValue evaluates without a row.
-	lhs := values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, values.TypeInt)
+	lhs := values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, values.NullableLong)
 	pred := predicates.NewComparisonPredicate(
 		lhs,
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(5), Typ: values.TypeInt}},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(5), Typ: values.NullableLong}},
 	)
 	got := FireRule(rule, pred)
 	if len(got) != 1 {
@@ -178,7 +178,7 @@ func TestSimplify_StringPredicates_FoldEndToEnd(t *testing.T) {
 		{
 			name: "IN matches",
 			pred: predicates.NewComparisonPredicate(
-				&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+				&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 				predicates.Comparison{Type: predicates.ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(5), int64(9)})},
 			),
 			want: predicates.TriTrue,
@@ -186,7 +186,7 @@ func TestSimplify_StringPredicates_FoldEndToEnd(t *testing.T) {
 		{
 			name: "IN doesn't match",
 			pred: predicates.NewComparisonPredicate(
-				&values.ConstantValue{Value: int64(99), Typ: values.TypeInt},
+				&values.ConstantValue{Value: int64(99), Typ: values.NullableLong},
 				predicates.Comparison{Type: predicates.ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2)})},
 			),
 			want: predicates.TriFalse,
@@ -254,17 +254,17 @@ func TestSimplify_IsDistinctFrom_FoldsEndToEnd(t *testing.T) {
 		},
 		{
 			"5 IS NOT DISTINCT FROM 5",
-			&values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, predicates.ComparisonNotDistinctFrom, &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+			&values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, predicates.ComparisonNotDistinctFrom, &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 			predicates.TriTrue,
 		},
 		{
 			"NULL IS DISTINCT FROM 5",
-			&values.NullValue{Typ: values.TypeUnknown}, predicates.ComparisonIsDistinctFrom, &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+			&values.NullValue{Typ: values.TypeUnknown}, predicates.ComparisonIsDistinctFrom, &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 			predicates.TriTrue,
 		},
 		{
 			"5 IS NOT DISTINCT FROM NULL",
-			&values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, predicates.ComparisonNotDistinctFrom, &values.NullValue{Typ: values.TypeUnknown},
+			&values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, predicates.ComparisonNotDistinctFrom, &values.NullValue{Typ: values.TypeUnknown},
 			predicates.TriFalse,
 		},
 	}
@@ -297,7 +297,7 @@ func TestComparisonConstantSimplify_CastFloat_Folds(t *testing.T) {
 	t.Parallel()
 	rule := NewComparisonConstantSimplifyRule()
 	pred := predicates.NewComparisonPredicate(
-		values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, values.NullableDouble),
+		values.NewCastValue(&values.ConstantValue{Value: int64(5), Typ: values.NullableLong}, values.NullableDouble),
 		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(float64(3.14))},
 	)
 	got := FireRule(rule, pred)
