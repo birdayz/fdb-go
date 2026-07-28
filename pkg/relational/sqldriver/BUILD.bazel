@@ -419,6 +419,7 @@ go_test(
         "windowed_aggregate_probe_test.go",
         "withinbox_dup_fdb_test.go",
         "zero_widen_ordering_test.go",
+        "zero_widen_stream_dedup_test.go",
         "zz_d2_correlation_pins_test.go",
         "zz_graefe_required_pins_test.go",
         "zz_in_proj_repro_test.go",
