@@ -327,6 +327,7 @@ go_test(
         "planning_cost_model_hash_test.go",
         "planning_cost_model_rungs_test.go",
         "planning_cost_model_test.go",
+        "point_probe_proof_agreement_test.go",
         "predicate_count_by_level_test.go",
         "predicate_matchers_test.go",
         "predicate_multi_map_test.go",
@@ -940,6 +941,7 @@ go_test(
         "scan_like_cost_point_probe_rate_test.go",
         "cardinality_cost_bound_test.go",
         "unique_zero_cardinality_test.go",
+        "point_probe_proof_agreement_test.go",
     ],
     deps = [
         "//gen",

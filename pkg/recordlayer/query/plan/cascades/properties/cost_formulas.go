@@ -4,6 +4,7 @@ import (
 	"math"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // Single source of truth for per-operator physical cost formulas (RFC-069).
@@ -340,4 +341,58 @@ func EqualityBoundsCoverKey(comps []*predicates.ComparisonRange, keyColumnCount 
 	}
 	_, numBound, allEquality := BoundSelectivity(comps)
 	return allEquality && numBound >= keyColumnCount && numBound == len(comps)
+}
+
+// AnyEqualityWidensBeyondOneKey reports whether any equality in comps binds
+// MORE THAN ONE physical key, so the comparisons do NOT pin a single index
+// entry even when every column is equality-bound.
+//
+// The only such case today is a zero-valued FLOAT/DOUBLE equality. IEEE says
+// -0.0 == +0.0, while FDB tuple encoding preserves the sign bit, so the two are
+// distinct adjacent keys and the executor widens a zero bound to span both.
+//
+// This is the SINGLE home for that exception. It previously lived nowhere and
+// four independent point-probe proofs each concluded "unique + all equalities =
+// exactly one row" on their own — computeCardinalities, isProvablePointProbe,
+// indexProvableMaxCard and scanLikeCost — so fixing one left the same plan with
+// contradictory cardinality and the cost model still ranking on the false bound.
+//
+// Conservative on purpose for a NON-CONSTANT float operand: its runtime value is
+// unknown, and if it binds to zero the scan widens. Callers that care about
+// SARGABILITY rather than a proof want the stricter constant-only test instead
+// (see match_candidate_index), because being conservative there de-sargs a probe
+// into a full leading-column scan rather than merely costing a sort.
+func AnyEqualityWidensBeyondOneKey(comps []*predicates.ComparisonRange) bool {
+	for _, cr := range comps {
+		if cr == nil || !cr.IsEquality() {
+			continue
+		}
+		cmp := cr.GetEqualityComparison()
+		if cmp == nil || cmp.Operand == nil {
+			continue
+		}
+		if !values.IsConstantValue(cmp.Operand) {
+			// Unknown at plan time — treat a declared float as possibly zero.
+			if t := cmp.Operand.Type(); t != nil &&
+				(t.Code() == values.TypeCodeFloat || t.Code() == values.TypeCodeDouble) {
+				return true
+			}
+			continue
+		}
+		v, ok := values.EvaluateConstant(cmp.Operand)
+		if !ok || v == nil {
+			continue
+		}
+		switch n := v.(type) {
+		case float64:
+			if n == 0 {
+				return true
+			}
+		case float32:
+			if n == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
