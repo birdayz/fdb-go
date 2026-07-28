@@ -196,7 +196,21 @@ bounds are unknown there and the clamp is a deterministic no-op. Since
 partition ranking feeds rule selection, its plan-shape diffs are reviewed with
 the same care as goldens (Consequences).
 
-**3. Zero is preserved, deliberately.** The clamp floors only when the proof
+**3. The clamp is a Cost contract, not a Cardinality patch.** Clamping the
+cardinality AFTER a formula ran leaves the rest of the `Cost` computed from
+the disproven number: `RecordQueryRecursiveLevelUnionPlan`'s hint charges
+buffer CPU proportional to estimated output, so a one-row seed with a
+zero-estimated recursive leg pays ZERO buffer work while the clamp then
+asserts the output is at least one row — the level-union-vs-DFS cost
+distinction the formula exists to draw, erased by the fix. So formulas whose
+CPU derives from OUTPUT cardinality consume the CLAMPED value (the clamp
+runs on the interval before those terms are computed), and the audit of
+which formulas that touches is an explicit implementation item, pinned by a
+verification item asserting whole-`Cost` consistency: no component of an
+emitted `Cost` may be a function of a cardinality the same `Cost` no longer
+carries.
+
+**4. Zero is preserved, deliberately.** The clamp floors only when the proof
 says min ≥ 1. A proven-zero or possibly-zero child keeps its zero — the
 `FlatMapCost` LIMIT-0 contract survives untouched. (CockroachDB goes as far as
 panicking on RowCount ≤ 0 with Max > 0; our equivalent guard is the standing
@@ -313,11 +327,16 @@ not assumed:
    on any arm with no table entry — an unpaired arm gets an explicit listed
    reason, never silence. That is this RFC's own drift channel displaced one
    level up, and it gets the same treatment.
-8. `TestCardinalityPropertyBoundsCostEstimate_RandomCombos` stays green — the
+8. **Whole-Cost consistency**: for every formula whose CPU (or any other
+   component) derives from output cardinality, the emitted `Cost` is
+   internally consistent with its clamped cardinality — the
+   recursive-level-union buffer-work shape is the pinned reproducer (zero
+   buffer CPU charged for an output the same Cost proves non-empty).
+9. `TestCardinalityPropertyBoundsCostEstimate_RandomCombos` stays green — the
    guard against the clamp introducing a new inconsistency in composed plans.
-9. Full plan-shape golden + plandiff corpus diff, every changed record
+10. Full plan-shape golden + plandiff corpus diff, every changed record
    reviewed and the reasoning recorded.
-10. 1M stress before/after, results recorded in TODO.md's baseline table.
+11. 1M stress before/after, results recorded in TODO.md's baseline table.
 
 ## What this does not do
 
