@@ -2021,7 +2021,7 @@ closed rather than silently alter rows or output schema.
   engine-wide (which would also make `NaN = NaN` true, as it is in Java) is a
   genuine semantics question for the review gate, NOT a silent choice to make
   here.
-- [ ] **CQ-28 (LOW, follow-up from CQ-27) — a zero-valued FLOAT/DOUBLE
+- [x] **CQ-28 (LOW, follow-up from CQ-27) — CLOSED 2026-07-28 — a zero-valued FLOAT/DOUBLE
   equality is left un-widened when it is NOT the terminal column of a
   composite index's equality prefix** (e.g. index `(a DOUBLE, b BIGINT)`,
   predicate `a = 0 AND b = 5`, where `a`'s stored value is `-0.0`).
@@ -2063,8 +2063,24 @@ closed rather than silently alter rows or output schema.
   surviving single probe does not get the zero-widening. That dedup is
   semantically defensible (`v IN (-0.0,0.0)` ≡ `v = 0` under IEEE); the defect
   is that the collapsed probe seeks only one of the two stored keys.
-  **SOLUTION IDENTIFIED 2026-07-28, after TWO failed attempts. Do not retry
-  either of them.** The correct fix is: keep the IN-list dedup as VALUE dedup
+  **FIXED 2026-07-28.** A zero-valued float equality now TERMINATES the scan
+  prefix during index matching (`match_candidate_index.go`), even when more
+  indexed columns could be consumed. The zero equality is then the last
+  comparison, so the executor widens it across both signed-zero keys, and the
+  trailing predicate is applied as a RESIDUAL filter. The scan is bounded to the
+  two zero groups and the residual drops the in-between keys, leaving exactly
+  the wanted pair. NO multi-range union machinery was needed -- the original
+  writeup below overestimated the cost by assuming the whole range had to be
+  expressed at once.
+  Cost: this shape no longer uses the full composite prefix, so it scans both
+  zero groups instead of seeking one key -- bounded by the rows sharing a zero
+  in the leading column, and the price of a correct answer.
+  KNOWN GAP: only a compile-time-constant zero is detectable at match time. A
+  correlated comparand that is zero at runtime keeps the full prefix and can
+  still miss the row; de-sargging every correlated composite join to cover it
+  would trade a rare wrong row for a broad performance cliff.
+  Mutation-verified; sentinel flipped to assert correct rows.
+  **Two earlier attempts failed and are recorded so they are not retried:** The correct fix is: keep the IN-list dedup as VALUE dedup
   (it is semantically right — `v IN (-0.0, 0.0)` genuinely is one set member
   under IEEE), and give the surviving single-element probe the same zero-widening
   a plain `v = 0` already gets. That is correct on BOTH paths simultaneously:

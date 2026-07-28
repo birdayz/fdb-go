@@ -449,6 +449,32 @@ func (c *ValueIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 		switch cr.GetRangeType() {
 		case predicates.ComparisonRangeEquality:
 			prefix[alias] = cr
+			// A zero-valued FLOAT/DOUBLE equality TERMINATES the prefix, even
+			// though more indexed columns could be consumed.
+			//
+			// IEEE says -0.0 == +0.0 and this engine's `=` follows IEEE, but
+			// FDB tuple encoding preserves the sign bit, so the two zeros are
+			// distinct adjacent index keys and the probe must span BOTH. The
+			// executor widens a zero bound that terminates the scan range.
+			// Consuming a trailing column defeats that: with index (v, w) and
+			// `v = 0 AND w = 5` the union of (-0.0,5) and (+0.0,5) is not a
+			// contiguous interval — the span between them also admits
+			// (-0.0, w>5) and (+0.0, w<5) — so no single TupleRange can express
+			// it, and the unwidened probe silently missed the -0.0 row.
+			//
+			// Stopping here makes the zero equality terminal, so the executor
+			// widens it across both keys, and leaves `w = 5` to be applied as a
+			// RESIDUAL filter. The scan is bounded to the two zero groups and
+			// the residual drops the in-between keys, which is exactly the
+			// wanted pair — one scan, no multi-range machinery.
+			//
+			// Only a compile-time-constant zero is detectable here. A
+			// correlated comparand that happens to be zero at runtime keeps the
+			// full prefix; de-sargging every correlated composite join to cover
+			// it would trade a rare wrong row for a broad performance cliff.
+			if isZeroFloatEqualityRange(cr) {
+				return prefix
+			}
 		case predicates.ComparisonRangeInequality:
 			prefix[alias] = cr
 			return prefix
@@ -828,3 +854,36 @@ var (
 )
 
 // Interface compliance also checked in match_candidate_interfaces.go.
+
+// isZeroFloatEqualityRange reports whether cr is an equality against a
+// compile-time-constant zero FLOAT/DOUBLE. Such an equality must terminate a
+// scan prefix so the executor can widen it across both signed zeros — see the
+// call site for why consuming a trailing column makes that inexpressible.
+//
+// A non-constant (correlated or parameterised) comparand returns false: its
+// value is unknown at plan time, and de-sargging on the possibility of a
+// runtime zero would cost every correlated composite join.
+func isZeroFloatEqualityRange(cr *predicates.ComparisonRange) bool {
+	if cr == nil || !cr.IsEquality() {
+		return false
+	}
+	cmp := cr.GetEqualityComparison()
+	if cmp == nil || cmp.Operand == nil {
+		return false
+	}
+	if t := cmp.Operand.Type(); t == nil ||
+		(t.Code() != values.TypeCodeFloat && t.Code() != values.TypeCodeDouble) {
+		return false
+	}
+	v, err := cmp.Operand.Evaluate(nil)
+	if err != nil || v == nil {
+		return false
+	}
+	switch n := v.(type) {
+	case float64:
+		return n == 0
+	case float32:
+		return n == 0
+	}
+	return false
+}

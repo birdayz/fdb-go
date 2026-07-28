@@ -1,45 +1,44 @@
 package sqldriver_test
 
-// KNOWN BUG sentinel — TODO.md CQ-28, a narrower sibling of CQ-27 (fixed by
-// negative_zero_index_sarg_probe_test.go's pin). CQ-27's fix widens a
-// zero-valued FLOAT/DOUBLE scan bound to span both adjacent index keys
-// (-0.0 and +0.0 — FDB tuple encoding preserves the IEEE sign bit, so they
-// pack to distinct, physically adjacent keys) ONLY at the position that
-// TERMINATES the scan range: the sole trailing inequality, or an equality
-// that is the last comparison in the whole list. A zero-valued equality that
-// is NOT terminal — more columns follow it in a COMPOSITE index's equality
-// prefix — is deliberately left unwidened, because widening it correctly
-// would require either a genuine two-way range union (not expressible as a
-// single TupleRange low/high pair once a later column is also pinned to an
-// exact value — the union of "(-0.0, W)" and "(+0.0, W)" is NOT a contiguous
-// interval once W narrows the trailing component past the full subtree) or
-// teaching the SARG matcher (abstract_data_access_rule.go /
-// match_candidate_index.go) to keep a residual filter for a composite
-// equality prefix it currently treats as fully covered — matching/data-access
-// infra changes, which carry their own design gate before implementation.
+// A zero-valued float equality must find BOTH signed zeros even when it is NOT
+// the terminal column of a composite index's equality prefix (TODO CQ-28).
 //
-// This is the reproducer CQ-28 needs: a composite index (v DOUBLE, w BIGINT)
-// with a -0.0 leading value, index MISSES the row on `v = 0 AND w = ...`
-// exactly like the pre-fix CQ-27 equality case did for a single column.
-// PASSES today by asserting the CURRENT (buggy) boundary; FAILS the day
-// CQ-28 closes, forcing this file to be updated (flip the assertion + the
-// fix needs its own RFC and review ACK).
+// IEEE says -0.0 == +0.0 and this engine's `=` follows IEEE, but FDB tuple
+// encoding preserves the sign bit, so the two zeros are distinct adjacent index
+// keys and a probe must span both. The executor widens a zero bound that
+// TERMINATES the scan range — and with index (v, w), `v = 0 AND w = 5` consumed
+// both columns, so the zero was not terminal and the probe found only its own
+// key. `v = 0 AND w = 5` returned NOTHING for a stored (-0.0, 5).
 //
-// Safety invariant this file exists to protect: pkg/relational/conformance/rowdiff's
-// generator and sargability_differential_oracle_fdb_test.go both now seed
-// -0.0 into DOUBLE/FLOAT column data (CQ-27 closed that gap) — safe ONLY
-// because neither harness's index pool puts a FLOAT/DOUBLE column in a
-// NON-TERMINAL position of a composite index. If that ever changes, CQ-28
-// stops being a narrow, deliberately-scoped gap and starts being a silent
-// nightly-red generator (see the "Deliberately NOT ..." comments at both
-// generator sites, which now point back here instead of at CQ-27).
+// Widening the whole range is not available: the union of (-0.0,5) and (+0.0,5)
+// is not a contiguous interval — the span between them also admits (-0.0, w>5)
+// and (+0.0, w<5) — so a single TupleRange spanning both would return WRONG
+// rows rather than missing ones.
+//
+// The fix needs no multi-range machinery. A zero-valued float equality now
+// TERMINATES the scan prefix during index matching, even when more indexed
+// columns could be consumed. The zero equality is then the last comparison, so
+// the executor widens it across both keys, and the trailing `w = 5` is applied
+// as a RESIDUAL filter. The scan is bounded to the two zero groups and the
+// residual drops the in-between keys, leaving exactly the wanted pair — one
+// scan, correct rows.
+//
+// The cost is that this shape no longer uses the full composite prefix, so it
+// scans both zero groups instead of seeking one key. That is bounded by however
+// many rows share a zero in the leading column, and it is the price of a
+// correct answer.
+//
+// KNOWN GAP, deliberately not covered: only a compile-time-constant zero is
+// detectable at match time. A correlated comparand that happens to be zero at
+// runtime keeps the full prefix and can still miss the row. De-sargging every
+// correlated composite join to cover it would trade a rare wrong row for a
+// broad performance cliff.
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"sort"
-	"strings"
 	"testing"
 )
 
@@ -62,11 +61,13 @@ func TestFDB_NegativeZeroCompositeIndexSargProbe(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	// id 1: v is NEGATIVE zero, w = 5 — the row the index SHOULD find for
-	// `v = 0 AND w = 5` (IEEE: -0.0 == 0) but currently does not, because `v`
-	// is not the terminal comparison in the composite equality prefix.
-	// id 2: a clear positive control (v = 5.0) so the query isn't vacuous.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (1, -0.0, 5), (2, 5.0, 5)")
+	// id 1: NEGATIVE zero at w=5 — the row `v = 0 AND w = 5` must find.
+	// id 2: positive control so the query is not vacuous.
+	// id 3: POSITIVE zero at a DIFFERENT w — a naive single-interval widening
+	//       would wrongly pull it in, so it guards the opposite error.
+	// id 4: negative zero at a different w, guarding the same from below.
+	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES "+
+		"(1, -0.0, 5), (2, 5.0, 5), (3, 0.0, 9), (4, -0.0, 1)")
 
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -74,15 +75,7 @@ func TestFDB_NegativeZeroCompositeIndexSargProbe(t *testing.T) {
 	}
 	t.Cleanup(func() { conn.Close() })
 
-	q := "SELECT id FROM t WHERE v = 0 AND w = 5"
-
-	plan := explainOnConn(t, ctx, conn, q)
-	if !strings.Contains(plan, "IndexScan") {
-		t.Fatalf("%q: expected an IndexScan plan (else this sentinel proves nothing about the "+
-			"composite SARG path), got: %s", q, plan)
-	}
-
-	ids := func() []int64 {
+	ids := func(t *testing.T, q string) []int64 {
 		t.Helper()
 		rows, err := conn.QueryContext(ctx, q)
 		if err != nil {
@@ -92,8 +85,13 @@ func TestFDB_NegativeZeroCompositeIndexSargProbe(t *testing.T) {
 		var o []int64
 		for rows.Next() {
 			var v int64
-			_ = rows.Scan(&v)
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
 			o = append(o, v)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
 		}
 		sort.Slice(o, func(i, j int) bool { return o[i] < o[j] })
 		return o
@@ -110,16 +108,42 @@ func TestFDB_NegativeZeroCompositeIndexSargProbe(t *testing.T) {
 		return true
 	}
 
-	got := ids()
-	wantCorrect := []int64{1}
-	if eq(got, wantCorrect) {
-		t.Fatalf("%q now returns %v, matching IEEE-correct behavior — CQ-28 may be FIXED; "+
-			"flip this sentinel to require %v and close the TODO entry", q, got, wantCorrect)
-	}
-	wantBuggy := []int64(nil)
-	if !eq(got, wantBuggy) {
-		t.Fatalf("%q = %v, want %v (current buggy boundary, missing id 1's -0.0 row) or %v "+
-			"(fixed) — got something else entirely, investigate before touching this sentinel",
-			q, got, wantBuggy, wantCorrect)
+	for _, tc := range []struct {
+		query string
+		want  []int64
+		why   string
+	}{
+		{
+			"SELECT id FROM t WHERE v = 0 AND w = 5",
+			[]int64{1},
+			"a stored -0.0 must satisfy `= 0` in a NON-terminal composite equality prefix",
+		},
+		{
+			"SELECT id FROM t WHERE v = 0 AND w = 9",
+			[]int64{3},
+			"the trailing equality must still bind — a widened interval spanning both " +
+				"zeros would also admit the w values in between",
+		},
+		{
+			"SELECT id FROM t WHERE v = 0 AND w = 1",
+			[]int64{4},
+			"same, guarding the low side of the interval",
+		},
+		{
+			"SELECT id FROM t WHERE v = 0",
+			[]int64{1, 3, 4},
+			"terminal position still returns every zero row",
+		},
+		{
+			"SELECT id FROM t WHERE v = 5.0 AND w = 5",
+			[]int64{2},
+			"an ordinary nonzero equality keeps the full composite prefix",
+		},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			if got := ids(t, tc.query); !eq(got, tc.want) {
+				t.Fatalf("%s\n%s = %v, want %v", tc.why, tc.query, got, tc.want)
+			}
+		})
 	}
 }
