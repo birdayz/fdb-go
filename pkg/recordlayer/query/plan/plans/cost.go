@@ -113,13 +113,20 @@ func isProvablePointProbe(plan RecordQueryPlan) bool {
 		if p == nil {
 			return false
 		}
-		return properties.EqualityBoundsCoverKey(p.GetScanComparisons(), len(p.GetPrimaryKeyValues()))
+		return properties.EqualityBoundsCoverKey(p.GetScanComparisons(), len(p.GetPrimaryKeyValues())) &&
+			!properties.AnyEqualityWidensBeyondOneKey(p.GetScanComparisons())
 	case *RecordQueryIndexPlan:
 		if p == nil {
 			return false
 		}
-		_, numBound, allEquality := properties.BoundSelectivity(p.GetScanComparisons())
-		return p.IsUnique() && allEquality && numBound == len(p.GetColumnNames())
+		comps := p.GetScanComparisons()
+		_, numBound, allEquality := properties.BoundSelectivity(comps)
+		// A widening equality (a zero float) binds TWO keys, so the probe is
+		// not a point probe even with every column equality-bound. Shared with
+		// computeCardinalities and the cost model so one plan cannot carry
+		// contradictory cardinality claims.
+		return p.IsUnique() && allEquality && numBound == len(p.GetColumnNames()) &&
+			!properties.AnyEqualityWidensBeyondOneKey(comps)
 	case *RecordQueryFetchFromPartialRecordPlan:
 		if p == nil {
 			return false

@@ -632,6 +632,26 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 					break
 				}
 			}
+			// A WIDENING equality does not pin a single key, so it cannot
+			// support an at-most-one PROOF. The executor widens a terminal
+			// zero-valued float bound across both signed zeros (-0.0 and +0.0
+			// are IEEE-equal but pack to distinct adjacent keys), and a UNIQUE
+			// index legitimately holds BOTH — uniqueness is enforced on the raw
+			// packed prefix, so the two are different entries. Measured: a
+			// unique index on a DOUBLE column holding both zeros returns TWO
+			// rows for `WHERE v = 0`. That is a false proof, not a loose
+			// estimate, and DISTINCT elision, single-row shortcuts and the cost
+			// model all inherit it.
+			//
+			// Uses the SHARED predicate, deliberately: a correlated or
+			// Unknown-typed operand — the QOV a multi-element float IN list
+			// produces — is not constant, yet the executor can still widen a
+			// zero binding at runtime. The matcher's constant-only helper is
+			// not runtime-safe, and using it here left the false proof
+			// reachable through exactly those operands.
+			if properties.AnyEqualityWidensBeyondOneKey(comps) {
+				allEquality = false
+			}
 			if allEquality && len(comps) == len(p.GetColumnNames()) {
 				return properties.AtMostOne()
 			}

@@ -2021,7 +2021,7 @@ closed rather than silently alter rows or output schema.
   engine-wide (which would also make `NaN = NaN` true, as it is in Java) is a
   genuine semantics question for the review gate, NOT a silent choice to make
   here.
-- [ ] **CQ-28 (LOW, follow-up from CQ-27) — a zero-valued FLOAT/DOUBLE
+- [x] **CQ-28 (LOW, follow-up from CQ-27) — CLOSED 2026-07-28 — a zero-valued FLOAT/DOUBLE
   equality is left un-widened when it is NOT the terminal column of a
   composite index's equality prefix** (e.g. index `(a DOUBLE, b BIGINT)`,
   predicate `a = 0 AND b = 5`, where `a`'s stored value is `-0.0`).
@@ -2038,7 +2038,93 @@ closed rather than silently alter rows or output schema.
   matching/data-access infra, milestone-level Graefe/Torvalds ACK) deciding
   between (a) multi-range union execution (reusing the same per-element
   fan-out the IN-list path already has) or (b) matcher-side residual-filter
-  cooperation. REPRODUCED and PINNED (not fixed) by
+  cooperation.
+  **RULING 2026-07-28 — the premise is CONFIRMED, not contingent; CQ-28 is real
+  work.** The prior note said this item might dissolve if Go adopted Java's
+  bit-identity `=`. It will not. Go keeps IEEE `=` (both zeros match), matching
+  the SQL standard, Postgres and CockroachDB. Java's alternative makes `d = 0`
+  fail to find a stored `-0.0`, breaks the most common operation in SQL, makes
+  `NaN = NaN` true, and moves away from the stated CRDB reference — for a corner
+  case, at the cost of touching every comparison, hash join and ordering in the
+  engine. Full-CRDB (everything merges) is physically impossible: a maintained
+  aggregate index stores the two zeros as two entries Java also reads. ANSI is
+  violated *somewhere* regardless; equality filters run constantly and
+  `SELECT DISTINCT` over a deliberately-stored `-0.0` is rare, so the common
+  path stays correct.
+  **ATTEMPTED AND REVERTED 2026-07-28 — the approach is viable but blocked on a
+  second bug.** Rewriting `floatCol = <zero>` to `floatCol IN (-0.0, +0.0)` at
+  resolve time is position-independent and needs no new execution machinery
+  (`rule_in_to_explode` already fans IN into per-value probes). It DID fix the
+  composite case — `v = 0 AND w = 5` returned `[1]` instead of nothing — but it
+  REGRESSED the terminal case from `[1 3]` to `[1]`, so it was reverted rather
+  than shipped. Root cause measured:
+  `inListValueEqual` (`rule_in_to_explode.go:211`) dedups IN elements with Go
+  `==`, under which `-0.0 == +0.0`, so the pair collapses to ONE element and the
+  surviving single probe does not get the zero-widening. That dedup is
+  semantically defensible (`v IN (-0.0,0.0)` ≡ `v = 0` under IEEE); the defect
+  is that the collapsed probe seeks only one of the two stored keys.
+  **FIXED 2026-07-28.** A zero-valued float equality now TERMINATES the scan
+  prefix during index matching (`match_candidate_index.go`), even when more
+  indexed columns could be consumed. The zero equality is then the last
+  comparison, so the executor widens it across both signed-zero keys, and the
+  trailing predicate is applied as a RESIDUAL filter. The scan is bounded to the
+  two zero groups and the residual drops the in-between keys, leaving exactly
+  the wanted pair. NO multi-range union machinery was needed -- the original
+  writeup below overestimated the cost by assuming the whole range had to be
+  expressed at once.
+  Cost: this shape no longer uses the full composite prefix, so it scans both
+  zero groups instead of seeking one key -- bounded by the rows sharing a zero
+  in the leading column, and the price of a correct answer.
+  KNOWN GAP: only a compile-time-constant zero is detectable at match time. A
+  correlated comparand that is zero at runtime keeps the full prefix and can
+  still miss the row; de-sargging every correlated composite join to cover it
+  would trade a rare wrong row for a broad performance cliff.
+  Mutation-verified; sentinel flipped to assert correct rows.
+  **Two earlier attempts failed and are recorded so they are not retried:** The correct fix is: keep the IN-list dedup as VALUE dedup
+  (it is semantically right — `v IN (-0.0, 0.0)` genuinely is one set member
+  under IEEE), and give the surviving single-element probe the same zero-widening
+  a plain `v = 0` already gets. That is correct on BOTH paths simultaneously:
+  the residual/filter path evaluates one predicate under IEEE and returns both
+  rows with no duplicates, and the index path issues one probe widened across
+  the two adjacent keys. The widening currently does not reach the IN-derived
+  probe, which is the whole defect.
+  **Attempt 1 — rewrite `floatCol = <zero>` to `floatCol IN (-0.0, +0.0)`:
+  REVERTED.** Fixed the composite case but regressed the terminal case from
+  `[1 3]` to `[1]`, because the IN dedup collapsed the pair back to one probe.
+  **Attempt 2 — make the IN dedup compare floats by BIT PATTERN so both
+  survive: REVERTED (commit 36b7ad7fc, reverted by 6e8acdcf3).** It fixed the
+  index path and broke the filter path: `IN` is executed as a JOIN over an
+  exploded element list, emitting one row per matching element, which is sound
+  only when the elements are MUTUALLY EXCLUSIVE under the comparison. `-0.0` and
+  `+0.0` are IEEE-EQUAL, so on an unindexed column every zero row matched both
+  probes — `v IN (-0.0, 0.0)` returned `[1 3 1 3]`, each row twice. The test
+  that "verified" it used an indexed column in every case, where key-exact
+  probes hide the duplication. Mutation-checking it proved only that it changed
+  the indexed path.
+  **Therefore the IN-rewrite direction is DEAD for CQ-28**, independently of the
+  dedup: it manufactures exactly the IEEE-equal element pair that makes
+  IN-as-join unsound. Any future attempt must not route a zero equality through
+  IN.
+  **Pre-existing bug found while measuring, still OPEN and independent of
+
+
+  blocks CQ-28 and is user-visible on its own.** Over rows
+  `(-0.0,5) (5.0,5) (0.0,9)` with index `(v,w)`:
+
+      v IN (-0.0, 0.0)  ->  [1]      plan IndexScan(T_VW,[=,*])   ONE probe
+      v IN (0.0, -0.0)  ->  [3]      same plan, keeps whichever is FIRST
+      v IN (-0.0, 5.0)  ->  [1] [2]  plan InJoin(...)             correct
+
+  So any user writing `v IN (-0.0, 0.0)` silently loses a row today, and the
+  result depends on element ORDER. Independent of CQ-28.
+  **Also measured: a separate, more general matcher gap.** An IN on a leading
+  column combined with a trailing equality does not sarg at all —
+  `v IN (5.0, 9.0) AND w = 5` plans as `PredicatesFilter(Scan(T))` while
+  `v IN (5.0, 9.0)` alone plans as `InJoin(IndexScan(T_V))` and
+  `v = 5.0 AND w = 5` as `IndexScan(T_VW,[=,=])`. Every `IN + trailing equality`
+  query pays a full scan. Far more general than signed zero and worth its own
+  item.
+  REPRODUCED and PINNED (not fixed) by
   `pkg/relational/sqldriver/negative_zero_composite_index_sarg_probe_test.go`
   (composite index `(v DOUBLE, w BIGINT)`, `WHERE v = 0 AND w = 5` misses a
   stored `-0.0` row via the index) — fails the day this closes, forcing that
@@ -9455,7 +9541,37 @@ projection paths are robust to these inputs.
 Crash seeds NOT committed (they would red CI for gated bugs); recorded as
 hashes/reproducers. All experiments reverted; tree clean.
 
-## Phase 11: Optimizer invariants (RFC-193/194 follow-through)
+## Phase 11: Optimizer invariants
+
+- [ ] **CQ-38 (MED, semantics) — NaN comparison follows Java's total order, not
+  IEEE.** MEASURED: `WHERE (v/z) = (v/z)` returns ALL rows (IEEE says none),
+  `<> ` returns none (IEEE says all), `> 0` returns all (IEEE: every NaN
+  comparison is false). Deliberate -- predicate comparison falls through to
+  `values.CompareFloat64`, the Double.compare total order with NaN greatest, and
+  the comment says "matching Java Double.equals". So for NaN, Go matches Java
+  and BOTH diverge from the SQL standard, Postgres and CRDB -- the opposite
+  posture from signed zero, where Go keeps IEEE and diverges from Java.
+  NOT symmetric with the signed-zero case and not a simple "apply the same
+  ruling": strict IEEE makes the comparator NON-TRANSITIVE and destroys the
+  total order that ORDER BY, tuple key order, merge joins and dedup all share.
+  Splitting PREDICATE comparison (IEEE) from ORDER BY (total order) is coherent
+  -- it is exactly the split RFC-082 already documents for signed zero -- but it
+  touches every comparison site and needs its own design gate.
+  DISTINCT/GROUP BY treating two NaNs as one value is settled and would NOT
+  change: value identity is tuple-key identity and every NaN packs identically.
+  Current behaviour is pinned by `nan_comparison_semantics_test.go` so it cannot
+  drift unobserved while the question is open.
+  **Also corrected DIVERGENCES.md, which claimed Go returned FALSE for NaN
+  self-equality "(IEEE, SQL standard)".** That was asserted, never measured, and
+  backwards -- written by me earlier the same day while documenting Java's `=`
+  bug. A false claim in the divergence register is worse than no claim.
+
+(Header previously read "RFC-193/194 follow-through". Neither document was ever
+committed — no such file exists in the repo or its history. The findings they
+were meant to hold are recorded in the items below, which is why they survived
+the drafts being lost. Do not reuse numbers 193/194 for unrelated documents: a
+stale reference that resolves to the WRONG doc is worse than one that resolves
+to nothing.)
 
 - [ ] **CQ-29 (HIGH) — five cost estimates violate a proven cardinality bound.**
   Found by cross-checking the cost model against `CardinalitiesProperty` as an
@@ -9492,7 +9608,10 @@ hashes/reproducers. All experiments reverted; tree clean.
   per group (one winner per distinct requested ordering), so "the group's
   cardinality" is genuinely ambiguous and two disagreeing answers live side by
   side. Fix: route criterion 2 through `GetRefPlanPropertiesMap`/
-  `computeCardinalities` and delete the duplicate. RFC-193 §5.3.
+  `computeCardinalities` and delete the duplicate. Specified in
+  `rfcs/195-cost-must-not-contradict-proof.md`, which covers this together with
+  CQ-29 — they are the same defect (cardinality with two homes) seen from the
+  two sides, and fixing one without the other leaves the disagreement intact.
 
 - [ ] **CQ-31 (HIGH) — retire `.Field` as an input to any DECISION.**
   Seven separate hand-rolled proofs of a semantic property by leaf-name
@@ -9509,7 +9628,13 @@ hashes/reproducers. All experiments reverted; tree clean.
   `ColumnMeta.Alias` is documented as display-only. **Enforcement is the point** —
   a `pkg/docscheck`-style build check that `.Field` cannot feed a comparison
   outside an allowlisted display site, or an eighth instance is certain.
-  RFC-193 §5.1.
+  (This item previously cited "RFC-193 §5.1". **That document was never
+  committed** — no such file exists in the repo or its history, so the citation
+  pointed at nothing. The measurements above are the actual specification; they
+  were recorded here rather than in the uncommitted draft, which is why they
+  survived. RFC number 193 remains unused and is NOT reused, so any stale
+  reference elsewhere stays merely broken instead of silently resolving to an
+  unrelated document.)
 
 - [ ] **CQ-32 (MED) — two `MemoEqual` callers still bypass the alias gate.**
   `Memo.memoizeNonLeaf` and `Memo.refContains` (`memo.go:398-433`, `511-523`) call

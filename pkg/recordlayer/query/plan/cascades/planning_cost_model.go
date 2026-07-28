@@ -506,7 +506,13 @@ func indexProvableMaxCard(p *plans.RecordQueryIndexPlan) (float64, bool) {
 			}
 		}
 	}
-	if numBound > 0 && allEquality && numBound == len(p.GetColumnNames()) {
+	// A widening equality (a zero float) binds TWO keys, so this is not a
+	// provable one-row bound. Shared with computeCardinalities and
+	// isProvablePointProbe so the same plan cannot carry contradictory
+	// cardinality claims -- the cost model previously kept ranking on the
+	// false bound after the property was fixed.
+	if numBound > 0 && allEquality && numBound == len(p.GetColumnNames()) &&
+		!properties.AnyEqualityWidensBeyondOneKey(p.GetScanComparisons()) {
 		return 1, true
 	}
 	return 0, false
@@ -1824,7 +1830,12 @@ func warnUnclassifiedPlanType(
 // priced at the same rate.
 func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, stats properties.StatisticsProvider, fullBindUnique bool) properties.Cost {
 	sel, numBound, allEquality := properties.BoundSelectivity(comps)
-	if fullBindUnique && numBound > 0 && allEquality && numBound == len(comps) {
+	// A widening equality (a zero float) binds TWO keys, so the probe is not
+	// a single-row fetch. Shared with computeCardinalities,
+	// isProvablePointProbe and indexProvableMaxCard -- the fourth and last
+	// independent copy of this proof.
+	if fullBindUnique && numBound > 0 && allEquality && numBound == len(comps) &&
+		!properties.AnyEqualityWidensBeyondOneKey(comps) {
 		return properties.Cost{Cardinality: 1, CPU: properties.FetchCPU}
 	}
 	total := 0.0
@@ -2315,6 +2326,12 @@ func pkFullyEqualityBound(pl *plans.RecordQueryScanPlan, ctx PlanContext) (fullB
 	if pkLen == 0 {
 		return false, false
 	}
+	// A widening equality (a terminal zero float) binds TWO keys, so a fully
+	// equality-bound PK is still not a one-row proof. Guarding the ONE shared
+	// helper covers both scanProvableMaxCard and scanPlanProvableMaxCard.
+	if properties.AnyEqualityWidensBeyondOneKey(pl.GetScanComparisons()) {
+		return false, true
+	}
 	return properties.EqualityBoundsCoverKey(pl.GetScanComparisons(), pkLen), true
 }
 
@@ -2335,7 +2352,13 @@ func indexPlanProvableMaxCard(pl *plans.RecordQueryIndexPlan, cols []string, uni
 			}
 		}
 	}
-	if numBound > 0 && allEquality && numBound == len(cols) {
+	// Same widening guard as computeCardinalities, isProvablePointProbe,
+	// indexProvableMaxCard and scanLikeCost. This is the CONCRETE physical
+	// path PlanningCostModelLess actually walks, so leaving it unguarded kept
+	// maxDataAccessCardinality=1 for a zero probe even after the property was
+	// fixed -- criterion #2 ranking on a bound the property had disowned.
+	if numBound > 0 && allEquality && numBound == len(cols) &&
+		!properties.AnyEqualityWidensBeyondOneKey(pl.GetScanComparisons()) {
 		return 1, true
 	}
 	return 0, false
