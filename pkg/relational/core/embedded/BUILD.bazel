@@ -72,6 +72,7 @@ go_library(
 go_test(
     name = "embedded_test",
     srcs = [
+        "aggregate_group_key_accessor_name_test.go",
         "ast_util_test.go",
         "bench_test.go",
         "bug_hunt_cascades_test.go",
