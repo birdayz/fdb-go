@@ -871,10 +871,13 @@ func isZeroFloatEqualityRange(cr *predicates.ComparisonRange) bool {
 	if cmp == nil || cmp.Operand == nil {
 		return false
 	}
-	if t := cmp.Operand.Type(); t == nil ||
-		(t.Code() != values.TypeCodeFloat && t.Code() != values.TypeCodeDouble) {
-		return false
-	}
+	// Deliberately NOT gated on the declared type. The executor decides to
+	// widen from the runtime VALUE (isZeroFloatBound), so gating here on a
+	// declared FLOAT/DOUBLE would let an untyped literal that evaluates to 0.0
+	// widen at execution while match-time reasoning never noticed -- the
+	// property and the behaviour would disagree, which is the whole defect
+	// class this guards. Match on the value's Go type, exactly as the
+	// executor does.
 	// Constness checked BEFORE evaluating: evaluating an arbitrary operand with
 	// a nil context treats unbound parameters as NULL, so `v = COALESCE(?, 0.0)`
 	// folds to zero and is misreported as a constant zero even when the runtime

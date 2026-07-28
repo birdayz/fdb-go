@@ -631,6 +631,22 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 					allEquality = false
 					break
 				}
+				// A zero-valued FLOAT/DOUBLE equality does NOT pin a single
+				// key, so it cannot support an at-most-one PROOF. The executor
+				// widens it across both signed zeros (-0.0 and +0.0 are
+				// IEEE-equal but pack to distinct adjacent keys), and a UNIQUE
+				// index legitimately holds BOTH — uniqueness is enforced on the
+				// raw packed prefix, so the two are different entries.
+				//
+				// Measured: with a unique index on a DOUBLE column holding both
+				// zeros, `WHERE v = 0` returns TWO rows. Claiming AtMostOne
+				// there is not a loose estimate, it is a false proof, and every
+				// consumer of it — DISTINCT elision, single-row shortcuts, the
+				// cost model — inherits the falsehood.
+				if isZeroFloatEqualityRange(cr) {
+					allEquality = false
+					break
+				}
 			}
 			if allEquality && len(comps) == len(p.GetColumnNames()) {
 				return properties.AtMostOne()
