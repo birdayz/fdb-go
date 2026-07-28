@@ -144,9 +144,26 @@ dependence in `GetBest`, the CQ-23/CQ-24 class, re-entering through the
 bounds channel. So:
 
 - In the EXPRESSION walk, a child `Reference`'s interval is
-  `WeakenCardinalities` over `Members()` + `FinalMembers()`, recursively,
-  memoised per Reference — order-independent by construction. Cost keeps
-  first-member; bounds do not.
+  `WeakenCardinalities` over `AllMembers()` (`reference.go:278` — the
+  existing accessor, not an open-coded union), recursively, memoised per
+  Reference — order-independent by construction. Cost keeps first-member;
+  bounds do not. The bounds memo is allocated UNCONDITIONALLY at the entry
+  point: `EstimateCostWith` deliberately passes a nil COST memo
+  (`cost.go:308-312`) and is called twice per winner comparison
+  (`planning_cost_model.go:404-405`) — all-members recursion without a
+  bounds memo there would expand the memo DAG combinatorially on the
+  planner's hottest path.
+
+Two properties of this composition are accepted EXPLICITLY rather than
+discovered later. Weakening only LOOSENS as exploration inserts members, so
+a clamped cost can move toward the unclamped estimate while planning runs —
+first-member cost did not move. This is deterministic (the task schedule is
+deterministic, so the same growth points produce the same comparisons on
+every run) and it is the same time-variance the property maps already have
+under priming; but it is a real behavioural difference, and item 4 pins
+BOTH faces: permutation (order does not matter) and growth (a cost
+re-derived after planning completes equals the extraction-time cost — the
+value the winner actually shipped with, not a mid-flight one).
 - In the CONCRETE walk there are no references — bounds derive from the
   concrete child, which also preserves that walk's deliberate decoupling
   from shared-group winners: no group-weakened interval
@@ -265,7 +282,15 @@ not assumed:
    order leaves every cost unchanged. This is the test the first-member
    bounds design would have FAILED while priming-invariance stayed green —
    the two invariance tests cover different doors into the same
-   nondeterminism.
+   nondeterminism. It also pins GROWTH: a cost re-derived after planning
+   completes equals the extraction-time cost, so the accepted mid-flight
+   movement (Decision §2) can never leak into what a winner shipped with.
+   It carries a MULTI-MEMBER NEGATIVE: weakening across
+   members means a child floor correctly DISAPPEARS when any member proves
+   `[0, unknown]` — the six table shapes are single-member and cannot pin
+   this, so a dedicated shape asserts the floor does NOT apply there, with a
+   failure message naming what gets re-armed if the weakening is ever
+   tightened.
 5. **Zero preservation**: a proven-zero leg under FlatMap keeps cost 0 through
    the clamp; pinned with the exact shape.
 6. **Method-level agreement, not walk-level**: for every operator, the
@@ -281,6 +306,13 @@ not assumed:
    identical child intervals — the pin that keeps the clamp symmetric and the
    extraction preference (`physical ≤ logical`) intact; the existing
    preference test (`rule_implement_filter_test.go`) must stay green.
+
+   Items 6 and 7 must be SELF-CLEANING, the way `addExcluded` already is.
+   There are ~11 logical arms against ~51 plan arms; a hand-written pairing
+   table passes vacuously the day arm 12 or plan 52 is added. The tests fail
+   on any arm with no table entry — an unpaired arm gets an explicit listed
+   reason, never silence. That is this RFC's own drift channel displaced one
+   level up, and it gets the same treatment.
 8. `TestCardinalityPropertyBoundsCostEstimate_RandomCombos` stays green — the
    guard against the clamp introducing a new inconsistency in composed plans.
 9. Full plan-shape golden + plandiff corpus diff, every changed record
