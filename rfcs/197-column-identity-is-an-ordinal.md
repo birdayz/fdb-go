@@ -176,7 +176,7 @@ claim is itself pinned when this item lands: a reflection test over the key
 type(s) asserting no field of string kind. Diagnostics render from the
 FieldValue they already have.
 
-**3. name-keyed (10) — name-keyed sets and matchers become identity-keyed.**
+**3. name-keyed (11) — name-keyed sets and matchers become identity-keyed.**
 `referenced_fields`, `rule_implement_distinct_final`,
 `rule_projection_merge`, `in_memory_sort`, `map_field_values`, `pullup`,
 `replace`, `simplifier_value`, and `logical_predicate.go:4151`.
