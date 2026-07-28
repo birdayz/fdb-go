@@ -284,8 +284,8 @@ func invalidAllowlistEntries(sites []fieldDecisionSite) []string {
 // accumulation can be driven over synthetic source. It is three lines, and two
 // of them are the increments that turn "this line is known" into a count — the
 // entire difference between a ratchet and a suppression list. Reachable only
-// through the tree walk, they are also unfalsifiable there: all 46 recorded
-// sites carry n == 1, so replacing `seen[key]++` with `seen[key] = 1` leaves
+// through the tree walk, they are also unfalsifiable there: every recorded
+// site carries n == 1, so replacing `seen[key]++` with `seen[key] = 1` leaves
 // every tally byte-identical and the suite green. Nothing about the real tree
 // can distinguish the two, which is precisely why the fixture has to supply a
 // line that hosts more than one.

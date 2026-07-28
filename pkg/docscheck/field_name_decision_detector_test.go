@@ -827,7 +827,7 @@ func TestBucketCountsSumsTaggedAndReportsUntagged(t *testing.T) {
 // The count comparison is the mechanism that makes the debt list a RATCHET
 // rather than a set of "this line is known" suppressions, and over the real tree
 // it is unexercised: every entry carries n == 1, so a mutation replacing the
-// per-site increment with a bare assignment leaves all 46 counts identical and
+// per-site increment with a bare assignment leaves every count identical and
 // the suite green. Both directions of disagreement are driven here directly.
 func TestDebtMismatchesChecksCountsInBothDirections(t *testing.T) {
 	t.Parallel()

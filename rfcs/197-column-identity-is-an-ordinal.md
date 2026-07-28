@@ -204,7 +204,7 @@ check can REFUSE an ordinal-equal match, which is a suspected live defect
 (an aliased reference to the same resolved column). Implementation probes
 that shape FIRST and pins whichever answer falls out.
 
-**4. translator (11) — the boundary keeps the name, under a mechanical test.**
+**4. translator (13) — the boundary keeps the name, under a mechanical test.**
 These sites match a PARSED identifier or a DECLARED column list — name
 resolution, the one place the rule permits a name. They move from the debt
 ratchet to the allowlist only under a demonstration with two testable legs:
