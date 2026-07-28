@@ -21,13 +21,15 @@ paths gets treated as two.
 Fixing the seven and stopping guarantees an eighth, so `pkg/docscheck`'s
 `TestFieldNameNeverDecides` now fails the build when `.Field` reaches a
 decision. That gate makes violations LOUD. It does not make them
-IMPOSSIBLE, and 46 sites are grandfathered on its ratchet. (38 when this
-revision was first drafted; widening the detector for the review findings —
-same-package escapes, laundering via concatenation and slicing, nested
-helpers — surfaced 8 more. A count that grows when the instrument improves
+IMPOSSIBLE, and 68 sites are grandfathered on its ratchet. (38 when this
+revision was first drafted; two rounds of detector widening — same-package
+escapes, laundering via concatenation/slicing/nested helpers, then
+intra-function taint through local variables — surfaced 30 more, including
+the LAST TWO of the original seven bugs, which had been absent from the
+inventory the whole time. A count that grows when the instrument improves
 is the instrument working.)
 
-This RFC is about closing those 46.
+This RFC is about closing those 68.
 
 ## The rule, and where it comes from
 
@@ -47,7 +49,7 @@ downstream it is display.**
 Go already has the machinery. `FieldValue.Resolved` is a `*FieldPath` of
 `ResolvedAccessor`s with ordinal-only identity — the port of Java's contract,
 already load-bearing and already tested. There is no missing capability here
-and no new type to invent. What is missing is that 46 sites still ask the
+and no new type to invent. What is missing is that 68 sites still ask the
 name a question the path can answer.
 
 ## What identity actually is: a triple
@@ -76,11 +78,11 @@ coerce. This is why the migration has a step 0.
 
 ## Decision
 
-The 46 sites partition into seven buckets. The partition is not prose: every
+The 68 sites partition into seven buckets. The partition is not prose: every
 `knownFieldDecisionDebt` entry carries exactly one bucket tag as a mandatory
 prefix on its reason string, pinned by `TestFieldDebtBucketsArePartition`.
-Counts at this revision: boundary 2, escape 7, contract 5, dotted 9,
-name-keyed 11, translator 11, harness 1. Revision 1's buckets double-counted
+Counts at this revision: boundary 2, escape 11, contract 11, dotted 15,
+name-keyed 15, translator 13, harness 1. Revision 1's buckets double-counted
 sites (an item claimed as both "escape" and "translator" disappears under
 whichever label is softest); single ownership makes the arithmetic real —
 and it already worked once: applying the bucket criteria moved
@@ -95,6 +97,17 @@ provably indexes THAT layout — for a frontier-pinned path by verifying the
 pin's frontier is the given one, for an unpinned single-accessor path by
 verifying the value's own source is the given frontier — and fails closed on
 everything else: multi-accessor, lazy, or any domain mismatch.
+
+The accessor requires state that does not yet exist, and step 0 is honest
+about being a REPRESENTATION change, not a query: `FieldPath` today stores
+only a `FrontierPinned` boolean, and a childless source-relative value
+retains no reference to its source at all — so "verify the value's source is
+the given frontier" is unanswerable from the current struct. Step 0 threads
+a DOMAIN TOKEN through construction and every copy/rebuild/rebase site
+(the same preserve-on-copy contract `Resolved` already imposes), excluded
+from equality and hashing exactly as `FrontierPinned` is — an
+evaluation-contract marker, not a value distinction. Without the token,
+`OrdinalIn(frontier)` would be a signature wearing a proof it cannot check.
 
 The accessor also FAILS CLOSED on a negative ordinal, and this clause is
 measured, not defensive. Java's ordinal-only accessor equality is safe only
@@ -162,7 +175,7 @@ Two preconditions this item must respect, not assume away:
   producer knows its source) or fails closed. It never falls back to
   comparing the name it happens to still carry.
 
-**2. escape (7) — escapes return an identity key, not the name.** Sites like
+**2. escape (11) — escapes return an identity key, not the name.** Sites like
 `correlatedInnerField`, `leafFieldName`, `bareColumnName` return `fv.Field`
 as a bare `string`; the caller keys maps by it, and by then no gate can see
 the decision. These return a key struct instead. **The key struct must not
@@ -176,7 +189,7 @@ claim is itself pinned when this item lands: a reflection test over the key
 type(s) asserting no field of string kind. Diagnostics render from the
 FieldValue they already have.
 
-**3. name-keyed (11) — name-keyed sets and matchers become identity-keyed.**
+**3. name-keyed (15) — name-keyed sets and matchers become identity-keyed.**
 `referenced_fields`, `rule_implement_distinct_final`,
 `rule_projection_merge`, `in_memory_sort`, `map_field_values`, `pullup`,
 `replace`, `simplifier_value`, and `logical_predicate.go:4151`.
@@ -213,7 +226,7 @@ exempted line exempt a 6000-line translator forever; measurement also showed
 its three file-wide entries covered ZERO sites, so it was deleted rather
 than narrowed.
 
-**5. contract (5) — one coordinated naming-contract change, scoped as its own
+**5. contract (11) — one coordinated naming-contract change, scoped as its own
 phase.** `AggregateKeyColumnName` (`group_by.go:118`) is THE naming
 authority binding planner, executor, and translator for group-key output
 columns; `logical_predicate.go:6093` and `cascades_translator.go:4748` are
@@ -221,16 +234,17 @@ the same contract family (aggregate output and RFC-141 hidden sort columns);
 the widened detector added `values.ProjectionColumnName` (`values.go:1274`,
 the projection output-naming authority) and the JDBC result-set label match
 (`cascades_generator.go:3301` — the label is the contract with the DRIVER
-consumer). These are not 5 independent sites; they are one contract whose
+consumer). These are not 11 independent sites; they are one contract whose
 currency is a name, and they close only by making that currency an ordinal
 slot where the consumer is internal — the JDBC label, whose consumer is the
 user's result set, may prove to be a true boundary and end on the allowlist
 instead, decided by item 4's test, not by fiat here. Scoping honestly: this
-RFC migrates 41 sites and changes one cross-component contract covering the
-other 5. No wire impact — the names never leave the process — but it is the
+RFC migrates 57 sites and changes one cross-component contract covering the
+other 11 (the aggregate-result naming switch in group_by.go joined its
+sibling authority when taint tracking exposed its six arms). No wire impact — the names never leave the process — but it is the
 one piece where "migrate the site" understates the work.
 
-**6. dotted (9) — kill the qualified-name channel, then the probes die.**
+**6. dotted (15) — kill the qualified-name channel, then the probes die.**
 Revision 1 claimed these probes exist because of the legacy flat
 `Child == nil` representation. That premise is FALSE and was falsified by
 reading the sites: `rule_implement_nested_loop_join.go:2337`,
@@ -250,11 +264,18 @@ The gate deliberately does not flag construction — building a FieldValue
 FROM a name is what the values package is for — which means it will go
 green on this item while proving nothing: the producers it targets are
 constructors. So this item carries its own gate, landed WITH the producer
-fix: no `FieldValue` may be constructed with a dotted `Field` (checked at
-the constructor boundary, a debug assertion plus a docscheck walk over
-composite literals and constructor calls). When that gate is green AND the
-five probe sites are deleted, the channel is provably closed; either alone
-proves nothing.
+fix. And that gate CANNOT be lexical: a quoted identifier like `"A.B"` is
+ONE legitimate column name containing a dot, regression-covered, and
+indistinguishable by string inspection from the channel's `alias + "." +
+col`. The gate is provenance-based instead — qualification becomes a tagged
+structural representation on the value, producers set the tag, and the
+assertion is "no untagged Field ever contains a dot introduced by
+CONCATENATION", checked where the concatenation used to happen (the
+producer sites) plus a constructor-boundary debug assertion on the tag.
+When that gate is green AND the fifteen probe sites are deleted, the channel
+is provably closed; either alone proves nothing — and a quoted `"A.B"`
+column keeps working, pinned by keeping its existing regression coverage
+green through the change.
 
 **harness (1)** — `rowdiff/ordering.go:241` compares plan sort keys against
 SQL `ORDER BY` text in the conformance oracle. Engine identity rules do not
@@ -265,13 +286,13 @@ audited separately rather than being waved through with the engine work.
 
 0. Domain accessor (fail-closed) — nothing else may land first.
 1. boundary (2): metadata names die at candidate construction.
-2. escape (7): key structs; kills the caller-side blindness the gate cannot
+2. escape (11): key structs; kills the caller-side blindness the gate cannot
    reach.
-3. name-keyed (11): including the 4151 probe-first defect check; 6188 is
+3. name-keyed (15): including the 4151 probe-first defect check; 6188 is
    the same two-Values shape and travels with it.
-4. translator (11): boundary demonstrations; allowlist grows only here.
-5. contract (5): the coordinated naming-contract change.
-6. dotted (9): producer-side channel removal.
+4. translator (13): boundary demonstrations; allowlist grows only here.
+5. contract (11): the coordinated naming-contract change.
+6. dotted (15): producer-side channel removal.
 
 ## Rejected alternatives
 
@@ -282,7 +303,7 @@ is the resolved-accessor path, the index-matching/compensation subsystem is
 a faithful port of that contract, and a competing identity notion would put
 two authorities on one fact for the length of the migration — the exact
 pathology this workstream exists to end. Revisit only if the triple proves
-insufficient after the 46 are closed, with the call sites already uniform.
+insufficient after the 68 are closed, with the call sites already uniform.
 
 **Swapping the dotted-probe predicate for a structural one, in place.**
 Treats the reader; the producer keeps writing structure into strings and
@@ -312,6 +333,6 @@ new failure mode this revision admits into the model. Where the shape is
 expressible in SQL, a yamsql scenario with an EXPLAIN assertion; where it is
 plan-internal, an FDB integration test.
 
-Absent that test a conversion is unfalsifiable, because every one of the 46
+Absent that test a conversion is unfalsifiable, because every one of the 68
 sites is green today with the defect latent — which is exactly the state the
 original seven shipped in.
