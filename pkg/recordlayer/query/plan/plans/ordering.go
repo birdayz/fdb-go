@@ -314,7 +314,23 @@ func isZeroFloatEqualityRange(cr *predicates.ComparisonRange) bool {
 	// class this guards. Match on the value's Go type, exactly as the
 	// executor does.
 	if !values.IsConstantValue(cmp.Operand) {
-		return false
+		// NOT constant — a parameter, correlated operand or ConstantObjectValue.
+		// Its runtime value is unknown here, and if it binds to zero the
+		// executor WILL widen. For ORDERING the safe answer is therefore the
+		// conservative one whenever the operand could be a float: report true
+		// so the suffix keeps no ordering claim.
+		//
+		// `WHERE v = ? ORDER BY w LIMIT 1` with ? bound to 0.0 otherwise loses
+		// its sort and returns the wrong row — and a bound parameter is the
+		// COMMON shape, far more common than the literal zero this function was
+		// originally written for.
+		//
+		// Asymmetric with the SARGABILITY decision in match_candidate_index on
+		// purpose, and the asymmetry is the point: there, being conservative
+		// de-sargs a probe into a scan of the whole leading-column group — a
+		// performance cliff on every correlated composite join. Here it costs
+		// one sort. Different price, different answer.
+		return couldBeFloatOperand(cmp.Operand)
 	}
 	v, ok := values.EvaluateConstant(cmp.Operand)
 	if !ok || v == nil {
@@ -327,6 +343,37 @@ func isZeroFloatEqualityRange(cr *predicates.ComparisonRange) bool {
 		return n == 0
 	}
 	return false
+}
+
+// couldBeFloatOperand reports whether a non-constant operand is DECLARED float,
+// so a zero binding could widen the scan. Integers, strings and booleans have
+// no signed zero and cannot.
+//
+// UNKNOWN deliberately returns FALSE, and that leaves a known hole. Treating it
+// as "could be" is the strictly safer reading — a bound parameter often reaches
+// the plan gates untyped — but it also swallows every untyped IN-join binding
+// over an INT column, which costs those plans their ordering claim and their
+// InJoin sorted-order optimisation for a signed zero that cannot exist there.
+// Measured: it turned four test targets red, including an InJoin that must
+// claim ascending order.
+//
+// The right discriminator is the INDEXED COLUMN's type — an int column has no
+// zero to widen regardless of what the comparand is — and that is not available
+// here; equalityPrefixLen sees only ComparisonRanges. Threading column types
+// into ordering computation is the real fix and is tracked separately. Until
+// then this covers the typed case and the untyped hole is pinned by a sentinel
+// rather than left silent.
+func couldBeFloatOperand(v values.Value) bool {
+	t := v.Type()
+	if t == nil {
+		return false
+	}
+	switch t.Code() {
+	case values.TypeCodeFloat, values.TypeCodeDouble:
+		return true
+	default:
+		return false
+	}
 }
 
 // PKScanOrdering returns a primary scan's PK ordering. Shared with the

@@ -108,6 +108,7 @@ go_test(
         "correlated_scalar_subquery_enclosure_fdb_test.go",
         "correlated_scalar_where_reject_fdb_test.go",
         "correlated_zero_composite_sentinel_test.go",
+        "correlated_zero_ordering_test.go",
         "covering_index_test.go",
         "cross_leg_duplicate_column_box_unnest_fdb_test.go",
         "cross_table_predicate_probe_test.go",
