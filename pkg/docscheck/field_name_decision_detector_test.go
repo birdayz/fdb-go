@@ -281,6 +281,55 @@ func f(v values.Value) (string, bool) {
 	return strings.ToUpper(stripColumnQualifier(fv.Field)), true
 }`,
 		},
+		{
+			// ONE local assignment between the name and the sink hid the
+			// decision from both tiers, because both inspect only the sink
+			// expression. This is buriedLegOrdinalLayout — one of the seven —
+			// verbatim: rule_implement_nested_loop_join.go:2213 builds the key,
+			// :2214-:2215 probe and write the layout under it. The gate was
+			// named for that function and could not see it.
+			name: "map key via a local derived from the name",
+			want: "a map key via local key derived from the name",
+			body: `func f(layout map[string]int, fv *values.FieldValue, corr string) int {
+	key := strings.ToUpper(corr) + "." + strings.ToUpper(fv.Field)
+	return layout[key]
+}`,
+		},
+		{
+			// The second of the two invisible bugs: fieldValueAliasAndCol
+			// (:3693 assigns, :3705/:3707 return). A returned SLICE of a local
+			// holding the name is the name leaving as a bare string exactly as
+			// much as a slice of `fv.Field` is.
+			name: "return escape via a local derived from the name",
+			want: "escaping as a bare string (return) via local upper derived from the name",
+			body: `func f(fv *values.FieldValue, dot int) (string, string) {
+	upper := strings.ToUpper(fv.Field)
+	return upper[:dot], upper[dot+1:]
+}`,
+		},
+		{
+			// The engine's name matching lives in Replace/pull-up closures, so
+			// a taint pass that stopped at a FuncLit would be blind to most of
+			// it. Measured: not descending into closures loses seven real sites
+			// (cascades_translator.go:5732/:5887/:5895,
+			// clustered_outer_scalar.go:402/:405/:406,
+			// exists_gathered_cluster_wrap.go:152) and silences no false
+			// positive — the scoping question is settled by keying the taint on
+			// the DECLARATION, not by refusing to look inside closures.
+			name: "helper call via a local derived from the name inside a closure",
+			want: "a Contains call via local leaf derived from the name",
+			body: `func f(v values.Value, cols []string) bool {
+	match := func(node values.Value) bool {
+		fv, ok := node.(*values.FieldValue)
+		if !ok {
+			return false
+		}
+		leaf := fv.Field
+		return slices.Contains(cols, leaf)
+	}
+	return match(v)
+}`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -381,6 +430,38 @@ func (k SortKey) Name() string { return k.Field }`,
 	return expression.Field.GetFanType() == gen.Field_FAN_OUT
 }`,
 		},
+		{
+			// A local keyed into a map is only a decision if the local holds the
+			// NAME. This one holds an unrelated string in a function that does
+			// handle a FieldValue, so the taint pass has every chance to be
+			// sloppy and must not take it.
+			name: "local assigned from something else entirely, used as a map key",
+			body: `func f(m map[string]bool, fv *values.FieldValue, names []string, i int) bool {
+	if fv.Child != nil {
+		return false
+	}
+	key := strings.ToUpper(names[i])
+	return m[key]
+}`,
+		},
+		{
+			// The measured reason the taint predicate is escapesFieldName (which
+			// proves the result is still a STRING holding the name) rather than
+			// deep containment (which accepts anything an expression MENTIONING
+			// the name produces). Under deep containment `dot` is a display name,
+			// `dot >= 0` is an identity decision, and the debt list grows by 53
+			// entries against the 22 real ones — int offsets, loop indices,
+			// slices built beside the name — for which there is no Resolved
+			// accessor to consult and so no possible fix. A list padded with
+			// unfixable entries is one nobody reads, which costs the real
+			// entries their audience.
+			name: "int offset computed from a local holding the name",
+			body: `func f(fv *values.FieldValue) bool {
+	upper := strings.ToUpper(fv.Field)
+	dot := strings.IndexByte(upper, '.')
+	return dot >= 0
+}`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -431,6 +512,138 @@ func TestFieldDecisionDetectorSeesUnqualifiedFieldValueInValuesPackage(t *testin
 			"The widening is package-scoped on purpose. Elsewhere a bare FieldValue names some "+
 			"unrelated type, and accepting it there is how the discriminator stops discriminating.", outside)
 	}
+}
+
+// The taint follows the DECLARATION, never the spelling.
+//
+// Keying it by name reports rule_implement_nested_loop_join.go:2237-2238, where
+// a second `key := leg.Name + "." + strings.ToUpper(fields[…].Name)` in a
+// sibling block of the same function is keyed into a map. That key is built from
+// a record constructor's column names and never touches a FieldValue, so the
+// entry would be a lie on a list whose entire value is that every line on it is
+// true. go/parser resolves block scopes, so the two `key`s are two objects.
+//
+// This fixture is also the tripwire on that resolution. *ast.Object is
+// deprecated; if it ever stops being populated the taint set empties and the
+// gate silently loses every local-hop site it holds — a build gate degrading to
+// green is the worst failure mode it has. Here the degradation is loud in both
+// directions: no resolution means either nothing reports, or the fallback
+// reports both.
+func TestFieldDecisionTaintFollowsTheDeclarationNotTheSpelling(t *testing.T) {
+	t.Parallel()
+
+	forms, lines := scanSnippetInPackage(t, "p", `func f(fv *values.FieldValue, names []string) map[string]int {
+	layout := map[string]int{}
+	{
+		key := strings.ToUpper(fv.Field)
+		layout[key] = 1
+	}
+	{
+		key := strings.ToUpper(names[0])
+		layout[key] = 2
+	}
+	return layout
+}`)
+
+	if len(forms) != 1 {
+		t.Fatalf("two same-named locals in sibling scopes produced %d report(s) on line(s) %v: %v\n\n"+
+			"Exactly one of them holds the name. Reporting the other puts a site on the debt "+
+			"list that never touches a FieldValue, and a debt list is only worth reading while "+
+			"every line on it is true; reporting NEITHER means identifier resolution went away "+
+			"underneath the taint set and every local-hop site the gate holds is now invisible.",
+			len(forms), lines, forms)
+	}
+	if !strings.Contains(forms[0], "via local key derived from the name") {
+		t.Fatalf("report = %q, want the map-key decision naming the local it arrived through", forms[0])
+	}
+	// scanSnippetInPackage prepends a fixed 10-line prologue, so the first
+	// block's `layout[key] = 1` is line 15 and the second block's is line 19.
+	// Naming the line is what makes this test discriminate: both blocks report
+	// the identical form string, so the LINE is the only evidence of which `key`
+	// the taint matched.
+	if lines[0] != 15 {
+		t.Fatalf("the decision was reported on line %d, want 15 — the FIRST block, whose key "+
+			"holds fv.Field. Line 19 is the second block, whose key is built from an unrelated "+
+			"string; reporting it means the taint matched a spelling.", lines[0])
+	}
+}
+
+// The shallow tier types a direct `.Field` selector by SPELLING ALONE, and the
+// two tests below pin both halves of that trade so it cannot be quietly
+// renegotiated. This half: a name-typed CARRIER must stay visible.
+//
+// A carrier is a plain struct field holding a string that came off a FieldValue
+// upstream — plans.SortKey.Field (in_memory_sort.go:142) and the conformance
+// oracle's sort key (rowdiff/ordering.go:241). Comparing two of them conflates
+// two same-named columns exactly as comparing two `fv.Field`s does; the name
+// simply travelled one type further from where it was read. Both are recorded
+// debt.
+//
+// Neither function names FieldValue anywhere, so gating the shallow tier on the
+// type discriminator — the obvious "fix" for the precision cost pinned below —
+// silences both. That was measured, and it loses on both axes: two real sites
+// traded for four protobuf false positives.
+func TestFieldDecisionDetectorReportsNameTypedCarriers(t *testing.T) {
+	t.Parallel()
+
+	got := scanSnippet(t, `type SortKey struct {
+	Field     string
+	Ascending bool
+}
+
+func sortKeysEqual(a, b SortKey) bool { return a.Field == b.Field }`)
+
+	for _, form := range got {
+		if strings.Contains(form, "== comparison") {
+			return
+		}
+	}
+	t.Fatalf("a name-typed CARRIER comparison was not reported: %v\n\n"+
+		"plans.SortKey.Field holds a leaf name read off a FieldValue upstream, and comparing "+
+		"two of them conflates two same-named columns just as comparing two `fv.Field`s does. "+
+		"in_memory_sort.go:142 and rowdiff/ordering.go:241 are exactly this shape and are "+
+		"recorded debt. If this went silent because the shallow tier was gated on the type "+
+		"discriminator, that gating also has to explain the four protobuf false positives it "+
+		"lets back in.", got)
+}
+
+// The other half of the same trade, asserted as CURRENT behavior rather than as
+// something desirable: a `.Field` selector on a type with no relation to
+// FieldValue, in a function that never mentions the type, IS reported.
+//
+// This is a false positive and it is the accepted price. The gate cannot
+// distinguish it from the carrier above without type information, and buying the
+// precision back by gating the shallow tier on the discriminator costs the
+// carriers — which are real debt on real columns. Precision on unrelated structs
+// is the cheaper thing to spend.
+//
+// The test asserts the cost so that removing it is a DECISION. Someone adding
+// type-based gating as a "precision fix" turns this red and the carrier test
+// above red at the same time, and has to re-derive which side of the trade they
+// are on rather than discovering it in production. If the trade is genuinely
+// re-made — full type checking, say, which answers both — delete both tests
+// together and say so.
+func TestFieldDecisionShallowTierCostsPrecisionOnUnrelatedStructs(t *testing.T) {
+	t.Parallel()
+
+	got := scanSnippet(t, `type HTTPValidationError struct {
+	Field  string
+	Reason string
+}
+
+func rejects(e HTTPValidationError, s string) bool { return e.Field == s }`)
+
+	for _, form := range got {
+		if strings.Contains(form, "== comparison") {
+			return
+		}
+	}
+	t.Fatalf("an unrelated `.Field` comparison stopped being reported: %v\n\n"+
+		"This test pins a COST, not a virtue. The shallow tier types a direct selector by "+
+		"spelling, so it cannot tell this from plans.SortKey.Field — a carrier holding a name "+
+		"read off a FieldValue, and real debt. If this went silent because type-based gating "+
+		"was added, TestFieldDecisionDetectorReportsNameTypedCarriers is red too, and the "+
+		"question to answer is which of the two the gate is for.", got)
 }
 
 // The ratchet counts decisions PER LINE, and in the real tree every entry

@@ -131,8 +131,12 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/match_candidate_index.go:792":          {1, "boundary: covered-column set holds index-definition NAMES, matched against a query value's leaf name (laundered through ToUpper) on every fetch-push; resolve to ordinals at candidate construction"},
 	"pkg/recordlayer/query/plan/cascades/windowed_index_match_candidate.go:246": {1, "boundary: same covered-column name set, windowed candidate"},
 
-	// escape (7)
+	// escape (11)
 	"pkg/relational/core/query/cascades_translator.go:7392":                       {1, "escape: aggregateOperandColumn hands the qualifier-stripped, upper-cased name back as a bare string; visible only once a launderer's argument is searched to any depth"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3705": {1, "escape: fieldValueAliasAndCol's dotted-split arm returns (qualifier, leaf) off a local holding the upper-cased name; one of the seven, and invisible until a local hop counted as a name read"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3707": {1, "escape: same function, childless bare arm -- returns the whole upper-cased name as the column"},
+	"pkg/relational/core/embedded/cascades_generator.go:3728":                     {1, "escape: gatheredExplodeElement hands the collection FieldValue's leaf name out as its second result; callers match it by name against the flowed row"},
+	"pkg/relational/core/embedded/cascades_generator.go:3732":                     {1, "escape: same function, no-element-type arm"},
 	"pkg/recordlayer/query/plan/cascades/fk_chain_cardinality.go:394":             {1, "escape: leafFieldName returns the bare name; callers key maps by it"},
 	"pkg/recordlayer/query/plan/cascades/fk_chain_cardinality.go:421":             {1, "escape: correlated variant, same caller pattern, after a Resolved.Single() guard"},
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3691": {1, "escape: returns (alias, column) as bare uppercased strings"},
@@ -140,15 +144,33 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:3741": {1, "escape: bareColumnName, flat-string fallback arm"},
 	"pkg/recordlayer/query/plan/plans/cost.go:643":                                {1, "escape: correlatedInnerField -- the shape the gate is named after; guarded by Resolved.Single() and a flat-QOV child, but the caller still keys want[]/bound[] by the returned name"},
 
-	// contract (5)
+	// contract (11)
+	//
+	// AggregateResultColumnName renders one canonical output name per aggregate
+	// function, so the SAME escape appears once per switch arm. Six lines, six
+	// entries: the ratchet is per SITE, and collapsing them to one would let five
+	// of the six change shape unnoticed.
+	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:147": {1, "contract: AggregateResultColumnName bakes the operand's DISPLAY name into the canonical aggregate output-column name the SELECT list references; same naming-authority family as AggregateKeyColumnName at :118, COUNT arm"},
+	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:149": {1, "contract: same authority, SUM arm"},
+	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:151": {1, "contract: same authority, MIN arm"},
+	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:153": {1, "contract: same authority, MAX arm"},
+	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:155": {1, "contract: same authority, AVG arm"},
+	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:157": {1, "contract: same authority, default arm"},
+
 	"pkg/recordlayer/query/plan/cascades/values/values.go:1274":       {1, "contract: ProjectionColumnName IS the projection output-column naming contract -- the key the executor writes a projected slot under and every re-reader reads it by; the naming authority the other contract sites delegate to, and invisible until the gate could see unqualified *FieldValue inside the values package"},
 	"pkg/relational/core/embedded/cascades_generator.go:3301":         {1, "contract: result-set metadata LABEL selection -- decides whether a dotted label is the internal duplicate-disambiguation key or a user alias by leaf-matching it against the projected value's name; the JDBC label contract, where a name genuinely is the identity"},
 	"pkg/recordlayer/query/plan/cascades/expressions/group_by.go:118": {1, "contract: AggregateKeyColumnName is THE group-key naming contract with the executor; moves only when the contract becomes an ordinal slot"},
 	"pkg/relational/core/embedded/logical_predicate.go:6093":          {1, "contract: aggregate group-key output name, same contract family"},
 	"pkg/relational/core/query/cascades_translator.go:4748":           {1, "contract: sort-key hidden-field naming (RFC-141), same output-naming contract family"},
 
-	// dotted (9)
+	// dotted (15)
 	"pkg/recordlayer/query/plan/cascades/values/value_correlation.go:57":          {1, "dotted: keys a correlation set by the QUALIFIER sliced off the flat 'ALIAS.col' name; the slice hid it from every wrapper whitelist"},
+	"pkg/relational/core/embedded/cascades_generator.go:4029":                     {1, "dotted: asks whether a group-key name is QUALIFIED by comparing it to its own bare form, then labels the output column from the answer; the flat representation is the debt, not the comparison"},
+	"pkg/relational/core/query/cascades_translator.go:5887":                       {1, "dotted: leg name matched against the qualifier sliced off the flat name, multi-leg baker; same channel as 5726, one local hop away"},
+	"pkg/relational/core/query/clustered_outer_scalar.go:189":                     {1, "dotted: leg-by-binding map keyed by an alias that is the sliced qualifier on the childless arm; same shape as value_correlation.go:57"},
+	"pkg/relational/core/query/clustered_outer_scalar.go:402":                     {1, "dotted: shadowed-alias set probed by the same sliced qualifier, outer-ref collector"},
+	"pkg/relational/core/query/clustered_outer_scalar.go:405":                     {1, "dotted: outer-alias set probed by the sliced qualifier"},
+	"pkg/relational/core/query/clustered_outer_scalar.go:406":                     {1, "dotted: the collected outer-ref set is WRITTEN under that sliced qualifier, so the conflation propagates to every consumer of refs"},
 	"pkg/relational/core/query/cascades_translator.go:5726":                       {1, "dotted: leg-layout match on the sliced qualifier"},
 	"pkg/relational/core/query/cascades_translator.go:5765":                       {1, "dotted: leg-layout map keyed by the sliced qualifier, same channel as 5726"},
 	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:131":               {1, "dotted: leg-window map keyed by the sliced qualifier, gathered-EXISTS wrap"},
@@ -158,21 +180,27 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted: frontier read attributed by '.' probe; the only dotted site actually gated on Child == nil"},
 	"pkg/relational/core/query/ordinal_seed.go:761":                               {1, "dotted: leg-ref detection via '.' probe on the merged-QOV leg.col channel"},
 
-	// name-keyed (11)
-	"pkg/recordlayer/query/plan/cascades/referenced_fields.go:125":             {1, "name-keyed: referenced-field set keyed by leaf name"},
-	"pkg/recordlayer/query/plan/cascades/rule_implement_distinct_final.go:197": {1, "name-keyed: distinct-key set keyed by name"},
-	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":         {1, "name-keyed: projection merge matches inner slot by name"},
-	"pkg/recordlayer/query/plan/plans/in_memory_sort.go:142":                   {1, "name-keyed: sort key equality by name"},
-	"pkg/recordlayer/query/plan/cascades/values/map_field_values.go:354":       {1, "name-keyed: field remap compares leaf names"},
-	"pkg/recordlayer/query/plan/cascades/values/pullup.go:210":                 {1, "name-keyed: pull-up picks a struct member by name"},
-	"pkg/recordlayer/query/plan/cascades/values/replace.go:498":                {1, "name-keyed: replacement target matched by name"},
-	"pkg/recordlayer/query/plan/cascades/values/replace.go:520":                {1, "name-keyed: same, second arm"},
-	"pkg/recordlayer/query/plan/cascades/values/simplifier_value.go:243":       {1, "name-keyed: composeFieldOverConstructor picks a constructor member by name, correct only because of its duplicate-name guard"},
-	"pkg/relational/core/embedded/logical_predicate.go:4151":                   {1, "name-keyed: ordinal equality ANDed with a name check on two RESOLVED values. Probed: UNREACHABLE as a decision-changer (every caller ORs it with SemanticEqualsUnderAliasMap; suite green with the matcher hard-wired false) and LOAD-BEARING against Ordinal:-1 name-only accessors, where ordinal equality is vacuous -- deleting it binds the wrong column. Pinned both directions in aggregate_group_key_accessor_name_test.go; convert only after RFC-197 step 0 fail-closes negative ordinals"},
-	"pkg/relational/core/embedded/logical_predicate.go:6188":                   {1, "name-keyed: group-key match compares two Values' leaf names during aggregate translation -- both operands are .Field, so this is a value-identity matcher, not resolution"},
+	// name-keyed (15)
+	"pkg/recordlayer/query/plan/cascades/referenced_fields.go:125":                {1, "name-keyed: referenced-field set keyed by leaf name"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2214": {1, "name-keyed: buriedLegOrdinalLayout -- one of the seven -- probes its leg layout under 'CORR.LEAF' built from the display name; the Resolved.Single() guard above it declines FUSED accessors but two same-named top-level columns still collide"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2215": {1, "name-keyed: same layout, the WRITE that mints the colliding key"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:2389": {1, "name-keyed: the READER of that layout -- a buried-leg reference bakes to whatever ordinal the name-built key returns"},
+	"pkg/relational/core/query/exists_gathered_cluster_wrap.go:152":               {1, "name-keyed: bare frontier read matched against the merged row's field names; the matches!=1 guard below makes an ambiguous name decline rather than mis-bind, which is the mitigation, not the fix"},
+	"pkg/recordlayer/query/plan/cascades/rule_implement_distinct_final.go:197":    {1, "name-keyed: distinct-key set keyed by name"},
+	"pkg/recordlayer/query/plan/cascades/rule_projection_merge.go:113":            {1, "name-keyed: projection merge matches inner slot by name"},
+	"pkg/recordlayer/query/plan/plans/in_memory_sort.go:142":                      {1, "name-keyed: sort key equality by name"},
+	"pkg/recordlayer/query/plan/cascades/values/map_field_values.go:354":          {1, "name-keyed: field remap compares leaf names"},
+	"pkg/recordlayer/query/plan/cascades/values/pullup.go:210":                    {1, "name-keyed: pull-up picks a struct member by name"},
+	"pkg/recordlayer/query/plan/cascades/values/replace.go:498":                   {1, "name-keyed: replacement target matched by name"},
+	"pkg/recordlayer/query/plan/cascades/values/replace.go:520":                   {1, "name-keyed: same, second arm"},
+	"pkg/recordlayer/query/plan/cascades/values/simplifier_value.go:243":          {1, "name-keyed: composeFieldOverConstructor picks a constructor member by name, correct only because of its duplicate-name guard"},
+	"pkg/relational/core/embedded/logical_predicate.go:4151":                      {1, "name-keyed: ordinal equality ANDed with a name check on two RESOLVED values. Probed: UNREACHABLE as a decision-changer (every caller ORs it with SemanticEqualsUnderAliasMap; suite green with the matcher hard-wired false) and LOAD-BEARING against Ordinal:-1 name-only accessors, where ordinal equality is vacuous -- deleting it binds the wrong column. Pinned both directions in aggregate_group_key_accessor_name_test.go; convert only after RFC-197 step 0 fail-closes negative ordinals"},
+	"pkg/relational/core/embedded/logical_predicate.go:6188":                      {1, "name-keyed: group-key match compares two Values' leaf names during aggregate translation -- both operands are .Field, so this is a value-identity matcher, not resolution"},
 
-	// translator (11)
+	// translator (13)
 	"pkg/relational/core/embedded/cascades_generator.go:3155": {1, "translator: parsed column ref matched against declared inner columns"},
+	"pkg/relational/core/query/cascades_translator.go:5732":   {1, "translator: single-ForEach flat baker scans the layout's declared column list for the parsed leaf and emits NewFieldValueWithResolvedOrdinal; same resolve-then-bake shape as 5879, reached through a local leaf"},
+	"pkg/relational/core/query/cascades_translator.go:5895":   {1, "translator: multi-leg baker, column membership within the matched leg window"},
 	"pkg/relational/core/embedded/cascades_generator.go:3169": {1, "translator: same inner-column lookup as 3175, leg-qualified arm -- the map key is a CONCATENATION, which is why the sibling entry was recorded and this one was not"},
 	"pkg/relational/core/embedded/cascades_generator.go:3175": {1, "translator: inner-column lookup by parsed name (laundered map key)"},
 	"pkg/relational/core/embedded/logical_predicate.go:6617":  {1, "translator: join-side name set during translation (laundered map key)"},
@@ -346,11 +374,126 @@ func isFieldSelector(e ast.Expr) bool {
 	return ok && sel.Sel != nil && sel.Sel.Name == "Field"
 }
 
+// nameTaint is the set of LOCAL variables a function assigns the leaf name to.
+// Every predicate below treats such a variable exactly as it treats `.Field`
+// itself.
+//
+// Both tiers of the sink test inspect only the SINK expression, so a single
+// local assignment hid the decision completely — and it hid two of the seven
+// bugs the gate exists for. `buriedLegOrdinalLayout` writes
+// `key := strings.ToUpper(qov…) + "." + strings.ToUpper(fv.Field)` and then
+// `layout[key]`; `fieldValueAliasAndCol` writes `upper := strings.ToUpper(fv.Field)`
+// and then `return upper[:dot], upper[dot+1:]`. By the sink the AST node is an
+// Ident, and every check downstream is blind — the same blindness that let the
+// RETURN escape defeat the gate's first version, one step earlier.
+//
+// Keyed by the parser's *ast.Object — the DECLARATION — and never by spelling,
+// which is a measured correction rather than tidiness. Keying by name reports
+// rule_implement_nested_loop_join.go:2237-2238, where a second, unrelated
+// `key := leg.Name + "." + strings.ToUpper(fields[…].Name)` in a sibling block
+// of the same function is keyed into a map. That key is built from a record
+// constructor's column names and never touches a FieldValue, so the report is a
+// lie in a list whose whole value is that every line on it is true. go/parser
+// resolves block scopes, so the two `key`s are two objects and the question
+// does not arise.
+//
+// The cost of the correction, stated because it is real: cascades_translator.go:5749
+// stops being reported. Its `leaf` is a PARAMETER of one closure that happens to
+// share a spelling with a name-derived local in a SIBLING closure, and the call
+// site does pass it `fv.Field[dot+1:]` — so it is a true site, found for a false
+// reason. Taint across a call boundary is out of scope by design (that is what
+// the RETURN escape check covers, from the side where the type is visible), and
+// a gate that keeps a site by coincidence has not earned it.
+type nameTaint map[*ast.Object]bool
+
+// has reports whether e is a local variable holding the name. Objects are the
+// parser's resolution of a declaration; an unresolved identifier (package-level
+// or dot-imported) has none and is never tainted, which keeps the taint strictly
+// intra-function.
+func (t nameTaint) has(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && id.Obj != nil && t[id.Obj]
+}
+
+// nameDerivedIdents collects the identifiers fn assigns an expression that
+// reads the leaf name — `:=`, `=`, or a `var` with an initializer.
+//
+// Deliberately flow-INSENSITIVE and scoped to the whole FuncDecl, nested
+// closures included: an identifier assigned the name anywhere in the function
+// counts everywhere in it. That over-approximates — a closure's `key` and its
+// parent's unrelated `key` are one name here — and the over-approximation was
+// measured on the tree rather than assumed. Lexical scoping (a closure sees the
+// parent's set plus its own, and its own does not leak back out) reports the
+// IDENTICAL set of sites over all 828 files, so the precise variant buys
+// nothing today and costs a parent-visible taint whenever a closure assigns to
+// a captured variable — `fn := func() { name = fv.Field }` followed by
+// `m[name]` in the parent is a real shape it would go blind to.
+//
+// Deliberately intra-function. Taint across a call boundary is what the RETURN
+// escape check already covers, from the side where the type is still visible;
+// doing it again by name would need a call graph and would report the callee
+// twice.
+//
+// The taint set is threaded back into the predicates as it is built, so
+// `a := fv.Field; b := a; m[b]` reports: source order makes the transitive step
+// free, and stopping at one step would be an arbitrary depth limit on the same
+// laundering the wrapper-whitelist lesson already settled.
+//
+// The derivation predicate is escapesFieldName — the SHAPE-matched one — and
+// not the deep-containment tier, and that is a measured narrowing rather than
+// caution. Deep containment as the taint rule adds 53 sites on top of the 22
+// this one finds, and they are not columns at all: it taints whatever an
+// expression MENTIONING the name produces, so `dot := strings.IndexByte(upper, '.')`
+// makes an int offset a display name and `if dot >= 0` an identity decision.
+// The locals it reports are `dot` seven times, `curIdx` six, loop indices `i`,
+// `j`, `n`, and string SLICES built beside the name. There is no Resolved
+// accessor to consult for an int offset, so those entries are unfixable by
+// construction, and a debt list padded with unfixable entries is one nobody
+// reads — which costs the 22 real ones their audience.
+//
+// escapesFieldName is the right predicate because it answers exactly the taint
+// question: does this expression yield a STRING that is still the name, with at
+// most a decoration on it. Its four shapes are the four ways a local acquires
+// the name, and it is safe without type information for the same reason the
+// shallow sink tier is — `strings.ToUpper(x)` only type-checks if x is a string.
+func nameDerivedIdents(fn ast.Node) nameTaint {
+	t := nameTaint{}
+	taint := func(lhs ast.Expr, rhs ast.Expr) {
+		id, ok := lhs.(*ast.Ident)
+		if !ok || id.Name == "_" || id.Obj == nil || !escapesFieldName(rhs, t) {
+			return
+		}
+		t[id.Obj] = true
+	}
+	ast.Inspect(fn, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.AssignStmt:
+			// A multi-value RHS (`a, b := f()`) cannot attribute the name to
+			// one of the results without types, so it stays silent.
+			if (x.Tok != token.DEFINE && x.Tok != token.ASSIGN) || len(x.Lhs) != len(x.Rhs) {
+				return true
+			}
+			for i, lhs := range x.Lhs {
+				taint(lhs, x.Rhs[i])
+			}
+		case *ast.ValueSpec:
+			for i, name := range x.Names {
+				if i < len(x.Values) {
+					taint(name, x.Values[i])
+				}
+			}
+		}
+		return true
+	})
+	return t
+}
+
 // readsFieldName reports whether e delivers the leaf name through wrapping that
-// PROVES it is still the name — `.Field` itself, in parentheses, or under a
-// launderer. This is the shape-matched tier of the sink test, and it needs no
-// type information to be safe: `strings.ToUpper(x)` is only well-typed if x is
-// a string, so a name read under it is still a name.
+// PROVES it is still the name — `.Field` itself, a local identifier assigned
+// from it, in parentheses, or under a launderer. This is the shape-matched tier
+// of the sink test, and it needs no type information to be safe:
+// `strings.ToUpper(x)` is only well-typed if x is a string, so a name read
+// under it is still a name.
 //
 // Requiring `.Field` to be the IMMEDIATE child of a sink is how
 // `coveredColumns[strings.ToUpper(v.Field)]` and `switch strings.ToUpper(fv.Field)`
@@ -358,18 +501,20 @@ func isFieldSelector(e ast.Expr) bool {
 // was enough to hide the decision. Uppercasing a name does not turn it into a
 // resolved column, so the wrapper is peeled and the sink is judged on what
 // actually reaches it.
-func readsFieldName(e ast.Expr) bool {
+func readsFieldName(e ast.Expr, taint nameTaint) bool {
 	switch x := e.(type) {
+	case *ast.Ident:
+		return taint.has(x)
 	case *ast.SelectorExpr:
 		return isFieldSelector(x)
 	case *ast.ParenExpr:
-		return readsFieldName(x.X)
+		return readsFieldName(x.X, taint)
 	case *ast.CallExpr:
 		if !nameLaunderers[callFuncName(x.Fun)] {
 			return false
 		}
 		for _, arg := range x.Args {
-			if readsFieldName(arg) {
+			if readsFieldName(arg, taint) {
 				return true
 			}
 		}
@@ -399,17 +544,27 @@ func readsFieldName(e ast.Expr) bool {
 // The walk is bounded at a FuncLit: a closure appearing inside a sink
 // expression is its own scope with its own returns, and its body is visited by
 // the outer ast.Inspect on its own terms.
-func containsFieldNameRead(e ast.Expr) bool {
+func containsFieldNameRead(e ast.Expr, taint nameTaint) bool {
 	found := false
 	ast.Inspect(e, func(n ast.Node) bool {
 		if found {
 			return false
 		}
-		if _, ok := n.(*ast.FuncLit); ok {
+		switch x := n.(type) {
+		case *ast.FuncLit:
 			return false
-		}
-		if x, ok := n.(ast.Expr); ok && isFieldSelector(x) {
-			found = true
+		case *ast.SelectorExpr:
+			// Only the RECEIVER side is searched. A selector's Sel is a bare
+			// Ident, so descending into it would let a tainted local sharing a
+			// method's name match a call that never touches the name.
+			if isFieldSelector(x) || containsFieldNameRead(x.X, taint) {
+				found = true
+			}
+			return false
+		case *ast.Ident:
+			if taint.has(x) {
+				found = true
+			}
 		}
 		return !found
 	})
@@ -426,10 +581,13 @@ func containsFieldNameRead(e ast.Expr) bool {
 // hand back a string derived from the name and nothing else:
 //
 //   - `fv.Field` itself, and it in parentheses;
+//   - a local identifier assigned from the name — `upper := strings.ToUpper(fv.Field)`
+//     followed by `return upper`, which is `fieldValueAliasAndCol`;
 //   - `strings.ToUpper(fv.Field)` — a launderer;
 //   - `legPrefix + fv.Field` — concatenation, which escapes the name with a
 //     decoration on it, still keyed and compared as a name downstream;
-//   - `fv.Field[:dot]` — a slice, i.e. the qualifier or the leaf on its own.
+//   - `fv.Field[:dot]` — a slice, i.e. the qualifier or the leaf on its own,
+//     over the name or over such a local.
 //
 // BELOW a launderer the rule relaxes to deep containment, which is what makes
 // `strings.ToUpper(stripColumnQualifier(fv.Field))` visible. A launderer's
@@ -437,24 +595,26 @@ func containsFieldNameRead(e ast.Expr) bool {
 // derivation of the name — there is no constructor to confuse it with, and
 // requiring the inner callee to be whitelisted too would just restart the
 // enumeration game one level down.
-func escapesFieldName(e ast.Expr) bool {
+func escapesFieldName(e ast.Expr, taint nameTaint) bool {
 	switch x := e.(type) {
+	case *ast.Ident:
+		return taint.has(x)
 	case *ast.SelectorExpr:
 		return isFieldSelector(x)
 	case *ast.ParenExpr:
-		return escapesFieldName(x.X)
+		return escapesFieldName(x.X, taint)
 	case *ast.SliceExpr:
-		return escapesFieldName(x.X)
+		return escapesFieldName(x.X, taint)
 	case *ast.BinaryExpr:
 		if x.Op == token.ADD {
-			return escapesFieldName(x.X) || escapesFieldName(x.Y)
+			return escapesFieldName(x.X, taint) || escapesFieldName(x.Y, taint)
 		}
 	case *ast.CallExpr:
 		if !nameLaunderers[callFuncName(x.Fun)] {
 			return false
 		}
 		for _, arg := range x.Args {
-			if containsFieldNameRead(arg) {
+			if containsFieldNameRead(arg, taint) {
 				return true
 			}
 		}
@@ -547,6 +707,22 @@ func funcTouchesFieldValue(fn ast.Node, unqualified bool) bool {
 	return found
 }
 
+// taintedIdentIn names the first name-derived local appearing in e, for the
+// report only. Empty when the decision owes nothing to the taint set.
+func taintedIdentIn(e ast.Expr, taint nameTaint) string {
+	var name string
+	ast.Inspect(e, func(n ast.Node) bool {
+		if name != "" {
+			return false
+		}
+		if id, ok := n.(*ast.Ident); ok && taint.has(id) {
+			name = id.Name
+		}
+		return name == ""
+	})
+	return name
+}
+
 // isNilIdent reports whether e is the identifier nil.
 func isNilIdent(e ast.Expr) bool {
 	id, ok := e.(*ast.Ident)
@@ -586,6 +762,10 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 	// exercise the same derivation the tree walk does.
 	inValuesPkg := f.Name != nil && f.Name.Name == "values"
 
+	// Identifiers the enclosing top-level func assigns the name to, so a sink
+	// reached through one local hop is judged on what actually flows into it.
+	tainted := nameTaint{}
+
 	// A sink decides on the name if the name PROVABLY reaches it (readsFieldName,
 	// safe without type information), or if it reaches it through arbitrary
 	// wrapping in a function that demonstrably handles a FieldValue.
@@ -606,14 +786,57 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 	// never name the type. Trading two known sites for four false positives is a
 	// worse gate on both axes, so the tiers are additive — reach is never
 	// narrowed, depth is only added where the type is in play.
+	//
+	// The PRICE of the ungated shallow tier, stated so nobody has to rediscover
+	// it: a direct `.Field` selector is typed by SPELLING ALONE. `x.Field == s`
+	// on a type unrelated to FieldValue, in a function with no FieldValue
+	// anywhere in it, is reported — the gate cannot tell it apart from
+	// in_memory_sort.go:142 (`plans.SortKey.Field`) or rowdiff/ordering.go:241,
+	// and those two are NAME-TYPED CARRIERS: the string they compare came off a
+	// FieldValue upstream and carries the conflation with it. They are real debt.
+	// So this is a deliberate trade, not an oversight — precision on unrelated
+	// `.Field` structs is spent to keep carriers visible, and it is spent knowing
+	// the type discriminator would buy the precision back at exactly that cost.
+	// Both halves are pinned by fixtures (the SortKey carrier must fire; the
+	// unrelated struct fires too, and the test says so), so type-based gating
+	// cannot be added as a "precision fix" without re-deriving the trade.
 	decides := func(e ast.Expr) bool {
-		return readsFieldName(e) || (handlesFieldValue && containsFieldNameRead(e))
+		return readsFieldName(e, tainted) || (handlesFieldValue && containsFieldNameRead(e, tainted))
 	}
+
+	// localNote names the local a decision arrived THROUGH, so the report points
+	// at the hop rather than at a sink whose operand reads as an ordinary
+	// variable. `layout[key]` on its own tells the reader nothing; "a map key via
+	// local key derived from the name" tells them where to look.
+	//
+	// raw is the same predicate with an EMPTY taint set: if the sink decides
+	// without the taint, the name is right there in the expression and there is
+	// no hop to name. Only a decision the taint set made possible gets the
+	// suffix, so an unrelated tainted identifier sitting elsewhere in a sink that
+	// already reads `.Field` directly cannot mislabel it.
+	localNote := func(raw func(ast.Expr) bool, es ...ast.Expr) string {
+		for _, e := range es {
+			if raw(e) {
+				return ""
+			}
+		}
+		for _, e := range es {
+			if name := taintedIdentIn(e, tainted); name != "" {
+				return " via local " + name + " derived from the name"
+			}
+		}
+		return ""
+	}
+	decidesRaw := func(e ast.Expr) bool {
+		return readsFieldName(e, nil) || (handlesFieldValue && containsFieldNameRead(e, nil))
+	}
+	escapesRaw := func(e ast.Expr) bool { return escapesFieldName(e, nil) }
 
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.FuncDecl:
 			handlesFieldValue = funcTouchesFieldValue(x, inValuesPkg)
+			tainted = nameDerivedIdents(x)
 		case *ast.BinaryExpr:
 			op := x.Op.String()
 			if op == "==" || op == "!=" || isOrderingOp(op) {
@@ -637,7 +860,7 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 					break
 				}
 				if decides(x.X) || decides(x.Y) {
-					report(x.Pos(), "a "+op+" comparison")
+					report(x.Pos(), "a "+op+" comparison"+localNote(decidesRaw, x.X, x.Y))
 				}
 			}
 		case *ast.SwitchStmt:
@@ -645,18 +868,18 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 			// EMPTY-tag switch needs no arm here: ast.Inspect still visits
 			// each case's boolean expression as an ordinary BinaryExpr.)
 			if x.Tag != nil && decides(x.Tag) {
-				report(x.Pos(), "a switch tag")
+				report(x.Pos(), "a switch tag"+localNote(decidesRaw, x.Tag))
 			}
 		case *ast.IndexExpr:
 			// Keying a map by display name conflates same-named columns.
 			if decides(x.Index) {
-				report(x.Pos(), "a map key")
+				report(x.Pos(), "a map key"+localNote(decidesRaw, x.Index))
 			}
 		case *ast.KeyValueExpr:
 			// map[string]T{fv.Field: …} builds the same conflation through
 			// a composite literal, which never produces an IndexExpr.
 			if decides(x.Key) {
-				report(x.Pos(), "a composite-literal key")
+				report(x.Pos(), "a composite-literal key"+localNote(decidesRaw, x.Key))
 			}
 		case *ast.ReturnStmt:
 			// The name ESCAPING as a bare string is the shape that defeated
@@ -670,8 +893,9 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 				break
 			}
 			for _, r := range x.Results {
-				if escapesFieldName(r) {
-					report(x.Pos(), "the name escaping as a bare string (return)")
+				if escapesFieldName(r, tainted) {
+					report(x.Pos(), "the name escaping as a bare string (return)"+
+						localNote(escapesRaw, r))
 					break
 				}
 			}
@@ -679,7 +903,7 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 			if name := callFuncName(x.Fun); stringCompareHelpers[name] {
 				for _, arg := range x.Args {
 					if decides(arg) {
-						report(x.Pos(), "a "+name+" call")
+						report(x.Pos(), "a "+name+" call"+localNote(decidesRaw, arg))
 						break
 					}
 				}
