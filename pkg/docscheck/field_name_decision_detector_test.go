@@ -255,6 +255,15 @@ func (k SortKey) Name() string { return k.Field }`,
 }`,
 		},
 		{
+			// Against "" it partitions "has a name" from "has none" — Java's
+			// null accessor name, i.e. pure ordinal access. It cannot confuse
+			// column A with column B, which is the only failure this gate is
+			// about, so flagging it told four sites to consult Resolved for a
+			// question Resolved does not answer.
+			name: "emptiness test on the name",
+			body: `func f(acc *values.FieldValue) bool { return acc.Field == "" }`,
+		},
+		{
 			// FieldValue.Field is a string and cannot be compared to nil, so a
 			// nil comparison proves the receiver is something else. This is a
 			// protobuf KeyExpression variant selector; it spent a release in the

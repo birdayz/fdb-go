@@ -115,9 +115,7 @@ type fieldDebt struct {
 var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/cascades/match_candidate_index.go:792":            {1, "laundered map key: coveredColumns[strings.ToUpper(v.Field)] -- the ToUpper wrapper is what hid it"},
 	"pkg/recordlayer/query/plan/cascades/windowed_index_match_candidate.go:246":   {1, "laundered map key, same shape"},
-	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:52":         {1, "values package, no longer blanket-exempt: accessor path segment compared by name"},
 	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:61":         {1, "values package: dotted-name probe on an accessor path"},
-	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go:64":         {1, "values package: accessor path segment compared by name"},
 	"pkg/recordlayer/query/plan/cascades/values/map_field_values.go:354":          {1, "values package: field remap keyed by name"},
 	"pkg/recordlayer/query/plan/cascades/values/pullup.go:210":                    {1, "values package: pull-up matches a column by name"},
 	"pkg/recordlayer/query/plan/cascades/values/replace.go:498":                   {1, "values package: replacement target matched by name"},
@@ -143,9 +141,7 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 	"pkg/recordlayer/query/plan/plans/in_memory_sort.go:142":                      {1, "sort key matched by name"},
 	"pkg/relational/conformance/rowdiff/ordering.go:241":                          {1, "oracle-side ordering, harness not engine"},
 	"pkg/relational/core/embedded/cascades_generator.go:3155":                     {1, "SQL translator layer"},
-	"pkg/relational/core/embedded/cascades_generator.go:3281":                     {1, "SQL translator layer"},
-	"pkg/relational/core/embedded/cascades_generator.go:3287":                     {1, "SQL translator layer"},
-	"pkg/relational/core/embedded/logical_predicate.go:4151":                      {3, "SQL translator layer"},
+	"pkg/relational/core/embedded/logical_predicate.go:4151":                      {1, "SQL translator layer"},
 	"pkg/relational/core/embedded/logical_predicate.go:6188":                      {1, "SQL translator layer"},
 	"pkg/relational/core/query/box_conjunct.go:149":                               {1, "dotted-name probe: frontier read attribution, SQL translator layer"},
 	"pkg/relational/core/query/ordinal_seed.go:761":                               {1, "dotted-name probe: leg-ref detection, SQL translator layer"},
@@ -264,6 +260,12 @@ func isNilIdent(e ast.Expr) bool {
 	return ok && id.Name == "nil"
 }
 
+// isEmptyStringLit reports whether e is the literal "".
+func isEmptyStringLit(e ast.Expr) bool {
+	lit, ok := e.(*ast.BasicLit)
+	return ok && lit.Kind == token.STRING && (lit.Value == `""` || lit.Value == "``")
+}
+
 // isOrderingOp reports whether op orders two values. Sorting BY leaf name is
 // leaf-name-as-identity exactly as much as comparing by it — a
 // `sort.Slice(cols, func(i,j int) bool { return cols[i].Field < cols[j].Field })`
@@ -302,6 +304,14 @@ func scanFieldDecisions(f *ast.File, report func(pos token.Pos, form string)) {
 				// does not make, telling its reader to consult a Resolved
 				// accessor that does not exist on it.
 				if isNilIdent(x.X) || isNilIdent(x.Y) {
+					break
+				}
+				// Against the EMPTY string it is not an identity decision
+				// either. `acc.Field == ""` asks whether an accessor is pure
+				// ordinal access (Java's null accessor name) — it partitions
+				// "has a name" from "has none" and can never confuse column A
+				// with column B, which is the only failure this gate is about.
+				if isEmptyStringLit(x.X) || isEmptyStringLit(x.Y) {
 					break
 				}
 				if readsFieldName(x.X) || readsFieldName(x.Y) {
