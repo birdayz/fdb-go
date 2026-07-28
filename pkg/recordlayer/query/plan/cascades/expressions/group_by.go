@@ -51,7 +51,7 @@ type AggregateSpec struct {
 	// (proto TYPE_INT32) → int32 overflow; any other value (including the zero
 	// TypeCodeUnknown) keeps the int64 (SUM_L) domain. This is a SEPARATE field
 	// because Go's resolver widens every integer column reference to LONG
-	// (values.NullableLong == NullableLong), so Operand.Type() cannot carry the
+	// (the retired `TypeInt` alias WAS NullableLong), so Operand.Type() cannot carry the
 	// INT32/INT64 distinction — the translator sources it from the proto-faithful
 	// record type instead.
 	OperandIntType values.TypeCode
