@@ -832,11 +832,23 @@ func constAsFloat64(cv any) (float64, bool) {
 // column returned ZERO rows for every comparison before this: FLOAT was
 // the only numeric column type NO widen/narrow rule covered at all.
 //
-// Unlike widenConstAgainstDoubleColumn (int→double is always exact for any
-// realistic int64) float32 has a 24-bit mantissa, so an ordinary integer
-// beyond 2^24 — or almost any non-terminating-binary fraction — is NOT
-// exactly representable. This function checks exactness explicitly
-// (round-trip float64(float32(f)) == f) rather than assuming it:
+// Unlike widenConstAgainstDoubleColumn, this function checks exactness. The
+// two are asymmetric for a REASON, and the asymmetry is easy to misread as an
+// oversight:
+//
+//   - int→double is NOT always exact — float64 has a 53-bit mantissa, so any
+//     |n| > 2^53 rounds. But widening anyway is CORRECT: SQL converts an exact
+//     numeric to approximate when comparing the two, so `double_col = 2^53+1`
+//     legitimately matches a stored 2^53. Postgres agrees. Adding an exactness
+//     check there would DECLINE a conversion the standard mandates and turn
+//     correct rows into missing ones. (An earlier version of this comment said
+//     int→double is "always exact for any realistic int64", which is false and
+//     invited exactly that non-fix.)
+//   - float64→float32 is different: the FLOAT column's index entries are packed
+//     under a different tuple type code, so a non-exact narrowing does not just
+//     lose precision, it probes a key that cannot exist. That is why this
+//     function checks exactness explicitly (round-trip float64(float32(f)) == f)
+//     rather than assuming it:
 //   - exact: retype the bare constant to float32 with the column's own
 //     Type (same pattern as the two sibling helpers — a bare re-typed
 //     ConstantValue, not a PromoteValue, because the SARG range-builder

@@ -875,8 +875,16 @@ func isZeroFloatEqualityRange(cr *predicates.ComparisonRange) bool {
 		(t.Code() != values.TypeCodeFloat && t.Code() != values.TypeCodeDouble) {
 		return false
 	}
-	v, err := cmp.Operand.Evaluate(nil)
-	if err != nil || v == nil {
+	// Constness checked BEFORE evaluating: evaluating an arbitrary operand with
+	// a nil context treats unbound parameters as NULL, so `v = COALESCE(?, 0.0)`
+	// folds to zero and is misreported as a constant zero even when the runtime
+	// binding is nonzero -- which would drop the trailing column from EVERY
+	// composite probe of that shape.
+	if !values.IsConstantValue(cmp.Operand) {
+		return false
+	}
+	v, ok := values.EvaluateConstant(cmp.Operand)
+	if !ok || v == nil {
 		return false
 	}
 	switch n := v.(type) {

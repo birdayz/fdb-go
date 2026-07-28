@@ -39,6 +39,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -141,6 +142,16 @@ func TestFDB_NegativeZeroCompositeIndexSargProbe(t *testing.T) {
 		},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
+			// Pin that the COMPOSITE INDEX path actually ran. Without this the
+			// row assertions pass on a primary scan too, because the residual
+			// IEEE comparison handles signed zero correctly on its own — so the
+			// test would prove nothing about the SARG path it exists to cover,
+			// and reverting the fix would not reliably redden it.
+			if plan := explainOnConn(t, ctx, conn, tc.query); !strings.Contains(plan, "T_VW") {
+				t.Fatalf("%s\nplan = %s\nwant the composite index T_VW: on a primary scan the "+
+					"residual filter answers correctly by itself, so this case would pass "+
+					"without exercising the changed matching path at all", tc.query, plan)
+			}
 			if got := ids(t, tc.query); !eq(got, tc.want) {
 				t.Fatalf("%s\n%s = %v, want %v", tc.why, tc.query, got, tc.want)
 			}

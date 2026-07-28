@@ -267,9 +267,63 @@ func equalityPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 		if !comps[i].IsEquality() {
 			break
 		}
+		// A zero-valued FLOAT/DOUBLE equality does NOT pin a single key. The
+		// executor widens it to span both signed zeros (-0.0 and +0.0 are
+		// IEEE-equal but pack to distinct adjacent keys), so the scan covers
+		// TWO physical prefixes and every column after it RESETS at the
+		// boundary.
+		//
+		// Counting it as an equality claimed the suffix was globally ordered
+		// and let the planner drop a required sort: over rows (-0.0, 9) and
+		// (+0.0, 1), `WHERE v = 0 ORDER BY w` returned [9 1] unsorted, and
+		// `... LIMIT 1` returned the wrong row entirely.
+		//
+		// Treat it like an inequality instead — stop here without counting it.
+		// A non-equality leading comparison already trims nothing, so `v` stays
+		// in the ordering (it IS ordered: -0.0 sorts immediately before +0.0)
+		// while the suffix no longer claims an order the scan does not provide.
+		if isZeroFloatEqualityRange(comps[i]) {
+			break
+		}
 		prefix = i + 1
 	}
 	return prefix
+}
+
+// isZeroFloatEqualityRange reports whether cr is an equality against a
+// COMPILE-TIME-CONSTANT zero FLOAT/DOUBLE — the shape the executor widens
+// across both signed zeros.
+//
+// Constness is checked BEFORE evaluating. Evaluating an arbitrary operand with
+// a nil context silently treats unbound parameters as NULL, so
+// `v = COALESCE(?, 0.0)` would fold to zero and be misreported as a constant
+// zero even when the runtime binding is nonzero.
+func isZeroFloatEqualityRange(cr *predicates.ComparisonRange) bool {
+	if cr == nil || !cr.IsEquality() {
+		return false
+	}
+	cmp := cr.GetEqualityComparison()
+	if cmp == nil || cmp.Operand == nil {
+		return false
+	}
+	if t := cmp.Operand.Type(); t == nil ||
+		(t.Code() != values.TypeCodeFloat && t.Code() != values.TypeCodeDouble) {
+		return false
+	}
+	if !values.IsConstantValue(cmp.Operand) {
+		return false
+	}
+	v, ok := values.EvaluateConstant(cmp.Operand)
+	if !ok || v == nil {
+		return false
+	}
+	switch n := v.(type) {
+	case float64:
+		return n == 0
+	case float32:
+		return n == 0
+	}
+	return false
 }
 
 // PKScanOrdering returns a primary scan's PK ordering. Shared with the
